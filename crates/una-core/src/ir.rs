@@ -1758,6 +1758,28 @@ pub enum Expr {
         /// `attempt` in the source.
         span: Span,
     },
+    /// `within(d) e`: `e` bounded by the deadline `d`, in milliseconds after `d` is evaluated
+    /// (`spec/27 §5`, ADR 0117 rule 5). Its value is `e`'s when `e` returns before the deadline.
+    /// Otherwise it fails with `timeout()`, a variant without fields: `e` is cancelled at its
+    /// next check point once the deadline passes, and the tasks it started with it. A failure
+    /// `x` of `e` in time fails as `wrap(x)` when there is a `wrap`, else as `x`. The verifier
+    /// assumes the facts of `e` on success, and proves `d >= 1` at `deadline_span`.
+    Within {
+        /// The deadline, an `Int`, bound before the expression.
+        deadline: Atom,
+        /// The deadline in the source, where its obligation `d >= 1` is reported.
+        deadline_span: Span,
+        /// The expression bounded.
+        body: Box<Expr>,
+        /// The failure when the deadline passes: `Timed.TimedOut` or `Deadline.Expired` of
+        /// `std.time`, or the function's own `TimedOut` under `if error pass`.
+        timeout: Box<Ctor>,
+        /// The variant that wraps a failure of `e` in time: `Timed.Failed`, whose one field is
+        /// the failure; none under `if error pass`, or when `e` cannot fail.
+        wrap: Option<Box<Ctor>>,
+        /// The whole `e within d` in the source, where its time-out is located.
+        span: Span,
+    },
     /// `with c = s in e`.
     With {
         /// The capability reference bound.

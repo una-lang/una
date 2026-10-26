@@ -843,7 +843,9 @@ impl Sites {
                 self.expr(body);
                 self.expr(handler);
             }
-            Expr::Attempt { body, .. } | Expr::With { body, .. } => self.expr(body),
+            Expr::Attempt { body, .. } | Expr::With { body, .. } | Expr::Within { body, .. } => {
+                self.expr(body);
+            }
             Expr::Atom { .. }
             | Expr::Fail { .. }
             | Expr::Exit { .. }

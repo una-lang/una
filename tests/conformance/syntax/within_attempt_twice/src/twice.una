@@ -1,0 +1,15 @@
+-- test: `attempt e within d` takes the deadline, so a second `within` after it on the same line is U0101 (spec/27 §5, ADR 0117 rule 5)
+-- spec: spec/27 §5
+-- expect: error U0101 at src/twice.una:12:56
+module twice
+
+import std.time (millisecond)
+
+next(n: Int) -> Int = n + 1
+
+pub twice(n: Int) -> Int
+=
+  let outcome = attempt next(n) within 5 * millisecond within 5 * millisecond
+  when outcome
+    is Ok(value) -> value
+    is Err(failure) -> 0

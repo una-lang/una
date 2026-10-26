@@ -176,6 +176,15 @@ if_block        = "if" line_expr NEWLINE INDENT block DEDENT
 
 (v0.2, ADR 0065.) In edition `0.2`, a block also takes `together` statements, and a `let` the `together for` form (`spec/19 §1`).
 
+(Edition 0.4, ADR 0117 rule 5.) In edition `0.4`, a `handled` line MAY bound its expression by a deadline, after its `with` clause, and `attempt` MAY take one, which it then holds (`spec/27 §5`):
+
+```ebnf
+handled         = line_expr [ with_clause ] [ "within" add_expr ] NEWLINE [ INDENT handling { handling } DEDENT ] ;
+attempt_expr    = "attempt" postfix [ "within" add_expr ] ;
+```
+
+A `handled` whose `line_expr` is an `attempt` with its own `within` takes no second `within` (U0101).
+
 ## 7. Expressions
 
 ```ebnf
