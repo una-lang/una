@@ -6879,7 +6879,9 @@ fn normalized_goal(goal: &str, layout: SourceLayout) -> String {
 /// amendment of 2026-10-25): white space that holds a line break right before a closing `)` or
 /// `]` token is erased, which is where the canonical form puts the closer of a wrapped group,
 /// and then every run of white space collapses to one space. Text literals hold no line break,
-/// and a closer inside one is no token, so their text is kept but for the collapse. One lexing
+/// and a closer inside one is no token, so their text is kept but for the collapse, which also joins runs of spaces inside a text literal
+/// shown in a hypothesis or contract: the text is for display and comparison, never evaluated
+/// (#1175, kept as it is). One lexing
 /// pass and one pass over the closers: O(n) time and space.
 pub fn unwrap_layout(text: &str) -> String {
     let mut sources = SourceDb::new();

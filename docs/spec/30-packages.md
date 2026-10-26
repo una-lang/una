@@ -4,7 +4,7 @@ Status: Normative, edition 0.4 preview (ADR 0122).
 
 From edition `0.4`, a package describes itself in `ita.una`, a declarative file in Una's lexical syntax, and is pinned by `ita.lock`, which only the tool writes. A repository may group packages in a workspace with `itaty.una`. Itá, the package manager, is the command `una ita` of the `una` binary. The rules of ADR 0122 join this chapter as they land, each with its conformance cases. Until the rules that load dependencies have landed, a package may write `needs`, which is read and checked, but every need is refused (U7008), so no import ever reaches a package that is not checked with the program.
 
-**Editions.** The rules of this chapter apply only to packages of edition `0.4` and later. Editions `0.1` to `0.3` keep `una.toml` and `verification.lock` (`spec/13 §7`), and a single file keeps edition `0.1` and has no dependencies.
+**Editions.** The rules of this chapter apply only to packages of edition `0.4` and later. Editions `0.1` to `0.3` keep `una.toml` and `verification.lock` (`spec/13 §7`), and a single file has no dependencies. A single file keeps edition `0.1`, except that a file named to `una fmt`, `una check` or another command, with an `ita.una` or `una.toml` in a directory above it, is read, formatted and checked in the edition of the nearest such manifest and is otherwise still its own package (#1175).
 
 ## 1. Lexical rules
 

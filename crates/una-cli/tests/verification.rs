@@ -65,8 +65,14 @@ fn package_of_edition(name: &str, edition: &str, files: &[(&str, &str)]) -> Path
 
 /// How tier 1 normalizes the source text of the package at `path`: edition 0.4, which only
 /// `ita.una` describes, erases the layout of wrapped lines (ADR 0125, amendment of 2026-10-25).
+/// The edition is the manifest's, not the presence of the file (#1175).
 fn layout_of(path: &Path) -> una_verify::SourceLayout {
-    if path.join("ita.una").is_file() {
+    let ita = path.join("ita.una");
+    let edition = match std::fs::read_to_string(&ita) {
+        Ok(text) => una_project::ita::parse_ita_manifest(&text).0.edition,
+        Err(_) => una_project::Edition::V0_1,
+    };
+    if edition >= una_project::Edition::V0_4 {
         una_verify::SourceLayout::Wrapped
     } else {
         una_verify::SourceLayout::Joined
