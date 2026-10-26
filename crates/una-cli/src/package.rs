@@ -295,6 +295,7 @@ pub fn load_files(files: &[(String, String)]) -> Result<Package, LoadError> {
         lock_bytes: None,
         modules: Vec::new(),
         disk_paths: BTreeMap::new(),
+        enclosing_edition: None,
         dependencies: Vec::new(),
         registry: Vec::new(),
     };
