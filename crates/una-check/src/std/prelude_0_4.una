@@ -206,12 +206,16 @@ pub dense_matrix_column[T](m: Matrix[T], index: Int) -> Array[T]
 =
   dense_matrix_column(m, index: index)
 
-pub dense_matrix_block[T](m: Matrix[T], row_from: Int, row_until: Int, column_from: Int, column_until: Int) -> Matrix[T]
+pub dense_matrix_block[T](m: Matrix[T], row_from: Int, row_until: Int, column_from: Int,
+  column_until: Int
+) -> Matrix[T]
   requires 0 <= row_from and row_from <= row_until and row_until <= m.rows
   requires 0 <= column_from and column_from <= column_until and column_until <= m.columns
   ensures result.rows == row_until - row_from and result.columns == column_until - column_from
 =
-  dense_matrix_block(m, row_from: row_from, row_until: row_until, column_from: column_from, column_until: column_until)
+  dense_matrix_block(m, row_from: row_from, row_until: row_until, column_from: column_from,
+    column_until: column_until
+  )
 
 pub dense_matrix_transpose[T](m: Matrix[T]) -> Matrix[T]
   ensures result.rows == m.columns and result.columns == m.rows

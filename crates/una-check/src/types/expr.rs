@@ -614,6 +614,18 @@ impl<'a> Checker<'_, 'a, '_> {
         let Some(def) = self.env.functions.get(id).cloned() else {
             return Ty::error();
         };
+        // ADR 0116 rule 8: a function that says `diverges` is not a value.
+        if def.diverges {
+            self.report.error(
+                Code::U3028,
+                span,
+                format!(
+                    "`{}` says `diverges`, so it is not a value: a value can be called where nothing says it may run forever; call it by name",
+                    def.name
+                ),
+            );
+            return Ty::error();
+        }
         if def.kind == FnKind::Policy {
             self.report.error(
                 Code::U2001,
@@ -764,6 +776,17 @@ impl<'a> Checker<'_, 'a, '_> {
         if let Some(current) = self.current {
             self.findings.edges.push((current, callee, span));
         }
+        // What can run beside a part of a task construct (ADR 0116 IF6).
+        if self.task_depth > 0 {
+            self.findings.task_edges.insert(callee);
+        }
+        if self.lambda_depth > 0 {
+            self.findings.lambda_edges.insert(callee);
+        }
+        if self.handler.is_some() {
+            self.findings.handler_edges.insert(callee);
+        }
+        self.timing_callee(callee);
     }
 
     /// An upper-case name used as a value: a variant without fields.

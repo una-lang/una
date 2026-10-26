@@ -97,6 +97,10 @@ impl<'p, 'l> Frames<'p, 'l> {
                 }
                 self.expr(body, env)
             }
+            // The value of a loop with `on stop` is that block's, which says nothing here.
+            Expr::Loop {
+                on_stop: Some(_), ..
+            } => Some(Vec::new()),
             Expr::Loop {
                 state,
                 init,
