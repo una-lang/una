@@ -172,6 +172,10 @@ fn record_write(written: io::Result<()>) {
 /// Records that the host operation in progress failed, with a failure the caller then reads
 /// as its value.
 pub(crate) fn failed(word: i64) -> i64 {
+    // A failure is a value of an error kind, a sum: a handle (even, not 0) or a variant without
+    // fields, `(index << 1) | 1` with `index >= 0`. So it is never `-1`, the word of a stopped
+    // task in the generated code (`una_codegen::lower::STOPPED`).
+    debug_assert_ne!(word, -1, "a failure word equal to the stop of a task");
     with_state(|state| state.host_failed = true);
     word
 }
@@ -390,11 +394,15 @@ pub fn event_arg(site: i64, slot: i64, index: i64, value: i64) {
 }
 
 /// Ends the event at `slot`, of operation `site`, with its value, or its failure when `failed`
-/// is 1.
+/// is 1. A task that stopped at or in the operation (`failed` 2) leaves the event as it was,
+/// `aborted`.
 pub fn event_end(site: i64, slot: i64, value: i64, failed: i64) {
     let (Ok(site), Ok(slot)) = (usize::try_from(site), usize::try_from(slot)) else {
         return;
     };
+    if failed == 2 {
+        return;
+    }
     with_state(|state| {
         let Some(op) = state.ops.get(site) else {
             return;
@@ -491,16 +499,16 @@ fn http(
     // Under virtual time, a network wait takes no virtual time (ADR 0116 rule 19), so only a
     // deadline the virtual clock has already reached cuts the request, at once.
     let mut settings = settings;
-    let mut cut = false;
-    if let Some(left) = crate::deadline::left()
+    let mut cut = None;
+    if let Some((left, bound)) = crate::deadline::left()
         && left < settings.timeout
         && (left.is_zero() || !crate::runtime::clock().is_virtual())
     {
         settings.timeout = left;
-        cut = true;
+        cut = Some(bound);
     }
     let stop = crate::runtime::op_interrupt();
-    let sent = if cut && settings.timeout.is_zero() {
+    let sent = if cut.is_some() && settings.timeout.is_zero() {
         Err(Error::TimedOut)
     } else {
         // In a task, the request runs on a helper of the I/O pool while the task parks (ADR 0117
@@ -524,7 +532,9 @@ fn http(
             }
         })
     };
-    if cut && sent == Err(Error::TimedOut) {
+    // A `for ever within` iteration observes its deadline at the operation; a `within` at its
+    // next check point, or when its expression returns (`spec/27 §5`).
+    if cut == Some(crate::deadline::Bound::Ever) && sent == Err(Error::TimedOut) {
         crate::deadline::timed_out();
     }
     match sent {

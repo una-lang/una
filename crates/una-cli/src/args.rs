@@ -283,6 +283,21 @@ pub(crate) enum Command {
 /// The commands of `una ita` implemented so far (ADR 0122 rule 57).
 #[derive(Debug, Subcommand)]
 pub(crate) enum ItaCommand {
+    /// Remove a need from ita.una, then write the lock
+    Remove {
+        /// The package's name, as the need writes it
+        name: String,
+
+        /// The package directory
+        #[arg(default_value = ".")]
+        path: PathBuf,
+    },
+    /// Print the program's packages, with their ceilings, authority and trust
+    Tree {
+        /// The package directory
+        #[arg(default_value = ".")]
+        path: PathBuf,
+    },
     /// Write `ita.lock` for the package, or check it with --check
     Lock {
         /// The package directory
@@ -294,9 +309,83 @@ pub(crate) enum ItaCommand {
         #[arg(long)]
         check: bool,
 
-        /// Record a ceiling wider than the one the lock records: an authority change
+        /// Record the ceiling of this package wider than the one the lock records: an
+        /// authority change; repeat it for each package
+        #[arg(long, value_name = "PACKAGE")]
+        accept_authority: Vec<String>,
+
+        /// Record consent to the trusted modules of this package for the content of this
+        /// digest, which the review prints; repeat it for each package
+        #[arg(long, value_name = "PACKAGE@DIGEST")]
+        accept_trust: Vec<String>,
+
+        /// Print the review of the changes, and write nothing
         #[arg(long)]
-        accept_authority: bool,
+        dry_run: bool,
+    },
+    /// Raise the named needs, or all, and write the lock, for the package in the current
+    /// directory
+    Update {
+        /// The packages to raise, as the needs write them; all when none is named
+        names: Vec<String>,
+
+        /// Take only releases logged at least this many hours before the resolution point
+        #[arg(long, value_name = "HOURS", conflicts_with = "now")]
+        cooldown: Option<u64>,
+
+        /// Take releases with no cooldown
+        #[arg(long)]
+        now: bool,
+
+        /// Record the ceiling of this package wider than the one the lock records: an
+        /// authority change; repeat it for each package
+        #[arg(long, value_name = "PACKAGE")]
+        accept_authority: Vec<String>,
+
+        /// Record consent to the trusted modules of this package for the content of this
+        /// digest, which the review prints; repeat it for each package
+        #[arg(long, value_name = "PACKAGE@DIGEST")]
+        accept_trust: Vec<String>,
+
+        /// Print the review of the changes, and write nothing
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Add a need to ita.una and write the lock, for the package in the current directory
+    Add {
+        /// The package's name, `name` or `owner/name`
+        name: String,
+
+        /// The least version the need admits, as `2.1` or `2.1.0`
+        version: Option<String>,
+
+        /// The need's local name
+        #[arg(long = "as", value_name = "LOCAL")]
+        local: Option<String>,
+
+        /// The source: `itaty` by default, or a source of ita.una's `sources`
+        #[arg(long, value_name = "SOURCE")]
+        from: Option<String>,
+
+        /// Take a release with no cooldown
+        #[arg(long)]
+        now: bool,
+
+        /// Print the review of the changes, and write nothing
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Copy each locked registry package from Itaoca into vendor/ita/, with its provenance
+    Vendor {
+        /// The package directory
+        #[arg(default_value = ".")]
+        path: PathBuf,
+    },
+    /// Verify each locked registry package again, in vendor/ita/ and in Itaoca
+    Verify {
+        /// The package directory
+        #[arg(default_value = ".")]
+        path: PathBuf,
     },
 }
 

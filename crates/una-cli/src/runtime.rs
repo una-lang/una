@@ -22,7 +22,7 @@ use una_syntax::{SourceDb, Span};
 
 use crate::contract::Modules;
 use crate::verification::tier_one;
-use crate::{Analysis, Environment, ExitStatus, Package, analyze, load, on_large_stack};
+use crate::{Analysis, Environment, ExitStatus, Package, analyze, on_large_stack};
 
 /// The exit status of a package that the checks reject: 3 for an internal error, 1 otherwise.
 pub(crate) fn rejected_status(diagnostics: &[Diagnostic]) -> ExitStatus {
@@ -228,7 +228,11 @@ pub(crate) fn run_command(
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> io::Result<ExitStatus> {
-    let package = match load(path) {
+    let package = match crate::package::load_in(
+        path,
+        &std::collections::BTreeMap::new(),
+        options.solving.itaoca.as_ref(),
+    ) {
         Ok(package) => package,
         Err(error) => {
             writeln!(stderr, "error: {error}")?;
@@ -815,7 +819,11 @@ pub(crate) fn test_command(
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> io::Result<ExitStatus> {
-    let package = match load(path) {
+    let package = match crate::package::load_in(
+        path,
+        &std::collections::BTreeMap::new(),
+        options.solving.itaoca.as_ref(),
+    ) {
         Ok(package) => package,
         Err(error) => {
             writeln!(stderr, "error: {error}")?;
