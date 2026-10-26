@@ -188,7 +188,7 @@ fn a_public_block_s_timing_never_depends_on_how_many_tasks_secret_code_started()
     // `/hold`, and the deadline is the slowest of them, plus the hold, plus 25 ms. Then key 0
     // and key 1 are built with it and run 20 times each, alternating. Each run measures three
     // samples, key 0, key 1 and key 1 again, in an order that cycles through all six, so every
-    // sample takes every place in a run equally often (#1189): a cost of the first place in a
+    // sample takes every place in a run 6 or 7 times (#1189): a cost of the first place in a
     // run, which differs between machines, falls on no sample alone.
     //
     // The judgment is the rank test of the header: key 0's 20 times against key 1's, failing at
@@ -222,6 +222,18 @@ fn a_public_block_s_timing_never_depends_on_how_many_tasks_secret_code_started()
         [2, 1, 0],
         [1, 0, 2],
     ];
+    // The 20 runs of ADR 0116 §G are not a multiple of 3, so the balance is as close as 20
+    // allows: each sample takes each place 6 or 7 times.
+    let mut places = [[0_usize; 3]; 3];
+    for run in 0..20 {
+        for (place, sample) in ORDERS[run % ORDERS.len()].into_iter().enumerate() {
+            places[sample][place] += 1;
+        }
+    }
+    assert!(
+        places.iter().flatten().all(|count| (6..=7).contains(count)),
+        "{places:?}"
+    );
     let mut samples: [Vec<f64>; 3] = [Vec::new(), Vec::new(), Vec::new()];
     for run in 0..20 {
         for sample in ORDERS[run % ORDERS.len()] {
