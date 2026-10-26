@@ -110,6 +110,7 @@ fn run_edition_seconds(dir: &Path, source: &str, edition: &str) -> f64 {
     let host = Host {
         grants: Vec::new(),
         keys: BTreeMap::new(),
+        virtual_time: false,
     };
     let stack = una_interp::stack_bytes(10_000).unwrap();
     std::thread::scope(|scope| {

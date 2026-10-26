@@ -50,6 +50,8 @@ pub(crate) struct RunOptions<'a> {
     pub(crate) grants: &'a [String],
     /// `--max-depth`.
     pub(crate) max_depth: usize,
+    /// `--workers`, `--task-depth`, `--io-threads` and `--file-threads`, as given.
+    pub(crate) tasks: TaskFlags,
     /// `--max-memory`, in MiB.
     pub(crate) max_memory: usize,
     /// `--max-response` and `--http-timeout` (`spec/24 §4`).
@@ -67,6 +69,37 @@ pub(crate) struct RunOptions<'a> {
     /// `--stop-after-iterations`: the host's stop after this many iterations have started
     /// (ADR 0116 rule 19).
     pub(crate) stop_after: Option<u64>,
+    /// `--virtual-time`: the run's clock is virtual (ADR 0116 rule 19, `spec/26 §8`). A test's
+    /// clock is virtual whatever this says.
+    pub(crate) virtual_time: bool,
+    /// `--deadline`: a host stop request after this many seconds (ADR 0116 rule 14).
+    pub(crate) deadline: Option<u64>,
+    /// `--stop-grace`: the seconds from the first host stop request to the hard stop (rule 16).
+    pub(crate) stop_grace: u64,
+}
+
+/// The flags of tasks as given on the command line, each `None` when absent (ADR 0117).
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct TaskFlags {
+    pub(crate) workers: Option<usize>,
+    pub(crate) task_depth: Option<usize>,
+    pub(crate) io_threads: Option<usize>,
+    pub(crate) file_threads: Option<usize>,
+}
+
+impl TaskFlags {
+    /// The checked settings for a run of `max_depth`, or the message of the usage error. The
+    /// interpreter runs no coroutine before `first of` and `start` (ADR 0117 rule 11), so it
+    /// only checks them, and refuses what the executable refuses.
+    fn check(self, max_depth: usize) -> Result<una_interp::Concurrency, String> {
+        una_interp::Concurrency::from_flags(
+            max_depth,
+            self.workers,
+            self.task_depth,
+            self.io_threads,
+            self.file_threads,
+        )
+    }
 }
 
 /// The world of `una run`: printed lines go to the thread that writes stdout, environment
@@ -137,12 +170,17 @@ fn file_fault(error: io::Error) -> FileFault {
 }
 
 /// The limits of a run (`spec/11 §7`, ADR 0061).
-fn limits<'a>(options: &RunOptions<'a>) -> una_interp::Limits<'a> {
+fn limits<'a>(
+    options: &RunOptions<'a>,
+    stop: Option<&'a std::sync::Arc<una_interp::stopping::RunStop>>,
+) -> una_interp::Limits<'a> {
     una_interp::Limits {
         max_depth: options.max_depth,
         max_memory: options.max_memory,
         held: options.heap.held,
         http: options.http,
+        stop_after: options.stop_after,
+        stop,
     }
 }
 
@@ -247,7 +285,6 @@ pub(crate) fn run_command(
     let drive = manifest.drive.as_ref().map(|drive| una_interp::Drive {
         ticks: drive.ticks,
         budget: drive.budget,
-        stop_after: options.stop_after,
     });
     let (entry, start) = if let Some(driven) = &manifest.drive {
         let module = driven.module.value.clone();
@@ -282,7 +319,11 @@ pub(crate) fn run_command(
             return Ok(ExitStatus::Usage);
         }
     };
-    let host = Host { grants, keys };
+    let host = Host {
+        grants,
+        keys,
+        virtual_time: options.virtual_time,
+    };
     let Some(stack) = una_interp::stack_bytes(options.max_depth) else {
         writeln!(
             stderr,
@@ -291,12 +332,42 @@ pub(crate) fn run_command(
         )?;
         return Ok(ExitStatus::Usage);
     };
+    if let Err(message) = options.tasks.check(options.max_depth) {
+        writeln!(stderr, "error: {message}")?;
+        return Ok(ExitStatus::Usage);
+    }
+    // ADR 0116 rule 18: a run that can reach a `for ever` or runs a driver installs the
+    // handlers of SIGINT and SIGTERM; any other keeps their default actions.
+    // The run's host stop state is made first, so a signal that comes while the handlers are
+    // installed counts for the run.
+    let stops = takes_stops(&analysis, &package.sources, &entry, drive.is_some());
+    let stop = una_interp::stopping::RunStop::new(options.stop_grace);
+    if stops && let Err(una_sys::signals::InstallError(message)) = una_sys::signals::install() {
+        writeln!(stderr, "internal compiler error (U8001): {message}")?;
+        return Ok(ExitStatus::Internal);
+    }
+    // The run's watcher when a request can come: a signal, or the deadline (rules 14 and 16).
+    // Its guard ends the watch on every way out, a panic's included.
+    let watching = if stops || options.deadline.is_some() {
+        match stop.watch(options.deadline.map(std::time::Duration::from_secs)) {
+            Ok(watching) => Some(watching),
+            Err(error) => {
+                writeln!(
+                    stderr,
+                    "internal compiler error (U8001): cannot start the watcher of host stops: {error}"
+                )?;
+                return Ok(ExitStatus::Internal);
+            }
+        }
+    } else {
+        None
+    };
     let (sender, receiver) = channel::<String>();
     let program = &analysis.program;
     let entry_path = entry.as_str();
     let host = &host;
     let max_depth = options.max_depth;
-    let limits = limits(&options);
+    let limits = limits(&options, Some(&stop));
     let environment = options.environment;
     let mut output = Vec::new();
     let mut write_error = None;
@@ -334,6 +405,7 @@ pub(crate) fn run_command(
         )
     });
     drop(ceiling);
+    drop(watching);
     let run = match evaluated {
         Ok(Some(run)) => run,
         Ok(None) => {
@@ -378,7 +450,8 @@ pub(crate) fn run_command(
             Abort::Depth { .. }
             | Abort::Memory { .. }
             | Abort::HeaderValue { .. }
-            | Abort::NotText { .. },
+            | Abort::NotText { .. }
+            | Abort::HostStop { .. },
         ) => ExitStatus::Errors,
         Completion::Aborted(Abort::Fault { .. }) => ExitStatus::Internal,
     };
@@ -471,6 +544,37 @@ pub(crate) fn entry_main<'a>(
         }
     )
     .then_some(main)
+}
+
+/// The message of U6007, which says why the hard stop came (ADR 0116 rule 16): the same in
+/// both engines.
+pub(crate) fn host_stop_message(hard: una_interp::stopping::HardStop) -> String {
+    una_interp::stopping::hard_stop_message(hard)
+}
+
+/// Whether a run of the package can take a host stop, so that it installs the handlers of
+/// SIGINT and SIGTERM (ADR 0116 rule 18): it runs a driver, or its `main` says `diverges`,
+/// the only way a run reaches a `for ever` (U3027, rule 8).
+pub(crate) fn takes_stops(
+    analysis: &Analysis,
+    sources: &SourceDb,
+    entry: &str,
+    driven: bool,
+) -> bool {
+    let modules = Modules {
+        sources,
+        interner: &analysis.interner,
+        trees: &analysis.trees,
+        mounts: &analysis.mounts,
+    };
+    driven
+        || modules
+            .function(&format!("{entry}.main"))
+            .is_some_and(|(_, _, main)| {
+                main.clauses
+                    .iter()
+                    .any(|clause| matches!(clause.kind, una_syntax::ast::ClauseKind::Diverges))
+            })
 }
 
 /// `init` of the driven module `module`, when the module has the shapes of ADR 0116 rule 2:
@@ -676,6 +780,11 @@ fn abort_diagnostic(abort: &Abort, sources: &SourceDb, root: &Location) -> Diagn
         Abort::NotText { span, message } => {
             Diagnostic::error(Code::U6005, *message, sources.location(*span))
         }
+        Abort::HostStop { span, hard } => Diagnostic::error(
+            Code::U6007,
+            host_stop_message(*hard),
+            sources.location(*span),
+        ),
         Abort::Fault { message, span } => Diagnostic::error(
             Code::U8001,
             format!("evaluation stopped: {message}"),
@@ -735,6 +844,10 @@ pub(crate) fn test_command(
         )?;
         return Ok(ExitStatus::Usage);
     };
+    if let Err(message) = options.tasks.check(options.max_depth) {
+        writeln!(stderr, "error: {message}")?;
+        return Ok(ExitStatus::Usage);
+    }
     // `una test` runs the examples of the root's modules only: a dependency's examples are
     // checked as its own, and never run with the root's authority (ADR 0122 rule 52).
     let mounts = crate::package::project(&package).0.mounts;
@@ -752,7 +865,7 @@ pub(crate) fn test_command(
     }
     let program = &tested;
     let max_depth = options.max_depth;
-    let limits = limits(&options);
+    let limits = limits(&options, None);
     let ceiling = Ceiling::raise(&options);
     let evaluated = std::thread::scope(|scope| {
         let worker = std::thread::Builder::new()
