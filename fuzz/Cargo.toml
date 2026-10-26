@@ -1,4 +1,5 @@
-# The fuzz targets of the native runtime (#766, the `sanitize` release gate). Outside the
+# The fuzz targets of the native runtime (#766, the `sanitize` release gate), and of the readers
+# of the package manager's documents (#997): the provenance, the archive and `ita.lock`. Outside the
 # workspace: its own `[workspace]` and Cargo.lock, so the workspace's stable builds never see
 # it. scripts/sanitize.sh builds it with the checking toolchain of scripts/check-toolchain.toml,
 # with libFuzzer's coverage, AddressSanitizer and `--cfg una_fuzz`, and runs each target.
@@ -16,6 +17,7 @@ publish = false
 libfuzzer-sys = "=0.4.13"
 num-bigint = "0.4.6"
 una-core = { path = "../crates/una-core" }
+una-project = { path = "../crates/una-project" }
 una-rt = { path = "../crates/una-rt" }
 
 [[bin]]
@@ -35,6 +37,27 @@ bench = false
 [[bin]]
 name = "json"
 path = "fuzz_targets/json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "provenance"
+path = "fuzz_targets/provenance.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "archive"
+path = "fuzz_targets/archive.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ita_lock"
+path = "fuzz_targets/ita_lock.rs"
 test = false
 doc = false
 bench = false

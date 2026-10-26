@@ -119,13 +119,15 @@ pub(crate) fn std_testing_names(edition: Edition) -> &'static [&'static str] {
 /// The path of the standard module of time units, edition 0.4 (ADR 0116 rule 0).
 pub(crate) const STD_TIME: &str = "std.time";
 
-/// What `std.time` exports: its measures, and the built-in constants `millisecond`, `second`
-/// and `minute`, of type `Int of Millisecond` (ADR 0116 rule 0 and its amendment of
-/// 2026-10-19).
-pub(crate) const STD_TIME_NAMES: [&str; 6] = [
+/// What `std.time` exports: its measures, the failure kinds of `within` (ADR 0117 rule 5), and
+/// the built-in constants `millisecond`, `second` and `minute`, of type `Int of Millisecond`
+/// (ADR 0116 rule 0 and its amendment of 2026-10-19).
+pub(crate) const STD_TIME_NAMES: [&str; 8] = [
     "Second",
     "Millisecond",
     "Minute",
+    "Timed",
+    "Deadline",
     "millisecond",
     "second",
     "minute",
