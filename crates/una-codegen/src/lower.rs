@@ -799,6 +799,8 @@ impl<'p> Lowerer<'_, 'p, '_> {
         scope: &mut Scope,
         catch: &Catch,
     ) -> Result<Option<Value>, CodegenError> {
+        // The runtime starts its threads before `main` (#1145).
+        self.emitter.threads = true;
         let Expr::Loop {
             source,
             var,
@@ -956,12 +958,26 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 self.fail(failure, scope, catch);
                 self.builder.switch_to_block(running);
                 self.runtime("una_rt_operation_begin", &[]);
-                let result = self.lower_on_stop(on_stop, env, &saved, &kinds, catch, scope)?;
+                // The shield ends on every way out of `on stop`: a failure out of it, an abort
+                // today, ends it before going on to `catch` with the loop's scope.
+                let unshield = self.join();
+                let shielded = Catch {
+                    block: unshield,
+                    outer: Scope::new(),
+                    base: 0,
+                    exit: None,
+                };
+                let result =
+                    self.lower_on_stop(on_stop, env, &saved, &kinds, &shielded, &Scope::new())?;
                 if let Some(result) = result {
                     self.release(result, Kind::Tuple);
                     self.runtime("una_rt_operation_end", &[]);
                     self.fail(failure, scope, catch);
                 }
+                self.builder.switch_to_block(unshield);
+                let out = self.param(unshield)?;
+                self.runtime("una_rt_operation_end", &[]);
+                self.fail(out, scope, catch);
             }
             None => self.fail(failure, scope, catch),
         }
@@ -1557,6 +1573,8 @@ impl<'p> Lowerer<'_, 'p, '_> {
         scope: &Scope,
         catch: &Catch,
     ) -> Result<Option<Value>, CodegenError> {
+        // The runtime starts its threads before `main` (#1145).
+        self.emitter.threads = true;
         let value = match expr {
             Expr::Together { tasks, span } => {
                 let site = self.site(*span);
@@ -1655,6 +1673,8 @@ impl<'p> Lowerer<'_, 'p, '_> {
         scope: &mut Scope,
         catch: &Catch,
     ) -> Result<Option<Value>, CodegenError> {
+        // The runtime starts its threads before `main` (#1145).
+        self.emitter.threads = true;
         let site = self.site(span);
         let (word, bounded) = match bound {
             Some((atom, _)) => {
@@ -1761,9 +1781,12 @@ impl<'p> Lowerer<'_, 'p, '_> {
         scope: &Scope,
         catch: &Catch,
     ) -> Result<Option<Value>, CodegenError> {
+        // The runtime starts its threads before `main` (#1145); a `start` stands only inside
+        // a `tasks` statement, which sets it too.
+        self.emitter.threads = true;
         let site = self.site(span);
         let closure = self.closure(&[], task, env)?;
-        let status = self.call("una_rt_start", &[closure, site])?;
+        let status = self.call("una_rt_start_task", &[closure, site])?;
         self.release(closure, Kind::Fn);
         let stop = self.builder.ins().iconst(types::I64, STOPPED);
         self.check(stop, status, scope, catch);
@@ -1841,6 +1864,9 @@ impl<'p> Lowerer<'_, 'p, '_> {
         scope: &mut Scope,
         catch: &Catch,
     ) -> Result<Option<Value>, CodegenError> {
+        // The runtime starts its threads before `main` (#1145): a `within` counts as a task
+        // construct for P8, so its cost never depends on whether earlier code started them.
+        self.emitter.threads = true;
         let (ms, _) = self.atom(deadline, env)?;
         let id = self.call("una_rt_within_enter", &[ms])?;
         let succeeded = self.join();

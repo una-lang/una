@@ -79,9 +79,13 @@ const PRELUDE_0_3: &str = include_str!("../std/prelude_0_3.una");
 const PRELUDE_0_4: &str = include_str!("../std/prelude_0_4.una");
 
 /// The declaration of `HttpError` in `PRELUDE_0_2`, and the one edition 0.4 replaces it with,
-/// which adds `Interrupted` last, so the earlier variants keep their indices (ADR 0116 rule 12).
-/// The text occurs exactly once in `PRELUDE_0_2` (a test checks it).
-const HTTP_ERROR_0_4: (&str, &str) = ("| Tls | Protocol\n", "| Tls | Protocol | Interrupted\n");
+/// which adds `Interrupted` (ADR 0116 rule 12) and then `RateLimited` (ADR 0117 rule 8) last,
+/// so the earlier variants keep their indices. The text occurs exactly once in `PRELUDE_0_2` (a
+/// test checks it).
+const HTTP_ERROR_0_4: (&str, &str) = (
+    "| Tls | Protocol\n",
+    "| Tls | Protocol | Interrupted | RateLimited\n",
+);
 
 /// The rewrites of the prelude in edition 0.2, each a text of `PRELUDE` and its replacement:
 /// `map`, `filter`, `first_where` and `fold` take effectful and failing functions (ADR 0062,
@@ -353,6 +357,10 @@ pub struct TypeCheck {
     /// The sites whose deadlines turn timing into values, in source order, with their timing
     /// labels: each `for ever within` (ADR 0116 rule 21), for the report's `timing` list.
     pub timing: Vec<TimingSite>,
+    /// `L_lim` (ADR 0117 IF4): the timing label of the package's `Http` requests, which a grant
+    /// with limits needs at most `internal`; `public` without such a request. `una build`
+    /// embeds it, and `una run` checks a limited `--grant` against it (`spec/27 §9` rule 5).
+    pub limit_label: una_core::Label,
 }
 
 /// A site with a deadline and its timing label (ADR 0116 IF5, rule 21).
@@ -381,6 +389,7 @@ impl Default for TypeCheck {
             program: una_core::Program::default(),
             index: Index::default(),
             timing: Vec::new(),
+            limit_label: una_core::Label::public(),
         }
     }
 }
@@ -593,12 +602,18 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
     // and operations of the locked headers that they do not grant.
     lock::resolve(&mut env, package.locks, &mut report);
     lock::drift(&env, &mut report);
-    // ADR 0117 IF2: the timing label of each `within` needs the whole package's call graph, so
-    // pass 2 is probed, its diagnostics dropped, until no label rises. Labels only rise, and
-    // each round that goes on raises one by at least one atom, so a round past that bound is an
-    // internal error, never a silent stop with a label too low. Before the file-state probe,
-    // whose label the timing labels can raise.
-    if withins {
+    // Two labels need a pass of their own before pass 2 checks with them, and each can raise
+    // the other, so they are probed together, pass 2 run with its diagnostics dropped, until
+    // neither rises:
+    // - ADR 0117 IF2: the timing label of each `within` needs the whole package's call graph;
+    // - S-14 (ADR 0085): a package that writes files labels the failure of every `Files`
+    //   operation with what decides its writes, so that a read checked before a write has the
+    //   label too, and a failure so labeled can raise a program counter that a `within`'s
+    //   timing label reads.
+    // Labels only rise, and each round that goes on raises one by at least one atom, so a round
+    // past that bound is an internal error, never a silent stop with a label too low. Both are
+    // confirmed after pass 2 (`authority::within_timing`, `file_state`).
+    if withins || env.files_written {
         let atoms = 4 + env.categories.len() + 1;
         let mut rounds = 0usize;
         loop {
@@ -619,10 +634,19 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
                     );
                 }
             }
-            let labels = authority::within_labels(&env, &probe);
-            if labels == env.within_timing {
-                break;
-            }
+            let labels = if withins {
+                authority::within_labels(&env, &probe)
+            } else {
+                std::collections::BTreeMap::new()
+            };
+            let state = if env.files_written {
+                env.file_state.join(&file_state(&env).0)
+            } else {
+                env.file_state.clone()
+            };
+            env.file_writes.clear();
+            env.file_calls.clear();
+            env.file_escaped.clear();
             let joined: std::collections::BTreeMap<Span, label::Label> = labels
                 .into_iter()
                 .map(|(key, label)| match env.within_timing.get(&key) {
@@ -630,47 +654,25 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
                     None => (key, label),
                 })
                 .collect();
-            if rounds > joined.len() * atoms + 2 {
+            let stable = joined == env.within_timing && state == env.file_state;
+            env.within_timing = joined;
+            env.file_state = state;
+            // Without a `within`, one probe gives the file-state label's least fixpoint, as
+            // before (ADR 0085): what the label raises in pass 2 is below it.
+            if stable || !withins {
+                break;
+            }
+            if rounds > (env.within_timing.len() + 1) * atoms + 2 {
                 if let Some(site) = probe.withins.first() {
                     report.error(
                         Code::U8001,
                         site.span,
-                        "internal error: the timing labels of `within` and `first of` did not reach a fixpoint (ADR 0117 IF2, IF3)".to_owned(),
+                        "internal error: the timing labels of `within` and `first of` and the file-state label did not reach a fixpoint (ADR 0117 IF2, IF3, ADR 0085)".to_owned(),
                     );
                 }
                 break;
             }
-            if joined == env.within_timing {
-                break;
-            }
-            env.within_timing = joined;
         }
-    }
-    // S-14 (ADR 0085): a package that writes files labels the failure of every `Files`
-    // operation with what decides its writes. Pass 2 is probed first, its diagnostics dropped,
-    // so that a read checked before a write has the label too. The probe's label is the least
-    // fixpoint: what the label itself raises in pass 2 is below it.
-    if env.files_written {
-        let mut scratch = Report::new(package.sources);
-        let mut findings = Findings::default();
-        let mut unused = authority::Collected::default();
-        for module in 0..package.modules.len() {
-            if env.reports(module) {
-                check::module(
-                    &mut env,
-                    &facts,
-                    &mut scratch,
-                    &mut findings,
-                    &mut unused,
-                    authority::Pass::Check,
-                    module,
-                );
-            }
-        }
-        env.file_state = file_state(&env).0;
-        env.file_writes.clear();
-        env.file_calls.clear();
-        env.file_escaped.clear();
     }
     let mut findings = Findings::default();
     let mut unused = authority::Collected::default();
@@ -732,6 +734,7 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
     authority::grants(&env, package.settings, package.run, &mut report);
     authority::drive_failures(&env, package.settings, &mut report);
     authority::drive_timing(&env, &findings, package.settings, &mut report);
+    let limit_label = authority::limit_timing(&env, &findings, package.settings, &mut report);
     let mut timing_sites = authority::deadline_timing(&env, &findings, &mut report);
     timing_sites.extend(authority::within_timing(&env, &findings, &mut report));
     timing_sites.sort_by_key(|(_, _, span, _)| (span.file, span.start, span.end));
@@ -822,6 +825,7 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
         Vec::new()
     };
     let check = TypeCheck {
+        limit_label,
         timing: timing_sites
             .into_iter()
             .map(|(construct, function, span, label)| TimingSite {
@@ -983,6 +987,15 @@ pub(crate) struct Findings {
     /// The `within`s checked (ADR 0117 rule 5, IF2): each one's deadline, span, function and
     /// the seed of its timing label.
     pub(crate) withins: Vec<within::WithinSite>,
+    /// The operations of the host's `Http` checked, for `L_lim` (ADR 0117 IF4).
+    pub(crate) http_sites: Vec<timing::HttpSite>,
+    /// The calls of the call graph of ADR 0116 P1: from a function's body, a handler's
+    /// operations or a lambda (`Λ`), to a function called or named.
+    pub(crate) calls: std::collections::BTreeSet<(timing::Caller, usize)>,
+    /// The nodes of that graph that call a function value, and so reach `Λ`.
+    pub(crate) value_calls: std::collections::BTreeSet<timing::Caller>,
+    /// The handlers each node of that graph installs.
+    pub(crate) caller_installs: std::collections::BTreeSet<(timing::Caller, usize)>,
     /// Names bound by selfified `let`s.
     pub(crate) selfified: Vec<Span>,
     /// The conditions of `for until` loops that are in the refinement language, which the
@@ -1507,8 +1520,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn interrupted_is_a_variant_of_http_error_in_edition_0_4_only() {
-        // ADR 0116 rule 12: added last, so the eight variants keep their indices.
+    fn interrupted_and_rate_limited_are_variants_of_http_error_in_edition_0_4_only() {
+        // ADR 0116 rule 12 and ADR 0117 rule 8: added last, so the eight variants keep their
+        // indices.
         assert_eq!(PRELUDE_0_2.matches(HTTP_ERROR_0_4.0).count(), 1);
         let line = |edition| {
             standard_source(edition)
@@ -1520,11 +1534,12 @@ mod tests {
         assert_eq!(
             line(Edition::V0_4).as_deref(),
             Some(
-                "pub kind HttpError = Denied | BadUrl | BadRequest | Unreachable | TimedOut | TooLarge | Tls | Protocol | Interrupted"
+                "pub kind HttpError = Denied | BadUrl | BadRequest | Unreachable | TimedOut | TooLarge | Tls | Protocol | Interrupted | RateLimited"
             )
         );
         for edition in [Edition::V0_2, Edition::V0_3] {
             assert!(line(edition).is_some_and(|line| !line.contains("Interrupted")));
+            assert!(line(edition).is_some_and(|line| !line.contains("RateLimited")));
         }
     }
 
@@ -1555,7 +1570,8 @@ mod tests {
         for edition in &Edition::ALL {
             let source = standard_source(*edition);
             let (prelude, keywords) = if *edition >= Edition::V0_4 {
-                // `HttpError` gains `Interrupted` (ADR 0116 rule 12).
+                // `HttpError` gains `Interrupted` and `RateLimited` (ADR 0116 rule 12, ADR 0117
+                // rule 8).
                 let http = PRELUDE_0_2.replace(HTTP_ERROR_0_4.0, HTTP_ERROR_0_4.1);
                 (
                     format!("{}\n{http}{PRELUDE_0_3}{PRELUDE_0_4}", of_prelude()),

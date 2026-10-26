@@ -5,7 +5,7 @@ module bound
 
 note(n: Int) -> Unit = unit
 
-pub none(n: Int) -> Unit
+pub zero(n: Int) -> Unit
 =
   tasks at most 0 at once
     start note(n)

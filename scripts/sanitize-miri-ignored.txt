@@ -1,7 +1,9 @@
 # The unit tests of una-rt that Miri does not run (#766), by the name the test harness prints,
 # sorted. scripts/sanitize.sh fails when the tests Miri ignores differ from this list, so a
 # skip is never added silently. Each is ignored in the code with its reason: a scenario run in
-# a process of its own, or a test that starts such a process.
+# a process of its own, a test that starts such a process, a test that starts the scheduler's
+# threads, maps a task's stack or switches coroutines, which Miri cannot do (#1145), or a test
+# that times the scheduler's turns on the real clock, which Miri simulates (#1146).
 ffi::tests::a_refused_task_aborts_the_run
 ffi::tests::a_refused_task_aborts_the_run_scenario
 ffi::tests::a_replace_of_an_empty_pattern_scenario
@@ -55,6 +57,7 @@ ffi::tests::i8_first_batch_failure_scenario
 ffi::tests::words_in_a_run_scenario
 runtime::tests::a_cancellation_from_another_thread_scenario
 runtime::tests::a_cancellation_from_another_thread_stops_the_next_check
+runtime::tests::a_program_with_tasks_starts_every_thread_before_main
 runtime::tests::the_checks_scaling_scenario
 runtime::tests::the_checks_take_the_fast_path_at_every_size_and_depth
 runtime::tests::the_depth_limit_fires_at_its_exact_call
@@ -64,3 +67,27 @@ runtime::tests::the_mechanism_allocates_nothing_scenario
 runtime::tests::the_memory_budget_at_a_call_scenario
 runtime::tests::the_memory_budget_at_an_iteration_scenario
 runtime::tests::the_memory_budget_fires_at_its_exact_byte
+sched::tests::a_cancelled_task_parked_on_an_interruptible_wait_is_woken_at_once
+sched::tests::a_construct_starts_no_thread_and_maps_no_stack_whatever_ran_before
+sched::tests::a_lone_task_that_gains_a_waiting_task_keeps_a_full_turn
+sched::tests::a_turn_lasts_its_slice_from_its_own_start_whatever_ran_before
+sched::tests::a_yield_lets_the_jobs_queued_before_it_run_first
+sched::tests::one_worker_runs_a_parent_and_the_children_it_waits_for_three_levels_deep
+sched::tests::placement_depends_only_on_the_parent_s_worker_the_part_and_the_workers
+sched::tests::stalled_requests_never_delay_files_or_the_tasks_beside_them
+sched::tests::start_all_fills_the_stack_pool_so_later_blocks_map_only_past_its_size
+sched::tests::start_all_starts_every_worker_and_both_pools_before_any_task
+sched::tests::the_stack_pool_reuses_stacks_by_size_and_keeps_at_most_its_bound
+tasks::tests::a_race_cancels_its_losers_once_a_branch_wins
+tasks::tests::a_race_gives_its_winner_and_fails_only_when_every_branch_fails
+tasks::tests::i10_a_refused_import_while_its_block_s_task_is_cancelled_stops_as_cancelled
+tasks::tests::i11_a_defect_cancels_every_task_of_its_block_and_decides_it
+tasks::tests::i11_a_panic_in_a_start_or_an_adoption_is_u8001_at_the_block
+tasks::tests::i11_a_thread_that_panics_after_its_report_is_u8001_when_its_block_fails
+tasks::tests::i11_a_thread_that_panics_after_its_report_stops_the_block_with_u8001
+tasks::tests::i1_a_block_s_copies_make_the_sum_of_its_tasks_steps
+tasks::tests::i1_a_traced_run_grows_its_trace_a_logarithmic_number_of_times
+tasks::tests::i1_i10_an_adoption_inside_nested_blocks_renumbers_within_what_it_reserved
+tasks::tests::i1_i10_an_adoption_reserves_what_it_allocates_and_renumbers_the_handlers
+tasks::tests::i1_i3_every_start_allocates_within_its_reservation_at_any_depth_and_path
+tasks::tests::i5_i7_a_block_joins_batch_by_batch_and_keeps_its_results_in_task_order

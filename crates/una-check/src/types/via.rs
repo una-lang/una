@@ -183,7 +183,16 @@ fn plain(env: &Env<'_>, report: &Report<'_>, id: usize) -> bool {
         .filter(|handled| allowed_hmac(env, report, def.module, &keys, handled))
         .count();
     let text = report.text(span);
-    exits(text) == allowed && !words(text).any(|word| word == "with")
+    // `with` installs a handler; `within` makes a failure that the timing of the code it
+    // bounds decides (ADR 0117 IF2), so neither may stand in the body, as a word anywhere; nor
+    // may `first of`, whose winner timing decides (ADR 0117 IF3).
+    let found: Vec<&str> = words(text).filter(|word| !word.is_empty()).collect();
+    let race = found.windows(2).any(|pair| pair == ["first", "of"]);
+    exits(text) == allowed
+        && !race
+        && !found
+            .iter()
+            .any(|word| *word == "with" || *word == "within")
 }
 
 /// Whether `handled` is `@k.hmac(key_name: "literal", data: e)` with one clause, `if error pass`
@@ -204,7 +213,15 @@ fn allowed_hmac(
         HandlingKind::ErrorFail(variant) => variant.args.is_empty(),
         _ => false,
     };
-    if !fixed || !handled.with.is_empty() {
+    // A `with` installs a handler; a `within` adds a failure decided by timing, of the `secret`
+    // data `hmac` reads (ADR 0117 IF2), which a plain `via` must not reveal.
+    if !fixed || !handled.with.is_empty() || handled.within.is_some() {
+        return false;
+    }
+    if let ExprKind::Attempt {
+        within: Some(_), ..
+    } = &handled.expr.kind
+    {
         return false;
     }
     let ExprKind::CapOp { cap, op, args } = &handled.expr.kind else {
@@ -334,5 +351,30 @@ mod tests {
             CapBindingValue::Cap(_) | CapBindingValue::Narrowed { .. } => false,
         };
         [stmt, expr, decl, binding]
+    }
+
+    /// The parts of a handled line and of `attempt`, destructured without `..`: a new part
+    /// fails to compile here, and its author must decide whether it changes what the line's
+    /// failure depends on, and extend `allowed_hmac` if it does (ADR 0098 rule 2; ADR 0117 IF2
+    /// for `within`).
+    #[allow(dead_code)]
+    fn handled_parts_are_reviewed(
+        handled: &una_syntax::ast::Handled,
+        expr: &una_syntax::ast::ExprKind,
+    ) -> usize {
+        let una_syntax::ast::Handled {
+            expr: _,
+            with,
+            within,
+            handlings,
+            span: _,
+        } = handled;
+        let attempt = match expr {
+            una_syntax::ast::ExprKind::Attempt { operand: _, within } => {
+                usize::from(within.is_some())
+            }
+            _ => 0,
+        };
+        with.len() + usize::from(within.is_some()) + handlings.len() + attempt
     }
 }

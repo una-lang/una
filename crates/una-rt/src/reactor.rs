@@ -864,7 +864,7 @@ mod tests {
     ) -> std::sync::mpsc::Receiver<T> {
         let (sent, seen) = std::sync::mpsc::channel();
         sched
-            .spawn(256 * 1024, move || sent.send(body()).unwrap(), || {})
+            .spawn(1, 256 * 1024, move || sent.send(body()).unwrap(), || {})
             .unwrap();
         seen
     }

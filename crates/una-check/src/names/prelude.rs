@@ -235,10 +235,11 @@ pub(crate) const ROUNDING_0_4: [&str; 8] = [
     "TowardNegative",
 ];
 
-/// The variant that edition 0.4 adds to `HttpError`: an operation that a host stop
-/// interrupts (ADR 0116 rule 12). Earlier editions keep the kind's eight variants, since a new
-/// variant changes which `when` arms are exhaustive.
-pub(crate) const HTTP_0_4: [&str; 1] = ["Interrupted"];
+/// The variants that edition 0.4 adds to `HttpError`: an operation that a host stop
+/// interrupts (ADR 0116 rule 12), and a request whose limit's queue is full (ADR 0117 rule 8).
+/// Earlier editions keep the kind's eight variants, since a new variant changes which `when`
+/// arms are exhaustive.
+pub(crate) const HTTP_0_4: [&str; 2] = ["Interrupted", "RateLimited"];
 
 #[cfg(test)]
 mod tests {

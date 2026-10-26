@@ -536,6 +536,12 @@ fn run(tasks: Tasks, shape: Shape, site: usize, invoke: Invoke) -> (i64, i64) {
         // and the block stops as a cancelled task.
         if template.cancelled() {
             values::release(block);
+            // A cut (`spec/27 §5`): every task of the block that has not returned ends with its
+            // `cancelled` event, started or not, in task order, so the trace does not depend on
+            // how many tasks the workers had started.
+            if crate::deadline::cut() {
+                cut_events(&template, first, total, site);
+            }
             return (0, 2);
         }
         // A race is one batch: its branches all run at once.
@@ -786,8 +792,12 @@ impl Block<'_> {
             let caught = Arc::clone(&panicked);
             let stack = template.stack;
             let sched = Arc::clone(&template.sched);
+            // The task's index in its block places it: part `index + 1`, counted from 1 (ADR 0116
+            // amendment, P6), runs on worker `(w + index + 1) mod N`, `w` being this task's
+            // worker, 0 for the root, whatever earlier code forked (`spec/27 §1` rule 2, #1145).
             sched
                 .spawn(
+                    index + 1,
                     stack,
                     move || {
                         // A panic of the runtime is caught on the task's own stack, so nothing
@@ -896,6 +906,8 @@ impl Block<'_> {
             }),
         };
         let aborts = matches!(decided, Some((_, Decision::Abort)));
+        // Whether the block's tasks were stopped by a cut (`spec/27 §5`).
+        let cut = crate::deadline::cut();
         // With no failure, win or abort, a task stops only when the task that runs the block was
         // cancelled: the block stops in turn, after recording what its tasks did.
         let stopped = decided.is_none()
@@ -1015,12 +1027,18 @@ impl Block<'_> {
                     {
                         state.failed_write = Some(error);
                     }
-                    if let Ended::Stopped = outcome.ended {
-                        if decided == Some((offset, Decision::Abort)) {
-                            abort = outcome.abort;
-                        } else if outcome.abort.is_none() {
-                            state.cancelled_event(path);
+                    match outcome.ended {
+                        Ended::Stopped => {
+                            if decided == Some((offset, Decision::Abort)) {
+                                abort = outcome.abort;
+                            } else if outcome.abort.is_none() {
+                                state.cancelled_event(path);
+                            }
                         }
+                        // A task that a cut kept from starting ends with its `cancelled` event
+                        // too (`spec/27 §5`); the bound above counts one event for it.
+                        Ended::NotStarted if cut => state.cancelled_event(path),
+                        _ => {}
                     }
                 }
             });
@@ -1398,6 +1416,13 @@ fn task(
     // A task starts when it receives its signal to run; one told to exit, or cancelled since
     // it imported, never starts and leaves no event.
     let go = signals.go.recv().unwrap_or(false);
+    // A branch of a race that got its signal before it parked runs on without waiting, ahead
+    // of the branches before it whose resumes are queued: it lets them run first, so that on
+    // one worker the branches start in index order, as the interpreter runs them, and a winner
+    // before it is seen below.
+    if go && race.is_some() {
+        sched::yield_now();
+    }
     let cancelled = count.load(Ordering::SeqCst) <= index || template.cancelled();
     if !go || cancelled {
         values::release(closure);
@@ -1578,6 +1603,42 @@ thread_local! {
     static TEST_REFUSE_START: Cell<bool> = const { Cell::new(false) };
     /// Refuses the adoption of every batch of the blocks this thread runs, in tests.
     static TEST_REFUSE_ADOPTION: Cell<bool> = const { Cell::new(false) };
+}
+
+/// The `cancelled` events of the tasks `first..total` of a block that a cut stops before they
+/// were forked (`spec/27 §5`), in task order, their bytes reserved first: a refusal stops the
+/// block over the budget (U6003), as any adoption does (ADR 0113 rule 3).
+fn cut_events(template: &TaskTemplate, first: usize, total: usize, site: usize) {
+    let tracing = with_state(|state| state.trace.is_some()).unwrap_or(false);
+    if !tracing || first >= total {
+        return;
+    }
+    let mut bytes: usize = 0;
+    for index in first..total {
+        bytes = bytes.saturating_add(path_len(template, index).saturating_mul(2) + 3);
+    }
+    let events = total - first;
+    let growth = with_state(|state| state.trace_growth(events)).flatten();
+    let trace_bytes = growth.map_or(0, |(capacity, _, exact)| {
+        exact
+            .saturating_sub(capacity)
+            .saturating_mul(size_of::<Event>())
+    });
+    let Some(step) = runtime::try_reserve(bytes.saturating_add(trace_bytes)) else {
+        runtime::refuse(site, None);
+        return;
+    };
+    with_state(|state| {
+        if let Some((_, _, exact)) = growth {
+            state.grow_trace(exact);
+        }
+        for index in first..total {
+            state.cancelled_event(task_path(template, index));
+        }
+    });
+    drop(step);
+    // A task that writes its events as they happen writes these now (ADR 0117 rule 10).
+    with_state(runtime::State::flush);
 }
 
 /// The bound on what adopting the batch whose first task is `first` allocates (ADR 0113 rule 3),
@@ -1768,6 +1829,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
     fn i5_i7_a_block_joins_batch_by_batch_and_keeps_its_results_in_task_order() {
         // ADR 0113 rules 1 and 3, in process, so that Miri checks the staged fork and join: a
         // block over more than one batch, of 2 tasks here, copies each task's result into its
@@ -1849,6 +1911,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
     fn a_race_gives_its_winner_and_fails_only_when_every_branch_fails() {
         // `spec/27 §6`: the branch that returns wins, and a failure cancels nothing; when every
         // branch fails, the race fails with the lowest-indexed failure; an abort decides the
@@ -1863,6 +1926,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
     fn a_race_cancels_its_losers_once_a_branch_wins() {
         // `spec/27 §6`, ADR 0117 rule 6: the winner lowers the race's count to 0, so a loser
         // that runs sees its cancellation at its next check, and the race gives the winner's
@@ -1895,6 +1959,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
     fn i11_a_defect_cancels_every_task_of_its_block_and_decides_it() {
         // ADR 0113 I11: a task stopped with U8001 cancels every task of its block, the lower
         // ones included, so that a lower task that would run on cannot hide the defect; the
@@ -1911,6 +1976,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
     fn i11_a_panic_in_a_start_or_an_adoption_is_u8001_at_the_block() {
         // ADR 0113 I11: a task's start and the adoption of a batch's events run inside
         // `guarded`, so a panic there stops the block with U8001, never unwinding through the
@@ -1961,6 +2027,7 @@ mod tests {
     static SEVEN_STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
     #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
     fn i11_a_thread_that_panics_after_its_report_stops_the_block_with_u8001() {
         // ADR 0113 I11: a task's thread that panics after it reported, as it releases its heap,
         // is joined with an error, which the block reports as U8001 rather than as a
@@ -1982,6 +2049,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
     fn i11_a_thread_that_panics_after_its_report_is_u8001_when_its_block_fails() {
         // ADR 0113 I11, through the threads the join tells to exit: a failing batch whose other
         // task panicked after its report stops with U8001, not with the failure; and when the
@@ -1998,6 +2066,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
     fn i10_a_refused_import_while_its_block_s_task_is_cancelled_stops_as_cancelled() {
         // ADR 0113 I10, through a real refused import: the copy into the task's heap is refused,
         // and the block's own task is cancelled before its join; the block stops as cancelled,
@@ -2151,6 +2220,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
     fn i1_i3_every_start_allocates_within_its_reservation_at_any_depth_and_path() {
         // ADR 0113 rule 2: the debug counters check each start, on the block's task and on the
         // new thread, against `K + T`, in blocks nested 1, 10, 50 and 200 deep and with a long
@@ -2205,6 +2275,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
     fn i1_i10_an_adoption_reserves_what_it_allocates_and_renumbers_the_handlers() {
         // ADR 0113 rule 3: a batch whose tasks each install a handler and record an event adopts
         // their events in task order, the handlers renumbered from the block's counts, within
@@ -2231,6 +2302,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
     fn i1_i10_an_adoption_inside_nested_blocks_renumbers_within_what_it_reserved() {
         // ADR 0113 rule 3, where the block's path is not empty: blocks nested 4 deep in a traced
         // task whose bottom block's two tasks each install a handler and record an event. Each
@@ -2247,6 +2319,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
     fn i1_a_traced_run_grows_its_trace_a_logarithmic_number_of_times() {
         // ADR 0113 rule 5, by counter: the trace grows as the slot table does, to twice its
         // capacity, so k blocks whose tasks each record an event grow it O(log k) times, not k
@@ -2274,6 +2347,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
     fn i1_a_block_s_copies_make_the_sum_of_its_tasks_steps() {
         // ADR 0113, I1, by counters: on the block's thread, a block of t tasks over integers
         // exports t closures, one object each, and imports t results, one text each.

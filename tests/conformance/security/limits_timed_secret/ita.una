@@ -1,9 +1,8 @@
-ita case
+ita limits_timed_secret
   version 0.1.0
   edition 0.4
 
 run
-  entry main
   grants
     http "https://api.example.com" get
-      at most 100 per minute
+      at most 10 per second

@@ -72,7 +72,7 @@ pub(crate) struct OpenWithin {
     key: Span,
     span: Span,
     tau: Label,
-    saved: Option<(Label, Span)>,
+    saved: Option<(Label, Span, Construct)>,
 }
 
 impl OpenWithin {
@@ -102,8 +102,8 @@ impl Checker<'_, '_, '_> {
         self.timing_source(label, "the deadline".to_owned());
         let floor = match self.ctx.timing.clone() {
             _ if tau.is_public() => self.ctx.timing.clone(),
-            Some((outer, _)) => Some((outer.join(&tau), span)),
-            None => Some((tau.clone(), span)),
+            Some((outer, _, _)) => Some((outer.join(&tau), span, Construct::Within)),
+            None => Some((tau.clone(), span, Construct::Within)),
         };
         let saved = std::mem::replace(&mut self.ctx.timing, floor);
         OpenWithin {
@@ -146,8 +146,8 @@ impl Checker<'_, '_, '_> {
         self.timing_start();
         let floor = match self.ctx.timing.clone() {
             _ if tau.is_public() => self.ctx.timing.clone(),
-            Some((outer, _)) => Some((outer.join(&tau), span)),
-            None => Some((tau.clone(), span)),
+            Some((outer, _, _)) => Some((outer.join(&tau), span, Construct::FirstOf)),
+            None => Some((tau.clone(), span, Construct::FirstOf)),
         };
         let saved = std::mem::replace(&mut self.ctx.timing, floor);
         OpenWithin {
@@ -317,23 +317,30 @@ impl Checker<'_, '_, '_> {
         }) else {
             return;
         };
-        let timed = place_ty.clone().with_label(&tau);
-        self.record_edit_bounds(&timed, &place_ty);
         let top = self.labeled(&place_ty).top_label();
         if tau.flows_to(&top) {
             return;
         }
+        // The timing label is known only once the package is checked, after the labels of
+        // editable bindings are inferred, so an inferred label does not rise to it: the place's
+        // declaration must name it (`docs/plan/0117-s2-design.md` §3).
         let shown = self.report.text(place.span).to_owned();
+        let root = place_root(place).map(|(root, _)| self.name(root).to_owned());
         let mut diagnostic = self.report.make(
             Code::U4001,
             place.span,
             format!(
-                "`{shown}` is labeled `{top}`, and whether this `within` lets its update happen depends on `{tau}` timing, which it would reveal; label it at least `{tau}`"
+                "`{shown}` has the label `{top}`, and whether this `within` lets its update happen depends on `{tau}` timing, which the update would reveal; the binding needs the label `{tau}` at least, written on its declaration"
             ),
         );
         diagnostic
             .related
             .push(self.report.related(within, "the `within`"));
+        if let Some(root) = root {
+            diagnostic.repairs.push(super::Report::advice(format!(
+                "write the label on the declaration of `{root}`, as `let edit {root}: {tau} ...`, or move the work on `{tau}` data out of the expression the `within` bounds"
+            )));
+        }
         self.report.push(diagnostic);
     }
 }

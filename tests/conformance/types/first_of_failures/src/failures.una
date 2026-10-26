@@ -1,11 +1,11 @@
 -- test: a branch's failure is its expression's failure after its handling clauses, a failure of the function's error kind, so `if error pass` of another kind is U3008, while `if error fail` maps it (spec/27 §6, ADR 0117 rule 6)
 -- spec: spec/27 §6
--- expect: error U3008 at src/failures.una:19:7
+-- expect: error U3008 at src/failures.una:20:7
 module failures
 
-pub kind FetchError = Unreachable
+pub kind FetchError = | Unreachable
 
-pub kind QuoteError = Missing
+pub kind QuoteError = | Missing
 
 fetch(n: Int) -> Int
   fails FetchError

@@ -2,7 +2,7 @@
 //! right, with the capability environment, the world and the trace.
 
 use std::cell::Cell;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -809,8 +809,19 @@ impl<'p, 'w> Machine<'p, 'w> {
         } else {
             seen
         };
-        let run = Run::new(world, clock, index.tasks);
+        let mut run = Run::new(world, clock, index.tasks);
         run.stop_after.set(limits.stop_after);
+        // The run's limits refill on the run's clock (ADR 0116 rule 19).
+        run.http_limits = una_http::limit::Governor::with_clock(
+            grants
+                .iter()
+                .filter_map(|grant| match grant {
+                    Grant::Http(http) => Some(http.clone()),
+                    _ => None,
+                })
+                .collect(),
+            Arc::new(run.clock.clone()),
+        );
         Machine {
             index,
             grants,
@@ -1377,6 +1388,45 @@ impl<'p, 'w> Machine<'p, 'w> {
         }
     }
 
+    /// The `cancelled` events of the tasks `from..to` of the block in progress, which a cut
+    /// stopped or kept from starting (`spec/27 §5`), in task order: each task the cut stops ends
+    /// with one, as natively, whatever had started.
+    fn cut_events(&mut self, from: usize, to: usize) {
+        for index in from..to {
+            let mut path: Vec<String> = self.task.iter().map(ToString::to_string).collect();
+            path.push((index + 1).to_string());
+            self.emit(Event {
+                seq: 0,
+                task: path.join("."),
+                instance: String::new(),
+                capability: String::new(),
+                op: String::new(),
+                args: Vec::new(),
+                outcome: EventOutcome::Cancelled,
+            });
+        }
+    }
+
+    /// The `cancelled` events of the branches `from..to` of the `race`-th `first of` of the task
+    /// in progress, which a cut stopped or kept from starting (`spec/27 §5`, `§6`), in index
+    /// order, as for the tasks of a block ([`Self::cut_events`]).
+    fn race_cut_events(&mut self, race: usize, from: usize, to: usize) {
+        for index in from..to {
+            let mut path: Vec<String> = self.task.iter().map(ToString::to_string).collect();
+            path.push(format!("f{race}"));
+            path.push((index + 1).to_string());
+            self.emit(Event {
+                seq: 0,
+                task: path.join("."),
+                instance: String::new(),
+                capability: String::new(),
+                op: String::new(),
+                args: Vec::new(),
+                outcome: EventOutcome::Cancelled,
+            });
+        }
+    }
+
     /// Appends the `timeout` event of a `within` of the task in progress (`spec/27 §5`).
     fn within_timeout_event(&mut self) {
         let task = self.task.join(".");
@@ -1734,8 +1784,14 @@ impl<'p, 'w> Machine<'p, 'w> {
                     let start = self.events.len();
                     let mut parts = Vec::with_capacity(tasks.len());
                     for (index, task) in tasks.iter().enumerate() {
-                        let (result, part) = self.task(env, &caps, index, task);
-                        parts.push(part);
+                        let result = match self.passed_within(self.within_shield) {
+                            Some(id) => Err(Stop::Cut(id)),
+                            None => {
+                                let (result, part) = self.task(env, &caps, index, task);
+                                parts.push(part);
+                                result
+                            }
+                        };
                         match result {
                             Ok(result) => results.push(result),
                             Err(stop) => {
@@ -1743,6 +1799,9 @@ impl<'p, 'w> Machine<'p, 'w> {
                                 self.adopt(start, &parts.iter().collect::<Vec<_>>());
                                 if matches!(stop, Stop::Fail(_)) {
                                     self.joined();
+                                }
+                                if matches!(stop, Stop::Cut(_)) {
+                                    self.cut_events(index, tasks.len());
                                 }
                                 return Err(stop);
                             }
@@ -1779,11 +1838,18 @@ impl<'p, 'w> Machine<'p, 'w> {
                     self.later.push((expr, rebound));
                     let start = self.events.len();
                     let mut parts = Vec::with_capacity(items.len());
+                    let count = items.len();
                     for (index, item) in items.into_iter().enumerate() {
                         let mark = env.len();
                         env.push((var.0.as_str(), item));
-                        let (result, part) = self.task(env, &caps, index, task);
-                        parts.push(part);
+                        let result = match self.passed_within(self.within_shield) {
+                            Some(id) => Err(Stop::Cut(id)),
+                            None => {
+                                let (result, part) = self.task(env, &caps, index, task);
+                                parts.push(part);
+                                result
+                            }
+                        };
                         env.truncate(mark);
                         match result {
                             Ok(result) => results.push(result),
@@ -1792,6 +1858,9 @@ impl<'p, 'w> Machine<'p, 'w> {
                                 self.adopt(start, &parts.iter().collect::<Vec<_>>());
                                 if matches!(stop, Stop::Fail(_)) {
                                     self.joined();
+                                }
+                                if matches!(stop, Stop::Cut(_)) {
+                                    self.cut_events(index, count);
                                 }
                                 return Err(stop);
                             }
@@ -2456,8 +2525,15 @@ impl<'p, 'w> Machine<'p, 'w> {
         let mut parts: Vec<Part> = Vec::with_capacity(tasks.len());
         let mut failure = None;
         for (index, task) in tasks.iter().enumerate() {
-            let (result, part) = self.branch(env, caps, (race, index), task);
-            parts.push(part);
+            // The start of each branch is a check point for a cut (`spec/27 §5`).
+            let result = match self.passed_within(self.within_shield) {
+                Some(id) => Err(Stop::Cut(id)),
+                None => {
+                    let (result, part) = self.branch(env, caps, (race, index), task);
+                    parts.push(part);
+                    result
+                }
+            };
             match result {
                 Ok(value) => {
                     // The winner's events first, then those of the branches before it.
@@ -2472,6 +2548,9 @@ impl<'p, 'w> Machine<'p, 'w> {
                 }
                 Err(stop) => {
                     self.adopt(start, &parts.iter().collect::<Vec<_>>());
+                    if matches!(stop, Stop::Cut(_)) {
+                        self.race_cut_events(race, index, tasks.len());
+                    }
                     return Err(stop);
                 }
             }
@@ -2911,8 +2990,9 @@ impl<'p, 'w> Machine<'p, 'w> {
 
     /// An operation of `Http` (`spec/24`), by the client that native code shares.
     fn http(&mut self, op: &str, args: &[Value<'p>], span: Span) -> Flow<'p> {
-        use una_http::client::{Error, Request, send, send_interruptible};
+        use una_http::client::{Error, Request, send_governed};
         use una_http::grant::Method;
+        use una_http::limit::Abandon;
         let fail = |error: Error| {
             let (name, index) = match error {
                 Error::Denied => ("Denied", 0),
@@ -2923,8 +3003,10 @@ impl<'p, 'w> Machine<'p, 'w> {
                 Error::TooLarge => ("TooLarge", 5),
                 Error::Tls => ("Tls", 6),
                 Error::Protocol => ("Protocol", 7),
-                // Edition 0.4 only: no operation of an earlier edition runs in a `for ever`.
+                // Edition 0.4 only: no operation of an earlier edition runs in a `for ever`, and
+                // limits need edition 0.4 (ADR 0117 rule 8, `spec/27 §9`).
                 Error::Interrupted => ("Interrupted", 8),
+                Error::RateLimited => ("RateLimited", 9),
                 // Not a failure: the run aborts.
                 Error::HeaderValue => return Stop::Abort(Abort::HeaderValue { span }),
             };
@@ -2974,14 +3056,6 @@ impl<'p, 'w> Machine<'p, 'w> {
             ),
             None => None,
         };
-        let grants: Vec<una_core::http::Grant> = self
-            .grants
-            .iter()
-            .filter_map(|grant| match grant {
-                Grant::Http(http) => Some(http.clone()),
-                _ => None,
-            })
-            .collect();
         let request = Request {
             method,
             url: &url,
@@ -3017,13 +3091,47 @@ impl<'p, 'w> Machine<'p, 'w> {
             settings.timeout = left;
             cut = true;
         }
+        // The covering deadline on the run's clock, which a wait at a limit reaches at most: under
+        // virtual time, a wait for a refill moves the clock to it (ADR 0116 rule 19).
+        let cover = left.map(|left| {
+            self.run
+                .clock
+                .now()
+                .saturating_add(u64::try_from(left.as_millis()).unwrap_or(u64::MAX))
+        });
         let sent = if cut && settings.timeout.is_zero() {
             Err(Error::TimedOut)
         } else if self.in_ever {
-            send_interruptible(&request, &grants, &settings, &self.stop.interrupt())
+            // The run's limits are shared by its tasks (ADR 0117 rule 8). The interpreter runs
+            // one task at a time, so no other request of the run is in flight while this one
+            // waits at a limit, and nothing abandons the wait but its deadline or a host stop.
+            send_governed(
+                &request,
+                &self.run.http_limits,
+                &settings,
+                &self.stop.interrupt(),
+                &Abandon::new(),
+                cover,
+            )
         } else {
-            send(&request, &grants, &settings)
+            send_governed(
+                &request,
+                &self.run.http_limits,
+                &settings,
+                &una_http::client::Uninterrupted,
+                &Abandon::new(),
+                cover,
+            )
         };
+        // Under virtual time, a wait at a limit that moved the clock to the covering deadline
+        // was cut by it, as a request is under the real clock.
+        if !cut
+            && sent == Err(Error::TimedOut)
+            && self.run.clock.is_virtual()
+            && cover.is_some_and(|at| self.run.clock.now() >= at)
+        {
+            cut = true;
+        }
         if cut && by_ever && sent == Err(Error::TimedOut) {
             self.timeout_event();
         }

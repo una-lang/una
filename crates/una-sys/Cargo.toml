@@ -20,6 +20,9 @@ libc.workspace = true
 unsafe_code = "deny"
 unsafe_op_in_unsafe_fn = "deny"
 missing_docs = "deny"
+# `una_asan`: set only by scripts/sanitize.sh for its AddressSanitizer builds, where the
+# coroutine switch is announced through the sanitizer's fiber interface (#1145).
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(una_asan)"] }
 
 [lints.clippy]
 dbg_macro = "deny"

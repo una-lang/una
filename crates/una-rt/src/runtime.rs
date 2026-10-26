@@ -290,6 +290,9 @@ pub(crate) fn guarded<R>(doing: &str, f: impl FnOnce() -> R) -> Result<R, String
     })
 }
 
+/// The trace file of the run, once `start` made it: a stop that writes no trace removes it.
+static TRACE_FILE: OnceLock<PathBuf> = OnceLock::new();
+
 /// The bytes that 2^32 − 1 references take, one word each: a count at its limit with less held
 /// in the heap and the stacks cannot be the program's (ADR 0113 rule 5).
 const COUNT_LIMIT_BYTES: usize = (values::COUNT_LIMIT as usize).saturating_mul(8);
@@ -319,6 +322,11 @@ pub(crate) fn count_limit_reached() -> ! {
     // The allocator's ceiling stays: the threads that still run until the process ends keep
     // their hard cap, and this stop allocates nothing.
     end_once();
+    // The trace file, made when the run started (ADR 0117 rule 10), is removed: this stop
+    // writes none.
+    if let Some(path) = TRACE_FILE.get() {
+        let _ = std::fs::remove_file(path);
+    }
     let held = crate::held().saturating_add(STACKS.load(Ordering::SeqCst));
     let (code, message, exit) = if held >= count_limit_bytes() {
         (
@@ -380,6 +388,15 @@ pub struct Meta {
     /// Whether the executable was built with check elision (ADR 0112), which `--virtual-time`
     /// refuses (ADR 0117 rule 12). No backend of this repository elides checks yet.
     pub elision: bool,
+    /// `L_lim` of the program, as a message writes it (ADR 0117 IF4), embedded for edition `0.4`
+    /// only: without it, the run takes no grant with limits.
+    pub limit_label: Option<String>,
+    /// Whether `L_lim` flows to `internal`, so that grants with limits are allowed.
+    pub limits_allowed: bool,
+    /// Whether the program holds a task construct or a `for ever`: the run then starts every
+    /// worker and both helper pools at full size before `main`, so that no thread starts at a
+    /// moment that earlier code decided (ADR 0116 amendment, P8; `spec/27 §1` rule 4; #1145).
+    pub threads: bool,
 }
 
 /// The `drive` section of a driven program, as `una build` embeds it (ADR 0116 rule 1).
@@ -490,10 +507,26 @@ impl Meta {
             .get("elision")
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        // A description without `L_lim` takes no limits (`spec/27 §9` rule 1).
+        let limit_label = match value.get("limit_label") {
+            Some(label) => Some(label.as_str()?.to_owned()),
+            None => None,
+        };
+        let limits_allowed = value
+            .get("limits_allowed")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let threads = value
+            .get("threads")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         Some(Meta {
             stops,
             tasks,
             elision,
+            limit_label,
+            limits_allowed,
+            threads,
             grants,
             uses,
             sites,
@@ -710,6 +743,9 @@ pub(crate) struct State {
     pub(crate) keys: Arc<BTreeMap<String, Vec<u8>>>,
     /// The limits and deadline of each HTTP request (`spec/24 §4`).
     pub(crate) http: una_http::client::Settings,
+    /// The run's `Http` grants and the state of their limits, which every task shares (ADR
+    /// 0117 rule 8, `spec/27 §9`).
+    pub(crate) http_limits: Arc<una_http::limit::Governor>,
     pub(crate) types: Arc<Types>,
     pub(crate) ops: Arc<Vec<OpSite>>,
     /// Whether the last host operation failed.
@@ -780,6 +816,7 @@ pub(crate) struct TaskTemplate {
     grants: Arc<Vec<Grant>>,
     keys: Arc<BTreeMap<String, Vec<u8>>>,
     http: una_http::client::Settings,
+    http_limits: Arc<una_http::limit::Governor>,
     types: Arc<Types>,
     ops: Arc<Vec<OpSite>>,
     max_memory: usize,
@@ -824,13 +861,14 @@ impl TaskTemplate {
         own + self.race.map_or(0, |race| 2 + digits(race))
     }
 
-    /// The bytes the template owns: its path, its cancellation entries and its location's file
-    /// (ADR 0113 rule 2, `T`).
+    /// The bytes the template owns: its path, its cancellation entries, its location's file and
+    /// its deadlines (ADR 0113 rule 2, `T`).
     pub(crate) fn owned_bytes(&self) -> usize {
         self.path
             .len()
             .saturating_add(self.location.file.len())
             .saturating_add(self.cancel.len().saturating_mul(size_of::<Cancel>()))
+            .saturating_add(self.deadline.owned_bytes())
     }
 }
 
@@ -850,7 +888,8 @@ fn unshielded(cancel: &[Cancel], shielded: usize) -> bool {
 
 impl State {
     /// What the tasks of a block at `site` start from.
-    /// The run's scheduler is made here, at its first block.
+    /// An executable's scheduler is made before `main`, its threads started (#1145); one is
+    /// made here, its threads started on demand, only for code without that start, as tests.
     pub(crate) fn for_tasks(&mut self, site: usize) -> TaskTemplate {
         let depth = HOT.with(|hot| hot.depth.get());
         let left = self.max_depth.saturating_sub(depth);
@@ -870,6 +909,7 @@ impl State {
             grants: Arc::clone(&self.grants),
             keys: Arc::clone(&self.keys),
             http: self.http,
+            http_limits: Arc::clone(&self.http_limits),
             types: Arc::clone(&self.types),
             ops: Arc::clone(&self.ops),
             max_memory: self.max_memory,
@@ -1069,14 +1109,24 @@ impl State {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(trace) = self.trace.as_mut() {
-            let local = format!("#@{task}#");
+            // Each string made at its exact size, as the adoption's bound counts them (ADR
+            // 0113 rule 3).
+            let mut local = String::with_capacity(task.len() + 3);
+            local.push_str("#@");
+            local.push_str(task);
+            local.push('#');
             for mut event in events {
                 if let Some(rest) = event.instance.strip_prefix("with:")
                     && let Some((name, count)) = rest.split_once(&local)
                     && let Ok(count) = count.parse::<usize>()
                 {
-                    let base = counts.get(name).copied().unwrap_or(0);
-                    event.instance = format!("with:{name}#{}", base + count);
+                    let number = counts.get(name).copied().unwrap_or(0) + count;
+                    let mut id = String::with_capacity(6 + name.len() + digits(number));
+                    id.push_str("with:");
+                    id.push_str(name);
+                    id.push('#');
+                    let _ = std::fmt::Write::write_fmt(&mut id, format_args!("{number}"));
+                    event.instance = id;
                 }
                 trace.push(event);
             }
@@ -1622,6 +1672,12 @@ pub(crate) fn pop_cancel(flag: &Arc<AtomicUsize>) {
     });
 }
 
+/// `f` of the task's cancellation entries that the operation in progress does not shield
+/// (`spec/19 §6` rule 4); `None` without a run's state.
+pub(crate) fn unshielded_entries<R>(f: impl FnOnce(&[Cancel]) -> R) -> Option<R> {
+    with_state(|state| f(state.cancel.get(state.shielded..).unwrap_or_default()))
+}
+
 /// Whether the thread's task stops: it was cancelled, or an abort stopped it.
 pub(crate) fn task_stopping() -> bool {
     with_state(|state| state.cancelled() || state.stopped.is_some()).unwrap_or(false)
@@ -1691,7 +1747,10 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
     // 10): one that cannot be made is a usage error.
     let shared = match &options.trace {
         Some(path) => match crate::started::RunShared::tracing(path) {
-            Ok(shared) => shared,
+            Ok(shared) => {
+                let _ = TRACE_FILE.set(path.clone());
+                shared
+            }
             Err(error) => {
                 let _ = writeln!(
                     stderr,
@@ -1740,6 +1799,17 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
             return USAGE;
         }
     };
+    // A grant with limits needs `L_lim` at most `internal` (ADR 0117 IF4): the embedded grants
+    // passed `una check`, and are checked again with the flags' (`spec/27 §9` rule 5).
+    let limit = meta
+        .limit_label
+        .as_deref()
+        .map(|label| (label, meta.limits_allowed));
+    let specs: Vec<String> = meta.grants.iter().chain(&options.grants).cloned().collect();
+    if let Err(message) = una_interp::check_limited_flags(&specs, limit) {
+        let _ = writeln!(stderr, "error: {message}");
+        return USAGE;
+    }
     let Some(stack) = una_interp::stack_bytes(options.max_depth) else {
         let _ = writeln!(
             stderr,
@@ -1784,7 +1854,8 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
     if let Clock::Virtual(virtual_clock) = clock() {
         virtual_clock.restart();
     }
-    let state = State {
+    let threads = meta.threads;
+    let mut state = State {
         trace: options.trace.as_ref().map(|_| Vec::new()),
         streaming: true,
         open_events: 0,
@@ -1795,6 +1866,11 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
         max_depth: options.max_depth,
         sites: Arc::new(meta.sites),
         failure: meta.failure.map(Arc::new),
+        // The run's limits refill on the run's clock, set just before (ADR 0116 rule 19).
+        http_limits: Arc::new(una_http::limit::Governor::with_clock(
+            http_grants(&grants),
+            Arc::new(clock().clone()),
+        )),
         grants: Arc::new(grants),
         keys: Arc::new(keys),
         http: options.http,
@@ -1834,15 +1910,37 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
         }
         FLOATS.store(true, Ordering::SeqCst);
     }
+    // ADR 0116 amendment, P8 (#1145): a program with a task construct or a `for ever` starts
+    // its scheduler, every worker and both helper pools at full size, and fills the stack pool
+    // with stacks of the size a block at the top asks for, the largest any task asks for, here,
+    // before `main`. Whether a thread exists, or how many stacks are pooled, is then never
+    // state that earlier code left, and no construct pays a thread's start or a stack's
+    // mapping because of it. A thread that cannot start, or a stack that cannot be mapped,
+    // stops the run here, with U6003 and no position, rather than leave a lazy start for
+    // later. A program without these constructs starts no thread (`spec/27 §1` rule 4).
+    // A `tasks` statement is such a construct; its root runs on this scheduler too, below.
+    if threads || meta.tasks {
+        let sched = crate::sched::Scheduler::new(state.concurrency);
+        if sched.start_all(stack).is_err() {
+            let written = writeln!(
+                stderr,
+                "[{}] Error: the threads and stacks of this run's tasks could not be made",
+                Code::U6003
+            );
+            return if written.is_ok() { 1 } else { USAGE };
+        }
+        state.sched = Some(sched);
+    }
     let budget = options.max_memory.saturating_mul(1024 * 1024);
     // An executable whose program has a `tasks` statement runs `main` as a coroutine on
-    // worker 0, so that the root takes turns with the tasks it starts (ADR 0117 rules 1 and
-    // 11); any other keeps its thread, as before.
-    let sched = meta
-        .tasks
-        .then(|| crate::sched::Scheduler::new(options.concurrency));
-    let mut state = state;
-    state.sched.clone_from(&sched);
+    // worker 0 of the scheduler started above, so that the root takes turns with the tasks it
+    // starts (ADR 0117 rules 1 and 11); any other keeps its thread, as before. One scheduler
+    // serves the run: its workers, helpers, stack pool and slicer all started before `main`.
+    let sched = if meta.tasks {
+        state.sched.clone()
+    } else {
+        None
+    };
     let main = move || {
         if floats {
             crate::ffi::write_float_environment();
@@ -2025,6 +2123,18 @@ fn grants(meta: &Meta, options: &Options) -> Result<Vec<Grant>, String> {
                     "`{spec}` is not a grant; grants are console, clock, env, keys:<file>, files:<path>:<access> and http:<origin>[:<methods>]"
                 )
             })
+        })
+        .collect()
+}
+
+/// The `Http` grants among `grants`, in order: what the run's governor of limits holds (ADR 0117
+/// rule 8).
+fn http_grants(grants: &[Grant]) -> Vec<una_http::grant::Grant> {
+    grants
+        .iter()
+        .filter_map(|grant| match grant {
+            Grant::Http(http) => Some(http.clone()),
+            _ => None,
         })
         .collect()
 }
@@ -2383,6 +2493,7 @@ pub(crate) fn enter_task(template: &TaskTemplate, path: String, entry: Cancel) {
         grants: Arc::clone(&template.grants),
         keys: Arc::clone(&template.keys),
         http: template.http,
+        http_limits: Arc::clone(&template.http_limits),
         types: Arc::clone(&template.types),
         ops: Arc::clone(&template.ops),
         host_failed: false,
@@ -2460,6 +2571,7 @@ pub(crate) fn install_test_state_as(path: String, tracing: bool, file: String) {
         grants: Arc::new(Vec::new()),
         keys: Arc::new(BTreeMap::new()),
         http: options.http,
+        http_limits: Arc::new(una_http::limit::Governor::new(Vec::new())),
         types: Arc::new(Types::default()),
         // One operation, which the tasks of a traced test record events of.
         ops: Arc::new(vec![OpSite {
@@ -2599,6 +2711,27 @@ fn abort_run(state: State, code: Code, location: Location, message: String) {
 /// Reports that `main` failed with `failure`, which the caller owns and the report releases:
 /// U6001 with the failure's `public` fields (`spec/04 §8`), after the output so far.
 pub fn main_failed(failure: i64) {
+    // The word of a stopped task (`una_codegen` `STOPPED`) is no failure: `main`'s thread ends
+    // the run at an abort, and every cut is caught by its own `within`, so `main` never returns
+    // it. Should it, that is an internal error (U8001, exit code 3), never a failure of `main`.
+    debug_assert_ne!(failure, -1, "`main` returned the stop of a task");
+    if failure == -1 {
+        let state = STATE.with(|cell| take_state(&mut cell.borrow_mut()));
+        if let Some(state) = state {
+            let location = state
+                .failure
+                .as_ref()
+                .map_or_else(|| site_location(&state, usize::MAX), |f| f.location.clone());
+            abort_run(
+                state,
+                Code::U8001,
+                location,
+                "internal error: `main` returned the stop of a task, which no failure is"
+                    .to_owned(),
+            );
+        }
+        return;
+    }
     let _ = io::stdout().flush();
     let diagnostic = STATE.with(|cell| {
         let cell = cell.borrow();
@@ -2767,6 +2900,41 @@ mod tests {
             0
         });
         assert_eq!(reused, 3);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
+    fn a_program_with_tasks_starts_every_thread_before_main() {
+        // #1145, ADR 0116 amendment P8: when the description says the program holds a task
+        // construct or a `for ever`, the scheduler exists before `main` runs, with every worker
+        // and both helper pools started at full size and the stack pool full; otherwise no thread
+        // starts.
+        let args: Vec<String> = "--workers 3 --io-threads 5 --file-threads 2"
+            .split(' ')
+            .map(str::to_owned)
+            .collect();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        for meta in [
+            r#"{"grants":[],"uses":[],"threads":true}"#,
+            r#"{"grants":[],"uses":[]}"#,
+        ] {
+            let record = Arc::clone(&seen);
+            let status = start(&args, meta, move || {
+                let observed = with_state(|state| {
+                    state
+                        .sched
+                        .as_ref()
+                        .map(|sched| (sched.started(), sched.stacks()))
+                });
+                record.lock().unwrap().push(observed);
+                0
+            });
+            assert_eq!(status, 0);
+        }
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [Some(Some(((3, 2, 5), (64, 0)))), Some(None)]
+        );
     }
 
     #[test]
