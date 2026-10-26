@@ -446,7 +446,7 @@ fn message_of(name: &str, text: &str, code: &str, budget: bool) -> String {
         .unwrap()
         .iter()
         .find(|d| d["code"] == code)
-        .unwrap_or_else(|| panic!("no {code} in {diagnostics}"))["message"]
+        .expect("the diagnostic of the code is published")["message"]
         .as_str()
         .unwrap()
         .to_owned()
