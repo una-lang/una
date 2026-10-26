@@ -1210,3 +1210,19 @@ The claim voids the thief's cancellation, so the recovery takes effect at its de
 - The client settles one replay of a prefix of the chain per revocation from the first claim on, to know the claims at each logging: O(S · P · E · K) for S such revocations, P passes, E entries and K keys, and nothing more for a chain with no claim. Revocations are rare events of a chain.
 - More names are unavailable when a place withholds cosignatures: whenever the two timings give different histories, not only when a release's verdict differs.
 - `spec/30 §14` rules 1 and 5 and the `ita-key/1` table state these rules as normative text.
+
+## Amendment 10 (2026-10-26): the cap of claims
+
+- Status: Accepted, recorded under the project's delegation.
+
+**Context.** Amendment 9 checks each entry's stated threshold against the state known at its logging. A claim of compromise is retroactive, so the client settles the chain up to each claim once more, and each settled replay is linear in the chain. A thief holding a stolen key can log claims cheaply, `revoke <former key> since <p>` while that key is current, so with no bound the work grows with the product of the claims and the chain's length: quadratic in what an attacker logs.
+
+**Decision.**
+1. **The cap.** An owner's chain holds at most 64 claims, `revoke <name> since <p>` entries, applied or void. A registry MUST NOT log a 65th. A client refuses the names of an owner whose chain holds more (U7010) as the registry's misbehavior, recorded as typed evidence with the log index of the first claim past the cap.
+2. **Why 64.** It is twice the most keys an owner holds at once (32): an owner can claim every key it holds, and claim each again from an earlier position once it learns more. An honest owner claims a stolen key once, rarely more than a few keys in a chain's life.
+3. **The work.** The client settles the chain once, then once more up to each claim, and makes one forward pass per group of entries logged with the same claims: at most 65 settled replays of at most 130 passes each, linear in the chain's length. Each signature of an entry by a key is verified once across all of them, and the count of checks covers all of them.
+4. **Evidence and omissions.** A replay up to an entry that does not settle is recorded as the registry's misbehavior. A request's effect that cannot be read during any replay makes the name unavailable (U7013), never a verdict.
+
+**Consequences.**
+- A registry refuses a 65th claim. A thief that holds a stolen key while it is current can spend the owner's claims: once the chain holds 64, the owner's own claim cannot be logged, and the owner falls back on revoking the key without `since`, a recovery, or a dispute, which leave the thief's releases signed before them counting. This trade is recorded for review: a cap that a thief cannot exhaust, such as one per signing key, is the alternative to weigh.
+- `spec/30 §14` rule 5 states the cap as normative text.
