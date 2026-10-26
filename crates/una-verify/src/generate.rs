@@ -1694,6 +1694,25 @@ impl<'p, 'i> Walker<'p, 'i> {
                         let mut stop_leaves = Vec::new();
                         self.walk(&on_stop.body, &stop_ctx, &mut stop_leaves);
                     }
+                    // `for ever within d` (`spec/26 §7`, ADR 0116 rule 11): `d >= 1`, a
+                    // `refinement` obligation at `d`, in the context before the loop.
+                    if let LoopSource::Ever {
+                        within: Some((deadline, deadline_span)),
+                    } = source.as_ref()
+                    {
+                        let value = self.atom(deadline, &ctx);
+                        let goal = (value.f.sort() == "Int")
+                            .then(|| F::op(">=", vec![value.f, F::Int("1".to_owned())]));
+                        let text = format!("{} >= 1", self.text(*deadline_span));
+                        self.site(
+                            ObligationKind::Refinement,
+                            &ctx,
+                            goal,
+                            text,
+                            *deadline_span,
+                            None,
+                        );
+                    }
                     let mut body_ctx = ctx.clone();
                     self.bind(&mut body_ctx, &var.0, &var.1);
                     if let LoopSource::Range {
@@ -4069,7 +4088,7 @@ impl<'p, 'i> Walker<'p, 'i> {
     /// number of integers of its range, zero when it is empty.
     fn task_count(&mut self, source: &LoopSource, ctx: &Ctx) -> Option<F> {
         match source {
-            LoopSource::Until { .. } | LoopSource::Ever => None,
+            LoopSource::Until { .. } | LoopSource::Ever { .. } => None,
             LoopSource::List(list) => {
                 let list = self.atom(list, ctx);
                 self.len(&list)

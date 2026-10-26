@@ -100,6 +100,43 @@ pub enum EventOutcome {
     /// A loop of the host stopped at the start of an iteration (ADR 0116 rule 14): the driver's,
     /// when the run's stop came. Like `Cancelled`, it names no operation.
     Stop,
+    /// An iteration of a `for ever within` passed its deadline (ADR 0116 rule 11): the event
+    /// after the first operation that the deadline made fail in the iteration. Like `Stop`, it
+    /// names no operation.
+    Timeout,
+}
+
+/// The deadline of the iteration of a `for ever within` in progress (ADR 0116 rule 11).
+#[derive(Clone, Debug)]
+pub(crate) struct Deadline {
+    /// When it passes; `None` when it is beyond what the clock can hold.
+    pub(crate) at: Option<std::time::Instant>,
+    /// The path of the task that runs the loop, whose control flow observes the deadline's
+    /// failures (`spec/26 §7`).
+    pub(crate) owner: Vec<usize>,
+    /// Whether a task the iteration started met the deadline, for the join of its block.
+    pub(crate) hit: bool,
+    /// Whether the iteration's `timeout` event is in the trace already.
+    pub(crate) reported: bool,
+}
+
+impl Deadline {
+    /// The deadline `ms` milliseconds from now, of a loop run by the task at `owner`.
+    pub(crate) fn after(ms: u64, owner: Vec<usize>) -> Deadline {
+        Deadline {
+            at: std::time::Instant::now().checked_add(std::time::Duration::from_millis(ms)),
+            owner,
+            hit: false,
+            reported: false,
+        }
+    }
+
+    /// The time left before it, zero once it has passed; `None` for a deadline that never
+    /// passes.
+    pub(crate) fn left(&self) -> Option<std::time::Duration> {
+        self.at
+            .map(|at| at.saturating_duration_since(std::time::Instant::now()))
+    }
 }
 
 /// Why a run stops without a value or a failure.
@@ -651,6 +688,8 @@ pub(crate) struct Machine<'p, 'w> {
     /// The path of the `together` task in progress, one 1-based index per enclosing block
     /// (`spec/19 §6`).
     task: Vec<usize>,
+    /// The deadline of the iteration of the `for ever within` in progress (ADR 0116 rule 11).
+    deadline: Option<Deadline>,
     /// What the function in progress evaluates after the expression in progress, innermost
     /// last, with the names that each rebinds before reading them: a binding none of them
     /// reads is dead once the expression no longer reads it (#201).
@@ -710,6 +749,7 @@ impl<'p, 'w> Machine<'p, 'w> {
             stack_budget: crate::stack_bytes(max_depth)
                 .map_or(usize::MAX, |bytes| bytes.saturating_sub(STACK_RESERVE)),
             installs: BTreeMap::new(),
+            deadline: None,
             frames: Vec::new(),
             task: Vec::new(),
             later: Vec::new(),
@@ -1241,11 +1281,15 @@ impl<'p, 'w> Machine<'p, 'w> {
                             Ok(result) => results.push(result),
                             Err(stop) => {
                                 self.later.pop();
+                                if matches!(stop, Stop::Fail(_)) {
+                                    self.joined();
+                                }
                                 return Err(stop);
                             }
                         }
                     }
                     self.later.pop();
+                    self.joined();
                     return Ok(Value::Tuple(Rc::new(results)));
                 }
                 // `together for` (`spec/19 §6`): one task per element, in element order.
@@ -1269,11 +1313,15 @@ impl<'p, 'w> Machine<'p, 'w> {
                             Ok(result) => results.push(result),
                             Err(stop) => {
                                 self.later.pop();
+                                if matches!(stop, Stop::Fail(_)) {
+                                    self.joined();
+                                }
                                 return Err(stop);
                             }
                         }
                     }
                     self.later.pop();
+                    self.joined();
                     return Ok(Value::List(Rc::new(results)));
                 }
                 // `let (x, ...) = a in e` (`spec/17 §4`).
@@ -1450,8 +1498,24 @@ impl<'p, 'w> Machine<'p, 'w> {
     ) -> Result<Vec<Value<'p>>, Stop<'p>> {
         match source {
             // `ever`: until `stop`, a failure, or a host stop at the start of an iteration
-            // (`spec/26 §5`, ADR 0116 rules 13 and 14).
-            LoopSource::Ever => {
+            // (`spec/26 §5`, ADR 0116 rules 13 and 14). With `within d`, each iteration has the
+            // deadline `d` after its start, which every interruptible operation it waits on or
+            // starts honors (`spec/26 §7`).
+            LoopSource::Ever { within } => {
+                let period = match within {
+                    Some((deadline, _)) => match self.atom(env, deadline)? {
+                        // A deadline below 1 is refuted by verification; one that does not
+                        // fit `u64` never passes.
+                        Value::Int(n) => Some(if n.sign() == Sign::Minus {
+                            0
+                        } else {
+                            u64::try_from(&n).unwrap_or(u64::MAX)
+                        }),
+                        _ => return Err(fault("a deadline that is not an `Int`")),
+                    },
+                    None => None,
+                };
+                let outer = self.deadline.take();
                 let ended = loop {
                     if self.ever_start() {
                         self.stop_event();
@@ -1461,6 +1525,7 @@ impl<'p, 'w> Machine<'p, 'w> {
                         break Err(stop);
                     }
                     self.in_ever = true;
+                    self.deadline = period.map(|ms| Deadline::after(ms, self.task.clone()));
                     let taken = std::mem::take(&mut current);
                     match self.iteration(env, caps, var, state, taken, &Value::Unit, body) {
                         Ok((next, stopped)) => {
@@ -1473,6 +1538,7 @@ impl<'p, 'w> Machine<'p, 'w> {
                     }
                 };
                 self.in_ever = false;
+                self.deadline = outer;
                 ended?;
             }
             // `until(c)`: `c` with the state bound, before each iteration (`spec/26 §4`).
@@ -1670,7 +1736,7 @@ impl<'p, 'w> Machine<'p, 'w> {
                 Value::List(items) => Ok(items.as_ref().clone()),
                 _ => Err(fault("a `together for` over a value that is not a list")),
             },
-            LoopSource::Until { .. } | LoopSource::Ever => {
+            LoopSource::Until { .. } | LoopSource::Ever { .. } => {
                 Err(fault("a `together for` with an `until` or `ever` source"))
             }
             LoopSource::Range {
@@ -1982,6 +2048,55 @@ impl<'p, 'w> Machine<'p, 'w> {
         result
     }
 
+    /// An operation failed because the deadline of the iteration in progress passed (ADR 0116
+    /// rule 11). In the task that runs the loop, the iteration observes it here; in a task it
+    /// started, at the join of that task's block ([`Self::joined`]).
+    fn timeout_event(&mut self) {
+        let Some(deadline) = self.deadline.as_mut() else {
+            return;
+        };
+        if self.task != deadline.owner {
+            deadline.hit = true;
+            return;
+        }
+        self.timeout_observed();
+    }
+
+    /// The join of a `together` or `together for` block: when the task that runs the loop
+    /// joins a block one of whose tasks met the deadline, the iteration observes it here.
+    fn joined(&mut self) {
+        if self
+            .deadline
+            .as_ref()
+            .is_some_and(|deadline| deadline.hit && self.task == deadline.owner)
+        {
+            self.timeout_observed();
+        }
+    }
+
+    /// Appends the iteration's one `timeout` event, with the path of the task that runs the
+    /// loop, the first time its control flow observes a failure the deadline caused: a trace
+    /// does not depend on which task met the deadline first (`spec/26 §7`).
+    fn timeout_observed(&mut self) {
+        let Some(deadline) = self.deadline.as_mut() else {
+            return;
+        };
+        if deadline.reported {
+            return;
+        }
+        deadline.reported = true;
+        let task: Vec<String> = deadline.owner.iter().map(ToString::to_string).collect();
+        self.trace.push(Event {
+            seq: self.trace.len() + 1,
+            task: task.join("."),
+            instance: String::new(),
+            capability: String::new(),
+            op: String::new(),
+            args: Vec::new(),
+            outcome: EventOutcome::Timeout,
+        });
+    }
+
     /// An operation of `Http` (`spec/24`), by the client that native code shares.
     fn http(&mut self, op: &str, args: &[Value<'p>], span: Span) -> Flow<'p> {
         use una_http::client::{Error, Request, send, send_interruptible};
@@ -2062,12 +2177,28 @@ impl<'p, 'w> Machine<'p, 'w> {
             body: body.as_bytes(),
             bearer: bearer.as_deref(),
         };
-        // In the body of a `for ever`, a host stop interrupts the request (ADR 0116 rule 12).
-        let sent = if self.in_ever {
-            send_interruptible(&request, &grants, &self.http, &self.stop.interrupt())
+        // The deadline of a `for ever within` iteration (`spec/26 §7`): past it, the request
+        // fails at once with `TimedOut`; before it, it waits no longer than the time left. In
+        // the body of a `for ever`, a host stop interrupts the request too (ADR 0116 rule 12):
+        // whichever comes first cuts the wait, in the same poll.
+        let mut settings = self.http;
+        let mut cut = false;
+        if let Some(left) = self.deadline.as_ref().and_then(Deadline::left)
+            && left < settings.timeout
+        {
+            settings.timeout = left;
+            cut = true;
+        }
+        let sent = if cut && settings.timeout.is_zero() {
+            Err(Error::TimedOut)
+        } else if self.in_ever {
+            send_interruptible(&request, &grants, &settings, &self.stop.interrupt())
         } else {
-            send(&request, &grants, &self.http)
+            send(&request, &grants, &settings)
         };
+        if cut && sent == Err(Error::TimedOut) {
+            self.timeout_event();
+        }
         let response = sent.map_err(fail)?;
         let headers: Vec<Value<'p>> = response
             .headers

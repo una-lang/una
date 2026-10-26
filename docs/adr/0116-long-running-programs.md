@@ -678,3 +678,10 @@ Rule 6 does not say what a statement after an unconditional `stop` or `skip` in 
 ## Amendment (2026-10-19): the reason of the hard stop in U6007
 
 Rule 16 shows U6007 with a `note:` line that says why the hard stop came. A diagnostic of `spec/13 §1` has no free note, and adding one would change the shape `una.diagnostic/1` of every diagnostic. The reason is part of the message instead, the same in both engines: "the host stopped the run before it finished, after the grace period of 10 seconds" (with "1 second" for a grace period of one second), or "the host stopped the run before it finished, at a second host stop request". The code's meaning, and its row in `spec/13 §4`, stay "The host stopped the run before it finished".
+
+## Amendment (2026-10-19): the report's `timing` list, and the timing label in the preview
+
+Rule 21 adds `timing` to the Information section of `una.report/2`. With `for ever within` (`spec/26 §7`):
+- **`information.timing`** is absent when it is empty, so a report without a site that has a deadline is the one earlier releases wrote.
+- **The driver's budget** (rule 1) is not yet a deadline, so it adds no `timing` entry until it bounds a step.
+- **One rule for `τ`.** The checker computes the timing label of every site with a deadline, the body of a `for ever within` and the driven step (IF7), by one function, which `within` of ADR 0117 is meant to call too. In the preview it keeps the over-approximations of `spec/26 §2` rule 5 for IF5 items 3 and 4 and IF6: at a site inside a function, every handler of an operation's capability counts, since the function's callers may have installed it; at the driven step, the host's capabilities count only through the handlers installed on the way, as before; and `τ_conc` is `⊤` wherever a part of a task construct can reach the site's function, directly or through a function value, a lambda or a handler's operation. They are sound, and MAY only become more precise.

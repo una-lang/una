@@ -669,6 +669,8 @@ pub(crate) struct TaskTemplate {
     pub(crate) stack: usize,
     /// Where the block is written.
     pub(crate) location: Location,
+    /// The deadline of the `for ever within` iteration that starts the block (`spec/26 §7`).
+    deadline: Option<crate::deadline::Deadline>,
 }
 
 impl TaskTemplate {
@@ -724,6 +726,7 @@ impl State {
             shielded: self.shielded,
             stack: una_interp::stack_bytes(left).unwrap_or(STACK_RESERVE * 2),
             location: site_location(self, site),
+            deadline: crate::deadline::current(),
         }
     }
 
@@ -1768,6 +1771,7 @@ pub(crate) fn enter_task(template: &TaskTemplate, path: String, entry: Cancel) {
     };
     state.stack_base = stack_position(&state);
     install(state, template.depth);
+    crate::deadline::adopt(template.deadline.clone());
 }
 
 /// What a task reports to its block when its code has ended (ADR 0113 rule 3): its events, the

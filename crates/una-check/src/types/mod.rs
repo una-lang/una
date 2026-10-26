@@ -47,6 +47,7 @@ mod shared;
 mod sharing_tests;
 mod stmt;
 mod summary;
+mod timing;
 mod ty;
 mod unify;
 mod units;
@@ -327,6 +328,22 @@ pub struct TypeCheck {
     pub program: una_core::Program,
     /// What the checker resolved, by span, for the language server (ADR 0063).
     pub index: Index,
+    /// The sites whose deadlines turn timing into values, in source order, with their timing
+    /// labels: each `for ever within` (ADR 0116 rule 21), for the report's `timing` list.
+    pub timing: Vec<TimingSite>,
+}
+
+/// A site with a deadline and its timing label (ADR 0116 IF5, rule 21).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TimingSite {
+    /// The construct, as `for ever within`.
+    pub construct: &'static str,
+    /// The qualified name of the function that holds it, or empty outside a function.
+    pub function: String,
+    /// Where it is.
+    pub location: Location,
+    /// Its timing label.
+    pub label: una_core::Label,
 }
 
 impl Default for TypeCheck {
@@ -341,6 +358,7 @@ impl Default for TypeCheck {
             headers: Vec::new(),
             program: una_core::Program::default(),
             index: Index::default(),
+            timing: Vec::new(),
         }
     }
 }
@@ -637,6 +655,7 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
     authority::grants(&env, package.settings, package.run, &mut report);
     authority::drive_failures(&env, package.settings, &mut report);
     authority::drive_timing(&env, &findings, package.settings, &mut report);
+    let timing_sites = authority::deadline_timing(&env, &findings, &mut report);
     authority::budget(&env, &findings, package.settings, &mut report);
     // Edition 0.3 (ADR 0100): last, once every other error of the package is known.
     dead::judge(
@@ -724,6 +743,15 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
         Vec::new()
     };
     let check = TypeCheck {
+        timing: timing_sites
+            .into_iter()
+            .map(|(construct, function, span, label)| TimingSite {
+                construct,
+                function,
+                location: report.location(span),
+                label,
+            })
+            .collect(),
         index,
         headers,
         program,
@@ -861,6 +889,18 @@ pub(crate) struct Findings {
     /// The functions whose bodies hold a task construct, `together` or `together for` (ADR 0116
     /// IF6).
     pub(crate) task_functions: std::collections::BTreeSet<usize>,
+    /// The functions called or named inside a part of a task construct, lambdas written there
+    /// included (ADR 0116 IF6).
+    pub(crate) task_edges: std::collections::BTreeSet<usize>,
+    /// The functions called or named inside a lambda, which may run wherever the lambda is
+    /// called (ADR 0116 IF6).
+    pub(crate) lambda_edges: std::collections::BTreeSet<usize>,
+    /// The functions called or named inside a handler's operations, which run wherever the
+    /// handler serves an operation (ADR 0116 IF6).
+    pub(crate) handler_edges: std::collections::BTreeSet<usize>,
+    /// The `for ever within` loops checked (ADR 0116 rule 11, IF8): each loop's span, its
+    /// function, and the seed of its body's timing label.
+    pub(crate) deadline_loops: Vec<DeadlineLoop>,
     /// Names bound by selfified `let`s.
     pub(crate) selfified: Vec<Span>,
     /// The conditions of `for until` loops that are in the refinement language, which the
@@ -2045,4 +2085,16 @@ pub scaled(a: Decimal[2], rate: Decimal[4]) -> Bool
             assert_eq!(codes, Vec::new(), "{edition:?}");
         }
     }
+}
+
+/// A `for ever within d` loop, for IF8 and the report's `timing` list (ADR 0116 rules 11 and
+/// 21).
+#[derive(Clone, Debug)]
+pub(crate) struct DeadlineLoop {
+    /// The loop.
+    pub(crate) span: Span,
+    /// The function whose body holds it.
+    pub(crate) function: Option<usize>,
+    /// The seed of the timing label of its body, the deadline's label included.
+    pub(crate) seed: timing::TimingSeed,
 }

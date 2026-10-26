@@ -283,7 +283,10 @@ fn print_source(source: &LoopSource) -> String {
             print_atom(high)
         ),
         LoopSource::Until { measure, .. } => format!("until decreases {}", measure.text),
-        LoopSource::Ever => "ever".to_owned(),
+        LoopSource::Ever { within: None } => "ever".to_owned(),
+        LoopSource::Ever {
+            within: Some((deadline, _)),
+        } => format!("ever within {}", print_atom(deadline)),
     }
 }
 

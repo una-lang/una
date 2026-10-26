@@ -569,6 +569,9 @@ impl Collector<'_> {
                 self.block(&stmt.block);
             }
             Stmt::Ever(stmt) => {
+                if let Some(within) = &stmt.within {
+                    self.expr(within);
+                }
                 self.block(&stmt.block);
                 if let Some(on_stop) = &stmt.on_stop {
                     self.block(&on_stop.block);

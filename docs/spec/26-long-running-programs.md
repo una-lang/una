@@ -9,7 +9,7 @@ A program that runs until it is told to stop, such as a game loop, a server or a
 ## 1. Edition and words
 
 1. **Edition.** A package of edition `0.4` names it in `ita.una` (`edition 0.4`, `spec/30`); `una.toml` naming it is U7002, with `una migrate` as its repair (ADR 0122 Question 8.1). Edition `0.4` is cumulative over edition `0.3`, as `0.3` is over `0.2`: it has every construct, keyword and rule of edition `0.3`. It is a preview under the terms of edition `0.3` (`spec/13 §7`) until the rules that target it have landed.
-2. **Reserved words.** In edition `0.4`, `diverges` and `within` are reserved: used as an identifier, each is U0103, `` `<word>` is reserved for edition 0.4 (long-running programs) ``, until the construct of this chapter that uses it lands. In earlier editions they are identifiers.
+2. **Reserved words.** In edition `0.4`, `diverges` and `within` are reserved: used as an identifier, each is U0103, `` `<word>` is reserved for edition 0.4 (long-running programs) ``. `diverges` is a word of a header (§5), and `within` one right after `for ever` (§7); elsewhere both stay reserved. In earlier editions they are identifiers.
 
 ## 2. The host-driven step
 
@@ -35,7 +35,7 @@ A program that runs until it is told to stop, such as a game loop, a server or a
    - It calls `step(edit state, input: tick)` with each tick, and the state `step` leaves is the state of the next one.
    - When the loop stops, it calls `on_stop(state)` when the module declares it, and the run ends with exit code 0.
    - Both engines run the same driver, and their outputs and traces compare under `spec/16 §5`.
-4. **Stopping.** The driver's loop is a `for ever` (§5): a host stop request (§6) interrupts its wait for a tick, within 100 ms at worst, or the waiting `Http` operations of the step that runs, and the loop stops at its next iteration start. The trace then gets an event whose `outcome` is `{"kind":"stop"}`, which names no operation, `on_stop` runs, and the run ends with exit code 0, unless the hard stop of §6 comes first. The budget is read and kept, and it bounds no step until the deadlines of ADR 0116 rule 11 land.
+4. **Stopping.** The driver's loop is a `for ever` (§5): a host stop request (§6) interrupts its wait for a tick, within 100 ms at worst, or the waiting `Http` operations of the step that runs, and the loop stops at its next iteration start. The trace then gets an event whose `outcome` is `{"kind":"stop"}`, which names no operation, `on_stop` runs, and the run ends with exit code 0, unless the hard stop of §6 comes first. The budget is read and kept, and it bounds no step yet: the deadlines of `for ever within` (§7) do not apply to it.
 5. **The timing label of a tick (IF7).** `at` and `missed` depend on how long earlier steps took. So the `input` parameter of `step` MUST be labeled at least `τ`, the timing label of the step, or the package is rejected with U4001 at the parameter. The message names the largest source of `τ` and the label `input` needs. `τ` is the join of:
    1. the deep label (`spec/07 §7` rule 3) of each parameter's declared type of `step`;
    2. for each operation in the effects of `step` and of every function `step` can reach, its result type's deep label, its `accepts` label and its failure kind's deep label;
@@ -174,3 +174,46 @@ A program that runs until it is told to stop, such as a game loop, a server or a
    ```
 
    The failure of a request is `internal` (`spec/24 §5`), so the count it changes is too.
+
+## 7. `for ever within d`
+
+1. **Grammar** (ADR 0116 rule 5). In edition `0.4`, a `for ever` loop MAY take a deadline:
+
+   ```ebnf
+   ever_stmt = "for" "ever" [ "within" add_expr ] NEWLINE INDENT block DEDENT [ on_stop ] ;
+   ```
+
+   `within` right after `for ever` starts the deadline. Anywhere else it stays reserved (§1 rule 2).
+2. **The deadline** (ADR 0116 rule 11). `d` is an `Int of Millisecond`, with `Millisecond` of `std.time` (§2 rule 2): a unitless `Int` or another unit is U2028, and a type that is not an integer is U2001. It is evaluated once, before the first iteration. It MUST be at least 1, a `refinement` obligation at `d` (`spec/12 §3`): `within 0 * millisecond` is U5001.
+3. **Past the deadline.** Each iteration has the deadline `d` after its start. Once an iteration has passed it, every interruptible operation it waits on, and every one it starts later in that iteration, fails at once with its time-out failure: for `Http`, `HttpError.TimedOut` (`spec/24 §1`). The tasks the iteration starts (`spec/19`) share its deadline. Nothing else changes: the iteration runs on to its end with the values its code gives the bindings, effects already performed stay (`spec/17 §7` rule 2), and the next iteration has a new deadline. In this edition the interruptible operations are those of `Http` (ADR 0116 rule 12); the operations of a handler are Una code, which a deadline does not cut. A host stop request (§6) cuts the same waits: an `Http` wait in the body ends at the deadline or at the request, whichever comes first, with `TimedOut` or `Interrupted`.
+4. **Trace.** Each iteration that meets its deadline gets one event `{"seq": n, "outcome": {"kind": "timeout"}}`, which names no operation (`spec/11 §5`). It carries the `task` field of the task that runs the loop, and it is written where the iteration's own control flow first observes a failure the deadline caused: right after the event of an operation of that task that the deadline made fail, or, when a task of a `together` or `together for` block the iteration runs met the deadline, at the block's join, after the block's events, whether the block ends normally or fails. A trace therefore never depends on which task met the deadline first: its events and their order are the same in every run that meets the deadline at the same operations, and in both engines (`spec/16 §5`).
+
+   ```una
+   import std.time (millisecond)
+
+   poll(url: Text) -> Unit
+     uses @http: Http[get]
+     uses @console: Console[print]
+     diverges
+   =
+     let edit n = 0
+     for ever within 100 * millisecond
+       stop when n == 10
+       let reading = attempt @http.get(url, headers: [], key_name: None)
+       @console.print("polled {n}")     -- also after a `TimedOut` reading
+       n = n + 1
+   ```
+
+5. **Information flow** (ADR 0116 IF5, IF6, IF8). Whether an operation completes, or fails because the deadline passed, depends on how long the iteration took. The **timing label** `τ` of the body bounds what that can depend on. It is the join of:
+   1. the program counter at the loop, and the label of `d`;
+   2. the deep label (`spec/07 §7` rule 3) of every binding the body reads from outside it, its lambdas' captures included;
+   3. for each operation the body can perform, directly or through the functions it calls: its result type's deep label, its `accepts` label and its failure kind's deep label; and, for every handler of that operation's capability in the package, the deep labels of the handler's parameters (`⊤` for one of function type) and the same for the operations it needs;
+   4. `⊤`, when the body, or a function it can reach, calls a function value, or a function of the prelude with a function argument;
+   5. `τ_conc`: `⊤` when a part of a `together` or `together for` block can run while the loop runs, which is when it can reach the loop's function through the call graph, or, in a package with such a block, through a function value, a lambda or a handler's operation.
+
+   The operations the deadline can cut run as if under `τ`, and their failures carry it: when an interruptible operation that the body can perform declares a failure label below `τ` (for `Http`, `internal`, `spec/24 §5`), the package is rejected with U4001 at the loop, naming the largest source of `τ`. A body that reads a `secret` binding and calls `Http` is rejected; one on `public` and `internal` data is accepted. A plain `for ever` needs no timing label (ADR 0116 IF7).
+
+   **Preview over-approximations.** Items 3 to 5 are coarser than ADR 0116 IF5 and IF6, as in §2 rule 5: they count every handler of a capability, not only the one installed, and `⊤` rather than the join of the siblings' `τ⁰`. They are sound; in the preview they MAY become more precise, and they MUST NOT become stricter. The same rule computes the timing label of a driven step (§2 rule 5).
+6. **Report** (ADR 0116 rule 21). The report's `information` section (`spec/13 §6`) lists each `for ever within` in `timing`, with its function and its timing label.
+7. **Core** (ADR 0116 rule 20). The loop's source is `ever(d)`, with `d` an atom bound before the loop, and the span of `d`, where its obligation is reported.
+8. **Costs.** One clock reading per iteration to arm the deadline, and one per interruptible operation to bound its wait, each O(1).

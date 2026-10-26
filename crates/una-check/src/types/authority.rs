@@ -2162,9 +2162,10 @@ pub(crate) fn drive_failures(env: &Env<'_>, settings: &Manifest, report: &mut Re
 ///   that is not the host's, counts by `ℓ*` of its parameters, the top label for one of function
 ///   type, and by the operations it needs;
 /// - a call of a function value anywhere the step reaches makes it the top label (#1023);
-/// - concurrent tasks: the top label when a function holding a task construct reaches the step.
+/// - concurrent tasks: the top label when a part of a task construct can reach the step.
 ///
-/// O(functions + call edges + operations).
+/// The label is [`super::timing::timing`]'s, the one rule of every timing label. O(functions +
+/// call edges + operations).
 pub(crate) fn drive_timing(
     env: &Env<'_>,
     findings: &Findings,
@@ -2198,144 +2199,30 @@ pub(crate) fn drive_timing(
         return;
     };
     let kinds = env.kind_labels.as_ref();
-    let top = Label::top(&env.categories);
-    // Each source with its label, in the order a message names them.
-    let mut sources: Vec<(Label, String)> = vec![(
-        state.ty.base.deep_label(kinds),
-        format!("the parameter `{}`", state.name),
-    )];
-    // The functions the step reaches, itself included.
-    let mut callees: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
-    for &(caller, callee, _) in &findings.edges {
-        callees.entry(caller).or_default().push(callee);
-    }
-    let mut reached: BTreeSet<usize> = BTreeSet::new();
-    let mut pending = vec![step];
-    while let Some(f) = pending.pop() {
-        if reached.insert(f) {
-            pending.extend(callees.get(&f).into_iter().flatten().copied());
-        }
-    }
-    let mut handlers: BTreeSet<usize> = findings
-        .installs
-        .iter()
-        .filter(|(f, _)| reached.contains(f))
-        .map(|&(_, h)| h)
-        .collect();
-    let mut needs: Vec<(CapId, String)> = Vec::new();
-    for &f in &reached {
-        let Some(function) = env.functions.get(f) else {
-            continue;
-        };
-        if findings.value_callers.contains(&f) {
-            sources.push((
-                top.clone(),
-                format!("a call of a function value in `{}`", function.name),
-            ));
-        }
-        // A prelude function that applies a function argument, such as `map`.
-        if function.module >= env.prelude
-            && function
-                .params
-                .iter()
-                .any(|p| matches!(p.ty.base.unlabeled(), Ty::Fn(_)))
-        {
-            sources.push((
-                top.clone(),
-                format!("the function argument of `{}`", function.name),
-            ));
-        }
-        for need in &function.uses {
-            if let Some(cap) = need.usage.capability {
-                needs.extend(need.usage.ops.iter().map(|op| (cap, op.clone())));
-            }
-        }
-    }
-    // The operations, and the handlers that can serve those of a capability that is not the
-    // host's, with the operations those handlers need, to a fixpoint over capabilities.
-    let mut seen: BTreeSet<(CapId, String)> = BTreeSet::new();
-    let mut handled: BTreeSet<usize> = BTreeSet::new();
-    while !needs.is_empty() || handlers.iter().any(|h| !handled.contains(h)) {
-        while let Some((cap, op)) = needs.pop() {
-            if !seen.insert((cap, op.clone())) {
-                continue;
-            }
-            let Some(capability) = env.capabilities.get(cap) else {
-                continue;
-            };
-            if let Some(def) = capability.ops.iter().find(|d| d.name == op) {
-                let mut rho = def.result.base.deep_label(kinds);
-                if let Some(accepts) = &def.accepts {
-                    rho = rho.join(accepts);
-                }
-                if let Some(fails) = &def.fails {
-                    rho = rho.join(&fails.deep_label(kinds));
-                }
-                sources.push((rho, format!("the operation `{}.{op}`", capability.name)));
-            }
-            if capability.module != env.prelude {
-                handlers.extend(
-                    env.handlers
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, h)| h.capability == Some(cap))
-                        .map(|(id, _)| id),
-                );
-            }
-        }
-        let next: Vec<usize> = handlers.difference(&handled).copied().collect();
-        for id in next {
-            handled.insert(id);
-            let Some(handler) = env.handlers.get(id) else {
-                continue;
-            };
-            for param in &handler.params {
-                let label = if matches!(param.ty.base.unlabeled(), Ty::Fn(_)) {
-                    top.clone()
-                } else {
-                    param.ty.base.deep_label(kinds)
-                };
-                sources.push((
-                    label,
-                    format!("the parameter `{}` of a handler", param.name),
-                ));
-            }
-            for need in &handler.uses {
-                if let Some(cap) = need.usage.capability {
-                    needs.extend(need.usage.ops.iter().map(|op| (cap, op.clone())));
-                }
-            }
-        }
-    }
-    // Concurrent tasks (IF6): the top label when a function holding a task construct reaches
-    // the step, the exact join of its siblings coming with `for ever within`.
-    let concurrent = findings.task_functions.iter().any(|&f| {
-        let mut seen: BTreeSet<usize> = BTreeSet::new();
-        let mut pending = vec![f];
-        while let Some(g) = pending.pop() {
-            if g == step {
-                return true;
-            }
-            if seen.insert(g) {
-                pending.extend(callees.get(&g).into_iter().flatten().copied());
-            }
-        }
-        false
-    });
-    if concurrent {
-        sources.push((top.clone(), "tasks that can run beside the step".to_owned()));
-    }
+    // The step is a site whose seed is its state parameter and the step itself (ADR 0116 IF7).
+    let seed = super::timing::TimingSeed {
+        sources: vec![(
+            state.ty.base.deep_label(kinds),
+            format!("the parameter `{}`", state.name),
+        )],
+        callees: BTreeSet::from([step]),
+        ..super::timing::TimingSeed::default()
+    };
+    let concurrent = super::timing::concurrent_functions(findings);
+    let timing = super::timing::timing(
+        env,
+        findings,
+        &seed,
+        Some(step),
+        super::timing::HostHandlers::Installed,
+        &concurrent,
+    );
     let declared = input.ty.base.deep_label(kinds);
-    let tau = sources
-        .iter()
-        .fold(Label::public(), |tau, (label, _)| tau.join(label));
+    let tau = timing.label.clone();
     if tau.flows_to(&declared) {
         return;
     }
-    let culprit = sources
-        .iter()
-        .find(|(label, _)| !label.flows_to(&declared))
-        .map_or_else(String::new, |(_, source)| source.clone());
+    let culprit = timing.culprit(&declared);
     let mut diagnostic = report.make(
         Code::U4001,
         input.span,
@@ -2349,6 +2236,72 @@ pub(crate) fn drive_timing(
         input.name, input.name
     )));
     report.push(diagnostic);
+}
+
+/// IF8 (ADR 0116): the operations that the deadline of a `for ever within d` can interrupt run
+/// as if under the timing label `τ` of its body (IF5, IF6), and their failures carry it. An
+/// interruptible operation, one of `Http` (rule 12), declares its failure at most what it
+/// accepts, `internal` (`spec/24 §5`): U4001 at the loop when `τ` is above it, naming the
+/// largest source of `τ`. Returns each loop, in source order, with its function and `τ`, for the
+/// report's `timing` list (rule 21). O(loops × (functions + call edges + operations)).
+pub(crate) fn deadline_timing(
+    env: &Env<'_>,
+    findings: &Findings,
+    report: &mut Report<'_>,
+) -> Vec<(&'static str, String, Span, Label)> {
+    if findings.deadline_loops.is_empty() {
+        return Vec::new();
+    }
+    let concurrent = super::timing::concurrent_functions(findings);
+    let mut loops: Vec<&super::DeadlineLoop> = findings.deadline_loops.iter().collect();
+    loops.sort_by_key(|site| (site.span.file, site.span.start));
+    let mut sites = Vec::new();
+    for site in loops {
+        let timing = super::timing::timing(
+            env,
+            findings,
+            &site.seed,
+            site.function,
+            super::timing::HostHandlers::All,
+            &concurrent,
+        );
+        let function = site
+            .function
+            .and_then(|id| env.functions.get(id))
+            .map(|def| {
+                let module = env.modules.get(def.module).map_or("", |m| m.path.as_str());
+                format!("{module}.{}", def.name)
+            })
+            .unwrap_or_default();
+        // The interruptible operations the body can reach (rule 12): those of the host's
+        // `Http`.
+        let interrupted = timing.ops.iter().find_map(|(cap, op)| {
+            let capability = env.capabilities.get(*cap)?;
+            if capability.module != env.prelude || capability.name != "Http" {
+                return None;
+            }
+            let def = capability.ops.iter().find(|d| d.name == *op)?;
+            let bound = def.accepts.clone().unwrap_or_else(Label::public);
+            (!timing.label.flows_to(&bound)).then(|| (format!("Http.{op}"), bound))
+        });
+        if let Some((op, bound)) = interrupted {
+            let tau = &timing.label;
+            let culprit = timing.culprit(&bound);
+            let mut diagnostic = report.make(
+                Code::U4001,
+                site.span,
+                format!(
+                    "the deadline of this `for ever within` can make `{op}` fail with `TimedOut`, and whether it does depends on {culprit}, labeled above the `{bound}` that the failure of `{op}` carries; the body's timing label is `{tau}`"
+                ),
+            );
+            diagnostic.repairs.push(Report::advice(format!(
+                "move the work on data above `{bound}` out of the loop's body, or remove `within` from the loop"
+            )));
+            report.push(diagnostic);
+        }
+        sites.push(("for ever within", function, site.span, timing.label));
+    }
+    sites
 }
 
 /// U7003: each module uses `checked` at most `[escape_budget] checked_per_module` times; the

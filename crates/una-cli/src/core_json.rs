@@ -683,7 +683,13 @@ impl Writer<'_> {
                 "measure" => self.clause(measure),
                 "decreases" => self.span(*decreases),
             ),
-            LoopSource::Ever => node!(Ever),
+            LoopSource::Ever { within: None } => node!(Ever),
+            LoopSource::Ever {
+                within: Some((deadline, span)),
+            } => node!(Ever,
+                "within" => self.atom(deadline),
+                "within_span" => self.span(*span),
+            ),
         }
     }
 

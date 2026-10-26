@@ -446,13 +446,34 @@ fn http(
         body: body.as_bytes(),
         bearer: bearer.as_deref(),
     };
-    // In the body of a `for ever`, a host stop interrupts the request (ADR 0116 rule 12).
-    let sent = match crate::runtime::op_interrupt() {
-        Some(stop) => {
-            una_http::client::send_interruptible(&request, &grants, &settings, &stop.interrupt())
+    // The deadline of a `for ever within` iteration (`spec/26 §7`): past it, the request fails
+    // at once with `TimedOut`; before it, it waits no longer than the time left. In the body of
+    // a `for ever`, a host stop interrupts the request too (ADR 0116 rule 12): whichever comes
+    // first cuts the wait, in the same poll.
+    let mut settings = settings;
+    let mut cut = false;
+    if let Some(left) = crate::deadline::left()
+        && left < settings.timeout
+    {
+        settings.timeout = left;
+        cut = true;
+    }
+    let sent = if cut && settings.timeout.is_zero() {
+        Err(Error::TimedOut)
+    } else {
+        match crate::runtime::op_interrupt() {
+            Some(stop) => una_http::client::send_interruptible(
+                &request,
+                &grants,
+                &settings,
+                &stop.interrupt(),
+            ),
+            None => send(&request, &grants, &settings),
         }
-        None => send(&request, &grants, &settings),
     };
+    if cut && sent == Err(Error::TimedOut) {
+        crate::deadline::timed_out();
+    }
     match sent {
         Ok(response) => {
             let list = values::list();

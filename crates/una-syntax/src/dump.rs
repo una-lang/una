@@ -550,7 +550,11 @@ impl Dumper<'_> {
             },
             Stmt::Skip(_) => atom("skip"),
             Stmt::Ever(stmt) => {
-                let mut items = vec![atom("for-ever"), self.block(&stmt.block)];
+                let mut items = vec![atom("for-ever")];
+                if let Some(within) = &stmt.within {
+                    items.push(list("within", [self.expr(within)]));
+                }
+                items.push(self.block(&stmt.block));
                 if let Some(on_stop) = &stmt.on_stop {
                     items.push(list("on-stop", [self.block(&on_stop.block)]));
                 }

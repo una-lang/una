@@ -147,6 +147,19 @@ struct HandlerAuthorityDoc {
 #[derive(Serialize)]
 struct InformationDoc {
     policy_calls: Vec<PolicyCallDoc>,
+    /// Each site whose deadline turns timing into values, with its timing label (ADR 0116
+    /// rule 21); absent when there is none, as in every package before edition 0.4.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    timing: Vec<TimingDoc>,
+}
+
+/// A site with a deadline and its timing label (ADR 0116 rule 21).
+#[derive(Serialize)]
+struct TimingDoc {
+    construct: &'static str,
+    function: String,
+    label: String,
+    site: SiteDoc,
 }
 
 #[derive(Serialize)]
@@ -595,7 +608,22 @@ fn build(
         obligations: counts,
         authority,
         handler_authority,
-        information: InformationDoc { policy_calls },
+        information: InformationDoc {
+            policy_calls,
+            timing: analysis
+                .timing
+                .iter()
+                .map(|site| TimingDoc {
+                    construct: site.construct,
+                    function: site.function.clone(),
+                    label: site.label.to_string(),
+                    site: SiteDoc {
+                        file: site.location.file.clone(),
+                        start: site.location.start,
+                    },
+                })
+                .collect(),
+        },
         escapes,
         assumptions,
         tcb: TcbDoc {
@@ -898,6 +926,17 @@ fn human(report: &Report) -> String {
             call.site.start.col,
             una_core::quote(&call.purpose),
             call.owner
+        ));
+    }
+    for site in &report.information.timing {
+        line(format!(
+            "  timing of {} in {} at {}:{}:{}: {}",
+            site.construct,
+            site.function,
+            site.site.file,
+            site.site.start.line,
+            site.site.start.col,
+            site.label
         ));
     }
     line("escapes:".to_owned());
