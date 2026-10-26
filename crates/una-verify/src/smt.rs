@@ -185,6 +185,7 @@ pub(crate) enum FunRole {
         item: Sort,
     },
     /// A predicate; a reflect one has a definition.
+    Predicate,
     /// Any other function, without facts: nonlinear arithmetic, text ordering.
     Other,
 }
