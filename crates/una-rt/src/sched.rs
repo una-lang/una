@@ -931,7 +931,7 @@ impl Scheduler {
                 let finish: Box<dyn FnOnce() + Send> = Box::new(move || {
                     let _ = done.send(());
                 });
-                worker.push(Job::Start(stack, body, finish));
+                worker.push_at(Job::Start(stack, body, finish), false);
             }
             drop(done);
             for _ in 0..wave {
@@ -1240,7 +1240,7 @@ pub(crate) fn yield_now() {
     };
     // The worker is this thread, so it takes the job only once the task has suspended; a wake
     // that comes meanwhile adds a resume of its own, which the task's next wait ignores.
-    worker.push(Job::Resume(id));
+    worker.push_at(Job::Resume(id), false);
     drop(worker);
     una_sys::coroutine::suspend();
 }
