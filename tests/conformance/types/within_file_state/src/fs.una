@@ -1,0 +1,26 @@
+-- test: the timing labels of `within` and the file-state label of S-14 are probed together until neither rises, so a `within` that a `Files` failure's label reaches is checked with that label, and a valid program gets no internal error (ADR 0117 IF2, ADR 0085)
+-- spec: spec/27 §5
+-- expect: ok
+module fs
+
+import std.time (millisecond)
+
+next(n: Int) -> Int = n + 1
+
+pub save(q: internal Text) -> Unit
+  uses @files: Files[write]
+=
+  @files.write(q, content: "x")
+    if error use unit
+  unit
+
+pub look() -> internal Int
+  uses @files: Files[read]
+=
+  let r = attempt @files.read("a")
+  when r
+    is Ok(v) -> 1
+    is Err(e) ->
+      let x = next(1) within 10 * millisecond
+        if error use 0
+      x

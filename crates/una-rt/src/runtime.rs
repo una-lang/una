@@ -769,7 +769,7 @@ pub(crate) struct TaskTemplate {
     /// Where the block is written.
     pub(crate) location: Location,
     /// The deadline of the `for ever within` iteration that starts the block (`spec/26 §7`).
-    deadline: Option<crate::deadline::Deadline>,
+    deadline: crate::deadline::Inherited,
     /// The settings of the run's tasks, and its scheduler.
     concurrency: una_interp::Concurrency,
     pub(crate) sched: Arc<crate::sched::Scheduler>,
@@ -781,13 +781,14 @@ impl TaskTemplate {
         unshielded(&self.cancel, self.shielded)
     }
 
-    /// The bytes the template owns: its path, its cancellation entries and its location's file
-    /// (ADR 0113 rule 2, `T`).
+    /// The bytes the template owns: its path, its cancellation entries, its location's file and
+    /// its deadlines (ADR 0113 rule 2, `T`).
     pub(crate) fn owned_bytes(&self) -> usize {
         self.path
             .len()
             .saturating_add(self.location.file.len())
             .saturating_add(self.cancel.len().saturating_mul(size_of::<Cancel>()))
+            .saturating_add(self.deadline.owned_bytes())
     }
 }
 
@@ -1373,6 +1374,48 @@ fn take_state(cell: &mut Option<State>) -> Option<State> {
         hot.flags.set(0);
     });
     cell.take()
+}
+
+/// Pushes the cancellation entry of a `within` (ADR 0117 rule 5): the task's check points, and
+/// those of the tasks it starts, see it once its deadline sets it. O(1).
+pub(crate) fn push_cancel(flag: Arc<AtomicUsize>) -> usize {
+    with_state(|state| {
+        state.cancel.push((flag, 1));
+        HOT.with(|hot| hot.flags.set(state.cancel.len()));
+        state.cancel.len() - 1
+    })
+    .unwrap_or(0)
+}
+
+/// How many of the task's cancellation entries the operation in progress shields: those before
+/// it began (`spec/19 §6` rule 4).
+pub(crate) fn shielded() -> usize {
+    with_state(|state| state.shielded).unwrap_or(0)
+}
+
+/// Removes the cancellation entry `flag` of a `within` that ended. O(entries).
+pub(crate) fn pop_cancel(flag: &Arc<AtomicUsize>) {
+    with_state(|state| {
+        if let Some(at) = state
+            .cancel
+            .iter()
+            .rposition(|(count, _)| Arc::ptr_eq(count, flag))
+        {
+            state.cancel.remove(at);
+        }
+        HOT.with(|hot| hot.flags.set(state.cancel.len()));
+    });
+}
+
+/// `f` of the task's cancellation entries that the operation in progress does not shield
+/// (`spec/19 §6` rule 4); `None` without a run's state.
+pub(crate) fn unshielded_entries<R>(f: impl FnOnce(&[Cancel]) -> R) -> Option<R> {
+    with_state(|state| f(state.cancel.get(state.shielded..).unwrap_or_default()))
+}
+
+/// Whether the thread's task stops: it was cancelled, or an abort stopped it.
+pub(crate) fn task_stopping() -> bool {
+    with_state(|state| state.cancelled() || state.stopped.is_some()).unwrap_or(false)
 }
 
 /// `f` of the state of the run, when the thread runs `main`.
@@ -2250,6 +2293,27 @@ fn abort_run(state: State, code: Code, location: Location, message: String) {
 /// Reports that `main` failed with `failure`, which the caller owns and the report releases:
 /// U6001 with the failure's `public` fields (`spec/04 §8`), after the output so far.
 pub fn main_failed(failure: i64) {
+    // The word of a stopped task (`una_codegen` `STOPPED`) is no failure: `main`'s thread ends
+    // the run at an abort, and every cut is caught by its own `within`, so `main` never returns
+    // it. Should it, that is an internal error (U8001, exit code 3), never a failure of `main`.
+    debug_assert_ne!(failure, -1, "`main` returned the stop of a task");
+    if failure == -1 {
+        let state = STATE.with(|cell| take_state(&mut cell.borrow_mut()));
+        if let Some(state) = state {
+            let location = state
+                .failure
+                .as_ref()
+                .map_or_else(|| site_location(&state, usize::MAX), |f| f.location.clone());
+            abort_run(
+                state,
+                Code::U8001,
+                location,
+                "internal error: `main` returned the stop of a task, which no failure is"
+                    .to_owned(),
+            );
+        }
+        return;
+    }
     let _ = io::stdout().flush();
     let diagnostic = STATE.with(|cell| {
         let cell = cell.borrow();

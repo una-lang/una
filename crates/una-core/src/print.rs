@@ -802,6 +802,26 @@ impl Printer {
                 self.line(indent, "attempt");
                 self.expr(indent + 1, body);
             }
+            Expr::Within {
+                deadline,
+                body,
+                timeout,
+                wrap,
+                ..
+            } => {
+                let wrap = wrap
+                    .as_ref()
+                    .map_or_else(String::new, |wrap| format!(", wrap {}", wrap.name));
+                self.line(
+                    indent,
+                    &format!(
+                        "within {} (timeout {}{wrap})",
+                        print_atom(deadline),
+                        timeout.name
+                    ),
+                );
+                self.expr(indent + 1, body);
+            }
             Expr::With { cap, source, body } => {
                 let source = match source {
                     Source::Rebind(other) => other.clone(),
