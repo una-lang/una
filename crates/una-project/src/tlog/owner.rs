@@ -1080,7 +1080,7 @@ type Replayed = (History, BTreeMap<u64, (Claim, bool)>);
 /// pass (applied, or void only because its signers are compromised), the key it removes or
 /// names and that key's introduction index, and whether only that key's own signature met the
 /// revocation's requirement.
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 fn replay_once(
     owner: &str,
     source: &str,
