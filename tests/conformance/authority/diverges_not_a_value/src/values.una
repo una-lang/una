@@ -1,0 +1,18 @@
+-- test: a function that says `diverges` is not a value: naming it other than as a callee is U3028 (spec/26 §5, ADR 0116 rule 8)
+-- spec: spec/26 §5
+-- expect: error U3028 at src/values.una:17:11
+module values
+
+spin() -> Int
+  diverges
+=
+  let edit n = 0
+  for ever
+    stop when n > 3
+    n = n + 1
+  n
+
+held() -> Int
+=
+  let f = spin
+  1

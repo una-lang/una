@@ -19,6 +19,7 @@ una-core.workspace = true
 una-diag.workspace = true
 una-http.workspace = true
 una-interp.workspace = true
+una-sys.workspace = true
 
 # The workspace lints, except `unsafe_code`: ADR 0058 allows `unsafe` in one module, the
 # C ABI boundary of `ffi.rs`, which the generated code calls. `deny` lets that module opt in;
