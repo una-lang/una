@@ -813,19 +813,21 @@ type Claim = ([u8; 32], u64);
 ///
 /// **Stated thresholds, as known at logging.** The `threshold` an entry states, the current one
 /// or one within the keys after it, is checked against the state known when the entry was
-/// logged: the replay of the entries before it, with the claims they settle to, never a state
-/// that a claim logged later rewrote. A mismatch there refuses the chain; a later claim never
-/// does, and no pass that assumes a claim refuses an entry for its stated threshold. The
-/// entries up to the first claim are checked in one pass with no claim; the entries after each
-/// later revocation, against the claims the chain before that revocation settles to; those after
-/// the last one, against the chain's own.
+/// logged: the replay of the chain up to and including it, with the claims that settle to,
+/// the entry's own claim among them, never a state that a claim logged later rewrote. A
+/// mismatch there refuses the chain; a later claim never does, and no pass that assumes a claim
+/// refuses an entry for its stated threshold. The entries before the first claim are checked
+/// with no claim; those from each later revocation on, against the claims the chain up to the
+/// next revocation settles to. Where such a prefix is itself refused or does not settle, which
+/// only entries that later claims make void can cause, its entries are checked against the
+/// chain's own claims.
 ///
 /// O(P · E · K) for P passes, E entries and K keys held at once (at most 32), plus O(R²) per pass
 /// for R revocations; the keys the chain names are checked only when an entry is not signed as
 /// required after a void one. The stated thresholds add one settled replay of a prefix per
 /// revocation from the first claim on, O(S · P · E · K) for S such revocations, and nothing
 /// for a chain with no claim: a claim is retroactive, so the state known at each logging
-/// depends on the claims logged before it, and revocations are rare events of a chain.
+/// depends on the claims logged up to it, and revocations are rare events of a chain.
 pub fn replay(
     owner: &str,
     source: &str,
@@ -855,51 +857,54 @@ pub fn replay(
             0..entries.len(),
         );
     };
-    // Up to the first claim, no claim was known: one pass checks those entries.
-    let known = BTreeMap::new();
-    let through = entries.get(..=first_claim).unwrap_or(entries);
-    replay_once(
-        owner,
-        source,
-        through,
-        log,
-        &known,
-        &mut effects,
-        effect,
-        &(0..first_claim + 1),
-    )?;
-    // Between two revocations, the claims known at each entry's logging are those its prefix
-    // settles to: the revocations before it, each standing or not by the entries before it.
-    let mut from = first_claim + 1;
-    for &at in revocations.iter().filter(|at| **at > first_claim) {
-        let before = entries.get(..at).unwrap_or(entries);
-        let known = settle(owner, source, before, log, &mut effects, effect, 0..0)?;
-        let through = entries.get(..=at).unwrap_or(entries);
-        replay_once(
-            owner,
-            source,
-            through,
-            log,
-            &known.compromised,
-            &mut effects,
-            effect,
-            &(from..at + 1),
-        )?;
-        from = at + 1;
-    }
-    // After the last revocation, the claims known are the chain's own, settled.
+    // The chain's own claims, settled: its history, whatever each entry's stated threshold.
     let history = settle(owner, source, entries, log, &mut effects, effect, 0..0)?;
-    if from < entries.len() {
-        replay_once(
-            owner,
-            source,
-            entries,
-            log,
-            &history.compromised,
-            &mut effects,
-            effect,
-            &(from..entries.len()),
-        )?;
+    // The entries before the first claim were logged with no claim known; from each later
+    // revocation on, the entries were logged with the claims that the chain up to and including
+    // them settles to, the same up to the next revocation. Each such group is checked against
+    // its own prefix, settled.
+    let mut starts = vec![0];
+    starts.extend(revocations.iter().copied().filter(|at| *at >= first_claim));
+    for (k, &from) in starts.iter().enumerate() {
+        let to = starts.get(k + 1).copied().unwrap_or(entries.len());
+        if from >= to {
+            continue;
+        }
+        let prefix = entries.get(..to).unwrap_or(entries);
+        let known = if to == entries.len() {
+            Ok(history.clone())
+        } else {
+            settle(owner, source, prefix, log, &mut effects, effect, 0..0)
+        };
+        match known {
+            Ok(known) => {
+                replay_once(
+                    owner,
+                    source,
+                    prefix,
+                    log,
+                    &known.compromised,
+                    &mut effects,
+                    effect,
+                    &(from..to),
+                )?;
+            }
+            // A prefix that the replay refuses or that does not settle holds entries that only
+            // later claims make void (a registry logged what it must not): its entries' stated
+            // thresholds are checked against the chain's own claims instead.
+            Err(_) => {
+                replay_once(
+                    owner,
+                    source,
+                    entries,
+                    log,
+                    &history.compromised,
+                    &mut effects,
+                    effect,
+                    &(from..to),
+                )?;
+            }
+        }
     }
     Ok(history)
 }
