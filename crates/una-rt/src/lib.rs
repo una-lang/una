@@ -18,6 +18,7 @@ use std::alloc::System;
 
 use cap::Cap;
 
+pub mod deadline;
 pub mod decimal;
 #[allow(unsafe_code)]
 pub mod ffi;
@@ -26,6 +27,7 @@ pub mod host;
 mod json;
 pub mod render;
 pub mod runtime;
+mod sched;
 pub mod tasks;
 pub mod values;
 

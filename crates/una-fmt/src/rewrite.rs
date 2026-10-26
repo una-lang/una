@@ -563,6 +563,21 @@ impl Collector<'_> {
                 }
             }
             Stmt::Skip(_) => {}
+            Stmt::Until(stmt) => {
+                self.expr(&stmt.condition);
+                self.expr(&stmt.measure);
+                self.block(&stmt.block);
+            }
+            Stmt::Ever(stmt) => {
+                if let Some(within) = &stmt.within {
+                    self.expr(within);
+                }
+                self.block(&stmt.block);
+                if let Some(on_stop) = &stmt.on_stop {
+                    self.block(&on_stop.block);
+                }
+            }
+            Stmt::OnStop(on_stop) => self.block(&on_stop.block),
         }
     }
 
