@@ -1270,3 +1270,19 @@ A recovery, a dispute or a `cancel` logged while a resetting request waits is ne
 - A thief's self-claim, signed with the stolen key alone or with keys that key added after the theft, never reaches back before its own index, so it never voids what the owner's keys signed before it, and the owner's claim stands.
 - `spec/30 §14` rule 5 states this as normative text.
 
+## Amendment 12 (2026-10-26): `publish to` names a workspace source
+
+- Status: Accepted, recorded under the project's delegation.
+
+**Context.** `spec/30 §2` rule 4 required `publish to` to name `itaty` or a source of the package's own `sources` section. Rule 43 refuses to publish a package with a `sources` section, and `spec/30 §15` rule 1 takes a source other than `itaty` from the `sources` of the nearest workspace whose `itaty.una` lists the package as a member. The two rules contradict each other: a package published to a private source failed its own manifest check (U7008), so it could not be published, and the archive of one already logged failed the check of its code at fetch, which allows U7008 only for registry needs, and at `una check`.
+
+**Decision.**
+1. `publish to` names `itaty` or a source name that `sources` could declare, never `path`, `git` or `workspace`; any other name is U7008 at the line, as before. Reading `ita.una` does not look the source up.
+2. `una ita publish` and `una ita yank` look it up when they run, before anything is built or sent: `itaty`, or a source that the `sources` of the nearest workspace listing the package as a member declares. A source no such workspace declares, a workspace that does not declare it, and a workspace file that cannot be read are refused (U7013), each by its kind, never by a message; nothing is sent.
+3. The `ita.una` of a published archive, read at fetch or by `una check`, therefore accepts its `publish to` line. No other diagnostic is relaxed: rule 43's refusals and the archive check's allowances are unchanged.
+
+**Checks.** The manifest tests accept `publish to acme` without `sources` and refuse `path`, `git` and `workspace`. The client's lookup is tested for each kind of refusal. `una ita publish` and `una ita yank` refuse a source the workspace does not declare. A release published to a private source is locked, fetched, yanked and audited end to end.
+
+**Consequences.**
+- A package names its private source in its own `ita.una`; the declaration of that source, its URL and its root's pin, lives in the workspace, where the publisher's other packages find it too.
+- `spec/30 §2` rule 4 states this as normative text.
