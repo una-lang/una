@@ -1902,7 +1902,11 @@ fn registry(line: &Line, errors: &mut Vec<Error>) -> Option<LockRegistry> {
                     Ok(index) if index.value >= size => {
                         errors.push(Error::new(
                             index.range.clone(),
-                            "a consented log index is below the registry's checkpoint size",
+                            format!(
+                                "the {} index {} is not below the registry's checkpoint size {size}",
+                                if effect { "effect" } else { "accepted" },
+                                index.value
+                            ),
                         ));
                         bad = true;
                     }
