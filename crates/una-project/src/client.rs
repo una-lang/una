@@ -57,7 +57,7 @@ use crate::resolve::{self, Identity, Index, Need, Offline, Release};
 use crate::tlog::map::{self, Head, Link};
 use crate::tlog::merkle::{self, Hash};
 use crate::tlog::note::{self, Checkpoint, Key, Note};
-use crate::tlog::owner::{self, History, ReplayError, Standing, Unsettled};
+use crate::tlog::owner::{self, History, ReplayError, Standing, TooManyClaims, Unsettled};
 use crate::tlog::release::{self, Statement};
 use crate::tlog::root::{self, Root};
 use crate::tlog::tile::Tiles;
@@ -405,8 +405,12 @@ pub struct Floors<'f> {
 /// included, since two mirrors can be one party: they never assert the registry's fault.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Misbehavior {
-    /// An owner chain that does not settle within the pass cap: the registry's misbehavior.
+    /// An owner chain, or a prefix of it, that does not settle within the pass cap: the
+    /// registry's misbehavior.
     Unsettled(Unsettled),
+    /// An owner chain that holds more claims of compromise than [`owner::MAX_CLAIMS`]: the
+    /// registry's misbehavior.
+    TooManyClaims(TooManyClaims),
     /// A request whose deadline checkpoint no place serves: the first checkpoint at or after
     /// its seven-day target with the witness threshold of cosignatures, which a registry
     /// MUST keep, so the request's effect cannot be decided. Evidence from an absence.
@@ -1796,6 +1800,13 @@ impl<'t> Registry<'t> {
                 };
                 owner::replay(owner_name, &source, &logged, &log, &mut effect)
             };
+            // An effect that could not be read: the owner's keys are unavailable here, with the
+            // omission the read recorded, never a verdict on its chain.
+            if let Err(ReplayError::Effect(why)) = &replayed {
+                self.failure
+                    .set(Some(effect_failure.unwrap_or(Failure::Unserved)));
+                return Err(format!("the registry `{source}`: {}", shown(why)));
+            }
             // The timing no place can withhold: each recovery, dispute and co-signer change at
             // the earliest position its seven days could allow. When the owner's verdict depends
             // on which, a place may be withholding cosignatures: unavailable, never decided.
@@ -1814,12 +1825,17 @@ impl<'t> Registry<'t> {
             let eager = if eager_needed {
                 let mut effect = |index: u64| self.earliest_effect(index);
                 let eager = owner::replay(owner_name, &source, &logged, &log, &mut effect);
+                if let Err(ReplayError::Effect(why)) = &eager {
+                    let kind = self.failure.get().unwrap_or(Failure::Unserved);
+                    self.failure.set(Some(kind));
+                    return Err(format!("the registry `{source}`: {}", shown(why)));
+                }
                 Some(eager)
             } else {
                 None
             };
             let withheld = match (&replayed, &eager) {
-                (Err(ReplayError::Unsettled(_)), _) => false,
+                (Err(ReplayError::Unsettled(_) | ReplayError::TooManyClaims(_)), _) => false,
                 (Ok(_), Some(Err(_))) | (Err(_), Some(Ok(_))) => true,
                 // Both settle but differ: the owner's keys, its requests or the positions their
                 // effects govern from depend on cosignatures a place may withhold, and a lock's
@@ -1858,11 +1874,32 @@ impl<'t> Registry<'t> {
                 self.eager.insert(owner_name.to_owned(), eager);
             }
             match replayed {
-                Ok(history) => history,
+                Ok(history) => {
+                    for unsettled in &history.unsettled_prefixes {
+                        self.evidence(Misbehavior::Unsettled(unsettled.clone()));
+                    }
+                    history
+                }
                 Err(ReplayError::Refused(why)) => {
-                    self.failure
-                        .set(Some(effect_failure.unwrap_or(Failure::Refused)));
+                    self.failure.set(Some(Failure::Refused));
                     return Err(format!("the registry `{source}`: {}", shown(&why)));
+                }
+                Err(ReplayError::Effect(why)) => {
+                    self.failure
+                        .set(Some(effect_failure.unwrap_or(Failure::Unserved)));
+                    return Err(format!("the registry `{source}`: {}", shown(&why)));
+                }
+                Err(ReplayError::TooManyClaims(too)) => {
+                    let message = format!(
+                        "the registry `{source}` logged more claims of compromise in the chain of `{}` than the {} a registry may log, which is registry misbehavior: {} of them, the first past the cap at the log index {}",
+                        shown(&too.owner),
+                        owner::MAX_CLAIMS,
+                        too.claims,
+                        too.index
+                    );
+                    self.evidence(Misbehavior::TooManyClaims(too));
+                    self.failure.set(Some(Failure::Refused));
+                    return Err(message);
                 }
                 Err(ReplayError::Unsettled(unsettled)) => {
                     let message = format!(

@@ -2139,6 +2139,46 @@ fn a_later_claim_never_refuses_an_earlier_stated_threshold() {
     assert!(!releases[0].compromised);
 }
 
+/// Each entry is checked as known at its own logging, not as the group of entries logged with
+/// the same claims: the overruling of [`a_later_claim_never_refuses_an_earlier_stated_threshold`]
+/// is checked at its logging though, after it and before the owner's claim, the registry logged
+/// the thief's addition signed by `A`, no longer a key there, which the claim later voids. The
+/// owner's chain stands.
+#[test]
+fn an_entry_refused_later_in_its_group_leaves_the_earlier_ones_checked_at_logging() {
+    let a = keypair(60, "acme.a");
+    let b = keypair(61, "acme.b");
+    let r = keypair(63, "acme.r");
+    let t = keypair(66, "acme.t");
+    let x = keypair(70, "trustee.x");
+    let mut registry = TestRegistry::new("acme");
+    registry.register_keys("acme", &[&a, &b], 2, &[&x], 1);
+    registry.checkpoint(NOW - 31 * DAY);
+    let recovery = registry.recover("acme", "recover", &r.1, &[&x]);
+    registry.checkpoint(NOW - 30 * DAY);
+    let cancel = registry.owner_event("acme", &format!("cancel {recovery}"), 2, &[&a]);
+    registry.checkpoint(NOW - 24 * DAY);
+    registry.append("other", "filler");
+    let deadline = registry.checkpoint(NOW - 22 * DAY);
+    let overrule = registry.owner_event("acme", &format!("overrule {cancel}"), 2, &[&x]);
+    assert_eq!(overrule, deadline);
+    registry.checkpoint(NOW - 21 * DAY);
+    let added = registry.owner_event("acme", &format!("add {}", key_text(&t.1)), 1, &[&a, &t]);
+    registry.owner_event("acme", "revoke acme.a since 0", 1, &[&r]);
+    registry.release("acme/ledger", "0.3.1", "none", "none", &[&r]);
+    registry.checkpoint(NOW);
+    let memory = Memory {
+        files: registry.files.clone(),
+    };
+    let mut client = open(&memory, &registry).unwrap();
+    let history = client.history("acme").unwrap();
+    assert!(history.voided.contains(&cancel) && history.voided.contains(&added));
+    assert_eq!(history.took_effect.get(&recovery), Some(&deadline));
+    assert_eq!(history.snapshots.last().unwrap().keys, vec![r.1.clone()]);
+    let releases = client.releases("acme/ledger").unwrap();
+    assert!(!releases[0].compromised);
+}
+
 /// Once the cosigners overruled a cancellation of a recovery, a later cancellation by an owner
 /// key does not count, and the recovery takes effect at its seven days.
 #[test]

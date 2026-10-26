@@ -2129,3 +2129,64 @@ fn owner_replay_holds_its_contract_to_depth_five() {
         stats.mutual_claims, stats.delay_refusals
     );
 }
+
+/// A chain of `claims` claims of compromise and `fillers` other entries: `A` and `B` registered,
+/// `B` claims `A` since 0, then claims it again, a former key, among cancellations of nothing.
+fn claims_chain(keys: &Keys, claims: usize, fillers: usize) -> Result<History, ReplayError> {
+    let mut steps = vec![Step::owner(
+        Act::Register {
+            keys: vec![K::A, K::B],
+            threshold: 1,
+            cosigners: None,
+        },
+        vec![K::A, K::B],
+        0,
+    )];
+    let every = fillers / claims.max(1) + 1;
+    let (mut made, mut filled) = (0, 0);
+    while made < claims || filled < fillers {
+        if made < claims && (filled >= fillers || filled % every == 0) {
+            steps.push(Step::owner(Act::Revoke(K::A, 1, Some(0)), vec![K::B], 0));
+            made += 1;
+        }
+        if filled < fillers {
+            steps.push(Step::owner(Act::Cancel(1 << 40, 1), vec![K::B], 0));
+            filled += 1;
+        }
+    }
+    run(keys, &build(keys, &steps, false, false, false))
+}
+
+/// The work of a replay, every check of every pass of every prefix counted, grows linearly with
+/// the chain at the cap of claims, and the claims are bounded: a chain past [`MAX_CLAIMS`] is
+/// refused as the registry's misbehavior.
+#[test]
+fn replay_work_is_bounded_by_the_cap_of_claims() {
+    use super::{MAX_CLAIMS, TooManyClaims};
+    let keys = Keys::new();
+    set_modeled(true);
+    let checks = |claims: usize, fillers: usize| -> u64 {
+        claims_chain(&keys, claims, fillers)
+            .expect("a chain within the cap")
+            .checks
+    };
+    // At the cap, the chain's length grows fourfold twice: the work at most about fourfold.
+    let sizes = [200usize, 800, 3200];
+    let work: Vec<u64> = sizes.iter().map(|n| checks(MAX_CLAIMS, *n)).collect();
+    println!("checks at {MAX_CLAIMS} claims for {sizes:?} other entries: {work:?}");
+    for pair in work.windows(2) {
+        assert!(pair[1] <= pair[0] * 5, "{work:?}");
+    }
+    // At a fixed length, fourfold the claims: the work at most about fourfold.
+    let by_claims: Vec<u64> = [16usize, 64].iter().map(|c| checks(*c, 800)).collect();
+    println!("checks at 800 other entries for 16 and 64 claims: {by_claims:?}");
+    assert!(by_claims[1] <= by_claims[0] * 6, "{by_claims:?}");
+    // One claim more than the cap: refused, naming the first past it.
+    match claims_chain(&keys, MAX_CLAIMS + 1, 10) {
+        Err(ReplayError::TooManyClaims(TooManyClaims { claims, .. })) => {
+            assert_eq!(claims, MAX_CLAIMS + 1);
+        }
+        other => panic!("{:?}", other.map(|h| h.checks)),
+    }
+    set_modeled(false);
+}
