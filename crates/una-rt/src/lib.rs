@@ -27,6 +27,7 @@ pub mod host;
 mod json;
 pub mod render;
 pub mod runtime;
+mod sched;
 pub mod tasks;
 pub mod values;
 

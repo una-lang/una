@@ -50,6 +50,8 @@ pub(crate) struct RunOptions<'a> {
     pub(crate) grants: &'a [String],
     /// `--max-depth`.
     pub(crate) max_depth: usize,
+    /// `--workers`, `--task-depth`, `--io-threads` and `--file-threads`, as given.
+    pub(crate) tasks: TaskFlags,
     /// `--max-memory`, in MiB.
     pub(crate) max_memory: usize,
     /// `--max-response` and `--http-timeout` (`spec/24 §4`).
@@ -74,6 +76,30 @@ pub(crate) struct RunOptions<'a> {
     pub(crate) deadline: Option<u64>,
     /// `--stop-grace`: the seconds from the first host stop request to the hard stop (rule 16).
     pub(crate) stop_grace: u64,
+}
+
+/// The flags of tasks as given on the command line, each `None` when absent (ADR 0117).
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct TaskFlags {
+    pub(crate) workers: Option<usize>,
+    pub(crate) task_depth: Option<usize>,
+    pub(crate) io_threads: Option<usize>,
+    pub(crate) file_threads: Option<usize>,
+}
+
+impl TaskFlags {
+    /// The checked settings for a run of `max_depth`, or the message of the usage error. The
+    /// interpreter runs no coroutine before `first of` and `start` (ADR 0117 rule 11), so it
+    /// only checks them, and refuses what the executable refuses.
+    fn check(self, max_depth: usize) -> Result<una_interp::Concurrency, String> {
+        una_interp::Concurrency::from_flags(
+            max_depth,
+            self.workers,
+            self.task_depth,
+            self.io_threads,
+            self.file_threads,
+        )
+    }
 }
 
 /// The world of `una run`: printed lines go to the thread that writes stdout, environment
@@ -306,6 +332,10 @@ pub(crate) fn run_command(
         )?;
         return Ok(ExitStatus::Usage);
     };
+    if let Err(message) = options.tasks.check(options.max_depth) {
+        writeln!(stderr, "error: {message}")?;
+        return Ok(ExitStatus::Usage);
+    }
     // ADR 0116 rule 18: a run that can reach a `for ever` or runs a driver installs the
     // handlers of SIGINT and SIGTERM; any other keeps their default actions.
     // The run's host stop state is made first, so a signal that comes while the handlers are
@@ -814,6 +844,10 @@ pub(crate) fn test_command(
         )?;
         return Ok(ExitStatus::Usage);
     };
+    if let Err(message) = options.tasks.check(options.max_depth) {
+        writeln!(stderr, "error: {message}")?;
+        return Ok(ExitStatus::Usage);
+    }
     // `una test` runs the examples of the root's modules only: a dependency's examples are
     // checked as its own, and never run with the root's authority (ADR 0122 rule 52).
     let mounts = crate::package::project(&package).0.mounts;

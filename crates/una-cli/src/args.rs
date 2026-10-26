@@ -180,6 +180,22 @@ pub(crate) enum Command {
         #[arg(long, value_name = "SECONDS", default_value_t = 30, value_parser = http_timeout)]
         http_timeout: u64,
 
+        /// The threads that run tasks, from 1 to 1024; by default one per core (ADR 0117)
+        #[arg(long, value_name = "N", value_parser = task_number)]
+        workers: Option<usize>,
+
+        /// The depth limit of the tasks of `first of` and `start`, from 1 to --max-depth; by default 1000 (ADR 0117)
+        #[arg(long, value_name = "N", value_parser = task_number)]
+        task_depth: Option<usize>,
+
+        /// The helper threads of `Http`, from 1 to 4096; by default 64 (ADR 0117)
+        #[arg(long, value_name = "N", value_parser = task_number)]
+        io_threads: Option<usize>,
+
+        /// The helper threads of `Files` and `Console`, from 1 to 256; by default 4 (ADR 0117)
+        #[arg(long, value_name = "N", value_parser = task_number)]
+        file_threads: Option<usize>,
+
         /// Stop a solver query after this many seconds; the obligation is then unknown
         #[arg(long, value_name = "SECONDS", default_value_t = 60)]
         solver_wallclock: u64,
@@ -228,6 +244,22 @@ pub(crate) enum Command {
         /// The memory a run may hold, in MiB
         #[arg(long, value_name = "MIB", default_value_t = una_interp::DEFAULT_MAX_MEMORY, value_parser = memory_budget)]
         max_memory: usize,
+
+        /// The threads that run tasks, from 1 to 1024; by default one per core (ADR 0117)
+        #[arg(long, value_name = "N", value_parser = task_number)]
+        workers: Option<usize>,
+
+        /// The depth limit of the tasks of `first of` and `start`, from 1 to --max-depth; by default 1000 (ADR 0117)
+        #[arg(long, value_name = "N", value_parser = task_number)]
+        task_depth: Option<usize>,
+
+        /// The helper threads of `Http`, from 1 to 4096; by default 64 (ADR 0117)
+        #[arg(long, value_name = "N", value_parser = task_number)]
+        io_threads: Option<usize>,
+
+        /// The helper threads of `Files` and `Console`, from 1 to 256; by default 4 (ADR 0117)
+        #[arg(long, value_name = "N", value_parser = task_number)]
+        file_threads: Option<usize>,
 
         /// Stop a solver query after this many seconds; the obligation is then unknown
         #[arg(long, value_name = "SECONDS", default_value_t = 60)]
@@ -331,6 +363,12 @@ fn http_timeout(text: &str) -> Result<u64, String> {
         ));
     }
     Ok(n)
+}
+
+/// A value of `--workers`, `--task-depth`, `--io-threads` or `--file-threads`: a whole number;
+/// its range is checked with the other flags (`una_interp::Concurrency`, ADR 0117).
+fn task_number(text: &str) -> Result<usize, String> {
+    text.parse::<usize>().map_err(|error| error.to_string())
 }
 
 /// A value of `--max-memory`: a whole number of MiB, at least 1, since no run fits in 0 MiB

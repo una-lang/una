@@ -68,6 +68,26 @@ pub(crate) fn thread_allocated() -> usize {
     THREAD_ALLOCATED.with(std::cell::Cell::get)
 }
 
+#[cfg(test)]
+std::thread_local! {
+    /// What a test lambda holds on its task until the task ends: a stand-in for memory the task
+    /// keeps, which `sched` swaps and drops with the task's other thread-locals.
+    pub(crate) static FILLER: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Exchanges the thread's [`FILLER`] with a parked task's, in tests.
+#[cfg(test)]
+pub(crate) fn swap_filler(filler: &mut Vec<u8>) {
+    FILLER.with(|cell| std::mem::swap(&mut *cell.borrow_mut(), filler));
+}
+
+/// Exchanges the thread's count of allocated bytes with a parked task's (`sched`), so that each
+/// task's count is its own, as on a thread of its own.
+#[cfg(debug_assertions)]
+pub(crate) fn swap_thread_allocated(allocated: &mut usize) {
+    *allocated = THREAD_ALLOCATED.with(|cell| cell.replace(*allocated));
+}
+
 // SAFETY: every method forwards to `Cap<System>`, a `GlobalAlloc`, with the caller's arguments
 // unchanged, so each keeps the contract the caller met for it; the wrapper only reads counters
 // after the inner call returns, and allocates nothing itself.
@@ -2059,10 +2079,7 @@ mod tests {
         assert_eq!(tasks, ["1", "2 cancelled"]);
     }
 
-    std::thread_local! {
-        /// What [`fills_after_cancel`] holds on its thread until the thread ends.
-        static FILLER: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
-    }
+    use super::FILLER;
 
     /// A lambda with one parameter that records one event, says it started, waits until its
     /// task is cancelled, then holds all but 4 bytes of what the budget leaves until its thread

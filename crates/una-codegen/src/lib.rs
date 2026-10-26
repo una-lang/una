@@ -114,6 +114,9 @@ pub struct Described<'a> {
     pub ops: &'a [serde_json::Value],
     /// The type of `main`'s failures, when it can fail.
     pub failure: Option<usize>,
+    /// Whether the compiled code holds a task construct or a `for ever`, so the runtime starts
+    /// its workers and helper pools before `main` (ADR 0116 amendment, P8; #1145).
+    pub threads: bool,
 }
 
 /// The object file of the program: `main` of module `entry` and the functions it reaches,
@@ -205,6 +208,7 @@ fn compile_start(
         types: emitter.types.shapes(),
         ops: &emitter.ops,
         failure,
+        threads: emitter.threads,
     });
     match loop_functions {
         None => emitter.entry(main_id.id, main, &meta)?,
@@ -502,6 +506,8 @@ struct Emitter<'p> {
     types: describe::Types<'p>,
     /// The operations, by the index passed to `una_rt_event`.
     ops: Vec<serde_json::Value>,
+    /// Whether a task construct or a `for ever` was compiled ([`Described::threads`]).
+    threads: bool,
 }
 
 impl<'p> Emitter<'p> {
@@ -534,6 +540,7 @@ impl<'p> Emitter<'p> {
             sites: Vec::new(),
             types: describe::Types::new(program),
             ops: Vec::new(),
+            threads: false,
         })
     }
 
