@@ -1114,9 +1114,13 @@ impl<'p, 'w> Machine<'p, 'w> {
                     state,
                     init,
                     body,
+                    on_stop,
                     span,
                 } => {
                     let mut current = self.atoms(env, init)?;
+                    // `on stop` runs after a failure of the body with the state from before
+                    // the loop (ADR 0116 rule 10).
+                    let before = on_stop.as_ref().map(|_| current.clone());
                     // The next iterations read the bindings the body reads, but for the item,
                     // the state and the binders of the body, which each iteration binds anew
                     // before reading them: Core binders are unique (#261).
@@ -1145,8 +1149,21 @@ impl<'p, 'w> Machine<'p, 'w> {
                         current,
                     );
                     self.later.pop();
-                    current = result?;
-                    return Ok(Value::Tuple(Rc::new(current)));
+                    let Some(on_stop) = on_stop else {
+                        current = result?;
+                        return Ok(Value::Tuple(Rc::new(current)));
+                    };
+                    return match result {
+                        Ok(last) => {
+                            let last = self.on_stop(env, &caps, on_stop, last)?;
+                            Ok(Value::Tuple(Rc::new(last)))
+                        }
+                        Err(Stop::Fail(failure)) => {
+                            self.on_stop(env, &caps, on_stop, before.unwrap_or_default())?;
+                            Err(Stop::Fail(failure))
+                        }
+                        Err(other) => Err(other),
+                    };
                 }
                 // The tasks of a `together` block (`spec/19 §6`), run one after another in
                 // branch order, the sequential schedule: a failure stops the block before
@@ -1371,6 +1388,16 @@ impl<'p, 'w> Machine<'p, 'w> {
         mut current: Vec<Value<'p>>,
     ) -> Result<Vec<Value<'p>>, Stop<'p>> {
         match source {
+            // `ever`: until `stop` or a failure (`spec/26 §5`).
+            LoopSource::Ever => loop {
+                self.within_budget(span)?;
+                let stopped;
+                (current, stopped) =
+                    self.iteration(env, caps, var, state, current, &Value::Unit, body)?;
+                if stopped {
+                    break;
+                }
+            },
             // `until(c)`: `c` with the state bound, before each iteration (`spec/26 §4`).
             LoopSource::Until { cond, .. } => loop {
                 self.within_budget(span)?;
@@ -1446,6 +1473,27 @@ impl<'p, 'w> Machine<'p, 'w> {
         Ok(current)
     }
 
+    /// The `on stop` block of a loop with the state `current` bound; returns the state it gives
+    /// (`spec/26 §5`).
+    fn on_stop(
+        &mut self,
+        env: &mut Env<'p>,
+        caps: &Caps<'p>,
+        on_stop: &'p una_core::OnStop,
+        current: Vec<Value<'p>>,
+    ) -> Result<Vec<Value<'p>>, Stop<'p>> {
+        let mark = env.len();
+        for ((name, _), value) in on_stop.state.iter().zip(current) {
+            env.push((name.as_str(), value));
+        }
+        let result = self.eval(env, caps, &on_stop.body);
+        env.truncate(mark);
+        match result? {
+            Value::Tuple(items) if items.len() == on_stop.state.len() => Ok(items.as_ref().clone()),
+            _ => Err(fault("an `on stop` block whose value is not its state")),
+        }
+    }
+
     /// One iteration of a loop: the body with the loop variable and the current state bound;
     /// returns the new state, and whether a `stop` ended the loop (`spec/26 §3`).
     #[allow(clippy::too_many_arguments)]
@@ -1506,7 +1554,9 @@ impl<'p, 'w> Machine<'p, 'w> {
                 Value::List(items) => Ok(items.as_ref().clone()),
                 _ => Err(fault("a `together for` over a value that is not a list")),
             },
-            LoopSource::Until { .. } => Err(fault("a `together for` with an `until` source")),
+            LoopSource::Until { .. } | LoopSource::Ever => {
+                Err(fault("a `together for` with an `until` or `ever` source"))
+            }
             LoopSource::Range {
                 low,
                 high,

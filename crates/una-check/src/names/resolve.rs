@@ -472,7 +472,7 @@ impl<'a> Resolver<'_, '_, 'a> {
                         ClauseKind::Uses(uses) => self.cap_type(&uses.cap_type),
                         ClauseKind::Fails(kind) => self.lookup(kind, Space::Upper, "error kind"),
                         // A parameter, which the type checker resolves (ADR 0062).
-                        ClauseKind::UsesOf(_) | ClauseKind::FailsOf(_) => {}
+                        ClauseKind::UsesOf(_) | ClauseKind::FailsOf(_) | ClauseKind::Diverges => {}
                         ClauseKind::DerivedFrom(requirements) => {
                             for requirement in requirements {
                                 self.requirement(requirement);
@@ -674,6 +674,13 @@ impl<'a> Resolver<'_, '_, 'a> {
                 self.expr(&stmt.measure);
                 self.block(&stmt.block);
             }
+            Stmt::Ever(stmt) => {
+                self.block(&stmt.block);
+                if let Some(on_stop) = &stmt.on_stop {
+                    self.block(&on_stop.block);
+                }
+            }
+            Stmt::OnStop(on_stop) => self.block(&on_stop.block),
         }
     }
 

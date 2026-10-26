@@ -424,6 +424,8 @@ pub enum ClauseKind {
     FailsOf(Ident),
     /// `derived from upper_ident { "," upper_ident }`.
     DerivedFrom(Vec<Ident>),
+    /// `diverges`, in edition 0.4: the function may run forever (`spec/26 §5`).
+    Diverges,
 }
 
 /// A body: a single line, or an indented block.
@@ -659,6 +661,33 @@ pub enum Stmt {
     Skip(Span),
     /// `for until c decreases m` with a block, in edition 0.4 (`spec/26 §4`).
     Until(Box<UntilStmt>),
+    /// `for ever` with a block and an optional `on stop`, in edition 0.4 (`spec/26 §5`).
+    Ever(Box<EverStmt>),
+    /// `on stop` with a block that follows a loop other than `for ever`, which U2034 reports
+    /// (`spec/26 §5`).
+    OnStop(Box<OnStop>),
+}
+
+/// `"for" "ever" NEWLINE INDENT block DEDENT [ on_stop ]` (`spec/26 §5`, ADR 0116 rule 10).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EverStmt {
+    /// The body.
+    pub block: Block,
+    /// The `on stop` block, when there is one.
+    pub on_stop: Option<OnStop>,
+    /// The whole statement.
+    pub span: Span,
+}
+
+/// `"on" "stop" NEWLINE INDENT block DEDENT` (`spec/26 §5`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OnStop {
+    /// The block.
+    pub block: Block,
+    /// The words `on stop`.
+    pub keyword: Span,
+    /// The whole `on stop` and its block.
+    pub span: Span,
 }
 
 /// `"for" "until" line_expr "decreases" add_expr NEWLINE INDENT block DEDENT` (`spec/26 §4`,

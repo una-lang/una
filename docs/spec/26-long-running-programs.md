@@ -101,3 +101,39 @@ A program that runs until it is told to stop, such as a game loop, a server or a
    - After a `for until` whose body has no `stop` of it, and whose `c` is in the refinement language, `c` holds. After every loop, the bindings it updates are fresh at their declared types.
 5. **Information flow** (ADR 0116 IF1). The body runs under the program counter joined with the label of `c`, since how many iterations run depends on it, as a `for` over a list runs under the list's top label (`spec/17 §6` rule 3). `m` is erased.
 6. **Core** (ADR 0116 rule 20). The loop is a Core `loop` whose source is `until(c)`, with `c` an expression over the state that both engines evaluate before each iteration, its formula when it is in the refinement language, and the measure as a clause.
+
+## 5. `diverges`, `for ever` and `on stop`
+
+1. **Grammar** (ADR 0116 rule 5). In edition `0.4`:
+
+   ```ebnf
+   clause    = ... | "diverges" NEWLINE ;      (* after "fails", before "derived from" *)
+   ever_stmt = "for" "ever" NEWLINE INDENT block DEDENT [ on_stop ] ;
+   on_stop   = "on" "stop" NEWLINE INDENT block DEDENT ;
+   ```
+
+   - `diverges` is a clause word, and stays reserved elsewhere (§1 rule 2). `ever` right after `for` starts this form when `in` does not follow it, so `for ever in xs` is a loop over `xs` whose variable is `ever`. `on` stays an identifier.
+   - `on stop` after a loop other than `for ever` is U2034. `una fmt` puts `diverges` after `fails`.
+2. **`diverges`** (ADR 0116 rule 8). A function whose header says `diverges` may run forever. It is never inferred, so it shows in every header that has it, and `una contract` reports it as the key `diverges`, a `Bool`, after `fails`.
+   - **Where.** `for ever`, and a call of a function that says `diverges`, are legal only in the body of a function that says it (U3027), and not in a lambda, a `together` task, an `on stop` block or the body of a `for ever` (U3027). The functions of a driven module may not say it.
+   - **Not a value.** A function that says `diverges` is not a value: naming it other than as a callee is U3028.
+3. **`for ever`** (ADR 0116 rules 9 and 10). The body runs again and again, under the program counter of the enclosing code (IF4). The loop ends only by `stop`, by a host stop at the start of an iteration, by a failure of its body or by the cancellation of its task. Each iteration ends: its body runs no `for ever` and calls no function that says `diverges` (U3027), its other loops are bounded or proven to end (§4), and recursion is bounded by `--max-depth`.
+4. **`on stop`** (ADR 0116 rule 10). It runs once the loop has ended, in any of these ways, and sees the bindings the body updates, with their values where the loop ended. After a failure of the body, those are their values from before the loop, and the failure propagates after the block. Its statements MUST NOT fail: each fallible one is handled where it is (U3029). It runs no `for ever` and calls no function that says `diverges` (U3027), and `stop` or `skip` in it is U2034. Execution then goes on after the loop.
+
+   ```una
+   log_forever() -> Unit
+     uses @console: Console[print]
+     diverges
+   =
+     let edit n = 0
+     for ever
+       @console.print("alive {n}")
+       n = n + 1
+       stop when n == 1_000_000
+     on stop
+       @console.print("done")
+   ```
+
+5. **Verification** (ADR 0116 V3, V4). After a `for ever`, the bindings it updates are fresh at their declared types, and `on stop` is verified with them fresh. A function that says `diverges` keeps partial correctness: its `ensures` holds whenever it returns.
+6. **Core** (ADR 0116 rule 20). The loop is a Core `loop` whose source is `ever`, with its `on stop` block, which binds the state afresh and returns it as the loop's value.
+7. **Preview.** Until host stops land (ADR 0116 rule 14), a `for ever` without `stop` ends only by a failure of its body or by the process ending.

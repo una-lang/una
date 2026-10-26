@@ -686,7 +686,7 @@ fn contract_marks_inferred_clauses() {
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(
         stdout(&output),
-        "{\"schema\":\"una.contract/1\",\"function\":\"app.log.helper\",\"public\":false,\"docs\":[\"Writes a line and flushes.\"],\"header\":\"helper(line: Text) -> Int\",\"constraints\":[],\"result_labels\":[],\"of_raises\":[],\"requires\":[],\"ensures\":[],\"uses\":[{\"cap\":\"log\",\"capability\":\"Log\",\"ops\":[\"write\",\"flush\"],\"inferred\":true}],\"fails\":{\"kind\":\"LookupError\",\"inferred\":true},\"derived_from\":[]}\n"
+        "{\"schema\":\"una.contract/1\",\"function\":\"app.log.helper\",\"public\":false,\"docs\":[\"Writes a line and flushes.\"],\"header\":\"helper(line: Text) -> Int\",\"constraints\":[],\"result_labels\":[],\"of_raises\":[],\"requires\":[],\"ensures\":[],\"uses\":[{\"cap\":\"log\",\"capability\":\"Log\",\"ops\":[\"write\",\"flush\"],\"inferred\":true}],\"fails\":{\"kind\":\"LookupError\",\"inferred\":true},\"diverges\":false,\"derived_from\":[]}\n"
     );
     std::fs::remove_dir_all(&root).unwrap();
 }
@@ -865,7 +865,7 @@ fn contract_shows_written_and_inferred_constraints() {
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(
         stdout(&output),
-        "{\"schema\":\"una.contract/1\",\"function\":\"app.k.same\",\"public\":true,\"docs\":[],\"header\":\"pub same[T: Eq](a: T, b: T) -> Bool\",\"constraints\":[{\"param\":\"T\",\"constraint\":\"Eq\",\"inferred\":false}],\"result_labels\":[{\"position\":\"top\",\"from\":[\"T\"]}],\"of_raises\":[],\"requires\":[],\"ensures\":[],\"uses\":[],\"fails\":null,\"derived_from\":[]}\n"
+        "{\"schema\":\"una.contract/1\",\"function\":\"app.k.same\",\"public\":true,\"docs\":[],\"header\":\"pub same[T: Eq](a: T, b: T) -> Bool\",\"constraints\":[{\"param\":\"T\",\"constraint\":\"Eq\",\"inferred\":false}],\"result_labels\":[{\"position\":\"top\",\"from\":[\"T\"]}],\"of_raises\":[],\"requires\":[],\"ensures\":[],\"uses\":[],\"fails\":null,\"diverges\":false,\"derived_from\":[]}\n"
     );
     std::fs::remove_dir_all(&root).unwrap();
 }

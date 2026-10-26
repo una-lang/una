@@ -1580,6 +1580,19 @@ pub enum LoopSource {
         /// The word `decreases`, where the measure's obligations are reported.
         decreases: Span,
     },
+    /// `ever`: no element and no end but `stop`, a host stop at the start of an iteration, a
+    /// failure of the body or a cancellation (`spec/26 §5`). Only in a loop.
+    Ever,
+}
+
+/// The `on stop` block of a loop (`spec/26 §5`, ADR 0116 rule 20): its binders of the state,
+/// and its body, whose value is the tuple of the state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OnStop {
+    /// The binders of the state in the block.
+    pub state: Vec<(Name, Type)>,
+    /// The block.
+    pub body: Expr,
 }
 
 /// How an iteration of a loop ends (`spec/26 §3`, ADR 0116 rule 20).
@@ -1653,6 +1666,10 @@ pub enum Expr {
         init: Vec<Atom>,
         /// The body, whose value is the tuple of the new state.
         body: Box<Expr>,
+        /// The `on stop` block of a `for ever` (ADR 0116 rule 20), run once the loop has ended,
+        /// with its final state, or after a failure of the body with the state from before the
+        /// loop, which then propagates. Its value, the tuple of the state, is the loop's.
+        on_stop: Option<Box<OnStop>>,
         /// The loop in the source.
         span: Span,
     },

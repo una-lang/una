@@ -283,7 +283,9 @@ mod tests {
             | Stmt::BlockExpr(_)
             | Stmt::Stop(_)
             | Stmt::Skip(_)
-            | Stmt::Until(_) => false,
+            | Stmt::Until(_)
+            | Stmt::Ever(_)
+            | Stmt::OnStop(_) => false,
         };
         let expr = match expr {
             ExprKind::IfLine { .. }

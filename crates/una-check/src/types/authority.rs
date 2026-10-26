@@ -958,6 +958,13 @@ impl<'a> Checker<'_, 'a, '_> {
     /// `if error pass` (`spec/06 §3`): the failure passes on unchanged, so its kind must be the
     /// body's (U3008). In pass 1, it is a failure of a body whose `fails` is inferred.
     pub(crate) fn pass_clause(&mut self, span: Span, expr: &Expr) {
+        if self.in_on_stop && self.authority() {
+            self.report.error(
+                Code::U3029,
+                span,
+                "`if error pass` passes the failure on, and `on stop` must not fail; handle it with `if error use`".to_owned(),
+            );
+        }
         let mut inner = expr;
         while let ExprKind::Paren(next) = &inner.kind {
             inner = next;
@@ -1098,6 +1105,14 @@ impl<'a> Checker<'_, 'a, '_> {
     /// U3009 (`spec/06 §2`): a variant raised outside the error kind of the body, or in a body
     /// that cannot fail. `kind` is the variant's kind, when it was found.
     pub(crate) fn fail_site(&mut self, variant: &Ident, kind: Option<usize>) {
+        if self.in_on_stop && self.authority() {
+            self.report.error(
+                Code::U3029,
+                variant.span,
+                "`on stop` must not fail, since it runs once its loop has ended".to_owned(),
+            );
+            return;
+        }
         if let Some(kind) = kind {
             self.raised_fact(
                 Raised::Kind(Ty::Kind(kind, Vec::new().into())),
@@ -1222,6 +1237,17 @@ impl<'a> Checker<'_, 'a, '_> {
             );
             return;
         }
+        // ADR 0116 rule 10: an `on stop` block handles every failure where it is.
+        if fails.is_some() && !handled && self.in_on_stop {
+            self.report.error(
+                Code::U3029,
+                span,
+                format!(
+                    "{what} can fail, and `on stop` must not fail, since it runs once its loop has ended; handle the failure with `if error use`, or wrap the call in `attempt`"
+                ),
+            );
+            return;
+        }
         if let Some(kind) = fails
             && !handled
         {
@@ -1261,12 +1287,15 @@ pub(crate) fn duplicate_refs(report: &mut Report<'_>, names: &[(&str, Span)]) {
 
 /// Whether a new `uses` clause goes before a clause of this kind (`spec/02 §3`).
 fn before_uses(kind: &ClauseKind) -> bool {
-    matches!(kind, ClauseKind::Fails(_) | ClauseKind::DerivedFrom(_))
+    matches!(
+        kind,
+        ClauseKind::Fails(_) | ClauseKind::Diverges | ClauseKind::DerivedFrom(_)
+    )
 }
 
 /// Whether a new `fails` clause goes before a clause of this kind (`spec/02 §3`).
 fn before_fails(kind: &ClauseKind) -> bool {
-    matches!(kind, ClauseKind::DerivedFrom(_))
+    matches!(kind, ClauseKind::Diverges | ClauseKind::DerivedFrom(_))
 }
 
 /// Infers the `uses` and `fails` of private functions that omit them, as least fixed points
@@ -2052,7 +2081,7 @@ fn function_grants(
 
 /// U3029: `step` and `on_stop` of a `[drive]` module handle every failure they meet, since the
 /// host has no caller to give a failure to (ADR 0116 rule 2); `init` may fail. Reported at the
-/// `fails` clause.
+/// `fails` clause. And U3027: none of them says `diverges` (rule 8).
 pub(crate) fn drive_failures(env: &Env<'_>, settings: &Manifest, report: &mut Report<'_>) {
     let Some(drive) = &settings.drive else {
         return;
@@ -2092,6 +2121,31 @@ pub(crate) fn drive_failures(env: &Env<'_>, settings: &Manifest, report: &mut Re
                     "handle each failure inside `{name}`, with `if error use` or `attempt`, and remove the `fails` clause"
                 )));
                 report.push(diagnostic);
+            }
+        }
+    }
+    // ADR 0116 rule 8: none of the driven functions may say `diverges` (U3027).
+    for name in ["init", "step", "on_stop"] {
+        let Some(Entity::Function(id)) = env
+            .modules
+            .get(module)
+            .and_then(|m| m.lower.get(name).copied())
+        else {
+            continue;
+        };
+        let Some(super::env::FnAst::Function(decl)) = env.functions.get(id).map(|f| f.ast) else {
+            continue;
+        };
+        for clause in &decl.clauses {
+            if matches!(clause.kind, una_syntax::ast::ClauseKind::Diverges) {
+                report.error(
+                    Code::U3027,
+                    clause.span,
+                    format!(
+                        "`{name}` of the driven module `{}` says `diverges`, but the host's loop is the only one that runs forever: each call of `{name}` must end",
+                        drive.module.value
+                    ),
+                );
             }
         }
     }

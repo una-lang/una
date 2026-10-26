@@ -167,6 +167,8 @@ pub(crate) struct LoopFrame {
     /// The program counter that a `skip` under a branch raises the rest of the body to, and
     /// the condition that raised it (IF3).
     pub(crate) skipped: Option<(Label, Option<Span>)>,
+    /// The frame is the `on stop` block of its loop, where `stop` and `skip` are U2034.
+    pub(crate) on_stop: bool,
 }
 
 /// What a normal return path must satisfy, for pending obligations.
@@ -216,6 +218,11 @@ pub(crate) struct Checker<'c, 'a, 's> {
     pub(crate) task_depth: usize,
     /// The loops whose bodies enclose the statement checked, innermost last (`spec/26 §3`).
     pub(crate) loops: Vec<LoopFrame>,
+    /// Inside an `on stop` block, whose statements must not fail (U3029, `spec/26 §5`).
+    pub(crate) in_on_stop: bool,
+    /// Inside the body of a `for ever`, which runs no `for ever` and calls no `diverges`
+    /// function (U3027, `spec/26 §5`).
+    pub(crate) in_ever: bool,
     /// The `stop` and `skip` statements reported as U2034, after which no U2040 is reported.
     pub(crate) misplaced_exits: Vec<Span>,
     /// The receiver of the method call being checked, with its call-site marker, for its
@@ -490,6 +497,8 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             task_depth: 0,
             loops: Vec::new(),
             misplaced_exits: Vec::new(),
+            in_on_stop: false,
+            in_ever: false,
             call_targets: BTreeMap::new(),
             operands: Vec::new(),
             needs_fields: Vec::new(),
@@ -1269,6 +1278,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                 ClauseKind::Fails(_)
                 | ClauseKind::UsesOf(_)
                 | ClauseKind::FailsOf(_)
+                | ClauseKind::Diverges
                 | ClauseKind::DerivedFrom(_) => {}
             }
         }

@@ -191,6 +191,7 @@ impl Dumper<'_> {
                         ClauseKind::Fails(kind) => list("fails", [atom(self.name(kind))]),
                         ClauseKind::UsesOf(param) => list("uses-of", [atom(self.name(param))]),
                         ClauseKind::FailsOf(param) => list("fails-of", [atom(self.name(param))]),
+                        ClauseKind::Diverges => atom("diverges"),
                         ClauseKind::DerivedFrom(requirements) => list(
                             "derived-from",
                             requirements.iter().map(|id| atom(self.name(id))),
@@ -548,6 +549,14 @@ impl Dumper<'_> {
                 None => atom("stop"),
             },
             Stmt::Skip(_) => atom("skip"),
+            Stmt::Ever(stmt) => {
+                let mut items = vec![atom("for-ever"), self.block(&stmt.block)];
+                if let Some(on_stop) = &stmt.on_stop {
+                    items.push(list("on-stop", [self.block(&on_stop.block)]));
+                }
+                Node::List(items)
+            }
+            Stmt::OnStop(on_stop) => list("on-stop", [self.block(&on_stop.block)]),
             Stmt::Until(stmt) => list(
                 "for-until",
                 [

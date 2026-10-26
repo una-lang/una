@@ -683,6 +683,7 @@ impl Writer<'_> {
                 "measure" => self.clause(measure),
                 "decreases" => self.span(*decreases),
             ),
+            LoopSource::Ever => node!(Ever),
         }
     }
 
@@ -739,15 +740,29 @@ impl Writer<'_> {
                 state,
                 init,
                 body,
+                on_stop,
                 span,
-            } => node!(Loop,
-                "source" => self.loop_source(source),
-                "var" => self.binder(var),
-                "state" => self.binders(state),
-                "init" => self.atoms(init),
-                "body" => self.expr(body),
-                "span" => self.span(*span),
-            ),
+            } => {
+                let mut node = node!(Loop,
+                    "source" => self.loop_source(source),
+                    "var" => self.binder(var),
+                    "state" => self.binders(state),
+                    "init" => self.atoms(init),
+                    "body" => self.expr(body),
+                    "span" => self.span(*span),
+                );
+                // The `on stop` of a `for ever`, an additive key (ADR 0116 rule 20).
+                if let (Some(on_stop), J::Obj(fields)) = (on_stop, &mut node) {
+                    fields.push((
+                        "on_stop",
+                        J::Obj(vec![
+                            ("state", self.binders(&on_stop.state)),
+                            ("body", self.expr(&on_stop.body)),
+                        ]),
+                    ));
+                }
+                node
+            }
             Expr::Together { tasks, span } => node!(Together,
                 "tasks" => list(tasks, |t| self.expr(t)),
                 "span" => self.span(*span),
