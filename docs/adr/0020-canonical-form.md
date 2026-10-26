@@ -43,3 +43,11 @@ The canonical form of a file that has no syntax error is defined by these rules.
 - **Aligned trailing comments:** alignment changes whenever a line changes, which makes unrelated lines differ in every diff.
 - **Keeping import order:** two agents adding imports in a different order would produce different files.
 - **Reporting U7001 once per file:** an edit for the whole file hides where the differences are and grows with the file.
+
+### Amendment on 2026-10-23 (ADR 0125)
+
+Rule 2's statement that no line width applies is superseded by ADR 0125. The canonical formatter targets 100 Unicode scalar values and wraps only after grammar-valid comma separators between arguments or elements inside parentheses or square brackets. A continuation is indented two spaces deeper than the containing delimiter, with two more spaces per nested delimiter. A wrapped group closes on its own line at the opener's indentation, keeping any following comma on that line. This is a soft target: an unbreakable segment may exceed it. A logical line containing a comment keeps its source line breaks and comment placement. The rule applies to every edition; it does not change parsing or semantics. ADR 0125 defines the deterministic break choice and defers repository-wide reformatting to a separate change.
+
+## Amendment (2026-10-25): soft wrapping applies to edition 0.4 only
+
+The amendment of 2026-10-23 is narrowed by ADR 0125's amendment of 2026-10-25. Rule 2 as accepted, with no line width, remains the canonical form of editions 0.1 to 0.3, so their canonical files do not change. Soft wrapping is the canonical form of edition 0.4 only, with the measured line, the outermost-first choice of separators, the indentation by nesting depth and the comment rule that ADR 0125's amendment defines.

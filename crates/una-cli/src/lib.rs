@@ -1549,7 +1549,8 @@ fn contract_command(
         .headers
         .iter()
         .find(|h| h.module == module && h.name == function_name);
-    let contract = contract::contract(&modules, &module, decl, function, header);
+    let layout = verification::source_layout(&package);
+    let contract = contract::contract(&modules, &module, decl, function, header, layout);
     if json {
         match serde_json::to_string(&contract) {
             Ok(document) => writeln!(stdout, "{document}")?,
