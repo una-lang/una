@@ -974,29 +974,61 @@ pub fn replay(
     effect: &mut dyn FnMut(u64) -> Result<Option<u64>, String>,
 ) -> Result<History, ReplayError> {
     let mut effects: BTreeMap<u64, Option<u64>> = BTreeMap::new();
-    // The count restarts where a recovery or a dispute took effect, read syntactically and by
-    // witness time only, never by the claims: a dispute whose effect point is reached, and a
-    // recovery that no cancellation entry names whose effect point is reached.
-    let cancelled: BTreeSet<u64> = entries
-        .iter()
-        .filter_map(|logged| match logged.entry.event {
-            Event::Cancel(target) => Some(target),
-            _ => None,
-        })
-        .collect();
-    // Each reset point, with the request that made it, by position.
-    let mut resets: Vec<(u64, u64)> = Vec::new();
+    // The count restarts where a recovery or a dispute took effect, read from the entries'
+    // positions and the witness time only, never from the claims. Each request waits from its
+    // index to its effect point, or to the point when that is not reached.
+    let mut waiting: Vec<(u64, Option<u64>, &Logged<'_>)> = Vec::new();
     for logged in entries {
-        let request = match logged.entry.event {
-            Event::Dispute(_) => true,
-            Event::Recover(_) => !cancelled.contains(&logged.index),
-            _ => false,
+        if matches!(logged.entry.event, Event::Recover(_) | Event::Dispute(_)) {
+            let position =
+                effect_at(logged.index, &mut effects, effect).map_err(ReplayError::Effect)?;
+            waiting.push((logged.index, position, logged));
+        }
+    }
+    // In log order: a request waits with an earlier one when some earlier one's wait has not
+    // ended at its index, and with a later one when the next request is logged before its own
+    // wait ends. The first position from which two requests that wait at once may freeze the
+    // chain, whatever their kinds, is the later one's index. O(Q) for Q requests.
+    let mut with_earlier: Vec<bool> = Vec::with_capacity(waiting.len());
+    let mut longest: Option<Option<u64>> = None;
+    for (index, end, _) in &waiting {
+        with_earlier.push(longest.is_some_and(|until| until.is_none_or(|until| *index < until)));
+        longest = Some(match (longest, end) {
+            (None, end) => *end,
+            (Some(None), _) | (Some(Some(_)), None) => None,
+            (Some(Some(until)), Some(end)) => Some(until.max(*end)),
+        });
+    }
+    let freeze = waiting
+        .iter()
+        .zip(&with_earlier)
+        .filter(|(_, earlier)| **earlier)
+        .map(|((index, _, _), _)| *index)
+        .min()
+        .unwrap_or(u64::MAX);
+    // The cancellations of each request, by the index they name.
+    let mut cancels: BTreeMap<u64, Vec<u64>> = BTreeMap::new();
+    for logged in entries {
+        if let Event::Cancel(target) = logged.entry.event {
+            cancels.entry(target).or_default().push(logged.index);
+        }
+    }
+    // A reset point: the effect point of a request that the witness time reached, with no other
+    // request waiting with it, no possible freeze in effect there, and, for a recovery, no
+    // cancellation of it logged while it waited.
+    let mut resets: Vec<(u64, u64)> = Vec::new();
+    for (at, (index, end, logged)) in waiting.iter().enumerate() {
+        let Some(end) = *end else {
+            continue;
         };
-        if request
-            && let Some(position) =
-                effect_at(logged.index, &mut effects, effect).map_err(ReplayError::Effect)?
-        {
-            resets.push((position, logged.index));
+        let with_later = waiting.get(at + 1).is_some_and(|(next, _, _)| *next < end);
+        let alone = !with_earlier.get(at).copied().unwrap_or(true) && !with_later;
+        let uncancelled = !matches!(logged.entry.event, Event::Recover(_))
+            || !cancels
+                .get(index)
+                .is_some_and(|list| list.iter().any(|cancel| index < cancel && *cancel < end));
+        if alone && freeze > end && uncancelled {
+            resets.push((end, *index));
         }
     }
     resets.sort_unstable();
@@ -1047,6 +1079,12 @@ pub fn replay(
         .filter(|logged| {
             !requests.contains(&logged.index)
                 && !matches!(logged.entry.event, Event::Register { .. })
+                && !(matches!(
+                    logged.entry.event,
+                    Event::Recover(_) | Event::Dispute(_) | Event::Cancel(_)
+                ) && resets
+                    .iter()
+                    .any(|(end, request)| *request <= logged.index && logged.index < *end))
                 && sealed
                     .iter()
                     .any(|segment| segment.first <= logged.index && logged.index <= segment.last)
