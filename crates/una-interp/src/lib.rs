@@ -7,6 +7,7 @@
 #![deny(missing_docs)]
 
 mod clock;
+pub mod concurrency;
 mod env;
 mod harness;
 mod host;
@@ -17,6 +18,7 @@ mod trace;
 mod value;
 
 pub use clock::{Clock, NotVirtual, VirtualClock};
+pub use concurrency::Concurrency;
 pub use harness::{
     Completion, DriveShape, ExampleFailure, ExampleRun, Host, Run, run_drive, run_examples,
     run_main,
