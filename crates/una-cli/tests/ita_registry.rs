@@ -299,7 +299,7 @@ fn publish_refuses_what_rule_43_names_and_sends_nothing() {
             "path-need",
             format!(
                 "{}\nneeds\n  util from path \"deps/util\"\n    accept name\n",
-                published("itaty")
+                published("acme")
             ),
             "path dependency",
         ),
@@ -337,16 +337,16 @@ fn publish_refuses_a_package_in_a_git_repository() {
     // This repository's own checkout holds the test's target directory.
     assert!(refused(&package(
         "publish-in-repository",
-        &published("itaty")
+        &published("acme")
     )));
-    let dir = package_outside_git("git-dir", &published("itaty"));
+    let dir = package_outside_git("git-dir", &published("acme"));
     assert!(!refused(&dir));
     std::fs::create_dir(dir.join(".git")).unwrap();
     assert!(refused(&dir), "a `.git` directory");
-    let dir = package_outside_git("git-file", &published("itaty"));
+    let dir = package_outside_git("git-file", &published("acme"));
     std::fs::write(dir.join(".git"), "gitdir: ../elsewhere\n").unwrap();
     assert!(refused(&dir), "a `.git` file");
-    let dir = package_outside_git("git-above", &published("itaty"));
+    let dir = package_outside_git("git-above", &published("acme"));
     std::fs::create_dir(dir.parent().unwrap().join(".git")).unwrap();
     assert!(refused(&dir), "a `.git` in an ancestor");
 }
@@ -363,10 +363,6 @@ fn publish_and_yank_send_only_where_the_source_is_declared() {
         assert!(out.contains(part), "{part}: {out}");
     };
     let itaty = package_outside_git("itaty", &published("itaty"));
-    // `una check` of a package needs its lock (U7009 without one): a package is locked
-    // before it is published.
-    let (status, out, err) = una_in(&["una", "ita", "lock", path(&itaty)], &store);
-    assert_eq!(status, 0, "{out}{err}");
     codes_and(
         &["una", "--json", "ita", "publish", path(&itaty)],
         "no https transport yet",
@@ -393,6 +389,18 @@ fn publish_and_yank_send_only_where_the_source_is_declared() {
         &["una", "--json", "ita", "publish", path(&member)],
         "no https transport yet",
     );
+    // A source the package's workspace does not declare is refused, and nothing is sent, the
+    // name being well formed: `publish to` is checked against `itaty.una` when it is published.
+    std::fs::write(member.join("ita.una"), published("other")).unwrap();
+    codes_and(
+        &["una", "--json", "ita", "publish", path(&member)],
+        "`other` is not a source of",
+    );
+    codes_and(
+        &["una", "--json", "ita", "yank", "0.1.0", path(&member)],
+        "`other` is not a source of",
+    );
+    std::fs::write(member.join("ita.una"), published("acme")).unwrap();
     let (status, _, err) = una_in(&["una", "ita", "yank", "0.1", path(&member)], &store);
     assert_eq!(status, 2);
     assert!(err.contains("full version"), "{err}");
@@ -772,7 +780,7 @@ fn unbundle_follows_no_link() {
 /// `GIT_DIR` or `GIT_WORK_TREE` set can put any directory in a repository: publish refuses.
 #[test]
 fn publish_refuses_with_git_variables_set() {
-    let dir = package_outside_git("git-variables", &published("itaty"));
+    let dir = package_outside_git("git-variables", &published("acme"));
     for variable in ["GIT_DIR", "GIT_WORK_TREE"] {
         let (status, out, _) = una_with(
             &["una", "--json", "ita", "publish", path(&dir)],

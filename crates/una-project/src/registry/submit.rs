@@ -72,32 +72,83 @@ pub fn git_entry(dir: &Path) -> Result<Option<PathBuf>, Refusal> {
     Ok(None)
 }
 
-/// The declaration of `source` for the package at `dir` (rules 8 and 43): only the root and
-/// `itaty.una` declare sources, and a published package has no `sources` section, so it is the
-/// one that the `sources` of the nearest workspace listing the package as a member gives, with
-/// its URL and its root's pin. `itaty`, whose URL and root are built into `una`, is served over
-/// HTTPS, and its root is not built in yet. Refused: a source no such workspace declares, and an
-/// `itaty.una` that does not read. O(d) for a path of d components, and the workspace's size.
-pub fn declared_source(dir: &Path, source: &str) -> Result<ita::Source, String> {
-    if source == crate::ita::ITATY {
-        return Err("`itaty` is served over HTTPS, and there is no https transport yet".to_owned());
+/// Why [`declared_source`] gives no declaration of a source, by kind: a caller tells them
+/// apart by the variant, never by the text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Undeclared {
+    /// `itaty`, whose URL and root are built into `una`: it is served over HTTPS, and there is
+    /// no https transport yet.
+    Itaty,
+    /// No `itaty.una` of a workspace that lists the package as a member was found.
+    NoWorkspace {
+        /// The source named.
+        source: String,
+    },
+    /// The workspace that lists the package as a member does not declare the source.
+    NotInWorkspace {
+        /// The source named.
+        source: String,
+        /// The workspace's `itaty.una`.
+        workspace: PathBuf,
+    },
+    /// A directory that cannot be resolved, or an `itaty.una` that cannot be read or does not
+    /// read: why, one sentence.
+    Unreadable(String),
+}
+
+impl std::fmt::Display for Undeclared {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Undeclared::Itaty => {
+                write!(
+                    f,
+                    "`itaty` is served over HTTPS, and there is no https transport yet"
+                )
+            }
+            Undeclared::NoWorkspace { source } => write!(
+                f,
+                "`{source}` is declared by no `itaty.una` of a workspace that lists the package; a source a package is published to is `itaty` or one its workspace declares"
+            ),
+            Undeclared::NotInWorkspace { source, workspace } => write!(
+                f,
+                "`{source}` is not a source of `{}`, the workspace of the package",
+                workspace.display()
+            ),
+            Undeclared::Unreadable(why) => f.write_str(why),
+        }
     }
-    let package = std::fs::canonicalize(dir)
-        .map_err(|error| format!("cannot resolve `{}`: {error}", dir.display()))?;
+}
+
+/// The declaration of `source` for the package at `dir` (rules 8 and 43, `spec/30 §2` rule 4):
+/// only the root and `itaty.una` declare sources, and a published package has no `sources`
+/// section, so `publish to` names `itaty` or a source that the `sources` of the nearest
+/// workspace listing the package as a member declares, with its URL and its root's pin; it is
+/// checked here, when the package is published or yanked. `itaty`, whose URL and root are built
+/// into `una`, is served over HTTPS, and its root is not built in yet. Refused, by kind: a
+/// source no such workspace declares, and an `itaty.una` that does not read. O(d) for a path
+/// of d components, and the workspace's size.
+pub fn declared_source(dir: &Path, source: &str) -> Result<ita::Source, Undeclared> {
+    if source == crate::ita::ITATY {
+        return Err(Undeclared::Itaty);
+    }
+    let package = std::fs::canonicalize(dir).map_err(|error| {
+        Undeclared::Unreadable(format!("cannot resolve `{}`: {error}", dir.display()))
+    })?;
     for ancestor in package.ancestors() {
         let file = ancestor.join("itaty.una");
         if !file.is_file() {
             continue;
         }
-        let text = std::fs::read_to_string(&file)
-            .map_err(|error| format!("cannot read `{}`: {error}", file.display()))?;
+        let text = std::fs::read_to_string(&file).map_err(|error| {
+            Undeclared::Unreadable(format!("cannot read `{}`: {error}", file.display()))
+        })?;
         let (workspace, errors) = crate::ita::parse_workspace(&text);
         if let Some(error) = errors.first() {
-            return Err(format!(
+            return Err(Undeclared::Unreadable(format!(
                 "`{}` does not read: {}",
                 file.display(),
                 error.message
-            ));
+            )));
         }
         let member = workspace.members.iter().any(|member| {
             std::fs::canonicalize(ancestor.join(member.value.trim_end_matches('/')))
@@ -111,16 +162,14 @@ pub fn declared_source(dir: &Path, source: &str) -> Result<ita::Source, String> 
             .iter()
             .find(|declared| declared.name.value == source)
             .cloned()
-            .ok_or_else(|| {
-                format!(
-                    "`{source}` is not a source of `{}`, the workspace of the package",
-                    file.display()
-                )
+            .ok_or_else(|| Undeclared::NotInWorkspace {
+                source: source.to_owned(),
+                workspace: file.clone(),
             });
     }
-    Err(format!(
-        "`{source}` is declared by no `itaty.una` of a workspace that lists the package; a source a package is published to is `itaty` or one its workspace declares"
-    ))
+    Err(Undeclared::NoWorkspace {
+        source: source.to_owned(),
+    })
 }
 
 /// The public headers of a package's modules, by module file: each line of a module that starts,

@@ -78,7 +78,7 @@ From edition `0.4`, a package describes itself in `ita.una`, a declarative file 
    - `version` is a full version, `MAJOR.MINOR.PATCH` with an optional pre-release, each numeric part at most 2^31 − 1, and no build metadata.
    - `edition` is `0.4` or a later edition the release serves. An earlier edition is U7008: that package keeps `una.toml`.
    - `profile` is `app`, the default. `systems` is U7008 in this release, which does not implement profiles: checking a `systems` package as `app` would leave out the obligations that profile adds.
-   - `about` and `license` are non-empty texts, `home` an `https://` URL, and `publish to` names `itaty` or a source of `sources`.
+   - `about` and `license` are non-empty texts, `home` an `https://` URL, and `publish to` names `itaty` or a source name that `sources` could declare, never `path`, `git` or `workspace`. A published package has no `sources` section (§15 rule 1), so the source is not checked when `ita.una` is read: `una ita publish` and `una ita yank` check it against the `sources` of the nearest workspace whose `itaty.una` lists the package as a member, before anything is built or sent, and refuse a source no such workspace declares (U7013). The `ita.una` of a published archive, read at fetch or by `una check`, therefore accepts its `publish to` line.
 5. **The sections that `una.toml` has.** Each has the meaning and the checks of `spec/13 §7` and of the records it names. Every error that `spec/13 §7` makes U7002 for a key of `una.toml` is U7008 at the corresponding line of `ita.una`; the codes of other domains stay (U1005 and U1002 for categories, U7005 for trusted modules).
    - `labels`: the categories, one per line.
    - `trusted`: the trusted modules, one per line.

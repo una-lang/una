@@ -103,13 +103,22 @@ fn the_head_is_checked() {
         Code::U7008,
         "`https://` URL",
     );
-    has(
-        &format!("{HEAD}  publish to acme\n"),
-        Code::U7008,
-        "names no source",
-    );
+    // A name reserved for an origin is no source; any other source name is checked against
+    // the workspace's `itaty.una` when the package is published (`spec/30 §2` rule 4).
+    for reserved in ["path", "git", "workspace"] {
+        has(
+            &format!("{HEAD}  publish to {reserved}\n"),
+            Code::U7008,
+            "names no source",
+        );
+    }
     assert_eq!(
         errors(&format!("{HEAD}  profile app\n  publish to itaty\n")),
+        Vec::<String>::new()
+    );
+    // A published package has no `sources`: its own manifest accepts the line.
+    assert_eq!(
+        errors(&format!("{HEAD}  publish to acme\n")),
         Vec::<String>::new()
     );
 }

@@ -1384,10 +1384,11 @@ fn a_published_source_is_the_one_its_workspace_declares() {
     let workspace = scratch("workspace");
     let package = workspace.join("pkg");
     std::fs::create_dir_all(&package).unwrap();
-    assert!(
-        submit::declared_source(&package, "acme")
-            .unwrap_err()
-            .contains("declared by no `itaty.una`")
+    assert_eq!(
+        submit::declared_source(&package, "acme").unwrap_err(),
+        submit::Undeclared::NoWorkspace {
+            source: "acme".to_owned()
+        }
     );
     std::fs::write(
         workspace.join("itaty.una"),
@@ -1401,15 +1402,17 @@ fn a_published_source_is_the_one_its_workspace_declares() {
         submit::declared_source(&package, "acme").unwrap().url.value,
         "https://ita.acme.example"
     );
-    assert!(
-        submit::declared_source(&package, "other")
-            .unwrap_err()
-            .contains("not a source")
+    // A source the workspace does not declare is refused, by its kind.
+    assert_eq!(
+        submit::declared_source(&package, "other").unwrap_err(),
+        submit::Undeclared::NotInWorkspace {
+            source: "other".to_owned(),
+            workspace: std::fs::canonicalize(&workspace).unwrap().join("itaty.una"),
+        }
     );
-    assert!(
-        submit::declared_source(&package, "itaty")
-            .unwrap_err()
-            .contains("no https transport yet")
+    assert_eq!(
+        submit::declared_source(&package, "itaty").unwrap_err(),
+        submit::Undeclared::Itaty
     );
 }
 
