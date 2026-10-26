@@ -11,7 +11,9 @@ pub literals() -> List[Decimal[2]] = [19.99, 5.0, 1.5e1, -0.25, 0.0, 1_000.5]
 
 pub mixed(price: Decimal[2], rate: Decimal[4]) -> Decimal[4] = price + rate - price * 1.1
 
-pub compare(price: Decimal[2], rate: Decimal[4]) -> Bool = price < 0.005 or price == rate or 1.0 <= price
+pub compare(price: Decimal[2],
+  rate: Decimal[4]
+) -> Bool = price < 0.005 or price == rate or 1.0 <= price
 
 pub methods(x: Decimal[2], y: Decimal[2]) -> Decimal[2]
   requires y != 0.00
