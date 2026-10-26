@@ -2015,6 +2015,63 @@ fn a_claim_signed_by_the_key_it_names_states_nothing_of_the_past() {
     assert!(releases[0].compromised && !releases[1].compromised);
 }
 
+/// A key's own word from the first assumption (ADR 0122 Amendment 11): `A` registered, `A` and
+/// `B` add `B`, then `A` is stolen. The thief signs a release, then `revoke A since 0` with `A`
+/// alone; the owner answers `revoke A since <the addition>` with `B`. The thief's self-claim
+/// starts no earlier than its own index from the first pass, so it never voids `B`'s addition:
+/// the owner's claim stands, `A` is compromised from the addition on, and the thief's release
+/// is skipped.
+#[test]
+fn a_thiefs_self_claim_never_reaches_back_before_it() {
+    let a = keypair(60, "acme.a");
+    let b = keypair(61, "acme.b");
+    let mut registry = TestRegistry::new("acme");
+    registry.register("acme", &a);
+    let added = registry.owner_event("acme", &format!("add {}", key_text(&b.1)), 1, &[&a, &b]);
+    registry.release("acme/ledger", "0.3.1", "none", "none", &[&a]);
+    registry.owner_event("acme", "revoke acme.a since 0", 1, &[&a]);
+    registry.owner_event("acme", &format!("revoke acme.a since {added}"), 1, &[&b]);
+    registry.release("acme/ledger", "0.3.2", "none", "none", &[&b]);
+    registry.checkpoint(NOW);
+    let memory = Memory {
+        files: registry.files.clone(),
+    };
+    let mut client = open(&memory, &registry).unwrap();
+    let history = client.history("acme").unwrap();
+    assert_eq!(history.compromised.get(&a.1.public), Some(&added));
+    let releases = client.releases("acme/ledger").unwrap();
+    assert!(releases[0].compromised && !releases[1].compromised);
+}
+
+/// The same with the thief's own key: after the theft, `A` adds `T`, and `A` and `T` sign the
+/// self-claim on `A`. `T`'s addition is signed by `A` after the theft, so the owner's claim
+/// voids it: nothing `A` or `T` signs after the theft counts, and the owner's release does.
+#[test]
+fn a_thiefs_self_claim_with_its_own_key_never_reaches_back() {
+    let a = keypair(60, "acme.a");
+    let b = keypair(61, "acme.b");
+    let t = keypair(66, "acme.t");
+    let mut registry = TestRegistry::new("acme");
+    registry.register("acme", &a);
+    let added = registry.owner_event("acme", &format!("add {}", key_text(&b.1)), 1, &[&a, &b]);
+    registry.release("acme/ledger", "0.3.1", "none", "none", &[&a]);
+    let thief_add = registry.owner_event("acme", &format!("add {}", key_text(&t.1)), 1, &[&a, &t]);
+    registry.owner_event("acme", "revoke acme.a since 0", 1, &[&a, &t]);
+    registry.release("acme/ledger", "0.3.2", "none", "none", &[&t]);
+    registry.owner_event("acme", &format!("revoke acme.a since {added}"), 1, &[&b]);
+    registry.release("acme/ledger", "0.3.3", "none", "none", &[&b]);
+    registry.checkpoint(NOW);
+    let memory = Memory {
+        files: registry.files.clone(),
+    };
+    let mut client = open(&memory, &registry).unwrap();
+    let history = client.history("acme").unwrap();
+    assert_eq!(history.compromised.get(&a.1.public), Some(&added));
+    assert!(history.voided.contains(&thief_add));
+    let releases = client.releases("acme/ledger").unwrap();
+    assert!(releases[0].compromised && releases[1].compromised && !releases[2].compromised);
+}
+
 /// A chain that does not settle, which a registry must never log, fed directly: `A` adds `C`,
 /// then `A` and `B` claim `A` since 0, and `A`, `B` and `C` claim `B` since 0. Assuming both
 /// claims voids the addition of `C`; both revocations are then void, stand as revocations that

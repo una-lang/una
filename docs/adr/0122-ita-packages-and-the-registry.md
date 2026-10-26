@@ -1249,3 +1249,15 @@ A recovery, a dispute or a `cancel` logged while a resetting request waits is ne
 
 **Correction.** Where Amendment 10 says the owner "then uses a dispute", an owner with co-signers in effect cannot dispute. A thief that cancels the owner's recovery while it waits keeps it from resetting. Once that recovery takes effect after the co-signers' overruling, the thief holds no current key, so the owner's next recovery cannot be cancelled and resets the count.
 
+## Amendment 11 (2026-10-26): the own-word floor from the first assumption
+
+- Status: Accepted, recorded under the project's delegation.
+
+**Context.** A revocation that meets its requirement only with the signature of the key it names is that key's own word, and its `p` is taken as no earlier than its own index. The replay applied that floor only from its second pass: the first assumed every claim at its stated `p`. Scenario: `A` registered; `A` and `B` add `B`; `A` is stolen; the thief logs `revoke A since 0` signed by `A` alone; the owner answers `revoke A since <the addition>` signed by `B`. Assumed at `since 0`, the thief's claim voided `B`'s addition, so the owner's claim was void and dropped, and a dropped claim never returns: `A` was compromised only from the thief's own claim, and what `A` signed between the addition and that claim counted.
+
+**Decision.** The floor holds from the first assumption. A claim whose signatures include the key it names, read from its signatures alone, is first assumed from its own index, whatever `p` it states. A later pass gives it back its stated `p` only when its other sound signers, or the cosigners in effect, meet its requirement without the named key. The fixpoint keeps its shape: claims are only dropped, never added back, and a chain whose claims do not settle within the pass cap is refused as before.
+
+**Consequences.**
+- A thief's self-claim, signed with the stolen key alone or with keys that key added after the theft, never reaches back before its own index, so it never voids what the owner's keys signed before it, and the owner's claim stands.
+- `spec/30 §14` rule 5 states this as normative text.
+
