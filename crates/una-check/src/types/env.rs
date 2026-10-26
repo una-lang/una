@@ -231,6 +231,8 @@ pub(crate) struct FnDef<'a> {
     pub(crate) infer_uses: bool,
     /// Whether its `fails` is inferred: a private function without `fails` (ADR 0007).
     pub(crate) infer_fails: bool,
+    /// Whether the header says `diverges`, edition 0.4 (`spec/26 §5`): never inferred.
+    pub(crate) diverges: bool,
     /// The parameters of function type whose effects it performs, by `uses of p`, written or
     /// inferred (ADR 0062).
     pub(crate) uses_of: Vec<usize>,
@@ -856,6 +858,7 @@ impl<'a> Env<'a> {
             constraints: Vec::new(),
             constraints_written: Vec::new(),
             infer_fails: false,
+            diverges: false,
             uses_of: Vec::new(),
             fails_of: None,
             requires: false,
@@ -866,8 +869,8 @@ impl<'a> Env<'a> {
     }
 
     /// Resolves the imports of the package modules, the first `count` modules, and of the
-    /// standard modules after `std.testing`, which may import one another (`std.drive` imports
-    /// `std.time`). Imports that resolve to nothing were reported by M3 and are skipped.
+    /// standard modules from `std.testing` on, which may import one another (`std.drive` and,
+    /// in edition 0.4, `std.testing` import `std.time`). Imports that resolve to nothing were reported by M3 and are skipped.
     fn imports(&mut self, count: usize) {
         let mut paths: BTreeMap<String, usize> = BTreeMap::new();
         for (index, module) in self.modules.iter().enumerate().take(count) {
@@ -880,8 +883,9 @@ impl<'a> Env<'a> {
         }
         // `std.host` is the prelude's host declarations (`spec/10 §11` rule 10).
         paths.insert(prelude::STD_HOST.to_owned(), count);
+        // `std.testing` imports `Millisecond` from `std.time` in edition 0.4 (ADR 0116 rule 19).
         let later = (count + 2)..self.modules.len();
-        for index in (0..count).chain(later) {
+        for index in (0..count).chain(std::iter::once(count + 1)).chain(later) {
             let Some(module) = self.modules.get(index) else {
                 continue;
             };
@@ -1559,6 +1563,10 @@ impl<'a> Env<'a> {
                     def.uses = uses;
                     def.uses_of = uses_of;
                     def.fails_of = fails_of;
+                    def.diverges = function
+                        .clauses
+                        .iter()
+                        .any(|clause| matches!(clause.kind, ClauseKind::Diverges));
                 }
             }
             FnAst::Predicate(predicate) => {

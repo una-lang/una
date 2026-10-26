@@ -1,6 +1,6 @@
 ---
 source: crates/una-cli/tests/cli.rs
-assertion_line: 588
+assertion_line: 587
 expression: stdout(&output)
 ---
-{"schema":"una.contract/1","function":"events.checkin.check_in","public":true,"docs":["Looks up a registration by phone, shows its availability, and records it.","The phone never leaves this function: only its keyed hash does."],"header":"pub check_in(phone: secret[PII] Phone) -> Availability","constraints":[],"result_labels":[],"of_raises":[],"requires":[],"ensures":[],"uses":[{"cap":"registrations","capability":"Registrations","ops":["find"],"inferred":false},{"cap":"audit","capability":"Audit","ops":["record"],"inferred":false},{"cap":"keys","capability":"Keys","ops":["hmac"],"inferred":false}],"fails":{"kind":"CheckInError","inferred":false},"derived_from":[]}
+{"schema":"una.contract/1","function":"events.checkin.check_in","public":true,"docs":["Looks up a registration by phone, shows its availability, and records it.","The phone never leaves this function: only its keyed hash does."],"header":"pub check_in(phone: secret[PII] Phone) -> Availability","constraints":[],"result_labels":[],"of_raises":[],"requires":[],"ensures":[],"uses":[{"cap":"registrations","capability":"Registrations","ops":["find"],"inferred":false},{"cap":"audit","capability":"Audit","ops":["record"],"inferred":false},{"cap":"keys","capability":"Keys","ops":["hmac"],"inferred":false}],"fails":{"kind":"CheckInError","inferred":false},"diverges":false,"derived_from":[]}

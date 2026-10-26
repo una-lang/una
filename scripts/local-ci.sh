@@ -144,6 +144,19 @@ if [ -n "${UNA_LOCAL_CI_SERIAL:-}" ]; then
 else
     step "Test" cargo test --workspace --locked
 fi
+# The security timing oracles (#1145): every test of crates/una-cli/tests/timing_channels.rs is
+# a real-clock oracle of a timing channel, ignored in the ordinary test run and run only here and
+# in the release gate of the same name, one at a time. Under emulation (UNA_LOCAL_CI_SERIAL, the
+# --linux container through Rosetta on an arm64 Mac, or a shell translated by Rosetta) the real
+# clock measures the emulator, not the runtime, so the step is skipped there, visibly.
+translated=$( (sysctl -n sysctl.proc_translated 2>/dev/null) || echo 0)
+if [ -n "${UNA_LOCAL_CI_SERIAL:-}" ] || [ "$translated" = 1 ]; then
+    echo "== Timing channels (security oracles)"
+    echo "skipped: under emulation the real clock is not the runtime's; run on a native host (macOS, --linux-arm64)"
+else
+    step "Timing channels (security oracles)" \
+        cargo test --release --locked -p una-cli --test timing_channels -- --ignored --test-threads=1 --nocapture
+fi
 # The documents' links (#708): every link of the documents names a tracked file or directory,
 # and every fragment a heading of its document; the check's own test refuses each kind of
 # broken link first. It needs only Python 3 and git, so it runs everywhere, the containers
