@@ -200,3 +200,47 @@ fn a_release_build_never_trusts_the_test_authority() {
     let grant = Grant::parse(&format!("http:https://127.0.0.1:{port}")).unwrap();
     assert_eq!(send(&get(&url), &[grant], &settings()), Err(Error::Tls));
 }
+
+/// An interruption that never comes, with a real wait: the socket is then non-blocking, and
+/// every step that would block waits here.
+struct NeverStopped;
+
+impl una_http::client::Interrupt for NeverStopped {
+    fn waits(&self) -> bool {
+        true
+    }
+
+    fn stopped(&self) -> bool {
+        false
+    }
+
+    fn wait(
+        &self,
+        socket: std::os::fd::RawFd,
+        write: bool,
+        timeout: Duration,
+    ) -> una_http::client::Waited {
+        use una_http::client::Waited;
+        use una_sys::signals::Readiness;
+        match una_sys::signals::wait(Some(socket), write, false, timeout) {
+            Readiness::Ready => Waited::Ready,
+            Readiness::TimedOut | Readiness::Woken => Waited::TimedOut,
+            Readiness::Failed => Waited::Failed,
+        }
+    }
+}
+
+#[cfg(debug_assertions)]
+#[test]
+fn an_interruptible_request_completes_over_non_blocking_tls() {
+    // S6-3: the handshake, the request and the response, each step through the wait, give the
+    // same response as a blocking request.
+    trust_test_roots(&authority().ca);
+    let port = serve("localhost", OK);
+    let url = format!("https://127.0.0.1:{port}/");
+    let grant = Grant::parse(&format!("http:https://127.0.0.1:{port}")).unwrap();
+    let response =
+        una_http::client::send_interruptible(&get(&url), &[grant], &settings(), &NeverStopped)
+            .unwrap();
+    assert_eq!((response.status, response.body.as_str()), (200, "secure"));
+}

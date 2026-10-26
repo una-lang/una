@@ -289,6 +289,21 @@ impl Normalizer<'_> {
                 }
             }
             Stmt::Skip(_) => {}
+            Stmt::Until(stmt) => {
+                self.expr(&mut stmt.condition);
+                self.expr(&mut stmt.measure);
+                self.block(&mut stmt.block);
+            }
+            Stmt::Ever(stmt) => {
+                if let Some(within) = &mut stmt.within {
+                    self.expr(within);
+                }
+                self.block(&mut stmt.block);
+                if let Some(on_stop) = &mut stmt.on_stop {
+                    self.block(&mut on_stop.block);
+                }
+            }
+            Stmt::OnStop(on_stop) => self.block(&mut on_stop.block),
         }
     }
 

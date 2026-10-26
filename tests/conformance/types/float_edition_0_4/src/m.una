@@ -12,6 +12,8 @@ pub step(b: Body, dt: F64, n: Int) -> F64
   let y = x.sqrt().copy_sign(from: dt).clamp(lo: 0.5, hi: 1.5)
   if y.is_zero() or y.ieee_lt(other: 0.0) then nan() else y.floor()
 
-pub keyed(xs: List[F64]) -> Map[F64, Text] = empty_map().with(key: max(1.0, b: infinity()), value: "{sort(xs)}")
+pub keyed(xs: List[F64]) -> Map[F64, Text] = empty_map().with(key: max(1.0, b: infinity()),
+  value: "{sort(xs)}"
+)
 
 pub read(t: Text) -> Result[F64, ParseError] = attempt parse_f64(t)

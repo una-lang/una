@@ -16,6 +16,7 @@ const EMPTY_LIST: &str = "{\"schema\":\"una.diagnostics/1\",\"diagnostics\":[],\
 fn una(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
         .args(args)
         .current_dir(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
         .output()
@@ -143,6 +144,7 @@ fn check_json_is_byte_identical_across_runs() {
         let second = una(&["check", "--json", target]);
         let single = Command::new(env!("CARGO_BIN_EXE_una"))
             .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+            .env_remove("UNA_PROOF_KEY")
             .args(["check", "--json", target])
             .env("RAYON_NUM_THREADS", "1")
             .current_dir(&repository)
@@ -494,6 +496,66 @@ fn fmt_writes_through_a_symbolic_link_onto_its_target() {
     std::fs::remove_dir_all(&root).unwrap();
 }
 
+/// #1160: a symbolic link planted at the temporary names a write used to take, such as one a
+/// cloned repository commits, is never written through: its destination stays as it was.
+#[cfg(unix)]
+#[test]
+fn fmt_never_writes_through_a_planted_temporary_link() {
+    let root = scratch("fmt-planted-temporary");
+    let package = root.join("package");
+    std::fs::create_dir_all(&package).unwrap();
+    let victim = root.join("victim.txt");
+    std::fs::write(&victim, "untouched\n").unwrap();
+    let module = package.join("main.una");
+    std::fs::write(&module, "module main\n\npub one() -> Int\n=\n  1+1\n").unwrap();
+    for name in [".main.una.fmt-tmp", ".main.una.tmp"] {
+        std::os::unix::fs::symlink(&victim, package.join(name)).unwrap();
+    }
+    let fmt = una(&["fmt", module.to_str().unwrap()]);
+    assert_eq!(fmt.status.code(), Some(0), "{}", stderr(&fmt));
+    assert_eq!(std::fs::read_to_string(&victim).unwrap(), "untouched\n");
+    assert_eq!(
+        std::fs::read_to_string(&module).unwrap(),
+        "module main\n\npub one() -> Int = 1 + 1\n"
+    );
+    assert!(
+        !std::fs::symlink_metadata(&module)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    for name in [".main.una.fmt-tmp", ".main.una.tmp"] {
+        assert_eq!(std::fs::read_link(package.join(name)).unwrap(), victim);
+    }
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+/// #1160: a source that is a symbolic link leading outside the package is not written
+/// through, and the error names where it leads.
+#[cfg(unix)]
+#[test]
+fn fmt_refuses_a_link_that_leads_outside_the_package() {
+    let root = scratch("fmt-link-outside");
+    let package = root.join("package");
+    std::fs::create_dir_all(&package).unwrap();
+    let outside = root.join("outside.una");
+    let original = "module linked\n\npub one() -> Int\n=\n  1+1\n";
+    std::fs::write(&outside, original).unwrap();
+    let link = package.join("linked.una");
+    std::os::unix::fs::symlink(&outside, &link).unwrap();
+    let fmt = una(&["fmt", link.to_str().unwrap()]);
+    assert_ne!(fmt.status.code(), Some(0));
+    assert!(
+        stderr(&fmt).contains("outside the package"),
+        "{}",
+        stderr(&fmt)
+    );
+    assert_eq!(std::fs::read_to_string(&outside).unwrap(), original);
+    assert_eq!(std::fs::read_link(&link).unwrap(), outside);
+    assert_eq!(std::fs::read_dir(&package).unwrap().count(), 1);
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
 #[test]
 fn check_reports_t7001_with_a_mechanical_edit() {
     let output = una(&[
@@ -571,6 +633,7 @@ fn una_in(dir: &std::path::Path, args: &[&str]) -> Output {
     let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
         .args(args)
         .current_dir(repository.join(dir))
         .output()
@@ -623,7 +686,7 @@ fn contract_marks_inferred_clauses() {
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(
         stdout(&output),
-        "{\"schema\":\"una.contract/1\",\"function\":\"app.log.helper\",\"public\":false,\"docs\":[\"Writes a line and flushes.\"],\"header\":\"helper(line: Text) -> Int\",\"constraints\":[],\"result_labels\":[],\"of_raises\":[],\"requires\":[],\"ensures\":[],\"uses\":[{\"cap\":\"log\",\"capability\":\"Log\",\"ops\":[\"write\",\"flush\"],\"inferred\":true}],\"fails\":{\"kind\":\"LookupError\",\"inferred\":true},\"derived_from\":[]}\n"
+        "{\"schema\":\"una.contract/1\",\"function\":\"app.log.helper\",\"public\":false,\"docs\":[\"Writes a line and flushes.\"],\"header\":\"helper(line: Text) -> Int\",\"constraints\":[],\"result_labels\":[],\"of_raises\":[],\"requires\":[],\"ensures\":[],\"uses\":[{\"cap\":\"log\",\"capability\":\"Log\",\"ops\":[\"write\",\"flush\"],\"inferred\":true}],\"fails\":{\"kind\":\"LookupError\",\"inferred\":true},\"diverges\":false,\"derived_from\":[]}\n"
     );
     std::fs::remove_dir_all(&root).unwrap();
 }
@@ -802,7 +865,7 @@ fn contract_shows_written_and_inferred_constraints() {
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(
         stdout(&output),
-        "{\"schema\":\"una.contract/1\",\"function\":\"app.k.same\",\"public\":true,\"docs\":[],\"header\":\"pub same[T: Eq](a: T, b: T) -> Bool\",\"constraints\":[{\"param\":\"T\",\"constraint\":\"Eq\",\"inferred\":false}],\"result_labels\":[{\"position\":\"top\",\"from\":[\"T\"]}],\"of_raises\":[],\"requires\":[],\"ensures\":[],\"uses\":[],\"fails\":null,\"derived_from\":[]}\n"
+        "{\"schema\":\"una.contract/1\",\"function\":\"app.k.same\",\"public\":true,\"docs\":[],\"header\":\"pub same[T: Eq](a: T, b: T) -> Bool\",\"constraints\":[{\"param\":\"T\",\"constraint\":\"Eq\",\"inferred\":false}],\"result_labels\":[{\"position\":\"top\",\"from\":[\"T\"]}],\"of_raises\":[],\"requires\":[],\"ensures\":[],\"uses\":[],\"fails\":null,\"diverges\":false,\"derived_from\":[]}\n"
     );
     std::fs::remove_dir_all(&root).unwrap();
 }
@@ -850,6 +913,44 @@ fn contract_and_report_show_result_summaries() {
     insta::assert_snapshot!(
         "report_generic_results_json",
         serde_json::to_string_pretty(&document["generic_results"]).unwrap()
+    );
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn contract_shows_a_wrapped_header_of_edition_0_4_on_one_line() {
+    // ADR 0125, amendment of 2026-10-25: the canonical form of edition 0.4 wraps the long
+    // header, and `una contract` shows its source text without that layout, as the verifier's
+    // goals do, in the JSON `header` and in the human header line.
+    let root = scratch("wrapped-contract");
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("ita.una"),
+        "ita s\n  version 0.1.0\n  edition 0.4\n",
+    )
+    .unwrap();
+    std::fs::copy(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/conformance/types/decimal_accepted/ita.lock"),
+        root.join("ita.lock"),
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/s.una"),
+        "module s\n\npub kind Pair[A, B]\n  left: A\n  right: B\n\npub tagged[T: Eq, U](first_value: T, second_value: T, tag: U) -> Pair[List[U],\n  Int\n] = Pair(left: if first_value == second_value then [tag] else [], right: 1)\n",
+    )
+    .unwrap();
+    let header =
+        "pub tagged[T: Eq, U](first_value: T, second_value: T, tag: U) -> Pair[List[U], Int]";
+    let json = una_in(&root, &["contract", "--json", "s.tagged"]);
+    let document: Value = serde_json::from_str(stdout(&json)).unwrap();
+    assert_eq!(document["header"], header, "{}", stdout(&json));
+    let human = una_in(&root, &["contract", "s.tagged"]);
+    assert_eq!(
+        stdout(&human).lines().next(),
+        Some(header),
+        "{}",
+        stdout(&human)
     );
     std::fs::remove_dir_all(&root).unwrap();
 }

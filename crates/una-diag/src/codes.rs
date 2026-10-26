@@ -227,8 +227,11 @@ pub enum Code {
     U3025,
     /// `attempt` of a call that cannot fail (edition 0.3, ADR 0100).
     U3026,
-    /// A failure that must be handled where it is not: a `fails` clause on `step` or `on_stop`
-    /// of a `[drive]` module (edition 0.4, ADR 0116).
+    /// Code that may run forever where it is not allowed to.
+    U3027,
+    /// A function that says `diverges`, used as a value.
+    U3028,
+    /// A failure that must be handled where it is not.
     U3029,
     /// Flow to a lower label.
     U4001,
@@ -260,6 +263,8 @@ pub enum Code {
     U6005,
     /// The floating-point environment of the platform is not the default one (ADR 0114).
     U6006,
+    /// The host stopped the run before it finished (ADR 0116 rule 16).
+    U6007,
     /// The host gave no random bytes for keyed hashing.
     U6009,
     /// Non-canonical formatting.
@@ -284,7 +289,7 @@ pub enum Code {
 
 impl Code {
     /// Every registered code, in the order of `spec/13 §4`.
-    pub const ALL: [Code; 107] = [
+    pub const ALL: [Code; 110] = [
         Code::U0001,
         Code::U0002,
         Code::U0003,
@@ -366,6 +371,8 @@ impl Code {
         Code::U3024,
         Code::U3025,
         Code::U3026,
+        Code::U3027,
+        Code::U3028,
         Code::U3029,
         Code::U4001,
         Code::U4002,
@@ -382,6 +389,7 @@ impl Code {
         Code::U6004,
         Code::U6005,
         Code::U6006,
+        Code::U6007,
         Code::U6009,
         Code::U7001,
         Code::U7002,
@@ -816,6 +824,16 @@ impl Code {
                 domain: Domain::Authority,
                 meaning: "`attempt` of a call that cannot fail",
             },
+            Code::U3027 => &Entry {
+                code: "U3027",
+                domain: Domain::Authority,
+                meaning: "Code that may run forever where it is not allowed to",
+            },
+            Code::U3028 => &Entry {
+                code: "U3028",
+                domain: Domain::Authority,
+                meaning: "A function that says `diverges`, used as a value",
+            },
             Code::U3029 => &Entry {
                 code: "U3029",
                 domain: Domain::Authority,
@@ -895,6 +913,11 @@ impl Code {
                 code: "U6006",
                 domain: Domain::Runtime,
                 meaning: "The floating-point environment of the platform is not the default one",
+            },
+            Code::U6007 => &Entry {
+                code: "U6007",
+                domain: Domain::Runtime,
+                meaning: "The host stopped the run before it finished",
             },
             Code::U6009 => &Entry {
                 code: "U6009",

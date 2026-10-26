@@ -20,6 +20,7 @@ fn repository() -> PathBuf {
 fn una(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
         .args(args)
         .current_dir(repository())
         .output()
@@ -62,16 +63,27 @@ fn package_of_edition(name: &str, edition: &str, files: &[(&str, &str)]) -> Path
     root
 }
 
+/// How tier 1 normalizes the source text of the package at `path`: edition 0.4, which only
+/// `ita.una` describes, erases the layout of wrapped lines (ADR 0125, amendment of 2026-10-25).
+fn layout_of(path: &Path) -> una_verify::SourceLayout {
+    if path.join("ita.una").is_file() {
+        una_verify::SourceLayout::Wrapped
+    } else {
+        una_verify::SourceLayout::Joined
+    }
+}
+
 /// The package at `path` checked at tier 0, and the obligations that tier 1 would generate for
 /// it, on a stack as large as tier 1 gives them, but not solved: tests that compare obligations
 /// or queries start no solver (#286).
 fn generated(path: &Path) -> (una_cli::Checked, Vec<una_verify::Obligation>) {
     let checked = una_cli::check(path, Tier::Zero).unwrap();
+    let layout = layout_of(path);
     let obligations = std::thread::scope(|scope| {
         std::thread::Builder::new()
             .stack_size(64 * 1024 * 1024)
             .spawn_scoped(scope, || {
-                una_verify::obligations(&checked.program, &checked.sources)
+                una_verify::obligations(&checked.program, &checked.sources, layout)
             })
             .unwrap()
             .join()
@@ -296,6 +308,7 @@ pub first() -> Int = book(4321)
     std::fs::create_dir_all(&empty).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
         .args(["--json", "check", root.to_str().unwrap()])
         .env("PATH", &empty)
         .output()
@@ -320,6 +333,7 @@ pub first() -> Int = book(4321)
     // Tier 0 needs no solver.
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
         .args(["check", "--tier", "0", root.to_str().unwrap()])
         .env("PATH", &empty)
         .output()
@@ -452,6 +466,7 @@ fn a_query_the_solver_rejects_is_u8001_and_exits_with_3() {
     let _ = std::fs::remove_dir_all(root.join(".una"));
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
         .args(["--json", "check", root.to_str().unwrap()])
         .env("PATH", &bin)
         .output()
@@ -1553,8 +1568,15 @@ fn a_forged_or_foreign_cache_entry_is_solved_again() {
     };
     let refuted =
         |output: &Output| output.status.code() == Some(1) && stderr(output).contains("U5001");
-    // The first run solves and caches the refutation under the key it makes.
-    assert!(refuted(&run("alice", None, &["check"])));
+    // The first run solves and caches the refutation under the key it makes: a missing key is
+    // made, with no note (#1164).
+    let first = run("alice", None, &["check"]);
+    assert!(refuted(&first));
+    assert!(
+        !stderr(&first).contains("proof cache key"),
+        "{}",
+        stderr(&first)
+    );
     assert_eq!(
         report("alice", None),
         (json!(1), json!("~/.una/proof-cache.key"))
@@ -1575,9 +1597,58 @@ fn a_forged_or_foreign_cache_entry_is_solved_again() {
     let unreadable = scratch.join("a-directory");
     std::fs::create_dir_all(&unreadable).unwrap();
     assert_eq!(report("alice", Some(&unreadable)), (json!(0), json!(null)));
+    // It exists and is not a regular file: a note says the cache is off (#1164).
+    let noted = run("alice", Some(&unreadable), &["check"]);
+    assert!(
+        stderr(&noted).contains(&format!(
+            "note: the proof cache key `{}` is not used, since it is not a regular file; the proof cache is off\n",
+            unreadable.display()
+        )),
+        "{}",
+        stderr(&noted)
+    );
     // The override names the key file, as the report shows it.
     let named = scratch.join("team.key");
     std::fs::write(&named, [7u8; 32]).unwrap();
+    // A key file is used only when it is a private regular file of the user (#1164): one the
+    // group or others can read is refused with a note, and the 0600 one is used, with none.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&named, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(report("carol", Some(&named)).1, json!(null));
+        let noted = run("carol", Some(&named), &["check"]);
+        assert!(
+            stderr(&noted).contains(
+                "is not used, since the group or others have permissions on it; the proof cache is off (chmod 600 it)"
+            ),
+            "{}",
+            stderr(&noted)
+        );
+        // Under `--json`, stderr stays empty (`spec/13 §5`): the report's null is the signal.
+        let quiet = run("carol", Some(&named), &["--json", "check"]);
+        assert_eq!(stderr(&quiet), "");
+        let _: serde_json::Value = serde_json::from_slice(&quiet.stdout).unwrap();
+        // A key of the wrong size is noted too, with no permission hint.
+        let short = scratch.join("short.key");
+        std::fs::write(&short, b"short").unwrap();
+        std::fs::set_permissions(&short, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let noted = run("carol", Some(&short), &["check"]);
+        assert!(
+            stderr(&noted).contains(
+                "is not used, since its size is outside 16 to 4096 bytes; the proof cache is off\n"
+            ),
+            "{}",
+            stderr(&noted)
+        );
+        std::fs::set_permissions(&named, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let used = run("carol", Some(&named), &["check"]);
+        assert!(
+            !stderr(&used).contains("proof cache key"),
+            "{}",
+            stderr(&used)
+        );
+    }
     let shown = json!(named.to_str().unwrap());
     assert_eq!(report("carol", Some(&named)).1, shown);
     let _ = std::fs::remove_dir_all(&scratch);
@@ -1699,6 +1770,7 @@ fn a_query_the_solver_rejects_is_an_internal_error_11() {
     let path = format!("{}:/usr/bin:/bin", bin.display());
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", scratch.join("home"))
+        .env_remove("UNA_PROOF_KEY")
         .env("PATH", path)
         .env_remove("UNA_PROOF_KEY")
         .args(["--json", "check"])
@@ -1976,7 +2048,11 @@ fn a_kind_core_does_not_declare_stops_tier_1() {
         std::thread::Builder::new()
             .stack_size(64 * 1024 * 1024)
             .spawn_scoped(scope, || {
-                una_verify::obligations(&checked.program, &checked.sources)
+                una_verify::obligations(
+                    &checked.program,
+                    &checked.sources,
+                    una_verify::SourceLayout::Joined,
+                )
             })
             .unwrap()
             .join()
@@ -2588,4 +2664,98 @@ fn the_cone_query_of_a_float_function_is_stable_across_runs() {
     let first = float_queries("float_stable_a", &source);
     let second = float_queries("float_stable_b", &source);
     assert_eq!(first, second);
+}
+
+/// A package of edition 0.4 under the test's temporary directory, described by `ita.una`, with
+/// the lock of the conformance cases of that edition (ADR 0122).
+fn package_0_4(name: &str, files: &[(&str, &str)]) -> PathBuf {
+    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join("verification")
+        .join(name);
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("ita.una"),
+        format!("ita {name}\n  version 0.1.0\n  edition 0.4\n"),
+    )
+    .unwrap();
+    std::fs::copy(
+        repository().join("tests/conformance/types/decimal_accepted/ita.lock"),
+        root.join("ita.lock"),
+    )
+    .unwrap();
+    for (path, text) in files {
+        std::fs::write(root.join(path), text).unwrap();
+    }
+    root
+}
+
+#[test]
+fn a_wrapped_line_keeps_the_ids_and_the_shown_text_of_its_obligations() {
+    // `spec/12 §8`, ADR 0125 amendment of 2026-10-25: the canonical form of edition 0.4 wraps
+    // the long call, and its obligations keep the ids, goals and hypotheses that the same call
+    // on one line has in edition 0.3, whose canonical form keeps it on one line. Nothing
+    // shown carries the wrapped layout.
+    let declarations = "module app\n\npub kind Seats = Int in 0..5000\n\npub kind Booking\n  seats: Seats\n  label: Text\n\npub half(n: Int) -> Int\n  requires n >= 0\n=\n  n / 2\n\n";
+    let call = "pub run() -> Int = half(Booking(seats: 20, label: \"a booking label long enough to carry this line past the width\").seats)\n";
+    let wrapped = "pub run() -> Int = half(Booking(seats: 20,\n    label: \"a booking label long enough to carry this line past the width\"\n  ).seats)\n";
+    let joined_root = package_of_edition(
+        "wrapped_ids_0_3",
+        "0.3",
+        &[("src/app.una", &format!("{declarations}{call}"))],
+    );
+    let wrapped_root = package_0_4(
+        "wrapped_ids_0_4",
+        &[("src/app.una", &format!("{declarations}{wrapped}"))],
+    );
+    assert_eq!(layout_of(&joined_root), una_verify::SourceLayout::Joined);
+    assert_eq!(layout_of(&wrapped_root), una_verify::SourceLayout::Wrapped);
+    let (joined_checked, joined) = generated(&joined_root);
+    let (wrapped_checked, wrapped_obligations) = generated(&wrapped_root);
+    // Each source is canonical in its edition (no U7001).
+    assert!(
+        joined_checked.diagnostics.is_empty(),
+        "{:?}",
+        joined_checked.diagnostics
+    );
+    assert!(
+        wrapped_checked.diagnostics.is_empty(),
+        "{:?}",
+        wrapped_checked.diagnostics
+    );
+    assert!(!wrapped_obligations.is_empty());
+    let shown = |obligations: &[una_verify::Obligation]| -> Vec<(String, String, Vec<String>)> {
+        obligations
+            .iter()
+            .map(|o| (o.id.clone(), o.goal.clone(), o.hypotheses.clone()))
+            .collect()
+    };
+    assert_eq!(shown(&wrapped_obligations), shown(&joined));
+    for (_, goal, hypotheses) in shown(&wrapped_obligations) {
+        assert!(!goal.contains('\n'), "{goal:?}");
+        assert!(
+            hypotheses.iter().all(|text| !text.contains('\n')),
+            "{hypotheses:?}"
+        );
+    }
+    // The layout is what erases the wrapping: read as an earlier edition reads it, the goal
+    // of the call's precondition would keep the space before the closer.
+    let as_joined = std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .stack_size(64 * 1024 * 1024)
+            .spawn_scoped(scope, || {
+                una_verify::obligations(
+                    &wrapped_checked.program,
+                    &wrapped_checked.sources,
+                    una_verify::SourceLayout::Joined,
+                )
+            })
+            .unwrap()
+            .join()
+            .unwrap()
+    })
+    .unwrap();
+    assert_ne!(shown(&as_joined), shown(&joined));
+    std::fs::remove_dir_all(&joined_root).unwrap();
+    std::fs::remove_dir_all(&wrapped_root).unwrap();
 }
