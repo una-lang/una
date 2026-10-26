@@ -136,6 +136,7 @@ impl Table {
 
 /// The object of `table`: a hash set's when `set`, else a hash map's.
 fn object(set: bool, table: Table) -> Object {
+    let table = Box::new(table);
     if set {
         Object::HashSet(Some(table))
     } else {
@@ -146,7 +147,9 @@ fn object(set: bool, table: Table) -> Object {
 /// The table of `object` when it has the layout `set` names.
 fn table_of(object: &Object, set: bool) -> Option<&Table> {
     match (object, set) {
-        (Object::HashMap(Some(table)), false) | (Object::HashSet(Some(table)), true) => Some(table),
+        (Object::HashMap(Some(table)), false) | (Object::HashSet(Some(table)), true) => {
+            Some(&**table)
+        }
         _ => None,
     }
 }

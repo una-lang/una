@@ -98,11 +98,12 @@ enum Object {
     Bits(collections::Bits),
     /// A `HashMap` of `std.collections`, its own layout: the ordered hash table of `una_hash`
     /// over words, with its table's key (`spec/28 §7`). `None` only while an operation holds
-    /// the table outside the heap, to compare keys (`hashes`).
-    HashMap(Option<hashes::Table>),
-    /// A `HashSet` of `std.collections`, its own layout: the same table, each item a key whose
-    /// value is `unit`.
-    HashSet(Option<hashes::Table>),
+    /// the table outside the heap, to compare keys (`hashes`). Boxed, since a table inline would
+    /// grow every object, and so every slot of every heap, by its size.
+    HashMap(Option<Box<hashes::Table>>),
+    /// A `HashSet` of `std.collections`, its own layout: the same table, boxed, each item a key
+    /// whose value is `unit`.
+    HashSet(Option<Box<hashes::Table>>),
 }
 
 /// A map's key, copied out of the heap at insert: an integer, or a text. A variant
@@ -1429,7 +1430,7 @@ impl Object {
             },
             Object::HashMap(table) | Object::HashSet(table) => Node::Hash {
                 set: matches!(self, Object::HashSet(_)),
-                key: table.as_ref().map_or((0, 0), hashes::Table::key_words),
+                key: table.as_ref().map_or((0, 0), |t| t.key_words()),
                 entries: table.as_ref().map_or_else(Vec::new, |t| {
                     t.entries
                         .iter_hashed()
@@ -3565,6 +3566,19 @@ mod tests {
         assert_eq!(
             size_of::<Slot>(),
             size_of::<usize>() + size_of::<Option<Object>>()
+        );
+    }
+
+    #[test]
+    fn no_collection_layout_grows_the_slot() {
+        // Every heap's slot table holds one slot per object, live or free, and the budget
+        // counts it: a collection's layout that is larger than a capability instance's
+        // (`id`, `code` and `cells`, nine words) is boxed, so that no slot of any program
+        // grows with it.
+        assert!(
+            size_of::<Object>() <= 9 * size_of::<usize>(),
+            "{}",
+            size_of::<Object>()
         );
     }
 
