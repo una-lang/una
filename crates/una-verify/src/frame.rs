@@ -155,7 +155,8 @@ impl<'p, 'l> Frames<'p, 'l> {
                 scope.remove(error);
                 join(body, self.expr(handler, &mut scope))
             }
-            Expr::With { body, .. } => self.expr(body, env),
+            // `e within d` has `e`'s value when it returns in time (`spec/27 §5`).
+            Expr::With { body, .. } | Expr::Within { body, .. } => self.expr(body, env),
             Expr::Fail { .. } | Expr::Unreachable { .. } => None,
             // `skip` and `stop` complete the iteration with their state, and the path ends.
             Expr::Exit { state, .. } => {

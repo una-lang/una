@@ -258,6 +258,13 @@ const EXPECTED_DIFFERENCES_0_4: &[Difference04] = &[
         added: &[],
         removed: &[("U0101", "src/before.una:9:13")],
     },
+    // ADR 0117 rule 13: `e within d` is an expression from edition 0.4, and there its unitless
+    // deadline `5` is refused where a duration is required.
+    Difference04 {
+        case: "syntax/within_before_0_4",
+        added: &[("U2028", "src/late.una:10:26")],
+        removed: &[("U0101", "src/late.una:10:19")],
+    },
     // ADR 0120 (`spec/29 §17`): `Matrix`, `Tensor` and `Lu` are built in from edition 0.4, so a
     // package that declares them is refused there.
     Difference04 {

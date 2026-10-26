@@ -1,0 +1,19 @@
+-- test: `e within d` can fail with its time-out, `Deadline` when `e` cannot fail, so without an `if error` clause it is U3007; `attempt` or `if error use` handles it (spec/27 §5, ADR 0117 rule 5)
+-- spec: spec/27 §5
+-- expect: error U3007 at src/bare.una:12:11
+module bare
+
+import std.time (millisecond)
+
+next(n: Int) -> Int = n + 1
+
+pub bare(n: Int) -> Int
+=
+  let x = next(n) within 10 * millisecond
+  x
+
+pub handled(n: Int) -> Int
+=
+  let x = next(n) within 10 * millisecond
+    if error use 0
+  x

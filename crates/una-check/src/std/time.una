@@ -11,3 +11,10 @@ pub measure Millisecond = Second / 1000
 
 --- Sixty seconds.
 pub measure Minute = 60 * Second
+
+--- The failure of `e within d` when `e` can fail with `E` (ADR 0117 rule 5): `TimedOut` when
+--- the deadline passed first, `Failed(error: x)` when `e` failed with `x` in time.
+pub kind Timed[E] = TimedOut | Failed(error: E)
+
+--- The failure of `e within d` when `e` cannot fail: the deadline passed first.
+pub kind Deadline = | Expired
