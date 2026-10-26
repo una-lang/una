@@ -39,8 +39,15 @@ pub(crate) fn mentions(expr: &Expr, name: &str, resolve: &dyn Fn(&Ident) -> Stri
     };
     match &expr.kind {
         ExprKind::Name(ident) => resolve(ident) == name,
+        ExprKind::Attempt {
+            operand,
+            within: Some(within),
+        } => mentions(operand, name, resolve) || mentions(within, name, resolve),
         ExprKind::Paren(inner)
-        | ExprKind::Attempt(inner)
+        | ExprKind::Attempt {
+            operand: inner,
+            within: None,
+        }
         | ExprKind::Old(inner)
         | ExprKind::Unary { operand: inner, .. } => mentions(inner, name, resolve),
         ExprKind::Field { target, .. } | ExprKind::In { value: target, .. } => {
@@ -97,8 +104,18 @@ pub(crate) fn reads(expr: &Expr, resolve: &dyn Fn(&Ident) -> String, out: &mut V
     };
     match &expr.kind {
         ExprKind::Name(ident) => out.push(resolve(ident)),
+        ExprKind::Attempt {
+            operand,
+            within: Some(within),
+        } => {
+            reads(operand, resolve, out);
+            reads(within, resolve, out);
+        }
         ExprKind::Paren(inner)
-        | ExprKind::Attempt(inner)
+        | ExprKind::Attempt {
+            operand: inner,
+            within: None,
+        }
         | ExprKind::Old(inner)
         | ExprKind::Unary { operand: inner, .. } => reads(inner, resolve, out),
         ExprKind::Field { target, .. } | ExprKind::In { value: target, .. } => {
