@@ -648,6 +648,10 @@ Recorded with the security review of slice S1 (issue #966, `docs/plan/0117-s1-de
 3. **The context switch is Rust `naked_asm!` only.** It is assembled by the Rust toolchain itself, inside `una-sys`: there is no `.s` or `.S` file, no build script, and no C source compiled, so the rule that nothing is compiled from anything but Rust (ADR 0116, amendment of 2026-10-19) holds.
 4. **Size.** Rule 2's cap of 800 lines rises to 1,200, with one assembly instruction per line (ADR 0116, amendment of 2026-10-19 on the size of `una-sys`).
 
+## Amendment (2026-10-19): the measurement of Implementation plan step 1
+
+Step 1 asks for "no regression on the performance gate programs". For the merge of slice S1, the measurement uses three microbenchmarks in the style of #598 (10^7 calls in a loop; 3·10^7 loop iterations; a `together for` of 1,000 tasks of 10^4 calls each, as the server load), built in release mode from `main` and from the slice, with a byte-identical copy of `main`'s executables as a control for the noise, timed in 15 interleaved rounds in a quiet window, comparing the slice with the ADR 0116 slices below it, so that the scheduler's cost is isolated. A program passes when its median slowdown is at most 2% or the noise the control measures, whichever is larger. The results, with the raw times, are recorded in the slice's pull request. A slowdown above that bound is a regression, fixed before the merge. The Gate 2 performance set cannot stand in: its preregistration (una-bench `docs/gate2-perf-plan.md` §3.3) forbids timing any Una version of it before its freeze, and that rule outranks this record's wording. These microbenchmarks stand in until the frozen set measures the same cost at its first gate run (#1074).
+
 ## Amendment (2026-10-25): structural placement, and threads started before main
 
 Found by the independent review of the ADR 0116 amendment for a precise `τ_conc` (channels P6 and P8), issue #1145, and landed in slice S1 before it merged. The text above stays as accepted; this amendment changes how it is read.
