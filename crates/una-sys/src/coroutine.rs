@@ -17,6 +17,10 @@
 //!   unwinding it (decision D1, ADR 0117 amendment of 2026-10-19).
 //! - The float control state is switched on x86-64 (MXCSR, x87) but not on AArch64 (FPCR): every
 //!   task writes the one environment of ADR 0114 rule 6.4; a per-task one must switch FPCR.
+//! - In AddressSanitizer builds only (`--cfg una_asan`, `scripts/sanitize.sh`), every switch is
+//!   announced through the sanitizer's own fiber interface (the private module `fiber`), and a
+//!   stack's usable region is unpoisoned when a task gets it or gives it back; no other build
+//!   refers to these functions (ADR 0117 amendment of 2026-10-25).
 //!
 //! ```compile_fail
 //! let stack = una_sys::coroutine::Stack::new(65536).unwrap();
@@ -137,6 +141,10 @@ impl Stack {
     /// pooled stack holds no memory and no data of the task that used it. On failure, the
     /// caller drops the stack instead of pooling it.
     pub fn discard(&mut self) -> Result<(), StackError> {
+        // ASan's shadow of the stack, which `madvise` does not clear on Linux, is cleared too:
+        // the frames of a coroutine's `entry` never return, so their redzones stay poisoned.
+        #[cfg(una_asan)]
+        fiber::unpoison(self.top() - self.usable(), self.usable());
         let usable = self
             .base
             .as_ptr()
@@ -172,10 +180,14 @@ impl Drop for Stack {
 }
 
 /// The stack pointer each side of a coroutine saved at its last switch: the resumer's, and
-/// the coroutine's. Only one side runs at a time.
+/// the coroutine's, and in AddressSanitizer builds what it is told at each switch. Only one
+/// side runs at a time.
 struct Switch {
     resumer: Cell<usize>,
     coroutine: Cell<usize>,
+    /// What AddressSanitizer is told at each switch, in its builds only.
+    #[cfg(una_asan)]
+    asan: fiber::Sides,
 }
 
 /// What a coroutine and its resumer share: the switch, and the body until it starts, which may
@@ -255,6 +267,8 @@ impl<'env> Scope<'env> {
             switch: Switch {
                 resumer: Cell::new(0),
                 coroutine: Cell::new(0),
+                #[cfg(una_asan)]
+                asan: fiber::Sides::new(stack.top() - stack.usable(), stack.usable()),
             },
             body: Cell::new(Some(body)),
             finished: Cell::new(false),
@@ -292,6 +306,9 @@ impl<'s> Coroutine<'s> {
         let Some(stack) = &self.stack else {
             return;
         };
+        // A pooled stack may hold the poisoned redzones of an earlier task's frames (ASan only).
+        #[cfg(una_asan)]
+        fiber::unpoison(stack.top() - stack.usable(), stack.usable());
         let top = stack.top() & !15;
         let entry = entry as extern "C" fn(*const Shared<'_>) as usize;
         let slots = arch::initial_frame(self.shared.as_ptr().addr(), entry);
@@ -328,11 +345,18 @@ impl<'s> Coroutine<'s> {
             self.shared().switch.resumer.as_ptr(),
             self.shared().switch.coroutine.get(),
         );
+        #[cfg(una_asan)]
+        fiber::start(
+            Some(&self.shared().switch.asan.resumer_fake),
+            self.shared().switch.asan.coroutine,
+        );
         // SAFETY: `load` is the stack pointer the coroutine saved at its last switch, or the
         // frame `prepare` wrote; its stack is alive, owned by `self`. `save` points into the
         // shared record, alive as long as `self`. The coroutine switches back to the pointer
         // saved here, so this call returns as an ordinary call.
         unsafe { arch::switch(save, load) };
+        #[cfg(una_asan)]
+        fiber::finish(self.shared().switch.asan.resumer_fake.get());
         CURRENT.with(|current| current.set(previous));
         if self.shared().finished.get() {
             self.run = Run::Finished;
@@ -389,9 +413,16 @@ pub fn suspend() -> bool {
     // and its switch, in the shared record, lives as long as the coroutine, which `resume`
     // borrows.
     let switch = unsafe { &*current };
+    #[cfg(una_asan)]
+    fiber::start(Some(&switch.asan.coroutine_fake), switch.asan.resumer.get());
     // SAFETY: the resumer saved its stack pointer in `resumer` when it switched here, and waits
     // in `resume`; the next resume switches back to the pointer saved in `coroutine`.
     unsafe { arch::switch(switch.coroutine.as_ptr(), switch.resumer.get()) };
+    #[cfg(una_asan)]
+    switch
+        .asan
+        .resumer
+        .set(fiber::finish(switch.asan.coroutine_fake.get()));
     true
 }
 
@@ -406,6 +437,13 @@ extern "C" fn entry(shared: *const Shared<'_>) {
     // SAFETY: the trampoline passes the record `prepare` wrote into the first frame, alive as
     // long as the coroutine, which `resume` borrows while this runs.
     let shared = unsafe { &*shared };
+    // The first landing on this stack: no fake stack of its own yet; the resumer's bounds.
+    #[cfg(una_asan)]
+    shared
+        .switch
+        .asan
+        .resumer
+        .set(fiber::finish(std::ptr::null_mut()));
     if let Some(body) = shared.body.take()
         && let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body))
     {
@@ -416,10 +454,99 @@ extern "C" fn entry(shared: *const Shared<'_>) {
     }
     shared.finished.set(true);
     let mut ended = 0usize;
+    // The last switch out: no fake stack to keep, so AddressSanitizer frees this one's.
+    #[cfg(una_asan)]
+    fiber::start(None, shared.switch.asan.resumer.get());
     // SAFETY: the resumer waits in `resume`, its stack pointer saved in `resumer`; nothing
     // ever switches back to `ended`.
     unsafe { arch::switch(&raw mut ended, shared.switch.resumer.get()) };
     std::process::abort();
+}
+
+/// AddressSanitizer's fiber interface, declared only in its builds (`--cfg una_asan`, set by
+/// `scripts/sanitize.sh`): `__sanitizer_start_switch_fiber` before each switch, with the bounds
+/// of the stack switched to, and `__sanitizer_finish_switch_fiber` on landing, which reports the
+/// bounds of the stack left. Without them ASan cannot follow the switch, warns on its
+/// `__asan_handle_no_return`, and may report errors that are not. The symbols are the
+/// sanitizer runtime's own, and no other build, a release least of all, refers to them.
+#[cfg(una_asan)]
+mod fiber {
+    use std::cell::Cell;
+    use std::ffi::c_void;
+
+    // SAFETY: functions of the sanitizer's public interface, with their C signatures: the two
+    // of `sanitizer/common_interface_defs.h` and `__asan_unpoison_memory_region` of
+    // `sanitizer/asan_interface.h` (its `void const volatile *` is a `*const c_void` here). The
+    // ASan runtime that `-Zsanitizer=address` links defines them.
+    unsafe extern "C" {
+        fn __sanitizer_start_switch_fiber(
+            save: *mut *mut c_void,
+            bottom: *const c_void,
+            size: usize,
+        );
+        fn __sanitizer_finish_switch_fiber(
+            save: *mut c_void,
+            bottom_old: *mut *const c_void,
+            size_old: *mut usize,
+        );
+        fn __asan_unpoison_memory_region(addr: *const c_void, size: usize);
+    }
+
+    /// A coroutine's two sides as ASan sees them: the bounds (lowest address and size) of the
+    /// coroutine's usable stack and of its resumer's, and the fake stack each side keeps while
+    /// the other runs.
+    pub(super) struct Sides {
+        pub(super) coroutine: (usize, usize),
+        pub(super) resumer: Cell<(usize, usize)>,
+        pub(super) resumer_fake: Cell<*mut c_void>,
+        pub(super) coroutine_fake: Cell<*mut c_void>,
+    }
+
+    impl Sides {
+        /// The sides of a coroutine whose usable stack starts at `bottom` and holds `size` bytes;
+        /// the resumer's bounds come from the first landing on that stack.
+        pub(super) fn new(bottom: usize, size: usize) -> Sides {
+            Sides {
+                coroutine: (bottom, size),
+                resumer: Cell::new((0, 0)),
+                resumer_fake: Cell::new(std::ptr::null_mut()),
+                coroutine_fake: Cell::new(std::ptr::null_mut()),
+            }
+        }
+    }
+
+    /// Announces a switch to the stack `to`; `save` keeps the fake stack of the side left, or is
+    /// `None` when that side never runs again, so ASan frees it.
+    // Inlined, so that after the last `start`, which frees the fake stack, no epilogue of a
+    // wrapper's own frame can write to it.
+    #[inline(always)]
+    pub(super) fn start(save: Option<&Cell<*mut c_void>>, to: (usize, usize)) {
+        let save = save.map_or(std::ptr::null_mut(), Cell::as_ptr);
+        let bottom = std::ptr::with_exposed_provenance::<c_void>(to.0);
+        // SAFETY: `save` is null or a cell alive across the switch; `bottom` and `to.1` are the
+        // bounds of a stack that is mapped while it runs. ASan only records them.
+        unsafe { __sanitizer_start_switch_fiber(save, bottom, to.1) }
+    }
+
+    /// Completes a switch on the stack landed on: `saved` is the fake stack this side kept when
+    /// it left, or null on its first landing. The bounds of the stack left.
+    #[inline(always)]
+    pub(super) fn finish(saved: *mut c_void) -> (usize, usize) {
+        let (mut bottom, mut size) = (std::ptr::null::<c_void>(), 0usize);
+        // SAFETY: `saved` came from this side's `start`, or is null; the two out-pointers are
+        // locals of this frame.
+        unsafe { __sanitizer_finish_switch_fiber(saved, &raw mut bottom, &raw mut size) };
+        (bottom.addr(), size)
+    }
+
+    /// Clears ASan's shadow of the `size` bytes from `bottom`, a stack's usable region, which
+    /// no code runs on at that moment.
+    pub(super) fn unpoison(bottom: usize, size: usize) {
+        let addr = std::ptr::with_exposed_provenance::<c_void>(bottom);
+        // SAFETY: `bottom .. bottom + size` is the usable region of a mapped stack that no frame
+        // uses now: one about to be given to a task, or given back; ASan only writes its shadow.
+        unsafe { __asan_unpoison_memory_region(addr, size) }
+    }
 }
 
 #[cfg(target_arch = "aarch64")]

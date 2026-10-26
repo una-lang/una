@@ -1829,6 +1829,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
     fn i5_i7_a_block_joins_batch_by_batch_and_keeps_its_results_in_task_order() {
         // ADR 0113 rules 1 and 3, in process, so that Miri checks the staged fork and join: a
         // block over more than one batch, of 2 tasks here, copies each task's result into its
@@ -1910,6 +1911,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
     fn a_race_gives_its_winner_and_fails_only_when_every_branch_fails() {
         // `spec/27 §6`: the branch that returns wins, and a failure cancels nothing; when every
         // branch fails, the race fails with the lowest-indexed failure; an abort decides the
@@ -1924,6 +1926,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
     fn a_race_cancels_its_losers_once_a_branch_wins() {
         // `spec/27 §6`, ADR 0117 rule 6: the winner lowers the race's count to 0, so a loser
         // that runs sees its cancellation at its next check, and the race gives the winner's
@@ -1956,6 +1959,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
     fn i11_a_defect_cancels_every_task_of_its_block_and_decides_it() {
         // ADR 0113 I11: a task stopped with U8001 cancels every task of its block, the lower
         // ones included, so that a lower task that would run on cannot hide the defect; the
@@ -1972,6 +1976,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
     fn i11_a_panic_in_a_start_or_an_adoption_is_u8001_at_the_block() {
         // ADR 0113 I11: a task's start and the adoption of a batch's events run inside
         // `guarded`, so a panic there stops the block with U8001, never unwinding through the
@@ -2022,6 +2027,7 @@ mod tests {
     static SEVEN_STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
     #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
     fn i11_a_thread_that_panics_after_its_report_stops_the_block_with_u8001() {
         // ADR 0113 I11: a task's thread that panics after it reported, as it releases its heap,
         // is joined with an error, which the block reports as U8001 rather than as a
@@ -2043,6 +2049,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
     fn i11_a_thread_that_panics_after_its_report_is_u8001_when_its_block_fails() {
         // ADR 0113 I11, through the threads the join tells to exit: a failing batch whose other
         // task panicked after its report stops with U8001, not with the failure; and when the
@@ -2059,6 +2066,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
     fn i10_a_refused_import_while_its_block_s_task_is_cancelled_stops_as_cancelled() {
         // ADR 0113 I10, through a real refused import: the copy into the task's heap is refused,
         // and the block's own task is cancelled before its join; the block stops as cancelled,
@@ -2212,6 +2220,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
     fn i1_i3_every_start_allocates_within_its_reservation_at_any_depth_and_path() {
         // ADR 0113 rule 2: the debug counters check each start, on the block's task and on the
         // new thread, against `K + T`, in blocks nested 1, 10, 50 and 200 deep and with a long
@@ -2266,6 +2275,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
     fn i1_i10_an_adoption_reserves_what_it_allocates_and_renumbers_the_handlers() {
         // ADR 0113 rule 3: a batch whose tasks each install a handler and record an event adopts
         // their events in task order, the handlers renumbered from the block's counts, within
@@ -2292,6 +2302,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
     fn i1_i10_an_adoption_inside_nested_blocks_renumbers_within_what_it_reserved() {
         // ADR 0113 rule 3, where the block's path is not empty: blocks nested 4 deep in a traced
         // task whose bottom block's two tasks each install a handler and record an event. Each
@@ -2308,6 +2319,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
     fn i1_a_traced_run_grows_its_trace_a_logarithmic_number_of_times() {
         // ADR 0113 rule 5, by counter: the trace grows as the slot table does, to twice its
         // capacity, so k blocks whose tasks each record an event grow it O(log k) times, not k
@@ -2335,6 +2347,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
     fn i1_a_block_s_copies_make_the_sum_of_its_tasks_steps() {
         // ADR 0113, I1, by counters: on the block's thread, a block of t tasks over integers
         // exports t closures, one object each, and imports t results, one text each.

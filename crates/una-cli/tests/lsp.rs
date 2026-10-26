@@ -56,6 +56,7 @@ fn uri(path: &Path) -> String {
 fn cli_check(dir: &Path) -> Value {
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
         .args(["--json", "check"])
         .arg(dir)
         .output()
@@ -146,6 +147,7 @@ impl Session {
     fn start(path: Option<&Path>) -> Session {
         let mut command = Command::new(env!("CARGO_BIN_EXE_una"));
         command.env("HOME", env!("CARGO_TARGET_TMPDIR"));
+        command.env_remove("UNA_PROOF_KEY");
         if let Some(path) = path {
             command.env("PATH", path);
         }
