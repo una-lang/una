@@ -4928,7 +4928,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                 },
             ),
             _ => {
-                self.broken = true;
+                self.broken.set(true);
                 (
                     false,
                     Label::public(),
@@ -5078,7 +5078,7 @@ impl<'e, 'a> Fx<'e, 'a> {
             }
             ComplexStep::Scale => {
                 let Some(k) = factor else {
-                    self.broken = true;
+                    self.broken.set(true);
                     return Atom::Unit;
                 };
                 let re = self.component(lets, &parts, FloatOp::Mul, vec![a, k.clone()]);
