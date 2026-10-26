@@ -7,7 +7,7 @@ use una_syntax::Span;
 use una_syntax::ast::{
     AssignStmt, Bind, Block, BlockExpr, Body, CapBindingValue, ElseBranch, Expr, ExprKind,
     ForSource, ForStmt, Handled, HandlingKind, IfBlock, IfThenStmt, LetStmt, LetValue, Literal,
-    PatternKind, Stmt, StopStmt, TextPart, TogetherFor, TogetherStmt, WhenExpr,
+    PatternKind, Stmt, StopStmt, TextPart, TogetherFor, TogetherStmt, UntilStmt, WhenExpr,
 };
 
 use super::Report;
@@ -141,6 +141,13 @@ impl<'a> Checker<'_, 'a, '_> {
                 Stmt::Stop(stmt) => {
                     self.outside_rl(stmt.span, || "`stop`".to_owned());
                     self.stop_stmt(stmt);
+                    if is_last && tail {
+                        self.returned_value(stmt.span, &Ty::Unit, expected, role);
+                    }
+                }
+                Stmt::Until(stmt) => {
+                    self.outside_rl(stmt.span, || "`for until`".to_owned());
+                    self.until_stmt(stmt);
                     if is_last && tail {
                         self.returned_value(stmt.span, &Ty::Unit, expected, role);
                     }
@@ -488,6 +495,80 @@ impl<'a> Checker<'_, 'a, '_> {
                 Some((label, at)) => (label.join(&pc), at.or(from)),
                 None => (pc, from),
             });
+        }
+    }
+
+    /// `for until c decreases m` with its block (`spec/26 §4`, ADR 0116 rule 7, V1, IF1): `c`
+    /// is a `Bool`, `m` an integer in the refinement language that is never run, and the body
+    /// runs under the label of `c`, since how many iterations run depends on it. The measure
+    /// carries the `decreases_bound` and `decreases_step` obligations, at `decreases`.
+    fn until_stmt(&mut self, stmt: &UntilStmt) {
+        // Whether `c` is in the refinement language decides what the verifier may assume.
+        let saved = std::mem::replace(&mut self.probe_failed, false);
+        self.ctx.rl = Rl::Probe;
+        let label = self.condition_label(&stmt.condition, "the condition of `for until`");
+        self.ctx.rl = Rl::Off;
+        if !std::mem::replace(&mut self.probe_failed, saved) {
+            self.findings.refinable_conditions.push(stmt.condition.span);
+        }
+        let ctx = Ctx {
+            rl: Rl::Clause,
+            labels: false,
+            ..self.ctx.clone()
+        };
+        let measure = self.within(ctx, |checker| checker.expr(&stmt.measure, None));
+        let measure = self.resolve(&measure);
+        if !matches!(measure.unlabeled(), Ty::Error(_))
+            && !super::fixed::is_integer(measure.magnitude())
+        {
+            self.report.error(
+                Code::U2001,
+                stmt.measure.span,
+                format!(
+                    "the measure of `decreases` must be an integer, found `{}`",
+                    self.show(&measure)
+                ),
+            );
+        }
+        self.obligation(ObligationKind::DecreasesBound, stmt.decreases, None);
+        self.obligation(ObligationKind::DecreasesStep, stmt.decreases, None);
+        let before = self.taken_state();
+        let before_len = self.locals.len();
+        let saved = self.raise_pc(&label, stmt.condition.span);
+        let mark = self.locals.len();
+        self.loops.push(LoopFrame {
+            pc: self.ctx.pc.clone(),
+            depth: (self.task_depth, self.lambda_depth),
+            skipped: None,
+        });
+        let ty = self.block(&stmt.block, None, Role::Plain, false);
+        self.loops.pop();
+        self.locals.truncate(mark);
+        self.restore_pc(saved);
+        self.discarded(value_span(&stmt.block), &ty);
+        self.taken_in_loop(&before, before_len);
+        self.join_skipped(&before);
+    }
+
+    /// U2017: the outer bindings that the body of a loop takes, and that it does not give a
+    /// new value before its end, are taken in every iteration (`spec/17 §3` rule 3).
+    fn taken_in_loop(&mut self, before: &TakenState, before_len: usize) {
+        let newly: Vec<(usize, Span)> = self
+            .locals
+            .taken_now()
+            .filter(|&(index, _)| index < before_len && before.get(index).is_none())
+            .collect();
+        for (index, at) in newly {
+            if let Some(local) = self.locals.get(index) {
+                let name = local.name;
+                self.report.error(
+                    Code::U2017,
+                    at,
+                    format!(
+                        "`{name}` is taken in every iteration of this loop; give it a new value before the end of the body, or declare it inside the loop"
+                    ),
+                );
+            }
         }
     }
 
@@ -1504,6 +1585,7 @@ fn stmt_span(stmt: &Stmt) -> Span {
         Stmt::BlockExpr(expr) => block_expr_span(expr),
         Stmt::Stop(stmt) => stmt.span,
         Stmt::Skip(span) => *span,
+        Stmt::Until(stmt) => stmt.span,
     }
 }
 

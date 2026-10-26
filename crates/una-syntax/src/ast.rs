@@ -657,6 +657,24 @@ pub enum Stmt {
     Stop(Box<StopStmt>),
     /// `skip`, in edition 0.4: ends the iteration (`spec/26 §3`). The span of the word.
     Skip(Span),
+    /// `for until c decreases m` with a block, in edition 0.4 (`spec/26 §4`).
+    Until(Box<UntilStmt>),
+}
+
+/// `"for" "until" line_expr "decreases" add_expr NEWLINE INDENT block DEDENT` (`spec/26 §4`,
+/// ADR 0116 rule 7).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UntilStmt {
+    /// `c`: the loop ends at the start of an iteration where it holds.
+    pub condition: Expr,
+    /// The word `decreases`, where the measure's obligations are reported.
+    pub decreases: Span,
+    /// `m`: the measure, for the verifier only.
+    pub measure: Expr,
+    /// The body.
+    pub block: Block,
+    /// The whole statement.
+    pub span: Span,
 }
 
 /// `"stop" [ "when" line_expr ]` (`spec/26 §3`, ADR 0116 rule 6).

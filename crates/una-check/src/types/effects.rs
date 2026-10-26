@@ -94,6 +94,11 @@ impl Scan<'_, '_> {
                 }
             }
             Stmt::Skip(_) => {}
+            // The measure is never evaluated (ADR 0116 rule 7).
+            Stmt::Until(stmt) => {
+                self.expr(&stmt.condition);
+                self.block(&stmt.block);
+            }
         }
     }
 

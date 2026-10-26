@@ -1,0 +1,22 @@
+-- test: the binary search of ADR 0116 rule 7 proves its measure: `not c` holds in the body, so `hi - lo` is at least 0 there and each iteration that goes on decreases it (spec/26 §4, ADR 0116 V1)
+-- spec: spec/26 §4
+-- expect: ok
+module search
+
+pub find(xs: List[Int], key: Int) -> Option[Int]
+=
+  let edit lo = 0
+  let edit hi = xs.len
+  let edit found: Option[Int] = None
+  for until lo >= hi decreases hi - lo
+    let mid = lo + (hi - lo) / 2
+    let value = xs.at(index: mid)
+      if none use key
+    if value == key
+      found = Some(mid)
+      stop
+    if value < key
+      lo = mid + 1
+    if value > key
+      hi = mid
+  found

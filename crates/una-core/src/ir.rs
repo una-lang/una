@@ -1566,6 +1566,20 @@ pub enum LoopSource {
         /// Whether `high` is visited (`..`), or excluded (`..<`).
         inclusive: bool,
     },
+    /// `until(c)`: no element; before each iteration, `cond` is evaluated with the current
+    /// state bound, and the loop ends when it is `true` (`spec/26 §4`, ADR 0116 rule 20). Only
+    /// in a loop, never in `together_for`.
+    Until {
+        /// The condition, an expression over the loop's state and the bindings before it.
+        cond: Box<Expr>,
+        /// The condition as a formula, when it is in the refinement language: false in the
+        /// body, and true after a loop with no `stop` (ADR 0116 V1, V3).
+        holds: Option<Box<Clause>>,
+        /// The measure, over the loop's state, which is never evaluated (ADR 0116 V1).
+        measure: Box<Clause>,
+        /// The word `decreases`, where the measure's obligations are reported.
+        decreases: Span,
+    },
 }
 
 /// How an iteration of a loop ends (`spec/26 §3`, ADR 0116 rule 20).

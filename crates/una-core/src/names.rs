@@ -65,6 +65,7 @@ pub fn vars(expr: &Expr, out: &mut BTreeSet<String>) {
                     atoms(std::slice::from_ref(low), out);
                     atoms(std::slice::from_ref(high), out);
                 }
+                LoopSource::Until { cond, .. } => vars(cond, out),
             }
             atoms(init, out);
             vars(body, out);
@@ -81,6 +82,7 @@ pub fn vars(expr: &Expr, out: &mut BTreeSet<String>) {
                     atoms(std::slice::from_ref(low), out);
                     atoms(std::slice::from_ref(high), out);
                 }
+                LoopSource::Until { cond, .. } => vars(cond, out),
             }
             vars(task, out);
         }
@@ -161,10 +163,17 @@ pub fn binders<'e>(expr: &'e Expr, out: &mut BTreeSet<&'e str>) {
             binders(body, out);
         }
         Expr::Loop {
-            var, state, body, ..
+            source,
+            var,
+            state,
+            body,
+            ..
         } => {
             out.insert(var.0.as_str());
             out.extend(state.iter().map(|(name, _)| name.as_str()));
+            if let LoopSource::Until { cond, .. } = source.as_ref() {
+                binders(cond, out);
+            }
             binders(body, out);
         }
         Expr::Together { tasks, .. } => tasks.iter().for_each(|task| binders(task, out)),

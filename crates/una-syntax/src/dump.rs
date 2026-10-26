@@ -548,6 +548,14 @@ impl Dumper<'_> {
                 None => atom("stop"),
             },
             Stmt::Skip(_) => atom("skip"),
+            Stmt::Until(stmt) => list(
+                "for-until",
+                [
+                    self.expr(&stmt.condition),
+                    self.expr(&stmt.measure),
+                    self.block(&stmt.block),
+                ],
+            ),
         }
     }
 

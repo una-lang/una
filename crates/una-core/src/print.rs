@@ -282,6 +282,7 @@ fn print_source(source: &LoopSource) -> String {
             if *inclusive { ".." } else { "..<" },
             print_atom(high)
         ),
+        LoopSource::Until { measure, .. } => format!("until decreases {}", measure.text),
     }
 }
 
@@ -634,6 +635,7 @@ impl Printer {
                 body,
                 ..
             } => {
+                let source_ref = source.as_ref();
                 let source = print_source(source);
                 let state: Vec<String> = state
                     .iter()
@@ -651,6 +653,12 @@ impl Printer {
                         state.join(", ")
                     ),
                 );
+                // The condition of `until`, evaluated before each iteration.
+                if let LoopSource::Until { cond, .. } = source_ref {
+                    self.line(indent + 1, "until");
+                    self.expr(indent + 2, cond);
+                    self.line(indent + 1, "do");
+                }
                 self.expr(indent + 1, body);
             }
             Expr::Together { tasks, .. } => {

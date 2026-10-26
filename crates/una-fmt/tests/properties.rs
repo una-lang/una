@@ -289,6 +289,11 @@ impl Normalizer<'_> {
                 }
             }
             Stmt::Skip(_) => {}
+            Stmt::Until(stmt) => {
+                self.expr(&mut stmt.condition);
+                self.expr(&mut stmt.measure);
+                self.block(&mut stmt.block);
+            }
         }
     }
 

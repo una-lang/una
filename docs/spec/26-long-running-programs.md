@@ -80,3 +80,24 @@ A program that runs until it is told to stop, such as a game loop, a server or a
 6. **Information flow** (ADR 0116 IF2, IF3).
    - Whether later iterations run must not depend on data the body did not start with. `stop` and `stop when c` are legal only where the program counter, joined with the label of `c`, is the one the loop's body starts with. Otherwise the statement is U4002, with the condition that raised it as a related location, as for `fail` (`spec/07 §3` rule 3).
    - `skip` inside a branch on `c` makes the rest of the body run only when the branch was not taken: the statements of the body after it are checked under the program counter joined with the label of `c`.
+
+## 4. `for until c decreases m`
+
+1. **Grammar.** In edition `0.4`, a `for` statement MAY be `for until c decreases m` with a block (ADR 0116 rules 5 and 7):
+
+   ```ebnf
+   until_stmt = "for" "until" line_expr "decreases" add_expr NEWLINE INDENT block DEDENT ;
+   ```
+
+   - `until` and `decreases` are words: `until` right after `for` starts this form when `in` does not follow it, so `for until in xs` is a loop over `xs` whose variable is `until`.
+   - Without `decreases` it is U0101, `` `for until` needs a `decreases` measure ``.
+2. **Meaning.** At the start of each iteration, `c` is evaluated with the current values of the bindings, and when it holds the loop ends. `c` is a `Bool` (U2001). `stop` and `skip` work in the body as in every `for` (§3).
+3. **The measure.** `m` is an expression of an integer type (`Int`, a fixed-width type or a measured type), in the refinement language (U2014 otherwise), over the bindings in scope; another type is U2001. It is never evaluated: it exists for the verifier.
+4. **Verification** (ADR 0116 V1, V3). The loop carries the obligations `decreases_bound` and `decreases_step` of `spec/12 §3`, under the loop's invariant: the bindings the body updates are fresh at their declared types, and the facts of the enclosing context are kept (`spec/17 §5` rule 3).
+   - When `c` is in the refinement language, `not c` is a hypothesis in the body.
+   - `decreases_bound`: where the loop continues, `m >= 0`.
+   - `decreases_step`: at the end of the body and at each `skip`, `m` is less than at the start of the iteration. A path that ends at `stop` carries neither obligation.
+   - Together they prove that the loop ends.
+   - After a `for until` whose body has no `stop` of it, and whose `c` is in the refinement language, `c` holds. After every loop, the bindings it updates are fresh at their declared types.
+5. **Information flow** (ADR 0116 IF1). The body runs under the program counter joined with the label of `c`, since how many iterations run depends on it, as a `for` over a list runs under the list's top label (`spec/17 §6` rule 3). `m` is erased.
+6. **Core** (ADR 0116 rule 20). The loop is a Core `loop` whose source is `until(c)`, with `c` an expression over the state that both engines evaluate before each iteration, its formula when it is in the refinement language, and the measure as a clause.

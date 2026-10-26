@@ -240,6 +240,12 @@ const EXPECTED_DIFFERENCES_0_4: &[Difference04] = &[
         added: &[],
         removed: &[("U0101", "src/before.una:10:10")],
     },
+    // ADR 0116 rule 7: `for until` is a loop form from edition 0.4.
+    Difference04 {
+        case: "syntax/until_before_0_4",
+        added: &[],
+        removed: &[("U0101", "src/before.una:9:13")],
+    },
     // ADR 0120 (`spec/29 §17`): `Matrix`, `Tensor` and `Lu` are built in from edition 0.4, so a
     // package that declares them is refused there.
     Difference04 {
