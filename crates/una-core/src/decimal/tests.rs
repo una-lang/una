@@ -453,3 +453,38 @@ fn parsing_under_the_cap_is_at_most_quadratic_in_its_digits() {
     let (small, large) = (time(500).max(1e-4), time(4_000).max(1e-4));
     assert!(large / small < 192.0, "{small} {large}");
 }
+
+#[test]
+fn the_powers_of_ten_are_exact() {
+    // #1090: each entry is 10^s itself, read back exactly as an integer, and the nearest binary64
+    // value to the integer 10^s.
+    for (s, &entry) in POW10.iter().enumerate() {
+        let exact = BigInt::from(10u8).pow(u32::try_from(s).unwrap());
+        assert_eq!(
+            crate::float::to_int_exact(entry),
+            Some(exact.clone()),
+            "10^{s}"
+        );
+        assert_eq!(
+            crate::float::from_int(&exact).to_bits(),
+            entry.to_bits(),
+            "10^{s}"
+        );
+    }
+}
+
+#[test]
+fn the_decimal_paths_call_no_platform_power() {
+    // #1090: `powi` and `powf` round differently across targets (and under Miri), so no decimal
+    // conversion may call them; powers of ten come from `POW10`.
+    let source = include_str!("../decimal.rs");
+    for (line, text) in source.lines().enumerate() {
+        let code = text.split("//").next().unwrap_or("");
+        assert!(
+            !code.contains(".powi(") && !code.contains(".powf("),
+            "decimal.rs:{}: {}",
+            line + 1,
+            text.trim()
+        );
+    }
+}
