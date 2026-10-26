@@ -451,8 +451,11 @@ mod tests {
         // AArch64's `fmadd`, where `mul_add` is that instruction (clippy's `disallowed_methods`
         // keeps it there: elsewhere it may call the platform's C library).
         #[cfg(target_arch = "aarch64")]
-        #[allow(clippy::disallowed_methods)]
-        assert_eq!(b(x.mul_add(y, z)), b(1.0 + e));
+        {
+            #[allow(clippy::disallowed_methods)]
+            let fused = x.mul_add(y, z);
+            assert_eq!(b(fused), b(1.0 + e));
+        }
         // Special values.
         assert_eq!(b(fma(f32::INFINITY, 0.0, 1.0)), CANONICAL_NAN);
         assert_eq!(b(fma(-0.0, 1.0, -0.0)), b(-0.0));

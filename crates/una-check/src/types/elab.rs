@@ -4613,7 +4613,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                     una_core::float32::Literal::Value(value) => Atom::F32(value.to_bits()),
                     // U2031, which the checker reported.
                     _ => {
-                        self.broken = true;
+                        self.broken.set(true);
                         Atom::F32(0)
                     }
                 }
