@@ -112,8 +112,13 @@ fn every_dense_contract_keeps_each_of_its_clauses() {
     let (_, types) = run("0.4", "module m\n\npub f() -> Int = 1\n");
     let source = standard_source(Edition::V0_4).prelude;
     let start = source.find("pub array[").expect("the dense prelude");
+    // The dense section ends where the declarations of `F32` (`spec/29 §18` rule 9) begin.
+    let end = start
+        + source[start..]
+            .find("pub f32_from_bits(")
+            .expect("the F32 prelude after the dense one");
     let mut expected: Vec<(String, usize, usize)> = Vec::new();
-    for line in source[start..].lines() {
+    for line in source[start..end].lines() {
         if let Some(rest) = line.strip_prefix("pub ") {
             let end = rest.find(['(', '[']).unwrap();
             expected.push((rest[..end].to_owned(), 0, 0));
