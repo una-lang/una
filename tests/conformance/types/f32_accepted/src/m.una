@@ -7,7 +7,9 @@ pub kind Sample
   value: F32
   name: Text
 
-pub literals() -> List[F32] = [0.5, 1.0, 0.1, 6.674_30e-11, 1.0e-45, 3.4028235e38, 3.4028235677973366e38, 0.0, -0.0]
+pub literals() -> List[F32] = [0.5, 1.0, 0.1, 6.674_30e-11, 1.0e-45, 3.4028235e38,
+  3.4028235677973366e38, 0.0, -0.0
+]
 
 pub arithmetic(a: F32, b: F32) -> F32 = (a + b) * (a - b) / -a + 0.1
 
@@ -17,7 +19,8 @@ pub methods(x: F32, y: F32) -> F32
 =
   let s = x.abs().sqrt() + x.fma(times: y, plus: 1.0) + x.rem(by: y)
   let r = x.floor() + x.ceil() + x.trunc() + x.round_half_even() + x.round_half_away()
-  s + r + x.copy_sign(from: y) + x.ieee_min(other: y) + x.ieee_max(other: y) + x.clamp(lo: 0.5, hi: 1.5)
+  let c = x.clamp(lo: 0.5, hi: 1.5)
+  s + r + x.copy_sign(from: y) + x.ieee_min(other: y) + x.ieee_max(other: y) + c
 
 pub tests(x: F32, y: F32) -> Bool
 =

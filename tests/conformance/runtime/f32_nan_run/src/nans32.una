@@ -16,7 +16,8 @@ made(i: Int) -> F32
   let zero: F32 = 0.0
   let one: F32 = 1.0
   let inf = infinity().to_f32()
-  if i == 0 then zero / zero else if i == 1 then one.rem(by: zero) else if i == 2 then inf.rem(by: one) else if i == 3 then inf.fma(times: zero, plus: one) else (-one).sqrt()
+  let fused = inf.fma(times: zero, plus: one)
+  if i == 0 then zero / zero else if i == 1 then one.rem(by: zero) else if i == 2 then inf.rem(by: one) else if i == 3 then fused else (-one).sqrt()
 
 pub main() -> Unit
   uses @console: Console[print]
