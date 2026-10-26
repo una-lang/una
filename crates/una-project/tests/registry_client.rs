@@ -2241,6 +2241,54 @@ fn a_dispute_that_takes_effect_restarts_the_count_of_claims() {
     assert!(client.misbehavior().is_empty());
 }
 
+/// A reset seals a segment past the cap of claims (ADR 0122 Amendment 10): the thief, holding
+/// `A`, spends 65 claims around a release of its own, which alone makes the owner's names
+/// unavailable ([`past_the_cap_of_claims_no_release_of_the_owner_counts`]); the owner's dispute
+/// takes effect and seals that segment, and `R` claims `A` since the theft. The names resolve
+/// again: no release in the sealed segment counts, the owner's own before the theft included,
+/// and the owner's new release counts.
+#[test]
+fn a_reset_seals_a_segment_past_the_cap_of_claims() {
+    let a = keypair(60, "acme.a");
+    let d = keypair(61, "acme.d");
+    let r = keypair(63, "acme.r");
+    let mut registry = TestRegistry::new("acme");
+    registry.register_keys("acme", &[&a, &d], 1, &[], 1);
+    registry.release("acme/ledger", "0.3.0", "none", "none", &[&a]);
+    let honest = registry.owner_event("acme", "revoke acme.d", 1, &[&a]);
+    registry.release("acme/ledger", "0.3.1", "none", "none", &[&a]);
+    for at in 0..=MAX_CLAIMS {
+        if at == 10 {
+            registry.release("acme/ledger", "0.3.2", "none", "none", &[&a]);
+        }
+        registry.owner_event("acme", "revoke acme.d since 0", 1, &[&a]);
+    }
+    registry.checkpoint(NOW - 30 * DAY);
+    let dispute = registry.recover("acme", "dispute", &r.1, &[]);
+    registry.checkpoint(NOW - 29 * DAY);
+    registry.append("other", "filler");
+    let reset = registry.checkpoint(NOW - 20 * DAY);
+    registry.owner_event("acme", &format!("revoke acme.a since {honest}"), 1, &[&r]);
+    registry.release("acme/ledger", "0.3.3", "none", "none", &[&r]);
+    registry.checkpoint(NOW);
+    let memory = Memory {
+        files: registry.files.clone(),
+    };
+    let mut client = open(&memory, &registry).unwrap();
+    let history = client.history("acme").unwrap();
+    assert_eq!(history.sealed.len(), 1);
+    let sealed = &history.sealed[0];
+    assert_eq!(
+        (sealed.first, sealed.request, sealed.reset, sealed.claims),
+        (0, dispute, reset, MAX_CLAIMS + 1)
+    );
+    let releases = client.releases("acme/ledger").unwrap();
+    assert_eq!(releases.len(), 4);
+    assert!(releases[..3].iter().all(|release| release.compromised));
+    assert!(!releases[3].compromised);
+    assert!(client.misbehavior().is_empty());
+}
+
 /// A recovery that a cancellation entry names does not restart the count, even once its
 /// co-signers overruled the cancellation and it took effect: the owner's claim after it is past
 /// the cap, and no release of the owner counts.
