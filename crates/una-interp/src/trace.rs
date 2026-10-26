@@ -86,7 +86,8 @@ pub enum OutcomeDoc<'a> {
     Cancelled,
     /// A loop stopped at the start of an iteration (ADR 0116 rule 14).
     Stop,
-    /// An iteration of a `for ever within` passed its deadline (ADR 0116 rule 11).
+    /// An iteration of a `for ever within`, or a `within`, passed its deadline (ADR 0116 rule
+    /// 11, ADR 0117 rule 5).
     Timeout,
 }
 

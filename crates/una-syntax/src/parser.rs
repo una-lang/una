@@ -67,6 +67,7 @@ pub(crate) fn parse_plain(lexed: &Lexed, file: FileId, interner: &Interner) -> P
         from_label: lexed.from_label,
         with_label: lexed.with_label,
         and_label: lexed.and_label,
+        error_label: lexed.error_label,
     };
     let tree = parser.file();
     Parsed {
@@ -128,6 +129,7 @@ pub fn parse_uses_clause(
         from_label: None,
         with_label: None,
         and_label: None,
+        error_label: None,
     };
     match parser.lone_uses_clause() {
         Ok(clause) if parser.errors.is_empty() => Ok(clause),
@@ -234,6 +236,8 @@ struct Parser<'a> {
     with_label: Option<Symbol>,
     /// See [`Parser::with_label`].
     and_label: Option<Symbol>,
+    /// Edition 0.4: the symbol of `error` as the field of `Failed(error: x)` (`spec/27 §5`).
+    error_label: Option<Symbol>,
 }
 
 fn is_layout(kind: &TokenKind) -> bool {
@@ -1353,9 +1357,27 @@ impl<'a> Parser<'a> {
         })
     }
 
+    /// Edition 0.4: the keyword `error` as a field name, when `followed_by_colon` is false or
+    /// it is followed by `:`, which only `Failed(error: x)` of `std.time` and code that names
+    /// that field use (`spec/27 §5`, ADR 0117 rule 5). It never names a binding.
+    fn error_field(&mut self, followed_by_colon: bool) -> Option<Ident> {
+        let name = self.error_label?;
+        if !self.v0_4
+            || self.peek() != &TokenKind::Keyword(Keyword::Error)
+            || (followed_by_colon && self.peek_at(1) != &TokenKind::Colon)
+        {
+            return None;
+        }
+        let span = self.advance();
+        Some(Ident { name, span })
+    }
+
     fn field(&mut self) -> Parse<Field> {
         let start = self.span();
-        let name = self.lower_name("a field name")?;
+        let name = match self.error_field(true) {
+            Some(name) => name,
+            None => self.lower_name("a field name")?,
+        };
         self.expect(&TokenKind::Colon, "`:` and the field's type")?;
         let ty = self.ty()?;
         Ok(Field {
@@ -2309,6 +2331,13 @@ impl<'a> Parser<'a> {
             && !matches!(self.peek_at(2), TokenKind::Keyword(Keyword::In))
     }
 
+    /// Whether the cursor is at the word `within` of a deadline (`spec/26 §7`, `spec/27 §5`),
+    /// which the lexer gives as a name only where a deadline may stand, in edition 0.4.
+    fn at_within(&self) -> bool {
+        self.v0_4
+            && matches!(self.peek(), TokenKind::LowerIdent(word) if self.interner.resolve(*word) == "within")
+    }
+
     /// Whether the cursor is at `on stop` alone on its line.
     fn at_on_stop(&self) -> bool {
         matches!(self.peek(), TokenKind::LowerIdent(on) if self.interner.resolve(*on) == "on")
@@ -2512,6 +2541,24 @@ impl<'a> Parser<'a> {
                 with.push(self.cap_binding()?);
             }
         }
+        // Edition 0.4: `within d`, the deadline of the expression (`spec/27 §5`). An `attempt`
+        // with its own deadline takes no second one (U0101).
+        let within = if self.at_within() {
+            if let ExprKind::Attempt {
+                within: Some(_), ..
+            } = &expr.kind
+            {
+                let span = self.span();
+                return self.fail(
+                    span,
+                    "this `attempt` has its deadline already; write one `within`, right after the attempted call",
+                );
+            }
+            self.advance();
+            Some(self.add_expr()?)
+        } else {
+            None
+        };
         let span = self.since(start);
         if self.at_keyword(Keyword::If)
             && matches!(
@@ -2558,6 +2605,7 @@ impl<'a> Parser<'a> {
         Ok(Handled {
             expr,
             with,
+            within,
             handlings,
             span,
         })
@@ -2777,7 +2825,10 @@ impl<'a> Parser<'a> {
     /// One `bind` of the variant pattern on `variant`.
     fn bind(&mut self, variant: Ident) -> Parse<Bind> {
         self.no_nested_pattern(variant)?;
-        let field = self.lower_name("a field name")?;
+        let field = match self.error_field(true) {
+            Some(field) => field,
+            None => self.lower_name("a field name")?,
+        };
         let local = if self.eat(&TokenKind::Colon) {
             self.no_nested_pattern(variant)?;
             Some(self.binding_name("a local name", Binding::Pattern)?)
@@ -3020,8 +3071,19 @@ impl<'a> Parser<'a> {
             TokenKind::Keyword(Keyword::Attempt) => {
                 let start = self.advance();
                 let operand = self.postfix()?;
+                // Edition 0.4: `attempt e within d` takes the deadline, so the `Result` holds the
+                // time-out (`spec/27 §5`).
+                let within = if self.at_within() {
+                    self.advance();
+                    Some(Box::new(self.add_expr()?))
+                } else {
+                    None
+                };
                 Ok(Expr {
-                    kind: ExprKind::Attempt(Box::new(operand)),
+                    kind: ExprKind::Attempt {
+                        operand: Box::new(operand),
+                        within,
+                    },
                     span: self.since(start),
                 })
             }
@@ -3280,7 +3342,10 @@ impl<'a> Parser<'a> {
         loop {
             if self.eat(&TokenKind::Dot) {
                 self.deeper()?;
-                let name = self.lower_name("a field or method name")?;
+                let name = match self.error_field(false) {
+                    Some(name) => name,
+                    None => self.lower_name("a field or method name")?,
+                };
                 expr = if self.at(&TokenKind::LParen) {
                     let args = self.call_args()?;
                     let span = self.since(expr.span);
@@ -3363,6 +3428,9 @@ impl<'a> Parser<'a> {
             let span = self.advance();
             self.advance();
             Some(Ident { name, span })
+        } else if let Some(label) = self.error_field(true) {
+            self.advance();
+            Some(label)
         } else if labeled {
             let label = self.lower_name("an argument label")?;
             self.advance();

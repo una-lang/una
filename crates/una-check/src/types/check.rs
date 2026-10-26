@@ -82,6 +82,10 @@ pub(crate) struct Ctx {
     /// raises the program counter of every effect in the body (ADR 0038 D4, `spec/07 §7`
     /// rule 4).
     pub(crate) floor: Option<Label>,
+    /// Inside `e within d`, its timing label `τ(e)` and the `within`: the timing floor that
+    /// raises the program counter of every operation and every call with effects in `e`, since
+    /// the deadline can cut `e` before any of them (ADR 0117 IF2).
+    pub(crate) timing: Option<(Label, Span)>,
 }
 
 impl Ctx {
@@ -105,6 +109,7 @@ impl Ctx {
             pc_from: None,
             labels: true,
             floor: None,
+            timing: None,
         }
     }
 }

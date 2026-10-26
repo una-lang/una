@@ -1,0 +1,24 @@
+-- test: under `within`, the arguments of an in-place update of a map are computed inside the deadline, after it starts, so a slow argument is cut and the map keeps its value from before; an update whose argument is quick takes place, in both engines (spec/27 §5 rules 2 and 5)
+-- spec: spec/27 §5
+-- grant: console
+-- expect: run-output "entries 1"
+module updates
+
+import std.time (millisecond, second)
+
+spin(n: Int) -> Int
+=
+  let edit total = 0
+  for i in 1..n
+    total = total + 1
+  total
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let edit counts: Map[Text, Int] = empty_map()
+  edit counts.set(key: "a", value: spin(4000000000)) within 20 * millisecond
+    if error use unit
+  edit counts.set(key: "b", value: spin(10)) within 60 * second
+    if error use unit
+  @console.print("entries {counts.len}")

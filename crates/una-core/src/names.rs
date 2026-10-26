@@ -52,6 +52,10 @@ pub fn vars(expr: &Expr, out: &mut BTreeSet<String>) {
             vars(handler, out);
         }
         Expr::Attempt { body, .. } => vars(body, out),
+        Expr::Within { deadline, body, .. } => {
+            atoms(std::slice::from_ref(deadline), out);
+            vars(body, out);
+        }
         Expr::LetTuple { value, body, .. } => {
             atoms(std::slice::from_ref(value), out);
             vars(body, out);
@@ -229,7 +233,7 @@ pub fn binders<'e>(expr: &'e Expr, out: &mut BTreeSet<&'e str>) {
             binders(body, out);
             binders(handler, out);
         }
-        Expr::Attempt { body, .. } => binders(body, out),
+        Expr::Attempt { body, .. } | Expr::Within { body, .. } => binders(body, out),
         Expr::With { cap, body, .. } => {
             out.insert(cap.as_str());
             binders(body, out);

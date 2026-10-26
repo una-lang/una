@@ -1248,3 +1248,25 @@ module demo
 
 pub change(edit: Int) -> Int = edit
 ```
+
+## 22. Migrating to edition 0.4
+
+From edition `0.4`, a package is described by `ita.una` and pinned by `ita.lock`, in Una's own syntax, in place of `una.toml` and `verification.lock` (`spec/30`). Run `una migrate` in the package: it writes both files, removes the old ones, and prints every diagnostic the new edition causes, such as a function named `within`, a word edition `0.4` reserves. Then run `una fix` and `una check`. What changes:
+
+- **The manifest.** `ita <name>` and its `version` and `edition` lines head the file; the tables of `una.toml` become sections with one entry per line, and a grant is a line such as `files "data/" read`.
+- **Dependencies.** A package may need another one from a directory, `util from path "../util"` with `accept name`, and import its modules as `util.text`. A dependency receives a capability only at a call, with `with`, within the `may` lines its need writes, and `una ita lock --accept-authority` records each ceiling.
+- **Never by hand.** `ita.lock` is written by `una ita lock`; `una fix` never edits `ita.una` or `ita.lock`.
+
+A block of edition `0.4` is checked as a package of `ita.una`:
+
+```una
+-- edition 0.4
+module demo
+
+pub total(xs: List[Int]) -> Int
+=
+  let edit sum = 0
+  for x in xs
+    sum = sum + x
+  sum
+```

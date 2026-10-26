@@ -2124,6 +2124,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                     if index == last
                         && returning
                         && handled.with.is_empty()
+                        && handled.within.is_none()
                         && handled.handlings.is_empty()
                         && !self.marked(&handled.expr) =>
                 {
@@ -2250,10 +2251,27 @@ impl<'e, 'a> Fx<'e, 'a> {
         handled: &Handled,
         tuple: Option<(Vec<Atom>, Vec<Type>)>,
     ) -> (CoreExpr, Vec<Type>) {
+        self.handled_body(handled, tuple, None)
+    }
+
+    /// [`Self::handled_in`], with `body` in place of the elaboration of `handled.expr` when it
+    /// is given: the in-place update of a map, a set or a sequence under a deadline, whose
+    /// tuple is `(new value, result)`.
+    fn handled_body(
+        &mut self,
+        handled: &Handled,
+        tuple: Option<(Vec<Atom>, Vec<Type>)>,
+        body: Option<CoreExpr>,
+    ) -> (CoreExpr, Vec<Type>) {
         let (places, mut components) = tuple.unwrap_or_default();
         let mut lets: Vec<Let> = Vec::new();
         let mut bindings = Vec::new();
         let span = handled.expr.span;
+        // `e within d`: `d` is evaluated first (`spec/27 §5`).
+        let deadline = handled
+            .within
+            .as_ref()
+            .map(|deadline| (self.atom(&mut lets, deadline), deadline.span));
         for binding in &handled.with {
             let cap = self.name(&binding.cap).to_owned();
             let source = match &binding.value {
@@ -2293,7 +2311,23 @@ impl<'e, 'a> Fx<'e, 'a> {
             };
             bindings.push((cap, source));
         }
-        let mut current = self.expr(&handled.expr);
+        let mut current = match body {
+            Some(body) => body,
+            None => self.expr(&handled.expr),
+        };
+        if let Some((atom, deadline_span)) = deadline {
+            let passing = handled
+                .handlings
+                .iter()
+                .any(|handling| matches!(handling.kind, HandlingKind::ErrorPass));
+            current = self.within_core(
+                current,
+                atom,
+                deadline_span,
+                passing,
+                span.to(deadline_span),
+            );
+        }
         let value_ty = self.type_at(handled.expr.span);
         for handling in &handled.handlings {
             current = match &handling.kind {
@@ -2377,6 +2411,63 @@ impl<'e, 'a> Fx<'e, 'a> {
             };
         }
         (close(lets, current), components)
+    }
+
+    /// `body` bounded by the deadline `deadline`, whose source is `deadline_span`, as the
+    /// whole `e within d` at `span` (`spec/27 §5`, ADR 0117 rule 5). Its time-out is `TimedOut`
+    /// of `Timed` with failures wrapped in `Failed`, or `Expired` of `Deadline`, as the checker
+    /// typed it; under `if error pass` (`passing`), the function's own `TimedOut`, with failures
+    /// passed as they are.
+    fn within_core(
+        &mut self,
+        body: CoreExpr,
+        deadline: Atom,
+        deadline_span: Span,
+        passing: bool,
+        span: Span,
+    ) -> CoreExpr {
+        let variant = |fx: &mut Self, kind: usize, name: &str| -> Option<Ctor> {
+            let index = fx
+                .env
+                .kinds
+                .get(kind)?
+                .variants
+                .iter()
+                .position(|v| v.name == name)?;
+            Some(fx.ctor(kind, Some(index)))
+        };
+        let failure = self.records.withins.get(&deadline_span).cloned();
+        let own = self.records.within_passes.get(&deadline_span).cloned();
+        let shape = match (passing, own, failure) {
+            (true, Some(Ty::Kind(own, _)), _) => {
+                variant(self, own, "TimedOut").map(|timeout| (timeout, None))
+            }
+            (false, _, Some(Ty::Kind(kind, args))) if !args.is_empty() => {
+                match (
+                    variant(self, kind, "TimedOut"),
+                    variant(self, kind, "Failed"),
+                ) {
+                    (Some(timeout), Some(wrap)) => Some((timeout, Some(wrap))),
+                    _ => None,
+                }
+            }
+            (false, _, Some(Ty::Kind(kind, _))) => {
+                variant(self, kind, "Expired").map(|timeout| (timeout, None))
+            }
+            _ => None,
+        };
+        let Some((timeout, wrap)) = shape else {
+            self.broken.set(true);
+            return body;
+        };
+        CoreExpr::Within {
+            deadline,
+            deadline_span,
+            body: Box::new(body),
+            timeout: Box::new(timeout),
+            wrap: wrap.map(Box::new),
+            span,
+        }
     }
 
     /// `if none` on the last component of a call's tuple: the places keep their new values,
@@ -3249,6 +3340,11 @@ impl<'e, 'a> Fx<'e, 'a> {
             Some(Res::SetUpdate(op)) => Some(Prim::Set(op)),
             _ => None,
         };
+        if handled.within.is_some()
+            && let Some(atom) = self.update_within(lets, handled)
+        {
+            return atom;
+        }
         if let Some(prim) = update {
             let ExprKind::MethodCall { target, args, .. } = &expr.kind else {
                 self.broken.set(true);
@@ -3338,6 +3434,110 @@ impl<'e, 'a> Fx<'e, 'a> {
         binders
             .last()
             .map_or(Atom::Unit, |(name, _)| Atom::Var(name.clone()))
+    }
+
+    /// The in-place update of a map, a set or a sequence bounded by `within` (`spec/27 §5`):
+    /// the update, and the read of a removal, run inside the `within`, as `(new value, result)`;
+    /// the target takes the new value only when the `within` succeeds, and keeps its value from
+    /// before otherwise, as a call's `edit` places do (`spec/17 §7` rule 1). `None` when
+    /// `handled` is no such update.
+    fn update_within(&mut self, lets: &mut Vec<Let>, handled: &Handled) -> Option<Atom> {
+        let expr = &handled.expr;
+        let span = expr.span;
+        let (prim, read) = match self.res(span) {
+            Some(Res::MapUpdate(op)) => (Prim::Map(op), None),
+            Some(Res::SetUpdate(op)) => (Prim::Set(op), None),
+            Some(Res::SeqUpdate(op)) => (Prim::Seq(op), op.removed().map(Prim::Seq)),
+            _ => return None,
+        };
+        let ExprKind::MethodCall { target, args, .. } = &expr.kind else {
+            self.broken.set(true);
+            return Some(Atom::Unit);
+        };
+        // Only the place's current value is read before the `within`; the arguments are
+        // computed inside it, so its deadline bounds them, after `d` (`spec/27 §5` rules 2
+        // and 5), as for a call with `edit` arguments.
+        let mut arg_spans = vec![target.span];
+        let old = self.atom(lets, target);
+        let mut values = vec![old.clone()];
+        let mut inner = Vec::new();
+        for arg in args {
+            arg_spans.push(arg.value.span);
+            values.push(self.atom(&mut inner, &arg.value));
+        }
+        let target_ty = self.type_at(target.span);
+        let result_ty = self.type_at(span);
+        let result = match read {
+            Some(read) => {
+                let r = self.temp();
+                inner.push(Let::inferred(
+                    r.clone(),
+                    result_ty.clone(),
+                    Bound::Rhs(Rhs::Prim {
+                        prim: read,
+                        args: values.clone(),
+                        arg_spans: arg_spans.clone(),
+                        span,
+                    }),
+                    span,
+                ));
+                Atom::Var(r)
+            }
+            None => Atom::Unit,
+        };
+        let t = self.temp();
+        inner.push(Let::inferred(
+            t.clone(),
+            target_ty.clone(),
+            Bound::Rhs(Rhs::Prim {
+                prim,
+                args: values,
+                arg_spans,
+                span,
+            }),
+            span,
+        ));
+        let components = vec![target_ty, result_ty];
+        let pair = self.temp();
+        inner.push(Let::inferred(
+            pair.clone(),
+            tuple_type(components.clone()),
+            Bound::Rhs(Rhs::Tuple(vec![Atom::Var(t), result])),
+            span,
+        ));
+        let body = close(
+            inner,
+            CoreExpr::Atom {
+                atom: Atom::Var(pair),
+                span,
+            },
+        );
+        let (value, components) =
+            self.handled_body(handled, Some((vec![old], components)), Some(body));
+        let whole = self.temp();
+        bind_expr(
+            lets,
+            whole.clone(),
+            tuple_type(components.clone()),
+            value,
+            span,
+            false,
+        );
+        let binders: Vec<(Name, Type)> = components
+            .iter()
+            .map(|ty| (self.temp(), ty.clone()))
+            .collect();
+        lets.push(Let::destructure(binders.clone(), Atom::Var(whole), span));
+        let (Some((updated, _)), Some((result, _))) = (binders.first(), binders.get(1)) else {
+            self.broken.set(true);
+            return Some(Atom::Unit);
+        };
+        let value = CoreExpr::Atom {
+            atom: Atom::Var(updated.clone()),
+            span: target.span,
+        };
+        self.assign(lets, target, value, span);
+        Some(Atom::Var(result.clone()))
     }
 
     /// `edit q.push(item: x)`, `edit q.pop()` and the other updates of a `Stack` or a `Queue`
@@ -3874,10 +4074,24 @@ impl<'e, 'a> Fx<'e, 'a> {
                 )
             }
             ExprKind::Fail(variant) => self.fail(variant),
-            ExprKind::Attempt(operand) => CoreExpr::Attempt {
-                body: Box::new(self.expr(operand)),
-                span: expr.span,
-            },
+            ExprKind::Attempt { operand, within } => {
+                // `attempt e within d`: `d` first, then `e` bounded by it (`spec/27 §5`).
+                let mut lets = Vec::new();
+                let deadline = within
+                    .as_ref()
+                    .map(|deadline| (self.atom(&mut lets, deadline), deadline.span));
+                let mut body = self.expr(operand);
+                if let Some((atom, deadline_span)) = deadline {
+                    body = self.within_core(body, atom, deadline_span, false, expr.span);
+                }
+                close(
+                    lets,
+                    CoreExpr::Attempt {
+                        body: Box::new(body),
+                        span: expr.span,
+                    },
+                )
+            }
             _ => {
                 let mut lets = Vec::new();
                 let atom = self.atom(&mut lets, expr);
@@ -4194,7 +4408,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                 let value = self.atom(lets, value);
                 self.range_test(lets, &value, value_span, range)
             }
-            ExprKind::IfLine { .. } | ExprKind::Fail(_) | ExprKind::Attempt(_) => {
+            ExprKind::IfLine { .. } | ExprKind::Fail(_) | ExprKind::Attempt { .. } => {
                 let inner = self.expr(expr);
                 self.push_expr(lets, span, inner)
             }
@@ -4569,7 +4783,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                     una_core::float32::Literal::Value(value) => Atom::F32(value.to_bits()),
                     // U2031, which the checker reported.
                     _ => {
-                        self.broken = true;
+                        self.broken.set(true);
                         Atom::F32(0)
                     }
                 }
@@ -4778,7 +4992,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                 },
             ),
             _ => {
-                self.broken = true;
+                self.broken.set(true);
                 (
                     false,
                     Label::public(),
@@ -4928,7 +5142,7 @@ impl<'e, 'a> Fx<'e, 'a> {
             }
             ComplexStep::Scale => {
                 let Some(k) = factor else {
-                    self.broken = true;
+                    self.broken.set(true);
                     return Atom::Unit;
                 };
                 let re = self.component(lets, &parts, FloatOp::Mul, vec![a, k.clone()]);
