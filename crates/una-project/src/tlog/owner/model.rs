@@ -2190,3 +2190,50 @@ fn replay_work_is_bounded_by_the_cap_of_claims() {
     }
     set_modeled(false);
 }
+
+/// The first segment sealed: `A` and `D` registered, `D` revoked, then 65 claims with `A`, a
+/// dispute naming `R` that takes effect a week on, and `R`'s claim on `A`. The registration
+/// stays the chain's first entry, every sealed entry is void yet still an entry of the chain,
+/// the owner's keys resume from `R`, and nothing `A` signed in the segment counts.
+#[test]
+fn the_first_segment_can_be_sealed() {
+    use super::MAX_CLAIMS;
+    let keys = Keys::new();
+    set_modeled(true);
+    let mut steps = vec![
+        Step::owner(
+            Act::Register {
+                keys: vec![K::A, K::B],
+                threshold: 1,
+                cosigners: None,
+            },
+            vec![K::A, K::B],
+            0,
+        ),
+        Step::owner(Act::Revoke(K::B, 1, None), vec![K::A], 0),
+    ];
+    for _ in 0..=MAX_CLAIMS {
+        steps.push(Step::owner(Act::Revoke(K::B, 1, Some(0)), vec![K::A], 0));
+    }
+    let dispute = steps.len() as u64;
+    steps.push(Step::owner(Act::Dispute(K::R), vec![K::Log], 0));
+    let claim = steps.len() as u64;
+    steps.push(Step::owner(Act::Revoke(K::A, 1, Some(1)), vec![K::R], WEEK));
+    let history = run(&keys, &build(&keys, &steps, false, false, false)).expect("a sealed chain");
+    assert_eq!(history.sealed.len(), 1);
+    let sealed = &history.sealed[0];
+    assert_eq!(
+        (sealed.first, sealed.request, sealed.reset),
+        (0, dispute, claim)
+    );
+    assert_eq!(history.entries.len(), steps.len());
+    assert_eq!(history.voided, (1..dispute).collect::<Vec<u64>>());
+    assert_eq!(
+        history.snapshots.last().map(|s| s.keys.clone()),
+        Some(vec![keys.key(K::R).clone()])
+    );
+    assert!(!counts(&keys, &history, &[K::A], 2, false));
+    assert!(!counts(&keys, &history, &[K::A, K::B], 1, false));
+    assert!(counts(&keys, &history, &[K::R], claim + 1, false));
+    set_modeled(false);
+}

@@ -1241,3 +1241,20 @@ The claim voids the thief's cancellation, so the recovery takes effect at its de
 - A key-only thief can make an owner's names unavailable by logging claims past the cap, and never make its own releases count.
 - The owner restores its names by a dispute, or a recovery with no cancellation against it, that takes effect, followed by its claim; the owner republishes its releases from the sealed segment. A thief that cancels the owner's recovery keeps it from resetting the count, and the owner then uses a dispute. The owner may also register under a new owner name.
 - `spec/30 §14` rule 5 states these rules as normative text.
+
+## Amendment 10, correction (2026-10-26): reset points
+
+- Status: Accepted, recorded under the project's delegation.
+
+**Context.** Amendment 10 read a reset point syntactically: the effect point of any dispute, or of a recovery that no `cancel` entry names. A thief holding a key and the account could log claims past the cap, then a dispute naming its own key. The owner's competing answer within the window would then fall in the sealed segment, so nothing competed and the thief's dispute took effect. That breaks rule 5: an answer within the window forces at worst a freeze. A `cancel` naming a future index also kept a recovery from resetting.
+
+**Decision.** A recovery or a dispute is a reset point only when all of these hold, read from positions and witness time only, never from the claims:
+1. the witness time reached its effect point;
+2. no other recovery or dispute is logged from it to its effect point;
+3. no freeze can be in effect at its effect point: no two recoveries or disputes waited at once before it;
+4. for a recovery, no `cancel` naming it is logged after it and before its effect point.
+
+A recovery, a dispute or a `cancel` logged while a resetting request waits is never sealed.
+
+**Correction.** Where Amendment 10 says the owner "then uses a dispute", an owner with co-signers in effect cannot dispute. A thief that cancels the owner's recovery while it waits keeps it from resetting. Once that recovery takes effect after the co-signers' overruling, the thief holds no current key, so the owner's next recovery cannot be cancelled and resets the count.
+

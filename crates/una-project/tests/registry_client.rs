@@ -2289,6 +2289,94 @@ fn a_reset_seals_a_segment_past_the_cap_of_claims() {
     assert!(client.misbehavior().is_empty());
 }
 
+/// A dispute that another request competes with is no reset point: a thief holding `A` and the
+/// account adds `T`, drops it, spends 65 claims on it and disputes, naming its own `M`; the owner
+/// answers within the week with a competing dispute and its claim on `A` signed by `B`. Nothing
+/// is sealed, the chain is at worst frozen or unavailable past the cap, and no release of the
+/// thief counts.
+#[test]
+fn a_competed_dispute_is_no_reset_point() {
+    let a = keypair(60, "acme.a");
+    let b = keypair(61, "acme.b");
+    let t = keypair(66, "acme.t");
+    let m = keypair(67, "acme.m");
+    let r = keypair(63, "acme.r");
+    let mut registry = TestRegistry::new("acme");
+    registry.register_keys("acme", &[&a, &b], 1, &[], 1);
+    let honest = registry
+        .release("acme/ledger", "0.3.0", "none", "none", &[&b])
+        .0;
+    registry.owner_event("acme", &format!("add {}", key_text(&t.1)), 1, &[&a, &t]);
+    registry.owner_event("acme", "revoke acme.t", 1, &[&a]);
+    registry.release("acme/ledger", "0.3.1", "none", "none", &[&a]);
+    for _ in 0..=MAX_CLAIMS {
+        registry.owner_event("acme", "revoke acme.t since 0", 1, &[&a]);
+    }
+    registry.checkpoint(NOW - 31 * DAY);
+    registry.recover("acme", "dispute", &m.1, &[]);
+    registry.checkpoint(NOW - 30 * DAY);
+    registry.recover("acme", "dispute", &r.1, &[]);
+    registry.owner_event("acme", &format!("revoke acme.a since {honest}"), 1, &[&b]);
+    registry.checkpoint(NOW - 29 * DAY);
+    registry.append("other", "filler");
+    registry.checkpoint(NOW - 20 * DAY);
+    registry.release("acme/ledger", "0.3.2", "none", "none", &[&m]);
+    registry.checkpoint(NOW);
+    let memory = Memory {
+        files: registry.files.clone(),
+    };
+    let mut client = open(&memory, &registry).unwrap();
+    match client.history("acme") {
+        Ok(history) => {
+            assert!(history.sealed.is_empty());
+            assert!(history.frozen.is_some());
+            if let Ok(releases) = client.releases("acme/ledger") {
+                assert!(releases.iter().skip(1).all(|release| release.compromised));
+            }
+        }
+        Err(_) => assert!(client.releases("acme/ledger").is_err()),
+    }
+}
+
+/// A cancellation logged before a recovery, naming its future index, does not keep it from
+/// restarting the count: the thief spends 65 claims and names the next index in a cancellation;
+/// the owner's recovery, signed by its co-signer, takes there and resets; the segment is sealed,
+/// and the recovered key's claim makes the names resolve again.
+#[test]
+fn a_cancellation_before_a_recovery_does_not_block_its_reset() {
+    let a = keypair(60, "acme.a");
+    let d = keypair(61, "acme.d");
+    let r = keypair(63, "acme.r");
+    let x = keypair(70, "trustee.x");
+    let mut registry = TestRegistry::new("acme");
+    registry.register_keys("acme", &[&a, &d], 1, &[&x], 1);
+    let honest = registry.owner_event("acme", "revoke acme.d", 1, &[&a]);
+    registry.release("acme/ledger", "0.3.1", "none", "none", &[&a]);
+    for _ in 0..=MAX_CLAIMS {
+        registry.owner_event("acme", "revoke acme.d since 0", 1, &[&a]);
+    }
+    let next = registry.entries.len() as u64 + 1;
+    registry.owner_event("acme", &format!("cancel {next}"), 1, &[&a]);
+    registry.checkpoint(NOW - 31 * DAY);
+    let recovery = registry.recover("acme", "recover", &r.1, &[&x]);
+    assert_eq!(recovery, next);
+    registry.checkpoint(NOW - 30 * DAY);
+    registry.append("other", "filler");
+    registry.checkpoint(NOW - 20 * DAY);
+    registry.owner_event("acme", &format!("revoke acme.a since {honest}"), 1, &[&r]);
+    registry.release("acme/ledger", "0.3.2", "none", "none", &[&r]);
+    registry.checkpoint(NOW);
+    let memory = Memory {
+        files: registry.files.clone(),
+    };
+    let mut client = open(&memory, &registry).unwrap();
+    let history = client.history("acme").unwrap();
+    assert_eq!(history.sealed.len(), 1);
+    assert_eq!(history.sealed[0].request, recovery);
+    let releases = client.releases("acme/ledger").unwrap();
+    assert!(releases[0].compromised && !releases[1].compromised);
+}
+
 /// A recovery that a cancellation entry names does not restart the count, even once its
 /// co-signers overruled the cancellation and it took effect: the owner's claim after it is past
 /// the cap, and no release of the owner counts.

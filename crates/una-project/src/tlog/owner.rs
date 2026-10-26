@@ -974,29 +974,61 @@ pub fn replay(
     effect: &mut dyn FnMut(u64) -> Result<Option<u64>, String>,
 ) -> Result<History, ReplayError> {
     let mut effects: BTreeMap<u64, Option<u64>> = BTreeMap::new();
-    // The count restarts where a recovery or a dispute took effect, read syntactically and by
-    // witness time only, never by the claims: a dispute whose effect point is reached, and a
-    // recovery that no cancellation entry names whose effect point is reached.
-    let cancelled: BTreeSet<u64> = entries
-        .iter()
-        .filter_map(|logged| match logged.entry.event {
-            Event::Cancel(target) => Some(target),
-            _ => None,
-        })
-        .collect();
-    // Each reset point, with the request that made it, by position.
-    let mut resets: Vec<(u64, u64)> = Vec::new();
+    // The count restarts where a recovery or a dispute took effect, read from the entries'
+    // positions and the witness time only, never from the claims. Each request waits from its
+    // index to its effect point, or to the point when that is not reached.
+    let mut waiting: Vec<(u64, Option<u64>, &Logged<'_>)> = Vec::new();
     for logged in entries {
-        let request = match logged.entry.event {
-            Event::Dispute(_) => true,
-            Event::Recover(_) => !cancelled.contains(&logged.index),
-            _ => false,
+        if matches!(logged.entry.event, Event::Recover(_) | Event::Dispute(_)) {
+            let position =
+                effect_at(logged.index, &mut effects, effect).map_err(ReplayError::Effect)?;
+            waiting.push((logged.index, position, logged));
+        }
+    }
+    // In log order: a request waits with an earlier one when some earlier one's wait has not
+    // ended at its index, and with a later one when the next request is logged before its own
+    // wait ends. The first position from which two requests that wait at once may freeze the
+    // chain, whatever their kinds, is the later one's index. O(Q) for Q requests.
+    let mut with_earlier: Vec<bool> = Vec::with_capacity(waiting.len());
+    let mut longest: Option<Option<u64>> = None;
+    for (index, end, _) in &waiting {
+        with_earlier.push(longest.is_some_and(|until| until.is_none_or(|until| *index < until)));
+        longest = Some(match (longest, end) {
+            (None, end) => *end,
+            (Some(None), _) | (Some(Some(_)), None) => None,
+            (Some(Some(until)), Some(end)) => Some(until.max(*end)),
+        });
+    }
+    let freeze = waiting
+        .iter()
+        .zip(&with_earlier)
+        .filter(|(_, earlier)| **earlier)
+        .map(|((index, _, _), _)| *index)
+        .min()
+        .unwrap_or(u64::MAX);
+    // The cancellations of each request, by the index they name.
+    let mut cancels: BTreeMap<u64, Vec<u64>> = BTreeMap::new();
+    for logged in entries {
+        if let Event::Cancel(target) = logged.entry.event {
+            cancels.entry(target).or_default().push(logged.index);
+        }
+    }
+    // A reset point: the effect point of a request that the witness time reached, with no other
+    // request waiting with it, no possible freeze in effect there, and, for a recovery, no
+    // cancellation of it logged while it waited.
+    let mut resets: Vec<(u64, u64)> = Vec::new();
+    for (at, (index, end, logged)) in waiting.iter().enumerate() {
+        let Some(end) = *end else {
+            continue;
         };
-        if request
-            && let Some(position) =
-                effect_at(logged.index, &mut effects, effect).map_err(ReplayError::Effect)?
-        {
-            resets.push((position, logged.index));
+        let with_later = waiting.get(at + 1).is_some_and(|(next, _, _)| *next < end);
+        let alone = !with_earlier.get(at).copied().unwrap_or(true) && !with_later;
+        let uncancelled = !matches!(logged.entry.event, Event::Recover(_))
+            || !cancels
+                .get(index)
+                .is_some_and(|list| list.iter().any(|cancel| index < cancel && *cancel < end));
+        if alone && freeze > end && uncancelled {
+            resets.push((end, *index));
         }
     }
     resets.sort_unstable();
@@ -1039,42 +1071,41 @@ pub fn replay(
             claims: *count,
         });
     }
+    // The entries of the sealed segments, void but still entries of the chain, replayed for
+    // their structure: never the registration, nor the request that made a reset.
     let requests: BTreeSet<u64> = resets.iter().map(|(_, request)| *request).collect();
-    let in_sealed = |index: u64| {
-        !requests.contains(&index)
-            && sealed
-                .iter()
-                .any(|segment| segment.first <= index && index <= segment.last)
-    };
-    let kept: Vec<Logged<'_>> = entries
+    let voided_by_seal: BTreeSet<u64> = entries
         .iter()
-        .filter(|logged| !in_sealed(logged.index))
-        .map(|logged| Logged {
-            index: logged.index,
-            note: logged.note,
-            entry: logged.entry,
+        .filter(|logged| {
+            !requests.contains(&logged.index)
+                && !matches!(logged.entry.event, Event::Register { .. })
+                && !(matches!(
+                    logged.entry.event,
+                    Event::Recover(_) | Event::Dispute(_) | Event::Cancel(_)
+                ) && resets
+                    .iter()
+                    .any(|(end, request)| *request <= logged.index && logged.index < *end))
+                && sealed
+                    .iter()
+                    .any(|segment| segment.first <= logged.index && logged.index <= segment.last)
         })
+        .map(|logged| logged.index)
         .collect();
-    let mut history = replay_unsealed(owner, source, &kept, log, effect, &mut effects)?;
-    if !sealed.is_empty() {
-        // The sealed entries are void and change nothing; the keys they bring in sign nothing
-        // that counts, and they are entries of the chain all the same.
-        for logged in entries.iter().filter(|logged| in_sealed(logged.index)) {
-            history.voided.push(logged.index);
-            history.entries.push(logged.index);
-            if let Event::Add(key) | Event::Recover(key) | Event::Dispute(key) = &logged.entry.event
-            {
-                history.void_keys.push(key.clone());
-            }
-        }
-        history.voided.sort_unstable();
-        history.entries.sort_unstable();
-        history.sealed = sealed;
-    }
+    let mut history = replay_unsealed(
+        owner,
+        source,
+        entries,
+        log,
+        effect,
+        &mut effects,
+        &voided_by_seal,
+    )?;
+    history.sealed = sealed;
     Ok(history)
 }
 
-/// [`replay`] of the entries no sealed segment holds, each segment's claims within the cap.
+/// [`replay`] with the entries of sealed segments, `sealed`, void: each segment's claims
+/// that are not sealed within the cap.
 fn replay_unsealed(
     owner: &str,
     source: &str,
@@ -1082,11 +1113,15 @@ fn replay_unsealed(
     log: &Key,
     effect: &mut dyn FnMut(u64) -> Result<Option<u64>, String>,
     effects: &mut BTreeMap<u64, Option<u64>>,
+    sealed: &BTreeSet<u64>,
 ) -> Result<History, ReplayError> {
     let claims: Vec<usize> = entries
         .iter()
         .enumerate()
-        .filter(|(_, logged)| matches!(logged.entry.event, Event::Revoke { since: Some(_), .. }))
+        .filter(|(_, logged)| {
+            !sealed.contains(&logged.index)
+                && matches!(logged.entry.event, Event::Revoke { since: Some(_), .. })
+        })
         .map(|(at, _)| at)
         .collect();
     let mut verifier = Verifier::default();
@@ -1100,6 +1135,7 @@ fn replay_unsealed(
             effects,
             effect,
             &mut verifier,
+            sealed,
             0..entries.len(),
         )?;
         history.checks = verifier.asked;
@@ -1114,6 +1150,7 @@ fn replay_unsealed(
         effects,
         effect,
         &mut verifier,
+        sealed,
         0..0,
     )?;
     // The entries before the first claim were logged with no claim known; from each later
@@ -1140,6 +1177,7 @@ fn replay_unsealed(
                 effects,
                 effect,
                 &mut verifier,
+                sealed,
                 0..0,
             ) {
                 Ok(settled) => Some(settled.compromised),
@@ -1166,6 +1204,7 @@ fn replay_unsealed(
                 effects,
                 effect,
                 &mut verifier,
+                sealed,
                 &checked,
             ) {
                 Ok(_) => fallback = to,
@@ -1190,6 +1229,7 @@ fn replay_unsealed(
                 effects,
                 effect,
                 &mut verifier,
+                sealed,
                 &checked,
             )?;
         }
@@ -1212,12 +1252,16 @@ fn settle(
     effects: &mut BTreeMap<u64, Option<u64>>,
     effect: &mut dyn FnMut(u64) -> Result<Option<u64>, String>,
     verifier: &mut Verifier,
+    sealed: &BTreeSet<u64>,
     checked: std::ops::Range<usize>,
 ) -> Result<History, ReplayError> {
     // The owner key each name brought in, and the index that brought it: registrations,
     // additions, recoveries and disputes, never cosigners.
     let mut introduced: BTreeMap<&str, Claim> = BTreeMap::new();
-    for logged in entries {
+    for logged in entries
+        .iter()
+        .filter(|logged| !sealed.contains(&logged.index))
+    {
         let brought: Vec<&Key> = match &logged.entry.event {
             Event::Register { keys, .. } => keys.iter().collect(),
             Event::Add(key) | Event::Recover(key) | Event::Dispute(key) => vec![key],
@@ -1241,6 +1285,7 @@ fn settle(
         .collect();
     let mut claims: BTreeMap<u64, Claim> = entries
         .iter()
+        .filter(|logged| !sealed.contains(&logged.index))
         .filter_map(|logged| match &logged.entry.event {
             Event::Revoke {
                 name,
@@ -1276,6 +1321,7 @@ fn settle(
             effects,
             effect,
             verifier,
+            sealed,
             &checked,
         )?;
         history.checks = verifier.asked;
@@ -1380,6 +1426,7 @@ fn replay_once(
     effects: &mut BTreeMap<u64, Option<u64>>,
     effect: &mut dyn FnMut(u64) -> Result<Option<u64>, String>,
     verifier: &mut Verifier,
+    sealed: &BTreeSet<u64>,
     checked: &std::ops::Range<usize>,
 ) -> Result<Replayed, PassError> {
     let mut state = Owner {
@@ -1429,6 +1476,28 @@ fn replay_once(
                     "the entry at {index} of the chain of `{owner}` is about another owner or source"
                 ),
             ));
+        }
+        // An entry of a sealed segment is void and changes nothing, but it is still an entry of
+        // the chain: in log order, about this owner, and never its first (`replay`).
+        if at != 0 && sealed.contains(&index) {
+            voided.push(index);
+            match &entry.event {
+                Event::Register { .. } => {
+                    return Err(rule(
+                        at,
+                        format!(
+                            "the entry at {index} of `{owner}` registers the owner, which only its first entry does"
+                        ),
+                    ));
+                }
+                Event::Add(key) | Event::Recover(key) | Event::Dispute(key) => {
+                    void_keys.push(key.clone());
+                    state.know([key]);
+                }
+                Event::Cosigners(Some((_, list))) => state.know(list.iter()),
+                _ => {}
+            }
+            continue;
         }
         let note = logged.note;
         let refuse = |what: &str| format!("the entry at {index} of `{owner}` {what}");
