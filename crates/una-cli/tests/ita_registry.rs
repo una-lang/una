@@ -96,9 +96,23 @@ fn acme(
     (ed25519_dalek::SigningKey, una_project::tlog::note::Key),
     SigningKey,
 ) {
+    acme_with(ago, &[])
+}
+
+/// [`acme`], the owner registered with the keys of `more` too, at threshold 1.
+fn acme_with(
+    ago: u64,
+    more: &[&(ed25519_dalek::SigningKey, una_project::tlog::note::Key)],
+) -> (
+    TestRegistry,
+    (ed25519_dalek::SigningKey, una_project::tlog::note::Key),
+    SigningKey,
+) {
     let mut registry = TestRegistry::new("acme");
     let pair = keypair(60, "acme.laptop");
-    registry.register("acme", &pair);
+    let mut keys = vec![&pair];
+    keys.extend_from_slice(more);
+    registry.register_keys("acme", &keys, 1, &[], 0);
     registry.checkpoint(now() - ago);
     let signing = SigningKey::from_secret("acme.laptop", &[60; 32]).unwrap();
     (registry, pair, signing)
@@ -188,7 +202,15 @@ fn project(name: &str, registry: &TestRegistry) -> (PathBuf, PathBuf, PathBuf) {
 /// A registry `acme` that holds `acme/ledger 0.3.1`, published through the library into a
 /// directory and logged a month ago, and a fresh checkpoint.
 fn published_registry(name: &str) -> (TestRegistry, SigningKey, PathBuf) {
-    let (mut registry, _, signing) = acme(40 * DAY);
+    published_registry_with(name, &[])
+}
+
+/// [`published_registry`], the owner registered with the keys of `more` too.
+fn published_registry_with(
+    name: &str,
+    more: &[&(ed25519_dalek::SigningKey, una_project::tlog::note::Key)],
+) -> (TestRegistry, SigningKey, PathBuf) {
+    let (mut registry, _, signing) = acme_with(40 * DAY, more);
     let inbox = scratch("ita-registry-inbox", name);
     let size = registry.entries.len() as u64;
     let checkpoint =
@@ -277,7 +299,7 @@ fn publish_refuses_what_rule_43_names_and_sends_nothing() {
             "path-need",
             format!(
                 "{}\nneeds\n  util from path \"deps/util\"\n    accept name\n",
-                published("acme")
+                published("itaty")
             ),
             "path dependency",
         ),
@@ -315,16 +337,16 @@ fn publish_refuses_a_package_in_a_git_repository() {
     // This repository's own checkout holds the test's target directory.
     assert!(refused(&package(
         "publish-in-repository",
-        &published("acme")
+        &published("itaty")
     )));
-    let dir = package_outside_git("git-dir", &published("acme"));
+    let dir = package_outside_git("git-dir", &published("itaty"));
     assert!(!refused(&dir));
     std::fs::create_dir(dir.join(".git")).unwrap();
     assert!(refused(&dir), "a `.git` directory");
-    let dir = package_outside_git("git-file", &published("acme"));
+    let dir = package_outside_git("git-file", &published("itaty"));
     std::fs::write(dir.join(".git"), "gitdir: ../elsewhere\n").unwrap();
     assert!(refused(&dir), "a `.git` file");
-    let dir = package_outside_git("git-above", &published("acme"));
+    let dir = package_outside_git("git-above", &published("itaty"));
     std::fs::create_dir(dir.parent().unwrap().join(".git")).unwrap();
     assert!(refused(&dir), "a `.git` in an ancestor");
 }
@@ -341,6 +363,10 @@ fn publish_and_yank_send_only_where_the_source_is_declared() {
         assert!(out.contains(part), "{part}: {out}");
     };
     let itaty = package_outside_git("itaty", &published("itaty"));
+    // `una check` of a package needs its lock (U7009 without one): a package is locked
+    // before it is published.
+    let (status, out, err) = una_in(&["una", "ita", "lock", path(&itaty)], &store);
+    assert_eq!(status, 0, "{out}{err}");
     codes_and(
         &["una", "--json", "ita", "publish", path(&itaty)],
         "no https transport yet",
@@ -414,19 +440,24 @@ fn a_published_release_is_locked_fetched_yanked_and_audited() {
 /// section (U7010), read from the client's typed record.
 #[test]
 fn audit_reports_an_unsettled_owner_chain_as_evidence_against_the_registry() {
-    let (mut registry, _, _) = published_registry("unsettled");
+    let b = keypair(61, "acme.b");
+    let c = keypair(62, "acme.c");
+    let d = keypair(64, "acme.d");
+    let (mut registry, _, _) = published_registry_with("unsettled", &[&b, &d]);
     let (dir, mirror, itaoca) = project("unsettled", &registry);
     let (status, out, err) = una_in(&["una", "ita", "lock", path(&dir)], &itaoca);
     assert_eq!(status, 0, "{out}{err}");
+    // `A` adds `C`, then `A` and `B` claim `A` since 0, and `A`, `B` and `C` claim `B` since
+    // 0: two claims whose own-word floors alternate, so the chain never settles.
     let a = keypair(60, "acme.laptop");
-    let t = keypair(66, "acme.t");
     registry.owner_event(
         "acme",
-        &format!("add {}", support::key_text(&t.1)),
+        &format!("add {}", support::key_text(&c.1)),
         1,
-        &[&a, &t],
+        &[&a, &c],
     );
-    let claim = registry.owner_event("acme", "revoke acme.laptop since 0", 1, &[&t]);
+    let claim = registry.owner_event("acme", "revoke acme.laptop since 0", 1, &[&a, &b]);
+    registry.owner_event("acme", "revoke acme.b since 0", 1, &[&a, &b, &c]);
     registry.checkpoint(now() - 30);
     registry.write(&mirror);
     let (status, out, _) = una_in(&["una", "--json", "ita", "audit", path(&dir)], &itaoca);
@@ -501,7 +532,7 @@ fn fetched(name: &str) -> (TestRegistry, PathBuf, PathBuf, PathBuf) {
 
 #[test]
 fn a_bundle_carries_the_lock_to_an_air_gapped_itaoca() {
-    let (_, dir, _, itaoca) = fetched("bundle");
+    let (registry, dir, _, itaoca) = fetched("bundle");
     let file = scratch("ita-registry-bundles", "one").join("demo.bundle");
     let (status, out, err) = una_in(&["una", "ita", "bundle", path(&file), path(&dir)], &itaoca);
     assert_eq!(status, 0, "{out}{err}");
@@ -514,8 +545,15 @@ fn a_bundle_carries_the_lock_to_an_air_gapped_itaoca() {
     );
     assert_eq!(status, 0, "{out}{err}");
     assert!(out.contains("stored acme/ledger 0.3.1 in Itaoca"), "{out}");
+    // The floor is kept under the registry's identity, the hex SHA-256 of its pin
+    // (`spec/30 §14` rule 3), never under the source's name.
+    let id = una_project::itaoca::registry_id(&registry.pin());
     assert!(
-        isolated.join("registry/acme/checkpoint").exists(),
+        isolated
+            .join("registry")
+            .join(&id)
+            .join("checkpoint")
+            .exists(),
         "the floor is stored"
     );
     let (status, out, _) = una_in(&["una", "ita", "verify", path(&dir)], &isolated);
@@ -734,7 +772,7 @@ fn unbundle_follows_no_link() {
 /// `GIT_DIR` or `GIT_WORK_TREE` set can put any directory in a repository: publish refuses.
 #[test]
 fn publish_refuses_with_git_variables_set() {
-    let dir = package_outside_git("git-variables", &published("acme"));
+    let dir = package_outside_git("git-variables", &published("itaty"));
     for variable in ["GIT_DIR", "GIT_WORK_TREE"] {
         let (status, out, _) = una_with(
             &["una", "--json", "ita", "publish", path(&dir)],
