@@ -850,6 +850,21 @@ impl Writer<'_> {
             Expr::Attempt { body, span } => {
                 node!(Attempt, "body" => self.expr(body), "span" => self.span(*span))
             }
+            Expr::Within {
+                deadline,
+                deadline_span,
+                body,
+                timeout,
+                wrap,
+                span,
+            } => node!(Within,
+                "deadline" => self.atom(deadline),
+                "deadline_span" => self.span(*deadline_span),
+                "body" => self.expr(body),
+                "timeout" => self.ctor(timeout),
+                "wrap" => opt(wrap.as_deref(), |c| self.ctor(c)),
+                "span" => self.span(*span),
+            ),
             Expr::With { cap, source, body } => node!(With,
                 "cap" => s(cap),
                 "source" => self.source(source),

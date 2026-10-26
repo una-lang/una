@@ -880,12 +880,17 @@ impl<'a> Checker<'_, 'a, '_> {
                     type_args: Vec::new(),
                 },
             );
-            // A policy call is a release (`spec/07 §5`); into a boundary it is U3024 itself.
-            self.release_site(span);
+            // A policy call is a release (`spec/07 §5`); into a boundary it is U3024 itself,
+            // unless its policy is declared in a dependency's module that the root trusts by
+            // a trust line (ADR 0122 rule 53.1).
+            let trusted_policy = self.env.trusted_dependencies.contains(&def.module);
+            if !trusted_policy {
+                self.release_site(span);
+            }
             let result = self.call_policy(&def, &callee, receiver, args, span);
             if let Some(boundary) = crossing {
                 let granting = Granting {
-                    release: Some(span),
+                    release: (!trusted_policy).then_some(span),
                     ..Granting::default()
                 };
                 self.cross(

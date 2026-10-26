@@ -131,7 +131,10 @@ fn reaches_tables<'p>(index: &Index<'p>, roots: &[&'p Expr]) -> bool {
                     },
                 }
             }
-            Expr::LetTuple { body, .. } | Expr::Loop { body, .. } | Expr::Attempt { body, .. } => {
+            Expr::LetTuple { body, .. }
+            | Expr::Loop { body, .. }
+            | Expr::Attempt { body, .. }
+            | Expr::Within { body, .. } => {
                 pending.push(body);
             }
             Expr::Together { tasks, .. } => pending.extend(tasks.iter()),
