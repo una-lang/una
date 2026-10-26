@@ -281,6 +281,46 @@ fn migrate_moves_the_project_files_and_the_package_checks() {
 }
 
 #[test]
+fn migrate_rewrites_the_modules_in_the_canonical_form_of_edition_0_4() {
+    // ADR 0125, amendment of 2026-10-25: soft wrapping is the canonical form of edition 0.4,
+    // and `una migrate` applies it. The long call is canonical in edition 0.3, on one line, and
+    // wraps after the migration, which leaves nothing for U7001.
+    let declarations = "module demo\n\npub add(first: Int, second: Int, third: Int, fourth: Int) -> Int = first + second + third + fourth\n\n";
+    let long = "pub total(quantity: Int) -> Int = add(quantity, second: quantity + 1000, third: quantity + 2000, fourth: quantity + 3000)\n";
+    let wrapped = "pub total(quantity: Int) -> Int = add(quantity, second: quantity + 1000, third: quantity + 2000,\n  fourth: quantity + 3000\n)\n";
+    let dir = toml_package("migrate-wrap", "0.3", &format!("{declarations}{long}"));
+    let before = una_cli::check(&dir, una_cli::Tier::Zero).unwrap();
+    assert_eq!(before.diagnostics, []);
+    let (code, out, err) = una(&["una", "migrate", path(&dir)]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        out,
+        "wrote ita.una, ita.lock, src/demo.una; removed una.toml, verification.lock\nname: demo-pkg -> demo_pkg\nedition 0.3 -> 0.4: 0 diagnostics\n"
+    );
+    let migrated = format!("{declarations}{wrapped}");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("src/demo.una")).unwrap(),
+        migrated
+    );
+    let after = una_cli::check(&dir, una_cli::Tier::Zero).unwrap();
+    assert_eq!(after.diagnostics, []);
+    let (code, _, err) = una(&["una", "fmt", "--check", path(&dir)]);
+    assert_eq!((code, err.as_str()), (0, ""));
+    // Migrating twice changes nothing: the package is already of edition 0.4.
+    let (code, _, err) = una(&["una", "migrate", path(&dir)]);
+    assert_eq!(code, 2);
+    assert!(err.contains("already has ita.una"), "{err}");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("src/demo.una")).unwrap(),
+        migrated
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("ita.una")).unwrap(),
+        "ita demo_pkg\n  version 0.1.0\n  edition 0.4\n"
+    );
+}
+
+#[test]
 fn migrate_dry_run_writes_nothing() {
     let dir = toml_package("migrate-dry", "0.1", MODULE);
     let (code, out, _) = una(&["una", "--json", "migrate", "--dry-run", path(&dir)]);

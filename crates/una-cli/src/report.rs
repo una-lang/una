@@ -275,8 +275,9 @@ pub(crate) fn report_command(
         );
     };
     // A clause the solver proves without any hypothesis is trivial.
+    let layout = crate::verification::source_layout(&package);
     let trivial_queries =
-        on_large_stack(|| una_verify::trivial_ensures(&analysis.program, &package.sources));
+        on_large_stack(|| una_verify::trivial_ensures(&analysis.program, &package.sources, layout));
     let trivial: BTreeSet<(String, Span)> =
         match una_verify::verify(&trivial_queries, &settings(&package, &options.solving)) {
             Ok(outcomes) => trivial_queries
