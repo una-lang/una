@@ -934,6 +934,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
     fn one_worker_runs_a_parent_and_the_children_it_waits_for_three_levels_deep() {
         // ADR 0117 rule 3: a join parks its task, so with one worker a parent and its children
         // share it without deadlock.
@@ -961,6 +962,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
     fn stalled_requests_never_delay_files_or_the_tasks_beside_them() {
         // ADR 0117 rule 3 and its Security section: the pools are separate, so `Http` helpers
         // that wait on a server do not delay a `Files` operation, and the parked tasks free
@@ -1215,6 +1217,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
     fn the_stack_pool_reuses_stacks_by_size_and_keeps_at_most_its_bound() {
         let sched = Scheduler::new(settings(2, 1, 1));
         let tasks: Vec<Receiver<()>> = (0..200).map(|part| start(&sched, part, || {})).collect();

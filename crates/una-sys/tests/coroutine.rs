@@ -276,3 +276,14 @@ fn child_panics_in_a_body() {
         coroutine.resume();
     });
 }
+
+#[test]
+#[cfg(not(una_asan))]
+fn asan_builds_are_off_in_ordinary_test_runs() {
+    // #1145: the switch is announced to AddressSanitizer, and stacks are unpoisoned, only in
+    // builds with `--cfg una_asan`, which only the sanitizer runs set; this test is compiled
+    // out of those builds. It checks that an ordinary test run is not such a build;
+    // scripts/check-release.sh is the guard of the shipped artifacts, the packed `una` and
+    // `libuna_rt.a`, which it checks for the sanitizer's symbols.
+    const { assert!(!cfg!(una_asan)) };
+}
