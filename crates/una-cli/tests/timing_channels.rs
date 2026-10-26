@@ -192,7 +192,10 @@ fn a_public_block_s_timing_never_depends_on_how_many_tasks_secret_code_started()
     // The deadline is calibrated on this machine first: the same program with key 1 and a
     // deadline of a minute runs 20 times, the server notes each run's time from `/mark` to
     // `/hold`, and the deadline is the slowest of them, plus the hold, plus 25 ms. Then key 0
-    // and key 1 are built with it and run 20 times each, alternating.
+    // and key 1 are built with it and run 20 times each, alternating. Each run measures three
+    // samples, key 0, key 1 and key 1 again, in an order that cycles through all six, so every
+    // sample takes every place in a run 6 or 7 times (#1189): a cost of the first place in a
+    // run, which differs between machines, falls on no sample alone.
     //
     // The judgment is the rank test of the header: key 0's 20 times against key 1's, failing at
     // p < 0.001, with timeouts ranked above every time. The control runs key 1 twice as often
@@ -215,13 +218,33 @@ fn a_public_block_s_timing_never_depends_on_how_many_tasks_secret_code_started()
         placement_package("key1", 1, deadline, port),
     ];
     // Per run, key 0, key 1 and key 1 again: the time from `/mark` to `/hold` in ms, or
-    // infinity for a run that timed out or whose deadline passed before `/hold` started.
+    // infinity for a run that timed out or whose deadline passed before `/hold` started. Run
+    // `r` measures them in the order `ORDERS[r % 6]`.
+    const ORDERS: [[usize; 3]; 6] = [
+        [0, 1, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [0, 2, 1],
+        [2, 1, 0],
+        [1, 0, 2],
+    ];
+    // The 20 runs of ADR 0116 §G are not a multiple of 3, so the balance is as close as 20
+    // allows: each sample takes each place 6 or 7 times.
+    let mut places = [[0_usize; 3]; 3];
+    for run in 0..20 {
+        for (place, sample) in ORDERS[run % ORDERS.len()].into_iter().enumerate() {
+            places[sample][place] += 1;
+        }
+    }
+    assert!(
+        places.iter().flatten().all(|count| (6..=7).contains(count)),
+        "{places:?}"
+    );
     let mut samples: [Vec<f64>; 3] = [Vec::new(), Vec::new(), Vec::new()];
     for run in 0..20 {
-        for (sample, (key, dir)) in [(0, &dirs[0]), (1, &dirs[1]), (1, &dirs[1])]
-            .into_iter()
-            .enumerate()
-        {
+        for sample in ORDERS[run % ORDERS.len()] {
+            let key = usize::from(sample != 0);
+            let dir = &dirs[key];
             spans.lock().unwrap().clear();
             let late = timed_out(dir, run * 3 + sample);
             let span = spans.lock().unwrap().first().copied();
@@ -229,7 +252,9 @@ fn a_public_block_s_timing_never_depends_on_how_many_tasks_secret_code_started()
                 Some(span) if !late => span as f64 / 1000.0,
                 _ => f64::INFINITY,
             };
-            eprintln!("run {run} key {key}: /mark to /hold {span:?} us, timed out {late}");
+            eprintln!(
+                "run {run} sample {sample} key {key}: /mark to /hold {span:?} us, timed out {late}"
+            );
             samples[sample].push(value);
         }
     }

@@ -63,16 +63,33 @@ fn package_of_edition(name: &str, edition: &str, files: &[(&str, &str)]) -> Path
     root
 }
 
+/// How tier 1 normalizes the source text of the package at `path`: edition 0.4, which only
+/// `ita.una` describes, erases the layout of wrapped lines (ADR 0125, amendment of 2026-10-25).
+/// The edition is the manifest's, not the presence of the file (#1175).
+fn layout_of(path: &Path) -> una_verify::SourceLayout {
+    let ita = path.join("ita.una");
+    let edition = match std::fs::read_to_string(&ita) {
+        Ok(text) => una_project::ita::parse_ita_manifest(&text).0.edition,
+        Err(_) => una_project::Edition::V0_1,
+    };
+    if edition >= una_project::Edition::V0_4 {
+        una_verify::SourceLayout::Wrapped
+    } else {
+        una_verify::SourceLayout::Joined
+    }
+}
+
 /// The package at `path` checked at tier 0, and the obligations that tier 1 would generate for
 /// it, on a stack as large as tier 1 gives them, but not solved: tests that compare obligations
 /// or queries start no solver (#286).
 fn generated(path: &Path) -> (una_cli::Checked, Vec<una_verify::Obligation>) {
     let checked = una_cli::check(path, Tier::Zero).unwrap();
+    let layout = layout_of(path);
     let obligations = std::thread::scope(|scope| {
         std::thread::Builder::new()
             .stack_size(64 * 1024 * 1024)
             .spawn_scoped(scope, || {
-                una_verify::obligations(&checked.program, &checked.sources)
+                una_verify::obligations(&checked.program, &checked.sources, layout)
             })
             .unwrap()
             .join()
@@ -2038,7 +2055,11 @@ fn a_kind_core_does_not_declare_stops_tier_1() {
         std::thread::Builder::new()
             .stack_size(64 * 1024 * 1024)
             .spawn_scoped(scope, || {
-                una_verify::obligations(&checked.program, &checked.sources)
+                una_verify::obligations(
+                    &checked.program,
+                    &checked.sources,
+                    una_verify::SourceLayout::Joined,
+                )
             })
             .unwrap()
             .join()
@@ -2650,4 +2671,98 @@ fn the_cone_query_of_a_float_function_is_stable_across_runs() {
     let first = float_queries("float_stable_a", &source);
     let second = float_queries("float_stable_b", &source);
     assert_eq!(first, second);
+}
+
+/// A package of edition 0.4 under the test's temporary directory, described by `ita.una`, with
+/// the lock of the conformance cases of that edition (ADR 0122).
+fn package_0_4(name: &str, files: &[(&str, &str)]) -> PathBuf {
+    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join("verification")
+        .join(name);
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("ita.una"),
+        format!("ita {name}\n  version 0.1.0\n  edition 0.4\n"),
+    )
+    .unwrap();
+    std::fs::copy(
+        repository().join("tests/conformance/types/decimal_accepted/ita.lock"),
+        root.join("ita.lock"),
+    )
+    .unwrap();
+    for (path, text) in files {
+        std::fs::write(root.join(path), text).unwrap();
+    }
+    root
+}
+
+#[test]
+fn a_wrapped_line_keeps_the_ids_and_the_shown_text_of_its_obligations() {
+    // `spec/12 §8`, ADR 0125 amendment of 2026-10-25: the canonical form of edition 0.4 wraps
+    // the long call, and its obligations keep the ids, goals and hypotheses that the same call
+    // on one line has in edition 0.3, whose canonical form keeps it on one line. Nothing
+    // shown carries the wrapped layout.
+    let declarations = "module app\n\npub kind Seats = Int in 0..5000\n\npub kind Booking\n  seats: Seats\n  label: Text\n\npub half(n: Int) -> Int\n  requires n >= 0\n=\n  n / 2\n\n";
+    let call = "pub run() -> Int = half(Booking(seats: 20, label: \"a booking label long enough to carry this line past the width\").seats)\n";
+    let wrapped = "pub run() -> Int = half(Booking(seats: 20,\n    label: \"a booking label long enough to carry this line past the width\"\n  ).seats)\n";
+    let joined_root = package_of_edition(
+        "wrapped_ids_0_3",
+        "0.3",
+        &[("src/app.una", &format!("{declarations}{call}"))],
+    );
+    let wrapped_root = package_0_4(
+        "wrapped_ids_0_4",
+        &[("src/app.una", &format!("{declarations}{wrapped}"))],
+    );
+    assert_eq!(layout_of(&joined_root), una_verify::SourceLayout::Joined);
+    assert_eq!(layout_of(&wrapped_root), una_verify::SourceLayout::Wrapped);
+    let (joined_checked, joined) = generated(&joined_root);
+    let (wrapped_checked, wrapped_obligations) = generated(&wrapped_root);
+    // Each source is canonical in its edition (no U7001).
+    assert!(
+        joined_checked.diagnostics.is_empty(),
+        "{:?}",
+        joined_checked.diagnostics
+    );
+    assert!(
+        wrapped_checked.diagnostics.is_empty(),
+        "{:?}",
+        wrapped_checked.diagnostics
+    );
+    assert!(!wrapped_obligations.is_empty());
+    let shown = |obligations: &[una_verify::Obligation]| -> Vec<(String, String, Vec<String>)> {
+        obligations
+            .iter()
+            .map(|o| (o.id.clone(), o.goal.clone(), o.hypotheses.clone()))
+            .collect()
+    };
+    assert_eq!(shown(&wrapped_obligations), shown(&joined));
+    for (_, goal, hypotheses) in shown(&wrapped_obligations) {
+        assert!(!goal.contains('\n'), "{goal:?}");
+        assert!(
+            hypotheses.iter().all(|text| !text.contains('\n')),
+            "{hypotheses:?}"
+        );
+    }
+    // The layout is what erases the wrapping: read as an earlier edition reads it, the goal
+    // of the call's precondition would keep the space before the closer.
+    let as_joined = std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .stack_size(64 * 1024 * 1024)
+            .spawn_scoped(scope, || {
+                una_verify::obligations(
+                    &wrapped_checked.program,
+                    &wrapped_checked.sources,
+                    una_verify::SourceLayout::Joined,
+                )
+            })
+            .unwrap()
+            .join()
+            .unwrap()
+    })
+    .unwrap();
+    assert_ne!(shown(&as_joined), shown(&joined));
+    std::fs::remove_dir_all(&joined_root).unwrap();
+    std::fs::remove_dir_all(&wrapped_root).unwrap();
 }

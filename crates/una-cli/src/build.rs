@@ -15,7 +15,7 @@ use una_syntax::ast::ClauseKind;
 use crate::contract::Modules;
 use crate::runtime::{driven_init, entry_main, rejected_status, takes_stops};
 use crate::verification::tier_one;
-use crate::{ExitStatus, analyze, load, on_large_stack};
+use crate::{ExitStatus, analyze, on_large_stack};
 
 /// The JSON schema of `una build --json` (`spec/16 §2`).
 const BUILD_SCHEMA: &str = "una.build/1";
@@ -56,7 +56,11 @@ pub(crate) fn build_command(
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> io::Result<ExitStatus> {
-    let package = match load(path) {
+    let package = match crate::package::load_in(
+        path,
+        &std::collections::BTreeMap::new(),
+        options.solving.itaoca.as_ref(),
+    ) {
         Ok(package) => package,
         Err(error) => {
             writeln!(stderr, "error: {error}")?;

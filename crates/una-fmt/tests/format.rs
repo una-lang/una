@@ -14,6 +14,21 @@ fn fmt(text: &str) -> String {
     once
 }
 
+fn fmt_in(text: &str, keywords: KeywordSet) -> String {
+    let mut db = SourceDb::new();
+    let id = db.add("t.una", text.as_bytes());
+    let mut interner = Interner::new();
+    let lexed = lex_in(db.file(id), id, &mut interner, keywords);
+    let parsed = parse(&lexed, id, &interner);
+    assert!(
+        lexed.errors.is_empty() && parsed.errors.is_empty(),
+        "{:?} {:?}\n{text}",
+        lexed.errors,
+        parsed.errors
+    );
+    una_fmt::format(db.file(id), &lexed, &parsed.file, &interner)
+}
+
 fn format_once(text: &str) -> String {
     let mut db = SourceDb::new();
     let id = db.add("t.una", text.as_bytes());
@@ -117,6 +132,231 @@ fn lines_continued_inside_brackets_are_joined() {
     assert_eq!(
         decls("f() -> List[Int] = [\n  1,\n  2\n]\n"),
         "f() -> List[Int] = [1, 2]\n"
+    );
+}
+
+/// The canonical form of `text` in edition 0.4, where long lines wrap (ADR 0125, amendment of
+/// 2026-10-25); also checks that formatting the result again changes nothing.
+fn fmt_0_4(text: &str) -> String {
+    let once = fmt_in(text, KeywordSet::V0_4);
+    assert_eq!(
+        fmt_in(&once, KeywordSet::V0_4),
+        once,
+        "formatting is not idempotent"
+    );
+    once
+}
+
+/// The canonical form of the declarations `body` in edition 0.4, after `module t` and a blank
+/// line.
+fn decls_0_4(body: &str) -> String {
+    fmt_0_4(&format!("module t\n\n{body}"))
+        .strip_prefix("module t\n\n")
+        .unwrap()
+        .to_owned()
+}
+
+#[test]
+fn wraps_at_legal_argument_and_element_separators() {
+    let a = "a".repeat(60);
+    let b = "b".repeat(60);
+    assert_eq!(
+        decls_0_4(&format!("f() -> Int = g({a}, {b})\n")),
+        format!("f() -> Int = g({a},\n  {b}\n)\n")
+    );
+
+    let a = "a".repeat(42);
+    let b = "b".repeat(42);
+    let c = "c".repeat(42);
+    assert_eq!(
+        decls_0_4(&format!("f() -> Int = g({a}, {b}, {c})\n")),
+        format!("f() -> Int = g({a},\n  {b}, {c}\n)\n")
+    );
+
+    // Only the inner separator fits on the first line, so the inner group wraps; its closer
+    // returns to its opener's level, one deeper than the line, and the rest follows it.
+    let a = "a".repeat(52);
+    let b = "b".repeat(52);
+    assert_eq!(
+        decls_0_4(&format!("f() -> Int = g(h({a}, {b}), 1)\n")),
+        format!("f() -> Int = g(h({a},\n    {b}\n  ), 1)\n")
+    );
+
+    let a = "a".repeat(50);
+    let b = "b".repeat(50);
+    let c = "c".repeat(50);
+    let d = "d".repeat(50);
+    assert_eq!(
+        decls_0_4(&format!("f() -> Int = outer(inner({a}, {b}), {c}, {d})\n")),
+        format!("f() -> Int = outer(inner({a},\n    {b}\n  ), {c},\n  {d}\n)\n")
+    );
+
+    let values = format!(
+        "[{}]",
+        (0..24)
+            .map(|i| i.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    assert_eq!(
+        decls_0_4(&format!("f() -> List[Int] = {values}\n")),
+        "f() -> List[Int] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,\n  22, 23\n]\n"
+    );
+
+    let arguments = (0..1_000)
+        .map(|i| format!("item_{i}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let formatted = decls_0_4(&format!("f() -> Int = g({arguments})\n"));
+    assert!(formatted.lines().all(|line| line.chars().count() <= 100));
+}
+
+#[test]
+fn wrapping_breaks_the_outermost_separator_that_fits() {
+    // ADR 0125, amendment of 2026-10-25: of the separators that keep the line within the
+    // target, the outermost one, the latest on a tie. Inner groups break only when no outer
+    // separator fits.
+
+    // Type arguments: the commas inside `Map[...]` fit too, but the parameter list is outer.
+    assert_eq!(
+        decls_0_4(
+            "pub merge(first_index: Map[Text, List[Int]], second_index: Map[Text, List[Int]], limit: Int) -> Int = limit\n"
+        ),
+        "pub merge(first_index: Map[Text, List[Int]], second_index: Map[Text, List[Int]],\n  limit: Int\n) -> Int = limit\n"
+    );
+
+    // Lambda parameters: `fn(best, price)` stays whole, and the call's argument list wraps.
+    assert_eq!(
+        decls_0_4(
+            "pub largest[T: Ord](prices: List[T], floor: T) -> T = prices.fold(initial: floor, step: fn(best, price) -> max(best, b: price))\n"
+        ),
+        "pub largest[T: Ord](prices: List[T], floor: T) -> T = prices.fold(initial: floor,\n  step: fn(best, price) -> max(best, b: price)\n)\n"
+    );
+
+    // Parameter list against body: both lists are outermost, and the body's separator is the
+    // latest that fits.
+    assert_eq!(
+        decls_0_4(
+            "pub total(prices: List[Int], discount: Int) -> Int = prices.fold(initial: 0, step: fn(sum, price) -> sum + price - discount)\n"
+        ),
+        "pub total(prices: List[Int], discount: Int) -> Int = prices.fold(initial: 0,\n  step: fn(sum, price) -> sum + price - discount\n)\n"
+    );
+
+    // When only the parameter list has a separator that fits, it wraps, and the rest of the
+    // header follows its closer.
+    assert_eq!(
+        decls_0_4(
+            "pub schedule(first_starting_moment: Int, second_starting_moment: Int, third_starting_moment: Int) -> Int = 0\n"
+        ),
+        "pub schedule(first_starting_moment: Int, second_starting_moment: Int,\n  third_starting_moment: Int\n) -> Int = 0\n"
+    );
+}
+
+#[test]
+fn wrapping_counts_unicode_scalars_and_does_not_split_indivisible_tokens() {
+    let at_limit = format!(
+        "f() -> Int = g(\"{}\", \"{}\")\n",
+        "🙂".repeat(50),
+        "🙂".repeat(28)
+    );
+    let at_limit = decls_0_4(&at_limit);
+    assert_eq!(at_limit.lines().count(), 1);
+    assert_eq!(at_limit.trim_end().chars().count(), 100);
+
+    let over_limit = format!(
+        "f() -> Int = g(\"{}\", \"{}\")\n",
+        "🙂".repeat(50),
+        "🙂".repeat(29)
+    );
+    let over_limit = decls_0_4(&over_limit);
+    assert_eq!(over_limit.lines().count(), 3);
+    assert!(over_limit.lines().all(|line| line.chars().count() <= 100));
+
+    let indivisible = format!("f() -> Text = \"{}\"\n", "🙂".repeat(120));
+    let formatted = decls_0_4(&indivisible);
+    assert_eq!(formatted.lines().count(), 1);
+    assert!(formatted.trim_end().chars().count() > 100);
+}
+
+#[test]
+fn commas_inside_text_interpolation_are_not_separators() {
+    // A text literal holds no line break: only the call's own separator wraps, and the line
+    // before it may exceed the target.
+    let line = "f(x: Int) -> Text = join(\"{max(x, b: 1)} and {max(x, b: 2)} and {max(x, b: 3)} and {max(x, b: 4)} and more\", sep: \"-\")\n";
+    assert_eq!(
+        decls_0_4(line),
+        "f(x: Int) -> Text = join(\"{max(x, b: 1)} and {max(x, b: 2)} and {max(x, b: 3)} and {max(x, b: 4)} and more\",\n  sep: \"-\"\n)\n"
+    );
+    let only_inside = "f(x: Int) -> Text = \"{max(x, b: 1)} and {max(x, b: 2)} and {max(x, b: 3)} and {max(x, b: 4)} and {max(x, b: 5)}\"\n";
+    assert_eq!(decls_0_4(only_inside), only_inside);
+}
+
+#[test]
+fn wrapped_import_lists_keep_their_names_sorted() {
+    let wrapped = "module t\n\nimport shop.catalog (Aisle, Basket, Catalog, Discount, Inventory, Price, Product, Receipt, Shelf,\n  Supplier, Warehouse\n)\n";
+    assert_eq!(
+        fmt_0_4(
+            "module t\n\nimport shop.catalog (Warehouse, Supplier, Shelf, Receipt, Product, Price, Inventory, Discount, Catalog, Basket, Aisle)\n"
+        ),
+        wrapped
+    );
+    assert_eq!(fmt_0_4(wrapped), wrapped);
+}
+
+#[test]
+fn a_line_inside_a_nested_block_wraps_from_its_own_indentation() {
+    let a = "a".repeat(40);
+    let b = "b".repeat(40);
+    assert_eq!(
+        decls_0_4(&format!(
+            "f(x: Option[Int]) -> Int\n=\n  when x\n    is Some(v) -> combine({a}, {b}, v)\n    is None -> 0\n"
+        )),
+        format!(
+            "f(x: Option[Int]) -> Int\n=\n  when x\n    is Some(v) -> combine({a},\n      {b}, v\n    )\n    is None -> 0\n"
+        )
+    );
+}
+
+#[test]
+fn soft_wrapping_is_the_canonical_form_of_edition_0_4_only() {
+    // ADR 0125, amendment of 2026-10-25: editions 0.1 to 0.3 keep their canonical form, so a
+    // long line that was canonical stays canonical there, and the same file wraps in 0.4.
+    let a = "a".repeat(60);
+    let b = "b".repeat(60);
+    let long = format!("module t\n\nf() -> Int = g({a}, {b})\n");
+    let wrapped = format!("module t\n\nf() -> Int = g({a},\n  {b}\n)\n");
+    for edition in [KeywordSet::V0_1, KeywordSet::V0_2, KeywordSet::V0_3] {
+        assert_eq!(fmt_in(&long, edition), long);
+        // A wrapped line is joined again, as before.
+        assert_eq!(fmt_in(&wrapped, edition), long);
+    }
+    assert_eq!(fmt(&long), long);
+    assert_eq!(fmt_0_4(&long), wrapped);
+}
+
+#[test]
+fn a_comment_after_a_wrapped_call_keeps_its_line_breaks() {
+    // ADR 0125 rule 4: a comment at the end of a logical line keeps its source line breaks in
+    // edition 0.4, continuation lines one level deeper, so it never joins the call again.
+    let a = "a".repeat(60);
+    let b = "b".repeat(60);
+    let commented = format!("module t\n\nf() -> Int = g({a},\n  {b}\n) -- the total\n");
+    assert_eq!(
+        fmt_0_4(&commented),
+        format!("module t\n\nf() -> Int = g({a},\n  {b}\n  ) -- the total\n")
+    );
+    // On one line, the comment keeps the line whole: it is not wrapped.
+    let one_line = format!("module t\n\nf() -> Int = g({a}, {b}) -- the total\n");
+    assert_eq!(fmt_0_4(&one_line), one_line);
+    // Editions 0.1 to 0.3 join the line, as before.
+    for edition in [KeywordSet::V0_1, KeywordSet::V0_2, KeywordSet::V0_3] {
+        assert_eq!(fmt_in(&commented, edition), one_line);
+    }
+
+    let comment = "-- keep this comment on its original physical line";
+    assert_eq!(
+        decls_0_4(&format!("f() -> Int = g({a},\n  {comment}\n  {b})\n")),
+        format!("f() -> Int = g({a},\n  {comment}\n  {b})\n")
     );
 }
 

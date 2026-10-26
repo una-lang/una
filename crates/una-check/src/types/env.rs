@@ -434,6 +434,9 @@ pub(crate) struct Env<'a> {
     /// module is trusted only when its header says so and it is listed here. Empty for a file
     /// checked on its own.
     pub(crate) trusted_listed: BTreeSet<String>,
+    /// The modules of dependencies the root trusts by a trust line (ADR 0122 rule 53.1), by
+    /// index: a release whose policy one declares is not a release into a boundary.
+    pub(crate) trusted_dependencies: BTreeSet<usize>,
     /// The code of an invalid project setting: U7002 in `una.toml`, U7008 in `ita.una`
     /// (ADR 0122 rule 13).
     pub(crate) project_code: Code,
@@ -568,6 +571,7 @@ impl<'a> Env<'a> {
             map_keys: Vec::new(),
             opaque_plain: BTreeSet::new(),
             trusted_listed: BTreeSet::new(),
+            trusted_dependencies: BTreeSet::new(),
             project_code: Code::U7002,
             boundaries: super::boundary::Boundaries::default(),
             plain_vias: BTreeSet::new(),

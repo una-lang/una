@@ -3723,7 +3723,8 @@ fn a_deadline_cuts_a_long_computation_at_a_check_point_in_both_engines() {
     // `spec/27 §5`, ADR 0117 rule 5: once the deadline passes, the expression is cancelled at
     // its next check point, here an iteration of a loop that would run for minutes, and the
     // `within` fails with its time-out, `Deadline.Expired`, which `if error use` handles. The
-    // timing label is `public`, so the result prints. One `timeout` event is in the trace.
+    // timing label is `public`, so the result prints. The trace has the `timeout` event, then
+    // the print.
     let program = "module busy\n\nimport std.time (millisecond)\n\nspin(n: Int) -> Int\n=\n  let edit total = 0\n  for i in 1..n\n    total = total + 1\n  total\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let total = spin(4000000000) within 20 * millisecond\n    if error use -1\n  @console.print(\"total {total}\")\n";
     let dir = within_package("busy", "busy", program);
     let started = std::time::Instant::now();
@@ -3737,7 +3738,17 @@ fn a_deadline_cuts_a_long_computation_at_a_check_point_in_both_engines() {
     );
     assert_eq!(
         document["trace"],
-        serde_json::json!([{"seq": 1, "outcome": {"kind": "timeout"}}])
+        serde_json::json!([
+            {"seq": 1, "outcome": {"kind": "timeout"}},
+            {
+                "seq": 2,
+                "instance": "host:Console",
+                "capability": "Console",
+                "op": "print",
+                "args": {"line": "\"total -1\""},
+                "outcome": {"kind": "ok", "value": "unit"}
+            }
+        ])
     );
     let exe = dir.join("target/una/busy");
     for workers in ["1", "4"] {
