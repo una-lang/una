@@ -684,6 +684,24 @@ impl Writer<'_> {
                 "high" => self.atom(high),
                 "inclusive" => J::Bool(*inclusive),
             ),
+            LoopSource::Until {
+                cond,
+                holds,
+                measure,
+                decreases,
+            } => node!(Until,
+                "cond" => self.expr(cond),
+                "holds" => opt(holds.as_ref(), |c| self.clause(c)),
+                "measure" => self.clause(measure),
+                "decreases" => self.span(*decreases),
+            ),
+            LoopSource::Ever { within: None } => node!(Ever),
+            LoopSource::Ever {
+                within: Some((deadline, span)),
+            } => node!(Ever,
+                "within" => self.atom(deadline),
+                "within_span" => self.span(*span),
+            ),
         }
     }
 
@@ -740,15 +758,29 @@ impl Writer<'_> {
                 state,
                 init,
                 body,
+                on_stop,
                 span,
-            } => node!(Loop,
-                "source" => self.loop_source(source),
-                "var" => self.binder(var),
-                "state" => self.binders(state),
-                "init" => self.atoms(init),
-                "body" => self.expr(body),
-                "span" => self.span(*span),
-            ),
+            } => {
+                let mut node = node!(Loop,
+                    "source" => self.loop_source(source),
+                    "var" => self.binder(var),
+                    "state" => self.binders(state),
+                    "init" => self.atoms(init),
+                    "body" => self.expr(body),
+                    "span" => self.span(*span),
+                );
+                // The `on stop` of a `for ever`, an additive key (ADR 0116 rule 20).
+                if let (Some(on_stop), J::Obj(fields)) = (on_stop, &mut node) {
+                    fields.push((
+                        "on_stop",
+                        J::Obj(vec![
+                            ("state", self.binders(&on_stop.state)),
+                            ("body", self.expr(&on_stop.body)),
+                        ]),
+                    ));
+                }
+                node
+            }
             Expr::Together { tasks, span } => node!(Together,
                 "tasks" => list(tasks, |t| self.expr(t)),
                 "span" => self.span(*span),
@@ -1024,14 +1056,20 @@ impl Writer<'_> {
     }
 
     fn example(&self, example: &Example) -> J {
-        J::Obj(vec![
+        let mut fields = vec![
             ("name", s(&example.name)),
             ("body", self.expr(&example.body)),
             (
                 "expectations",
                 list(&example.expectations, |e| self.expectation(e)),
             ),
-        ])
+        ];
+        // Only an example with a `stop after` line has the key (ADR 0116 rule 19), so the
+        // export of every other example is unchanged.
+        if let Some(iterations) = example.stop_after {
+            fields.push(("stop_after", J::Num(iterations)));
+        }
+        J::Obj(fields)
     }
 
     /// A declaration of the module `module`: a function with what its header adds (`fun_in`).

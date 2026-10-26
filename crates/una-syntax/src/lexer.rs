@@ -1114,7 +1114,25 @@ impl Lexer<'_> {
                 _ => {}
             }
         }
-        let kind = if word == "with" && after_dot && self.out.keywords >= KeywordSet::V0_2 {
+        // Edition 0.4: `diverges` alone on its line is the clause of a header (`spec/26 §5`);
+        // anywhere else it stays reserved (U0103).
+        let line_start = self
+            .out
+            .tokens
+            .last()
+            .is_none_or(|token| matches!(token.kind, TokenKind::Newline | TokenKind::Indent));
+        let clause = word == "diverges"
+            && line_start
+            && self.out.keywords >= KeywordSet::V0_4
+            && self.rest_of_line_blank();
+        // Edition 0.4: `within` right after `for ever` is the deadline of the loop (`spec/26
+        // §7`); anywhere else it stays reserved (U0103).
+        let deadline =
+            word == "within" && self.out.keywords >= KeywordSet::V0_4 && self.after_for_ever();
+        let kind = if (word == "with" && after_dot && self.out.keywords >= KeywordSet::V0_2)
+            || clause
+            || deadline
+        {
             TokenKind::LowerIdent(self.interner.intern(&word))
         } else if let Some(keyword) = Keyword::from_word_in(&word, self.out.keywords) {
             TokenKind::Keyword(keyword)
@@ -1125,6 +1143,31 @@ impl Lexer<'_> {
             TokenKind::LowerIdent(self.interner.intern(&word))
         };
         self.push(kind, start, self.pos);
+    }
+
+    /// Whether the last two tokens are `for` and `ever`, on the current line.
+    fn after_for_ever(&self) -> bool {
+        let tokens = &self.out.tokens;
+        let n = tokens.len();
+        if n < 2 {
+            return false;
+        }
+        let (Some(first), Some(second)) = (tokens.get(n - 2), tokens.get(n - 1)) else {
+            return false;
+        };
+        first.kind == TokenKind::Keyword(Keyword::For)
+            && matches!(second.kind, TokenKind::LowerIdent(word) if self.interner.resolve(word) == "ever")
+    }
+
+    /// Whether the rest of the current line, from the cursor, holds only spaces or a comment.
+    fn rest_of_line_blank(&self) -> bool {
+        let rest = self.text.get(self.pos..).unwrap_or("");
+        let line = rest
+            .split('\n')
+            .next()
+            .unwrap_or("")
+            .trim_start_matches([' ', '\t', '\r']);
+        line.is_empty() || line.starts_with("--")
     }
 
     fn upper_word(&mut self) {
@@ -1260,6 +1303,13 @@ impl Lexer<'_> {
     }
 
     fn flush_chunk(&mut self, chunk: &mut String, start: usize, end: usize) {
+        // INVARIANT (#1175): a text chunk is never empty and so never has an empty span: each
+        // character pushed to `chunk` advanced `pos` past `start`. With `InterpStart` (`{`) and
+        // the `InterpEnd` of a closed interpolation (`}`), each one scalar wide, this is what
+        // the formatter's linear cost bound in `una-fmt` `break_line` assumes. Only the
+        // `InterpEnd` of an unterminated literal (U0004) is empty, and a file with errors is
+        // never formatted.
+        debug_assert!(chunk.is_empty() || end > start);
         if !chunk.is_empty() {
             self.push(TokenKind::TextChunk(std::mem::take(chunk)), start, end);
         }

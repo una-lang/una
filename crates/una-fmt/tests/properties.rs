@@ -54,10 +54,17 @@ struct Parsed {
 /// (`spec/13 §7`); a single file is edition 0.1.
 fn keywords_for(path: &Path) -> KeywordSet {
     for dir in path.ancestors().skip(1) {
+        // `ita.una` exists from edition 0.4 only (ADR 0122), so it names that edition for the
+        // wrapping formatter (#1175); it comes first, as the package reads its manifests.
+        if dir.join("ita.una").is_file() {
+            return KeywordSet::V0_4;
+        }
         let manifest = dir.join("una.toml");
         if manifest.is_file() {
             let text = std::fs::read_to_string(manifest).unwrap_or_default();
-            return if text.contains("edition = \"0.2\"") {
+            return if text.contains("edition = \"0.3\"") {
+                KeywordSet::V0_3
+            } else if text.contains("edition = \"0.2\"") {
                 KeywordSet::V0_2
             } else {
                 KeywordSet::V0_1
@@ -289,6 +296,21 @@ impl Normalizer<'_> {
                 }
             }
             Stmt::Skip(_) => {}
+            Stmt::Until(stmt) => {
+                self.expr(&mut stmt.condition);
+                self.expr(&mut stmt.measure);
+                self.block(&mut stmt.block);
+            }
+            Stmt::Ever(stmt) => {
+                if let Some(within) = &mut stmt.within {
+                    self.expr(within);
+                }
+                self.block(&mut stmt.block);
+                if let Some(on_stop) = &mut stmt.on_stop {
+                    self.block(&mut on_stop.block);
+                }
+            }
+            Stmt::OnStop(on_stop) => self.block(&mut on_stop.block),
         }
     }
 
