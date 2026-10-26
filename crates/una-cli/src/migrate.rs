@@ -323,6 +323,7 @@ fn migrated(
         lock: Some(lock_id),
         modules,
         disk_paths,
+        enclosing_edition: None,
         dependencies: Vec::new(),
     }
 }

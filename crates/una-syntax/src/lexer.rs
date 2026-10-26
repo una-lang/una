@@ -1303,6 +1303,13 @@ impl Lexer<'_> {
     }
 
     fn flush_chunk(&mut self, chunk: &mut String, start: usize, end: usize) {
+        // INVARIANT (#1175): a text chunk is never empty and so never has an empty span: each
+        // character pushed to `chunk` advanced `pos` past `start`. With `InterpStart` (`{`) and
+        // the `InterpEnd` of a closed interpolation (`}`), each one scalar wide, this is what
+        // the formatter's linear cost bound in `una-fmt` `break_line` assumes. Only the
+        // `InterpEnd` of an unterminated literal (U0004) is empty, and a file with errors is
+        // never formatted.
+        debug_assert!(chunk.is_empty() || end > start);
         if !chunk.is_empty() {
             self.push(TokenKind::TextChunk(std::mem::take(chunk)), start, end);
         }
