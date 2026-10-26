@@ -285,5 +285,5 @@ fn asan_builds_are_off_in_ordinary_test_runs() {
     // out of those builds. It checks that an ordinary test run is not such a build;
     // scripts/check-release.sh is the guard of the shipped artifacts, the packed `una` and
     // `libuna_rt.a`, which it checks for the sanitizer's symbols.
-    assert!(!cfg!(una_asan));
+    const { assert!(!cfg!(una_asan)) };
 }
