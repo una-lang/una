@@ -12,9 +12,11 @@
 #   version.txt     `una --version`
 # OUT/una-docs-<version>.tar.gz and its .sha256
 #
-# Neutrality: public pages must be neutral (ADR 0088). The pattern is read only from the
-# environment variable UNA_NEUTRALITY_PATTERN, never from a file. When it is set, each file is
-# marked neutral or not, and the manifest says `"neutrality": "checked"`; otherwise every file
+# Neutrality: public pages must be neutral (ADR 0088). The pattern, an extended regular
+# expression (grep -E), comes on the file descriptor that UNA_NEUTRALITY_PATTERN_FD names, as
+# scripts/release-gates.sh passes it, else from the environment variable UNA_NEUTRALITY_PATTERN,
+# for a run by hand; never from a file. When there is one, each file is marked neutral or not,
+# a pattern grep cannot apply fails the bundle, and the manifest says `"neutrality": "checked"`; otherwise every file
 # is marked `null` and the manifest says `"unchecked"`. The website publishes only files it
 # knows are neutral.
 #
@@ -25,6 +27,15 @@
 #
 # Usage: scripts/site-bundle.sh OUT
 set -eu
+# A trace would print the pattern: refuse it; drop the shells' startup files; no core file.
+case $- in
+    *x*)
+        echo "site-bundle: refusing to run with xtrace (set -x), which would print the pattern" >&2
+        exit 2
+        ;;
+esac
+unset BASH_ENV ENV
+ulimit -c 0
 
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
@@ -101,7 +112,19 @@ json() {
     sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/	/\\t/g' | awk '{ printf "\"%s\"", $0 }'
 }
 
-pattern=${UNA_NEUTRALITY_PATTERN:-}
+# A name the caller exported would stay exported: unset first.
+unset pattern
+pattern=
+if [ -n "${UNA_NEUTRALITY_PATTERN_FD:-}" ]; then
+    case $UNA_NEUTRALITY_PATTERN_FD in
+        3) pattern=$(cat <&3); exec 3<&- ;;
+        *) fail "UNA_NEUTRALITY_PATTERN_FD must be 3" ;;
+    esac
+else
+    pattern=${UNA_NEUTRALITY_PATTERN:-}
+fi
+# Held in this variable only: no command this script runs inherits it.
+unset UNA_NEUTRALITY_PATTERN UNA_NEUTRALITY_PATTERN_FD
 neutrality=unchecked
 [ -n "$pattern" ] && neutrality=checked
 
@@ -125,7 +148,17 @@ echo "$files" | while read -r kind path; do
     esac
     neutral=null
     if [ -n "$pattern" ]; then
-        if grep -Eiq -- "$pattern" "$path"; then neutral=false; else neutral=true; fi
+        # The pattern goes to grep on its standard input (the shell's own printf), never as an
+        # argument, which other processes could read. grep's own message is dropped, and a
+        # status other than match (0) or no match (1) fails: a pattern grep cannot apply never
+        # marks a file neutral.
+        status=0
+        printf '%s\n' "$pattern" | grep -Eiq -f - -- "$path" 2>/dev/null || status=$?
+        case $status in
+            0) neutral=false ;;
+            1) neutral=true ;;
+            *) fail "the neutrality pattern could not be applied (grep -E): it is not a valid extended regular expression, or $path cannot be read" ;;
+        esac
     fi
     printf '{"path":%s,"kind":"%s","title":%s,"sha256":"%s","spec_refs":[%s],"neutral":%s}\n' \
         "$(printf '%s\n' "$path" | json)" "$kind" "$title" "$digest" "$refs" "$neutral" >>"$entries"
