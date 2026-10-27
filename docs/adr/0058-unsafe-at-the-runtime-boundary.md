@@ -74,3 +74,9 @@ find crates/una-sys/src -name '*.rs' -exec cat {} + | wc -l
 ```
 
 On `main` at the time of this amendment the count is 363. This amendment does not change the cap. A later amendment sets it at the exact count of the merged slices, with at most 5% of headroom, and replaces every earlier number. Each pull request that changes the crate states its count, by this command, in its description.
+
+## Amendment (2026-10-27, ADR 0124)
+
+The amendment of ADRs 0116 and 0117 says that `una-sys` holds only the signal handlers and the coroutine stacks, and the amendment of 2026-10-25 lists the bindings it may hold. It now holds: that base code; and behind the feature `solver`, which only `una-cli` enables (and `una-z3`, through which `una-cli` gets it), the solver child's confinement, limits, spawn attributes and footprint reading of ADR 0124 rules 5 to 7, at most 600 lines, counted as the amendment of 2026-10-25 counts, over the files that the feature gates. A third place may hold `unsafe` code: the crate `una-z3`, holding only the declaration of Z3's front-end entry, the construction of its arguments and the call, at most 150 lines under `crates/una-z3/src/`, depending only on `una-sys`. `ffi.rs` also holds the RELRO protection at start-up (ADR 0124 rule 25) from the Linux step of that record. Each is under rule 1's comments and lint settings, and every change gets a security review.
+
+ADR 0124 rule 35 states the base code's limit as 800 lines, from the count at its writing; the amendment of 2026-10-25, later and specific to the count, governs the base code's cap, and this amendment does not change it. The first slice of ADR 0124 step 1 adds `solver.rs` with the confinement record alone, with no `unsafe` code.

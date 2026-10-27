@@ -1255,17 +1255,60 @@ fn run_command(
     status.unwrap_or(ExitStatus::Usage)
 }
 
-/// `una.version/1`, with keys in this order (ADR 0034 rule 4).
+/// `una.version/1`, with keys in this order (ADR 0034 rule 4). `build` is present in a
+/// development build only (ADR 0124 rule 19).
 #[derive(serde::Serialize)]
 struct VersionDocument {
     schema: &'static str,
     version: &'static str,
     editions: Vec<&'static str>,
     z3: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    build: Option<&'static str>,
+}
+
+/// Whether this `una` is a development build (ADR 0124 rule 19): one built without the
+/// release solver taken by digest. A release build has it, and from step 2 of that record
+/// the embedded runtime too.
+fn development_build() -> bool {
+    !una_z3::BUILD.release
+}
+
+/// The build record (ADR 0124 rule 20): what this `una` was built with, as one JSON document
+/// with keys in a fixed order, which the solver child's handshake hashes and the report lists.
+/// It grows with the embedded runtime in step 2 of that record.
+#[derive(serde::Serialize)]
+struct BuildRecord {
+    schema: &'static str,
+    version: &'static str,
+    z3_version: &'static str,
+    z3_commit: &'static str,
+    z3_tree: &'static str,
+    z3_source_sha256: &'static str,
+    z3_library_sha256: &'static str,
+    development: bool,
+}
+
+/// This `una`'s build record, as its JSON text.
+pub fn build_record() -> String {
+    let z3 = una_z3::BUILD;
+    let record = BuildRecord {
+        schema: "una.build-record/1",
+        version: env!("CARGO_PKG_VERSION"),
+        z3_version: z3.version,
+        z3_commit: z3.commit,
+        z3_tree: z3.tree,
+        z3_source_sha256: z3.source_sha256,
+        z3_library_sha256: z3.library_sha256,
+        development: development_build(),
+    };
+    // INVARIANT: a struct of strings and a bool always serializes.
+    serde_json::to_string(&record).unwrap_or_default()
 }
 
 /// `una --version` (`spec/13 §5`, #305): the version of `una`, the editions it serves and the
-/// Z3 version its default lock pins, with no commit hash, so builds stay reproducible.
+/// Z3 version built into it, with no commit hash, so builds stay reproducible; a development
+/// build says so on its last line (ADR 0124 rule 19).
 fn version_command(json: bool, stdout: &mut dyn Write) -> io::Result<ExitStatus> {
     let version = env!("CARGO_PKG_VERSION");
     let editions: Vec<&'static str> = una_project::Edition::ALL
@@ -1273,12 +1316,14 @@ fn version_command(json: bool, stdout: &mut dyn Write) -> io::Result<ExitStatus>
         .map(|edition| edition.name())
         .collect();
     let z3 = una_project::DEFAULT_SOLVER_VERSION;
+    let build = development_build().then_some("development");
     if json {
         let document = VersionDocument {
             schema: "una.version/1",
             version,
             editions,
             z3,
+            build,
         };
         // INVARIANT: a struct of strings always serializes.
         let text = serde_json::to_string(&document).unwrap_or_default();
@@ -1287,6 +1332,9 @@ fn version_command(json: bool, stdout: &mut dyn Write) -> io::Result<ExitStatus>
         writeln!(stdout, "una {version}")?;
         writeln!(stdout, "editions: {}", editions.join(", "))?;
         writeln!(stdout, "z3: {z3}")?;
+        if build.is_some() {
+            writeln!(stdout, "development build")?;
+        }
     }
     Ok(ExitStatus::Success)
 }

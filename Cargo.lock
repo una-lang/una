@@ -1363,6 +1363,7 @@ dependencies = [
  "una-syntax",
  "una-sys",
  "una-verify",
+ "una-z3",
 ]
 
 [[package]]
@@ -1524,6 +1525,14 @@ dependencies = [
  "una-core",
  "una-diag",
  "una-syntax",
+]
+
+[[package]]
+name = "una-z3"
+version = "0.3.16"
+dependencies = [
+ "sha2",
+ "una-sys",
 ]
 
 [[package]]
