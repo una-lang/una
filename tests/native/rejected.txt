@@ -1,0 +1,3 @@
+# Runnable programs whose `una run` is rejected, by repository path, each with a reason after a
+# colon (#1045). The differential test (crates/una-cli/tests/native.rs) compares nothing for such
+# a case, so one that is not listed here fails the test, and a listed one that runs must be removed.
