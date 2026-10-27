@@ -716,6 +716,13 @@ Recorded with slice S5 (issue #970, `docs/plan/0117-s5-design.md`, `spec/27 §9`
 9. **The preview over-approximation.** `τ_conc` is `⊤` wherever a part of a task construct can run beside a site (`spec/26 §2` rule 5), so the grants of a program whose `Http` requests can run beside a task construct, a started task's included, cannot carry limits until `τ_conc` becomes the join of the siblings' `τ⁰` (ADR 0116 IF6). That is the safe side of IF4.
 10. **`std.limit` is a later slice.** Step 5 lists `std.limit` after the limits on grants; it lands with its own issue, with IF5.
 
+## Amendment (2026-10-27): rule 8 item 4 read with ADR 0116 P9
+
+Recorded with slice S5 (issue #970), once the ADR 0116 amendment on a precise `τ_conc` (P9, P12) was accepted. The accepted text above is unchanged; this amendment says how it is read.
+
+1. **An abandoned exchange ends at its next I/O step.** Rule 8 item 4 says a request that runs on a helper holds its slots until the helper returns. Under ADR 0116 P9, which issue #1148 implements, a request whose task is cancelled is abandoned: a wait at a limit leaves its queues unsent, as rule 8 says, and an exchange in progress ends at its next I/O step, its socket shut down, with `Interrupted`; the helper then returns, and the slots are released at that moment, not when the peer would have answered. A request waiting for those slots before that moment still waits for it. The server sees the connection closed. The count in flight is never understated: a slot is held exactly while an exchange runs on a helper.
+2. **Until #1148 lands,** the abandon ends only the wait at a limit, and an exchange in progress runs to its end on its helper, holding its slots, as the tests of this slice show; #1148 changes that test with the client. The reactor (step 6) ends an interrupted request with its task, and the residue label `L_res` of #1148 covers what a helper does between the cancellation and that step.
+
 ## Amendment (2026-10-25): structural placement, and threads started before main
 
 Found by the independent review of the ADR 0116 amendment for a precise `τ_conc` (channels P6 and P8), issue #1145, and landed in slice S1 before it merged. The text above stays as accepted; this amendment changes how it is read.
