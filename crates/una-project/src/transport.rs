@@ -11,6 +11,12 @@
 //! - any other scheme, `http://` included, and a bare path are refused when they are parsed:
 //!   plain HTTP is never used, and neither is any scheme this client does not know.
 //!
+//! **Writing.** A submission (ADR 0122 rule 43) is written through [`Transport::put`]: once per
+//! path, a second write of other bytes refused. A directory writes a fresh private file and
+//! links it into place with a hard link, which fails when the target exists, so no two writers
+//! replace each other's file; an `https://` location has no transport yet, and refuses, saying
+//! so.
+//!
 //! No transport starts another program.
 //!
 //! Costs: a read is O(b) for the b bytes of the file, bounded by the limit its caller gives.
@@ -38,6 +44,15 @@ pub trait Transport {
 
     /// Where the transport reads from, for messages.
     fn describe(&self) -> String;
+
+    /// Writes `bytes` as the file at `path` below the registry's base, once: when a file is
+    /// already there, it must be the same bytes. A transport that cannot write refuses.
+    /// A transport that cannot serve ([`Transport::serves`]) refuses every write too.
+    fn put(&self, path: &str, bytes: &[u8]) -> Result<(), Refusal> {
+        segments(path)?;
+        let _ = bytes;
+        Err(format!("{} cannot be written to", self.describe()))
+    }
 
     /// Every place the transport reads from, in order, for evidence: the one it describes,
     /// for a single place.
@@ -178,6 +193,59 @@ impl Transport for Directory {
     fn describe(&self) -> String {
         format!("the mirror `{}`", self.root.display())
     }
+
+    /// Writes once, with no check-then-write race: the bytes go into a file of this write's
+    /// own name, then are linked into place with a hard link, which fails when the target
+    /// exists, and the staged name is removed. A file already there with the same bytes is
+    /// accepted; any other is refused. A checkpoint is never written: `checkpoint`,
+    /// `checkpoint/latest` and every path below `checkpoint/` are refused.
+    fn put(&self, path: &str, bytes: &[u8]) -> Result<(), Refusal> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static STAGED: AtomicU64 = AtomicU64::new(0);
+
+        let parts = segments(path)?;
+        if parts.first() == Some(&"checkpoint") {
+            return Err("a submission never writes a registry's checkpoint".to_owned());
+        }
+        let Some((file, parents)) = parts.split_last() else {
+            return Err(format!("`{path}` is not a path of a registry"));
+        };
+        tree::not_a_link(&self.root)?;
+        let parent = tree::make_dirs(&self.root, parents)?;
+        let staged = format!(
+            ".put-{}-{}",
+            std::process::id(),
+            STAGED.fetch_add(1, Ordering::Relaxed)
+        );
+        tree::store_file(&parent, &staged, bytes, true)?;
+        let linked = std::fs::hard_link(parent.join(&staged), parent.join(file));
+        let removed = std::fs::remove_file(parent.join(&staged));
+        match linked {
+            Ok(()) => removed.map_err(|error| {
+                format!(
+                    "cannot remove the staged copy of `{path}` of {}: {error}",
+                    self.describe()
+                )
+            }),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                match self.get(path, bytes.len() as u64) {
+                    Ok(Some(there)) if there == bytes => Ok(()),
+                    Ok(_) => Err(format!(
+                        "another file is already at `{path}` of {}",
+                        self.describe()
+                    )),
+                    Err(why) => Err(format!(
+                        "`{path}` of {} cannot be compared: {why}",
+                        self.describe()
+                    )),
+                }
+            }
+            Err(error) => Err(format!(
+                "cannot write `{path}` of {}: {error}",
+                self.describe()
+            )),
+        }
+    }
 }
 
 /// The transport of an `https://` location. This release has no HTTPS transport: every read
@@ -200,6 +268,14 @@ impl Transport for Unavailable {
 
     fn describe(&self) -> String {
         format!("`{}`", self.url)
+    }
+
+    fn put(&self, path: &str, _bytes: &[u8]) -> Result<(), Refusal> {
+        segments(path)?;
+        Err(format!(
+            "`{}` is reached over https, and there is no https transport yet; nothing is sent",
+            self.url
+        ))
     }
 
     fn serves(&self) -> bool {

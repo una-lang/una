@@ -171,7 +171,8 @@ fn a_raise_waits_the_cooldown_unless_now() {
             held: Some(v("2.1.1")),
         }
     );
-    // The message points to the audit and to the need, never to a flag that skips the wait.
+    // A raise past a yank or an advisory points to the audit and to the need, never to a flag
+    // that skips the wait.
     let message = held.to_string();
     assert!(
         !message.contains("--now") && message.contains("`una ita audit`"),

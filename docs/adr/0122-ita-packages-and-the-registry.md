@@ -1147,6 +1147,15 @@ Existing codes cover the rest:
 
 **ADR 0121, Note, appended on its acceptance, coordinated with Question 8.1.** In edition `0.4`, the edition switch of rule 2 and its opt-ins are read from `ita.una` (ADR 0122), where rule 2 says `una.toml`. The `0.3`-to-`0.4` pair of the edition test (rule 11) runs `una migrate` on each `0.3` package of the suite, then compares; a difference that the migration alone causes is not a clash. `una.toml` naming edition `0.4` is U7002 if no released `una` accepted that form when ADR 0122's files land, and a U7007 ledger entry otherwise.
 
+## Amendment of 2026-10-25: the yank command
+
+Rule 41 states that an owner yanks a release by a logged statement, and rule 57 lists the commands of `una ita`. This amendment names the command that writes that statement.
+
+- **`una ita yank <version> [path]`** writes the yank statement of the release `<version>` of the package at `path`: a statement in the chain of the package's name (rule 36.1), whose `previous` is the head of that chain, of the form `spec/30 §11` gives, which the log then holds as a leaf (rule 41).
+- **Who signs it.** The owner's keys, at least the owner's threshold of keys valid at the head of its chain (rule 38). A yank signed by fewer is not a yank: the registry does not log it, and no client reads it as one.
+- **Where it goes.** To the source that the head's `publish to` names, as a submission, through the same transport as `una ita publish` (rule 43), with the registry's signed promise to log it (rule 36.2).
+- **What it changes.** As rule 41 states: new resolutions skip the release, existing locks keep it, and nothing is deleted. A version that was never released, or is already yanked, is refused.
+
 ## Amendment of 2026-10-25: co-signer changes wait
 
 - Status: Accepted, recorded under the project's delegation.
@@ -1261,3 +1270,25 @@ A recovery, a dispute or a `cancel` logged while a resetting request waits is ne
 - A thief's self-claim, signed with the stolen key alone or with keys that key added after the theft, never reaches back before its own index, so it never voids what the owner's keys signed before it, and the owner's claim stands.
 - `spec/30 §14` rule 5 states this as normative text.
 
+## Amendment 12 (2026-10-26): `publish to` names a workspace source
+
+- Status: Accepted, recorded under the project's delegation.
+
+**Context.** `spec/30 §2` rule 4 required `publish to` to name `itaty` or a source of the package's own `sources` section. Rule 43 refuses to publish a package with a `sources` section, and `spec/30 §15` rule 1 takes a source other than `itaty` from the `sources` of the nearest workspace whose `itaty.una` lists the package as a member. The two rules contradict each other: a package published to a private source failed its own manifest check (U7008), so it could not be published, and the archive of one already logged failed the check of its code at fetch, which allows U7008 only for registry needs, and at `una check`.
+
+**Decision.**
+1. `publish to` names `itaty` or a source name that `sources` could declare, never `path`, `git` or `workspace`; any other name is U7008 at the line, as before. Reading `ita.una` does not look the source up.
+2. `una ita publish` and `una ita yank` look it up when they run, before anything is built or sent: `itaty`, or a source that the `sources` of the nearest workspace listing the package as a member declares. A source no such workspace declares, a workspace that does not declare it, and a workspace file that cannot be read are refused (U7013), each by its kind, never by a message; nothing is sent.
+3. The `ita.una` of a published archive, read at fetch or by `una check`, therefore accepts its `publish to` line. No other diagnostic is relaxed: rule 43's refusals and the archive check's allowances are unchanged.
+
+**Checks.** The manifest tests accept `publish to acme` without `sources` and refuse `path`, `git` and `workspace`. The client's lookup is tested for each kind of refusal. `una ita publish` and `una ita yank` refuse a source the workspace does not declare. A release published to a private source is locked, fetched, yanked and audited end to end.
+
+**Consequences.**
+- A package names its private source in its own `ita.una`; the declaration of that source, its URL and its root's pin, lives in the workspace, where the publisher's other packages find it too.
+- `spec/30 §2` rule 4 states this as normative text.
+
+## Amendment 12, correction (2026-10-26): when the source is looked up
+
+- Status: Accepted, recorded under the project's delegation.
+
+Amendment 12, decision 2, says the source is looked up "before anything is built or sent". `spec/30 §15` rule 3 orders publishing: the refusals of `spec/30 §11` rule 12, then a package in a git repository, then `una check` at tier 1, and only then the archive and the source. The lookup keeps that order: `una ita publish` looks the source up after the package's own refusals and its check, and before its archive is built or anything is sent. `una ita yank`, which checks no code, looks it up before it reads the registry. A package that does not check is refused for that, whatever source it names.

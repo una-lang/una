@@ -44,7 +44,11 @@ pub(crate) struct Output<'a> {
 }
 
 /// The diagnostics of `errors`, located in the file `id` of `sources`.
-fn located(sources: &SourceDb, id: FileId, errors: Vec<ProjectError>) -> Vec<Diagnostic> {
+pub(crate) fn located(
+    sources: &SourceDb,
+    id: FileId,
+    errors: Vec<ProjectError>,
+) -> Vec<Diagnostic> {
     errors
         .into_iter()
         .map(|error| {
@@ -60,7 +64,7 @@ fn located(sources: &SourceDb, id: FileId, errors: Vec<ProjectError>) -> Vec<Dia
 /// Prints the result of a command: one `una.ita/1` document with `--json`, with `schema`
 /// first; otherwise the diagnostics on stderr and `lines` on stdout. Exit code 1 when a
 /// diagnostic is an error (`spec/13 §5`).
-fn finish(
+pub(crate) fn finish(
     command: &str,
     written: &[&str],
     lines: &[String],
@@ -2780,6 +2784,15 @@ pub(crate) fn add_command(
             .find(|source| source.owners.iter().any(|o| o.value == owner))
             .map(|source| source.name.value.clone())
     });
+    if let (Some(given), Some(serving)) = (from, serving.as_deref())
+        && given != serving
+    {
+        writeln!(
+            out.stderr,
+            "error: the owner of `{name}` is served by the source `{serving}`, so the need is `from {serving}`, never `from {given}`"
+        )?;
+        return Ok(ExitStatus::Usage);
+    }
     let from: Option<String> = from.map(str::to_owned).or(serving);
     let version: String = match version {
         Some(version) => version.to_owned(),

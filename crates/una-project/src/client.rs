@@ -35,9 +35,17 @@
 //! - **its logged time** is the k-th earliest of the distinct witnesses' earliest cosignatures on
 //!   the kept checkpoints that include it (rule 36.4), read by size from the entry on.
 //!
+//! - **a name's yanks and advisories** (rule 41, [`Registry::marks`]): a yank stands only when
+//!   the owner's threshold of keys valid at its position signs it, and names a release logged
+//!   before it; one that counts only with a compromised key, or that repeats a yank, is void and
+//!   ignored. An advisory stands only when a security key of the root signs it, and it names
+//!   the releases it affects; it lifts the cooldown for the fix it names by digest only with
+//!   the root's security threshold of security keys, never fewer than two, or one and the
+//!   owner's threshold. Resolution reads them through [`Registry::state`].
+//!
 //! A failure is a refusal, U7010 where `una ita` reports it, naming the registry and what failed.
-//! An entry of a kind this client does not read yet (a yank, an advisory, a transfer) refuses the
-//! name, so nothing is ever resolved from a partial view of its state.
+//! An entry of a kind this client does not read yet (a transfer) refuses the name, so nothing is
+//! ever resolved from a partial view of its state.
 //!
 //! **Transport.** Bytes come only through [`Transport`]; every rule above applies to every
 //! transport alike, a local mirror directory included. Which place a source is read from is
@@ -51,7 +59,7 @@
 //! sizes up to the deadline, at most [`MAX_DEADLINE_SPAN`] sizes.
 
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::resolve::{self, Identity, Index, Need, Offline, Release};
 use crate::tlog::map::{self, Head, Link};
@@ -60,6 +68,7 @@ use crate::tlog::note::{self, Checkpoint, Key, Note};
 use crate::tlog::owner::{self, History, ReplayError, Standing, Unsettled};
 use crate::tlog::release::{self, Statement};
 use crate::tlog::root::{self, Root};
+use crate::tlog::state::{self, Advisory, Signers, Yank};
 use crate::tlog::tile::Tiles;
 use crate::tlog::witness::{self, Cosigned};
 use crate::transport::{Refusal, Transport};
@@ -650,6 +659,10 @@ pub enum Kind {
     Release(Box<Statement>),
     /// An owner's key event (rule 38).
     Owner(Box<owner::Entry>),
+    /// A yank (rule 41).
+    Yank(Box<Yank>),
+    /// An advisory (rule 41).
+    Advisory(Box<Advisory>),
 }
 
 impl Kind {
@@ -658,6 +671,8 @@ impl Kind {
         let previous = match self {
             Kind::Release(statement) => statement.previous.as_ref(),
             Kind::Owner(entry) => entry.previous.as_ref(),
+            Kind::Yank(yank) => yank.previous.as_ref(),
+            Kind::Advisory(advisory) => advisory.previous.as_ref(),
         };
         match previous {
             None => Ok(None),
@@ -680,6 +695,8 @@ pub fn read_entry(document: &str) -> Result<(Note, Kind), Refusal> {
         owner::REGISTRATION | owner::KEY_EVENT => {
             Kind::Owner(Box::new(owner::parse_entry(&signed.text)?))
         }
+        state::YANK => Kind::Yank(Box::new(state::parse_yank(&signed.text)?)),
+        state::ADVISORY => Kind::Advisory(Box::new(state::parse_advisory(&signed.text)?)),
         other => {
             return Err(format!(
                 "the log holds an entry `{other}` of a kind this client does not read yet, so the state of its name cannot be known"
@@ -716,6 +733,85 @@ impl LoggedRelease {
 pub fn owner_of(name: &str) -> &str {
     name.split_once('/')
         .map_or(owner::ITAUNA, |(owner, _)| owner)
+}
+
+/// A name's yanks and advisories, verified (rule 41).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Marks {
+    /// The releases yanked, with the log index of their yank.
+    pub yanked: BTreeMap<Version, u64>,
+    /// The releases each advisory names, by version: the advisories' identifiers.
+    pub advised: BTreeMap<Version, Vec<String>>,
+    /// The advisories, by identifier, with their log index.
+    pub advisories: BTreeMap<String, (u64, Advisory)>,
+    /// The releases that an advisory lifting the cooldown names, by digest, as its fix.
+    pub threshold_fix: BTreeSet<Version>,
+    /// The yanks that do not stand and are ignored, in log order: one that counts only with a
+    /// key compromised before it, and a second yank of a version already yanked.
+    pub voided: Vec<Void>,
+}
+
+/// A yank ignored as void (rule 41): its log index, the version it names, and why.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Void {
+    /// Its log index.
+    pub index: u64,
+    /// The version it names.
+    pub version: Version,
+    /// Why it does not stand.
+    pub why: String,
+}
+
+/// How a yank stands against its owner's replayed history (rule 41), as [`apply_yank`] judges
+/// it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum YankStanding {
+    /// It counts, and yanks its version: signed by the owner's threshold of sound keys valid at
+    /// its position.
+    Stands,
+    /// It is void and ignored, listed in [`Marks::voided`]: it counts only with keys
+    /// compromised or void before it, it is logged once its owner's chain was frozen, or its
+    /// version is yanked already.
+    Void,
+    /// It is not signed as required, which a registry following the rules never logs: the
+    /// name is refused (U7010), and `marks` is left unchanged.
+    Unsigned,
+}
+
+/// Applies to `marks` a yank of `version` whose `note` is logged at `index`, judged by the owner
+/// replay's [`History::judge`] and never derived here: a yank that counts marks the version
+/// yanked; one skipped, and a second yank of a version yanked already, are listed as void. The
+/// standing says which. O(S) for the note's S signatures, plus O(log V) for V versions yanked.
+pub fn apply_yank(
+    marks: &mut Marks,
+    history: &History,
+    note: &Note,
+    index: u64,
+    version: &Version,
+) -> YankStanding {
+    match history.judge(note, index) {
+        Standing::Counts(_) => {}
+        Standing::Skipped(_) => {
+            marks.voided.push(Void {
+                index,
+                version: version.clone(),
+                why: "it counts only with keys compromised or void before it, or is logged once its owner's chain was frozen"
+                    .to_owned(),
+            });
+            return YankStanding::Void;
+        }
+        Standing::Unsigned => return YankStanding::Unsigned,
+    }
+    if marks.yanked.contains_key(version) {
+        marks.voided.push(Void {
+            index,
+            version: version.clone(),
+            why: "the version is yanked already".to_owned(),
+        });
+        return YankStanding::Void;
+    }
+    marks.yanked.insert(version.clone(), index);
+    YankStanding::Stands
 }
 
 /// One registry, read through one transport, at one checkpoint.
@@ -767,6 +863,8 @@ pub struct Registry<'t> {
     /// What the client observed that changes no result.
     observations: Vec<Observation>,
     releases: BTreeMap<String, Vec<LoggedRelease>>,
+    chains: BTreeMap<String, Vec<ChainEntry>>,
+    marks: BTreeMap<String, Marks>,
 }
 
 impl<'t> Registry<'t> {
@@ -979,6 +1077,8 @@ impl<'t> Registry<'t> {
             omitted: Vec::new(),
             observations: Vec::new(),
             releases: BTreeMap::new(),
+            chains: BTreeMap::new(),
+            marks: BTreeMap::new(),
         };
         if let Some(floor) = floors.checkpoint {
             // A tile of the floor's proof no place serves is an omission, never a fork.
@@ -1085,6 +1185,51 @@ impl<'t> Registry<'t> {
             .ok()
             .and_then(|signed| note::parse_checkpoint(&signed.text).ok())
             .is_some_and(|floor| floor.size > self.point.checkpoint.size)
+    }
+
+    /// The root of `version` in the chain walked, when its digest is `digest`: what a document
+    /// stored under an earlier root, such as a submission's first promise (`spec/30 §15` rule
+    /// 5), is verified against again. O(R) for R versions.
+    pub fn root_at(&self, version: u64, digest: &str) -> Option<&Root> {
+        self.begin();
+        self.chain
+            .iter()
+            .find(|(root, walked)| root.version == version && walked == digest)
+            .map(|(root, _)| root)
+    }
+
+    /// The last root version walked, with its digest, `sha256:` and hex.
+    pub fn last_root(&self) -> Option<(u64, &str)> {
+        self.begin();
+        self.chain
+            .last()
+            .map(|(root, digest)| (root.version, digest.as_str()))
+    }
+
+    /// Refuses, as unavailable, the judgment of `note`, an entry of `name`'s chain at `index`,
+    /// by its owner's `history` when the earliest timing of the owner's requests would change
+    /// it (`spec/30 §14` rule 1, withheld cosignatures): an omission of cosignatures, recorded
+    /// for [`Registry::take_omitted`], never a verdict. `what` names the entry. O(S) for its S
+    /// signatures.
+    fn timing_settled(
+        &mut self,
+        name: &str,
+        history: &History,
+        note: &Note,
+        index: u64,
+        what: &str,
+    ) -> Result<(), Refusal> {
+        let differs = self
+            .eager
+            .get(owner_of(name))
+            .is_some_and(|eager| eager.judge(note, index) != history.judge(note, index));
+        if differs {
+            self.omitted.push(Omission::Cosignatures(name.to_owned()));
+            return Err(self.unserved(format!(
+                "{what} at log entry {index} stands or not as a recovery, a dispute or a co-signer change of its owner is in effect at its earliest position or later, which depends on witnesses' cosignatures that no place served, which a place may withhold; the name is unavailable here: try another place or a later checkpoint"
+            )));
+        }
+        Ok(())
     }
 
     /// A failure because what was served does not verify (U7010), one sentence naming the
@@ -1227,6 +1372,9 @@ impl<'t> Registry<'t> {
     /// many as the map counts (rule 36.1). O(E log L).
     pub fn chain(&mut self, name: &str) -> Result<Vec<ChainEntry>, Refusal> {
         self.begin();
+        if let Some(chain) = self.chains.get(name) {
+            return Ok(chain.clone());
+        }
         let Some(head) = self.head(name)? else {
             return Ok(Vec::new());
         };
@@ -1263,7 +1411,9 @@ impl<'t> Registry<'t> {
                 self.refuse(why)
             });
         }
-        Ok(read.into_values().collect())
+        let chain: Vec<ChainEntry> = read.into_values().collect();
+        self.chains.insert(name.to_owned(), chain.clone());
+        Ok(chain)
     }
 
     /// The kept checkpoint of `size` (rule 36.4), at `checkpoint/<size>`, when the registry
@@ -1508,6 +1658,7 @@ impl<'t> Registry<'t> {
         self.histories.clear();
         self.eager.clear();
         self.releases.clear();
+        self.marks.clear();
     }
 
     /// The deadline of a wait from the entry at `index` that ends at witness time `target`,
@@ -1770,9 +1921,9 @@ impl<'t> Registry<'t> {
             for entry in chain {
                 match entry.kind {
                     Kind::Owner(read) => entries.push((entry.index, entry.note, *read)),
-                    Kind::Release(_) => {
+                    Kind::Release(_) | Kind::Yank(_) | Kind::Advisory(_) => {
                         return Err(self.refuse(format!(
-                            "the chain of the owner `{owner_name}` holds a release statement"
+                            "the chain of the owner `{owner_name}` holds an entry about a package"
                         )));
                     }
                 }
@@ -1929,12 +2080,16 @@ impl<'t> Registry<'t> {
         let mut out: Vec<LoggedRelease> = Vec::new();
         let mut highest: BTreeMap<Line, usize> = BTreeMap::new();
         for entry in chain {
-            let Kind::Release(statement) = entry.kind else {
-                return Err(self.refuse(format!(
-                    "the chain of the package `{name}` holds an owner's key event"
-                )));
+            let statement = match entry.kind {
+                Kind::Release(statement) => *statement,
+                // Read by `marks`, after the releases they name.
+                Kind::Yank(_) | Kind::Advisory(_) => continue,
+                Kind::Owner(_) => {
+                    return Err(self.refuse(format!(
+                        "the chain of the package `{name}` holds an owner's key event"
+                    )));
+                }
             };
-            let statement = *statement;
             if statement.source != self.source || statement.name != name {
                 return Err(self.refuse(format!(
                     "the chain of `{name}` holds a statement of `{}` at `{}`",
@@ -2007,11 +2162,164 @@ impl<'t> Registry<'t> {
         Ok(out)
     }
 
+    /// The yanks and advisories of `name` at the point (rule 41), each verified, in log order.
+    ///
+    /// - A yank of this source and name, of a release logged before it, stands as the owner
+    ///   replay judges it ([`apply_yank`], [`History::judge`]). One that counts only with keys
+    ///   compromised or void before its position, one logged once the owner's chain was frozen,
+    ///   and a second yank of a version already yanked, are void: ignored, and listed in
+    ///   [`Marks::voided`] for `una ita audit`.
+    /// - An advisory of this source and name stands when at least one security key of the root
+    ///   signs it, and names releases logged before it; it lifts the cooldown for the fix it
+    ///   names by digest only with the root's security threshold of security keys, never fewer
+    ///   than two, or one security key and the owner's threshold ([`Signers::lifts_cooldown`]).
+    ///   An identifier given twice refuses the name.
+    ///
+    /// Any other refuses the name: it is evidence that the registry logged what it must not.
+    /// O(E) after the chain.
+    pub fn marks(&mut self, name: &str) -> Result<Marks, Refusal> {
+        self.begin();
+        if let Some(marks) = self.marks.get(name) {
+            return Ok(marks.clone());
+        }
+        let chain = self.chain(name)?;
+        let releases = self.releases(name)?;
+        let history = self.history(owner_of(name))?;
+        let security = self.root.security.keys.clone();
+        let security_threshold = self.root.security.threshold;
+        let logged = |version: &Version, before: u64| {
+            releases
+                .iter()
+                .any(|r| r.statement.version == *version && r.index < before)
+        };
+        let mut marks = Marks::default();
+        let mut fixes: Vec<(Version, String)> = Vec::new();
+        for entry in &chain {
+            let index = entry.index;
+            match &entry.kind {
+                Kind::Yank(yank) => {
+                    if yank.source != self.source || yank.name != name {
+                        return Err(self.refuse(format!(
+                            "the chain of `{name}` holds a yank of `{}` at `{}`",
+                            yank.name, yank.source
+                        )));
+                    }
+                    if !logged(&yank.version, index) {
+                        return Err(self.refuse(format!(
+                            "the chain of `{name}` holds a yank of {}, which is not released before it",
+                            yank.version
+                        )));
+                    }
+                    // How it stands is the owner replay's, never derived here
+                    // ([`apply_yank`], through `History::judge`), and only when the earliest
+                    // timing of its owner's requests would not change it.
+                    let what = format!("the yank of `{name} {}`", yank.version);
+                    self.timing_settled(name, &history, &entry.note, index, &what)?;
+                    if apply_yank(&mut marks, &history, &entry.note, index, &yank.version)
+                        == YankStanding::Unsigned
+                    {
+                        return Err(self.refuse(format!(
+                            "the yank of `{name} {}` at log entry {index} is not signed by the threshold of its owner's keys valid there",
+                            yank.version
+                        )));
+                    }
+                }
+                Kind::Advisory(advisory) => {
+                    if advisory.source != self.source || advisory.name != name {
+                        return Err(self.refuse(format!(
+                            "the chain of `{name}` holds an advisory of `{}` at `{}`",
+                            advisory.name, advisory.source
+                        )));
+                    }
+                    // The security keys are judged first. The owner's signers count only when
+                    // they can matter: for a fix that the security keys alone do not lift. So
+                    // a doubt about the owner's timing never makes the name unavailable when
+                    // the owner's signers are not needed.
+                    let alone = Signers {
+                        security: entry.note.signers(&security),
+                        owner_threshold: false,
+                    };
+                    let needs_owner =
+                        alone.needs_owner(advisory.fixed.is_some(), security_threshold);
+                    // The owner's threshold counts as the owner replay judges the entry
+                    // (`History::judge`), once the earliest timing of the owner's requests
+                    // would not change it, its sound signers taken without the root's security
+                    // keys, so the two counts are of disjoint keys, and one key that is both
+                    // never counts twice (§11 rule 11).
+                    let owner_threshold = if needs_owner {
+                        let what = format!("the advisory {}", advisory.id);
+                        self.timing_settled(name, &history, &entry.note, index, &what)?;
+                        match history.judge(&entry.note, index) {
+                            Standing::Counts(sound) => history.at(index).is_some_and(|snapshot| {
+                                let owners = sound
+                                    .iter()
+                                    .filter(|key| !security.iter().any(|s| s.public == key.public))
+                                    .count();
+                                snapshot.threshold > 0 && owners >= snapshot.threshold
+                            }),
+                            Standing::Skipped(_) | Standing::Unsigned => false,
+                        }
+                    } else {
+                        false
+                    };
+                    let signers = Signers {
+                        security: alone.security,
+                        owner_threshold,
+                    };
+                    if !signers.valid() {
+                        return Err(self.refuse(format!(
+                            "the advisory {} is signed by no security key of the root",
+                            advisory.id
+                        )));
+                    }
+                    if marks.advisories.contains_key(&advisory.id) {
+                        return Err(self.refuse(format!(
+                            "the chain of `{name}` holds the advisory {} twice",
+                            advisory.id
+                        )));
+                    }
+                    for version in &advisory.affected {
+                        if !logged(version, index) {
+                            return Err(self.refuse(format!(
+                                "the advisory {} names {version}, which is not released before it",
+                                advisory.id
+                            )));
+                        }
+                        marks
+                            .advised
+                            .entry(version.clone())
+                            .or_default()
+                            .push(advisory.id.clone());
+                    }
+                    if let Some(fix) = &advisory.fixed
+                        && signers.lifts_cooldown(security_threshold)
+                    {
+                        fixes.push(fix.clone());
+                    }
+                    marks
+                        .advisories
+                        .insert(advisory.id.clone(), (index, (**advisory).clone()));
+                }
+                Kind::Release(_) | Kind::Owner(_) => {}
+            }
+        }
+        for (version, digest) in fixes {
+            if releases
+                .iter()
+                .any(|r| r.statement.version == version && r.statement.digest == digest)
+            {
+                marks.threshold_fix.insert(version);
+            }
+        }
+        self.marks.insert(name.to_owned(), marks.clone());
+        Ok(marks)
+    }
+
     /// The releases of the identity `name` on `line` as resolution reads them (rules 23 and 24):
-    /// each version, skipped as yanked when signed after its key's stated compromise, with the
-    /// time it was logged. A name whose owner's chain is frozen is refused. Yanks and
-    /// advisories are entries this client does not read yet, and refuse the name
-    /// ([`read_entry`]).
+    /// each version, with the time it was logged; yanked when a yank stands or when it was signed
+    /// after its key's stated compromise; advised when an advisory names it; and whether an
+    /// advisory that lifts the cooldown names it as its fix ([`Registry::marks`]). A name whose
+    /// owner's chain is frozen is refused.
     pub fn state(&mut self, name: &str, line: Line) -> Result<Vec<Release>, Refusal> {
         self.begin();
         // A chain frozen by competing recoveries or disputes resolves to no one (rule 38.1).
@@ -2023,6 +2331,7 @@ impl<'t> Registry<'t> {
             )));
         }
         let releases = self.releases(name)?;
+        let marks = self.marks(name)?;
         let mut out = Vec::new();
         for release in releases
             .iter()
@@ -2049,11 +2358,12 @@ impl<'t> Registry<'t> {
                     self.observations.push(observation);
                 }
             }
+            let version = &release.statement.version;
             out.push(Release {
-                version: release.statement.version.clone(),
-                yanked: release.compromised,
-                advised: false,
-                threshold_fix: false,
+                version: version.clone(),
+                yanked: release.compromised || marks.yanked.contains_key(version),
+                advised: marks.advised.contains_key(version),
+                threshold_fix: marks.threshold_fix.contains(version),
                 logged_at: served,
             });
         }

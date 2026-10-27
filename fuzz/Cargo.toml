@@ -179,6 +179,55 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "registry_yank"
+path = "fuzz_targets/registry_yank.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "registry_advisory"
+path = "fuzz_targets/registry_advisory.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "registry_entry"
+path = "fuzz_targets/registry_entry.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "registry_keyfile"
+path = "fuzz_targets/registry_keyfile.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "registry_bundle"
+path = "fuzz_targets/registry_bundle.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "registry_watch"
+path = "fuzz_targets/registry_watch.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "registry_promise"
+path = "fuzz_targets/registry_promise.rs"
+test = false
+doc = false
+bench = false
+
 [profile.release]
 debug = 1
 debug-assertions = true

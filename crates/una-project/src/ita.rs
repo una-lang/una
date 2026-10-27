@@ -226,15 +226,19 @@ pub fn parse_ita_manifest(text: &str) -> (Manifest, Vec<ProjectError>) {
         ));
     }
     let sources = check_sources(&read.sources, code, &mut errors);
+    // `publish to` names `itaty` or a source name that `sources` could declare: a published
+    // package has no `sources`, so the source is the one its workspace's `itaty.una` declares,
+    // checked when it is published or yanked (`spec/30 §2` rule 4, §15 rule 1), never here.
     if let Some(target) = &read.publish_to
         && target.value != ITATY
-        && !sources.contains_key(target.value.as_str())
+        && (RESERVED_SOURCES.contains(&target.value.as_str())
+            || !is_name_word(&target.value, 1, NAME_BYTES))
     {
         errors.push(error(
             code,
             target.range.clone(),
             format!(
-                "`publish to {}` names no source; the sources are `itaty` and those of `sources`",
+                "`publish to {}` names no source: a source is `itaty` or a name that `sources` could declare",
                 target.value
             ),
         ));

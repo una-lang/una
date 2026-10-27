@@ -1,0 +1,6 @@
+ita-promise/1
+source acme
+leaf sha256:abababababababababababababababababababababababababababababababab
+by 1900003600
+
+— acme.example/log AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA

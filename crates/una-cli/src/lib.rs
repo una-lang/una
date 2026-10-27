@@ -12,6 +12,7 @@ mod contract;
 mod core_json;
 mod fix;
 mod ita;
+mod ita_registry;
 mod lsp;
 mod migrate;
 mod package;
@@ -688,6 +689,18 @@ pub(crate) fn itaoca(environment: Environment<'_>) -> Option<una_project::itaoca
     una_project::itaoca::Itaoca::at(dir.as_deref(), home.as_deref().map(Path::new))
 }
 
+/// The codes `una ita audit` reports for the package at `path`, each registry package's facts
+/// from `facts_of`, as the verified client gives them (ADR 0122 rule 41, U7014): for the explain
+/// examples of U7014, which state a registry's state without a registry.
+pub fn audit_codes(
+    path: &Path,
+    facts_of: &mut dyn FnMut(
+        &una_project::registry::audit::Locked,
+    ) -> Result<una_project::registry::audit::Facts, String>,
+) -> Vec<Code> {
+    ita_registry::audit_codes(path, facts_of)
+}
+
 /// The local clock, in seconds since the Unix epoch, which only the freshness of a registry's
 /// checkpoint reads (ADR 0122 rules 36.4 and 39); 0 when the clock is before the epoch, which
 /// makes every checkpoint look ahead of it, so resolution stops with a clock skew.
@@ -802,7 +815,13 @@ fn panic_location(command: Option<&Command>) -> una_diag::Location {
                 | ItaCommand::Tree { path }
                 | ItaCommand::Vendor { path }
                 | ItaCommand::Verify { path }
-                | ItaCommand::Remove { path, .. },
+                | ItaCommand::Remove { path, .. }
+                | ItaCommand::Fetch { path }
+                | ItaCommand::Publish { path, .. }
+                | ItaCommand::Yank { path, .. }
+                | ItaCommand::Audit { path }
+                | ItaCommand::Bundle { path, .. }
+                | ItaCommand::Unbundle { path, .. },
         }) => Some(path.clone()),
         // `una ita add` and `update` work on the package in the current directory.
         Some(Command::Ita {
@@ -1173,6 +1192,55 @@ fn run_command(
                     ItaCommand::Verify { path } => {
                         ita::verify_command(&path, store.as_ref(), output)
                     }
+                    ItaCommand::Publish { path } => {
+                        // A refused proof cache key is a note on this command's stderr (#1164).
+                        let solving =
+                            solving(DEFAULT_WALLCLOCK.as_secs(), json, &mut *output.stderr);
+                        let home = variable(environment, "HOME");
+                        let keys = ita_registry::keys_dir(home.as_deref());
+                        let git_variable = ["GIT_DIR", "GIT_WORK_TREE"]
+                            .into_iter()
+                            // Set at all, even to a value that is not UTF-8.
+                            .find(|name| !matches!(environment(name), Ok(None)));
+                        ita_registry::publish_command(
+                            &path,
+                            keys.as_deref(),
+                            git_variable,
+                            &solving,
+                            output,
+                        )
+                    }
+                    ItaCommand::Yank { version, path } => {
+                        let store = itaoca(environment);
+                        let home = variable(environment, "HOME");
+                        let keys = ita_registry::keys_dir(home.as_deref());
+                        ita_registry::yank_command(
+                            &version,
+                            &path,
+                            keys.as_deref(),
+                            store.as_ref(),
+                            output,
+                        )
+                    }
+                    ItaCommand::Audit { path } => {
+                        ita_registry::audit_command(&path, itaoca(environment).as_ref(), output)
+                    }
+                    ItaCommand::Watch { owner, names, from } => {
+                        let store = itaoca(environment);
+                        ita_registry::watch_command(&owner, &names, &from, store.as_ref(), output)
+                    }
+                    ItaCommand::Bundle { file, path } => ita_registry::bundle_command(
+                        &file,
+                        &path,
+                        itaoca(environment).as_ref(),
+                        output,
+                    ),
+                    ItaCommand::Unbundle { file, path } => ita_registry::unbundle_command(
+                        &file,
+                        &path,
+                        itaoca(environment).as_ref(),
+                        output,
+                    ),
                 }
             }
             Command::Fmt { path, check } => {
