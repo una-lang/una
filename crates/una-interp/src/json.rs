@@ -168,6 +168,9 @@ pub(crate) enum NoTree {
     NotJson,
     /// The run is over its memory budget.
     OverBudget,
+    /// A `Number` holds an `Int` of more than `MAX_INT_DIGITS` digits, which is never written
+    /// (`spec/11 §7`, #923).
+    IntTooLong,
 }
 
 /// The tree of a `Json` value, asking `within` every [`json::CHECK_EVERY`] values whether the
@@ -193,7 +196,9 @@ pub(crate) fn tree(value: &Value<'_>, within: &mut dyn FnMut() -> bool) -> Resul
             done = match (data.ctor.index, field) {
                 (NULL, _) => Some(Tree::Null),
                 (BOOLEAN, Some(Value::Bool(b))) => Some(Tree::Bool(*b)),
-                (NUMBER, Some(Value::Int(n))) => Some(Tree::Int(n.to_string())),
+                (NUMBER, Some(Value::Int(n))) => {
+                    Some(Tree::Int(una_core::int_text(n).ok_or(NoTree::IntTooLong)?))
+                }
                 (DECIMAL, Some(Value::Text(t))) => Some(Tree::Decimal(t.to_string())),
                 (STR, Some(Value::Text(t))) => Some(Tree::Str(t.to_string())),
                 (ARRAY, Some(Value::List(items))) => {
