@@ -1,0 +1,15 @@
+-- test: a function value whose code is not known at the call, here a parameter of a helper the step reaches, still gives the step the top timing label, so its `input` is U4001 (spec/26 §2 rule 5 item 4, ADR 0116 IF5 item 4, #1023)
+-- spec: spec/26 §2
+-- expect: error U4001 at src/counter.una:13:34
+module counter
+
+import std.drive (Tick)
+
+pub init() -> Int = 0
+
+--- Applies `f`: what `f` captured is not in its type, so its running time is unknown here.
+apply(f: fn(Int) -> Int, x: Int) -> Int = f(x)
+
+pub step(edit count: Int, input: Tick) -> Unit
+=
+  count = apply(fn(x: Int) -> x + 1, count)

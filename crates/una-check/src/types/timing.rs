@@ -36,6 +36,10 @@ pub(crate) struct TimingSeed {
     pub(crate) handlers: BTreeSet<usize>,
     /// Whether it calls a function value whose code is not known at the site (IF5 item 4).
     pub(crate) value_call: bool,
+    /// The prelude functions with a function parameter that the site's own code calls with
+    /// lambdas written at the call only (#1023): their argument's code is the site's own, so
+    /// such a call adds no `⊤`, unless the function is also reached through another function.
+    pub(crate) known_fn_callees: BTreeSet<usize>,
     /// Whether it lies inside a lambda, a `together` task or a handler's operation, whose
     /// concurrent work the structure of its function does not show: `τ_conc` is then `⊤`.
     pub(crate) unplaced: bool,
@@ -160,8 +164,28 @@ impl Checker<'_, '_, '_> {
 
     /// Records a call of a function value in every open site (IF5 item 4).
     pub(crate) fn timing_value_call(&mut self) {
-        for frame in &mut self.timing {
+        self.timing_value_call_from(0);
+    }
+
+    /// Records a call of a function value in the open sites from the `from`-th on: a lambda a
+    /// `let` bound inside the first `from` sites is their own code, already counted when its
+    /// body was checked, and unknown code only to the sites opened after it (#1023).
+    pub(crate) fn timing_value_call_from(&mut self, from: usize) {
+        for frame in self.timing.iter_mut().skip(from) {
             frame.seed.value_call = true;
+        }
+    }
+
+    /// How many timing sites are open.
+    pub(crate) fn timing_sites(&self) -> usize {
+        self.timing.len()
+    }
+
+    /// Records, in every open site, a call of the prelude function `callee` whose function
+    /// arguments are all lambdas written at the call (#1023).
+    pub(crate) fn timing_known_fn(&mut self, callee: usize) {
+        for frame in &mut self.timing {
+            frame.seed.known_fn_callees.insert(callee);
         }
     }
 }
@@ -236,6 +260,16 @@ pub(crate) fn timing(
     }
     let callees = callees_of(findings);
     let reached = reach(&callees, seed.callees.iter().copied());
+    // The functions reached through another function, not only called by the site itself: a
+    // prelude function with a function parameter that the site calls with lambdas written
+    // there still gets `⊤` when some reached function calls it too, with code the site cannot
+    // see (#1023).
+    let transitive = reach(
+        &callees,
+        seed.callees
+            .iter()
+            .flat_map(|callee| callees.get(callee).into_iter().flatten().copied()),
+    );
     let mut handlers: BTreeSet<usize> = seed.handlers.clone();
     handlers.extend(
         findings
@@ -255,12 +289,16 @@ pub(crate) fn timing(
                 format!("a call of a function value in `{}`", def.name),
             ));
         }
-        // A prelude function that applies a function argument, such as `map`.
+        // A prelude function that applies a function argument, such as `map`, unless the
+        // site's own code calls it with lambdas written at the call only, whose free variables,
+        // calls and operations this seed already holds, and nothing else reaches it (#1023,
+        // IF5 item 4).
         if def.module >= env.prelude
             && def
                 .params
                 .iter()
                 .any(|p| matches!(p.ty.base.unlabeled(), Ty::Fn(_)))
+            && !(seed.known_fn_callees.contains(&f) && !transitive.contains(&f))
         {
             sources.push((
                 top.clone(),

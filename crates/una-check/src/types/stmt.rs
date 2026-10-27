@@ -482,6 +482,18 @@ impl<'a> Checker<'_, 'a, '_> {
         if let Some(local) = self.locals.last_mut() {
             local.refined = stmt.editable && refined;
         }
+        // #1023, ADR 0116 IF5 item 4: a local that a `let` binds to a lambda written there, and
+        // never rebinds, holds code the sites open here have already counted.
+        let lambda = !stmt.editable
+            && matches!(&stmt.value, LetValue::Handled(handled)
+                if handled.with.is_empty()
+                    && handled.within.is_none()
+                    && handled.handlings.is_empty()
+                    && matches!(handled.expr.kind, ExprKind::Lambda { .. }));
+        if lambda && let Some(index) = self.locals.position(name) {
+            let sites = self.timing_sites();
+            self.locals.mark_lambda(index, sites);
+        }
     }
 
     /// `place = value` (`spec/17 §2` rule 3).

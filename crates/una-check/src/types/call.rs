@@ -206,6 +206,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 site,
                 None,
                 None,
+                None,
             );
             if let Some((kind, index)) = self.field_index(&resolved, method) {
                 self.resolved(span, Res::FieldFn { kind, index });
@@ -374,7 +375,22 @@ impl<'a> Checker<'_, 'a, '_> {
                     if self.uses_of_param(name) {
                         self.every_condition(span);
                     }
-                    return self.call_value(&ty, args, span, &format!("`{name}`"), site, of, index);
+                    // A local a `let` bound to a lambda written there: its code is known to
+                    // the sites that were open at the `let` (#1023, IF5 item 4).
+                    let known = self
+                        .locals
+                        .position(name)
+                        .and_then(|index| self.locals.lambda_sites(index));
+                    return self.call_value(
+                        &ty,
+                        args,
+                        span,
+                        &format!("`{name}`"),
+                        site,
+                        of,
+                        index,
+                        known,
+                    );
                 }
                 match self.env.lower(self.module, name) {
                     Some(Entity::Function(id)) => {
@@ -403,7 +419,7 @@ impl<'a> Checker<'_, 'a, '_> {
             _ => {
                 self.outside_rl(span, || "call of a function value".to_owned());
                 let ty = self.expr(callee, None);
-                self.call_value(&ty, args, span, "this function", site, None, None)
+                self.call_value(&ty, args, span, "this function", site, None, None, None)
             }
         }
     }
@@ -411,6 +427,8 @@ impl<'a> Checker<'_, 'a, '_> {
     /// A call of a function value: positional arguments only.
     /// `of`: for a parameter that an `of` clause names, the effects and failure of its
     /// argument, which the call performs (ADR 0062).
+    /// `known`: for a local a `let` bound to a lambda written there, how many timing sites
+    /// were open at that `let` (#1023).
     #[allow(clippy::too_many_arguments)]
     fn call_value(
         &mut self,
@@ -421,6 +439,7 @@ impl<'a> Checker<'_, 'a, '_> {
         site: Site,
         of: Option<super::effects::OfFound>,
         of_index: Option<usize>,
+        known: Option<usize>,
     ) -> Ty {
         let value_label = self.labeled(ty).top_label();
         // The function type is taken before its labels are settled: the result of a generic
@@ -483,7 +502,9 @@ impl<'a> Checker<'_, 'a, '_> {
         if let Some(current) = self.current {
             self.findings.value_callers.insert(current);
         }
-        self.timing_value_call();
+        // Unknown code to every open site, or, for a lambda a `let` bound inside the first
+        // `known` sites, only to the sites opened after it (#1023, IF5 item 4).
+        self.timing_value_call_from(known.unwrap_or(0));
         self.ordered(span, (0..args.len()).map(Some).collect());
         let mut flows = Vec::new();
         let mut decided = Label::public();
@@ -923,6 +944,9 @@ impl<'a> Checker<'_, 'a, '_> {
             self.granting.push(granting);
         }
         let has_receiver = receiver.is_some();
+        // #1023, IF5 item 4: a prelude function with a function parameter, called with lambdas
+        // written here only, runs code the open sites have already counted.
+        let saved = std::mem::replace(&mut self.unknown_fn_argument, false);
         let checked = self.arguments(
             &callee,
             &def.params,
@@ -932,6 +956,14 @@ impl<'a> Checker<'_, 'a, '_> {
             span,
             def.module,
         );
+        let unknown = std::mem::replace(&mut self.unknown_fn_argument, saved);
+        let takes_function = def
+            .params
+            .iter()
+            .any(|p| matches!(p.ty.base.unlabeled(), Ty::Fn(_)));
+        if def.module == self.env.prelude && takes_function && !unknown {
+            self.timing_known_fn(id);
+        }
         // ADR 0092 rule 3: the function values the callee may run through the caller's
         // bindings, charged once the arguments are typed (#615).
         self.passed_conditions(id, has_receiver, args, span, level);
@@ -1864,6 +1896,13 @@ impl<'a> Checker<'_, 'a, '_> {
                 self.expr(&arg.value, None);
                 continue;
             };
+            // A function parameter given anything but a lambda written here holds code the
+            // call's sites cannot see (#1023).
+            if matches!(param.ty.base.unlabeled(), Ty::Fn(_))
+                && !matches!(arg.value.kind, ExprKind::Lambda { .. })
+            {
+                self.unknown_fn_argument = true;
+            }
             let expected = param.ty.base.substitute(subst);
             // ADR 0067 L4: in edition 0.2, whose prelude gives `filter` and `first_where` an
             // `of` clause, the predicate's result is a variable bound to `Bool` that takes the

@@ -40,12 +40,12 @@ A program that runs until it is told to stop, such as a game loop, a server or a
    1. the deep label (`spec/07 §7` rule 3) of each parameter's declared type of `step`;
    2. for each operation in the effects of `step` and of every function `step` can reach, its result type's deep label, its `accepts` label and its failure kind's deep label;
    3. for each handler a reachable `with` installs, the deep labels of its parameters, `⊤` for a parameter of function type; and, for an operation of a capability that is not a host capability with no installation known on the way, the same for every handler of that capability in the package;
-   4. `⊤`, when `step` or a function it can reach calls a function value, or a function of the prelude with a function argument;
+   4. `⊤`, when `step` or a function it can reach calls a function value whose code is not known at the call: a parameter, a field, a `uses of` parameter, a local bound outside the body of `step`, or a function argument of a prelude function that is not a lambda written at the call. (2026-10-27, #1023.) A lambda written in the body of `step`, at the call of a prelude function such as `map` or bound by a `let` of that body to a name the body calls, is the body's own code: the bindings it captures, the functions it calls and the operations it performs count under items 1 to 3, and the call adds no `⊤`; so does a prelude function the body calls with such lambdas only, unless a function the body reaches calls it too, with code the body cannot see;
    5. `⊤`, when a part of a `together` or `together for` block can reach `step` through the call graph.
 
-   A `step` whose effects only print `public` values and whose state is `public` has a `public` `τ`, and its `input` needs no label.
+   A `step` whose effects only print `public` values and whose state is `public` has a `public` `τ`, and its `input` needs no label; one that maps over its state with a lambda written there, capturing `public` data, the same.
 
-   **Preview over-approximations.** Items 4 and 5 are coarser than ADR 0116 IF5 and IF6, which look at the captures of the function values a site calls and at the sibling parts of each task construct. They are sound: `⊤` is the most `τ` can be. In the preview they MAY become more precise, so that a package accepted today stays accepted, and they MUST NOT become stricter.
+   **Preview over-approximations.** Items 4 and 5 are coarser than ADR 0116 IF5 and IF6: item 4 gives a function value whose code is not known at the call `⊤` rather than the label of what it captured, and item 5 `⊤` rather than the join of the sibling parts of each task construct. They are sound: `⊤` is the most `τ` can be. In the preview they MAY become more precise, so that a package accepted today stays accepted, and they MUST NOT become stricter.
 
 ## 3. `stop` and `skip`
 
@@ -209,7 +209,7 @@ A program that runs until it is told to stop, such as a game loop, a server or a
    1. the program counter at the loop, and the label of `d`;
    2. the deep label (`spec/07 §7` rule 3) of every binding the body reads from outside it, its lambdas' captures included;
    3. for each operation the body can perform, directly or through the functions it calls: its result type's deep label, its `accepts` label and its failure kind's deep label; and, for every handler of that operation's capability in the package, the deep labels of the handler's parameters (`⊤` for one of function type) and the same for the operations it needs;
-   4. `⊤`, when the body, or a function it can reach, calls a function value, or a function of the prelude with a function argument;
+   4. `⊤`, when the body, or a function it can reach, calls a function value whose code is not known at the call, or a function of the prelude with a function argument that is not a lambda written at the call (§2 rule 5 item 4, #1023): a lambda written in the body, at such a call or bound by a `let` of the body to a name the body calls, is the body's own code, counted under items 2 and 3;
    5. `τ_conc`: `⊤` when a part of a `together` or `together for` block can run while the loop runs, which is when it can reach the loop's function through the call graph, or, in a package with such a block, through a function value, a lambda or a handler's operation.
 
    The operations the deadline can cut run as if under `τ`, and their failures carry it: when an interruptible operation that the body can perform declares a failure label below `τ` (for `Http`, `internal`, `spec/24 §5`), the package is rejected with U4001 at the loop, naming the largest source of `τ`. A body that reads a `secret` binding and calls `Http` is rejected; one on `public` and `internal` data is accepted. A plain `for ever` needs no timing label (ADR 0116 IF7).

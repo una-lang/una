@@ -1,0 +1,18 @@
+-- test: a lambda written at the call is the step's own code, so what it captures counts: a step whose lambda captures a `secret` has a `secret` timing label, and its `input` must be labeled at least so (spec/26 §2 rule 5 items 2 and 4, ADR 0116 IF7, #1023)
+-- spec: spec/26 §2
+-- expect: error U4001 at src/counter.una:14:36
+module counter
+
+import std.drive (Tick)
+
+pub kind State
+  count: Int
+  key: secret Int
+
+pub init() -> State = State(count: 0, key: 7)
+
+pub step(edit state: State, input: Tick) -> Unit
+=
+  let key = state.key
+  let next = [state.count].map(each: fn(x: Int) -> x + key)
+  state = State(count: next.len, key: state.key)

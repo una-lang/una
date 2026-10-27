@@ -1,6 +1,6 @@
--- test: in the preview, a driven step that calls a function value, here through `map`, has the top timing label, since what the function captured is not in any type on the way (spec/26 §2, ADR 0116 IF7)
+-- test: a driven step that maps over its state with a lambda written at the call captures only `public` data, so the lambda is the step's own code and its `input` needs no label (spec/26 §2 rule 5 item 4, ADR 0116 IF5 item 4, #1023)
 -- spec: spec/26 §2
--- expect: error U4001 at src/counter.una:10:34
+-- expect: ok
 module counter
 
 import std.drive (Tick)

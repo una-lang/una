@@ -17,6 +17,10 @@ pub(crate) struct Locals<'a> {
     /// The positions of the locals passed by `take`, and where: the `taken` of each local,
     /// kept sparse, so the states saved around branches cost the taken locals only.
     taken: BTreeMap<usize, Span>,
+    /// The positions of the locals a `let` bound to a lambda written there (#1023, ADR 0116
+    /// IF5 item 4), each with how many timing sites were open at the `let`: inside those sites
+    /// the lambda's code is the site's own, already counted when its body was checked.
+    lambdas: BTreeMap<usize, usize>,
 }
 
 /// The taken state of the locals at a point (`spec/17 §3` rule 3): how many locals there were,
@@ -47,7 +51,22 @@ impl<'a> Locals<'a> {
         if let Some(span) = local.taken {
             self.taken.insert(index, span);
         }
+        self.lambdas.remove(&index);
         self.items.push(local);
+    }
+
+    /// Marks the local at `index` as bound by a `let` to a lambda written there, inside
+    /// `sites` open timing sites (#1023).
+    pub(crate) fn mark_lambda(&mut self, index: usize, sites: usize) {
+        if index < self.items.len() {
+            self.lambdas.insert(index, sites);
+        }
+    }
+
+    /// How many timing sites were open when the local at `index` was bound to a lambda written
+    /// at its `let`; `None` for any other local.
+    pub(crate) fn lambda_sites(&self, index: usize) -> Option<usize> {
+        self.lambdas.get(&index).copied()
     }
 
     /// Binds each of `locals` innermost, in order.
@@ -79,6 +98,7 @@ impl<'a> Locals<'a> {
     fn pop(&mut self) -> Option<Local<'a>> {
         let local = self.items.pop()?;
         self.taken.remove(&self.items.len());
+        self.lambdas.remove(&self.items.len());
         if let Some(positions) = self.slots.get_mut(local.name) {
             positions.pop();
             if positions.is_empty() {

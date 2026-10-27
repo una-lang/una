@@ -210,6 +210,9 @@ pub(crate) struct Checker<'c, 'a, 's> {
     pub(crate) lambda_depth: usize,
     /// The argument about to be checked is one of a prelude function's.
     pub(crate) prelude_argument: bool,
+    /// Whether an argument of the call being checked gives a function parameter a value whose
+    /// code is not known at the call: not a lambda written there (#1023, ADR 0116 IF5 item 4).
+    pub(crate) unknown_fn_argument: bool,
     /// Whether the lambda about to be checked is an argument of a call of a name that does
     /// not resolve, whose parameters then report nothing (ADR 0096 rule 8).
     pub(crate) unknown_callee_argument: bool,
@@ -501,6 +504,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             of_found: Vec::new(),
             lambda_depth: 0,
             prelude_argument: false,
+            unknown_fn_argument: false,
             unknown_callee_argument: false,
             prelude_lambda: false,
             task_mark: None,
