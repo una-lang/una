@@ -12,10 +12,11 @@ use una_core::{
 };
 use una_syntax::ast::{
     Arg, BinaryOp, Block, BlockExpr, Body, CapBindingValue, Clause, ClauseKind, Convention,
-    DeclKind, ElseBranch, EverStmt, ExampleDecl, ExpectationKind, Expr, ExprKind, ForSource,
-    ForStmt, FunctionDecl, Handled, HandlingKind, IfBlock, IfThenStmt, IsTarget, LetValue, Literal,
-    OpClauseKind, PatternKind, Range, SignedInt, Stmt, TextLit, TextPart, TogetherFor,
-    TogetherStmt, UnaryOp, UntilStmt, UsesClause, VariantExpr, WhenExpr,
+    DeclKind, ElseBranch, EverStmt, ExampleDecl, ExpectationKind, Expr, ExprKind, FirstOf,
+    ForSource, ForStmt, FunctionDecl, Handled, HandlingKind, IfBlock, IfThenStmt, IsTarget,
+    LetValue, Literal, OpClauseKind, PatternKind, Range, SignedInt, StartStmt, Stmt, TasksStmt,
+    TextLit, TextPart, TogetherFor, TogetherStmt, UnaryOp, UntilStmt, UsesClause, VariantExpr,
+    WhenExpr,
 };
 use una_syntax::{SourceDb, Span};
 
@@ -1966,9 +1967,12 @@ impl<'e, 'a> Fx<'e, 'a> {
                         tail_span = stmt.span;
                     }
                 }
-                // A `together for` is wrapped as a whole, after its tasks (`spec/19 §5`).
+                // A `together for` and a `first of` are wrapped as a whole, after their tasks
+                // (`spec/19 §5`, `spec/27 §6`).
                 Stmt::BlockExpr(expr)
-                    if index == last && returning && !matches!(expr, BlockExpr::TogetherFor(_)) =>
+                    if index == last
+                        && returning
+                        && !matches!(expr, BlockExpr::TogetherFor(_) | BlockExpr::FirstOf(_)) =>
                 {
                     let saved = self.current_join.replace(Wrap::Return);
                     tail = self.block_expr(expr);
@@ -2000,6 +2004,27 @@ impl<'e, 'a> Fx<'e, 'a> {
                 }
                 // Never the last line of a block, which the parser reports.
                 Stmt::Together(stmt) => self.together(&mut lets, stmt),
+                // As the last line, the value is `unit` (`spec/27 §7`).
+                Stmt::Tasks(stmt) => {
+                    self.tasks(&mut lets, stmt);
+                    if index == last {
+                        tail = CoreExpr::Atom {
+                            atom: Atom::Unit,
+                            span: stmt.span,
+                        };
+                        tail_span = stmt.span;
+                    }
+                }
+                Stmt::Start(stmt) => {
+                    self.start(&mut lets, stmt);
+                    if index == last {
+                        tail = CoreExpr::Atom {
+                            atom: Atom::Unit,
+                            span: stmt.span,
+                        };
+                        tail_span = stmt.span;
+                    }
+                }
                 Stmt::For(stmt) => {
                     self.for_loop(&mut lets, stmt);
                     if index == last {
@@ -3010,6 +3035,70 @@ impl<'e, 'a> Fx<'e, 'a> {
         lets.push(Let::destructure(after, Atom::Var(t), stmt.span));
     }
 
+    /// `tasks [at most b at once]` with its block: `let (x₁, ..., xₙ) = tasks(b) e`, where `e`
+    /// is the block, which returns the new values of the outer bindings it updates, as the
+    /// block of an `if` without `else` does (`spec/27 §7`, `spec/17 §4`). `stop` and `skip` in
+    /// it stay those of the enclosing loop, whose `exit`s cross the statement.
+    fn tasks(&mut self, lets: &mut Vec<Let>, stmt: &TasksStmt) {
+        let bound = stmt
+            .bound
+            .as_ref()
+            .map(|bound| (self.atom(lets, bound), bound.span));
+        let names = self.block_updates(&stmt.block);
+        if names.is_empty() {
+            let body = self.block(&stmt.block);
+            let expr = CoreExpr::Tasks {
+                bound,
+                body: Box::new(body),
+                span: stmt.span,
+            };
+            bind_expr(lets, "_".to_owned(), unit(), expr, stmt.span, false);
+            return;
+        }
+        self.tail_wrap = Some(Wrap::Join {
+            names: names.clone(),
+            ty: unit(),
+        });
+        let body = self.block(&stmt.block);
+        let expr = CoreExpr::Tasks {
+            bound,
+            body: Box::new(body),
+            span: stmt.span,
+        };
+        self.bind_join(lets, &names, unit(), expr, stmt.span);
+    }
+
+    /// `start e`: `start(e)`, whose task is `e` with its deadline and handling clauses, closed
+    /// over the bindings before it, its tail never a return (`spec/27 §7`).
+    fn start(&mut self, lets: &mut Vec<Let>, stmt: &StartStmt) {
+        // A started task is not a loop body for `skip` and `stop` (U2034).
+        let outer = self.loop_names.take();
+        let wrap = self.tail_wrap.take();
+        let join = self.current_join.take();
+        let mark = self.scope.len();
+        let handled = &stmt.handled;
+        let mut inner = Vec::new();
+        let value = if self.marked(&handled.expr) {
+            let atom = self.marked_call(&mut inner, handled);
+            CoreExpr::Atom {
+                atom,
+                span: handled.expr.span,
+            }
+        } else {
+            self.handled(handled)
+        };
+        // The task's own names end with it.
+        self.scope.truncate(mark);
+        self.tail_wrap = wrap;
+        self.current_join = join;
+        self.loop_names = outer;
+        let expr = CoreExpr::Start {
+            task: Box::new(close(inner, value)),
+            span: stmt.span,
+        };
+        bind_expr(lets, "_".to_owned(), unit(), expr, stmt.span, false);
+    }
+
     /// `together` with branches: `let (x₁, ..., xₙ) = together(e₁ ∥ ... ∥ eₙ)`, where each task
     /// `eᵢ` binds its branch's value as its `let` would, the refinement of a written type an
     /// obligation there, and returns it (`spec/19 §5`).
@@ -3140,6 +3229,61 @@ impl<'e, 'a> Fx<'e, 'a> {
         )
     }
 
+    /// `first of` with its branches: `first_of(e₁ | ... | eₙ)`, whose tasks are the branches'
+    /// expressions with their `with` bindings and handling clauses, each closed over the
+    /// bindings before the block, bound to a temporary (`spec/27 §6`, ADR 0117 rule 6).
+    fn first_of(&mut self, first: &FirstOf) -> CoreExpr {
+        // A branch is not a loop body for `skip` and `stop` (U2034), and its tail is no return.
+        let outer = self.loop_names.take();
+        let wrap = self.tail_wrap.take();
+        let join = self.current_join.take();
+        let mut tasks = Vec::new();
+        for branch in &first.body {
+            let Stmt::Handled(handled) = branch else {
+                self.broken.set(true);
+                continue;
+            };
+            let mark = self.scope.len();
+            let mut inner = Vec::new();
+            let value = if self.marked(&handled.expr) {
+                let atom = self.marked_call(&mut inner, handled);
+                CoreExpr::Atom {
+                    atom,
+                    span: handled.expr.span,
+                }
+            } else {
+                self.handled(handled)
+            };
+            // The branch's own names end with it.
+            self.scope.truncate(mark);
+            tasks.push(close(inner, value));
+        }
+        self.tail_wrap = wrap;
+        self.current_join = join;
+        self.loop_names = outer;
+        let t = self.temp();
+        let ty = self.type_at(first.span);
+        let mut lets = Vec::new();
+        bind_expr(
+            &mut lets,
+            t.clone(),
+            ty,
+            CoreExpr::FirstOf {
+                tasks,
+                span: first.span,
+            },
+            first.span,
+            false,
+        );
+        close(
+            lets,
+            CoreExpr::Atom {
+                atom: Atom::Var(t),
+                span: first.span,
+            },
+        )
+    }
+
     /// Whether `expr` is a call with an `edit` argument or receiver.
     fn marked(&self, expr: &Expr) -> bool {
         match &expr.kind {
@@ -3193,6 +3337,9 @@ impl<'e, 'a> Fx<'e, 'a> {
         let update = match self.res(span) {
             Some(Res::MapUpdate(op)) => Some(Prim::Map(op)),
             Some(Res::SetUpdate(op)) => Some(Prim::Set(op)),
+            // The same for a hash map and a hash set (`spec/28 §7`).
+            Some(Res::HashMapUpdate(op)) => Some(Prim::HashMap(op)),
+            Some(Res::HashSetUpdate(op)) => Some(Prim::HashSet(op)),
             _ => None,
         };
         if handled.within.is_some()
@@ -3477,6 +3624,8 @@ impl<'e, 'a> Fx<'e, 'a> {
                 inner.push(self.name(&together.var).to_owned());
                 self.scan_block(&together.block, &inner, found);
             }
+            // A branch updates no binding declared outside it (U2023).
+            BlockExpr::FirstOf(_) => {}
             BlockExpr::When(when) => {
                 for arm in &when.arms {
                     if let Body::Block(block) = &arm.body {
@@ -3541,6 +3690,9 @@ impl<'e, 'a> Fx<'e, 'a> {
                     }
                 }
                 Stmt::OnStop(on_stop) => self.scan_block(&on_stop.block, &local, found),
+                Stmt::Tasks(stmt) => self.scan_block(&stmt.block, &local, found),
+                // A started task updates no binding declared outside it (U2023).
+                Stmt::Start(_) => {}
             }
         }
     }
@@ -3647,6 +3799,7 @@ impl<'e, 'a> Fx<'e, 'a> {
             BlockExpr::If(block) => self.if_block(block),
             BlockExpr::When(when) => self.when(when),
             BlockExpr::TogetherFor(together) => self.together_for(together),
+            BlockExpr::FirstOf(first) => self.first_of(first),
         }
     }
 
@@ -4383,18 +4536,22 @@ impl<'e, 'a> Fx<'e, 'a> {
                     )
                 }
                 // A built-in method of an integer type (`spec/18 §4`, `§5`), or one of a map, a
-                // stack or a queue that reads it (`spec/21 §2`, `spec/28 §5`), or one of a set
-                // that reads it or gives a new set (`spec/28 §6`).
+                // stack or a queue that reads it (`spec/21 §2`, `spec/28 §5`), or one of a set,
+                // a hash map or a hash set that reads it or gives a new one (`spec/28 §6`, `§7`).
                 Some(
                     res @ (Res::IntMethod(_)
                     | Res::MapMethod(_)
                     | Res::SeqMethod(_)
-                    | Res::SetMethod(_)),
+                    | Res::SetMethod(_)
+                    | Res::HashMapMethod(_)
+                    | Res::HashSetMethod(_)),
                 ) => {
                     let prim = match res {
                         Res::MapMethod(op) => Prim::Map(op),
                         Res::SeqMethod(op) => Prim::Seq(op),
                         Res::SetMethod(op) => Prim::Set(op),
+                        Res::HashMapMethod(op) => Prim::HashMap(op),
+                        Res::HashSetMethod(op) => Prim::HashSet(op),
                         Res::IntMethod(prim) => prim,
                         _ => Prim::Len,
                     };
@@ -4752,7 +4909,10 @@ impl<'e, 'a> Fx<'e, 'a> {
             );
         }
         if Some(id) == self.env.map_update {
-            return self.map_update(lets, span, type_args, values, arg_spans);
+            return self.map_update(lets, span, type_args, values, arg_spans, false);
+        }
+        if Some(id) == self.env.hash_map_update {
+            return self.map_update(lets, span, type_args, values, arg_spans, true);
         }
         if def.kind == FnKind::Policy {
             let FnAst::Policy(policy) = def.ast else {
@@ -4838,7 +4998,8 @@ impl<'e, 'a> Fx<'e, 'a> {
     /// tuple `(m', unit)` of a call with an `edit` argument (`spec/17 §4`). `f` is called
     /// exactly once, and a failure of it leaves `m` as it was, since the place takes its new
     /// value only when the call returns (`spec/17 §7` rule 1). A lookup and an insertion,
-    /// O(log n) each (`spec/21 §5`). `values` and `arg_spans` are in parameter order.
+    /// O(log n) each (`spec/21 §5`). `values` and `arg_spans` are in parameter order. With
+    /// `hashed`, the same on a hash map (ADR 0119 rule 12), O(|k|) expected each.
     fn map_update(
         &mut self,
         lets: &mut Vec<Let>,
@@ -4846,7 +5007,16 @@ impl<'e, 'a> Fx<'e, 'a> {
         type_args: &[Ty],
         values: Vec<Atom>,
         arg_spans: Vec<Span>,
+        hashed: bool,
     ) -> Atom {
+        let (get, with) = if hashed {
+            (
+                Prim::HashMap(una_core::HashMapOp::Get),
+                Prim::HashMap(una_core::HashMapOp::With),
+            )
+        } else {
+            (Prim::Map(MapOp::Get), Prim::Map(MapOp::With))
+        };
         let ([map, key, initial, change], [map_span, key_span, initial_span, change_span]) =
             (values.as_slice(), arg_spans.as_slice())
         else {
@@ -4858,10 +5028,18 @@ impl<'e, 'a> Fx<'e, 'a> {
         let map_ty = match self.records.types.get(map_span) {
             Some(ty) => self.ty(ty),
             None => {
-                let arg = |index: usize| {
-                    super::ty::Shared::new(type_args.get(index).cloned().unwrap_or_else(Ty::error))
-                };
-                self.ty(&Ty::Map(arg(0), arg(1)))
+                let arg = |index: usize| type_args.get(index).cloned().unwrap_or_else(Ty::error);
+                if hashed {
+                    self.ty(&Ty::Coll(
+                        una_core::Coll::HashMap,
+                        vec![arg(0), arg(1)].into(),
+                    ))
+                } else {
+                    self.ty(&Ty::Map(
+                        super::ty::Shared::new(arg(0)),
+                        super::ty::Shared::new(arg(1)),
+                    ))
+                }
             }
         };
         let value_ty = match &map_ty {
@@ -4885,7 +5063,7 @@ impl<'e, 'a> Fx<'e, 'a> {
             found.clone(),
             option_ty.clone(),
             Bound::Rhs(Rhs::Prim {
-                prim: Prim::Map(MapOp::Get),
+                prim: get,
                 args: vec![map.clone(), key.clone()],
                 arg_spans: vec![*map_span, *key_span],
                 span,
@@ -4923,7 +5101,7 @@ impl<'e, 'a> Fx<'e, 'a> {
             updated.clone(),
             map_ty,
             Bound::Rhs(Rhs::Prim {
-                prim: Prim::Map(MapOp::With),
+                prim: with,
                 args: vec![map.clone(), key.clone(), Atom::Var(after)],
                 arg_spans: vec![*map_span, *key_span, *change_span],
                 span,
@@ -5182,6 +5360,7 @@ fn block_expr_span(expr: &BlockExpr) -> Span {
         BlockExpr::When(when) => when.span,
         BlockExpr::If(block) => block.span,
         BlockExpr::TogetherFor(together) => together.span,
+        BlockExpr::FirstOf(first) => first.span,
     }
 }
 

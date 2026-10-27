@@ -102,9 +102,12 @@ fn the_report_of_the_events_example() {
         .map(String::as_str)
         .collect();
     // ADR 0067 added `generic_results`, after `native`; ADR 0081 `handler_authority`, after
-    // `authority`.
-    assert_eq!(keys.len(), 16);
+    // `authority`; ADR 0122 `dependencies`, after `handler_authority`, always present.
+    assert_eq!(keys.len(), 17);
     assert_eq!(report["generic_results"], json!([]));
+    assert_eq!(report["dependencies"], json!([]));
+    assert_eq!(report["tcb"]["registries"], json!([]));
+    assert_eq!(report["tcb"]["dependency_trust"], json!([]));
     assert_eq!(report["handler_authority"], json!([]));
     assert_eq!(report["native"]["target"], target.as_str());
     // `clamp_seats` returns `Seats`, `Int in 0..5000`, a machine width (FW-1); its parameter
@@ -161,6 +164,8 @@ fn the_out_of_model_list_is_the_one_of_the_spec() {
             "the time of a host stop",
             "interference of the host's load with the timing of an expression",
             "uncatchable termination",
+            "waits at limits and at `start`",
+            "which branch of `first of` wins, beyond its label",
         ]
     );
     let (last, first) = channels.split_last().unwrap();

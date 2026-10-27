@@ -183,6 +183,24 @@ impl Clock {
     }
 }
 
+/// The run's clock as the limits on grants read it (ADR 0117 rule 8, ADR 0116 rule 19): a
+/// bucket refills on the run's time, and under virtual time a wait for a refill moves it.
+impl una_http::limit::RunClock for Clock {
+    fn now_millis(&self) -> u64 {
+        self.now()
+    }
+
+    fn is_virtual(&self) -> bool {
+        Clock::is_virtual(self)
+    }
+
+    fn advance_to(&self, at: u64) {
+        if let Clock::Virtual(clock) = self {
+            clock.advance_to(at);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     // Tests may unwrap freely (compiler/conventions.md §1).

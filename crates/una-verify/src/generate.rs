@@ -8,17 +8,33 @@ use sha2::{Digest, Sha256};
 use una_core::flow::Variance;
 use una_core::{
     Atom, Base, BinOp, Bound, CapOp, Clause, Ctor, DataVariant, DecimalOp, Decl, Expr, FixedOp,
-    FloatOp, Fun, IntType, LoopSource, MapOp, Name, Path, Prim, Program, Refinement, Rhs, SeqOp,
-    SetOp, ShapeFun, Source, Term, Type, Use, print_term_with,
+    FloatOp, Fun, HashMapOp, HashSetOp, IntType, LoopSource, MapOp, Name, Path, Prim, Program,
+    Refinement, Rhs, SeqOp, SetOp, ShapeFun, Source, Term, Type, Use, print_term_with,
 };
 use una_diag::ObligationKind;
-use una_syntax::{SourceDb, Span};
+use una_syntax::{Interner, KeywordSet, SourceDb, Span, TokenKind, lex_in};
 
 use crate::run::Problem;
 use crate::smt::{
     ARRAY, Const, ConstRole, Definition, F, FLOAT64, Fun as SmtFun, FunRole, HASHED, LIST, MAP,
     MATRIX, Query, Sort, TEXT, UNIT, kind_sort, path_selector,
 };
+
+/// How the source text of an obligation's goal and hypotheses is normalized: by the edition of
+/// the package, whose canonical form decides the layout of that text (`spec/12 §8`, ADR 0125,
+/// amendment of 2026-10-25).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SourceLayout {
+    /// Editions 0.1 to 0.3, whose canonical form keeps each logical line without comments on
+    /// one line: the goal's white space collapses to single spaces, and the hypotheses are
+    /// shown as written, exactly as before soft wrapping.
+    #[default]
+    Joined,
+    /// Edition 0.4, whose canonical form wraps long lines: [`unwrap_layout`] normalizes the
+    /// goal and each hypothesis, so wrapping a line changes neither an obligation's id nor its
+    /// shown text.
+    Wrapped,
+}
 
 /// A proof obligation of `spec/12 §3`, with its query.
 #[derive(Clone, Debug)]
@@ -200,18 +216,23 @@ pub(crate) enum Show {
     Opaque(String),
 }
 
-/// The obligations of `program`, in the order of `spec/12 §5`: file, start offset, kind.
+/// The obligations of `program`, in the order of `spec/12 §5`: file, start offset, kind, with
+/// the source text of their goals and hypotheses normalized by `layout`, the edition's.
 ///
 /// # Errors
 ///
 /// [`Problem::UnresolvedKind`] when Core IR names a kind that no declaration has: a lookup
 /// that finds nothing would drop a fact or skip a check, so generation fails closed (#407).
-pub fn obligations(program: &Program, sources: &SourceDb) -> Result<Vec<Obligation>, Problem> {
+pub fn obligations(
+    program: &Program,
+    sources: &SourceDb,
+    layout: SourceLayout,
+) -> Result<Vec<Obligation>, Problem> {
     let index = Index::new(program);
     let mut all = Vec::new();
     for module in &program.modules {
         for decl in &module.decls {
-            let mut walker = Walker::new(&index, sources, &module.path);
+            let mut walker = Walker::new(&index, sources, &module.path, layout);
             match decl {
                 Decl::Fun(fun) => walker.function(fun),
                 Decl::Handler {
@@ -246,7 +267,7 @@ pub fn obligations(program: &Program, sources: &SourceDb) -> Result<Vec<Obligati
             all.extend(walker.obligations);
         }
         for example in &module.examples {
-            let mut walker = Walker::new(&index, sources, &module.path);
+            let mut walker = Walker::new(&index, sources, &module.path, layout);
             walker.declaration =
                 format!("{}.example {}", module.path, una_core::quote(&example.name));
             walker.within = Within::Example;
@@ -280,8 +301,12 @@ pub fn obligations(program: &Program, sources: &SourceDb) -> Result<Vec<Obligati
 
 /// For each `ensures` clause of a public function, a query without any hypothesis, its
 /// parameters and `result` unconstrained: a clause the solver proves this way is trivial, a
-/// missing contract (`spec/13 §6`).
-pub fn trivial_ensures(program: &Program, sources: &SourceDb) -> Vec<Obligation> {
+/// missing contract (`spec/13 §6`). Their text is normalized by `layout`, the edition's.
+pub fn trivial_ensures(
+    program: &Program,
+    sources: &SourceDb,
+    layout: SourceLayout,
+) -> Vec<Obligation> {
     let index = Index::new(program);
     let mut all = Vec::new();
     for module in &program.modules {
@@ -292,7 +317,7 @@ pub fn trivial_ensures(program: &Program, sources: &SourceDb) -> Vec<Obligation>
             if !fun.public || fun.ensures.is_empty() {
                 continue;
             }
-            let mut walker = Walker::new(&index, sources, &module.path);
+            let mut walker = Walker::new(&index, sources, &module.path, layout);
             walker.declaration = format!("{}.{}", module.path, fun.name);
             walker.lambdas.clear();
             let mut ctx = Ctx::default();
@@ -1083,7 +1108,8 @@ fn stops(expr: &Expr) -> bool {
         Expr::LetTuple { body, .. }
         | Expr::With { body, .. }
         | Expr::Attempt { body, .. }
-        | Expr::Within { body, .. } => stops(body),
+        | Expr::Within { body, .. }
+        | Expr::Tasks { body, .. } => stops(body),
         Expr::If {
             then, otherwise, ..
         } => stops(then) || stops(otherwise),
@@ -1096,7 +1122,9 @@ fn stops(expr: &Expr) -> bool {
         | Expr::Unreachable { .. }
         | Expr::Loop { .. }
         | Expr::Together { .. }
-        | Expr::TogetherFor { .. } => false,
+        | Expr::TogetherFor { .. }
+        | Expr::FirstOf { .. }
+        | Expr::Start { .. } => false,
     }
 }
 
@@ -1220,6 +1248,8 @@ struct Walker<'p, 'i> {
     index: &'i Index<'p>,
     sources: &'i SourceDb,
     module: &'p str,
+    /// How the text of goals and hypotheses is normalized, by the package's edition.
+    layout: SourceLayout,
     declaration: String,
     obligations: Vec<Obligation>,
     /// The definitions of the reflect predicates met so far.
@@ -1245,6 +1275,9 @@ struct Walker<'p, 'i> {
     /// The element type of the list that the `together for` being walked makes, from the
     /// binder of its `let`: each task's value flows into it (ADR 0103 rule 3).
     together_element: Option<Type>,
+    /// The type of the value of the `first of` being walked, when it is bound by a `let`:
+    /// each branch's value flows into it (`spec/27 §6`, as ADR 0103 rule 3 for `together for`).
+    first_of_type: Option<Type>,
     /// The name of the named function whose eta-expansion is walked (issue #76).
     eta_name: Option<String>,
     /// The binder that an assignment's refinement obligation is about, which a counterexample
@@ -1292,11 +1325,17 @@ struct Who {
 }
 
 impl<'p, 'i> Walker<'p, 'i> {
-    fn new(index: &'i Index<'p>, sources: &'i SourceDb, module: &'p str) -> Self {
+    fn new(
+        index: &'i Index<'p>,
+        sources: &'i SourceDb,
+        module: &'p str,
+        layout: SourceLayout,
+    ) -> Self {
         Walker {
             index,
             sources,
             module,
+            layout,
             declaration: String::new(),
             obligations: Vec::new(),
             definitions: float_order_definitions(),
@@ -1308,6 +1347,7 @@ impl<'p, 'i> Walker<'p, 'i> {
             fresh: 0,
             eta: None,
             together_element: None,
+            first_of_type: None,
             eta_name: None,
             assigned: None,
             frames: BTreeMap::new(),
@@ -1903,6 +1943,70 @@ impl<'p, 'i> Walker<'p, 'i> {
                     });
                     return;
                 }
+                // `first_of(e₁ | ... | eₙ)` (`spec/27 §6`, ADR 0117 Verification): each branch
+                // is verified alone, in the context before the block, and each of its values
+                // flows into the type of the result, which carries the facts of that type only:
+                // which branch wins is timing.
+                Expr::FirstOf { tasks, span } => {
+                    let result = self.first_of_type.take().filter(has_refinements);
+                    for task in tasks {
+                        let mut task_leaves = Vec::new();
+                        self.walk(task, &ctx, &mut task_leaves);
+                        let Some(result) = &result else {
+                            continue;
+                        };
+                        for leaf in &task_leaves {
+                            let Some(value) = &leaf.value else {
+                                continue;
+                            };
+                            let mut leaf_ctx = ctx.clone();
+                            leaf_ctx.hyps = leaf.hyps.clone();
+                            self.refined_flow(result, value, leaf.span, &leaf_ctx);
+                        }
+                    }
+                    leaves.push(Leaf {
+                        hyps: ctx.hyps.clone(),
+                        divisions: ctx.divisions.clone(),
+                        value: None,
+                        span: *span,
+                        returns: Vec::new(),
+                    });
+                    return;
+                }
+                // `tasks(b) e` (`spec/27 §7`, ADR 0117 Verification): `b >= 1`, a `refinement`
+                // obligation at `b`; the block runs in the current task, so it is walked as a
+                // block, and its `start`s change no outer binding.
+                Expr::Tasks { bound, body, .. } => {
+                    if let Some((bound, bound_span)) = bound {
+                        let value = self.atom(bound, &ctx);
+                        let goal = (value.f.sort() == "Int")
+                            .then(|| F::op(">=", vec![value.f, F::Int("1".to_owned())]));
+                        let text = format!("{} >= 1", self.text(*bound_span));
+                        self.site(
+                            ObligationKind::Refinement,
+                            &ctx,
+                            goal,
+                            text,
+                            *bound_span,
+                            None,
+                        );
+                    }
+                    expr = body;
+                }
+                // `start e`: `e` is verified alone, in the context of the `start`, as a
+                // `together` task is; its value is `unit`, and it gives no fact.
+                Expr::Start { task, span } => {
+                    let mut task_leaves = Vec::new();
+                    self.walk(task, &ctx, &mut task_leaves);
+                    leaves.push(Leaf {
+                        hyps: ctx.hyps.clone(),
+                        divisions: ctx.divisions.clone(),
+                        value: None,
+                        span: *span,
+                        returns: Vec::new(),
+                    });
+                    return;
+                }
                 // The tasks of a `together` block outside the `let` that binds their tuple,
                 // which the desugar never makes: each is checked in the context before it.
                 Expr::Together { tasks, span } => {
@@ -2024,6 +2128,9 @@ impl<'p, 'i> Walker<'p, 'i> {
                                 } = ty
                             {
                                 self.together_element = args.first().cloned();
+                            }
+                            if let Expr::FirstOf { .. } = inner {
+                                self.first_of_type = Some(ty.clone());
                             }
                             let mut inner_leaves = Vec::new();
                             self.walk(inner, &ctx, &mut inner_leaves);
@@ -2567,6 +2674,47 @@ impl<'p, 'i> Walker<'p, 'i> {
                 // positions (ADR 0103 rule 4). The other set operations keep only the
                 // receiver's items, so their other set stores nothing.
                 if *prim == Prim::Set(SetOp::Union)
+                    && let (Some(set), Some(other)) = (values.first(), values.get(1))
+                    && let Type::Base {
+                        base: base @ Base::Named { .. },
+                        label,
+                        ..
+                    } = &set.ty
+                    && has_refinements(&set.ty)
+                {
+                    let target = Type::Base {
+                        base: base.clone(),
+                        refinements: Vec::new(),
+                        label: label.clone(),
+                    };
+                    let at = arg_spans.get(1).copied().unwrap_or(*span);
+                    self.refined_flow(&target, other, at, ctx);
+                }
+                // ADR 0119 rule 1 and ADR 0103 rule 3: a hash map's `set`, `with` and the
+                // `with` of `update` store the key and the value at the map's types, and a hash
+                // set's `add` and `with` store the item, each a flow site with its `refinement`
+                // obligations; a lookup stores nothing.
+                if matches!(
+                    prim,
+                    Prim::HashMap(HashMapOp::With) | Prim::HashSet(HashSetOp::With)
+                ) && let Some(Type::Base {
+                    base: Base::Named { args: stored, .. },
+                    ..
+                }) = values.first().map(|table| &table.ty)
+                {
+                    let stored = stored.clone();
+                    for (index, target) in stored.iter().enumerate() {
+                        if let Some(value) = values.get(index + 1)
+                            && has_refinements(target)
+                        {
+                            let at = arg_spans.get(index + 1).copied().unwrap_or(*span);
+                            self.refined_flow(target, value, at, ctx);
+                        }
+                    }
+                }
+                // A hash set's `union` stores the other set's items at the receiver's item
+                // type, as a set's does.
+                if *prim == Prim::HashSet(HashSetOp::Union)
                     && let (Some(set), Some(other)) = (values.first(), values.get(1))
                     && let Type::Base {
                         base: base @ Base::Named { .. },
@@ -3306,6 +3454,103 @@ impl<'p, 'i> Walker<'p, 'i> {
                             &base,
                             Base::Named { module, name, args }
                                 if is_collection(module, name) && name == "Set" && args.len() == 1
+                        ) =>
+                        {
+                            Type::Base {
+                                base,
+                                refinements: Vec::new(),
+                                label: type_label(binder).clone(),
+                            }
+                        }
+                        _ => unknown(),
+                    }
+                }
+                // ADR 0119 V6: what a hash map or a hash set gives back carries its position's
+                // refinements, as for a map (ADR 0103 rule 6), and an update or a set operation
+                // gives a table of the receiver's type, each stored key, value and item a flow
+                // site of its own.
+                Prim::HashMap(op) => {
+                    let receiver = args.first().map(|map| self.atom(map, ctx).ty);
+                    match receiver {
+                        Some(Type::Base {
+                            base: base @ Base::Named { .. },
+                            ..
+                        }) if matches!(
+                            &base,
+                            Base::Named { module, name, args }
+                                if is_collection(module, name) && name == "HashMap" && args.len() == 2
+                        ) =>
+                        {
+                            let Base::Named { args: kv, .. } = &base else {
+                                return Some(unknown());
+                            };
+                            let Ok([key, value]) = <[Type; 2]>::try_from(kv.clone()) else {
+                                return Some(unknown());
+                            };
+                            let named = |name: &str, args: Vec<Type>| Type::Base {
+                                base: Base::Named {
+                                    module: una_core::PRELUDE_MODULE.to_owned(),
+                                    name: name.to_owned(),
+                                    args,
+                                },
+                                refinements: Vec::new(),
+                                label: type_label(binder).clone(),
+                            };
+                            match op {
+                                HashMapOp::Has | HashMapOp::SameEntries => unknown(),
+                                HashMapOp::Get => named("Option", vec![value]),
+                                HashMapOp::With | HashMapOp::Without => Type::Base {
+                                    base,
+                                    refinements: Vec::new(),
+                                    label: type_label(binder).clone(),
+                                },
+                                HashMapOp::Keys => named("List", vec![key]),
+                                HashMapOp::Values => named("List", vec![value]),
+                                HashMapOp::Entries => {
+                                    named("List", vec![named("Entry", vec![key, value])])
+                                }
+                            }
+                        }
+                        _ => unknown(),
+                    }
+                }
+                Prim::HashSet(op) => {
+                    let receiver = args.first().map(|set| self.atom(set, ctx).ty);
+                    match (op, receiver) {
+                        (
+                            HashSetOp::Items,
+                            Some(Type::Base {
+                                base: Base::Named { module, name, args },
+                                ..
+                            }),
+                        ) if is_collection(&module, &name)
+                            && name == "HashSet"
+                            && args.len() == 1 =>
+                        {
+                            Type::Base {
+                                base: Base::Named {
+                                    module: una_core::PRELUDE_MODULE.to_owned(),
+                                    name: "List".to_owned(),
+                                    args,
+                                },
+                                refinements: Vec::new(),
+                                label: type_label(binder).clone(),
+                            }
+                        }
+                        (
+                            HashSetOp::With
+                            | HashSetOp::Without
+                            | HashSetOp::Union
+                            | HashSetOp::Intersection
+                            | HashSetOp::Difference,
+                            Some(Type::Base {
+                                base: base @ Base::Named { .. },
+                                ..
+                            }),
+                        ) if matches!(
+                            &base,
+                            Base::Named { module, name, args }
+                                if is_collection(module, name) && name == "HashSet" && args.len() == 1
                         ) =>
                         {
                             Type::Base {
@@ -4481,15 +4726,18 @@ impl<'p, 'i> Walker<'p, 'i> {
                 let args: Vec<F> = values.iter().map(|v| v.f.clone()).collect();
                 float_term(op, &args)?
             }
-            // A sequence's operations are known by their facts (`seq_facts`), not as terms. A
-            // set's methods are known by their facts, which ADR 0119 V2 to V4 give, not as
-            // terms: until then, each result is a fresh binder, which proves nothing about it.
+            // A sequence's operations are known by their facts (`seq_facts`), not as terms. The
+            // methods of a set, a hash map and a hash set are known by their facts, which ADR
+            // 0119 V2 to V4 give, not as terms: until then, each result is a fresh binder, which
+            // proves nothing about it.
             Prim::Concat
             | Prim::ToText
             | Prim::Fixed(..)
             | Prim::Map(_)
             | Prim::Seq(_)
-            | Prim::Set(_) => {
+            | Prim::Set(_)
+            | Prim::HashMap(_)
+            | Prim::HashSet(_) => {
                 return None;
             }
             Prim::Decimal(op) => return self.decimal(op, values),
@@ -5406,7 +5654,13 @@ impl<'p, 'i> Walker<'p, 'i> {
             }
         }
         shown_facts.append(&mut hypotheses);
-        let hypotheses = shown_facts;
+        // Edition 0.4: a hypothesis shows its source text without the layout of a wrapped line,
+        // as the goal does (ADR 0125, amendment of 2026-10-25). Earlier editions show it as
+        // written, as before.
+        let hypotheses = match self.layout {
+            SourceLayout::Joined => shown_facts,
+            SourceLayout::Wrapped => shown_facts.iter().map(|text| unwrap_layout(text)).collect(),
+        };
         self.add_definitions(&mut query);
         let shown = self.shown(&query, ctx);
         // A shown value of a sum is read through its tag. When no assertion uses that tag, the
@@ -5459,7 +5713,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                 forgotten.push(name);
             }
         }
-        let normalized: String = goal.split_whitespace().collect::<Vec<_>>().join(" ");
+        let normalized = normalized_goal(&goal, self.layout);
         let id = obligation_id(self.module, &self.declaration, kind, &normalized);
         self.obligations.push(Obligation {
             id,
@@ -6825,6 +7079,58 @@ fn prim_text(prim: Prim, args: &[String], whole: &str) -> String {
     }
 }
 
+/// The normalized goal of `spec/12 §8`, from which an obligation's id is computed. Editions 0.1
+/// to 0.3 ([`SourceLayout::Joined`]) collapse its white space, exactly as before soft wrapping,
+/// so their ids are unchanged by construction; edition 0.4 also erases the layout of a wrapped
+/// line ([`unwrap_layout`]).
+fn normalized_goal(goal: &str, layout: SourceLayout) -> String {
+    match layout {
+        SourceLayout::Joined => goal.split_whitespace().collect::<Vec<_>>().join(" "),
+        SourceLayout::Wrapped => unwrap_layout(goal),
+    }
+}
+
+/// Edition 0.4's normalization of source text in an obligation (`spec/12 §8`, ADR 0125,
+/// amendment of 2026-10-25): white space that holds a line break right before a closing `)` or
+/// `]` token is erased, which is where the canonical form puts the closer of a wrapped group,
+/// and then every run of white space collapses to one space. Text literals hold no line break,
+/// and a closer inside one is no token, so their text is kept but for the collapse, which also joins runs of spaces inside a text literal
+/// shown in a hypothesis or contract: the text is for display and comparison, never evaluated
+/// (#1175, kept as it is). One lexing
+/// pass and one pass over the closers: O(n) time and space.
+pub fn unwrap_layout(text: &str) -> String {
+    let mut sources = SourceDb::new();
+    let file = sources.add("<obligation-text>", text.as_bytes());
+    let source = sources.file(file);
+    let mut interner = Interner::new();
+    let lexed = lex_in(source, file, &mut interner, KeywordSet::V0_4);
+    let closers = lexed
+        .tokens
+        .iter()
+        .filter(|token| matches!(token.kind, TokenKind::RParen | TokenKind::RBracket))
+        .map(|token| token.span.start);
+    let text = source.text();
+    let mut unwrapped = String::with_capacity(text.len());
+    let mut previous = 0;
+    for closer in closers {
+        // INVARIANT: token starts ascend and fall on character boundaries of `text`, so `get`
+        // never refuses; were it to, `previous` stays and the text is copied with a later range.
+        let Some(prefix) = text.get(previous..closer) else {
+            continue;
+        };
+        let kept = prefix.trim_end_matches(char::is_whitespace);
+        let trailing = prefix.get(kept.len()..).unwrap_or_default();
+        unwrapped.push_str(if trailing.contains('\n') {
+            kept
+        } else {
+            prefix
+        });
+        previous = closer;
+    }
+    unwrapped.push_str(text.get(previous..).unwrap_or_default());
+    unwrapped.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// `ob-` and the first 12 hex digits of SHA-256 over the module path, the declaration, the
 /// kind and the normalized goal (`spec/12 §8`).
 fn obligation_id(module: &str, declaration: &str, kind: ObligationKind, goal: &str) -> String {
@@ -7284,7 +7590,7 @@ mod tests {
         let span = Span::new(file, 0, 6);
         let first = namespace_program(&[], span);
         let mut internal: BTreeSet<String> = BTreeSet::new();
-        let obligations = super::obligations(&first, &sources).unwrap();
+        let obligations = super::obligations(&first, &sources, SourceLayout::Joined).unwrap();
         assert!(obligations.len() >= 2, "{}", obligations.len());
         for obligation in &obligations {
             for symbol in declared(&obligation.query.text()) {
@@ -7313,7 +7619,7 @@ mod tests {
         }
         let names: Vec<String> = internal.iter().cloned().collect();
         let second = namespace_program(&names, span);
-        let obligations = super::obligations(&second, &sources).unwrap();
+        let obligations = super::obligations(&second, &sources, SourceLayout::Joined).unwrap();
         let mut users = 0;
         for obligation in &obligations {
             // No symbol stands for two things: a declaration is emitted once per symbol, so two
@@ -7531,7 +7837,7 @@ mod tests {
         let program = Program::default();
         let index = Index::new(&program);
         let sources = SourceDb::new();
-        let mut walker = Walker::new(&index, &sources, "m");
+        let mut walker = Walker::new(&index, &sources, "m", SourceLayout::Joined);
         let (a, b, c) = (var("a", "Int"), var("b", "Int"), var("c", "Int"));
         let low = F::op("<=", vec![int("0"), a.clone()]);
         let high = F::op("<", vec![a.clone(), int("20")]);
@@ -7615,6 +7921,117 @@ mod tests {
         for (formula, shown) in cases {
             assert_eq!(walker.show_formula(&formula), shown);
         }
+    }
+
+    /// The goal of the toolshelf example's obligation on one line, and the same goal as the
+    /// canonical form of edition 0.4 wraps it.
+    const INLINE_GOAL: &str = "Checkout(tool: Tool(name: \"saw\", deposit: 15), member: Member(name: \"Bo\", holding: 3), due: 10).member.holding > 0";
+    const WRAPPED_GOAL: &str = "Checkout(tool: Tool(name: \"saw\", deposit: 15), member: Member(name: \"Bo\", holding: 3\n  ), due: 10).member.holding > 0";
+
+    fn toolshelf_id(goal: &str) -> String {
+        obligation_id(
+            "toolshelf.tools",
+            "toolshelf.tools.example \"bringing a tool back frees a place\"",
+            ObligationKind::Precondition,
+            goal,
+        )
+    }
+
+    #[test]
+    fn editions_0_1_to_0_3_keep_their_goal_normalization_and_ids() {
+        // `spec/12 §8`, ADR 0125 amendment of 2026-10-25: the goal of editions 0.1 to 0.3
+        // collapses white space, exactly as before soft wrapping, so the ids of the same
+        // sources are the ids they had: these are the ids of the rule before it.
+        for goal in [
+            INLINE_GOAL,
+            WRAPPED_GOAL,
+            "f(\"a  b\")",
+            "f(value )",
+            "f(value,\n  1\n)",
+            "f(value) -- a  comment",
+        ] {
+            assert_eq!(
+                normalized_goal(goal, SourceLayout::Joined),
+                goal.split_whitespace().collect::<Vec<_>>().join(" "),
+                "{goal}"
+            );
+        }
+        assert_eq!(
+            toolshelf_id(&normalized_goal(INLINE_GOAL, SourceLayout::Joined)),
+            "ob-436d76f3dbf7"
+        );
+        // A line break before a closer, which a comment inside a line may keep in these
+        // editions, still counts as a space there, as it always did.
+        assert_eq!(
+            toolshelf_id(&normalized_goal(WRAPPED_GOAL, SourceLayout::Joined)),
+            "ob-4b9498c40ba5"
+        );
+    }
+
+    #[test]
+    fn edition_0_4_erases_the_layout_of_a_wrapped_line() {
+        // The closer of a wrapped group changes neither the goal nor the id in edition 0.4.
+        assert_eq!(
+            normalized_goal(WRAPPED_GOAL, SourceLayout::Wrapped),
+            normalized_goal(INLINE_GOAL, SourceLayout::Joined)
+        );
+        assert_eq!(
+            toolshelf_id(&normalized_goal(WRAPPED_GOAL, SourceLayout::Wrapped)),
+            "ob-436d76f3dbf7"
+        );
+        // A closer inside a text literal is no token: its space stays.
+        assert_ne!(unwrap_layout("f(\"x )\")"), unwrap_layout("f(\"x)\")"));
+        assert_ne!(unwrap_layout("f(\"x ]\")"), unwrap_layout("f(\"x]\")"));
+        for unchanged in [
+            "f(\"a  b\")",
+            "f(\"a \\\"b\")",
+            "f(\"{value}  )\")",
+            r#"f("outer {g("inner ) ]")}  )")"#,
+            "f(value )",
+            "f(value) -- a  comment",
+        ] {
+            assert_eq!(
+                unwrap_layout(unchanged),
+                unchanged.split_whitespace().collect::<Vec<_>>().join(" "),
+                "{unchanged}"
+            );
+        }
+        for size in [16, 256, 4096] {
+            let wrapped = (0..size)
+                .map(|index| format!("f(value,\n  {index}\n)"))
+                .collect::<Vec<_>>()
+                .join(" + ");
+            let inline = (0..size)
+                .map(|index| format!("f(value, {index})"))
+                .collect::<Vec<_>>()
+                .join(" + ");
+            assert_eq!(unwrap_layout(&wrapped), inline);
+        }
+    }
+
+    #[test]
+    fn goal_normalization_scales_linearly_with_wrapped_delimiters() {
+        use std::time::Instant;
+
+        let per_byte = |size: usize| {
+            let unit = "f(value,\n  1\n) + ";
+            let goal = unit.repeat(size / unit.len());
+            let started = Instant::now();
+            let normalized = unwrap_layout(std::hint::black_box(&goal));
+            std::hint::black_box(normalized);
+            started.elapsed().as_secs_f64() / goal.len() as f64
+        };
+        per_byte(1 << 15);
+        let small = (0..3)
+            .map(|_| per_byte(1 << 15))
+            .fold(f64::INFINITY, f64::min);
+        let large = (0..3)
+            .map(|_| per_byte(1 << 19))
+            .fold(f64::INFINITY, f64::min);
+        assert!(
+            large <= small * 4.0,
+            "per-byte time grew from {small:e} to {large:e}"
+        );
     }
 
     #[test]

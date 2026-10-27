@@ -526,6 +526,13 @@ pub enum Prim {
     /// A built-in method of a `Set` of `std.collections` (`spec/28 §6`, ADR 0119 rule 7);
     /// `add` and `remove` are rebinds to `With` and `Without`.
     Set(SetOp),
+    /// A built-in method of a `HashMap` of `std.collections` (`spec/28 §7`, ADR 0119 rules 8 to
+    /// 12); `set` and `remove` are rebinds to `With` and `Without`, and `update` is a lookup,
+    /// a call and a `With`.
+    HashMap(HashMapOp),
+    /// A built-in method of a `HashSet` of `std.collections` (`spec/28 §7`, ADR 0119 rules 8 to
+    /// 12); `add` and `remove` are rebinds to `With` and `Without`.
+    HashSet(HashSetOp),
     /// An operator, method or conversion of `F64` (`spec/29`, ADR 0114): its own kind, so no
     /// existing primitive changes meaning.
     Float(FloatOp),
@@ -1239,6 +1246,104 @@ impl SetOp {
     }
 }
 
+/// The built-in methods of `HashMap[K, V]` (`spec/28 §7`, ADR 0119 rule 12), each over the
+/// map in its first argument. Lookups and updates are O(|k|) expected, the listings O(n).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum HashMapOp {
+    /// `has(key:)`.
+    Has,
+    /// `get(key:)`.
+    Get,
+    /// `with(key:, value:)`, and `edit set`.
+    With,
+    /// `without(key:)`, and `edit remove`.
+    Without,
+    /// `keys()`, in insertion order.
+    Keys,
+    /// `values()`, in insertion order.
+    Values,
+    /// `entries()`, in insertion order.
+    Entries,
+    /// `same_entries(as:)`, whatever the order.
+    SameEntries,
+}
+
+impl HashMapOp {
+    /// The method's name in the source.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            HashMapOp::Has => "has",
+            HashMapOp::Get => "get",
+            HashMapOp::With => "with",
+            HashMapOp::Without => "without",
+            HashMapOp::Keys => "keys",
+            HashMapOp::Values => "values",
+            HashMapOp::Entries => "entries",
+            HashMapOp::SameEntries => "same_entries",
+        }
+    }
+
+    /// Whether the operation gives a new map built from its receiver, which it may update in
+    /// place when the receiver is given up (ADR 0119 rule 1).
+    pub fn rebuilds(self) -> bool {
+        matches!(self, HashMapOp::With | HashMapOp::Without)
+    }
+}
+
+/// The built-in methods of `HashSet[T]` (`spec/28 §7`, ADR 0119 rule 12), each over the set in
+/// its first argument.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum HashSetOp {
+    /// `has(item:)`.
+    Has,
+    /// `with(item:)`, and `edit add`.
+    With,
+    /// `without(item:)`, and `edit remove`.
+    Without,
+    /// `items()`, in insertion order.
+    Items,
+    /// `union(other:)`.
+    Union,
+    /// `intersection(other:)`.
+    Intersection,
+    /// `difference(other:)`.
+    Difference,
+    /// `is_subset(of:)`.
+    IsSubset,
+    /// `same_items(as:)`, whatever the order.
+    SameItems,
+}
+
+impl HashSetOp {
+    /// The method's name in the source.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            HashSetOp::Has => "has",
+            HashSetOp::With => "with",
+            HashSetOp::Without => "without",
+            HashSetOp::Items => "items",
+            HashSetOp::Union => "union",
+            HashSetOp::Intersection => "intersection",
+            HashSetOp::Difference => "difference",
+            HashSetOp::IsSubset => "is_subset",
+            HashSetOp::SameItems => "same_items",
+        }
+    }
+
+    /// Whether the operation gives a new set built from its receiver, which it may update in
+    /// place when the receiver is given up (ADR 0119 rule 1).
+    pub fn rebuilds(self) -> bool {
+        matches!(
+            self,
+            HashSetOp::With
+                | HashSetOp::Without
+                | HashSetOp::Union
+                | HashSetOp::Intersection
+                | HashSetOp::Difference
+        )
+    }
+}
+
 /// The wrapping, saturating and bit methods of the fixed-width types (`spec/18 §5`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum FixedOp {
@@ -1363,6 +1468,8 @@ impl Prim {
             Prim::Map(op) => op.as_str(),
             Prim::Seq(op) => op.as_str(),
             Prim::Set(op) => op.as_str(),
+            Prim::HashMap(op) => op.as_str(),
+            Prim::HashSet(op) => op.as_str(),
             Prim::Float(op) => op.as_str(),
             Prim::Shape(fun) => fun.as_str(),
             Prim::Decimal(op) => op.as_str(),
@@ -1711,6 +1818,40 @@ pub enum Expr {
         /// The task of one element.
         task: Box<Expr>,
         /// The expression in the source.
+        span: Span,
+    },
+    /// `first_of(e₁ | ... | eₙ)`: the branches of a `first of` race (`spec/27 §6`, ADR 0117
+    /// rule 6), each a task closed over the bindings before it. Its value is the result of the
+    /// first branch to return, and the other branches are cancelled; when every branch fails,
+    /// it fails with the failure of the lowest-indexed one. The interpreter runs the branches
+    /// in index order and stops at the first that returns, one legal schedule.
+    FirstOf {
+        /// The branches, in index order.
+        tasks: Vec<Expr>,
+        /// The expression in the source.
+        span: Span,
+    },
+    /// `tasks(b) e`: the block of a `tasks` statement (`spec/27 §7`, ADR 0117 rule 7), run in
+    /// the current task. The `start`s inside `e`, outside any task of it, start tasks that run
+    /// beside it; the statement ends once `e` has ended and every task it started has ended,
+    /// also when `e` fails, after cancelling them, or leaves by an `exit` of an enclosing loop.
+    /// Its value is `e`'s: the tuple of the outer bindings `e` updates, or `unit`.
+    Tasks {
+        /// The bound of `at most b at once`, an `Int` bound before the statement, and where it
+        /// is written, for its obligation `b >= 1`; none for the default bound.
+        bound: Option<(Atom, Span)>,
+        /// The block.
+        body: Box<Expr>,
+        /// The statement in the source.
+        span: Span,
+    },
+    /// `start e`: starts a task for `e`, a `Unit` that cannot fail, closed over the bindings
+    /// before it, and goes on; once as many tasks as its `tasks` statement's bound run, it
+    /// first waits until one ends (`spec/27 §7`, ADR 0117 rule 7). Its value is `unit`.
+    Start {
+        /// The started expression, with its deadline and handling clauses.
+        task: Box<Expr>,
+        /// The statement in the source.
         span: Span,
     },
     /// `if a then e else e`.

@@ -159,7 +159,7 @@ pub(crate) const STD_COLLECTIONS: &str = una_core::COLLECTIONS_MODULE;
 /// What `std.collections` exports to an import in edition 0.4: its types, its kind `Ranked`
 /// and the functions that make the types implemented so far (ADR 0119 rule 0). The other
 /// functions join the list with the types they make.
-pub(crate) const STD_COLLECTIONS_NAMES: [&str; 11] = [
+pub(crate) const STD_COLLECTIONS_NAMES: [&str; 13] = [
     "Stack",
     "Queue",
     "Set",
@@ -171,6 +171,8 @@ pub(crate) const STD_COLLECTIONS_NAMES: [&str; 11] = [
     "empty_stack",
     "empty_queue",
     "empty_set",
+    "empty_hash_map",
+    "empty_hash_set",
 ];
 
 /// The text functions of the prelude in edition 0.2 (`spec/22 §2`).
@@ -235,10 +237,11 @@ pub(crate) const ROUNDING_0_4: [&str; 8] = [
     "TowardNegative",
 ];
 
-/// The variant that edition 0.4 adds to `HttpError`: an operation that a host stop
-/// interrupts (ADR 0116 rule 12). Earlier editions keep the kind's eight variants, since a new
-/// variant changes which `when` arms are exhaustive.
-pub(crate) const HTTP_0_4: [&str; 1] = ["Interrupted"];
+/// The variants that edition 0.4 adds to `HttpError`: an operation that a host stop
+/// interrupts (ADR 0116 rule 12), and a request whose limit's queue is full (ADR 0117 rule 8).
+/// Earlier editions keep the kind's eight variants, since a new variant changes which `when`
+/// arms are exhaustive.
+pub(crate) const HTTP_0_4: [&str; 2] = ["Interrupted", "RateLimited"];
 
 #[cfg(test)]
 mod tests {

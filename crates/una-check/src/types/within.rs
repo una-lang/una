@@ -16,6 +16,10 @@
 //! checks of pass 2 read the result ([`Env::within_timing`]), and after it the labels it records
 //! are confirmed not to exceed the ones it read (`types::check_package`).
 //!
+//! `first of` (ADR 0117 rule 6, IF3) is a site of the same kind: its timing label `t`, the join
+//! of `τ` of every branch, labels its value, and every branch is checked under the timing floor
+//! `pc ⊔ t` ([`Checker::race_open`]).
+//!
 //! [`Env::within_timing`]: super::env::Env::within_timing
 
 use una_diag::Code;
@@ -28,10 +32,32 @@ use super::memory::place_root;
 use super::timing::TimingSeed;
 use super::ty::Ty;
 
-/// A `within` checked, for its timing label once the package is checked (IF2, rule 13).
+/// The construct of a timed site.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Construct {
+    /// `e within d` (IF2).
+    Within,
+    /// `first of` (IF3).
+    FirstOf,
+}
+
+impl Construct {
+    /// Its words, as the report's `timing` list and the messages name it.
+    pub(crate) fn words(self) -> &'static str {
+        match self {
+            Construct::Within => "within",
+            Construct::FirstOf => "first of",
+        }
+    }
+}
+
+/// A `within` or a `first of` checked, for its timing label once the package is checked (IF2,
+/// IF3, rule 13).
 #[derive(Clone, Debug)]
 pub(crate) struct WithinSite {
-    /// The span of the deadline `d`, which keys the site.
+    /// Which construct it is.
+    pub(crate) construct: Construct,
+    /// The span of the deadline `d`, or of the words `first of`, which keys the site.
     pub(crate) key: Span,
     /// The whole `e within d`, where its diagnostics and report entry point.
     pub(crate) span: Span,
@@ -46,7 +72,7 @@ pub(crate) struct OpenWithin {
     key: Span,
     span: Span,
     tau: Label,
-    saved: Option<(Label, Span)>,
+    saved: Option<(Label, Span, Construct)>,
 }
 
 impl OpenWithin {
@@ -76,8 +102,8 @@ impl Checker<'_, '_, '_> {
         self.timing_source(label, "the deadline".to_owned());
         let floor = match self.ctx.timing.clone() {
             _ if tau.is_public() => self.ctx.timing.clone(),
-            Some((outer, _)) => Some((outer.join(&tau), span)),
-            None => Some((tau.clone(), span)),
+            Some((outer, _, _)) => Some((outer.join(&tau), span, Construct::Within)),
+            None => Some((tau.clone(), span, Construct::Within)),
         };
         let saved = std::mem::replace(&mut self.ctx.timing, floor);
         OpenWithin {
@@ -95,6 +121,7 @@ impl Checker<'_, '_, '_> {
         self.ctx.timing = open.saved.clone();
         let seed = self.timing_end();
         self.findings.withins.push(WithinSite {
+            construct: Construct::Within,
             key: open.key,
             span: open.span,
             function: self.current,
@@ -103,6 +130,47 @@ impl Checker<'_, '_, '_> {
         let failure = self.within_failure(inner);
         self.records.withins.insert(open.key, failure.clone());
         failure
+    }
+
+    /// Opens `first of` at `span`, keyed by its words `key` (IF3): starts the timing label's
+    /// seed, which its branches extend, and raises the timing floor of every branch by `t`,
+    /// the join of `τ` of every branch, as the probe found it. The branches are checked
+    /// between this and [`Self::race_close`].
+    pub(crate) fn race_open(&mut self, key: Span, span: Span) -> OpenWithin {
+        let tau = self
+            .env
+            .within_timing
+            .get(&key)
+            .cloned()
+            .unwrap_or_else(Label::public);
+        self.timing_start();
+        let floor = match self.ctx.timing.clone() {
+            _ if tau.is_public() => self.ctx.timing.clone(),
+            Some((outer, _, _)) => Some((outer.join(&tau), span, Construct::FirstOf)),
+            None => Some((tau.clone(), span, Construct::FirstOf)),
+        };
+        let saved = std::mem::replace(&mut self.ctx.timing, floor);
+        OpenWithin {
+            key,
+            span,
+            tau,
+            saved,
+        }
+    }
+
+    /// Closes the `first of` that `open` opened, once its branches are checked: records the
+    /// site, and returns `t`, the label of its value.
+    pub(crate) fn race_close(&mut self, open: &OpenWithin) -> Label {
+        self.ctx.timing = open.saved.clone();
+        let seed = self.timing_end();
+        self.findings.withins.push(WithinSite {
+            construct: Construct::FirstOf,
+            key: open.key,
+            span: open.span,
+            function: self.current,
+            seed,
+        });
+        open.tau.clone()
     }
 
     /// The failure of `e within d`: `Timed[E]` when `e` fails with `E`, else `Deadline`.
@@ -128,6 +196,18 @@ impl Checker<'_, '_, '_> {
             return;
         }
         let shown = self.show(failure);
+        // A started task must not fail (ADR 0117 rule 7).
+        if self.in_start {
+            self.report.error(
+                Code::U3029,
+                span,
+                super::authority::START_FAILS.replace(
+                    "{what}",
+                    &format!("`within` can fail with `{shown}` when its deadline passes"),
+                ),
+            );
+            return;
+        }
         self.report.error(
             Code::U3007,
             span,
@@ -151,6 +231,13 @@ impl Checker<'_, '_, '_> {
                 Code::U3029,
                 span,
                 "`if error pass` passes the failure on, and `on stop` must not fail; handle it with `if error use`".to_owned(),
+            );
+        } else if self.in_start && self.authority() {
+            self.report.error(
+                Code::U3029,
+                span,
+                super::authority::START_FAILS
+                    .replace("{what}", "`if error pass` passes the failure on"),
             );
         }
         if let Some(inner) = inner {

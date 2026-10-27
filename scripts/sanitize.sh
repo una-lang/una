@@ -12,8 +12,9 @@
 #    runtime to what `una build` links, so `una` itself has no hook for it. Any report aborts the
 #    program and fails the test.
 # 3. libFuzzer: the fuzz targets of fuzz/ (the literals, the entry points on any words, the JSON
-#    parser) run a fixed number of inputs each, under AddressSanitizer, after a canary target
-#    whose planted crash must be found, kept and minimized. A crash prints where its input and
+#    parser, and the readers of a provenance, an archive and ita.lock) run a fixed number of
+#    inputs each, under AddressSanitizer, after a canary target whose planted crash must be
+#    found, kept and minimized. A crash prints where its input and
 #    the minimized input are kept, under target/fuzz.
 #
 # It ends with PASS, or FAIL and the step that failed. A missing or different checking toolchain
@@ -199,14 +200,18 @@ fuzz_bin=$fuzz_out/build/$host/release
 # (docs/release-gates.md, the `sanitize` gate): each target takes about a minute on the release
 # machine, about ten times below the ceiling.
 FUZZ_SEED=766
-FUZZ_TARGETS="literal:350000 words:350000 json:450000"
+# The floors of provenance, archive and ita_lock (#997) come from a run of 300000 inputs each.
+# With a fixed seed a larger count runs those inputs first, so it reaches at least their
+# coverage: provenance and archive run about a minute, and ita_lock keeps 300000 (about two
+# minutes), since a lower count could end under its floor.
+FUZZ_TARGETS="literal:350000 words:350000 json:450000 provenance:1280000 archive:1280000 ita_lock:300000"
 FUZZ_CEILING=600
 # The coverage each target must reach, so that a target that returns early on every input, or a
 # runtime built without libFuzzer's counters, fails rather than running its count for nothing:
 # the counters of the instrumented code libFuzzer loads, and the edges (`cov`) and features
 # (`ft`) its run ends with. Each floor is nine tenths of a measured run's value
 # (docs/release-gates.md).
-FUZZ_FLOORS="literal:244243:499:759 words:244798:4473:16955 json:244454:2124:7364"
+FUZZ_FLOORS="literal:244243:499:759 words:244798:4473:16955 json:244454:2124:7364 provenance:143114:340:758 archive:143109:617:1593 ita_lock:144242:2848:9344"
 
 # The fuzz targets are exactly the canary and FUZZ_TARGETS: a target added to fuzz/Cargo.toml
 # and left out here, or the reverse, fails.

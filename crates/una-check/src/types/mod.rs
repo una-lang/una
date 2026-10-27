@@ -32,6 +32,7 @@ mod fixed;
 mod float;
 mod flow;
 mod generic;
+mod hash;
 mod hover;
 mod index;
 mod label;
@@ -79,9 +80,13 @@ const PRELUDE_0_3: &str = include_str!("../std/prelude_0_3.una");
 const PRELUDE_0_4: &str = include_str!("../std/prelude_0_4.una");
 
 /// The declaration of `HttpError` in `PRELUDE_0_2`, and the one edition 0.4 replaces it with,
-/// which adds `Interrupted` last, so the earlier variants keep their indices (ADR 0116 rule 12).
-/// The text occurs exactly once in `PRELUDE_0_2` (a test checks it).
-const HTTP_ERROR_0_4: (&str, &str) = ("| Tls | Protocol\n", "| Tls | Protocol | Interrupted\n");
+/// which adds `Interrupted` (ADR 0116 rule 12) and then `RateLimited` (ADR 0117 rule 8) last,
+/// so the earlier variants keep their indices. The text occurs exactly once in `PRELUDE_0_2` (a
+/// test checks it).
+const HTTP_ERROR_0_4: (&str, &str) = (
+    "| Tls | Protocol\n",
+    "| Tls | Protocol | Interrupted | RateLimited\n",
+);
 
 /// The rewrites of the prelude in edition 0.2, each a text of `PRELUDE` and its replacement:
 /// `map`, `filter`, `first_where` and `fold` take effectful and failing functions (ADR 0062,
@@ -186,12 +191,13 @@ pub struct StandardSource {
 }
 
 /// The built-in methods and properties that the checker resolves by the type of their
-/// receiver, as `(receiver, name)`: `.len` on `Text`, `List`, `Map` (`spec/14 §2`) and `Set`,
-/// the methods of maps (`spec/21 §2`), of `Stack` and of `Queue` (`spec/28 §5`) and of sets
-/// (`spec/28 §6`), the conversions (`spec/18 §4`), and the wrapping, saturating and bit
-/// operations of the fixed-width integers (`spec/18 §5`). The receivers are `"len"`, `"Map"`,
-/// `"Stack"`, `"Queue"`, `"Set"`, `"conversion"` and `"fixed"`. Read-only: it is built from the
-/// tables the checker resolves them with, for the standard library reference (#690).
+/// receiver, as `(receiver, name)`: `.len` on `Text`, `List`, `Map` (`spec/14 §2`) and the
+/// collections, the methods of maps (`spec/21 §2`), of `Stack` and of `Queue` (`spec/28 §5`), of
+/// sets (`spec/28 §6`) and of hash maps and hash sets (`spec/28 §7`), the conversions (`spec/18
+/// §4`), and the wrapping, saturating and bit operations of the fixed-width integers (`spec/18
+/// §5`). The receivers are `"len"`, `"Map"`, `"Stack"`, `"Queue"`, `"Set"`, `"HashMap"`,
+/// `"HashSet"`, `"conversion"` and `"fixed"`. Read-only: it is built from the tables the
+/// checker resolves them with, for the standard library reference (#690).
 pub fn builtin_methods() -> Vec<(&'static str, String)> {
     let mut methods = vec![("len", "len".to_owned())];
     methods.extend(
@@ -217,6 +223,19 @@ pub fn builtin_methods() -> Vec<(&'static str, String)> {
         set::SET_METHODS
             .iter()
             .map(|(name, ..)| ("Set", (*name).to_owned())),
+    );
+    // Edition 0.4: the methods of `HashMap`, with `update`, and of `HashSet` (ADR 0119 rule
+    // 12).
+    methods.extend(
+        hash::HASH_MAP_METHODS
+            .iter()
+            .map(|(name, ..)| ("HashMap", (*name).to_owned())),
+    );
+    methods.push(("HashMap", "update".to_owned()));
+    methods.extend(
+        hash::HASH_SET_METHODS
+            .iter()
+            .map(|(name, ..)| ("HashSet", (*name).to_owned())),
     );
     methods.extend(una_core::IntType::ALL.iter().map(|t| {
         (
@@ -353,6 +372,10 @@ pub struct TypeCheck {
     /// The sites whose deadlines turn timing into values, in source order, with their timing
     /// labels: each `for ever within` (ADR 0116 rule 21), for the report's `timing` list.
     pub timing: Vec<TimingSite>,
+    /// `L_lim` (ADR 0117 IF4): the timing label of the package's `Http` requests, which a grant
+    /// with limits needs at most `internal`; `public` without such a request. `una build`
+    /// embeds it, and `una run` checks a limited `--grant` against it (`spec/27 §9` rule 5).
+    pub limit_label: una_core::Label,
 }
 
 /// A site with a deadline and its timing label (ADR 0116 IF5, rule 21).
@@ -381,6 +404,7 @@ impl Default for TypeCheck {
             program: una_core::Program::default(),
             index: Index::default(),
             timing: Vec::new(),
+            limit_label: una_core::Label::public(),
         }
     }
 }
@@ -464,6 +488,14 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
         .map(|entry| entry.value.clone())
         .collect();
     env.project_code = package.settings.format.code();
+    env.trusted_dependencies = env
+        .modules
+        .iter()
+        .enumerate()
+        .take(package.modules.len())
+        .filter(|(_, module)| package.settings.dependency_trusted.contains(&module.path))
+        .map(|(index, _)| index)
+        .collect();
     // Edition 0.3: the boundaries of `una.toml`, checked against the package (ADR 0093).
     env.boundaries = boundary::resolve(
         &env,
@@ -658,7 +690,7 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
                     report.error(
                         Code::U8001,
                         site.span,
-                        "internal error: the timing labels of `within` and the file-state label did not reach a fixpoint (ADR 0117 IF2, ADR 0085)".to_owned(),
+                        "internal error: the timing labels of `within` and `first of` and the file-state label did not reach a fixpoint (ADR 0117 IF2, IF3, ADR 0085)".to_owned(),
                     );
                 }
                 break;
@@ -725,6 +757,7 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
     authority::grants(&env, package.settings, package.run, &mut report);
     authority::drive_failures(&env, package.settings, &mut report);
     authority::drive_timing(&env, &findings, package.settings, &mut report);
+    let limit_label = authority::limit_timing(&env, &findings, package.settings, &mut report);
     let mut timing_sites = authority::deadline_timing(&env, &findings, &mut report);
     timing_sites.extend(authority::within_timing(&env, &findings, &mut report));
     timing_sites.sort_by_key(|(_, _, span, _)| (span.file, span.start, span.end));
@@ -815,6 +848,7 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
         Vec::new()
     };
     let check = TypeCheck {
+        limit_label,
         timing: timing_sites
             .into_iter()
             .map(|(construct, function, span, label)| TimingSite {
@@ -976,6 +1010,15 @@ pub(crate) struct Findings {
     /// The `within`s checked (ADR 0117 rule 5, IF2): each one's deadline, span, function and
     /// the seed of its timing label.
     pub(crate) withins: Vec<within::WithinSite>,
+    /// The operations of the host's `Http` checked, for `L_lim` (ADR 0117 IF4).
+    pub(crate) http_sites: Vec<timing::HttpSite>,
+    /// The calls of the call graph of ADR 0116 P1: from a function's body, a handler's
+    /// operations or a lambda (`Λ`), to a function called or named.
+    pub(crate) calls: std::collections::BTreeSet<(timing::Caller, usize)>,
+    /// The nodes of that graph that call a function value, and so reach `Λ`.
+    pub(crate) value_calls: std::collections::BTreeSet<timing::Caller>,
+    /// The handlers each node of that graph installs.
+    pub(crate) caller_installs: std::collections::BTreeSet<(timing::Caller, usize)>,
     /// Names bound by selfified `let`s.
     pub(crate) selfified: Vec<Span>,
     /// The conditions of `for until` loops that are in the refinement language, which the
@@ -1500,8 +1543,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn interrupted_is_a_variant_of_http_error_in_edition_0_4_only() {
-        // ADR 0116 rule 12: added last, so the eight variants keep their indices.
+    fn interrupted_and_rate_limited_are_variants_of_http_error_in_edition_0_4_only() {
+        // ADR 0116 rule 12 and ADR 0117 rule 8: added last, so the eight variants keep their
+        // indices.
         assert_eq!(PRELUDE_0_2.matches(HTTP_ERROR_0_4.0).count(), 1);
         let line = |edition| {
             standard_source(edition)
@@ -1513,11 +1557,12 @@ mod tests {
         assert_eq!(
             line(Edition::V0_4).as_deref(),
             Some(
-                "pub kind HttpError = Denied | BadUrl | BadRequest | Unreachable | TimedOut | TooLarge | Tls | Protocol | Interrupted"
+                "pub kind HttpError = Denied | BadUrl | BadRequest | Unreachable | TimedOut | TooLarge | Tls | Protocol | Interrupted | RateLimited"
             )
         );
         for edition in [Edition::V0_2, Edition::V0_3] {
             assert!(line(edition).is_some_and(|line| !line.contains("Interrupted")));
+            assert!(line(edition).is_some_and(|line| !line.contains("RateLimited")));
         }
     }
 
@@ -1548,7 +1593,8 @@ mod tests {
         for edition in &Edition::ALL {
             let source = standard_source(*edition);
             let (prelude, keywords) = if *edition >= Edition::V0_4 {
-                // `HttpError` gains `Interrupted` (ADR 0116 rule 12).
+                // `HttpError` gains `Interrupted` and `RateLimited` (ADR 0116 rule 12, ADR 0117
+                // rule 8).
                 let http = PRELUDE_0_2.replace(HTTP_ERROR_0_4.0, HTTP_ERROR_0_4.1);
                 (
                     format!("{}\n{http}{PRELUDE_0_3}{PRELUDE_0_4}", of_prelude()),

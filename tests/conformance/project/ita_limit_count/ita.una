@@ -1,0 +1,10 @@
+ita ita_limit_count
+  version 0.1.0
+  edition 0.4
+
+run
+  grants
+    http "https://api.example.com" get
+      at most 0 per second
+      at most 2147483648 at once
+      waiting at most 2147483647

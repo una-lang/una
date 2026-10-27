@@ -1,0 +1,8 @@
+-- test: a dependency's trusted module is trusted by a trust line and the lock's consent; its policy's release is no release into a boundary
+-- spec: spec/30 §13
+-- expect: ok
+module main
+
+import util.keys (reveal)
+
+pub show(t: secret Text) -> Text = reveal(t)

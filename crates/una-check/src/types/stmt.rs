@@ -6,8 +6,9 @@ use una_diag::{Code, ObligationKind};
 use una_syntax::Span;
 use una_syntax::ast::{
     AssignStmt, Bind, Block, BlockExpr, Body, CapBindingValue, ElseBranch, EverStmt, Expr,
-    ExprKind, ForSource, ForStmt, Handled, HandlingKind, IfBlock, IfThenStmt, LetStmt, LetValue,
-    Literal, PatternKind, Stmt, StopStmt, TextPart, TogetherFor, TogetherStmt, UntilStmt, WhenExpr,
+    ExprKind, FirstOf, ForSource, ForStmt, Handled, HandlingKind, IfBlock, IfThenStmt, LetStmt,
+    LetValue, Literal, PatternKind, StartStmt, Stmt, StopStmt, TasksStmt, TextPart, TogetherFor,
+    TogetherStmt, UntilStmt, WhenExpr,
 };
 
 use super::Report;
@@ -175,6 +176,22 @@ impl<'a> Checker<'_, 'a, '_> {
                         self.returned_value(*span, &Ty::Unit, expected, role);
                     }
                 }
+                // A block that ends in `tasks` or `start` has `unit` as its value (ADR 0117
+                // rule 7).
+                Stmt::Tasks(stmt) => {
+                    self.outside_rl(stmt.span, || "`tasks`".to_owned());
+                    self.tasks_stmt(stmt);
+                    if is_last && tail {
+                        self.returned_value(stmt.span, &Ty::Unit, expected, role);
+                    }
+                }
+                Stmt::Start(stmt) => {
+                    self.outside_rl(stmt.span, || "`start`".to_owned());
+                    self.start_stmt(stmt);
+                    if is_last && tail {
+                        self.returned_value(stmt.span, &Ty::Unit, expected, role);
+                    }
+                }
             }
         }
         self.ctx.rl = rl;
@@ -192,6 +209,14 @@ impl<'a> Checker<'_, 'a, '_> {
             .current
             .and_then(|id| self.env.functions.get(id))
             .is_some_and(|def| def.diverges);
+        // A started task may run forever where its function says `diverges`, also inside a
+        // `for ever` body or a task, since it ends with its `tasks` statement, which waits for
+        // it (ADR 0117 rule 7, ADR 0116 rules 8 and 9).
+        if self.in_start && self.lambda_depth == 0 {
+            return (!diverges).then_some(
+                "its function does not say `diverges`; add `diverges` to the header of a function that may run forever",
+            );
+        }
         if self.lambda_depth > 0 {
             Some(
                 "a lambda may not run forever: it is an ordinary value that can be called later from code that does not say `diverges`",
@@ -760,6 +785,100 @@ impl<'a> Checker<'_, 'a, '_> {
         }
     }
 
+    /// `tasks [at most n at once]` with its block (`spec/27 §7`, ADR 0117 rule 7): the bound is
+    /// an `Int` of at least 1, a `refinement` obligation, evaluated once; the block runs in the
+    /// current task, and the `start` statements in it, outside any task within it, start its
+    /// tasks.
+    fn tasks_stmt(&mut self, stmt: &TasksStmt) {
+        if let Some(current) = self.current {
+            self.findings.task_functions.insert(current);
+        }
+        if let Some(bound) = &stmt.bound {
+            let found = self.expr(bound, None);
+            let found = self.resolve(&found);
+            if !matches!(found.unlabeled(), Ty::Error(_)) {
+                if matches!(found.magnitude(), Ty::Int) {
+                    self.obligation(ObligationKind::Refinement, bound.span, None);
+                } else {
+                    let shown = self.show(&found);
+                    self.report.error(
+                        Code::U2001,
+                        bound.span,
+                        format!("the bound of `tasks` is an `Int`, found `{shown}`"),
+                    );
+                }
+            }
+        }
+        self.tasks_frames.push((self.task_depth, self.lambda_depth));
+        let ty = self.block(&stmt.block, None, Role::Plain, false);
+        self.tasks_frames.pop();
+        self.discarded(value_span(&stmt.block), &ty);
+    }
+
+    /// `start e` (`spec/27 §7`, ADR 0117 rule 7): legal only in the block of a `tasks`, outside
+    /// any task and lambda within it, and without a `with` clause (U2035). `e`, with its
+    /// deadline and handling clauses, is a task: checked as a `together` branch is, under the
+    /// program counter of the `start` (IF1), unable to change a binding declared outside it
+    /// (U2023); it is a `Unit` (U2011) that must not fail (U3029).
+    fn start_stmt(&mut self, stmt: &StartStmt) {
+        if let Some(current) = self.current {
+            self.findings.task_functions.insert(current);
+        }
+        let placed = self.tasks_frames.last().is_some_and(|&(tasks, lambdas)| {
+            tasks == self.task_depth && lambdas == self.lambda_depth
+        });
+        if !placed {
+            let inside = if self.lambda_depth > 0
+                && self
+                    .tasks_frames
+                    .last()
+                    .is_some_and(|&(_, lambdas)| lambdas < self.lambda_depth)
+            {
+                "inside a lambda, a value that may be called after its `tasks` statement has ended"
+            } else if self.tasks_frames.is_empty() {
+                "outside the block of a `tasks` statement, which waits for the tasks it starts"
+            } else {
+                "inside a task within the block of its `tasks` statement, which cannot wait for it"
+            };
+            self.report.error(
+                Code::U2035,
+                stmt.keyword,
+                format!(
+                    "`start` stands {inside}; start tasks from the block of a `tasks` statement"
+                ),
+            );
+        }
+        if let Some(binding) = stmt.handled.with.first() {
+            let mut diagnostic = self.report.make(
+                Code::U2035,
+                binding.span,
+                "`start` takes no `with` clause, since its task outlives the statement a `with` scopes over; install the handler around the call of the function that holds the `tasks` statement, or inside the started function".to_owned(),
+            );
+            diagnostic
+                .related
+                .push(self.report.related(stmt.keyword, "the `start`"));
+            self.report.push(diagnostic);
+        }
+        if matches!(
+            stmt.handled.expr.kind,
+            ExprKind::Call { .. } | ExprKind::MethodCall { .. }
+        ) {
+            self.statement_calls.push(stmt.handled.expr.span);
+        }
+        let mark = self.locals.len();
+        let saved_mark = self.task_mark.replace(mark);
+        let word = std::mem::replace(&mut self.task_word, "started task");
+        let in_start = std::mem::replace(&mut self.in_start, true);
+        self.task_depth += 1;
+        let ty = self.handled(&stmt.handled, None, Role::Plain, false);
+        self.task_depth -= 1;
+        self.in_start = in_start;
+        self.task_word = word;
+        self.task_mark = saved_mark;
+        self.locals.truncate(mark);
+        self.discarded(stmt.handled.expr.span, &ty);
+    }
+
     /// `together` with its branches (`spec/19 §1`, `§2`): each branch is checked as its `let`,
     /// under the program counter of the block, without the bindings of its siblings, and
     /// cannot change a binding declared before it (U2023). The branches' bindings are in scope
@@ -793,6 +912,7 @@ impl<'a> Checker<'_, 'a, '_> {
         }
         let mark = self.locals.len();
         let saved = self.task_mark.replace(mark);
+        let word = std::mem::replace(&mut self.task_word, "`together` task");
         self.task_depth += 1;
         let mut bound = Vec::new();
         for branch in &stmt.body {
@@ -812,8 +932,106 @@ impl<'a> Checker<'_, 'a, '_> {
             bound.extend(self.locals.drain_from(mark));
         }
         self.task_mark = saved;
+        self.task_word = word;
         self.task_depth -= 1;
         self.locals.extend(bound);
+    }
+
+    /// `first of` with its branches (`spec/27 §6`, ADR 0117 rule 6 and IF3): each branch is a
+    /// task, checked as a `together` branch is, under the program counter of the block,
+    /// without the bindings of its siblings, and unable to change a binding declared before
+    /// it (U2023). Every branch has the one type of the block (U2001). Timing decides the
+    /// winner, so the value is labeled with `t`, the join of `τ` of every branch, and every
+    /// operation and call with effects in a branch is checked under the timing floor `pc ⊔ t`,
+    /// since a sibling that wins can cut it. A body with fewer than two branches, or with a
+    /// line that is not an expression, is U2035.
+    fn first_of(
+        &mut self,
+        first: &FirstOf,
+        expected: Option<&Ty>,
+        role: Role<'_>,
+        tail: bool,
+    ) -> Ty {
+        self.outside_rl(first.span, || "`first of`".to_owned());
+        if let Some(current) = self.current {
+            self.findings.task_functions.insert(current);
+        }
+        let branches = first
+            .body
+            .iter()
+            .filter(|s| matches!(s, Stmt::Handled(_)))
+            .count();
+        if let Some(other) = first.body.iter().find(|s| !matches!(s, Stmt::Handled(_))) {
+            let mut diagnostic = self.report.make(
+                Code::U2035,
+                first.keyword,
+                "each line of `first of` is a branch, an expression with its handling clauses; call a function from a branch for more steps".to_owned(),
+            );
+            diagnostic
+                .related
+                .push(self.report.related(stmt_span(other), "not an expression"));
+            self.report.push(diagnostic);
+        } else if branches < 2 {
+            self.report.error(
+                Code::U2035,
+                first.keyword,
+                "`first of` races at least two branches; with one, write the expression alone"
+                    .to_owned(),
+            );
+        }
+        // IF3: the timing label of the race, and its timing floor over every branch.
+        let open = self.race_open(first.keyword, first.span);
+        let mark = self.locals.len();
+        let saved_mark = self.task_mark.replace(mark);
+        let word = std::mem::replace(&mut self.task_word, "branch of `first of`");
+        self.task_depth += 1;
+        let mut joined = expected.cloned();
+        let mut types: Vec<(Span, Ty)> = Vec::new();
+        for branch in &first.body {
+            let Stmt::Handled(handled) = branch else {
+                continue;
+            };
+            if matches!(
+                handled.expr.kind,
+                ExprKind::Call { .. } | ExprKind::MethodCall { .. }
+            ) {
+                self.statement_calls.push(handled.expr.span);
+            }
+            let ty = self.handled(handled, joined.as_ref(), Role::Plain, false);
+            // A branch's own names end with it.
+            self.locals.truncate(mark);
+            if joined.is_none() && self.resolve(&ty) != Ty::Never {
+                joined = Some(ty.clone());
+            }
+            types.push((handled.expr.span, ty));
+        }
+        self.task_mark = saved_mark;
+        self.task_word = word;
+        self.task_depth -= 1;
+        let tau = self.race_close(&open);
+        let reached: Vec<(Span, Ty)> = types
+            .iter()
+            .filter(|(_, ty)| self.resolve(ty) != Ty::Never)
+            .cloned()
+            .collect();
+        let value = match reached.split_first() {
+            None => joined.unwrap_or(Ty::Never),
+            Some(((_, first_ty), [])) => first_ty.clone(),
+            Some(((_, first_ty), rest)) => {
+                let mut value = first_ty.clone();
+                for (_, ty) in rest {
+                    value = self.vars.join(&value, ty);
+                }
+                self.join_flows(&value, reached.clone());
+                value
+            }
+        };
+        // Timing decides which branch wins (IF3).
+        let value = value.with_label(&tau);
+        if tail {
+            self.returned_value(first.span, &value, expected, role);
+        }
+        value
     }
 
     /// `together for x in source` with its block (`spec/19 §1`, `§2`, `§3`): one task per
@@ -840,6 +1058,7 @@ impl<'a> Checker<'_, 'a, '_> {
         let saved_pc = self.raise_pc(&label, from);
         let mark = self.locals.len();
         let saved_mark = self.task_mark.replace(mark);
+        let word = std::mem::replace(&mut self.task_word, "`together` task");
         self.task_depth += 1;
         self.bind(self.name(&together.var), var_ty);
         let element = self.block(
@@ -851,6 +1070,7 @@ impl<'a> Checker<'_, 'a, '_> {
         self.locals.truncate(mark);
         self.task_depth -= 1;
         self.task_mark = saved_mark;
+        self.task_word = word;
         self.restore_pc(saved_pc);
         // How many elements there are depends on the label of what the tasks visit.
         let ty = Ty::List(Shared::new(element)).with_label(&label);
@@ -1342,6 +1562,7 @@ impl<'a> Checker<'_, 'a, '_> {
             BlockExpr::When(when) => self.when(when, expected, role, tail),
             BlockExpr::If(block) => self.if_block(block, expected, role, tail),
             BlockExpr::TogetherFor(together) => self.together_for(together, expected, role, tail),
+            BlockExpr::FirstOf(first) => self.first_of(first, expected, role, tail),
         };
         // The value of a join, in the desugar of the memory model (`spec/17 §4`).
         self.typed(block_expr_span(expr), &ty);
@@ -1794,6 +2015,7 @@ fn block_expr_span(expr: &BlockExpr) -> Span {
         BlockExpr::When(when) => when.span,
         BlockExpr::If(block) => block.span,
         BlockExpr::TogetherFor(together) => together.span,
+        BlockExpr::FirstOf(first) => first.span,
     }
 }
 
@@ -1811,6 +2033,8 @@ fn stmt_span(stmt: &Stmt) -> Span {
         Stmt::Skip(span) => *span,
         Stmt::Until(stmt) => stmt.span,
         Stmt::Ever(stmt) => stmt.span,
+        Stmt::Tasks(stmt) => stmt.span,
+        Stmt::Start(stmt) => stmt.span,
         Stmt::OnStop(on_stop) => on_stop.span,
     }
 }

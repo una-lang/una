@@ -576,6 +576,33 @@ pub extern "C" fn una_rt_together_for(closure: i64, items: i64, site: i64) -> i6
     tasks::together_for(closure, items, usize::try_from(site).unwrap_or(usize::MAX))
 }
 
+/// Runs the branches of `first of` at `site` ([`tasks::first_of`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_first_of(closures: i64, site: i64) -> i64 {
+    tasks::first_of(closures, usize::try_from(site).unwrap_or(usize::MAX))
+}
+
+/// Opens the `tasks` statement at `site`, bounded by the integer of the borrowed word `bound`
+/// when `bounded` is 1: 0, or 2 when the task stops instead ([`crate::started::tasks_begin`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_tasks_begin(bound: i64, bounded: i64, site: i64) -> i64 {
+    crate::started::tasks_begin(bound, bounded, usize::try_from(site).unwrap_or(usize::MAX))
+}
+
+/// Starts a task for the closure `closure`, which the caller keeps, at the `start` at `site`:
+/// 0, or 2 when the task stops instead ([`crate::started::start`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_start_task(closure: i64, site: i64) -> i64 {
+    crate::started::start(closure, usize::try_from(site).unwrap_or(usize::MAX), invoke)
+}
+
+/// Ends the innermost `tasks` statement once its block has ended, cancelling its tasks first
+/// when `cancel` is 1, and waits for them ([`crate::started::tasks_end`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_tasks_end(cancel: i64) {
+    crate::started::tasks_end(cancel);
+}
+
 /// How the last block of tasks ended ([`tasks::status`]).
 #[unsafe(no_mangle)]
 pub extern "C" fn una_rt_together_status() -> i64 {

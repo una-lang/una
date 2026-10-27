@@ -32,6 +32,8 @@ const MOVEMENTS: &[&str] = &[
     "generic",
     "generic_field",
     "handler_result",
+    "hash_items",
+    "hash_with",
     "join",
     "map_entries",
     "map_get",
@@ -57,11 +59,12 @@ const SCALAR: &str = "";
 // rhs-cases:begin
 /// The movement case of each form of a Core right-hand side bound to a refined binder (ADR
 /// 0103 rule 4), the forms the verifier's `rhs_type` types. The match has no catch-all: a new
-/// form of `Rhs`, `Prim`, `MapOp`, `SeqOp` or `SetOp` does not compile until it names its case here, and
+/// form of `Rhs`, `Prim`, `MapOp`, `SeqOp`, `SetOp`, `HashMapOp` or `HashSetOp` does not compile
+/// until it names its case here, and
 /// `every_right_hand_side_has_a_case` then requires the case.
 #[allow(dead_code)]
 fn rhs_case(rhs: &una_core::Rhs) -> &'static str {
-    use una_core::{MapOp, Prim, Rhs, SeqOp, SetOp};
+    use una_core::{HashMapOp, HashSetOp, MapOp, Prim, Rhs, SeqOp, SetOp};
     match rhs {
         Rhs::Atom(_) => "annotated_let",
         // An `edit` call's results, rebound to the places.
@@ -90,6 +93,22 @@ fn rhs_case(rhs: &una_core::Rhs) -> &'static str {
                 | SetOp::Union
                 | SetOp::Intersection
                 | SetOp::Difference => "set_with",
+            },
+            Prim::HashMap(op) => match op {
+                HashMapOp::Has | HashMapOp::SameEntries => SCALAR,
+                HashMapOp::Get | HashMapOp::Keys | HashMapOp::Values | HashMapOp::Entries => {
+                    "hash_items"
+                }
+                HashMapOp::With | HashMapOp::Without => "hash_with",
+            },
+            Prim::HashSet(op) => match op {
+                HashSetOp::Has | HashSetOp::IsSubset | HashSetOp::SameItems => SCALAR,
+                HashSetOp::Items => "hash_items",
+                HashSetOp::With
+                | HashSetOp::Without
+                | HashSetOp::Union
+                | HashSetOp::Intersection
+                | HashSetOp::Difference => "hash_with",
             },
             Prim::Add
             | Prim::Sub
@@ -219,7 +238,11 @@ fn refinement_goals(name: &str, source: &str) -> Vec<String> {
         std::thread::Builder::new()
             .stack_size(64 * 1024 * 1024)
             .spawn_scoped(scope, || {
-                una_verify::obligations(&checked.program, &checked.sources)
+                una_verify::obligations(
+                    &checked.program,
+                    &checked.sources,
+                    una_verify::SourceLayout::Joined,
+                )
             })
             .unwrap()
             .join()

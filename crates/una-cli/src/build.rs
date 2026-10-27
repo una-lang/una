@@ -15,7 +15,7 @@ use una_syntax::ast::ClauseKind;
 use crate::contract::Modules;
 use crate::runtime::{driven_init, entry_main, rejected_status, takes_stops};
 use crate::verification::tier_one;
-use crate::{ExitStatus, analyze, load, on_large_stack};
+use crate::{ExitStatus, analyze, on_large_stack};
 
 /// The JSON schema of `una build --json` (`spec/16 §2`).
 const BUILD_SCHEMA: &str = "una.build/1";
@@ -56,7 +56,11 @@ pub(crate) fn build_command(
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> io::Result<ExitStatus> {
-    let package = match load(path) {
+    let package = match crate::package::load_in(
+        path,
+        &std::collections::BTreeMap::new(),
+        options.solving.itaoca.as_ref(),
+    ) {
         Ok(package) => package,
         Err(error) => {
             writeln!(stderr, "error: {error}")?;
@@ -192,6 +196,8 @@ pub(crate) fn build_command(
         &entry,
         manifest.drive.is_some(),
     );
+    // A program with a `tasks` statement runs `main` as a coroutine (ADR 0117 rule 11).
+    let tasks = una_core::has_tasks(&analysis.program);
     let meta = |described: &una_codegen::Described<'_>| {
         let sites: Vec<una_diag::Location> = described
             .sites
@@ -204,6 +210,9 @@ pub(crate) fn build_command(
                 section => format!("`{section}`"),
             },
             "stops": stops,
+            "tasks": tasks,
+            // This backend never elides a check (ADR 0112): `--virtual-time` is accepted.
+            "elision": false,
             "grants": grants,
             "uses": uses,
             "sites": sites,
@@ -233,6 +242,20 @@ pub(crate) fn build_command(
         }
         if let (Some(drive), Some(object)) = (&drive, meta.as_object_mut()) {
             object.insert("drive".to_owned(), drive.clone());
+        }
+        // ADR 0117 IF4: `L_lim`, which a grant with limits needs at most `internal`, for an
+        // executable of edition 0.4 only; one without it takes no limits (`spec/27 §9`).
+        if manifest.edition >= una_project::Edition::V0_4
+            && let Some(object) = meta.as_object_mut()
+        {
+            object.insert(
+                "limit_label".to_owned(),
+                json!(analysis.limit_label.to_string()),
+            );
+            object.insert(
+                "limits_allowed".to_owned(),
+                json!(analysis.limit_label.flows_to(&internal_label())),
+            );
         }
         meta.to_string()
     };
@@ -592,5 +615,13 @@ mod tests {
             None
         );
         assert_eq!(stale_runtime_hint("ld: library not found", runtime), None);
+    }
+}
+
+/// The label `internal`, the most `L_lim` may be for grants with limits (ADR 0117 IF4).
+pub(crate) fn internal_label() -> una_core::Label {
+    una_core::Label {
+        level: una_syntax::ast::Level::Internal,
+        ..una_core::Label::public()
     }
 }
