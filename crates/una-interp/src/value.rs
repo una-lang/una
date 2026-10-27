@@ -385,7 +385,7 @@ fn composite(value: &Value<'_>) -> Option<(u8, usize)> {
         Value::List(x) if !x.is_empty() => Some((1, Rc::as_ptr(x) as usize)),
         Value::Tuple(x) if !x.is_empty() => Some((2, Rc::as_ptr(x) as usize)),
         Value::Map(x) if !x.is_empty() => Some((3, Rc::as_ptr(x) as usize)),
-        Value::Dense(x) => Some((4, Rc::as_ptr(x) as usize)),
+        Value::Dense(x) => Some((6, Rc::as_ptr(x) as usize)),
         Value::Seq(x) if !x.is_empty() => Some((5, Rc::as_ptr(x) as usize)),
         Value::Set(x) if !x.is_empty() => Some((4, Rc::as_ptr(x) as usize)),
         _ => None,
