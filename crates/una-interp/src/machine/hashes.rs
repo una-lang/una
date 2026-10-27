@@ -398,6 +398,12 @@ fn encode<S: Sink>(encoder: &mut Encoder<'_, S>, value: &Value<'_>) -> bool {
                     }
                 }
             }
+            // Its size as an integer, then its words, little-endian (ADR 0119 rule 9). The bits
+            // past the size stay zero, so two equal bit sets encode alike.
+            Value::BitSet(bits) => {
+                encoder.len(bits.size);
+                encoder.words(&bits.words);
+            }
             Value::Closure(_) | Value::HashMap(_) | Value::HashSet(_) | Value::Priority(_) => {
                 return false;
             }
@@ -614,6 +620,42 @@ fn holds_all<'p>(
         }
     }
     Ok(true)
+}
+
+/// `xs.to_hash_set()` and `es.to_hash_map()` (`spec/28 §10`, ADR 0119 rule 16): a new table
+/// under `key`, filled from the list in its order. A set holds each item once, at its first
+/// occurrence; a map lists each key at its first occurrence, with the value of its last entry,
+/// as `set` of a present key keeps its place. O(n · |k|) expected, amortized.
+pub(super) fn from_list<'p>(
+    name: &str,
+    key: SipKey,
+    args: &[Value<'p>],
+    budget: &Budget,
+) -> Flow<'p> {
+    let Some(Value::List(xs)) = args.first() else {
+        return Err(fault(format!("`{name}` without a list")));
+    };
+    let mut table = HashTable::new(key);
+    if name == "to_hash_map" {
+        for entry in xs.iter() {
+            let Value::Data(entry) = entry else {
+                return Err(fault("`to_hash_map` of an element that is not an `Entry`"));
+            };
+            let [k, v] = entry.fields.as_slice() else {
+                return Err(fault("`to_hash_map` of an element that is not an `Entry`"));
+            };
+            let hash = hash_of(table.key, k)?;
+            insert(&mut table, hash, k.clone(), v.clone(), budget)?;
+        }
+        return Ok(Value::HashMap(Rc::new(table)));
+    }
+    for item in xs.iter() {
+        let hash = hash_of(table.key, item)?;
+        if lookup(&table, hash, item, budget)?.is_none() {
+            insert(&mut table, hash, item.clone(), Value::Unit, budget)?;
+        }
+    }
+    Ok(Value::HashSet(Rc::new(table)))
 }
 
 /// A hash set's built-in method over its arguments, receiver first (`spec/28 §7`). Each item

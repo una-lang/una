@@ -120,6 +120,8 @@ pub(crate) fn build(env: &Env<'_>, findings: &Findings) -> Index {
             | Res::HashSetUpdate(_)
             | Res::PriorityMethod(_)
             | Res::PriorityUpdate { .. }
+            | Res::BitSetMethod(_)
+            | Res::BitSetUpdate(_)
             | Res::Constant(_)
             | Res::Shape(_)
             | Res::DenseElement(_)

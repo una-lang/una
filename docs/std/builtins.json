@@ -22,8 +22,8 @@
             "Built in on `Text` and `List` and, from edition 0.2 on, on `Map` (`spec/14 §2`,",
             "`spec/21 §2`). On a `Text` it counts Unicode scalar values (`spec/14 §1`); a map's is",
             "never negative (`spec/21 §2`). From edition 0.4 on, a `Stack`, a `Queue`, a `Set`, a",
-            "`HashMap`, a `HashSet` and a `PriorityQueue` count their items, in O(1) (`spec/28 §5`,",
-            "`§6`, `§7`, `§8`)."
+            "`HashMap`, a `HashSet` and a `PriorityQueue` count their items, and a `BitSet` its",
+            "members, in O(1) (`spec/28 §5`, `§6`, `§7`, `§8`, `§9`)."
           ]
         },
         {
@@ -36,21 +36,21 @@
             "Built in on `Text` and `List` and, from edition 0.2 on, on `Map` (`spec/14 §2`,",
             "`spec/21 §2`). On a `Text` it counts Unicode scalar values (`spec/14 §1`); a map's is",
             "never negative (`spec/21 §2`). From edition 0.4 on, a `Stack`, a `Queue`, a `Set`, a",
-            "`HashMap`, a `HashSet` and a `PriorityQueue` count their items, in O(1) (`spec/28 §5`,",
-            "`§6`, `§7`, `§8`)."
+            "`HashMap`, a `HashSet` and a `PriorityQueue` count their items, and a `BitSet` its",
+            "members, in O(1) (`spec/28 §5`, `§6`, `§7`, `§8`, `§9`)."
           ]
         },
         {
           "editions": [
             "0.4"
           ],
-          "declaration": "t.len -> Int\n  where t: Text\nxs.len -> Int\n  where xs: List[T]\nm.len -> Int\n  where m: Map[K, V]\ns.len -> Int\n  where s: Set[T]\nm.len -> Int\n  where m: HashMap[K, V]\ns.len -> Int\n  where s: HashSet[T]",
+          "declaration": "t.len -> Int\n  where t: Text\nxs.len -> Int\n  where xs: List[T]\nm.len -> Int\n  where m: Map[K, V]\ns.len -> Int\n  where s: Set[T]\nm.len -> Int\n  where m: HashMap[K, V]\ns.len -> Int\n  where s: HashSet[T]\nb.len -> Int\n  where b: BitSet",
           "docs": [
             "Built in on `Text` and `List` and, from edition 0.2 on, on `Map` (`spec/14 §2`,",
             "`spec/21 §2`). On a `Text` it counts Unicode scalar values (`spec/14 §1`); a map's is",
             "never negative (`spec/21 §2`). From edition 0.4 on, a `Stack`, a `Queue`, a `Set`, a",
-            "`HashMap`, a `HashSet` and a `PriorityQueue` count their items, in O(1) (`spec/28 §5`,",
-            "`§6`, `§7`, `§8`)."
+            "`HashMap`, a `HashSet` and a `PriorityQueue` count their items, and a `BitSet` its",
+            "members, in O(1) (`spec/28 §5`, `§6`, `§7`, `§8`, `§9`)."
           ]
         }
       ]
@@ -63,7 +63,8 @@
         "spec/21 §2",
         "spec/21 §4",
         "spec/28 §6",
-        "spec/28 §7"
+        "spec/28 §7",
+        "spec/28 §9"
       ],
       "variants": [
         {
@@ -76,19 +77,21 @@
             "Whether `m` has `key`. Like `m.len`, it may appear in `requires`, `ensures`, `where`",
             "and predicates (`spec/21 §2`, `spec/21 §4`). On a `Set`, from edition 0.4 on, whether",
             "`s` holds `item`, in O(log n) (`spec/28 §6`). On a `HashMap` and a `HashSet`, the same",
-            "in O(|k|) expected, outside contracts in edition 0.4 (`spec/28 §7`)."
+            "in O(|k|) expected, outside contracts in edition 0.4 (`spec/28 §7`). On a `BitSet`,",
+            "whether `item` is a member, `false` outside its range, in O(1) (`spec/28 §9`)."
           ]
         },
         {
           "editions": [
             "0.4"
           ],
-          "declaration": "m.has(key: K) -> Bool\n  where m: Map[K, V]\ns.has(item: T) -> Bool\n  where s: Set[T]\nm.has(key: K) -> Bool\n  where m: HashMap[K, V]\ns.has(item: T) -> Bool\n  where s: HashSet[T]",
+          "declaration": "m.has(key: K) -> Bool\n  where m: Map[K, V]\ns.has(item: T) -> Bool\n  where s: Set[T]\nm.has(key: K) -> Bool\n  where m: HashMap[K, V]\ns.has(item: T) -> Bool\n  where s: HashSet[T]\nb.has(item: Int) -> Bool\n  where b: BitSet",
           "docs": [
             "Whether `m` has `key`. Like `m.len`, it may appear in `requires`, `ensures`, `where`",
             "and predicates (`spec/21 §2`, `spec/21 §4`). On a `Set`, from edition 0.4 on, whether",
             "`s` holds `item`, in O(log n) (`spec/28 §6`). On a `HashMap` and a `HashSet`, the same",
-            "in O(|k|) expected, outside contracts in edition 0.4 (`spec/28 §7`)."
+            "in O(|k|) expected, outside contracts in edition 0.4 (`spec/28 §7`). On a `BitSet`,",
+            "whether `item` is a member, `false` outside its range, in O(1) (`spec/28 §9`)."
           ]
         }
       ]
@@ -168,7 +171,8 @@
       "spec": [
         "spec/21 §2",
         "spec/28 §6",
-        "spec/28 §7"
+        "spec/28 §7",
+        "spec/28 §9"
       ],
       "variants": [
         {
@@ -181,19 +185,21 @@
             "Updates `m` in place, written `edit m.remove(...)`: afterwards `not m.has(key: k)`,",
             "and `m.len` shrinks by one when the key was there (`spec/21 §2`). On a `Set`, written",
             "`edit s.remove(...)`, afterwards `not s.has(item: x)`, in O(log n) (`spec/28 §6`). On a",
-            "`HashMap` and a `HashSet`, the same in O(|k|) expected, amortized (`spec/28 §7`)."
+            "`HashMap` and a `HashSet`, the same in O(|k|) expected, amortized (`spec/28 §7`). On a",
+            "`BitSet`, in O(1), and an item outside its range changes nothing (`spec/28 §9`)."
           ]
         },
         {
           "editions": [
             "0.4"
           ],
-          "declaration": "edit m.remove(key: K) -> Unit\n  where m: Map[K, V]\nedit s.remove(item: T) -> Unit\n  where s: Set[T]\nedit m.remove(key: K) -> Unit\n  where m: HashMap[K, V]\nedit s.remove(item: T) -> Unit\n  where s: HashSet[T]",
+          "declaration": "edit m.remove(key: K) -> Unit\n  where m: Map[K, V]\nedit s.remove(item: T) -> Unit\n  where s: Set[T]\nedit m.remove(key: K) -> Unit\n  where m: HashMap[K, V]\nedit s.remove(item: T) -> Unit\n  where s: HashSet[T]\nedit b.remove(item: Int) -> Unit\n  where b: BitSet",
           "docs": [
             "Updates `m` in place, written `edit m.remove(...)`: afterwards `not m.has(key: k)`,",
             "and `m.len` shrinks by one when the key was there (`spec/21 §2`). On a `Set`, written",
             "`edit s.remove(...)`, afterwards `not s.has(item: x)`, in O(log n) (`spec/28 §6`). On a",
-            "`HashMap` and a `HashSet`, the same in O(|k|) expected, amortized (`spec/28 §7`)."
+            "`HashMap` and a `HashSet`, the same in O(|k|) expected, amortized (`spec/28 §7`). On a",
+            "`BitSet`, in O(1), and an item outside its range changes nothing (`spec/28 §9`)."
           ]
         }
       ]
@@ -205,7 +211,8 @@
       "spec": [
         "spec/21 §2",
         "spec/28 §6",
-        "spec/28 §7"
+        "spec/28 §7",
+        "spec/28 §9"
       ],
       "variants": [
         {
@@ -217,18 +224,20 @@
           "docs": [
             "A map with the contract of `set`, for the result (`spec/21 §2`). On a `Set`, a set",
             "with the contract of `add`, for the result (`spec/28 §6`); on a `HashMap` and a",
-            "`HashSet`, the same for the hash table (`spec/28 §7`)."
+            "`HashSet`, the same for the hash table (`spec/28 §7`); on a `BitSet`, the same for the",
+            "bit set (`spec/28 §9`)."
           ]
         },
         {
           "editions": [
             "0.4"
           ],
-          "declaration": "m.with(key: K, value: V) -> Map[K, V]\n  where m: Map[K, V]\ns.with(item: T) -> Set[T]\n  where s: Set[T]\nm.with(key: K, value: V) -> HashMap[K, V]\n  where m: HashMap[K, V]\ns.with(item: T) -> HashSet[T]\n  where s: HashSet[T]",
+          "declaration": "m.with(key: K, value: V) -> Map[K, V]\n  where m: Map[K, V]\ns.with(item: T) -> Set[T]\n  where s: Set[T]\nm.with(key: K, value: V) -> HashMap[K, V]\n  where m: HashMap[K, V]\ns.with(item: T) -> HashSet[T]\n  where s: HashSet[T]\nb.with(item: Int) -> BitSet\n  where b: BitSet",
           "docs": [
             "A map with the contract of `set`, for the result (`spec/21 §2`). On a `Set`, a set",
             "with the contract of `add`, for the result (`spec/28 §6`); on a `HashMap` and a",
-            "`HashSet`, the same for the hash table (`spec/28 §7`)."
+            "`HashSet`, the same for the hash table (`spec/28 §7`); on a `BitSet`, the same for the",
+            "bit set (`spec/28 §9`)."
           ]
         }
       ]
@@ -240,7 +249,8 @@
       "spec": [
         "spec/21 §2",
         "spec/28 §6",
-        "spec/28 §7"
+        "spec/28 §7",
+        "spec/28 §9"
       ],
       "variants": [
         {
@@ -252,18 +262,20 @@
           "docs": [
             "A map with the contract of `remove`, for the result (`spec/21 §2`). On a `Set`, a set",
             "with the contract of `remove`, for the result (`spec/28 §6`); on a `HashMap` and a",
-            "`HashSet`, the same for the hash table (`spec/28 §7`)."
+            "`HashSet`, the same for the hash table (`spec/28 §7`); on a `BitSet`, the same for the",
+            "bit set (`spec/28 §9`)."
           ]
         },
         {
           "editions": [
             "0.4"
           ],
-          "declaration": "m.without(key: K) -> Map[K, V]\n  where m: Map[K, V]\ns.without(item: T) -> Set[T]\n  where s: Set[T]\nm.without(key: K) -> HashMap[K, V]\n  where m: HashMap[K, V]\ns.without(item: T) -> HashSet[T]\n  where s: HashSet[T]",
+          "declaration": "m.without(key: K) -> Map[K, V]\n  where m: Map[K, V]\ns.without(item: T) -> Set[T]\n  where s: Set[T]\nm.without(key: K) -> HashMap[K, V]\n  where m: HashMap[K, V]\ns.without(item: T) -> HashSet[T]\n  where s: HashSet[T]\nb.without(item: Int) -> BitSet\n  where b: BitSet",
           "docs": [
             "A map with the contract of `remove`, for the result (`spec/21 §2`). On a `Set`, a set",
             "with the contract of `remove`, for the result (`spec/28 §6`); on a `HashMap` and a",
-            "`HashSet`, the same for the hash table (`spec/28 §7`)."
+            "`HashSet`, the same for the hash table (`spec/28 §7`); on a `BitSet`, the same for the",
+            "bit set (`spec/28 §9`)."
           ]
         }
       ]
@@ -467,20 +479,22 @@
         "spec/28 §5",
         "spec/28 §6",
         "spec/28 §7",
-        "spec/28 §8"
+        "spec/28 §8",
+        "spec/28 §9"
       ],
       "variants": [
         {
           "editions": [
             "0.4"
           ],
-          "declaration": "s.items() -> List[T]\n  where s: Stack[T]\nq.items() -> List[T]\n  where q: Queue[T]\ns.items() -> List[T]\n  where s: Set[T]\ns.items() -> List[T]\n  where s: HashSet[T]\nq.items() -> List[T]\n  where q: PriorityQueue[T, P]",
+          "declaration": "s.items() -> List[T]\n  where s: Stack[T]\nq.items() -> List[T]\n  where q: Queue[T]\ns.items() -> List[T]\n  where s: Set[T]\ns.items() -> List[T]\n  where s: HashSet[T]\nq.items() -> List[T]\n  where q: PriorityQueue[T, P]\nb.items() -> List[Int]\n  where b: BitSet",
           "docs": [
             "The items as a list: a `Stack` top first and a `Queue` front first, as many as its",
             "`len`, in O(n) time (`spec/28 §5`); a `Set`'s in ascending order, as many as its",
             "`len`, in O(n) time (`spec/28 §6`); a `HashSet`'s in the order its items were first",
             "added, in O(n) time (`spec/28 §7`); a `PriorityQueue`'s in the order of the pops, in",
-            "O(n log n) comparisons (`spec/28 §8`)."
+            "O(n log n) comparisons (`spec/28 §8`); a `BitSet`'s members in ascending order, in",
+            "O(size / 64 + len) time (`spec/28 §9`)."
           ]
         }
       ]
@@ -552,18 +566,20 @@
       "kind": "method",
       "spec": [
         "spec/28 §6",
-        "spec/28 §7"
+        "spec/28 §7",
+        "spec/28 §9"
       ],
       "variants": [
         {
           "editions": [
             "0.4"
           ],
-          "declaration": "edit s.add(item: T) -> Unit\n  where s: Set[T]\nedit s.add(item: T) -> Unit\n  where s: HashSet[T]",
+          "declaration": "edit s.add(item: T) -> Unit\n  where s: Set[T]\nedit s.add(item: T) -> Unit\n  where s: HashSet[T]\nedit b.add(item: Int) -> Unit\n  where b: BitSet",
           "docs": [
             "Updates `s` in place, written `edit s.add(...)`: afterwards `s.has(item: x)`, and",
             "`s.len` grows by one when the item was not there. O(log n) (`spec/28 §6`); on a",
-            "`HashSet`, O(|k|) expected, amortized (`spec/28 §7`)."
+            "`HashSet`, O(|k|) expected, amortized (`spec/28 §7`). On a `BitSet`, O(1), and it",
+            "requires `0 <= item and item < b.size` (`spec/28 §9`)."
           ]
         }
       ]
@@ -573,16 +589,18 @@
       "module": "builtin",
       "kind": "method",
       "spec": [
-        "spec/28 §6"
+        "spec/28 §6",
+        "spec/28 §9"
       ],
       "variants": [
         {
           "editions": [
             "0.4"
           ],
-          "declaration": "s.first() -> Option[T]\n  where s: Set[T]",
+          "declaration": "s.first() -> Option[T]\n  where s: Set[T]\nb.first() -> Option[Int]\n  where b: BitSet",
           "docs": [
-            "The least item of `s`, or `None` when it is empty. O(log n) (`spec/28 §6`)."
+            "The least item of `s`, or `None` when it is empty. O(log n) (`spec/28 §6`), and",
+            "O(size / 64) on a `BitSet` (`spec/28 §9`)."
           ]
         }
       ]
@@ -592,16 +610,18 @@
       "module": "builtin",
       "kind": "method",
       "spec": [
-        "spec/28 §6"
+        "spec/28 §6",
+        "spec/28 §9"
       ],
       "variants": [
         {
           "editions": [
             "0.4"
           ],
-          "declaration": "s.last() -> Option[T]\n  where s: Set[T]",
+          "declaration": "s.last() -> Option[T]\n  where s: Set[T]\nb.last() -> Option[Int]\n  where b: BitSet",
           "docs": [
-            "The greatest item of `s`, or `None` when it is empty. O(log n) (`spec/28 §6`)."
+            "The greatest item of `s`, or `None` when it is empty. O(log n) (`spec/28 §6`), and",
+            "O(size / 64) on a `BitSet` (`spec/28 §9`)."
           ]
         }
       ]
@@ -632,18 +652,20 @@
       "kind": "method",
       "spec": [
         "spec/28 §6",
-        "spec/28 §7"
+        "spec/28 §7",
+        "spec/28 §9"
       ],
       "variants": [
         {
           "editions": [
             "0.4"
           ],
-          "declaration": "s.union(other: Set[T]) -> Set[T]\n  where s: Set[T]\ns.union(other: HashSet[T]) -> HashSet[T]\n  where s: HashSet[T]",
+          "declaration": "s.union(other: Set[T]) -> Set[T]\n  where s: Set[T]\ns.union(other: HashSet[T]) -> HashSet[T]\n  where s: HashSet[T]\nb.union(other: BitSet) -> BitSet\n  where b: BitSet",
           "docs": [
             "The items of `s` and those of `other`. O(n + m), or less when `other` is much smaller",
             "(`spec/28 §6`). On a `HashSet`, the receiver's items, then the other's it lacks, in",
-            "the other's order (`spec/28 §7`)."
+            "the other's order (`spec/28 §7`). On a `BitSet`, `other` has its size, in",
+            "O(size / 64) (`spec/28 §9`)."
           ]
         }
       ]
@@ -654,17 +676,19 @@
       "kind": "method",
       "spec": [
         "spec/28 §6",
-        "spec/28 §7"
+        "spec/28 §7",
+        "spec/28 §9"
       ],
       "variants": [
         {
           "editions": [
             "0.4"
           ],
-          "declaration": "s.intersection(other: Set[T]) -> Set[T]\n  where s: Set[T]\ns.intersection(other: HashSet[T]) -> HashSet[T]\n  where s: HashSet[T]",
+          "declaration": "s.intersection(other: Set[T]) -> Set[T]\n  where s: Set[T]\ns.intersection(other: HashSet[T]) -> HashSet[T]\n  where s: HashSet[T]\nb.intersection(other: BitSet) -> BitSet\n  where b: BitSet",
           "docs": [
             "The items of `s` that `other` holds. O(n + m), or less when one of the sets is much",
-            "smaller (`spec/28 §6`). On a `HashSet`, in the receiver's order (`spec/28 §7`)."
+            "smaller (`spec/28 §6`). On a `HashSet`, in the receiver's order (`spec/28 §7`). On a",
+            "`BitSet`, `other` has its size, in O(size / 64) (`spec/28 §9`)."
           ]
         }
       ]
@@ -675,17 +699,19 @@
       "kind": "method",
       "spec": [
         "spec/28 §6",
-        "spec/28 §7"
+        "spec/28 §7",
+        "spec/28 §9"
       ],
       "variants": [
         {
           "editions": [
             "0.4"
           ],
-          "declaration": "s.difference(other: Set[T]) -> Set[T]\n  where s: Set[T]\ns.difference(other: HashSet[T]) -> HashSet[T]\n  where s: HashSet[T]",
+          "declaration": "s.difference(other: Set[T]) -> Set[T]\n  where s: Set[T]\ns.difference(other: HashSet[T]) -> HashSet[T]\n  where s: HashSet[T]\nb.difference(other: BitSet) -> BitSet\n  where b: BitSet",
           "docs": [
             "The items of `s` that `other` does not hold. O(n + m), or less when `other` is much",
-            "smaller (`spec/28 §6`). On a `HashSet`, in the receiver's order (`spec/28 §7`)."
+            "smaller (`spec/28 §6`). On a `HashSet`, in the receiver's order (`spec/28 §7`). On a",
+            "`BitSet`, `other` has its size, in O(size / 64) (`spec/28 §9`)."
           ]
         }
       ]
@@ -696,17 +722,19 @@
       "kind": "method",
       "spec": [
         "spec/28 §6",
-        "spec/28 §7"
+        "spec/28 §7",
+        "spec/28 §9"
       ],
       "variants": [
         {
           "editions": [
             "0.4"
           ],
-          "declaration": "s.is_subset(of: Set[T]) -> Bool\n  where s: Set[T]\ns.is_subset(of: HashSet[T]) -> Bool\n  where s: HashSet[T]",
+          "declaration": "s.is_subset(of: Set[T]) -> Bool\n  where s: Set[T]\ns.is_subset(of: HashSet[T]) -> Bool\n  where s: HashSet[T]\nb.is_subset(of: BitSet) -> Bool\n  where b: BitSet",
           "docs": [
             "Whether `of` holds every item of `s`. O(n + m), or less when `s` is much smaller",
-            "(`spec/28 §6`). On a `HashSet`, O(n · |k|) expected (`spec/28 §7`)."
+            "(`spec/28 §6`). On a `HashSet`, O(n · |k|) expected (`spec/28 §7`). On a `BitSet`,",
+            "`of` has its size, in O(size / 64) (`spec/28 §9`)."
           ]
         }
       ]
@@ -789,6 +817,26 @@
           "docs": [
             "The priority of the item that `pop` would give from a `PriorityQueue`, as `Some`,",
             "and `None` exactly when it is empty, in O(1) time (`spec/28 §8`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "size",
+      "module": "builtin",
+      "kind": "method",
+      "spec": [
+        "spec/28 §9"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "b.size -> Int\n  where b: BitSet",
+          "docs": [
+            "The number of bits of a `BitSet`, fixed when `empty_bit_set` makes it: its members",
+            "are integers from 0 to `size - 1`. O(1) (`spec/28 §9`)."
           ]
         }
       ]

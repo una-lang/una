@@ -438,6 +438,9 @@ impl Writer<'_> {
             Prim::Priority(op) => {
                 node!(Priority, "value" => J::Obj(vec![("kind", s(op.as_str()))]))
             }
+            // ADR 0119 rule 14: the methods and the property `size` of `BitSet`, by their
+            // source names.
+            Prim::BitSet(op) => node!(BitSet, "value" => J::Obj(vec![("kind", s(op.as_str()))])),
             // ADR 0114 rule 17: the operations of `F64` are kinds of their own, under `float`.
             Prim::Float(op) => node!(Float, "value" => J::Obj(vec![(
                 "kind",

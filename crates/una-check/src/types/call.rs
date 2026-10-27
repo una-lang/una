@@ -75,6 +75,10 @@ impl<'a> Checker<'_, 'a, '_> {
                 .fold(top, |label, (_, arg)| label.join(&arg.every_label(&kinds)));
             return Ty::Int.with_label(&label);
         }
+        // `b.size` of a bit set, labeled with its shape (`spec/28 §9`, ADR 0119 IF2).
+        if let Some(ty) = self.bit_set_size(&target_ty, field, span) {
+            return ty;
+        }
         if let Some(ty) = self.record_field(labeled.unlabeled(), field) {
             if let Some((kind, index)) = self.field_index(&resolved, field) {
                 self.resolved(span, Res::Field { kind, index });
@@ -285,6 +289,17 @@ impl<'a> Checker<'_, 'a, '_> {
             return ty;
         }
         if let Some(ty) = self.priority_method(
+            target,
+            &target_ty,
+            place.as_ref(),
+            marker,
+            method,
+            args,
+            span,
+        ) {
+            return ty;
+        }
+        if let Some(ty) = self.bit_set_method(
             target,
             &target_ty,
             place.as_ref(),
@@ -993,7 +1008,9 @@ impl<'a> Checker<'_, 'a, '_> {
             self.refined_vars_at_base(&result)
         };
         let decided = self.decided_callbacks(&callee, span, &needs, call_fails.is_some(), &checked);
-        let result = if prelude_labeled(self.env.prelude, &def) {
+        let result = if prelude_labeled(self.env.prelude, &def)
+            || collections_labeled(self.env.collections, &def)
+        {
             self.prelude_result(&callee, def.name, checked, result)
         } else {
             self.argument_flows(&callee, checked);
@@ -2654,6 +2671,12 @@ fn structural_inputs(name: &str) -> Option<&'static [(&'static str, bool)]> {
         // the labels of its type variable.
         "array" => &[("xs", false)],
         "array_filled" => &[("length", true)],
+        // `std.collections` (ADR 0119 IF1, IF2): a bit set's size is its shape, so the bit set
+        // takes every label of `size`; a conversion takes the list's top label, and its
+        // positions keep the labels of their type variables.
+        "empty_bit_set" => &[("size", true)],
+        "to_stack" | "to_queue" | "to_set" | "to_hash_set" => &[("xs", false)],
+        "to_hash_map" => &[("es", false)],
         "matrix" => &[("rows", true), ("columns", true), ("elements", false)],
         "matrix_filled" => &[("rows", true), ("columns", true)],
         "matrix_diagonal" => &[("values", false)],
@@ -2706,6 +2729,28 @@ fn decides_failure(capability: &str, op: &str, param: &str) -> bool {
 /// functions (ADR 0051); the other prelude functions keep the labels of their parameter types.
 fn prelude_labeled(prelude: usize, def: &FnDef<'_>) -> bool {
     def.module == prelude && def.kind == FnKind::Function && PRELUDE_LABELED.contains(&def.name)
+}
+
+/// The functions of `std.collections` whose results carry the labels of their arguments, as
+/// the prelude's of `PRELUDE_LABELED` do: `empty_bit_set`, whose size is part of the bit set's
+/// shape (ADR 0119 IF2), and the conversions of rule 16, whose results hold the list's items in
+/// its order. Their bodies are placeholders that both engines replace, so no summary of a body
+/// could label them.
+const COLLECTIONS_LABELED: [&str; 6] = [
+    "empty_bit_set",
+    "to_stack",
+    "to_queue",
+    "to_set",
+    "to_hash_set",
+    "to_hash_map",
+];
+
+/// Whether `def` is a function of `std.collections` whose result is labeled by its arguments
+/// (`COLLECTIONS_LABELED`), with `structural_inputs`.
+fn collections_labeled(collections: Option<usize>, def: &FnDef<'_>) -> bool {
+    Some(def.module) == collections
+        && def.kind == FnKind::Function
+        && COLLECTIONS_LABELED.contains(&def.name)
 }
 
 /// Whether every type parameter of `ty` is at a covariant position (ADR 0103 rule 5): never

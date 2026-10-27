@@ -13,3 +13,5 @@ tests/conformance/runtime/hash_on_stop_run
 tests/conformance/runtime/hash_until_run
 tests/conformance/runtime/loop_state_dense
 tests/conformance/runtime/hash_tasks
+tests/conformance/runtime/bit_set_run
+tests/conformance/runtime/collection_conversions_run
