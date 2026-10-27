@@ -19,10 +19,11 @@
 //! - **Helpers.** [`blocking`] runs a host operation that may block on a helper thread of its
 //!   pool while the task parks: `Files` and a blocked `Console.print` on one pool, `Http` on the
 //!   other, so that stalled requests never delay files or prints.
-//! - **One scheduler per run.** A program that holds a task construct or a `for ever` makes it
-//!   before `main`, with every worker and both helper pools started at full size
-//!   ([`Scheduler::start_all`], #1145), so no thread starts at a moment earlier code decided. A
-//!   program without them has no worker, no helper and no switch.
+//! - **One scheduler per run.** A program that holds a task construct, a `within` or a
+//!   `for ever` makes it before `main`, with every worker and both helper pools started at full
+//!   size, and the timer thread of `within` (`timer`) started ([`Scheduler::start_all`], #1145,
+//!   #1151), so no thread starts at a moment earlier code decided. A program without them has
+//!   no worker, no helper, no timer thread and no switch.
 //!
 //! The stack pool hands out guard-paged stacks by size and takes them back, at most
 //! [`POOL_STACKS`] kept, in O(log k).
@@ -516,6 +517,9 @@ impl Shared {
 pub(crate) struct Scheduler {
     workers: Vec<Arc<Worker>>,
     shared: Arc<Shared>,
+    /// The timers of the run's `within`s, whose thread [`Scheduler::start_all`] starts with the
+    /// workers (ADR 0116 amendment, P8; #1151).
+    timers: Arc<crate::timer::Timers>,
 }
 
 /// Why a task could not start: no stack could be mapped, or no thread started.
@@ -563,6 +567,7 @@ impl Scheduler {
                 #[cfg(test)]
                 used: Mutex::new(std::collections::BTreeSet::new()),
             }),
+            timers: Arc::new(crate::timer::Timers::new(crate::timer::Source::Run)),
         });
         if !crate::runtime::clock().is_virtual() {
             let weak = Arc::downgrade(&scheduler);
@@ -574,6 +579,11 @@ impl Scheduler {
                 .spawn(move || slice(&weak));
         }
         scheduler
+    }
+
+    /// The timers of the run's `within`s (`timer`).
+    pub(crate) fn timers(&self) -> &Arc<crate::timer::Timers> {
+        &self.timers
     }
 
     /// Starts `body`, part `part` of its construct counted from 1 in index order, as a task on
@@ -875,8 +885,8 @@ impl Scheduler {
         Ok(())
     }
 
-    /// Starts every worker's thread and both helper pools at their full sizes, before `main`
-    /// (ADR 0116 amendment, P8; `spec/27 §1` rule 4; #1145). Lazy starts would leave history:
+    /// Starts every worker's thread, both helper pools at their full sizes and the timer thread
+    /// of `within` (#1151), before `main` (ADR 0116 amendment, P8; `spec/27 §1` rule 4; #1145). Lazy starts would leave history:
     /// whether a thread exists, and so whether a construct pays its start, would depend on what
     /// earlier code forked or waited on, possibly on `secret` data. O(N + H) thread starts, for
     /// `N` workers and `H` helpers, once per run; their stacks are reserved, not committed.
@@ -905,6 +915,12 @@ impl Scheduler {
         // wait ends with `Err` instead of blocking.
         for _ in 0..started {
             readied.recv().map_err(|_| NotStarted)?;
+        }
+        // The timer thread of `within` starts here too, before `main`, and runs once this
+        // returns (#1151, P8): a `within` never pays for its start, whether or not an earlier
+        // one ran.
+        if !self.timers.start() {
+            return Err(NotStarted);
         }
         self.warm_up(stack)
     }
@@ -1009,6 +1025,7 @@ impl Drop for Scheduler {
         }
         self.shared.files.close();
         self.shared.io.close();
+        self.timers.close();
     }
 }
 
@@ -1808,8 +1825,12 @@ mod tests {
         // worker's thread and both helper pools at full size, so no construct starts a thread.
         let sched = Scheduler::new(settings(3, 5, 2));
         assert_eq!(sched.started(), (0, 0, 0));
+        assert!(!sched.timers().running());
         sched.start_all(256 * 1024).unwrap();
         assert_eq!(sched.started(), (3, 2, 5));
+        // The timer thread of `within` runs too (#1151), started once.
+        assert!(sched.timers().running());
+        assert_eq!(sched.timers().starts(), 1);
         // Every worker ran its warm-up task, and every pooled stack was run on once.
         assert_eq!(sched.warmth(), (3, true));
         // The helpers are running threads: each reaches its idle wait.
@@ -1833,6 +1854,7 @@ mod tests {
             assert_eq!(task.recv(), Some(()));
         }
         assert_eq!(sched.started(), (3, 2, 5));
+        assert_eq!(sched.timers().starts(), 1);
     }
 
     #[test]

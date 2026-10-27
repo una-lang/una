@@ -393,9 +393,10 @@ pub struct Meta {
     pub limit_label: Option<String>,
     /// Whether `L_lim` flows to `internal`, so that grants with limits are allowed.
     pub limits_allowed: bool,
-    /// Whether the program holds a task construct or a `for ever`: the run then starts every
-    /// worker and both helper pools at full size before `main`, so that no thread starts at a
-    /// moment that earlier code decided (ADR 0116 amendment, P8; `spec/27 §1` rule 4; #1145).
+    /// Whether the program holds a task construct, a `within` or a `for ever`: the run then
+    /// starts every worker, both helper pools at full size and the timer thread of `within`
+    /// before `main`, so that no thread starts at a moment that earlier code decided (ADR 0116
+    /// amendment, P8; `spec/27 §1` rule 4; #1145, #1151).
     pub threads: bool,
 }
 
@@ -1263,9 +1264,36 @@ thread_local! {
 /// settings, when its first tick was due on the run's clock, the next tick due and the
 /// iterations started.
 struct Driver {
+    /// The tick period, in milliseconds.
     ticks: u64,
-    origin: Option<u64>,
+    /// When the first tick was due, in nanoseconds of the run's clock (P13, #1151): a reading
+    /// in whole milliseconds would carry the phase within a millisecond that `init` left into
+    /// every tick.
+    origin: Option<u128>,
     next: u64,
+}
+
+/// The nanoseconds of a millisecond.
+const NANOS_PER_MILLI: u128 = 1_000_000;
+
+/// When tick `next` of a loop whose first tick was due at `origin` is due, with a period of
+/// `period` milliseconds: in nanoseconds of the run's clock, exactly `next × period`
+/// milliseconds after `origin` (`spec/26 §2` rule 3; P13, #1151).
+fn tick_due(origin: u128, next: u64, period: u64) -> u128 {
+    origin.saturating_add((u128::from(next) * u128::from(period)).saturating_mul(NANOS_PER_MILLI))
+}
+
+/// The tick the driver delivers when the clock reads `now`, in nanoseconds, for a loop whose
+/// first tick was due at `origin`, whose next tick is `next` and whose period is `period`
+/// milliseconds, at least 1: the latest tick due, never one before `next`, and how many due
+/// ticks it skipped. O(1).
+fn tick_at(origin: u128, now: u128, next: u64, period: u64) -> (u64, u64) {
+    let period = u128::from(period.max(1)) * NANOS_PER_MILLI;
+    let elapsed = now.saturating_sub(origin);
+    let latest = u64::try_from(elapsed / period)
+        .unwrap_or(u64::MAX)
+        .max(next);
+    (latest, latest - next)
 }
 
 /// The clock of the run in this process (ADR 0116 rule 19): set once when the executable
@@ -1294,6 +1322,21 @@ pub fn clock() -> &'static Clock {
     CLOCK.get_or_init(Clock::real)
 }
 
+/// The timers of the run's scheduler, which a `within` arms on the real clock (`timer`,
+/// #1151). An executable whose program has a `within` made the scheduler and started the timer
+/// thread before `main` (P8), so this is a borrow and a reference count. Code without that
+/// start, as unit tests, makes the scheduler here, and its timer thread starts at the first
+/// deadline. `None` on a thread without a run's state.
+pub(crate) fn timers() -> Option<Arc<crate::timer::Timers>> {
+    with_state(|state| {
+        let concurrency = state.concurrency;
+        let sched = state
+            .sched
+            .get_or_insert_with(|| crate::sched::Scheduler::new(concurrency));
+        Arc::clone(sched.timers())
+    })
+}
+
 /// The next tick of the host's loop, as the interpreter's driver gives it: an owned `Tick` of
 /// `std.drive` after waiting for the next one due, delivering the latest one due with the
 /// count of those skipped; or 0 when the loop stops at this iteration start, after a host stop
@@ -1309,22 +1352,30 @@ pub fn drive_tick() -> i64 {
         if iteration_stops() {
             return None;
         }
-        // On the run's clock, real or virtual: under virtual time the wait moves the clock to
-        // the tick at once (ADR 0116 rule 19); on the real clock a host stop interrupts it.
+        // On the run's clock, real or virtual, in nanoseconds (P13, #1151): under virtual time
+        // the wait moves the clock to the tick at once (ADR 0116 rule 19), in whole
+        // milliseconds. On the real clock the wait ends at the tick's exact instant, to the
+        // resolution of the system's sleep: `wait_tick` polls only the whole milliseconds
+        // left, since `poll` rounds a wait up to whole milliseconds, and sleeps the
+        // sub-millisecond rest. A host stop interrupts the polls; during that rest, under 1 ms,
+        // it is seen at its end.
         let clock = clock();
-        let origin = *driver.origin.get_or_insert_with(|| clock.now());
-        let period = driver.ticks.max(1);
-        let due = origin.saturating_add(driver.next.saturating_mul(period));
+        let origin = *driver.origin.get_or_insert_with(|| clock.now_nanos());
+        let due = tick_due(origin, driver.next, driver.ticks.max(1));
         if clock.is_virtual() {
-            clock.wait_until(due);
+            clock.wait_until(u64::try_from(due.div_ceil(NANOS_PER_MILLI)).unwrap_or(u64::MAX));
         } else {
-            let now = clock.now();
+            let now = clock.now_nanos();
             if now < due {
-                let left = std::time::Duration::from_millis(due - now);
+                let left = crate::deadline::duration(due - now);
                 let waited = match RUN_STOP.get() {
                     Some(stop) => una_interp::stopping::wait_tick(stop, left),
                     None => {
-                        clock.wait_until(due);
+                        while clock.now_nanos() < due {
+                            std::thread::sleep(crate::deadline::duration(
+                                due.saturating_sub(clock.now_nanos()),
+                            ));
+                        }
                         true
                     }
                 };
@@ -1333,9 +1384,7 @@ pub fn drive_tick() -> i64 {
                 }
             }
         }
-        let elapsed = clock.now().saturating_sub(origin);
-        let latest = (elapsed / period).max(driver.next);
-        let missed = latest - driver.next;
+        let (latest, missed) = tick_at(origin, clock.now_nanos(), driver.next, driver.ticks);
         let at = latest.saturating_mul(driver.ticks);
         driver.next = latest + 1;
         Some((at, missed))
@@ -1910,8 +1959,9 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
         }
         FLOATS.store(true, Ordering::SeqCst);
     }
-    // ADR 0116 amendment, P8 (#1145): a program with a task construct or a `for ever` starts
-    // its scheduler, every worker and both helper pools at full size, and fills the stack pool
+    // ADR 0116 amendment, P8 (#1145, #1151): a program with a task construct, a `within` or a
+    // `for ever` starts its scheduler, every worker, both helper pools at full size and the
+    // timer thread of `within`, and fills the stack pool
     // with stacks of the size a block at the top asks for, the largest any task asks for, here,
     // before `main`. Whether a thread exists, or how many stacks are pooled, is then never
     // state that earlier code left, and no construct pays a thread's start or a stack's
@@ -2988,6 +3038,96 @@ mod tests {
             *seen.lock().unwrap(),
             [Some(Some(((3, 2, 5), (64, 0)))), Some(None)]
         );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
+    fn the_timer_thread_runs_before_main_and_no_within_starts_it_whatever_ran_before() {
+        // #1151, ADR 0116 amendment P8, the deterministic guard of the lazy timer: in a program
+        // with the `threads` flag (a `within`, a `for ever` or a task construct), the run's
+        // timer thread runs before `main`'s first construct, started exactly once, and a
+        // `within` then starts none, whether no `within` ran before it or some did, as code
+        // under a `secret` branch may have. Without the flag, no scheduler is made and no timer
+        // thread exists. On the old code, whose timer thread started at the first deadline
+        // through a `OnceLock`, it was absent before `main`, and the measured `within` started
+        // it after a history of 0 earlier ones and not after 1 or 3: a cost inside the
+        // construct that earlier code decided.
+        type Seen = (Option<(bool, usize)>, Option<usize>);
+        let seen: Arc<std::sync::Mutex<Vec<Seen>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let with_flag = r#"{"grants":[],"uses":[],"threads":true}"#;
+        for (meta, earlier) in [
+            (with_flag, 0),
+            (with_flag, 1),
+            (with_flag, 3),
+            (r#"{"grants":[],"uses":[]}"#, 0),
+        ] {
+            let record = Arc::clone(&seen);
+            let status = start(&[], meta, move || {
+                let timers = || {
+                    with_state(|state| {
+                        state
+                            .sched
+                            .as_ref()
+                            .map(|sched| (sched.timers().running(), sched.timers().starts()))
+                    })
+                    .flatten()
+                };
+                let before = timers();
+                let mut during = None;
+                if before.is_some() {
+                    // A minute: no deadline passes in this test.
+                    let d = values::int_word(&num_bigint::BigInt::from(60_000));
+                    for _ in 0..earlier {
+                        let id = crate::deadline::within_enter(d);
+                        assert_eq!(crate::deadline::within_end(id, 0), 0);
+                    }
+                    let starts = timers().map_or(0, |(_, starts)| starts);
+                    let id = crate::deadline::within_enter(d);
+                    assert_eq!(crate::deadline::within_end(id, 0), 0);
+                    during = Some(timers().map_or(0, |(_, after)| after) - starts);
+                }
+                record.lock().unwrap().push((before, during));
+                0
+            });
+            assert_eq!(status, 0);
+        }
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [
+                (Some((true, 1)), Some(0)),
+                (Some((true, 1)), Some(0)),
+                (Some((true, 1)), Some(0)),
+                (None, None),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_tick_is_due_at_its_exact_nanosecond_whatever_the_phase_of_its_origin() {
+        // P13, #1151: tick `k` of the driver is due exactly `k × ticks` milliseconds after the
+        // first one, in nanoseconds, whatever the offset within a millisecond at which `init`
+        // returned; one nanosecond before it, the tick before is still the latest due. The old
+        // driver read its origin and the clock in whole milliseconds, so a tick was due up to
+        // 1 ms early or late, by the phase that `init` left.
+        const MS: u128 = 1_000_000;
+        for millis in [0u128, 3, 86_400_000] {
+            for offset in (0..MS).step_by(9_901).chain([1, MS - 1]) {
+                let origin = millis * MS + offset;
+                for period in [1u64, 16, 1_000] {
+                    for next in [0u64, 1, 2, 7] {
+                        let due = tick_due(origin, next, period);
+                        assert_eq!(due - origin, u128::from(next) * u128::from(period) * MS);
+                        if next > 0 {
+                            assert_eq!(tick_at(origin, due - 1, next - 1, period), (next - 1, 0));
+                        }
+                        assert_eq!(tick_at(origin, due, next, period), (next, 0));
+                        // A later reading delivers the latest tick due, with the count skipped.
+                        let late = tick_due(origin, next + 3, period);
+                        assert_eq!(tick_at(origin, late, next, period), (next + 3, 3));
+                    }
+                }
+            }
+        }
     }
 
     #[test]

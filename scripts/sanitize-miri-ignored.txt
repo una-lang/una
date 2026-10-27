@@ -5,7 +5,7 @@
 # threads, maps a task's stack or switches coroutines, which Miri cannot do (#1145), a test
 # that times the scheduler's turns on the real clock, which Miri simulates (#1146), or a test
 # that starts the timer thread, which serves until the process ends, while Miri rejects a
-# thread alive at exit (#1193).
+# thread alive at exit (#1151, #1193).
 ffi::tests::a_refused_task_aborts_the_run
 ffi::tests::a_refused_task_aborts_the_run_scenario
 ffi::tests::a_replace_of_an_empty_pattern_scenario
@@ -69,6 +69,7 @@ runtime::tests::the_mechanism_allocates_nothing_scenario
 runtime::tests::the_memory_budget_at_a_call_scenario
 runtime::tests::the_memory_budget_at_an_iteration_scenario
 runtime::tests::the_memory_budget_fires_at_its_exact_byte
+runtime::tests::the_timer_thread_runs_before_main_and_no_within_starts_it_whatever_ran_before
 sched::tests::a_cancelled_task_parked_on_an_interruptible_wait_is_woken_at_once
 sched::tests::a_construct_starts_no_thread_and_maps_no_stack_whatever_ran_before
 sched::tests::a_lone_task_that_gains_a_waiting_task_keeps_a_full_turn
