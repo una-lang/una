@@ -213,7 +213,9 @@ impl<'e> Facts<'e> {
                     self.expr(&on_stop.body, owned);
                 }
             }
-            Expr::Together { tasks, .. } => tasks.iter().for_each(|task| self.expr(task, owned)),
+            Expr::Together { tasks, .. } | Expr::FirstOf { tasks, .. } => {
+                tasks.iter().for_each(|task| self.expr(task, owned));
+            }
             Expr::TogetherFor { task, .. } => self.expr(task, owned),
             Expr::If {
                 then, otherwise, ..
@@ -235,9 +237,13 @@ impl<'e> Facts<'e> {
                 self.expr(body, owned);
                 self.expr(handler, owned);
             }
-            Expr::Attempt { body, .. } | Expr::With { body, .. } | Expr::Within { body, .. } => {
+            Expr::Attempt { body, .. }
+            | Expr::With { body, .. }
+            | Expr::Within { body, .. }
+            | Expr::Tasks { body, .. } => {
                 self.expr(body, owned);
             }
+            Expr::Start { task, .. } => self.expr(task, owned),
         }
     }
 }

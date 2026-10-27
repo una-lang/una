@@ -17,7 +17,7 @@ use std::collections::BTreeSet;
 use std::rc::Rc;
 
 use num_bigint::{BigInt, Sign};
-use una_core::{Bound, Expectation, Expr, HashMapOp, HashSetOp, Rhs, Source};
+use una_core::{Bound, Expectation, Expr, HashMapOp, HashSetOp, LoopSource, Rhs, Source};
 use una_hash::{Encoder, KeyError, ProcessKey, Sink, SipKey};
 use una_syntax::Span;
 
@@ -96,12 +96,25 @@ fn reaches_tables<'p>(index: &Index<'p>, roots: &[&'p Expr]) -> bool {
             | Expr::Exit { .. }
             | Expr::Fail { .. }
             | Expr::Unreachable { .. } => {}
-            Expr::Let { value, body, .. } => {
+            Expr::Let {
+                name: _,
+                ty: _,
+                value,
+                body,
+                span: _,
+                written: _,
+            } => {
                 pending.push(body);
                 match value.as_ref() {
                     Bound::Expr(inner) => pending.push(inner),
                     Bound::Rhs(rhs) => match rhs {
-                        Rhs::Call { function, .. } => {
+                        Rhs::Call {
+                            function,
+                            type_args: _,
+                            args: _,
+                            arg_spans: _,
+                            span: _,
+                        } => {
                             if function.module == una_core::COLLECTIONS_MODULE
                                 && constructs(&function.name)
                             {
@@ -115,9 +128,28 @@ fn reaches_tables<'p>(index: &Index<'p>, roots: &[&'p Expr]) -> bool {
                                 &mut pending,
                             );
                         }
-                        Rhs::Lambda { body, .. } => pending.push(body),
-                        Rhs::Checked { predicate, .. } => pending.push(predicate),
-                        Rhs::Declassify { via, .. } => {
+                        Rhs::Lambda {
+                            params: _,
+                            body,
+                            function: _,
+                        } => pending.push(body),
+                        Rhs::Checked {
+                            value: _,
+                            it: _,
+                            predicate,
+                            formula: _,
+                            ctor: _,
+                            args: _,
+                            arg_spans: _,
+                            span: _,
+                        } => pending.push(predicate),
+                        Rhs::Declassify {
+                            policy: _,
+                            via,
+                            arg: _,
+                            arg_span: _,
+                            span: _,
+                        } => {
                             enter(index, &mut visited, &via.module, &via.name, &mut pending);
                         }
                         Rhs::Atom(_)
@@ -131,35 +163,98 @@ fn reaches_tables<'p>(index: &Index<'p>, roots: &[&'p Expr]) -> bool {
                     },
                 }
             }
-            Expr::LetTuple { body, .. }
-            | Expr::Loop { body, .. }
-            | Expr::Attempt { body, .. }
-            | Expr::Within { body, .. } => {
+            Expr::LetTuple {
+                names: _,
+                value: _,
+                body,
+                span: _,
+            }
+            | Expr::Attempt { body, span: _ }
+            | Expr::Within {
+                deadline: _,
+                deadline_span: _,
+                body,
+                timeout: _,
+                wrap: _,
+                span: _,
+            }
+            | Expr::Tasks {
+                bound: _,
+                body,
+                span: _,
+            } => {
                 pending.push(body);
             }
-            Expr::Together { tasks, .. } => pending.extend(tasks.iter()),
-            Expr::TogetherFor { task, .. } => pending.push(task),
+            Expr::Loop {
+                source,
+                var: _,
+                state: _,
+                init: _,
+                body,
+                on_stop,
+                span: _,
+            } => {
+                pending.push(body);
+                // The `on stop` block runs when the loop ends, and can make a table of its own.
+                if let Some(on_stop) = on_stop {
+                    pending.push(&on_stop.body);
+                }
+                pending.extend(source_condition(source));
+            }
+            Expr::Together { tasks, span: _ } | Expr::FirstOf { tasks, .. } => {
+                pending.extend(tasks.iter());
+            }
+            Expr::TogetherFor {
+                source,
+                var: _,
+                task,
+                span: _,
+            } => {
+                pending.push(task);
+                pending.extend(source_condition(source));
+            }
+            // A started task runs code of the run as a `together` task does (`spec/27 §7`).
+            Expr::Start { task, span: _ } => pending.push(task),
             Expr::If {
-                then, otherwise, ..
+                cond: _,
+                then,
+                otherwise,
             } => {
                 pending.push(then);
                 pending.push(otherwise);
             }
             Expr::Case {
-                arms, otherwise, ..
+                scrutinee: _,
+                arms,
+                otherwise,
             } => {
                 pending.extend(arms.iter().map(|arm| &arm.body));
                 if let Some(otherwise) = otherwise {
                     pending.push(otherwise);
                 }
             }
-            Expr::Handle { body, handler, .. } => {
+            Expr::Handle {
+                body,
+                error: _,
+                handler,
+            } => {
                 pending.push(body);
                 pending.push(handler);
             }
-            Expr::With { source, body, .. } => {
+            Expr::With {
+                cap: _,
+                source,
+                body,
+            } => {
                 pending.push(body);
-                if let Source::Handler { handler, .. } = source {
+                if let Source::Handler {
+                    handler,
+                    args: _,
+                    arg_spans: _,
+                    given: _,
+                    span: _,
+                } = source
+                {
                     enter(
                         index,
                         &mut visited,
@@ -172,6 +267,25 @@ fn reaches_tables<'p>(index: &Index<'p>, roots: &[&'p Expr]) -> bool {
         }
     }
     false
+}
+
+/// The condition of an `until` source, the only part of a loop's source that is an expression.
+fn source_condition(source: &LoopSource) -> Option<&Expr> {
+    match source {
+        LoopSource::Until {
+            cond,
+            holds: _,
+            measure: _,
+            decreases: _,
+        } => Some(cond),
+        LoopSource::List(_)
+        | LoopSource::Range {
+            low: _,
+            high: _,
+            inclusive: _,
+        }
+        | LoopSource::Ever { within: _ } => None,
+    }
 }
 
 /// Queues the body of the function or predicate, or the operations of the handler, named

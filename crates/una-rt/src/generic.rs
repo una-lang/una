@@ -172,19 +172,19 @@ pub fn to_int(desc: i64, x: i64) -> i64 {
 /// `x` written as text by interpolation, on a `T: Eq` (`spec/11 §5`, ADR 0068): an integer
 /// in decimal, a `Text` as it is, any other value in its Una form, by the type description that
 /// its descriptor carries. A new reference.
-pub fn write(desc: i64, x: i64) -> i64 {
+pub fn write(site: i64, desc: i64, x: i64) -> i64 {
     match Descriptor::from_word(desc) {
-        Some(Descriptor::Int | Descriptor::Fixed(_)) => values::int_text(x),
+        Some(Descriptor::Int | Descriptor::Fixed(_)) => runtime::int_text(site, x),
         Some(Descriptor::Text) => {
             retain(x);
             x
         }
         Some(Descriptor::F64) => values::text_word(una_core::float::render(values::f64_value(x))),
         Some(Descriptor::Sum(ty) | Descriptor::Structural(ty) | Descriptor::Decimal(ty)) => {
-            runtime::written(ty, x, &[])
+            runtime::written(site, ty, x, &[])
         }
         Some(Descriptor::Composite(index)) => match entry(index) {
-            Some((ty, params)) => runtime::written(ty, x, &params),
+            Some((ty, params)) => runtime::written(site, ty, x, &params),
             None => {
                 fault();
                 values::text_word(String::new())
