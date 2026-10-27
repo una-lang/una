@@ -18,7 +18,7 @@ So S6 adds the storage, the dispatch and the gate; it does not extend them.
 ## 2. Two pull requests
 
 - **Part 1, native dense values** (`Refs #989`): the runtime object, the codegen lowering, the budget check, sharing at `together`, rendering and equality, and the seven dense cases run natively. Draft until built.
-- **Part 2, dispatch and the gate** (`Closes #989`): the target variants in `una-core`, the one `unsafe` call site in `una-rt`'s `ffi.rs`, the interpreter on the same table, the feature-equality test, the allowlist in the build report, and the disassembly gate. Stacked on part 1. Draft until built.
+- **Part 2, dispatch and the gate** (`Closes #989`, `Closes #1216`): the target variants in `una-core`, the one `unsafe` call site in `una-rt`'s `ffi.rs`, the interpreter on the same table, the feature-equality test, the allowlist in the build report, and the disassembly gate. Stacked on part 1. Draft until built.
 
 Both get the security review ADR 0120 asks for (the dispatch macro and the shared buffers) before merge.
 
