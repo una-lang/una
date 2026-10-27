@@ -143,11 +143,26 @@ pub(crate) const STD_DRIVE: &str = "std.drive";
 /// What `std.drive` exports: the kind of a tick (ADR 0116 rule 2).
 pub(crate) const STD_DRIVE_NAMES: [&str; 1] = ["Tick"];
 
+/// The path of the standard module of rate limits computed in code, edition 0.4 (ADR 0117
+/// rule 9).
+pub(crate) const STD_LIMIT: &str = "std.limit";
+
+/// What `std.limit` exports: the capability `Limit`, its failure kind `Limited`, and the
+/// handler `limiter`, which the runtime provides (ADR 0117 rule 9, `spec/27 §10`).
+pub(crate) const STD_LIMIT_NAMES: [&str; 3] = ["Limit", "Limited", "limiter"];
+
 /// The standard modules a package of `edition` may import (`spec/10 §11` rule 10, ADR 0119
-/// rule 0).
+/// rule 0, ADR 0117 rule 9).
 pub(crate) fn importable(edition: Edition) -> &'static [&'static str] {
     if edition >= Edition::V0_4 {
-        &[STD_HOST, STD_TESTING, STD_TIME, STD_DRIVE, STD_COLLECTIONS]
+        &[
+            STD_HOST,
+            STD_TESTING,
+            STD_TIME,
+            STD_DRIVE,
+            STD_COLLECTIONS,
+            STD_LIMIT,
+        ]
     } else {
         &[STD_HOST, STD_TESTING]
     }
@@ -156,10 +171,10 @@ pub(crate) fn importable(edition: Edition) -> &'static [&'static str] {
 /// The path of the standard module of the collections, edition 0.4 (ADR 0119 rule 0).
 pub(crate) const STD_COLLECTIONS: &str = una_core::COLLECTIONS_MODULE;
 
-/// What `std.collections` exports to an import in edition 0.4: its types, its kind `Ranked`
-/// and the functions that make the types implemented so far (ADR 0119 rule 0). The other
-/// functions join the list with the types they make.
-pub(crate) const STD_COLLECTIONS_NAMES: [&str; 13] = [
+/// What `std.collections` exports to an import in edition 0.4: its types, its kind `Ranked`,
+/// the functions that make the types implemented so far and the conversions into them (ADR 0119
+/// rules 0 and 16). The other functions join the list with the types they make.
+pub(crate) const STD_COLLECTIONS_NAMES: [&str; 21] = [
     "Stack",
     "Queue",
     "Set",
@@ -173,6 +188,14 @@ pub(crate) const STD_COLLECTIONS_NAMES: [&str; 13] = [
     "empty_set",
     "empty_hash_map",
     "empty_hash_set",
+    "lowest_first",
+    "highest_first",
+    "empty_bit_set",
+    "to_stack",
+    "to_queue",
+    "to_set",
+    "to_hash_set",
+    "to_hash_map",
 ];
 
 /// The text functions of the prelude in edition 0.2 (`spec/22 §2`).
@@ -238,11 +261,22 @@ pub(crate) const ROUNDING_0_4: [&str; 8] = [
     "TowardPositive",
     "TowardNegative",
 ];
+/// The functions of `F32` that edition 0.4 adds to the prelude (`spec/29`, ADR 0120 rule 5).
+pub(crate) const FLOAT_0_4: [&str; 2] = ["f32_from_bits", "parse_f32"];
 
-/// The variant that edition 0.4 adds to `HttpError`: an operation that a host stop
-/// interrupts (ADR 0116 rule 12). Earlier editions keep the kind's eight variants, since a new
-/// variant changes which `when` arms are exhaustive.
-pub(crate) const HTTP_0_4: [&str; 1] = ["Interrupted"];
+/// The function of `Complex` that edition 0.4 adds to the prelude (`spec/29 §19`, ADR 0120
+/// rule 22).
+pub(crate) const COMPLEX_0_4: [&str; 1] = ["complex"];
+
+/// The upper names that edition 0.4 adds: `F32`, the finite kinds and `Complex` (ADR 0120
+/// rules 5, 11 and 22).
+pub(crate) const UPPER_0_4: [&str; 4] = ["F32", "Finite64", "Finite32", "Complex"];
+
+/// The variants that edition 0.4 adds to `HttpError`: an operation that a host stop
+/// interrupts (ADR 0116 rule 12), and a request whose limit's queue is full (ADR 0117 rule 8).
+/// Earlier editions keep the kind's eight variants, since a new variant changes which `when`
+/// arms are exhaustive.
+pub(crate) const HTTP_0_4: [&str; 2] = ["Interrupted", "RateLimited"];
 
 #[cfg(test)]
 mod tests {

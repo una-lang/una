@@ -878,6 +878,29 @@ The first step of section E, `Array[T]` and `Matrix[T]` (`spec/29 §17`), settle
 
 And one rule the text implies, stated: **a trusted function that computes new elements keeps no refinement of its element type in its result.** ADR 0103 rule 5 lets a refinement flow through a generic call's covariant result because the callee can only return values it was given; `matrix_diagonal`'s `+0`, the reductions and the products compute new values, so their results are over the element type's base (`spec/29 §17` rule 6).
 
+## Amendment (2026-10-19): the binary32 overflow boundary of rule 5
+
+Found while implementing rule 5 (issue #984).
+
+Rule 5 names `3.4028235677973366e38` as the midpoint between the largest finite binary32 value and 2^128. That text is not the midpoint: it lies just below it.
+
+1. **The midpoint** is exactly 2^128 - 2^103 = 340282356779733661637539395458142568448. It is a tie between the largest finite value, 2^128 - 2^104 = 340282346638528859811704183484516925440 (`3.4028235e38`), and 2^128, and a tie rounds to even, so the midpoint itself rounds to an infinity.
+2. **Its neighbors.** `3.4028235677973366e38` is the midpoint less about 1.6 × 10^21: it rounds to the largest finite value and is accepted. `3.4028235677973367e38` is the midpoint plus about 8.4 × 10^21: it rounds to an infinity and is U2031.
+3. **Rule 5's bound reads:** U2031 for a literal whose value is at least 2^128 - 2^103, which rounds to an infinity. The underflow bound, 2^-150, is unchanged.
+4. **The Conformance section's** "U2031 on both sides of `3.4028235677973366e38`" reads "on both sides of 2^128 - 2^103: `3.4028235677973366e38` accepted, and the exact midpoint and `3.4028235677973367e38` refused".
+
+The unit test `literals_round_once_to_binary32` of `crates/una-core/src/float32.rs` pins both sides of the midpoint, and the conformance case `tests/conformance/types/f32_range` checks them through the checker.
+
+## Amendment (2026-10-19): `complex` as a value, labels inside `Complex[...]`, and the prelude's complex kinds
+
+Found while implementing rules 22 to 25 (issue #986).
+
+1. **`complex` is not a function value.** The type of its result, `Complex[F64]` or `Complex[F32]`, is chosen at each call by its arguments' type, so a function value, which carries one signature, could not carry it. Naming the prelude's `complex` as a value is **U2001** in edition `0.4`, with a repair to a lambda that calls it. A package's own `complex` keeps its meaning (rule 4).
+2. **The arguments bind as a function's.** The first argument of `complex` binds `re` by position, the second its label or by punning (`spec/04 §3`), and `x.complex(im: y)` is the same call. A complex type that the context expects gives its component type to both arguments, so in `let u: Complex[F32] = complex(re: 0.1, im: 0.2)` both literals are `F32` (rule 6).
+3. **No label inside the brackets.** `Complex` takes `F64` or `F32` unlabeled. A labeled argument, as in `Complex[secret F64]`, is **U2002**, with the meaning of rule 2's "`Complex` of any other type": the components of a record share its top label, so a label inside the brackets would have no position of its own to stay in. The label applies to the whole type, `secret Complex[F64]`, and every field read from such a value carries it (IF1).
+4. **The prelude's kinds.** The prelude of edition `0.4` declares the two types as record kinds of two fields that no program can name, and both engines elaborate every operation of rule 23 into the operations of the components, so they compute the same bits. Their names in Core IR, `Complex_F64` and `Complex_F32`, give V3's sorts `i!Complex_F64` and `i!Complex_F32`; diagnostics, hovers, repairs and the Core printer write them `Complex[F64]` and `Complex[F32]`.
+5. **Left for later steps.** The hash encoding of the amendment of ADR 0119 rule 9 waits for keyed hashing; the conformance case "`x * y` against the 1 × 1 product" waits for the dense types (section E); `Complex[F64] of` a unit waits for the units step (rule 64).
+
 ## Amendment (2026-10-19): what the second step of dense values settles (issue #987)
 
 The second step of section E, `Tensor[T]` and `Lu[T]` with the factorizations and solves of rules 38 to 50 (`spec/29 §17` rules 26 to 31), settles these points, which the text above leaves open. None of them makes the language accept more than the text allows.

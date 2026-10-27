@@ -85,18 +85,19 @@ fn precedence(term: &Term) -> u8 {
         Term::Int(digits) if digits.starts_with('-') => 8,
         Term::Field { .. }
         | Term::Len(_)
+        | Term::Size(_)
         | Term::Shape { .. }
         | Term::Dim { .. }
         | Term::Proj { .. }
         | Term::Call { .. } => 9,
-        Term::Float { op, .. } => match op {
+        Term::Float { op, .. } | Term::Float32 { op, .. } => match op {
             FloatOp::Eq | FloatOp::Ne | FloatOp::Lt | FloatOp::Le | FloatOp::Gt | FloatOp::Ge => 5,
             FloatOp::Add | FloatOp::Sub => 6,
             FloatOp::Mul | FloatOp::Div => 7,
             FloatOp::Neg => 8,
             _ => 9,
         },
-        Term::ToF64 { .. } => 9,
+        Term::ToF64 { .. } | Term::ToF32 { .. } => 9,
         _ => 10,
     }
 }
@@ -146,6 +147,16 @@ fn write_term(
             out.push_str(".has(key: ");
             write_term(out, key, 0, replace);
             out.push(')');
+        }
+        Term::Member { set, item } => {
+            write_term(out, set, 9, replace);
+            out.push_str(".has(item: ");
+            write_term(out, item, 0, replace);
+            out.push(')');
+        }
+        Term::Size(value) => {
+            write_term(out, value, 9, replace);
+            out.push_str(".size");
         }
         Term::Shape { fun, value } => {
             write_term(out, value, 9, replace);
@@ -242,7 +253,8 @@ fn write_term(
             out.push(')');
         }
         Term::F64(bits) => out.push_str(&crate::float::render(f64::from_bits(*bits))),
-        Term::Float { op, args } => {
+        Term::F32(bits) => out.push_str(&crate::float32::render(f32::from_bits(*bits))),
+        Term::Float { op, args } | Term::Float32 { op, args } => {
             let symbol = match op {
                 FloatOp::Add => Some("+"),
                 FloatOp::Sub => Some("-"),
@@ -286,6 +298,17 @@ fn write_term(
             write_term(out, value, 9, replace);
             out.push_str(".to_f64()");
         }
+        Term::ToF32 { value, .. } => {
+            write_term(out, value, 9, replace);
+            out.push_str(".to_f32()");
+        }
+        Term::Complex { re, im, .. } => {
+            out.push_str("complex(re: ");
+            write_term(out, re, 1, replace);
+            out.push_str(", im: ");
+            write_term(out, im, 1, replace);
+            out.push(')');
+        }
     }
     if parens {
         out.push(')');
@@ -324,6 +347,7 @@ pub fn print_atom(atom: &Atom) -> String {
             let c = coefficient.parse().unwrap_or_default();
             format!("{}d", crate::decimal::render(&c, *scale))
         }
+        Atom::F32(bits) => crate::float32::render(f32::from_bits(*bits)),
         Atom::Bool(value) => value.to_string(),
         Atom::Text(text) => quote(text),
         Atom::Unit => "unit".to_owned(),
@@ -409,10 +433,15 @@ fn write_base(out: &mut String, base: &Base) {
         Base::Fixed(int) => out.push_str(int.as_str()),
         Base::F64 => out.push_str("F64"),
         Base::Decimal(scale) => out.push_str(&format!("Decimal[{scale}]")),
+        Base::F32 => out.push_str("F32"),
         Base::Bool => out.push_str("Bool"),
         Base::Text => out.push_str("Text"),
         Base::Unit => out.push_str("Unit"),
         Base::Hashed => out.push_str("Hashed"),
+        // A complex kind of the prelude is written as its type (ADR 0120 rule 22).
+        Base::Named { module, name, .. } if crate::complex::is_kind(module, name) => {
+            out.push_str(crate::complex::written(name).unwrap_or("Complex"));
+        }
         Base::Named { name, args, .. } => {
             out.push_str(name);
             if !args.is_empty() {
@@ -705,6 +734,26 @@ impl Printer {
                     self.line(indent + 1, "task");
                     self.expr(indent + 2, task);
                 }
+            }
+            Expr::FirstOf { tasks, .. } => {
+                self.line(indent, "first_of");
+                for task in tasks {
+                    self.line(indent + 1, "branch");
+                    self.expr(indent + 2, task);
+                }
+            }
+            Expr::Tasks { bound, body, .. } => {
+                match bound {
+                    Some((bound, _)) => {
+                        self.line(indent, &format!("tasks at most {}", print_atom(bound)));
+                    }
+                    None => self.line(indent, "tasks"),
+                }
+                self.expr(indent + 1, body);
+            }
+            Expr::Start { task, .. } => {
+                self.line(indent, "start");
+                self.expr(indent + 1, task);
             }
             Expr::TogetherFor {
                 source, var, task, ..

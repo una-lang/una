@@ -28,6 +28,8 @@ pub enum Shape {
     Hashed,
     /// `F64`, by its shortest round-trip text (`spec/29 §7`).
     F64,
+    /// `F32`, by its shortest round-trip text (ADR 0120 rule 5).
+    F32,
     /// A function.
     Fn,
     /// `List` of the type at this index.
@@ -37,6 +39,19 @@ pub enum Shape {
     /// `Array`, `Matrix`, `Tensor` or `Lu` of the element type at this index (`spec/29 §17`):
     /// the value says which, and its shape.
     Dense(usize),
+    /// `Stack` or `Queue` of the type at this index, written as a list, front first, or
+    /// `PriorityQueue` of items of that type, written as a list in the order of its pops
+    /// (`spec/28 §4`).
+    Seq(usize),
+    /// `Set` of the type at this index, written in braces, ascending (`spec/28 §4`).
+    Set(usize),
+    /// `BitSet`, its members written in braces, ascending (`spec/28 §4`).
+    Bits,
+    /// `HashMap` of the key and value types at these indices, written as a map in the order its
+    /// keys were first added, never in the order of their hashes (`spec/28 §4`).
+    HashMap(usize, usize),
+    /// `HashSet` of the type at this index, written in braces in insertion order.
+    HashSet(usize),
     /// A kind, by its variants in declaration order.
     Data(Vec<Variant>),
     /// The type parameter at this position of a composite descriptor, which says how to write
@@ -111,47 +126,50 @@ impl Types {
 
     /// The failure `word`, of the kind at `ty`, as U6001 shows it: its variant, and its fields
     /// that are `public`.
-    pub fn shown(&self, ty: usize, word: i64) -> String {
+    pub fn shown(&self, ty: usize, word: i64) -> Option<String> {
         let Some(variant) = self.variant(ty, word) else {
-            return "?".to_owned();
+            return Some("?".to_owned());
         };
-        let fields: Vec<String> = variant
+        let fields: Option<Vec<String>> = variant
             .fields
             .iter()
             .enumerate()
             .filter(|(_, field)| field.shown)
             .map(|(index, field)| {
                 let value = field_word(word, index);
-                format!("{}: {}", field.name, self.render(field.ty, value))
+                Some(format!("{}: {}", field.name, self.render(field.ty, value)?))
             })
             .collect();
-        if fields.is_empty() {
+        let fields = fields?;
+        Some(if fields.is_empty() {
             variant.name.clone()
         } else {
             format!("{}({})", variant.name, fields.join(", "))
-        }
+        })
     }
 
     /// `word`, a value of the type at `ty`, in its Una form, or `<redacted:level>` when
     /// `redacted` names a level; `unit` carries no information and is never redacted.
-    pub fn redacted(&self, ty: usize, word: i64, redacted: Option<&str>) -> String {
+    pub fn redacted(&self, ty: usize, word: i64, redacted: Option<&str>) -> Option<String> {
         let unit = matches!(self.0.get(ty), Some(Shape::Unit));
         match redacted {
-            Some(level) if !unit => format!("<redacted:{level}>"),
+            Some(level) if !unit => Some(format!("<redacted:{level}>")),
             _ => self.render(ty, word),
         }
     }
 
     /// The Una form of `word`, a value of the type at `ty`, with the fields labeled above
-    /// `public` redacted, as traces and diagnostics show it.
-    pub fn render(&self, ty: usize, word: i64) -> String {
+    /// `public` redacted, as traces and diagnostics show it. `None` for a value that holds an
+    /// `Int` of more than `MAX_INT_DIGITS` digits, which is never written (`spec/11 §7`,
+    /// #923): the caller aborts the run with U6003.
+    pub fn render(&self, ty: usize, word: i64) -> Option<String> {
         render(&self.0, ty, word, true, &[])
     }
 
     /// The Una form of `word` with every field, as interpolation writes it: the text carries
     /// the value's labels (`spec/11 §5`, ADR 0068). `params` are the descriptors of the type
     /// parameters that the type at `ty` holds, by position.
-    pub fn written(&self, ty: usize, word: i64, params: &[i64]) -> String {
+    pub fn written(&self, ty: usize, word: i64, params: &[i64]) -> Option<String> {
         render(&self.0, ty, word, false, params)
     }
 }
@@ -167,7 +185,7 @@ enum Task {
 /// than the native stack: a value can nest deeper than any call (ADR 0060, draft). With
 /// `redact`, a field of a kind whose declared type is labeled above `public` is
 /// `<redacted:level>`.
-fn render(types: &[Shape], ty: usize, word: i64, redact: bool, params: &[i64]) -> String {
+fn render(types: &[Shape], ty: usize, word: i64, redact: bool, params: &[i64]) -> Option<String> {
     let mut out = String::new();
     let mut tasks = vec![Task::Value(ty, word, std::rc::Rc::new(params.to_vec()))];
     while let Some(task) = tasks.pop() {
@@ -181,7 +199,7 @@ fn render(types: &[Shape], ty: usize, word: i64, redact: bool, params: &[i64]) -
         // The parts of a list or a variant, in order; pushed in reverse onto the stack.
         let mut parts = Vec::new();
         match types.get(ty) {
-            Some(Shape::Int) => out.push_str(&values::int_value(word).to_string()),
+            Some(Shape::Int) => out.push_str(&una_core::int_text(&values::int_value(word))?),
             Some(Shape::Decimal(scale)) => {
                 out.push_str(&una_core::decimal::render(&values::int_value(word), *scale))
             }
@@ -191,6 +209,9 @@ fn render(types: &[Shape], ty: usize, word: i64, redact: bool, params: &[i64]) -
             // Interpolation writes no bytes of a hash (ADR 0068, amendment of 2026-10-06).
             Some(Shape::F64) => {
                 out.push_str(&una_core::float::render(values::f64_value(word)));
+            }
+            Some(Shape::F32) => {
+                out.push_str(&una_core::float32::render(values::f32_value(word)));
             }
             Some(Shape::Hashed) if !redact => out.push_str("<hashed>"),
             Some(Shape::Hashed) => {
@@ -211,6 +232,50 @@ fn render(types: &[Shape], ty: usize, word: i64, redact: bool, params: &[i64]) -
                     ));
                 }
                 parts.push(Task::Text("]".to_owned()));
+            }
+            // A stack or a queue front first, and a priority queue in the order of its pops,
+            // as lists; a set ascending, in braces (`spec/28 §4`).
+            Some(Shape::Seq(item) | Shape::Set(item)) => {
+                let set = matches!(types.get(ty), Some(Shape::Set(_)));
+                out.push(if set { '{' } else { '[' });
+                for (index, word) in values::collection_words(word).into_iter().enumerate() {
+                    if index > 0 {
+                        parts.push(Task::Text(", ".to_owned()));
+                    }
+                    parts.push(Task::Value(*item, word, std::rc::Rc::clone(&params)));
+                }
+                parts.push(Task::Text(if set { "}" } else { "]" }.to_owned()));
+            }
+            // A bit set's members, integers written at once.
+            Some(Shape::Bits) => {
+                let members: Vec<String> = values::bit_set_members(word)
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect();
+                out.push_str(&format!("{{{}}}", members.join(", ")));
+            }
+            // `{k: v, ...}` and `{a, b}` in insertion order, `{}` when empty (ADR 0119 rule 10).
+            Some(Shape::HashMap(key, value)) => {
+                out.push('{');
+                for (index, (k, v)) in values::hash_entries(word).into_iter().enumerate() {
+                    if index > 0 {
+                        parts.push(Task::Text(", ".to_owned()));
+                    }
+                    parts.push(Task::Value(*key, k, std::rc::Rc::clone(&params)));
+                    parts.push(Task::Text(": ".to_owned()));
+                    parts.push(Task::Value(*value, v, std::rc::Rc::clone(&params)));
+                }
+                parts.push(Task::Text("}".to_owned()));
+            }
+            Some(Shape::HashSet(item)) => {
+                out.push('{');
+                for (index, (k, _)) in values::hash_entries(word).into_iter().enumerate() {
+                    if index > 0 {
+                        parts.push(Task::Text(", ".to_owned()));
+                    }
+                    parts.push(Task::Value(*item, k, std::rc::Rc::clone(&params)));
+                }
+                parts.push(Task::Text("}".to_owned()));
             }
             // `{k: v, ...}` in key order, `{}` when empty.
             Some(Shape::Map(key, value)) => {
@@ -310,13 +375,16 @@ fn render(types: &[Shape], ty: usize, word: i64, redact: bool, params: &[i64]) -
                     .and_then(|desc| crate::generic::shape_of(*desc))
                 {
                     Some(crate::generic::Written::Int) => {
-                        out.push_str(&values::int_value(word).to_string());
+                        out.push_str(&una_core::int_text(&values::int_value(word))?);
                     }
                     Some(crate::generic::Written::Text) => {
                         out.push_str(&una_core::quote(&values::text_value(word)));
                     }
                     Some(crate::generic::Written::F64) => {
                         out.push_str(&una_core::float::render(values::f64_value(word)));
+                    }
+                    Some(crate::generic::Written::F32) => {
+                        out.push_str(&una_core::float32::render(values::f32_value(word)));
                     }
                     Some(crate::generic::Written::Typed(ty, inner)) => {
                         parts.push(Task::Value(ty, word, std::rc::Rc::new(inner)));
@@ -328,7 +396,7 @@ fn render(types: &[Shape], ty: usize, word: i64, redact: bool, params: &[i64]) -
         }
         tasks.extend(parts.into_iter().rev());
     }
-    out
+    Some(out)
 }
 
 fn field_word(word: i64, index: usize) -> i64 {
@@ -353,10 +421,16 @@ fn shape(value: &Value) -> Option<Shape> {
         "unit" => Shape::Unit,
         "hashed" => Shape::Hashed,
         "f64" => Shape::F64,
+        "f32" => Shape::F32,
         "fn" => Shape::Fn,
         "list" => Shape::List(index(value, "item")?),
         "map" => Shape::Map(index(value, "key")?, index(value, "value")?),
         "dense" => Shape::Dense(index(value, "element")?),
+        "seq" => Shape::Seq(index(value, "item")?),
+        "set" => Shape::Set(index(value, "item")?),
+        "bits" => Shape::Bits,
+        "hashmap" => Shape::HashMap(index(value, "key")?, index(value, "value")?),
+        "hashset" => Shape::HashSet(index(value, "item")?),
         "param" => Shape::Param(index(value, "index")?),
         "data" => Shape::Data(
             value
@@ -428,22 +502,25 @@ mod tests {
         values::push(halt, 8485);
         values::push(halt, some);
         assert_eq!(
-            types.shown(0, halt),
+            types.shown(0, halt).unwrap(),
             r#"Halt(reason: "maintenance", inner: Some(Pair(name: "ana", pin: <redacted:secret>)))"#
         );
         assert_eq!(
-            types.render(0, halt),
+            types.render(0, halt).unwrap(),
             r#"Halt(reason: "maintenance", code: <redacted:secret>, inner: Some(Pair(name: "ana", pin: <redacted:secret>)))"#
         );
         assert_eq!(
-            types.redacted(1, 0, Some("internal")),
+            types.redacted(1, 0, Some("internal")).unwrap(),
             "<redacted:internal>"
         );
         let none = values::data(0);
         values::push(none, values::text_word("x".to_owned()));
         values::push(none, 1);
         values::push(none, 3);
-        assert_eq!(types.shown(0, none), r#"Halt(reason: "x", inner: None)"#);
+        assert_eq!(
+            types.shown(0, none).unwrap(),
+            r#"Halt(reason: "x", inner: None)"#
+        );
         assert_eq!(types.variant_name(0, none), "Halt");
     }
 
@@ -479,7 +556,7 @@ mod tests {
         }
         let list = values::list();
         values::push(list, value);
-        let rendered = types.render(1, list);
+        let rendered = types.render(1, list).unwrap();
         assert_eq!(
             rendered.len(),
             "[]".len() + depth * "Some()".len() + "None".len()

@@ -33,6 +33,75 @@ fn error(code: Code, range: std::ops::Range<usize>, message: impl Into<String>) 
     ProjectError::new(code, range, message)
 }
 
+/// The limits of a grant of `run grants` as the suffixes of its text form (ADR 0117 rule 8,
+/// `spec/27 §9`), or `None` after U7008 at each invalid one: a limit under a grant other than
+/// `http`, a count below 1 or above 2^31 − 1, or a kind given twice, two rates being one kind.
+fn limits(grant: &ita::Grant, code: Code, errors: &mut Vec<ProjectError>) -> Option<String> {
+    use una_core::http::{Limits, MAX_LIMIT, Period};
+    if grant.limits.is_empty() {
+        return Some(String::new());
+    }
+    if !grant.spec.starts_with("http:") {
+        for limit in &grant.limits {
+            errors.push(error(
+                code,
+                limit.range.clone(),
+                "limits apply to `http` grants only",
+            ));
+        }
+        return None;
+    }
+    let mut out = Limits::default();
+    let mut valid = true;
+    for limit in &grant.limits {
+        let count = match u32::try_from(limit.count.value) {
+            Ok(count) if (1..=MAX_LIMIT).contains(&count) => count,
+            _ => {
+                errors.push(error(
+                    code,
+                    limit.count.range.clone(),
+                    format!(
+                        "the count of a limit is from 1 to {MAX_LIMIT}, not {}",
+                        limit.count.value
+                    ),
+                ));
+                valid = false;
+                continue;
+            }
+        };
+        let twice = match &limit.kind {
+            ita::LimitKind::Rate(word) => match Period::of(word) {
+                Some(period) => out.rate.replace((count, period)).is_some(),
+                None => {
+                    errors.push(error(
+                        code,
+                        limit.range.clone(),
+                        "a rate's period is `second`, `minute` or `hour`",
+                    ));
+                    valid = false;
+                    continue;
+                }
+            },
+            ita::LimitKind::AtOnce => out.at_once.replace(count).is_some(),
+            ita::LimitKind::Waiting => out.waiting.replace(count).is_some(),
+        };
+        if twice {
+            let kind = match limit.kind {
+                ita::LimitKind::Rate(_) => "a rate",
+                ita::LimitKind::AtOnce => "`at most n at once`",
+                ita::LimitKind::Waiting => "`waiting at most n`",
+            };
+            errors.push(error(
+                code,
+                limit.range.clone(),
+                format!("this grant already has {kind}; a kind of limit is given at most once"),
+            ));
+            valid = false;
+        }
+    }
+    valid.then(|| out.suffix())
+}
+
 fn located(at: &At<String>) -> Located {
     Located {
         value: at.value.clone(),
@@ -235,18 +304,13 @@ pub fn parse_ita_manifest(text: &str) -> (Manifest, Vec<ProjectError>) {
                 ));
                 continue;
             }
-            // ADR 0117's limits are not implemented by this release. A grant read without the
-            // limit written below it would allow more than the manifest says, so it is refused.
-            if let Some(limit) = grant.limits.first() {
-                errors.push(error(
-                    code,
-                    limit.clone(),
-                    "limits on grants are not supported by this release; a grant without its limit would allow more than written",
-                ));
+            // ADR 0117 rule 8: the limit lines, as the suffixes of the text form. A grant with
+            // an invalid limit is not read: without it, it would allow more than written.
+            let Some(suffix) = limits(grant, code, &mut errors) else {
                 continue;
-            }
+            };
             manifest.grants.push(Located {
-                value: grant.spec.clone(),
+                value: format!("{}{suffix}", grant.spec),
                 range: grant.range.clone(),
             });
         }

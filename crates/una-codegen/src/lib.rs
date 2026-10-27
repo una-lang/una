@@ -118,6 +118,10 @@ pub struct Described<'a> {
     pub ops: &'a [serde_json::Value],
     /// The type of `main`'s failures, when it can fail.
     pub failure: Option<usize>,
+    /// Whether the compiled code makes a hash table, so that the run reads the process key of
+    /// keyed hashing before `main` (ADR 0119 rule 9). The code compiled is the code `main`
+    /// reaches, the standard library's included.
+    pub hashing: bool,
     /// Whether the compiled code holds a task construct or a `for ever`, so the runtime starts
     /// its workers and helper pools before `main` (ADR 0116 amendment, P8; #1145).
     pub threads: bool,
@@ -212,6 +216,7 @@ fn compile_start(
         types: emitter.types.shapes(),
         ops: &emitter.ops,
         failure,
+        hashing: emitter.hashing,
         threads: emitter.threads,
     });
     match loop_functions {
@@ -335,7 +340,7 @@ const RUNTIME: &[(&str, usize, bool)] = &[
     ("una_rt_int_mod", 2, true),
     ("una_rt_int_neg", 1, true),
     ("una_rt_int_compare", 2, true),
-    ("una_rt_int_text", 1, true),
+    ("una_rt_int_text", 2, true),
     ("una_rt_bool_text", 1, true),
     ("una_rt_text_concat", 2, true),
     ("una_rt_text_append_owned", 2, true),
@@ -381,6 +386,27 @@ const RUNTIME: &[(&str, usize, bool)] = &[
     ("una_rt_map_without", 2, true),
     ("una_rt_map_without_owned", 2, true),
     ("una_rt_map_list", 2, true),
+    ("una_rt_collection_len", 1, true),
+    ("una_rt_seq_empty", 0, true),
+    ("una_rt_seq_of", 2, true),
+    ("una_rt_seq_op", 3, true),
+    ("una_rt_seq_op_owned", 3, true),
+    ("una_rt_set_empty", 0, true),
+    ("una_rt_set_of", 1, true),
+    ("una_rt_set_op", 4, true),
+    ("una_rt_set_op_owned", 4, true),
+    ("una_rt_priority_empty", 1, true),
+    ("una_rt_priority_op", 4, true),
+    ("una_rt_priority_op_owned", 4, true),
+    ("una_rt_bit_set_empty", 2, true),
+    ("una_rt_bit_set_op", 4, true),
+    ("una_rt_bit_set_op_owned", 4, true),
+    ("una_rt_hash_empty", 2, true),
+    ("una_rt_hash_of_list", 4, true),
+    ("una_rt_hash_map_op", 6, true),
+    ("una_rt_hash_map_op_owned", 6, true),
+    ("una_rt_hash_set_op", 5, true),
+    ("una_rt_hash_set_op_owned", 5, true),
     ("una_rt_split", 2, true),
     ("una_rt_join", 2, true),
     ("una_rt_ends_with", 2, true),
@@ -399,6 +425,9 @@ const RUNTIME: &[(&str, usize, bool)] = &[
     ("una_rt_f64_literal", 1, true),
     ("una_rt_f64_op", 4, true),
     ("una_rt_f64_from_bits", 1, true),
+    ("una_rt_f32_op", 4, true),
+    ("una_rt_f32_from_bits", 1, true),
+    ("una_rt_parse_f32", 1, true),
     ("una_rt_parse_f64_failure", 1, true),
     ("una_rt_parse_f64", 1, true),
     ("una_rt_as_f64", 1, true),
@@ -432,20 +461,25 @@ const RUNTIME: &[(&str, usize, bool)] = &[
     ("una_rt_generic_contains_at", 4, true),
     ("una_rt_generic_sum", 2, true),
     ("una_rt_generic_sort", 2, true),
-    ("una_rt_generic_write", 2, true),
-    ("una_rt_write", 2, true),
+    ("una_rt_generic_write", 3, true),
+    ("una_rt_write", 3, true),
     ("una_rt_descriptor_composite", 2, true),
     ("una_rt_operation_begin", 0, false),
     ("una_rt_operation_end", 0, false),
     ("una_rt_together", 2, true),
     ("una_rt_together_for", 3, true),
+    ("una_rt_first_of", 2, true),
     ("una_rt_together_status", 0, true),
+    ("una_rt_tasks_begin", 3, true),
+    ("una_rt_start_task", 2, true),
+    ("una_rt_tasks_end", 1, false),
     ("una_rt_range", 4, true),
     ("una_rt_clock_now", 0, true),
     ("una_rt_env_get", 2, true),
     ("una_rt_files_read", 2, true),
     ("una_rt_files_write", 2, true),
     ("una_rt_keys_hmac", 2, true),
+    ("una_rt_http_enable", 0, false),
     ("una_rt_http_get", 4, true),
     ("una_rt_http_post", 5, true),
     ("una_rt_http_put", 5, true),
@@ -458,6 +492,8 @@ const RUNTIME: &[(&str, usize, bool)] = &[
     ("una_rt_is_json_number", 1, true),
     ("una_rt_host_instance", 1, true),
     ("una_rt_handler_instance", 1, true),
+    ("una_rt_limiter_instance", 3, true),
+    ("una_rt_limit_acquire", 2, true),
     ("una_rt_event", 2, true),
     ("una_rt_push_op", 2, false),
     ("una_rt_event_arg", 4, false),
@@ -656,8 +692,13 @@ struct Emitter<'p> {
     types: describe::Types<'p>,
     /// The operations, by the index passed to `una_rt_event`.
     ops: Vec<serde_json::Value>,
+    /// Whether a compiled function makes a hash table (ADR 0119 rule 9).
+    hashing: bool,
     /// Whether a task construct or a `for ever` was compiled ([`Described::threads`]).
     threads: bool,
+    /// Whether an operation of `Http` was compiled: the C `main` then calls
+    /// `una_rt_http_enable`, the only path to the TLS stack (ADR 0074 H7, #1148).
+    http: bool,
 }
 
 impl<'p> Emitter<'p> {
@@ -690,7 +731,9 @@ impl<'p> Emitter<'p> {
             sites: Vec::new(),
             types: describe::Types::new(program),
             ops: Vec::new(),
+            hashing: false,
             threads: false,
+            http: false,
         })
     }
 
@@ -1226,6 +1269,9 @@ impl<'p> Emitter<'p> {
                 .iconst(pointer, i64::try_from(meta.len()).map_err(internal)?);
             let una_main_ref = self.module.declare_func_in_func(una_main_id, builder.func);
             let una_main_address = builder.ins().func_addr(pointer, una_main_ref);
+            if self.http {
+                self.runtime_call(&mut builder, "una_rt_http_enable", &[])?;
+            }
             let start_ref = self.module.declare_func_in_func(start, builder.func);
             let call = builder.ins().call(
                 start_ref,

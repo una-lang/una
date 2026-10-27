@@ -1,0 +1,20 @@
+-- test: in edition 0.4 a kind, variant or unit named `F32`, `Complex`, `Array`, `Matrix`, `Tensor` or `Lu` is U1002
+-- spec: spec/29 §18
+-- expect: error U1002 at src/m.una:11:10
+-- expect: error U1002 at src/m.una:13:10
+-- expect: error U1002 at src/m.una:16:10
+-- expect: error U1002 at src/m.una:18:18
+-- expect: error U1002 at src/m.una:18:27
+-- expect: error U1002 at src/m.una:20:13
+module m
+
+pub kind F32 = A | B
+
+pub kind Complex
+  re: Int
+
+pub kind Array = Empty | Full
+
+pub kind Shape = Matrix | Tensor
+
+pub measure Lu
