@@ -214,9 +214,13 @@ fn failing_examples_yield_their_code_and_fixed_examples_yield_nothing() {
     // reports when it resolves, and `una check` never does (ADR 0122 rule 25). U7010 and U7011
     // are reachable only with a registry need, which this release refuses (U7008), so a locked
     // registry package is U7009 too and no example can report the code alone: remove with #998,
-    // which lets registry needs load and writes their examples.
+    // which lets registry needs load and writes their examples. U2039 and U3032 belong to the
+    // `simd required` clause of ADR 0120 rule 58, which this release does not read yet: remove
+    // with ADR 0120 S8 (#991), which lands the clause and writes their examples.
     for code in Code::ALL {
         if code == Code::U8001
+            || code == Code::U2039
+            || code == Code::U3032
             || code == Code::U6005
             || code == Code::U6006
             || code == Code::U6009

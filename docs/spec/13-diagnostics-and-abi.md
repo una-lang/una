@@ -179,6 +179,7 @@ Other diagnostics MAY include repairs (for example, a missing label with its mec
 | U2033 | types | A comparison of an `F64` with a float literal zero |
 | U2034 | types | `stop` or `skip` outside a loop body, or across a task boundary |
 | U2037 | types | A decimal scale out of place |
+| U2039 | types | A `map`, `zip_map` or `update` in a function with `simd required` whose lambda cannot be vectorized for a listed target |
 | U2040 | types | A statement after `stop` or `skip` in the same block, which never runs |
 | U3001 | authority | Capability not in scope |
 | U3002 | authority | Operation not permitted by capability type |
@@ -208,6 +209,7 @@ Other diagnostics MAY include repairs (for example, a missing label with its mec
 | U3027 | authority | Code that may run forever where it is not allowed to |
 | U3028 | authority | A function that says `diverges`, used as a value |
 | U3029 | authority | A failure that must be handled where it is not |
+| U3032 | authority | A `simd required` clause outside a `systems` package of edition `0.4` |
 | U4001 | security | Flow to a lower label |
 | U4002 | security | Implicit flow through control, failure or call under raised pc |
 | U4003 | security | Sink label exceeded |

@@ -174,6 +174,10 @@ pub enum Code {
     U2034,
     /// A decimal scale out of place (ADR 0120).
     U2037,
+    /// A `map`, `zip_map` or `update` in a function with `simd required` whose lambda cannot be
+    /// vectorized for a listed target (ADR 0120 rule 58). Registered by ADR 0109 slice S1;
+    /// reported once the clause lands with its slice.
+    U2039,
     /// A statement after `stop` or `skip` in the same block, which never runs.
     U2040,
     /// Capability not in scope.
@@ -233,6 +237,10 @@ pub enum Code {
     U3028,
     /// A failure that must be handled where it is not.
     U3029,
+    /// A `simd required` clause outside a `systems` package of edition `0.4` (ADR 0120 rule
+    /// 58, ADR 0109 rule 5). Registered by ADR 0109 slice S1; reported once the clause lands
+    /// with its slice.
+    U3032,
     /// Flow to a lower label.
     U4001,
     /// Implicit flow through control, failure or call under raised pc.
@@ -295,7 +303,7 @@ pub enum Code {
 
 impl Code {
     /// Every registered code, in the order of `spec/13 §4`.
-    pub const ALL: [Code; 113] = [
+    pub const ALL: [Code; 115] = [
         Code::U0001,
         Code::U0002,
         Code::U0003,
@@ -351,6 +359,7 @@ impl Code {
         Code::U2033,
         Code::U2034,
         Code::U2037,
+        Code::U2039,
         Code::U2040,
         Code::U3001,
         Code::U3002,
@@ -380,6 +389,7 @@ impl Code {
         Code::U3027,
         Code::U3028,
         Code::U3029,
+        Code::U3032,
         Code::U4001,
         Code::U4002,
         Code::U4003,
@@ -703,6 +713,11 @@ impl Code {
                 domain: Domain::Types,
                 meaning: "A decimal scale out of place",
             },
+            Code::U2039 => &Entry {
+                code: "U2039",
+                domain: Domain::Types,
+                meaning: "A `map`, `zip_map` or `update` in a function with `simd required` whose lambda cannot be vectorized for a listed target",
+            },
             Code::U2040 => &Entry {
                 code: "U2040",
                 domain: Domain::Types,
@@ -847,6 +862,11 @@ impl Code {
                 code: "U3029",
                 domain: Domain::Authority,
                 meaning: "A failure that must be handled where it is not",
+            },
+            Code::U3032 => &Entry {
+                code: "U3032",
+                domain: Domain::Authority,
+                meaning: "A `simd required` clause outside a `systems` package of edition `0.4`",
             },
             Code::U4001 => &Entry {
                 code: "U4001",
