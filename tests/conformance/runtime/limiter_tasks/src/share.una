@@ -1,0 +1,41 @@
+-- test: the started tasks of a `tasks` statement inside the statement a `limiter` scopes over share its one bucket: three tokens serve three started tasks, and the block then finds none left (spec/27 §10, ADR 0117 rule 9)
+-- spec: spec/27 §10
+-- grant: console
+-- expect: run-output "task 1 served"
+-- expect: run-output "task 2 served"
+-- expect: run-output "task 3 served"
+-- expect: run-output "after: limited"
+-- expect: run-output "done"
+module share
+
+import std.limit (Limit, limiter)
+import std.time (minute)
+
+--- A started task that takes one token.
+hit(n: Int) -> Unit
+  uses @gate: Limit[acquire]
+  uses @console: Console[print]
+=
+  let got = attempt @gate.acquire()
+  when got
+    is Ok(took) -> @console.print("task {n} served")
+    is Err(failure) -> @console.print("task {n} busy")
+
+--- Three tasks, then one more call in the block's own task.
+run_all() -> Unit
+  uses @gate: Limit[acquire]
+  uses @console: Console[print]
+=
+  tasks
+    for n in 1..3
+      start hit(n)
+  let after = attempt @gate.acquire()
+  when after
+    is Ok(took) -> @console.print("after: free")
+    is Err(failure) -> @console.print("after: limited")
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  run_all() with @gate = limiter(at_most: 3, per: minute, waiting: 0)
+  @console.print("done")

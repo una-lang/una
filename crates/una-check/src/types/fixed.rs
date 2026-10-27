@@ -8,7 +8,7 @@ use una_syntax::Span;
 use una_syntax::ast::{Arg, Expr, ExprKind, Literal, Range, UnaryOp};
 
 use super::check::{Checker, Rl, Role};
-use super::records::Res;
+use super::records::{ConvertNumber, Res};
 use super::ty::Ty;
 
 /// Whether the integer `-digits` (when `negative`) or `digits` lies in `int`'s range. A literal
@@ -107,8 +107,8 @@ impl Checker<'_, '_, '_> {
         // type, as it takes a fixed-width type.
         if let Some(Ty::Measured(unit, magnitude)) = expected.map(|e| self.vars.peel(e)) {
             self.int_literal_type(negative, digits, span, Some(&magnitude));
-            // The expected type's magnitude, built by `Ty::measured`, holds no label.
-            debug_assert!(matches!(*magnitude, Ty::Int | Ty::Fixed(_)));
+            // The expected type's magnitude, built by `Ty::measured`, holds no label. Where it
+            // is not an integer type, the literal was U2001 (ADR 0114 rule 2.6).
             return Ty::Measured(unit, magnitude);
         }
         // ADR 0120 rule 12: an integer literal never takes a decimal type.
@@ -120,6 +120,11 @@ impl Checker<'_, '_, '_> {
         if expected.is_some_and(|e| self.is_f64(e)) {
             self.int_literal_for_f64(negative, digits, span);
             return Ty::F64;
+        }
+        // ADR 0120 rule 6: nor `F32`.
+        if expected.is_some_and(|e| self.is_f32(e)) {
+            self.int_literal_for_float("F32", negative, digits, span);
+            return Ty::F32;
         }
         let Some(int) = self.expected_fixed(expected) else {
             return Ty::Int;
@@ -190,7 +195,7 @@ impl Checker<'_, '_, '_> {
         // A built-in integer method on a measured receiver (ADR 0104 rule 3). Any other name
         // resolves as on any value, so a function of the package called in method form keeps
         // working.
-        if matches!(self.resolve(target).unlabeled(), Ty::Measured(..))
+        if matches!(self.resolve(target).unlabeled(), Ty::Measured(_, magnitude) if is_integer(magnitude))
             && (convert_target(method).is_some() || FixedOp::from_name(method).is_some())
         {
             return Some(self.measured_int_method(target, method, args, span));
@@ -286,7 +291,9 @@ impl Checker<'_, '_, '_> {
 
     /// `measured()`, `magnitude()` or `convert()` on `target` (ADR 0104 rule 4), the unit it
     /// produces taken from `expected`. Each unitless use, a missing expected unit and a
-    /// conversion that is not exact or does not fit is an error, never a silent call.
+    /// conversion that is not exact or does not fit is an error, never a silent call. The
+    /// receiver is any number type that takes a unit (ADR 0114 rule 12, ADR 0120 rules 61 to
+    /// 64), or a dense value, whose elements carry it.
     fn unit_method(&mut self, target: &Ty, method: &str, span: Span, expected: Option<&Ty>) -> Ty {
         use super::units::Unit;
         let label = self.deep(target);
@@ -296,27 +303,25 @@ impl Checker<'_, '_, '_> {
             self.resolved(span, Res::UnitMethod { ratio: 1 });
             return Ty::error();
         }
+        if matches!(receiver.unlabeled(), Ty::Dense(..)) {
+            return self.dense_unit_method(target, method, span, expected);
+        }
         let source_unit = receiver.unit().cloned();
         let magnitude = receiver.magnitude().clone();
         let expected = expected.map(|e| self.vars.peel(e));
         let expected_unit = expected.as_ref().and_then(|e| e.unit().cloned());
         let integer = matches!(magnitude, Ty::Int | Ty::Fixed(_) | Ty::Error(_));
-        let measured = |unit: Unit, magnitude: Ty| {
-            if unit.is_one() {
-                magnitude
-            } else {
-                Ty::measured(unit, magnitude)
-            }
-        };
+        let number = self.takes_unit(&magnitude);
+        let measured = |unit: Unit, magnitude: Ty| magnitude.in_unit(Some(&unit));
         let (result, ratio) = match method {
             "magnitude" => match &source_unit {
                 Some(_) => (magnitude.clone(), 1),
                 None => {
-                    let message = if integer {
+                    let message = if number {
                         "`magnitude()` takes a measured value, and this one has no unit".to_owned()
                     } else {
                         format!(
-                            "`magnitude()` takes a measured integer, not `{}`",
+                            "`magnitude()` takes a measured number, not `{}`",
                             self.show(&receiver)
                         )
                     };
@@ -324,19 +329,19 @@ impl Checker<'_, '_, '_> {
                     (Ty::error(), 1)
                 }
             },
-            "measured" if !integer => {
+            "measured" if !number => {
                 self.report.error(
                     Code::U2028,
                     span,
                     format!(
-                        "`measured()` takes an integer, not `{}`",
+                        "`measured()` takes a number, not `{}`",
                         self.show(&receiver)
                     ),
                 );
                 (Ty::error(), 1)
             }
             "measured" => match (&source_unit, expected_unit) {
-                (None, Some(unit)) if integer => (measured(unit, magnitude.clone()), 1),
+                (None, Some(unit)) => (measured(unit, magnitude.clone()), 1),
                 (Some(_), _) => {
                     self.report.error(
                         Code::U2030,
@@ -359,9 +364,7 @@ impl Checker<'_, '_, '_> {
                 // dimensionless unit (ADR 0104 rule 2).
                 let target_unit = match (&expected_unit, &expected) {
                     (Some(unit), _) => Some(unit.clone()),
-                    (None, Some(ty)) if matches!(ty.magnitude(), Ty::Int | Ty::Fixed(_)) => {
-                        Some(Unit::one())
-                    }
+                    (None, Some(ty)) if self.takes_unit(ty.magnitude()) => Some(Unit::one()),
                     _ => None,
                 };
                 match (&source_unit, target_unit) {
@@ -380,6 +383,11 @@ impl Checker<'_, '_, '_> {
                             "`convert()` takes its unit from the type expected here, and none is; annotate it".to_owned(),
                         );
                         (Ty::error(), 1)
+                    }
+                    (Some(source), Some(target_unit)) if !integer => {
+                        let result = self.number_convert(source, &target_unit, &magnitude, span);
+                        let label = label.clone();
+                        return result.map_or_else(Ty::error, |ty| ty.with_label(&label));
                     }
                     (Some(source), Some(target_unit)) => match source.ratio_to(&target_unit) {
                         Some(k) if fits_ratio(&magnitude, k) => {
@@ -418,6 +426,195 @@ impl Checker<'_, '_, '_> {
         }
         self.resolved(span, Res::UnitMethod { ratio });
         result.with_label(&label)
+    }
+
+    /// Whether `ty`, a magnitude, is a number type that takes a unit: an integer type, `F64`,
+    /// `F32`, `Decimal[s]` or a complex type (ADR 0104 rule 2, ADR 0114 rule 12.1, ADR 0120
+    /// rule 61). An error type does, so one mistake gives one diagnostic.
+    pub(crate) fn takes_unit(&self, ty: &Ty) -> bool {
+        matches!(
+            ty,
+            Ty::Int | Ty::Fixed(_) | Ty::F64 | Ty::F32 | Ty::Decimal(_) | Ty::Error(_)
+        ) || self.is_complex(ty)
+    }
+
+    /// `x.convert()` from `source` to `target` on a magnitude that is not an integer, after
+    /// the checks shared with the integers: the measured result, or `None` after U2030 (ADR
+    /// 0114 rule 12.5, ADR 0120 rule 63). An `F64` multiplies or divides by a ratio k or 1/k
+    /// with k a positive integer of at most 2^53, which an `F64` holds exactly, and an `F32`
+    /// by one of at most 2^24, for the same reason (rule 62); a decimal multiplies its
+    /// coefficient by an integer ratio k, exactly, and a ratio 1/k, which would round, is
+    /// refused. A complex value converts by its components, with `magnitude()`.
+    fn number_convert(
+        &mut self,
+        source: &super::units::Unit,
+        target: &super::units::Unit,
+        magnitude: &Ty,
+        span: Span,
+    ) -> Option<Ty> {
+        let up = source.ratio_to(target);
+        let down = target.ratio_to(source);
+        let refuse = |this: &mut Self, message: String, advice: Option<String>| {
+            let mut diagnostic = this.report.make(Code::U2030, span, message);
+            if let Some(advice) = advice {
+                diagnostic.repairs.push(super::Report::advice(advice));
+            }
+            this.report.push(diagnostic);
+            None
+        };
+        if !source.same_dimension(target) {
+            return refuse(
+                self,
+                format!(
+                    "converting `{source}` to `{target}` is between units of different dimensions"
+                ),
+                None,
+            );
+        }
+        let measured = magnitude.clone().in_unit(Some(target));
+        match magnitude {
+            Ty::F64 | Ty::F32 => {
+                let (bound, name, power) = if *magnitude == Ty::F32 {
+                    (1u128 << 24, "F32", "2^24")
+                } else {
+                    (1u128 << 53, "F64", "2^53")
+                };
+                let number = if *magnitude == Ty::F32 {
+                    ConvertNumber::F32
+                } else {
+                    ConvertNumber::F64
+                };
+                let op = match (up, down) {
+                    (Some(1), _) | (_, Some(1)) => Res::UnitMethod { ratio: 1 },
+                    (Some(k), _) if k <= bound => Res::Convert {
+                        ratio: k,
+                        divide: false,
+                        number,
+                    },
+                    (_, Some(k)) if k <= bound => Res::Convert {
+                        ratio: k,
+                        divide: true,
+                        number,
+                    },
+                    _ => {
+                        return refuse(
+                            self,
+                            format!(
+                                "converting `{source}` to `{target}` is not by a ratio k or 1/k with k a positive integer of at most {power}, which an `{name}` holds exactly"
+                            ),
+                            Some(
+                                "write the arithmetic out with `magnitude()` and `measured()`, so its rounding shows".to_owned(),
+                            ),
+                        );
+                    }
+                };
+                self.resolved(span, op);
+                Some(measured)
+            }
+            Ty::Decimal(scale) => match (up, down) {
+                (Some(k), _) => {
+                    let op = if k == 1 {
+                        Res::UnitMethod { ratio: 1 }
+                    } else {
+                        Res::Convert {
+                            ratio: k,
+                            divide: false,
+                            number: ConvertNumber::Decimal(*scale),
+                        }
+                    };
+                    self.resolved(span, op);
+                    Some(measured)
+                }
+                (None, Some(k)) => refuse(
+                    self,
+                    format!(
+                        "converting `{source}` to `{target}` divides by {k}, which a decimal would round"
+                    ),
+                    Some(format!(
+                        "write the division with its scale and its rounding, as in `x.magnitude().divide(by: {k}.0, scale: {scale}, rounding: HalfEven).measured()`"
+                    )),
+                ),
+                (None, None) => refuse(
+                    self,
+                    format!(
+                        "converting `{source}` to `{target}` is not by an integer ratio; write the division out with `magnitude()`, `divide` and `measured()`"
+                    ),
+                    None,
+                ),
+            },
+            _ => {
+                let shown = self.show(&measured);
+                refuse(
+                    self,
+                    format!("`convert()` on `{shown}` is not defined; convert its components"),
+                    Some(
+                        "write `complex(re: z.re.convert(), im: z.im.convert())`, with the unit of the result in its type".to_owned(),
+                    ),
+                )
+            }
+        }
+    }
+
+    /// `measured()`, `magnitude()` or `convert()` on a dense value (ADR 0120 rule 64): the
+    /// first two are O(1), since the representation is the same, and set or drop the unit of
+    /// every element; `convert()` is not defined on a dense value.
+    fn dense_unit_method(
+        &mut self,
+        target: &Ty,
+        method: &str,
+        span: Span,
+        expected: Option<&Ty>,
+    ) -> Ty {
+        let full = self.labeled(target);
+        let Some((_, element)) = self.dense_of(&full) else {
+            return Ty::error();
+        };
+        let unit = self.unit_of(&element);
+        let expected_unit = expected
+            .and_then(|e| self.dense_of(e))
+            .and_then(|(_, element)| self.unit_of(&element));
+        let result = match (method, unit, expected_unit) {
+            ("magnitude", Some(_), _) => super::dense::dense_in_unit(&full, None),
+            ("magnitude", None, _) => {
+                self.report.error(
+                    Code::U2028,
+                    span,
+                    "`magnitude()` takes a measured value, and the elements of this one have no unit",
+                );
+                Ty::error()
+            }
+            ("measured", None, Some(unit)) => super::dense::dense_in_unit(&full, Some(&unit)),
+            ("measured", Some(_), _) => {
+                self.report.error(
+                    Code::U2030,
+                    span,
+                    "`measured()` takes a unitless value, and the elements of this one have a unit",
+                );
+                Ty::error()
+            }
+            ("measured", None, None) => {
+                self.report.error(
+                    Code::U2030,
+                    span,
+                    "`measured()` takes its unit from the type expected here, and none is; annotate it, as `let d: Array[F64 of Meter] = a.measured()`",
+                );
+                Ty::error()
+            }
+            _ => {
+                let mut diagnostic = self.report.make(
+                    Code::U2030,
+                    span,
+                    "`convert()` is not defined on a dense value",
+                );
+                diagnostic.repairs.push(super::Report::advice(
+                    "convert the elements with `map`, as in `a.map(each: fn(e) -> e.convert())`, with the unit of the result in its type",
+                ));
+                self.report.push(diagnostic);
+                Ty::error()
+            }
+        };
+        self.resolved(span, Res::UnitMethod { ratio: 1 });
+        result
     }
 
     /// A built-in method of a fixed-width type on a measured receiver (ADR 0104 rule 3): the

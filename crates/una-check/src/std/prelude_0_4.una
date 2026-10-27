@@ -964,3 +964,36 @@ pub dense_tensor_contract[T](t: Tensor[T], with_: Tensor[T], axis: Int, other: I
   ensures (t.rank - 1 <= 7 and 7 < t.rank - 1 + other implies result.dim(axis: 7) == with_.dim(axis: 7 - t.rank + 1)) and (t.rank - 1 + other <= 7 implies result.dim(axis: 7) == with_.dim(axis: 7 - t.rank + 2))
 =
   dense_tensor_contract(t, with: with_, axis: axis, other: other)
+
+--- The `F32` with the bits `bits`; any NaN gives the canonical NaN `0x7FC00000`
+--- (`spec/29 §18`, ADR 0120 rule 5).
+pub f32_from_bits(bits: U32) -> F32 = 0.0
+
+--- The `F32` that `t` writes, a JSON number, `nan`, `inf` or `-inf`, rounded once to the nearest
+--- `F32`, or why it writes none (`spec/29 §18`, ADR 0120 rule 5).
+pub parse_f32(t: Text) -> F32
+  fails ParseError
+=
+  fail Empty
+
+--- An `F64` that is neither NaN nor an infinity (`spec/29 §18`, ADR 0120 rule 11).
+pub kind Finite64 = F64 where it.is_finite()
+
+--- An `F32` that is neither NaN nor an infinity (`spec/29 §18`, ADR 0120 rule 11).
+pub kind Finite32 = F32 where it.is_finite()
+
+--- `Complex[F64]`, which no program names this way: a flat record of two components
+--- (`spec/29 §19`, ADR 0120 rules 22 and 25).
+kind Complex_F64
+  re: F64
+  im: F64
+
+--- `Complex[F32]`, as `Complex[F64]` with `F32` components (`spec/29 §19`).
+kind Complex_F32
+  re: F32
+  im: F32
+
+--- `complex(re: x, im: y)` builds a `Complex[F64]` from two `F64` and a `Complex[F32]` from
+--- two `F32` (`spec/29 §19`): the checker resolves every call to the kind of its arguments,
+--- and this placeholder is never called.
+complex[T](re: T, im: T) -> T = re

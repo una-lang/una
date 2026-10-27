@@ -29,8 +29,19 @@ pub(crate) enum Res {
     /// `measured()`, `magnitude()` or `convert()` (ADR 0104 rule 4): erased to the receiver,
     /// multiplied by `ratio` when it is not 1 (rule 5).
     UnitMethod { ratio: u128 },
+    /// `convert()` on a magnitude that is not an integer, by a ratio that is not 1 (ADR 0114
+    /// rule 12.5, ADR 0120 rule 63): erased to the receiver multiplied by `ratio`, or divided
+    /// by it when `divide`, as an operation of `number` with a literal `ratio`.
+    Convert {
+        ratio: u128,
+        divide: bool,
+        number: ConvertNumber,
+    },
     /// A built-in method of a map that reads it (`spec/21 §2`).
     MapMethod(una_core::MapOp),
+    /// A method of `Complex[F64]` or `Complex[F32]`, which elaborates to the operations of the
+    /// components (`spec/29 §19`, ADR 0120 rule 23).
+    Complex(super::complex::ComplexMethod),
     /// `edit m.set(...)` or `edit m.remove(...)`: the map rebound to `With` or `Without`.
     MapUpdate(una_core::MapOp),
     /// A built-in method of a `Stack` or a `Queue` that reads it (`spec/28 §5`).
@@ -53,6 +64,19 @@ pub(crate) enum Res {
     /// `edit s.add(...)` or `edit s.remove(...)` on a `HashSet`: the set rebound to `With` or
     /// `Without`.
     HashSetUpdate(una_core::HashSetOp),
+    /// A built-in method of a `PriorityQueue` that reads it (`spec/28 §8`).
+    PriorityMethod(una_core::PriorityOp),
+    /// `edit q.push(...)`, `edit q.pop()` or `edit q.pop_ranked()`: the queue rebound to `op`'s
+    /// result, and for a removal, the first item read first by `read` as the call's value.
+    PriorityUpdate {
+        op: una_core::PriorityOp,
+        read: Option<una_core::PriorityOp>,
+    },
+    /// A built-in method of a `BitSet` that reads it or gives a new bit set, or its property
+    /// `size` (`spec/28 §9`).
+    BitSetMethod(una_core::BitSetOp),
+    /// `edit b.add(...)` or `edit b.remove(...)`: the bit set rebound to `With` or `Without`.
+    BitSetUpdate(una_core::BitSetOp),
     /// A record field.
     Field { kind: KindId, index: usize },
     /// An operation of a capability.
@@ -77,6 +101,17 @@ pub(crate) enum Res {
     /// An operator of dense values, elaborated as `map` or `zip_map` (the prelude function
     /// `id`) with a lambda that applies the element type's operator (ADR 0120 rule 34).
     DenseOp { id: usize, op: DenseOp },
+}
+
+/// The magnitude of a [`Res::Convert`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ConvertNumber {
+    /// `F64`: `*` or `/` by the `F64` literal of the ratio.
+    F64,
+    /// `F32`: `*` or `/` by the `F32` literal of the ratio.
+    F32,
+    /// `Decimal[s]`: `*` by the `Decimal[0]` literal of the ratio, which keeps the scale.
+    Decimal(u8),
 }
 
 /// The operator of a [`Res::DenseOp`], as its lambda applies it to each element.

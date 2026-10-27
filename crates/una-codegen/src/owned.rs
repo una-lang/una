@@ -113,6 +113,38 @@ impl<'e> Facts<'e> {
                 args,
                 ..
             } => self.consume(args.first()),
+            // So do the updates of the collections of `std.collections` (`spec/28`, ADR 0119
+            // rule 1).
+            Rhs::Prim {
+                prim: Prim::Seq(op),
+                args,
+                ..
+            } if op.rebuilds() => self.consume(args.first()),
+            Rhs::Prim {
+                prim: Prim::Set(op),
+                args,
+                ..
+            } if op.rebuilds() => self.consume(args.first()),
+            Rhs::Prim {
+                prim: Prim::HashMap(op),
+                args,
+                ..
+            } if op.rebuilds() => self.consume(args.first()),
+            Rhs::Prim {
+                prim: Prim::HashSet(op),
+                args,
+                ..
+            } if op.rebuilds() => self.consume(args.first()),
+            Rhs::Prim {
+                prim: Prim::Priority(op),
+                args,
+                ..
+            } if op.rebuilds() => self.consume(args.first()),
+            Rhs::Prim {
+                prim: Prim::BitSet(op),
+                args,
+                ..
+            } if op.rebuilds() => self.consume(args.first()),
             Rhs::Call { function, args, .. } => {
                 if function.module == PRELUDE_MODULE {
                     if matches!(function.name.as_str(), "append" | "set") {
@@ -181,7 +213,9 @@ impl<'e> Facts<'e> {
                     self.expr(&on_stop.body, owned);
                 }
             }
-            Expr::Together { tasks, .. } => tasks.iter().for_each(|task| self.expr(task, owned)),
+            Expr::Together { tasks, .. } | Expr::FirstOf { tasks, .. } => {
+                tasks.iter().for_each(|task| self.expr(task, owned));
+            }
             Expr::TogetherFor { task, .. } => self.expr(task, owned),
             Expr::If {
                 then, otherwise, ..
@@ -203,9 +237,13 @@ impl<'e> Facts<'e> {
                 self.expr(body, owned);
                 self.expr(handler, owned);
             }
-            Expr::Attempt { body, .. } | Expr::With { body, .. } | Expr::Within { body, .. } => {
+            Expr::Attempt { body, .. }
+            | Expr::With { body, .. }
+            | Expr::Within { body, .. }
+            | Expr::Tasks { body, .. } => {
                 self.expr(body, owned);
             }
+            Expr::Start { task, .. } => self.expr(task, owned),
         }
     }
 }
