@@ -219,6 +219,9 @@ pub enum Code {
     U3020,
     /// A call that grants a boundary module more than its ceiling (edition 0.3, ADR 0093).
     U3021,
+    /// A labeled operation passed to code that reads its answers lower (edition 0.3, ADR
+    /// 0094).
+    U3022,
     /// A locked function's header grants more than its lock.
     U3023,
     /// A call into a boundary module from which a release is reachable (edition 0.3, ADR 0093).
@@ -373,6 +376,7 @@ impl Code {
         Code::U3019,
         Code::U3020,
         Code::U3021,
+        Code::U3022,
         Code::U3023,
         Code::U3024,
         Code::U3025,
@@ -812,6 +816,11 @@ impl Code {
                 code: "U3021",
                 domain: Domain::Authority,
                 meaning: "Call that grants a boundary module more than its ceiling",
+            },
+            Code::U3022 => &Entry {
+                code: "U3022",
+                domain: Domain::Authority,
+                meaning: "Labeled operation passed to code that reads it lower",
             },
             Code::U3023 => &Entry {
                 code: "U3023",

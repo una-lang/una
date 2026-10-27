@@ -68,6 +68,8 @@ result secret then true trusted unit use uses when where with
 active generated human owner proposed purpose regulation source status text to via
 ```
 
+(v0.3, ADR 0094 rule 6.) `gives` is a contextual keyword: in edition `0.3`, after an operation name inside the brackets of a header's `uses` (`spec/02 §3`, `spec/05 §3` rule 6), and an identifier everywhere else, in every edition. A program of edition `0.1` or `0.2` that writes it there gets U0103 at the word, "`gives` is a keyword of edition 0.3 (operation labels)"; the word is not reserved in those editions, so a function, a local or an operation named `gives` stays accepted.
+
 (v0.3, ADR 0104.) In edition `0.3`, `measure` is a keyword only at the start of a top-level declaration, after an optional `pub` and before an upper identifier, and `of` is one after an integer type (`spec/25`). Both are identifiers elsewhere.
 
 **Reserved, not available in v0.1.** Using any of these as an identifier or keyword is an error (U0103). The message names either the planned version and feature, or the alternative in Una. It is written `` `<keyword>` is <message> `` with the message of the table below, for example `` `match` is not a keyword in Una; use `when` `` (ADR 0014).

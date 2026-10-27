@@ -499,10 +499,14 @@ impl<'a> Checker<'_, 'a, '_> {
                 }
                 // A function whose `uses` carry a condition is not a value: the higher-order
                 // callee that would call it could not prove the condition (ADR 0092 rule 1).
+                // Nor is one whose `uses` label an operation: a function type carries no
+                // `gives`, so the callee would read the answers below the label (ADR 0094
+                // rule 1).
                 let conditioned = self.env.functions.get(id).is_some_and(|f| match f.ast {
                     super::env::FnAst::Function(decl) => decl.clauses.iter().any(|clause| {
                         matches!(&clause.kind, ClauseKind::Uses(uses)
-                            if uses.cap_type.conditions.iter().any(Option::is_some))
+                            if uses.cap_type.conditions.iter().any(Option::is_some)
+                                || uses.cap_type.gives.iter().any(Option::is_some))
                     }),
                     _ => false,
                 });
@@ -566,7 +570,7 @@ impl<'a> Checker<'_, 'a, '_> {
                         Code::U3006,
                         ident.span,
                         format!(
-                            "`{name}` has a condition on an operation of its `uses`, so it is not a value; call it, or wrap the call in a lambda"
+                            "`{name}` has a condition or a label on an operation of its `uses`, so it is not a value; call it, or wrap the call in a lambda"
                         ),
                     );
                 } else if effects
@@ -1957,6 +1961,7 @@ impl<'a> Checker<'_, 'a, '_> {
                                 capability: need.capability,
                                 ops: need.capability.map(|_| need.ops.clone()),
                                 clause: None,
+                                gives: need.gives.clone(),
                             },
                         )
                     })

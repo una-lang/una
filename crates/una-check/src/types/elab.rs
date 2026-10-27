@@ -5557,6 +5557,7 @@ mod tests {
             name: "log".to_owned(),
             capability: Some(0),
             ops: vec!["write".to_owned()],
+            gives: Vec::new(),
         }
     }
 

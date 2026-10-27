@@ -1849,11 +1849,26 @@ impl<'a> Env<'a> {
                 .map(|op| (*op).to_owned())
                 .collect()
         };
+        // ADR 0094 rule 1: the label each listed operation gives through this binding, in the
+        // capability's declaration order, `public` left out; its categories are checked as a
+        // type's are (U4007).
+        let mut gives: Vec<(String, Label)> = Vec::new();
+        for (op, label) in listed.iter().zip(&uses.cap_type.gives) {
+            let Some(label) = label else {
+                continue;
+            };
+            let lowered = self.lower_label(module, label, report);
+            if !lowered.is_public() && ops.iter().any(|listed| listed == op) {
+                gives.push(((*op).to_owned(), lowered));
+            }
+        }
+        gives.sort_by_key(|(op, _)| ops.iter().position(|listed| listed == op));
         Need {
             usage: FnUse {
                 name,
                 capability,
                 ops,
+                gives,
             },
             span: uses.span,
         }

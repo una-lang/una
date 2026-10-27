@@ -1604,6 +1604,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                             capability: need.usage.capability,
                             ops: need.usage.capability.map(|_| need.usage.ops.clone()),
                             clause: Some(need.span),
+                            gives: need.usage.gives.clone(),
                         },
                     )
                 })
@@ -1832,6 +1833,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                             capability: need.usage.capability,
                             ops: need.usage.capability.map(|_| need.usage.ops.clone()),
                             clause: (!def.infer_uses).then_some(need.span),
+                            gives: need.usage.gives.clone(),
                         },
                     )
                 })
