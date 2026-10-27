@@ -134,13 +134,15 @@ fn reaches_tables<'p>(index: &Index<'p>, roots: &[&'p Expr]) -> bool {
             Expr::LetTuple { body, .. }
             | Expr::Loop { body, .. }
             | Expr::Attempt { body, .. }
-            | Expr::Within { body, .. } => {
+            | Expr::Within { body, .. }
+            | Expr::Tasks { body, .. } => {
                 pending.push(body);
             }
             Expr::Together { tasks, .. } | Expr::FirstOf { tasks, .. } => {
                 pending.extend(tasks.iter());
             }
-            Expr::TogetherFor { task, .. } => pending.push(task),
+            // A started task runs code of the run as a `together` task does (`spec/27 §7`).
+            Expr::TogetherFor { task, .. } | Expr::Start { task, .. } => pending.push(task),
             Expr::If {
                 then, otherwise, ..
             } => {
