@@ -301,7 +301,7 @@ impl<'a> Checker<'_, 'a, '_> {
     }
 
     /// Whether diagnostics of this milestone are reported here.
-    fn authority(&self) -> bool {
+    pub(crate) fn authority(&self) -> bool {
         self.pass == Pass::Check && self.base != Base::Quiet
     }
 
@@ -2307,6 +2307,119 @@ pub(crate) fn deadline_timing(
         sites.push(("for ever within", function, site.span, timing.label));
     }
     sites
+}
+
+/// The timing label `τ(e)` of each `within` that `findings` recorded, by the span of its
+/// deadline (ADR 0117 IF2, ADR 0116 IF5 and IF6). O(sites × (functions + call edges +
+/// operations)).
+pub(crate) fn within_labels(env: &Env<'_>, findings: &Findings) -> BTreeMap<Span, Label> {
+    if findings.withins.is_empty() {
+        return BTreeMap::new();
+    }
+    let concurrent = super::timing::concurrent_functions(findings);
+    let mut labels: BTreeMap<Span, Label> = BTreeMap::new();
+    for site in &findings.withins {
+        let timing = super::timing::timing(
+            env,
+            findings,
+            &site.seed,
+            site.function,
+            super::timing::HostHandlers::All,
+            &concurrent,
+        );
+        // A site checked twice, as an `attempt` inside a probe, keeps the join.
+        let label = match labels.get(&site.key) {
+            Some(before) => before.join(&timing.label),
+            None => timing.label,
+        };
+        labels.insert(site.key, label);
+    }
+    labels
+}
+
+/// After pass 2, for each `e within d` (ADR 0117 IF2, rule 13):
+/// - `τ(e)` from what pass 2 recorded is never above the label its checks read, the probe's:
+///   an internal error (U8001) otherwise, never a check that a lower label let pass;
+/// - IF8 (ADR 0116): an interruptible operation that `e` can reach, one of `Http`, declares its
+///   failure at most `internal`, so `τ(e)` above it is U4001 at the `within`;
+/// - each `within` whose `τ` is above `public` joins the report's `timing` list.
+///
+/// Returns the report's entries, in source order. O(sites × (functions + call edges +
+/// operations)).
+pub(crate) fn within_timing(
+    env: &Env<'_>,
+    findings: &Findings,
+    report: &mut Report<'_>,
+) -> Vec<(&'static str, String, Span, Label)> {
+    if findings.withins.is_empty() {
+        return Vec::new();
+    }
+    let concurrent = super::timing::concurrent_functions(findings);
+    let mut sites: Vec<&super::within::WithinSite> = findings.withins.iter().collect();
+    sites.sort_by_key(|site| (site.span.file, site.span.start, site.span.end));
+    sites.dedup_by_key(|site| site.key);
+    let mut entries = Vec::new();
+    for site in sites {
+        let timing = super::timing::timing(
+            env,
+            findings,
+            &site.seed,
+            site.function,
+            super::timing::HostHandlers::All,
+            &concurrent,
+        );
+        let used = env
+            .within_timing
+            .get(&site.key)
+            .cloned()
+            .unwrap_or_else(Label::public);
+        if !timing.label.flows_to(&used) {
+            report.error(
+                Code::U8001,
+                site.span,
+                format!(
+                    "internal error: the timing label of this `within` is `{}`, above the `{used}` that the checks used (ADR 0117 IF2)",
+                    timing.label
+                ),
+            );
+        }
+        let function = site
+            .function
+            .and_then(|id| env.functions.get(id))
+            .map(|def| {
+                let module = env.modules.get(def.module).map_or("", |m| m.path.as_str());
+                format!("{module}.{}", def.name)
+            })
+            .unwrap_or_default();
+        let interrupted = timing.ops.iter().find_map(|(cap, op)| {
+            let capability = env.capabilities.get(*cap)?;
+            if capability.module != env.prelude || capability.name != "Http" {
+                return None;
+            }
+            let def = capability.ops.iter().find(|d| d.name == *op)?;
+            let bound = def.accepts.clone().unwrap_or_else(Label::public);
+            (!timing.label.flows_to(&bound)).then(|| (format!("Http.{op}"), bound))
+        });
+        if let Some((op, bound)) = interrupted {
+            let tau = &timing.label;
+            let culprit = timing.culprit(&bound);
+            let mut diagnostic = report.make(
+                Code::U4001,
+                site.span,
+                format!(
+                    "the deadline of this `within` can make `{op}` fail with `TimedOut`, and whether it does depends on {culprit}, labeled above the `{bound}` that the failure of `{op}` carries; the expression's timing label is `{tau}`"
+                ),
+            );
+            diagnostic.repairs.push(Report::advice(format!(
+                "move the work on data above `{bound}` out of the expression the `within` bounds"
+            )));
+            report.push(diagnostic);
+        }
+        if !timing.label.is_public() {
+            entries.push(("within", function, site.span, timing.label));
+        }
+    }
+    entries
 }
 
 /// U7003: each module uses `checked` at most `[escape_budget] checked_per_module` times; the

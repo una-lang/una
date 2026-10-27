@@ -8,8 +8,8 @@ use sha2::{Digest, Sha256};
 use una_core::flow::Variance;
 use una_core::{
     Atom, Base, BinOp, Bound, CapOp, Clause, Ctor, DataVariant, DecimalOp, Decl, Expr, FixedOp,
-    FloatOp, Fun, IntType, LoopSource, MapOp, Name, Path, Prim, Program, Refinement, Rhs, SeqOp,
-    SetOp, ShapeFun, Source, Term, Type, Use, print_term_with,
+    FloatOp, Fun, HashMapOp, HashSetOp, IntType, LoopSource, MapOp, Name, Path, Prim, Program,
+    Refinement, Rhs, SeqOp, SetOp, ShapeFun, Source, Term, Type, Use, print_term_with,
 };
 use una_diag::ObligationKind;
 use una_syntax::{Interner, KeywordSet, SourceDb, Span, TokenKind, lex_in};
@@ -1105,9 +1105,10 @@ fn stops(expr: &Expr) -> bool {
         Expr::Let { value, body, .. } => {
             matches!(value.as_ref(), Bound::Expr(inner) if stops(inner)) || stops(body)
         }
-        Expr::LetTuple { body, .. } | Expr::With { body, .. } | Expr::Attempt { body, .. } => {
-            stops(body)
-        }
+        Expr::LetTuple { body, .. }
+        | Expr::With { body, .. }
+        | Expr::Attempt { body, .. }
+        | Expr::Within { body, .. } => stops(body),
         Expr::If {
             then, otherwise, ..
         } => stops(then) || stops(otherwise),
@@ -2288,6 +2289,29 @@ impl<'p, 'i> Walker<'p, 'i> {
                     self.walk(body, &ctx, leaves);
                     expr = handler;
                 }
+                // `e within d` (`spec/27 §5`, ADR 0117 rule 5): `d >= 1`, a `refinement`
+                // obligation at `d`; on success the facts of `e` hold as without the deadline,
+                // and a time-out carries none, as any failure.
+                Expr::Within {
+                    deadline,
+                    deadline_span,
+                    body,
+                    ..
+                } => {
+                    let value = self.atom(deadline, &ctx);
+                    let goal = (value.f.sort() == "Int")
+                        .then(|| F::op(">=", vec![value.f, F::Int("1".to_owned())]));
+                    let text = format!("{} >= 1", self.text(*deadline_span));
+                    self.site(
+                        ObligationKind::Refinement,
+                        &ctx,
+                        goal,
+                        text,
+                        *deadline_span,
+                        None,
+                    );
+                    expr = body;
+                }
                 Expr::Attempt { body, span } => {
                     let mut returns = Vec::new();
                     self.walk(body, &ctx, &mut returns);
@@ -2576,6 +2600,47 @@ impl<'p, 'i> Walker<'p, 'i> {
                 // positions (ADR 0103 rule 4). The other set operations keep only the
                 // receiver's items, so their other set stores nothing.
                 if *prim == Prim::Set(SetOp::Union)
+                    && let (Some(set), Some(other)) = (values.first(), values.get(1))
+                    && let Type::Base {
+                        base: base @ Base::Named { .. },
+                        label,
+                        ..
+                    } = &set.ty
+                    && has_refinements(&set.ty)
+                {
+                    let target = Type::Base {
+                        base: base.clone(),
+                        refinements: Vec::new(),
+                        label: label.clone(),
+                    };
+                    let at = arg_spans.get(1).copied().unwrap_or(*span);
+                    self.refined_flow(&target, other, at, ctx);
+                }
+                // ADR 0119 rule 1 and ADR 0103 rule 3: a hash map's `set`, `with` and the
+                // `with` of `update` store the key and the value at the map's types, and a hash
+                // set's `add` and `with` store the item, each a flow site with its `refinement`
+                // obligations; a lookup stores nothing.
+                if matches!(
+                    prim,
+                    Prim::HashMap(HashMapOp::With) | Prim::HashSet(HashSetOp::With)
+                ) && let Some(Type::Base {
+                    base: Base::Named { args: stored, .. },
+                    ..
+                }) = values.first().map(|table| &table.ty)
+                {
+                    let stored = stored.clone();
+                    for (index, target) in stored.iter().enumerate() {
+                        if let Some(value) = values.get(index + 1)
+                            && has_refinements(target)
+                        {
+                            let at = arg_spans.get(index + 1).copied().unwrap_or(*span);
+                            self.refined_flow(target, value, at, ctx);
+                        }
+                    }
+                }
+                // A hash set's `union` stores the other set's items at the receiver's item
+                // type, as a set's does.
+                if *prim == Prim::HashSet(HashSetOp::Union)
                     && let (Some(set), Some(other)) = (values.first(), values.get(1))
                     && let Type::Base {
                         base: base @ Base::Named { .. },
@@ -3315,6 +3380,103 @@ impl<'p, 'i> Walker<'p, 'i> {
                             &base,
                             Base::Named { module, name, args }
                                 if is_collection(module, name) && name == "Set" && args.len() == 1
+                        ) =>
+                        {
+                            Type::Base {
+                                base,
+                                refinements: Vec::new(),
+                                label: type_label(binder).clone(),
+                            }
+                        }
+                        _ => unknown(),
+                    }
+                }
+                // ADR 0119 V6: what a hash map or a hash set gives back carries its position's
+                // refinements, as for a map (ADR 0103 rule 6), and an update or a set operation
+                // gives a table of the receiver's type, each stored key, value and item a flow
+                // site of its own.
+                Prim::HashMap(op) => {
+                    let receiver = args.first().map(|map| self.atom(map, ctx).ty);
+                    match receiver {
+                        Some(Type::Base {
+                            base: base @ Base::Named { .. },
+                            ..
+                        }) if matches!(
+                            &base,
+                            Base::Named { module, name, args }
+                                if is_collection(module, name) && name == "HashMap" && args.len() == 2
+                        ) =>
+                        {
+                            let Base::Named { args: kv, .. } = &base else {
+                                return Some(unknown());
+                            };
+                            let Ok([key, value]) = <[Type; 2]>::try_from(kv.clone()) else {
+                                return Some(unknown());
+                            };
+                            let named = |name: &str, args: Vec<Type>| Type::Base {
+                                base: Base::Named {
+                                    module: una_core::PRELUDE_MODULE.to_owned(),
+                                    name: name.to_owned(),
+                                    args,
+                                },
+                                refinements: Vec::new(),
+                                label: type_label(binder).clone(),
+                            };
+                            match op {
+                                HashMapOp::Has | HashMapOp::SameEntries => unknown(),
+                                HashMapOp::Get => named("Option", vec![value]),
+                                HashMapOp::With | HashMapOp::Without => Type::Base {
+                                    base,
+                                    refinements: Vec::new(),
+                                    label: type_label(binder).clone(),
+                                },
+                                HashMapOp::Keys => named("List", vec![key]),
+                                HashMapOp::Values => named("List", vec![value]),
+                                HashMapOp::Entries => {
+                                    named("List", vec![named("Entry", vec![key, value])])
+                                }
+                            }
+                        }
+                        _ => unknown(),
+                    }
+                }
+                Prim::HashSet(op) => {
+                    let receiver = args.first().map(|set| self.atom(set, ctx).ty);
+                    match (op, receiver) {
+                        (
+                            HashSetOp::Items,
+                            Some(Type::Base {
+                                base: Base::Named { module, name, args },
+                                ..
+                            }),
+                        ) if is_collection(&module, &name)
+                            && name == "HashSet"
+                            && args.len() == 1 =>
+                        {
+                            Type::Base {
+                                base: Base::Named {
+                                    module: una_core::PRELUDE_MODULE.to_owned(),
+                                    name: "List".to_owned(),
+                                    args,
+                                },
+                                refinements: Vec::new(),
+                                label: type_label(binder).clone(),
+                            }
+                        }
+                        (
+                            HashSetOp::With
+                            | HashSetOp::Without
+                            | HashSetOp::Union
+                            | HashSetOp::Intersection
+                            | HashSetOp::Difference,
+                            Some(Type::Base {
+                                base: base @ Base::Named { .. },
+                                ..
+                            }),
+                        ) if matches!(
+                            &base,
+                            Base::Named { module, name, args }
+                                if is_collection(module, name) && name == "HashSet" && args.len() == 1
                         ) =>
                         {
                             Type::Base {
@@ -4490,15 +4652,18 @@ impl<'p, 'i> Walker<'p, 'i> {
                 let args: Vec<F> = values.iter().map(|v| v.f.clone()).collect();
                 float_term(op, &args)?
             }
-            // A sequence's operations are known by their facts (`seq_facts`), not as terms. A
-            // set's methods are known by their facts, which ADR 0119 V2 to V4 give, not as
-            // terms: until then, each result is a fresh binder, which proves nothing about it.
+            // A sequence's operations are known by their facts (`seq_facts`), not as terms. The
+            // methods of a set, a hash map and a hash set are known by their facts, which ADR
+            // 0119 V2 to V4 give, not as terms: until then, each result is a fresh binder, which
+            // proves nothing about it.
             Prim::Concat
             | Prim::ToText
             | Prim::Fixed(..)
             | Prim::Map(_)
             | Prim::Seq(_)
-            | Prim::Set(_) => {
+            | Prim::Set(_)
+            | Prim::HashMap(_)
+            | Prim::HashSet(_) => {
                 return None;
             }
             Prim::Decimal(op) => return self.decimal(op, values),
@@ -6855,7 +7020,9 @@ fn normalized_goal(goal: &str, layout: SourceLayout) -> String {
 /// amendment of 2026-10-25): white space that holds a line break right before a closing `)` or
 /// `]` token is erased, which is where the canonical form puts the closer of a wrapped group,
 /// and then every run of white space collapses to one space. Text literals hold no line break,
-/// and a closer inside one is no token, so their text is kept but for the collapse. One lexing
+/// and a closer inside one is no token, so their text is kept but for the collapse, which also joins runs of spaces inside a text literal
+/// shown in a hypothesis or contract: the text is for display and comparison, never evaluated
+/// (#1175, kept as it is). One lexing
 /// pass and one pass over the closers: O(n) time and space.
 pub fn unwrap_layout(text: &str) -> String {
     let mut sources = SourceDb::new();

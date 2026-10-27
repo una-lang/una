@@ -394,6 +394,10 @@ pub(crate) struct Env<'a> {
     /// the package writes, and whether it runs, whatever run it happens in, which labels the failure of every
     /// `Files` operation (S-14, ADR 0085). Public until the probe of pass 2 sets it.
     pub(crate) file_state: Label,
+    /// The timing label `τ(e)` of each `e within d`, by the span of `d` (ADR 0117 IF2): what the
+    /// probe of pass 2 found, read by the checks of pass 2; a site absent here is `public` (the
+    /// first probe).
+    pub(crate) within_timing: BTreeMap<Span, Label>,
     /// What a check of pass 2 records for the file-state label: each `Files.write`, with the
     /// labels of its path and the program counter, and the code it is in; each direct call
     /// of a function, with the program counter; the functions used as values, which a caller
@@ -430,6 +434,9 @@ pub(crate) struct Env<'a> {
     /// module is trusted only when its header says so and it is listed here. Empty for a file
     /// checked on its own.
     pub(crate) trusted_listed: BTreeSet<String>,
+    /// The modules of dependencies the root trusts by a trust line (ADR 0122 rule 53.1), by
+    /// index: a release whose policy one declares is not a release into a boundary.
+    pub(crate) trusted_dependencies: BTreeSet<usize>,
     /// The code of an invalid project setting: U7002 in `una.toml`, U7008 in `ita.una`
     /// (ADR 0122 rule 13).
     pub(crate) project_code: Code,
@@ -451,6 +458,9 @@ pub(crate) struct Env<'a> {
     /// The module `std.collections`, when a package of edition 0.4 imports it (ADR 0119
     /// rule 0).
     pub(crate) collections: Option<usize>,
+    /// The hidden function `update` of that module, which only method syntax on a hash map
+    /// reaches (ADR 0119 rule 12).
+    pub(crate) hash_map_update: Option<usize>,
 }
 
 /// The key type of a written `Map[K, V]`, or an argument of a written collection type that
@@ -549,6 +559,7 @@ impl<'a> Env<'a> {
             edit_label_spans: BTreeMap::new(),
             files_written: false,
             file_state: Label::public(),
+            within_timing: BTreeMap::new(),
             file_writes: Vec::new(),
             file_calls: Vec::new(),
             file_escaped: BTreeSet::new(),
@@ -563,6 +574,7 @@ impl<'a> Env<'a> {
             map_keys: Vec::new(),
             opaque_plain: BTreeSet::new(),
             trusted_listed: BTreeSet::new(),
+            trusted_dependencies: BTreeSet::new(),
             project_code: Code::U7002,
             boundaries: super::boundary::Boundaries::default(),
             plain_vias: BTreeSet::new(),
@@ -570,6 +582,7 @@ impl<'a> Env<'a> {
             map_module: None,
             map_update: None,
             collections: None,
+            hash_map_update: None,
         };
         for source in package
             .into_iter()
@@ -588,6 +601,12 @@ impl<'a> Env<'a> {
         }
         env.map_update =
             env.map_module
+                .and_then(|index| match env.modules.get(index)?.lower.get("update") {
+                    Some(Entity::Function(id)) => Some(*id),
+                    _ => None,
+                });
+        env.hash_map_update =
+            env.collections
                 .and_then(|index| match env.modules.get(index)?.lower.get("update") {
                     Some(Entity::Function(id)) => Some(*id),
                     _ => None,
@@ -1010,6 +1029,18 @@ impl<'a> Env<'a> {
     pub(crate) fn prelude_function(&self, name: &str) -> Option<usize> {
         match self.modules.get(self.prelude)?.lower.get(name)? {
             Entity::Function(id) => Some(*id),
+            _ => None,
+        }
+    }
+
+    /// The kind `name` of `std.time`, `Timed` or `Deadline` (ADR 0117 rule 5), in edition 0.4.
+    pub(crate) fn std_time_kind(&self, name: &str) -> Option<KindId> {
+        let module = self
+            .modules
+            .iter()
+            .find(|module| module.path == crate::names::prelude::STD_TIME)?;
+        match module.upper.get(name)? {
+            Entity::Kind(id) => Some(*id),
             _ => None,
         }
     }

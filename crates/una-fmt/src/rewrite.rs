@@ -255,6 +255,7 @@ fn plain_line(block: &Block) -> Option<&Expr> {
     match block.stmts.as_slice() {
         [Stmt::Handled(handled)]
             if handled.with.is_empty()
+                && handled.within.is_none()
                 && handled.handlings.is_empty()
                 && !marked(&handled.expr) =>
         {
@@ -598,6 +599,9 @@ impl Collector<'_> {
                 self.args(&call.args);
             }
         }
+        if let Some(within) = &handled.within {
+            self.expr(within);
+        }
         for handling in &handled.handlings {
             match &handling.kind {
                 HandlingKind::ErrorFail(variant) | HandlingKind::NoneFail(variant) => {
@@ -689,10 +693,15 @@ impl Collector<'_> {
                 self.expr(predicate);
                 self.variant(failure);
             }
-            ExprKind::Attempt(operand)
-            | ExprKind::Unary { operand, .. }
-            | ExprKind::Old(operand)
-            | ExprKind::Paren(operand) => self.expr(operand),
+            ExprKind::Attempt { operand, within } => {
+                self.expr(operand);
+                if let Some(within) = within {
+                    self.expr(within);
+                }
+            }
+            ExprKind::Unary { operand, .. } | ExprKind::Old(operand) | ExprKind::Paren(operand) => {
+                self.expr(operand)
+            }
             ExprKind::Fail(variant) => self.variant(variant),
             ExprKind::Binary { left, right, .. } => {
                 self.expr(left);

@@ -4,6 +4,7 @@
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
@@ -11,6 +12,7 @@ use una_interp::{Event, EventOutcome, FileFault, Grant, NotText, World};
 
 use crate::render::index;
 use crate::runtime::with_state;
+use crate::sched::{self, Pool};
 use crate::values;
 
 /// How an operation's argument, result or failure is shown: its type, and the level that
@@ -147,8 +149,17 @@ fn file_fault(error: io::Error) -> FileFault {
 
 /// Writes `line` and a newline to stdout, keeping the first failed write to report at the end.
 fn print(line: &str) {
+    record_write(write_line(line));
+}
+
+/// Writes `line` and a newline to stdout.
+fn write_line(line: &str) -> io::Result<()> {
     let mut stdout = io::stdout().lock();
-    let written = writeln!(stdout, "{line}").and_then(|()| stdout.flush());
+    writeln!(stdout, "{line}").and_then(|()| stdout.flush())
+}
+
+/// Keeps the first failed write of the run or the task, to report at the end.
+fn record_write(written: io::Result<()>) {
     if let Err(error) = written {
         with_state(|state| {
             if state.failed_write.is_none() {
@@ -161,6 +172,10 @@ fn print(line: &str) {
 /// Records that the host operation in progress failed, with a failure the caller then reads
 /// as its value.
 pub(crate) fn failed(word: i64) -> i64 {
+    // A failure is a value of an error kind, a sum: a handle (even, not 0) or a variant without
+    // fields, `(index << 1) | 1` with `index >= 0`. So it is never `-1`, the word of a stopped
+    // task in the generated code (`una_codegen::lower::STOPPED`).
+    debug_assert_ne!(word, -1, "a failure word equal to the stop of a task");
     with_state(|state| state.host_failed = true);
     word
 }
@@ -178,9 +193,16 @@ const DENIED: i64 = 3;
 const IO: i64 = 5;
 const UNKNOWN_KEY: i64 = 1;
 
-/// `Console.print(line)`.
+/// `Console.print(line)`. In a task, a line goes out on the worker when stdout can take it
+/// without waiting, and on a helper of the file pool otherwise, while the task parks (ADR 0117
+/// rule 3).
 pub fn console_print(line: i64) -> i64 {
-    print(&values::text_value(line));
+    let line = values::text_value(line);
+    if sched::in_task() && !una_sys::io::writable(1) {
+        record_write(sched::blocking(Pool::Files, move || write_line(&line)));
+    } else {
+        print(&line);
+    }
     0
 }
 
@@ -221,8 +243,7 @@ fn not_text(site: i64, message: &str) -> i64 {
 
 /// The path that `relative` names under the first `Files` grant that allows the access, as
 /// `una run` confines it (`spec/14 §3`).
-fn confined(relative: &str, writing: bool) -> Option<PathBuf> {
-    let grants = with_state(|state| state.grants.clone()).unwrap_or_default();
+fn confined(grants: &[Grant], relative: &str, writing: bool) -> Option<PathBuf> {
     grants.iter().find_map(|grant| match grant {
         Grant::Files {
             prefix,
@@ -246,25 +267,46 @@ fn file_failure(fault: FileFault) -> i64 {
 
 /// `Files.read(path)` at the call `site`. Content that is not valid UTF-8 aborts the run, or the
 /// task, with U6005 at the operation (S-16, ADR 0086).
+///
+/// In a task, the confinement and the read run on a helper of the file pool while the task
+/// parks, since either may block (ADR 0117 rule 3).
 pub fn files_read(site: i64, path: i64) -> i64 {
-    let Some(target) = confined(&values::text_value(path), false) else {
-        return failed(DENIED);
-    };
-    match Machine.read_file(&target) {
-        Ok(text) => values::text_word(text),
-        Err(FileFault::NotText) => not_text(site, "the content of this file is not valid UTF-8"),
-        Err(fault) => file_failure(fault),
+    let relative = values::text_value(path);
+    let grants = run_grants();
+    let read = sched::blocking(Pool::Files, move || {
+        let target = confined(&grants, &relative, false)?;
+        Some(Machine.read_file(&target))
+    });
+    match read {
+        None => failed(DENIED),
+        Some(Ok(text)) => values::text_word(text),
+        Some(Err(FileFault::NotText)) => {
+            not_text(site, "the content of this file is not valid UTF-8")
+        }
+        Some(Err(fault)) => file_failure(fault),
     }
 }
 
+/// The grants of the run, which every task reads.
+fn run_grants() -> Arc<Vec<Grant>> {
+    with_state(|state| Arc::clone(&state.grants)).unwrap_or_default()
+}
+
 /// `Files.write(path, content)`.
+///
+/// In a task, it runs on a helper of the file pool while the task parks, as a read does.
 pub fn files_write(path: i64, content: i64) -> i64 {
-    let Some(target) = confined(&values::text_value(path), true) else {
-        return failed(DENIED);
-    };
-    match Machine.write_file(&target, &values::text_value(content)) {
-        Ok(()) => 0,
-        Err(fault) => file_failure(fault),
+    let relative = values::text_value(path);
+    let content = values::text_value(content);
+    let grants = run_grants();
+    let written = sched::blocking(Pool::Files, move || {
+        let target = confined(&grants, &relative, true)?;
+        Some(Machine.write_file(&target, &content))
+    });
+    match written {
+        None => failed(DENIED),
+        Some(Ok(())) => 0,
+        Some(Err(fault)) => file_failure(fault),
     }
 }
 
@@ -352,11 +394,15 @@ pub fn event_arg(site: i64, slot: i64, index: i64, value: i64) {
 }
 
 /// Ends the event at `slot`, of operation `site`, with its value, or its failure when `failed`
-/// is 1.
+/// is 1. A task that stopped at or in the operation (`failed` 2) leaves the event as it was,
+/// `aborted`.
 pub fn event_end(site: i64, slot: i64, value: i64, failed: i64) {
     let (Ok(site), Ok(slot)) = (usize::try_from(site), usize::try_from(slot)) else {
         return;
     };
+    if failed == 2 {
+        return;
+    }
     with_state(|state| {
         let Some(op) = state.ops.get(site) else {
             return;
@@ -446,43 +492,49 @@ fn http(
         (grants, state.http)
     })
     .unwrap_or_default();
-    let request = Request {
-        method,
-        url: &url,
-        headers: &headers,
-        body: body.as_bytes(),
-        bearer: bearer.as_deref(),
-    };
     // The deadline of a `for ever within` iteration (`spec/26 §7`): past it, the request fails
-    // at once with `TimedOut`; before it, it waits no longer than the time left. In the body of
-    // a `for ever`, a host stop interrupts the request too (ADR 0116 rule 12): whichever comes
-    // first cuts the wait, in the same poll.
+    // at once with `TimedOut`; before it, it waits no longer than the time left. In the body of a `for ever`, a host stop interrupts the request
+    // too (ADR 0116 rule 12): whichever comes first cuts the wait, in the same poll.
     //
     // Under virtual time, a network wait takes no virtual time (ADR 0116 rule 19), so only a
     // deadline the virtual clock has already reached cuts the request, at once.
     let mut settings = settings;
-    let mut cut = false;
-    if let Some(left) = crate::deadline::left()
+    let mut cut = None;
+    if let Some((left, bound)) = crate::deadline::left()
         && left < settings.timeout
         && (left.is_zero() || !crate::runtime::clock().is_virtual())
     {
         settings.timeout = left;
-        cut = true;
+        cut = Some(bound);
     }
-    let sent = if cut && settings.timeout.is_zero() {
+    let stop = crate::runtime::op_interrupt();
+    let sent = if cut.is_some() && settings.timeout.is_zero() {
         Err(Error::TimedOut)
     } else {
-        match crate::runtime::op_interrupt() {
-            Some(stop) => una_http::client::send_interruptible(
-                &request,
-                &grants,
-                &settings,
-                &stop.interrupt(),
-            ),
-            None => send(&request, &grants, &settings),
-        }
+        // In a task, the request runs on a helper of the I/O pool while the task parks (ADR 0117
+        // rule 3); only owned data, and the run's static stop state, cross.
+        sched::blocking(Pool::Io, move || {
+            let request = Request {
+                method,
+                url: &url,
+                headers: &headers,
+                body: body.as_bytes(),
+                bearer: bearer.as_deref(),
+            };
+            match stop {
+                Some(stop) => una_http::client::send_interruptible(
+                    &request,
+                    &grants,
+                    &settings,
+                    &stop.interrupt(),
+                ),
+                None => send(&request, &grants, &settings),
+            }
+        })
     };
-    if cut && sent == Err(Error::TimedOut) {
+    // A `for ever within` iteration observes its deadline at the operation; a `within` at its
+    // next check point, or when its expression returns (`spec/27 §5`).
+    if cut == Some(crate::deadline::Bound::Ever) && sent == Err(Error::TimedOut) {
         crate::deadline::timed_out();
     }
     match sent {

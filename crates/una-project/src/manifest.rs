@@ -39,6 +39,10 @@ pub struct Manifest {
     /// name, under which its modules are named, and where its files are. Filled when the
     /// dependencies are loaded, empty otherwise.
     pub mounts: Vec<Mount>,
+    /// The modules of dependencies that a trust line of the root names and the lock consents
+    /// to, by their paths in the program, `<local>.m` (ADR 0122 rule 53): each is an extent of
+    /// its own, and a release whose policy it declares is never U3024 (rule 53.1).
+    pub dependency_trusted: Vec<String>,
     /// For `ita.una`, the file as read, with what only it writes: the head's `about`,
     /// `license`, `home` and `publish to`, and the sections `sources`, `needs`, `replace` and
     /// `trust` (ADR 0122).

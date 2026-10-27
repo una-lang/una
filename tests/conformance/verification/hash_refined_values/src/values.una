@@ -1,0 +1,25 @@
+-- test: in edition 0.4, `set` on a `HashMap[Text, Pos]` and `add` on a `HashSet[Pos]` store their value and item at `Pos`, a `refinement` obligation each, refuted for a non-positive one and proven for a `Pos` (ADR 0119 rule 1, ADR 0103 rule 3)
+-- spec: spec/28 §7
+-- expect: error U5001 at src/values.una:22:29
+-- expect: error U5001 at src/values.una:24:20
+module values
+
+import std.collections (HashMap, HashSet, empty_hash_map, empty_hash_set)
+
+pub kind Pos = Int where it > 0
+
+pub kept(p: Pos, k: Text) -> Int
+=
+  let edit m: HashMap[Text, Pos] = empty_hash_map()
+  edit m.set(key: k, value: p)
+  let edit s: HashSet[Pos] = empty_hash_set()
+  edit s.add(item: p)
+  m.len + s.len
+
+pub moved(k: Text) -> Int
+=
+  let edit m: HashMap[Text, Pos] = empty_hash_map()
+  edit m.set(key: k, value: 0)
+  let edit s: HashSet[Pos] = empty_hash_set()
+  edit s.add(item: 0)
+  m.len + s.len
