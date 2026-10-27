@@ -17,8 +17,9 @@
 //!   its coroutine suspends, so its worker runs other tasks, or, outside a coroutine, its thread
 //!   waits. A sender wakes it. So a join never blocks a worker its children need.
 //! - **Helpers.** [`blocking`] runs a host operation that may block on a helper thread of its
-//!   pool while the task parks: `Files` and a blocked `Console.print` on one pool, `Http` on the
-//!   other, so that stalled requests never delay files or prints.
+//!   pool while the task parks: `Files` and a blocked `Console.print` on one pool, the name
+//!   resolution and connection of `Http` on the other, so that requests never delay files or
+//!   prints. A request's waits on its server park on the reactor (`crate::reactor`, slice S7).
 //! - **One scheduler per run.** A program that holds a task construct, a `within` or a
 //!   `for ever` makes it before `main`, with every worker and both helper pools started at full
 //!   size, and the timer thread of `within` (`timer`) started ([`Scheduler::start_all`], #1145,
@@ -1155,7 +1156,8 @@ impl Helpers {
 pub(crate) enum Pool {
     /// `Files`, and a `Console.print` whose output would block: `--file-threads`.
     Files,
-    /// `Http`: `--io-threads`.
+    /// `Http`'s name resolution and connection, and its whole request when the reactor
+    /// cannot start: `--io-threads`.
     Io,
 }
 
@@ -1245,6 +1247,34 @@ pub(crate) fn blocking<T: Send + 'static>(
         // panic outside the job, which `catch_unwind` excludes.
         None => std::panic::resume_unwind(Box::new("a helper thread ended without its result")),
     }
+}
+
+/// Queues `job` on a helper of `pool` for a task on a worker that waits for it by its own
+/// means, as the reactor does (ADR 0117 slice S7); the job back when the calling code is not
+/// such a task, or when the pool has no thread and none could start, so the caller runs it.
+pub(crate) fn submit(
+    pool: Pool,
+    job: Box<dyn FnOnce() + Send>,
+) -> Result<(), Box<dyn FnOnce() + Send>> {
+    let shared = if una_sys::coroutine::inside() {
+        RUNNING.with(|running| {
+            running
+                .borrow()
+                .as_ref()
+                .map(|(_, _, shared)| Arc::clone(shared))
+        })
+    } else {
+        None
+    };
+    let Some(shared) = shared else {
+        return Err(job);
+    };
+    let helpers = match pool {
+        Pool::Files => Arc::clone(&shared.files),
+        Pool::Io => Arc::clone(&shared.io),
+    };
+    drop(shared);
+    helpers.submit(job)
 }
 
 /// Gives the worker to the jobs queued before the calling task, which runs again after them:

@@ -14,7 +14,7 @@
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::os::fd::RawFd;
+use std::os::fd::{AsRawFd, BorrowedFd};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -40,8 +40,8 @@ impl Interrupt for Waits {
         false
     }
 
-    fn wait(&self, socket: RawFd, write: bool, timeout: Duration) -> Waited {
-        match wait(Some(socket), write, false, timeout) {
+    fn wait(&self, socket: BorrowedFd<'_>, write: bool, timeout: Duration) -> Waited {
+        match wait(Some(socket.as_raw_fd()), write, false, timeout) {
             Readiness::Ready => Waited::Ready,
             Readiness::Failed => Waited::Failed,
             Readiness::TimedOut | Readiness::Woken => Waited::TimedOut,

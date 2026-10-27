@@ -409,6 +409,13 @@ fn under_virtual_time_refills_move_the_clock_alike_in_both_engines() {
     let built = una(&dir, &["build", "."]);
     assert_eq!(built.status.code(), Some(0), "{built:?}");
     let trace_file = dir.join("trace.json");
+    // The system checks a new executable at its first launch, which can take a second or more
+    // on a loaded machine: launched once first with a flag it refuses, so only the run is timed.
+    let _ = Command::new(dir.join("target/una/refills"))
+        .arg("--no-such-flag")
+        .current_dir(&dir)
+        .output()
+        .unwrap();
     let native_started = Instant::now();
     let native = Command::new(dir.join("target/una/refills"))
         .args(["--virtual-time", "--trace"])

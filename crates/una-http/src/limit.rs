@@ -406,6 +406,12 @@ impl Governor {
         &self.grants
     }
 
+    /// Whether some grant carries a rate or a count in flight, so that a hop may wait in a
+    /// queue; otherwise nothing is charged and no hop ever waits.
+    pub fn limited(&self) -> bool {
+        self.limited
+    }
+
     /// Locks the state, recovering it when a thread panicked while holding the lock: every
     /// critical section leaves it consistent.
     fn lock(&self) -> MutexGuard<'_, Inner> {
@@ -656,7 +662,7 @@ impl Drop for Permit<'_> {
 
 #[cfg(test)]
 mod tests {
-    use std::os::fd::RawFd;
+    use std::os::fd::BorrowedFd;
     use std::sync::atomic::{AtomicU64, AtomicUsize};
 
     use super::*;
@@ -668,7 +674,7 @@ mod tests {
         fn stopped(&self) -> bool {
             false
         }
-        fn wait(&self, _socket: RawFd, _write: bool, _timeout: Duration) -> Waited {
+        fn wait(&self, _socket: BorrowedFd<'_>, _write: bool, _timeout: Duration) -> Waited {
             Waited::Ready
         }
         fn waits(&self) -> bool {
@@ -682,7 +688,7 @@ mod tests {
         fn stopped(&self) -> bool {
             true
         }
-        fn wait(&self, _socket: RawFd, _write: bool, _timeout: Duration) -> Waited {
+        fn wait(&self, _socket: BorrowedFd<'_>, _write: bool, _timeout: Duration) -> Waited {
             Waited::Stopped
         }
         fn waits(&self) -> bool {

@@ -15,7 +15,7 @@
 //! request of another run left it readable.
 
 use std::cell::Cell;
-use std::os::fd::RawFd;
+use std::os::fd::{AsRawFd, BorrowedFd};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::time::{Duration, Instant};
@@ -125,11 +125,16 @@ impl RunStop {
     }
 
     /// The run's own stop request, by `--stop-after-iterations` (rule 19): one request, however
-    /// many threads make it.
+    /// many threads make it. It wakes the waits on the pipe, as the deadline's request does, so
+    /// a request parked on the native reactor in another `for ever` sees it at once.
     pub fn request_local(&self) {
-        let _ = self
+        if self
             .own
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst);
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            una_sys::signals::wake();
+        }
     }
 
     /// The request of `--deadline`, local to the run: one request, which also wakes the waits
@@ -295,7 +300,7 @@ impl Interrupt for OpInterrupt<'_> {
     /// rounded up, so it waits only the whole milliseconds left, and the sub-millisecond rest
     /// is slept to the exact instant, then the socket is polled once without waiting, so a
     /// readiness that came during that rest is still seen ([`precise_rest`], #1151).
-    fn wait(&self, socket: RawFd, write: bool, timeout: Duration) -> Waited {
+    fn wait(&self, socket: BorrowedFd<'_>, write: bool, timeout: Duration) -> Waited {
         let end = Instant::now().checked_add(timeout);
         loop {
             if self.stop.stopped() {
@@ -311,7 +316,7 @@ impl Interrupt for OpInterrupt<'_> {
                     return Waited::Stopped;
                 }
                 return match una_sys::signals::wait(
-                    Some(socket),
+                    Some(socket.as_raw_fd()),
                     write,
                     !self.stale.get(),
                     Duration::ZERO,
@@ -322,7 +327,8 @@ impl Interrupt for OpInterrupt<'_> {
                     Readiness::Woken | Readiness::TimedOut => Waited::TimedOut,
                 };
             };
-            match una_sys::signals::wait(Some(socket), write, !self.stale.get(), slice) {
+            match una_sys::signals::wait(Some(socket.as_raw_fd()), write, !self.stale.get(), slice)
+            {
                 Readiness::Ready => return Waited::Ready,
                 Readiness::Failed => return Waited::Failed,
                 Readiness::TimedOut => {}
@@ -387,7 +393,7 @@ fn precise_rest(end: Option<Instant>, left: Duration) {
 
 #[cfg(test)]
 mod tests {
-    use std::os::fd::AsRawFd;
+    use std::os::fd::AsFd;
 
     use super::*;
 
@@ -459,7 +465,7 @@ mod tests {
         for k in 0..20u32 {
             let timeout = Duration::from_micros(1_300 + u64::from(k % 4) * 1_000);
             let start = Instant::now();
-            let waited = interrupt.wait(client.as_raw_fd(), false, timeout);
+            let waited = interrupt.wait(client.as_fd(), false, timeout);
             let took = start.elapsed();
             assert!(matches!(waited, Waited::TimedOut), "{waited:?}");
             assert!(took >= timeout, "{took:?} before {timeout:?}");

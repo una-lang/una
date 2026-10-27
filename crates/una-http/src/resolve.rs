@@ -1,6 +1,6 @@
 //! Reaching a server on bounded pools of threads: name resolution and the TCP connection
-//! (`spec/24 §4` rule 2, ADR 0116 amendment P8 and P9, #1148), until the reactor of ADR 0117 step
-//! 6 replaces them.
+//! (`spec/24 §4` rule 2, ADR 0116 amendment P8 and P9, #1148). The reactor of ADR 0117 (slice
+//! S7) keeps them: its job on a helper of the I/O pool hands them to these pools too.
 //!
 //! The host's resolver has no timeout, nothing in the process can cut a lookup, and `connect`
 //! cannot be woken without code of `una-sys` of its own. So a request never runs either on its
@@ -37,7 +37,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError, mpsc};
 use std::time::{Duration, Instant};
 
-use crate::client::{Error, Interrupt};
+use crate::client::Error;
 use crate::limit::Abandon;
 
 /// A lookup function: the addresses of a name and a port, as the system's resolver gives them.
@@ -358,10 +358,10 @@ pub(crate) fn reach(
     host: &str,
     port: u16,
     deadline: Instant,
-    interrupt: &dyn Interrupt,
+    stopped: &dyn Fn() -> bool,
     abandon: &Abandon,
 ) -> Result<TcpStream, Error> {
-    if interrupt.stopped() {
+    if stopped() {
         return Err(Error::Interrupted);
     }
     let Some(pools) = pools() else {
@@ -374,7 +374,7 @@ pub(crate) fn reach(
             let found = hand_off(&pools.lookups, deadline, abandon, move |_| {
                 lookup()(&name, port)
             })?;
-            if interrupt.stopped() {
+            if stopped() {
                 return Err(Error::Interrupted);
             }
             match found {
@@ -386,7 +386,7 @@ pub(crate) fn reach(
     let stream = hand_off(&pools.connects, deadline, abandon, move |gave_up| {
         connect_any(addrs, deadline, gave_up)
     })??;
-    if interrupt.stopped() || abandon.abandoned() {
+    if stopped() || abandon.abandoned() {
         return Err(Error::Interrupted);
     }
     Ok(stream)

@@ -1115,3 +1115,315 @@ fn twenty_thousand_started_tasks_report_the_cap_of_the_map_count_on_linux() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Runs `executable` with `args` in `dir`, its limit of open descriptors raised to `fds` first
+/// (`docs/plan/0117-s7-design.md` §7): a request parked on the reactor holds its socket.
+fn run_with_descriptors(executable: &Path, dir: &Path, fds: usize, args: &[&str]) -> Output {
+    Command::new("sh")
+        .arg("-c")
+        .arg(format!("ulimit -n {fds} && exec \"$0\" \"$@\""))
+        .arg(executable)
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .unwrap()
+}
+
+/// The port file a [`silent_server_process`] writes, read through the environment.
+const SILENT_PORT_FILE: &str = "UNA_TEST_SILENT_PORT_FILE";
+
+#[test]
+#[ignore = "a helper process of the reactor's scale tests: it serves only when they start it"]
+fn silent_server_helper() {
+    // Started by `silent_server_process` with its descriptors raised: accepts connections and
+    // never answers, until it is killed. Run alone, it returns at once.
+    // The test process reads the port file its parent named; no library code reads it.
+    #[allow(clippy::disallowed_methods)]
+    let Some(file) = std::env::var_os(SILENT_PORT_FILE) else {
+        return;
+    };
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::fs::write(&file, port.to_string()).unwrap();
+    let mut held = Vec::new();
+    for stream in listener.incoming() {
+        held.extend(stream.ok());
+    }
+}
+
+/// A server that accepts connections and never answers, in a process of its own whose limit of
+/// open descriptors is `fds`, so that it holds as many connections as the tests park.
+// The child is returned to the caller, which kills and waits for it; it is waited for here
+// only when it never started.
+#[allow(clippy::zombie_processes)]
+fn silent_server_process(fds: usize) -> (std::process::Child, u16) {
+    let file = std::env::temp_dir().join(format!("una-silent-port-{}", std::process::id()));
+    let _ = std::fs::remove_file(&file);
+    let mut child = Command::new("sh")
+        .arg("-c")
+        .arg(format!("ulimit -n {fds} && exec \"$0\" \"$@\""))
+        .arg(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "silent_server_helper",
+            "--ignored",
+            "--nocapture",
+        ])
+        .env(SILENT_PORT_FILE, &file)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let started = std::time::Instant::now();
+    loop {
+        if let Some(port) = std::fs::read_to_string(&file)
+            .ok()
+            .and_then(|text| text.trim().parse().ok())
+        {
+            let _ = std::fs::remove_file(&file);
+            return (child, port);
+        }
+        let late = started.elapsed() >= Duration::from_secs(30);
+        if late {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        assert!(
+            !late,
+            "the silent server did not start (is `ulimit -n {fds}` allowed?)"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn requests_to_a_server_that_never_answers_hold_no_thread_and_delay_no_files_or_prints() {
+    // ADR 0117 rules 3 and 4, Conformance (pools), `spec/27 §2` (slice S7): 64 started tasks
+    // wait on a server that never answers, with one helper in the I/O pool. Each parks on the
+    // reactor, so a task beside them writes and reads a file and prints at once, long before
+    // `--http-timeout`, and the 64 requests time out together, in about one `--http-timeout`,
+    // where a pool of one helper would take 64 of them in turn.
+    let port = silent_server();
+    let program = format!(
+        r#"module stalled
+
+probe() -> Unit
+  uses @http: Http[get]
+=
+  let outcome = attempt @http.get("http://127.0.0.1:{port}/a", headers: [], key_name: None)
+  unit
+
+note() -> Unit
+  uses @console: Console[print]
+  uses @files: Files[read, write]
+=
+  let written = attempt @files.write("note.txt", content: "noted")
+  let read = attempt @files.read("note.txt")
+  @console.print("noted")
+
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @files: Files[read, write]
+  uses @http: Http[get]
+=
+  tasks
+    for i in 1..64
+      start probe()
+    start note()
+  @console.print("done")
+"#
+    );
+    let dir = std::env::temp_dir().join(format!("una-http-stalled-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::create_dir_all(dir.join("data")).unwrap();
+    std::fs::write(
+        dir.join("ita.una"),
+        format!(
+            "ita stalled\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry stalled\n  grants\n    console\n    files \"data/\" read, write\n    http \"http://127.0.0.1:{port}\" get\n"
+        ),
+    )
+    .unwrap();
+    std::fs::copy(
+        root().join("tests/conformance/runtime/for_ever_on_stop/ita.lock"),
+        dir.join("ita.lock"),
+    )
+    .unwrap();
+    std::fs::write(dir.join("src/stalled.una"), program).unwrap();
+    let built = una(&dir, &["build", "."]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    // The system checks a new executable at its first launch, which can take seconds on a
+    // loaded machine: launched once first with a flag it refuses, so only the runs are timed.
+    let _ = Command::new(dir.join("target/una/stalled"))
+        .arg("--no-such-flag")
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    for workers in ["1", "4"] {
+        let started = std::time::Instant::now();
+        let mut child = Command::new(dir.join("target/una/stalled"))
+            .args([
+                "--http-timeout",
+                "4",
+                "--io-threads",
+                "1",
+                "--workers",
+                workers,
+            ])
+            .current_dir(&dir)
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut lines =
+            std::io::BufRead::lines(std::io::BufReader::new(child.stdout.take().unwrap()));
+        let noted = lines.next().unwrap().unwrap();
+        let noted_at = started.elapsed();
+        let done = lines.next().unwrap().unwrap();
+        let done_at = started.elapsed();
+        assert!(child.wait().unwrap().success());
+        assert_eq!((noted.as_str(), done.as_str()), ("noted", "done"));
+        assert!(
+            noted_at < Duration::from_secs(2),
+            "--workers {workers}: the file and the print waited {noted_at:?}"
+        );
+        assert!(
+            done_at >= Duration::from_secs(4) && done_at < Duration::from_secs(30),
+            "--workers {workers}: the requests ended after {done_at:?}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Runs `count` started tasks, each parked on a request to a server that never answers until
+/// `--http-timeout`, all at once, under a memory budget linear in their number, and returns how
+/// long the run took (ADR 0117 Conformance, scale, slice S7).
+fn run_parked(port: u16, count: usize) -> Duration {
+    let name = format!("parked{count}");
+    let dir = started_requests(&name, port, "/never", count);
+    let budget = (32 + count * 128 / 1024).to_string();
+    let started = std::time::Instant::now();
+    let native = run_with_descriptors(
+        &dir.join(format!("target/una/{name}")),
+        &dir,
+        // The cap on request sockets keeps a quarter of the limit for the rest: every task
+        // holds its socket at once under this limit.
+        count * 4 / 3 + 1_024,
+        &["--max-memory", &budget, "--http-timeout", "5"],
+    );
+    let took = started.elapsed();
+    assert_eq!(native.status.code(), Some(0), "{count} tasks: {native:?}");
+    assert_eq!(String::from_utf8_lossy(&native.stdout), "done\n");
+    let _ = std::fs::remove_dir_all(&dir);
+    took
+}
+
+#[test]
+fn a_thousand_and_four_thousand_started_tasks_park_on_requests_at_once() {
+    // ADR 0117 rules 2, 3 and 7, Conformance (scale), slice S7: every task parks on its
+    // request at the same time, on the reactor, so the run lasts about one `--http-timeout`
+    // whatever the number of tasks, far from the 4,000 / 64 rounds of the I/O pool; memory
+    // stays within a budget linear in the tasks.
+    let (mut server, port) = silent_server_process(4_000 * 4 / 3 + 1_024);
+    let one = run_parked(port, 1_000);
+    let four = run_parked(port, 4_000);
+    let _ = server.kill();
+    let _ = server.wait();
+    assert!(
+        four < Duration::from_secs(60),
+        "4,000 parked tasks took {four:?}"
+    );
+    assert!(
+        four < one * 12 + Duration::from_secs(5),
+        "1,000 parked tasks took {one:?}, and 4,000 took {four:?}"
+    );
+}
+
+#[test]
+#[ignore = "10,000 and 15,000 sockets at once: run by the release gates (ADR 0117 Conformance, scale)"]
+fn ten_and_fifteen_thousand_started_tasks_park_on_requests_at_once() {
+    let (mut server, port) = silent_server_process(15_000 * 4 / 3 + 1_024);
+    let one = run_parked(port, 1_000);
+    let ten = run_parked(port, 10_000);
+    let fifteen = run_parked(port, 15_000);
+    let _ = server.kill();
+    let _ = server.wait();
+    assert!(
+        ten < one * 30 + Duration::from_secs(10) && fifteen < one * 45 + Duration::from_secs(10),
+        "1,000 parked tasks took {one:?}, 10,000 took {ten:?} and 15,000 took {fifteen:?}"
+    );
+}
+
+#[test]
+fn parked_requests_under_a_small_descriptor_limit_never_make_files_fail() {
+    // `docs/plan/0117-s7-design.md` §7, decision S7-D4: under `ulimit -n 256`, 1,000 started
+    // tasks wait on a server that never answers; the requests hold at most the sockets the cap
+    // allows, so a task beside them still writes, reads and writes again a file, which it could
+    // not if the requests had taken every descriptor of the process. The requests beyond the
+    // cap wait for a socket, and their deadline covers that wait.
+    let (mut server, port) = silent_server_process(4_096);
+    let program = format!(
+        r#"module crowded
+
+probe() -> Unit
+  uses @http: Http[get]
+=
+  let outcome = attempt @http.get("http://127.0.0.1:{port}/a", headers: [], key_name: None)
+  unit
+
+note() -> Unit
+  uses @files: Files[read, write]
+=
+  let written = attempt @files.write("note.txt", content: "noted")
+  let read = attempt @files.read("note.txt")
+  let copied = when read
+    is Ok(text) -> attempt @files.write("copy.txt", content: text)
+    is Err(failure) -> attempt @files.write("copy.txt", content: "unread")
+  unit
+
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @files: Files[read, write]
+  uses @http: Http[get]
+=
+  tasks at most 2000 at once
+    for i in 1..1000
+      start probe()
+    start note()
+  @console.print("done")
+"#
+    );
+    let dir = std::env::temp_dir().join(format!("una-http-crowded-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::create_dir_all(dir.join("data")).unwrap();
+    std::fs::write(
+        dir.join("ita.una"),
+        format!(
+            "ita crowded\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry crowded\n  grants\n    console\n    files \"data/\" read, write\n    http \"http://127.0.0.1:{port}\" get\n"
+        ),
+    )
+    .unwrap();
+    std::fs::copy(
+        root().join("tests/conformance/runtime/for_ever_on_stop/ita.lock"),
+        dir.join("ita.lock"),
+    )
+    .unwrap();
+    std::fs::write(dir.join("src/crowded.una"), program).unwrap();
+    let built = una(&dir, &["build", "."]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    let native = run_with_descriptors(
+        &dir.join("target/una/crowded"),
+        &dir,
+        256,
+        &["--http-timeout", "3"],
+    );
+    let _ = server.kill();
+    let _ = server.wait();
+    assert_eq!(native.status.code(), Some(0), "{native:?}");
+    assert_eq!(String::from_utf8_lossy(&native.stdout), "done\n");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("data/copy.txt")).unwrap(),
+        "noted"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
