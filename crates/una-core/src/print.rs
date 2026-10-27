@@ -85,6 +85,7 @@ fn precedence(term: &Term) -> u8 {
         Term::Int(digits) if digits.starts_with('-') => 8,
         Term::Field { .. }
         | Term::Len(_)
+        | Term::Size(_)
         | Term::Shape { .. }
         | Term::Proj { .. }
         | Term::Call { .. } => 9,
@@ -145,6 +146,16 @@ fn write_term(
             out.push_str(".has(key: ");
             write_term(out, key, 0, replace);
             out.push(')');
+        }
+        Term::Member { set, item } => {
+            write_term(out, set, 9, replace);
+            out.push_str(".has(item: ");
+            write_term(out, item, 0, replace);
+            out.push(')');
+        }
+        Term::Size(value) => {
+            write_term(out, value, 9, replace);
+            out.push_str(".size");
         }
         Term::Shape { fun, value } => {
             write_term(out, value, 9, replace);
@@ -699,6 +710,26 @@ impl Printer {
                     self.line(indent + 1, "task");
                     self.expr(indent + 2, task);
                 }
+            }
+            Expr::FirstOf { tasks, .. } => {
+                self.line(indent, "first_of");
+                for task in tasks {
+                    self.line(indent + 1, "branch");
+                    self.expr(indent + 2, task);
+                }
+            }
+            Expr::Tasks { bound, body, .. } => {
+                match bound {
+                    Some((bound, _)) => {
+                        self.line(indent, &format!("tasks at most {}", print_atom(bound)));
+                    }
+                    None => self.line(indent, "tasks"),
+                }
+                self.expr(indent + 1, body);
+            }
+            Expr::Start { task, .. } => {
+                self.line(indent, "start");
+                self.expr(indent + 1, task);
             }
             Expr::TogetherFor {
                 source, var, task, ..

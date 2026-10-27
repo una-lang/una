@@ -1399,7 +1399,7 @@
           "editions": [
             "0.4"
           ],
-          "declaration": "pub kind HttpError = Denied | BadUrl | BadRequest | Unreachable | TimedOut | TooLarge | Tls | Protocol | Interrupted",
+          "declaration": "pub kind HttpError = Denied | BadUrl | BadRequest | Unreachable | TimedOut | TooLarge | Tls | Protocol | Interrupted | RateLimited",
           "docs": [
             "Why an HTTP request got no response it may return (`spec/24 §1` rule 3)."
           ]

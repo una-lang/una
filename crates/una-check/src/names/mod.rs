@@ -993,6 +993,7 @@ impl<'p, 'a> Checker<'p, 'a> {
                 prelude::STD_TIME => &prelude::STD_TIME_NAMES,
                 prelude::STD_DRIVE => &prelude::STD_DRIVE_NAMES,
                 prelude::STD_COLLECTIONS => &prelude::STD_COLLECTIONS_NAMES,
+                prelude::STD_LIMIT => &prelude::STD_LIMIT_NAMES,
                 _ => &[],
             };
             if target.is_none() && !is_std {

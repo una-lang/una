@@ -454,11 +454,12 @@ impl<'a> Checker<'_, 'a, '_> {
         if index >= mark {
             return false;
         }
+        let task = self.task_word;
         self.report.error(
             Code::U2023,
             span,
             format!(
-                "`{name}` is declared outside this `together` task, which captures its value and cannot change it, so it cannot be {what} here; return the new value from the task instead"
+                "`{name}` is declared outside this {task}, which captures its value and cannot change it, so it cannot be {what} here; return the new value from the task instead"
             ),
         );
         true
