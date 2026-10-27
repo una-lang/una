@@ -1512,7 +1512,13 @@ impl<'p, 'w> Machine<'p, 'w> {
                         .map(|(name, _)| name.as_str())
                         .chain(self.binders(body).iter().copied())
                         .chain(in_cond.iter().flat_map(|names| names.iter().copied()))
-                        .collect();
+                        .collect::<Vec<_>>();
+                    // The condition of `for until` is evaluated again before each iteration,
+                    // so it is later too, for the body and for the condition itself (#1202).
+                    let mark = self.later.len();
+                    if let Some(cond) = until {
+                        self.later.push((cond, rebound.clone()));
+                    }
                     self.later.push((body, rebound));
                     let result = self.iterations(
                         env,
@@ -1526,7 +1532,7 @@ impl<'p, 'w> Machine<'p, 'w> {
                         ),
                         current,
                     );
-                    self.later.pop();
+                    self.later.truncate(mark);
                     let Some(on_stop) = on_stop else {
                         current = result?;
                         return Ok(Value::Tuple(Rc::new(current)));
