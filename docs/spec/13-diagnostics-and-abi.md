@@ -476,6 +476,7 @@ Keys are printed in this order, and two runs over the same sources print the sam
 | `MapOp` | `has`, `get`, `with`, `without`, `keys`, `values`, `entries` |
 | `Prim` | `add`, `sub`, `mul`, `div`, `mod`, `neg`, `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `not`, `len`, `concat`, `to_text`, `convert`, `fixed`, `map`, `seq`, `set`, `hash_map`, `hash_set`, `priority`, `bit_set`, `float`, `shape`, `decimal`, `float32` |
 | `PriorityOp` | `push`, `pop`, `peek`, `peek_priority`, `peek_ranked`, `items` |
+| `Profile` | `app`, `systems` |
 | `Rhs` | `atom`, `tuple`, `prim`, `call`, `apply`, `op`, `construct`, `field`, `list`, `lambda`, `checked`, `declassify` |
 | `SeqOp` | `push_front`, `push_back`, `pop_front`, `pop_back`, `peek_front`, `peek_back`, `items` |
 | `SetOp` | `has`, `with`, `without`, `first`, `last`, `between`, `items`, `union`, `intersection`, `difference`, `is_subset` |

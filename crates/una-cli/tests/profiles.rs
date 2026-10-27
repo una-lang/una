@@ -10,7 +10,12 @@
 //! packages twice, on four workers, and runs each runtime package twice. Linear in the packages.
 
 // Tests may unwrap freely (compiler/conventions.md §1).
-#![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
+#![allow(
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::unwrap_used
+)]
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
