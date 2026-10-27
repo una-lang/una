@@ -15,7 +15,7 @@ use una_syntax::ast::ClauseKind;
 use crate::contract::Modules;
 use crate::runtime::{driven_init, entry_main, rejected_status, takes_stops};
 use crate::verification::tier_one;
-use crate::{ExitStatus, analyze, load, on_large_stack};
+use crate::{ExitStatus, analyze, on_large_stack};
 
 /// The JSON schema of `una build --json` (`spec/16 §2`).
 const BUILD_SCHEMA: &str = "una.build/1";
@@ -56,7 +56,11 @@ pub(crate) fn build_command(
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> io::Result<ExitStatus> {
-    let package = match load(path) {
+    let package = match crate::package::load_in(
+        path,
+        &std::collections::BTreeMap::new(),
+        options.solving.itaoca.as_ref(),
+    ) {
         Ok(package) => package,
         Err(error) => {
             writeln!(stderr, "error: {error}")?;
@@ -216,6 +220,14 @@ pub(crate) fn build_command(
             && let Some(object) = meta.as_object_mut()
         {
             object.insert("float_environment".to_owned(), json!(true));
+        }
+        // ADR 0116 amendment, P8 (#1145): a program with a task construct or a `for ever`
+        // starts its workers and helper pools before `main`, so no thread starts inside a
+        // construct, at a moment that earlier code could have decided.
+        if described.threads
+            && let Some(object) = meta.as_object_mut()
+        {
+            object.insert("threads".to_owned(), json!(true));
         }
         if let (Some(root), Some(object)) = (described.failure, meta.as_object_mut()) {
             object.insert(

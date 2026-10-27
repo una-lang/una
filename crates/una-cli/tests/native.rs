@@ -11,51 +11,18 @@
 //! the test until it leaves the list, so the list stays exact.
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
 
+#[path = "common/native_build.rs"]
+mod native_build;
 #[path = "common/timing.rs"]
 mod timing;
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::sync::OnceLock;
 
 use serde_json::Value;
 
-/// The repository root.
-fn root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .canonicalize()
-        .unwrap()
-}
-
-/// Builds the runtime library next to the `una` binary, once: `cargo test` builds `una-rt`'s
-/// static library only when asked.
-fn runtime() {
-    static BUILT: OnceLock<()> = OnceLock::new();
-    BUILT.get_or_init(|| {
-        let status = Command::new(env!("CARGO"))
-            .args(["build", "--quiet", "-p", "una-rt"])
-            .current_dir(root())
-            .status()
-            .unwrap();
-        assert!(status.success(), "cargo build -p una-rt failed");
-    });
-}
-
-/// Runs `una` in `dir`, once the runtime library is built: `una build` links it, and cargo
-/// builds the test binaries before the staticlib on a cold target directory.
-fn una(dir: &Path, args: &[&str]) -> Output {
-    runtime();
-    Command::new(env!("CARGO_BIN_EXE_una"))
-        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
-        .env_remove("UNA_PROOF_KEY")
-        .args(args)
-        .current_dir(dir)
-        .env("NO_COLOR", "1")
-        .output()
-        .unwrap()
-}
+use native_build::{root, runtime, una};
 
 /// A fresh copy of `source`, a package directory or a single file, in a temporary directory:
 /// builds and proof caches never touch the repository.
@@ -1011,11 +978,25 @@ fn completes_or_u6003(name: &str, output: &Output) {
     assert!(!stderr.contains("memory allocation"), "{name}: {stderr}");
 }
 
+/// Whether the tests run under Rosetta, Apple's x86-64 emulator, on Linux: its mappings show
+/// in `/proc/self/maps`. Rosetta's own VM tracker kills a program that starts a million tasks
+/// ("VmTracker slab allocator has run out of memory", VMAllocationTracker.cpp:659), which
+/// completes natively on arm64 Linux and on macOS, so that one test skips itself there (#1246).
+fn under_rosetta() -> bool {
+    std::fs::read_to_string("/proc/self/maps").is_ok_and(|maps| maps.contains("rosetta"))
+}
+
 #[test]
 fn i1_i8_a_block_of_a_million_tasks_completes_or_stops_with_u6003() {
     // ADR 0113 rules 1, 2 and 5: a `together for` over 10^6 small integers under `--max-memory
     // 64` reserves its result list exactly, each batch's state and each task's start, so it
     // either completes or stops with U6003 at the block, and never aborts the process.
+    if under_rosetta() {
+        println!(
+            "skipped under Rosetta: the emulator's VM tracker kills a million-task program (not the program)"
+        );
+        return;
+    }
     let main = "pub main() -> Unit\n  uses @console: Console[print]\n=\n";
     let name = "million_tasks";
     let dir = copies_program(
@@ -1424,7 +1405,7 @@ fn a_list_built_by_append_in_a_loop_is_never_copied_at_any_size() {
         );
         edition_0_2(&dir);
         let expected = format!("{n} {}\n", n + 1);
-        let interpreted = una(&dir, &["run"]);
+        let interpreted = una(&dir, &["run", "."]);
         assert_eq!(interpreted.status.code(), Some(0), "{n}: {interpreted:?}");
         assert_eq!(
             String::from_utf8_lossy(&interpreted.stdout),
@@ -1830,6 +1811,152 @@ fn tasks_package(name: &str, module: &str, program: &str) -> PathBuf {
     let built = una(&dir, &["build"]);
     assert_eq!(built.status.code(), Some(0), "{built:?}");
     dir
+}
+
+#[test]
+fn one_worker_runs_blocks_nested_three_levels_deep_without_deadlock() {
+    // ADR 0117 rule 3 and its Conformance section: a join parks its task, so a `together` whose
+    // parent and children share the one worker, nested three levels deep, ends with the
+    // interpreter's results, with one worker and with several.
+    let program = "module nest\n\nleaf(label: Text, n: Int) -> Int\n  uses @console: Console[print]\n=\n  @console.print(label)\n  n\n\nmiddle(label: Text, n: Int) -> Int\n  uses @console: Console[print]\n=\n  together\n    let x = leaf(\"{label}.1\", n: n)\n    let y = leaf(\"{label}.2\", n: n + 1)\n  x + y\n\ntop(label: Text, n: Int) -> Int\n  uses @console: Console[print]\n=\n  together\n    let x = middle(\"{label}.1\", n: n)\n    let y = middle(\"{label}.2\", n: n + 10)\n  x + y\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  together\n    let a = top(\"a\", n: 1)\n    let b = top(\"b\", n: 100)\n  @console.print(\"{a} {b}\")\n";
+    let dir = tasks_package("nest", "nest", program);
+    let exe = dir.join("target/una/nest");
+    for workers in ["1", "2", "64"] {
+        let native = Command::new(&exe)
+            .args(["--workers", workers])
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        assert_eq!(
+            native.status.code(),
+            Some(0),
+            "--workers {workers}: {native:?}"
+        );
+        let stdout = String::from_utf8_lossy(&native.stdout);
+        let mut lines: Vec<&str> = stdout.lines().collect();
+        assert_eq!(lines.pop(), Some("26 422"), "--workers {workers}: {stdout}");
+        lines.sort_unstable();
+        assert_eq!(
+            lines,
+            [
+                "a.1.1", "a.1.2", "a.2.1", "a.2.2", "b.1.1", "b.1.2", "b.2.1", "b.2.2"
+            ],
+            "--workers {workers}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Whether the executable at `exe` embeds the description key that starts its threads before
+/// `main` (#1145): `una build` writes the description as compact JSON, so the key reads
+/// `"threads":true` in the binary, and the runtime's own code never holds that text.
+fn embeds_threads(exe: &Path) -> bool {
+    let bytes = std::fs::read(exe).unwrap();
+    bytes
+        .windows(br#""threads":true"#.len())
+        .any(|window| window == br#""threads":true"#)
+}
+
+#[test]
+fn the_description_starts_threads_exactly_for_tasks_and_for_ever() {
+    // #1145, ADR 0116 amendment P8, `spec/27 §1` rule 4: codegen marks a program that holds a
+    // `together`, a `together for`, a `for ever` or a `within`, and `una build` embeds `"threads": true`,
+    // which makes the runtime start its threads and fill its stack pool before `main`; a
+    // program with none of them has no such key and starts no thread.
+    let cases = [
+        (
+            "flagtogether",
+            "module flagtogether\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  together\n    let a = 1\n    let b = 2\n  @console.print(\"{a} {b}\")\n",
+            true,
+        ),
+        (
+            "flagfor",
+            "module flagfor\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let squares = together for i in 1..3\n    i * i\n  @console.print(\"{squares.len}\")\n",
+            true,
+        ),
+        (
+            "flagnone",
+            "module flagnone\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  @console.print(\"plain\")\n",
+            false,
+        ),
+    ];
+    for (name, program, threads) in cases {
+        let dir = tasks_package(name, name, program);
+        let exe = dir.join(format!("target/una/{name}"));
+        assert_eq!(embeds_threads(&exe), threads, "{name}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    // `for ever`, from its conformance case, in edition 0.4.
+    let scratch = std::env::temp_dir().join(format!("una-flag-ever-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).unwrap();
+    let dir = copy(
+        &root().join("tests/conformance/runtime/for_ever_on_stop"),
+        &scratch,
+    );
+    let built = una(&dir, &["build", "."]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    assert!(embeds_threads(&dir.join("target/una/for_ever_on_stop")));
+    // `within`, from its conformance case, in edition 0.4: a deadline counts as a task
+    // construct for P8, so its program starts its threads before `main` too.
+    let within = copy(
+        &root().join("tests/conformance/runtime/within_runs"),
+        &scratch,
+    );
+    let built = una(&within, &["build", "."]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    assert!(embeds_threads(&within.join("target/una/within_runs")));
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+#[test]
+fn the_flags_of_tasks_out_of_range_are_usage_errors_in_both_engines() {
+    // ADR 0117, Diagnostics: a `--workers`, `--task-depth`, `--io-threads` or `--file-threads`
+    // that is not a number or is out of its range is a usage error, exit code 2, before `main`.
+    let program = "module flags\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  @console.print(\"ran\")\n";
+    let dir = tasks_package("flags", "flags", program);
+    let exe = dir.join("target/una/flags");
+    for args in [
+        &["--workers", "0"][..],
+        &["--workers", "1025"],
+        &["--workers", "many"],
+        &["--max-depth", "50", "--task-depth", "51"],
+        &["--io-threads", "4097"],
+        &["--file-threads", "257"],
+    ] {
+        let native = Command::new(&exe)
+            .args(args)
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        assert_eq!(native.status.code(), Some(2), "{args:?}: {native:?}");
+        assert!(native.stdout.is_empty(), "{args:?}");
+        let mut run = vec!["run", "."];
+        run.extend_from_slice(args);
+        let interpreted = una(&dir, &run);
+        assert_eq!(
+            interpreted.status.code(),
+            Some(2),
+            "{args:?}: {interpreted:?}"
+        );
+    }
+    let native = Command::new(&exe)
+        .args([
+            "--workers",
+            "1",
+            "--task-depth",
+            "7",
+            "--io-threads",
+            "1",
+            "--file-threads",
+            "1",
+        ])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert_eq!(native.status.code(), Some(0), "{native:?}");
+    assert_eq!(String::from_utf8_lossy(&native.stdout), "ran\n");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -2399,7 +2526,7 @@ fn a_call_that_would_retain_every_owned_argument_takes_the_borrowed_entry() {
             &[("src/rc.una", &program)],
         );
         edition_0_2(&dir);
-        let interpreted = una(&dir, &["run"]);
+        let interpreted = una(&dir, &["run", "."]);
         assert_eq!(
             interpreted.status.code(),
             Some(0),
@@ -3521,4 +3648,276 @@ pub main() -> Unit
     }
     assert_eq!(traces[0], traces[1]);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A package of edition 0.4, in `ita.una`, whose `run` entry is `module`, built.
+fn within_package(name: &str, module: &str, program: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("una-native-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(
+        dir.join("ita.una"),
+        format!(
+            "ita {name}\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry {module}\n  grants\n    console\n"
+        ),
+    )
+    .unwrap();
+    std::fs::copy(
+        root().join("tests/conformance/runtime/within_runs/ita.lock"),
+        dir.join("ita.lock"),
+    )
+    .unwrap();
+    std::fs::write(dir.join(format!("src/{module}.una")), program).unwrap();
+    let built = una(&dir, &["build", "."]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    dir
+}
+
+#[test]
+fn a_deadline_cuts_a_long_computation_at_a_check_point_in_both_engines() {
+    // `spec/27 §5`, ADR 0117 rule 5: once the deadline passes, the expression is cancelled at
+    // its next check point, here an iteration of a loop that would run for minutes, and the
+    // `within` fails with its time-out, `Deadline.Expired`, which `if error use` handles. The
+    // timing label is `public`, so the result prints. The trace has the `timeout` event, then
+    // the print.
+    let program = "module busy\n\nimport std.time (millisecond)\n\nspin(n: Int) -> Int\n=\n  let edit total = 0\n  for i in 1..n\n    total = total + 1\n  total\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let total = spin(4000000000) within 20 * millisecond\n    if error use -1\n  @console.print(\"total {total}\")\n";
+    let dir = within_package("busy", "busy", program);
+    let started = std::time::Instant::now();
+    let interpreted = una(&dir, &["--json", "run", "."]);
+    assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
+    let document: Value = serde_json::from_slice(&interpreted.stdout).unwrap();
+    assert_eq!(
+        document["output"],
+        serde_json::json!(["total -1"]),
+        "{document}"
+    );
+    assert_eq!(
+        document["trace"],
+        serde_json::json!([
+            {"seq": 1, "outcome": {"kind": "timeout"}},
+            {
+                "seq": 2,
+                "instance": "host:Console",
+                "capability": "Console",
+                "op": "print",
+                "args": {"line": "\"total -1\""},
+                "outcome": {"kind": "ok", "value": "unit"}
+            }
+        ])
+    );
+    let exe = dir.join("target/una/busy");
+    for workers in ["1", "4"] {
+        let trace = dir.join(format!("trace-{workers}.json"));
+        let native = Command::new(&exe)
+            .args(["--workers", workers, "--trace"])
+            .arg(&trace)
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        assert_eq!(native.status.code(), Some(0), "{native:?}");
+        assert_eq!(String::from_utf8_lossy(&native.stdout), "total -1\n");
+        let written: Value =
+            serde_json::from_str(&std::fs::read_to_string(&trace).unwrap()).unwrap();
+        assert_eq!(written, document["trace"]);
+    }
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(60),
+        "the deadline cut nothing"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_deadline_cancels_the_tasks_started_inside_its_expression() {
+    // ADR 0117 rule 5 and `spec/27 §5` rule 7: tasks started inside `e` are cancelled with it,
+    // and `e` ends once they have stopped; the `within` then fails with its time-out. Every task
+    // of the block that had not returned ends with its `cancelled` event, started or not, in
+    // task order, so the trace is the interpreter's whatever the number of workers.
+    let program = "module tasks\n\nimport std.time (millisecond)\n\nspin(n: Int) -> Int\n=\n  let edit total = 0\n  for i in 1..n\n    total = total + 1\n  total\n\npair(n: Int) -> Int\n=\n  together\n    let a = spin(n)\n    let b = spin(n)\n    let c = spin(n)\n  a + b + c\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let total = pair(4000000000) within 20 * millisecond\n    if error use -1\n  @console.print(\"total {total}\")\n";
+    let dir = within_package("tasks", "tasks", program);
+    let started = std::time::Instant::now();
+    let interpreted = una(&dir, &["--json", "run", "."]);
+    assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
+    let document: Value = serde_json::from_slice(&interpreted.stdout).unwrap();
+    assert_eq!(
+        document["output"],
+        serde_json::json!(["total -1"]),
+        "{document}"
+    );
+    let kinds: Vec<String> = document["trace"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|event| {
+            format!(
+                "{}:{}",
+                event["task"].as_str().unwrap_or(""),
+                event["outcome"]["kind"].as_str().unwrap_or("")
+            )
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            "1:cancelled",
+            "2:cancelled",
+            "3:cancelled",
+            ":timeout",
+            ":ok"
+        ],
+        "{document}"
+    );
+    let exe = dir.join("target/una/tasks");
+    for workers in ["1", "4"] {
+        let trace = dir.join(format!("trace-{workers}.json"));
+        let native = Command::new(&exe)
+            .args(["--workers", workers, "--trace"])
+            .arg(&trace)
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        assert_eq!(
+            native.status.code(),
+            Some(0),
+            "--workers {workers}: {native:?}"
+        );
+        assert_eq!(String::from_utf8_lossy(&native.stdout), "total -1\n");
+        let written: Value =
+            serde_json::from_str(&std::fs::read_to_string(&trace).unwrap()).unwrap();
+        assert_eq!(written, document["trace"], "--workers {workers}");
+    }
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(60),
+        "the deadline cut nothing"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn tasks_inside_a_within_have_one_trace_under_virtual_time() {
+    // `spec/27 §5` rule 7 and `spec/26 §8`: under `--virtual-time` no deadline passes inside
+    // `e`, so a `within` over a block of tasks that print has the same output and trace in both
+    // engines, with one worker and with several.
+    let program = "module vt\n\nimport std.time (second)\n\nleaf(label: Text, n: Int) -> Int\n  uses @console: Console[print]\n=\n  @console.print(label)\n  n\n\npair(n: Int) -> Int\n  uses @console: Console[print]\n=\n  together\n    let a = leaf(\"a\", n: n)\n    let b = leaf(\"b\", n: n + 1)\n  a + b\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let total = pair(20) within 1 * second\n    if error use -1\n  @console.print(\"total {total}\")\n";
+    let dir = within_package("vt", "vt", program);
+    let interpreted = una(&dir, &["--json", "run", ".", "--virtual-time"]);
+    assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
+    let document: Value = serde_json::from_slice(&interpreted.stdout).unwrap();
+    assert_eq!(
+        document["output"],
+        serde_json::json!(["a", "b", "total 41"]),
+        "{document}"
+    );
+    for workers in ["1", "4"] {
+        let trace = dir.join(format!("trace-{workers}.json"));
+        let native = Command::new(dir.join("target/una/vt"))
+            .args(["--virtual-time", "--workers", workers, "--trace"])
+            .arg(&trace)
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        assert_eq!(
+            native.status.code(),
+            Some(0),
+            "--workers {workers}: {native:?}"
+        );
+        let mut lines: Vec<String> = String::from_utf8_lossy(&native.stdout)
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(lines.pop().as_deref(), Some("total 41"));
+        lines.sort();
+        assert_eq!(lines, ["a", "b"], "--workers {workers}");
+        let written: Value =
+            serde_json::from_str(&std::fs::read_to_string(&trace).unwrap()).unwrap();
+        assert_eq!(written, document["trace"], "--workers {workers}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_deadline_met_keeps_the_value_under_virtual_time_in_both_engines() {
+    // `spec/27 §5` and `spec/26 §8`: under `--virtual-time` nothing but the run's own waits
+    // moves the clock, so a computation meets any deadline, and both engines give the same
+    // output and trace.
+    let program = "module met\n\nimport std.time (millisecond)\n\nspin(n: Int) -> Int\n=\n  let edit total = 0\n  for i in 1..n\n    total = total + 1\n  total\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let total = spin(100000) within 1 * millisecond\n    if error use -1\n  @console.print(\"total {total}\")\n";
+    let dir = within_package("met", "met", program);
+    let interpreted = una(&dir, &["--json", "run", ".", "--virtual-time"]);
+    assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
+    let document: Value = serde_json::from_slice(&interpreted.stdout).unwrap();
+    assert_eq!(
+        document["output"],
+        serde_json::json!(["total 100000"]),
+        "{document}"
+    );
+    let trace = dir.join("trace.json");
+    let native = Command::new(dir.join("target/una/met"))
+        .args(["--virtual-time", "--trace"])
+        .arg(&trace)
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert_eq!(native.status.code(), Some(0), "{native:?}");
+    assert_eq!(String::from_utf8_lossy(&native.stdout), "total 100000\n");
+    let written: Value = serde_json::from_str(&std::fs::read_to_string(&trace).unwrap()).unwrap();
+    assert_eq!(written, document["trace"]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A program that runs `rounds` `within`s, each over an expression that builds a list of a
+/// thousand items and then computes for minutes, so its deadline of 1 ms cuts it with the list
+/// alive, and prints how many were cut.
+fn cuts_program(rounds: u64) -> String {
+    format!(
+        "module cuts\n\nimport std.time (millisecond)\n\nkeep(items: List[Int], total: Int) -> Int = total\n\ngrow(n: Int) -> Int\n=\n  let edit items = [0]\n  for i in 1..1000\n    items = items.append(item: i)\n  let edit total = 0\n  for i in 1..n\n    total = total + 1\n  keep(items, total: total)\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let edit cut = 0\n  for round in 1..{rounds}\n    let got = grow(4000000000) within 1 * millisecond\n      if error use -1\n    if got == -1\n      cut = cut + 1\n  @console.print(\"cut {{cut}}\")\n"
+    )
+}
+
+#[test]
+fn ten_thousand_cuts_release_what_they_cut_in_both_engines() {
+    // ADR 0117 rule 5 and its amendment of 2026-10-19: a cut leaves each frame of the
+    // expression by the path a failure takes, so each frame releases its words. Ten thousand
+    // cuts, each abandoning a list of a thousand items, about 16 KiB, run under a 16 MiB budget,
+    // which a leak would exceed some ten times over (U6003). The same program with no cut needs
+    // between 8 and 16 MiB in a debug build, whatever the number of rounds.
+    let dir = within_package("cuts", "cuts", &cuts_program(10_000));
+    let interpreted = una(&dir, &["run", ".", "--max-memory", "16"]);
+    assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
+    assert_eq!(String::from_utf8_lossy(&interpreted.stdout), "cut 10000\n");
+    for workers in ["1", "4"] {
+        let native = Command::new(dir.join("target/una/cuts"))
+            .args(["--max-memory", "16", "--workers", workers])
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        assert_eq!(
+            native.status.code(),
+            Some(0),
+            "--workers {workers}: {native:?}"
+        );
+        assert_eq!(String::from_utf8_lossy(&native.stdout), "cut 10000\n");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_memory_that_cuts_hold_stays_flat_as_they_grow() {
+    // The same program at growing numbers of cuts, natively, under one budget that the
+    // program with no cut needs anyway (16 MiB in a debug build): memory that grew with the cuts
+    // would pass at the smallest number and fail at the largest. Each cut abandons about 16 KiB;
+    // at 10,000 cuts a leak of a tenth of it would need another 16 MiB.
+    for rounds in [500_u64, 2_000, 10_000] {
+        let dir = within_package(&format!("cuts{rounds}"), "cuts", &cuts_program(rounds));
+        let native = Command::new(dir.join(format!("target/una/cuts{rounds}")))
+            .args(["--max-memory", "16"])
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        assert_eq!(native.status.code(), Some(0), "{rounds} cuts: {native:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&native.stdout),
+            format!("cut {rounds}\n")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

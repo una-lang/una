@@ -22,7 +22,7 @@ use una_syntax::{SourceDb, Span};
 
 use crate::contract::Modules;
 use crate::verification::tier_one;
-use crate::{Analysis, Environment, ExitStatus, Package, analyze, load, on_large_stack};
+use crate::{Analysis, Environment, ExitStatus, Package, analyze, on_large_stack};
 
 /// The exit status of a package that the checks reject: 3 for an internal error, 1 otherwise.
 pub(crate) fn rejected_status(diagnostics: &[Diagnostic]) -> ExitStatus {
@@ -50,6 +50,8 @@ pub(crate) struct RunOptions<'a> {
     pub(crate) grants: &'a [String],
     /// `--max-depth`.
     pub(crate) max_depth: usize,
+    /// `--workers`, `--task-depth`, `--io-threads` and `--file-threads`, as given.
+    pub(crate) tasks: TaskFlags,
     /// `--max-memory`, in MiB.
     pub(crate) max_memory: usize,
     /// `--max-response` and `--http-timeout` (`spec/24 §4`).
@@ -74,6 +76,30 @@ pub(crate) struct RunOptions<'a> {
     pub(crate) deadline: Option<u64>,
     /// `--stop-grace`: the seconds from the first host stop request to the hard stop (rule 16).
     pub(crate) stop_grace: u64,
+}
+
+/// The flags of tasks as given on the command line, each `None` when absent (ADR 0117).
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct TaskFlags {
+    pub(crate) workers: Option<usize>,
+    pub(crate) task_depth: Option<usize>,
+    pub(crate) io_threads: Option<usize>,
+    pub(crate) file_threads: Option<usize>,
+}
+
+impl TaskFlags {
+    /// The checked settings for a run of `max_depth`, or the message of the usage error. The
+    /// interpreter runs no coroutine before `first of` and `start` (ADR 0117 rule 11), so it
+    /// only checks them, and refuses what the executable refuses.
+    fn check(self, max_depth: usize) -> Result<una_interp::Concurrency, String> {
+        una_interp::Concurrency::from_flags(
+            max_depth,
+            self.workers,
+            self.task_depth,
+            self.io_threads,
+            self.file_threads,
+        )
+    }
 }
 
 /// The world of `una run`: printed lines go to the thread that writes stdout, environment
@@ -202,7 +228,11 @@ pub(crate) fn run_command(
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> io::Result<ExitStatus> {
-    let package = match load(path) {
+    let package = match crate::package::load_in(
+        path,
+        &std::collections::BTreeMap::new(),
+        options.solving.itaoca.as_ref(),
+    ) {
         Ok(package) => package,
         Err(error) => {
             writeln!(stderr, "error: {error}")?;
@@ -306,6 +336,10 @@ pub(crate) fn run_command(
         )?;
         return Ok(ExitStatus::Usage);
     };
+    if let Err(message) = options.tasks.check(options.max_depth) {
+        writeln!(stderr, "error: {message}")?;
+        return Ok(ExitStatus::Usage);
+    }
     // ADR 0116 rule 18: a run that can reach a `for ever` or runs a driver installs the
     // handlers of SIGINT and SIGTERM; any other keeps their default actions.
     // The run's host stop state is made first, so a signal that comes while the handlers are
@@ -421,6 +455,9 @@ pub(crate) fn run_command(
             | Abort::Memory { .. }
             | Abort::HeaderValue { .. }
             | Abort::NotText { .. }
+            | Abort::NoRandomBytes
+            | Abort::Tables { .. }
+            | Abort::IntText { .. }
             | Abort::HostStop { .. },
         ) => ExitStatus::Errors,
         Completion::Aborted(Abort::Fault { .. }) => ExitStatus::Internal,
@@ -698,7 +735,8 @@ fn root_location(package: &Package) -> Location {
 }
 
 /// U6001 when `main` failed, U6003 when a call went too deep, U6004 for a header value with a
-/// control character, U6005 for host text that is not valid UTF-8, U8001 on a fault.
+/// control character, U6005 for host text that is not valid UTF-8, U6009 when the host gave no
+/// random bytes for keyed hashing, U8001 on a fault.
 fn completion_diagnostic(
     completion: &Completion,
     main: Span,
@@ -750,6 +788,23 @@ fn abort_diagnostic(abort: &Abort, sources: &SourceDb, root: &Location) -> Diagn
         Abort::NotText { span, message } => {
             Diagnostic::error(Code::U6005, *message, sources.location(*span))
         }
+        // Before any code runs, so with no position of its own (`spec/13 §5`).
+        Abort::NoRandomBytes => Diagnostic::error(
+            Code::U6009,
+            "the host gave no random bytes for keyed hashing",
+            root.clone(),
+        ),
+        Abort::Tables { span } => Diagnostic::error(
+            Code::U6003,
+            "this call makes a hash table after the run's table counter reached its limit",
+            sources.location(*span),
+        ),
+        // A final value of `main` has no position of its own (`spec/11 §7`, #923).
+        Abort::IntText { span } => Diagnostic::error(
+            Code::U6003,
+            una_core::INT_TEXT_LIMIT_MESSAGE,
+            span.map_or_else(|| root.clone(), |span| sources.location(span)),
+        ),
         Abort::HostStop { span, hard } => Diagnostic::error(
             Code::U6007,
             host_stop_message(*hard),
@@ -771,7 +826,11 @@ pub(crate) fn test_command(
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> io::Result<ExitStatus> {
-    let package = match load(path) {
+    let package = match crate::package::load_in(
+        path,
+        &std::collections::BTreeMap::new(),
+        options.solving.itaoca.as_ref(),
+    ) {
         Ok(package) => package,
         Err(error) => {
             writeln!(stderr, "error: {error}")?;
@@ -814,6 +873,10 @@ pub(crate) fn test_command(
         )?;
         return Ok(ExitStatus::Usage);
     };
+    if let Err(message) = options.tasks.check(options.max_depth) {
+        writeln!(stderr, "error: {message}")?;
+        return Ok(ExitStatus::Usage);
+    }
     // `una test` runs the examples of the root's modules only: a dependency's examples are
     // checked as its own, and never run with the root's authority (ADR 0122 rule 52).
     let mounts = crate::package::project(&package).0.mounts;

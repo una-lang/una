@@ -119,13 +119,15 @@ pub(crate) fn std_testing_names(edition: Edition) -> &'static [&'static str] {
 /// The path of the standard module of time units, edition 0.4 (ADR 0116 rule 0).
 pub(crate) const STD_TIME: &str = "std.time";
 
-/// What `std.time` exports: its measures, and the built-in constants `millisecond`, `second`
-/// and `minute`, of type `Int of Millisecond` (ADR 0116 rule 0 and its amendment of
-/// 2026-10-19).
-pub(crate) const STD_TIME_NAMES: [&str; 6] = [
+/// What `std.time` exports: its measures, the failure kinds of `within` (ADR 0117 rule 5), and
+/// the built-in constants `millisecond`, `second` and `minute`, of type `Int of Millisecond`
+/// (ADR 0116 rule 0 and its amendment of 2026-10-19).
+pub(crate) const STD_TIME_NAMES: [&str; 8] = [
     "Second",
     "Millisecond",
     "Minute",
+    "Timed",
+    "Deadline",
     "millisecond",
     "second",
     "minute",
@@ -157,7 +159,7 @@ pub(crate) const STD_COLLECTIONS: &str = una_core::COLLECTIONS_MODULE;
 /// What `std.collections` exports to an import in edition 0.4: its types, its kind `Ranked`
 /// and the functions that make the types implemented so far (ADR 0119 rule 0). The other
 /// functions join the list with the types they make.
-pub(crate) const STD_COLLECTIONS_NAMES: [&str; 11] = [
+pub(crate) const STD_COLLECTIONS_NAMES: [&str; 13] = [
     "Stack",
     "Queue",
     "Set",
@@ -169,6 +171,8 @@ pub(crate) const STD_COLLECTIONS_NAMES: [&str; 11] = [
     "empty_stack",
     "empty_queue",
     "empty_set",
+    "empty_hash_map",
+    "empty_hash_set",
 ];
 
 /// The text functions of the prelude in edition 0.2 (`spec/22 §2`).

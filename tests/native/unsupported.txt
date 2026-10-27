@@ -5,3 +5,9 @@ tests/conformance/runtime/dense_memory_budget
 tests/conformance/runtime/dense_memory_budget_integers
 tests/conformance/runtime/stack_queue_run
 tests/conformance/runtime/set_run
+tests/conformance/runtime/hash_map_run
+tests/conformance/runtime/hash_set_run
+tests/conformance/runtime/hash_keys_equal
+tests/conformance/runtime/hash_on_stop_run
+tests/conformance/runtime/hash_until_run
+tests/conformance/runtime/loop_state_dense

@@ -426,6 +426,13 @@ impl Writer<'_> {
             Prim::Seq(op) => node!(Seq, "value" => J::Obj(vec![("kind", s(op.as_str()))])),
             // ADR 0119 rule 7: the methods of `Set`, by their source names.
             Prim::Set(op) => node!(Set, "value" => J::Obj(vec![("kind", s(op.as_str()))])),
+            // ADR 0119 rule 12: the methods of `HashMap` and `HashSet`, by their source names.
+            Prim::HashMap(op) => {
+                node!(HashMap, "value" => J::Obj(vec![("kind", s(op.as_str()))]))
+            }
+            Prim::HashSet(op) => {
+                node!(HashSet, "value" => J::Obj(vec![("kind", s(op.as_str()))]))
+            }
             // ADR 0114 rule 17: the operations of `F64` are kinds of their own, under `float`.
             Prim::Float(op) => node!(Float, "value" => J::Obj(vec![(
                 "kind",
@@ -830,6 +837,21 @@ impl Writer<'_> {
             Expr::Attempt { body, span } => {
                 node!(Attempt, "body" => self.expr(body), "span" => self.span(*span))
             }
+            Expr::Within {
+                deadline,
+                deadline_span,
+                body,
+                timeout,
+                wrap,
+                span,
+            } => node!(Within,
+                "deadline" => self.atom(deadline),
+                "deadline_span" => self.span(*deadline_span),
+                "body" => self.expr(body),
+                "timeout" => self.ctor(timeout),
+                "wrap" => opt(wrap.as_deref(), |c| self.ctor(c)),
+                "span" => self.span(*span),
+            ),
             Expr::With { cap, source, body } => node!(With,
                 "cap" => s(cap),
                 "source" => self.source(source),

@@ -218,6 +218,31 @@ thread_local! {
     static HEAP: RefCell<Heap> = RefCell::new(Heap::default());
 }
 
+/// A task's heap, and its test counters, while it is parked (`sched`, ADR 0117 rule 2).
+#[derive(Default)]
+pub(crate) struct Slots {
+    heap: Heap,
+    #[cfg(test)]
+    counters: [usize; 3],
+}
+
+/// Exchanges the thread's heap and test counters with `slots`. A heap is never borrowed when a
+/// task parks or ends: a borrow here is a defect, which ends the process rather than mix two
+/// tasks' heaps.
+pub(crate) fn swap_slots(slots: &mut Slots) {
+    HEAP.with(|heap| match heap.try_borrow_mut() {
+        Ok(mut heap) => std::mem::swap(&mut *heap, &mut slots.heap),
+        Err(_) => std::process::abort(),
+    });
+    #[cfg(test)]
+    {
+        let [equality, objects, growth] = &mut slots.counters;
+        *equality = EQUALITY_STEPS.with(|cell| cell.replace(*equality));
+        *objects = OBJECT_STEPS.with(|cell| cell.replace(*objects));
+        *growth = MOST_GROWTH.with(|cell| cell.replace(*growth));
+    }
+}
+
 /// Whether `word` is a handle.
 fn is_handle(word: i64) -> bool {
     word & 1 == 0 && word != 0
@@ -639,8 +664,8 @@ pub fn text_len(a: i64) -> i64 {
 }
 
 /// An `Int` as text, in decimal.
-pub fn int_text(a: i64) -> i64 {
-    text_word(int_value(a).to_string())
+pub fn int_text(a: i64) -> Option<i64> {
+    una_core::int_text(&int_value(a)).map(text_word)
 }
 
 /// A `Bool` as text, `true` or `false`.
@@ -3319,7 +3344,7 @@ mod tests {
         assert_eq!(int(text_len(concat(a, b))), "5");
         assert_eq!(text_compare(a, b), -1);
         assert_eq!(text_equal(a, text_word("hé".to_owned())), 1);
-        assert_eq!(text_value(int_text(n(-42))), "-42");
+        assert_eq!(text_value(int_text(n(-42)).unwrap()), "-42");
         assert_eq!(text_value(bool_text(1)), "true");
     }
 

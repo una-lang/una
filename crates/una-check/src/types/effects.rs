@@ -140,6 +140,16 @@ impl Scan<'_, '_> {
     fn handled(&mut self, handled: &Handled) {
         let of_param =
             matches!(&handled.expr.kind, ExprKind::Call { callee, .. } if self.is_param(callee));
+        // A `within` passes its time-out as the function's own `TimedOut` (ADR 0117 rule 5): a
+        // failure of the function itself, whatever it passes on besides.
+        if handled.within.is_some()
+            && handled
+                .handlings
+                .iter()
+                .any(|h| matches!(h.kind, HandlingKind::ErrorPass))
+        {
+            self.found.own_failures = true;
+        }
         for handling in &handled.handlings {
             match &handling.kind {
                 HandlingKind::ErrorPass if of_param => self.found.passed = true,
@@ -154,6 +164,9 @@ impl Scan<'_, '_> {
             if let CapBindingValue::Handler(call) = &binding.value {
                 self.args(&call.args, false);
             }
+        }
+        if let Some(within) = &handled.within {
+            self.expr(within);
         }
         for handling in &handled.handlings {
             match &handling.kind {
@@ -252,9 +265,22 @@ impl Scan<'_, '_> {
                 self.lambda -= 1;
             }
             // `attempt f(x)` and `(f(x))` stand where the call does (#270).
-            ExprKind::Paren(inner) | ExprKind::Attempt(inner) => {
+            ExprKind::Paren(inner)
+            | ExprKind::Attempt {
+                operand: inner,
+                within: None,
+            } => {
                 self.top = top;
                 self.expr(inner);
+            }
+            ExprKind::Attempt {
+                operand: inner,
+                within: Some(within),
+            } => {
+                self.top = top;
+                self.expr(inner);
+                self.top = false;
+                self.expr(within);
             }
             // `is` reads only its value: its literal is a constant, since interpolating in it is
             // U4008 (`spec/07 §7` rule 3, S-28), so walking `value` alone is complete.
@@ -545,14 +571,17 @@ impl<'a> Checker<'_, 'a, '_> {
                 (self.labeled(&list).top_label(), false)
             }
             (Some("first_where"), Some(list)) => (self.deep(&list), true),
-            // The map's `update` calls `change` once, with the stored value or `initial`
-            // depending on whether the map holds the key: under the map's top label, its key
-            // position's labels and the key's (ADR 0119 IF7).
+            // The `update` of a map or a hash map calls `change` once, with the stored value or
+            // `initial` depending on whether the map holds the key: under the map's top label,
+            // its key position's labels and the key's (ADR 0119 IF7).
             (Some("update"), Some(map)) => {
                 let map = self.labeled(&map);
                 let kinds = self.env.kind_labels.clone();
                 let keys = match map.unlabeled() {
                     Ty::Map(key, _) => key.every_label(&kinds),
+                    Ty::Coll(una_core::Coll::HashMap, kv) => kv
+                        .first()
+                        .map_or_else(Label::public, |key| key.every_label(&kinds)),
                     _ => Label::public(),
                 };
                 let key = checked
