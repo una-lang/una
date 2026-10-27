@@ -92,6 +92,27 @@ impl<'a> Checker<'_, 'a, '_> {
                     self.typed(operand.span, &ty);
                     return ty;
                 }
+                // ADR 0109 rule 3: in a `systems` package, a negated `Int` literal, in
+                // parentheses or not, is one literal too, as the Core IR negates a literal:
+                // its value, not the operand's, decides its `overflow` site, and the negation
+                // carries none.
+                if *op == UnaryOp::Neg
+                    && self.int_word()
+                    && let Some(digits) = fixed::plain_literal(operand)
+                    && self.expected_fixed(expected).is_none()
+                    && expected.is_none_or(|e| self.decimal_scale(e).is_none() && !self.is_f64(e))
+                {
+                    let ty = self.int_literal_type(true, digits, span, expected);
+                    let mut inner = operand.as_ref();
+                    loop {
+                        self.typed(inner.span, &ty);
+                        match &inner.kind {
+                            ExprKind::Paren(next) => inner = &**next,
+                            _ => break,
+                        }
+                    }
+                    return ty;
+                }
                 let (ty, symbol) = match op {
                     UnaryOp::Neg => {
                         // `-e` has the integer type of `e` (`spec/18 §2`).
@@ -144,7 +165,8 @@ impl<'a> Checker<'_, 'a, '_> {
                                 Ty::Int
                             }
                         };
-                        self.overflow_site(&ty, span);
+                        // On `Int` in a `systems` package too (ADR 0109 rule 3).
+                        self.int_overflow_site(&ty, span);
                         let label = self.deep(&found);
                         return ty.with_label(&label);
                     }
@@ -643,6 +665,12 @@ impl<'a> Checker<'_, 'a, '_> {
         let Some(def) = self.env.functions.get(id).cloned() else {
             return Ty::error();
         };
+        // ADR 0109 rule 3: `abs` or `sum` of the prelude used as a value, as in `xs.map(abs)`,
+        // computes an `Int` with no bound on its operands at this use: an `overflow` site at
+        // the reference, which the verifier reports unknown.
+        if def.module == self.env.prelude {
+            self.prelude_overflow_site(def.name, span);
+        }
         // ADR 0116 rule 8: a function that says `diverges` is not a value.
         if def.diverges {
             self.report.error(
@@ -1338,7 +1366,9 @@ impl<'a> Checker<'_, 'a, '_> {
         }
         self.operands.push(first_ty.clone());
         self.operands.push(second_ty.clone());
-        self.overflow_site(&magnitude, span);
+        // On a fixed-width type (`spec/18 §3`), and on `Int` in a `systems` package (ADR 0109
+        // rule 3).
+        self.int_overflow_site(&magnitude, span);
         // The units: a constant operand's unit is open, `None`.
         let unit_of = |expr: &Expr, top: &Ty| -> Option<Option<super::units::Unit>> {
             if fixed::is_constant(expr) {

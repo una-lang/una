@@ -9,7 +9,7 @@ use una_core::flow::Variance;
 use una_core::{
     Atom, Base, BinOp, BitSetOp, Bound, CapOp, Clause, Ctor, DataVariant, DecimalOp, Decl, Expr,
     FixedOp, FloatOp, Fun, HashMapOp, HashSetOp, IntType, LoopSource, MapOp, Name, Path, Prim,
-    PriorityOp, Program, Refinement, Rhs, SeqOp, SetOp, ShapeFun, Source, Term, Type, Use,
+    PriorityOp, Profile, Program, Refinement, Rhs, SeqOp, SetOp, ShapeFun, Source, Term, Type, Use,
     print_term_with,
 };
 use una_diag::ObligationKind;
@@ -138,10 +138,22 @@ pub struct Site {
     /// For a precondition of a named function passed as a function value, the function's
     /// name: the function type it flows into has no precondition (issue #76).
     pub function_value: Option<String>,
-    /// For an `overflow` obligation, a guard that is valid code and states its goal without
-    /// overflowing itself: the operand's range for a conversion, or the operation on `Int`
-    /// (`spec/18 §3`).
+    /// For an `overflow` obligation, a guard that is valid code and states its goal: the
+    /// operand's range for a conversion, the operation on `Int` for a fixed-width type, and
+    /// the operation with its operands as written for `Int` (`spec/18 §3`).
     pub guard: Option<String>,
+    /// Whether the obligation is an `overflow` one on `Int` in a `systems` package, whose
+    /// repairs are those of ADR 0109 rule 3: a guard, a refinement of the operands, a
+    /// fixed-width type, or the wrapping or saturating methods of one.
+    pub int: bool,
+    /// For an `overflow` obligation over the result of a prelude call that states no bound on
+    /// it, as `sum`'s, the callee: a refutation sets that result freely, so it is no run, and
+    /// the obligation is unknown (ADR 0109 rule 3).
+    pub unbounded: Option<String>,
+    /// For an obligation unknown by construction, its reason: no query is sent. The `overflow`
+    /// obligation of `abs` or `sum` used as a function value in a `systems` package is one,
+    /// since their operands have no bounds at that use (ADR 0109 rule 3).
+    pub unknown: Option<String>,
     /// For an `effect_condition` obligation, the conditioned operation and where it is
     /// charged, which decide its message and repairs (ADR 0092 rules 3 and 5).
     pub effect: Option<Effect>,
@@ -406,6 +418,9 @@ pub(crate) struct Index<'p> {
     /// The edits of callees' conditions, by site, caller's binding and operation (ADR 0092,
     /// amendment of 2026-10-14).
     condition_edits: BTreeMap<(Span, &'p str, &'p str), &'p una_core::ConditionEdit>,
+    /// The package's profile, as the program records it: in `systems`, `Int` arithmetic has
+    /// `overflow` obligations (ADR 0109 rules 3 and 6).
+    profile: Profile,
     /// Whether a map's update keeps its other keys, in edition `0.4` (ADR 0069, amendment of
     /// 2026-10-19; ADR 0119 V3).
     map_frames: bool,
@@ -560,6 +575,7 @@ impl<'p> Index<'p> {
                 .iter()
                 .map(|edit| ((edit.site, edit.binding.as_str(), edit.op.as_str()), edit))
                 .collect(),
+            profile: program.profile,
         };
         for signature in &program.library {
             index
@@ -2732,6 +2748,9 @@ impl<'p, 'i> Walker<'p, 'i> {
         let x = own(ctx, name);
         match rhs {
             Rhs::Atom(atom) => {
+                // ADR 0109 rule 3: an `Int` literal outside the tagged range, which
+                // elaboration binds at its span in a `systems` package.
+                self.literal_site(ty, atom, span, ctx);
                 let value = self.atom(atom, ctx);
                 if value.f.sort() == x.f.sort() {
                     let definition = F::eq(x.f.clone(), value.f.clone());
@@ -3015,6 +3034,8 @@ impl<'p, 'i> Walker<'p, 'i> {
                     if is_prelude(&function.module) {
                         self.text_facts(&function.name, &values, &x, ctx);
                         self.dense_facts(&function.name, &values, &x, ctx);
+                        // ADR 0109 rule 3: after the callee's `ensures`, which bound `abs`.
+                        self.prelude_site(&function.name, &x, arg_spans, *span, ctx);
                     }
                     // ADR 0119 rule 14: `empty_bit_set(size: n)` ensures `result.size == n`
                     // and `result.len == 0`, which its declaration cannot write until V5: facts
@@ -3206,6 +3227,10 @@ impl<'p, 'i> Walker<'p, 'i> {
                 body,
                 function,
             } => {
+                // ADR 0109 rule 3: `abs` or `sum` of the prelude used as a value.
+                if let Some(path) = function {
+                    self.prelude_value_site(path, span, ctx);
+                }
                 self.lambda_binders.insert(name.to_owned());
                 let mut inner = ctx.clone();
                 for (param, ty) in params {
@@ -5313,7 +5338,8 @@ impl<'p, 'i> Walker<'p, 'i> {
     /// The obligations of a primitive of fixed-width integers (`spec/18 §3`, `§5`): an
     /// `overflow` obligation for arithmetic whose result has a fixed-width type and for a
     /// narrowing conversion, and the precondition `0 <= n and n < width` of a shift. A negated
-    /// literal is a literal, which the checker bounds (U2022).
+    /// literal is a literal, which the checker bounds (U2022). In a `systems` package, `Int`
+    /// arithmetic has its `overflow` obligations too ([`Walker::int_sites`], ADR 0109 rule 3).
     #[allow(clippy::too_many_arguments)]
     fn fixed_sites(
         &mut self,
@@ -5347,12 +5373,18 @@ impl<'p, 'i> Walker<'p, 'i> {
             }
             return;
         }
-        let Type::Base {
-            base: Base::Fixed(int),
-            ..
-        } = ty
-        else {
-            return;
+        let int = match ty {
+            Type::Base {
+                base: Base::Fixed(int),
+                ..
+            } => *int,
+            Type::Base {
+                base: Base::Int, ..
+            } if self.index.profile == Profile::Systems => {
+                self.int_sites(prim, args, values, arg_spans, span, ctx);
+                return;
+            }
+            _ => return,
         };
         let exact = match prim {
             Prim::Add | Prim::Sub | Prim::Mul | Prim::Div | Prim::Mod => self.prim(prim, values),
@@ -5361,7 +5393,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                 let source = values.first().map(|v| &v.ty);
                 let widening = matches!(
                     source,
-                    Some(Type::Base { base: Base::Fixed(from), .. }) if from.widens_to(*int)
+                    Some(Type::Base { base: Base::Fixed(from), .. }) if from.widens_to(int)
                 );
                 if widening { None } else { arg(0) }
             }
@@ -5370,9 +5402,7 @@ impl<'p, 'i> Walker<'p, 'i> {
         let Some(exact) = exact else {
             return;
         };
-        let goal = in_range(exact, *int);
         let range = format!("{}..{}", int.least(), int.greatest());
-        let text = format!("{} in {range}", self.text(span));
         // The operands as `Int`: a literal as written, any other value converted.
         let operand = |i: usize| -> String {
             let written = arg_spans.get(i).map_or_else(String::new, |s| self.text(*s));
@@ -5399,22 +5429,228 @@ impl<'p, 'i> Walker<'p, 'i> {
                     .map_or_else(String::new, |s| self.text(*s));
                 Some(format!("{written} in {range}"))
             }
-            Prim::Neg => Some(format!("-{} in {range}", operand(0))),
-            Prim::Add | Prim::Sub | Prim::Mul | Prim::Div | Prim::Mod => {
-                let symbol = match prim {
-                    Prim::Add => "+",
-                    Prim::Sub => "-",
-                    Prim::Mul => "*",
-                    Prim::Div => "/",
-                    _ => "mod",
-                };
-                Some(format!("{} {symbol} {} in {range}", operand(0), operand(1)))
+            _ => operation_guard(prim, &operand, &range),
+        };
+        self.overflow_site(
+            exact,
+            (int.least(), int.greatest()),
+            guard,
+            OverflowOf::Fixed,
+            span,
+            ctx,
+        );
+    }
+
+    /// The `overflow` obligations of a primitive whose result is an `Int` in a `systems`
+    /// package (ADR 0109 rule 3, `spec/18 §3`): its exact result lies in the tagged range,
+    /// [`INT_LEAST`] to [`INT_GREATEST`]. They are those of `+`, `-`, `*`, `/`, `mod`, of
+    /// unary `-` on a value that is not a literal, of the product by its ratio that
+    /// `convert()` elaborates to, and of `to_int()` on `I64` and `U64`. A negated literal is
+    /// one literal: outside the range, its ground goal is refuted at once. An element-wise
+    /// operator of dense values carries none on `Int` elements, as the checker records none
+    /// (ADR 0120 rule 34 states the element obligation for fixed-width elements).
+    fn int_sites(
+        &mut self,
+        prim: Prim,
+        args: &[Atom],
+        values: &[Tv],
+        arg_spans: &[Span],
+        span: Span,
+        ctx: &Ctx,
+    ) {
+        // The operands of an element-wise operator carry the operator's span; the ratio of
+        // `convert()` does too, as a literal.
+        let element_wise = args
+            .iter()
+            .zip(arg_spans)
+            .any(|(atom, at)| *at == span && !matches!(atom, Atom::Int(_)));
+        if element_wise {
+            return;
+        }
+        let range = format!("{INT_LEAST}..{INT_GREATEST}");
+        // The operands as they are written: `Int` needs no conversion, and the ratio of
+        // `convert()` is its digits.
+        let operand = |i: usize| -> String {
+            match args.get(i) {
+                Some(Atom::Int(digits)) => digits.clone(),
+                _ => arg_spans.get(i).map_or_else(String::new, |s| self.text(*s)),
             }
+        };
+        // The literal operand of a product, as the ratio of `convert()` is.
+        let literal = |i: usize| match args.get(i) {
+            Some(Atom::Int(digits)) => digits.parse::<i128>().ok(),
             _ => None,
         };
+        // `convert()` multiplies its receiver by the ratio, at the method's own span.
+        let ratio = (prim == Prim::Mul && arg_spans.get(1) == Some(&span))
+            .then(|| literal(1))
+            .flatten()
+            .filter(|k| *k > 0);
+        let (exact, guard) = match prim {
+            Prim::Mul if ratio.is_some() => {
+                let k = ratio.unwrap_or(1);
+                (
+                    self.prim(prim, values),
+                    Some(format!(
+                        "{} in -{}..{}",
+                        operand(0),
+                        -INT_LEAST / k,
+                        INT_GREATEST / k
+                    )),
+                )
+            }
+            Prim::Add | Prim::Sub | Prim::Mul | Prim::Div | Prim::Mod => {
+                (self.prim(prim, values), int_guard(prim, &operand, &literal))
+            }
+            Prim::Neg => match args.first() {
+                // A negated literal is one literal: a site only outside the range.
+                Some(Atom::Int(digits)) => {
+                    let value = format!("-{digits}");
+                    if fits_word(&value) {
+                        return;
+                    }
+                    (Some(F::Int(value)), None)
+                }
+                _ => (self.prim(prim, values), int_guard(prim, &operand, &literal)),
+            },
+            // `to_int()` on a 64-bit value, which can lie outside the tagged range.
+            Prim::Convert(None)
+                if matches!(
+                    values.first().map(|v| &v.ty),
+                    Some(Type::Base {
+                        base: Base::Fixed(IntType::I64 | IntType::U64),
+                        ..
+                    })
+                ) =>
+            {
+                (
+                    values.first().map(|v| v.f.clone()),
+                    Some(format!("{} in {range}", operand(0))),
+                )
+            }
+            _ => return,
+        };
+        let Some(exact) = exact else {
+            return;
+        };
+        self.overflow_site(
+            exact,
+            (INT_LEAST, INT_GREATEST),
+            guard,
+            OverflowOf::Int,
+            span,
+            ctx,
+        );
+    }
+
+    /// The `overflow` obligation of an `Int` literal outside the tagged range, bound to its
+    /// own temporary in a `systems` package (ADR 0109 rule 3): its goal is ground, and
+    /// refuted at once.
+    fn literal_site(&mut self, ty: &Type, atom: &Atom, span: Span, ctx: &Ctx) {
+        if self.index.profile != Profile::Systems {
+            return;
+        }
+        let (
+            Type::Base {
+                base: Base::Int, ..
+            },
+            Atom::Int(digits),
+        ) = (ty, atom)
+        else {
+            return;
+        };
+        if fits_word(digits) {
+            return;
+        }
+        self.overflow_site(
+            F::Int(digits.clone()),
+            (INT_LEAST, INT_GREATEST),
+            None,
+            OverflowOf::Int,
+            span,
+            ctx,
+        );
+    }
+
+    /// The `overflow` obligation of a call of the prelude's `abs` or `sum` in a `systems`
+    /// package, over the call's result `x` (ADR 0109 rule 3): `abs`'s `ensures`, assumed
+    /// already, proves it when the operand is bounded; `sum` states no bound on its result, so
+    /// a refutation sets it freely and the obligation is unknown.
+    fn prelude_site(&mut self, name: &str, x: &Tv, arg_spans: &[Span], span: Span, ctx: &Ctx) {
+        if self.index.profile != Profile::Systems || self.eta.is_some() {
+            return;
+        }
+        // The guard bounds the operand, never the result: in the range and off the least
+        // value, `abs` stays in it. `sum` has none, as no test on its operands bounds its result.
+        let (of, guard) = match name {
+            "abs" => (
+                OverflowOf::Int,
+                arg_spans.first().map(|at| off_least(&self.text(*at))),
+            ),
+            "sum" => (OverflowOf::Unbounded(name), None),
+            _ => return,
+        };
+        self.overflow_site(x.f.clone(), (INT_LEAST, INT_GREATEST), guard, of, span, ctx);
+    }
+
+    /// The `overflow` obligation of the prelude's `abs` or `sum` used as a function value at
+    /// `span`, as in `xs.map(abs)`, in a `systems` package (ADR 0109 rule 3): unknown by
+    /// construction, since the operands have no bounds at that use, so no query is sent. Its
+    /// one repair is the call inside a lambda, where the operand's bounds apply.
+    fn prelude_value_site(&mut self, path: &Path, span: Span, ctx: &Ctx) {
+        if self.index.profile != Profile::Systems || !is_prelude(&path.module) {
+            return;
+        }
+        let name = path.name.as_str();
+        let operand = match name {
+            "abs" => "x",
+            "sum" => "xs",
+            _ => return,
+        };
+        let text = format!("{} in {INT_LEAST}..{INT_GREATEST}", self.text(span));
+        let mut place = self.place(ObligationKind::Overflow, None);
+        place.int = true;
+        place.unknown = Some(format!(
+            "the operands of `{name}` have no bounds at this use"
+        ));
+        place.flow = Some(format!(
+            "write the call inside a lambda, `fn({operand}) -> {name}({operand})`, so its operand's bounds apply"
+        ));
+        self.push(
+            ObligationKind::Overflow,
+            text,
+            span,
+            None,
+            Vec::new(),
+            Vec::new(),
+            vec![F::Bool(false)],
+            ctx,
+            place,
+            vec![ctx.divisions.to_vec()],
+        );
+    }
+
+    /// An `overflow` obligation at `span`: `exact` lies in `least..greatest` (`spec/18 §3`).
+    /// Its goal text is the operation's source text in that range, and `guard`, when given, is
+    /// the repair's guard.
+    fn overflow_site(
+        &mut self,
+        exact: F,
+        (least, greatest): (i128, i128),
+        guard: Option<String>,
+        of: OverflowOf<'_>,
+        span: Span,
+        ctx: &Ctx,
+    ) {
+        let goal = within(exact, least, greatest);
+        let text = format!("{} in {least}..{greatest}", self.text(span));
         let mut assertions: Vec<F> = ctx.hyps.iter().map(|h| h.f.clone()).collect();
         let mut place = self.place(ObligationKind::Overflow, Some(&goal));
         place.guard = guard;
+        place.int = !matches!(of, OverflowOf::Fixed);
+        if let OverflowOf::Unbounded(callee) = of {
+            place.unbounded = Some(callee.to_owned());
+        }
         assertions.push(F::not(goal));
         let hypotheses = self.shown_hypotheses(&ctx.hyps);
         self.push(
@@ -6844,6 +7080,9 @@ impl<'p, 'i> Walker<'p, 'i> {
                 flow: None,
                 function_value: None,
                 guard: None,
+                int: false,
+                unbounded: None,
+                unknown: None,
                 effect: None,
             };
         };
@@ -6878,6 +7117,9 @@ impl<'p, 'i> Walker<'p, 'i> {
             function_value: None,
             effect: None,
             guard: None,
+            int: false,
+            unbounded: None,
+            unknown: None,
         }
     }
 
@@ -8051,10 +8293,111 @@ fn projection(tuple: &Tv, index: usize) -> Option<Tv> {
 
 /// `least <= value <= greatest` of a fixed-width type (`spec/18 §6`).
 fn in_range(value: F, int: IntType) -> F {
+    within(value, int.least(), int.greatest())
+}
+
+/// `least <= value <= greatest`.
+fn within(value: F, least: i128, greatest: i128) -> F {
     F::and(vec![
-        F::op("<=", vec![F::Int(int.least().to_string()), value.clone()]),
-        F::op("<=", vec![value, F::Int(int.greatest().to_string())]),
+        F::op("<=", vec![F::Int(least.to_string()), value.clone()]),
+        F::op("<=", vec![value, F::Int(greatest.to_string())]),
     ])
+}
+
+/// The least value of `Int` that stays in a machine word, `-2^62`: in a `systems` package, no
+/// result of `Int` arithmetic leaves the tagged range (ADR 0109 rule 3, `spec/18 §3`).
+const INT_LEAST: i128 = -(1 << 62);
+
+/// The greatest value of `Int` that stays in a machine word, `2^62 - 1` (ADR 0109 rule 3).
+const INT_GREATEST: i128 = (1 << 62) - 1;
+
+/// Whether the integer literal `digits`, in decimal with an optional `-`, lies in the tagged
+/// range of `Int`. A literal too long for 128 bits lies outside it.
+fn fits_word(digits: &str) -> bool {
+    digits
+        .parse::<i128>()
+        .is_ok_and(|value| (INT_LEAST..=INT_GREATEST).contains(&value))
+}
+
+/// What an `overflow` obligation is on, which decides its repairs (`spec/18 §3`).
+#[derive(Clone, Copy, Debug)]
+enum OverflowOf<'a> {
+    /// A fixed-width type.
+    Fixed,
+    /// `Int` in a `systems` package (ADR 0109 rule 3).
+    Int,
+    /// The result of the named prelude function in a `systems` package, which states no bound
+    /// on it.
+    Unbounded(&'a str),
+}
+
+/// The guard that states the `overflow` goal of the arithmetic primitive `prim` with its
+/// operands as `operand` writes them, as in `a + b in -128..127` (`spec/18 §3`).
+fn operation_guard(prim: Prim, operand: &dyn Fn(usize) -> String, range: &str) -> Option<String> {
+    let symbol = match prim {
+        Prim::Neg => return Some(format!("-{} in {range}", operand(0))),
+        Prim::Add => "+",
+        Prim::Sub => "-",
+        Prim::Mul => "*",
+        Prim::Div => "/",
+        Prim::Mod => "mod",
+        _ => return None,
+    };
+    Some(format!("{} {symbol} {} in {range}", operand(0), operand(1)))
+}
+
+/// The guard of an `Int` operation of a `systems` package, with its operands as `operand`
+/// writes them (ADR 0109 rule 3): it bounds the operands, never the result, since a test on
+/// the exact result is itself an `Int` operation whose obligation could not be proven. For `+`
+/// and `-`, each operand in -2^61..2^61 - 1; for `*`, each in -(2^31 - 1)..2^31 - 1; for `/`,
+/// the dividend in -(2^62 - 1)..2^62 - 1, the divisor unbounded; for `mod`, both operands in
+/// that range, since the result is bounded by the divisor; for unary `-`, the operand in
+/// -(2^62 - 1)..2^62 - 1. An operand that is a
+/// literal within its bound needs no test; `None` when no operand does.
+fn int_guard(
+    prim: Prim,
+    operand: &dyn Fn(usize) -> String,
+    literal: &dyn Fn(usize) -> Option<i128>,
+) -> Option<String> {
+    let bounded = |bound: i128| -> Option<String> {
+        let tests: Vec<String> = (0..2)
+            .filter(|i| literal(*i).is_none_or(|value| value.abs() > bound))
+            .map(|i| format!("{} in {}..{}", operand(i), -bound - 1, bound))
+            .collect();
+        (!tests.is_empty()).then(|| tests.join(" and "))
+    };
+    match prim {
+        Prim::Add | Prim::Sub => {
+            // -2^61..2^61 - 1.
+            let half = (1i128 << 61) - 1;
+            bounded(half)
+        }
+        Prim::Mul => {
+            let bound = (1i128 << 31) - 1;
+            let tests: Vec<String> = (0..2)
+                .filter(|i| literal(*i).is_none_or(|value| value.abs() > bound))
+                .map(|i| format!("{} in -{bound}..{bound}", operand(i)))
+                .collect();
+            (!tests.is_empty()).then(|| tests.join(" and "))
+        }
+        // The dividend, or the operand of `-`, off the least value; the divisor of `/` needs
+        // no bound, since the quotient's magnitude never exceeds the dividend's.
+        Prim::Div | Prim::Neg => Some(off_least(&operand(0))),
+        // `a mod b` is bounded by `|b|`, not by `a` (`-1 mod (2^62 + 5)` is `2^62 + 4`), so both
+        // operands are bounded.
+        Prim::Mod => Some(format!(
+            "{} and {}",
+            off_least(&operand(0)),
+            off_least(&operand(1))
+        )),
+        _ => None,
+    }
+}
+
+/// The guard that keeps `operand` in the tagged range but off its least value, -2^62, where
+/// `-`, `abs` and a division by -1 leave it (ADR 0109 rule 3).
+fn off_least(operand: &str) -> String {
+    format!("{operand} in {}..{INT_GREATEST}", INT_LEAST + 1)
 }
 
 /// `value` reduced into the range of `int` modulo `2^width`: `((value - least) mod 2^w) +
@@ -9005,6 +9348,315 @@ mod tests {
         assert!(all.contains("u!f!tag!Stamp!u!Kind_m_K"), "{all}");
     }
 
+    /// `f(a: Int, b: Int) -> Int` whose body computes `a + b`, binds the literal
+    /// `4611686018427387904`, negates `a` where the source writes `-x` and the literal `5`
+    /// where it writes `-5`, and returns `a + b`, in a package of `profile`.
+    fn int_program(text: &str, file: una_syntax::FileId, profile: Profile) -> Program {
+        let at = |part: &str| {
+            let start = text.find(part).unwrap();
+            Span::new(file, start, start + part.len())
+        };
+        let int = || base(Base::Int);
+        let sum = at("a + b");
+        let (a, b) = (
+            Span::new(file, sum.start, sum.start + 1),
+            Span::new(file, sum.end - 1, sum.end),
+        );
+        let neg = at("-x");
+        let x = Span::new(file, neg.start + 1, neg.end);
+        let small = at("-5");
+        let five = Span::new(file, small.start + 1, small.end);
+        let var = |name: &str| Atom::Var(name.to_owned());
+        let bind = |name: &str, value: Rhs, span: Span, body: Expr| Expr::Let {
+            name: name.to_owned(),
+            ty: int(),
+            value: Box::new(Bound::Rhs(value)),
+            body: Box::new(body),
+            span,
+            written: false,
+        };
+        let body = bind(
+            "%1",
+            Rhs::Prim {
+                prim: Prim::Add,
+                args: vec![var("a"), var("b")],
+                arg_spans: vec![a, b],
+                span: sum,
+            },
+            sum,
+            bind(
+                "%2",
+                Rhs::Atom(Atom::Int("4611686018427387904".to_owned())),
+                at("4611686018427387904"),
+                bind(
+                    "%3",
+                    Rhs::Prim {
+                        prim: Prim::Neg,
+                        args: vec![var("a")],
+                        arg_spans: vec![x],
+                        span: neg,
+                    },
+                    neg,
+                    bind(
+                        "%4",
+                        Rhs::Prim {
+                            prim: Prim::Neg,
+                            args: vec![Atom::Int("5".to_owned())],
+                            arg_spans: vec![five],
+                            span: small,
+                        },
+                        small,
+                        Expr::Atom {
+                            atom: var("%1"),
+                            span: sum,
+                        },
+                    ),
+                ),
+            ),
+        );
+        Program {
+            profile,
+            modules: vec![una_core::Module {
+                path: "m".to_owned(),
+                decls: vec![Decl::Fun(Box::new(Fun {
+                    name: "f".to_owned(),
+                    type_params: Vec::new(),
+                    constraints: Vec::new(),
+                    params: vec![("a".to_owned(), int()), ("b".to_owned(), int())],
+                    result: int(),
+                    uses: Vec::new(),
+                    uses_of: Vec::new(),
+                    locks: Vec::new(),
+                    fails: None,
+                    error: None,
+                    requires: Vec::new(),
+                    ensures: Vec::new(),
+                    body,
+                    span: Span::new(file, 0, 1),
+                    public: false,
+                }))],
+                examples: Vec::new(),
+            }],
+            ..Program::default()
+        }
+    }
+
+    #[test]
+    fn int_arithmetic_of_a_systems_package_has_overflow_obligations() {
+        // ADR 0109 rule 3, `spec/18 §3`: in `systems`, `a + b`, `-x` and a literal outside the
+        // tagged range each carry an `overflow` obligation, with the goal `<exact> in
+        // -4611686018427387904..4611686018427387903` and a guard that bounds the operands;
+        // the literal's goal is ground, and `-5` is a literal in range, with none. In `app`,
+        // none of them carries one (rule 2.1).
+        let text = "a + b\n4611686018427387904\n-x\n-5\n";
+        let mut sources = SourceDb::new();
+        let file = sources.add("m.una", text.as_bytes());
+        let range = "-4611686018427387904..4611686018427387903";
+        let systems = int_program(text, file, Profile::Systems);
+        let obligations = super::obligations(&systems, &sources, SourceLayout::Joined).unwrap();
+        let overflow: Vec<(&str, Option<&str>, bool, bool)> = obligations
+            .iter()
+            .filter(|o| o.kind == ObligationKind::Overflow)
+            .map(|o| {
+                (
+                    o.goal.as_str(),
+                    o.site.guard.as_deref(),
+                    o.site.int,
+                    o.site.ground,
+                )
+            })
+            .collect();
+        let sum_goal = format!("a + b in {range}");
+        let literal_goal = format!("4611686018427387904 in {range}");
+        let neg_goal = format!("-x in {range}");
+        // The guards bound the operands, never the result (ADR 0109 rule 3).
+        let half = "-2305843009213693952..2305843009213693951";
+        let sum_guard = format!("a in {half} and b in {half}");
+        let neg_guard = "x in -4611686018427387903..4611686018427387903";
+        assert_eq!(
+            overflow,
+            [
+                (sum_goal.as_str(), Some(sum_guard.as_str()), true, false),
+                (literal_goal.as_str(), None, true, true),
+                (neg_goal.as_str(), Some(neg_guard), true, false),
+            ]
+        );
+        // The literal's query is `not (least <= 2^62 <= greatest)`, refuted by any model.
+        let literal = obligations.iter().find(|o| o.goal == literal_goal).unwrap();
+        assert!(
+            literal.query.text().contains("4611686018427387904"),
+            "{}",
+            literal.query.text()
+        );
+        // The repairs of an `Int` site are rule 3's, the guard first.
+        let refuted = crate::run::Outcome {
+            status: una_diag::ObligationStatus::Refuted,
+            reason: None,
+            cached: false,
+            path: None,
+            bindings: Vec::new(),
+            division: None,
+            values_error: None,
+        };
+        let sum = obligations.iter().find(|o| o.goal == sum_goal).unwrap();
+        let diagnostics = crate::report::diagnostics(
+            std::slice::from_ref(sum),
+            std::slice::from_ref(&refuted),
+            &sources,
+        );
+        let repairs: Vec<&str> = diagnostics[0]
+            .repairs
+            .iter()
+            .map(|r| r.description.as_str())
+            .collect();
+        let guard = format!("guard the operation with `if {sum_guard}`");
+        assert_eq!(
+            repairs,
+            [
+                guard.as_str(),
+                "bound the operands with a refined kind, as `kind Small = Int where it >= 0 and it <= 1000` for a parameter or a field, so that the exact result stays in the range",
+                "give the values a fixed-width type, as `I64`, converting them explicitly",
+                "if wrapping or saturating is meant, give the values a fixed-width type and use its `wrapping_add`, `saturating_add` or their siblings",
+            ]
+        );
+        // A ground goal has no repair (R-021) and no counterexample.
+        let diagnostics = crate::report::diagnostics(
+            std::slice::from_ref(literal),
+            std::slice::from_ref(&refuted),
+            &sources,
+        );
+        assert_eq!(diagnostics[0].code, una_diag::Code::U5001);
+        assert!(diagnostics[0].repairs.is_empty());
+        assert!(diagnostics[0].counterexample.is_none());
+        let app = int_program(text, file, Profile::App);
+        let obligations = super::obligations(&app, &sources, SourceLayout::Joined).unwrap();
+        assert!(
+            obligations
+                .iter()
+                .all(|o| o.kind != ObligationKind::Overflow),
+            "{:?}",
+            obligations.iter().map(|o| &o.goal).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn abs_as_a_function_value_is_unknown_with_no_query() {
+        // ADR 0109 rule 3: `abs` used as a value in a `systems` package, the lambda that stands
+        // for it at the reference, has an `overflow` obligation unknown by construction: its
+        // reason and its one repair are fixed, and `verify` sends no query, so a solver that
+        // does not exist is never started. In `app` there is none.
+        let text = "xs.map(each: abs)\n";
+        let mut sources = SourceDb::new();
+        let file = sources.add("m.una", text.as_bytes());
+        let start = text.find("abs").unwrap();
+        let at = Span::new(file, start, start + 3);
+        let int = || base(Base::Int);
+        let program = |profile: Profile| Program {
+            profile,
+            modules: vec![una_core::Module {
+                path: "m".to_owned(),
+                decls: vec![Decl::Fun(Box::new(Fun {
+                    name: "f".to_owned(),
+                    type_params: Vec::new(),
+                    constraints: Vec::new(),
+                    params: Vec::new(),
+                    result: base(Base::Unit),
+                    uses: Vec::new(),
+                    uses_of: Vec::new(),
+                    locks: Vec::new(),
+                    fails: None,
+                    error: None,
+                    requires: Vec::new(),
+                    ensures: Vec::new(),
+                    body: Expr::Let {
+                        name: "%1".to_owned(),
+                        ty: base(Base::Unit),
+                        value: Box::new(Bound::Rhs(Rhs::Lambda {
+                            params: vec![("x".to_owned(), int())],
+                            body: Box::new(Expr::Atom {
+                                atom: Atom::Var("x".to_owned()),
+                                span: at,
+                            }),
+                            function: Some(una_core::Path {
+                                module: una_core::PRELUDE_MODULE.to_owned(),
+                                name: "abs".to_owned(),
+                            }),
+                        })),
+                        body: Box::new(Expr::Atom {
+                            atom: Atom::Unit,
+                            span: at,
+                        }),
+                        span: at,
+                        written: false,
+                    },
+                    span: Span::new(file, 0, 1),
+                    public: false,
+                }))],
+                examples: Vec::new(),
+            }],
+            ..Program::default()
+        };
+        let systems = program(Profile::Systems);
+        let obligations = super::obligations(&systems, &sources, SourceLayout::Joined).unwrap();
+        let reason = "the operands of `abs` have no bounds at this use";
+        let repair =
+            "write the call inside a lambda, `fn(x) -> abs(x)`, so its operand's bounds apply";
+        let overflow: Vec<&Obligation> = obligations
+            .iter()
+            .filter(|o| o.kind == ObligationKind::Overflow)
+            .collect();
+        assert_eq!(overflow.len(), 1, "{obligations:?}");
+        assert_eq!(overflow[0].source, at);
+        assert_eq!(overflow[0].site.unknown.as_deref(), Some(reason));
+        assert_eq!(overflow[0].site.flow.as_deref(), Some(repair));
+        let settings = crate::run::Settings {
+            solver: std::path::PathBuf::from("/nonexistent/una-no-solver"),
+            lock: crate::run::Lock {
+                text: String::new(),
+                solver_version: "0.0.0".to_owned(),
+                step_budget: 1,
+                random_seed: 0,
+            },
+            wallclock: std::time::Duration::from_secs(1),
+            cache: None,
+            cancel: None,
+        };
+        let outcomes = crate::run::verify(&obligations, &settings).unwrap();
+        assert_eq!(outcomes.len(), obligations.len());
+        assert!(outcomes.iter().all(|o| !o.cached));
+        let index = obligations
+            .iter()
+            .position(|o| o.kind == ObligationKind::Overflow)
+            .unwrap();
+        assert_eq!(outcomes[index].status, una_diag::ObligationStatus::Unknown);
+        assert_eq!(outcomes[index].reason.as_deref(), Some(reason));
+        let diagnostics = crate::report::diagnostics(
+            std::slice::from_ref(overflow[0]),
+            std::slice::from_ref(&outcomes[index]),
+            &sources,
+        );
+        assert_eq!(diagnostics[0].code, una_diag::Code::U5002);
+        assert_eq!(
+            diagnostics[0].message,
+            format!(
+                "overflow obligation `abs in -4611686018427387904..4611686018427387903` could not be proven ({reason})"
+            )
+        );
+        let repairs: Vec<&str> = diagnostics[0]
+            .repairs
+            .iter()
+            .map(|r| r.description.as_str())
+            .collect();
+        assert_eq!(repairs, [repair]);
+        let app = program(Profile::App);
+        let obligations = super::obligations(&app, &sources, SourceLayout::Joined).unwrap();
+        assert!(
+            obligations
+                .iter()
+                .all(|o| o.kind != ObligationKind::Overflow)
+        );
+    }
+
     #[test]
     fn a_kind_the_package_declares_is_never_a_prelude_kind() {
         // R-010: tier 0 rejects a module named `prelude` (U1009); the verifier still takes the
@@ -9155,7 +9807,7 @@ mod tests {
             library: Vec::new(),
             host: vec![files(Vec::new())],
             condition_edits: Vec::new(),
-            map_frames: false,
+            ..Program::default()
         };
         let index = Index::new(&program);
         let ensures = |module: &str| {

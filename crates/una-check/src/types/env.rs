@@ -422,8 +422,8 @@ pub(crate) struct Env<'a> {
     /// The package's edition (`spec/13 §7`).
     pub(crate) edition: Edition,
     /// The package's profile (ADR 0109 rule 1): `app` for a single file and before edition
-    /// 0.3. No check reads it yet; slice S2 adds the `overflow` obligation of rule 3 on it.
-    #[allow(dead_code)]
+    /// 0.3. In `systems`, each `Int` operation outside clauses records an `overflow` site
+    /// (rule 3), and elaboration records it in the program (rule 6).
     pub(crate) profile: Profile,
     /// The result summary of each generic function declared outside the prelude, by function
     /// (ADR 0067, `spec/07 §7` rule 8); edition 0.2 only.

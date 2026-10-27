@@ -436,7 +436,7 @@ Project errors do not stop checking: the modules are still checked, with the def
 }
 ```
 
-- (ADR 0109 rule 6.) `profile` is the package's profile, `"app"` or `"systems"`, so the re-check of the formal track sees it; its theorems do not depend on it. The key is additive under ADR 0076.
+- (ADR 0109 rule 6.) `profile` is the package's profile, as the program records it, `"app"` or `"systems"`, so the re-check of the formal track sees it; its theorems do not depend on it. The key is additive under ADR 0076.
 - `complete` is `true` when the package checked clean at tier 0, so Core holds every declaration; otherwise Core holds only the declarations without diagnostics, which go to stderr, and the exit code follows them.
 - `modules` are in the order of Core IR; `library` holds the prelude's signatures and `host` the host capabilities' declarations.
 - (ADR 0091.) With `--with-rejected`, the document has one more key, `rejected`, after `file_state`: a list of `{"module": "app", "decl": { ... }, "diagnostics": [{"code": "U4003", "span": { ... }}]}`, in path order, then declaration order. It holds each declaration with at least one diagnostic, every one of which is in the `security` domain, and whose elaboration is complete; `decl` is its Core, encoded as `modules[].decls` are, and `diagnostics` are its diagnostics, each with its code and its primary location, which the declaration holds. These declarations are never in `modules`, and `complete` keeps its meaning. Without the flag, the key is absent and the document is unchanged; a consumer that ignores unknown keys reads the same document either way. No other command reads these declarations.
@@ -476,6 +476,7 @@ Keys are printed in this order, and two runs over the same sources print the sam
 | `MapOp` | `has`, `get`, `with`, `without`, `keys`, `values`, `entries` |
 | `Prim` | `add`, `sub`, `mul`, `div`, `mod`, `neg`, `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `not`, `len`, `concat`, `to_text`, `convert`, `fixed`, `map`, `seq`, `set`, `hash_map`, `hash_set`, `priority`, `bit_set`, `float`, `shape`, `decimal`, `float32` |
 | `PriorityOp` | `push`, `pop`, `peek`, `peek_priority`, `peek_ranked`, `items` |
+| `Profile` | `app`, `systems` |
 | `Rhs` | `atom`, `tuple`, `prim`, `call`, `apply`, `op`, `construct`, `field`, `list`, `lambda`, `checked`, `declassify` |
 | `SeqOp` | `push_front`, `push_back`, `pop_front`, `pop_back`, `peek_front`, `peek_back`, `items` |
 | `SetOp` | `has`, `with`, `without`, `first`, `last`, `between`, `items`, `union`, `intersection`, `difference`, `is_subset` |

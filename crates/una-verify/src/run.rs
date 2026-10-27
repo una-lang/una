@@ -233,6 +233,27 @@ fn forgotten(items: &[(String, Collection)], kind: ObligationKind) -> String {
 pub(crate) const UNENCODABLE_LOCK: &str =
     "the locked condition is outside what the verifier encodes (`spec/12 §2`)";
 
+/// The outcome of an obligation unknown by construction, with `reason` (ADR 0109 rule 3).
+fn unknown_outcome(reason: &str) -> Outcome {
+    Outcome {
+        status: ObligationStatus::Unknown,
+        reason: Some(reason.to_owned()),
+        cached: false,
+        path: None,
+        bindings: Vec::new(),
+        division: None,
+        values_error: None,
+    }
+}
+
+/// The reason of an `overflow` obligation over the result of `callee`, a prelude function that
+/// states no bound on it, whose refutation is no run (ADR 0109 rule 3).
+pub(crate) fn unbounded_result(callee: &str) -> String {
+    format!(
+        "`{callee}` states no bound on its result, so the counterexample sets it freely; in a `systems` package, compute it with operations whose own `overflow` obligations a guard or a refinement proves, or over a fixed-width type"
+    )
+}
+
 pub(crate) const UNINTERPRETED: &str = "the refutation depends on a product, quotient or remainder of two values, which the encoding of `spec/12 §2` leaves uninterpreted";
 
 /// Whether the model agrees with real arithmetic at every application of uninterpreted
@@ -324,6 +345,27 @@ fn check_version(settings: &Settings) -> Result<(), Problem> {
 /// Discharges `obligations`: cached answers first, then the solver for the others, in
 /// parallel; outcomes come in the order of the obligations.
 pub fn verify(obligations: &[Obligation], settings: &Settings) -> Result<Vec<Outcome>, Problem> {
+    // An obligation unknown by construction sends no query (ADR 0109 rule 3): the others are
+    // solved, and the outcomes are put back in order.
+    if obligations.iter().any(|o| o.site.unknown.is_some()) {
+        let sent: Vec<Obligation> = obligations
+            .iter()
+            .filter(|o| o.site.unknown.is_none())
+            .cloned()
+            .collect();
+        let mut solved = verify(&sent, settings)?.into_iter();
+        return Ok(obligations
+            .iter()
+            .map(|obligation| match &obligation.site.unknown {
+                Some(reason) => unknown_outcome(reason),
+                // INVARIANT: `verify` gives one outcome per obligation sent, so one is left for
+                // each obligation that was; a missing one is unknown, never proven.
+                None => solved.next().unwrap_or_else(|| {
+                    unknown_outcome("internal error: no outcome for this obligation")
+                }),
+            })
+            .collect());
+    }
     let mut outcomes = verify_once(obligations, settings)?;
     // The obligation whose query decided each status, when it is not the obligation itself:
     // the full query of a refutation (ADR 0114 rule 8.3).
@@ -926,6 +968,21 @@ fn outcome(
             values_error,
         };
     }
+    // ADR 0109 rule 3: the result of a prelude call that states no bound on it, as `sum`'s,
+    // is free in the query, so a model that sets it outside the range is no run.
+    if answer.status == Status::Refuted
+        && let Some(callee) = &obligation.site.unbounded
+    {
+        return Outcome {
+            status: ObligationStatus::Unknown,
+            reason: Some(unbounded_result(callee)),
+            cached,
+            path: None,
+            bindings: Vec::new(),
+            division: None,
+            values_error,
+        };
+    }
     // ADR 0053: a refutation whose model disagrees with real arithmetic at an application of
     // uninterpreted arithmetic is no execution, so the obligation is unknown, with no
     // counterexample.
@@ -1373,7 +1430,7 @@ mod missing_values_tests {
     use una_diag::{ObligationKind, ObligationStatus};
     use una_syntax::{SourceDb, Span};
 
-    use super::{Answer, Status, UNENCODABLE_LOCK, outcome, shown_bindings};
+    use super::{Answer, Status, UNENCODABLE_LOCK, outcome, shown_bindings, unbounded_result};
     use crate::generate::{Effect, EffectAt, Obligation, Show, Shown, Site, Within};
     use crate::smt::{Const, ConstRole, F, Fun, FunRole, Query};
 
@@ -1486,6 +1543,9 @@ mod missing_values_tests {
                 flow: None,
                 function_value: None,
                 guard: None,
+                int: false,
+                unbounded: None,
+                unknown: None,
                 effect: None,
             },
             forgotten: Vec::new(),
@@ -1527,6 +1587,78 @@ mod missing_values_tests {
     }
 
     #[test]
+    fn a_refuted_overflow_of_an_unbounded_prelude_result_is_unknown() {
+        // ADR 0109 rule 3: `sum` states no bound on its result, which is free in the query, so
+        // a model that sets it outside the range is no run: unknown (U5002), with the reason
+        // and no counterexample. A proof stays proven.
+        let mut sources = SourceDb::new();
+        let file = sources.add("src/m.una", b"sum(xs)\n");
+        let r = constant("r", "Int");
+        let obligation = Obligation {
+            id: "ob-test".to_owned(),
+            kind: ObligationKind::Overflow,
+            module: "m".to_owned(),
+            declaration: "m.f".to_owned(),
+            goal: "sum(xs) in -4611686018427387904..4611686018427387903".to_owned(),
+            source: Span::new(file, 0, 7),
+            related: None,
+            paths: Vec::new(),
+            hypotheses: Vec::new(),
+            query: Query::default(),
+            shown: vec![shown("r", &r, Show::Value)],
+            site: Site {
+                within: Within::Function { public: false },
+                parameter: None,
+                over_parameters: false,
+                ground: false,
+                flow: None,
+                function_value: None,
+                guard: None,
+                int: true,
+                unbounded: Some("sum".to_owned()),
+                unknown: None,
+                effect: None,
+            },
+            forgotten: Vec::new(),
+            entry: Vec::new(),
+            divisions: Vec::new(),
+            unencodable: None,
+            full: None,
+        };
+        let refutation = outcome(
+            &obligation,
+            std::slice::from_ref(&r),
+            &refuted(&["4611686018427387904"], None),
+            None,
+            false,
+        );
+        assert_eq!(refutation.status, ObligationStatus::Unknown);
+        assert_eq!(refutation.reason, Some(unbounded_result("sum")));
+        assert_eq!(refutation.bindings, []);
+        let diagnostics = crate::report::diagnostics(
+            std::slice::from_ref(&obligation),
+            std::slice::from_ref(&refutation),
+            &sources,
+        );
+        assert_eq!(diagnostics[0].code, una_diag::Code::U5002);
+        assert!(
+            diagnostics[0].message.starts_with(
+                "overflow obligation `sum(xs) in -4611686018427387904..4611686018427387903` could not be proven (`sum` states no bound"
+            ),
+            "{}",
+            diagnostics[0].message
+        );
+        let proof = Answer {
+            status: Status::Proven,
+            reason: None,
+            values: Vec::new(),
+            values_error: None,
+        };
+        let proven = outcome(&obligation, &[], &proof, None, false);
+        assert_eq!(proven.status, ObligationStatus::Proven);
+    }
+
+    #[test]
     fn an_unencodable_lock_is_unknown_at_its_entry() {
         // #638: the checker rejects a locked condition outside the encoding as U7002, so this
         // obligation is synthetic. Its refutation is unknown, U5002 at the lock's entry in
@@ -1558,6 +1690,9 @@ mod missing_values_tests {
                 flow: None,
                 function_value: None,
                 guard: None,
+                int: false,
+                unbounded: None,
+                unknown: None,
                 effect: Some(Effect {
                     operation: "@catalog.set_price".to_owned(),
                     condition: "mode == unit".to_owned(),

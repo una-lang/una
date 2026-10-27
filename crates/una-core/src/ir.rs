@@ -2531,10 +2531,47 @@ pub struct Module {
     pub examples: Vec<Example>,
 }
 
+/// A package's profile (ADR 0109): `app`, the language as it is, or `systems`, which only adds
+/// obligations and declarations to the same program (rule 2). Both manifest formats declare it,
+/// and Core IR records it (rule 6), so the verifier and the Core export read it from the
+/// program.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Profile {
+    /// The default: the language as it is.
+    #[default]
+    App,
+    /// Stricter than or equal to `app` (ADR 0109 rule 2): each `Int` operation outside
+    /// clauses carries an `overflow` obligation (rule 3).
+    Systems,
+}
+
+impl Profile {
+    /// The profile's name, as both manifest formats and the Core export write it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Profile::App => "app",
+            Profile::Systems => "systems",
+        }
+    }
+
+    /// The profile named `text`, if it is one.
+    pub fn parse(text: &str) -> Option<Profile> {
+        match text {
+            "app" => Some(Profile::App),
+            "systems" => Some(Profile::Systems),
+            _ => None,
+        }
+    }
+}
+
 /// The Core IR of a package: its modules, in path order, and the contracts of the standard
 /// library.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Program {
+    /// The package's profile (ADR 0109 rules 3 and 6), set by elaboration from the manifest:
+    /// in `systems`, the verifier gives each `Int` operation outside clauses an `overflow`
+    /// obligation.
+    pub profile: Profile,
     /// The modules.
     pub modules: Vec<Module>,
     /// The functions of the prelude and `std.testing`.

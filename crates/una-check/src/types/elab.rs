@@ -139,6 +139,9 @@ pub(crate) fn program(
         .collect();
     let host = host(env, findings, dbs, &mut gaps.standard);
     let program = Program {
+        // ADR 0109 rule 6: the profile is part of the program, which the verifier and the
+        // Core export read.
+        profile: env.profile,
         modules,
         library,
         host,
@@ -5014,6 +5017,15 @@ impl<'e, 'a> Fx<'e, 'a> {
 
     fn literal_atom(&mut self, lets: &mut Vec<Let>, literal: &Literal, span: Span) -> Atom {
         match literal {
+            // ADR 0109 rule 3: an `Int` literal outside the tagged range in a `systems`
+            // package is bound to its own temporary at its span, where the verifier finds its
+            // `overflow` site. The value is the same, so no engine sees a difference.
+            Literal::Int(digits)
+                if self.env.in_package(self.module)
+                    && self.findings.int_literals.contains(&span) =>
+            {
+                self.push(lets, span, Rhs::Atom(Atom::Int(digits.clone())))
+            }
             Literal::Int(digits) => Atom::Int(digits.clone()),
             // A literal typed as a decimal is its coefficient at that scale (`spec/29 §16`).
             Literal::Float(text) if self.decimal_at(span).is_some() => {
@@ -5985,6 +5997,14 @@ fn bind_expr(lets: &mut Vec<Let>, name: Name, ty: Type, expr: CoreExpr, span: Sp
                     last.destructure.is_none()
                         && last.name == var
                         && !(written && last.ty != ty && has_fn_type(&ty))
+                        // The temporary of an `Int` literal outside the tagged range, which a
+                        // `systems` package binds, keeps its own span, the literal's
+                        // `overflow` site (ADR 0109 rule 3).
+                        && !matches!(
+                            &last.value,
+                            Bound::Rhs(Rhs::Atom(Atom::Int(digits)))
+                                if !super::fixed::fits_word(false, digits)
+                        )
                 }) =>
             {
                 if let Some(last) = lets.pop() {
