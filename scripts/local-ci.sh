@@ -5,8 +5,9 @@
 # it runs the same inside a linux/amd64 container of CI's Ubuntu image
 # (scripts/local-ci/Dockerfile), emulated on an arm64 Mac, so it is slow and runs the tests one
 # at a time (#286); with --linux-arm64, inside a linux/arm64 one, native on such a Mac (#241),
-# with the tests in parallel. The target directory (one volume per checkout), the cargo registry
-# and Z3 live in named volumes, so later runs are incremental. It ends with PASS, or FAIL and
+# with the tests in parallel. The target directory (one volume per checkout), the cargo registry,
+# Z3 and the cache of the Z3 library built into una (ADR 0124, one volume per architecture,
+# kept across fresh target volumes) live in named volumes, so later runs are incremental. It ends with PASS, or FAIL and
 # the step that failed, and a non-zero exit on any failure. While GitHub Actions is unavailable,
 # this is the check before a merge (#156).
 #
@@ -80,6 +81,8 @@ if [ "${1:-}" = --linux ] || [ "${1:-}" = --linux-arm64 ]; then
         --volume una-local-ci-registry:/opt/cargo/registry \
         --volume "una-local-ci-z3$suffix:/opt/z3" \
         --env UNA_LOCAL_CI_Z3=/opt/z3 \
+        --volume "una-local-ci-z3-cache$suffix:/opt/z3-cache" \
+        --env UNA_Z3_CACHE=/opt/z3-cache \
         --volume "una-local-ci-lean$suffix:/opt/lean" \
         --env UNA_FORMAL_LEAN=/opt/lean \
         --env "UNA_LOCAL_CI_SERIAL=$serial" \
@@ -109,18 +112,39 @@ PATH="$z3/bin:$PATH"
 export PATH
 
 # The Z3 built into una (ADR 0124 rules 1 and 19): the library of supply-chain/z3.lock, built
-# once per pin by scripts/build-z3.sh into target/z3/<source digest>/ (a cold build of 10 to 20
-# minutes; UNA_Z3_SOURCE names a local copy of the pinned tarball until the mirror release
-# exists), and named to every cargo step by UNA_Z3_LIB. Without it, `una check` would be U5003.
-z3_digest=$(sed -n 's/^source_sha256 *= *"\([^"]*\)"$/\1/p' supply-chain/z3.lock)
-z3_lib="$root/target/z3/$z3_digest/lib/libz3shell.a"
-if [ ! -f "$z3_lib" ]; then
-    echo "== building the Z3 library of supply-chain/z3.lock"
-    if [ -n "${UNA_Z3_SOURCE:-}" ]; then
-        scripts/build-z3.sh --source "$UNA_Z3_SOURCE" || fail "building the Z3 library"
+# once per pin and toolchain by scripts/build-z3.sh into the cache UNA_Z3_CACHE (default
+# ~/.cache/una/z3; inside the container a named volume), under the key the script computes from
+# the pin and the toolchain, outside every worktree and target directory. The library's digest,
+# recorded by the build, is checked again here before the library is used: an entry whose
+# bytes changed is refused and built again (a cold build of 10 to 20 minutes; UNA_Z3_SOURCE
+# names a local copy of the pinned tarball until the mirror release exists). Every cargo step
+# gets the library by UNA_Z3_LIB; without it, `una check` would be U5003.
+z3_cache=${UNA_Z3_CACHE:-$HOME/.cache/una/z3}
+z3_key=$(scripts/build-z3.sh --key) || fail "the cache key of the Z3 library"
+z3_lib="$z3_cache/$z3_key/lib/libz3shell.a"
+z3_recorded="$z3_cache/$z3_key/library.sha256"
+z3_fresh=1
+if [ -f "$z3_lib" ] && [ -f "$z3_recorded" ]; then
+    if command -v sha256sum >/dev/null 2>&1; then
+        z3_actual=$(sha256sum "$z3_lib" | cut -d ' ' -f 1)
     else
-        scripts/build-z3.sh || fail "building the Z3 library"
+        z3_actual=$(shasum -a 256 "$z3_lib" | cut -d ' ' -f 1)
     fi
+    if [ "$z3_actual" = "$(cat "$z3_recorded")" ]; then
+        echo "== the Z3 library of supply-chain/z3.lock, from the cache $z3_cache/$z3_key ($z3_actual)"
+        z3_fresh=0
+    else
+        echo "== the cached Z3 library's digest differs from its record ($z3_actual); refused, building again"
+    fi
+fi
+if [ "$z3_fresh" = 1 ]; then
+    echo "== building the Z3 library of supply-chain/z3.lock into $z3_cache/$z3_key"
+    if [ -n "${UNA_Z3_SOURCE:-}" ]; then
+        scripts/build-z3.sh --source "$UNA_Z3_SOURCE" --out "$z3_cache" || fail "building the Z3 library"
+    else
+        scripts/build-z3.sh --out "$z3_cache" || fail "building the Z3 library"
+    fi
+    [ -f "$z3_lib" ] || fail "the Z3 build wrote no library at $z3_lib"
 fi
 UNA_Z3_LIB=$z3_lib
 export UNA_Z3_LIB

@@ -1,18 +1,26 @@
 #!/bin/sh
 # Builds the Z3 that supply-chain/z3.lock pins, by the recipe of supply-chain/z3/ (ADR 0124
-# rule 1), into target/z3/<source digest>/: lib/libz3shell.a, the SMT-LIB front end as a library
-# for una-z3, and bin/z3, the standalone front end from the same objects, for the solver-identity
-# gate; with build-record.txt (pin, toolchain versions, the flags CMake added, time, digests).
+# rule 1): lib/libz3shell.a, the SMT-LIB front end as a library for una-z3, and bin/z3, the
+# standalone front end from the same objects, for the solver-identity gate; with
+# build-record.txt (pin, toolchain versions, the flags CMake added, time, digests).
 #
-# Usage: scripts/build-z3.sh [--source FILE] [--out DIR] [--jobs N] [--reproducible]
+# Usage: scripts/build-z3.sh [--source FILE] [--out DIR] [--jobs N] [--reproducible] [--key]
 #   --source FILE   a local copy of the pinned tarball, instead of a download from the mirror
-#   --out DIR       the output root (default: target/z3 under the repository)
+#   --out DIR       the cache root (default: UNA_Z3_CACHE, else ~/.cache/una/z3)
 #   --jobs N        parallel compile jobs (default: the machine's processors)
 #   --reproducible  two cold builds; fails unless both libraries have the same digest
+#   --key           print the cache key of this machine's toolchain and the pin, and exit
 #
-# The tarball's digest is checked against the lock before anything is extracted or compiled,
-# and each patch's digest before it is applied; a mismatch stops the build. The tarball is the
-# pristine upstream tree; every change of ours is a patch listed in the lock. Nothing is written outside the output root and a temporary
+# The output lands in <cache root>/<key>/, where the key is the SHA-256 over the pinned
+# tarball's digest, each patch's digest in the lock's order, and the toolchain (the C++
+# compiler's and cmake's version lines and the machine), so that one cache holds one build per
+# toolchain and pin, outside every worktree and target directory. The directory holds
+# lib/libz3shell.a, bin/z3, build-record.txt, configure.log and library.sha256, the library's
+# digest, which scripts/local-ci.sh checks again before it uses the library: a cache entry
+# whose bytes changed is refused and built again. The tarball's digest is checked against the
+# lock before anything is extracted or compiled, and each patch's digest before it is applied;
+# a mismatch stops the build. The tarball is the pristine upstream tree; every change of ours is
+# a patch listed in the lock. Nothing is written outside the cache root and a temporary
 # directory. It needs cmake, make, a C++20 compiler and git (which applies the recipe's patch).
 set -eu
 
@@ -20,16 +28,18 @@ root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 lock="$root/supply-chain/z3.lock"
 recipe="$root/supply-chain/z3"
 source_file=
-out="$root/target/z3"
+out=${UNA_Z3_CACHE:-$HOME/.cache/una/z3}
 jobs=
 reproducible=0
+key_only=0
 while [ "$#" -gt 0 ]; do
     case $1 in
         --source) shift; source_file=${1:?--source needs a file} ;;
         --out) shift; out=${1:?--out needs a directory} ;;
         --jobs) shift; jobs=${1:?--jobs needs a number} ;;
         --reproducible) reproducible=1 ;;
-        *) echo "usage: scripts/build-z3.sh [--source FILE] [--out DIR] [--jobs N] [--reproducible]" >&2; exit 2 ;;
+        --key) key_only=1 ;;
+        *) echo "usage: scripts/build-z3.sh [--source FILE] [--out DIR] [--jobs N] [--reproducible] [--key]" >&2; exit 2 ;;
     esac
     shift
 done
@@ -76,6 +86,17 @@ for tool in cmake make git; do
 done
 cxx=${CXX:-c++}
 command -v "$cxx" >/dev/null 2>&1 || fail "no C++ compiler: $cxx"
+
+# The cache key: the pin (tarball and patches, by digest) and the toolchain that compiles it.
+cxx_version=$("$cxx" --version 2>/dev/null | head -n 1)
+cmake_version=$(cmake --version | head -n 1)
+machine="$(uname -s) $(uname -m)"
+key=$(printf '%s\n%s\n%s\n%s\n%s\n' "$source_sha256" "$patches" "$cxx_version" "$cmake_version" "$machine" | digest_stdin)
+dest="$out/$key"
+if [ "$key_only" = 1 ]; then
+    echo "$key"
+    exit 0
+fi
 
 work=$(mktemp -d)
 trap 'rm -rf "${work:?}"' EXIT
@@ -148,8 +169,8 @@ if [ "$reproducible" = 1 ]; then
     echo "ok: two cold builds of libz3shell.a gave the same digest"
 fi
 
-# 2. The output, under the source digest, and its record.
-dest="$out/$source_sha256"
+# 2. The output, under the cache key, with its record and the library's digest; a half-written
+# entry never counts, since the digest file is written last.
 rm -rf "${dest:?}"
 mkdir -p "$dest/lib" "$dest/bin"
 cp "$work/one/build/libz3shell.a" "$dest/lib/libz3shell.a"
@@ -173,7 +194,9 @@ chmod 755 "$dest/bin/z3"
     sed -n 's/^-- \(Z3_COMPONENT_CXX_FLAGS: .*\)$/\1/p; s/^-- \(Z3_COMPONENT_CXX_DEFINES: .*\)$/\1/p' "$work/one/configure.log"
 } > "$dest/build-record.txt"
 cp "$work/one/configure.log" "$dest/configure.log"
+echo "$lib_sha256" > "$dest/library.sha256"
 echo "built z3 $version in $(cat "$work/one/seconds") s"
+echo "key $key"
 echo "libz3shell.a sha256 $lib_sha256"
 echo "z3 sha256 $z3_sha256"
 echo "output $dest"
