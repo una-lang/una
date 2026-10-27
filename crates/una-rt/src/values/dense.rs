@@ -1,7 +1,8 @@
 //! Dense values in native code (`spec/29 §17`, ADR 0120 rules 26 to 54; design note
 //! `docs/plan/0120-s6-design.md`, part 1): construction, views, element access, reductions,
 //! products, factorizations and solves, with the semantics, the text and the bits of the
-//! interpreter's `machine/dense.rs`.
+//! interpreter's `machine/dense.rs`. The kernels run through [`crate::ffi::dispatched`], the
+//! variant of `una_core::dense::variants` this processor runs (ADR 0120 rule 56).
 //!
 //! - **One heap object per value** (D1): an [`Object::Dense`] header with its kind, offset,
 //!   shape and strides over a store. Canonical `F64` elements live raw in an `Arc<Vec<f64>>`,
@@ -26,13 +27,20 @@ use std::borrow::Cow;
 use std::sync::Arc;
 
 use num_bigint::BigInt;
-use una_core::dense::{self as chains, blocked, fma};
+use una_core::dense::{self as chains, fma, variants::Kernels};
 use una_core::float;
 
 use super::{
     HEAP, NONE, Object, alloc, copied, count, count_limit, data, f64_word, fault, field, int_value,
     int_word, is_handle, precondition_outside, push, release, retain, slot, some, unique, with,
 };
+
+/// The kernels of the variant this processor runs, chosen once at start (ADR 0120 rule 56):
+/// every kernel with an `fma` runs through this table, so native code uses the processor's
+/// instruction where it has one, with the bits of every other variant (rule 53).
+fn kernels() -> &'static Kernels {
+    crate::ffi::dispatched()
+}
 
 /// The most axes a tensor has (ADR 0120 rule 27).
 pub(crate) const MAX_RANK: usize = 8;
@@ -1560,7 +1568,7 @@ fn sum_of(d: i64) -> i64 {
         return 0;
     };
     let total = match (header.as_slice(), header.f64_iter()) {
-        (Some(items), _) => blocked::sum(items),
+        (Some(items), _) => (kernels().sum)(items),
         (None, Some(items)) => chains::sum_f64(items),
         (None, None) => {
             fault();
@@ -1595,8 +1603,8 @@ pub(crate) fn array_dot(site: i64, a: i64, with: i64) -> i64 {
             return bad();
         };
         let total = match (x.as_slice(), y.as_slice()) {
-            (Some(p), Some(q)) => blocked::dot(p, q),
-            _ => blocked::dot_pairs(0.0, xs.zip(ys)),
+            (Some(p), Some(q)) => kernels().dot(p, q),
+            _ => kernels().dot_of_pairs(0.0, xs.zip(ys)),
         };
         Some(f64_word(total))
     })
@@ -1606,7 +1614,7 @@ pub(crate) fn array_dot(site: i64, a: i64, with: i64) -> i64 {
 pub(crate) fn array_norm2(_site: i64, a: i64) -> i64 {
     let header = dense(a);
     match header.as_ref().and_then(|header| header.f64_iter()) {
-        Some(items) => f64_word(blocked::norm2(items)),
+        Some(items) => f64_word(kernels().norm2_of(items)),
         None => {
             fault();
             0
@@ -1766,7 +1774,7 @@ pub(crate) fn matrix_multiply(site: i64, m: i64, by: i64) -> i64 {
         let y = slice_of(site, &b)?;
         let mut out = buffer::<f64>(site, size, 0)?;
         out.resize(size, 0.0);
-        blocked::add_product(&mut out, &x, &y, rows, k, columns);
+        (kernels().add_product)(&mut out, &x, &y, rows, k, columns);
         let made = compact(DenseKind::Matrix, Axes::two(rows, columns), f64_store(out));
         ensure(site, made, &[rows, columns], "multiply")
     })
@@ -1788,7 +1796,7 @@ pub(crate) fn matrix_multiply_array(site: i64, m: i64, by: i64) -> i64 {
         let y = slice_of(site, &v)?;
         let mut out = buffer::<f64>(site, rows, 0)?;
         out.resize(rows, 0.0);
-        blocked::multiply_array(&x, rows, k, &y, &mut out);
+        (kernels().multiply_array)(&x, rows, k, &y, &mut out);
         let made = compact(DenseKind::Array, Axes::one(rows), f64_store(out));
         ensure(site, made, &[rows], "multiply_array")
     })
@@ -1846,7 +1854,7 @@ fn add_product(site: i64, c: i64, a: i64, b: i64, give: bool) -> i64 {
                     .and_then(|items| items.get_mut(start..start.checked_add(count)?))
                 {
                     Some(out) => {
-                        blocked::add_product(out, &p, &q, m, k, n);
+                        (kernels().add_product)(out, &p, &q, m, k, n);
                         true
                     }
                     None => false,
@@ -2093,7 +2101,7 @@ pub(crate) fn tensor_contract(site: i64, t: i64, with: i64, axis: i64, other: i6
                     y.f64_at(ui.get(..ru).unwrap_or(&[])).unwrap_or(f64::NAN),
                 )
             });
-            blocked::dot_pairs(0.0, pairs)
+            kernels().dot_of_pairs(0.0, pairs)
         };
         let made = made_f64(site, DenseKind::Tensor, shape, (0..n).map(element))?;
         ensure(site, made, shape.as_slice(), "contract")
@@ -2115,7 +2123,7 @@ fn factorize(
     let mut factors = f64_copy(site, header, extra)?;
     let mut pivots = buffer::<usize>(site, n, 0)?;
     pivots.resize(n, 0);
-    let nonsingular = blocked::lu(&mut factors, n, &mut pivots);
+    let nonsingular = (kernels().lu)(&mut factors, n, &mut pivots);
     Some(nonsingular.then_some((n, factors, pivots)))
 }
 
@@ -2139,7 +2147,7 @@ fn lu_solved(
         return outside(site, SOLVE_ROWS);
     }
     let mut x = f64_copy(site, rhs, 0)?;
-    blocked::lu_solve(factors, pivots, n, &mut x, r);
+    (kernels().lu_solve)(factors, pivots, n, &mut x, r);
     let made = compact(kind, shape, f64_store(x));
     ensure(site, made, shape.as_slice(), "solve")
 }
@@ -2251,7 +2259,7 @@ pub(crate) fn matrix_cholesky(site: i64, m: i64) -> i64 {
         let header = dense(m)?;
         let n = square(site, &header, "cholesky")?;
         let mut factor = f64_copy(site, &header, 0)?;
-        if !blocked::cholesky(&mut factor, n) {
+        if !(kernels().cholesky)(&mut factor, n) {
             return Some(NONE);
         }
         let made = compact(DenseKind::Matrix, Axes::two(n, n), f64_store(factor));
@@ -2285,7 +2293,7 @@ fn solve_triangular(site: i64, m: i64, rhs: i64, unit: i64, lower: bool) -> i64 
         } else {
             chains::Triangle::Upper
         };
-        blocked::solve_triangular(&t, n, &mut x, r, triangle, unit);
+        (kernels().solve_triangular)(&t, n, &mut x, r, triangle, unit);
         let made = compact(DenseKind::Matrix, Axes::two(n, r), f64_store(x));
         ensure(site, made, &[n, r], name)
     })

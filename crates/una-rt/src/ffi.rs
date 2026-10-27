@@ -184,6 +184,8 @@ pub unsafe extern "C" fn una_rt_start(
     // SAFETY: the caller passes `meta_len` bytes at `meta` (this function's contract).
     let meta = unsafe { text(meta, meta_len) }.unwrap_or_default();
     ignore_sigpipe();
+    // The kernel variants are chosen once, at start, by the processor (ADR 0120 rule 56).
+    dispatched();
     runtime::start(&args, &meta, move || entry())
 }
 
@@ -820,6 +822,152 @@ pub fn fuzz_literals(bytes: &[u8]) -> (i64, i64) {
         )
     }
 }
+
+// ===== The dispatch of the dense kernels' target variants (ADR 0120 rule 56, #989) =====
+//
+// A self-contained block: the table of the variant this processor runs, chosen once, and
+// `variant_call!`, the one `unsafe` site of the dispatch.
+
+/// The table of dense kernels this process runs, chosen once by [`select`] at its first use,
+/// which [`una_rt_start`] makes the start of the process (ADR 0120 rule 56).
+static DISPATCHED: std::sync::OnceLock<una_core::dense::variants::Kernels> =
+    std::sync::OnceLock::new();
+
+/// The dense kernels of the variant this processor runs: x86-64-v4's when it has every feature
+/// of `X86_64_V4_FEATURES`, else x86-64-v3's when it has every feature of
+/// `X86_64_V3_FEATURES`, else the baseline; on AArch64 the baseline, whose `fma` is the
+/// `fmadd` instruction already. Chosen once, by the processor alone (rule 56); every variant
+/// gives the same bits (rule 53). O(1) after the first call.
+pub fn dispatched() -> &'static una_core::dense::variants::Kernels {
+    DISPATCHED.get_or_init(select)
+}
+
+/// The tables of every variant this processor can run, the baseline first: each x86-64
+/// variant's only when the detection of exactly its features succeeds. For the tests that run
+/// every variant against the reference's bits (rule 53). O(1).
+#[cfg_attr(not(target_arch = "x86_64"), allow(unused_mut))]
+pub fn runnable() -> Vec<una_core::dense::variants::Kernels> {
+    let mut tables = vec![una_core::dense::variants::Kernels::BASELINE];
+    #[cfg(target_arch = "x86_64")]
+    {
+        if una_core::dense::variants::x86_64_v3::detected() {
+            tables.push(x86_64_v3::KERNELS);
+        }
+        if una_core::dense::variants::x86_64_v4::detected() {
+            tables.push(x86_64_v4::KERNELS);
+        }
+    }
+    tables
+}
+
+/// The table [`dispatched`] holds: the most capable variant whose features the standard
+/// library's safe detection finds, in order x86-64-v4, x86-64-v3, baseline.
+fn select() -> una_core::dense::variants::Kernels {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if una_core::dense::variants::x86_64_v4::detected() {
+            return x86_64_v4::KERNELS;
+        }
+        if una_core::dense::variants::x86_64_v3::detected() {
+            return x86_64_v3::KERNELS;
+        }
+    }
+    una_core::dense::variants::Kernels::BASELINE
+}
+
+/// The calls of the target variants of `una_core::dense::variants`. `variant_call!(name)`
+/// makes the private module `name`: a safe wrapper for each kernel of the variant `name`, which
+/// calls it, and `name::KERNELS`, the table of those wrappers, which only [`select`] and
+/// [`runnable`] read, each after `una_core::dense::variants::name::detected()` returned true.
+/// The `@wrap` arm makes one wrapper and holds the one `unsafe` block of the dispatch.
+#[cfg(target_arch = "x86_64")]
+macro_rules! variant_call {
+    (@wrap $variant:ident, $kernel:ident($($arg:ident: $ty:ty),*) $(-> $ret:ty)?) => {
+        fn $kernel($($arg: $ty),*) $(-> $ret)? {
+            // SAFETY: a wrapper is reached only through `KERNELS`, which `select` and `runnable`
+            // return only after `una_core::dense::variants::<variant>::detected()` found, by the
+            // standard library's detection, every feature of the variant's `FEATURES`; the
+            // variant's `#[target_feature]` attributes are generated from the same tokens, so
+            // the processor has every feature the called code may use, and the test of rule 56
+            // shows that the toolchain implies no other. Neither the inputs nor the environment
+            // select the variant, only the processor does, and every variant gives the
+            // reference's bits (ADR 0120 rules 53 and 56, ADR 0058).
+            unsafe { una_core::dense::variants::$variant::$kernel($($arg),*) }
+        }
+    };
+    ($variant:ident) => {
+        /// The safe wrappers of one target variant and their table.
+        mod $variant {
+            use una_core::dense::Triangle;
+            use una_core::dense::variants::Kernels;
+
+            variant_call!(@wrap $variant, sum(items: &[f64]) -> f64);
+            variant_call!(@wrap $variant, dot_from(start: f64, x: &[f64], y: &[f64]) -> f64);
+            variant_call!(@wrap $variant, dot_pairs(
+                start: f64,
+                pairs: &mut dyn Iterator<Item = (f64, f64)>
+            ) -> f64);
+            variant_call!(@wrap $variant, norm2(
+                scan: &mut dyn Iterator<Item = f64>,
+                items: &mut dyn Iterator<Item = f64>
+            ) -> f64);
+            variant_call!(@wrap $variant, add_product(
+                c: &mut [f64],
+                a: &[f64],
+                b: &[f64],
+                m: usize,
+                k: usize,
+                n: usize
+            ));
+            variant_call!(@wrap $variant, multiply_array(
+                a: &[f64],
+                m: usize,
+                k: usize,
+                v: &[f64],
+                out: &mut [f64]
+            ));
+            variant_call!(@wrap $variant, lu(a: &mut [f64], n: usize, pivots: &mut [usize]) -> bool);
+            variant_call!(@wrap $variant, cholesky(a: &mut [f64], n: usize) -> bool);
+            variant_call!(@wrap $variant, solve_triangular(
+                t: &[f64],
+                n: usize,
+                b: &mut [f64],
+                r: usize,
+                triangle: Triangle,
+                unit_diagonal: bool
+            ));
+            variant_call!(@wrap $variant, lu_solve(
+                factors: &[f64],
+                pivots: &[usize],
+                n: usize,
+                b: &mut [f64],
+                r: usize
+            ));
+
+            /// The table of this variant's wrappers, read only after its detection.
+            pub(super) const KERNELS: Kernels = Kernels {
+                name: una_core::dense::variants::$variant::NAME,
+                sum,
+                dot_from,
+                dot_pairs,
+                norm2,
+                add_product,
+                multiply_array,
+                lu,
+                cholesky,
+                solve_triangular,
+                lu_solve,
+            };
+        }
+    };
+}
+
+#[cfg(target_arch = "x86_64")]
+variant_call!(x86_64_v3);
+#[cfg(target_arch = "x86_64")]
+variant_call!(x86_64_v4);
+
+// ===== End of the dispatch of the dense kernels' target variants =====
 
 #[cfg(test)]
 mod tests {
