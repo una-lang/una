@@ -1,0 +1,26 @@
+# The Z3 built into una (ADR 0124 rule 1): the commit of the release tag, pinned by its commit
+# hash, its git tree hash and the SHA-256 of a source tarball made from that tree with
+# `git archive --format=tar --prefix=z3-<version>/ <commit> | gzip -n -9`. Archives that a
+# hosting service generates on request are not used, since their bytes are not promised to stay
+# the same. The tarball is mirrored as an asset of the GitHub release `mirror/z3-<version>` of
+# una-lang/una, made on the commit that adds this pin; the digest here is the security boundary,
+# the release only keeps the bytes available. The recipe is supply-chain/z3/, and
+# scripts/build-z3.sh builds it after checking the digest. A test keeps `version` equal to
+# verification.lock's solver_version (crates/una-cli/tests/z3_lock.rs).
+version = "5.1.0"
+tag = "z3-5.1.0"
+commit = "0b6cdcdbc65da25ef0f73ac9da210574d0f66cf8"
+tree = "7fc624d354d92e7e6f38d3a10ba069b8196e3379"
+source = "z3-5.1.0.tar.gz"
+source_sha256 = "e621ef190d1486759306b83619ffd66ce3ee19cfdb799d17399953e7b0849b75"
+# The digest of the uncompressed tar, which no gzip implementation can change.
+source_tar_sha256 = "9579acc80f89f03ec04c6a54d468143fb940139b13e901821c335e268ee611b0"
+mirror = "https://github.com/una-lang/una/releases/download/mirror/z3-5.1.0/z3-5.1.0.tar.gz"
+
+# The SHA-256 of lib/libz3shell.a per target, shown reproducible by two cold builds with equal
+# digests (scripts/build-z3.sh --reproducible) and stored in the project's release storage under
+# it. Release builds take the library by this digest, so the release and reproducible gates check
+# a digest instead of rebuilding Z3; it changes only when the pin or the recipe changes. Each
+# target's line is added by the first reproducible build on it, with the toolchain of its
+# build record.
+[library]
