@@ -79,11 +79,15 @@ struct Seat;
 
 impl Drop for Seat {
     fn drop(&mut self) {
-        if let Some(admission) = ADMISSION.get()
-            && let Ok(mut running) = admission.running.lock()
-        {
+        if let Some(admission) = ADMISSION.get() {
+            // A poisoned lock still counts: the seat was taken, so it is given back.
+            let mut running = admission
+                .running
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             *running = running.saturating_sub(1);
-            admission.freed.notify_one();
+            // Every waiter wakes, since waiters may have different capacities.
+            admission.freed.notify_all();
         }
     }
 }
@@ -103,24 +107,32 @@ fn capacity(processors: usize, memory_bytes: Option<u64>, memory_mib: u64) -> us
     processors.max(1).min(by_memory)
 }
 
-/// Waits for a seat: blocks while the children running are at the capacity.
-fn admit(memory_mib: u64) -> Seat {
+/// Waits for a seat: blocks while the children running are at the capacity, waking every
+/// 50 ms to notice a cancellation, in which case no seat is taken. A poisoned lock is used
+/// all the same: the count is a plain integer that no panic leaves half-written.
+fn admit(memory_mib: u64, cancel: Option<&AtomicBool>) -> Option<Seat> {
     let admission = ADMISSION.get_or_init(|| Admission {
         running: Mutex::new(0),
         freed: Condvar::new(),
     });
     let processors = std::thread::available_parallelism().map_or(1, usize::from);
     let capacity = capacity(processors, machine_memory(), memory_mib);
-    if let Ok(mut running) = admission.running.lock() {
-        while *running >= capacity {
-            match admission.freed.wait(running) {
-                Ok(guard) => running = guard,
-                Err(_) => return Seat,
-            }
+    let mut running = admission
+        .running
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    while *running >= capacity {
+        if cancel.is_some_and(|cancel| cancel.load(Ordering::Relaxed)) {
+            return None;
         }
-        *running += 1;
+        running = admission
+            .freed
+            .wait_timeout(running, Duration::from_millis(50))
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .0;
     }
-    Seat
+    *running += 1;
+    Some(Seat)
 }
 
 /// The memory the children may share: the machine's physical memory, or the limit of the
@@ -136,18 +148,29 @@ fn machine_memory() -> Option<u64> {
                     .and_then(|rest| rest.trim().split(' ').next()?.parse::<u64>().ok())
                     .map(|kib| kib.saturating_mul(1024))
             });
-        let cgroup = [
-            "/sys/fs/cgroup/memory.max",
-            "/sys/fs/cgroup/memory/memory.limit_in_bytes",
-        ]
-        .iter()
-        .find_map(|path| {
-            std::fs::read_to_string(path)
-                .ok()?
-                .trim()
-                .parse::<u64>()
-                .ok()
-        });
+        // The process's own control group (v2: `0::<path>` in /proc/self/cgroup), then the
+        // root, then the v1 limit.
+        let own = std::fs::read_to_string("/proc/self/cgroup")
+            .ok()
+            .and_then(|text| {
+                text.lines()
+                    .find_map(|line| line.strip_prefix("0::"))
+                    .map(|path| format!("/sys/fs/cgroup{}/memory.max", path.trim()))
+            });
+        let cgroup = own
+            .iter()
+            .map(String::as_str)
+            .chain([
+                "/sys/fs/cgroup/memory.max",
+                "/sys/fs/cgroup/memory/memory.limit_in_bytes",
+            ])
+            .find_map(|path| {
+                std::fs::read_to_string(path)
+                    .ok()?
+                    .trim()
+                    .parse::<u64>()
+                    .ok()
+            });
         match (physical, cgroup) {
             (Some(physical), Some(limit)) => Some(physical.min(limit)),
             (Some(physical), None) => Some(physical),
@@ -308,7 +331,17 @@ impl Solver for Launcher {
     }
 
     fn library_digest(&self) -> String {
-        una_z3::BUILD.library_sha256.to_owned()
+        // A development build's digest differs from every release's (rule 10), and a stand-in
+        // of the test hooks from both: their answers never serve a release's cache. The
+        // release digest is the library's alone, the same on every machine.
+        if let Some(stand_in) = self.stand_in() {
+            return format!("stand-in:{}:{}", stand_in.display(), build_digest());
+        }
+        if una_z3::BUILD.release {
+            una_z3::BUILD.library_sha256.to_owned()
+        } else {
+            format!("dev:{}", build_digest())
+        }
     }
 
     fn run(
@@ -320,7 +353,14 @@ impl Solver for Launcher {
         // A seat first (rule 6), then the deadline, which runs from before the child starts and
         // holds while the query is written: a child that does not read its input must not keep
         // the run past its time (#286); the wait for a seat is not the child's time.
-        let _seat = admit(self.memory_mib);
+        let Some(_seat) = admit(self.memory_mib, cancel) else {
+            return Ok(Raw {
+                stdout: String::new(),
+                stderr: String::new(),
+                ended: Ended::Cancelled,
+                outer_denied: None,
+            });
+        };
         let started = Instant::now();
         let deadline = started + wallclock;
         let exe = self.executable()?;
