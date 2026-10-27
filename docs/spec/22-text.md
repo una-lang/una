@@ -75,6 +75,7 @@ They are prelude functions, called with method syntax, as `line.split(on: ",")` 
    - This is the freedom of `spec/17 §7` rule 3: it changes no output, failure or trace.
    - So a loop of k such appends is O(total length), not O(k²).
 3. **Equivalence.** Both engines give the same text for every operation, by the rules of §2 to §4 (`spec/16 §5`).
+4. **Writing integers** (2026-10-27, #923). Interpolation and `to_text` write an `Int` of at most 4300 digits, the bound of §4, in O(d) for its d digits; an `Int` of more digits is never written: the run aborts with U6003 at the interpolation or the call (`spec/11 §7`).
 
 ## 7. Verification
 

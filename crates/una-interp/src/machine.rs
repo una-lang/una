@@ -194,6 +194,13 @@ pub enum Abort {
         /// The call.
         span: Span,
     },
+    /// An integer of more than `MAX_INT_DIGITS` digits is written as text at this span (U6003,
+    /// `spec/11 §7`, #923): an interpolation, a call of `to_text` or `to_json`, or an
+    /// operation whose event shows it; `None` for the final value or failure of `main`.
+    IntText {
+        /// The site, when the write has one.
+        span: Option<Span>,
+    },
     /// The hard stop of the host came at the check point at this span: a call or a loop
     /// iteration (U6007, ADR 0116 rule 16).
     HostStop {
@@ -373,24 +380,26 @@ impl<'p> Index<'p> {
 
     /// The Una form of `value`. A field whose declared type is labeled above
     /// `public` is `<redacted:level>`.
-    pub(crate) fn render(&self, value: &Value<'_>) -> String {
+    pub(crate) fn render(&self, value: &Value<'_>) -> Result<String, IntTooLong> {
         self.una_form(value, Form::Redacted)
     }
 
     /// The Una form of `value` with every field, which interpolation writes: its text carries
     /// the value's labels (`spec/11 §5`, ADR 0068).
-    pub(crate) fn written(&self, value: &Value<'_>) -> String {
+    pub(crate) fn written(&self, value: &Value<'_>) -> Result<String, IntTooLong> {
         self.una_form(value, Form::Written)
     }
 
     /// The Una form of `value` in `form`: an example's results and reasons, which edition `0.2`
     /// shows with every field (`spec/11 §5`, ADR 0078).
-    pub(crate) fn shown(&self, value: &Value<'_>, form: Form) -> String {
+    pub(crate) fn shown(&self, value: &Value<'_>, form: Form) -> Result<String, IntTooLong> {
         self.una_form(value, form)
     }
 
-    /// The Una form of `value` (`spec/11 §5`), in `form`.
-    fn una_form(&self, value: &Value<'_>, form: Form) -> String {
+    /// The Una form of `value` (`spec/11 §5`), in `form`. An `Int` of more than
+    /// `MAX_INT_DIGITS` digits is never written (`spec/11 §7`, #923): the form is refused
+    /// before any conversion, and the caller aborts the run with U6003.
+    fn una_form(&self, value: &Value<'_>, form: Form) -> Result<String, IntTooLong> {
         // A worklist instead of recursion: a value built by a loop can be deeper than the
         // native stack allows (`spec/17 §4`, ADR 0032).
         enum Task<'v, 'p> {
@@ -409,7 +418,7 @@ impl<'p> Index<'p> {
             };
             let mut parts: Vec<Task<'_, '_>> = Vec::new();
             match value {
-                Value::Int(n) => out.push_str(&n.to_string()),
+                Value::Int(n) => out.push_str(&una_core::int_text(n).ok_or(IntTooLong)?),
                 Value::F64(x) => out.push_str(&una_core::float::render(*x)),
                 Value::Decimal(c, s) => out.push_str(&una_core::decimal::render(c, *s)),
                 Value::Bool(b) => out.push_str(&b.to_string()),
@@ -562,23 +571,26 @@ impl<'p> Index<'p> {
             }
             pending.extend(parts.into_iter().rev());
         }
-        out
+        Ok(out)
     }
 
-    pub(crate) fn redacted(&self, value: &Value<'_>, label: &Label) -> String {
+    pub(crate) fn redacted(&self, value: &Value<'_>, label: &Label) -> Result<String, IntTooLong> {
         if label.is_public() || matches!(value, Value::Unit) {
             self.render(value)
         } else {
-            format!("<redacted:{}>", level_name(label.level))
+            Ok(format!("<redacted:{}>", level_name(label.level)))
         }
     }
 
     /// The variant of a failure and its fields whose declared labels are `public`, in their Una
     /// form (`spec/04 §8`). A field of a type parameter is not shown, since its label is not
     /// known at run time.
-    pub(crate) fn public_fields(&self, value: &Value<'_>) -> Vec<(String, String)> {
+    pub(crate) fn public_fields(
+        &self,
+        value: &Value<'_>,
+    ) -> Result<Vec<(String, String)>, IntTooLong> {
         let Value::Data(data) = value else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
         let names = self.fields(&data.ctor);
         data.fields
@@ -587,9 +599,19 @@ impl<'p> Index<'p> {
             .filter(|(_, (_, ty))| {
                 ty.is_some_and(|ty| !ty.has_param() && ty.deep_label().is_public())
             })
-            .map(|(v, (name, _))| (name.to_owned(), self.render(v)))
+            .map(|(v, (name, _))| Ok((name.to_owned(), self.render(v)?)))
             .collect()
     }
+}
+
+/// An `Int` of more than `MAX_INT_DIGITS` digits met where a value is written as text
+/// (`spec/11 §7`, #923): the run aborts with U6003 rather than convert it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct IntTooLong;
+
+/// The abort of a write of an integer too long for text, at `span` (U6003, `spec/11 §7`).
+fn int_text_abort<'p>(span: Option<Span>) -> Stop<'p> {
+    Stop::Abort(Abort::IntText { span })
 }
 
 fn level_name(level: Level) -> &'static str {
@@ -1537,10 +1559,69 @@ impl<'p, 'w> Machine<'p, 'w> {
         if self.reads(rest).contains(name) {
             return false;
         }
-        let later = self.later.clone();
-        later
-            .into_iter()
-            .all(|(expr, rebound)| rebound.contains(&name) || !self.reads(expr).contains(name))
+        // Taken out and put back rather than cloned: each update asks this.
+        let later = std::mem::take(&mut self.later);
+        let dead = later
+            .iter()
+            .all(|(expr, rebound)| rebound.contains(&name) || !self.reads(expr).contains(name));
+        self.later = later;
+        dead
+    }
+
+    /// The bindings of `init`, the values a loop's state starts from, that nothing reads once
+    /// the loop has started, neither its source, its condition, its body, its `on stop` block
+    /// nor what follows it: they give their values up to the state, so that the body, holding
+    /// the only reference, updates a value in place, as a call's argument at its last use does
+    /// (#30, #201). Without this, a nested loop over an `edit` binding copies the value at each
+    /// entry of the inner loop, O(n) per entry. A value something else holds is still copied
+    /// when written.
+    fn give_up_init(
+        &mut self,
+        env: &mut Env<'p>,
+        source: &'p LoopSource,
+        init: &'p [Atom],
+        body: &'p Expr,
+        on_stop: Option<&'p una_core::OnStop>,
+    ) {
+        let mut read: Vec<&'p str> = Vec::new();
+        let mut var = |atom: &'p Atom| {
+            if let Atom::Var(name) = atom {
+                read.push(name.as_str());
+            }
+        };
+        let cond = match source {
+            LoopSource::List(list) => {
+                var(list);
+                None
+            }
+            LoopSource::Range { low, high, .. } => {
+                var(low);
+                var(high);
+                None
+            }
+            LoopSource::Until { cond, .. } => Some(self.reads(cond)),
+            LoopSource::Ever { within } => {
+                if let Some((deadline, _)) = within {
+                    var(deadline);
+                }
+                None
+            }
+        };
+        let block = on_stop.map(|on_stop| self.reads(&on_stop.body));
+        for atom in init {
+            let Atom::Var(name) = atom else {
+                continue;
+            };
+            let kept = read.contains(&name.as_str())
+                || cond.as_ref().is_some_and(|names| names.contains(name))
+                || block.as_ref().is_some_and(|names| names.contains(name));
+            if !kept
+                && self.dead_after(name, body)
+                && let Some(value) = env.lookup_mut(name)
+            {
+                *value = Value::Unit;
+            }
+        }
     }
 
     /// `let t2 = concat(t1, part, ...) in rest`, the interpolation `"{t}..."`, where the text of
@@ -1767,6 +1848,7 @@ impl<'p, 'w> Machine<'p, 'w> {
                     span,
                 } => {
                     let mut current = self.atoms(env, init)?;
+                    self.give_up_init(env, source, init, body, on_stop.as_deref());
                     // `on stop` runs after a failure of the body with the state from before
                     // the loop (ADR 0116 rule 10).
                     let before = on_stop.as_ref().map(|_| current.clone());
@@ -1783,7 +1865,13 @@ impl<'p, 'w> Machine<'p, 'w> {
                         .map(|(name, _)| name.as_str())
                         .chain(self.binders(body).iter().copied())
                         .chain(in_cond.iter().flat_map(|names| names.iter().copied()))
-                        .collect();
+                        .collect::<Vec<_>>();
+                    // The condition of `for until` is evaluated again before each iteration,
+                    // so it is later too, for the body and for the condition itself (#1202).
+                    let mark = self.later.len();
+                    if let Some(cond) = until {
+                        self.later.push((cond, rebound.clone()));
+                    }
                     self.later.push((body, rebound));
                     let result = self.iterations(
                         env,
@@ -1797,7 +1885,7 @@ impl<'p, 'w> Machine<'p, 'w> {
                         ),
                         current,
                     );
-                    self.later.pop();
+                    self.later.truncate(mark);
                     let Some(on_stop) = on_stop else {
                         current = result?;
                         return Ok(Value::Tuple(Rc::new(current)));
@@ -1962,8 +2050,18 @@ impl<'p, 'w> Machine<'p, 'w> {
                     if items.len() != names.len() {
                         return Err(fault("`let (...)` of a tuple of another length"));
                     }
-                    for ((name, _), item) in names.iter().zip(items.iter()) {
-                        env.push((name.as_str(), item.clone()));
+                    // A tuple binding at its last use, as the result of an update or of a
+                    // loop is, gives its items up: the names bound to them then hold them
+                    // once, and the next update of one happens in place (#30, #201).
+                    if let Atom::Var(tuple) = value
+                        && self.dead_after(tuple, body)
+                        && let Some(bound) = env.lookup_mut(tuple)
+                    {
+                        *bound = Value::Unit;
+                    }
+                    let items = Rc::try_unwrap(items).unwrap_or_else(|shared| (*shared).clone());
+                    for ((name, _), item) in names.iter().zip(items) {
+                        env.push((name.as_str(), item));
                     }
                     expr = body;
                 }
@@ -2347,9 +2445,10 @@ impl<'p, 'w> Machine<'p, 'w> {
         let result = self.eval(env, caps, body);
         env.truncate(mark);
         match result {
-            Ok(Value::Tuple(items)) if items.len() == state.len() => {
-                Ok((items.as_ref().clone(), false))
-            }
+            Ok(Value::Tuple(items)) if items.len() == state.len() => Ok((
+                Rc::try_unwrap(items).unwrap_or_else(|shared| (*shared).clone()),
+                false,
+            )),
             Err(Stop::Exit(tag, values)) if values.len() == state.len() => {
                 Ok((values, tag == ExitTag::Stop))
             }
@@ -2695,7 +2794,20 @@ impl<'p, 'w> Machine<'p, 'w> {
                     && let Some(value) = args.first()
                     && !matches!(value, Value::Int(_) | Value::Bool(_) | Value::Text(_))
                 {
-                    return Ok(Value::text(&self.index.written(value)));
+                    let text = self
+                        .index
+                        .written(value)
+                        .map_err(|IntTooLong| int_text_abort(Some(*span)))?;
+                    return Ok(Value::text(&text));
+                }
+                // An `Int` of more than `MAX_INT_DIGITS` digits is never written (`spec/11
+                // §7`, #923): the run aborts at the interpolation or the call of `to_text`.
+                if *prim == Prim::ToText
+                    && let Some(Value::Int(n)) = args.first()
+                {
+                    return una_core::int_text(n)
+                        .map(|text| Value::text(&text))
+                        .ok_or_else(|| int_text_abort(Some(*span)));
                 }
                 prim_apply(*prim, &args)
             }
@@ -2943,16 +3055,18 @@ impl<'p, 'w> Machine<'p, 'w> {
                 .map(|n| (*n).to_owned())
                 .collect(),
         };
-        let shown: Vec<(String, String)> = args
-            .iter()
-            .enumerate()
-            .map(|(i, value)| {
-                let name = names.get(i).cloned().unwrap_or_else(|| format!("arg{i}"));
-                // An argument labeled above `public` is redacted.
-                let label = labels.get(i).cloned().unwrap_or_else(Label::public);
-                (name, self.index.redacted(value, &label))
-            })
-            .collect();
+        let mut shown: Vec<(String, String)> = Vec::with_capacity(args.len());
+        for (i, value) in args.iter().enumerate() {
+            let name = names.get(i).cloned().unwrap_or_else(|| format!("arg{i}"));
+            // An argument labeled above `public` is redacted.
+            let label = labels.get(i).cloned().unwrap_or_else(Label::public);
+            // An integer too long for text aborts the run at the operation (`spec/11 §7`).
+            let text = self
+                .index
+                .redacted(value, &label)
+                .map_err(|IntTooLong| int_text_abort(Some(span)))?;
+            shown.push((name, text));
+        }
         // The operation's event is written when it ends, after the events of the handler code
         // that served it (ADR 0117 rule 10).
         let slot = self.events.len();
@@ -2969,16 +3083,32 @@ impl<'p, 'w> Machine<'p, 'w> {
         self.ops_open += 1;
         let result = self.serve(&instance, capability, op, args, span);
         self.ops_open = self.ops_open.saturating_sub(1);
-        let outcome = match &result {
-            Ok(value) => EventOutcome::Ok(self.index.redacted(value, &request.result)),
-            Err(Stop::Fail(failure)) => EventOutcome::Fail {
-                variant: variant(failure),
-                value: self.index.render(failure),
+        // An outcome that holds an integer too long for text aborts the run at the operation
+        // (`spec/11 §7`, #923), its event left `aborted`.
+        let (result, outcome) = match result {
+            Ok(value) => match self.index.redacted(&value, &request.result) {
+                Ok(text) => (Ok(value), EventOutcome::Ok(text)),
+                Err(IntTooLong) => (Err(int_text_abort(Some(span))), EventOutcome::Aborted),
+            },
+            Err(Stop::Fail(failure)) => match self.index.render(&failure) {
+                Ok(text) => {
+                    let variant = variant(&failure);
+                    (
+                        Err(Stop::Fail(failure)),
+                        EventOutcome::Fail {
+                            variant,
+                            value: text,
+                        },
+                    )
+                }
+                Err(IntTooLong) => (Err(int_text_abort(Some(span))), EventOutcome::Aborted),
             },
             // An operation in progress completes (`spec/19 §6` rule 4): a cut inside its
             // handler is only one of a `within` that the handler's own code started, which
             // catches it there.
-            Err(Stop::Abort(_) | Stop::Exit(..) | Stop::Cut(_)) => EventOutcome::Aborted,
+            other @ Err(Stop::Abort(_) | Stop::Exit(..) | Stop::Cut(_)) => {
+                (other, EventOutcome::Aborted)
+            }
         };
         if let Some(event) = self.events.get_mut(slot) {
             event.outcome = outcome;
@@ -3419,6 +3549,9 @@ impl<'p, 'w> Machine<'p, 'w> {
                     Ok(tree) => tree,
                     Err(crate::json::NoTree::NotJson) => return Err(bad()),
                     Err(crate::json::NoTree::OverBudget) => return Err(over),
+                    Err(crate::json::NoTree::IntTooLong) => {
+                        return Err(int_text_abort(Some(span)));
+                    }
                 };
                 match una_core::json::write_within(&tree, &mut within) {
                     Some(text) => Value::text(&text),
@@ -3921,7 +4054,12 @@ fn prim_apply<'p>(prim: Prim, args: &[Value<'p>]) -> Flow<'p> {
             _ => return Err(fault("a shape of a value that is not a matrix")),
         },
         Prim::ToText => match arg(0)? {
-            Value::Int(n) => Value::text(&n.to_string()),
+            // The machine writes an `Int` at its site, where a too long one aborts the run
+            // (`spec/11 §7`); here, without a site, one is a fault, never a conversion.
+            Value::Int(n) => match una_core::int_text(n) {
+                Some(text) => Value::text(&text),
+                None => return Err(fault("an integer too long for text outside a site")),
+            },
             Value::Bool(b) => Value::text(&b.to_string()),
             Value::Text(t) => Value::Text(t.clone()),
             _ => {
