@@ -347,7 +347,10 @@ mod tests {
         let k = Kernels::BASELINE;
         let bits = |v: f64| v.to_bits();
         assert_eq!(bits((k.sum)(&x)), bits(super::super::blocked::sum(&x)));
-        assert_eq!(bits(k.dot(&x, &y)), bits(super::super::blocked::dot(&x, &y)));
+        assert_eq!(
+            bits(k.dot(&x, &y)),
+            bits(super::super::blocked::dot(&x, &y))
+        );
         let pairs = || x.iter().copied().zip(y.iter().copied());
         assert_eq!(
             bits(k.dot_of_pairs(1.5, pairs())),

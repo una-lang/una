@@ -317,7 +317,7 @@ exported! {
     una_rt_int_mod => values::rem, (a, b);
     una_rt_int_neg => values::neg, (a);
     una_rt_int_compare => values::compare, (a, b);
-    una_rt_int_text => values::int_text, (a);
+    una_rt_int_text => runtime::int_text, (site, a);
     una_rt_bool_text => values::bool_text, (a);
     una_rt_text_concat => values::concat, (a, b);
     una_rt_text_append_owned => values::text_append_owned, (t, part);
@@ -357,6 +357,9 @@ exported! {
     una_rt_f64_literal => values::f64_literal, (bits);
     una_rt_f64_op => values::f64_op, (op, a, b, c);
     una_rt_f64_from_bits => values::f64_from_bits, (bits);
+    una_rt_f32_op => values::f32_op, (op, a, b, c);
+    una_rt_f32_from_bits => values::f32_from_bits, (bits);
+    una_rt_parse_f32 => values::parse_f32, (t);
     una_rt_parse_f64_failure => values::parse_f64_failure, (t);
     una_rt_parse_f64 => values::parse_f64, (t);
     una_rt_as_f64 => values::as_f64, (j);
@@ -378,6 +381,27 @@ exported! {
     una_rt_map_without => values::map_without, (map, key);
     una_rt_map_without_owned => values::map_without_owned, (map, key);
     una_rt_map_list => values::map_list, (map, part);
+    una_rt_collection_len => values::collection_len, (c);
+    una_rt_seq_empty => values::seq_empty, ();
+    una_rt_seq_of => values::seq_of, (xs, stack);
+    una_rt_seq_op => values::seq_op, (op, s, item);
+    una_rt_seq_op_owned => values::seq_op_owned, (op, s, item);
+    una_rt_set_empty => values::set_empty, ();
+    una_rt_set_of => values::set_of, (xs);
+    una_rt_set_op => values::set_op, (op, s, a, b);
+    una_rt_set_op_owned => values::set_op_owned, (op, s, a, b);
+    una_rt_priority_empty => values::priority_empty, (highest);
+    una_rt_priority_op => values::priority_op, (op, q, item, priority);
+    una_rt_priority_op_owned => values::priority_op_owned, (op, q, item, priority);
+    una_rt_bit_set_empty => values::bit_set_empty, (site, size);
+    una_rt_bit_set_op => values::bit_set_op, (site, op, b, x);
+    una_rt_bit_set_op_owned => values::bit_set_op_owned, (site, op, b, x);
+    una_rt_hash_empty => values::hash_empty, (site, set);
+    una_rt_hash_of_list => values::hash_of_list, (site, set, desc, xs);
+    una_rt_hash_map_op => values::hash_map_op, (site, op, desc, m, a, b);
+    una_rt_hash_map_op_owned => values::hash_map_op_owned, (site, op, desc, m, a, b);
+    una_rt_hash_set_op => values::hash_set_op, (site, op, desc, s, a);
+    una_rt_hash_set_op_owned => values::hash_set_op_owned, (site, op, desc, s, a);
     una_rt_reuse => values::reuse, (old, tag);
     una_rt_sum => values::sum, (xs);
     una_rt_generic_compare => generic::compare, (desc, a, b);
@@ -388,8 +412,8 @@ exported! {
     una_rt_generic_contains_at => generic::contains, (site, desc, xs, item);
     una_rt_generic_sum => generic::sum, (desc, xs);
     una_rt_generic_sort => generic::sort, (desc, xs);
-    una_rt_generic_write => generic::write, (desc, x);
-    una_rt_write => runtime::write, (ty, word);
+    una_rt_generic_write => generic::write, (site, desc, x);
+    una_rt_write => runtime::write, (site, ty, word);
     una_rt_descriptor_composite => generic::composite, (ty, params);
     una_rt_or_else => values::or_else, (o, default);
     una_rt_op_code => values::op_code, (instance, index);
@@ -417,6 +441,8 @@ exported! {
     una_rt_is_json_number => json::is_json_number, (t);
     una_rt_host_instance => host::host_instance, (capability);
     una_rt_handler_instance => host::handler_instance, (name);
+    una_rt_limiter_instance => host::limiter_instance, (at_most, per, waiting);
+    una_rt_limit_acquire => host::limit_acquire, (site, instance);
     una_rt_event => host::event, (site, instance);
     // Dense values (`spec/29 §17`, ADR 0120, design note D5): the site first, and a tensor's
     // functions per rank.
@@ -628,6 +654,15 @@ pub extern "C" fn una_rt_main_failed(failure: i64) {
     runtime::main_failed(failure);
 }
 
+/// Called by the C `main` of a program that performs an operation of `Http`, before
+/// `una_rt_start`: lets the run build the client's TLS settings before `main` when its grants
+/// include `Http` ([`runtime::enable_http`]). A program without `Http` never calls it, so the
+/// linker drops the TLS stack from its executable (ADR 0074 H7).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_http_enable() {
+    runtime::enable_http();
+}
+
 /// Checks the memory budget at an iteration of the loop at `site` (U6003 over it): 1 when
 /// the task must stop instead ([`runtime::budget`]).
 #[unsafe(no_mangle)]
@@ -722,6 +757,33 @@ pub extern "C" fn una_rt_together(closures: i64, site: i64) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn una_rt_together_for(closure: i64, items: i64, site: i64) -> i64 {
     tasks::together_for(closure, items, usize::try_from(site).unwrap_or(usize::MAX))
+}
+
+/// Runs the branches of `first of` at `site` ([`tasks::first_of`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_first_of(closures: i64, site: i64) -> i64 {
+    tasks::first_of(closures, usize::try_from(site).unwrap_or(usize::MAX))
+}
+
+/// Opens the `tasks` statement at `site`, bounded by the integer of the borrowed word `bound`
+/// when `bounded` is 1: 0, or 2 when the task stops instead ([`crate::started::tasks_begin`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_tasks_begin(bound: i64, bounded: i64, site: i64) -> i64 {
+    crate::started::tasks_begin(bound, bounded, usize::try_from(site).unwrap_or(usize::MAX))
+}
+
+/// Starts a task for the closure `closure`, which the caller keeps, at the `start` at `site`:
+/// 0, or 2 when the task stops instead ([`crate::started::start`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_start_task(closure: i64, site: i64) -> i64 {
+    crate::started::start(closure, usize::try_from(site).unwrap_or(usize::MAX), invoke)
+}
+
+/// Ends the innermost `tasks` statement once its block has ended, cancelling its tasks first
+/// when `cancel` is 1, and waits for them ([`crate::started::tasks_end`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_tasks_end(cancel: i64) {
+    crate::started::tasks_end(cancel);
 }
 
 /// How the last block of tasks ended ([`tasks::status`]).
@@ -1504,7 +1566,10 @@ mod tests {
             .ok()
             .and_then(|text| text.trim().parse().ok())
             .unwrap_or(0);
-        let args = ["--max-memory".to_owned(), "8".to_owned()];
+        // The budget counts every byte the process holds, this scenario's own list of cases
+        // included, about 14 MiB with the dense entry points (#989): 24 MiB leaves the calls
+        // about the 8 MiB they had before that list grew.
+        let args = ["--max-memory".to_owned(), "24".to_owned()];
         runtime::start(&args, SET_META, move || {
             let pool = word_pool();
             // Fewer drawn tuples than outside a run: each call that ends the run costs a process.
@@ -1529,7 +1594,7 @@ mod tests {
     #[cfg_attr(miri, ignore = "runs a process of its own, which Miri cannot")]
     fn every_entry_point_takes_any_word_in_a_run() {
         // #766, step 1, inside a started run, with its heap, its sites and a memory budget of
-        // 8 MiB: the same calls, `range` with every word. A call either returns, or ends the
+        // 24 MiB, about 8 MiB beyond the scenario's own list of cases: the same calls, `range` with every word. A call either returns, or ends the
         // run as the model says (exit code 1 or 3 with its diagnostic: U6003 over the budget,
         // U8001 for a `set` outside its list), and the next run resumes after it. A panic, a
         // signal, another exit, or a run that does not end within `DEADLINE` (a call that hangs,

@@ -38,8 +38,13 @@ fn cfg_features(enabled: &[&str]) -> BTreeSet<String> {
     let mut command = Command::new(&rustc);
     command.args(["--print", "cfg", "--target", TARGET]);
     if !enabled.is_empty() {
-        let list: Vec<String> = enabled.iter().map(|feature| format!("+{feature}")).collect();
-        command.arg("-C").arg(format!("target-feature={}", list.join(",")));
+        let list: Vec<String> = enabled
+            .iter()
+            .map(|feature| format!("+{feature}"))
+            .collect();
+        command
+            .arg("-C")
+            .arg(format!("target-feature={}", list.join(",")));
     }
     let output = command.output().unwrap_or_else(|error| {
         panic!(

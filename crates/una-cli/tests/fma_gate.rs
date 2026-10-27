@@ -201,11 +201,15 @@ fn an_fma_instruction_in_an_allowlisted_variant_passes_the_gate() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        String::from_utf8_lossy(&output.stdout).contains("no FMA instruction outside the allowlist")
+        String::from_utf8_lossy(&output.stdout)
+            .contains("no FMA instruction outside the allowlist")
     );
     // The allowlist the report gives replaces the default: without the variant's prefix, the
     // same object fails.
-    let output = gate(&["--allow", "una_core::dense::variants::x86_64_v4"], &[&variant]);
+    let output = gate(
+        &["--allow", "una_core::dense::variants::x86_64_v4"],
+        &[&variant],
+    );
     assert_eq!(
         output.status.code(),
         Some(1),

@@ -10,7 +10,7 @@
 module dense
 
 -- The bits of the lane-blocked sum and of the scaled norm of x.
-summary(x: Matrix[F64]) -> Text = "{x.sum().to_bits()} {x.norm2().to_bits()}"
+summary(x: Matrix[F64]) -> Text = "{x.sum().to_bits()} {x.to_tensor().reshape(shape: [x.rows * x.columns]).to_array().norm2().to_bits()}"
 
 -- `solve` with a column of ones, of the n × n matrix whose row i, column j holds
 -- 1 / (i + j + 1), plus 2 on the diagonal.
@@ -67,7 +67,7 @@ singular(n: Int, zero_last: Bool) -> Text
   "{by_lu} {by_solve}"
 
 -- A triangular solve with two columns of ones, of the matrix of `solved`.
-triangular(n: Int, lower: Bool, unit: Bool) -> Text
+triangular(n: Int, lower: Bool, unit_diagonal: Bool) -> Text
   requires n >= 1
 =
   let zero = 0.0
@@ -78,17 +78,19 @@ triangular(n: Int, lower: Bool, unit: Bool) -> Text
       let shift = if i == j then 2.0 else 0.0
       edit a.set(row: i, column: j, item: x + shift)
   let b = matrix_filled(rows: n, columns: 2, value: 1.0)
-  let x = if lower then a.solve_lower(rhs: b, unit_diagonal: unit) else a.solve_upper(rhs: b, unit_diagonal: unit)
+  let x = if lower then a.solve_lower(rhs: b,
+    unit_diagonal: unit_diagonal
+  ) else a.solve_upper(rhs: b, unit_diagonal: unit_diagonal)
   summary(x)
 
 pub main() -> Unit
   uses @console: Console[print]
 =
   @console.print("solve {solved(3)} {solved(70)} {solved(130)}")
-  @console.print("cholesky {factored(70, -1)} {factored(70, 68)} {factored(70, 3)}")
-  @console.print("singular {singular(66, true)} {singular(66, false)}")
-  @console.print("lower {triangular(70, true, false)} {triangular(70, true, true)}")
-  @console.print("upper {triangular(70, false, false)} {triangular(70, false, true)}")
+  @console.print("cholesky {factored(70, low: -1)} {factored(70, low: 68)} {factored(70, low: 3)}")
+  @console.print("singular {singular(66, zero_last: true)} {singular(66, zero_last: false)}")
+  @console.print("lower {triangular(70, lower: true, unit_diagonal: false)} {triangular(70, lower: true, unit_diagonal: true)}")
+  @console.print("upper {triangular(70, lower: false, unit_diagonal: false)} {triangular(70, lower: false, unit_diagonal: true)}")
   let lower: List[F64] = [0.0, 0.0, 1.0, 2.0]
   let upper: List[F64] = [2.0, 1.0, 0.0, 0.0]
   let zeros: List[F64] = [0.0, 1.0]

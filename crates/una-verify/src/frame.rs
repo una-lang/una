@@ -157,6 +157,8 @@ impl<'p, 'l> Frames<'p, 'l> {
             }
             // `e within d` has `e`'s value when it returns in time (`spec/27 §5`).
             Expr::With { body, .. } | Expr::Within { body, .. } => self.expr(body, env),
+            // A `tasks` statement has its block's value; its `exit`s cross it (`spec/27 §7`).
+            Expr::Tasks { body, .. } => self.expr(body, env),
             Expr::Fail { .. } | Expr::Unreachable { .. } => None,
             // `skip` and `stop` complete the iteration with their state, and the path ends.
             Expr::Exit { state, .. } => {
@@ -166,11 +168,13 @@ impl<'p, 'l> Frames<'p, 'l> {
                 }
                 None
             }
-            // The value of `attempt` is a `Result`, and those of `together` say nothing about
-            // the state.
-            Expr::Attempt { .. } | Expr::Together { .. } | Expr::TogetherFor { .. } => {
-                Some(Vec::new())
-            }
+            // The value of `attempt` is a `Result`, and those of `together` and `first of` say
+            // nothing about the state.
+            Expr::Attempt { .. }
+            | Expr::Together { .. }
+            | Expr::TogetherFor { .. }
+            | Expr::FirstOf { .. }
+            | Expr::Start { .. } => Some(Vec::new()),
         }
     }
 

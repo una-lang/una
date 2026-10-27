@@ -20,6 +20,8 @@ pub(crate) enum Value<'p> {
     /// A `Decimal[s]`: its coefficient and its scale (`spec/29 §16`, ADR 0120 rule 12). The
     /// scale is the type's, so every value of one type has the same.
     Decimal(BigInt, u8),
+    /// An `F32`, always canonical: its NaN is `0x7FC00000` (ADR 0120 rule 5).
+    F32(f32),
     /// A boolean.
     Bool(bool),
     /// A text.
@@ -51,6 +53,12 @@ pub(crate) enum Value<'p> {
     /// A `HashSet` of `std.collections`: the same table, each item a key whose value is
     /// `unit`.
     HashSet(Rc<HashTable<'p>>),
+    /// A `PriorityQueue` of `std.collections`, a stable 4-ary heap (`spec/28 §8`, ADR 0119 rule
+    /// 19). It has no `==` (ADR 0119 rule 2), so no equality ever compares two of them.
+    Priority(Rc<Heap<'p>>),
+    /// A `BitSet` of `std.collections` (`spec/28 §9`, ADR 0119 rule 19): its words of 64 bits,
+    /// its size and its count of members. It holds no values.
+    BitSet(Rc<Bits>),
     /// A dense value of edition 0.4, `Array[T]`, `Matrix[T]`, `Tensor[T]` or `Lu[T]` (`spec/29
     /// §17`): a view of a buffer, with its own offset, shape and strides, so a view shares its
     /// parent's storage.
@@ -109,6 +117,47 @@ pub(crate) struct Dense<'p> {
     pub(crate) strides: Vec<usize>,
 }
 
+/// A priority queue: a 4-ary heap of its entries, each ordered by its priority in the queue's
+/// direction and then by its sequence number, ascending (ADR 0119 rule 19). The first entry is
+/// the one `pop` gives.
+#[derive(Clone, Debug)]
+pub(crate) struct Heap<'p> {
+    /// Whether `pop` gives the greatest priority first (`highest_first`), or the least
+    /// (`lowest_first`).
+    pub(crate) highest: bool,
+    /// The sequence number of the next push.
+    pub(crate) next: u64,
+    /// The entries, in heap order: each entry comes after its parent at `(i - 1) / 4`.
+    pub(crate) entries: Vec<Ranked<'p>>,
+}
+
+/// An entry of a priority queue: its item, its priority with the priority's order key, and
+/// the sequence number of its push, which breaks ties between equal priorities in push order.
+#[derive(Clone, Debug)]
+pub(crate) struct Ranked<'p> {
+    /// The order key of `priority`.
+    pub(crate) key: Key,
+    /// The sequence number of the push that added it.
+    pub(crate) sequence: u64,
+    /// The priority, as its value, for `peek_priority` and `pop_ranked`.
+    pub(crate) priority: Value<'p>,
+    /// The item.
+    pub(crate) item: Value<'p>,
+}
+
+/// The members of a bit set (ADR 0119 rule 19): bit `i % 64` of word `i / 64` is set exactly
+/// when `i` is a member, for `i` below `size`; the bits past the size stay zero, so two bit
+/// sets of one size and the same members have the same words.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Bits {
+    /// `size.div_ceil(64)` words.
+    pub(crate) words: Vec<u64>,
+    /// The size, fixed when the bit set is made.
+    pub(crate) size: usize,
+    /// The number of members, kept with the words so that `len` is O(1).
+    pub(crate) count: usize,
+}
+
 /// The items of a set, by their order.
 pub(crate) type Items<'p> = BTreeMap<Key, Value<'p>>;
 
@@ -165,6 +214,8 @@ pub(crate) enum Key {
     Int(BigInt),
     /// An `F64` by the key of totalOrder (ADR 0114 rule 9.5).
     F64(i64),
+    /// An `F32` by the key of totalOrder (ADR 0120 rule 10).
+    F32(i32),
     Text(Rc<Text>),
     Variant(usize),
 }
@@ -178,6 +229,7 @@ impl Key {
             // The keys of one map share their type, so their scale: the coefficient orders
             // them by value (ADR 0120 rule 18).
             Value::Decimal(c, _) => Some(Key::Int(c.clone())),
+            Value::F32(x) => Some(Key::F32(una_core::float32::order_key(*x))),
             Value::Text(t) => Some(Key::Text(t.clone())),
             Value::Data(data) if data.fields.is_empty() => Some(Key::Variant(data.ctor.index)),
             _ => None,
@@ -292,6 +344,16 @@ fn unwind<'p>(mut pending: Vec<Value<'p>>, mut caps: Vec<Caps<'p>>) {
                         }
                     }
                 }
+                Value::Priority(heap) => {
+                    if let Ok(heap) = Rc::try_unwrap(heap) {
+                        for entry in heap.entries {
+                            pending.push(entry.priority);
+                            pending.push(entry.item);
+                        }
+                    }
+                }
+                // A bit set holds words, never values: dropping it frees them at once.
+                Value::BitSet(_) => {}
                 Value::Dense(dense) => {
                     if let Ok(mut dense) = Rc::try_unwrap(dense)
                         && let Some(items) = take_values(&mut dense)
@@ -399,6 +461,7 @@ fn leaf_equal(a: &Value<'_>, b: &Value<'_>) -> bool {
         (Value::Int(x), Value::Int(y)) => x == y,
         (Value::F64(x), Value::F64(y)) => una_core::float::equal(*x, *y),
         (Value::Decimal(..), Value::Decimal(..)) => decimal_cmp(a, b) == Ordering::Equal,
+        (Value::F32(x), Value::F32(y)) => una_core::float32::equal(*x, *y),
         (Value::Bool(x), Value::Bool(y)) => x == y,
         (Value::Text(x), Value::Text(y)) => Rc::ptr_eq(x, y) || x == y,
         (Value::Unit, Value::Unit) => true,
@@ -415,6 +478,9 @@ fn leaf_equal(a: &Value<'_>, b: &Value<'_>) -> bool {
         (Value::Map(x), Value::Map(y)) => x.is_empty() && y.is_empty(),
         (Value::Seq(x), Value::Seq(y)) => x.is_empty() && y.is_empty(),
         (Value::Set(x), Value::Set(y)) => x.is_empty() && y.is_empty(),
+        // A bit set is a leaf: the same size and the same members (`spec/28 §3` rule 3), its
+        // words compared at once, in O(size / 64), since they hold no values.
+        (Value::BitSet(x), Value::BitSet(y)) => Rc::ptr_eq(x, y) || x == y,
         _ => false,
     }
 }
@@ -627,6 +693,7 @@ pub(crate) fn compare(a: &Value<'_>, b: &Value<'_>) -> Ordering {
         (Value::Int(x), Value::Int(y)) => x.cmp(y),
         (Value::F64(x), Value::F64(y)) => una_core::float::total_cmp(*x, *y),
         (Value::Decimal(..), Value::Decimal(..)) => decimal_cmp(a, b),
+        (Value::F32(x), Value::F32(y)) => una_core::float32::total_cmp(*x, *y),
         (Value::Text(x), Value::Text(y)) => x.cmp(y),
         (Value::Data(x), Value::Data(y)) => x.ctor.index.cmp(&y.ctor.index),
         _ => Ordering::Equal,

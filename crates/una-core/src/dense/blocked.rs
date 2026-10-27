@@ -97,7 +97,12 @@ pub fn dot(x: &[f64], y: &[f64]) -> f64 {
 
 /// [`dot_from`] with the `fma` `f`.
 #[inline(always)]
-pub(crate) fn dot_from_with(start: f64, x: &[f64], y: &[f64], f: impl Fn(f64, f64, f64) -> f64) -> f64 {
+pub(crate) fn dot_from_with(
+    start: f64,
+    x: &[f64],
+    y: &[f64],
+    f: impl Fn(f64, f64, f64) -> f64,
+) -> f64 {
     let mut s = start;
     for (xs, ys) in x.chunks(KB).zip(y.chunks(KB)) {
         let mut p = 0.0_f64;
@@ -425,7 +430,11 @@ pub fn cholesky(a: &mut [f64], n: usize) -> bool {
 
 /// [`cholesky`] with the `fma` `f`.
 #[inline(always)]
-pub(crate) fn cholesky_with(a: &mut [f64], n: usize, f: impl Fn(f64, f64, f64) -> f64 + Copy) -> bool {
+pub(crate) fn cholesky_with(
+    a: &mut [f64],
+    n: usize,
+    f: impl Fn(f64, f64, f64) -> f64 + Copy,
+) -> bool {
     // Only the n × n elements are the matrix.
     let Some(a) = n.checked_mul(n).and_then(|size| a.get_mut(..size)) else {
         return false;
