@@ -340,6 +340,8 @@ fn encode<S: Sink>(encoder: &mut Encoder<'_, S>, value: &Value<'_>) -> bool {
             // Every `F64` is canonical, so every NaN encodes alike, and `-0.0` and `0.0` differ,
             // as their `==` does (ADR 0114 rule 6.1).
             Value::F64(x) => encoder.f64_bits(una_core::float::to_bits(*x)),
+            // The integer whose value is its 32 canonical bits (`spec/28 §1` rule 2).
+            Value::F32(x) => encoder.uint(u64::from(una_core::float32::to_bits(*x))),
             // Its coefficient: the keys of one table share one type, so one scale (ADR 0120,
             // the amendment of ADR 0119 rule 9).
             Value::Decimal(coefficient, _) => integer(encoder, coefficient),
