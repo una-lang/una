@@ -1,0 +1,19 @@
+-- test: `start` stands only in the block of a `tasks` statement, outside the tasks within it: outside any `tasks`, or in the body of a `together for` inside one, it is U2035 at `start` (spec/27 §7, ADR 0117 rule 7)
+-- spec: spec/27 §7
+-- expect: error U2035 at src/place.una:11:3
+-- expect: error U2035 at src/place.una:17:7
+module place
+
+note(n: Int) -> Unit = unit
+
+pub outside(n: Int) -> Unit
+=
+  start note(n)
+
+pub nested(jobs: List[Int]) -> Unit
+=
+  tasks
+    let done = together for job in jobs
+      start note(job)
+      job
+    note(0)

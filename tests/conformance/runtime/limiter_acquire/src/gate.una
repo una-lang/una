@@ -1,0 +1,44 @@
+-- test: `acquire` of a `limiter` takes a token at once while the burst lasts and waits for a refill otherwise; with `waiting: 0` a call that finds no token fails at once with `RateLimited`, the one failure of `Limited`; both engines agree (spec/27 §10, ADR 0117 rule 9)
+-- spec: spec/27 §10
+-- grant: console
+-- expect: run-output "paced: 3"
+-- expect: run-output "limited"
+module gate
+
+import std.limit (Limit, Limited, limiter)
+import std.time (millisecond, minute)
+
+--- One for a token taken, zero for a call that found none.
+taken(got: Result[Unit, Limited]) -> Int
+=
+  when got
+    is Ok(took) -> 1
+    is Err(failure) -> 0
+
+--- How many of `n` calls took a token: all of them, the third after a refill.
+paced(n: Int) -> Int
+  uses @gate: Limit[acquire]
+=
+  let edit done = 0
+  for i in 1..n
+    let got = attempt @gate.acquire()
+    done = done + taken(got)
+  done
+
+--- The second call of a bucket of one token that nothing may wait for.
+busy() -> Text
+  uses @gate: Limit[acquire]
+=
+  let first = attempt @gate.acquire()
+  let second = attempt @gate.acquire()
+  when second
+    is Ok(took) -> "free"
+    is Err(failure) -> "limited"
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let count = paced(3) with @gate = limiter(at_most: 2, per: 20 * millisecond, waiting: 4)
+  @console.print("paced: {count}")
+  let state = busy() with @gate = limiter(at_most: 1, per: minute, waiting: 0)
+  @console.print(state)

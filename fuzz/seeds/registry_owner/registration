@@ -1,0 +1,8 @@
+ita-owner/1
+source acme
+owner acme
+previous none
+threshold 1
+key acme.laptop 47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=
+cosigner trustee.a 47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFE=
+cosigners 1

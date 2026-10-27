@@ -1,6 +1,6 @@
 ---
 construct: "[package] edition"
-editions: ["0.1", "0.2"]
+editions: ["0.1", "0.2", "0.3"]
 spec: ["spec/13 §7", "spec/01 §5", "spec/17 §1", "spec/18 §1", "spec/19 §1", "spec/20 §2", "spec/05 §3", "spec/03 §3", "spec/25 §1", "spec/26 §1", "spec/30 §2"]
 codes: [U0103, U7002]
 ---
@@ -53,9 +53,10 @@ ita <name>
   - **`[boundaries]`.** A table of `una.toml` that gives a module the most authority it may ever use. See [`[boundaries]`](../boundaries.md).
   - **Refined elements of collections.** A refined kind may be a type argument, as `List[Pos]`, and every value that flows into such a position is checked against its refinement.
   - **Units of measure.** `measure` declares a unit, and `Int of Meter` is an integer in meters, which never mixes with seconds.
+  - **Profiles and memory budgets.** `[package] profile` is `"app"` or `"systems"`, and `[run] max_memory` declares a package's memory budget; `ita.una` writes them as the lines `profile` and `max_memory` in edition `0.4`. See [`[package] profile`](profile.md) and [`[run] max_memory`](../run/max_memory.md).
 
   Edition `0.3` is a preview: the rules that target it join it as they land, so a later `0.3.x` release may add obligations or errors to an edition `0.3` package. It only gets stricter for the programs that edition `0.2` can express. A construct that a rule targeting edition `0.3` adds, such as a condition on an operation (`uses @log: Log[write where not dry_run]`), is a syntax error in earlier releases and may become accepted; it only narrows what a program may do, since erasing it gives a program that edition `0.2` accepts. Editions `0.1` and `0.2` keep their stability promise.
-- **Edition `0.4`** has every construct, keyword and rule of edition `0.3`, and is a preview under the same terms. It is the edition of long-running programs (`spec/26`): `diverges` and `within` are reserved in it, and its constructs join it as they land. A package of edition `0.4` is described by `ita.una` and pinned by `ita.lock` (`spec/30`); `una.toml` naming edition `0.4` is U7002, and `una migrate` moves a package of an earlier edition to `0.4`.
+- **Edition `0.4`** has every construct, keyword and rule of edition `0.3`, and is a preview under the same terms. It is the edition of long-running programs (`spec/26`): `diverges` and `within` are reserved in it, and its constructs join it as they land. A package of edition `0.4` is described by [`ita.una`](../ita/manifest.md) and pinned by [`ita.lock`](../ita/lock.md) (`spec/30`); `una.toml` naming edition `0.4` is U7002, and [`una migrate`](../ita/migrate.md) moves a package of an earlier edition to `0.4`.
 - **A single file**, outside a package, has edition `"0.1"`.
 
 ## Examples

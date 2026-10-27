@@ -1987,6 +1987,219 @@ fn set_updates_lookups_and_operations_scale_as_n_log_n() {
     );
 }
 
+/// A `HashMap` and a `HashSet` of `COUNT` keys built by `set` and `add`, each key looked up in
+/// both, a set intersected with a copy missing one item, then both emptied by `remove`
+/// (`spec/28 §7`).
+const HASH_SCALE: &str = "module scale
+
+import std.collections (HashMap, HashSet, empty_hash_map, empty_hash_set)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let edit m: HashMap[Int, Int] = empty_hash_map()
+  for i in 0..<COUNT
+    edit m.set(key: (i * 7919) mod COUNT, value: i)
+  let edit s: HashSet[Int] = empty_hash_set()
+  for i in 0..<COUNT
+    edit s.add(item: i)
+  let edit found = 0
+  for i in 0..<COUNT
+    if m.has(key: i) and s.has(item: i)
+      found = found + 1
+  let common = s.intersection(other: s.without(item: 0))
+  for i in 0..<COUNT
+    edit m.remove(key: i)
+    edit s.remove(item: i)
+  @console.print(\"{found} {common.len} {m.len} {s.len}\")
+";
+
+#[test]
+fn hash_table_updates_lookups_and_operations_scale_linearly() {
+    // `spec/28 §7`: `set`, `add`, `has` and `remove` are O(|k|) expected, amortized, and
+    // `intersection` is O(n · |k|); an update of a table nothing else holds is in place. Ten
+    // times the keys take under 25 times as long: expected O(1) per operation gives about 10,
+    // a copy per update or a hash that collides about 100.
+    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join("runtime")
+        .join("hash_scale");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("ita.una"),
+        "ita hash_scale\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry scale\n  grants\n    console\n",
+    )
+    .unwrap();
+    std::fs::copy(
+        repository().join("tests/conformance/names/collections_exports_in_0_4/ita.lock"),
+        root.join("ita.lock"),
+    )
+    .unwrap();
+    let dir = root.to_str().unwrap();
+    // Writes the program of `n` keys (untimed), then times its run.
+    let measure = |n: usize| {
+        std::fs::write(
+            root.join("src/scale.una"),
+            HASH_SCALE.replace("COUNT", &n.to_string()),
+        )
+        .unwrap();
+        let (output, seconds) =
+            timing::timed(|| una(&["run", dir, "--grant", "console", "--max-memory", "1024"]));
+        assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+        assert_eq!(stdout(&output), format!("{n} {} 0 0\n", n - 1));
+        seconds
+    };
+    timing::assert_growth(
+        "keys",
+        &[100_000, 1_000_000],
+        0.0,
+        timing::FLOOR,
+        25.0,
+        measure,
+    );
+}
+
+/// A `PriorityQueue` of `COUNT` items pushed with priorities that repeat, so that ties are
+/// common, then popped empty, checking that the priorities come out in order (`spec/28 §8`).
+const PRIORITY_SCALE: &str = "module scale
+
+import std.collections (PriorityQueue, lowest_first)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let edit q: PriorityQueue[Int, Int] = lowest_first()
+  for i in 0..<COUNT
+    edit q.push(item: i, priority: (i * 7919) mod 1000)
+  let edit popped = 0
+  let edit ordered = 0
+  let edit last = 0
+  for i in 0..<COUNT
+    let p = q.peek_priority()
+      if none use -1
+    if p >= last
+      ordered = ordered + 1
+    last = p
+    let item = edit q.pop()
+    if item != None
+      popped = popped + 1
+  @console.print(\"{popped} {ordered} {q.len}\")
+";
+
+#[test]
+fn priority_queue_pushes_and_pops_scale_as_n_log_n() {
+    // `spec/28 §8`: `push` and `pop` make O(log n) comparisons, `peek_priority` is O(1), and an
+    // update of a queue nothing else holds is in place. Ten times the items take under 40 times
+    // as long: n log n gives about 12, a copy per update about 100, and the bound of 40x is
+    // between them, as for sets.
+    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join("runtime")
+        .join("priority_scale");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("ita.una"),
+        "ita priority_scale\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry scale\n  grants\n    console\n",
+    )
+    .unwrap();
+    std::fs::copy(
+        repository().join("tests/conformance/names/collections_exports_in_0_4/ita.lock"),
+        root.join("ita.lock"),
+    )
+    .unwrap();
+    let dir = root.to_str().unwrap();
+    // Writes the program of `n` items (untimed), then times its run.
+    let measure = |n: usize| {
+        std::fs::write(
+            root.join("src/scale.una"),
+            PRIORITY_SCALE.replace("COUNT", &n.to_string()),
+        )
+        .unwrap();
+        let (output, seconds) =
+            timing::timed(|| una(&["run", dir, "--grant", "console", "--max-memory", "1024"]));
+        assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+        assert_eq!(stdout(&output), format!("{n} {n} 0\n"));
+        seconds
+    };
+    timing::assert_growth(
+        "items",
+        &[100_000, 1_000_000],
+        0.0,
+        timing::FLOOR,
+        40.0,
+        measure,
+    );
+}
+
+/// A `BitSet` of `COUNT` bits filled by `add` in a scattered order, each looked up,
+/// intersected with a copy missing one member, then emptied by `remove` (`spec/28 §9`).
+const BIT_SET_SCALE: &str = "module scale
+
+import std.collections (empty_bit_set)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let edit b = empty_bit_set(size: COUNT)
+  for i in 0..<COUNT
+    let j = (i * 7919) mod COUNT
+    if 0 <= j and j < b.size
+      edit b.add(item: j)
+  let edit found = 0
+  for i in 0..<COUNT
+    if b.has(item: i)
+      found = found + 1
+  let common = b.intersection(other: b.without(item: 0))
+  for i in 0..<COUNT
+    edit b.remove(item: i)
+  @console.print(\"{found} {common.len} {b.len}\")
+";
+
+#[test]
+fn bit_set_updates_and_lookups_scale_linearly() {
+    // `spec/28 §9`: `add`, `has` and `remove` are O(1), `intersection` is O(size / 64), and an
+    // update of a bit set nothing else holds is in place. Ten times the bits take under 30 times
+    // as long: linear time gives about 10, a copy of the words per update about 100. A miss is
+    // measured twice more before it fails (#341).
+    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join("runtime")
+        .join("bit_set_scale");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("ita.una"),
+        "ita bit_set_scale\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry scale\n  grants\n    console\n",
+    )
+    .unwrap();
+    std::fs::copy(
+        repository().join("tests/conformance/runtime/bit_set_run/ita.lock"),
+        root.join("ita.lock"),
+    )
+    .unwrap();
+    let dir = root.to_str().unwrap();
+    // Writes the program of `n` bits (untimed), then times its run.
+    let measure = |n: usize| {
+        std::fs::write(
+            root.join("src/scale.una"),
+            BIT_SET_SCALE.replace("COUNT", &n.to_string()),
+        )
+        .unwrap();
+        let (output, seconds) =
+            timing::timed(|| una(&["run", dir, "--grant", "console", "--max-memory", "1024"]));
+        assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+        assert_eq!(stdout(&output), format!("{n} {} 0\n", n - 1));
+        seconds
+    };
+    timing::assert_growth(
+        "bits",
+        &[100_000, 1_000_000],
+        0.0,
+        timing::FLOOR,
+        30.0,
+        measure,
+    );
+}
+
 /// A program that appends `steps` items to a list in a loop, through `shape`: an `edit`
 /// argument one, two or three calls deep, or a binding rebound from a call's result (#262).
 fn appends_through_calls(shape: &str, steps: usize) -> String {

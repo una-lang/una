@@ -1,0 +1,10 @@
+---
+name: release
+description: Cut and publish a release of Una (patch of a release line or a new minor) with the full gate set. Use only when a version is declared stable.
+---
+Releases are the only time the heavy gates run (docs/release-gates.md). Steps:
+1. Decide the line: patch = branch release/v0.X from its last tag plus cherry-picked fixes; minor = tag on main. CHANGELOG.md gets the version section; advisories in docs/security/advisories.md name only tagged releases in "Fixed in" (add the new version right after the tag).
+2. Preflight on this Mac: Docker Desktop context desktop-linux, amd64 under Rosetta (`docker run --rm --platform linux/amd64 una-local-ci:1.98.1 sh -c 'grep -io rosetta /proc/self/maps | head -1; uname -m'`), fileproviderd idle, 1-min load < 5, >= 60 GB free. Nothing else runs during the gates (the hunt gate has a time budget).
+3. `DOCKER_CONTEXT=desktop-linux scripts/release-gates.sh <40-hex sha> <OUT>` with OUT under /Users/leocardoso/Projects/una-lang/ops/gates/<version>.noindex (never /tmp). Every gate must be PASS; never edit a verdict; fix and rerun the whole set on the new tip.
+4. `scripts/release-summary.py <version> <OUT>/record.md <OUT>` writes docs/releases/<version>-validation.md and docs/validation/<version>.md; PR them to the line; merge; `git tag v<version> <merge commit>`; push the tag; `scripts/release-publish.sh <version> <OUT> <BUILT>` prints the publish command; run it; verify `gh release view v<version>`.
+5. Post-tag: advisories "Fixed in" updated on main and the line; install.sh and the website pins when they name the version; the board milestone closed.

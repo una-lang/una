@@ -185,7 +185,7 @@ pub fn discover_dependency(dir: &Path, written: &str) -> Result<Loaded, LoadErro
     not_followed(&src)?;
     let mut files = vec![LoadedFile {
         name: format!("{written}/ita.una"),
-        bytes: read(&manifest)?,
+        bytes: read_unlinked(&manifest)?,
         path: manifest,
         role: Role::Manifest,
     }];
@@ -195,7 +195,7 @@ pub fn discover_dependency(dir: &Path, written: &str) -> Result<Loaded, LoadErro
     for (name, file) in modules {
         files.push(LoadedFile {
             name,
-            bytes: read(&file)?,
+            bytes: read_unlinked(&file)?,
             path: file,
             role: Role::Module,
         });
@@ -269,6 +269,15 @@ fn is_hidden(name: &str) -> bool {
 
 fn read(path: &Path) -> Result<Vec<u8>, LoadError> {
     std::fs::read(path).map_err(|error| unreadable(path, &error))
+}
+
+/// Reads a file of a dependency through a descriptor opened with no link followed, checked to
+/// be the regular file its directory lists (ADR 0122 rule 30).
+fn read_unlinked(path: &Path) -> Result<Vec<u8>, LoadError> {
+    crate::tree::read_unlinked(path).map_err(|reason| LoadError::Unreadable {
+        path: path.to_path_buf(),
+        reason,
+    })
 }
 
 fn unreadable(path: &Path, error: &std::io::Error) -> LoadError {

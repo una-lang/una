@@ -678,6 +678,38 @@ pub enum Stmt {
     /// `on stop` with a block that follows a loop other than `for ever`, which U2034 reports
     /// (`spec/26 §5`).
     OnStop(Box<OnStop>),
+    /// `tasks [at most n at once]` with a block, in edition 0.4 (`spec/27 §7`).
+    Tasks(Box<TasksStmt>),
+    /// `start` with a handled expression, in edition 0.4 (`spec/27 §7`).
+    Start(Box<StartStmt>),
+}
+
+/// `"tasks" [ "at" "most" add_expr "at" "once" ] NEWLINE INDENT block DEDENT` (`spec/27 §7`,
+/// ADR 0117 rule 7): a block that runs in the current task and may start tasks with `start`,
+/// all of which end before the statement does.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TasksStmt {
+    /// The bound after `at most`, when there is one.
+    pub bound: Option<Expr>,
+    /// The block.
+    pub block: Block,
+    /// The word `tasks`.
+    pub keyword: Span,
+    /// The whole statement.
+    pub span: Span,
+}
+
+/// `"start" line_expr [ "within" add_expr ] NEWLINE [ INDENT handling { handling } DEDENT ]`
+/// (`spec/27 §7`, ADR 0117 rule 7): starts a task for the expression and goes on. A `with`
+/// clause parses, so that the checker reports it (U2035).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StartStmt {
+    /// The started expression, with its deadline and handling clauses.
+    pub handled: Handled,
+    /// The word `start`.
+    pub keyword: Span,
+    /// The whole statement.
+    pub span: Span,
 }
 
 /// `"for" "ever" [ "within" add_expr ] NEWLINE INDENT block DEDENT [ on_stop ]` (`spec/26 §5`,
@@ -797,6 +829,20 @@ pub struct TogetherFor {
     pub span: Span,
 }
 
+/// `"first" "of" NEWLINE INDENT handled handled { handled } DEDENT` (`spec/27 §6`, ADR 0117
+/// rule 6): a race of its branches, whose value is the first branch to return. The body is
+/// kept as parsed; the checker reports a line that is not a `handled` expression, or fewer
+/// than two branches (U2035).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FirstOf {
+    /// The statements of the body, each `handled` expression a branch.
+    pub body: Vec<Stmt>,
+    /// The words `first of`, where U2035 points.
+    pub keyword: Span,
+    /// The whole expression.
+    pub span: Span,
+}
+
 /// What a `for` loop visits.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ForSource {
@@ -837,13 +883,16 @@ pub enum LetValue {
     BlockExpr(BlockExpr),
 }
 
-/// `line_expr [ with_clause ]` and its handling clauses.
+/// `line_expr [ with_clause ] [ "within" add_expr ]` and its handling clauses; the deadline
+/// from edition 0.4 (`spec/27 §5`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Handled {
     /// The expression.
     pub expr: Expr,
     /// The `with` bindings.
     pub with: Vec<CapBinding>,
+    /// The deadline after `within`, when there is one (ADR 0117 rule 5).
+    pub within: Option<Expr>,
     /// The handling clauses (`if error ...`, `if none ...`).
     pub handlings: Vec<Handling>,
     /// The whole statement.
@@ -925,6 +974,8 @@ pub enum BlockExpr {
     If(IfBlock),
     /// `together for`, from edition 0.2 (`spec/19 §1`).
     TogetherFor(Box<TogetherFor>),
+    /// `first of`, in edition 0.4 (`spec/27 §6`, ADR 0117 rule 6).
+    FirstOf(Box<FirstOf>),
 }
 
 /// `"when" line_expr` and its arms.
@@ -1046,8 +1097,13 @@ pub enum ExprKind {
         /// The variant raised when the check fails.
         failure: VariantExpr,
     },
-    /// `attempt postfix`.
-    Attempt(Box<Expr>),
+    /// `attempt postfix [ "within" add_expr ]`; the deadline from edition 0.4 (`spec/27 §5`).
+    Attempt {
+        /// The expression attempted.
+        operand: Box<Expr>,
+        /// The deadline after `within`, when there is one.
+        within: Option<Box<Expr>>,
+    },
     /// `fail V`.
     Fail(VariantExpr),
     /// A binary operation.

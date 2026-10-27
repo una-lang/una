@@ -1,0 +1,3 @@
+module a
+
+pub to_f32(x: F64) -> Int = 0

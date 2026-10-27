@@ -1,0 +1,85 @@
+-- test: `first of` gives the value of the branch that returns, fails only when every branch fails, with the lowest-indexed failure, and nests with `together` three levels deep; the outcomes here do not depend on timing, so both engines agree (spec/27 §6, ADR 0117 rule 6)
+-- spec: spec/27 §6
+-- grant: console
+-- expect: run-output "won 5"
+-- expect: run-output "failed Slow"
+-- expect: run-output "same 4"
+-- expect: run-output "deep done"
+module race
+
+pub kind FetchError = Unreachable | Slow
+
+fetch(n: Int) -> Int
+  fails FetchError
+=
+  if n < 0 then fail Unreachable else n
+
+refuse(n: Int) -> Int
+  fails FetchError
+=
+  if n > 0 then fail Slow else fail Unreachable
+
+name(failure: FetchError) -> Text
+=
+  when failure
+    is Unreachable -> "Unreachable"
+    is Slow -> "Slow"
+
+winner(n: Int) -> Int
+  fails FetchError
+=
+  first of
+    fetch(-1)
+      if error pass
+    fetch(n)
+      if error pass
+
+all_fail() -> Int
+  fails FetchError
+=
+  first of
+    refuse(1)
+      if error pass
+    fetch(-1)
+      if error pass
+
+double(n: Int) -> Int = n * 2
+
+leaf(n: Int) -> restricted Int
+=
+  first of
+    double(n)
+    double(n)
+
+middle(n: Int) -> restricted Int
+=
+  together
+    let a = leaf(n)
+    let b = leaf(n)
+  a + b
+
+top(n: Int) -> restricted Int
+=
+  first of
+    middle(n)
+    middle(n)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let won = winner(5)
+    if error use 0
+  @console.print("won {won}")
+  let failed = attempt all_fail()
+  let reason = when failed
+    is Ok(value) -> "ok"
+    is Err(failure) -> name(failure)
+  @console.print("failed {reason}")
+  let same = first of
+    double(2)
+    double(2)
+  @console.print("same {same}")
+  -- A race inside a task's function is timed by the tasks beside it (`τ_conc`, ADR 0116 IF6),
+  -- so `deep` is `restricted`: its value is checked by `runtime/first_of_virtual`.
+  let deep = top(1)
+  @console.print("deep done")

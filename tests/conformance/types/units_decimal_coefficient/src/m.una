@@ -1,0 +1,8 @@
+-- test: `coefficient()` needs a unitless decimal, so on dollars it is U2028 (ADR 0120 rule 63)
+-- spec: spec/25 §9
+-- expect: error U2028 at src/m.una:8:40
+module m
+
+pub measure Usd
+
+pub bad(a: Decimal[2] of Usd) -> Int = a.coefficient()
