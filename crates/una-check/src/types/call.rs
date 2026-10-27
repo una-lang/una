@@ -59,14 +59,13 @@ impl<'a> Checker<'_, 'a, '_> {
             return Ty::Int.with_label(&top);
         }
         // A collection's size depends on its shape, so `.len` takes the labels of the type
-        // arguments that are part of it too (ADR 0119 IF2 to IF4). The refinement language gains
-        // `.len` of a collection with ADR 0119 V5; until then, it is outside it.
+        // arguments that are part of it too (ADR 0119 IF2 to IF4). It is in the refinement
+        // language (ADR 0119 V5).
         if field == "len"
             && let Ty::Coll(coll, args) = labeled.unlabeled()
             && super::collections::has_len(*coll)
         {
             self.resolved(span, Res::Len);
-            self.outside_rl(span, || format!("`.len` of a `{}`", coll.as_str()));
             let kinds = self.env.kind_labels.clone();
             let label = args
                 .iter()

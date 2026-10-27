@@ -71,7 +71,7 @@ impl Checker<'_, '_, '_> {
             .map(|(_, op, update, params, read)| (*op, *update, *params, *read))?;
         let item = queue_args.first().cloned().unwrap_or_else(Ty::error);
         let priority = queue_args.get(1).cloned().unwrap_or_else(Ty::error);
-        // The refinement language gains `.len` of a collection with ADR 0119 V5, and none of a
+        // The refinement language has `.len` of a collection (ADR 0119 V5), and none of a
         // priority queue's methods: each is outside it.
         self.outside_rl(span, || format!("the method `{method}`"));
         let receiver = self.report.text(target.span).to_owned();

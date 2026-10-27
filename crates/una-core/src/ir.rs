@@ -304,13 +304,22 @@ pub enum Term {
         /// The indices, one per axis.
         indices: Vec<Term>,
     },
-    /// `m.has(key: k)` of a map (`spec/21 §4` rule 4).
+    /// `m.has(key: k)` of a map (`spec/21 §4` rule 4), or of a `HashMap` (ADR 0119 V5).
     Has {
         /// The map.
         map: Box<Term>,
         /// The key.
         key: Box<Term>,
     },
+    /// `s.has(item: x)` of a `Set`, a `HashSet` or a `BitSet` (ADR 0119 V5).
+    Member {
+        /// The set.
+        set: Box<Term>,
+        /// The item.
+        item: Box<Term>,
+    },
+    /// `b.size` of a `BitSet` (ADR 0119 V5).
+    Size(Box<Term>),
     /// The component `index` of a tuple, as `result` of a function with `edit` parameters
     /// (`spec/17 §4`).
     Proj {
@@ -2415,6 +2424,10 @@ pub struct Program {
     /// `with`s, in site order (ADR 0092, amendment of 2026-10-14). Not exported: `una core`
     /// derives nothing from them.
     pub condition_edits: Vec<ConditionEdit>,
+    /// Whether the verifier keeps a map's other keys across its updates: the frame facts of
+    /// ADR 0119 V3 on `Map`, in edition `0.4` and later only (ADR 0069, amendment of
+    /// 2026-10-19). Not exported: `una core` derives nothing from it.
+    pub map_frames: bool,
 }
 
 /// The condition that a call or a `with` asks of its callee or handler, written on the callee's

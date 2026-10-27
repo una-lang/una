@@ -279,6 +279,11 @@ impl Writer<'_> {
             ),
             Term::Len(value) => node!(Len, "value" => self.term(value)),
             Term::Has { map, key } => node!(Has, "map" => self.term(map), "key" => self.term(key)),
+            // ADR 0119 V5: membership of a set and the size of a bit set.
+            Term::Member { set, item } => {
+                node!(Member, "set" => self.term(set), "item" => self.term(item))
+            }
+            Term::Size(value) => node!(Size, "value" => self.term(value)),
             // ADR 0120 rule 33: the shape functions and the elements of a dense value.
             Term::Shape { fun, value } => {
                 node!(Shape, "fun" => s(fun.as_str()), "value" => self.term(value))
