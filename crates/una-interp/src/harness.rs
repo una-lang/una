@@ -7,9 +7,20 @@ use una_core::{Atom, Bound, Example, Expectation, Expr, LoopSource, Program, Rhs
 use crate::clock::Clock;
 use crate::host::{Grant, NoWorld, World};
 use crate::machine::{
-    Abort, Drive, Env, Event, EventOutcome, Flow, Form, Index, Limits, Machine, Stop, hashes,
-    variant,
+    Abort, Drive, Env, Event, EventOutcome, Flow, Form, Index, IntTooLong, Limits, Machine, Stop,
+    hashes, variant,
 };
+
+/// What a test's reason says of a value that holds an integer too long for text (`spec/11 §7`,
+/// #923): the reason is a message, so the value is named rather than written.
+const INT_TOO_LONG: &str = "<an integer of more than 4300 digits>";
+
+/// The Una form of `value` for a message, or [`INT_TOO_LONG`].
+fn named(index: &Index<'_>, value: &Value<'_>, form: Form) -> String {
+    index
+        .shown(value, form)
+        .unwrap_or_else(|IntTooLong| INT_TOO_LONG.to_owned())
+}
 use crate::value::Value;
 
 /// What `una run` grants: the grants, with the keys of the key files of `keys:` grants loaded
@@ -141,13 +152,24 @@ fn not_started(abort: Abort) -> Run {
 }
 
 fn completion(index: &Index<'_>, result: Flow<'_>, form: Form) -> Completion {
+    // A final value or failure that holds an integer too long for text aborts the run, with no
+    // position (`spec/11 §7`, #923).
+    let too_long = || Completion::Aborted(Abort::IntText { span: None });
     match result {
-        Ok(value) => Completion::Ok(index.shown(&value, form)),
-        Err(Stop::Fail(failure)) => Completion::Failed {
-            variant: variant(&failure),
-            value: index.shown(&failure, form),
-            public: index.public_fields(&failure),
+        Ok(value) => match index.shown(&value, form) {
+            Ok(shown) => Completion::Ok(shown),
+            Err(IntTooLong) => too_long(),
         },
+        Err(Stop::Fail(failure)) => {
+            match (index.shown(&failure, form), index.public_fields(&failure)) {
+                (Ok(value), Ok(public)) => Completion::Failed {
+                    variant: variant(&failure),
+                    value,
+                    public,
+                },
+                _ => too_long(),
+            }
+        }
         Err(Stop::Abort(abort)) => Completion::Aborted(abort),
         // Core puts an exit only in a loop's body, which catches it.
         Err(Stop::Exit(..)) => Completion::Aborted(Abort::Fault {
@@ -292,7 +314,7 @@ fn judge<'p>(
             expectation: None,
             reason: format!(
                 "the `do` line failed with `{}`, and no `expect fails` line expects a failure",
-                index.shown(failure, form)
+                named(index, failure, form)
             ),
         }),
         _ => None,
@@ -324,7 +346,7 @@ where
                 Err(Stop::Fail(failure)) if mentions_result => {
                     let reason = format!(
                         "the `do` line failed with `{}`, so `result` has no value",
-                        index.shown(failure, form)
+                        named(index, failure, form)
                     );
                     return Some((*line, text, reason));
                 }
@@ -339,13 +361,13 @@ where
                     Ok(value) if mentions_result => {
                         format!(
                             "it is false, with `result` = `{}`",
-                            index.shown(value, form)
+                            named(index, value, form)
                         )
                     }
                     _ => "it is false".to_owned(),
                 },
                 Err(Stop::Fail(failure)) => {
-                    format!("it failed with `{}`", index.shown(&failure, form))
+                    format!("it failed with `{}`", named(index, &failure, form))
                 }
                 Err(Stop::Abort(_) | Stop::Exit(..) | Stop::Cut(_)) => "it aborted".to_owned(),
             };
@@ -359,11 +381,14 @@ where
             let reason = match result {
                 Err(Stop::Fail(failure)) if variant(failure) == *expected => return None,
                 Err(Stop::Fail(failure)) => {
-                    format!("the `do` line failed with `{}`", index.shown(failure, form))
+                    format!(
+                        "the `do` line failed with `{}`",
+                        named(index, failure, form)
+                    )
                 }
                 Ok(value) => format!(
                     "the `do` line completed with `{}`",
-                    index.shown(value, form)
+                    named(index, value, form)
                 ),
                 Err(Stop::Abort(_) | Stop::Exit(..) | Stop::Cut(_)) => {
                     "the `do` line aborted".to_owned()
