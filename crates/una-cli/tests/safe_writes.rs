@@ -30,7 +30,7 @@ const RAW_WRITES: [&str; 10] = [
 const CRATES: [&str; 4] = ["una-cli", "una-verify", "una-codegen", "una-project"];
 
 /// The raw writes that remain, by file and call, with how many there are and why each is safe.
-const ALLOWED: [(&str, &str, usize, &str); 13] = [
+const ALLOWED: [(&str, &str, usize, &str); 14] = [
     (
         "crates/una-cli/src/build.rs",
         "create_dir_all(",
