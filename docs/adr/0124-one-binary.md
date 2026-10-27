@@ -1,8 +1,8 @@
 # 0124. One binary: the solver, the runtime and the linker inside `una`
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-18
-- Deciders:
+- Deciders: Una project (accepted on 2026-10-27)
 - Resolves: issue #891
 - Related:
   - ADR 0003 (Z3 through SMT-LIB text over a subprocess), whose subprocess becomes a child process of `una` itself;
@@ -35,9 +35,9 @@
 Each question states what is being decided, its cost to the programmer, an example and the recommendation this draft follows.
 
 - **Questions 3 to 8 are decided as recommended.**
-- **Questions 1 and 2 are held for the project's decision on toolchain scope.** Una admits no foreign code, and the project is deciding whether that also excludes a C compiler inside `una` for `--release` (ADR 0106) and a C library (musl) inside the executables `una` writes. Until then this record stays Proposed. The rules that follow Question 2 (a) (rules 12, 16, 21, 22, 25 and 29, the musl inputs of rule 24's scan, and the Linux parts of rules 31 and 33 and of the Conformance) stand only if the project decides (a), and are rewritten otherwise.
+- **Questions 1 and 2 are decided (2026-10-27) by the project's ruling on toolchain scope.** Una admits no foreign code inside a Una program: no C code is embedded in Una or in the executables `una` writes, and no C compiler goes into `una`. Calls of the operating system through its own interface (libSystem on macOS, the C library's system-call wrappers on Linux) are allowed, and so is hand-written assembly where it serves extreme performance, always with the same safety. Under that ruling the C-emitting backend of ADR 0106 is withdrawn (issue #1099), which closes Question 1, and Question 2 is decided as (a), where musl is the executables' interface to the operating system and nothing more. The rules that follow Question 2 (a) (rules 12, 16, 21, 22, 25 and 29, the musl inputs of rule 24's scan, and the Linux parts of rules 31 and 33 and of the Conformance) stand.
 
-1. **Where does the C compiler of `una build --release` come from? Held for the project's decision.** Not decided by this record either way. ADR 0106 (accepted, not yet implemented) runs the system C compiler. The direction this record states is a pinned clang built into `una`, run as a confined child (rule 9). The decision is a dated amendment of ADR 0106, taken after a measured prototype: the size of `una` with LLVM and clang linked in, the start-up of `una --version` and of a solver child with LLVM's static initializers and relocations in the binary, and the build time of the release gates. Steps 1 to 5 of the plan do not wait for it.
+1. **Where does the C compiler of `una build --release` come from? Decided (2026-10-27): no C compiler goes into `una`.** The C-emitting backend of ADR 0106 is withdrawn (issue #1099), by a dated amendment of that record; the release path becomes Una's own code generation. The paragraph that follows records the direction this record stated before that ruling, and is kept for the history of the question. Not decided by this record either way. ADR 0106 (accepted, not yet implemented) runs the system C compiler. The direction this record states is a pinned clang built into `una`, run as a confined child (rule 9). The decision is a dated amendment of ADR 0106, taken after a measured prototype: the size of `una` with LLVM and clang linked in, the start-up of `una --version` and of a solver child with LLVM's static initializers and relocations in the binary, and the build time of the release gates. Steps 1 to 5 of the plan do not wait for it.
    - **Cost to the programmer until then:** release builds, once implemented, need a C compiler; nothing else does.
    - *Example.*
 
@@ -47,7 +47,7 @@ Each question states what is being decided, its cost to the programmer, an examp
      $ una build --release    # until ADR 0106's amendment: needs cc
      ```
 
-2. **What do Linux executables link against? Held for the project's decision.** Today they link the system's glibc dynamically (`crates/una-cli/src/build.rs`, `link`). Two options:
+2. **What do Linux executables link against? Decided (2026-10-27): option (a), as recommended.** Today they link the system's glibc dynamically (`crates/una-cli/src/build.rs`, `link`). Two options:
    - **(a) Recommended: a static, position-independent executable with musl's C library inside it,** taken from the pinned Rust toolchain. It runs on any Linux of its architecture, with no shared library, and keeps address randomization. Recommended on three conditions, each a rule of this record: RELRO is really applied at run time (rule 25, probe P2); the runtime's allocator is chosen by measurement, preferring one that adds no C code to the runtime's trusted base, and otherwise reviewed as a C dependency (rule 21); and the name-resolution limit is documented in the guide.
    - **(b)** A dynamic executable against glibc. The internal linker would then write symbol versions and dynamic sections, against a list of glibc's symbols embedded in `una`.
    - **Cost to the programmer under (a):** host names resolve through `/etc/hosts` and the DNS servers of `/etc/resolv.conf` only, without the system's name-service modules (LDAP, mDNS). And `una` itself stays a glibc executable (rule 1): it runs on glibc distributions from the gate image's glibc on, not on musl distributions such as Alpine, although the executables it writes do.
@@ -383,7 +383,7 @@ In one paragraph: the release `una` contains Z3, built from a pinned commit by a
     - **P6:** the solver's queries of the conformance suite, under the filter in log mode (`SECCOMP_RET_LOG` in place of every `ERRNO` and kill action), on the oldest glibc the project supports for `una`, on the gate image's glibc, and on a current one: every call made outside the allowed list, and in particular every file opened, which decides between opening those files before the filter and `EACCES` (rule 7);
     - **P7, partial (2026-10-18, macOS 26.6.2, arm64):** `(version 1)(deny default)` is accepted by `sandbox_init` in-process; allocation, threads, clocks and reading stdin work under it; opening a file, `fork`, `connect`, `bind` and `sysctlbyname("hw.ncpu")` are denied (hence rule 7's one `sysctl-read` allowance). As an approximation of the front end, 110 of 110 solver queries gave identical answers under a deny-default profile. Still open: macOS 13, and the real front end inside `una`.
 
-    P1, P2 and P6 are pending.
+    P1, P2 and P6 are pending. The record was accepted on 2026-10-27 with these three still pending: they are run and recorded on issue #891 before the implementation steps they condition, P1 and P6 before the solver's confinement ships on Linux (rules 7 and 31) and P2 before the static executables of Question 2 (a) ship (rule 25).
 
 ## Security
 
