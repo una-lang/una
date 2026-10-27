@@ -458,6 +458,9 @@ pub(crate) struct Env<'a> {
     /// The module `std.collections`, when a package of edition 0.4 imports it (ADR 0119
     /// rule 0).
     pub(crate) collections: Option<usize>,
+    /// The hidden function `update` of that module, which only method syntax on a hash map
+    /// reaches (ADR 0119 rule 12).
+    pub(crate) hash_map_update: Option<usize>,
 }
 
 /// The key type of a written `Map[K, V]`, or an argument of a written collection type that
@@ -579,6 +582,7 @@ impl<'a> Env<'a> {
             map_module: None,
             map_update: None,
             collections: None,
+            hash_map_update: None,
         };
         for source in package
             .into_iter()
@@ -597,6 +601,12 @@ impl<'a> Env<'a> {
         }
         env.map_update =
             env.map_module
+                .and_then(|index| match env.modules.get(index)?.lower.get("update") {
+                    Some(Entity::Function(id)) => Some(*id),
+                    _ => None,
+                });
+        env.hash_map_update =
+            env.collections
                 .and_then(|index| match env.modules.get(index)?.lower.get("update") {
                     Some(Entity::Function(id)) => Some(*id),
                     _ => None,

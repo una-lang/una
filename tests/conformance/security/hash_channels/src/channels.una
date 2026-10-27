@@ -1,0 +1,69 @@
+-- test: in edition 0.4, the keys of a hash map and the items of a hash set are its shape: a `secret` item added to a set with a `public` top label is U4001 at the item, with a control; `has` with a `secret` item carries its label to `Console`; the size of a set of records with a `secret` field is `secret`; `get` with a `secret` key is `secret`; `update` runs `change` under the key's label, so a `public` effect in it is U4003, and the key it may add to a `public` table is U4001, with a control; and the listing order of a `public` set built under `public` control may be printed (ADR 0119 IF2, IF3, IF5 and IF7)
+-- spec: spec/28 §7
+-- expect: error U4001 at src/channels.una:21:20
+-- expect: error U4003 at src/channels.una:35:18
+-- expect: error U4001 at src/channels.una:38:44
+-- expect: error U4001 at src/channels.una:43:67
+-- expect: error U4001 at src/channels.una:52:8
+-- expect: error U4003 at src/channels.una:52:59
+module channels
+
+import std.collections (HashMap, HashSet, empty_hash_map, empty_hash_set)
+
+pub kind Patient
+  name: Text
+  pin: secret Int
+
+--- A secret item into an editable hash set with a public top label.
+pub into_public(x: secret Int) -> Unit
+=
+  let edit s: HashSet[Int] = empty_hash_set()
+  edit s.add(item: x)
+  unit
+
+--- The control: the set is declared with a secret top label.
+pub into_secret(x: secret Int) -> Unit
+=
+  let edit s: secret HashSet[Int] = empty_hash_set()
+  edit s.add(item: x)
+  unit
+
+--- Looking a secret item up, and printing the answer.
+pub presence(s: HashSet[Int], x: secret Int) -> Unit
+  uses @console: Console[print]
+=
+  @console.print("{s.has(item: x)}")
+
+--- The size of a set of records with a secret field is secret, since the hash reads it.
+pub patients(s: HashSet[Patient]) -> Int = s.len
+
+pub patients_control(s: HashSet[Patient]) -> secret Int = s.len
+
+--- A value under a secret key.
+pub value(m: HashMap[Text, Int], k: secret Text) -> Option[Int] = m.get(key: k)
+
+pub value_control(m: HashMap[Text, Int], k: secret Text) -> secret Option[Int] = m.get(key: k)
+
+--- `change` runs under the key's label, so its effect would reveal whether the key was there.
+pub tally(m: HashMap[Text, Unit], k: secret Text) -> Unit
+  uses @console: Console[print]
+=
+  let edit out = m
+  edit out.update(key: k, initial: unit, change: fn(u) -> @console.print("changed"))
+  unit
+
+pub tally_control(m: HashMap[Text, Unit], k: Text) -> Unit
+  uses @console: Console[print]
+=
+  let edit out = m
+  edit out.update(key: k, initial: unit, change: fn(u) -> @console.print("changed"))
+  unit
+
+--- The listing order of a public set built under public control may be printed.
+pub listed(words: List[Text]) -> Unit
+  uses @console: Console[print]
+=
+  let edit seen: HashSet[Text] = empty_hash_set()
+  for word in words
+    edit seen.add(item: word)
+  @console.print("{seen.items()}")

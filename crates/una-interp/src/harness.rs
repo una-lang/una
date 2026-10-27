@@ -7,7 +7,8 @@ use una_core::{Atom, Bound, Example, Expectation, Expr, LoopSource, Program, Rhs
 use crate::clock::Clock;
 use crate::host::{Grant, NoWorld, World};
 use crate::machine::{
-    Abort, Drive, Env, Event, EventOutcome, Flow, Form, Index, Limits, Machine, Stop, variant,
+    Abort, Drive, Env, Event, EventOutcome, Flow, Form, Index, Limits, Machine, Stop, hashes,
+    variant,
 };
 use crate::value::Value;
 
@@ -62,7 +63,13 @@ pub fn run_main(
 ) -> Option<Run> {
     let index = Index::new(program);
     let main = index.function(module, "main")?;
+    // The process key of keyed hashing, before any effect (`spec/28 §1` rule 3).
+    let hashing = match hashes::process_key(&index, &[&main.body]) {
+        Ok(hashing) => hashing,
+        Err(abort) => return Some(not_started(abort)),
+    };
     let mut machine = Machine::new(&index, world, &host.grants, &host.keys, limits);
+    machine.hashing = hashing;
     machine.clock = Clock::for_run(host.virtual_time);
     let result = machine.run_main(main);
     let completion = completion(&index, result, Form::Redacted);
@@ -97,7 +104,14 @@ pub fn run_drive(
     let init = index.function(module, "init").ok_or(DriveShape::NoInit)?;
     let step = index.function(module, "step").ok_or(DriveShape::NoStep)?;
     let on_stop = index.function(module, "on_stop");
+    let mut roots = vec![&init.body, &step.body];
+    roots.extend(on_stop.map(|fun| &fun.body));
+    let hashing = match hashes::process_key(&index, &roots) {
+        Ok(hashing) => hashing,
+        Err(abort) => return Ok(not_started(abort)),
+    };
     let mut machine = Machine::new(&index, world, &host.grants, &host.keys, limits);
+    machine.hashing = hashing;
     machine.clock = Clock::for_run(host.virtual_time);
     let result = machine.drive(init, step, on_stop, &drive);
     let completion = completion(&index, result, Form::Redacted);
@@ -105,6 +119,15 @@ pub fn run_drive(
         completion,
         trace: machine.trace,
     })
+}
+
+/// A run that aborted before it started, with no trace: the host gave no random bytes for the
+/// process key (U6009, `spec/28 §1` rule 3).
+fn not_started(abort: Abort) -> Run {
+    Run {
+        completion: Completion::Aborted(abort),
+        trace: Vec::new(),
+    }
 }
 
 fn completion(index: &Index<'_>, result: Flow<'_>, form: Form) -> Completion {
@@ -185,7 +208,23 @@ fn run_example<'p>(
     let mut world = NoWorld;
     let grants: Vec<Grant> = Vec::new();
     let keys = BTreeMap::new();
+    let hashing = match hashes::process_key(index, &hashes::example_roots(example)) {
+        Ok(hashing) => hashing,
+        Err(abort) => {
+            return ExampleRun {
+                module: module.to_owned(),
+                name: example.name.clone(),
+                failure: Some(ExampleFailure {
+                    expectation: None,
+                    reason: "the `do` line aborted".to_owned(),
+                }),
+                completion: Completion::Aborted(abort),
+                trace: Vec::new(),
+            };
+        }
+    };
     let mut machine = Machine::new(index, &mut world, &grants, &keys, limits);
+    machine.hashing = hashing;
     // Time in a test is virtual, and its `stop after N` line is its stop schedule (ADR 0116
     // rule 19, `spec/26 §8`).
     machine.clock = Clock::virtual_time();
