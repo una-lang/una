@@ -6,8 +6,9 @@ use una_diag::{Code, ObligationKind};
 use una_syntax::Span;
 use una_syntax::ast::{
     AssignStmt, Bind, Block, BlockExpr, Body, CapBindingValue, ElseBranch, EverStmt, Expr,
-    ExprKind, ForSource, ForStmt, Handled, HandlingKind, IfBlock, IfThenStmt, LetStmt, LetValue,
-    Literal, PatternKind, Stmt, StopStmt, TextPart, TogetherFor, TogetherStmt, UntilStmt, WhenExpr,
+    ExprKind, FirstOf, ForSource, ForStmt, Handled, HandlingKind, IfBlock, IfThenStmt, LetStmt,
+    LetValue, Literal, PatternKind, StartStmt, Stmt, StopStmt, TasksStmt, TextPart, TogetherFor,
+    TogetherStmt, UntilStmt, WhenExpr,
 };
 
 use super::Report;
@@ -175,6 +176,22 @@ impl<'a> Checker<'_, 'a, '_> {
                         self.returned_value(*span, &Ty::Unit, expected, role);
                     }
                 }
+                // A block that ends in `tasks` or `start` has `unit` as its value (ADR 0117
+                // rule 7).
+                Stmt::Tasks(stmt) => {
+                    self.outside_rl(stmt.span, || "`tasks`".to_owned());
+                    self.tasks_stmt(stmt);
+                    if is_last && tail {
+                        self.returned_value(stmt.span, &Ty::Unit, expected, role);
+                    }
+                }
+                Stmt::Start(stmt) => {
+                    self.outside_rl(stmt.span, || "`start`".to_owned());
+                    self.start_stmt(stmt);
+                    if is_last && tail {
+                        self.returned_value(stmt.span, &Ty::Unit, expected, role);
+                    }
+                }
             }
         }
         self.ctx.rl = rl;
@@ -192,6 +209,14 @@ impl<'a> Checker<'_, 'a, '_> {
             .current
             .and_then(|id| self.env.functions.get(id))
             .is_some_and(|def| def.diverges);
+        // A started task may run forever where its function says `diverges`, also inside a
+        // `for ever` body or a task, since it ends with its `tasks` statement, which waits for
+        // it (ADR 0117 rule 7, ADR 0116 rules 8 and 9).
+        if self.in_start && self.lambda_depth == 0 {
+            return (!diverges).then_some(
+                "its function does not say `diverges`; add `diverges` to the header of a function that may run forever",
+            );
+        }
         if self.lambda_depth > 0 {
             Some(
                 "a lambda may not run forever: it is an ordinary value that can be called later from code that does not say `diverges`",
@@ -233,7 +258,10 @@ impl<'a> Checker<'_, 'a, '_> {
             );
         }
         // `within d` (`spec/26 §7`, ADR 0116 rule 11): evaluated once, before the loop.
-        let deadline = stmt.within.as_ref().map(|within| self.deadline(within));
+        let deadline = stmt
+            .within
+            .as_ref()
+            .map(|within| self.deadline(within, "`for ever within`"));
         let before = self.taken_state();
         let before_len = self.locals.len();
         let mark = self.locals.len();
@@ -285,11 +313,13 @@ impl<'a> Checker<'_, 'a, '_> {
     /// The deadline `d` of `for ever within d` (`spec/26 §7`, ADR 0116 rule 11): an `Int of
     /// Millisecond` (U2028 for another unit or none, U2001 for a type that is not an integer)
     /// of at least 1, a `refinement` obligation (U5001 for `within 0`). Returns its label,
-    /// which the timing label of the body joins (IF5 item 5).
-    fn deadline(&mut self, within: &Expr) -> Label {
+    /// which the timing label of the body joins (IF5 item 5). `e within d` checks its deadline
+    /// the same way (ADR 0117 rule 5); `what` names the construct.
+    pub(crate) fn deadline(&mut self, within: &Expr, what: &str) -> Label {
         let found = self.expr(within, None);
-        let found = self.resolve(&found);
+        // The label first: `resolve` keeps the type, not its labels.
         let label = self.deep(&found);
+        let found = self.resolve(&found);
         if matches!(found.unlabeled(), Ty::Error(_)) {
             return label;
         }
@@ -298,9 +328,7 @@ impl<'a> Checker<'_, 'a, '_> {
             self.report.error(
                 Code::U2001,
                 within.span,
-                format!(
-                    "the deadline of `for ever within` is an `Int of Millisecond`, found `{shown}`"
-                ),
+                format!("the deadline of {what} is an `Int of Millisecond`, found `{shown}`"),
             );
             return label;
         }
@@ -321,7 +349,7 @@ impl<'a> Checker<'_, 'a, '_> {
             let mut diagnostic = self.report.make(
                 Code::U2028,
                 within.span,
-                format!("the deadline of `for ever within` is an `Int of Millisecond` from `std.time`, found `{shown}`"),
+                format!("the deadline of {what} is an `Int of Millisecond` from `std.time`, found `{shown}`"),
             );
             diagnostic.repairs.push(Report::advice(
                 "write the deadline in milliseconds, as `100 * millisecond` with `import std.time (millisecond)`",
@@ -422,6 +450,7 @@ impl<'a> Checker<'_, 'a, '_> {
         let (ty, value) = match &stmt.value {
             LetValue::Handled(handled) => {
                 let probe = handled.with.is_empty()
+                    && handled.within.is_none()
                     && handled.handlings.is_empty()
                     && self.ctx.rl == Rl::Off;
                 let ty = if probe {
@@ -495,10 +524,21 @@ impl<'a> Checker<'_, 'a, '_> {
             return;
         };
         let (value, span) = match &stmt.value {
-            LetValue::Handled(handled) => (
-                self.handled(handled, Some(&place_ty), Role::Plain, false),
-                handled.expr.span,
-            ),
+            LetValue::Handled(handled) => {
+                let value = self.handled(handled, Some(&place_ty), Role::Plain, false);
+                // ADR 0117 IF2: whether the place changes depends on whether `e` met its
+                // deadline.
+                if let Some(deadline) = &handled.within {
+                    let tau = self
+                        .env
+                        .within_timing
+                        .get(&deadline.span)
+                        .cloned()
+                        .unwrap_or_else(Label::public);
+                    self.within_place(&stmt.place, tau, handled.expr.span.to(deadline.span));
+                }
+                (value, handled.expr.span)
+            }
             LetValue::BlockExpr(expr) => (
                 self.block_expr(expr, Some(&place_ty), Role::Plain, false),
                 block_expr_span(expr),
@@ -745,6 +785,113 @@ impl<'a> Checker<'_, 'a, '_> {
         }
     }
 
+    /// `tasks [at most n at once]` with its block (`spec/27 §7`, ADR 0117 rule 7): the bound is
+    /// an `Int` of at least 1, a `refinement` obligation, evaluated once; the block runs in the
+    /// current task, and the `start` statements in it, outside any task within it, start its
+    /// tasks.
+    ///
+    /// The whole statement is a site whose seed, `κ` of ADR 0116 P2, makes the residue label
+    /// `L_res` when its parts can reach `Http` (P9): its tasks' requests can be left running
+    /// when they are cancelled.
+    fn tasks_stmt(&mut self, stmt: &TasksStmt) {
+        if let Some(current) = self.current {
+            self.findings.task_functions.insert(current);
+        }
+        // Started before the block's frame, so that the seed's own `τ_conc` is that of the
+        // statement, not of its parts.
+        self.timing_start();
+        if let Some(bound) = &stmt.bound {
+            let found = self.expr(bound, None);
+            let found = self.resolve(&found);
+            if !matches!(found.unlabeled(), Ty::Error(_)) {
+                if matches!(found.magnitude(), Ty::Int) {
+                    self.obligation(ObligationKind::Refinement, bound.span, None);
+                } else {
+                    let shown = self.show(&found);
+                    self.report.error(
+                        Code::U2001,
+                        bound.span,
+                        format!("the bound of `tasks` is an `Int`, found `{shown}`"),
+                    );
+                }
+            }
+        }
+        self.tasks_frames.push((self.task_depth, self.lambda_depth));
+        let ty = self.block(&stmt.block, None, Role::Plain, false);
+        self.tasks_frames.pop();
+        let seed = self.timing_end();
+        self.findings.tasks_sites.push(super::timing::TasksSite {
+            span: stmt.span,
+            function: self.current,
+            seed,
+        });
+        self.discarded(value_span(&stmt.block), &ty);
+    }
+
+    /// `start e` (`spec/27 §7`, ADR 0117 rule 7): legal only in the block of a `tasks`, outside
+    /// any task and lambda within it, and without a `with` clause (U2035). `e`, with its
+    /// deadline and handling clauses, is a task: checked as a `together` branch is, under the
+    /// program counter of the `start` (IF1), unable to change a binding declared outside it
+    /// (U2023); it is a `Unit` (U2011) that must not fail (U3029).
+    fn start_stmt(&mut self, stmt: &StartStmt) {
+        if let Some(current) = self.current {
+            self.findings.task_functions.insert(current);
+        }
+        let placed = self.tasks_frames.last().is_some_and(|&(tasks, lambdas)| {
+            tasks == self.task_depth && lambdas == self.lambda_depth
+        });
+        if !placed {
+            let inside = if self.lambda_depth > 0
+                && self
+                    .tasks_frames
+                    .last()
+                    .is_some_and(|&(_, lambdas)| lambdas < self.lambda_depth)
+            {
+                "inside a lambda, a value that may be called after its `tasks` statement has ended"
+            } else if self.tasks_frames.is_empty() {
+                "outside the block of a `tasks` statement, which waits for the tasks it starts"
+            } else {
+                "inside a task within the block of its `tasks` statement, which cannot wait for it"
+            };
+            self.report.error(
+                Code::U2035,
+                stmt.keyword,
+                format!(
+                    "`start` stands {inside}; start tasks from the block of a `tasks` statement"
+                ),
+            );
+        }
+        if let Some(binding) = stmt.handled.with.first() {
+            let mut diagnostic = self.report.make(
+                Code::U2035,
+                binding.span,
+                "`start` takes no `with` clause, since its task outlives the statement a `with` scopes over; install the handler around the call of the function that holds the `tasks` statement, or inside the started function".to_owned(),
+            );
+            diagnostic
+                .related
+                .push(self.report.related(stmt.keyword, "the `start`"));
+            self.report.push(diagnostic);
+        }
+        if matches!(
+            stmt.handled.expr.kind,
+            ExprKind::Call { .. } | ExprKind::MethodCall { .. }
+        ) {
+            self.statement_calls.push(stmt.handled.expr.span);
+        }
+        let mark = self.locals.len();
+        let saved_mark = self.task_mark.replace(mark);
+        let word = std::mem::replace(&mut self.task_word, "started task");
+        let in_start = std::mem::replace(&mut self.in_start, true);
+        self.task_depth += 1;
+        let ty = self.handled(&stmt.handled, None, Role::Plain, false);
+        self.task_depth -= 1;
+        self.in_start = in_start;
+        self.task_word = word;
+        self.task_mark = saved_mark;
+        self.locals.truncate(mark);
+        self.discarded(stmt.handled.expr.span, &ty);
+    }
+
     /// `together` with its branches (`spec/19 §1`, `§2`): each branch is checked as its `let`,
     /// under the program counter of the block, without the bindings of its siblings, and
     /// cannot change a binding declared before it (U2023). The branches' bindings are in scope
@@ -778,6 +925,7 @@ impl<'a> Checker<'_, 'a, '_> {
         }
         let mark = self.locals.len();
         let saved = self.task_mark.replace(mark);
+        let word = std::mem::replace(&mut self.task_word, "`together` task");
         self.task_depth += 1;
         let mut bound = Vec::new();
         for branch in &stmt.body {
@@ -797,8 +945,106 @@ impl<'a> Checker<'_, 'a, '_> {
             bound.extend(self.locals.drain_from(mark));
         }
         self.task_mark = saved;
+        self.task_word = word;
         self.task_depth -= 1;
         self.locals.extend(bound);
+    }
+
+    /// `first of` with its branches (`spec/27 §6`, ADR 0117 rule 6 and IF3): each branch is a
+    /// task, checked as a `together` branch is, under the program counter of the block,
+    /// without the bindings of its siblings, and unable to change a binding declared before
+    /// it (U2023). Every branch has the one type of the block (U2001). Timing decides the
+    /// winner, so the value is labeled with `t`, the join of `τ` of every branch, and every
+    /// operation and call with effects in a branch is checked under the timing floor `pc ⊔ t`,
+    /// since a sibling that wins can cut it. A body with fewer than two branches, or with a
+    /// line that is not an expression, is U2035.
+    fn first_of(
+        &mut self,
+        first: &FirstOf,
+        expected: Option<&Ty>,
+        role: Role<'_>,
+        tail: bool,
+    ) -> Ty {
+        self.outside_rl(first.span, || "`first of`".to_owned());
+        if let Some(current) = self.current {
+            self.findings.task_functions.insert(current);
+        }
+        let branches = first
+            .body
+            .iter()
+            .filter(|s| matches!(s, Stmt::Handled(_)))
+            .count();
+        if let Some(other) = first.body.iter().find(|s| !matches!(s, Stmt::Handled(_))) {
+            let mut diagnostic = self.report.make(
+                Code::U2035,
+                first.keyword,
+                "each line of `first of` is a branch, an expression with its handling clauses; call a function from a branch for more steps".to_owned(),
+            );
+            diagnostic
+                .related
+                .push(self.report.related(stmt_span(other), "not an expression"));
+            self.report.push(diagnostic);
+        } else if branches < 2 {
+            self.report.error(
+                Code::U2035,
+                first.keyword,
+                "`first of` races at least two branches; with one, write the expression alone"
+                    .to_owned(),
+            );
+        }
+        // IF3: the timing label of the race, and its timing floor over every branch.
+        let open = self.race_open(first.keyword, first.span);
+        let mark = self.locals.len();
+        let saved_mark = self.task_mark.replace(mark);
+        let word = std::mem::replace(&mut self.task_word, "branch of `first of`");
+        self.task_depth += 1;
+        let mut joined = expected.cloned();
+        let mut types: Vec<(Span, Ty)> = Vec::new();
+        for branch in &first.body {
+            let Stmt::Handled(handled) = branch else {
+                continue;
+            };
+            if matches!(
+                handled.expr.kind,
+                ExprKind::Call { .. } | ExprKind::MethodCall { .. }
+            ) {
+                self.statement_calls.push(handled.expr.span);
+            }
+            let ty = self.handled(handled, joined.as_ref(), Role::Plain, false);
+            // A branch's own names end with it.
+            self.locals.truncate(mark);
+            if joined.is_none() && self.resolve(&ty) != Ty::Never {
+                joined = Some(ty.clone());
+            }
+            types.push((handled.expr.span, ty));
+        }
+        self.task_mark = saved_mark;
+        self.task_word = word;
+        self.task_depth -= 1;
+        let tau = self.race_close(&open);
+        let reached: Vec<(Span, Ty)> = types
+            .iter()
+            .filter(|(_, ty)| self.resolve(ty) != Ty::Never)
+            .cloned()
+            .collect();
+        let value = match reached.split_first() {
+            None => joined.unwrap_or(Ty::Never),
+            Some(((_, first_ty), [])) => first_ty.clone(),
+            Some(((_, first_ty), rest)) => {
+                let mut value = first_ty.clone();
+                for (_, ty) in rest {
+                    value = self.vars.join(&value, ty);
+                }
+                self.join_flows(&value, reached.clone());
+                value
+            }
+        };
+        // Timing decides which branch wins (IF3).
+        let value = value.with_label(&tau);
+        if tail {
+            self.returned_value(first.span, &value, expected, role);
+        }
+        value
     }
 
     /// `together for x in source` with its block (`spec/19 §1`, `§2`, `§3`): one task per
@@ -825,6 +1071,7 @@ impl<'a> Checker<'_, 'a, '_> {
         let saved_pc = self.raise_pc(&label, from);
         let mark = self.locals.len();
         let saved_mark = self.task_mark.replace(mark);
+        let word = std::mem::replace(&mut self.task_word, "`together` task");
         self.task_depth += 1;
         self.bind(self.name(&together.var), var_ty);
         let element = self.block(
@@ -836,6 +1083,7 @@ impl<'a> Checker<'_, 'a, '_> {
         self.locals.truncate(mark);
         self.task_depth -= 1;
         self.task_mark = saved_mark;
+        self.task_word = word;
         self.restore_pc(saved_pc);
         // How many elements there are depends on the label of what the tasks visit.
         let ty = Ty::List(Shared::new(element)).with_label(&label);
@@ -887,7 +1135,12 @@ impl<'a> Checker<'_, 'a, '_> {
                 // ADR 0104 rule 3: both bounds have one unit, and the loop's value has it.
                 let base = match self.resolve(&first_ty).unlabeled() {
                     fixed @ Ty::Fixed(_) => fixed.clone(),
-                    measured @ Ty::Measured(..) => measured.clone(),
+                    // Only an integer magnitude ranges (ADR 0114 rule 12.1).
+                    measured @ Ty::Measured(_, magnitude)
+                        if matches!(**magnitude, Ty::Int | Ty::Fixed(_)) =>
+                    {
+                        measured.clone()
+                    }
                     _ => Ty::Int,
                 };
                 let second_ty = self.expr(second, Some(&base));
@@ -920,6 +1173,26 @@ impl<'a> Checker<'_, 'a, '_> {
         }
         if !handled.handlings.is_empty() {
             self.outside_rl(handled.span, || "a handling clause".to_owned());
+        }
+        if handled.within.is_some() {
+            self.outside_rl(handled.span, || "`within`".to_owned());
+        }
+        // Edition 0.4: `e within d` (ADR 0117 rule 5). `d` is evaluated first, outside the
+        // `with` bindings; the timing label's seed covers the handlers they install.
+        let within = handled.within.as_ref().map(|deadline| {
+            let span = handled.expr.span.to(deadline.span);
+            self.within_open(deadline, span)
+        });
+        // ADR 0117 rule 9, IF5: a statement that installs `limiter` of `std.limit` is a site
+        // of its own, whose seed covers the handlers its bindings install.
+        let limiters: Vec<Span> = handled
+            .with
+            .iter()
+            .filter(|binding| self.installs_limiter(&binding.value))
+            .map(|binding| binding.span)
+            .collect();
+        if !limiters.is_empty() {
+            self.timing_start();
         }
         // The `with` bindings of a statement form one frame over its expression (`spec/10 §6`);
         // their right-hand sides resolve outside it.
@@ -1005,7 +1278,8 @@ impl<'a> Checker<'_, 'a, '_> {
         // with the expected type after unwrapping, so a value that is no `Option` gets the
         // precise diagnostic.
         let value_expected = if unwraps { None } else { expected.cloned() };
-        self.ctx.handled = catches;
+        // A `within` takes the failure of `e` into its own (rule 5).
+        self.ctx.handled = catches || within.is_some();
         self.ctx.top = true;
         let end = handled
             .with
@@ -1030,18 +1304,52 @@ impl<'a> Checker<'_, 'a, '_> {
         self.statement = saved;
         self.ctx.handled = false;
         self.ctx.top = false;
-        let error = self.fails_of(&handled.expr).unwrap_or(Ty::error());
+        let inner = self.fails_of(&handled.expr);
+        if !limiters.is_empty() {
+            let seed = self.timing_end();
+            if self.pass == super::authority::Pass::Check {
+                for span in limiters {
+                    self.findings.limiter_sites.push(super::LimiterSite {
+                        span,
+                        function: self.current,
+                        seed: seed.clone(),
+                    });
+                }
+            }
+        }
+        // `e within d` fails with `Timed[E]` or `Deadline`, labeled with `τ(e)` (IF2).
+        let timed = within.as_ref().map(|open| {
+            self.within_places(&handled.expr, open);
+            let failure = self.within_close(open, inner.as_ref());
+            if !catches {
+                self.within_unhandled(open.span(), &failure);
+            }
+            (failure, open.tau().clone(), open.span())
+        });
+        let error = match &timed {
+            Some((failure, _, _)) => failure.clone(),
+            None => inner.clone().unwrap_or(Ty::error()),
+        };
         // The label that decides whether the call fails, when its arguments' values do:
-        // a handling clause branches on it.
-        let decided = self
+        // a handling clause branches on it. A deadline's adds the timing label.
+        let mut decided = self
             .decided_of(&handled.expr)
             .filter(|label| !label.is_public());
-        let decided_by = decided.as_ref().map(|label| (label, handled.expr.span));
+        let mut decided_at = handled.expr.span;
+        if let Some((_, tau, span)) = &timed
+            && !tau.is_public()
+        {
+            decided = Some(decided.map_or_else(|| tau.clone(), |label| label.join(tau)));
+            decided_at = *span;
+        }
+        let decided_by = decided.as_ref().map(|label| (label, decided_at));
         // Edition 0.3 (ADR 0100): the `if error` clauses of an expression with no failure type
         // never run. Their own U3008 and U3009 are held with them until the package is judged.
+        // A `within` can always fail.
         let dead = self.pass == super::authority::Pass::Check
             && self.env.edition >= una_project::Edition::V0_3
-            && self.fails_of(&handled.expr).is_none();
+            && timed.is_none()
+            && inner.is_none();
         if self.pass == super::authority::Pass::Check
             && handled.handlings.iter().any(|h| {
                 matches!(
@@ -1072,7 +1380,11 @@ impl<'a> Checker<'_, 'a, '_> {
                 HandlingKind::ErrorPass => {
                     self.impure(handling.span, || "`if error pass`".to_owned());
                     self.fail_under_pc(handling.span, "`if error pass`", decided_by);
-                    self.pass_clause(handling.span, &handled.expr);
+                    if let Some(open) = &within {
+                        self.within_pass(handling.span, inner.as_ref(), open);
+                    } else {
+                        self.pass_clause(handling.span, &handled.expr);
+                    }
                 }
                 HandlingKind::ErrorUse(value) => {
                     let ctx = Ctx {
@@ -1082,7 +1394,7 @@ impl<'a> Checker<'_, 'a, '_> {
                     let expected = current.clone();
                     let saved = decided
                         .as_ref()
-                        .map(|label| self.raise_pc(label, handled.expr.span));
+                        .map(|label| self.raise_pc(label, decided_at));
                     let used = self.within(ctx, |checker| {
                         {
                             // The default's flow is the binder's (ADR 0103).
@@ -1188,7 +1500,7 @@ impl<'a> Checker<'_, 'a, '_> {
     ) -> super::dead::Site {
         let inner = unparenthesized(expr);
         let (args, what): (Vec<Span>, String) = match &inner.kind {
-            ExprKind::Attempt(_) => (
+            ExprKind::Attempt { .. } => (
                 Vec::new(),
                 "`attempt`, which already turns the failure into a value,".to_owned(),
             ),
@@ -1291,6 +1603,7 @@ impl<'a> Checker<'_, 'a, '_> {
             BlockExpr::When(when) => self.when(when, expected, role, tail),
             BlockExpr::If(block) => self.if_block(block, expected, role, tail),
             BlockExpr::TogetherFor(together) => self.together_for(together, expected, role, tail),
+            BlockExpr::FirstOf(first) => self.first_of(first, expected, role, tail),
         };
         // The value of a join, in the desugar of the memory model (`spec/17 §4`).
         self.typed(block_expr_span(expr), &ty);
@@ -1475,10 +1788,11 @@ impl<'a> Checker<'_, 'a, '_> {
                             self.int_literal_type(false, digits, pattern, Some(&Ty::Fixed(int)))
                         }
                         // A float literal is never a pattern (ADR 0114 rules 5.5 and 5.6).
-                        (Literal::Float(text), _) => {
-                            self.float_pattern(text, pattern);
+                        (Literal::Float(text), scrutinee_ty) => {
+                            let name = self.float_name_of(&scrutinee_ty, &scrutinee_ty);
+                            self.float_pattern(name, text, pattern);
                             problem = true;
-                            Ty::F64
+                            if name == "F32" { Ty::F32 } else { Ty::F64 }
                         }
                         _ => literal_type(literal),
                     };
@@ -1513,12 +1827,17 @@ impl<'a> Checker<'_, 'a, '_> {
                     // (`spec/18 §2`).
                     if let Ty::Fixed(int) = self.resolve(&scrutinee) {
                         self.range_bounds(range, int);
-                    } else if self.is_f64(&scrutinee) {
-                        // ADR 0114 rule 5.6: a range is never a pattern over an `F64`.
+                    } else if self.is_float(&self.number_of(&scrutinee)) {
+                        // ADR 0114 rule 5.6: a range is never a pattern over an `F64`, nor over
+                        // an `F32` (ADR 0120 rule 5), measured or not.
+                        let number = self.number_of(&scrutinee);
+                        let name = self.float_name_of(&number, &number);
                         let mut diagnostic = self.report.make(
                             Code::U2032,
                             pattern,
-                            "a range is not a pattern over an `F64`; compare in an `if`",
+                            format!(
+                                "a range is not a pattern over an `{name}`; compare in an `if`"
+                            ),
                         );
                         diagnostic.repairs.push(super::Report::advice(
                             "write an `if` that compares with `<=` and `>=`, or with the IEEE methods, such as `x.ieee_ge(other: lo) and x.ieee_le(other: hi)`",
@@ -1743,6 +2062,7 @@ fn block_expr_span(expr: &BlockExpr) -> Span {
         BlockExpr::When(when) => when.span,
         BlockExpr::If(block) => block.span,
         BlockExpr::TogetherFor(together) => together.span,
+        BlockExpr::FirstOf(first) => first.span,
     }
 }
 
@@ -1760,6 +2080,8 @@ fn stmt_span(stmt: &Stmt) -> Span {
         Stmt::Skip(span) => *span,
         Stmt::Until(stmt) => stmt.span,
         Stmt::Ever(stmt) => stmt.span,
+        Stmt::Tasks(stmt) => stmt.span,
+        Stmt::Start(stmt) => stmt.span,
         Stmt::OnStop(on_stop) => on_stop.span,
     }
 }

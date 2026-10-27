@@ -1,0 +1,13 @@
+-- test: before edition 0.4, `first of` does not parse (U0101): `first` is a name there, and `of`, another name, cannot follow it (spec/27 §6, ADR 0117 Conformance)
+-- spec: spec/27 §6
+-- expect: error U0101 at src/late.una:10:17
+module late
+
+primary(n: Int) -> Int = n + 1
+
+pub late(n: Int) -> Int
+=
+  let x = first of
+    primary(n)
+    primary(n)
+  x

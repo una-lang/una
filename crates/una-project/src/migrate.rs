@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ita::{check_package_name, write_lock};
 use crate::lock::{Lock, parse_lock};
-use crate::manifest::{Edition, Manifest, parse_manifest};
+use crate::manifest::{Edition, Manifest, Profile, parse_manifest};
 use crate::version::Version;
 use una_syntax::ita::PkgName;
 
@@ -101,6 +101,12 @@ pub fn migrate(toml: &str, lock: Option<&str>, name: Option<&str>) -> Result<Mig
     out.line(1, &format!("version {version}"));
     out.comments_at(1, &comments.before_key("package", "edition"));
     out.line(1, "edition 0.4");
+    // The profile and the budget move with the package: dropping either would check a
+    // `systems` package as `app` or widen its budget (ADR 0109 rules 2 and 4).
+    if manifest.profile != Profile::App {
+        out.comments_at(1, &comments.before_key("package", "profile"));
+        out.line(1, &format!("profile {}", manifest.profile.name()));
+    }
     sections(&manifest, &comments, &mut out);
     Ok(Migration {
         manifest: out.text,
@@ -161,11 +167,15 @@ fn sections(manifest: &Manifest, comments: &Comments, out: &mut Writer) {
             }
         }
     }
-    if manifest.entry.is_some() || !manifest.grants.is_empty() {
+    if manifest.entry.is_some() || manifest.max_memory.is_some() || !manifest.grants.is_empty() {
         out.section(comments, "run", "run");
         if let Some(entry) = &manifest.entry {
             out.comments_at(1, &comments.before_key("run", "entry"));
             out.line(1, &format!("entry {}", entry.value));
+        }
+        if let Some(budget) = manifest.max_memory {
+            out.comments_at(1, &comments.before_key("run", "max_memory"));
+            out.line(1, &format!("max_memory {budget}"));
         }
         if !manifest.grants.is_empty() {
             out.comments_at(1, &comments.before_key("run", "grants"));

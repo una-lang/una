@@ -1,0 +1,36 @@
+# What a released `una` and an executable that `una build` links may ask the dynamic loader
+# for (#1103), read by scripts/load-commands.sh. One entry per line: PLATFORM KIND VALUE, then
+# `#` and the reason. Anything not listed fails the check; an entry allows, it never requires.
+#
+# macOS (`otool -l`): every load command's kind must be listed as `command`; the dylib a
+# LC_LOAD_DYLIB names must be listed as `dylib`, by its exact install name, and the dynamic
+# linker of LC_LOAD_DYLINKER as `dylinker`. The kinds that add a library or a search path
+# another way (LC_LOAD_WEAK_DYLIB, LC_REEXPORT_DYLIB, LC_LAZY_LOAD_DYLIB, LC_LOAD_UPWARD_DYLIB,
+# LC_RPATH, LC_DYLD_ENVIRONMENT) are not listed, so any of them fails.
+macos dylib /usr/lib/libSystem.B.dylib  # the C library, the unwinder, threads and dispatch of the Rust standard library (docs/foreign-code-inventory.md section 3)
+macos dylinker /usr/lib/dyld  # the dynamic linker that loads libSystem
+macos command LC_LOAD_DYLIB  # names a dylib, checked against the `dylib` entries
+macos command LC_LOAD_DYLINKER  # names the dynamic linker, checked against `dylinker`
+macos command LC_SEGMENT_64  # the program's segments
+macos command LC_SYMTAB  # the symbol table
+macos command LC_DYSYMTAB  # the dynamic symbol table
+macos command LC_DYLD_INFO_ONLY  # binding and rebasing information, older ld64 format
+macos command LC_DYLD_CHAINED_FIXUPS  # binding and rebasing information, chained fixups format
+macos command LC_DYLD_EXPORTS_TRIE  # the exported symbols, with chained fixups
+macos command LC_FUNCTION_STARTS  # the start addresses of functions, for tools
+macos command LC_DATA_IN_CODE  # data regions inside code, for tools
+macos command LC_UUID  # the image's identity
+macos command LC_BUILD_VERSION  # the platform and minimum OS version
+macos command LC_SOURCE_VERSION  # the source version field, zero
+macos command LC_MAIN  # the entry point
+macos command LC_CODE_SIGNATURE  # the ad hoc code signature that arm64 macOS requires
+#
+# Linux (`readelf -d` and `readelf -l`): every NEEDED entry must be listed as `needed`, and the
+# program interpreter as `interpreter`. RPATH, RUNPATH, AUXILIARY, FILTER, AUDIT and DEPAUDIT
+# entries fail.
+linux needed libc.so.6  # glibc, the C library of the Rust standard library (docs/foreign-code-inventory.md section 4)
+linux needed libgcc_s.so.1  # the unwinder of panics and backtraces (`_Unwind_*`)
+linux needed ld-linux-x86-64.so.2  # the x86_64 dynamic loader, which provides __tls_get_addr for thread-local storage
+linux needed ld-linux-aarch64.so.1  # the aarch64 dynamic loader, for the same symbols
+linux interpreter /lib64/ld-linux-x86-64.so.2  # the x86_64 program interpreter
+linux interpreter /lib/ld-linux-aarch64.so.1  # the aarch64 program interpreter

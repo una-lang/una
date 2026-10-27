@@ -1061,6 +1061,13 @@ fn core_prints_the_package_s_core_ir_as_una_core_1() {
     );
     let document: Value = serde_json::from_str(text).unwrap();
     assert_eq!(document["complete"], true);
+    // ADR 0109 rule 6: the header records the profile, after the edition; `app` by default.
+    assert!(
+        text.starts_with(
+            "{\"schema\":\"una.core/1\",\"edition\":\"0.1\",\"profile\":\"app\",\"complete\":"
+        ),
+        "{text}"
+    );
     let module = &document["modules"][0];
     assert_eq!(module["path"], "hello");
     let main = &module["decls"][0];

@@ -1,0 +1,9 @@
+ita case
+  version 0.1.0
+  edition 0.4
+  profile systems
+
+run
+  entry main
+  grants
+    console
