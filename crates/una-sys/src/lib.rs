@@ -5,9 +5,10 @@
 //!
 //! The crate stays under 1,200 lines, with one assembly instruction per line (ADR 0116 amendment
 //! of 2026-10-19), and depends on no crate of the repository. Every change to it gets a security
-//! review before it merges. Only `signals`, `coroutine`, `io` and `poll` hold `unsafe` code, each
-//! block with a `// SAFETY:` comment; `solver`, behind the feature of that name, holds the solver
-//! child's confinement record (ADR 0124). The context switch is Rust `naked_asm!` only,
+//! review before it merges. Only `signals`, `coroutine`, `io`, `poll` and, behind the feature of
+//! that name, `solver` hold `unsafe` code, each block with a `// SAFETY:` comment; `solver` holds
+//! the solver child's confinement, limits, spawn attributes and footprint reading, and the
+//! record of its confinement (ADR 0124 rules 5 to 7). The context switch is Rust `naked_asm!` only,
 //! assembled by the toolchain: no `.s` or `.S` file, no build script, and no C is compiled.
 //! It assumes no x86 shadow stacks (CET) and no AArch64 branch targets (BTI) are enforced, as for
 //! Rust binaries on these targets today; if either is turned on, the switch must be revisited.

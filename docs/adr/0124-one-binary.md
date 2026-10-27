@@ -558,3 +558,35 @@ To be appended, dated, when this record is accepted:
 ## Amendment (2026-10-27): the size of `una-sys`
 
 Rule 35 and the ADR 0058 entry of Appendix A say that `una-sys`'s base code is at most 800 lines. That number predates ADR 0058's amendment of 2026-10-25, which defines how the crate's size is counted (physical lines of the Rust files under `crates/una-sys/src/`), keeps the cap of 1,200 lines until a later amendment sets it at the exact count of the merged slices, and replaces every earlier number. On `main` at this date the count is 1097. ADR 0058's amendment of 2026-10-25 therefore governs the base code's count and cap; this record's 800 is not a cap. The 600 lines behind `solver` and the 150 lines of `una-z3` stand as written, counted the same way.
+
+## Amendment (2026-10-27): the solver files' size
+
+Rule 35 states the base code of `una-sys` as 800 lines and the code behind `solver` as 600 lines,
+estimates from its writing. ADR 0058's amendment of 2026-10-25 governs the count and the cap of
+the base code (1,200 lines until its exact-count amendment); rule 35's 800 is not a cap. The
+files behind the feature `solver` (`crates/una-sys/src/solver/`) are capped at their measured
+physical count, comments and blank lines included, as that amendment counts, plus at most 5%:
+1,166 lines at 3010a0867, so the cap is 1,224. `una-z3`'s 150 lines stand.
+
+## Amendment (2026-10-27): the outer sandbox's minimum (rule 7, Question 6)
+
+A limit on the file size stops writing data but not creating, removing or renaming files. The
+outer sandbox counts as the confinement only if it also denies `file-write-create` and
+`file-write-unlink` at `/` and at a path outside the temporary directory, beside the network
+operations and `file-write-data` of Question 6; otherwise U5003, "the outer sandbox is too
+permissive for the solver". The fixed list of rule 7 gains those four operations, in the order
+the report keeps.
+
+## Amendment (2026-10-27): the proof condition (rule 8)
+
+Z3 5.1.0's front end answers the script's `(get-model)` and `(get-value ...)` after `unsat` with
+`(error "line N column M: model is not available")` and exits with status 1, so "exited with
+status 0" can never hold for a proof. A proof requires: the handshake matched; exactly one answer
+to `(check-sat)`, `unsat`; and then either exit status 0, or exit status 1 where every line after
+`unsat` on stdout is the pinned solver's exact "model is not available" error text (pinned per
+solver build, compared byte for byte but for the line and column numbers) or the reply to the
+script's `(get-info :reason-unknown)`, with nothing on stderr and no other output of any kind; no
+other status is excused. Anything else is `unknown`, never cached. The alternative, a dialogue
+with the child that sends `(get-model)` only after `sat`, was rejected: rule 6's whole script
+and the solver-identity comparison stay as they are. The conformance test is the real
+transcript and its near misses (crates/una-verify/src/solver.rs).
