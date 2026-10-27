@@ -8,3 +8,4 @@ tests/conformance/runtime/set_run
 tests/conformance/runtime/hash_map_run
 tests/conformance/runtime/hash_set_run
 tests/conformance/runtime/hash_keys_equal
+tests/conformance/runtime/loop_state_dense
