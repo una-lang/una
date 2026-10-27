@@ -6940,9 +6940,10 @@ fn operation_guard(prim: Prim, operand: &dyn Fn(usize) -> String, range: &str) -
 /// The guard of an `Int` operation of a `systems` package, with its operands as `operand`
 /// writes them (ADR 0109 rule 3): it bounds the operands, never the result, since a test on
 /// the exact result is itself an `Int` operation whose obligation could not be proven. For `+`
-/// and `-`, each operand in -2^61..2^61 - 1; for `*`, each in -(2^31 - 1)..2^31 - 1; for `/`
-/// and `mod`, the dividend in -(2^62 - 1)..2^62 - 1, the divisor unbounded; for unary `-`, the
-/// operand in -(2^62 - 1)..2^62 - 1. An operand that is a
+/// and `-`, each operand in -2^61..2^61 - 1; for `*`, each in -(2^31 - 1)..2^31 - 1; for `/`,
+/// the dividend in -(2^62 - 1)..2^62 - 1, the divisor unbounded; for `mod`, both operands in
+/// that range, since the result is bounded by the divisor; for unary `-`, the operand in
+/// -(2^62 - 1)..2^62 - 1. An operand that is a
 /// literal within its bound needs no test; `None` when no operand does.
 fn int_guard(
     prim: Prim,
@@ -6970,8 +6971,16 @@ fn int_guard(
                 .collect();
             (!tests.is_empty()).then(|| tests.join(" and "))
         }
-        // The dividend, or the operand of `-`, off the least value; the divisor needs no bound.
-        Prim::Div | Prim::Mod | Prim::Neg => Some(off_least(&operand(0))),
+        // The dividend, or the operand of `-`, off the least value; the divisor of `/` needs
+        // no bound, since the quotient's magnitude never exceeds the dividend's.
+        Prim::Div | Prim::Neg => Some(off_least(&operand(0))),
+        // `a mod b` is bounded by `|b|`, not by `a` (`-1 mod (2^62 + 5)` is `2^62 + 4`), so both
+        // operands are bounded.
+        Prim::Mod => Some(format!(
+            "{} and {}",
+            off_least(&operand(0)),
+            off_least(&operand(1))
+        )),
         _ => None,
     }
 }
