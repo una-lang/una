@@ -26,7 +26,7 @@ Edition `0.4` is the next preview edition, under the terms of ADR 0121. Its lang
 | The numeric foundation | `F32`, `Decimal`, `Complex`, dense arrays and SIMD | ADR 0120 | Accepted |
 | Packages | Itá: the package manager, `ita.una` and `ita.lock`, and its registry | ADR 0122 | Accepted |
 | HTTP servers | `HttpServer` and `Listener`, granted by address | ADR 0123 | Accepted |
-| One binary | `una` checks, proves and builds with nothing else installed | ADR 0124 | Proposed |
+| One binary | `una` checks, proves and builds with nothing else installed | ADR 0124 | Accepted (2026-10-27) |
 
 Una admits no foreign code: no foreign function interface, in any form, in any edition.
 
