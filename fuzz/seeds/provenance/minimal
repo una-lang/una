@@ -1,0 +1,14 @@
+ita-provenance/1
+root 23
+ita-root/1
+source acme
+checkpoint 64
+acme.example/log
+2
+AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+statement 26
+ita-release/1
+source acme
+index 1
+proof AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+key acme.publisher AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=

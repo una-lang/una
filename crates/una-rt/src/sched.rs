@@ -182,18 +182,26 @@ impl<T> Receiver<T> {
     /// The value, once sent; `None` when the sender was dropped without sending. Parks until
     /// one or the other.
     pub(crate) fn recv(&self) -> Option<T> {
+        self.recv_parked().0
+    }
+
+    /// As [`Receiver::recv`], and whether the receiver parked before the value or the close
+    /// came.
+    pub(crate) fn recv_parked(&self) -> (Option<T>, bool) {
+        let mut parked = false;
         loop {
             {
                 let mut mailbox = lock(&self.0);
                 if let Some(value) = mailbox.value.take() {
-                    return Some(value);
+                    return (Some(value), parked);
                 }
                 if mailbox.closed {
-                    return None;
+                    return (None, parked);
                 }
                 mailbox.waiter = Some(Waker::current());
             }
             park();
+            parked = true;
         }
     }
 }
@@ -233,6 +241,9 @@ struct Worker {
     /// queue's lock, when a turn begins and when a task is queued behind a lone one, so the two
     /// never race; read by the turn's check points and by the slicer. 0 before any turn.
     turn_ends: AtomicU64,
+    /// Whether the worker has run a task, its warm-up included, in tests.
+    #[cfg(test)]
+    ran: std::sync::atomic::AtomicBool,
 }
 
 impl Worker {
@@ -344,6 +355,8 @@ fn serve_in(
         }
         let id = match job {
             Job::Start(stack, body, finish) => {
+                #[cfg(test)]
+                worker.ran.store(true, Ordering::SeqCst);
                 generation += 1;
                 let entry = Entry {
                     coroutine: scope.spawn(stack, body),
@@ -420,6 +433,9 @@ struct Shared {
     /// How many worker threads started, in tests.
     #[cfg(test)]
     spawned: AtomicUsize,
+    /// The stacks given back at least once, by their top, in tests.
+    #[cfg(test)]
+    used: Mutex<std::collections::BTreeSet<usize>>,
 }
 
 impl Shared {
@@ -480,6 +496,8 @@ impl Shared {
     /// Keeps `stack` for reuse, its pages discarded, or unmaps it when the pool is full. The pool is keyed by the
     /// usable size, and a request takes the smallest stack at least as large.
     fn give(&self, mut stack: Stack) {
+        #[cfg(test)]
+        lock(&self.used).insert(stack.top());
         // Its pages go back to the system first, so a pooled stack holds no memory outside
         // `--max-memory` and no data of its last task; one that cannot be cleared is unmapped.
         if stack.discard().is_err() {
@@ -518,14 +536,18 @@ impl Scheduler {
             .map(|index| {
                 Arc::new(Worker {
                     index,
+                    // Reserved like the worker's own table, so that a queue's first jobs never
+                    // grow it, whatever earlier code queued (#1145).
                     queue: Mutex::new(Queue {
-                        jobs: VecDeque::new(),
+                        jobs: VecDeque::with_capacity(WORKER_TASKS),
                         closed: false,
                         started: false,
                     }),
                     ready: Condvar::new(),
                     word: Mutex::new(None),
                     turn_ends: AtomicU64::new(0),
+                    #[cfg(test)]
+                    ran: std::sync::atomic::AtomicBool::new(false),
                 })
             })
             .collect();
@@ -541,6 +563,8 @@ impl Scheduler {
                 mapped: AtomicUsize::new(0),
                 #[cfg(test)]
                 spawned: AtomicUsize::new(0),
+                #[cfg(test)]
+                used: Mutex::new(std::collections::BTreeSet::new()),
             }),
         });
         if !crate::runtime::clock().is_virtual() {
@@ -885,7 +909,65 @@ impl Scheduler {
         for _ in 0..started {
             readied.recv().map_err(|_| NotStarted)?;
         }
+        self.warm_up(stack)
+    }
+
+    /// Runs one no-op task on every worker, and one on every pooled stack, through the real path
+    /// before `main` (#1145): a stack from the pool, a coroutine made and switched to on the
+    /// worker with its thread-locals swapped, a small allocation and free on that worker, and
+    /// the stack's pages discarded back to the pool. So whether a worker has run a task, and
+    /// whether a pooled stack has been run on and discarded, is the same for every history:
+    /// every one has, once. The tasks run in waves of at most [`POOL_STACKS`], each wave's
+    /// stacks taken from the pool first, so the first wave runs on every pooled stack and no
+    /// wave maps one. O(max(N, 64)) tasks, in parallel across the workers.
+    fn warm_up(&self, stack: usize) -> Result<(), NotStarted> {
+        let count = self.workers.len().max(1);
+        let total = count.max(POOL_STACKS);
+        let mut next = 0;
+        while next < total {
+            let wave = (total - next).min(POOL_STACKS);
+            let stacks: Vec<Stack> = (0..wave)
+                .map(|_| self.shared.take(stack).ok_or(NotStarted))
+                .collect::<Result<_, _>>()?;
+            let (done, finished) = mpsc::channel();
+            for (offset, stack) in stacks.into_iter().enumerate() {
+                let worker = self
+                    .workers
+                    .get((next + offset) % count)
+                    .ok_or(NotStarted)?;
+                let done = done.clone();
+                let body: Box<dyn FnOnce() + Send> = Box::new(|| {
+                    drop(std::hint::black_box(Vec::<u8>::with_capacity(4096)));
+                });
+                let finish: Box<dyn FnOnce() + Send> = Box::new(move || {
+                    let _ = done.send(());
+                });
+                worker.push_at(Job::Start(stack, body, finish), false);
+            }
+            drop(done);
+            for _ in 0..wave {
+                finished.recv().map_err(|_| NotStarted)?;
+            }
+            next += wave;
+        }
         Ok(())
+    }
+
+    /// How many workers have run a task, and whether every pooled stack has been run on and
+    /// given back at least once, in tests.
+    #[cfg(test)]
+    pub(crate) fn warmth(&self) -> (usize, bool) {
+        let ran = self
+            .workers
+            .iter()
+            .filter(|worker| worker.ran.load(Ordering::SeqCst))
+            .count();
+        let used = lock(&self.shared.used);
+        let pooled = lock(&self.shared.stacks)
+            .values()
+            .flatten()
+            .all(|stack| used.contains(&stack.top()));
+        (ran, pooled)
     }
 
     /// How many threads started, workers and helpers, in tests.
@@ -1198,7 +1280,7 @@ pub(crate) fn yield_now() {
     };
     // The worker is this thread, so it takes the job only once the task has suspended; a wake
     // that comes meanwhile adds a resume of its own, which the task's next wait ignores.
-    worker.push(Job::Resume(id));
+    worker.push_at(Job::Resume(id), false);
     drop(worker);
     una_sys::coroutine::suspend();
 }
@@ -1760,6 +1842,8 @@ mod tests {
         assert_eq!(sched.started(), (0, 0, 0));
         sched.start_all(256 * 1024).unwrap();
         assert_eq!(sched.started(), (3, 2, 5));
+        // Every worker ran its warm-up task, and every pooled stack was run on once.
+        assert_eq!(sched.warmth(), (3, true));
         // The helpers are running threads: each reaches its idle wait.
         let idle = || {
             (
@@ -1849,7 +1933,19 @@ mod tests {
         for history in [0, 1, 63, 1023] {
             let sched = Scheduler::new(settings(8, 2, 2));
             sched.start_all(256 * 1024).unwrap();
+            // The warm-up ran a task on every worker and on every pooled stack (#1145), so a
+            // history leaves no worker that never ran a task and no stack never run on.
+            assert_eq!(
+                sched.warmth(),
+                (8, true),
+                "before a history of {history} tasks"
+            );
             run(&sched, history);
+            assert_eq!(
+                sched.warmth(),
+                (8, true),
+                "after a history of {history} tasks"
+            );
             let before = (sched.spawned(), sched.stacks().1);
             run(&sched, POOL_STACKS);
             let after = (sched.spawned(), sched.stacks().1);

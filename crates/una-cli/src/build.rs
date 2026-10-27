@@ -15,7 +15,7 @@ use una_syntax::ast::ClauseKind;
 use crate::contract::Modules;
 use crate::runtime::{driven_init, entry_main, rejected_status, takes_stops};
 use crate::verification::tier_one;
-use crate::{ExitStatus, analyze, load, on_large_stack};
+use crate::{ExitStatus, analyze, on_large_stack};
 
 /// The JSON schema of `una build --json` (`spec/16 §2`).
 const BUILD_SCHEMA: &str = "una.build/1";
@@ -56,7 +56,11 @@ pub(crate) fn build_command(
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> io::Result<ExitStatus> {
-    let package = match load(path) {
+    let package = match crate::package::load_in(
+        path,
+        &std::collections::BTreeMap::new(),
+        options.solving.itaoca.as_ref(),
+    ) {
         Ok(package) => package,
         Err(error) => {
             writeln!(stderr, "error: {error}")?;
@@ -544,6 +548,14 @@ fn runtime_library(environment: crate::Environment<'_>) -> Result<PathBuf, Strin
         .ok_or_else(|| missing_runtime(&dir))
 }
 
+/// The label `internal`, the most `L_lim` may be for grants with limits (ADR 0117 IF4).
+pub(crate) fn internal_label() -> una_core::Label {
+    una_core::Label {
+        level: una_syntax::ast::Level::Internal,
+        ..una_core::Label::public()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -611,13 +623,5 @@ mod tests {
             None
         );
         assert_eq!(stale_runtime_hint("ld: library not found", runtime), None);
-    }
-}
-
-/// The label `internal`, the most `L_lim` may be for grants with limits (ADR 0117 IF4).
-pub(crate) fn internal_label() -> una_core::Label {
-    una_core::Label {
-        level: una_syntax::ast::Level::Internal,
-        ..una_core::Label::public()
     }
 }

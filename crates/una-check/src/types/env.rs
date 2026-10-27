@@ -434,6 +434,9 @@ pub(crate) struct Env<'a> {
     /// module is trusted only when its header says so and it is listed here. Empty for a file
     /// checked on its own.
     pub(crate) trusted_listed: BTreeSet<String>,
+    /// The modules of dependencies the root trusts by a trust line (ADR 0122 rule 53.1), by
+    /// index: a release whose policy one declares is not a release into a boundary.
+    pub(crate) trusted_dependencies: BTreeSet<usize>,
     /// The code of an invalid project setting: U7002 in `una.toml`, U7008 in `ita.una`
     /// (ADR 0122 rule 13).
     pub(crate) project_code: Code,
@@ -455,6 +458,9 @@ pub(crate) struct Env<'a> {
     /// The module `std.collections`, when a package of edition 0.4 imports it (ADR 0119
     /// rule 0).
     pub(crate) collections: Option<usize>,
+    /// The hidden function `update` of that module, which only method syntax on a hash map
+    /// reaches (ADR 0119 rule 12).
+    pub(crate) hash_map_update: Option<usize>,
 }
 
 /// The key type of a written `Map[K, V]`, or an argument of a written collection type that
@@ -568,6 +574,7 @@ impl<'a> Env<'a> {
             map_keys: Vec::new(),
             opaque_plain: BTreeSet::new(),
             trusted_listed: BTreeSet::new(),
+            trusted_dependencies: BTreeSet::new(),
             project_code: Code::U7002,
             boundaries: super::boundary::Boundaries::default(),
             plain_vias: BTreeSet::new(),
@@ -575,6 +582,7 @@ impl<'a> Env<'a> {
             map_module: None,
             map_update: None,
             collections: None,
+            hash_map_update: None,
         };
         for source in package
             .into_iter()
@@ -593,6 +601,12 @@ impl<'a> Env<'a> {
         }
         env.map_update =
             env.map_module
+                .and_then(|index| match env.modules.get(index)?.lower.get("update") {
+                    Some(Entity::Function(id)) => Some(*id),
+                    _ => None,
+                });
+        env.hash_map_update =
+            env.collections
                 .and_then(|index| match env.modules.get(index)?.lower.get("update") {
                     Some(Entity::Function(id)) => Some(*id),
                     _ => None,
