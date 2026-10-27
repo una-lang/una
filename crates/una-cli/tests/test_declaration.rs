@@ -271,3 +271,178 @@ fn messages_name_the_declaration_by_the_edition() {
         "{in_0_2:#?}"
     );
 }
+
+#[test]
+fn one_fix_run_rewrites_the_keyword_and_then_a_callee_condition() {
+    // ADR 0105 rule 3, rounds: the U0103 is a tier-0 diagnostic, so the round that takes it
+    // checks no tier 1 (ADR 0084); the condition a `do` line's callee needs (ADR 0092's
+    // amendment of 2026-10-14) is written in the next round of the same run.
+    let source = "module m\n\npub capability Log\n  op write(n: Int) -> Unit\n\nhandler silent() for Log\n  op write(n) = unit\n\nnote(n: Int, quiet: Bool) -> Unit\n  uses @log: Log[write]\n=\n  if not quiet\n    @log.write(n)\n  unit\n\npub run(n: Int, dry: Bool) -> Unit\n  uses @log: Log[write where not dry]\n=\n  note(n, quiet: dry)\n\nexample \"a dry run writes nothing\"\n  given @log = silent()\n  do run(1, dry: true)\n  expect not performed @log.write\n";
+    let root = package("rounds-0-3", "0.3", source);
+    let fix = una_in(&root, &["--json", "fix", "."]);
+    assert_eq!(fix.status.code(), Some(0), "{fix:?}");
+    let document = json(&fix);
+    assert_eq!(document["stopped"], "done", "{document:#?}");
+    let applied: Vec<(u64, String)> = document["applied"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|edit| {
+            (
+                edit["round"].as_u64().unwrap(),
+                edit["code"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        applied,
+        vec![(1, "U0103".to_owned()), (2, "U5001".to_owned())],
+        "{document:#?}"
+    );
+    let text = std::fs::read_to_string(root.join("src/m.una")).unwrap();
+    assert!(text.contains("\ntest \"a dry run writes nothing\"\n"), "{text}");
+    assert!(
+        text.contains("note(n: Int, quiet: Bool) -> Unit\n  uses @log: Log[write where not quiet]\n"),
+        "{text}"
+    );
+    let check = una_in(&root, &["check", "."]);
+    assert_eq!(check.status.code(), Some(0), "{check:?}");
+    let output = una_in(&root, &["test", "."]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert!(stdout(&output).ends_with("1 test: 1 passed, 0 failed\n"));
+}
+
+#[test]
+fn std_testing_messages_name_the_declaration_by_the_edition() {
+    // ADR 0105 rule 6: U3015 says "tests" in edition 0.3 and "examples" before.
+    let source = "module m\n\nimport std.testing (fake_hash)\n\npub digest(seed: Int) -> internal Hashed = fake_hash(seed)\n";
+    for (name, edition, word) in [
+        ("testing-0-3", "0.3", "tests"),
+        ("testing-0-2", "0.2", "examples"),
+    ] {
+        let root = package(name, edition, source);
+        let document = json(&una_in(&root, &["--json", "check", "."]));
+        let found: Vec<String> = document["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|d| d["code"] == "U3015")
+            .map(|d| d["message"].as_str().unwrap().to_owned())
+            .collect();
+        let expected = format!(
+            "`fake_hash` belongs to `std.testing`, which only handler operations and {word} may use"
+        );
+        assert_eq!(found, [expected], "{edition}");
+    }
+}
+
+#[test]
+fn una_fmt_leaves_an_example_in_edition_0_3_as_it_is() {
+    // ADR 0105 rule 8: the rewrite of the keyword is a repair of `una fix`, never a change of
+    // layout; a file with the U0103 has no canonical form, and `una fmt` reports it unchanged.
+    let root = package("fmt-example-0-3", "0.3", &doubling("example"));
+    let fmt = una_in(&root, &["fmt", "."]);
+    assert_eq!(fmt.status.code(), Some(1), "{fmt:?}");
+    assert!(
+        std::str::from_utf8(&fmt.stderr).unwrap().contains("[U0103]"),
+        "{fmt:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("src/m.una")).unwrap(),
+        doubling("example")
+    );
+    let check = json(&una_in(&root, &["--json", "fmt", "--check", "."]));
+    let codes: Vec<&str> = check["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["code"].as_str().unwrap())
+        .collect();
+    assert_eq!(codes, ["U0103", "U0103"]);
+}
+
+/// The conformance cases of editions 0.1 and 0.2 that `una test` runs: single files, which
+/// are edition 0.1, and directories whose `una.toml` names one of the two editions, each with
+/// a `test-pass` or `test-fail` expectation.
+fn earlier_edition_test_cases() -> Vec<PathBuf> {
+    let root = repository().join("tests/conformance");
+    let mut cases = Vec::new();
+    let mut pending = vec![root];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                let manifest = path.join("una.toml");
+                if manifest.is_file() {
+                    let text = std::fs::read_to_string(&manifest).unwrap();
+                    let earlier = text.contains("edition = \"0.1\"")
+                        || text.contains("edition = \"0.2\"");
+                    let runs = walk(&path.join("src"))
+                        .iter()
+                        .any(|file| expects_a_run(file));
+                    if earlier && runs {
+                        cases.push(path);
+                    }
+                } else if !path.join("ita.una").is_file() {
+                    pending.push(path);
+                }
+            } else if path.extension().is_some_and(|e| e == "una") && expects_a_run(&path) {
+                cases.push(path);
+            }
+        }
+    }
+    cases.sort();
+    cases
+}
+
+fn walk(dir: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                pending.push(path);
+            } else {
+                files.push(path);
+            }
+        }
+    }
+    files
+}
+
+fn expects_a_run(file: &Path) -> bool {
+    std::fs::read_to_string(file).is_ok_and(|text| {
+        text.lines()
+            .take_while(|line| line.starts_with("--"))
+            .any(|line| {
+                line.starts_with("-- expect: test-pass")
+                    || line.starts_with("-- expect: test-fail")
+            })
+    })
+}
+
+#[test]
+fn editions_0_1_and_0_2_keep_una_test_1() {
+    // ADR 0105 rule 6: packages of editions 0.1 and 0.2 keep `una.test/1`, its key `examples`
+    // and its key order, on every conformance case that `una test` runs; the full document
+    // of the reference example is pinned by `runtime.rs`'s snapshot.
+    let cases = earlier_edition_test_cases();
+    assert!(cases.len() >= 10, "{cases:#?}");
+    for case in cases {
+        let output = una_in(&repository(), &["--json", "test", case.to_str().unwrap()]);
+        let text = stdout(&output);
+        assert!(
+            text.starts_with("{\"schema\":\"una.test/1\",\"tier\":"),
+            "{}: {text}",
+            case.display()
+        );
+        assert!(text.contains(",\"examples\":["), "{}: {text}", case.display());
+        assert!(!text.contains("\"tests\":"), "{}: {text}", case.display());
+        let document: Value = serde_json::from_str(text).unwrap();
+        assert!(document["examples"].is_array(), "{}", case.display());
+    }
+}
