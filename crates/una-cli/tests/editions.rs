@@ -258,6 +258,12 @@ const EXPECTED_DIFFERENCES_0_4: &[Difference04] = &[
         added: &[],
         removed: &[("U0101", "src/before.una:11:3")],
     },
+    // ADR 0117 rules 1 and 2: `tasks` and `start` are statements from edition 0.4.
+    Difference04 {
+        case: "syntax/tasks_before_0_4",
+        added: &[],
+        removed: &[("U0101", "src/late.una:11:5")],
+    },
     // ADR 0116 rule 7: `for until` is a loop form from edition 0.4.
     Difference04 {
         case: "syntax/until_before_0_4",
