@@ -1877,6 +1877,7 @@ mod tests {
                 .collect(),
             (edition >= Edition::V0_4).then(|| source(&standard.map_0_4)),
             (edition >= Edition::V0_4).then(|| source(&standard.collections)),
+            (edition >= Edition::V0_4).then(|| source(&standard.limit)),
             Vec::new(),
             edition,
             &mut report,
