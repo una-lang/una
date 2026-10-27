@@ -5,14 +5,17 @@
 //! independent chains in any order, and must never change one. This module holds the reference
 //! chains, written as plain loops with the project's own routines of [`crate::float`], so every
 //! result is canonical; [`blocked`] holds the kernels for each target's baseline, which the
-//! interpreter runs, with the `fma` of [`fma`]. Every blocked kernel is tested bit for bit
-//! against these references, and both against the corpus of `tests/dense_corpus.txt` (rule 53).
+//! interpreter runs, with the `fma` of [`fma`]; [`variants`] holds the same kernels compiled
+//! for each target's processor extensions, and the table a run calls them through. Every
+//! blocked kernel is tested bit for bit against these references, and both against the corpus
+//! of `tests/dense_corpus.txt` (rule 53).
 //!
 //! The kernels take canonical inputs, which every engine stores (ADR 0114 rule 6.1), and store
 //! only canonical values (rule 52).
 
 pub mod blocked;
 pub mod fma;
+pub mod variants;
 
 use crate::float;
 

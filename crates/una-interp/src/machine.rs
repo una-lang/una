@@ -772,6 +772,9 @@ pub struct Limits<'a> {
     /// The run's host stop state, which its watcher shares (ADR 0116 rules 14 and 16); a run
     /// without one makes its own, which only its own stop reaches.
     pub stop: Option<&'a Arc<RunStop>>,
+    /// The table of dense kernels the run calls (ADR 0120 rules 53 and 56): the baseline by
+    /// default; the caller may give the variant its processor runs, which gives the same bits.
+    pub kernels: &'static una_core::dense::variants::Kernels,
 }
 
 impl Limits<'_> {
@@ -786,6 +789,7 @@ impl Limits<'_> {
             stop_after: None,
             task_depth: max_depth,
             stop: None,
+            kernels: &una_core::dense::variants::Kernels::BASELINE,
         }
     }
 }
@@ -899,6 +903,8 @@ pub(crate) struct Machine<'p, 'w> {
     later: Vec<(&'p Expr, Vec<&'p str>)>,
     /// `later` of the functions that called the one in progress.
     callers: Vec<Vec<(&'p Expr, Vec<&'p str>)>>,
+    /// The table of dense kernels (ADR 0120 rule 56), from the limits.
+    kernels: &'static una_core::dense::variants::Kernels,
 }
 
 impl<'p, 'w> Machine<'p, 'w> {
@@ -954,6 +960,7 @@ impl<'p, 'w> Machine<'p, 'w> {
             seen: Cell::new(seen),
             max_memory: limits.max_memory,
             held: limits.held,
+            kernels: limits.kernels,
             baseline: (limits.held)(),
             stack_base: stack_position(&max_depth),
             stack_budget: crate::stack_bytes(max_depth)
@@ -998,6 +1005,8 @@ impl<'p, 'w> Machine<'p, 'w> {
             grants: self.grants,
             keys: self.keys,
             http: self.http,
+            // A task runs the kernels of the run that started it (ADR 0120 rule 56).
+            kernels: self.kernels,
             run: Rc::clone(&self.run),
             depth: self.depth,
             max_depth: self
@@ -4913,6 +4922,7 @@ mod tests {
             stop_after: None,
             task_depth: 10,
             stop: None,
+            kernels: &una_core::dense::variants::Kernels::BASELINE,
         };
         let mut machine = Machine::new(&index, &mut world, &[], &keys, limits, Clock::real());
         held.store(

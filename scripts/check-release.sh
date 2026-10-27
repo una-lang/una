@@ -175,6 +175,23 @@ if [ ! -f "$tmp/$name/lib/libuna_rt.a" ]; then
 fi
 una="$tmp/$name/una"
 limited 300 "$tmp/step" "$una" check examples/events || { cat "$tmp/step" "$tmp/step.err" >&2; exit 1; }
+# The FMA disassembly gate (#1216; ADR 0114 Appendix C rules 7 and 8, as ADR 0120 Appendix A
+# amends them): on x86-64, no FMA instruction in the shipped `una` or `libuna_rt.a` outside the
+# dispatched kernel variants of the allowlist, which the packed `una` records in its build report
+# (`native.kernels.fma_allowlist`); without a report, scripts/check-fma.sh uses its own copy of
+# una_core::dense::variants::ALLOWLIST. On AArch64 the scan prints that it is not applicable.
+allowlist=$("$una" --json report examples/events 2>/dev/null \
+    | grep -o '"fma_allowlist":\[[^]]*\]' \
+    | sed -e 's/^"fma_allowlist":\[//' -e 's/\]$//' \
+    | tr ',' '\n' | sed -e 's/^"//' -e 's/"$//' || true)
+set --
+for prefix in $allowlist; do
+    set -- "$@" --allow "$prefix"
+done
+if [ "$#" -eq 0 ]; then
+    echo "note: no fma_allowlist in the report of the packed una; scripts/check-fma.sh uses its own"
+fi
+scripts/check-fma.sh "$@" "$tmp/$name/una" "$tmp/$name/lib/libuna_rt.a"
 limited 300 "$tmp/step" "$una" test examples/events || { cat "$tmp/step" "$tmp/step.err" >&2; exit 1; }
 limited 300 "$tmp/step" "$una" run examples/hello || { cat "$tmp/step.err" >&2; exit 1; }
 greeting=$(cat "$tmp/step")

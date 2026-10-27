@@ -95,12 +95,23 @@ struct ResultLabelDoc {
     from: Vec<String>,
 }
 
-/// The native backend (ADR 0055): the host target, and the bindings whose `Int` stays
-/// arbitrary precision in native code.
+/// The native backend (ADR 0055): the host target, the bindings whose `Int` stays
+/// arbitrary precision in native code, and the dense kernels' variants (ADR 0120).
 #[derive(Serialize)]
 struct NativeDoc {
     target: String,
     arbitrary_precision: Vec<String>,
+    kernels: KernelsDoc,
+}
+
+/// The variants of the dense kernels that an executable for the host target holds and chooses
+/// among at start (ADR 0120 rules 56 and 57), and the allowlist of the FMA disassembly gate:
+/// the demangled prefixes of the symbols where an x86-64 executable may hold an FMA
+/// instruction (ADR 0120 Appendix A, the amendment of ADR 0106 item 3).
+#[derive(Serialize)]
+struct KernelsDoc {
+    variants: Vec<String>,
+    fma_allowlist: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -748,6 +759,16 @@ fn build(
         native: NativeDoc {
             target: una_codegen::host_target(),
             arbitrary_precision: arbitrary_precision(program),
+            kernels: KernelsDoc {
+                variants: una_core::dense::variants::variant_names()
+                    .iter()
+                    .map(|name| (*name).to_owned())
+                    .collect(),
+                fma_allowlist: una_core::dense::variants::ALLOWLIST
+                    .iter()
+                    .map(|prefix| (*prefix).to_owned())
+                    .collect(),
+            },
         },
         generic_results,
         out_of_model: OUT_OF_MODEL,
@@ -1119,6 +1140,14 @@ fn human(report: &Report) -> String {
     line(format!(
         "  arbitrary precision: {}",
         report.native.arbitrary_precision.join(", ")
+    ));
+    line(format!(
+        "  kernels: {}",
+        report.native.kernels.variants.join(", ")
+    ));
+    line(format!(
+        "  fma allowlist: {}",
+        report.native.kernels.fma_allowlist.join(", ")
     ));
     for generic in &report.generic_results {
         let parts: Vec<String> = generic

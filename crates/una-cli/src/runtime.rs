@@ -253,6 +253,7 @@ fn limits<'a>(
             .check(options.max_depth)
             .map_or(options.max_depth, |settings| settings.task_depth),
         stop,
+        kernels: &una_core::dense::variants::Kernels::BASELINE,
     }
 }
 

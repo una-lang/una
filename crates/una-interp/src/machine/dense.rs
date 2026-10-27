@@ -1,8 +1,9 @@
 //! Dense values in the interpreter (`spec/29 §17`, ADR 0120 rules 26 to 54): construction,
 //! views, element-wise functions, reductions, products, factorizations and solves, by the
-//! blocked kernels of `una_core::dense::blocked` and their `fma` (ADR 0120 rule 53), whose
-//! chains are the references' of `una_core::dense`, so the interpreter gives the bits of every
-//! other implementation. A kernel reads a contiguous operand in place, and a view of another
+//! blocked kernels of `una_core::dense::blocked` and their `fma` (ADR 0120 rule 53), through
+//! the table of the run's limits (`una_core::dense::variants`, the baseline by default; rule
+//! 56), whose chains are the references' of `una_core::dense`, so the interpreter gives the
+//! bits of every other implementation. A kernel reads a contiguous operand in place, and a view of another
 //! layout through a compact copy, reserved within the budget as the kernel's workspace.
 //!
 //! Every buffer is checked against the memory budget before it is allocated, in checked
@@ -15,7 +16,7 @@ use std::borrow::Cow;
 use std::rc::Rc;
 
 use num_bigint::BigInt;
-use una_core::dense::{self as chains, blocked, fma};
+use una_core::dense::{self as chains, fma};
 use una_core::float;
 use una_syntax::Span;
 
@@ -577,7 +578,7 @@ impl<'p> Machine<'p, '_> {
         let mut factors = self.f64_copy(value, extra, "lu", span)?;
         let mut pivots: Vec<usize> = self.buffer(n, true, span)?;
         pivots.resize(n, 0);
-        let nonsingular = blocked::lu(&mut factors, n, &mut pivots);
+        let nonsingular = (self.kernels.lu)(&mut factors, n, &mut pivots);
         Ok(nonsingular.then_some((n, factors, pivots)))
     }
 
@@ -605,7 +606,7 @@ impl<'p> Machine<'p, '_> {
             ));
         }
         let mut x = self.f64_copy(rhs, 0, "solve", span)?;
-        blocked::lu_solve(factors, pivots, n, &mut x, r);
+        (self.kernels.lu_solve)(factors, pivots, n, &mut x, r);
         let value = compact(kind, shape.clone(), Elements::F64(x));
         ensure_shape(&value, &shape, "solve")?;
         Ok(value)
@@ -692,6 +693,8 @@ impl<'p> Machine<'p, '_> {
         if !METHODS.contains(&method) {
             return Err(fault(format!("no dense method `{method}`")));
         }
+        // The run's table of kernels (ADR 0120 rule 56), a shared reference to a static.
+        let kernels = self.kernels;
         let receiver = dense(args.first(), method)?.clone();
         // An index or a permutation of another length than the tensor's rank: `at` gives
         // `None`, and the others' preconditions exclude it.
@@ -932,7 +935,7 @@ impl<'p> Machine<'p, '_> {
             "sum" => {
                 let items = receiver.f64_iter().ok_or_else(|| bad(method))?;
                 Ok(Value::F64(match as_slice(&receiver) {
-                    Some(x) => blocked::sum(x),
+                    Some(x) => (kernels.sum)(x),
                     None => chains::sum_f64(items),
                 }))
             }
@@ -944,13 +947,13 @@ impl<'p> Machine<'p, '_> {
                     other.f64_iter().ok_or_else(|| bad(method))?,
                 );
                 Ok(Value::F64(match (as_slice(&receiver), as_slice(other)) {
-                    (Some(x), Some(y)) => blocked::dot(x, y),
-                    _ => blocked::dot_pairs(0.0, a.zip(b)),
+                    (Some(x), Some(y)) => kernels.dot(x, y),
+                    _ => kernels.dot_of_pairs(0.0, a.zip(b)),
                 }))
             }
             "norm2" => {
                 let items = receiver.f64_iter().ok_or_else(|| bad(method))?;
-                Ok(Value::F64(blocked::norm2(items)))
+                Ok(Value::F64(kernels.norm2_of(items)))
             }
             "all_finite" => {
                 let items = receiver.f64_iter().ok_or_else(|| bad(method))?;
@@ -1026,7 +1029,7 @@ impl<'p> Machine<'p, '_> {
                 let b = self.slice_of(other, method, span)?;
                 let mut out: Vec<f64> = self.buffer(size, true, span)?;
                 out.resize(size, 0.0);
-                blocked::add_product(&mut out, &a, &b, m, k, n);
+                (kernels.add_product)(&mut out, &a, &b, m, k, n);
                 let value = compact(DenseKind::Matrix, vec![m, n], Elements::F64(out));
                 ensure_shape(&value, &[m, n], method)?;
                 Ok(value)
@@ -1047,7 +1050,7 @@ impl<'p> Machine<'p, '_> {
                 let v = self.slice_of(other, method, span)?;
                 let mut out: Vec<f64> = self.buffer(m, true, span)?;
                 out.resize(m, 0.0);
-                blocked::multiply_array(&a, m, k, &v, &mut out);
+                (kernels.multiply_array)(&a, m, k, &v, &mut out);
                 let value = compact(DenseKind::Array, vec![m], Elements::F64(out));
                 ensure_len(&value, m, method)?;
                 Ok(value)
@@ -1091,7 +1094,7 @@ impl<'p> Machine<'p, '_> {
                         let c = items
                             .get_mut(start..start + count)
                             .ok_or_else(|| bad(method))?;
-                        blocked::add_product(c, &x, &y, m, k, n);
+                        (kernels.add_product)(c, &x, &y, m, k, n);
                     }
                     _ => return Err(bad(method)),
                 }
@@ -1338,7 +1341,7 @@ impl<'p> Machine<'p, '_> {
                             f64_at(&other, ui.get(..ru).unwrap_or(&[])).unwrap_or(f64::NAN),
                         )
                     });
-                    Ok(blocked::dot_pairs(0.0, pairs))
+                    Ok(kernels.dot_of_pairs(0.0, pairs))
                 };
                 let value = self.made_f64(
                     DenseKind::Tensor,
@@ -1417,7 +1420,7 @@ impl<'p> Machine<'p, '_> {
                 drop(args);
                 let n = Self::square(&receiver, method, span)?;
                 let mut factor = self.f64_copy(&receiver, 0, method, span)?;
-                if !blocked::cholesky(&mut factor, n) {
+                if !(kernels.cholesky)(&mut factor, n) {
                     return Ok(none());
                 }
                 let value = compact(DenseKind::Matrix, vec![n, n], Elements::F64(factor));
@@ -1446,7 +1449,7 @@ impl<'p> Machine<'p, '_> {
                 } else {
                     chains::Triangle::Upper
                 };
-                blocked::solve_triangular(&t, n, &mut x, r, triangle, unit);
+                (kernels.solve_triangular)(&t, n, &mut x, r, triangle, unit);
                 let value = compact(DenseKind::Matrix, vec![n, r], Elements::F64(x));
                 ensure_shape(&value, &[n, r], method)?;
                 Ok(value)
