@@ -333,6 +333,20 @@ pub fn make_dirs(base: &Path, relative: &[&str]) -> Result<PathBuf, Refusal> {
     Ok(path)
 }
 
+/// Opens the lock file at `path` for an advisory lock, creating it when missing: read and
+/// write, never truncated, mode 0600 when created, and with no link followed at its name
+/// (`O_NOFOLLOW`), so a link swapped in after a check is refused rather than opened.
+pub fn open_lock_file(path: &Path) -> Result<fs::File, Refusal> {
+    let flags = flags()?;
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    with_private_mode(&mut options);
+    with_flags(&mut options, flags.no_follow);
+    options
+        .open(path)
+        .map_err(|e| cannot("open, without following a link,", path, &e))
+}
+
 fn open(path: &Path, custom: i32) -> Result<fs::File, Refusal> {
     let mut options = OpenOptions::new();
     options.read(true);
@@ -342,32 +356,65 @@ fn open(path: &Path, custom: i32) -> Result<fs::File, Refusal> {
         .map_err(|e| cannot("open, without following a link,", path, &e))
 }
 
-/// Opens the regular file at `path` with no link followed, by the flags `refuse`: its
-/// descriptor, and its size. The entry must be a regular file before and after it is opened, the
-/// same one, with one link only when `single`.
-fn open_regular(
-    path: &Path,
-    flags: Flags,
-    refuse: i32,
-    single: bool,
-) -> Result<(fs::File, u64), Refusal> {
+/// What [`open_regular`] found at a path.
+enum Opened {
+    /// The regular file the path names, with one link when one was required: its descriptor and
+    /// its size.
+    File(fs::File, u64),
+    /// The entry was replaced by another between its listing and its open, or after its open
+    /// (a rename over it leaves the descriptor a file with no link): nothing was read.
+    Replaced,
+}
+
+/// Opens the regular file at `path` with no link followed, by the flags `refuse`. The entry must
+/// be a regular file before and after it is opened, the same one, and, when `single`, a file
+/// with exactly one link: a second link is refused, and a file left with none, or another entry
+/// than the one listed, is [`Opened::Replaced`].
+fn open_regular(path: &Path, flags: Flags, refuse: i32, single: bool) -> Result<Opened, Refusal> {
     let listed = fs::symlink_metadata(path).map_err(|e| cannot("read", path, &e))?;
     if !listed.file_type().is_file() {
         return Err(format!("`{}` is not a regular file", path.display()));
     }
     let handle = open(path, refuse | flags.non_block)?;
     let opened = handle.metadata().map_err(|e| cannot("read", path, &e))?;
-    if !opened.is_file() || identity(&opened) != identity(&listed) {
+    if !opened.is_file() {
         return Err(format!("`{}` changed while it was opened", path.display()));
     }
-    if single && links(&opened) != 1 {
-        return Err(format!(
-            "`{}` has more than one hard link, which a package may not hold",
-            path.display()
-        ));
+    if identity(&opened) != identity(&listed) {
+        return Ok(Opened::Replaced);
     }
-    Ok((handle, opened.len()))
+    if single {
+        let count = links(&opened);
+        if count > 1 {
+            return Err(format!(
+                "`{}` has more than one hard link, which a package may not hold",
+                path.display()
+            ));
+        }
+        if count != 1 {
+            return Ok(Opened::Replaced);
+        }
+    }
+    Ok(Opened::File(handle, opened.len()))
 }
+
+/// [`open_regular`], for an entry that is never replaced while it is read: a replacement is a
+/// refusal.
+fn open_stable(
+    path: &Path,
+    flags: Flags,
+    refuse: i32,
+    single: bool,
+) -> Result<(fs::File, u64), Refusal> {
+    match open_regular(path, flags, refuse, single)? {
+        Opened::File(handle, size) => Ok((handle, size)),
+        Opened::Replaced => Err(format!("`{}` changed while it was opened", path.display())),
+    }
+}
+
+/// How many times [`read_file`] opens again a document that a rename replaced while it was
+/// opened, before it refuses it.
+const REPLACED_TRIES: usize = 8;
 
 /// Reads `size` bytes through `handle`, refusing a file that is not that size when read.
 fn read_exactly(handle: &fs::File, size: u64, path: &Path) -> Result<Vec<u8>, Refusal> {
@@ -392,7 +439,25 @@ fn read_exactly(handle: &fs::File, size: u64, path: &Path) -> Result<Vec<u8>, Re
 /// provenance; a package's files are read with [`list`] and [`Listing::verify`] only.
 pub fn read_file(path: &Path, limit: u64) -> Result<Vec<u8>, Refusal> {
     let flags = flags()?;
-    let (handle, size) = open_regular(path, flags, flags.no_link(), true)?;
+    // A document stored by a rename over it, as a floor is under its lock while this read takes
+    // none, may be replaced between the listing, the open and the check of its links. It is
+    // opened again, a few times; the bytes read are always those of a file with one link that
+    // the path named when it was opened.
+    let mut tries = 0;
+    let (handle, size) = loop {
+        match open_regular(path, flags, flags.no_link(), true)? {
+            Opened::File(handle, size) => break (handle, size),
+            Opened::Replaced => {
+                tries += 1;
+                if tries >= REPLACED_TRIES {
+                    return Err(format!(
+                        "`{}` was replaced each time it was opened",
+                        path.display()
+                    ));
+                }
+            }
+        }
+    };
     if size > limit {
         return Err(format!(
             "`{}` holds more than {limit} bytes",
@@ -410,7 +475,7 @@ pub fn read_unlinked(path: &Path) -> Result<Vec<u8>, Refusal> {
     let flags = flags()?;
     // The path dependency's directory may lie below a link the user chose, such as macOS's
     // `/tmp`, so only the last component is refused here; the caller walked the rest.
-    let (handle, size) = open_regular(path, flags, flags.no_follow, false)?;
+    let (handle, size) = open_stable(path, flags, flags.no_follow, false)?;
     if size > MAX_BYTES {
         return Err(format!(
             "`{}` holds more than {MAX_BYTES} bytes",
@@ -534,7 +599,7 @@ impl Listing {
         let refuse = self.flags.no_link();
         let mut files = Vec::with_capacity(self.files.len());
         for listed in self.files {
-            let (handle, size) = open_regular(&listed.disk, self.flags, refuse, true)?;
+            let (handle, size) = open_stable(&listed.disk, self.flags, refuse, true)?;
             let now = handle
                 .metadata()
                 .map_err(|e| cannot("read", &listed.disk, &e))?;

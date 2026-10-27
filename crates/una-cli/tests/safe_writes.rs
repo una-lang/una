@@ -30,7 +30,7 @@ const RAW_WRITES: [&str; 10] = [
 const CRATES: [&str; 4] = ["una-cli", "una-verify", "una-codegen", "una-project"];
 
 /// The raw writes that remain, by file and call, with how many there are and why each is safe.
-const ALLOWED: [(&str, &str, usize, &str); 12] = [
+const ALLOWED: [(&str, &str, usize, &str); 13] = [
     (
         "crates/una-cli/src/build.rs",
         "create_dir_all(",
@@ -70,10 +70,19 @@ const ALLOWED: [(&str, &str, usize, &str); 12] = [
     (
         "crates/una-project/src/tree.rs",
         "OpenOptions::new(",
-        2,
+        3,
         "the package store of `una ita` (ADR 0122 rules 14 and 30), under Itaoca or the vendor \
-         directory: a package file opened for reading with `O_NOFOLLOW`, and a file \
-         created in the fresh private directory with `create_new` and `O_NOFOLLOW`, mode 0600",
+         directory: a package file opened for reading with `O_NOFOLLOW`, a file created in \
+         the fresh private directory with `create_new` and `O_NOFOLLOW`, mode 0600, and the \
+         floor lock of a registry in Itaoca (rule 39), opened with `O_NOFOLLOW`",
+    ),
+    (
+        "crates/una-project/src/tree.rs",
+        ".create(true)",
+        1,
+        "the floor lock of a registry in Itaoca (rule 39), outside any package: an empty file \
+         for an advisory lock, never truncated or written, mode 0600, opened with `O_NOFOLLOW` \
+         so a link at its name is refused",
     ),
     (
         "crates/una-project/src/tree.rs",

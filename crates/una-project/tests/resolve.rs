@@ -680,8 +680,9 @@ fn the_offline_index_resolves_local_packages_and_refuses_unheld_sources() {
     let registry = [need("json", "2.1")];
     assert_eq!(
         resolve(&registry, &offline, &policy(), Bounds::default()),
-        Err(Problem::Index(
-            "the per-name state of `itaty` is not held".to_owned()
-        ))
+        Err(Problem::Index {
+            source: Some("itaty".to_owned()),
+            why: "the per-name state of `itaty` is not held".to_owned(),
+        })
     );
 }

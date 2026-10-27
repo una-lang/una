@@ -1,8 +1,8 @@
 ---
 construct: "una ita"
 editions: ["0.4"]
-spec: ["spec/30 §6", "spec/30 §10", "spec/30 §12"]
-codes: [U7013]
+spec: ["spec/30 §6", "spec/30 §10", "spec/30 §12", "spec/30 §14"]
+codes: [U7013, U7014]
 ---
 
 # `una ita`
@@ -70,8 +70,8 @@ pub greet() -> Text = shout("hello")
 ## Forms
 
 ```text
-una ita lock [path] [--check] [--dry-run] [--accept-authority <package>]... [--accept-trust <package>@<digest>]...
-una ita update [<name>...] [--cooldown <hours>] [--now] [--dry-run] [--accept-authority <package>]... [--accept-trust <package>@<digest>]...
+una ita lock [path] [--check [--fresh]] [--dry-run] [--accept-authority <package>]... [--accept-trust <package>@<digest>]... [--accept-key <package>]...
+una ita update [<name>...] [--cooldown <hours>] [--now] [--dry-run] [--accept-authority <package>]... [--accept-trust <package>@<digest>]... [--accept-key <package>]...
 una ita add <name> [<version>] [--as <local>] [--from <source>] [--now] [--dry-run]
 una ita remove <name> [path]
 una ita tree [path]
@@ -79,7 +79,7 @@ una ita vendor [path]
 una ita verify [path]
 ```
 
-- **`lock`** resolves the package by minimal version selection and writes `ita.lock`: the solver section, kept from the lock it replaces, and each path dependency with its version, directory, digest, ceiling and consents. `--check` writes nothing and reports where the lock is not the one it would write (U7009).
+- **`lock`** resolves the package by minimal version selection and writes `ita.lock`: the solver section, kept from the lock it replaces, and each path dependency with its version, directory, digest, ceiling and consents. `--check` writes nothing and reports where the lock is not the one it would write (U7009), and fails on a registry package whose owner's chain froze since the lock (U7010), as far as the newest checkpoint a place serves shows, which a note states; `--check --fresh` requires that checkpoint to be less than 24 hours old, and fails without one (U7013). CI runs `--check --fresh` (see [the lock](lock.md#in-ci)).
 - **`update`** raises the named needs, or all, and writes the lock; a need it is not asked to raise keeps what the lock records. A path dependency is always locked as its directory holds it, so `update` locks it again. `--cooldown` and `--now` set how long a release must have been logged before it is taken: 72 hours by default.
 - **`add`** adds a need to `ita.una` and locks; both files are written only when the resolution succeeds, the lock first, put back if `ita.una` cannot be written. It writes no `may` and no `trust` line.
 - **`remove`** takes a need out of `ita.una`, then writes the lock.
@@ -113,14 +113,17 @@ change util 0.2.0 -> 0.3.0 (path deps/util): digest sha256:… -> sha256:…; ma
 
 - **Usage errors.** A directory without `ita.una`, a name `update` or `remove` is given that the package does not need, and a word `add` would write that is not a name or a version, are usage errors, exit code 2.
 - **Errors.** A command whose output holds an error diagnostic exits with code 1, and writes nothing. A file that cannot be written is exit code 1 too, with a message.
-- **Registry needs.** This release holds no registry's per-name state, which says what releases exist and which are yanked or under an advisory. So `lock`, `update` and `add` refuse a registry need with U7013 rather than resolve it from a partial view, and `add` writes nothing in this release.
-- **No network.** No command of this release opens a connection: `fetch`, `audit` and `publish` come with the registry client.
+- **Registry needs.** `lock`, `update`, `add` and `fetch` read a source of `sources` from the first of its places whose copy verifies: the mirrors listed for it in Itaoca's `mirrors.una`, then its own URL. They verify everything they read, from the root its `sources` entry pins to each release's signature and its owner's keys, and skip a mirror that serves a bad copy, naming it (U7010). This release has no https transport, so a source needs a mirror directory, listed as a `file://` URL; with none it is U7013. A `http://` location is refused: plain HTTP is never used. A need of `itaty`, whose root is not built into this release, is U7013.
+- **Keys.** A change of a locked package's owner's keys, a key added or revoked, or a recovery or a co-signer change that took effect, is U7014 until `--accept-key <package>` records it, and so is a recovery, a dispute or a co-signer change pending at the resolution point.
+- **Owners' keys.** An owner of packages should use a threshold above one, or designate recovery co-signers: with one key and no co-signers, a single stolen key can harm the owner's packages until a recovery or a dispute takes effect and the owner logs its claim on the stolen key (`spec/30 §14` rule 5). A change of co-signers waits seven days, as a recovery does, and any current key of the owner cancels it meanwhile, so co-signers are designated before they are needed; a thief's designation cannot block a dispute, which stays available while it waits. Two disputes, or a dispute and a recovery, waiting at once on one owner's chain mean that its account was taken over: the chain freezes, its names are no longer resolved (U7010), and the owner registers anew under a new owner name. A claim that a key was compromised since an earlier position is signed with the owner's other keys, its co-signers, or the key of its recovery or dispute, and never with the key it names: one that needs the claimed key's own signature counts only from its own position, since a thief holding the key could sign it too. An owner responds to a pending change it did not make within seven days: after that, a thief holding only one of its keys can take its names.
+- **No network.** No command of this release opens a network connection. `fetch` fills Itaoca with the locked releases from the mirror, verified; `audit` and `publish` come later.
 
 ## Diagnostics
 
 The commands report the diagnostics of the files they read: see [`ita.una`](manifest.md), [`ita.lock`](lock.md) and [path dependencies](path-dependencies.md). Resolution adds one:
 
-- [U7013](../../../../crates/una-explain/explain/U7013.md): no resolution: a need no release meets, an avoided version with no later release, a bound exceeded, or a registry need this release cannot resolve offline.
+- [U7013](../../../../crates/una-explain/explain/U7013.md): no resolution: a need no release meets, an avoided version with no later release, a bound exceeded, a source with no mirror, or a need of `itaty`.
+- [U7014](../../../../crates/una-explain/explain/U7014.md): the keys of a locked package's owner changed, until `--accept-key` records it.
 
 ## Edition
 
@@ -128,4 +131,4 @@ Edition `0.4` only, a preview.
 
 ## Normative source
 
-- `spec/30 §6`: commands; `spec/30 §10`: resolution, the review, `update`, `add` and `verify`; `spec/30 §12`: path dependencies and the lock.
+- `spec/30 §6`: commands; `spec/30 §10`: resolution, the review, `update`, `add` and `verify`; `spec/30 §12`: path dependencies and the lock; `spec/30 §14`: the registry client and owners' keys.

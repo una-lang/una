@@ -26,6 +26,10 @@
 #                timing_channels -- --ignored --test-threads=1 --nocapture`, the real-clock tests that a timing
 #                channel stays closed, which the ordinary test run ignores; it runs right after
 #                `native`, with no Docker gate running, so the machine is as quiet as the run gets
+#   owner-replay the exhaustive model of the replay of an owner's chain (spec/30 §14 rule 5):
+#                `cargo test --release --locked -p una-project --lib -- --ignored --exact
+#                tlog::owner::model::owner_replay_holds_its_contract_to_depth_five --nocapture`,
+#                every chain of the model to depth 5, which the ordinary test run checks to depth 3
 #   sanitize     scripts/sanitize.sh (#766): Miri on the unit tests of una-rt, and the native
 #                equivalence test against una-rt built with AddressSanitizer, with the checking
 #                toolchain of scripts/check-toolchain.toml; macOS only for now
@@ -69,7 +73,7 @@
 # Usage: scripts/release-gates.sh SHA OUT [GATE...]
 set -u
 
-ALL=(clone build deps mac linux linux-arm64 release reproducible determinism native timing-channels sanitize site formal hunt hunt-linux-arm64)
+ALL=(clone build deps mac linux linux-arm64 release reproducible determinism native timing-channels owner-replay sanitize site formal hunt hunt-linux-arm64)
 
 usage() {
     echo "usage: scripts/release-gates.sh SHA OUT [GATE...]; SHA is a full 40-digit commit, GATE is one of: ${ALL[*]}" >&2
@@ -362,6 +366,15 @@ gate_timing-channels() {
     # ignored in the ordinary run and runs only here and in the step of the same name of
     # scripts/local-ci.sh, one at a time, on the real clock of a native host.
     run timing-channels cargo test --release --locked -p una-cli --test timing_channels -- --ignored --test-threads=1 --nocapture
+}
+
+gate_owner-replay() {
+    # The exhaustive model of the replay of an owner's chain (spec/30 §14 rule 5): ignored in
+    # the ordinary run, which checks it to depth 3, and run here to depth 5. It is a unit test of
+    # una-project, since the model of signatures it stands in for Ed25519 exists only in that
+    # crate's test build; `--release`, for its millions of replays; `--nocapture`, so the log
+    # holds its counts.
+    run owner-replay cargo test --release --locked -p una-project --lib -- --ignored --exact tlog::owner::model::owner_replay_holds_its_contract_to_depth_five --nocapture
 }
 
 # #766: Miri on the runtime's unit tests, and the native equivalence test against the runtime

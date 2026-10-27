@@ -1,0 +1,15 @@
+ita-root/1
+source acme
+version 1
+expires 4000000000
+root 1
+key root.a 47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=
+log acme.example/log 47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFE=
+witnesses 1
+key witness.a 47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFI=
+security 1
+key security.a 47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFM=
+itauna 1
+key itauna.a 47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFQ=
+
+— root.a AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=

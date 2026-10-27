@@ -17,6 +17,7 @@ mod migrate;
 mod package;
 mod proof_key;
 mod recovery;
+mod registry;
 mod report;
 mod runtime;
 mod std_builtins;
@@ -687,6 +688,15 @@ pub(crate) fn itaoca(environment: Environment<'_>) -> Option<una_project::itaoca
     una_project::itaoca::Itaoca::at(dir.as_deref(), home.as_deref().map(Path::new))
 }
 
+/// The local clock, in seconds since the Unix epoch, which only the freshness of a registry's
+/// checkpoint reads (ADR 0122 rules 36.4 and 39); 0 when the clock is before the epoch, which
+/// makes every checkpoint look ahead of it, so resolution stops with a clock skew.
+pub(crate) fn local_clock() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs())
+}
+
 /// The heap of the process, as the binary counts it (ADR 0061): the bytes it holds, and how to
 /// set the ceiling past which an allocation fails. The library never touches the allocator.
 #[derive(Clone, Copy)]
@@ -1068,18 +1078,33 @@ fn run_command(
                     stdout,
                     stderr,
                 };
+                let store = itaoca(environment);
+                let clock = local_clock();
                 match command {
                     ItaCommand::Tree { path } => ita::tree_command(&path, output),
                     ItaCommand::Remove { name, path } => ita::remove_command(&name, &path, output),
                     ItaCommand::Lock {
                         path,
                         check,
+                        fresh,
                         accept_authority,
                         accept_trust,
+                        accept_key,
                         dry_run,
                     } => ita::lock_command(
                         &path,
-                        ita::LockOptions::lock(check, dry_run, &accept_authority, &accept_trust),
+                        ita::LockOptions {
+                            fresh,
+                            accept_key: &accept_key,
+                            itaoca: store.as_ref(),
+                            now: clock,
+                            ..ita::LockOptions::lock(
+                                check,
+                                dry_run,
+                                &accept_authority,
+                                &accept_trust,
+                            )
+                        },
                         output,
                     ),
                     ItaCommand::Update {
@@ -1088,6 +1113,7 @@ fn run_command(
                         now,
                         accept_authority,
                         accept_trust,
+                        accept_key,
                         dry_run,
                     } => {
                         let options = ita::LockOptions {
@@ -1099,6 +1125,9 @@ fn run_command(
                                     hours.saturating_mul(3600)
                                 })
                             },
+                            accept_key: &accept_key,
+                            itaoca: store.as_ref(),
+                            now: clock,
                             ..ita::LockOptions::lock(
                                 false,
                                 dry_run,
@@ -1123,6 +1152,8 @@ fn run_command(
                             } else {
                                 una_project::resolve::COOLDOWN
                             },
+                            itaoca: store.as_ref(),
+                            now: clock,
                             ..ita::LockOptions::lock(false, dry_run, &[], &[])
                         };
                         ita::add_command(
@@ -1135,11 +1166,12 @@ fn run_command(
                             output,
                         )
                     }
+                    ItaCommand::Fetch { path } => ita::fetch_command(&path, store.as_ref(), output),
                     ItaCommand::Vendor { path } => {
-                        ita::vendor_command(&path, itaoca(environment).as_ref(), output)
+                        ita::vendor_command(&path, store.as_ref(), output)
                     }
                     ItaCommand::Verify { path } => {
-                        ita::verify_command(&path, itaoca(environment).as_ref(), output)
+                        ita::verify_command(&path, store.as_ref(), output)
                     }
                 }
             }

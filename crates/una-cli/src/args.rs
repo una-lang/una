@@ -315,6 +315,11 @@ pub(crate) enum ItaCommand {
         #[arg(long)]
         check: bool,
 
+        /// With --check: also read a checkpoint less than 24 hours old from a place or a
+        /// mirror, and fail on a package whose owner's chain froze since the lock was written
+        #[arg(long, requires = "check")]
+        fresh: bool,
+
         /// Record the ceiling of this package wider than the one the lock records: an
         /// authority change; repeat it for each package
         #[arg(long, value_name = "PACKAGE")]
@@ -324,6 +329,11 @@ pub(crate) enum ItaCommand {
         /// digest, which the review prints; repeat it for each package
         #[arg(long, value_name = "PACKAGE@DIGEST")]
         accept_trust: Vec<String>,
+
+        /// Record a change of the keys of this package's owner: a key added or revoked, a
+        /// threshold, a recovery or a dispute, or another signing key
+        #[arg(long, value_name = "PACKAGE")]
+        accept_key: Vec<String>,
 
         /// Print the review of the changes, and write nothing
         #[arg(long)]
@@ -353,6 +363,11 @@ pub(crate) enum ItaCommand {
         #[arg(long, value_name = "PACKAGE@DIGEST")]
         accept_trust: Vec<String>,
 
+        /// Record a change of the keys of this package's owner: a key added or revoked, a
+        /// threshold, a recovery or a dispute, or another signing key
+        #[arg(long, value_name = "PACKAGE")]
+        accept_key: Vec<String>,
+
         /// Print the review of the changes, and write nothing
         #[arg(long)]
         dry_run: bool,
@@ -380,6 +395,12 @@ pub(crate) enum ItaCommand {
         /// Print the review of the changes, and write nothing
         #[arg(long)]
         dry_run: bool,
+    },
+    /// Fetch each locked registry package into Itaoca, verified, with its provenance
+    Fetch {
+        /// The package directory
+        #[arg(default_value = ".")]
+        path: PathBuf,
     },
     /// Copy each locked registry package from Itaoca into vendor/ita/, with its provenance
     Vendor {

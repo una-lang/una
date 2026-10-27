@@ -7,7 +7,13 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+// The test registry of `tests/support/registry.rs` names this crate `una_project`; the owner
+// model's unit tests render chains with it.
+#[cfg(test)]
+extern crate self as una_project;
+
 pub mod authority;
+pub mod client;
 pub mod content;
 mod document;
 pub mod ita;
@@ -16,11 +22,13 @@ pub mod literal;
 mod lock;
 mod manifest;
 pub mod migrate;
+pub mod mirrors;
 pub mod names;
 mod package;
 pub mod provenance;
 pub mod resolve;
 pub mod tlog;
+pub mod transport;
 pub mod tree;
 pub mod vendor;
 pub mod version;

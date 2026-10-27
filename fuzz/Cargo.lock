@@ -645,6 +645,7 @@ dependencies = [
 name = "una-rt-fuzz"
 version = "0.0.0"
 dependencies = [
+ "ed25519-dalek",
  "libfuzzer-sys",
  "num-bigint",
  "una-core",
