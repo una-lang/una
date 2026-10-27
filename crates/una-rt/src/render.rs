@@ -34,6 +34,9 @@ pub enum Shape {
     List(usize),
     /// `Map` of the key and value types at these indices (`spec/21 §2` rule 4).
     Map(usize, usize),
+    /// `Array`, `Matrix`, `Tensor` or `Lu` of the element type at this index (`spec/29 §17`):
+    /// the value says which, and its shape.
+    Dense(usize),
     /// A kind, by its variants in declaration order.
     Data(Vec<Variant>),
     /// The type parameter at this position of a composite descriptor, which says how to write
@@ -222,6 +225,44 @@ fn render(types: &[Shape], ty: usize, word: i64, redact: bool, params: &[i64]) -
                 }
                 parts.push(Task::Text("}".to_owned()));
             }
+            // An `Lu[T]` renders as `<lu size n>`, which is not source, as `<hashed>` is not
+            // (ADR 0120 rule 38); any other dense value as the construction call that rebuilds
+            // it, its elements in row-major order (rule 41), as the interpreter renders it.
+            Some(Shape::Dense(element)) => {
+                let Some(dense) = values::dense::parts(word) else {
+                    out.push('?');
+                    continue;
+                };
+                let layout = dense.layout;
+                let shape = layout.shape.as_slice();
+                match (layout.kind, shape) {
+                    (values::dense::DenseKind::Lu, _) => {
+                        let size = shape.get(1).copied().unwrap_or(0);
+                        out.push_str(&format!("<lu size {size}>"));
+                        continue;
+                    }
+                    (values::dense::DenseKind::Matrix, [rows, columns]) => out.push_str(&format!(
+                        "matrix(rows: {rows}, columns: {columns}, elements: ["
+                    )),
+                    (values::dense::DenseKind::Tensor, shape) => {
+                        let lengths: Vec<String> = shape.iter().map(ToString::to_string).collect();
+                        out.push_str(&format!("tensor(shape: [{}], elements: [", lengths.join(", ")));
+                    }
+                    _ => out.push_str("array(["),
+                }
+                for (index, item) in dense.elements.into_iter().enumerate() {
+                    if index > 0 {
+                        parts.push(Task::Text(", ".to_owned()));
+                    }
+                    parts.push(match item {
+                        values::dense::Element::Raw(x) => Task::Text(una_core::float::render(x)),
+                        values::dense::Element::Word(item) => {
+                            Task::Value(*element, item, std::rc::Rc::clone(&params))
+                        }
+                    });
+                }
+                parts.push(Task::Text("])".to_owned()));
+            }
             Some(Shape::Data(variants)) => {
                 let variant = usize::try_from(values::tag(word))
                     .ok()
@@ -312,6 +353,7 @@ fn shape(value: &Value) -> Option<Shape> {
         "fn" => Shape::Fn,
         "list" => Shape::List(index(value, "item")?),
         "map" => Shape::Map(index(value, "key")?, index(value, "value")?),
+        "dense" => Shape::Dense(index(value, "element")?),
         "param" => Shape::Param(index(value, "index")?),
         "data" => Shape::Data(
             value
