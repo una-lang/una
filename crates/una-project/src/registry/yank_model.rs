@@ -13,6 +13,9 @@
 //! - a yank by the owner, signed by its keys valid at `p` that the thief does not hold, as the
 //!   chain stood when the yank was logged, and without `A` after an over-cautious claim.
 //!
+//! When a yank was logged, the registry replayed the entries before `p` at the witness time of
+//! `p`: a request whose seven days that time reached is in effect there (`as_logged`).
+//!
 //! **The invariants.** (1) No yank stands that needs a key compromised before its position: no
 //! subset of the thief's keys yanks alone, and none adds what the owner's keys lack, at any
 //! position. As for releases, a chain taken over with the account and frozen while the owner
@@ -23,7 +26,8 @@
 //! thief's yank that ends void is reported by `una ita audit` ([`audit::void_yanks`],
 //! [`audit::findings`]) as a void yank at its position.
 //!
-//! Costs: per final chain of length `L`, O(L x 2^3) judgments, each O(S) for its S signatures.
+//! Costs: per final chain of length `L`, O(L x 2^3) judgments, each O(S) for its S signatures,
+//! and L replays of its prefixes as logged.
 
 #![allow(
     clippy::indexing_slicing,
@@ -36,10 +40,10 @@
 
 use crate::client::{Marks, YankStanding, apply_yank};
 use crate::registry::audit::{self, Facts, Kind};
-use crate::tlog::owner::History;
 use crate::tlog::owner::model::{
-    Act, Final, K, Keys, OWNER, Options, THIEF, explore, registrations,
+    Act, Final, K, Keys, OWNER, Options, Step, THIEF, build, explore, registrations, run,
 };
+use crate::tlog::owner::{History, ReplayError};
 use crate::version::Version;
 
 /// The counts of a run of the yank extension, each path it took.
@@ -86,6 +90,27 @@ fn yank(keys: &Keys, history: &History, signers: &[K], position: u64) -> (YankSt
     let mut marks = Marks::default();
     let standing = apply_yank(&mut marks, history, &note, position, &version());
     (standing, marks)
+}
+
+/// The owner's history as a registry replays it when it logs a yank at `position`: the chain's
+/// entries before it, at the witness time of that position. The model's step there waits
+/// before it, so a request whose seven days that wait ends is in effect from `position`, as the
+/// final history has it; the trail, built from the entries alone, has no such wait. O(L) for
+/// the L entries before `position`, as one replay.
+fn as_logged(keys: &Keys, chain: &[Step], position: usize) -> Result<History, ReplayError> {
+    let through = chain.len().min(position + 1);
+    let mut built = build(keys, &chain[..through], false, false, false);
+    built.notes.truncate(position);
+    built.entries.truncate(position);
+    built.effects.truncate(position);
+    // The effects the registry knows when it logs at `position`: those of the checkpoints up
+    // to that size, never one that only the entry logged there could reach.
+    for effect in &mut built.effects {
+        if effect.is_some_and(|at| at > position as u64) {
+            *effect = None;
+        }
+    }
+    run(keys, &built)
 }
 
 /// The yank invariants on one final chain: the failures found.
@@ -148,7 +173,16 @@ fn check(end: &Final<'_>, counts: &mut Counts) -> Vec<String> {
         }
     }
     for p in 1..=logged as u64 {
-        let then = &end.trail[p as usize - 1];
+        let view = match as_logged(keys, end.chain, p as usize) {
+            Ok(history) => history,
+            Err(why) => {
+                found.push(format!(
+                    "the chain before {p} does not replay as a registry logs at {p}: {why}"
+                ));
+                continue;
+            }
+        };
+        let then = &view;
         // (3) and (4): the thief's yanks a registry would log.
         if !frozen {
             for set in subsets(&bad_at(p)) {

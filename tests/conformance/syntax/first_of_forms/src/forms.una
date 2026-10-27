@@ -1,0 +1,46 @@
+-- test: `first of` races its branches as the value of a `let`, of an assignment and as the last line of a block, with handling clauses on its branches; elsewhere `first` and `of` are names, and the prelude's `first` stays a method (spec/27 §6, ADR 0117 rule 6)
+-- spec: spec/27 §6
+-- expect: ok
+module forms
+
+pub kind FetchError = | Unreachable
+
+primary(n: Int) -> Int = n + 1
+
+replica(n: Int) -> Int = n + 2
+
+guarded(n: Int) -> Int
+  fails FetchError
+=
+  if n < 0 then fail Unreachable else n
+
+pub quote(n: Int) -> Int
+=
+  let price = first of
+    primary(n)
+    replica(n)
+  price
+
+pub assigned(n: Int) -> Int
+=
+  let edit total = 0
+  total = first of
+    primary(n)
+    replica(n)
+  total
+
+pub last(n: Int) -> Int
+  fails FetchError
+=
+  first of
+    guarded(n)
+      if error pass
+    guarded(n + 1)
+      if error use 0
+
+pub named(xs: List[Int]) -> Int
+=
+  let of = 2
+  let head = xs.first()
+    if none use 0
+  head + of

@@ -16,6 +16,8 @@ pub enum Descriptor {
     Text,
     /// `F64`: equality by its bits, and IEEE totalOrder (ADR 0114 rule 9.4).
     F64,
+    /// `F32`: equality by its bits, and IEEE totalOrder (ADR 0120 rule 10).
+    F32,
     /// A sum whose variants have no payload, by the position of the variant, with the index of
     /// its type description, which interpolation writes it by (ADR 0068).
     Sum(usize),
@@ -46,6 +48,7 @@ impl Descriptor {
             Descriptor::Int => 0,
             Descriptor::Text => 1,
             Descriptor::F64 => 6,
+            Descriptor::F32 => 7,
             Descriptor::Sum(ty) => 2 | index(ty),
             Descriptor::Structural(ty) => 3 | index(ty),
             Descriptor::Composite(entry) => 4 | index(entry),
@@ -77,6 +80,7 @@ impl Descriptor {
             4 => Some(Descriptor::Composite(ty)),
             5 => Some(Descriptor::Decimal(ty)),
             6 if ty == 0 => Some(Descriptor::F64),
+            7 if ty == 0 => Some(Descriptor::F32),
             code if ty == 0 => usize::try_from(code - FIXED)
                 .ok()
                 .and_then(|i| IntType::ALL.get(i).copied())
@@ -96,6 +100,7 @@ mod tests {
             Descriptor::Int,
             Descriptor::Text,
             Descriptor::F64,
+            Descriptor::F32,
             Descriptor::Sum(0),
             Descriptor::Sum(41),
             Descriptor::Structural(0),
@@ -114,6 +119,11 @@ mod tests {
             assert_eq!(Descriptor::from_word(word), Some(descriptor));
         }
         assert_eq!(Descriptor::from_word(2), None);
-        assert_eq!(Descriptor::from_word((7 << 1) | 1), None);
+        // Every code below the fixed-width ones is taken; a type index on a code that takes none
+        // is no descriptor.
+        assert_eq!(
+            Descriptor::from_word((((1 << CODE_BITS) | 6) << 1) | 1),
+            None
+        );
     }
 }

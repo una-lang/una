@@ -17,6 +17,10 @@ use super::ty::{CapId, FnUse, Ty};
 use super::{Findings, Report};
 use crate::names::RunInput;
 
+/// The message of U3029 for a `start` whose expression can fail (`spec/27 §7`, ADR 0117 rule
+/// 7), with `{what}` for what fails.
+pub(crate) const START_FAILS: &str = "{what}, and a started task must not fail, since no code receives its failure; handle it with `if error use`, or wrap the call in `attempt`";
+
 /// Which pass of the checker runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Pass {
@@ -301,7 +305,7 @@ impl<'a> Checker<'_, 'a, '_> {
     }
 
     /// Whether diagnostics of this milestone are reported here.
-    fn authority(&self) -> bool {
+    pub(crate) fn authority(&self) -> bool {
         self.pass == Pass::Check && self.base != Base::Quiet
     }
 
@@ -958,6 +962,19 @@ impl<'a> Checker<'_, 'a, '_> {
     /// `if error pass` (`spec/06 §3`): the failure passes on unchanged, so its kind must be the
     /// body's (U3008). In pass 1, it is a failure of a body whose `fails` is inferred.
     pub(crate) fn pass_clause(&mut self, span: Span, expr: &Expr) {
+        if self.in_on_stop && self.authority() {
+            self.report.error(
+                Code::U3029,
+                span,
+                "`if error pass` passes the failure on, and `on stop` must not fail; handle it with `if error use`".to_owned(),
+            );
+        } else if self.in_start && self.authority() {
+            self.report.error(
+                Code::U3029,
+                span,
+                START_FAILS.replace("{what}", "`if error pass` passes the failure on"),
+            );
+        }
         let mut inner = expr;
         while let ExprKind::Paren(next) = &inner.kind {
             inner = next;
@@ -1098,6 +1115,22 @@ impl<'a> Checker<'_, 'a, '_> {
     /// U3009 (`spec/06 §2`): a variant raised outside the error kind of the body, or in a body
     /// that cannot fail. `kind` is the variant's kind, when it was found.
     pub(crate) fn fail_site(&mut self, variant: &Ident, kind: Option<usize>) {
+        if self.in_on_stop && self.authority() {
+            self.report.error(
+                Code::U3029,
+                variant.span,
+                "`on stop` must not fail, since it runs once its loop has ended".to_owned(),
+            );
+            return;
+        }
+        if self.in_start && self.authority() {
+            self.report.error(
+                Code::U3029,
+                variant.span,
+                START_FAILS.replace("{what}", "this clause fails"),
+            );
+            return;
+        }
         if let Some(kind) = kind {
             self.raised_fact(
                 Raised::Kind(Ty::Kind(kind, Vec::new().into())),
@@ -1222,6 +1255,26 @@ impl<'a> Checker<'_, 'a, '_> {
             );
             return;
         }
+        // ADR 0117 rule 7: a started task handles every failure where it is.
+        if fails.is_some() && !handled && self.in_start {
+            self.report.error(
+                Code::U3029,
+                span,
+                START_FAILS.replace("{what}", &format!("{what} can fail")),
+            );
+            return;
+        }
+        // ADR 0116 rule 10: an `on stop` block handles every failure where it is.
+        if fails.is_some() && !handled && self.in_on_stop {
+            self.report.error(
+                Code::U3029,
+                span,
+                format!(
+                    "{what} can fail, and `on stop` must not fail, since it runs once its loop has ended; handle the failure with `if error use`, or wrap the call in `attempt`"
+                ),
+            );
+            return;
+        }
         if let Some(kind) = fails
             && !handled
         {
@@ -1261,12 +1314,15 @@ pub(crate) fn duplicate_refs(report: &mut Report<'_>, names: &[(&str, Span)]) {
 
 /// Whether a new `uses` clause goes before a clause of this kind (`spec/02 §3`).
 fn before_uses(kind: &ClauseKind) -> bool {
-    matches!(kind, ClauseKind::Fails(_) | ClauseKind::DerivedFrom(_))
+    matches!(
+        kind,
+        ClauseKind::Fails(_) | ClauseKind::Diverges | ClauseKind::DerivedFrom(_)
+    )
 }
 
 /// Whether a new `fails` clause goes before a clause of this kind (`spec/02 §3`).
 fn before_fails(kind: &ClauseKind) -> bool {
-    matches!(kind, ClauseKind::DerivedFrom(_))
+    matches!(kind, ClauseKind::Diverges | ClauseKind::DerivedFrom(_))
 }
 
 /// Infers the `uses` and `fails` of private functions that omit them, as least fixed points
@@ -1906,11 +1962,14 @@ fn granted(grants: &[String]) -> BTreeMap<&'static str, BTreeSet<&'static str>> 
             "clock" => ("Clock", vec!["now"]),
             "env" => ("Env", vec!["get"]),
             _ if grant.starts_with("keys:") => ("Keys", vec!["hmac"]),
-            // An `http:` grant gives the operations of its methods (`spec/24 §2`).
-            _ if grant.starts_with("http:") => match una_core::http::Grant::parse(grant) {
-                Some(http) => ("Http", http.methods().iter().map(|m| m.op()).collect()),
-                None => continue,
-            },
+            // An `http:` grant gives the operations of its methods (`spec/24 §2`), with or
+            // without limits (`spec/27 §9`).
+            _ if grant.starts_with("http:") => {
+                match una_core::http::Grant::parse_limited(grant).and_then(Result::ok) {
+                    Some(http) => ("Http", http.methods().iter().map(|m| m.op()).collect()),
+                    None => continue,
+                }
+            }
             _ => match grant
                 .strip_prefix("files:")
                 .and_then(|rest| rest.rsplit_once(':'))
@@ -2052,7 +2111,7 @@ fn function_grants(
 
 /// U3029: `step` and `on_stop` of a `[drive]` module handle every failure they meet, since the
 /// host has no caller to give a failure to (ADR 0116 rule 2); `init` may fail. Reported at the
-/// `fails` clause.
+/// `fails` clause. And U3027: none of them says `diverges` (rule 8).
 pub(crate) fn drive_failures(env: &Env<'_>, settings: &Manifest, report: &mut Report<'_>) {
     let Some(drive) = &settings.drive else {
         return;
@@ -2095,6 +2154,31 @@ pub(crate) fn drive_failures(env: &Env<'_>, settings: &Manifest, report: &mut Re
             }
         }
     }
+    // ADR 0116 rule 8: none of the driven functions may say `diverges` (U3027).
+    for name in ["init", "step", "on_stop"] {
+        let Some(Entity::Function(id)) = env
+            .modules
+            .get(module)
+            .and_then(|m| m.lower.get(name).copied())
+        else {
+            continue;
+        };
+        let Some(super::env::FnAst::Function(decl)) = env.functions.get(id).map(|f| f.ast) else {
+            continue;
+        };
+        for clause in &decl.clauses {
+            if matches!(clause.kind, una_syntax::ast::ClauseKind::Diverges) {
+                report.error(
+                    Code::U3027,
+                    clause.span,
+                    format!(
+                        "`{name}` of the driven module `{}` says `diverges`, but the host's loop is the only one that runs forever: each call of `{name}` must end",
+                        drive.module.value
+                    ),
+                );
+            }
+        }
+    }
 }
 
 /// U4001 at the `input` parameter of `step` of a `[drive]` module whose label is not at least
@@ -2108,13 +2192,16 @@ pub(crate) fn drive_failures(env: &Env<'_>, settings: &Manifest, report: &mut Re
 ///   that is not the host's, counts by `ℓ*` of its parameters, the top label for one of function
 ///   type, and by the operations it needs;
 /// - a call of a function value anywhere the step reaches makes it the top label (#1023);
-/// - concurrent tasks: the top label when a function holding a task construct reaches the step.
+/// - concurrent tasks: the top label when a part of a task construct can reach the step;
+/// - the residue label `L_res` (ADR 0116 P9), the work that cancelled requests leave running.
 ///
-/// O(functions + call edges + operations).
+/// The label is [`super::timing::timing`]'s, the one rule of every timing label. O(functions +
+/// call edges + operations).
 pub(crate) fn drive_timing(
     env: &Env<'_>,
     findings: &Findings,
     settings: &Manifest,
+    residue: &super::timing::Residue,
     report: &mut Report<'_>,
 ) {
     let Some(drive) = &settings.drive else {
@@ -2144,144 +2231,33 @@ pub(crate) fn drive_timing(
         return;
     };
     let kinds = env.kind_labels.as_ref();
-    let top = Label::top(&env.categories);
-    // Each source with its label, in the order a message names them.
-    let mut sources: Vec<(Label, String)> = vec![(
-        state.ty.base.deep_label(kinds),
-        format!("the parameter `{}`", state.name),
-    )];
-    // The functions the step reaches, itself included.
-    let mut callees: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
-    for &(caller, callee, _) in &findings.edges {
-        callees.entry(caller).or_default().push(callee);
-    }
-    let mut reached: BTreeSet<usize> = BTreeSet::new();
-    let mut pending = vec![step];
-    while let Some(f) = pending.pop() {
-        if reached.insert(f) {
-            pending.extend(callees.get(&f).into_iter().flatten().copied());
-        }
-    }
-    let mut handlers: BTreeSet<usize> = findings
-        .installs
-        .iter()
-        .filter(|(f, _)| reached.contains(f))
-        .map(|&(_, h)| h)
-        .collect();
-    let mut needs: Vec<(CapId, String)> = Vec::new();
-    for &f in &reached {
-        let Some(function) = env.functions.get(f) else {
-            continue;
-        };
-        if findings.value_callers.contains(&f) {
-            sources.push((
-                top.clone(),
-                format!("a call of a function value in `{}`", function.name),
-            ));
-        }
-        // A prelude function that applies a function argument, such as `map`.
-        if function.module >= env.prelude
-            && function
-                .params
-                .iter()
-                .any(|p| matches!(p.ty.base.unlabeled(), Ty::Fn(_)))
-        {
-            sources.push((
-                top.clone(),
-                format!("the function argument of `{}`", function.name),
-            ));
-        }
-        for need in &function.uses {
-            if let Some(cap) = need.usage.capability {
-                needs.extend(need.usage.ops.iter().map(|op| (cap, op.clone())));
-            }
-        }
-    }
-    // The operations, and the handlers that can serve those of a capability that is not the
-    // host's, with the operations those handlers need, to a fixpoint over capabilities.
-    let mut seen: BTreeSet<(CapId, String)> = BTreeSet::new();
-    let mut handled: BTreeSet<usize> = BTreeSet::new();
-    while !needs.is_empty() || handlers.iter().any(|h| !handled.contains(h)) {
-        while let Some((cap, op)) = needs.pop() {
-            if !seen.insert((cap, op.clone())) {
-                continue;
-            }
-            let Some(capability) = env.capabilities.get(cap) else {
-                continue;
-            };
-            if let Some(def) = capability.ops.iter().find(|d| d.name == op) {
-                let mut rho = def.result.base.deep_label(kinds);
-                if let Some(accepts) = &def.accepts {
-                    rho = rho.join(accepts);
-                }
-                if let Some(fails) = &def.fails {
-                    rho = rho.join(&fails.deep_label(kinds));
-                }
-                sources.push((rho, format!("the operation `{}.{op}`", capability.name)));
-            }
-            if capability.module != env.prelude {
-                handlers.extend(
-                    env.handlers
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, h)| h.capability == Some(cap))
-                        .map(|(id, _)| id),
-                );
-            }
-        }
-        let next: Vec<usize> = handlers.difference(&handled).copied().collect();
-        for id in next {
-            handled.insert(id);
-            let Some(handler) = env.handlers.get(id) else {
-                continue;
-            };
-            for param in &handler.params {
-                let label = if matches!(param.ty.base.unlabeled(), Ty::Fn(_)) {
-                    top.clone()
-                } else {
-                    param.ty.base.deep_label(kinds)
-                };
-                sources.push((
-                    label,
-                    format!("the parameter `{}` of a handler", param.name),
-                ));
-            }
-            for need in &handler.uses {
-                if let Some(cap) = need.usage.capability {
-                    needs.extend(need.usage.ops.iter().map(|op| (cap, op.clone())));
-                }
-            }
-        }
-    }
-    // Concurrent tasks (IF6): the top label when a function holding a task construct reaches
-    // the step, the exact join of its siblings coming with `for ever within`.
-    let concurrent = findings.task_functions.iter().any(|&f| {
-        let mut seen: BTreeSet<usize> = BTreeSet::new();
-        let mut pending = vec![f];
-        while let Some(g) = pending.pop() {
-            if g == step {
-                return true;
-            }
-            if seen.insert(g) {
-                pending.extend(callees.get(&g).into_iter().flatten().copied());
-            }
-        }
-        false
-    });
-    if concurrent {
-        sources.push((top.clone(), "tasks that can run beside the step".to_owned()));
-    }
+    // The step is a site whose seed is its state parameter and the step itself (ADR 0116 IF7).
+    let seed = super::timing::TimingSeed {
+        sources: vec![(
+            state.ty.base.deep_label(kinds),
+            format!("the parameter `{}`", state.name),
+        )],
+        callees: BTreeSet::from([step]),
+        ..super::timing::TimingSeed::default()
+    };
+    let concurrent = super::timing::concurrent_functions(findings);
+    let timing = super::timing::timing(
+        env,
+        findings,
+        &seed,
+        Some(step),
+        super::timing::HostHandlers::Installed,
+        &concurrent,
+    );
+    // ADR 0116 P9 and C: the residue of cancelled requests slows the step, through its
+    // requests and through the helpers' work on the machine's cores, and so the tick.
+    let timing = residue.join_into(timing);
     let declared = input.ty.base.deep_label(kinds);
-    let tau = sources
-        .iter()
-        .fold(Label::public(), |tau, (label, _)| tau.join(label));
+    let tau = timing.label.clone();
     if tau.flows_to(&declared) {
         return;
     }
-    let culprit = sources
-        .iter()
-        .find(|(label, _)| !label.flows_to(&declared))
-        .map_or_else(String::new, |(_, source)| source.clone());
+    let culprit = timing.culprit(&declared);
     let mut diagnostic = report.make(
         Code::U4001,
         input.span,
@@ -2295,6 +2271,339 @@ pub(crate) fn drive_timing(
         input.name, input.name
     )));
     report.push(diagnostic);
+}
+
+/// IF4 (ADR 0117), with the history of a limit (ADR 0116 P8, slice T1): `L_lim`, the timing
+/// label of the package's `Http` requests, which labels `HttpError.RateLimited` and the
+/// `TimedOut` of a wait at a limit with `internal`. Each request's label covers the bodies of
+/// every ancestor of its function in the call graph, its own function included, since the time
+/// between two requests of one task is spent there, and `τ_conc` at it, the preview's. When a
+/// grant of the manifest's `run grants` carries limits and `L_lim` is above `internal`, U4001 at
+/// each request whose own label is above it, in source order, naming the ancestor that raised it
+/// (`spec/27 §9` rule 5). `L_lim` also joins `L_res` (ADR 0116 P9, P10): a request waits at a
+/// slot that an interrupted request can still hold. Returns `L_lim`, which `una build` embeds
+/// and `una run` checks a limited `--grant` against.
+///
+/// O(F + H + C + O + E) label joins in all ([`super::timing::limit_labels`]), with no search
+/// per request; the diagnostics add O(R log R) to sort the `R` requests.
+pub(crate) fn limit_timing(
+    env: &Env<'_>,
+    findings: &Findings,
+    settings: &Manifest,
+    residue: &super::timing::Residue,
+    report: &mut Report<'_>,
+) -> Label {
+    let concurrent = super::timing::concurrent_functions(findings);
+    let graph = super::timing::graph(env, findings);
+    let limits = super::timing::limit_labels(env, findings, &graph, &concurrent, residue);
+    let internal = Label {
+        level: una_syntax::ast::Level::Internal,
+        ..Label::public()
+    };
+    if limits.label.flows_to(&internal) {
+        return limits.label;
+    }
+    let Some(grant) = settings.grants.iter().find(|grant| {
+        una_core::http::Grant::parse_limited(&grant.value)
+            .and_then(Result::ok)
+            .is_some_and(|http| http.limits().any())
+    }) else {
+        return limits.label;
+    };
+    let section = settings.format.section("[run] grants");
+    let section = if section.starts_with('`') {
+        section
+    } else {
+        format!("`{section}`")
+    };
+    let mut sites: Vec<&super::timing::LimitSite> = limits.sites.iter().collect();
+    sites.sort_by_key(|site| (site.span.file, site.span.start, site.span.end));
+    sites.dedup_by_key(|site| site.span);
+    for site in sites {
+        if site.label.flows_to(&internal) {
+            continue;
+        }
+        let (by, raised) = match &site.raiser {
+            Some(super::timing::Raiser::Ancestor(name, label, own)) => {
+                let how = if *own {
+                    "which makes it"
+                } else {
+                    "which leads to it"
+                };
+                (format!("the work of {name}, {how}"), label.clone())
+            }
+            Some(super::timing::Raiser::Residue(source, label)) => (source.clone(), label.clone()),
+            Some(super::timing::Raiser::Beside) | None => (
+                "tasks that can run beside it".to_owned(),
+                site.label.clone(),
+            ),
+        };
+        let mut diagnostic = report.make(
+            Code::U4001,
+            site.span,
+            format!(
+                "the grant `{}` of {section} has limits, so this request must be timed by `internal` data at most, but when it is made depends on {by}, labeled `{raised}`",
+                grant.value
+            ),
+        );
+        diagnostic.repairs.push(Report::advice(format!(
+            "move the work on data above `internal` out of the functions that lead to this request, or remove the limits from the grant in {section}"
+        )));
+        report.push(diagnostic);
+    }
+    limits.label
+}
+
+/// IF8 (ADR 0116): the operations that the deadline of a `for ever within d` can interrupt run
+/// as if under the timing label `τ` of its body (IF5, IF6), and their failures carry it. An
+/// interruptible operation, one of `Http` (rule 12), declares its failure at most what it
+/// accepts, `internal` (`spec/24 §5`): U4001 at the loop when `τ` is above it, naming the
+/// largest source of `τ`. `τ` joins the residue label `L_res` (ADR 0116 P9), computed once.
+/// Returns each loop, in source order, with its function and `τ`, for the report's `timing`
+/// list (rule 21). O(loops × (functions + call edges + operations)).
+pub(crate) fn deadline_timing(
+    env: &Env<'_>,
+    findings: &Findings,
+    residue: &super::timing::Residue,
+    report: &mut Report<'_>,
+) -> Vec<(&'static str, String, Span, Label)> {
+    if findings.deadline_loops.is_empty() {
+        return Vec::new();
+    }
+    let concurrent = super::timing::concurrent_functions(findings);
+    let mut loops: Vec<&super::DeadlineLoop> = findings.deadline_loops.iter().collect();
+    loops.sort_by_key(|site| (site.span.file, site.span.start));
+    let mut sites = Vec::new();
+    for site in loops {
+        let timing = super::timing::timing(
+            env,
+            findings,
+            &site.seed,
+            site.function,
+            super::timing::HostHandlers::All,
+            &concurrent,
+        );
+        // ADR 0116 P9 and C: every timing site joins `L_res`.
+        let timing = residue.join_into(timing);
+        let function = site
+            .function
+            .and_then(|id| env.functions.get(id))
+            .map(|def| {
+                let module = env.modules.get(def.module).map_or("", |m| m.path.as_str());
+                format!("{module}.{}", def.name)
+            })
+            .unwrap_or_default();
+        // The interruptible operations the body can reach (rule 12): those of the host's
+        // `Http`.
+        let interrupted = timing.ops.iter().find_map(|(cap, op)| {
+            let capability = env.capabilities.get(*cap)?;
+            if capability.module != env.prelude || capability.name != "Http" {
+                return None;
+            }
+            let def = capability.ops.iter().find(|d| d.name == *op)?;
+            let bound = def.accepts.clone().unwrap_or_else(Label::public);
+            (!timing.label.flows_to(&bound)).then(|| (format!("Http.{op}"), bound))
+        });
+        if let Some((op, bound)) = interrupted {
+            let tau = &timing.label;
+            let culprit = timing.culprit(&bound);
+            let mut diagnostic = report.make(
+                Code::U4001,
+                site.span,
+                format!(
+                    "the deadline of this `for ever within` can make `{op}` fail with `TimedOut`, and whether it does depends on {culprit}, labeled above the `{bound}` that the failure of `{op}` carries; the body's timing label is `{tau}`"
+                ),
+            );
+            diagnostic.repairs.push(Report::advice(format!(
+                "move the work on data above `{bound}` out of the loop's body, or remove `within` from the loop"
+            )));
+            report.push(diagnostic);
+        }
+        sites.push(("for ever within", function, site.span, timing.label));
+    }
+    sites
+}
+
+/// IF5 (ADR 0117): at each installation of `limiter` of `std.limit`, whether a token is left
+/// depends on the timing of the code that shares the instance: the statement the `with` scopes
+/// over, or the `do` line of the example whose `given` line installs it, and, through
+/// `τ_conc`, the program's other tasks. `Limited` is labeled `internal`, so `τ` of that
+/// statement MUST flow to `internal`; U4001 at the binding otherwise, naming what raised it
+/// (`spec/27 §10`). The label is joined with the residue label `L_res` (ADR 0116 P9), as at
+/// every timing site. O(sites × (functions + call edges + operations)).
+pub(crate) fn limiter_timing(
+    env: &Env<'_>,
+    findings: &Findings,
+    residue: &super::timing::Residue,
+    report: &mut Report<'_>,
+) {
+    if findings.limiter_sites.is_empty() {
+        return;
+    }
+    let concurrent = super::timing::concurrent_functions(findings);
+    let internal = Label {
+        level: una_syntax::ast::Level::Internal,
+        ..Label::public()
+    };
+    let mut sites: Vec<&super::LimiterSite> = findings.limiter_sites.iter().collect();
+    sites.sort_by_key(|site| (site.span.file, site.span.start, site.span.end));
+    sites.dedup_by_key(|site| site.span);
+    for site in sites {
+        let timing = super::timing::timing(
+            env,
+            findings,
+            &site.seed,
+            site.function,
+            super::timing::HostHandlers::All,
+            &concurrent,
+        );
+        let timing = residue.join_into(timing);
+        if timing.label.flows_to(&internal) {
+            continue;
+        }
+        let tau = &timing.label;
+        let culprit = timing.culprit(&internal);
+        let mut diagnostic = report.make(
+            Code::U4001,
+            site.span,
+            format!(
+                "whether `acquire` of this `limiter` finds a token depends on {culprit}, labeled above the `internal` that `Limited` carries; the statement's timing label is `{tau}`"
+            ),
+        );
+        diagnostic.repairs.push(Report::advice(
+            "move the work on data above `internal` out of the statement the `limiter` scopes over, or install the `limiter` around a statement that does not compute on it".to_owned(),
+        ));
+        report.push(diagnostic);
+    }
+}
+
+/// The timing label `τ(e)` of each `within` and `first of` that `findings` recorded, by the
+/// span of its deadline or its words (ADR 0117 IF2, IF3, ADR 0116 IF5 and IF6), each joined with
+/// the residue label `L_res` (ADR 0116 P9 and C), which is returned too, for the messages of pass
+/// 2. O(sites × (functions + call edges + operations)), and O(V + E + size of the seeds) once
+/// for `L_res`.
+pub(crate) fn within_labels(
+    env: &Env<'_>,
+    findings: &Findings,
+) -> (BTreeMap<Span, Label>, super::timing::Residue) {
+    if findings.withins.is_empty() {
+        return (BTreeMap::new(), super::timing::Residue::none());
+    }
+    let concurrent = super::timing::concurrent_functions(findings);
+    let residue = super::timing::residue_of(env, findings);
+    let mut labels: BTreeMap<Span, Label> = BTreeMap::new();
+    for site in &findings.withins {
+        let timing = super::timing::timing(
+            env,
+            findings,
+            &site.seed,
+            site.function,
+            super::timing::HostHandlers::All,
+            &concurrent,
+        );
+        let timing = residue.join_into(timing);
+        // A site checked twice, as an `attempt` inside a probe, keeps the join.
+        let label = match labels.get(&site.key) {
+            Some(before) => before.join(&timing.label),
+            None => timing.label,
+        };
+        labels.insert(site.key, label);
+    }
+    (labels, residue)
+}
+
+/// After pass 2, for each `e within d` (ADR 0117 IF2, rule 13):
+/// - `τ(e)` from what pass 2 recorded is never above the label its checks read, the probe's:
+///   an internal error (U8001) otherwise, never a check that a lower label let pass;
+/// - IF8 (ADR 0116): an interruptible operation that `e` can reach, one of `Http`, declares its
+///   failure at most `internal`, so `τ(e)` above it is U4001 at the `within`;
+/// - each `within` whose `τ` is above `public` joins the report's `timing` list.
+///
+/// Returns the report's entries, in source order. O(sites × (functions + call edges +
+/// operations)).
+pub(crate) fn within_timing(
+    env: &Env<'_>,
+    findings: &Findings,
+    residue: &super::timing::Residue,
+    report: &mut Report<'_>,
+) -> Vec<(&'static str, String, Span, Label)> {
+    if findings.withins.is_empty() {
+        return Vec::new();
+    }
+    let concurrent = super::timing::concurrent_functions(findings);
+    let mut sites: Vec<&super::within::WithinSite> = findings.withins.iter().collect();
+    sites.sort_by_key(|site| (site.span.file, site.span.start, site.span.end));
+    sites.dedup_by_key(|site| site.key);
+    let mut entries = Vec::new();
+    for site in sites {
+        let timing = super::timing::timing(
+            env,
+            findings,
+            &site.seed,
+            site.function,
+            super::timing::HostHandlers::All,
+            &concurrent,
+        );
+        // ADR 0116 P9 and C: every timing site joins `L_res`.
+        let timing = residue.join_into(timing);
+        let used = env
+            .within_timing
+            .get(&site.key)
+            .cloned()
+            .unwrap_or_else(Label::public);
+        let words = site.construct.words();
+        if !timing.label.flows_to(&used) {
+            report.error(
+                Code::U8001,
+                site.span,
+                format!(
+                    "internal error: the timing label of this `{words}` is `{}`, above the `{used}` that the checks used (ADR 0117 IF2, IF3)",
+                    timing.label
+                ),
+            );
+        }
+        let function = site
+            .function
+            .and_then(|id| env.functions.get(id))
+            .map(|def| {
+                let module = env.modules.get(def.module).map_or("", |m| m.path.as_str());
+                format!("{module}.{}", def.name)
+            })
+            .unwrap_or_default();
+        // IF8 is IF2's: a deadline makes a waiting request fail. A loser of `first of` is
+        // cancelled instead, and its request ends `interrupted`, with no failure to label.
+        let interrupted = timing.ops.iter().find_map(|(cap, op)| {
+            if site.construct == super::within::Construct::FirstOf {
+                return None;
+            }
+            let capability = env.capabilities.get(*cap)?;
+            if capability.module != env.prelude || capability.name != "Http" {
+                return None;
+            }
+            let def = capability.ops.iter().find(|d| d.name == *op)?;
+            let bound = def.accepts.clone().unwrap_or_else(Label::public);
+            (!timing.label.flows_to(&bound)).then(|| (format!("Http.{op}"), bound))
+        });
+        if let Some((op, bound)) = interrupted {
+            let tau = &timing.label;
+            let culprit = timing.culprit(&bound);
+            let mut diagnostic = report.make(
+                Code::U4001,
+                site.span,
+                format!(
+                    "the deadline of this `within` can make `{op}` fail with `TimedOut`, and whether it does depends on {culprit}, labeled above the `{bound}` that the failure of `{op}` carries; the expression's timing label is `{tau}`"
+                ),
+            );
+            diagnostic.repairs.push(Report::advice(format!(
+                "move the work on data above `{bound}` out of the expression the `within` bounds"
+            )));
+            report.push(diagnostic);
+        }
+        if !timing.label.is_public() {
+            entries.push((words, function, site.span, timing.label));
+        }
+    }
+    entries
 }
 
 /// U7003: each module uses `checked` at most `[escape_budget] checked_per_module` times; the

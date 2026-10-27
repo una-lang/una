@@ -28,10 +28,15 @@
   "builtin last",
   "builtin peek",
   "builtin peek_back",
+  "builtin peek_priority",
   "builtin pop",
   "builtin pop_back",
+  "builtin pop_ranked",
   "builtin push",
   "builtin push_front",
+  "builtin same_entries",
+  "builtin same_items",
+  "builtin size",
   "builtin union",
   "builtin update",
   "prelude Clock",
@@ -39,6 +44,8 @@
   "prelude Env",
   "prelude FileError",
   "prelude Files",
+  "prelude Finite32",
+  "prelude Finite64",
   "prelude Header",
   "prelude Http",
   "prelude HttpError",
@@ -49,6 +56,7 @@
   "prelude array_filled",
   "prelude as_decimal",
   "prelude as_f64",
+  "prelude f32_from_bits",
   "prelude f64_from_bits",
   "prelude infinity",
   "prelude json_decimal",
@@ -58,7 +66,11 @@
   "prelude matrix_filled",
   "prelude nan",
   "prelude parse_decimal",
+  "prelude parse_f32",
   "prelude parse_f64",
+  "prelude tensor",
+  "prelude tensor_filled",
+  "std.testing elapse",
   "std.testing fake_hash"
  ],
  "entries": [
@@ -1455,6 +1467,45 @@
       "type": "Bool",
       "meaning": "`true` when `s` holds `item`; not usable in contracts in edition 0.4"
      }
+    },
+    "HashMap[K, V]": {
+     "meaning": "the hash map `m`",
+     "params": [
+      {
+       "name": "key",
+       "meaning": "the key to look for; it is taken at the base type of a refined key type `K`, so a key outside the refinement finds no entry"
+      }
+     ],
+     "returns": {
+      "type": "Bool",
+      "meaning": "`true` when `m` has an entry at `key`; not usable in contracts in edition 0.4"
+     }
+    },
+    "HashSet[T]": {
+     "meaning": "the hash set `s`",
+     "params": [
+      {
+       "name": "item",
+       "meaning": "the item to look for; it is taken at the base type of a refined item type `T`, so an item outside the refinement is not found"
+      }
+     ],
+     "returns": {
+      "type": "Bool",
+      "meaning": "`true` when `s` holds `item`; not usable in contracts in edition 0.4"
+     }
+    },
+    "BitSet": {
+     "meaning": "the bit set `b`",
+     "params": [
+      {
+       "name": "item",
+       "meaning": "the integer to look for; outside the range from 0 to `b.size - 1` it is never a member"
+      }
+     ],
+     "returns": {
+      "type": "Bool",
+      "meaning": "`true` when `item` is a member of `b`; not usable in contracts in edition 0.4"
+     }
     }
    },
    "describes": [
@@ -1466,7 +1517,7 @@
       "0.2",
       "0.3"
      ],
-     "differs": "no `Set[T]` receiver, since `std.collections` begins in edition 0.4: it has neither `s.has(item: T) -> Bool` nor `where s: Set[T]`"
+     "differs": "no `Set[T]`, `HashMap[K, V]`, `HashSet[T]` or `BitSet` receiver, since `std.collections` begins in edition 0.4: it has none of `s.has(item: T) -> Bool`, `where s: Set[T]`, `where m: HashMap[K, V]`, `where s: HashSet[T]`, `b.has(item: Int) -> Bool` and `where b: BitSet`"
     }
    ],
    "use_instead": [
@@ -1492,10 +1543,16 @@
    "module": "builtin",
    "name": "get",
    "area": "maps",
-   "receiver": {
-    "type": "Map[K, V]",
-    "meaning": "the map `m`"
-   },
+   "receivers": [
+    {
+     "type": "Map[K, V]",
+     "meaning": "the map `m`"
+    },
+    {
+     "type": "HashMap[K, V]",
+     "meaning": "the hash map `m`"
+    }
+   ],
    "params": [
     {
      "name": "key",
@@ -1506,6 +1563,18 @@
     "type": "Option[V]",
     "meaning": "`Some` of the value at `key`, `Some` exactly when `m.has(key: key)`; a missing key gives `None`, not a failure"
    },
+   "describes": [
+    "0.4"
+   ],
+   "earlier": [
+    {
+     "editions": [
+      "0.2",
+      "0.3"
+     ],
+     "differs": "no `HashMap[K, V]` receiver, since `std.collections` begins in edition 0.4: it has no `where m: HashMap[K, V]`"
+    }
+   ],
    "see_also": [
     "builtin has"
    ],
@@ -1518,17 +1587,24 @@
       "symbol": "n",
       "meaning": "the number of entries in `m`"
      }
-    ]
+    ],
+    "on": "Map[K, V]"
    }
   },
   {
    "module": "builtin",
    "name": "set",
    "area": "maps",
-   "receiver": {
-    "type": "Map[K, V]",
-    "meaning": "the map `m`, changed in place, written `edit m.set(...)`"
-   },
+   "receivers": [
+    {
+     "type": "Map[K, V]",
+     "meaning": "the map `m`, changed in place, written `edit m.set(...)`"
+    },
+    {
+     "type": "HashMap[K, V]",
+     "meaning": "the hash map `m`, changed in place, written `edit m.set(...)`; a key already there keeps its place in the listing"
+    }
+   ],
    "params": [
     {
      "name": "key",
@@ -1543,6 +1619,18 @@
     "type": "Unit",
     "meaning": "nothing; afterwards `m.get(key: key) == Some(value)`, and `m.len` grows by one when `key` was not there"
    },
+   "describes": [
+    "0.4"
+   ],
+   "earlier": [
+    {
+     "editions": [
+      "0.2",
+      "0.3"
+     ],
+     "differs": "no `HashMap[K, V]` receiver, since `std.collections` begins in edition 0.4: it has no `where m: HashMap[K, V]`"
+    }
+   ],
    "use_instead": [
     {
      "item": "builtin with",
@@ -1561,7 +1649,8 @@
       "symbol": "n",
       "meaning": "the number of entries in `m`; in the native runtime the update is in place when `m` is uniquely held, and on a copy, in O(n), otherwise"
      }
-    ]
+    ],
+    "on": "Map[K, V]"
    }
   },
   {
@@ -1594,6 +1683,45 @@
       "type": "Unit",
       "meaning": "nothing; afterwards `s.has(item: item)` is `false`, and `s.len` shrinks by one when `item` was there"
      }
+    },
+    "HashMap[K, V]": {
+     "meaning": "the hash map `m`, changed in place, written `edit m.remove(...)`",
+     "params": [
+      {
+       "name": "key",
+       "meaning": "the key; it is taken at the base type of a refined key type `K`, so a key outside the refinement finds no entry"
+      }
+     ],
+     "returns": {
+      "type": "Unit",
+      "meaning": "nothing; afterwards `m.has(key: key)` is `false`, and `m.len` shrinks by one when `key` was there"
+     }
+    },
+    "HashSet[T]": {
+     "meaning": "the hash set `s`, changed in place, written `edit s.remove(...)`",
+     "params": [
+      {
+       "name": "item",
+       "meaning": "the item; it is taken at the base type of a refined item type `T`, so an item outside the refinement is not found"
+      }
+     ],
+     "returns": {
+      "type": "Unit",
+      "meaning": "nothing; afterwards `s.has(item: item)` is `false`, and `s.len` shrinks by one when `item` was there"
+     }
+    },
+    "BitSet": {
+     "meaning": "the bit set `b`, changed in place, written `edit b.remove(...)`",
+     "params": [
+      {
+       "name": "item",
+       "meaning": "the integer; outside the range from 0 to `b.size - 1` it changes nothing"
+      }
+     ],
+     "returns": {
+      "type": "Unit",
+      "meaning": "nothing; afterwards `b.has(item: item)` is `false`, `b.size` is unchanged, and `b.len` shrinks by one when `item` was a member"
+     }
     }
    },
    "describes": [
@@ -1605,7 +1733,7 @@
       "0.2",
       "0.3"
      ],
-     "differs": "no `Set[T]` receiver, since `std.collections` begins in edition 0.4: it has neither `edit s.remove(item: T) -> Unit` nor `where s: Set[T]`"
+     "differs": "no `Set[T]`, `HashMap[K, V]`, `HashSet[T]` or `BitSet` receiver, since `std.collections` begins in edition 0.4: it has none of `edit s.remove(item: T) -> Unit`, `where s: Set[T]`, `where m: HashMap[K, V]`, `where s: HashSet[T]`, `edit b.remove(item: Int) -> Unit` and `where b: BitSet`"
     }
    ],
    "use_instead": [
@@ -1664,6 +1792,49 @@
       "type": "Set[T]",
       "meaning": "a set with the contract of `add` for the result: `s` with `item`; `s` itself is unchanged"
      }
+    },
+    "HashMap[K, V]": {
+     "meaning": "the hash map `m`",
+     "params": [
+      {
+       "name": "key",
+       "meaning": "the key; with a refined key type `K`, it is stored at `K`, an obligation that `una check` proves at the call"
+      },
+      {
+       "name": "value",
+       "meaning": "the value at `key`; with a refined value type `V`, it is stored at `V`, an obligation that `una check` proves at the call"
+      }
+     ],
+     "returns": {
+      "type": "HashMap[K, V]",
+      "meaning": "a map with the contract of `set` for the result: `m` with `value` at `key`, a new key listed last; `m` itself is unchanged"
+     }
+    },
+    "HashSet[T]": {
+     "meaning": "the hash set `s`",
+     "params": [
+      {
+       "name": "item",
+       "meaning": "the item; with a refined item type `T`, it is stored at `T`, an obligation that `una check` proves at the call"
+      }
+     ],
+     "returns": {
+      "type": "HashSet[T]",
+      "meaning": "a set with the contract of `add` for the result: `s` with `item`, a new item listed last; `s` itself is unchanged"
+     }
+    },
+    "BitSet": {
+     "meaning": "the bit set `b`",
+     "params": [
+      {
+       "name": "item",
+       "meaning": "the integer, which must be in the range from 0 to `b.size - 1`: an obligation that `una check` proves at the call"
+      }
+     ],
+     "returns": {
+      "type": "BitSet",
+      "meaning": "a bit set with the contract of `add` for the result: `b` with `item`, of the same size; `b` itself is unchanged"
+     }
     }
    },
    "describes": [
@@ -1675,7 +1846,7 @@
       "0.2",
       "0.3"
      ],
-     "differs": "no `Set[T]` receiver, since `std.collections` begins in edition 0.4: it has neither `s.with(item: T) -> Set[T]` nor `where s: Set[T]`"
+     "differs": "no `Set[T]`, `HashMap[K, V]`, `HashSet[T]` or `BitSet` receiver, since `std.collections` begins in edition 0.4: it has none of `s.with(item: T) -> Set[T]`, `where s: Set[T]`, `m.with(key: K, value: V) -> HashMap[K, V]`, `where m: HashMap[K, V]`, `s.with(item: T) -> HashSet[T]`, `where s: HashSet[T]`, `b.with(item: Int) -> BitSet` and `where b: BitSet`"
     }
    ],
    "see_also": [
@@ -1725,6 +1896,45 @@
       "type": "Set[T]",
       "meaning": "a set with the contract of `remove` for the result: `s` without `item`; `s` itself is unchanged"
      }
+    },
+    "HashMap[K, V]": {
+     "meaning": "the hash map `m`",
+     "params": [
+      {
+       "name": "key",
+       "meaning": "the key; it is taken at the base type of a refined key type `K`, so a key outside the refinement finds no entry"
+      }
+     ],
+     "returns": {
+      "type": "HashMap[K, V]",
+      "meaning": "a map with the contract of `remove` for the result: `m` without `key`; `m` itself is unchanged"
+     }
+    },
+    "HashSet[T]": {
+     "meaning": "the hash set `s`",
+     "params": [
+      {
+       "name": "item",
+       "meaning": "the item; it is taken at the base type of a refined item type `T`, so an item outside the refinement is not found"
+      }
+     ],
+     "returns": {
+      "type": "HashSet[T]",
+      "meaning": "a set with the contract of `remove` for the result: `s` without `item`; `s` itself is unchanged"
+     }
+    },
+    "BitSet": {
+     "meaning": "the bit set `b`",
+     "params": [
+      {
+       "name": "item",
+       "meaning": "the integer; outside the range from 0 to `b.size - 1` it changes nothing"
+      }
+     ],
+     "returns": {
+      "type": "BitSet",
+      "meaning": "a bit set with the contract of `remove` for the result: `b` without `item`, of the same size; `b` itself is unchanged"
+     }
     }
    },
    "describes": [
@@ -1736,7 +1946,7 @@
       "0.2",
       "0.3"
      ],
-     "differs": "no `Set[T]` receiver, since `std.collections` begins in edition 0.4: it has neither `s.without(item: T) -> Set[T]` nor `where s: Set[T]`"
+     "differs": "no `Set[T]`, `HashMap[K, V]`, `HashSet[T]` or `BitSet` receiver, since `std.collections` begins in edition 0.4: it has none of `s.without(item: T) -> Set[T]`, `where s: Set[T]`, `m.without(key: K) -> HashMap[K, V]`, `where m: HashMap[K, V]`, `s.without(item: T) -> HashSet[T]`, `where s: HashSet[T]`, `b.without(item: Int) -> BitSet` and `where b: BitSet`"
     }
    ],
    "see_also": [
@@ -1760,15 +1970,33 @@
    "module": "builtin",
    "name": "keys",
    "area": "maps",
-   "receiver": {
-    "type": "Map[K, V]",
-    "meaning": "the map `m`"
-   },
+   "receivers": [
+    {
+     "type": "Map[K, V]",
+     "meaning": "the map `m`"
+    },
+    {
+     "type": "HashMap[K, V]",
+     "meaning": "the hash map `m`"
+    }
+   ],
    "params": [],
    "returns": {
     "type": "List[K]",
-    "meaning": "the keys of `m`, in ascending key order; as many as `m.len`"
+    "meaning": "the keys of `m`, in ascending key order on a `Map` and in the order they were first added on a `HashMap`; as many as `m.len`"
    },
+   "describes": [
+    "0.4"
+   ],
+   "earlier": [
+    {
+     "editions": [
+      "0.2",
+      "0.3"
+     ],
+     "differs": "no `HashMap[K, V]` receiver, since `std.collections` begins in edition 0.4: it has no `where m: HashMap[K, V]`"
+    }
+   ],
    "see_also": [
     "builtin values",
     "builtin entries"
@@ -1779,15 +2007,33 @@
    "module": "builtin",
    "name": "values",
    "area": "maps",
-   "receiver": {
-    "type": "Map[K, V]",
-    "meaning": "the map `m`"
-   },
+   "receivers": [
+    {
+     "type": "Map[K, V]",
+     "meaning": "the map `m`"
+    },
+    {
+     "type": "HashMap[K, V]",
+     "meaning": "the hash map `m`"
+    }
+   ],
    "params": [],
    "returns": {
     "type": "List[V]",
-    "meaning": "the values of `m`, in the order of their keys; as many as `m.len`"
+    "meaning": "the values of `m`, in the order of their keys on a `Map` and in the order the keys were first added on a `HashMap`; as many as `m.len`"
    },
+   "describes": [
+    "0.4"
+   ],
+   "earlier": [
+    {
+     "editions": [
+      "0.2",
+      "0.3"
+     ],
+     "differs": "no `HashMap[K, V]` receiver, since `std.collections` begins in edition 0.4: it has no `where m: HashMap[K, V]`"
+    }
+   ],
    "see_also": [
     "builtin keys",
     "builtin entries"
@@ -1798,15 +2044,33 @@
    "module": "builtin",
    "name": "entries",
    "area": "maps",
-   "receiver": {
-    "type": "Map[K, V]",
-    "meaning": "the map `m`"
-   },
+   "receivers": [
+    {
+     "type": "Map[K, V]",
+     "meaning": "the map `m`"
+    },
+    {
+     "type": "HashMap[K, V]",
+     "meaning": "the hash map `m`"
+    }
+   ],
    "params": [],
    "returns": {
     "type": "List[Entry[K, V]]",
-    "meaning": "the entries of `m` as `Entry` values, in ascending key order; as many as `m.len`"
+    "meaning": "the entries of `m` as `Entry` values, in ascending key order on a `Map` and in the order the keys were first added on a `HashMap`; as many as `m.len`"
    },
+   "describes": [
+    "0.4"
+   ],
+   "earlier": [
+    {
+     "editions": [
+      "0.2",
+      "0.3"
+     ],
+     "differs": "no `HashMap[K, V]` receiver, since `std.collections` begins in edition 0.4: it has no `where m: HashMap[K, V]`"
+    }
+   ],
    "see_also": [
     "builtin keys",
     "builtin values"
@@ -1833,12 +2097,24 @@
     {
      "type": "Set[T]",
      "meaning": "a set `s`: its number of items"
+    },
+    {
+     "type": "HashMap[K, V]",
+     "meaning": "a hash map `m`: its number of entries"
+    },
+    {
+     "type": "HashSet[T]",
+     "meaning": "a hash set `s`: its number of items"
+    },
+    {
+     "type": "BitSet",
+     "meaning": "a bit set `b`: its number of members, at most `b.size`"
     }
    ],
    "params": [],
    "returns": {
     "type": "Int",
-    "meaning": "the length of the receiver, a text, a list, a map or a set"
+    "meaning": "the length of the receiver, a text, a list, a map, a set, a hash table or a bit set"
    },
    "describes": [
     "0.4"
@@ -1848,14 +2124,14 @@
      "editions": [
       "0.1"
      ],
-     "differs": "no `Map[K, V]` receiver, since edition 0.1 has no maps, and no `Set[T]` receiver: it has none of `m.len -> Int`, `where m: Map[K, V]`, `s.len -> Int` and `where s: Set[T]`"
+     "differs": "no `Map[K, V]` receiver, since edition 0.1 has no maps, and no `Set[T]`, `HashMap[K, V]`, `HashSet[T]` or `BitSet` receiver: it has none of `m.len -> Int`, `where m: Map[K, V]`, `s.len -> Int`, `where s: Set[T]`, `where m: HashMap[K, V]`, `where s: HashSet[T]`, `b.len -> Int` and `where b: BitSet`"
     },
     {
      "editions": [
       "0.2",
       "0.3"
      ],
-     "differs": "no `Set[T]` receiver, since `std.collections` begins in edition 0.4: it has neither `s.len -> Int` nor `where s: Set[T]`"
+     "differs": "no `Set[T]`, `HashMap[K, V]`, `HashSet[T]` or `BitSet` receiver, since `std.collections` begins in edition 0.4: it has none of `s.len -> Int`, `where s: Set[T]`, `where m: HashMap[K, V]`, `where s: HashSet[T]`, `b.len -> Int` and `where b: BitSet`"
     }
    ],
    "see_also": [

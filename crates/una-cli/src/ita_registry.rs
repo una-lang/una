@@ -14,7 +14,7 @@
 //! connection or starts a program.
 
 use std::collections::BTreeMap;
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 
 use una_diag::{Code, Diagnostic};
@@ -84,14 +84,41 @@ struct Prepared {
     time: u64,
 }
 
+/// The declaration of `source`, the one the head's `publish to` names, for the package at
+/// `path` (`spec/30 §2` rule 4, §15 rule 1), and the location of its own URL: `itaty`, or a
+/// source that the workspace listing the package declares, refused by its kind (U7013), and an
+/// `https://` URL, which has no transport yet (U7013), each before an archive is built or
+/// anything is sent.
+/// Reads only the workspace files above `path`.
+fn declaration(
+    path: &Path,
+    source: &str,
+    range: std::ops::Range<usize>,
+) -> Result<(ita::Source, Location), ProjectError> {
+    let at = |why: String| problem(Code::U7013, range.clone(), why);
+    let declared = submit::declared_source(path, source).map_err(|why| {
+        at(format!(
+            "the submission cannot be sent to `{source}`: {why}; nothing is sent"
+        ))
+    })?;
+    let url = declared.url.value.clone();
+    match Location::parse(&url) {
+        Ok(Location::Https(_)) => Err(at(format!(
+            "the submission cannot be sent to `{source}`: `{url}` is reached over https, and there is no https transport yet; nothing is sent"
+        ))),
+        Ok(location) => Ok((declared, location)),
+        Err(why) => Err(at(why)),
+    }
+}
+
 /// Reads what a submission of `name` to `source` needs (ADR 0122 rules 8, 38, 39, 40 and 43):
-/// the source's declaration in the package's workspace, the transport of its own URL (an
-/// `https://` one has none yet, U7013), the registry opened at a fresh checkpoint from its first
+/// from the source's declaration in the package's workspace and its location ([`declaration`]),
+/// the transport of that location, the registry opened at a fresh checkpoint from its first
 /// place that verifies (its mirrors, then its URL), the name's state, the owner's keys from
 /// `keys`, and, with `version`, the files of the highest earlier release of its line. Each
 /// problem is at `range`: U7010 for what does not verify, U7013 otherwise.
 fn prepare(
-    path: &Path,
+    (declared, location): &(ita::Source, Location),
     source: &str,
     name: &str,
     version: Option<&Version>,
@@ -100,25 +127,8 @@ fn prepare(
     range: std::ops::Range<usize>,
 ) -> Result<Prepared, ProjectError> {
     let at = |code: Code, why: String| problem(code, range.clone(), why);
-    let declared = submit::declared_source(path, source).map_err(|why| {
-        at(
-            Code::U7013,
-            format!("the submission cannot be sent to `{source}`: {why}; nothing is sent"),
-        )
-    })?;
     let url = declared.url.value.clone();
-    let target = match Location::parse(&url) {
-        Ok(Location::Https(_)) => {
-            return Err(at(
-                Code::U7013,
-                format!(
-                    "the submission cannot be sent to `{source}`: `{url}` is reached over https, and there is no https transport yet; nothing is sent"
-                ),
-            ));
-        }
-        Ok(location) => transport::open(&location),
-        Err(why) => return Err(at(Code::U7013, why)),
-    };
+    let target = transport::open(location);
     let mirrors = crate::registry::load_mirrors(itaoca).map_err(|errors| {
         let why = errors
             .into_iter()
@@ -127,12 +137,12 @@ fn prepare(
             .join("; ");
         at(Code::U7008, why)
     })?;
-    let places = crate::registry::places_of(&declared, &mirrors);
+    let places = crate::registry::places_of(declared, &mirrors);
     let point = Point::Latest {
         now: crate::local_clock(),
     };
     let (mut registry, notes) =
-        crate::registry::open_first(&declared, &places, &point, itaoca, None)
+        crate::registry::open_first(declared, &places, &point, itaoca, None)
             .map_err(|(code, why)| at(code, why))?;
     // Each failure is coded where it arises, never from its message: a read that no place
     // served leaves the state unavailable (U7013), never different.
@@ -275,8 +285,9 @@ fn authority(analysis: &crate::Analysis) -> BTreeMap<String, std::collections::B
 
 /// `una ita publish [path]` (ADR 0122 rule 43): refuses what rule 43 names, and a package in a
 /// git repository while the check for uncommitted changes is not available; checks the package
-/// at tier 1 and refuses any diagnostic; builds its archive (rule 27); resolves the source the
-/// head's `publish to` names and its transport; writes the release statement against the
+/// at tier 1 and refuses any diagnostic; resolves the source the head's `publish to` names in
+/// the package's workspace, and its location; builds its archive (rule 27); opens the source's
+/// transport; writes the release statement against the
 /// verified state of its name (rule 26 against the highest earlier release of its line); signs
 /// it with the owner's keys of `~/.una/keys/`; and sends the archive and the statement. The
 /// submission is recorded in Itaoca, so `una ita watch` can check the registry's promise for
@@ -366,6 +377,21 @@ pub(crate) fn publish_command(
         ));
         return finish("publish", &[], &[], &diagnostics, sources, out);
     }
+    // The source `publish to` names is `itaty` or one the package's workspace declares, looked
+    // up once the package checks and before its archive is built (`spec/30 §2` rule 4, §15
+    // rule 3).
+    let source = read
+        .publish_to
+        .as_ref()
+        .map(|t| t.value.clone())
+        .unwrap_or_default();
+    let declared = match declaration(path, &source, head.clone()) {
+        Ok(declared) => declared,
+        Err(refusal) => {
+            diagnostics.extend(located(sources, manifest_id, vec![refusal]));
+            return finish("publish", &[], &[], &diagnostics, sources, out);
+        }
+    };
     let files = match package_files(path, &package) {
         Ok(files) => files,
         Err(message) => {
@@ -377,11 +403,6 @@ pub(crate) fn publish_command(
             return finish("publish", &[], &[], &diagnostics, sources, out);
         }
     };
-    let source = read
-        .publish_to
-        .as_ref()
-        .map(|t| t.value.clone())
-        .unwrap_or_default();
     let name = read
         .name
         .as_ref()
@@ -392,7 +413,7 @@ pub(crate) fn publish_command(
         .as_ref()
         .and_then(|v| Version::parse_full(&v.value).ok());
     let prepared = match prepare(
-        path,
+        &declared,
         &source,
         &name,
         version.as_ref(),
@@ -588,7 +609,9 @@ pub(crate) fn yank_command(
         ));
         return finish("yank", &[], &[], &diagnostics, &sources, out);
     };
-    let prepared = match prepare(path, &source, &name, None, keys, itaoca, head.clone()) {
+    let prepared = match declaration(path, &source, head.clone())
+        .and_then(|declared| prepare(&declared, &source, &name, None, keys, itaoca, head.clone()))
+    {
         Ok(prepared) => prepared,
         Err(refusal) => {
             diagnostics.extend(located(&sources, id, vec![refusal]));
@@ -783,12 +806,18 @@ fn audit_project(project: &Project, facts_of: &mut FactsOf<'_>) -> (Vec<Diagnost
     for finding in &result.findings {
         if let Some(package) = packages.get(finding.package) {
             if finding.is_note() {
-                let note = format!(
-                    "note: `{}` ({}): {}",
-                    package.name,
-                    package.source,
-                    finding.text(package)
-                );
+                // A fact of the owner's chain names the owner and the source itself, so it is
+                // said once for all the owner's packages.
+                let note = if finding.of_owner() {
+                    format!("note: {}", finding.text(package))
+                } else {
+                    format!(
+                        "note: `{}` ({}): {}",
+                        package.name,
+                        package.source,
+                        finding.text(package)
+                    )
+                };
                 if !said.contains(&note) {
                     said.push(note);
                 }
@@ -1013,7 +1042,7 @@ fn find_source(dir: &Path, source: &str) -> Result<ita::Source, String> {
             return Ok(declared.clone());
         }
     }
-    submit::declared_source(dir, source)
+    submit::declared_source(dir, source).map_err(|why| why.to_string())
 }
 
 /// `una ita watch <owner> [<name>...] [--from <source>]` (ADR 0122 rules 36 and 36.2): prints
@@ -1087,9 +1116,8 @@ pub(crate) fn watch_command(
     // watching's own, a chain shorter than the count seen, is evidence (U7010).
     let mut failed_read: Option<Code> = None;
     let mut chain = |name: &str| {
-        watch::chain_of(&mut registry, name).map_err(|why| {
+        watch::chain_of(&mut registry, name).inspect_err(|_| {
             failed_read = Some(crate::registry::code_of(&mut registry));
-            why
         })
     };
     let followed = watch::watch(&mut chain, &stored, names);
@@ -1385,27 +1413,15 @@ fn expected_packages(project: &Project) -> (Vec<(Expected, &ita::LockPackage)>, 
     (expected, problems)
 }
 
-/// Writes `bytes` to `file` through a fresh file beside it and a rename, so a reader never sees
-/// part of it.
+/// Writes `bytes` to `file` through a fresh exclusive file beside it and a rename, so a reader
+/// never sees part of it, with `una_diag::safe_write`: a link at the name is replaced, never
+/// followed.
 fn write_file(file: &Path, bytes: &[u8]) -> io::Result<()> {
-    let name = file
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("bundle");
-    let temporary = file.with_file_name(format!(".{name}.{}.tmp", std::process::id()));
-    let result = (|| {
-        let mut handle = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)?;
-        handle.write_all(bytes)?;
-        handle.sync_all()?;
-        std::fs::rename(&temporary, file)
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&temporary);
-    }
-    result
+    let directory = match file.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    una_diag::safe_write::write_new_name(directory, file, bytes, true)
 }
 
 /// `una ita bundle <file> [path]` (ADR 0122 rule 33): reads each source of the lock's registry

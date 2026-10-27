@@ -1192,3 +1192,103 @@ From then on a recovery needs `X`'s signature, which only the thief gives, and a
 - **The owner response window.** The guarantees against a stolen key hold for an owner that responds within seven days of the attacker's first pending change; where the attacker makes no pending change, there is no deadline. An owner that does not respond in time can lose its names to a thief holding only a key, and an owner that never acts cannot be protected against a valid key. With an account taken over too, a thief's dispute that the owner does not answer takes effect, and an answer forces at worst a freeze. So a registry notifies the owner's verified contact as soon as any pending key event, co-signer change, recovery or dispute is logged against the owner's chain, and clients report each such pending event as U7014 to everyone who locks, updates or audits a package of that owner.
 - A single-key owner whose key is stolen keeps the dispute: the thief's designation waits, the dispute is logged meanwhile, and when it takes effect it ends the designation.
 - `spec/30 §14` rule 5 states these rules as normative text.
+
+## Amendment 9 (2026-10-25): stated thresholds as known at logging
+
+- Status: Accepted, recorded under the project's delegation.
+
+**Context.** Every `ita-key/1` entry states a `threshold`: the current one for a cancellation, an overruling, a co-signer change and a claim on a former or last key, and one within the keys after the event for an addition or a revocation. A mismatch refuses the chain. A claim of compromise, `revoke <key> since <p>`, is retroactive: it can void entries logged before it, and so change the state at every later position. The rules did not say against which state an entry's stated threshold is checked. Checked against the state a later claim rewrote, an honest entry can become a mismatch, which refuses the whole chain:
+- Entry 0: the owner registers keys `A` and `B`, threshold two, and the co-signer `X` at threshold one. A thief copies `A`.
+- Entry 1: the owner, below its threshold without `A`, asks a recovery naming `R`, signed by the log's key and `X`.
+- Entry 2, six and a half days later: the thief cancels the recovery with `A`.
+- Entry 3, a day later, after the recovery's seven days: `X` overrules the cancellation, stating `threshold 2`, the owner's threshold then.
+- Entry 4, a week later: `R` claims `revoke A since 0`.
+
+The claim voids the thief's cancellation, so the recovery takes effect at its deadline, the overruling's own position, with threshold one. Checked against that state, the overruling's `threshold 2` is a mismatch, and the chain is refused: the registry must refuse the owner's claim, and the owner loses its names to the thief. A claim from a later position instead leaves the thief's releases counting. The replay also refused a chain for a mismatch found in a pass that assumes every claim, even one that the fixpoint later drops.
+
+**Decision.**
+1. **Stated thresholds, as known at logging.** An entry's stated `threshold`, the current one or one within the keys after the event, is checked against the state known when the entry was logged: the replay of the chain up to and including it, with the claims that settle to, its own claim among them, as a registry replays a chain to log an entry. Where that replay is itself refused or does not settle, which only entries that later claims make void can cause, the entry is checked against the chain's own settled claims. It is never checked against a state that a claim logged later rewrote. A mismatch at its logging still refuses the chain (U7010); a later claim never makes an earlier entry's stated threshold a refusal, and no pass of the fixpoint that assumes a claim refuses an entry for its stated threshold. The fixpoint's rules for which keys are valid are otherwise unchanged.
+2. **Timings that differ, for keys and consent.** The comparison of a request's served and earliest timings (`spec/30 §14` rule 1) also covers rule 8's verdict: which requests took effect, from which position, and so whether the owner's keys changed since a lock's point. When the two timings give different histories, the owner's names are unavailable (U7013), and each request's missing deadline checkpoint is recorded, never decided on the served timing.
+
+**Alternatives rejected.**
+- **A mismatch voids the entry** instead of refusing the chain. A thief's claim could then rewrite the state so that a victim's honest entries mismatch, and drop them: an overruling, a cancellation of the thief's request, or a co-signer change would be lost to a later claim.
+- **Refusals count only in the settled pass.** It removes the refusal of a pass that assumes a claim, but in the scenario above the settled pass is the one where the claim stands, and the overruling still mismatches there: the owner's claim is still refused.
+
+**Consequences.**
+- An owner's response by the rules can always be logged after honest entries whose stated thresholds were right when they were logged; a registry checks a new entry against the chain it holds, as a client does.
+- The client settles one replay of a prefix of the chain per revocation from the first claim on, to know the claims at each logging: O(S · P · E · K) for S such revocations, P passes, E entries and K keys, and nothing more for a chain with no claim. Revocations are rare events of a chain.
+- More names are unavailable when a place withholds cosignatures: whenever the two timings give different histories, not only when a release's verdict differs.
+- `spec/30 §14` rules 1 and 5 and the `ita-key/1` table state these rules as normative text.
+
+## Amendment 10 (2026-10-26): the cap of claims
+
+- Status: Accepted, recorded under the project's delegation.
+
+**Context.** Amendment 9 checks each entry's stated threshold against the state known at its logging. A claim of compromise is retroactive, so the client settles the chain up to each claim once more, and each settled replay is linear in the chain. A thief holding a stolen key can log claims cheaply, `revoke <former key> since <p>` while that key is current, so with no bound the work grows with the product of the claims and the chain's length: quadratic in what an attacker logs.
+
+**Decision.**
+1. **No refusal by count.** A registry never refuses a claim because of how many claims a chain holds: the owner's claim is always loggable.
+2. **Reset points.** The client counts the claims, `revoke <name> since <p>` entries applied or void, in one pass over the chain before any replay, by segment between reset points. A reset point is the effect position of a dispute, which cannot be cancelled, or of a recovery that no `cancel` entry names, whose effect point the witness time reached. Reset points are read from the entries and the effect points only, never from the claims, so the count does not depend on the fixpoint. An effect point that cannot be read makes the names unavailable (U7013), a reset neither assumed nor denied.
+3. **Sealed segments.** A segment of more than 64 claims that a reset point follows is sealed. Every entry in it is void, except the dispute or recovery that made the reset: no key change in it applies, its claims are dropped, and no release logged in it counts, the owner's own included, which the owner republishes after the reset. The key state resumes at the reset point from the key the reset names. Claims outside sealed segments still reach back with their `since`, so the owner's claim after the reset voids the thief's releases before it. The history exposes each sealed segment, its first and last log index and the reset that sealed it, for `una ita audit` to name.
+4. **The last segment.** A client does not replay a chain whose last segment, with no reset after it, holds more than 64 claims. Every name of that owner is refused (U7010), giving the count and the log index of the first claim past it, and no release of the owner counts, the thief's included. It is not the registry's misbehavior: an honest registry logs it.
+5. **Why 64.** It is twice the most keys an owner holds at once (32): an owner can claim every key it holds, and claim each again from an earlier position once it learns more. An honest owner claims a stolen key once, rarely more than a few keys in a chain's life.
+6. **The work.** The claims replayed are at most 64 per segment that is not sealed, 64 times one more than the resets, and a sealed segment costs O(E). A reset needs the co-signers or the registry's dispute, which a key-only thief cannot obtain, so a thief cannot cheaply raise this bound. The client settles the chain once, then once more up to each claim, and makes one forward pass per group of entries logged with the same claims, linear in the chain's length for a bounded number of resets. Each signature of an entry by a key is verified once across all of them, and the count of checks covers all of them.
+7. **Evidence and omissions.** A replay up to an entry that does not settle is recorded as the registry's misbehavior. A request's effect that cannot be read during any replay makes the name unavailable (U7013), never a verdict.
+
+**Rationale: integrity over availability.** A cap that refuses claims at logging lets a key-only thief spend the claims and block the owner's own, so the thief's releases signed with the stolen key would still count. A budget of claims per signing key does not hold: the thief adds keys and spends each one's budget. Freezing the chain at the cap does not either: releases logged before the freeze would still count. Sealing is safe: only a reset seals, which a key-only thief cannot make; sealing voids releases and never makes one count; the owner's honest entries in a sealed segment are an availability cost only.
+
+**Consequences.**
+- A key-only thief can make an owner's names unavailable by logging claims past the cap, and never make its own releases count.
+- The owner restores its names by a dispute, or a recovery with no cancellation against it, that takes effect, followed by its claim; the owner republishes its releases from the sealed segment. A thief that cancels the owner's recovery keeps it from resetting the count, and the owner then uses a dispute. The owner may also register under a new owner name.
+- `spec/30 §14` rule 5 states these rules as normative text.
+
+## Amendment 10, correction (2026-10-26): reset points
+
+- Status: Accepted, recorded under the project's delegation.
+
+**Context.** Amendment 10 read a reset point syntactically: the effect point of any dispute, or of a recovery that no `cancel` entry names. A thief holding a key and the account could log claims past the cap, then a dispute naming its own key. The owner's competing answer within the window would then fall in the sealed segment, so nothing competed and the thief's dispute took effect. That breaks rule 5: an answer within the window forces at worst a freeze. A `cancel` naming a future index also kept a recovery from resetting.
+
+**Decision.** A recovery or a dispute is a reset point only when all of these hold, read from positions and witness time only, never from the claims:
+1. the witness time reached its effect point;
+2. no other recovery or dispute is logged from it to its effect point;
+3. no freeze can be in effect at its effect point: no two recoveries or disputes waited at once before it;
+4. for a recovery, no `cancel` naming it is logged after it and before its effect point.
+
+A recovery, a dispute or a `cancel` logged while a resetting request waits is never sealed.
+
+**Correction.** Where Amendment 10 says the owner "then uses a dispute", an owner with co-signers in effect cannot dispute. A thief that cancels the owner's recovery while it waits keeps it from resetting. Once that recovery takes effect after the co-signers' overruling, the thief holds no current key, so the owner's next recovery cannot be cancelled and resets the count.
+
+## Amendment 11 (2026-10-26): the own-word floor from the first assumption
+
+- Status: Accepted, recorded under the project's delegation.
+
+**Context.** A revocation that meets its requirement only with the signature of the key it names is that key's own word, and its `p` is taken as no earlier than its own index. The replay applied that floor only from its second pass: the first assumed every claim at its stated `p`. Scenario: `A` registered; `A` and `B` add `B`; `A` is stolen; the thief logs `revoke A since 0` signed by `A` alone; the owner answers `revoke A since <the addition>` signed by `B`. Assumed at `since 0`, the thief's claim voided `B`'s addition, so the owner's claim was void and dropped, and a dropped claim never returns: `A` was compromised only from the thief's own claim, and what `A` signed between the addition and that claim counted.
+
+**Decision.** The floor holds from the first assumption. A claim whose signatures include the key it names, read from its signatures alone, is first assumed from its own index, whatever `p` it states. A later pass gives it back its stated `p` only when its other sound signers, or the cosigners in effect, meet its requirement without the named key. The fixpoint keeps its shape: claims are only dropped, never added back, and a chain whose claims do not settle within the pass cap is refused as before.
+
+**Consequences.**
+- A thief's self-claim, signed with the stolen key alone or with keys that key added after the theft, never reaches back before its own index, so it never voids what the owner's keys signed before it, and the owner's claim stands.
+- `spec/30 §14` rule 5 states this as normative text.
+
+## Amendment 12 (2026-10-26): `publish to` names a workspace source
+
+- Status: Accepted, recorded under the project's delegation.
+
+**Context.** `spec/30 §2` rule 4 required `publish to` to name `itaty` or a source of the package's own `sources` section. Rule 43 refuses to publish a package with a `sources` section, and `spec/30 §15` rule 1 takes a source other than `itaty` from the `sources` of the nearest workspace whose `itaty.una` lists the package as a member. The two rules contradict each other: a package published to a private source failed its own manifest check (U7008), so it could not be published, and the archive of one already logged failed the check of its code at fetch, which allows U7008 only for registry needs, and at `una check`.
+
+**Decision.**
+1. `publish to` names `itaty` or a source name that `sources` could declare, never `path`, `git` or `workspace`; any other name is U7008 at the line, as before. Reading `ita.una` does not look the source up.
+2. `una ita publish` and `una ita yank` look it up when they run, before anything is built or sent: `itaty`, or a source that the `sources` of the nearest workspace listing the package as a member declares. A source no such workspace declares, a workspace that does not declare it, and a workspace file that cannot be read are refused (U7013), each by its kind, never by a message; nothing is sent.
+3. The `ita.una` of a published archive, read at fetch or by `una check`, therefore accepts its `publish to` line. No other diagnostic is relaxed: rule 43's refusals and the archive check's allowances are unchanged.
+
+**Checks.** The manifest tests accept `publish to acme` without `sources` and refuse `path`, `git` and `workspace`. The client's lookup is tested for each kind of refusal. `una ita publish` and `una ita yank` refuse a source the workspace does not declare. A release published to a private source is locked, fetched, yanked and audited end to end.
+
+**Consequences.**
+- A package names its private source in its own `ita.una`; the declaration of that source, its URL and its root's pin, lives in the workspace, where the publisher's other packages find it too.
+- `spec/30 §2` rule 4 states this as normative text.
+
+## Amendment 12, correction (2026-10-26): when the source is looked up
+
+- Status: Accepted, recorded under the project's delegation.
+
+Amendment 12, decision 2, says the source is looked up "before anything is built or sent". `spec/30 §15` rule 3 orders publishing: the refusals of `spec/30 §11` rule 12, then a package in a git repository, then `una check` at tier 1, and only then the archive and the source. The lookup keeps that order: `una ita publish` looks the source up after the package's own refusals and its check, and before its archive is built or anything is sent. `una ita yank`, which checks no code, looks it up before it reads the registry. A package that does not check is refused for that, whatever source it names.

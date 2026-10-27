@@ -1,0 +1,8 @@
+ita for_ever_edit_state
+  version 0.1.0
+  edition 0.4
+
+run
+  entry failures
+  grants
+    console

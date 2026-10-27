@@ -26,7 +26,7 @@ use una_project::registry::watch::{
     encode_stored_root, judge, parse_stored_root, to_judge, watch,
 };
 use una_project::tlog::note::parse_note;
-use una_project::tlog::owner::Unsettled;
+use una_project::tlog::owner::{MAX_CLAIMS, Unsettled};
 use una_project::tlog::release::parse_statement;
 use una_project::tlog::state::Advisory;
 use una_project::tlog::state::{Signers, parse_advisory};
@@ -558,6 +558,7 @@ fn audit_reports_yanks_advisories_compromises_and_owner_events() {
                         ..fixed_late.clone()
                     },
                 ],
+                sealed: Vec::new(),
             }
         } else {
             Facts {
@@ -1223,10 +1224,12 @@ fn the_audit_leaves_out_what_the_lock_accepted() {
     let owner = keypair(60, "acme.laptop");
     test.register("acme", &owner);
     let (index, digest) = test.release("acme/ledger", "0.3.1", "none", "none", &[&owner]);
-    test.checkpoint(NOW - 100);
-    let resolution = test.entries.len() as u64;
     let newcomer = keypair(64, "acme.new");
     let request = test.recover("acme", "recover", &newcomer.1, &[]);
+    // The lock's resolution point holds the request: a recorded consent counts only for an
+    // index below it that is pending there (`spec/30 §14` rule 8).
+    test.checkpoint(NOW - 100);
+    let resolution = test.entries.len() as u64;
     test.checkpoint(NOW);
     let memory = Memory {
         source: "acme".to_owned(),
@@ -1381,10 +1384,11 @@ fn a_published_source_is_the_one_its_workspace_declares() {
     let workspace = scratch("workspace");
     let package = workspace.join("pkg");
     std::fs::create_dir_all(&package).unwrap();
-    assert!(
-        submit::declared_source(&package, "acme")
-            .unwrap_err()
-            .contains("declared by no `itaty.una`")
+    assert_eq!(
+        submit::declared_source(&package, "acme").unwrap_err(),
+        submit::Undeclared::NoWorkspace {
+            source: "acme".to_owned()
+        }
     );
     std::fs::write(
         workspace.join("itaty.una"),
@@ -1398,15 +1402,17 @@ fn a_published_source_is_the_one_its_workspace_declares() {
         submit::declared_source(&package, "acme").unwrap().url.value,
         "https://ita.acme.example"
     );
-    assert!(
-        submit::declared_source(&package, "other")
-            .unwrap_err()
-            .contains("not a source")
+    // A source the workspace does not declare is refused, by its kind.
+    assert_eq!(
+        submit::declared_source(&package, "other").unwrap_err(),
+        submit::Undeclared::NotInWorkspace {
+            source: "other".to_owned(),
+            workspace: std::fs::canonicalize(&workspace).unwrap().join("itaty.una"),
+        }
     );
-    assert!(
-        submit::declared_source(&package, "itaty")
-            .unwrap_err()
-            .contains("no https transport yet")
+    assert_eq!(
+        submit::declared_source(&package, "itaty").unwrap_err(),
+        submit::Undeclared::Itaty
     );
 }
 
@@ -1829,6 +1835,78 @@ fn the_audit_honors_accepted_indices_as_the_lock_does() {
     assert!(facts.key_changes.contains(&request), "{facts:?}");
 }
 
+/// An owner chain with more claims than the cap that a dispute's reset follows has a sealed
+/// segment (`spec/30 §14` rule 5): the audit names it, its first and last log index, its claims
+/// and the reset that sealed it, as a note that decides nothing, once per owner and source.
+#[test]
+fn the_audit_names_a_sealed_segment_of_the_owners_chain() {
+    let day = 24 * 3600;
+    let a = keypair(60, "acme.a");
+    let d = keypair(61, "acme.d");
+    let r = keypair(63, "acme.r");
+    let mut test = TestRegistry::new("acme");
+    test.register_keys("acme", &[&a, &d], 1, &[], 1);
+    test.release("acme/ledger", "0.3.0", "none", "none", &[&a]);
+    let honest = test.owner_event("acme", "revoke acme.d", 1, &[&a]);
+    for _ in 0..=MAX_CLAIMS {
+        test.owner_event("acme", "revoke acme.d since 0", 1, &[&a]);
+    }
+    test.checkpoint(NOW - 30 * day);
+    let dispute = test.recover("acme", "dispute", &r.1, &[]);
+    test.checkpoint(NOW - 29 * day);
+    test.append("other", "filler");
+    let reset = test.checkpoint(NOW - 20 * day);
+    test.owner_event("acme", &format!("revoke acme.a since {honest}"), 1, &[&r]);
+    let (index, digest) = test.release("acme/ledger", "0.3.1", "none", "none", &[&r]);
+    test.checkpoint(NOW);
+    let memory = Memory {
+        source: "acme".to_owned(),
+        files: test.files.clone(),
+    };
+    let mut client = Registry::open(
+        "acme",
+        &memory,
+        &test.pin(),
+        &Point::Latest { now: NOW + 60 },
+        None,
+    )
+    .unwrap();
+    let locked = Locked {
+        source: "acme".to_owned(),
+        name: "acme/ledger".to_owned(),
+        version: v("0.3.1"),
+        logged: Some(index),
+        digest: Some(digest),
+        resolution: test.entries.len() as u64,
+        accepted: BTreeSet::new(),
+        effects: BTreeSet::new(),
+    };
+    let facts = audit::facts(&mut client, &locked).unwrap();
+    assert_eq!(facts.sealed.len(), 1, "{facts:?}");
+    let sealed = facts.sealed[0].clone();
+    assert_eq!(
+        (sealed.first, sealed.request, sealed.reset, sealed.claims),
+        (0, dispute, reset, MAX_CLAIMS + 1)
+    );
+    let findings = audit::findings(0, &facts);
+    let named: Vec<&audit::Finding> = findings
+        .iter()
+        .filter(|f| f.kind == Kind::Sealed(sealed.clone()))
+        .collect();
+    assert_eq!(named.len(), 1, "{findings:?}");
+    assert!(named[0].is_note() && named[0].of_owner());
+    assert_eq!(
+        named[0].text(&locked),
+        format!(
+            "the chain of the owner `acme` at `acme` has a sealed segment, log entries 0 to {} ({} claims), sealed by the recovery or dispute at log entry {dispute}, in effect from {reset}: no release logged in it counts, the owner's own included; the owner republishes the ones it needs",
+            sealed.last,
+            MAX_CLAIMS + 1
+        )
+    );
+    // The release the owner published after the reset counts: the note is the only finding.
+    assert!(findings.iter().all(audit::Finding::is_note), "{findings:?}");
+}
+
 /// A lock whose `effect` line records a recovery in effect at its resolution point passes the
 /// audit for that effect; an `effect` index that was only pending there is not honored, and the
 /// pending recovery is reported.
@@ -2010,23 +2088,28 @@ fn a_frozen_owner_chain_is_refused_by_the_audit() {
 }
 
 /// A chain the registry logged that does not settle: the audit refuses the package (U7010) and
-/// reports the registry's misbehavior as evidence, from the client's typed record.
+/// reports the registry's misbehavior as evidence, from the client's typed record. The chain is
+/// the replay's own example: `A` adds `C`, then `A` and `B` claim `A` since 0, and `A`, `B` and
+/// `C` claim `B` since 0, two claims whose own-word floors alternate.
 #[test]
 fn the_audit_reports_an_unsettled_chain_as_evidence() {
     let mut test = TestRegistry::new("acme");
     let a = keypair(60, "acme.a");
-    let t = keypair(66, "acme.t");
-    test.register("acme", &a);
-    let (index, digest) = test.release("acme/ledger", "0.3.1", "none", "none", &[&a]);
+    let b = keypair(61, "acme.b");
+    let c = keypair(62, "acme.c");
+    let d = keypair(64, "acme.d");
+    test.register_keys("acme", &[&a, &b, &d], 1, &[], 0);
+    let (index, digest) = test.release("acme/ledger", "0.3.1", "none", "none", &[&d]);
     test.checkpoint(NOW - 100);
     let resolution = test.entries.len() as u64;
     test.owner_event(
         "acme",
-        &format!("add {}", support::key_text(&t.1)),
+        &format!("add {}", support::key_text(&c.1)),
         1,
-        &[&a, &t],
+        &[&a, &c],
     );
-    let claim = test.owner_event("acme", "revoke acme.a since 0", 1, &[&t]);
+    let claim = test.owner_event("acme", "revoke acme.a since 0", 1, &[&a, &b]);
+    test.owner_event("acme", "revoke acme.b since 0", 1, &[&a, &b, &c]);
     test.checkpoint(NOW);
     let memory = Memory {
         source: "acme".to_owned(),
@@ -2055,7 +2138,7 @@ fn the_audit_reports_an_unsettled_chain_as_evidence() {
     let unsettled = Unsettled {
         owner: "acme".to_owned(),
         index: claim,
-        passes: 4,
+        passes: 6,
     };
     assert_eq!(
         audit::evidence(&client),
@@ -2248,7 +2331,9 @@ fn the_audit_reports_deadline_and_cadence_evidence() {
         None,
     )
     .unwrap();
-    client.logged_at(release).unwrap();
+    // Never the point's time: the logged time is unavailable, an omission of the cadence, and
+    // the gap is recorded as evidence.
+    assert!(client.logged_at(release).is_err());
     // One place read: evidence from an absence, a note.
     let place = memory.describe();
     let gap = audit::Evidence::CadenceGap {
@@ -2257,7 +2342,7 @@ fn the_audit_reports_deadline_and_cadence_evidence() {
         places: vec![place.clone()],
         places_agreeing: 1,
     };
-    assert_eq!(audit::evidence(&client), [gap.clone()]);
+    assert_eq!(audit::evidence(&client), std::slice::from_ref(&gap));
     assert!(!gap.attributed());
     let text = gap.text("acme");
     assert!(
@@ -2277,7 +2362,7 @@ fn the_audit_reports_deadline_and_cadence_evidence() {
         None,
     )
     .unwrap();
-    client.logged_at(release).unwrap();
+    assert!(client.logged_at(release).is_err());
     let evidence = audit::evidence(&client);
     assert_eq!(evidence.len(), 1, "{evidence:?}");
     assert!(!evidence[0].attributed(), "{evidence:?}");

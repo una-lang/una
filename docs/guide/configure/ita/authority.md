@@ -13,7 +13,7 @@ A dependency holds no capability unless the package hands it one, at a call, wit
 
 Every module of a dependency is a boundary (see [`[boundaries]`](../boundaries.md)): a call into it takes no capability by name from the caller (U3020), hands over only what fits the ceiling (U3021), and reaches no release of a label.
 
-The lock records the ceiling it was written with. A wider `may` line is U7009 until `una ita lock --accept-authority` records it, so every widening is explicit and shows in the lock's diff.
+The lock records the ceiling it was written with. A wider `may` line is U7009 until `una ita lock --accept-authority <package>`, naming the package, records it, so every widening is explicit and shows in the lock's diff.
 
 `ita.una`
 
@@ -291,14 +291,14 @@ pub main() -> Unit
 ```
 
 ```text
-$ una ita lock --accept-authority
+$ una ita lock --accept-authority util
 add util 0.2.0 (path deps/util): digest sha256:…; may Console[print]; uses Console[print]
 wrote ita.lock
 ```
 
 ## Edge cases
 
-- **A first ceiling** counts as a widening: `una ita lock` records it only with `--accept-authority`.
+- **A first ceiling** counts as a widening: `una ita lock` records it only with `--accept-authority <package>`. Without it, the review is printed with the flag to copy, and nothing is written.
 - **`una fix` never widens a ceiling**, and never edits `ita.una` or `ita.lock`.
 - **A dependency's examples** are checked as its own, with no ceiling on their `given` lines, since `una test` never runs them.
 - **The report** lists, for each dependency, the ceiling the package grants it, what it can ever exercise and what its code uses.

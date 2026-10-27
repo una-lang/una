@@ -1388,10 +1388,18 @@
         {
           "editions": [
             "0.2",
-            "0.3",
-            "0.4"
+            "0.3"
           ],
           "declaration": "pub kind HttpError = Denied | BadUrl | BadRequest | Unreachable | TimedOut | TooLarge | Tls | Protocol",
+          "docs": [
+            "Why an HTTP request got no response it may return (`spec/24 §1` rule 3)."
+          ]
+        },
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "pub kind HttpError = Denied | BadUrl | BadRequest | Unreachable | TimedOut | TooLarge | Tls | Protocol | Interrupted | RateLimited",
           "docs": [
             "Why an HTTP request got no response it may return (`spec/24 §1` rule 3)."
           ]
@@ -1718,6 +1726,128 @@
       ]
     },
     {
+      "name": "tensor",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/29 §17"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "pub tensor[T](shape: List[Int], elements: List[T]) -> Tensor[T]",
+          "docs": [
+            "A tensor of the lengths in `shape`, a list literal of 1 to 8 of them, with the elements of",
+            "`elements` in row-major order (`spec/29 §17`). Each call takes the contract of its rank:",
+            "`requires` every length `>= 0` and `elements.len` their product; `ensures result.rank` the",
+            "literal's length and `result.dim(axis: k)` the k-th length. A shape that is not a list",
+            "literal is U2038. O(n)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "tensor_filled",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/29 §17"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "pub tensor_filled[T](shape: List[Int], value: T) -> Tensor[T]",
+          "docs": [
+            "A tensor of the lengths in `shape`, a list literal of 1 to 8 of them, each element `value`",
+            "(`spec/29 §17`): `requires` every length `>= 0`, `ensures` the rank and the lengths, as for",
+            "`tensor`. O(n)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "f32_from_bits",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/29 §18"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "pub f32_from_bits(bits: U32) -> F32",
+          "docs": [
+            "The `F32` with the bits `bits`; any NaN gives the canonical NaN `0x7FC00000`",
+            "(`spec/29 §18`, ADR 0120 rule 5)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "parse_f32",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/29 §18"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "pub parse_f32(t: Text) -> F32\n  fails ParseError",
+          "docs": [
+            "The `F32` that `t` writes, a JSON number, `nan`, `inf` or `-inf`, rounded once to the nearest",
+            "`F32`, or why it writes none (`spec/29 §18`, ADR 0120 rule 5)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Finite64",
+      "module": "prelude",
+      "kind": "kind",
+      "spec": [
+        "spec/29 §18"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "pub kind Finite64 = F64 where it.is_finite()",
+          "docs": [
+            "An `F64` that is neither NaN nor an infinity (`spec/29 §18`, ADR 0120 rule 11)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Finite32",
+      "module": "prelude",
+      "kind": "kind",
+      "spec": [
+        "spec/29 §18"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "pub kind Finite32 = F32 where it.is_finite()",
+          "docs": [
+            "An `F32` that is neither NaN nor an infinity (`spec/29 §18`, ADR 0120 rule 11)."
+          ]
+        }
+      ]
+    },
+    {
       "name": "fake_hash",
       "module": "std.testing",
       "kind": "function",
@@ -1736,6 +1866,28 @@
           "docs": [
             "A deterministic `Hashed` value for tests: equal seeds give equal values. Usable only in",
             "examples and in handlers that only examples install (`spec/14 §4`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "elapse",
+      "module": "std.testing",
+      "kind": "function",
+      "spec": [
+        "spec/26 §8",
+        "spec/14 §4"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "pub elapse(d: Int of Millisecond) -> Unit\n  requires d >= 0",
+          "docs": [
+            "Moves the test's virtual clock forward by `d` at once, without waiting (ADR 0116 rule 19,",
+            "`spec/26 §8`). Usable only in examples and in handlers that only examples install",
+            "(`spec/14 §4`)."
           ]
         }
       ]

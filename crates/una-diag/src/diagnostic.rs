@@ -81,7 +81,9 @@ pub enum ObligationKind {
     /// The arms of a `when` cover every value.
     Exhaustive,
     /// The exact result of an operation on a fixed-width integer type, or of a narrowing
-    /// conversion, lies in the type's range (`spec/18 §3`).
+    /// conversion, lies in the type's range; and, in a `systems` package, the exact result of
+    /// an operation on `Int` lies in -2^62 to 2^62 - 1 (`spec/18 §3`, ADR 0109 rule 3). The
+    /// kind covers fixed-width, and `Int` in a `systems` package.
     Overflow,
     /// A conditioned operation of a binding runs only where its condition holds: at the
     /// operation, at a call that passes the binding, and at a `with` that installs a handler
@@ -90,6 +92,12 @@ pub enum ObligationKind {
     /// A locked function's header is at least as strong as its lock: the header's condition on
     /// a locked operation implies the lock's (ADR 0092 rule 8).
     ContractLock,
+    /// The measure of a `for until` loop is at least 0 where the loop continues (ADR 0116
+    /// V1).
+    DecreasesBound,
+    /// The measure of a `for until` loop decreases in every iteration that goes on (ADR 0116
+    /// V1).
+    DecreasesStep,
 }
 
 impl ObligationKind {
@@ -104,6 +112,8 @@ impl ObligationKind {
             ObligationKind::Overflow => "overflow",
             ObligationKind::EffectCondition => "effect_condition",
             ObligationKind::ContractLock => "contract_lock",
+            ObligationKind::DecreasesBound => "decreases_bound",
+            ObligationKind::DecreasesStep => "decreases_step",
         }
     }
 }

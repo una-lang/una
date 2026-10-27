@@ -129,8 +129,10 @@ impl Itaoca {
 
     /// Stores the provenance of a release at the resolution point of `size`, once: the
     /// document must read ([`provenance::parse`]), and one already stored must be the same
-    /// bytes. It is written into a fresh private directory, never through a link, then renamed
-    /// into place.
+    /// bytes. It is written into a fresh private directory, never through a link, then linked
+    /// to its name, which fails when anything is there, so a stored provenance is never
+    /// replaced, even by a process storing another at the same moment
+    /// ([`tree::store_file_once`]); what is there is then read and compared.
     pub fn store_provenance(
         &self,
         source: &str,
@@ -161,12 +163,27 @@ impl Itaoca {
                 release.as_str(),
             ],
         )?;
-        tree::store_file(&parent, file, bytes, true)
-            .map_err(|refusal| format!("cannot store the provenance: {refusal}"))
+        let stored = tree::store_file_once(&parent, file, bytes, true)
+            .map_err(|refusal| format!("cannot store the provenance: {refusal}"))?;
+        match stored {
+            tree::Stored::Written => Ok(()),
+            // Another process stored one first: it must be the same document.
+            tree::Stored::Present => match self.load_provenance(source, name, version, size)? {
+                Some(there) if there == bytes => Ok(()),
+                Some(_) => Err(format!(
+                    "another provenance of `{name} {version}` at the checkpoint of size {size} is stored"
+                )),
+                None => Err(format!(
+                    "the provenance of `{name} {version}` at the checkpoint of size {size} was removed while it was stored"
+                )),
+            },
+        }
     }
 
     /// The provenance of a release at the resolution point of `size`, read once with no link
-    /// followed, or `None` when it is not stored. It is verified by the caller, on every load.
+    /// followed, or `None` when it is not stored. A second link that an interrupted
+    /// [`Itaoca::store_provenance`] left beside it is removed first
+    /// ([`tree::clear_stray_links`]). It is verified by the caller, on every load.
     pub fn load_provenance(
         &self,
         source: &str,
@@ -178,7 +195,12 @@ impl Itaoca {
         let relative: Vec<&str> = parts.iter().map(String::as_str).collect();
         tree::not_a_link(&self.root)?;
         match tree::locate(&self.root, &relative)? {
-            Some(path) => tree::read_file(&path, provenance::MAX_BYTES as u64).map(Some),
+            Some(path) => {
+                // A store interrupted after its link leaves a second link in a fresh
+                // directory beside the file, which would refuse it forever.
+                tree::clear_stray_links(&path)?;
+                tree::read_file(&path, provenance::MAX_BYTES as u64).map(Some)
+            }
             None => Ok(None),
         }
     }
@@ -227,12 +249,7 @@ impl Itaoca {
         let dir = tree::make_dirs(&self.root, &["registry", id])?;
         let path = dir.join("floor.lock");
         tree::not_a_link(&path)?;
-        let file = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&path)
+        let file = tree::open_lock_file(&path)
             .map_err(|error| format!("cannot open the floor lock: {error}"))?;
         let mut tries = 0;
         loop {

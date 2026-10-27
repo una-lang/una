@@ -202,10 +202,13 @@ fn a_release_verifies_from_its_provenance() {
     );
 }
 
+/// A change of what the lock says, by the name of what it changes.
+type Change = (&'static str, Box<dyn Fn(&mut Expected)>);
+
 #[test]
 fn each_thing_the_lock_says_is_verified() {
     let release = good();
-    let changes: Vec<(&str, Box<dyn Fn(&mut Expected)>)> = vec![
+    let changes: Vec<Change> = vec![
         (
             "root",
             Box::new(|e: &mut Expected| e.root = format!("sha256:{}", "0".repeat(64))),
@@ -411,6 +414,90 @@ fn a_release_loads_from_itaoca_verified() {
     ));
 }
 
+/// Itaoca holding a release's files without its provenance is an inconsistent store, refused
+/// (U7010), not a package in neither place (U7011).
+#[test]
+fn itaoca_files_without_provenance_are_refused() {
+    let release = good();
+    let itaoca = Itaoca {
+        root: fresh("files-only-itaoca"),
+    };
+    itaoca.store(&release.archive).unwrap();
+    let root = fresh("files-only-root");
+    let refusal = vendor::load(&root, Some(&itaoca), &release.expected).unwrap_err();
+    assert!(
+        matches!(&refusal, Problem::Refused(message) if message.contains("inconsistent")),
+        "{refusal:?}"
+    );
+}
+
+/// A stray file in a vendored copy, such as the `.DS_Store` a file browser leaves, refuses the
+/// load (U7010), and the refusal names it.
+#[test]
+fn a_stray_file_in_a_vendored_copy_is_named() {
+    let (release, itaoca) = stored("vendor-stray");
+    let root = fresh("vendor-stray-root");
+    vendor::vendor(&root, Some(&itaoca), &release.expected).unwrap();
+    let dir = root.join("vendor/ita/acme/acme+ledger-0.3.1");
+    std::fs::write(dir.join("src/.DS_Store"), b"\0\0\0\x01Bud1").unwrap();
+    let refusal = vendor::load(&root, None, &release.expected).unwrap_err();
+    assert!(
+        matches!(&refusal, Problem::Refused(message) if message.contains("`src/.DS_Store`")),
+        "{refusal:?}"
+    );
+}
+
+/// A store of a provenance interrupted after its link, which left a second link in a fresh
+/// directory beside it, does not refuse the provenance forever: the stray link is removed when
+/// it is next loaded.
+#[cfg(unix)]
+#[test]
+fn an_interrupted_provenance_store_is_repaired_on_load() {
+    let release = good();
+    let itaoca = Itaoca {
+        root: fresh("provenance-stray"),
+    };
+    let bytes = release.provenance.encode();
+    itaoca
+        .store_provenance(SOURCE, NAME, VERSION, 2, &bytes)
+        .unwrap();
+    let release_dir = itaoca.root.join("registry/acme/releases/acme+ledger-0.3.1");
+    let stray = release_dir.join(".una-fresh-9-9-9");
+    std::fs::create_dir(&stray).unwrap();
+    std::fs::hard_link(
+        release_dir.join("checkpoint-2.provenance"),
+        stray.join("file"),
+    )
+    .unwrap();
+    assert_eq!(
+        itaoca.load_provenance(SOURCE, NAME, VERSION, 2).unwrap(),
+        Some(bytes)
+    );
+    assert!(!stray.exists());
+}
+
+/// A link planted at the name of a provenance to store is never written through: the store is
+/// refused and the link's target keeps its bytes.
+#[cfg(unix)]
+#[test]
+fn a_provenance_is_never_stored_through_a_link() {
+    let release = good();
+    let itaoca = Itaoca {
+        root: fresh("provenance-link"),
+    };
+    let release_dir = itaoca.root.join("registry/acme/releases/acme+ledger-0.3.1");
+    std::fs::create_dir_all(&release_dir).unwrap();
+    let target = fresh("provenance-link-target").join("kept");
+    std::fs::write(&target, b"kept").unwrap();
+    std::os::unix::fs::symlink(&target, release_dir.join("checkpoint-2.provenance")).unwrap();
+    assert!(
+        itaoca
+            .store_provenance(SOURCE, NAME, VERSION, 2, &release.provenance.encode())
+            .is_err()
+    );
+    assert_eq!(std::fs::read(&target).unwrap(), b"kept");
+}
+
 #[test]
 fn vendoring_copies_the_release_and_every_load_verifies_it() {
     let (release, itaoca) = stored("vendoring");
@@ -466,7 +553,7 @@ fn vendoring_copies_the_release_and_every_load_verifies_it() {
     let mut bytes = std::fs::read(&beside).unwrap();
     let at = bytes.len() - 10;
     bytes[at] ^= 1;
-    std::fs::write(&beside, &bytes).unwrap();
+    std::fs::write(&beside, bytes).unwrap();
     assert!(matches!(
         vendor::load(&root, None, &release.expected),
         Err(Problem::Refused(_))

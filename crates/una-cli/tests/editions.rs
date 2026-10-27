@@ -190,6 +190,12 @@ const EXPECTED_DIFFERENCES: &[Difference] = &[
         case: "verification/refined_elements_0_2_facts",
         edition_0_2: &[("U5001", "src/edition_0_2_facts.una:14:25")],
     },
+    // ADR 0109 rule 1: `[package] profile`, an unknown key before edition 0.3, where the
+    // package checks clean.
+    Difference::Looser {
+        case: "project/profile_edition_0_2",
+        edition_0_2: &[("U7002", "una.toml:5:1")],
+    },
 ];
 
 /// An edition `0.3` package whose output in edition `0.4` differs by design: the diagnostics a
@@ -211,17 +217,74 @@ const EXPECTED_DIFFERENCES_0_4: &[Difference04] = &[
         added: &[],
         removed: &[("U1001", "src/m.una:6:8")],
     },
+    // ADR 0120 rule 4 (`spec/29 §18` rule 6, `§16` rule 5): the built-in `to_f32` and
+    // `to_decimal` resolve ahead of a package function of their name from edition 0.4, so one
+    // on an integer, an `F64` or a type parameter is refused there.
+    Difference04 {
+        case: "names/conversion_functions_in_0_3",
+        added: &[
+            ("U1002", "src/a.una:3:5"),
+            ("U1002", "src/b.una:3:5"),
+            ("U1002", "src/c.una:3:5"),
+            ("U1002", "src/d.una:3:5"),
+            ("U1002", "src/e.una:3:5"),
+            ("U1002", "src/m.una:6:5"),
+        ],
+        removed: &[],
+    },
     // ADR 0120 (`spec/29 §16`): `Decimal[s]` is a type from edition 0.4.
     Difference04 {
         case: "names/decimal_edition_0_3",
         added: &[],
         removed: &[("U0101", "src/m.una:6:22")],
     },
+    // ADR 0116 rule 12: `HttpError.Interrupted` is a variant from edition 0.4, and so is
+    // `RateLimited` (ADR 0117 rule 8), which the `when` then lacks.
+    Difference04 {
+        case: "names/http_interrupted_0_3",
+        added: &[("U2007", "src/poll.una:9:3")],
+        removed: &[("U1001", "src/poll.una:18:8")],
+    },
+    // ADR 0117 rule 8: `HttpError.RateLimited` is a variant from edition 0.4, and so is
+    // `Interrupted` (ADR 0116 rule 12), which the `when` then lacks.
+    Difference04 {
+        case: "names/http_rate_limited_0_3",
+        added: &[("U2007", "src/poll.una:9:3")],
+        removed: &[("U1001", "src/poll.una:18:8")],
+    },
+    // ADR 0117 rule 9 (`spec/27 §10`): `std.limit` is an importable module from edition 0.4.
+    Difference04 {
+        case: "names/limit_0_3",
+        added: &[],
+        removed: &[("U1001", "src/gate.una:6:8")],
+    },
     // ADR 0119 rule 18: a package function `update` whose first parameter is a `Map`.
     Difference04 {
         case: "names/map_update_function_in_0_3",
         added: &[("U1002", "src/a.una:6:5")],
         removed: &[],
+    },
+    // ADR 0120 rule 1 (`spec/29 §16` rule 1, `§17` rule 1, `§18` rule 1): `F32`, `Decimal`,
+    // `Complex`, `Array`, `Matrix`, `Tensor` and `Lu` are built-in names from edition 0.4, so a
+    // kind, variant or unit of one of those names is refused there.
+    Difference04 {
+        case: "names/numeric_names_in_0_3",
+        added: &[
+            ("U1002", "src/m.una:6:10"),
+            ("U1002", "src/m.una:8:10"),
+            ("U1002", "src/m.una:11:10"),
+            ("U1002", "src/m.una:14:10"),
+            ("U1002", "src/m.una:16:18"),
+            ("U1002", "src/m.una:16:27"),
+            ("U1002", "src/m.una:18:13"),
+        ],
+        removed: &[],
+    },
+    // ADR 0117 rule 6: `first of` is an expression from edition 0.4.
+    Difference04 {
+        case: "syntax/first_of_before_0_4",
+        added: &[],
+        removed: &[("U0101", "src/late.una:10:17")],
     },
     // ADR 0116 rule 0: `diverges` and `within` are reserved words.
     Difference04 {
@@ -240,14 +303,51 @@ const EXPECTED_DIFFERENCES_0_4: &[Difference04] = &[
         added: &[],
         removed: &[("U0101", "src/before.una:10:10")],
     },
+    // ADR 0120 rule 1 (`spec/01 §5`): `simd` is reserved before edition 0.4 and an identifier
+    // from it.
+    Difference04 {
+        case: "syntax/simd_word_in_0_3",
+        added: &[],
+        removed: &[
+            ("U0103", "src/simd03.una:9:7"),
+            ("U0103", "src/simd03.una:10:3"),
+        ],
+    },
+    // ADR 0116 rule 19: an example's `stop after` line exists from edition 0.4.
+    Difference04 {
+        case: "syntax/stop_after_before_0_4",
+        added: &[],
+        removed: &[("U0101", "src/before.una:11:3")],
+    },
+    // ADR 0117 rules 1 and 2: `tasks` and `start` are statements from edition 0.4.
+    Difference04 {
+        case: "syntax/tasks_before_0_4",
+        added: &[],
+        removed: &[("U0101", "src/late.una:11:5")],
+    },
+    // ADR 0116 rule 7: `for until` is a loop form from edition 0.4.
+    Difference04 {
+        case: "syntax/until_before_0_4",
+        added: &[],
+        removed: &[("U0101", "src/before.una:9:13")],
+    },
+    // ADR 0117 rule 13: `e within d` is an expression from edition 0.4, and there its unitless
+    // deadline `5` is refused where a duration is required.
+    Difference04 {
+        case: "syntax/within_before_0_4",
+        added: &[("U2028", "src/late.una:10:26")],
+        removed: &[("U0101", "src/late.una:10:19")],
+    },
     // ADR 0120 (`spec/29 §17`): `Matrix`, `Tensor` and `Lu` are built in from edition 0.4, so a
-    // package that declares them is refused there.
+    // package that declares them is refused there, and `Lu(size: 3)` is U2001, since the type
+    // has no constructor (ADR 0120 rule 3, `spec/29 §17` rules 1 and 28).
     Difference04 {
         case: "types/dense_edition_0_3",
         added: &[
             ("U1002", "src/dense.una:6:10"),
             ("U1002", "src/dense.una:8:10"),
             ("U2003", "src/dense.una:13:33"),
+            ("U2001", "src/dense.una:15:36"),
         ],
         removed: &[],
     },
@@ -337,6 +437,7 @@ fn run_as(
     std::fs::write(&manifest, replaced).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
         .args(["--json", command, "."])
         .current_dir(work)
         .output()
@@ -454,13 +555,18 @@ fn every_edition_0_2_package_checks_the_same_in_edition_0_3() {
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
 
-/// Every edition `0.3` package of the conformance suite, moved to edition `0.4` by `una migrate`,
-/// checks as it does in edition `0.3`, but for the packages of `EXPECTED_DIFFERENCES_0_4`, each
-/// of which gains exactly its listed diagnostics (ADR 0119 rule 0, ADR 0121 rule 11 with the note
-/// of ADR 0122 Question 8.1). A difference that the migration alone causes is not a clash: the
-/// diagnostics of the manifest and the lock, whose files the migration renames, are left out of
-/// both sides. A package whose `una.toml` `una migrate` refuses is one that edition `0.3` already
-/// reports at its manifest. Linear in the packages, each checked twice.
+/// Every edition `0.3` package of the conformance suite, MIGRATED to edition `0.4` by
+/// `una migrate`, checks as it does in edition `0.3`, but for the packages of
+/// `EXPECTED_DIFFERENCES_0_4`, each of which gains exactly its listed diagnostics (ADR 0119 rule
+/// 0, ADR 0121 rule 11 with the note of ADR 0122 Question 8.1). The invariant is over migrated
+/// packages: `una migrate` also rewrites the modules in the canonical form of edition `0.4`,
+/// which wraps long lines (ADR 0125, amendment of 2026-10-25), so a package is compared after
+/// it, never as edition `0.3` wrote it. That rewrite changes only white space, which is checked,
+/// and the positions of edition `0.3` are moved to the same characters of the rewritten modules.
+/// A difference that the migration alone causes is not a clash: the diagnostics of the manifest
+/// and the lock, whose files the migration renames, are left out of both sides. A package whose
+/// `una.toml` `una migrate` refuses is one that edition `0.3` already reports at its manifest.
+/// Linear in the packages, each checked twice.
 #[test]
 fn every_edition_0_3_package_checks_the_same_in_edition_0_4() {
     let root = conformance();
@@ -567,6 +673,7 @@ fn compare_migrated(
     let una = |args: &[&str]| {
         Command::new(env!("CARGO_BIN_EXE_una"))
             .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+            .env_remove("UNA_PROOF_KEY")
             .args(args)
             .current_dir(work)
             .output()
@@ -607,6 +714,36 @@ fn compare_migrated(
                     )),
                 }
             }
+            // The migration rewrites the modules in the canonical form of edition 0.4, which
+            // changes only white space: each site of edition 0.3 is at the same character.
+            let mut rewritten = Vec::new();
+            for module in modules(&package.join("src")) {
+                let relative = module.strip_prefix(package).unwrap().to_path_buf();
+                let old = std::fs::read_to_string(&module).unwrap();
+                let new = std::fs::read_to_string(work.join(&relative)).unwrap();
+                if !old
+                    .chars()
+                    .filter(|c| !c.is_whitespace())
+                    .eq(new.chars().filter(|c| !c.is_whitespace()))
+                {
+                    rewritten.push(relative.to_string_lossy().replace('\\', "/"));
+                }
+            }
+            if !rewritten.is_empty() {
+                missing.push(format!(
+                    "una migrate changed more than white space in {rewritten:?}"
+                ));
+            }
+            for (_, at) in &mut kept {
+                let file = at.rsplitn(3, ':').nth(2).unwrap_or("").to_owned();
+                if let (Ok(old), Ok(new)) = (
+                    std::fs::read_to_string(package.join(&file)),
+                    std::fs::read_to_string(work.join(&file)),
+                ) && old != new
+                {
+                    *at = moved(at, &old, &new);
+                }
+            }
             if !missing.is_empty() {
                 Err(format!(
                     "edition 0.4 lacks the listed {}",
@@ -642,6 +779,64 @@ fn compare_migrated(
     };
     std::fs::remove_dir_all(work).unwrap();
     result
+}
+
+/// The `.una` files under `dir`, recursively, in a stable order.
+fn modules(dir: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return found;
+    };
+    let mut paths: Vec<PathBuf> = entries.map(|entry| entry.unwrap().path()).collect();
+    paths.sort();
+    for path in paths {
+        if path.is_dir() {
+            found.extend(modules(&path));
+        } else if path.extension().is_some_and(|extension| extension == "una") {
+            found.push(path);
+        }
+    }
+    found
+}
+
+/// The site `at`, `file:line:col` of the text `old`, at the same character of `new`, which
+/// differs from `old` in white space only: the character there is the one with as many
+/// characters that are not white space before it. Columns count Unicode scalar values.
+fn moved(at: &str, old: &str, new: &str) -> String {
+    let mut parts = at.rsplitn(3, ':');
+    let (Some(col), Some(line), Some(file)) = (parts.next(), parts.next(), parts.next()) else {
+        return at.to_owned();
+    };
+    let (Ok(line), Ok(col)) = (line.parse::<usize>(), col.parse::<usize>()) else {
+        return at.to_owned();
+    };
+    // The number of characters that are not white space before the site in `old`.
+    let mut before = 0;
+    for (index, text) in old.split('\n').enumerate() {
+        if index + 1 < line {
+            before += text.chars().filter(|c| !c.is_whitespace()).count();
+        } else {
+            before += text
+                .chars()
+                .take(col.saturating_sub(1))
+                .filter(|c| !c.is_whitespace())
+                .count();
+            break;
+        }
+    }
+    let mut seen = 0;
+    for (index, text) in new.split('\n').enumerate() {
+        for (column, c) in text.chars().enumerate() {
+            if c.is_whitespace() {
+                continue;
+            }
+            if seen == before {
+                return format!("{file}:{}:{}", index + 1, column + 1);
+            }
+            seen += 1;
+        }
+    }
+    at.to_owned()
 }
 
 /// The `file:line:col` of a location of the JSON documents.

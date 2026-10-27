@@ -97,17 +97,17 @@ trust
 
 ## Examples
 
-A trusted module that no trust line names, or whose consent the lock does not record for the dependency's content as it is now, is U7012 at the need. The repair is to review the trusted modules and the code they run, then:
+A trusted module that no trust line names, or whose consent the lock does not record for the dependency's content as it is now, is U7012 at the need. The refusal and the review print the flag to copy, with the content digest of the package as it is now. The repair is to review the trusted modules and the code they run, then:
 
 ```text
-$ una ita lock --accept-trust privacy
+$ una ita lock --accept-trust privacy@sha256:…
 change privacy 1.0.0 (path deps/privacy): digest sha256:… -> sha256:…; may …; uses …
 wrote ita.lock
 ```
 
 ## Edge cases
 
-- **Pinned to the whole package.** A policy's `via` may call any function of its package, so the consent covers the content digest of every file of it.
+- **Pinned to the whole package.** A policy's `via` may call any function of its package, so the consent covers the content digest of every file of it, computed from the bytes checked. A consent to another digest is refused.
 - **Only that module.** A release whose policy is declared in a trusted module of a dependency is exempt from the boundary's rule; every other release still is not.
 - **The report** lists each dependency's consented trusted modules under its `trust`, and in `tcb.dependency_trust` with their line counts.
 

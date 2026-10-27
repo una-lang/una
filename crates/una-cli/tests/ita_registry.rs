@@ -86,11 +86,12 @@ fn now() -> u64 {
         .as_secs()
 }
 
-/// A registry `acme`: the owner `acme` registered with the key of seed 60, its checkpoint
-/// cosigned `ago` seconds before now. Returns it, the owner's key pair, and its signing key as a
-/// publisher holds it.
-fn acme(
+/// A registry `acme`: the owner `acme` registered with the key of seed 60 and the keys of
+/// `more`, at threshold 1, its checkpoint cosigned `ago` seconds before now. Returns it, the
+/// owner's key pair of seed 60, and its signing key as a publisher holds it.
+fn acme_with(
     ago: u64,
+    more: &[&(ed25519_dalek::SigningKey, una_project::tlog::note::Key)],
 ) -> (
     TestRegistry,
     (ed25519_dalek::SigningKey, una_project::tlog::note::Key),
@@ -98,7 +99,9 @@ fn acme(
 ) {
     let mut registry = TestRegistry::new("acme");
     let pair = keypair(60, "acme.laptop");
-    registry.register("acme", &pair);
+    let mut keys = vec![&pair];
+    keys.extend_from_slice(more);
+    registry.register_keys("acme", &keys, 1, &[], 0);
     registry.checkpoint(now() - ago);
     let signing = SigningKey::from_secret("acme.laptop", &[60; 32]).unwrap();
     (registry, pair, signing)
@@ -188,7 +191,15 @@ fn project(name: &str, registry: &TestRegistry) -> (PathBuf, PathBuf, PathBuf) {
 /// A registry `acme` that holds `acme/ledger 0.3.1`, published through the library into a
 /// directory and logged a month ago, and a fresh checkpoint.
 fn published_registry(name: &str) -> (TestRegistry, SigningKey, PathBuf) {
-    let (mut registry, _, signing) = acme(40 * DAY);
+    published_registry_with(name, &[])
+}
+
+/// [`published_registry`], the owner registered with the keys of `more` too.
+fn published_registry_with(
+    name: &str,
+    more: &[&(ed25519_dalek::SigningKey, una_project::tlog::note::Key)],
+) -> (TestRegistry, SigningKey, PathBuf) {
+    let (mut registry, _, signing) = acme_with(40 * DAY, more);
     let inbox = scratch("ita-registry-inbox", name);
     let size = registry.entries.len() as u64;
     let checkpoint =
@@ -312,11 +323,15 @@ fn publish_refuses_a_package_in_a_git_repository() {
         let (status, out, _) = una_in(&["una", "--json", "ita", "publish", path(dir)], &store);
         status == 1 && out.contains("uncommitted changes is not available yet")
     };
-    // This repository's own checkout holds the test's target directory.
-    assert!(refused(&package(
-        "publish-in-repository",
-        &published("acme")
-    )));
+    // A package several directories below a repository's root. The test's target directory
+    // may be anywhere, inside a checkout or not, so the repository is made here.
+    let root = outside_git("in-repository");
+    std::fs::create_dir(root.join(".git")).unwrap();
+    let deep = root.join("a").join("b").join("pkg");
+    std::fs::create_dir_all(deep.join("src")).unwrap();
+    std::fs::write(deep.join("ita.una"), published("acme")).unwrap();
+    std::fs::write(deep.join("src/demo.una"), MODULE).unwrap();
+    assert!(refused(&deep), "a `.git` several directories above");
     let dir = package_outside_git("git-dir", &published("acme"));
     assert!(!refused(&dir));
     std::fs::create_dir(dir.join(".git")).unwrap();
@@ -340,7 +355,14 @@ fn publish_and_yank_send_only_where_the_source_is_declared() {
         assert_eq!(codes_of(&out), ["U7013"], "{out}");
         assert!(out.contains(part), "{part}: {out}");
     };
+    // `una check` of the package comes before the source is looked up (`spec/30 §15` rule 3),
+    // and it needs the lock: each package is locked first, as a publisher does.
+    let locked = |dir: &Path| {
+        let (status, out, err) = una_in(&["una", "ita", "lock", path(dir)], &store);
+        assert_eq!(status, 0, "{out}{err}");
+    };
     let itaty = package_outside_git("itaty", &published("itaty"));
+    locked(&itaty);
     codes_and(
         &["una", "--json", "ita", "publish", path(&itaty)],
         "no https transport yet",
@@ -350,6 +372,7 @@ fn publish_and_yank_send_only_where_the_source_is_declared() {
         "no https transport yet",
     );
     let lone = package_outside_git("lone", &published("acme"));
+    locked(&lone);
     codes_and(
         &["una", "--json", "ita", "publish", path(&lone)],
         "declared by no",
@@ -363,10 +386,23 @@ fn publish_and_yank_send_only_where_the_source_is_declared() {
         ),
     )
     .unwrap();
+    locked(&member);
     codes_and(
         &["una", "--json", "ita", "publish", path(&member)],
         "no https transport yet",
     );
+    // A source the package's workspace does not declare is refused, and nothing is sent, the
+    // name being well formed: `publish to` is checked against `itaty.una` when it is published.
+    std::fs::write(member.join("ita.una"), published("other")).unwrap();
+    codes_and(
+        &["una", "--json", "ita", "publish", path(&member)],
+        "`other` is not a source of",
+    );
+    codes_and(
+        &["una", "--json", "ita", "yank", "0.1.0", path(&member)],
+        "`other` is not a source of",
+    );
+    std::fs::write(member.join("ita.una"), published("acme")).unwrap();
     let (status, _, err) = una_in(&["una", "ita", "yank", "0.1", path(&member)], &store);
     assert_eq!(status, 2);
     assert!(err.contains("full version"), "{err}");
@@ -402,11 +438,13 @@ fn a_published_release_is_locked_fetched_yanked_and_audited() {
     assert_eq!(status, 1, "{out}");
     assert_eq!(codes_of(&out), ["U7014"], "{out}");
     assert!(out.contains("0.3.1 is yanked"), "{out}");
-    // A source no place can serve is not called clean.
+    // A source no place can serve is not called clean: unavailable (U7013), since what is
+    // missing never makes a verdict.
     std::fs::remove_file(itaoca.join("mirrors.una")).unwrap();
     let (status, out, _) = una_in(&["una", "--json", "ita", "audit", path(&dir)], &itaoca);
     assert_eq!(status, 1);
-    assert_eq!(codes_of(&out), ["U7010"], "{out}");
+    assert_eq!(codes_of(&out), ["U7013"], "{out}");
+    assert!(out.contains("audit reports nothing as clean"), "{out}");
 }
 
 /// The registry then logs an owner chain that does not settle: the audit refuses the package
@@ -414,19 +452,24 @@ fn a_published_release_is_locked_fetched_yanked_and_audited() {
 /// section (U7010), read from the client's typed record.
 #[test]
 fn audit_reports_an_unsettled_owner_chain_as_evidence_against_the_registry() {
-    let (mut registry, _, _) = published_registry("unsettled");
+    let b = keypair(61, "acme.b");
+    let c = keypair(62, "acme.c");
+    let d = keypair(64, "acme.d");
+    let (mut registry, _, _) = published_registry_with("unsettled", &[&b, &d]);
     let (dir, mirror, itaoca) = project("unsettled", &registry);
     let (status, out, err) = una_in(&["una", "ita", "lock", path(&dir)], &itaoca);
     assert_eq!(status, 0, "{out}{err}");
+    // `A` adds `C`, then `A` and `B` claim `A` since 0, and `A`, `B` and `C` claim `B` since
+    // 0: two claims whose own-word floors alternate, so the chain never settles.
     let a = keypair(60, "acme.laptop");
-    let t = keypair(66, "acme.t");
     registry.owner_event(
         "acme",
-        &format!("add {}", support::key_text(&t.1)),
+        &format!("add {}", support::key_text(&c.1)),
         1,
-        &[&a, &t],
+        &[&a, &c],
     );
-    let claim = registry.owner_event("acme", "revoke acme.laptop since 0", 1, &[&t]);
+    let claim = registry.owner_event("acme", "revoke acme.laptop since 0", 1, &[&a, &b]);
+    registry.owner_event("acme", "revoke acme.b since 0", 1, &[&a, &b, &c]);
     registry.checkpoint(now() - 30);
     registry.write(&mirror);
     let (status, out, _) = una_in(&["una", "--json", "ita", "audit", path(&dir)], &itaoca);
@@ -501,7 +544,7 @@ fn fetched(name: &str) -> (TestRegistry, PathBuf, PathBuf, PathBuf) {
 
 #[test]
 fn a_bundle_carries_the_lock_to_an_air_gapped_itaoca() {
-    let (_, dir, _, itaoca) = fetched("bundle");
+    let (registry, dir, _, itaoca) = fetched("bundle");
     let file = scratch("ita-registry-bundles", "one").join("demo.bundle");
     let (status, out, err) = una_in(&["una", "ita", "bundle", path(&file), path(&dir)], &itaoca);
     assert_eq!(status, 0, "{out}{err}");
@@ -514,16 +557,23 @@ fn a_bundle_carries_the_lock_to_an_air_gapped_itaoca() {
     );
     assert_eq!(status, 0, "{out}{err}");
     assert!(out.contains("stored acme/ledger 0.3.1 in Itaoca"), "{out}");
+    // The floor is kept under the registry's identity, the hex SHA-256 of its pin
+    // (`spec/30 §14` rule 3), never under the source's name.
+    let id = una_project::itaoca::registry_id(&registry.pin());
     assert!(
-        isolated.join("registry/acme/checkpoint").exists(),
+        isolated
+            .join("registry")
+            .join(&id)
+            .join("checkpoint")
+            .exists(),
         "the floor is stored"
     );
-    let (status, out, _) = una_in(&["una", "ita", "verify", path(&dir)], &isolated);
-    assert_eq!(status, 0, "{out}");
-    assert!(
-        out.contains("verified acme/ledger 0.3.1 in Itaoca"),
-        "{out}"
-    );
+    // Every copy matches the lock, and the package is still not verified until the registry
+    // client supplies its key chain and name map proof: unavailable (`spec/30 §10` rule 11).
+    let (status, out, _) = una_in(&["una", "--json", "ita", "verify", path(&dir)], &isolated);
+    assert_eq!(status, 1, "{out}");
+    assert_eq!(codes_of(&out), ["U7013"], "{out}");
+    assert!(out.contains("match the lock"), "{out}");
     // Again: Itaoca holds it already.
     let (status, out, _) = una_in(
         &["una", "ita", "unbundle", path(&file), path(&dir)],

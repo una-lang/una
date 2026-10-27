@@ -19,7 +19,7 @@ use std::collections::BTreeSet;
 
 use super::read_failure;
 use crate::client::{Marks, Misbehavior, Observation, Registry, owner_of, shown};
-use crate::tlog::owner::Unsettled;
+use crate::tlog::owner::{Sealed, Unsettled};
 use crate::tlog::state::Advisory;
 use crate::transport::Refusal;
 use crate::version::{Line, Version};
@@ -89,6 +89,9 @@ pub struct Facts {
     /// The releases of its name whose cooldown eligibility a place's withheld cosignatures
     /// delay, as the client observed them ([`Observation::EligibilityDelay`]).
     pub eligibility_delays: Vec<Delay>,
+    /// The sealed segments of its owner's chain (`spec/30 §14` rule 5, sealed segments), in log
+    /// order: no release logged in one counts, the owner's own included.
+    pub sealed: Vec<Sealed>,
 }
 
 /// A release whose cooldown eligibility withheld cosignatures delay: eligible at the earliest
@@ -278,6 +281,7 @@ pub fn facts(registry: &mut Registry<'_>, locked: &Locked) -> Result<Facts, (Cod
         void_yanks: void_yanks(&marks, &locked.version),
         accepted_effects,
         eligibility_delays,
+        sealed: history.sealed.clone(),
     })
 }
 
@@ -315,6 +319,10 @@ pub enum Kind {
     /// a finding (U7014) when it is the fix an advisory naming the locked release names, a note
     /// otherwise ([`Finding::is_note`]).
     EligibilityDelay(Delay),
+    /// A sealed segment of its owner's chain (`spec/30 §14` rule 5): a note, said once per
+    /// owner and source, since every entry in it is void and no release logged in it counts,
+    /// the owner's own included.
+    Sealed(Sealed),
 }
 
 /// A finding: the package, by its index among the packages audited, and what was found.
@@ -375,18 +383,37 @@ impl Finding {
                 delay.served,
                 delay.earliest
             ),
+            Kind::Sealed(sealed) => format!(
+                "the chain of the owner `{}` at `{}` has a sealed segment, log entries {} to {} ({} claims), sealed by the recovery or dispute at log entry {}, in effect from {}: no release logged in it counts, the owner's own included; the owner republishes the ones it needs",
+                owner_of(&locked.name),
+                locked.source,
+                sealed.first,
+                sealed.last,
+                sealed.claims,
+                sealed.request,
+                sealed.reset
+            ),
         }
     }
 
     /// Whether it is a note, which the audit says and which decides nothing: a delayed release
-    /// that is not the fix of an advisory naming the locked release.
+    /// that is not the fix of an advisory naming the locked release, or a sealed segment of the
+    /// owner's chain.
     pub fn is_note(&self) -> bool {
         matches!(&self.kind, Kind::EligibilityDelay(delay) if !delay.fix)
+            || matches!(&self.kind, Kind::Sealed(_))
+    }
+
+    /// Whether it is a fact of the owner's chain alone, the same for every package of that
+    /// owner at that source, which the audit says once: a sealed segment.
+    pub fn of_owner(&self) -> bool {
+        matches!(&self.kind, Kind::Sealed(_))
     }
 }
 
 /// The findings of one package from its facts, in a fixed order: yanked, advisories,
-/// compromise, pending recoveries, key changes. O(A + K).
+/// compromise, pending recoveries, key changes, void yanks, accepted effects, eligibility
+/// delays, sealed segments. O(A + K + S) for its S sealed segments.
 pub fn findings(package: usize, facts: &Facts) -> Vec<Finding> {
     let mut kinds = Vec::new();
     if facts.yanked {
@@ -426,6 +453,7 @@ pub fn findings(package: usize, facts: &Facts) -> Vec<Finding> {
             kinds.push(Kind::EligibilityDelay(delay.clone()));
         }
     }
+    kinds.extend(facts.sealed.iter().cloned().map(Kind::Sealed));
     kinds
         .into_iter()
         .map(|kind| Finding { package, kind })
