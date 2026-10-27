@@ -287,7 +287,7 @@ fn render(types: &[Shape], ty: usize, word: i64, redact: bool, params: &[i64]) -
         }
         tasks.extend(parts.into_iter().rev());
     }
-    out
+    Some(out)
 }
 
 fn field_word(word: i64, index: usize) -> i64 {

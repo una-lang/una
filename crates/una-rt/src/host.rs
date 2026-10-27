@@ -374,9 +374,11 @@ pub fn event_arg(site: i64, slot: i64, index: i64, value: i64) {
     ) else {
         return;
     };
-    with_state(|state| {
+    // An argument that holds an integer too long for text aborts the run at the operation
+    // (`spec/11 §7`, #923), its event left `aborted`.
+    let too_long = with_state(|state| {
         let Some(op) = state.ops.get(site) else {
-            return;
+            return false;
         };
         let name = op
             .params
@@ -385,12 +387,20 @@ pub fn event_arg(site: i64, slot: i64, index: i64, value: i64) {
             .unwrap_or_else(|| format!("arg{index}"));
         let shown = match op.args.get(index) {
             Some(arg) => state.types.redacted(arg.ty, value, arg.redacted.as_deref()),
-            None => "?".to_owned(),
+            None => Some("?".to_owned()),
+        };
+        let Some(shown) = shown else {
+            return true;
         };
         if let Some(event) = state.trace.as_mut().and_then(|trace| trace.get_mut(slot)) {
             event.args.push((name, shown));
         }
-    });
+        false
+    })
+    .unwrap_or(false);
+    if too_long {
+        crate::runtime::int_text_abort(i64::try_from(site).unwrap_or(i64::MAX));
+    }
 }
 
 /// Ends the event at `slot`, of operation `site`, with its value, or its failure when `failed`
