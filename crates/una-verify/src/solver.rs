@@ -81,6 +81,53 @@ const SIGXCPU: i32 = 24;
 /// stderr and nothing on stdout (probe P4 of ADR 0124).
 const MEMOUT_STATUS: i32 = 101;
 const MEMOUT_MESSAGE: &str = "(error \"out of memory\")";
+/// What Z3 5.1.0's front end answers `(get-model)` and `(get-value ...)` after `unsat`, with
+/// exit status 1: `(error "line N column M: model is not available")`, pinned per solver
+/// build and compared byte for byte but for the two numbers (ADR 0124 rule 8 as amended).
+const MODEL_UNAVAILABLE_HEAD: &str = "(error \"line ";
+const MODEL_UNAVAILABLE_TAIL: &str = ": model is not available\")";
+/// The reply to the script's `(get-info :reason-unknown)` after a proof.
+const NO_REASON: &str = "(:reason-unknown \"\")";
+
+/// Whether a line is exactly the pinned "model is not available" error, with its position.
+fn model_unavailable_line(line: &str) -> bool {
+    let Some(rest) = line.strip_prefix(MODEL_UNAVAILABLE_HEAD) else {
+        return false;
+    };
+    let Some(rest) = rest.strip_suffix(MODEL_UNAVAILABLE_TAIL) else {
+        return false;
+    };
+    let mut parts = rest.split(" column ");
+    let (Some(line_number), Some(column), None) = (parts.next(), parts.next(), parts.next()) else {
+        return false;
+    };
+    !line_number.is_empty()
+        && !column.is_empty()
+        && line_number.bytes().all(|b| b.is_ascii_digit())
+        && column.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// Whether what the child wrote is a proof's exact output with exit status 1: `unsat` as the
+/// first line, every later line of stdout the pinned error or the reply to `:reason-unknown`,
+/// nothing on stderr, and no other status word anywhere.
+fn exact_proof_output(stdout: &str, stderr: &str) -> bool {
+    if !stderr.trim().is_empty() {
+        return false;
+    }
+    let mut lines = stdout.lines();
+    if lines.next() != Some("unsat") {
+        return false;
+    }
+    lines.all(|line| line == NO_REASON || model_unavailable_line(line))
+}
+
+/// How many status words the output holds at the top level.
+fn status_count(output: &str) -> usize {
+    tokens(output)
+        .iter()
+        .filter(|item| matches!(item, Sexp::Atom(atom) if matches!(atom.as_str(), "sat" | "unsat" | "unknown")))
+        .count()
+}
 
 /// The status of a query: `unsat` proves the obligation, `sat` refutes it (`spec/12 §5, §6`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -112,11 +159,6 @@ pub(crate) struct Answer {
     /// which Z3 ends with status 1 (probe P4). Read at parsing, never cached.
     #[serde(skip)]
     pub(crate) error_after_sat: bool,
-    /// Whether every `(error ...)` line after the status says the model is not available:
-    /// what `(get-model)` and `(get-value ...)` answer after `unsat`, which makes Z3 exit
-    /// with status 1 although the proof is sound (rule 8 as amended). Never cached.
-    #[serde(skip)]
-    pub(crate) model_unavailable_only: bool,
 }
 
 /// Why the solver could not answer: the query is not valid SMT-LIB for it, which is a bug of
@@ -124,14 +166,16 @@ pub(crate) struct Answer {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Failure(pub(crate) String);
 
-/// The answer of a query from what its child wrote and how it ended (ADR 0124 rule 8).
-/// Proven needs the handshake (checked by the [`Solver`]), `unsat`, and a normal exit: with
-/// status 0, or with status 1 when every `(error ...)` after `unsat` says the model is not
-/// available, which is what the script's `(get-model)` and `(get-value ...)` answer after a
-/// proof and what makes Z3 5.1.0 exit with 1; refuted needs `sat` with status 0, or status 1
-/// when an `(error ...)` followed `sat`; a limit or a crash is `unknown` with its reason,
-/// never a proof, never cached, and never U8001; a `SIGSYS` is U5003; an `(error ...)` before
-/// the status stays U8001, whatever the exit status.
+/// The answer of a query from what its child wrote and how it ended (ADR 0124 rule 8, as
+/// amended on 2026-10-27). Proven needs the handshake (checked by the [`Solver`]), exactly one
+/// status word, `unsat`, and then either exit status 0, or exit status 1 where every line
+/// after `unsat` on stdout is the pinned solver's exact "model is not available" error (what
+/// the script's `(get-model)` and `(get-value ...)` answer after a proof, which makes Z3 5.1.0
+/// exit with 1) or the reply to `(get-info :reason-unknown)`, with nothing on stderr and no
+/// other output of any kind; refuted needs `sat` with status 0, or status 1 when an
+/// `(error ...)` followed `sat`; a limit or a crash is `unknown` with its reason, never a
+/// proof, never cached, and never U8001; a `SIGSYS` is U5003; an `(error ...)` before the
+/// status stays U8001, whatever the exit status.
 pub(crate) fn answer(raw: &Raw, values: usize) -> Result<Answer, Refused> {
     let unknown = |reason: &str, detail: Option<String>| {
         Ok(Answer {
@@ -141,7 +185,6 @@ pub(crate) fn answer(raw: &Raw, values: usize) -> Result<Answer, Refused> {
             values_error: None,
             detail,
             error_after_sat: false,
-            model_unavailable_only: false,
         })
     };
     let status = match raw.ended {
@@ -191,9 +234,16 @@ pub(crate) fn answer(raw: &Raw, values: usize) -> Result<Answer, Refused> {
         }
         Err(failure) => return Err(Refused::Query(failure.0)),
     };
+    // Exactly one answer to `(check-sat)`: a second status word is no proof and no refutation.
+    if parsed.status != Status::Unknown && status_count(&raw.stdout) != 1 {
+        return unknown(
+            "crash",
+            Some("the solver child wrote more than one status".to_owned()),
+        );
+    }
     match (parsed.status, status) {
         (Status::Proven | Status::Refuted, 0) | (Status::Unknown, _) => Ok(parsed),
-        (Status::Proven, 1) if parsed.model_unavailable_only => Ok(parsed),
+        (Status::Proven, 1) if exact_proof_output(&raw.stdout, &raw.stderr) => Ok(parsed),
         (Status::Refuted, 1) if parsed.error_after_sat => Ok(parsed),
         (_, status) => unknown(
             "crash",
@@ -404,11 +454,6 @@ fn parse(output: &str, values: usize) -> Result<Answer, Failure> {
         )));
     };
     let error_after_sat = status == Status::Refuted && !errors_after_status.is_empty();
-    let model_unavailable_only = status == Status::Proven
-        && !errors_after_status.is_empty()
-        && errors_after_status
-            .iter()
-            .all(|error| error.ends_with("model is not available"));
     // A refutation whose values do not answer every requested term, or that the solver
     // followed with an error, has no model to show: none is kept, never empty values (#668).
     // The other statuses keep no values at all.
@@ -436,7 +481,6 @@ fn parse(output: &str, values: usize) -> Result<Answer, Failure> {
         values_error: values_error.filter(|_| status == Status::Refuted),
         detail: None,
         error_after_sat,
-        model_unavailable_only,
     })
 }
 
@@ -460,7 +504,6 @@ mod tests {
                 values_error: None,
                 detail: None,
                 error_after_sat: false,
-                model_unavailable_only: false,
             })
         );
         let proven =
@@ -474,7 +517,6 @@ mod tests {
                 values_error: None,
                 detail: None,
                 error_after_sat: false,
-                model_unavailable_only: false,
             })
         );
         let rejected_values = "sat\n(\n  (define-fun |e| () Int\n    0)\n)\n(error \"line 12 column 14: unknown constant\")\n(:reason-unknown \"\")\n";
@@ -487,7 +529,6 @@ mod tests {
                 values_error: Some("line 12 column 14: unknown constant".to_owned()),
                 detail: None,
                 error_after_sat: false,
-                model_unavailable_only: false,
             })
         );
         // Fewer values than requested terms are no model either.
@@ -500,7 +541,6 @@ mod tests {
                 values_error: Some("1 values for 2 requested terms".to_owned()),
                 detail: None,
                 error_after_sat: false,
-                model_unavailable_only: false,
             })
         );
         let unknown = "unknown\n(error \"model is not available\")\n(:reason-unknown \"(resource limits reached)\")\n";
@@ -543,10 +583,38 @@ mod tests {
         let transcript = "unsat\n(error \"line 9 column 10: model is not available\")\n(error \"line 10 column 12: model is not available\")\n(:reason-unknown \"\")\n";
         let proven = answer(&raw(transcript, "", Ended::Exited(1)), 2).unwrap();
         assert_eq!(proven.status, Status::Proven);
-        // Any other error after `unsat` with status 1 is not a proof.
-        let other = "unsat\n(error \"line 9 column 10: model is not available\")\n(error \"line 11: unknown constant\")\n";
-        let crashed = answer(&raw(other, "", Ended::Exited(1)), 2).unwrap();
-        assert_eq!(crashed.reason.as_deref(), Some("crash"));
+        // Any other line after `unsat` with status 1 is not a proof: another error, a text
+        // that is nearly the pinned one, anything on stderr, a second status.
+        for (stdout, stderr) in [
+            (
+                "unsat\n(error \"line 9 column 10: model is not available\")\n(error \"line 11: unknown constant\")\n",
+                "",
+            ),
+            (
+                "unsat\n(error \"line 9 column 10: model is not available \")\n",
+                "",
+            ),
+            ("unsat\n(error \"model is not available\")\n", ""),
+            (
+                "unsat\n(error \"line x column 10: model is not available\")\n",
+                "",
+            ),
+            (
+                "unsat\n(error \"line 9 column 10: model is not available\")\nsat\n",
+                "",
+            ),
+            (
+                "unsat\n(error \"line 9 column 10: model is not available\")\n",
+                "warning\n",
+            ),
+            ("unsat\nunsat\n", ""),
+        ] {
+            let not_proven = answer(&raw(stdout, stderr, Ended::Exited(1)), 2).unwrap();
+            assert_eq!(not_proven.reason.as_deref(), Some("crash"), "{stdout:?}");
+        }
+        // Two status words with status 0 are no proof either.
+        let twice = answer(&raw("unsat\nunsat\n", "", Ended::Exited(0)), 0).unwrap();
+        assert_eq!(twice.reason.as_deref(), Some("crash"));
         // An error before the status, with status 1 as Z3 exits, is still a rejected query.
         let rejected = "(error \"line 2 column 11: unknown constant y\")\nsat\n";
         assert!(matches!(
