@@ -125,15 +125,40 @@ impl Parker {
     }
 }
 
+/// What ends the I/O step an exchange waits in when its request is abandoned (#1148): the
+/// shutdown of its socket, set by the client once it is connected and run once by
+/// [`Abandon::abandon`].
+type Hook = Box<dyn FnOnce() + Send>;
+
+/// The hook slot of an [`Abandon`]: at most one, since a request's hops run one at a time.
+#[derive(Default)]
+struct HookSlot(Mutex<Option<Hook>>);
+
+impl std::fmt::Debug for HookSlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("HookSlot")
+    }
+}
+
+/// Locks a hook slot, recovering it when a thread panicked while holding the lock: each
+/// critical section leaves it consistent.
+fn lock_hook(slot: &HookSlot) -> MutexGuard<'_, Option<Hook>> {
+    slot.0.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 #[derive(Debug, Default)]
 struct AbandonInner {
     abandoned: AtomicBool,
     parker: Parker,
+    hook: HookSlot,
 }
 
-/// How an engine ends the wait of a request whose task was cancelled while it waited (ADR 0117
-/// rule 4, first bullet): the request then leaves the queues at once and is never sent. A clone
-/// shares the flag.
+/// How an engine ends a request whose task was cancelled (ADR 0117 rule 4, first bullet; ADR
+/// 0116 P9, #1148). A request still waiting at a limit leaves the queues at once and is never
+/// sent. One whose exchange has begun stops at its next I/O step: the client sees the flag as an
+/// interruption ([`crate::client::send_covered`]), and its hook wakes the step that waits, by
+/// shutting down the connection's socket, with no polling; a resolution or a connection attempt
+/// in progress sees the flag when it returns. A clone shares the flag.
 #[derive(Clone, Debug, Default)]
 pub struct Abandon(Arc<AbandonInner>);
 
@@ -143,15 +168,40 @@ impl Abandon {
         Abandon::default()
     }
 
-    /// Raises the flag and wakes the wait.
+    /// Raises the flag, wakes the wait at a limit, and runs the hook of the I/O step in
+    /// progress, once.
     pub fn abandon(&self) {
         self.0.abandoned.store(true, Ordering::SeqCst);
         self.0.parker.unpark();
+        let hook = lock_hook(&self.0.hook).take();
+        if let Some(hook) = hook {
+            hook();
+        }
     }
 
     /// Whether the flag is raised.
     pub fn abandoned(&self) -> bool {
         self.0.abandoned.load(Ordering::SeqCst)
+    }
+
+    /// Sets the hook that ends the I/O step in progress when the request is abandoned, in place
+    /// of any earlier one, which is dropped unrun. When the flag is already raised, the hook runs
+    /// at once: the flag is set before the slot is read, under the slot's lock, so a hook is
+    /// never left unrun after an abandon.
+    pub(crate) fn on_abandon(&self, hook: Hook) {
+        let mut slot = lock_hook(&self.0.hook);
+        if self.abandoned() {
+            drop(slot);
+            hook();
+            return;
+        }
+        *slot = Some(hook);
+    }
+
+    /// Drops the hook of the I/O step that ended, unrun.
+    pub(crate) fn clear_hook(&self) {
+        let hook = lock_hook(&self.0.hook).take();
+        drop(hook);
     }
 }
 
@@ -518,7 +568,7 @@ impl Drop for Permit<'_> {
 
 #[cfg(test)]
 mod tests {
-    use std::os::fd::RawFd;
+    use std::os::fd::BorrowedFd;
     use std::sync::atomic::{AtomicU64, AtomicUsize};
 
     use super::*;
@@ -530,7 +580,7 @@ mod tests {
         fn stopped(&self) -> bool {
             false
         }
-        fn wait(&self, _socket: RawFd, _write: bool, _timeout: Duration) -> Waited {
+        fn wait(&self, _socket: BorrowedFd<'_>, _write: bool, _timeout: Duration) -> Waited {
             Waited::Ready
         }
         fn waits(&self) -> bool {
@@ -544,7 +594,7 @@ mod tests {
         fn stopped(&self) -> bool {
             true
         }
-        fn wait(&self, _socket: RawFd, _write: bool, _timeout: Duration) -> Waited {
+        fn wait(&self, _socket: BorrowedFd<'_>, _write: bool, _timeout: Duration) -> Waited {
             Waited::Stopped
         }
         fn waits(&self) -> bool {

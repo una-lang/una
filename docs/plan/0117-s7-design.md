@@ -17,7 +17,7 @@ This note fixes how S7 is built, and lists the decisions it takes where the ADRs
 5. Name resolution and the TCP connection stay on the I/O pool (`--io-threads`), interruptibly, with their wait in the pool covered by the request's deadline, and resolver threads bounded (decision S7-D2).
 6. Conformance: 64 requests to a server that never answers delay no `Files` or `Console` operation of another task, with `--io-threads 1`; 1,000 requests under `ulimit -n 256` never make a `Files` operation fail; the scale tests of S4 with every task parked on a request at once.
 
-No construct, diagnostic code, flag or trace event is added, and no outcome changes: `spec/27 §2` rule 4 ("Meaning") holds, so the reactor changes when an operation's waits end, never what the operation does.
+No construct, diagnostic code, flag or trace event is added, and no outcome changes: `spec/27 §2` rule 5 ("Meaning") holds, so the reactor changes when an operation's waits end, never what the operation does.
 
 ## 2. The `una-sys` interface
 
@@ -107,7 +107,7 @@ The crate stays under its cap of 1,200 lines (ADR 0116 amendment of 2026-10-19),
 
 - **Resolution and connection run as one job on the I/O pool** (`--io-threads`). The task parks on the reactor until the job hands back its connection (`Ready`), until the request's deadline passes, which covers the job's wait in the pool's queue, or until a cancellation. The job is `una_http::client::open`: the resolver on a thread of its own bounded by the deadline, then `connect_timeout` over the addresses, within the request's deadline. The connected stream comes back to the task, which makes it non-blocking and goes on, on the reactor.
 - **A job whose task gave up ends at once** (review R7-3). The job carries clones of the task's cancellation entries and reads them, with the run's stop and the deadline, before it resolves, and before each address. So a job of a cancelled or expired request that a helper takes from the queue costs O(1) and opens nothing.
-- **Name resolution** (`una-http`, `resolve.rs`, review R7-10):
+- **Name resolution** (`una-http`, `resolve.rs`, review R7-10). Withdrawn when S7 was merged with #1148 (ADR 0117 amendment of 2026-10-27, slice S7 merged with issue #1148): the job hands the lookup and the connection to the bounded pools of #1148 instead. As designed:
   - **One lookup per name at a time.** Callers that ask for a name while its lookup is in flight wait for that lookup's answer, each until its own deadline. A lookup whose callers all gave up keeps its place until the system answers it, but later callers of the name join it rather than start another. So a name whose lookups stall holds one resolver place, whatever the rate of its requests: the bound per name is 1, below a quarter of any bound of the process.
   - **Bounded threads.** Resolver threads are bounded process-wide by `--io-threads` (`una_http::client::limit_resolvers`, set when the run's scheduler is made; 64 in the interpreter), with a first-come, first-served line for a place whose wait the deadline also covers. No thread starts past a deadline.
   - **At most a quarter of the threads per zone** (the name without its first label: `a.example.net` is in `example.net`), and at least 1 (review R7-13). A zone whose many distinct names never resolve, such as a wildcard zone, holds at most that share, and leaves the other places to other zones; a caller whose zone has its share waits out of the line, so it holds no one behind it, and joins the line's end again once the zone has room.

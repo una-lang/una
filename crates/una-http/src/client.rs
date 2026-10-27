@@ -2,7 +2,7 @@
 //! within one deadline for the whole request, its redirects included.
 
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpStream};
+use std::net::TcpStream;
 use std::os::fd::{AsFd, BorrowedFd};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
@@ -117,13 +117,90 @@ pub trait Interrupt {
     /// say `false`, or the non-blocking loop would spin until the deadline.
     fn waits(&self) -> bool;
 
-    /// Resolves `host` and connects to `port` there within `deadline`: by default [`open`] on
-    /// the calling thread, with [`Interrupt::stopped`] checked between the addresses. The
-    /// native runtime's reactor runs it on a helper thread instead, so the task that sends the
-    /// request never blocks its worker on them (ADR 0117 slice S7).
-    fn open(&self, host: &str, port: u16, deadline: Instant) -> Result<TcpStream, Error> {
-        open(host, port, deadline, &|| self.stopped())
+    /// Resolves `host` and connects to `port` there within `deadline`: by default on the bounded
+    /// lookup and connect pools of [`crate::resolve`] (#1148), which the request waits for only
+    /// until its deadline or until `abandon` wakes it, with [`Interrupt::stopped`] checked once
+    /// each wait ends. The native runtime's reactor runs them as one job on a helper thread
+    /// instead, so the task that sends the request never blocks its worker on them (ADR 0117
+    /// slice S7).
+    fn open(
+        &self,
+        host: &str,
+        port: u16,
+        deadline: Instant,
+        abandon: &Abandon,
+    ) -> Result<TcpStream, Error> {
+        open(host, port, deadline, &|| self.stopped(), abandon)
     }
+
+    /// Whether the request's task was cancelled (ADR 0116 P9, #1148): the exchange then stops
+    /// after the I/O step in progress, and before it parses or decodes what it has read. Only
+    /// the client's own wrapper of an [`Abandon`] says so; an engine's interruption keeps the
+    /// default.
+    fn cancelled(&self) -> bool {
+        false
+    }
+}
+
+/// The interruption an exchange sees (ADR 0116 P9, #1148): the engine's, and the cancellation
+/// of the request's task, which the engine raises through `abandon`. So a task's cancellation
+/// reaches the client's interruption, not only the wait at a limit: every wait of the exchange
+/// ends at it, and the abandon's hook wakes the step in progress ([`Abandon::abandon`]).
+struct Cut<'a> {
+    interrupt: &'a dyn Interrupt,
+    abandon: &'a Abandon,
+}
+
+impl Interrupt for Cut<'_> {
+    fn stopped(&self) -> bool {
+        self.abandon.abandoned() || self.interrupt.stopped()
+    }
+
+    fn wait(&self, socket: BorrowedFd<'_>, write: bool, timeout: Duration) -> Waited {
+        if self.abandon.abandoned() {
+            return Waited::Stopped;
+        }
+        let waited = self.interrupt.wait(socket, write, timeout);
+        // The hook shut the socket down, which made it ready: the wait ends as a stop.
+        if self.abandon.abandoned() {
+            Waited::Stopped
+        } else {
+            waited
+        }
+    }
+
+    fn waits(&self) -> bool {
+        self.interrupt.waits()
+    }
+
+    fn cancelled(&self) -> bool {
+        self.abandon.abandoned()
+    }
+
+    /// The engine's own resolution and connection, as the reactor's (ADR 0117 slice S7), with
+    /// the request's abandon.
+    fn open(
+        &self,
+        host: &str,
+        port: u16,
+        deadline: Instant,
+        abandon: &Abandon,
+    ) -> Result<TcpStream, Error> {
+        self.interrupt.open(host, port, deadline, abandon)
+    }
+}
+
+/// The deadline that covers a request (ADR 0116 rule 19, P9): the moment of a deadline of
+/// `within` or `for ever within` around its operation, on the run's clock for a wait at a limit,
+/// and on the monotonic clock for the exchange. The request's deadline is never later than
+/// either, whenever the helper that runs it starts, so a request queued behind busy helpers ends
+/// at the covering deadline itself, at its next I/O step (#1148).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Cover {
+    /// The moment on the run's clock, in milliseconds, which a wait at a limit reaches at most.
+    pub at: Option<u64>,
+    /// The same moment on the monotonic clock: the exchange's deadline is never later.
+    pub instant: Option<Instant>,
 }
 
 /// No interruption: every wait is left to the socket's own timeouts, and a wait at a limit to
@@ -171,13 +248,36 @@ pub fn send_interruptible(
     interrupt: &dyn Interrupt,
 ) -> Result<Response, Error> {
     let governor = Governor::new(grants.to_vec());
-    send_governed(
+    send_covered(
         request,
         &governor,
         settings,
         interrupt,
         &Abandon::new(),
-        None,
+        Cover::default(),
+    )
+}
+
+/// [`send_covered`] with a covering deadline on the run's clock only, `cover`, in milliseconds:
+/// the exchange's deadline is its time-out from the moment it starts.
+pub fn send_governed(
+    request: &Request<'_>,
+    governor: &Governor,
+    settings: &Settings,
+    interrupt: &dyn Interrupt,
+    abandon: &Abandon,
+    cover: Option<u64>,
+) -> Result<Response, Error> {
+    send_covered(
+        request,
+        governor,
+        settings,
+        interrupt,
+        abandon,
+        Cover {
+            at: cover,
+            instant: None,
+        },
     )
 }
 
@@ -197,27 +297,44 @@ pub fn send_interruptible(
 /// When `interrupt` waits, the socket is non-blocking from the connection on: every read,
 /// write and step of the TLS handshake that would block waits through `interrupt` instead, and
 /// a stop is checked before each try, so a slow or stalled peer cannot hold a stopped request.
-/// Name resolution and the TCP connection are not waited on with `interrupt`: a stop that comes
-/// during them takes effect when they return, within the request's deadline (ADR 0116,
-/// implementation plan, item 6).
-pub fn send_governed(
+/// Name resolution and the TCP connection run on the bounded pool of [`crate::resolve`], which
+/// the request waits for only until its deadline or its abandon: the client starts no thread
+/// per request, and its helper never blocks in either (#1148).
+///
+/// **A cancelled task** (ADR 0116 P9, ADR 0117 rule 4, #1148). `abandon` reaches the exchange
+/// too, whether `interrupt` waits or not, with no polling: the wait for a connection ends at once
+/// through the abandon's hook, a step that waits on the socket ends when the hook shuts the
+/// socket down, and the exchange checks the flag after each I/O step and before it parses or
+/// decodes the response. So an abandoned exchange does at most one I/O step more on its helper:
+/// one read or write, or one step of the TLS handshake. A lookup or a connection attempt it left
+/// runs on to its end on its pool thread, which closes what it reached: residue that `L_res`
+/// covers, at most the pool's size at once. It then fails with `Interrupted`, which the engine
+/// drops, and its connection is closed.
+///
+/// **The covering deadline** `cover` bounds the exchange's deadline as an instant, so a request
+/// that waited for a helper never runs past it.
+pub fn send_covered(
     request: &Request<'_>,
     governor: &Governor,
     settings: &Settings,
     interrupt: &dyn Interrupt,
     abandon: &Abandon,
-    cover: Option<u64>,
+    cover: Cover,
 ) -> Result<Response, Error> {
     let grants = governor.grants();
     // Capped at a day, as the flags are, so the deadline never overflows the clock.
     let timeout = settings.timeout.min(Duration::from_secs(MAX_TIMEOUT_SECS));
-    let deadline = Instant::now().checked_add(timeout).ok_or(Error::TimedOut)?;
+    let started = Instant::now();
+    let own = started.checked_add(timeout).ok_or(Error::TimedOut)?;
+    // The covering deadline itself, never later than the time-out from now (#1148).
+    let deadline = cover.instant.map_or(own, |covering| own.min(covering));
     // The same deadline on the run's clock, for the waits at limits (ADR 0116 rule 19).
-    let millis = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
+    let millis =
+        u64::try_from(deadline.saturating_duration_since(started).as_millis()).unwrap_or(u64::MAX);
     let until = governor
         .now_millis()
         .saturating_add(millis)
-        .min(cover.unwrap_or(u64::MAX));
+        .min(cover.at.unwrap_or(u64::MAX));
     // First, so that the abort it leads to depends on the header values alone.
     if request
         .headers
@@ -226,9 +343,10 @@ pub fn send_governed(
     {
         return Err(Error::HeaderValue);
     }
-    if interrupt.stopped() {
+    if interrupt.stopped() || abandon.abandoned() {
         return Err(Error::Interrupted);
     }
+    let cut = Cut { interrupt, abandon };
     let mut url = Url::parse(request.url).ok_or(Error::BadUrl)?;
     check_headers(request.headers, request.bearer)?;
     if !allowed(grants, &url, request.method) {
@@ -266,7 +384,7 @@ pub fn send_governed(
             body,
             bearer,
             settings,
-            (deadline, interrupt),
+            (deadline, &cut as &dyn Interrupt, abandon),
         );
         drop(permit);
         let response = response?;
@@ -348,23 +466,18 @@ pub(crate) fn left(deadline: Instant) -> Result<Duration, Error> {
     Ok(deadline - now)
 }
 
-/// Bounds the resolver threads of the process at `most`, at least 1 (64 until it is called):
-/// the native runtime sets it to `--io-threads` (ADR 0117 slice S7, `crate::resolve`).
-pub fn limit_resolvers(most: usize) {
-    crate::resolve::limit(most);
-}
-
-/// The addresses of a host, resolved by the system within the deadline (`crate::resolve`):
-/// one lookup per name at a time, shared by its callers, on a bounded number of threads, none
-/// started past the deadline, and a name whose lookup failed answers `Unreachable` for a few
-/// seconds without a new lookup.
-fn resolve(host: &str, port: u16, deadline: Instant) -> Result<Vec<SocketAddr>, Error> {
+/// A TCP connection to `host` and `port`, within the deadline (#1148): the name is looked up,
+/// and the connection made, on the bounded pool of [`crate::resolve`], which the request waits
+/// for only until its deadline or its abandon, so its helper never blocks in either.
+fn reach(
+    host: &str,
+    port: u16,
+    deadline: Instant,
+    stopped: &dyn Fn() -> bool,
+    abandon: &Abandon,
+) -> Result<TcpStream, Error> {
     let name = host.trim_start_matches('[').trim_end_matches(']');
-    // A literal address needs no resolver, and no thread starts for it.
-    if let Ok(ip) = name.parse::<std::net::IpAddr>() {
-        return Ok(vec![SocketAddr::new(ip, port)]);
-    }
-    crate::resolve::global().resolve(name, port, deadline)
+    crate::resolve::reach(name, port, deadline, stopped, abandon)
 }
 
 /// A connection, over TCP or TLS.
@@ -429,7 +542,12 @@ impl Connection {
     ) -> Result<std::io::Result<T>, Error> {
         if !interrupt.waits() {
             self.bound(deadline)?;
-            return Ok(step(self));
+            let done = step(self);
+            // A cancellation that shut the socket down ended the step (#1148).
+            if interrupt.cancelled() {
+                return Err(Error::Interrupted);
+            }
+            return Ok(done);
         }
         loop {
             if interrupt.stopped() {
@@ -441,6 +559,8 @@ impl Connection {
                     self.wait_on(self.direction(write), deadline, interrupt)?;
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                // A cancellation that came during the step ends the exchange after it (#1148).
+                _ if interrupt.cancelled() => return Err(Error::Interrupted),
                 done => return Ok(done),
             }
         }
@@ -516,12 +636,29 @@ fn io_error(error: &std::io::Error, deadline: Instant) -> Error {
     Error::Unreachable
 }
 
+/// The TLS settings of the process, built once ([`tls_config`]).
+static TLS_CONFIG: OnceLock<Arc<rustls::ClientConfig>> = OnceLock::new();
+
+/// Builds the TLS settings now, when they are not built yet (ADR 0116 amendment, P8 and P9,
+/// #1148). Built lazily at a run's first `https` request, they would be state that earlier code
+/// left: a request after earlier `secret` code that made one would save the time of building
+/// them, about a millisecond. So an engine calls this before `main` in every run whose grants
+/// include `Http`, with the other state it starts up front, and a run without such a grant
+/// never builds them. O(roots), once per process.
+pub fn prepare() {
+    drop(tls_config());
+}
+
+/// Whether the TLS settings of the process are built ([`prepare`]).
+pub fn tls_ready() -> bool {
+    TLS_CONFIG.get().is_some()
+}
+
 /// The TLS settings: the Mozilla roots compiled in (`spec/24 §3` rule 4); in debug builds only,
 /// also the roots of the PEM file that `UNA_HTTP_TEST_ROOTS` names, for the tests' local
 /// servers. Release builds have no such hook.
 fn tls_config() -> Arc<rustls::ClientConfig> {
-    static CONFIG: OnceLock<Arc<rustls::ClientConfig>> = OnceLock::new();
-    Arc::clone(CONFIG.get_or_init(|| {
+    Arc::clone(TLS_CONFIG.get_or_init(|| {
         let roots = rustls::RootCertStore {
             roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
         };
@@ -580,10 +717,12 @@ fn test_roots(roots: &mut rustls::RootCertStore) {
 }
 
 /// Resolves `host` and connects to `port` at the first of its addresses that answers, within
-/// `deadline`; `stopped` is checked before anything starts and before each address, and a
-/// stop then fails with `Interrupted`, as a deadline already passed fails with `TimedOut`.
-/// Both steps block the calling thread, bounded by the deadline: the resolver runs on a thread
-/// of its own, unless `host` is a literal address.
+/// `deadline`, on the bounded lookup and connect pools of [`crate::resolve`] (#1148); `stopped`
+/// is checked before anything starts and once each step ends, and a stop then fails with
+/// `Interrupted`, as a deadline already passed fails with `TimedOut`. The calling thread waits
+/// for the pools until the deadline, or until `abandon` wakes it: the reactor's job on a helper
+/// of the I/O pool (ADR 0117 slice S7) is given the request's abandon, which a cancellation of
+/// its task raises (ADR 0116 P9), so the job ends at once too.
 ///
 /// It checks no grant: a caller MUST have checked that the grants allow this origin, as
 /// [`send_interruptible`] does before it calls [`Interrupt::open`].
@@ -592,29 +731,32 @@ pub fn open(
     port: u16,
     deadline: Instant,
     stopped: &dyn Fn() -> bool,
+    abandon: &Abandon,
 ) -> Result<TcpStream, Error> {
     if stopped() {
         return Err(Error::Interrupted);
     }
     left(deadline)?;
-    for addr in resolve(host, port, deadline)? {
-        if stopped() {
-            return Err(Error::Interrupted);
-        }
-        match TcpStream::connect_timeout(&addr, left(deadline)?) {
-            Ok(connected) => return Ok(connected),
-            Err(error) if error.kind() == std::io::ErrorKind::TimedOut => {
-                left(deadline)?;
-            }
-            Err(_) => {}
-        }
-    }
-    Err(Error::Unreachable)
+    reach(host, port, deadline, stopped, abandon)
 }
 
-/// Connects to the URL's origin within the deadline, with TLS for `https`.
-fn connect(url: &Url, deadline: Instant, interrupt: &dyn Interrupt) -> Result<Connection, Error> {
-    let stream = interrupt.open(&url.host, url.port, deadline)?;
+/// Connects to the URL's origin within the deadline, with TLS for `https`. From the connection
+/// on, an abandon shuts its socket down, which ends the I/O step in progress, blocking or not
+/// (#1148).
+fn connect(
+    url: &Url,
+    deadline: Instant,
+    interrupt: &dyn Interrupt,
+    abandon: &Abandon,
+) -> Result<Connection, Error> {
+    let stream = interrupt.open(&url.host, url.port, deadline, abandon)?;
+    // The abandon's hook holds a second handle of the socket, which it shuts down, so a wait on
+    // it ends at once, with no polling. A socket whose handle cannot be made, as when the
+    // process is out of descriptors, is not used: its waits could not be woken.
+    let socket = stream.try_clone().map_err(|_| Error::Unreachable)?;
+    abandon.on_abandon(Box::new(move || {
+        let _ = socket.shutdown(std::net::Shutdown::Both);
+    }));
     if interrupt.stopped() {
         return Err(Error::Interrupted);
     }
@@ -683,8 +825,19 @@ fn request_bytes(
     out
 }
 
+/// Drops the hook of an exchange once it ends, on every way out, so an abandon after it shuts
+/// down no socket (#1148).
+struct Unhook<'a>(&'a Abandon);
+
+impl Drop for Unhook<'_> {
+    fn drop(&mut self) {
+        self.0.clear_hook();
+    }
+}
+
 /// One request and its response, on a connection of its own, by `deadline` unless `interrupt`
-/// ends it first.
+/// ends it first. `interrupt` is the request's [`Cut`], and `abandon` its own, whose hook each
+/// step that can wait sets.
 fn exchange(
     method: Method,
     url: &Url,
@@ -692,9 +845,10 @@ fn exchange(
     body: &[u8],
     bearer: Option<&[u8]>,
     settings: &Settings,
-    (deadline, interrupt): (Instant, &dyn Interrupt),
+    (deadline, interrupt, abandon): (Instant, &dyn Interrupt, &Abandon),
 ) -> Result<Response, Error> {
-    let mut connection = connect(url, deadline, interrupt)?;
+    let _unhook = Unhook(abandon);
+    let mut connection = connect(url, deadline, interrupt, abandon)?;
     connection.write_all(
         &request_bytes(method, url, headers, body, bearer),
         deadline,
@@ -717,7 +871,20 @@ fn exchange(
             .feed(buffer.get(..n).unwrap_or_default())
             .map_err(parse_error)?;
     }
+    finish(parser, interrupt)
+}
+
+/// The response that `parser` read, unless the request's task was cancelled (#1148): the flag is
+/// checked before the parser finishes and before the body is decoded, the two steps whose cost
+/// grows with the body, so an abandoned exchange takes neither and drops its connection.
+fn finish(parser: Parser, interrupt: &dyn Interrupt) -> Result<Response, Error> {
+    if interrupt.cancelled() {
+        return Err(Error::Interrupted);
+    }
     let raw = parser.finish().map_err(parse_error)?;
+    if interrupt.cancelled() {
+        return Err(Error::Interrupted);
+    }
     let body = String::from_utf8(raw.body).map_err(|_| Error::Protocol)?;
     Ok(Response {
         status: raw.status,
@@ -730,5 +897,69 @@ fn parse_error(error: parse::Error) -> Error {
     match error {
         parse::Error::Protocol => Error::Protocol,
         parse::Error::TooLarge => Error::TooLarge,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_abandoned_exchange_neither_finishes_its_parse_nor_decodes_its_body() {
+        // #1148, ADR 0116 P9: the steps whose cost grows with the body, the parser's end and the
+        // decoding, run only while the request's task is not cancelled. Before the fix, the
+        // client never looked at the abandon after its wait at a limit, and decoded the body of
+        // a cancelled request all the same.
+        let complete = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
+        let read = || {
+            let mut parser = Parser::new(Limits::default());
+            parser.feed(complete).unwrap();
+            assert!(parser.done());
+            parser
+        };
+        let abandon = Abandon::new();
+        let cut = Cut {
+            interrupt: &Uninterrupted,
+            abandon: &abandon,
+        };
+        assert_eq!(
+            finish(read(), &cut).map(|response| response.body),
+            Ok("ok".to_owned())
+        );
+        abandon.abandon();
+        assert!(cut.cancelled() && cut.stopped());
+        assert_eq!(
+            finish(read(), &cut).map(|response| response.body),
+            Err(Error::Interrupted)
+        );
+    }
+
+    #[test]
+    fn an_abandon_runs_the_hook_of_the_step_in_progress_once_and_a_late_hook_at_once() {
+        // #1148: the hook wakes the step that waits; one set after the abandon runs at once, so
+        // a step that begins after a cancellation never waits for it.
+        let abandon = Abandon::new();
+        let runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = Arc::clone(&runs);
+        abandon.on_abandon(Box::new(move || {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }));
+        abandon.abandon();
+        abandon.abandon();
+        assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let counted = Arc::clone(&runs);
+        abandon.on_abandon(Box::new(move || {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }));
+        assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 2);
+        // A hook cleared once its step ended never runs.
+        let fresh = Abandon::new();
+        let counted = Arc::clone(&runs);
+        fresh.on_abandon(Box::new(move || {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }));
+        fresh.clear_hook();
+        fresh.abandon();
+        assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 }

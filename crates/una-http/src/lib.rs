@@ -7,7 +7,7 @@ pub mod limit;
 pub mod parse;
 pub mod reply;
 pub mod request;
-mod resolve;
+pub mod resolve;
 pub mod strict;
 
 /// URLs and grants, which `una-core` holds for every crate that reads grants.

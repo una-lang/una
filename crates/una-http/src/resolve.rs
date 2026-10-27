@@ -1,511 +1,393 @@
-//! Name resolution for the client (ADR 0117 slice S7, `docs/plan/0117-s7-design.md` §5).
+//! Reaching a server on bounded pools of threads: name resolution and the TCP connection
+//! (`spec/24 §4` rule 2, ADR 0116 amendment P8 and P9, #1148). The reactor of ADR 0117 (slice
+//! S7) keeps them: its job on a helper of the I/O pool hands them to these pools too.
 //!
-//! The system's resolver (`getaddrinfo`) has no timeout of its own, so each lookup runs on a
-//! thread of its own, which may outlive the callers that gave up on it. To keep a name whose
-//! lookups stall from starving the others (review R7-10):
+//! The host's resolver has no timeout, nothing in the process can cut a lookup, and `connect`
+//! cannot be woken without code of `una-sys` of its own. So a request never runs either on its
+//! own thread, the I/O helper's: it hands each to a pool and waits for the answer only until its
+//! deadline, an absolute instant, or until its task's cancellation abandons it. On either, it
+//! stops waiting and fails with `TimedOut` or `Interrupted`; the lookup or the connection attempt
+//! in progress runs to its end on the pool's thread, which then closes the connection, if one
+//! came, without using it.
 //!
-//! - **One lookup per name at a time.** Callers that ask for a name while its lookup is in
-//!   flight wait for that lookup's answer, each until its own deadline. So a name holds at
-//!   most one place among the resolver threads, whatever the rate of its requests: the bound
-//!   per name is 1, below a quarter of any bound of the process.
-//! - **A bounded number of resolver threads,** `most` ([`limit`]), with a first-come,
-//!   first-served line for a place, whose wait the caller's deadline covers. No thread starts
-//!   past a deadline.
-//! - **At most a quarter of the threads per zone** (the name without its first label), at
-//!   least 1, so a zone whose many names never resolve, such as a wildcard one, leaves the other
-//!   places to other zones; a caller whose zone has its share waits out of the line.
-//! - **A lookup that panics** ends as a failure through a guard in its thread, so its place and
-//!   its callers are never lost.
-//! - **A failed name is remembered** for [`FAILED_FOR`]: it answers `Unreachable` at once,
-//!   without a new lookup. The time is the monotonic clock of the process: a run under virtual
-//!   time has no real network (ADR 0116 rule 19).
-//! - **Costs.** O(1) per call on average: hash maps by name, a line whose callers that gave up
-//!   are skipped lazily, and a cache of failures pruned when it has doubled. A place given back
-//!   wakes the callers that wait for one, at most the threads that resolve (the helpers of the
-//!   I/O pool, or the interpreter's thread).
+//! - **Two pools.** Lookups run on the lookup pool, [`lookup_pool_size`] threads,
+//!   `max(2, --io-threads / 4)`: a lookup normally takes milliseconds against an exchange's tens
+//!   to hundreds. Connections run on the connect pool, `--io-threads` threads, one per helper, so
+//!   connecting is never capped below what the helpers could do themselves (performance parity).
+//!   An address literal skips the lookup pool. Both start all their threads at once ([`start`]),
+//!   which an engine does before `main` in a run whose grants include `Http`, with its other
+//!   pools (P8), so whether a pool thread exists is never state left by earlier code; their
+//!   stacks are reserved, 256 KiB each, and committed only as they are used. With the helpers,
+//!   the run's `Http` threads are at most `2 × --io-threads + max(2, --io-threads / 4)`.
+//! - **The hand-off.** Each pool job costs one push and one pop under the pool's mutex, a wake of
+//!   one pool thread, and a reply on the request's own channel: O(1), about two thread wakes per
+//!   step, against the milliseconds the step itself takes.
+//! - **Hangs.** When every thread of a pool holds a step that hangs, new steps queue, and each of
+//!   their requests still gives up exactly at its own deadline. A job still queued when its
+//!   request gives up never runs. Without [`start`], a request fails with `Unreachable`: every
+//!   engine starts the pools.
+//! - **Residue.** A lookup or a connection whose request gave up keeps its pool thread until it
+//!   returns, beside later code: the residue that `L_res` labels (`spec/26 §7` rule 5), at most
+//!   the pools' sizes. A connection job looks at its request only between two addresses, so an
+//!   attempt in progress runs until it connects or the request's deadline passes.
 
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::net::{SocketAddr, ToSocketAddrs};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
+use std::collections::VecDeque;
+use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError, mpsc};
 use std::time::{Duration, Instant};
 
-use crate::client::{Error, left};
+use crate::client::Error;
+use crate::limit::Abandon;
 
-/// How long a name whose lookup failed answers `Unreachable` without a new lookup.
-pub(crate) const FAILED_FOR: Duration = Duration::from_secs(5);
+/// A lookup function: the addresses of a name and a port, as the system's resolver gives them.
+pub type Lookup = fn(&str, u16) -> std::io::Result<Vec<SocketAddr>>;
 
-/// A lookup of a name: its addresses, with port 0.
-type Lookup = fn(&str) -> std::io::Result<Vec<SocketAddr>>;
+/// A connect function: a TCP connection to an address, within a time-out.
+pub type Connect = fn(&SocketAddr, Duration) -> std::io::Result<TcpStream>;
 
-/// The system's lookup.
-fn system(name: &str) -> std::io::Result<Vec<SocketAddr>> {
-    (name, 0).to_socket_addrs().map(Iterator::collect)
+/// The fewest threads of the lookup pool.
+pub const MIN_RESOLVERS: usize = 2;
+
+/// The size of the lookup pool for a run of `io_threads` I/O helpers: `max(2, io_threads / 4)`.
+/// A lookup normally takes milliseconds against an exchange's tens to hundreds, so a quarter of
+/// the helpers serve their lookups without a queue, and lookups that hang hold at most that many.
+pub fn lookup_pool_size(io_threads: usize) -> usize {
+    (io_threads / 4).max(MIN_RESOLVERS)
 }
 
-/// One lookup in flight, whose answer every caller of its name shares.
-#[derive(Default)]
-struct Pending {
-    answer: Mutex<Option<Result<Vec<SocketAddr>, Error>>>,
+/// The size of the connect pool for a run of `io_threads` I/O helpers: one thread per helper,
+/// so connections are never capped below what the helpers could make themselves.
+pub fn connect_pool_size(io_threads: usize) -> usize {
+    io_threads.max(1)
+}
+
+/// The most threads a run's `Http` requests take for `io_threads` helpers: the helpers, the
+/// connect pool and the lookup pool, `2 × io_threads + max(2, io_threads / 4)`.
+pub fn thread_bound(io_threads: usize) -> usize {
+    io_threads
+        .saturating_add(connect_pool_size(io_threads))
+        .saturating_add(lookup_pool_size(io_threads))
+}
+
+/// A job on a pool: what it runs, given whether its request gave up, and that flag.
+struct Job {
+    run: Box<dyn FnOnce(&AtomicBool) + Send>,
+    gave_up: Arc<AtomicBool>,
+}
+
+/// A pool: its queue, the threads it was made with, and how many of them started.
+struct Pool {
+    jobs: Mutex<VecDeque<Job>>,
     ready: Condvar,
+    wanted: usize,
+    threads: AtomicUsize,
 }
 
-/// The resolver threads and their callers.
-struct State {
-    running: usize,
-    most: usize,
-    next: u64,
-    /// The tickets of the callers waiting for a place, in order.
-    line: VecDeque<u64>,
-    /// Tickets in `line` whose callers gave up, skipped when they reach its front.
-    gave_up: HashSet<u64>,
-    pending: HashMap<String, Arc<Pending>>,
-    /// The lookups running in each zone ([`zone`]), for the zones that have one.
-    zones: HashMap<String, usize>,
-    failed: HashMap<String, Instant>,
-    /// The size of `failed` after its last pruning.
-    pruned: usize,
+/// The two pools of the process.
+struct Pools {
+    lookups: Arc<Pool>,
+    connects: Arc<Pool>,
 }
 
-/// The resolver of the process, or of a test.
-pub(crate) struct Resolver {
-    state: Mutex<State>,
-    /// Signaled when a place is given back, a caller leaves the line, or a lookup starts.
-    freed: Condvar,
-    lookup: Lookup,
+/// The process's pools, made once, by [`start`].
+static POOLS: OnceLock<Pools> = OnceLock::new();
+
+/// Locks a queue, recovering it when a thread panicked while holding the lock: each critical
+/// section leaves it consistent.
+fn lock(pool: &Pool) -> MutexGuard<'_, VecDeque<Job>> {
+    pool.jobs.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// The zone of a name: the name without its first label (`a.example.net` is in
-/// `example.net`), or the name itself when it has one label. The lookups that run in one zone
-/// are bounded ([`State::per_zone`]), so a zone whose names never resolve, such as a wildcard
-/// one that answers nothing for any of its many names, cannot take every place (review R7-13).
-fn zone(name: &str) -> &str {
-    name.split_once('.').map_or(name, |(_, rest)| rest)
-}
-
-impl State {
-    /// The most lookups that run at once in one zone: a quarter of the bound, at least 1.
-    fn per_zone(&self) -> usize {
-        (self.most / 4).max(1)
-    }
-}
-
-/// Ends a lookup when its thread ends, with a failure when the lookup did not return: a
-/// lookup that panics, or a thread that never started, gives its place back and answers its
-/// callers (review R7-14).
-struct Finishing {
-    resolver: &'static Resolver,
-    name: String,
-    pending: Arc<Pending>,
-    done: bool,
-}
-
-impl Drop for Finishing {
-    fn drop(&mut self) {
-        if !self.done {
-            let failed = Err(std::io::Error::other("the lookup did not return"));
-            self.resolver
-                .finish(&self.name, &self.pending, failed, false);
+/// Makes a pool with `size` threads named `name`, all started now.
+fn make(size: usize, name: &str) -> Arc<Pool> {
+    let pool = Arc::new(Pool {
+        jobs: Mutex::new(VecDeque::new()),
+        ready: Condvar::new(),
+        wanted: size.max(1),
+        threads: AtomicUsize::new(0),
+    });
+    for _ in 0..size.max(1) {
+        let serving = Arc::clone(&pool);
+        let spawned = std::thread::Builder::new()
+            .name(name.to_owned())
+            .stack_size(256 * 1024)
+            .spawn(move || serve(&serving));
+        if spawned.is_ok() {
+            pool.threads.fetch_add(1, Ordering::SeqCst);
         }
     }
+    pool
 }
 
-/// What a caller does once it holds the state.
-enum Next {
-    /// Wait for the lookup in flight.
-    Join(Arc<Pending>),
-    /// Start the lookup, on a place just taken.
-    Start(Arc<Pending>),
-}
-
-/// The resolver of the process.
-pub(crate) fn global() -> &'static Resolver {
-    static GLOBAL: OnceLock<Resolver> = OnceLock::new();
-    GLOBAL.get_or_init(|| Resolver::new(64, system))
-}
-
-/// Bounds the resolver threads of the process at `most`, at least 1.
-pub(crate) fn limit(most: usize) {
-    let resolver = global();
-    resolver.lock().most = most.max(1);
-    resolver.freed.notify_all();
-}
-
-impl Resolver {
-    fn new(most: usize, lookup: Lookup) -> Resolver {
-        Resolver {
-            state: Mutex::new(State {
-                running: 0,
-                most: most.max(1),
-                next: 0,
-                line: VecDeque::new(),
-                gave_up: HashSet::new(),
-                pending: HashMap::new(),
-                zones: HashMap::new(),
-                failed: HashMap::new(),
-                pruned: 0,
-            }),
-            freed: Condvar::new(),
-            lookup,
-        }
+/// Makes the two pools for `io_threads` helpers.
+fn make_pools(io_threads: usize) -> Pools {
+    Pools {
+        lookups: make(lookup_pool_size(io_threads), "una-http-lookup"),
+        connects: make(connect_pool_size(io_threads), "una-http-connect"),
     }
+}
 
-    fn lock(&self) -> MutexGuard<'_, State> {
-        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+/// A pool thread could not start ([`start`]), which the engine reports before `main`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NotStarted;
+
+/// Starts the process's pools for a run of `io_threads` I/O helpers, all their threads at once,
+/// unless they exist: what an engine calls before `main` in a run whose grants include `Http`.
+/// `Err` when a thread could not start, which the engine reports before `main`. The first call
+/// sets the sizes for the process.
+pub fn start(io_threads: usize) -> Result<(), NotStarted> {
+    let pools = POOLS.get_or_init(|| make_pools(io_threads));
+    let full = |pool: &Pool| pool.threads.load(Ordering::SeqCst) == pool.wanted;
+    if full(&pools.lookups) && full(&pools.connects) {
+        Ok(())
+    } else {
+        Err(NotStarted)
     }
+}
 
-    /// The addresses of `name` with `port`, by `deadline`.
-    pub(crate) fn resolve(
-        &'static self,
-        name: &str,
-        port: u16,
-        deadline: Instant,
-    ) -> Result<Vec<SocketAddr>, Error> {
-        let next = self.next(name, deadline)?;
-        let pending = match next {
-            Next::Join(pending) => pending,
-            Next::Start(pending) => {
-                let mut guard = Finishing {
-                    resolver: self,
-                    name: name.to_owned(),
-                    pending: Arc::clone(&pending),
-                    done: false,
-                };
-                // A thread that cannot start drops its closure, and the guard in it ends the
-                // lookup with a failure.
-                let _ = std::thread::Builder::new()
-                    .name("una-http-resolve".to_owned())
-                    .spawn(move || {
-                        let found = (guard.resolver.lookup)(&guard.name);
-                        guard.done = true;
-                        guard
-                            .resolver
-                            .finish(&guard.name, &guard.pending, found, true);
-                    });
-                pending
-            }
-        };
-        let mut answer = pending
-            .answer
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        loop {
-            if let Some(found) = answer.as_ref() {
-                return found.clone().map(|addrs| {
-                    addrs
-                        .into_iter()
-                        .map(|mut addr| {
-                            addr.set_port(port);
-                            addr
-                        })
-                        .collect()
-                });
-            }
-            let time = left(deadline)?;
-            answer = pending
-                .ready
-                .wait_timeout(answer, time)
-                .unwrap_or_else(PoisonError::into_inner)
-                .0;
-        }
-    }
+/// The threads the process's pools have started, the lookup pool's and the connect pool's:
+/// `(0, 0)` before [`start`].
+pub fn threads() -> (usize, usize) {
+    POOLS.get().map_or((0, 0), |pools| {
+        (
+            pools.lookups.threads.load(Ordering::SeqCst),
+            pools.connects.threads.load(Ordering::SeqCst),
+        )
+    })
+}
 
-    /// Joins the lookup of `name` in flight, or takes a place for a new one, first come,
-    /// first served, until `deadline`; `Unreachable` at once for a name that failed lately.
-    fn next(&self, name: &str, deadline: Instant) -> Result<Next, Error> {
-        let mut state = self.lock();
-        let mut ticket: Option<u64> = None;
-        let next = loop {
-            let failed = state
-                .failed
-                .get(name)
-                .is_some_and(|at| at.elapsed() < FAILED_FOR);
-            if failed {
-                Self::leave(&mut state, ticket);
-                break Err(Error::Unreachable);
-            }
-            if let Some(pending) = state.pending.get(name) {
-                let pending = Arc::clone(pending);
-                Self::leave(&mut state, ticket);
-                break Ok(Next::Join(pending));
-            }
-            // A zone that runs its share of lookups: the caller waits out of the line, so it
-            // holds no one behind it, and joins its end again once the zone has room.
-            let in_zone = state.zones.get(zone(name)).copied().unwrap_or(0);
-            if in_zone >= state.per_zone() {
-                if ticket.is_some() {
-                    Self::leave(&mut state, ticket.take());
-                    self.freed.notify_all();
-                }
-            } else {
-                let mine = match ticket {
-                    Some(mine) => mine,
+/// What a pool thread does: takes the next job whose request still waits, dropping the others
+/// unrun, and runs it.
+fn serve(pool: &Pool) {
+    loop {
+        let job = {
+            let mut jobs = lock(pool);
+            loop {
+                match jobs.pop_front() {
+                    Some(job) if job.gave_up.load(Ordering::SeqCst) => {}
+                    Some(job) => break job,
                     None => {
-                        let mine = state.next;
-                        state.next = state.next.wrapping_add(1);
-                        state.line.push_back(mine);
-                        ticket = Some(mine);
-                        mine
+                        jobs = pool
+                            .ready
+                            .wait(jobs)
+                            .unwrap_or_else(PoisonError::into_inner);
                     }
-                };
-                if state.running < state.most && Self::front(&mut state) == Some(mine) {
-                    state.line.pop_front();
-                    state.running += 1;
-                    *state.zones.entry(zone(name).to_owned()).or_insert(0) += 1;
-                    let pending = Arc::new(Pending::default());
-                    state.pending.insert(name.to_owned(), Arc::clone(&pending));
-                    break Ok(Next::Start(pending));
                 }
             }
-            let Ok(time) = left(deadline) else {
-                Self::leave(&mut state, ticket);
-                break Err(Error::TimedOut);
-            };
-            state = self
-                .freed
-                .wait_timeout(state, time)
-                .unwrap_or_else(PoisonError::into_inner)
-                .0;
         };
-        drop(state);
-        self.freed.notify_all();
-        next
-    }
-
-    /// The first ticket of the line whose caller still waits, after dropping those that gave
-    /// up. O(1) amortized.
-    fn front(state: &mut State) -> Option<u64> {
-        while let Some(first) = state.line.front().copied() {
-            if !state.gave_up.remove(&first) {
-                return Some(first);
-            }
-            state.line.pop_front();
-        }
-        None
-    }
-
-    /// Takes `ticket` out of the line, when the caller had one. O(1).
-    fn leave(state: &mut State, ticket: Option<u64>) {
-        let Some(ticket) = ticket else {
-            return;
-        };
-        if state.line.front() == Some(&ticket) {
-            state.line.pop_front();
-        } else {
-            state.gave_up.insert(ticket);
-        }
-    }
-
-    /// Ends the lookup of `name`: gives its place back, remembers a failure when `remember`,
-    /// and hands the answer to every caller of the name.
-    fn finish(
-        &self,
-        name: &str,
-        pending: &Arc<Pending>,
-        found: std::io::Result<Vec<SocketAddr>>,
-        remember: bool,
-    ) {
-        let answer = match found {
-            Ok(addrs) if !addrs.is_empty() => Ok(addrs),
-            _ => Err(Error::Unreachable),
-        };
-        {
-            let mut state = self.lock();
-            state.running = state.running.saturating_sub(1);
-            let zone = zone(name);
-            if let Some(count) = state.zones.get_mut(zone) {
-                *count = count.saturating_sub(1);
-                if *count == 0 {
-                    state.zones.remove(zone);
-                }
-            }
-            if state
-                .pending
-                .get(name)
-                .is_some_and(|current| Arc::ptr_eq(current, pending))
-            {
-                state.pending.remove(name);
-            }
-            if remember && answer.is_err() {
-                state.failed.insert(name.to_owned(), Instant::now());
-                if state.failed.len() > state.pruned * 2 + 64 {
-                    state.failed.retain(|_, at| at.elapsed() < FAILED_FOR);
-                    state.pruned = state.failed.len();
-                }
-            }
-        }
-        self.freed.notify_all();
-        *pending
-            .answer
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = Some(answer);
-        pending.ready.notify_all();
+        (job.run)(&job.gave_up);
     }
 }
 
-#[cfg(test)]
-#[allow(clippy::unwrap_used)]
-mod tests {
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+/// What a waiting request gets: the job's answer, or the wake of its abandon.
+enum Answer<T> {
+    Done(T),
+    Abandoned,
+}
 
-    use super::*;
-
-    fn leaked(most: usize, lookup: Lookup) -> &'static Resolver {
-        Box::leak(Box::new(Resolver::new(most, lookup)))
+/// Hands `step` to `pool` and waits for its answer until `deadline`, `TimedOut`, or until
+/// `abandon` wakes the wait, `Interrupted`, with no polling. On either, the job is marked given
+/// up: queued, it never runs; running, it ends alone and its answer is dropped. O(1) besides the
+/// wait.
+fn hand_off<T: Send + 'static>(
+    pool: &Pool,
+    deadline: Instant,
+    abandon: &Abandon,
+    step: impl FnOnce(&AtomicBool) -> T + Send + 'static,
+) -> Result<T, Error> {
+    if abandon.abandoned() {
+        return Err(Error::Interrupted);
     }
-
-    fn local() -> Vec<SocketAddr> {
-        vec![SocketAddr::from(([127, 0, 0, 1], 0))]
+    let left = deadline.saturating_duration_since(Instant::now());
+    if left.is_zero() {
+        return Err(Error::TimedOut);
     }
-
-    static SHARED_CALLS: AtomicUsize = AtomicUsize::new(0);
-
-    fn slow(_name: &str) -> std::io::Result<Vec<SocketAddr>> {
-        SHARED_CALLS.fetch_add(1, Ordering::SeqCst);
-        std::thread::sleep(Duration::from_millis(200));
-        Ok(local())
-    }
-
-    #[test]
-    fn concurrent_callers_of_a_name_share_one_lookup() {
-        let resolver = leaked(4, slow);
-        let deadline = Instant::now() + Duration::from_secs(10);
-        let callers: Vec<_> = (0..8)
-            .map(|_| std::thread::spawn(move || resolver.resolve("shared.test", 80, deadline)))
-            .collect();
-        for caller in callers {
-            let addrs = caller.join().unwrap().unwrap();
-            assert_eq!(addrs, [SocketAddr::from(([127, 0, 0, 1], 80))]);
+    let (reply, answers) = mpsc::channel::<Answer<T>>();
+    let waker = reply.clone();
+    abandon.on_abandon(Box::new(move || {
+        let _ = waker.send(Answer::Abandoned);
+    }));
+    let gave_up = Arc::new(AtomicBool::new(false));
+    lock(pool).push_back(Job {
+        run: Box::new(move |gave_up: &AtomicBool| {
+            let answer = step(gave_up);
+            let _ = reply.send(Answer::Done(answer));
+        }),
+        gave_up: Arc::clone(&gave_up),
+    });
+    pool.ready.notify_one();
+    let answer = answers.recv_timeout(left);
+    abandon.clear_hook();
+    match answer {
+        Ok(Answer::Done(done)) => Ok(done),
+        Ok(Answer::Abandoned) => {
+            gave_up.store(true, Ordering::SeqCst);
+            Err(Error::Interrupted)
         }
-        assert_eq!(SHARED_CALLS.load(Ordering::SeqCst), 1);
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            gave_up.store(true, Ordering::SeqCst);
+            Err(Error::TimedOut)
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            gave_up.store(true, Ordering::SeqCst);
+            Err(Error::Unreachable)
+        }
     }
+}
 
-    static RELEASE: AtomicBool = AtomicBool::new(false);
+/// Connects to the first of `addrs` that accepts, each attempt bounded by the time left before
+/// `deadline`, on a thread of the connect pool; between two addresses it stops when its request
+/// gave up. A connection that comes after the request gave up is closed here.
+fn connect_any(
+    addrs: Vec<SocketAddr>,
+    deadline: Instant,
+    gave_up: &AtomicBool,
+) -> Result<TcpStream, Error> {
+    for addr in addrs {
+        if gave_up.load(Ordering::SeqCst) {
+            return Err(Error::Interrupted);
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(Error::TimedOut);
+        }
+        match connect()(&addr, left) {
+            Ok(connected) if gave_up.load(Ordering::SeqCst) => {
+                drop(connected);
+                return Err(Error::Interrupted);
+            }
+            Ok(connected) => return Ok(connected),
+            Err(_) => {}
+        }
+    }
+    if Instant::now() >= deadline {
+        Err(Error::TimedOut)
+    } else {
+        Err(Error::Unreachable)
+    }
+}
 
-    fn stalls(name: &str) -> std::io::Result<Vec<SocketAddr>> {
-        if name == "stalled.test" {
-            let started = Instant::now();
-            while !RELEASE.load(Ordering::SeqCst) && started.elapsed() < Duration::from_secs(20) {
-                std::thread::sleep(Duration::from_millis(5));
+/// The system's resolver.
+fn system_lookup(name: &str, port: u16) -> std::io::Result<Vec<SocketAddr>> {
+    (name, port).to_socket_addrs().map(Iterator::collect)
+}
+
+/// The system's `connect`, within a time-out.
+fn system_connect(addr: &SocketAddr, timeout: Duration) -> std::io::Result<TcpStream> {
+    TcpStream::connect_timeout(addr, timeout)
+}
+
+/// The marker the release gate looks for in the shipped `una` and `libuna_rt.a`, by `nm` and in
+/// their raw bytes (`scripts/check-release.sh`): it exists only with the `test-hooks` feature,
+/// and [`pools`] reads it, so a build with the hooks keeps it (#1148).
+#[cfg(feature = "test-hooks")]
+#[used]
+pub static UNA_HTTP_TEST_HOOKS_MARKER: [u8; 26] = *b"UNA_HTTP_TEST_HOOKS_MARKER";
+
+/// The lookup and the connect function a test put in place of the system's, with the
+/// `test-hooks` feature only, which only tests enable.
+#[cfg(feature = "test-hooks")]
+static TEST_LOOKUP: OnceLock<Lookup> = OnceLock::new();
+#[cfg(feature = "test-hooks")]
+static TEST_CONNECT: OnceLock<Connect> = OnceLock::new();
+
+/// With the `test-hooks` feature only: makes `lookup` the resolver of the process, for tests
+/// whose lookups hang. It takes effect only when nothing set one before.
+#[cfg(feature = "test-hooks")]
+pub fn use_test_lookup(lookup: Lookup) {
+    let _ = TEST_LOOKUP.set(lookup);
+}
+
+/// With the `test-hooks` feature only: makes `connect` the connect function of the process, for
+/// tests whose connections hang. It takes effect only when nothing set one before.
+#[cfg(feature = "test-hooks")]
+pub fn use_test_connect(connect: Connect) {
+    let _ = TEST_CONNECT.set(connect);
+}
+
+/// The resolver: a test's, with the `test-hooks` feature.
+#[cfg(feature = "test-hooks")]
+fn lookup() -> Lookup {
+    TEST_LOOKUP.get().copied().unwrap_or(system_lookup)
+}
+
+/// The resolver: the system's.
+#[cfg(not(feature = "test-hooks"))]
+fn lookup() -> Lookup {
+    system_lookup
+}
+
+/// The connect function: a test's, with the `test-hooks` feature.
+#[cfg(feature = "test-hooks")]
+fn connect() -> Connect {
+    TEST_CONNECT.get().copied().unwrap_or(system_connect)
+}
+
+/// The connect function: the system's.
+#[cfg(not(feature = "test-hooks"))]
+fn connect() -> Connect {
+    system_connect
+}
+
+/// The helpers the pools of the tests of the client are made for, when none were started.
+#[cfg(feature = "test-hooks")]
+const TEST_IO_THREADS: usize = 4;
+
+/// The pools, with the `test-hooks` feature: ones for [`TEST_IO_THREADS`] helpers are started
+/// for the tests of the client, which call it directly, when none were.
+#[cfg(feature = "test-hooks")]
+fn pools() -> Option<&'static Pools> {
+    let _ = std::hint::black_box(&UNA_HTTP_TEST_HOOKS_MARKER);
+    Some(POOLS.get_or_init(|| make_pools(TEST_IO_THREADS)))
+}
+
+/// The pools, or `None` before [`start`]: a request made before the engine started them fails
+/// with `Unreachable`, never with pools started lazily, which would be state left by earlier
+/// code (P8).
+#[cfg(not(feature = "test-hooks"))]
+fn pools() -> Option<&'static Pools> {
+    POOLS.get()
+}
+
+/// A TCP connection to `host` and `port` for a request whose deadline is `deadline` (#1148): the
+/// name looked up on the lookup pool, unless it is an address literal, then the connection made
+/// on the connect pool. The request waits for each until the deadline, `TimedOut`, or until
+/// `abandon` wakes it, `Interrupted`, with no polling; a stop is seen once a wait ends.
+pub(crate) fn reach(
+    host: &str,
+    port: u16,
+    deadline: Instant,
+    stopped: &dyn Fn() -> bool,
+    abandon: &Abandon,
+) -> Result<TcpStream, Error> {
+    if stopped() {
+        return Err(Error::Interrupted);
+    }
+    let Some(pools) = pools() else {
+        return Err(Error::Unreachable);
+    };
+    let addrs = match host.parse::<IpAddr>() {
+        Ok(ip) => vec![SocketAddr::new(ip, port)],
+        Err(_) => {
+            let name = host.to_owned();
+            let found = hand_off(&pools.lookups, deadline, abandon, move |_| {
+                lookup()(&name, port)
+            })?;
+            if stopped() {
+                return Err(Error::Interrupted);
+            }
+            match found {
+                Ok(addrs) if !addrs.is_empty() => addrs,
+                _ => return Err(Error::Unreachable),
             }
         }
-        Ok(local())
+    };
+    let stream = hand_off(&pools.connects, deadline, abandon, move |gave_up| {
+        connect_any(addrs, deadline, gave_up)
+    })??;
+    if stopped() || abandon.abandoned() {
+        return Err(Error::Interrupted);
     }
-
-    #[test]
-    fn a_stalled_name_holds_one_place_and_never_blocks_the_others() {
-        // Review R7-10: two places; many callers of a name whose lookup never answers give up
-        // at their deadlines, and the name holds one place, so another name still resolves.
-        let resolver = leaked(2, stalls);
-        let soon = Instant::now() + Duration::from_millis(100);
-        let callers: Vec<_> = (0..16)
-            .map(|_| std::thread::spawn(move || resolver.resolve("stalled.test", 80, soon)))
-            .collect();
-        for caller in callers {
-            assert_eq!(caller.join().unwrap(), Err(Error::TimedOut));
-        }
-        let started = Instant::now();
-        let later = Instant::now() + Duration::from_secs(5);
-        assert!(resolver.resolve("other.test", 80, later).is_ok());
-        assert!(started.elapsed() < Duration::from_secs(2));
-        assert_eq!(resolver.lock().running, 1);
-        RELEASE.store(true, Ordering::SeqCst);
-    }
-
-    static ZONE_RELEASE: AtomicBool = AtomicBool::new(false);
-
-    fn stalls_a_zone(name: &str) -> std::io::Result<Vec<SocketAddr>> {
-        if name.ends_with(".wild.test") {
-            let started = Instant::now();
-            while !ZONE_RELEASE.load(Ordering::SeqCst)
-                && started.elapsed() < Duration::from_secs(20)
-            {
-                std::thread::sleep(Duration::from_millis(5));
-            }
-        }
-        Ok(local())
-    }
-
-    #[test]
-    fn a_stalled_zone_of_many_names_leaves_places_to_the_other_zones() {
-        // Review R7-13: four places, so one per zone; sixteen distinct names of a wildcard zone
-        // that never answers hold one place between them, and a healthy host still resolves.
-        let resolver = leaked(4, stalls_a_zone);
-        let soon = Instant::now() + Duration::from_millis(100);
-        let callers: Vec<_> = (0..16)
-            .map(|i| {
-                std::thread::spawn(move || resolver.resolve(&format!("n{i}.wild.test"), 80, soon))
-            })
-            .collect();
-        for caller in callers {
-            assert_eq!(caller.join().unwrap(), Err(Error::TimedOut));
-        }
-        assert_eq!(resolver.lock().running, 1);
-        let started = Instant::now();
-        let later = Instant::now() + Duration::from_secs(5);
-        assert!(resolver.resolve("healthy.example", 80, later).is_ok());
-        assert!(started.elapsed() < Duration::from_secs(2));
-        assert_eq!(resolver.lock().running, 1);
-        ZONE_RELEASE.store(true, Ordering::SeqCst);
-    }
-
-    fn panics(name: &str) -> std::io::Result<Vec<SocketAddr>> {
-        if name == "boom.test" {
-            panic!("a lookup that panics");
-        }
-        Ok(local())
-    }
-
-    #[test]
-    fn a_lookup_that_panics_gives_its_place_back_and_answers_its_callers() {
-        // Review R7-14: with one place, the panicking lookup answers `Unreachable` and gives
-        // its place back, so the next name resolves.
-        let resolver = leaked(1, panics);
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let started = Instant::now();
-        assert_eq!(
-            resolver.resolve("boom.test", 80, deadline),
-            Err(Error::Unreachable)
-        );
-        assert!(started.elapsed() < Duration::from_secs(2));
-        {
-            let state = resolver.lock();
-            assert_eq!(state.running, 0);
-            assert!(state.pending.is_empty() && state.zones.is_empty());
-        }
-        assert!(resolver.resolve("fine.test", 80, deadline).is_ok());
-    }
-
-    static FAILED_CALLS: AtomicUsize = AtomicUsize::new(0);
-
-    fn fails(_name: &str) -> std::io::Result<Vec<SocketAddr>> {
-        FAILED_CALLS.fetch_add(1, Ordering::SeqCst);
-        Err(std::io::Error::other("no such name"))
-    }
-
-    #[test]
-    fn a_failed_name_is_remembered_for_a_few_seconds() {
-        let resolver = leaked(2, fails);
-        let deadline = Instant::now() + Duration::from_secs(5);
-        assert_eq!(
-            resolver.resolve("bad.test", 80, deadline),
-            Err(Error::Unreachable)
-        );
-        assert_eq!(
-            resolver.resolve("bad.test", 80, deadline),
-            Err(Error::Unreachable)
-        );
-        assert_eq!(FAILED_CALLS.load(Ordering::SeqCst), 1);
-    }
-
-    #[test]
-    fn the_line_serves_first_come_first_served_and_skips_those_that_left() {
-        let resolver = leaked(1, slow);
-        let mut state = resolver.lock();
-        state.line.extend([1, 2, 3]);
-        Resolver::leave(&mut state, Some(2));
-        assert_eq!(Resolver::front(&mut state), Some(1));
-        Resolver::leave(&mut state, Some(1));
-        assert_eq!(Resolver::front(&mut state), Some(3));
-        assert!(state.gave_up.is_empty());
-    }
+    Ok(stream)
 }

@@ -1460,6 +1460,9 @@ impl<'a> Checker<'_, 'a, '_> {
         let resolved = self.op_site(cap, op);
         if let Some(id) = resolved {
             self.timing_op(id, op_name);
+            // The edge of ADR 0116 P1 from the node whose code holds the operation, a lambda's
+            // included, to the operation: every operation call, whatever `uses` names (#1148).
+            self.graph_op(id, op_name);
         }
         let capability = resolved
             .and_then(|id| self.env.capabilities.get(id))

@@ -413,6 +413,27 @@ pub(crate) fn run_command(
             return Ok(ExitStatus::Usage);
         }
     };
+    // ADR 0116 amendment, P8 (#1148): the client's TLS settings are built before `main` when
+    // the grants include `Http`, as a native executable builds them, never at a first request.
+    if grants
+        .iter()
+        .any(|grant| matches!(grant, una_interp::Grant::Http(_)))
+    {
+        una_http::client::prepare();
+        // The client's lookup and connect pools, all their threads at once (`spec/24 §4` rule 2).
+        let io_threads = options
+            .tasks
+            .io_threads
+            .unwrap_or(una_interp::concurrency::DEFAULT_IO_THREADS);
+        if una_http::resolve::start(io_threads).is_err() {
+            writeln!(
+                stderr,
+                "[{}] Error: the lookup and connect threads of this run's requests could not be made",
+                Code::U6003
+            )?;
+            return Ok(ExitStatus::Errors);
+        }
+    }
     let host = Host {
         grants,
         keys,

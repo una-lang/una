@@ -657,11 +657,13 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
                     );
                 }
             }
-            let labels = if withins {
+            let (labels, residue) = if withins {
                 authority::within_labels(&env, &probe)
             } else {
-                std::collections::BTreeMap::new()
+                (std::collections::BTreeMap::new(), timing::Residue::none())
             };
+            // ADR 0116 P9: what the messages of pass 2 name when `L_res` raises a label.
+            env.residue = residue;
             let state = if env.files_written {
                 env.file_state.join(&file_state(&env).0)
             } else {
@@ -756,10 +758,18 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
     }
     authority::grants(&env, package.settings, package.run, &mut report);
     authority::drive_failures(&env, package.settings, &mut report);
-    authority::drive_timing(&env, &findings, package.settings, &mut report);
-    let limit_label = authority::limit_timing(&env, &findings, package.settings, &mut report);
-    let mut timing_sites = authority::deadline_timing(&env, &findings, &mut report);
-    timing_sites.extend(authority::within_timing(&env, &findings, &mut report));
+    // `L_res` of the checked package, computed once for every site that joins it (ADR 0116 P9).
+    let residue = timing::residue_of(&env, &findings);
+    authority::drive_timing(&env, &findings, package.settings, &residue, &mut report);
+    let limit_label =
+        authority::limit_timing(&env, &findings, package.settings, &residue, &mut report);
+    let mut timing_sites = authority::deadline_timing(&env, &findings, &residue, &mut report);
+    timing_sites.extend(authority::within_timing(
+        &env,
+        &findings,
+        &residue,
+        &mut report,
+    ));
     timing_sites.sort_by_key(|(_, _, span, _)| (span.file, span.start, span.end));
     authority::budget(&env, &findings, package.settings, &mut report);
     // Edition 0.3 (ADR 0100): last, once every other error of the package is known.
@@ -1012,6 +1022,9 @@ pub(crate) struct Findings {
     pub(crate) withins: Vec<within::WithinSite>,
     /// The operations of the host's `Http` checked, for `L_lim` (ADR 0117 IF4).
     pub(crate) http_sites: Vec<timing::HttpSite>,
+    /// The `tasks` statements checked, each with the seed of `κ` of the whole statement, for
+    /// the residue label `L_res` (ADR 0116 P9).
+    pub(crate) tasks_sites: Vec<timing::TasksSite>,
     /// The calls of the call graph of ADR 0116 P1: from a function's body, a handler's
     /// operations or a lambda (`Λ`), to a function called or named.
     pub(crate) calls: std::collections::BTreeSet<(timing::Caller, usize)>,
@@ -1019,6 +1032,8 @@ pub(crate) struct Findings {
     pub(crate) value_calls: std::collections::BTreeSet<timing::Caller>,
     /// The handlers each node of that graph installs.
     pub(crate) caller_installs: std::collections::BTreeSet<(timing::Caller, usize)>,
+    /// The operations each node of that graph performs, those of lambdas included (#1148).
+    pub(crate) caller_ops: std::collections::BTreeSet<(timing::Caller, ty::CapId, String)>,
     /// Names bound by selfified `let`s.
     pub(crate) selfified: Vec<Span>,
     /// The conditions of `for until` loops that are in the refinement language, which the

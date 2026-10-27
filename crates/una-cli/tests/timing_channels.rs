@@ -27,14 +27,19 @@
 //! 45 ms, 9 and 1 timeouts in 20, and the same majority. A control compares one input with
 //! itself, 20 runs against 20, and must pass, so a machine whose noise alone would fail the
 //! test is seen as such. The deterministic test of P8 in `crates/una-rt/src/sched.rs` remains
-//! the primary guard at this slice.
+//! the primary guard at this slice. The oracle of the lazy timer (#1151) deviates from §G, as
+//! its own comment records: its channel cannot be amplified to a deadline outcome, so it
+//! measures a span, has low power before the fix, and the deterministic guards of #1151 are
+//! primary.
 //!
 //! The oracles of #1146 judge outcomes rather than times: each builds one program twice, with
 //! only its `secret` key changed, runs each executable 20 times on one worker, and requires
 //! the same outcomes for both keys, the winner of a race or whether a deadline's `timeout` is
 //! in the trace. The oracle of #1147 is the positive control of its differential, whose
 //! `secret` half is a deterministic test in `http_limits.rs`: under a limit, a `public` key's
-//! time must still change how many requests a server receives on this machine.
+//! time must still change how many requests a server receives on this machine. The oracle of
+//! #1148 (ADR 0116 P9) runs the `public` twin of the residue amplifier, whose `secret` half
+//! `una check` refuses with U4001, and requires its two keys to give the same deadline outcomes.
 //! `crates/una-cli/tests/release_gates.rs` checks that every test here carries the attribute.
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
 
@@ -139,6 +144,12 @@ pub main() -> Unit
   unit
 "#
     );
+    build_flip(name, port, &program)
+}
+
+/// Writes the package `flip`, whose module `flip` is `program` and whose run may `get` from
+/// the server on `port`, in a directory named by `name`, and builds it.
+fn build_flip(name: &str, port: u16, program: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("una-timing-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("src")).unwrap();
@@ -291,6 +302,55 @@ fn a_public_block_s_timing_never_depends_on_how_many_tasks_secret_code_started()
     }
 }
 
+/// The oracle's package of the lazy timer, with `key` as its `secret` input, built in a
+/// directory named by `name`.
+fn lazy_timer_package(name: &str, key: u8, port: u16) -> PathBuf {
+    let get = |path: &str| {
+        let url = format!("http://127.0.0.1:{port}/{path}");
+        format!(r#"attempt @http.get("{url}", headers: [], key_name: None)"#)
+    };
+    let (mark, hold) = (get("mark"), get("hold"));
+    let program = format!(
+        r#"module flip
+
+import std.time (second)
+
+warm(key: secret Int) -> secret Int
+=
+  let value = key within 60 * second
+    if error use 0
+  value
+
+pub main() -> Unit
+  uses @http: Http[get]
+=
+  let key: secret Int = {key}
+  let public_value = 7
+  let earlier = if key == 1 then warm(key) else 0
+  let at_mark = {mark}
+  let first = public_value within 60 * second
+    if error use 0
+  let at_hold = {hold}
+  unit
+"#
+    );
+    build_flip(name, port, &program)
+}
+
+/// The time of one run of the lazy timer's oracle from `/mark` to `/hold`, which follows the
+/// first public `within` at once, in milliseconds.
+fn span(dir: &Path, spans: &Mutex<Vec<u128>>) -> f64 {
+    spans.lock().unwrap().clear();
+    let native = Command::new(dir.join("target/una/flip"))
+        .args(["--workers", "2", "--http-timeout", "30"])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert_eq!(native.status.code(), Some(0), "{native:?}");
+    let span = spans.lock().unwrap().first().copied();
+    span.map_or(f64::INFINITY, |span| span as f64 / 1000.0)
+}
+
 /// The program of #1146: a `secret` key, `key`, decides whether a task is started before a
 /// public race between a long branch, listed first, and a short one; the race prints its winner.
 ///
@@ -305,6 +365,88 @@ fn slicer_program(key: u8) -> String {
     format!(
         "module leak\n\nnoop() -> Unit = unit\n\nkey() -> secret Int = {key}\n\nwork(n: Int, answer: Int) -> Int\n=\n  let edit total = 0\n  for i in 1..n\n    total = total + 1\n  answer\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  if key() > 0\n    tasks\n      start noop()\n  let w = first of\n    work(300000000, answer: 1)\n    work(20000, answer: 2)\n  @console.print(\"{{w}}\")\n"
     )
+}
+
+#[test]
+#[ignore = "security timing oracle: run by the timing-channels step of local-ci and the release gates"]
+fn a_public_within_s_timing_never_depends_on_whether_secret_code_ran_a_within() {
+    // #1151, ADR 0116 amendment P8 and P13, `spec/27 §1` rule 4 and §5, on the real clock, in
+    // release form, at `--workers 2`. The `secret` key, 0 or 1, decides whether a `within`
+    // ran before `main`'s public section; nothing else differs. The public section is one
+    // `within` over a public value between a request to `/mark` and one to `/hold`, and the
+    // server notes the time between the two requests: the measurement is narrowed to the first
+    // public `within`, the only one that a lazy start could charge.
+    //
+    // Before the fix, the timer thread started at the first deadline, through a `OnceLock`:
+    // key 0's first public `within` paid the thread's start, key 1's did not. After it, both
+    // programs start the timer thread before `main` (they hold a `within`), and every
+    // deadline is armed and fired in nanoseconds, so the two keys' spans have one
+    // distribution.
+    //
+    // **A deviation from ADR 0116 amendment §G, recorded:** §G asks for an amplifier that
+    // turns the channel into a deadline outcome at least 25 ms from `d`. This channel cannot
+    // be amplified so: its effect is one thread start, tens of microseconds, once per
+    // process, since a process started its timer thread at most once, and the sub-millisecond
+    // phase of P13 is not cumulative either. So this oracle measures the span directly, has
+    // low power before the fix, below the noise of two local requests on most machines, and
+    // a pass before the fix proves nothing. The primary guards at this slice are
+    // deterministic and need no timing: `runtime::tests::the_timer_thread_runs_before_main_
+    // and_no_within_starts_it_whatever_ran_before`, `sched`'s `start_all` test, the history
+    // guard `timer::tests::a_history_of_cancelled_timers_leaves_no_state_and_no_later_wake`,
+    // and the tests of P13 on a clock the test drives (`timer.rs`, `wheel.rs`, `deadline.rs`,
+    // the driver's ticks in `runtime.rs` and the waits of `una-interp`'s `stopping.rs`). This
+    // oracle guards the whole executable after the fix: a lazy start, or any other cost that a
+    // `secret` `within` leaves to a later public one, large enough to see, fails it.
+    //
+    // The judgment is the rank test of the header: key 0's 20 spans against key 1's, failing
+    // at p < 0.001. The control runs key 0 twice as often and compares its two halves, which
+    // must pass at p >= 0.001.
+    let spans = Arc::new(Mutex::new(Vec::new()));
+    let port = holding_server(Arc::clone(&spans));
+    let dirs = [
+        lazy_timer_package("lazy0", 0, port),
+        lazy_timer_package("lazy1", 1, port),
+    ];
+    // Per run, key 0, key 1 and key 0 again.
+    let mut samples: [Vec<f64>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+    for run in 0..20 {
+        for (sample, key) in [0usize, 1, 0].into_iter().enumerate() {
+            let value = span(&dirs[key], &spans);
+            eprintln!("run {run} key {key}: /mark to /hold {value:.3} ms");
+            samples[sample].push(value);
+        }
+    }
+    let report = |what: &str, test: &RankTest, a: &[f64], b: &[f64]| {
+        eprintln!(
+            "{what}: U = {}, z = {:.3}, p = {:.3e}; {a:?} against {b:?}",
+            test.u, test.z, test.p
+        );
+    };
+    let secret = mann_whitney(&samples[0], &samples[1]);
+    report("key 0 against key 1", &secret, &samples[0], &samples[1]);
+    let control = mann_whitney(&samples[0], &samples[2]);
+    report(
+        "control, key 0 against key 0",
+        &control,
+        &samples[0],
+        &samples[2],
+    );
+    assert!(
+        control.p >= 0.001,
+        "the control failed: the machine's noise alone separates one input from itself"
+    );
+    assert!(
+        samples.iter().flatten().all(|value| value.is_finite()),
+        "a run never reached `/hold`"
+    );
+    assert!(
+        secret.p >= 0.001,
+        "key 0 and key 1 differ: p = {:.3e}",
+        secret.p
+    );
+    for dir in &dirs {
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }
 
 #[test]
@@ -449,5 +591,260 @@ fn the_history_of_a_limit_amplifies_time_on_this_machine() {
             [(Some(0), String::new(), 1), (Some(0), String::new(), 2)],
             "the control, native {native}"
         );
+    }
+}
+
+/// The residue amplifier of ADR 0116 amendment §G, P9 (#1148), with its key labeled `label`,
+/// `"secret "` or `""`, and nothing else differing: `key` decides whether a started task's
+/// request to a server that never answers (`silent`) leaves before its `tasks` statement's block
+/// fails and cancels it, and then `main` makes a request to a server that answers at once
+/// (`fast`) under `within 300 * millisecond`.
+///
+/// With key 0, `churn` makes its request at once; with key 1 it computes for seconds first, and
+/// the block's failure, about 30 ms in, cancels it before the request. Before #1148 the
+/// cancelled request kept the only helper (`--io-threads 1`) until its time-out, so the later
+/// request waited behind it and its `within` timed out exactly when key was 0. With the label,
+/// `L_res` is `secret` and the `within` is U4001; the runtime now abandons the cancelled
+/// exchange at its next I/O step, so the `public` twin gives the same outcome for both keys.
+fn residue_program(label: &str, key: u8, silent: &str, fast: &str) -> String {
+    format!(
+        r#"module residue
+
+import std.time (millisecond)
+
+pub kind Burst = | Ended
+
+key() -> {label}Int = {key}
+
+crunch(n: {label}Int) -> {label}Int
+=
+  let edit total: {label}Int = 0
+  for i in 1..n
+    total = total + 1
+  total
+
+--- Works for a time `n` decides, then makes a request to a server that never answers, tagged
+--- with the run.
+churn(n: {label}Int, run: internal Text) -> Unit
+  uses @http: Http[get]
+=
+  let spent = crunch(n)
+  let outcome = attempt @http.get("{silent}?r={{run}}", headers: [], key_name: None)
+  unit
+
+--- Starts `churn`, then fails its block after public work, which cancels its task.
+burst(n: {label}Int, run: internal Text) -> Unit
+  uses @http: Http[get]
+  fails Burst
+=
+  tasks
+    start churn(n, run)
+    let waited = crunch(30000000)
+    fail Ended
+
+pub main() -> Unit
+  uses @env: Env[get]
+  uses @http: Http[get]
+=
+  let n = if key() > 0 then 2000000000 else 0
+  let run = when @env.get("UNA_RESIDUE_RUN")
+    is Some(text) -> text
+    is None -> "0"
+  let tried = attempt burst(n, run)
+  let later = attempt @http.get("{fast}", headers: [], key_name: None) within 300 * millisecond
+  unit
+"#
+    )
+}
+
+/// The `/silent` requests the residue server received, by the run each was tagged with.
+type Silent = Arc<Mutex<BTreeMap<String, usize>>>;
+
+/// A server for the residue oracle: it holds `/silent?r=<run>` open without answering, counting
+/// those requests by run, and answers `/fast` at once. Returns its port and those counts.
+fn residue_server() -> (u16, Silent) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let silent: Silent = Arc::default();
+    let counted = Arc::clone(&silent);
+    std::thread::spawn(move || {
+        let held: Arc<Mutex<Vec<std::net::TcpStream>>> = Arc::new(Mutex::new(Vec::new()));
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let held = Arc::clone(&held);
+            let counted = Arc::clone(&counted);
+            std::thread::spawn(move || {
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+                let mut request = Vec::new();
+                let mut byte = [0u8; 1];
+                while !request.ends_with(b"\r\n\r\n") {
+                    match stream.read(&mut byte) {
+                        Ok(1) => request.push(byte[0]),
+                        _ => break,
+                    }
+                }
+                let request = String::from_utf8_lossy(&request).into_owned();
+                if request.split(' ').nth(1) == Some("/fast") {
+                    let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+                } else {
+                    let target = request.split(' ').nth(1).unwrap_or("");
+                    let run = target.split("?r=").nth(1).unwrap_or("").to_owned();
+                    *counted.lock().unwrap().entry(run).or_default() += 1;
+                    held.lock().unwrap().push(stream);
+                }
+            });
+        }
+    });
+    (port, silent)
+}
+
+/// A package of edition `0.4` named `name` whose entry module is [`residue_program`], granted
+/// the server's origin, in a fresh temporary directory; built with `una build` when `build`.
+fn residue_package(name: &str, label: &str, key: u8, port: u16, build: bool) -> PathBuf {
+    let silent = format!("http://127.0.0.1:{port}/silent");
+    let fast = format!("http://127.0.0.1:{port}/fast");
+    let dir = std::env::temp_dir().join(format!("una-timing-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(
+        dir.join("ita.una"),
+        format!(
+            "ita {name}\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry residue\n  grants\n    env\n    http \"http://127.0.0.1:{port}\" get\n"
+        ),
+    )
+    .unwrap();
+    std::fs::copy(
+        root().join("tests/conformance/runtime/within_runs/ita.lock"),
+        dir.join("ita.lock"),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("src/residue.una"),
+        residue_program(label, key, &silent, &fast),
+    )
+    .unwrap();
+    if build {
+        let built = una(&dir, &["build", "."]);
+        assert_eq!(built.status.code(), Some(0), "{built:?}");
+    }
+    dir
+}
+
+/// Whether one run of the residue oracle's executable in `dir`, named `name`, met its deadline:
+/// its request to `/fast`, the run's last `get`, failed with `TimedOut`.
+fn residue_timed_out(dir: &Path, name: &str, run: usize) -> bool {
+    let trace = dir.join(format!("trace-{run}.json"));
+    let native = Command::new(dir.join(format!("target/una/{name}")))
+        .args([
+            "--workers",
+            "2",
+            "--io-threads",
+            "1",
+            "--http-timeout",
+            "5",
+            "--trace",
+        ])
+        .arg(&trace)
+        .env("UNA_RESIDUE_RUN", run.to_string())
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert_eq!(native.status.code(), Some(0), "{native:?}");
+    let events: Value = serde_json::from_str(&std::fs::read_to_string(&trace).unwrap()).unwrap();
+    let _ = std::fs::remove_file(&trace);
+    let last = events
+        .as_array()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|event| event["op"] == "get" && event["task"].as_str().unwrap_or("").is_empty())
+        .cloned()
+        .unwrap_or(Value::Null);
+    assert!(!last.is_null(), "{events}");
+    last["outcome"]["variant"] == "TimedOut"
+}
+
+#[test]
+#[ignore = "security timing oracle: run by the timing-channels step of local-ci and the release gates"]
+fn a_cancelled_task_s_request_never_changes_a_later_deadline_s_outcome() {
+    // #1148, ADR 0116 amendment P9 and §G, `spec/27 §2` rule 4, on the real clock, with
+    // `--workers 2` and `--io-threads 1`. The `secret` program, whose key decides whether a
+    // cancelled started task's request was left on the only helper, is refused: label fixes are
+    // checked by the diagnostic (§G), U4001 at the later `within`, since `L_res` is `secret`.
+    // Its `public` twin, the same program but for that label, is accepted, and runs as the
+    // `secret` one would: key 0 leaves the request, key 1 does not.
+    //
+    // The judgment is the rank test of the header over each run's outcome, 1 when the later
+    // `within` timed out and 0 when it did not: key 0's 20 runs against key 1's, failing at
+    // p < 0.001, and a control of key 1 against itself, which must pass. Before the fix, every
+    // run of key 0 timed out, the helper held by the cancelled request for `--http-timeout`, and
+    // no run of key 1 did, p about 1e-9. After it, the cancelled exchange ends at its next I/O
+    // step, the helper is free again within it, and no run of either key times out.
+    let (port, silent) = residue_server();
+    let refused = residue_package("residuesecret", "secret ", 0, port, false);
+    let checked = una(&refused, &["check", "."]);
+    let said = format!(
+        "{}{}",
+        String::from_utf8_lossy(&checked.stdout),
+        String::from_utf8_lossy(&checked.stderr)
+    );
+    assert_ne!(checked.status.code(), Some(0), "{said}");
+    // U4001 at the later `within`, line 44 of the program, at its `attempt`: the diagnostic
+    // that names U4001, up to the next one, holds that position.
+    let at_within = said.match_indices("U4001").any(|(at, _)| {
+        let rest = &said[at..];
+        let end = rest
+            .get(1..)
+            .and_then(|tail| tail.find("[U"))
+            .map_or(rest.len(), |e| e + 1);
+        rest[..end].contains("src/residue.una:44:15")
+    });
+    assert!(at_within, "{said}");
+    let _ = std::fs::remove_dir_all(&refused);
+    let dirs = [
+        residue_package("residuekey0", "", 0, port, true),
+        residue_package("residuekey1", "", 1, port, true),
+    ];
+    let names = ["residuekey0", "residuekey1"];
+    let mut samples: [Vec<f64>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+    let mut expected: BTreeMap<String, usize> = BTreeMap::new();
+    for run in 0..20 {
+        for (sample, key) in [0usize, 1, 1].into_iter().enumerate() {
+            let tag = run * 3 + sample;
+            let late = residue_timed_out(&dirs[key], names[key], tag);
+            eprintln!("run {run} key {key}: timed out {late}");
+            if key == 0 {
+                expected.insert(tag.to_string(), 1);
+            }
+            samples[sample].push(if late { 1.0 } else { 0.0 });
+        }
+    }
+    // The power check: the amplifier worked on every run, each key-0 run leaving exactly one
+    // request at the server, tagged with its run, and no key-1 run any, so the outcomes compared
+    // are those of the channel. Each request carries its run, so one the server read late is
+    // never counted for another run.
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(*silent.lock().unwrap(), expected, "/silent requests by run");
+    let secret = mann_whitney(&samples[0], &samples[1]);
+    let control = mann_whitney(&samples[1], &samples[2]);
+    eprintln!(
+        "key 0 against key 1: U = {}, z = {:.3}, p = {:.3e}; {:?} against {:?}",
+        secret.u, secret.z, secret.p, samples[0], samples[1]
+    );
+    eprintln!(
+        "control, key 1 against key 1: U = {}, z = {:.3}, p = {:.3e}",
+        control.u, control.z, control.p
+    );
+    assert!(
+        control.p >= 0.001,
+        "the control failed: the machine's noise alone separates one input from itself"
+    );
+    assert!(
+        secret.p >= 0.001,
+        "key 0 and key 1 differ: p = {:.3e}; a cancelled request still holds its helper",
+        secret.p
+    );
+    for dir in &dirs {
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

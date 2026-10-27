@@ -35,6 +35,7 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
 use una_http::client::{Error, Interrupt, Waited};
+use una_http::limit::Abandon;
 use una_interp::stopping::RunStop;
 use una_sys::poll::{Events, Interest, Poller};
 
@@ -570,6 +571,11 @@ pub(crate) struct Parked<'a> {
     /// The request's place among the sockets of the process (`crate::sockets`), taken before
     /// its first connection and kept until the request ends.
     place: RefCell<Option<Arc<Permit>>>,
+    /// The request's abandon (ADR 0116 P9, #1148), raised when a cancellation of the task
+    /// interrupts the request, as the helper path raises its own: the exchange then stops
+    /// before it parses or decodes what it read, its socket is shut down, and a job of the
+    /// request still waiting on the lookup or connect pools ends at once.
+    abandon: Abandon,
 }
 
 impl<'a> Parked<'a> {
@@ -584,6 +590,20 @@ impl<'a> Parked<'a> {
             entries,
             cancelled: Cell::new(false),
             place: RefCell::new(None),
+            abandon: Abandon::new(),
+        }
+    }
+
+    /// The request's abandon, which the engine passes to the client with this interruption.
+    pub(crate) fn abandon(&self) -> &Abandon {
+        &self.abandon
+    }
+
+    /// Records that a cancellation of the task interrupted the request, and raises its abandon
+    /// once (ADR 0116 P9).
+    fn mark_cancelled(&self) {
+        if !self.cancelled.replace(true) {
+            self.abandon.abandon();
         }
     }
 
@@ -597,7 +617,7 @@ impl<'a> Parked<'a> {
     /// Reads the task's cancellation entries, and records one that is cancelled.
     fn cut(&self) -> bool {
         if !self.cancelled.get() && crate::interrupt::cancelled(self.entries) {
-            self.cancelled.set(true);
+            self.mark_cancelled();
         }
         self.cancelled.get()
     }
@@ -607,7 +627,7 @@ impl<'a> Parked<'a> {
         match woken {
             Woken::TimedOut => Error::TimedOut,
             Woken::Cancelled => {
-                self.cancelled.set(true);
+                self.mark_cancelled();
                 Error::Interrupted
             }
             Woken::Stopped => Error::Interrupted,
@@ -691,7 +711,7 @@ impl Interrupt for Parked<'_> {
                 Woken::Ready => return Waited::Ready,
                 Woken::Failed => return Waited::Failed,
                 Woken::Cancelled => {
-                    self.cancelled.set(true);
+                    self.mark_cancelled();
                     return Waited::Stopped;
                 }
                 // The loop reads the stop and the time left again.
@@ -706,7 +726,16 @@ impl Interrupt for Parked<'_> {
     /// once. The job reads the task's cancellation entries and the deadline before it starts
     /// anything, so a job whose task gave up ends at once; one that connected for a task that
     /// left closes its connection before its place is given back.
-    fn open(&self, host: &str, port: u16, deadline: Instant) -> Result<TcpStream, Error> {
+    ///
+    /// The job is given the request's abandon (ADR 0116 P9, #1148): a cancellation of the task
+    /// raises it, which wakes the job's wait on the lookup or connect pool at once.
+    fn open(
+        &self,
+        host: &str,
+        port: u16,
+        deadline: Instant,
+        abandon: &Abandon,
+    ) -> Result<TcpStream, Error> {
         if self.stopped() {
             return Err(Error::Interrupted);
         }
@@ -716,18 +745,19 @@ impl Interrupt for Parked<'_> {
             return Err(Error::TimedOut);
         }
         let result: Arc<Mutex<Option<Opened>>> = Arc::new(Mutex::new(None));
-        let (slot, entries, stop, host) = (
+        let (slot, entries, stop, host, abandon) = (
             Arc::clone(&result),
             self.entries.to_vec(),
             self.stop,
             host.to_owned(),
+            abandon.clone(),
         );
         let job = move |done: crate::interrupt::Wake| {
             let opened = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let stopped =
                     || crate::interrupt::cancelled(&entries) || stop.is_some_and(RunStop::stopped);
                 (
-                    una_http::client::open(&host, port, deadline, &stopped),
+                    una_http::client::open(&host, port, deadline, &stopped, &abandon),
                     place,
                 )
             }));

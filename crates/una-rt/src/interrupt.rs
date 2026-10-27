@@ -23,7 +23,7 @@
 //!   it wakes when the count is 0, as a race's is. Nothing else takes the mutex.
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use crate::runtime::Cancel;
@@ -36,6 +36,9 @@ struct Waiting {
     /// The task's entry for that count: the wait is interrupted once the count is below it.
     entry: usize,
     wake: Wake,
+    /// Whether the wait's job has begun on its helper, when the wait has a job: a deadline's cut
+    /// wakes only a wait whose job has not ([`lowered_unstarted`]).
+    begun: Option<Arc<AtomicBool>>,
     /// Keeps the count, and so the address that keys it, alive while the wait is registered.
     _count: Arc<AtomicUsize>,
 }
@@ -69,8 +72,13 @@ pub(crate) struct Registration {
 
 /// Registers `wake` on each of `entries`, the cancellation entries that can interrupt the
 /// wait. The caller checks the entries again afterwards, so a cancellation that came before the
-/// registration is never missed.
-pub(crate) fn register(entries: &[Cancel], wake: &Wake) -> Registration {
+/// registration is never missed. For a wait on a job of a helper pool, `begun` is set when the
+/// job begins on its helper (#1148).
+pub(crate) fn register_job(
+    entries: &[Cancel],
+    wake: &Wake,
+    begun: Option<Arc<AtomicBool>>,
+) -> Registration {
     let mut keys = Vec::with_capacity(entries.len());
     let mut waits = lock();
     let id = waits.next;
@@ -82,12 +90,19 @@ pub(crate) fn register(entries: &[Cancel], wake: &Wake) -> Registration {
             Waiting {
                 entry: *entry,
                 wake: Arc::clone(wake),
+                begun: begun.clone(),
                 _count: Arc::clone(count),
             },
         );
         keys.push((at, id));
     }
     Registration { keys }
+}
+
+/// [`register_job`] for a wait that is not a job, in tests.
+#[cfg(test)]
+fn register(entries: &[Cancel], wake: &Wake) -> Registration {
+    register_job(entries, wake, None)
 }
 
 impl Drop for Registration {
@@ -115,6 +130,20 @@ pub(crate) fn cancelled(entries: &[Cancel]) -> bool {
 /// Wakes every wait registered on `count` whose entry it now cancels, after the count was
 /// lowered. The waits are woken outside the lock.
 pub(crate) fn lowered(count: &AtomicUsize) {
+    wake_cancelled(count, false);
+}
+
+/// [`lowered`] for a deadline's cut (#1148): wakes only the waits whose job has not begun on
+/// its helper, still queued, which nothing would end before a helper took it; a wait whose job
+/// runs stays registered, and its task waits for the job, which the same deadline ends at its
+/// next I/O step. O(k log w), as [`lowered`].
+pub(crate) fn lowered_unstarted(count: &AtomicUsize) {
+    wake_cancelled(count, true);
+}
+
+/// Wakes the waits on `count` that its value cancels, those whose job began left out when
+/// `unstarted_only`.
+fn wake_cancelled(count: &AtomicUsize, unstarted_only: bool) {
     let wakes: Vec<Wake> = {
         let mut waits = lock();
         let at = key(count);
@@ -125,6 +154,13 @@ pub(crate) fn lowered(count: &AtomicUsize) {
         let cancelled: Vec<u64> = registered
             .iter()
             .filter(|(_, waiting)| now < waiting.entry)
+            .filter(|(_, waiting)| {
+                !unstarted_only
+                    || waiting
+                        .begun
+                        .as_ref()
+                        .is_none_or(|begun| !begun.load(Ordering::SeqCst))
+            })
             .map(|(id, _)| *id)
             .collect();
         let wakes = cancelled
