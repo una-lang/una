@@ -53,3 +53,6 @@ pub needs(a: Int, b: Int) -> Int
 
 -- No obligation: a `reflect` body computes exactly.
 pub predicate reflect beyond(a: Int, b: Int) -> Bool = a + b > 4611686018427387904
+
+-- U5002: `abs` as a function value has no bound on its operand at this use.
+pub absolutes(xs: List[Int]) -> List[Int] = xs.map(each: abs)

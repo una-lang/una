@@ -149,6 +149,10 @@ pub struct Site {
     /// it, as `sum`'s, the callee: a refutation sets that result freely, so it is no run, and
     /// the obligation is unknown (ADR 0109 rule 3).
     pub unbounded: Option<String>,
+    /// For an obligation unknown by construction, its reason: no query is sent. The `overflow`
+    /// obligation of `abs` or `sum` used as a function value in a `systems` package is one,
+    /// since their operands have no bounds at that use (ADR 0109 rule 3).
+    pub unknown: Option<String>,
     /// For an `effect_condition` obligation, the conditioned operation and where it is
     /// charged, which decide its message and repairs (ADR 0092 rules 3 and 5).
     pub effect: Option<Effect>,
@@ -2920,6 +2924,10 @@ impl<'p, 'i> Walker<'p, 'i> {
                 body,
                 function,
             } => {
+                // ADR 0109 rule 3: `abs` or `sum` of the prelude used as a value.
+                if let Some(path) = function {
+                    self.prelude_value_site(path, span, ctx);
+                }
                 self.lambda_binders.insert(name.to_owned());
                 let mut inner = ctx.clone();
                 for (param, ty) in params {
@@ -4669,6 +4677,41 @@ impl<'p, 'i> Walker<'p, 'i> {
         self.overflow_site(x.f.clone(), (INT_LEAST, INT_GREATEST), guard, of, span, ctx);
     }
 
+    /// The `overflow` obligation of the prelude's `abs` or `sum` used as a function value at
+    /// `span`, as in `xs.map(abs)`, in a `systems` package (ADR 0109 rule 3): unknown by
+    /// construction, since the operands have no bounds at that use, so no query is sent. Its
+    /// one repair is the call inside a lambda, where the operand's bounds apply.
+    fn prelude_value_site(&mut self, path: &Path, span: Span, ctx: &Ctx) {
+        if self.index.profile != Profile::Systems || !is_prelude(&path.module) {
+            return;
+        }
+        let name = path.name.as_str();
+        let operand = match name {
+            "abs" => "x",
+            "sum" => "xs",
+            _ => return,
+        };
+        let text = format!("{} in {INT_LEAST}..{INT_GREATEST}", self.text(span));
+        let mut place = self.place(ObligationKind::Overflow, None);
+        place.int = true;
+        place.unknown = Some(format!("the operands of `{name}` have no bounds at this use"));
+        place.flow = Some(format!(
+            "write the call inside a lambda, `fn({operand}) -> {name}({operand})`, so its operand's bounds apply"
+        ));
+        self.push(
+            ObligationKind::Overflow,
+            text,
+            span,
+            None,
+            Vec::new(),
+            Vec::new(),
+            vec![F::Bool(false)],
+            ctx,
+            place,
+            vec![ctx.divisions.to_vec()],
+        );
+    }
+
     /// An `overflow` obligation at `span`: `exact` lies in `least..greatest` (`spec/18 §3`).
     /// Its goal text is the operation's source text in that range, and `guard`, when given, is
     /// the repair's guard.
@@ -5957,6 +6000,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                 guard: None,
                 int: false,
                 unbounded: None,
+                unknown: None,
                 effect: None,
             };
         };
@@ -5993,6 +6037,7 @@ impl<'p, 'i> Walker<'p, 'i> {
             guard: None,
             int: false,
             unbounded: None,
+            unknown: None,
         }
     }
 

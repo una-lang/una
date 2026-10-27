@@ -638,6 +638,12 @@ impl<'a> Checker<'_, 'a, '_> {
         let Some(def) = self.env.functions.get(id).cloned() else {
             return Ty::error();
         };
+        // ADR 0109 rule 3: `abs` or `sum` of the prelude used as a value, as in `xs.map(abs)`,
+        // computes an `Int` with no bound on its operands at this use: an `overflow` site at
+        // the reference, which the verifier reports unknown.
+        if def.module == self.env.prelude {
+            self.prelude_overflow_site(def.name, span);
+        }
         // ADR 0116 rule 8: a function that says `diverges` is not a value.
         if def.diverges {
             self.report.error(

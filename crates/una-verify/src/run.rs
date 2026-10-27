@@ -233,6 +233,19 @@ fn forgotten(items: &[(String, Collection)], kind: ObligationKind) -> String {
 pub(crate) const UNENCODABLE_LOCK: &str =
     "the locked condition is outside what the verifier encodes (`spec/12 §2`)";
 
+/// The outcome of an obligation unknown by construction, with `reason` (ADR 0109 rule 3).
+fn unknown_outcome(reason: &str) -> Outcome {
+    Outcome {
+        status: ObligationStatus::Unknown,
+        reason: Some(reason.to_owned()),
+        cached: false,
+        path: None,
+        bindings: Vec::new(),
+        division: None,
+        values_error: None,
+    }
+}
+
 /// The reason of an `overflow` obligation over the result of `callee`, a prelude function that
 /// states no bound on it, whose refutation is no run (ADR 0109 rule 3).
 pub(crate) fn unbounded_result(callee: &str) -> String {
@@ -332,6 +345,27 @@ fn check_version(settings: &Settings) -> Result<(), Problem> {
 /// Discharges `obligations`: cached answers first, then the solver for the others, in
 /// parallel; outcomes come in the order of the obligations.
 pub fn verify(obligations: &[Obligation], settings: &Settings) -> Result<Vec<Outcome>, Problem> {
+    // An obligation unknown by construction sends no query (ADR 0109 rule 3): the others are
+    // solved, and the outcomes are put back in order.
+    if obligations.iter().any(|o| o.site.unknown.is_some()) {
+        let sent: Vec<Obligation> = obligations
+            .iter()
+            .filter(|o| o.site.unknown.is_none())
+            .cloned()
+            .collect();
+        let mut solved = verify(&sent, settings)?.into_iter();
+        return Ok(obligations
+            .iter()
+            .map(|obligation| match &obligation.site.unknown {
+                Some(reason) => unknown_outcome(reason),
+                // INVARIANT: `verify` gives one outcome per obligation sent, so one is left for
+                // each obligation that was; a missing one is unknown, never proven.
+                None => solved.next().unwrap_or_else(|| {
+                    unknown_outcome("internal error: no outcome for this obligation")
+                }),
+            })
+            .collect());
+    }
     let mut outcomes = verify_once(obligations, settings)?;
     // The obligation whose query decided each status, when it is not the obligation itself:
     // the full query of a refutation (ADR 0114 rule 8.3).
@@ -1463,6 +1497,7 @@ mod missing_values_tests {
                 guard: None,
                 int: false,
                 unbounded: None,
+                unknown: None,
                 effect: None,
             },
             forgotten: Vec::new(),
@@ -1533,6 +1568,7 @@ mod missing_values_tests {
                 guard: None,
                 int: true,
                 unbounded: Some("sum".to_owned()),
+                unknown: None,
                 effect: None,
             },
             forgotten: Vec::new(),
@@ -1608,6 +1644,7 @@ mod missing_values_tests {
                 guard: None,
                 int: false,
                 unbounded: None,
+                unknown: None,
                 effect: Some(Effect {
                     operation: "@catalog.set_price".to_owned(),
                     condition: "mode == unit".to_owned(),

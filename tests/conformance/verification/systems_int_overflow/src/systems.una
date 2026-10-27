@@ -1,13 +1,14 @@
--- test: in a `systems` package, each `Int` operation outside clauses carries an `overflow` obligation: its exact result lies in -2^62 to 2^62 - 1; a literal outside it is refuted at once; `sum`, `to_int()` on `U64`, `abs`, `convert()` on an `Int` magnitude and `+` on `Int of Meter` carry theirs; a guard or a `requires` proves them; clauses and `reflect` bodies carry none (ADR 0109 rule 3)
+-- test: in a `systems` package, each `Int` operation outside clauses carries an `overflow` obligation: its exact result lies in -2^62 to 2^62 - 1; a literal outside it is refuted at once; `sum`, `to_int()` on `U64`, `abs`, `convert()` on an `Int` magnitude and `+` on `Int of Meter` carry theirs, and so does `abs` used as a function value; a guard or a `requires` proves them; clauses and `reflect` bodies carry none (ADR 0109 rule 3)
 -- spec: spec/18 §3
--- expect: error U5001 at src/systems.una:18:34
--- expect: error U5001 at src/systems.una:24:20
--- expect: error U5001 at src/systems.una:27:29
--- expect: error U5002 at src/systems.una:35:35
--- expect: error U5001 at src/systems.una:38:28
--- expect: error U5001 at src/systems.una:41:32
--- expect: error U5001 at src/systems.una:50:54
--- expect: error U5001 at src/systems.una:53:62
+-- expect: error U5001 at src/systems.una:19:34
+-- expect: error U5001 at src/systems.una:25:20
+-- expect: error U5001 at src/systems.una:28:29
+-- expect: error U5002 at src/systems.una:36:35
+-- expect: error U5001 at src/systems.una:39:28
+-- expect: error U5001 at src/systems.una:42:32
+-- expect: error U5001 at src/systems.una:51:54
+-- expect: error U5001 at src/systems.una:54:62
+-- expect: error U5002 at src/systems.una:66:58
 module systems
 
 pub measure Meter
@@ -60,3 +61,6 @@ pub needs(a: Int, b: Int) -> Int
 
 -- No obligation: a `reflect` body computes exactly.
 pub predicate reflect beyond(a: Int, b: Int) -> Bool = a + b > 4611686018427387904
+
+-- U5002: `abs` as a function value has no bound on its operand at this use.
+pub absolutes(xs: List[Int]) -> List[Int] = xs.map(each: abs)

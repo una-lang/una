@@ -222,8 +222,8 @@ impl Checker<'_, '_, '_> {
     }
 
     /// Records the `overflow` obligation of a call of a prelude function that computes an
-    /// `Int` by arithmetic, `sum` and `abs`, at the call, in a `systems` package (ADR 0109
-    /// rule 3). The entry points (`to_int` of a text, `parse_int`, JSON's `Number`,
+    /// `Int` by arithmetic, `sum` and `abs`, at the call, or at the reference when one is used
+    /// as a function value, in a `systems` package (ADR 0109 rule 3). The entry points (`to_int` of a text, `parse_int`, JSON's `Number`,
     /// `Clock.now()`) and the functions bounded by a size, as `len`, record none.
     pub(crate) fn prelude_overflow_site(&mut self, name: &str, span: Span) {
         if matches!(name, "sum" | "abs") && self.int_word() {
