@@ -17,8 +17,11 @@ distinct(xs: List[Int]) -> Int
 pub main() -> Unit
   uses @console: Console[print]
 =
+  let edit left: Nat = 5
   let edit m = 0
-  for until distinct([m, 2, 2]) == 1 decreases 5 - m
-    stop when m >= 5
+  for until distinct([m, 2, 2]) == 1 decreases left
+    if left == 0
+      stop
+    left = left - 1
     m = m + 1
   @console.print("until: {m}")
