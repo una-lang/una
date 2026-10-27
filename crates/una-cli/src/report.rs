@@ -255,6 +255,26 @@ struct TcbDoc {
     /// The trusted modules of dependencies that the root consented to, with their line counts,
     /// by package: none while trust lines do not load.
     dependency_trust: Vec<DependencyTrustedDoc>,
+    /// The Z3 built into `una`: the digests of its source tarball and of its library (ADR 0124
+    /// rules 20 and 28); absent in a development build without the solver.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    solver_build: Option<SolverBuildDoc>,
+    /// How the solver children were confined, `own` or `outer` (ADR 0124 rule 7); absent when
+    /// no child ran.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    solver_confinement: Option<String>,
+    /// Under an outer sandbox, the operations it denies, in rule 7's order.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    solver_outer_denied: Option<Vec<String>>,
+}
+
+/// The digests of the solver's build (ADR 0124 rule 20).
+#[derive(Serialize)]
+struct SolverBuildDoc {
+    /// The SHA-256 of Z3's source tarball.
+    source_sha256: String,
+    /// The SHA-256 of the library linked into `una`.
+    library_sha256: String,
 }
 
 /// A registry source and the digest of its root metadata.
@@ -735,6 +755,14 @@ fn build(
             proof_cache_key,
             registries: Vec::new(),
             dependency_trust,
+            solver_build: una_z3::BUILD.linked.then(|| SolverBuildDoc {
+                source_sha256: una_z3::BUILD.source_sha256.to_owned(),
+                library_sha256: una_z3::BUILD.library_sha256.to_owned(),
+            }),
+            solver_confinement: crate::solver_child::confinement_seen().map(|(kind, _)| kind),
+            solver_outer_denied: crate::solver_child::confinement_seen()
+                .filter(|(kind, _)| kind == "outer")
+                .map(|(_, denied)| denied),
         },
         requirements,
         coverage: CoverageDoc {
@@ -1083,6 +1111,21 @@ fn human(report: &Report) -> String {
         report.tcb.host_capabilities.join(", ")
     ));
     line(format!("  solver: {}", report.tcb.solver));
+    if let Some(build) = &report.tcb.solver_build {
+        line(format!(
+            "  solver build: source {}, library {}",
+            build.source_sha256, build.library_sha256
+        ));
+    }
+    if let Some(confinement) = &report.tcb.solver_confinement {
+        line(format!("  solver confinement: {confinement}"));
+    }
+    if let Some(denied) = &report.tcb.solver_outer_denied {
+        line(format!(
+            "  solver outer sandbox denies: {}",
+            denied.join(", ")
+        ));
+    }
     line(format!("  proof cache: {}", report.tcb.proof_cache));
     line(format!(
         "  proof cache key: {}",

@@ -911,8 +911,9 @@ fn run_command(
     // never makes one (ADR 0064). A key file that exists but is refused turns the cache off,
     // with a note on stderr (#1164), except under `--json`, whose stderr stays empty
     // (`spec/13 §5`, ADR 0015 rule 3): the report's `tcb.proof_cache_key: null` is the signal.
-    let solving = |seconds: u64, json: bool, stderr: &mut dyn Write| Solving {
+    let solving = |seconds: u64, memory: u64, json: bool, stderr: &mut dyn Write| Solving {
         wallclock: Duration::from_secs(seconds),
+        memory_mib: memory,
         proof_key: match proof_key::resolve(environment) {
             Ok(key) => key,
             Err(refused) => {
@@ -956,6 +957,7 @@ fn run_command(
                 tier,
                 dump_core,
                 solver_wallclock,
+                solver_memory,
             } => {
                 let options = CheckOptions {
                     tier: match tier {
@@ -964,7 +966,7 @@ fn run_command(
                     },
                     json,
                     color: use_color(color, stderr_is_terminal),
-                    solving: solving(solver_wallclock, json, stderr),
+                    solving: solving(solver_wallclock, solver_memory, json, stderr),
                 };
                 check_command(&path, options, dump_core.as_deref(), stdout, stderr)
             }
@@ -982,33 +984,36 @@ fn run_command(
             Command::Trace {
                 requirement,
                 solver_wallclock,
+                solver_memory,
             } => {
                 let options = trace::TraceOptions {
                     json,
                     color: use_color(color, stderr_is_terminal),
-                    solving: solving(solver_wallclock, json, stderr),
+                    solving: solving(solver_wallclock, solver_memory, json, stderr),
                 };
                 trace::trace_command(&requirement, options, stdout, stderr)
             }
             Command::Report {
                 path,
                 solver_wallclock,
+                solver_memory,
             } => {
                 let options = report::ReportOptions {
                     json,
                     color: use_color(color, stderr_is_terminal),
-                    solving: solving(solver_wallclock, json, stderr),
+                    solving: solving(solver_wallclock, solver_memory, json, stderr),
                 };
                 report::report_command(&path, options, stdout, stderr)
             }
             Command::Obligations {
                 path,
                 solver_wallclock,
+                solver_memory,
             } => {
                 let options = verification::ObligationsOptions {
                     json,
                     color: use_color(color, stderr_is_terminal),
-                    solving: solving(solver_wallclock, json, stderr),
+                    solving: solving(solver_wallclock, solver_memory, json, stderr),
                 };
                 verification::obligations_command(&path, options, stdout, stderr)
             }
@@ -1017,6 +1022,7 @@ fn run_command(
                 tier,
                 dry_run,
                 solver_wallclock,
+                solver_memory,
             } => {
                 let options = fix::FixOptions {
                     tier: match tier {
@@ -1026,7 +1032,7 @@ fn run_command(
                     dry_run,
                     json,
                     color: use_color(color, stderr_is_terminal),
-                    solving: solving(solver_wallclock, json, stderr),
+                    solving: solving(solver_wallclock, solver_memory, json, stderr),
                 };
                 fix::fix_command(&path, options, stdout, stderr)
             }
@@ -1158,6 +1164,7 @@ fn run_command(
                 io_threads,
                 file_threads,
                 solver_wallclock,
+                solver_memory,
                 stop_after_iterations,
                 virtual_time,
                 deadline,
@@ -1178,7 +1185,7 @@ fn run_command(
                     json,
                     color: use_color(color, stderr_is_terminal),
                     environment,
-                    solving: solving(solver_wallclock, json, stderr),
+                    solving: solving(solver_wallclock, solver_memory, json, stderr),
                     stop_after: stop_after_iterations,
                     virtual_time,
                     deadline,
@@ -1190,12 +1197,13 @@ fn run_command(
                 path,
                 out,
                 solver_wallclock,
+                solver_memory,
             } => {
                 let options = build::BuildOptions {
                     out,
                     json,
                     color: use_color(color, stderr_is_terminal),
-                    solving: solving(solver_wallclock, json, stderr),
+                    solving: solving(solver_wallclock, solver_memory, json, stderr),
                     environment,
                 };
                 build::build_command(&path, &options, stdout, stderr)
@@ -1209,6 +1217,7 @@ fn run_command(
                 io_threads,
                 file_threads,
                 solver_wallclock,
+                solver_memory,
             } => {
                 let options = runtime::RunOptions {
                     grants: &[],
@@ -1225,7 +1234,7 @@ fn run_command(
                     json,
                     color: use_color(color, stderr_is_terminal),
                     environment,
-                    solving: solving(solver_wallclock, json, stderr),
+                    solving: solving(solver_wallclock, solver_memory, json, stderr),
                     stop_after: None,
                     // Time in a test is always virtual (ADR 0116 rule 19).
                     virtual_time: true,
