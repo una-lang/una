@@ -1165,6 +1165,17 @@ impl<'a> Checker<'_, 'a, '_> {
             let span = handled.expr.span.to(deadline.span);
             self.within_open(deadline, span)
         });
+        // ADR 0117 rule 9, IF5: a statement that installs `limiter` of `std.limit` is a site
+        // of its own, whose seed covers the handlers its bindings install.
+        let limiters: Vec<Span> = handled
+            .with
+            .iter()
+            .filter(|binding| self.installs_limiter(&binding.value))
+            .map(|binding| binding.span)
+            .collect();
+        if !limiters.is_empty() {
+            self.timing_start();
+        }
         // The `with` bindings of a statement form one frame over its expression (`spec/10 §6`);
         // their right-hand sides resolve outside it.
         let mut frame = Frame::default();
@@ -1276,6 +1287,18 @@ impl<'a> Checker<'_, 'a, '_> {
         self.ctx.handled = false;
         self.ctx.top = false;
         let inner = self.fails_of(&handled.expr);
+        if !limiters.is_empty() {
+            let seed = self.timing_end();
+            if self.pass == super::authority::Pass::Check {
+                for span in limiters {
+                    self.findings.limiter_sites.push(super::LimiterSite {
+                        span,
+                        function: self.current,
+                        seed: seed.clone(),
+                    });
+                }
+            }
+        }
         // `e within d` fails with `Timed[E]` or `Deadline`, labeled with `τ(e)` (IF2).
         let timed = within.as_ref().map(|open| {
             self.within_places(&handled.expr, open);

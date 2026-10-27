@@ -173,6 +173,11 @@ const COLLECTIONS: &str = include_str!("../std/collections.una");
 /// module that no scope holds: method syntax on a map reaches it, its name never does.
 const MAP_0_4: &str = include_str!("../std/map_0_4.una");
 
+/// `std.limit` (ADR 0117 rule 9, `spec/27 §10`) as Una source: the capability `Limit`, its
+/// failure kind and the handler `limiter`, which the runtime provides. The checker loads it only
+/// for a package of edition 0.4 that imports it.
+const LIMIT: &str = include_str!("../std/limit.una");
+
 /// The standard modules as the checker reads them in one edition: the prelude's source, with
 /// the declarations edition 0.2 rewrites and adds, `std.testing`'s source, and the keyword
 /// set the prelude is lexed with (`spec/14`). Read-only: the checker loads exactly this text
@@ -458,25 +463,31 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
         .map(|category| category.value.clone())
         .collect();
     // ADR 0119 rule 0: `std.collections` is in scope only for a package of edition 0.4 that
-    // imports it, so no other package's checks or Core IR change.
-    let imports_collections = package.settings.edition >= Edition::V0_4
-        && package.modules.iter().any(|module| {
-            module.tree.imports.iter().any(|import| {
-                let path: Vec<&str> = import
-                    .module
-                    .segments
-                    .iter()
-                    .map(|segment| package.interner.resolve(segment.name))
-                    .collect();
-                path.join(".") == una_core::COLLECTIONS_MODULE
+    // imports it, so no other package's checks or Core IR change; `std.limit` the same (ADR
+    // 0117 rule 9).
+    let imports = |standard: &str| {
+        package.settings.edition >= Edition::V0_4
+            && package.modules.iter().any(|module| {
+                module.tree.imports.iter().any(|import| {
+                    let path: Vec<&str> = import
+                        .module
+                        .segments
+                        .iter()
+                        .map(|segment| package.interner.resolve(segment.name))
+                        .collect();
+                    path.join(".") == standard
+                })
             })
-        });
+    };
+    let imports_collections = imports(una_core::COLLECTIONS_MODULE);
+    let imports_limit = imports(una_core::LIMIT_MODULE);
     let mut env = Env::build(
         sources,
         standard.source(&standard.prelude),
         standard.after_prelude(),
         (package.settings.edition >= Edition::V0_4).then(|| standard.source(&standard.map_0_4)),
         imports_collections.then(|| standard.source(&standard.collections)),
+        imports_limit.then(|| standard.source(&standard.limit)),
         categories,
         package.settings.edition,
         &mut report,
@@ -758,6 +769,7 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
     authority::drive_failures(&env, package.settings, &mut report);
     authority::drive_timing(&env, &findings, package.settings, &mut report);
     let limit_label = authority::limit_timing(&env, &findings, package.settings, &mut report);
+    authority::limiter_timing(&env, &findings, &mut report);
     let mut timing_sites = authority::deadline_timing(&env, &findings, &mut report);
     timing_sites.extend(authority::within_timing(&env, &findings, &mut report));
     timing_sites.sort_by_key(|(_, _, span, _)| (span.file, span.start, span.end));
@@ -1012,6 +1024,10 @@ pub(crate) struct Findings {
     pub(crate) withins: Vec<within::WithinSite>,
     /// The operations of the host's `Http` checked, for `L_lim` (ADR 0117 IF4).
     pub(crate) http_sites: Vec<timing::HttpSite>,
+    /// The installations of `limiter` of `std.limit` by `with` or `given` (ADR 0117 rule 9,
+    /// IF5): each one's binding, its function and the seed of the timing label of the statement
+    /// it scopes over.
+    pub(crate) limiter_sites: Vec<LimiterSite>,
     /// The calls of the call graph of ADR 0116 P1: from a function's body, a handler's
     /// operations or a lambda (`Λ`), to a function called or named.
     pub(crate) calls: std::collections::BTreeSet<(timing::Caller, usize)>,
@@ -1097,6 +1113,8 @@ struct Standard {
     collections: File,
     /// The hidden module of the built-in `update` of maps in edition 0.4 (ADR 0119 rule 18).
     map_0_4: File,
+    /// `std.limit` (ADR 0117 rule 9), loaded when a package of edition 0.4 imports it.
+    limit: File,
 }
 
 impl Standard {
@@ -1116,6 +1134,7 @@ impl Standard {
         let testing = sources.add("std/testing.una", testing.as_bytes());
         let collections = sources.add("std/collections.una", COLLECTIONS.as_bytes());
         let map_0_4 = sources.add("std/map_0_4.una", MAP_0_4.as_bytes());
+        let limit = sources.add("std/limit.una", LIMIT.as_bytes());
         let prelude = parse_standard(&sources, prelude, &mut interner, keywords);
         let testing = parse_standard(&sources, testing, &mut interner, keywords);
         // The modules of edition 0.4 declare measures, a construct of edition 0.3.
@@ -1130,6 +1149,8 @@ impl Standard {
         // `empty_set[T: Ord]` writes a constraint, which edition 0.2's syntax has.
         let collections = parse_standard(&sources, collections, &mut interner, KeywordSet::V0_2);
         let map_0_4 = parse_standard(&sources, map_0_4, &mut interner, KeywordSet::V0_2);
+        // `std.limit` writes a measure, `Int of Millisecond`, and a handler of edition 0.4.
+        let limit = parse_standard(&sources, limit, &mut interner, KeywordSet::V0_4);
         Standard {
             sources,
             interner,
@@ -1138,6 +1159,7 @@ impl Standard {
             later,
             collections,
             map_0_4,
+            limit,
         }
     }
 
@@ -1855,6 +1877,7 @@ mod tests {
                 .collect(),
             (edition >= Edition::V0_4).then(|| source(&standard.map_0_4)),
             (edition >= Edition::V0_4).then(|| source(&standard.collections)),
+            (edition >= Edition::V0_4).then(|| source(&standard.limit)),
             Vec::new(),
             edition,
             &mut report,
@@ -2226,5 +2249,19 @@ pub(crate) struct DeadlineLoop {
     /// The function whose body holds it.
     pub(crate) function: Option<usize>,
     /// The seed of the timing label of its body, the deadline's label included.
+    pub(crate) seed: timing::TimingSeed,
+}
+
+/// An installation of `limiter` of `std.limit` (ADR 0117 rule 9, IF5): whether a token is left
+/// depends on the timing of the code that shares the instance, so `τ` of the statement the
+/// `with` scopes over, or of the example's `do` line for a `given` line, must flow to
+/// `internal`, the label `Limited` carries.
+#[derive(Clone, Debug)]
+pub(crate) struct LimiterSite {
+    /// The `with` binding, or the `given` line.
+    pub(crate) span: Span,
+    /// The function whose body holds it.
+    pub(crate) function: Option<usize>,
+    /// The seed of the timing label of the statement, the handlers it installs included.
     pub(crate) seed: timing::TimingSeed,
 }

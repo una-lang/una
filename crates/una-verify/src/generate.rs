@@ -2423,6 +2423,30 @@ impl<'p, 'i> Walker<'p, 'i> {
                                     *span,
                                     &EffectAt::With(handler.name.clone()),
                                 );
+                            } else if key == (una_core::LIMIT_MODULE, una_core::LIMITER) {
+                                // `limiter(at_most, per, waiting)` of `std.limit` (ADR 0117
+                                // rule 9, `spec/27 §10`): the engines provide it, so Core
+                                // declares no handler; its installation carries
+                                // `at_most >= 1`, `per >= 1` and `waiting >= 0`, a
+                                // `refinement` obligation at each argument.
+                                let bounds = ["1", "1", "0"];
+                                for ((arg, arg_span), bound) in
+                                    args.iter().zip(arg_spans).zip(bounds)
+                                {
+                                    let value = self.atom(arg, &ctx);
+                                    let goal = (value.f.sort() == "Int").then(|| {
+                                        F::op(">=", vec![value.f, F::Int(bound.to_owned())])
+                                    });
+                                    let text = format!("{} >= {bound}", self.text(*arg_span));
+                                    self.site(
+                                        ObligationKind::Refinement,
+                                        &ctx,
+                                        goal,
+                                        text,
+                                        *arg_span,
+                                        None,
+                                    );
+                                }
                             }
                             None
                         }

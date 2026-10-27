@@ -7,9 +7,9 @@ use una_diag::{Code, Escape, ObligationKind, Repair};
 use una_project::Edition;
 use una_syntax::Span;
 use una_syntax::ast::{
-    CapabilityDecl, ClauseKind, Convention, DeclKind, ExampleDecl, ExpectationKind, Expr,
-    FunctionDecl, HandlerCall, HandlerDecl, Ident, OpClauseKind, PolicyDecl, PredicateDecl,
-    UsesClause,
+    CapBindingValue, CapabilityDecl, ClauseKind, Convention, DeclKind, ExampleDecl,
+    ExpectationKind, Expr, FunctionDecl, HandlerCall, HandlerDecl, Ident, OpClauseKind, PolicyDecl,
+    PredicateDecl, UsesClause,
 };
 
 use super::authority::{Base, Bound, Collected, Frame, Pass};
@@ -818,6 +818,13 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                 let checked =
                     self.arguments(&callee, &params, &[], None, &call.args, call.span, module);
                 self.argument_flows(&callee, checked);
+                // ADR 0117 rule 9: installing `limiter` carries `at_most >= 1`, `per >= 1` and
+                // `waiting >= 0`, a `refinement` obligation at each argument (`spec/27 §10`).
+                if Some(id) == self.env.limiter {
+                    for arg in &call.args {
+                        self.obligation(ObligationKind::Refinement, arg.value.span, None);
+                    }
+                }
                 let given = self.granting.pop().unwrap_or_default();
                 let install = match crossing {
                     Some(boundary) => Some(Install {
@@ -878,6 +885,24 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                 (None, None, None)
             }
         }
+    }
+
+    /// Whether a `with` binding's value installs `limiter` of `std.limit` (ADR 0117 rule 9).
+    pub(crate) fn installs_limiter(&self, value: &CapBindingValue) -> bool {
+        match value {
+            CapBindingValue::Handler(call) => self.installs_limiter_call(call),
+            CapBindingValue::Cap(_) | CapBindingValue::Narrowed { .. } => false,
+        }
+    }
+
+    /// Whether the handler call `call` names `limiter` of `std.limit`.
+    pub(crate) fn installs_limiter_call(&self, call: &HandlerCall) -> bool {
+        self.env.limiter.is_some_and(|limiter| {
+            matches!(
+                self.env.lower(self.module, self.name(&call.name)),
+                Some(Entity::Handler(id)) if id == limiter
+            )
+        })
     }
 
     /// Records, in pass 2, what the expression or pattern at `span` resolves to.
@@ -1784,7 +1809,39 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         self.ctx.in_do = true;
         self.do_stops = example.stop_after.is_some();
         self.absorbed.clear();
+        // ADR 0117 rule 9, IF5: a `given` line that installs `limiter` of `std.limit` makes the
+        // `do` line a site, whose seed covers the handlers the `given` lines install.
+        let limiters: Vec<Span> = example
+            .givens
+            .iter()
+            .filter(|given| self.installs_limiter_call(&given.handler))
+            .map(|given| given.handler.span)
+            .collect();
+        if !limiters.is_empty() {
+            self.timing_start();
+            // The `do` line is the root of the test's run: placed, as `main` is.
+            self.timing_placed();
+            for given in &example.givens {
+                if let Some(Entity::Handler(id)) =
+                    self.env.lower(self.module, self.name(&given.handler.name))
+                {
+                    self.timing_install(id);
+                }
+            }
+        }
         let ty = self.expr(&example.action, None);
+        if !limiters.is_empty() {
+            let seed = self.timing_end();
+            if self.pass == Pass::Check {
+                for span in limiters {
+                    self.findings.limiter_sites.push(super::LimiterSite {
+                        span,
+                        function: None,
+                        seed: seed.clone(),
+                    });
+                }
+            }
+        }
         self.ctx.in_do = false;
         self.do_stops = false;
         // The error kind of the `do` expression: the failures of its calls, except those that
