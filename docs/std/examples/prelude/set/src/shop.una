@@ -1,0 +1,11 @@
+module shop
+
+--- A shelf count corrected after a recount.
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let edit counts = [3, 0, 7]
+  if counts.len > 1
+    edit counts.set(index: 1, item: 12)
+  let total = counts.sum()
+  @console.print("total {total}")

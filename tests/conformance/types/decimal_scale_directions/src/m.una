@@ -1,0 +1,15 @@
+-- test: `widen` adds digits and `rescale` and `rescale_exact` drop them: the wrong direction is U2037, and a scale that is no integer literal is U2037
+-- spec: spec/29 §16
+-- expect: error U2037 at src/m.una:9:60
+-- expect: error U2037 at src/m.una:11:59
+-- expect: error U2037 at src/m.una:13:64
+-- expect: error U2037 at src/m.una:15:70
+module m
+
+pub narrower(x: Decimal[4]) -> Decimal[2] = x.widen(scale: 2)
+
+pub wider(x: Decimal[2]) -> Decimal[4] = x.rescale(scale: 4, rounding: HalfEven)
+
+pub same(x: Decimal[2]) -> Decimal[2] = x.rescale_exact(scale: 2)
+
+pub computed(x: Decimal[4], s: Int) -> Decimal[2] = x.rescale(scale: s, rounding: HalfEven)

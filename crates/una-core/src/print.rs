@@ -6,8 +6,8 @@
 use std::fmt::Write as _;
 
 use crate::ir::{
-    Arm, Atom, Base, BinOp, Bound, CapOp, Clause, Ctor, Decl, Expr, Fun, HandlerOp, LoopSource,
-    Module, Rhs, Source, Term, Type, Use,
+    Arm, Atom, Base, BinOp, Bound, CapOp, Clause, Ctor, Decl, Expr, FloatOp, Fun, HandlerOp,
+    LoopSource, Module, Prim, Rhs, Source, Term, Type, Use,
 };
 
 /// The text of a module's Core IR, newline-terminated.
@@ -83,7 +83,21 @@ fn precedence(term: &Term) -> u8 {
         Term::Is { .. } | Term::In { .. } => 5,
         Term::Neg(_) => 8,
         Term::Int(digits) if digits.starts_with('-') => 8,
-        Term::Field { .. } | Term::Len(_) | Term::Proj { .. } | Term::Call { .. } => 9,
+        Term::Field { .. }
+        | Term::Len(_)
+        | Term::Size(_)
+        | Term::Shape { .. }
+        | Term::Dim { .. }
+        | Term::Proj { .. }
+        | Term::Call { .. } => 9,
+        Term::Float { op, .. } | Term::Float32 { op, .. } => match op {
+            FloatOp::Eq | FloatOp::Ne | FloatOp::Lt | FloatOp::Le | FloatOp::Gt | FloatOp::Ge => 5,
+            FloatOp::Add | FloatOp::Sub => 6,
+            FloatOp::Mul | FloatOp::Div => 7,
+            FloatOp::Neg => 8,
+            _ => 9,
+        },
+        Term::ToF64 { .. } | Term::ToF32 { .. } => 9,
         _ => 10,
     }
 }
@@ -132,6 +146,60 @@ fn write_term(
             write_term(out, map, 9, replace);
             out.push_str(".has(key: ");
             write_term(out, key, 0, replace);
+            out.push(')');
+        }
+        Term::Member { set, item } => {
+            write_term(out, set, 9, replace);
+            out.push_str(".has(item: ");
+            write_term(out, item, 0, replace);
+            out.push(')');
+        }
+        Term::Size(value) => {
+            write_term(out, value, 9, replace);
+            out.push_str(".size");
+        }
+        Term::Shape { fun, value } => {
+            write_term(out, value, 9, replace);
+            let _ = write!(out, ".{}", fun.as_str());
+        }
+        // `a.get(index: i)`, `m.get(row: i, column: j)`, `t.get(at: [i, j, k])` (ADR 0120
+        // rule 33).
+        Term::Element {
+            value,
+            indices,
+            tensor,
+        } => {
+            write_term(out, value, 9, replace);
+            if *tensor {
+                out.push_str(".get(at: [");
+                for (n, index) in indices.iter().enumerate() {
+                    if n > 0 {
+                        out.push_str(", ");
+                    }
+                    write_term(out, index, 0, replace);
+                }
+                out.push_str("])");
+            } else {
+                out.push_str(".get(");
+                let labels: &[&str] = match indices.len() {
+                    1 => &["index"],
+                    _ => &["row", "column"],
+                };
+                for (n, (index, label)) in indices.iter().zip(labels).enumerate() {
+                    if n > 0 {
+                        out.push_str(", ");
+                    }
+                    let _ = write!(out, "{label}: ");
+                    write_term(out, index, 0, replace);
+                }
+                out.push(')');
+            }
+        }
+        // `t.dim(axis: k)` (ADR 0120 rule 33).
+        Term::Dim { value, axis } => {
+            write_term(out, value, 9, replace);
+            out.push_str(".dim(axis: ");
+            write_term(out, axis, 0, replace);
             out.push(')');
         }
         Term::Proj { value, index } => {
@@ -184,6 +252,63 @@ fn write_term(
             }
             out.push(')');
         }
+        Term::F64(bits) => out.push_str(&crate::float::render(f64::from_bits(*bits))),
+        Term::F32(bits) => out.push_str(&crate::float32::render(f32::from_bits(*bits))),
+        Term::Float { op, args } | Term::Float32 { op, args } => {
+            let symbol = match op {
+                FloatOp::Add => Some("+"),
+                FloatOp::Sub => Some("-"),
+                FloatOp::Mul => Some("*"),
+                FloatOp::Div => Some("/"),
+                FloatOp::Eq => Some("=="),
+                FloatOp::Ne => Some("!="),
+                FloatOp::Lt => Some("<"),
+                FloatOp::Le => Some("<="),
+                FloatOp::Gt => Some(">"),
+                FloatOp::Ge => Some(">="),
+                _ => None,
+            };
+            match (symbol, args.as_slice(), op) {
+                (Some(symbol), [left, right], _) => {
+                    let level = precedence(term);
+                    write_term(out, left, level, replace);
+                    let _ = write!(out, " {symbol} ");
+                    write_term(out, right, level + 1, replace);
+                }
+                (_, [value], FloatOp::Neg) => {
+                    out.push('-');
+                    write_term(out, value, 9, replace);
+                }
+                (_, [receiver, rest @ ..], op) => {
+                    write_term(out, receiver, 9, replace);
+                    let _ = write!(out, ".{}(", op.method().unwrap_or("?"));
+                    for (index, (arg, param)) in rest.iter().zip(op.params()).enumerate() {
+                        if index > 0 {
+                            out.push_str(", ");
+                        }
+                        let _ = write!(out, "{param}: ");
+                        write_term(out, arg, 1, replace);
+                    }
+                    out.push(')');
+                }
+                _ => out.push('?'),
+            }
+        }
+        Term::ToF64 { value, .. } => {
+            write_term(out, value, 9, replace);
+            out.push_str(".to_f64()");
+        }
+        Term::ToF32 { value, .. } => {
+            write_term(out, value, 9, replace);
+            out.push_str(".to_f32()");
+        }
+        Term::Complex { re, im, .. } => {
+            out.push_str("complex(re: ");
+            write_term(out, re, 1, replace);
+            out.push_str(", im: ");
+            write_term(out, im, 1, replace);
+            out.push(')');
+        }
     }
     if parens {
         out.push(')');
@@ -204,6 +329,11 @@ fn print_source(source: &LoopSource) -> String {
             if *inclusive { ".." } else { "..<" },
             print_atom(high)
         ),
+        LoopSource::Until { measure, .. } => format!("until decreases {}", measure.text),
+        LoopSource::Ever { within: None } => "ever".to_owned(),
+        LoopSource::Ever {
+            within: Some((deadline, _)),
+        } => format!("ever within {}", print_atom(deadline)),
     }
 }
 
@@ -212,6 +342,12 @@ pub fn print_atom(atom: &Atom) -> String {
     match atom {
         Atom::Var(name) => name.clone(),
         Atom::Int(digits) => digits.clone(),
+        Atom::F64(bits) => crate::float::render(f64::from_bits(*bits)),
+        Atom::Decimal { coefficient, scale } => {
+            let c = coefficient.parse().unwrap_or_default();
+            format!("{}d", crate::decimal::render(&c, *scale))
+        }
+        Atom::F32(bits) => crate::float32::render(f32::from_bits(*bits)),
         Atom::Bool(value) => value.to_string(),
         Atom::Text(text) => quote(text),
         Atom::Unit => "unit".to_owned(),
@@ -295,10 +431,17 @@ fn write_base(out: &mut String, base: &Base) {
     match base {
         Base::Int => out.push_str("Int"),
         Base::Fixed(int) => out.push_str(int.as_str()),
+        Base::F64 => out.push_str("F64"),
+        Base::Decimal(scale) => out.push_str(&format!("Decimal[{scale}]")),
+        Base::F32 => out.push_str("F32"),
         Base::Bool => out.push_str("Bool"),
         Base::Text => out.push_str("Text"),
         Base::Unit => out.push_str("Unit"),
         Base::Hashed => out.push_str("Hashed"),
+        // A complex kind of the prelude is written as its type (ADR 0120 rule 22).
+        Base::Named { module, name, .. } if crate::complex::is_kind(module, name) => {
+            out.push_str(crate::complex::written(name).unwrap_or("Complex"));
+        }
         Base::Named { name, args, .. } => {
             out.push_str(name);
             if !args.is_empty() {
@@ -547,8 +690,10 @@ impl Printer {
                 state,
                 init,
                 body,
+                on_stop,
                 ..
             } => {
+                let source_ref = source.as_ref();
                 let source = print_source(source);
                 let state: Vec<String> = state
                     .iter()
@@ -566,7 +711,22 @@ impl Printer {
                         state.join(", ")
                     ),
                 );
+                // The condition of `until`, evaluated before each iteration.
+                if let LoopSource::Until { cond, .. } = source_ref {
+                    self.line(indent + 1, "until");
+                    self.expr(indent + 2, cond);
+                    self.line(indent + 1, "do");
+                }
                 self.expr(indent + 1, body);
+                if let Some(on_stop) = on_stop {
+                    let names: Vec<&str> = on_stop
+                        .state
+                        .iter()
+                        .map(|(name, _)| name.as_str())
+                        .collect();
+                    self.line(indent, &format!("on stop with ({}) do", names.join(", ")));
+                    self.expr(indent + 1, &on_stop.body);
+                }
             }
             Expr::Together { tasks, .. } => {
                 self.line(indent, "together");
@@ -574,6 +734,26 @@ impl Printer {
                     self.line(indent + 1, "task");
                     self.expr(indent + 2, task);
                 }
+            }
+            Expr::FirstOf { tasks, .. } => {
+                self.line(indent, "first_of");
+                for task in tasks {
+                    self.line(indent + 1, "branch");
+                    self.expr(indent + 2, task);
+                }
+            }
+            Expr::Tasks { bound, body, .. } => {
+                match bound {
+                    Some((bound, _)) => {
+                        self.line(indent, &format!("tasks at most {}", print_atom(bound)));
+                    }
+                    None => self.line(indent, "tasks"),
+                }
+                self.expr(indent + 1, body);
+            }
+            Expr::Start { task, .. } => {
+                self.line(indent, "start");
+                self.expr(indent + 1, task);
             }
             Expr::TogetherFor {
                 source, var, task, ..
@@ -654,6 +834,9 @@ impl Printer {
             Expr::Fail { ctor: c, args, .. } => {
                 self.line(indent, &format!("fail {}", ctor(c, args)));
             }
+            Expr::Exit { tag, state, .. } => {
+                self.line(indent, &format!("exit {}({})", tag.as_str(), atoms(state)));
+            }
             Expr::Handle {
                 body,
                 error,
@@ -666,6 +849,26 @@ impl Printer {
             }
             Expr::Attempt { body, .. } => {
                 self.line(indent, "attempt");
+                self.expr(indent + 1, body);
+            }
+            Expr::Within {
+                deadline,
+                body,
+                timeout,
+                wrap,
+                ..
+            } => {
+                let wrap = wrap
+                    .as_ref()
+                    .map_or_else(String::new, |wrap| format!(", wrap {}", wrap.name));
+                self.line(
+                    indent,
+                    &format!(
+                        "within {} (timeout {}{wrap})",
+                        print_atom(deadline),
+                        timeout.name
+                    ),
+                );
                 self.expr(indent + 1, body);
             }
             Expr::With { cap, source, body } => {
@@ -731,6 +934,15 @@ fn rhs_line(rhs: &Rhs) -> String {
     match rhs {
         Rhs::Atom(atom) => print_atom(atom),
         Rhs::Tuple(items) => format!("({})", atoms(items)),
+        Rhs::Prim {
+            prim: Prim::Decimal(op),
+            args,
+            ..
+        } => {
+            // The static scales are part of a decimal operation's meaning (`spec/29 §16`).
+            let scales: Vec<String> = op.scales().iter().map(u8::to_string).collect();
+            format!("{}[{}]({})", op.as_str(), scales.join(", "), atoms(args))
+        }
         Rhs::Prim { prim, args, .. } => format!("{}({})", prim.as_str(), atoms(args)),
         Rhs::Call {
             function,

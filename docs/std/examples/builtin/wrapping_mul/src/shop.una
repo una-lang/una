@@ -1,0 +1,12 @@
+module shop
+
+--- One-byte products reduced into the range of the type.
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let crates: U8 = 250
+  let doubled = crates.wrapping_mul(by: 2)
+  let bottom: I8 = -128
+  let flipped = bottom.wrapping_mul(by: -1)
+  @console.print("{doubled}")
+  @console.print("{flipped}")

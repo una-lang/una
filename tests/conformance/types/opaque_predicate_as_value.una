@@ -1,4 +1,4 @@
--- test: an opaque predicate used as a function value is U2016 at each use (N-008)
+-- test: an opaque predicate used as a function value is U2016 at each use
 -- spec: spec/03 §4
 -- expect: error U2016 at 14:11
 -- expect: error U2016 at 17:57

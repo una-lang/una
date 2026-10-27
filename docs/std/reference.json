@@ -1,0 +1,2942 @@
+{
+ "schema": "una.std-reference/1",
+ "note": "Unstable, not part of the specification: see docs/std/README.md. Hand-written; crates/una-cli/tests/std_listing.rs checks it against the listing.",
+ "requires_note": "Each condition under `requires` is an obligation at every call, which `una check` proves (`spec/12 §3`): it reports U5001 when the condition is refuted and U5002 when it is unknown (`spec/12 §6`), and `una run`, `una test` and `una build` refuse a package with an obligation that is not proved (`spec/22 §2`).",
+ "areas": [
+  "text",
+  "numbers",
+  "lists",
+  "options-and-results",
+  "maps",
+  "json",
+  "files",
+  "console",
+  "clock",
+  "env",
+  "keys",
+  "http",
+  "testing"
+ ],
+ "pending": [
+  "builtin add",
+  "builtin between",
+  "builtin difference",
+  "builtin first",
+  "builtin intersection",
+  "builtin is_subset",
+  "builtin items",
+  "builtin last",
+  "builtin peek",
+  "builtin peek_back",
+  "builtin peek_priority",
+  "builtin pop",
+  "builtin pop_back",
+  "builtin pop_ranked",
+  "builtin push",
+  "builtin push_front",
+  "builtin same_entries",
+  "builtin same_items",
+  "builtin size",
+  "builtin union",
+  "builtin update",
+  "prelude Clock",
+  "prelude Console",
+  "prelude Env",
+  "prelude FileError",
+  "prelude Files",
+  "prelude Finite32",
+  "prelude Finite64",
+  "prelude Header",
+  "prelude Http",
+  "prelude HttpError",
+  "prelude Keys",
+  "prelude Response",
+  "prelude Rounding",
+  "prelude array",
+  "prelude array_filled",
+  "prelude as_decimal",
+  "prelude as_f64",
+  "prelude f32_from_bits",
+  "prelude f64_from_bits",
+  "prelude infinity",
+  "prelude json_decimal",
+  "prelude json_number",
+  "prelude matrix",
+  "prelude matrix_diagonal",
+  "prelude matrix_filled",
+  "prelude nan",
+  "prelude parse_decimal",
+  "prelude parse_f32",
+  "prelude parse_f64",
+  "prelude tensor",
+  "prelude tensor_filled",
+  "std.testing elapse",
+  "std.testing fake_hash"
+ ],
+ "entries": [
+  {
+   "module": "prelude",
+   "name": "is_digits",
+   "area": "text",
+   "params": [
+    {
+     "name": "t",
+     "meaning": "the text"
+    }
+   ],
+   "returns": {
+    "type": "Bool",
+    "meaning": "`true` when every character of `t` is an ASCII digit, so also for the empty text"
+   },
+   "use_instead": [
+    {
+     "item": "prelude parse_int",
+     "from_edition": "0.2",
+     "why": "to read the number the digits write, with a reason when there is none"
+    }
+   ],
+   "see_also": [
+    "prelude to_int"
+   ],
+   "example": "docs/std/examples/prelude/is_digits"
+  },
+  {
+   "module": "prelude",
+   "name": "starts_with",
+   "area": "text",
+   "params": [
+    {
+     "name": "t",
+     "meaning": "the text"
+    },
+    {
+     "name": "prefix",
+     "meaning": "the text `t` may start with"
+    }
+   ],
+   "returns": {
+    "type": "Bool",
+    "meaning": "`true` when the first scalar values of `t` are those of `prefix`"
+   },
+   "see_also": [
+    {
+     "item": "prelude ends_with",
+     "from_edition": "0.2"
+    },
+    {
+     "item": "prelude contains_text",
+     "from_edition": "0.2"
+    }
+   ],
+   "example": "docs/std/examples/prelude/starts_with"
+  },
+  {
+   "module": "prelude",
+   "name": "trim",
+   "area": "text",
+   "params": [
+    {
+     "name": "t",
+     "meaning": "the text"
+    }
+   ],
+   "returns": {
+    "type": "Text",
+    "meaning": "`t` without the Unicode `White_Space` at both ends; never longer than `t`"
+   },
+   "use_instead": [
+    {
+     "item": "prelude trim_start",
+     "from_edition": "0.2",
+     "why": "to keep the Unicode `White_Space` at the end"
+    },
+    {
+     "item": "prelude trim_end",
+     "from_edition": "0.2",
+     "why": "to keep the Unicode `White_Space` at the start"
+    }
+   ],
+   "example": "docs/std/examples/prelude/trim"
+  },
+  {
+   "module": "prelude",
+   "name": "to_int",
+   "area": "text",
+   "params": [
+    {
+     "name": "t",
+     "meaning": "the text"
+    }
+   ],
+   "returns": {
+    "type": "Option[Int]",
+    "meaning": "`Some` of the integer `t` writes, an optional `-` and from 1 to 4300 ASCII digits; `None` for any other text, among them a leading `+` and more than 4300 digits"
+   },
+   "use_instead": [
+    {
+     "item": "prelude parse_int",
+     "from_edition": "0.2",
+     "why": "to know why a text is not a number"
+    }
+   ],
+   "see_also": [
+    "prelude is_digits",
+    "prelude trim"
+   ],
+   "example": "docs/std/examples/prelude/to_int"
+  },
+  {
+   "module": "prelude",
+   "name": "split",
+   "area": "text",
+   "params": [
+    {
+     "name": "t",
+     "meaning": "the text"
+    },
+    {
+     "name": "on",
+     "meaning": "the separator"
+    }
+   ],
+   "returns": {
+    "type": "List[Text]",
+    "meaning": "the parts of `t` between the non-overlapping occurrences of `on`, left to right, empty parts included; at least one part"
+   },
+   "requires": [
+    {
+     "condition": "on.len > 0",
+     "meaning": "the separator is not empty"
+    }
+   ],
+   "see_also": [
+    "prelude join",
+    "prelude find"
+   ],
+   "cost": {
+    "time": "O(b + m), two-way search",
+    "source": "ADR 0070",
+    "terms": [
+     {
+      "symbol": "b",
+      "meaning": "the length of `t` in UTF-8 bytes"
+     },
+     {
+      "symbol": "m",
+      "meaning": "the length of `on` in UTF-8 bytes"
+     }
+    ]
+   },
+   "example": "docs/std/examples/prelude/split"
+  },
+  {
+   "module": "prelude",
+   "name": "join",
+   "area": "text",
+   "params": [
+    {
+     "name": "parts",
+     "meaning": "the texts to join, in order"
+    },
+    {
+     "name": "separator",
+     "meaning": "the text between each two parts"
+    }
+   ],
+   "returns": {
+    "type": "Text",
+    "meaning": "the parts joined, with `separator` between each two"
+   },
+   "see_also": [
+    "prelude split"
+   ],
+   "cost": {
+    "time": "O(total bytes)",
+    "source": "ADR 0070",
+    "terms": [
+     {
+      "symbol": "total bytes",
+      "meaning": "the length of the result in UTF-8 bytes: the parts and the separators between them"
+     }
+    ]
+   },
+   "example": "docs/std/examples/prelude/join"
+  },
+  {
+   "module": "prelude",
+   "name": "ends_with",
+   "area": "text",
+   "params": [
+    {
+     "name": "t",
+     "meaning": "the text"
+    },
+    {
+     "name": "suffix",
+     "meaning": "the text `t` may end with"
+    }
+   ],
+   "returns": {
+    "type": "Bool",
+    "meaning": "`true` when the last scalar values of `t` are those of `suffix`"
+   },
+   "see_also": [
+    "prelude starts_with",
+    "prelude contains_text"
+   ],
+   "cost": {
+    "time": "O(m)",
+    "source": "ADR 0070",
+    "terms": [
+     {
+      "symbol": "m",
+      "meaning": "the length of `suffix` in UTF-8 bytes"
+     }
+    ]
+   },
+   "example": "docs/std/examples/prelude/ends_with"
+  },
+  {
+   "module": "prelude",
+   "name": "contains_text",
+   "area": "text",
+   "params": [
+    {
+     "name": "t",
+     "meaning": "the text"
+    },
+    {
+     "name": "part",
+     "meaning": "the text to look for"
+    }
+   ],
+   "returns": {
+    "type": "Bool",
+    "meaning": "`true` when `part` occurs in `t`"
+   },
+   "use_instead": [
+    {
+     "item": "prelude find",
+     "why": "to know where it occurs"
+    }
+   ],
+   "see_also": [
+    "prelude starts_with",
+    "prelude ends_with"
+   ],
+   "cost": {
+    "time": "O(b + m)",
+    "source": "ADR 0070",
+    "terms": [
+     {
+      "symbol": "b",
+      "meaning": "the length of `t` in UTF-8 bytes"
+     },
+     {
+      "symbol": "m",
+      "meaning": "the length of `part` in UTF-8 bytes"
+     }
+    ]
+   },
+   "example": "docs/std/examples/prelude/contains_text"
+  },
+  {
+   "module": "prelude",
+   "name": "find",
+   "area": "text",
+   "params": [
+    {
+     "name": "t",
+     "meaning": "the text"
+    },
+    {
+     "name": "text",
+     "meaning": "the text to look for"
+    }
+   ],
+   "returns": {
+    "type": "Option[Int]",
+    "meaning": "`Some` of the scalar position, from 0, of the first occurrence of `text` in `t`, `Some(0)` for an empty `text`, and `None` when it does not occur; when it is `Some(p)`, `0 <= p` and `p + text.len <= t.len`, which the verifier assumes after each call"
+   },
+   "use_instead": [
+    {
+     "item": "prelude contains_text",
+     "why": "when only whether it occurs matters"
+    }
+   ],
+   "see_also": [
+    "prelude slice"
+   ],
+   "cost": {
+    "time": "O(b + m), plus O(1) for the scalar index from the checkpoints",
+    "source": "ADR 0070",
+    "terms": [
+     {
+      "symbol": "b",
+      "meaning": "the length of `t` in UTF-8 bytes"
+     },
+     {
+      "symbol": "m",
+      "meaning": "the length of `text` in UTF-8 bytes"
+     },
+     {
+      "symbol": "index",
+      "meaning": "on a text that is not all ASCII, the byte offset of every 64th scalar value, its checkpoints: built in O(b) by the first call that needs a position and kept with the value, so at most once per value; an ASCII text needs none (spec/22 §6)"
+     }
+    ]
+   },
+   "example": "docs/std/examples/prelude/find"
+  },
+  {
+   "module": "prelude",
+   "name": "replace",
+   "area": "text",
+   "params": [
+    {
+     "name": "t",
+     "meaning": "the text"
+    },
+    {
+     "name": "pattern",
+     "meaning": "the text to replace"
+    },
+    {
+     "name": "by",
+     "meaning": "the text that takes its place"
+    }
+   ],
+   "returns": {
+    "type": "Text",
+    "meaning": "`t` with every non-overlapping occurrence of `pattern` replaced by `by`, left to right"
+   },
+   "requires": [
+    {
+     "condition": "pattern.len > 0",
+     "meaning": "the pattern is not empty"
+    }
+   ],
+   "see_also": [
+    "prelude split",
+    "prelude contains_text"
+   ],
+   "cost": {
+    "time": "O(b + m + result)",
+    "source": "ADR 0070",
+    "terms": [
+     {
+      "symbol": "b",
+      "meaning": "the length of `t` in UTF-8 bytes"
+     },
+     {
+      "symbol": "m",
+      "meaning": "the length of `pattern` in UTF-8 bytes"
+     },
+     {
+      "symbol": "result",
+      "meaning": "the length of the result in UTF-8 bytes"
+     }
+    ]
+   },
+   "example": "docs/std/examples/prelude/replace"
+  },
+  {
+   "module": "prelude",
+   "name": "slice",
+   "area": "text",
+   "params": [
+    {
+     "name": "t",
+     "meaning": "the text"
+    },
+    {
+     "name": "start",
+     "meaning": "the scalar position, from 0, of the first scalar value to take"
+    },
+    {
+     "name": "end",
+     "meaning": "the scalar position after the last scalar value to take"
+    }
+   ],
+   "returns": {
+    "type": "Text",
+    "meaning": "the scalar values of `t` from `start` up to, not including, `end`; its length is `end - start`"
+   },
+   "requires": [
+    {
+     "condition": "0 <= start and start <= end and end <= t.len",
+     "meaning": "the positions are in order and inside `t`"
+    }
+   ],
+   "see_also": [
+    "prelude find",
+    "prelude chars"
+   ],
+   "cost": {
+    "time": "O(result), after the index is built once",
+    "source": "ADR 0070",
+    "terms": [
+     {
+      "symbol": "result",
+      "meaning": "the length of the result in UTF-8 bytes"
+     },
+     {
+      "symbol": "index",
+      "meaning": "on a text that is not all ASCII, the byte offset of every 64th scalar value, its checkpoints: built in O(b) by the first call that needs a position and kept with the value, so at most once per value; an ASCII text needs none (spec/22 §6)"
+     }
+    ]
+   },
+   "example": "docs/std/examples/prelude/slice"
+  },
+  {
+   "module": "prelude",
+   "name": "to_upper",
+   "area": "text",
+   "params": [
+    {
+     "name": "t",
+     "meaning": "the text"
+    }
+   ],
+   "returns": {
+    "type": "Text",
+    "meaning": "`t` with the ASCII letters `a` to `z` in upper case and every other scalar value as it is; the same length as `t`"
+   },
+   "see_also": [
+    "prelude to_lower"
+   ],
+   "cost": {
+    "time": "O(b)",
+    "source": "ADR 0070",
+    "terms": [
+     {
+      "symbol": "b",
+      "meaning": "the length of `t` in UTF-8 bytes"
+     }
+    ]
+   },
+   "example": "docs/std/examples/prelude/to_upper"
+  },
+  {
+   "module": "prelude",
+   "name": "to_lower",
+   "area": "text",
+   "params": [
+    {
+     "name": "t",
+     "meaning": "the text"
+    }
+   ],
+   "returns": {
+    "type": "Text",
+    "meaning": "`t` with the ASCII letters `A` to `Z` in lower case and every other scalar value as it is; the same length as `t`"
+   },
+   "see_also": [
+    "prelude to_upper"
+   ],
+   "cost": {
+    "time": "O(b)",
+    "source": "ADR 0070",
+    "terms": [
+     {
+      "symbol": "b",
+      "meaning": "the length of `t` in UTF-8 bytes"
+     }
+    ]
+   },
+   "example": "docs/std/examples/prelude/to_lower"
+  },
+  {
+   "module": "prelude",
+   "name": "chars",
+   "area": "text",
+   "params": [
+    {
+     "name": "t",
+     "meaning": "the text"
+    }
+   ],
+   "returns": {
+    "type": "List[Text]",
+    "meaning": "one text of length 1 per scalar value of `t`, in order; as many as `t.len`"
+   },
+   "see_also": [
+    "prelude bytes",
+    "prelude slice"
+   ],
+   "cost": {
+    "time": "O(b)",
+    "source": "ADR 0070",
+    "terms": [
+     {
+      "symbol": "b",
+      "meaning": "the length of `t` in UTF-8 bytes"
+     }
+    ]
+   },
+   "example": "docs/std/examples/prelude/chars"
+  },
+  {
+   "module": "prelude",
+   "name": "parse_int",
+   "area": "text",
+   "params": [
+    {
+     "name": "t",
+     "meaning": "the text"
+    }
+   ],
+   "returns": {
+    "type": "Int",
+    "meaning": "the integer `t` writes, an optional `-` and one or more ASCII digits; space is not trimmed"
+   },
+   "fails": [
+    {
+     "variant": "Empty",
+     "when": "`t` is empty"
+    },
+    {
+     "variant": "NotADigit",
+     "when": "a character is neither the leading `-` nor an ASCII digit; `at` is the scalar position, from 0, of the first one"
+    },
+    {
+     "variant": "NoDigits",
+     "when": "`t` is `-` alone"
+    },
+    {
+     "variant": "TooLong",
+     "when": "`t` is an optional `-` and more than 4300 ASCII digits, leading zeros included"
+    }
+   ],
+   "use_instead": [
+    {
+     "item": "prelude to_int",
+     "why": "when the reason does not matter"
+    }
+   ],
+   "see_also": [
+    "prelude ParseError",
+    "prelude trim",
+    "prelude is_digits"
+   ],
+   "cost": {
+    "time": "O(b)",
+    "source": "ADR 0070",
+    "terms": [
+     {
+      "symbol": "b",
+      "meaning": "the length of `t` in UTF-8 bytes"
+     }
+    ]
+   },
+   "example": "docs/std/examples/prelude/parse_int"
+  },
+  {
+   "module": "prelude",
+   "name": "trim_start",
+   "area": "text",
+   "params": [
+    {
+     "name": "t",
+     "meaning": "the text"
+    }
+   ],
+   "returns": {
+    "type": "Text",
+    "meaning": "`t` without the Unicode `White_Space` at its start; never longer than `t`"
+   },
+   "see_also": [
+    "prelude trim",
+    "prelude trim_end"
+   ],
+   "cost": {
+    "time": "O(result + trimmed)",
+    "source": "ADR 0070",
+    "terms": [
+     {
+      "symbol": "result",
+      "meaning": "the length of the result in UTF-8 bytes"
+     },
+     {
+      "symbol": "trimmed",
+      "meaning": "the length in UTF-8 bytes of the white space removed"
+     }
+    ]
+   },
+   "example": "docs/std/examples/prelude/trim_start"
+  },
+  {
+   "module": "prelude",
+   "name": "trim_end",
+   "area": "text",
+   "params": [
+    {
+     "name": "t",
+     "meaning": "the text"
+    }
+   ],
+   "returns": {
+    "type": "Text",
+    "meaning": "`t` without the Unicode `White_Space` at its end; never longer than `t`"
+   },
+   "see_also": [
+    "prelude trim",
+    "prelude trim_start"
+   ],
+   "cost": {
+    "time": "O(result + trimmed)",
+    "source": "ADR 0070",
+    "terms": [
+     {
+      "symbol": "result",
+      "meaning": "the length of the result in UTF-8 bytes"
+     },
+     {
+      "symbol": "trimmed",
+      "meaning": "the length in UTF-8 bytes of the white space removed"
+     }
+    ]
+   },
+   "example": "docs/std/examples/prelude/trim_end"
+  },
+  {
+   "module": "prelude",
+   "name": "bytes",
+   "area": "text",
+   "params": [
+    {
+     "name": "t",
+     "meaning": "the text"
+    }
+   ],
+   "returns": {
+    "type": "List[U8]",
+    "meaning": "the UTF-8 encoding of `t`; at least as many bytes as `t` has scalar values"
+   },
+   "see_also": [
+    "prelude chars"
+   ],
+   "cost": {
+    "time": "O(b)",
+    "source": "ADR 0070",
+    "terms": [
+     {
+      "symbol": "b",
+      "meaning": "the length of `t` in UTF-8 bytes"
+     }
+    ]
+   },
+   "example": "docs/std/examples/prelude/bytes"
+  },
+  {
+   "module": "prelude",
+   "name": "ParseError",
+   "area": "text",
+   "variants": [
+    {
+     "name": "Empty",
+     "fields": [],
+     "meaning": "the text is empty"
+    },
+    {
+     "name": "NotADigit",
+     "fields": [
+      {
+       "name": "at",
+       "meaning": "the scalar position, from 0, of the first character that is neither the leading `-` nor an ASCII digit"
+      }
+     ],
+     "meaning": "a character is not a digit"
+    },
+    {
+     "name": "NoDigits",
+     "fields": [],
+     "meaning": "the text is `-` alone"
+    },
+    {
+     "name": "TooLong",
+     "fields": [],
+     "meaning": "the text writes more than 4300 digits, the sign excluded and leading zeros included"
+    }
+   ],
+   "see_also": [
+    "prelude parse_int"
+   ],
+   "example": "docs/std/examples/prelude/parse_int"
+  },
+  {
+   "module": "prelude",
+   "name": "Nat",
+   "area": "numbers",
+   "definition": {
+    "type": "Int where it >= 0",
+    "meaning": "an `Int` that is at least zero; an `Int` becomes a `Nat` where the checker proves the bound"
+   },
+   "see_also": [
+    "prelude abs"
+   ],
+   "example": "docs/std/examples/prelude/Nat"
+  },
+  {
+   "module": "prelude",
+   "name": "abs",
+   "area": "numbers",
+   "params": [
+    {
+     "name": "x",
+     "meaning": "the number"
+    }
+   ],
+   "returns": {
+    "type": "Int",
+    "meaning": "the absolute value of `x`: at least `0`, and either `x` or `-x`"
+   },
+   "see_also": [
+    "prelude Nat"
+   ],
+   "example": "docs/std/examples/prelude/abs"
+  },
+  {
+   "module": "prelude",
+   "name": "min",
+   "area": "numbers",
+   "params": [
+    {
+     "name": "a",
+     "meaning": "a value"
+    },
+    {
+     "name": "b",
+     "meaning": "another value of the same type"
+    }
+   ],
+   "returns": {
+    "type": "T",
+    "meaning": "the smaller of `a` and `b`: `result <= a`, `result <= b`, and it is one of them"
+   },
+   "describes": [
+    "0.2",
+    "0.3",
+    "0.4"
+   ],
+   "earlier": [
+    {
+     "editions": [
+      "0.1"
+     ],
+     "differs": "`min(a: Int, b: Int) -> Int`: integers only"
+    }
+   ],
+   "see_also": [
+    "prelude max"
+   ],
+   "example": "docs/std/examples/prelude/min"
+  },
+  {
+   "module": "prelude",
+   "name": "max",
+   "area": "numbers",
+   "params": [
+    {
+     "name": "a",
+     "meaning": "a value"
+    },
+    {
+     "name": "b",
+     "meaning": "another value of the same type"
+    }
+   ],
+   "returns": {
+    "type": "T",
+    "meaning": "the larger of `a` and `b`: `result >= a`, `result >= b`, and it is one of them"
+   },
+   "describes": [
+    "0.2",
+    "0.3",
+    "0.4"
+   ],
+   "earlier": [
+    {
+     "editions": [
+      "0.1"
+     ],
+     "differs": "`max(a: Int, b: Int) -> Int`: integers only"
+    }
+   ],
+   "see_also": [
+    "prelude min"
+   ],
+   "example": "docs/std/examples/prelude/max"
+  },
+  {
+   "module": "prelude",
+   "name": "append",
+   "area": "lists",
+   "params": [
+    {
+     "name": "xs",
+     "meaning": "the list"
+    },
+    {
+     "name": "item",
+     "meaning": "the element to add"
+    }
+   ],
+   "returns": {
+    "type": "List[T]",
+    "meaning": "`xs` with `item` after its last element; one element longer than `xs`"
+   },
+   "see_also": [
+    {
+     "item": "prelude set",
+     "from_edition": "0.2"
+    }
+   ],
+   "example": "docs/std/examples/prelude/append",
+   "cost": {
+    "time": "amortized O(1) append, O(n) copy when the list is shared",
+    "source": "ADR 0107",
+    "terms": [
+     {
+      "symbol": "n",
+      "meaning": "the length of `xs`"
+     }
+    ]
+   }
+  },
+  {
+   "module": "prelude",
+   "name": "at",
+   "area": "lists",
+   "params": [
+    {
+     "name": "xs",
+     "meaning": "the list"
+    },
+    {
+     "name": "index",
+     "meaning": "the position, from 0"
+    }
+   ],
+   "returns": {
+    "type": "Option[T]",
+    "meaning": "`Some` of the element at `index`, and `None` exactly when `index` is below `0` or at least `xs.len`; it never fails"
+   },
+   "see_also": [
+    "prelude first"
+   ],
+   "example": "docs/std/examples/prelude/at",
+   "cost": {
+    "time": "O(1) index",
+    "source": "ADR 0107",
+    "terms": []
+   }
+  },
+  {
+   "module": "prelude",
+   "name": "contains",
+   "area": "lists",
+   "params": [
+    {
+     "name": "xs",
+     "meaning": "the list"
+    },
+    {
+     "name": "item",
+     "meaning": "the value to look for"
+    }
+   ],
+   "returns": {
+    "type": "Bool",
+    "meaning": "`true` when an element of `xs` equals `item`, compared structurally"
+   },
+   "describes": [
+    "0.2",
+    "0.3",
+    "0.4"
+   ],
+   "earlier": [
+    {
+     "editions": [
+      "0.1"
+     ],
+     "differs": "`contains[T](xs: List[T], item: T) -> Bool`: no `Eq` constraint on `T`"
+    }
+   ],
+   "use_instead": [
+    {
+     "item": "prelude first_where",
+     "why": "to find the element itself, by a condition"
+    }
+   ],
+   "example": "docs/std/examples/prelude/contains"
+  },
+  {
+   "module": "prelude",
+   "name": "filter",
+   "area": "lists",
+   "params": [
+    {
+     "name": "xs",
+     "meaning": "the list"
+    },
+    {
+     "name": "keep",
+     "meaning": "the condition an element must meet"
+    }
+   ],
+   "returns": {
+    "type": "List[T]",
+    "meaning": "the elements `x` of `xs` for which `keep(x)` is `true`, in order; never more than `xs`"
+   },
+   "effects_of": {
+    "param": "keep",
+    "meaning": "it calls `keep` from the first element on, at most once per element, has the effects of `keep`, and stops at the first failure of `keep`, which becomes its own"
+   },
+   "describes": [
+    "0.2",
+    "0.3",
+    "0.4"
+   ],
+   "earlier": [
+    {
+     "editions": [
+      "0.1"
+     ],
+     "differs": "`keep` has no effects and cannot fail: the declaration has no `uses of keep` or `fails of keep`"
+    }
+   ],
+   "see_also": [
+    "prelude first_where",
+    "prelude map"
+   ],
+   "example": "docs/std/examples/prelude/filter"
+  },
+  {
+   "module": "prelude",
+   "name": "first",
+   "area": "lists",
+   "params": [
+    {
+     "name": "xs",
+     "meaning": "the list"
+    }
+   ],
+   "returns": {
+    "type": "Option[T]",
+    "meaning": "`Some` of the element at position `0`, and `None` exactly when `xs` is empty"
+   },
+   "use_instead": [
+    {
+     "item": "prelude first_where",
+     "why": "for the first element that meets a condition"
+    }
+   ],
+   "see_also": [
+    "prelude at",
+    "prelude or_else"
+   ],
+   "example": "docs/std/examples/prelude/first",
+   "cost": {
+    "time": "O(1) index",
+    "source": "ADR 0107",
+    "terms": []
+   }
+  },
+  {
+   "module": "prelude",
+   "name": "first_where",
+   "area": "lists",
+   "params": [
+    {
+     "name": "xs",
+     "meaning": "the list"
+    },
+    {
+     "name": "keep",
+     "meaning": "the condition the element must meet"
+    }
+   ],
+   "returns": {
+    "type": "Option[T]",
+    "meaning": "`Some` of the first element for which `keep` is `true`, and `None` when there is none; `keep` is not called after that element"
+   },
+   "effects_of": {
+    "param": "keep",
+    "meaning": "it calls `keep` from the first element on, at most once per element, has the effects of `keep`, and stops at the first failure of `keep`, which becomes its own"
+   },
+   "describes": [
+    "0.2",
+    "0.3",
+    "0.4"
+   ],
+   "earlier": [
+    {
+     "editions": [
+      "0.1"
+     ],
+     "differs": "`keep` has no effects and cannot fail: the declaration has no `uses of keep` or `fails of keep`"
+    }
+   ],
+   "see_also": [
+    "prelude filter",
+    "prelude contains"
+   ],
+   "example": "docs/std/examples/prelude/first_where"
+  },
+  {
+   "module": "prelude",
+   "name": "fold",
+   "area": "lists",
+   "params": [
+    {
+     "name": "xs",
+     "meaning": "the list"
+    },
+    {
+     "name": "initial",
+     "meaning": "the accumulator before the first element"
+    },
+    {
+     "name": "step",
+     "meaning": "the next accumulator, from the last one and an element"
+    }
+   ],
+   "returns": {
+    "type": "U",
+    "meaning": "the last accumulator: `initial` when `xs` is empty, otherwise `step` applied from the first element to the last"
+   },
+   "effects_of": {
+    "param": "step",
+    "meaning": "it calls `step` from the first element on, at most once per element, has the effects of `step`, and stops at the first failure of `step`, which becomes its own"
+   },
+   "describes": [
+    "0.2",
+    "0.3",
+    "0.4"
+   ],
+   "earlier": [
+    {
+     "editions": [
+      "0.1"
+     ],
+     "differs": "`step` has no effects and cannot fail: the declaration has no `uses of step` or `fails of step`"
+    }
+   ],
+   "use_instead": [
+    {
+     "item": "prelude sum",
+     "why": "to add integers"
+    }
+   ],
+   "see_also": [
+    "prelude map"
+   ],
+   "example": "docs/std/examples/prelude/fold"
+  },
+  {
+   "module": "prelude",
+   "name": "is_empty",
+   "area": "lists",
+   "params": [
+    {
+     "name": "xs",
+     "meaning": "the list"
+    }
+   ],
+   "returns": {
+    "type": "Bool",
+    "meaning": "`true` exactly when `xs.len == 0`"
+   },
+   "example": "docs/std/examples/prelude/is_empty"
+  },
+  {
+   "module": "prelude",
+   "name": "map",
+   "area": "lists",
+   "params": [
+    {
+     "name": "xs",
+     "meaning": "the list"
+    },
+    {
+     "name": "each",
+     "meaning": "what each element becomes"
+    }
+   ],
+   "returns": {
+    "type": "List[U]",
+    "meaning": "`each(x)` for each element `x` of `xs`, in order; as many as `xs`"
+   },
+   "effects_of": {
+    "param": "each",
+    "meaning": "it calls `each` from the first element on, at most once per element, has the effects of `each`, and stops at the first failure of `each`, which becomes its own"
+   },
+   "describes": [
+    "0.2",
+    "0.3",
+    "0.4"
+   ],
+   "earlier": [
+    {
+     "editions": [
+      "0.1"
+     ],
+     "differs": "`each` has no effects and cannot fail: the declaration has no `uses of each` or `fails of each`"
+    }
+   ],
+   "see_also": [
+    "prelude filter",
+    "prelude fold"
+   ],
+   "example": "docs/std/examples/prelude/map"
+  },
+  {
+   "module": "prelude",
+   "name": "sort",
+   "area": "lists",
+   "params": [
+    {
+     "name": "xs",
+     "meaning": "the list"
+    }
+   ],
+   "returns": {
+    "type": "List[T]",
+    "meaning": "the elements of `xs` in ascending order, equal ones in their order in `xs`; as many as `xs`"
+   },
+   "example": "docs/std/examples/prelude/sort"
+  },
+  {
+   "module": "prelude",
+   "name": "sum",
+   "area": "lists",
+   "params": [
+    {
+     "name": "xs",
+     "meaning": "the list"
+    }
+   ],
+   "returns": {
+    "type": "Int",
+    "meaning": "the exact sum of the elements, as an `Int`; `0` for an empty list; it never overflows"
+   },
+   "describes": [
+    "0.2",
+    "0.3",
+    "0.4"
+   ],
+   "earlier": [
+    {
+     "editions": [
+      "0.1"
+     ],
+     "differs": "`sum(xs: List[Int]) -> Int`: `Int` elements only"
+    }
+   ],
+   "see_also": [
+    "prelude fold"
+   ],
+   "example": "docs/std/examples/prelude/sum"
+  },
+  {
+   "module": "prelude",
+   "name": "set",
+   "area": "lists",
+   "params": [
+    {
+     "name": "xs",
+     "meaning": "the list, changed in place"
+    },
+    {
+     "name": "index",
+     "meaning": "the position to replace, from 0"
+    },
+    {
+     "name": "item",
+     "meaning": "the new element"
+    }
+   ],
+   "returns": {
+    "type": "Unit",
+    "meaning": "nothing; afterwards `xs` holds `item` at `index`, and its length is unchanged"
+   },
+   "requires": [
+    {
+     "condition": "0 <= index and index < xs.len",
+     "meaning": "the position is inside the list"
+    }
+   ],
+   "see_also": [
+    "prelude append",
+    "prelude at"
+   ],
+   "example": "docs/std/examples/prelude/set",
+   "cost": {
+    "time": "O(1) index and set, O(n) copy when the list is shared",
+    "source": "ADR 0107",
+    "terms": [
+     {
+      "symbol": "n",
+      "meaning": "the length of `xs`"
+     }
+    ]
+   }
+  },
+  {
+   "module": "prelude",
+   "name": "Option",
+   "area": "options-and-results",
+   "variants": [
+    {
+     "name": "Some",
+     "fields": [
+      {
+       "name": "value",
+       "meaning": "the value"
+      }
+     ],
+     "meaning": "a value is there"
+    },
+    {
+     "name": "None",
+     "fields": [],
+     "meaning": "no value is there"
+    }
+   ],
+   "see_also": [
+    "prelude is_some",
+    "prelude or_else"
+   ],
+   "example": "docs/std/examples/prelude/Option"
+  },
+  {
+   "module": "prelude",
+   "name": "Result",
+   "area": "options-and-results",
+   "variants": [
+    {
+     "name": "Ok",
+     "fields": [
+      {
+       "name": "value",
+       "meaning": "the success value"
+      }
+     ],
+     "meaning": "the operation succeeded"
+    },
+    {
+     "name": "Err",
+     "fields": [
+      {
+       "name": "failure",
+       "meaning": "the failure"
+      }
+     ],
+     "meaning": "the operation failed"
+    }
+   ],
+   "see_also": [
+    "prelude is_ok"
+   ],
+   "example": "docs/std/examples/prelude/Result"
+  },
+  {
+   "module": "prelude",
+   "name": "is_some",
+   "area": "options-and-results",
+   "params": [
+    {
+     "name": "o",
+     "meaning": "the option"
+    }
+   ],
+   "returns": {
+    "type": "Bool",
+    "meaning": "`true` exactly when `o` is `Some`"
+   },
+   "see_also": [
+    "prelude Option",
+    "prelude or_else"
+   ],
+   "example": "docs/std/examples/prelude/is_some"
+  },
+  {
+   "module": "prelude",
+   "name": "is_ok",
+   "area": "options-and-results",
+   "params": [
+    {
+     "name": "r",
+     "meaning": "the result"
+    }
+   ],
+   "returns": {
+    "type": "Bool",
+    "meaning": "`true` exactly when `r` is `Ok`"
+   },
+   "see_also": [
+    "prelude Result"
+   ],
+   "example": "docs/std/examples/prelude/is_ok"
+  },
+  {
+   "module": "prelude",
+   "name": "or_else",
+   "area": "options-and-results",
+   "params": [
+    {
+     "name": "o",
+     "meaning": "the option"
+    },
+    {
+     "name": "default",
+     "meaning": "the value for `None`, evaluated before the call"
+    }
+   ],
+   "returns": {
+    "type": "T",
+    "meaning": "the value of `Some`, and `default` for `None`"
+   },
+   "see_also": [
+    "prelude Option",
+    "prelude first"
+   ],
+   "example": "docs/std/examples/prelude/or_else"
+  },
+  {
+   "module": "prelude",
+   "name": "Entry",
+   "area": "maps",
+   "fields": [
+    {
+     "name": "key",
+     "meaning": "the key"
+    },
+    {
+     "name": "value",
+     "meaning": "the value at that key"
+    }
+   ],
+   "see_also": [
+    "builtin entries"
+   ],
+   "example": "docs/std/examples/prelude/Entry"
+  },
+  {
+   "module": "prelude",
+   "name": "empty_map",
+   "area": "maps",
+   "params": [],
+   "returns": {
+    "type": "Map[K, V]",
+    "meaning": "the map with no entries, of the type its context expects; its `len` is `0`"
+   },
+   "see_also": [
+    "builtin with",
+    "builtin set"
+   ],
+   "example": "docs/std/examples/prelude/empty_map"
+  },
+  {
+   "module": "builtin",
+   "name": "has",
+   "area": "maps",
+   "by_receiver": {
+    "Map[K, V]": {
+     "meaning": "the map `m`",
+     "params": [
+      {
+       "name": "key",
+       "meaning": "the key to look for; from edition 0.3, it is taken at the base type of a refined key type `K`, so a key outside the refinement finds no entry"
+      }
+     ],
+     "returns": {
+      "type": "Bool",
+      "meaning": "`true` when `m` has an entry at `key`; usable in `requires`, `ensures`, `where` and predicates"
+     }
+    },
+    "Set[T]": {
+     "meaning": "the set `s`",
+     "params": [
+      {
+       "name": "item",
+       "meaning": "the item to look for; it is taken at the base type of a refined item type `T`, so an item outside the refinement is not found"
+      }
+     ],
+     "returns": {
+      "type": "Bool",
+      "meaning": "`true` when `s` holds `item`; not usable in contracts in edition 0.4"
+     }
+    },
+    "HashMap[K, V]": {
+     "meaning": "the hash map `m`",
+     "params": [
+      {
+       "name": "key",
+       "meaning": "the key to look for; it is taken at the base type of a refined key type `K`, so a key outside the refinement finds no entry"
+      }
+     ],
+     "returns": {
+      "type": "Bool",
+      "meaning": "`true` when `m` has an entry at `key`; not usable in contracts in edition 0.4"
+     }
+    },
+    "HashSet[T]": {
+     "meaning": "the hash set `s`",
+     "params": [
+      {
+       "name": "item",
+       "meaning": "the item to look for; it is taken at the base type of a refined item type `T`, so an item outside the refinement is not found"
+      }
+     ],
+     "returns": {
+      "type": "Bool",
+      "meaning": "`true` when `s` holds `item`; not usable in contracts in edition 0.4"
+     }
+    },
+    "BitSet": {
+     "meaning": "the bit set `b`",
+     "params": [
+      {
+       "name": "item",
+       "meaning": "the integer to look for; outside the range from 0 to `b.size - 1` it is never a member"
+      }
+     ],
+     "returns": {
+      "type": "Bool",
+      "meaning": "`true` when `item` is a member of `b`; not usable in contracts in edition 0.4"
+     }
+    }
+   },
+   "describes": [
+    "0.4"
+   ],
+   "earlier": [
+    {
+     "editions": [
+      "0.2",
+      "0.3"
+     ],
+     "differs": "no `Set[T]`, `HashMap[K, V]`, `HashSet[T]` or `BitSet` receiver, since `std.collections` begins in edition 0.4: it has none of `s.has(item: T) -> Bool`, `where s: Set[T]`, `where m: HashMap[K, V]`, `where s: HashSet[T]`, `b.has(item: Int) -> Bool` and `where b: BitSet`"
+    }
+   ],
+   "use_instead": [
+    {
+     "item": "builtin get",
+     "why": "to read the value too"
+    }
+   ],
+   "example": "docs/std/examples/builtin/has",
+   "cost": {
+    "time": "O(log n) per lookup",
+    "source": "spec/21 §5",
+    "terms": [
+     {
+      "symbol": "n",
+      "meaning": "the number of entries in `m`"
+     }
+    ],
+    "on": "Map[K, V]"
+   }
+  },
+  {
+   "module": "builtin",
+   "name": "get",
+   "area": "maps",
+   "receivers": [
+    {
+     "type": "Map[K, V]",
+     "meaning": "the map `m`"
+    },
+    {
+     "type": "HashMap[K, V]",
+     "meaning": "the hash map `m`"
+    }
+   ],
+   "params": [
+    {
+     "name": "key",
+     "meaning": "the key; from edition 0.3, it is taken at the base type of a refined key type `K`, so a key outside the refinement finds no entry"
+    }
+   ],
+   "returns": {
+    "type": "Option[V]",
+    "meaning": "`Some` of the value at `key`, `Some` exactly when `m.has(key: key)`; a missing key gives `None`, not a failure"
+   },
+   "describes": [
+    "0.4"
+   ],
+   "earlier": [
+    {
+     "editions": [
+      "0.2",
+      "0.3"
+     ],
+     "differs": "no `HashMap[K, V]` receiver, since `std.collections` begins in edition 0.4: it has no `where m: HashMap[K, V]`"
+    }
+   ],
+   "see_also": [
+    "builtin has"
+   ],
+   "example": "docs/std/examples/builtin/get",
+   "cost": {
+    "time": "O(log n) per lookup",
+    "source": "spec/21 §5",
+    "terms": [
+     {
+      "symbol": "n",
+      "meaning": "the number of entries in `m`"
+     }
+    ],
+    "on": "Map[K, V]"
+   }
+  },
+  {
+   "module": "builtin",
+   "name": "set",
+   "area": "maps",
+   "receivers": [
+    {
+     "type": "Map[K, V]",
+     "meaning": "the map `m`, changed in place, written `edit m.set(...)`"
+    },
+    {
+     "type": "HashMap[K, V]",
+     "meaning": "the hash map `m`, changed in place, written `edit m.set(...)`; a key already there keeps its place in the listing"
+    }
+   ],
+   "params": [
+    {
+     "name": "key",
+     "meaning": "the key; from edition 0.3, with a refined key type `K`, it is stored at `K`, an obligation that `una check` proves at the call"
+    },
+    {
+     "name": "value",
+     "meaning": "the new value at `key`; from edition 0.3, with a refined value type `V`, it is stored at `V`, an obligation that `una check` proves at the call"
+    }
+   ],
+   "returns": {
+    "type": "Unit",
+    "meaning": "nothing; afterwards `m.get(key: key) == Some(value)`, and `m.len` grows by one when `key` was not there"
+   },
+   "describes": [
+    "0.4"
+   ],
+   "earlier": [
+    {
+     "editions": [
+      "0.2",
+      "0.3"
+     ],
+     "differs": "no `HashMap[K, V]` receiver, since `std.collections` begins in edition 0.4: it has no `where m: HashMap[K, V]`"
+    }
+   ],
+   "use_instead": [
+    {
+     "item": "builtin with",
+     "why": "for a new map, leaving the old one as it is"
+    }
+   ],
+   "see_also": [
+    "builtin remove"
+   ],
+   "example": "docs/std/examples/builtin/set",
+   "cost": {
+    "time": "O(log n) per lookup, insertion and removal",
+    "source": "spec/21 §5",
+    "terms": [
+     {
+      "symbol": "n",
+      "meaning": "the number of entries in `m`; in the native runtime the update is in place when `m` is uniquely held, and on a copy, in O(n), otherwise"
+     }
+    ],
+    "on": "Map[K, V]"
+   }
+  },
+  {
+   "module": "builtin",
+   "name": "remove",
+   "area": "maps",
+   "by_receiver": {
+    "Map[K, V]": {
+     "meaning": "the map `m`, changed in place, written `edit m.remove(...)`",
+     "params": [
+      {
+       "name": "key",
+       "meaning": "the key; from edition 0.3, it is taken at the base type of a refined key type `K`, so a key outside the refinement finds no entry"
+      }
+     ],
+     "returns": {
+      "type": "Unit",
+      "meaning": "nothing; afterwards `m.has(key: key)` is `false`, and `m.len` shrinks by one when `key` was there"
+     }
+    },
+    "Set[T]": {
+     "meaning": "the set `s`, changed in place, written `edit s.remove(...)`",
+     "params": [
+      {
+       "name": "item",
+       "meaning": "the item; it is taken at the base type of a refined item type `T`, so an item outside the refinement is not found"
+      }
+     ],
+     "returns": {
+      "type": "Unit",
+      "meaning": "nothing; afterwards `s.has(item: item)` is `false`, and `s.len` shrinks by one when `item` was there"
+     }
+    },
+    "HashMap[K, V]": {
+     "meaning": "the hash map `m`, changed in place, written `edit m.remove(...)`",
+     "params": [
+      {
+       "name": "key",
+       "meaning": "the key; it is taken at the base type of a refined key type `K`, so a key outside the refinement finds no entry"
+      }
+     ],
+     "returns": {
+      "type": "Unit",
+      "meaning": "nothing; afterwards `m.has(key: key)` is `false`, and `m.len` shrinks by one when `key` was there"
+     }
+    },
+    "HashSet[T]": {
+     "meaning": "the hash set `s`, changed in place, written `edit s.remove(...)`",
+     "params": [
+      {
+       "name": "item",
+       "meaning": "the item; it is taken at the base type of a refined item type `T`, so an item outside the refinement is not found"
+      }
+     ],
+     "returns": {
+      "type": "Unit",
+      "meaning": "nothing; afterwards `s.has(item: item)` is `false`, and `s.len` shrinks by one when `item` was there"
+     }
+    },
+    "BitSet": {
+     "meaning": "the bit set `b`, changed in place, written `edit b.remove(...)`",
+     "params": [
+      {
+       "name": "item",
+       "meaning": "the integer; outside the range from 0 to `b.size - 1` it changes nothing"
+      }
+     ],
+     "returns": {
+      "type": "Unit",
+      "meaning": "nothing; afterwards `b.has(item: item)` is `false`, `b.size` is unchanged, and `b.len` shrinks by one when `item` was a member"
+     }
+    }
+   },
+   "describes": [
+    "0.4"
+   ],
+   "earlier": [
+    {
+     "editions": [
+      "0.2",
+      "0.3"
+     ],
+     "differs": "no `Set[T]`, `HashMap[K, V]`, `HashSet[T]` or `BitSet` receiver, since `std.collections` begins in edition 0.4: it has none of `edit s.remove(item: T) -> Unit`, `where s: Set[T]`, `where m: HashMap[K, V]`, `where s: HashSet[T]`, `edit b.remove(item: Int) -> Unit` and `where b: BitSet`"
+    }
+   ],
+   "use_instead": [
+    {
+     "item": "builtin without",
+     "why": "for a new map, leaving the old one as it is"
+    }
+   ],
+   "see_also": [
+    "builtin set"
+   ],
+   "example": "docs/std/examples/builtin/remove",
+   "cost": {
+    "time": "O(log n) per lookup, insertion and removal",
+    "source": "spec/21 §5",
+    "terms": [
+     {
+      "symbol": "n",
+      "meaning": "the number of entries in `m`; in the native runtime the update is in place when `m` is uniquely held, and on a copy, in O(n), otherwise"
+     }
+    ],
+    "on": "Map[K, V]"
+   }
+  },
+  {
+   "module": "builtin",
+   "name": "with",
+   "area": "maps",
+   "by_receiver": {
+    "Map[K, V]": {
+     "meaning": "the map `m`",
+     "params": [
+      {
+       "name": "key",
+       "meaning": "the key; from edition 0.3, with a refined key type `K`, it is stored at `K`, an obligation that `una check` proves at the call"
+      },
+      {
+       "name": "value",
+       "meaning": "the value at `key`; from edition 0.3, with a refined value type `V`, it is stored at `V`, an obligation that `una check` proves at the call"
+      }
+     ],
+     "returns": {
+      "type": "Map[K, V]",
+      "meaning": "a map with the contract of `set` for the result: `m` with `value` at `key`; `m` itself is unchanged"
+     }
+    },
+    "Set[T]": {
+     "meaning": "the set `s`",
+     "params": [
+      {
+       "name": "item",
+       "meaning": "the item; with a refined item type `T`, it is stored at `T`, an obligation that `una check` proves at the call"
+      }
+     ],
+     "returns": {
+      "type": "Set[T]",
+      "meaning": "a set with the contract of `add` for the result: `s` with `item`; `s` itself is unchanged"
+     }
+    },
+    "HashMap[K, V]": {
+     "meaning": "the hash map `m`",
+     "params": [
+      {
+       "name": "key",
+       "meaning": "the key; with a refined key type `K`, it is stored at `K`, an obligation that `una check` proves at the call"
+      },
+      {
+       "name": "value",
+       "meaning": "the value at `key`; with a refined value type `V`, it is stored at `V`, an obligation that `una check` proves at the call"
+      }
+     ],
+     "returns": {
+      "type": "HashMap[K, V]",
+      "meaning": "a map with the contract of `set` for the result: `m` with `value` at `key`, a new key listed last; `m` itself is unchanged"
+     }
+    },
+    "HashSet[T]": {
+     "meaning": "the hash set `s`",
+     "params": [
+      {
+       "name": "item",
+       "meaning": "the item; with a refined item type `T`, it is stored at `T`, an obligation that `una check` proves at the call"
+      }
+     ],
+     "returns": {
+      "type": "HashSet[T]",
+      "meaning": "a set with the contract of `add` for the result: `s` with `item`, a new item listed last; `s` itself is unchanged"
+     }
+    },
+    "BitSet": {
+     "meaning": "the bit set `b`",
+     "params": [
+      {
+       "name": "item",
+       "meaning": "the integer, which must be in the range from 0 to `b.size - 1`: an obligation that `una check` proves at the call"
+      }
+     ],
+     "returns": {
+      "type": "BitSet",
+      "meaning": "a bit set with the contract of `add` for the result: `b` with `item`, of the same size; `b` itself is unchanged"
+     }
+    }
+   },
+   "describes": [
+    "0.4"
+   ],
+   "earlier": [
+    {
+     "editions": [
+      "0.2",
+      "0.3"
+     ],
+     "differs": "no `Set[T]`, `HashMap[K, V]`, `HashSet[T]` or `BitSet` receiver, since `std.collections` begins in edition 0.4: it has none of `s.with(item: T) -> Set[T]`, `where s: Set[T]`, `m.with(key: K, value: V) -> HashMap[K, V]`, `where m: HashMap[K, V]`, `s.with(item: T) -> HashSet[T]`, `where s: HashSet[T]`, `b.with(item: Int) -> BitSet` and `where b: BitSet`"
+    }
+   ],
+   "see_also": [
+    "builtin set",
+    "builtin without"
+   ],
+   "example": "docs/std/examples/builtin/with",
+   "cost": {
+    "time": "O(log n) per lookup, insertion and removal",
+    "source": "spec/21 §5",
+    "terms": [
+     {
+      "symbol": "n",
+      "meaning": "the number of entries in `m`; the update is in place when the call is the last use of `m` and nothing else holds it, and on a copy, in O(n), otherwise"
+     }
+    ],
+    "on": "Map[K, V]"
+   }
+  },
+  {
+   "module": "builtin",
+   "name": "without",
+   "area": "maps",
+   "by_receiver": {
+    "Map[K, V]": {
+     "meaning": "the map `m`",
+     "params": [
+      {
+       "name": "key",
+       "meaning": "the key; from edition 0.3, it is taken at the base type of a refined key type `K`, so a key outside the refinement finds no entry"
+      }
+     ],
+     "returns": {
+      "type": "Map[K, V]",
+      "meaning": "a map with the contract of `remove` for the result: `m` without `key`; `m` itself is unchanged"
+     }
+    },
+    "Set[T]": {
+     "meaning": "the set `s`",
+     "params": [
+      {
+       "name": "item",
+       "meaning": "the item; it is taken at the base type of a refined item type `T`, so an item outside the refinement is not found"
+      }
+     ],
+     "returns": {
+      "type": "Set[T]",
+      "meaning": "a set with the contract of `remove` for the result: `s` without `item`; `s` itself is unchanged"
+     }
+    },
+    "HashMap[K, V]": {
+     "meaning": "the hash map `m`",
+     "params": [
+      {
+       "name": "key",
+       "meaning": "the key; it is taken at the base type of a refined key type `K`, so a key outside the refinement finds no entry"
+      }
+     ],
+     "returns": {
+      "type": "HashMap[K, V]",
+      "meaning": "a map with the contract of `remove` for the result: `m` without `key`; `m` itself is unchanged"
+     }
+    },
+    "HashSet[T]": {
+     "meaning": "the hash set `s`",
+     "params": [
+      {
+       "name": "item",
+       "meaning": "the item; it is taken at the base type of a refined item type `T`, so an item outside the refinement is not found"
+      }
+     ],
+     "returns": {
+      "type": "HashSet[T]",
+      "meaning": "a set with the contract of `remove` for the result: `s` without `item`; `s` itself is unchanged"
+     }
+    },
+    "BitSet": {
+     "meaning": "the bit set `b`",
+     "params": [
+      {
+       "name": "item",
+       "meaning": "the integer; outside the range from 0 to `b.size - 1` it changes nothing"
+      }
+     ],
+     "returns": {
+      "type": "BitSet",
+      "meaning": "a bit set with the contract of `remove` for the result: `b` without `item`, of the same size; `b` itself is unchanged"
+     }
+    }
+   },
+   "describes": [
+    "0.4"
+   ],
+   "earlier": [
+    {
+     "editions": [
+      "0.2",
+      "0.3"
+     ],
+     "differs": "no `Set[T]`, `HashMap[K, V]`, `HashSet[T]` or `BitSet` receiver, since `std.collections` begins in edition 0.4: it has none of `s.without(item: T) -> Set[T]`, `where s: Set[T]`, `m.without(key: K) -> HashMap[K, V]`, `where m: HashMap[K, V]`, `s.without(item: T) -> HashSet[T]`, `where s: HashSet[T]`, `b.without(item: Int) -> BitSet` and `where b: BitSet`"
+    }
+   ],
+   "see_also": [
+    "builtin remove",
+    "builtin with"
+   ],
+   "example": "docs/std/examples/builtin/without",
+   "cost": {
+    "time": "O(log n) per lookup, insertion and removal",
+    "source": "spec/21 §5",
+    "terms": [
+     {
+      "symbol": "n",
+      "meaning": "the number of entries in `m`; the update is in place when the call is the last use of `m` and nothing else holds it, and on a copy, in O(n), otherwise"
+     }
+    ],
+    "on": "Map[K, V]"
+   }
+  },
+  {
+   "module": "builtin",
+   "name": "keys",
+   "area": "maps",
+   "receivers": [
+    {
+     "type": "Map[K, V]",
+     "meaning": "the map `m`"
+    },
+    {
+     "type": "HashMap[K, V]",
+     "meaning": "the hash map `m`"
+    }
+   ],
+   "params": [],
+   "returns": {
+    "type": "List[K]",
+    "meaning": "the keys of `m`, in ascending key order on a `Map` and in the order they were first added on a `HashMap`; as many as `m.len`"
+   },
+   "describes": [
+    "0.4"
+   ],
+   "earlier": [
+    {
+     "editions": [
+      "0.2",
+      "0.3"
+     ],
+     "differs": "no `HashMap[K, V]` receiver, since `std.collections` begins in edition 0.4: it has no `where m: HashMap[K, V]`"
+    }
+   ],
+   "see_also": [
+    "builtin values",
+    "builtin entries"
+   ],
+   "example": "docs/std/examples/builtin/keys"
+  },
+  {
+   "module": "builtin",
+   "name": "values",
+   "area": "maps",
+   "receivers": [
+    {
+     "type": "Map[K, V]",
+     "meaning": "the map `m`"
+    },
+    {
+     "type": "HashMap[K, V]",
+     "meaning": "the hash map `m`"
+    }
+   ],
+   "params": [],
+   "returns": {
+    "type": "List[V]",
+    "meaning": "the values of `m`, in the order of their keys on a `Map` and in the order the keys were first added on a `HashMap`; as many as `m.len`"
+   },
+   "describes": [
+    "0.4"
+   ],
+   "earlier": [
+    {
+     "editions": [
+      "0.2",
+      "0.3"
+     ],
+     "differs": "no `HashMap[K, V]` receiver, since `std.collections` begins in edition 0.4: it has no `where m: HashMap[K, V]`"
+    }
+   ],
+   "see_also": [
+    "builtin keys",
+    "builtin entries"
+   ],
+   "example": "docs/std/examples/builtin/values"
+  },
+  {
+   "module": "builtin",
+   "name": "entries",
+   "area": "maps",
+   "receivers": [
+    {
+     "type": "Map[K, V]",
+     "meaning": "the map `m`"
+    },
+    {
+     "type": "HashMap[K, V]",
+     "meaning": "the hash map `m`"
+    }
+   ],
+   "params": [],
+   "returns": {
+    "type": "List[Entry[K, V]]",
+    "meaning": "the entries of `m` as `Entry` values, in ascending key order on a `Map` and in the order the keys were first added on a `HashMap`; as many as `m.len`"
+   },
+   "describes": [
+    "0.4"
+   ],
+   "earlier": [
+    {
+     "editions": [
+      "0.2",
+      "0.3"
+     ],
+     "differs": "no `HashMap[K, V]` receiver, since `std.collections` begins in edition 0.4: it has no `where m: HashMap[K, V]`"
+    }
+   ],
+   "see_also": [
+    "builtin keys",
+    "builtin values"
+   ],
+   "example": "docs/std/examples/builtin/entries"
+  },
+  {
+   "module": "builtin",
+   "name": "len",
+   "area": "text",
+   "receivers": [
+    {
+     "type": "Text",
+     "meaning": "a text `t`: its length in Unicode scalar values"
+    },
+    {
+     "type": "List[T]",
+     "meaning": "a list `xs`: its number of elements"
+    },
+    {
+     "type": "Map[K, V]",
+     "meaning": "a map `m`: its number of entries, never negative"
+    },
+    {
+     "type": "Set[T]",
+     "meaning": "a set `s`: its number of items"
+    },
+    {
+     "type": "HashMap[K, V]",
+     "meaning": "a hash map `m`: its number of entries"
+    },
+    {
+     "type": "HashSet[T]",
+     "meaning": "a hash set `s`: its number of items"
+    },
+    {
+     "type": "BitSet",
+     "meaning": "a bit set `b`: its number of members, at most `b.size`"
+    }
+   ],
+   "params": [],
+   "returns": {
+    "type": "Int",
+    "meaning": "the length of the receiver, a text, a list, a map, a set, a hash table or a bit set"
+   },
+   "describes": [
+    "0.4"
+   ],
+   "earlier": [
+    {
+     "editions": [
+      "0.1"
+     ],
+     "differs": "no `Map[K, V]` receiver, since edition 0.1 has no maps, and no `Set[T]`, `HashMap[K, V]`, `HashSet[T]` or `BitSet` receiver: it has none of `m.len -> Int`, `where m: Map[K, V]`, `s.len -> Int`, `where s: Set[T]`, `where m: HashMap[K, V]`, `where s: HashSet[T]`, `b.len -> Int` and `where b: BitSet`"
+    },
+    {
+     "editions": [
+      "0.2",
+      "0.3"
+     ],
+     "differs": "no `Set[T]`, `HashMap[K, V]`, `HashSet[T]` or `BitSet` receiver, since `std.collections` begins in edition 0.4: it has none of `s.len -> Int`, `where s: Set[T]`, `where m: HashMap[K, V]`, `where s: HashSet[T]`, `b.len -> Int` and `where b: BitSet`"
+    }
+   ],
+   "see_also": [
+    "prelude is_empty",
+    {
+     "item": "prelude bytes",
+     "from_edition": "0.2"
+    }
+   ],
+   "cost": {
+    "time": "O(1)",
+    "source": "ADR 0070",
+    "terms": [],
+    "on": "Text"
+   },
+   "example": "docs/std/examples/builtin/len"
+  },
+  {
+   "module": "builtin",
+   "name": "to_i8",
+   "area": "numbers",
+   "params": [],
+   "returns": {
+    "type": "I8",
+    "meaning": "the value of `x` as an `I8`: from `I8` the conversion widens, so it always succeeds; from `Int` and every other type it narrows, and a narrowing conversion carries an `overflow` obligation that the value fits, which `una check` proves at the call, or goes through `checked`, which counts against the escape budget"
+   },
+   "receivers": [
+    {
+     "type": "Int",
+     "meaning": "an integer `x`"
+    },
+    {
+     "type": "F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+     "meaning": "a fixed-width integer `x`, of one of the eight types `I8`, `I16`, `I32`, `I64`, `U8`, `U16`, `U32` and `U64`"
+    }
+   ],
+   "see_also": [
+    "builtin to_int"
+   ],
+   "example": "docs/std/examples/builtin/to_i8"
+  },
+  {
+   "module": "builtin",
+   "name": "to_i16",
+   "area": "numbers",
+   "params": [],
+   "returns": {
+    "type": "I16",
+    "meaning": "the value of `x` as an `I16`: from `I8`, `I16` and `U8` the conversion widens, so it always succeeds; from `Int` and every other type it narrows, and a narrowing conversion carries an `overflow` obligation that the value fits, which `una check` proves at the call, or goes through `checked`, which counts against the escape budget"
+   },
+   "receivers": [
+    {
+     "type": "Int",
+     "meaning": "an integer `x`"
+    },
+    {
+     "type": "F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+     "meaning": "a fixed-width integer `x`, of one of the eight types `I8`, `I16`, `I32`, `I64`, `U8`, `U16`, `U32` and `U64`"
+    }
+   ],
+   "see_also": [
+    "builtin to_int"
+   ],
+   "example": "docs/std/examples/builtin/to_i16"
+  },
+  {
+   "module": "builtin",
+   "name": "to_i32",
+   "area": "numbers",
+   "params": [],
+   "returns": {
+    "type": "I32",
+    "meaning": "the value of `x` as an `I32`: from `I8`, `I16`, `I32`, `U8` and `U16` the conversion widens, so it always succeeds; from `Int` and every other type it narrows, and a narrowing conversion carries an `overflow` obligation that the value fits, which `una check` proves at the call, or goes through `checked`, which counts against the escape budget"
+   },
+   "receivers": [
+    {
+     "type": "Int",
+     "meaning": "an integer `x`"
+    },
+    {
+     "type": "F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+     "meaning": "a fixed-width integer `x`, of one of the eight types `I8`, `I16`, `I32`, `I64`, `U8`, `U16`, `U32` and `U64`"
+    }
+   ],
+   "see_also": [
+    "builtin to_int"
+   ],
+   "example": "docs/std/examples/builtin/to_i32"
+  },
+  {
+   "module": "builtin",
+   "name": "to_i64",
+   "area": "numbers",
+   "params": [],
+   "returns": {
+    "type": "I64",
+    "meaning": "the value of `x` as an `I64`: from `I8`, `I16`, `I32`, `I64`, `U8`, `U16` and `U32` the conversion widens, so it always succeeds; from `Int` and every other type it narrows, and a narrowing conversion carries an `overflow` obligation that the value fits, which `una check` proves at the call, or goes through `checked`, which counts against the escape budget"
+   },
+   "receivers": [
+    {
+     "type": "Int",
+     "meaning": "an integer `x`"
+    },
+    {
+     "type": "F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+     "meaning": "a fixed-width integer `x`, of one of the eight types `I8`, `I16`, `I32`, `I64`, `U8`, `U16`, `U32` and `U64`"
+    }
+   ],
+   "see_also": [
+    "builtin to_int"
+   ],
+   "example": "docs/std/examples/builtin/to_i64"
+  },
+  {
+   "module": "builtin",
+   "name": "to_u8",
+   "area": "numbers",
+   "params": [],
+   "returns": {
+    "type": "U8",
+    "meaning": "the value of `x` as a `U8`: from `U8` the conversion widens, so it always succeeds; from `Int` and every other type it narrows, and a narrowing conversion carries an `overflow` obligation that the value fits, which `una check` proves at the call, or goes through `checked`, which counts against the escape budget"
+   },
+   "receivers": [
+    {
+     "type": "Int",
+     "meaning": "an integer `x`"
+    },
+    {
+     "type": "F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+     "meaning": "a fixed-width integer `x`, of one of the eight types `I8`, `I16`, `I32`, `I64`, `U8`, `U16`, `U32` and `U64`"
+    }
+   ],
+   "see_also": [
+    "builtin to_int"
+   ],
+   "example": "docs/std/examples/builtin/to_u8"
+  },
+  {
+   "module": "builtin",
+   "name": "to_u16",
+   "area": "numbers",
+   "params": [],
+   "returns": {
+    "type": "U16",
+    "meaning": "the value of `x` as a `U16`: from `U8` and `U16` the conversion widens, so it always succeeds; from `Int` and every other type it narrows, and a narrowing conversion carries an `overflow` obligation that the value fits, which `una check` proves at the call, or goes through `checked`, which counts against the escape budget"
+   },
+   "receivers": [
+    {
+     "type": "Int",
+     "meaning": "an integer `x`"
+    },
+    {
+     "type": "F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+     "meaning": "a fixed-width integer `x`, of one of the eight types `I8`, `I16`, `I32`, `I64`, `U8`, `U16`, `U32` and `U64`"
+    }
+   ],
+   "see_also": [
+    "builtin to_int"
+   ],
+   "example": "docs/std/examples/builtin/to_u16"
+  },
+  {
+   "module": "builtin",
+   "name": "to_u32",
+   "area": "numbers",
+   "params": [],
+   "returns": {
+    "type": "U32",
+    "meaning": "the value of `x` as a `U32`: from `U8`, `U16` and `U32` the conversion widens, so it always succeeds; from `Int` and every other type it narrows, and a narrowing conversion carries an `overflow` obligation that the value fits, which `una check` proves at the call, or goes through `checked`, which counts against the escape budget"
+   },
+   "receivers": [
+    {
+     "type": "Int",
+     "meaning": "an integer `x`"
+    },
+    {
+     "type": "F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+     "meaning": "a fixed-width integer `x`, of one of the eight types `I8`, `I16`, `I32`, `I64`, `U8`, `U16`, `U32` and `U64`"
+    }
+   ],
+   "see_also": [
+    "builtin to_int"
+   ],
+   "example": "docs/std/examples/builtin/to_u32"
+  },
+  {
+   "module": "builtin",
+   "name": "to_u64",
+   "area": "numbers",
+   "params": [],
+   "returns": {
+    "type": "U64",
+    "meaning": "the value of `x` as a `U64`: from `U8`, `U16`, `U32` and `U64` the conversion widens, so it always succeeds; from `Int` and every other type it narrows, and a narrowing conversion carries an `overflow` obligation that the value fits, which `una check` proves at the call, or goes through `checked`, which counts against the escape budget"
+   },
+   "receivers": [
+    {
+     "type": "Int",
+     "meaning": "an integer `x`"
+    },
+    {
+     "type": "F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+     "meaning": "a fixed-width integer `x`, of one of the eight types `I8`, `I16`, `I32`, `I64`, `U8`, `U16`, `U32` and `U64`"
+    }
+   ],
+   "see_also": [
+    "builtin to_int"
+   ],
+   "example": "docs/std/examples/builtin/to_u64"
+  },
+  {
+   "module": "builtin",
+   "name": "to_int",
+   "area": "numbers",
+   "params": [],
+   "returns": {
+    "type": "Int",
+    "meaning": "the value of `x` as an `Int`, which every value of a fixed-width type fits, so it always succeeds"
+   },
+   "receivers": [
+    {
+     "type": "Int",
+     "meaning": "an integer `x`"
+    },
+    {
+     "type": "F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+     "meaning": "a fixed-width integer `x`, of one of the eight types `I8`, `I16`, `I32`, `I64`, `U8`, `U16`, `U32` and `U64`"
+    }
+   ],
+   "see_also": [
+    "prelude to_int",
+    "builtin to_i64"
+   ],
+   "example": "docs/std/examples/builtin/to_int"
+  },
+  {
+   "module": "builtin",
+   "name": "wrapping_add",
+   "area": "numbers",
+   "params": [
+    {
+     "name": "by",
+     "meaning": "the other operand, of the same type"
+    }
+   ],
+   "returns": {
+    "type": "F",
+    "meaning": "the exact sum reduced into the range of the type modulo `2^w`, where `w` is its width: past the largest value it goes on from the smallest; it never fails"
+   },
+   "receiver": {
+    "type": "F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+    "meaning": "a fixed-width integer `a`, of one of the eight types `I8`, `I16`, `I32`, `I64`, `U8`, `U16`, `U32` and `U64`; the result has its type"
+   },
+   "see_also": [
+    "builtin saturating_add"
+   ],
+   "example": "docs/std/examples/builtin/wrapping_add"
+  },
+  {
+   "module": "builtin",
+   "name": "wrapping_sub",
+   "area": "numbers",
+   "params": [
+    {
+     "name": "by",
+     "meaning": "the other operand, of the same type"
+    }
+   ],
+   "returns": {
+    "type": "F",
+    "meaning": "the exact difference reduced into the range of the type modulo `2^w`, where `w` is its width: below the smallest value it goes on from the largest; it never fails"
+   },
+   "receiver": {
+    "type": "F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+    "meaning": "a fixed-width integer `a`, of one of the eight types `I8`, `I16`, `I32`, `I64`, `U8`, `U16`, `U32` and `U64`; the result has its type"
+   },
+   "see_also": [
+    "builtin saturating_sub"
+   ],
+   "example": "docs/std/examples/builtin/wrapping_sub"
+  },
+  {
+   "module": "builtin",
+   "name": "wrapping_mul",
+   "area": "numbers",
+   "params": [
+    {
+     "name": "by",
+     "meaning": "the other operand, of the same type"
+    }
+   ],
+   "returns": {
+    "type": "F",
+    "meaning": "the exact product reduced into the range of the type modulo `2^w`, where `w` is its width; it never fails"
+   },
+   "receiver": {
+    "type": "F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+    "meaning": "a fixed-width integer `a`, of one of the eight types `I8`, `I16`, `I32`, `I64`, `U8`, `U16`, `U32` and `U64`; the result has its type"
+   },
+   "see_also": [
+    "builtin saturating_mul"
+   ],
+   "example": "docs/std/examples/builtin/wrapping_mul"
+  },
+  {
+   "module": "builtin",
+   "name": "saturating_add",
+   "area": "numbers",
+   "params": [
+    {
+     "name": "by",
+     "meaning": "the other operand, of the same type"
+    }
+   ],
+   "returns": {
+    "type": "F",
+    "meaning": "the exact sum clamped to the range of the type: the largest value when the sum is above it, the smallest when it is below; it never fails"
+   },
+   "receiver": {
+    "type": "F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+    "meaning": "a fixed-width integer `a`, of one of the eight types `I8`, `I16`, `I32`, `I64`, `U8`, `U16`, `U32` and `U64`; the result has its type"
+   },
+   "see_also": [
+    "builtin wrapping_add"
+   ],
+   "example": "docs/std/examples/builtin/saturating_add"
+  },
+  {
+   "module": "builtin",
+   "name": "saturating_sub",
+   "area": "numbers",
+   "params": [
+    {
+     "name": "by",
+     "meaning": "the other operand, of the same type"
+    }
+   ],
+   "returns": {
+    "type": "F",
+    "meaning": "the exact difference clamped to the range of the type: the largest value when the difference is above it, the smallest when it is below; it never fails"
+   },
+   "receiver": {
+    "type": "F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+    "meaning": "a fixed-width integer `a`, of one of the eight types `I8`, `I16`, `I32`, `I64`, `U8`, `U16`, `U32` and `U64`; the result has its type"
+   },
+   "see_also": [
+    "builtin wrapping_sub"
+   ],
+   "example": "docs/std/examples/builtin/saturating_sub"
+  },
+  {
+   "module": "builtin",
+   "name": "saturating_mul",
+   "area": "numbers",
+   "params": [
+    {
+     "name": "by",
+     "meaning": "the other operand, of the same type"
+    }
+   ],
+   "returns": {
+    "type": "F",
+    "meaning": "the exact product clamped to the range of the type: the largest value when the product is above it, the smallest when it is below; it never fails"
+   },
+   "receiver": {
+    "type": "F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+    "meaning": "a fixed-width integer `a`, of one of the eight types `I8`, `I16`, `I32`, `I64`, `U8`, `U16`, `U32` and `U64`; the result has its type"
+   },
+   "see_also": [
+    "builtin wrapping_mul"
+   ],
+   "example": "docs/std/examples/builtin/saturating_mul"
+  },
+  {
+   "module": "builtin",
+   "name": "bit_and",
+   "area": "numbers",
+   "params": [
+    {
+     "name": "mask",
+     "meaning": "the other operand, of the same type"
+    }
+   ],
+   "returns": {
+    "type": "F",
+    "meaning": "the bits set in both `a` and `mask`, on the two's-complement bits of the width; on an unsigned type `result <= a` and `result <= mask`; it never fails"
+   },
+   "receiver": {
+    "type": "F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+    "meaning": "a fixed-width integer `a`, of one of the eight types `I8`, `I16`, `I32`, `I64`, `U8`, `U16`, `U32` and `U64`; the result has its type"
+   },
+   "see_also": [
+    "builtin bit_or",
+    "builtin bit_xor",
+    "builtin bit_not"
+   ],
+   "example": "docs/std/examples/builtin/bit_and"
+  },
+  {
+   "module": "builtin",
+   "name": "bit_or",
+   "area": "numbers",
+   "params": [
+    {
+     "name": "mask",
+     "meaning": "the other operand, of the same type"
+    }
+   ],
+   "returns": {
+    "type": "F",
+    "meaning": "the bits set in `a` or in `mask`, on the two's-complement bits of the width; on an unsigned type `result >= a` and `result >= mask`; it never fails"
+   },
+   "receiver": {
+    "type": "F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+    "meaning": "a fixed-width integer `a`, of one of the eight types `I8`, `I16`, `I32`, `I64`, `U8`, `U16`, `U32` and `U64`; the result has its type"
+   },
+   "see_also": [
+    "builtin bit_and",
+    "builtin bit_xor",
+    "builtin bit_not"
+   ],
+   "example": "docs/std/examples/builtin/bit_or"
+  },
+  {
+   "module": "builtin",
+   "name": "bit_xor",
+   "area": "numbers",
+   "params": [
+    {
+     "name": "mask",
+     "meaning": "the other operand, of the same type"
+    }
+   ],
+   "returns": {
+    "type": "F",
+    "meaning": "the bits set in exactly one of `a` and `mask`, on the two's-complement bits of the width; it never fails"
+   },
+   "receiver": {
+    "type": "F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+    "meaning": "a fixed-width integer `a`, of one of the eight types `I8`, `I16`, `I32`, `I64`, `U8`, `U16`, `U32` and `U64`; the result has its type"
+   },
+   "see_also": [
+    "builtin bit_and",
+    "builtin bit_or",
+    "builtin bit_not"
+   ],
+   "example": "docs/std/examples/builtin/bit_xor"
+  },
+  {
+   "module": "builtin",
+   "name": "bit_not",
+   "area": "numbers",
+   "params": [],
+   "returns": {
+    "type": "F",
+    "meaning": "each bit of `a` flipped, on the two's-complement bits of the width; it never fails"
+   },
+   "receiver": {
+    "type": "F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+    "meaning": "a fixed-width integer `a`, of one of the eight types `I8`, `I16`, `I32`, `I64`, `U8`, `U16`, `U32` and `U64`; the result has its type"
+   },
+   "see_also": [
+    "builtin bit_and",
+    "builtin bit_or",
+    "builtin bit_xor"
+   ],
+   "example": "docs/std/examples/builtin/bit_not"
+  },
+  {
+   "module": "builtin",
+   "name": "shift_right",
+   "area": "numbers",
+   "params": [
+    {
+     "name": "by",
+     "meaning": "the number of places, an `Int`"
+    }
+   ],
+   "returns": {
+    "type": "F",
+    "meaning": "`a` divided by `2^by`, rounding toward negative infinity: on a signed type the shift is arithmetic, so a negative value stays negative; on an unsigned type `result <= a`"
+   },
+   "receiver": {
+    "type": "F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+    "meaning": "a fixed-width integer `a`, of one of the eight types `I8`, `I16`, `I32`, `I64`, `U8`, `U16`, `U32` and `U64`; the result has its type"
+   },
+   "requires": [
+    {
+     "condition": "0 <= by and by < w",
+     "meaning": "the number of places is at least `0` and below the width `w` of the type, `8` for `I8` and `U8` up to `64` for `I64` and `U64`"
+    }
+   ],
+   "see_also": [
+    "builtin wrapping_shift_left"
+   ],
+   "example": "docs/std/examples/builtin/shift_right"
+  },
+  {
+   "module": "builtin",
+   "name": "wrapping_shift_left",
+   "area": "numbers",
+   "params": [
+    {
+     "name": "by",
+     "meaning": "the number of places, an `Int`"
+    }
+   ],
+   "returns": {
+    "type": "F",
+    "meaning": "`a * 2^by` reduced into the range of the type modulo `2^w`, where `w` is its width: the bits shifted past the top are dropped"
+   },
+   "receiver": {
+    "type": "F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+    "meaning": "a fixed-width integer `a`, of one of the eight types `I8`, `I16`, `I32`, `I64`, `U8`, `U16`, `U32` and `U64`; the result has its type"
+   },
+   "requires": [
+    {
+     "condition": "0 <= by and by < w",
+     "meaning": "the number of places is at least `0` and below the width `w` of the type, `8` for `I8` and `U8` up to `64` for `I64` and `U64`"
+    }
+   ],
+   "see_also": [
+    "builtin shift_right"
+   ],
+   "example": "docs/std/examples/builtin/wrapping_shift_left"
+  },
+  {
+   "module": "prelude",
+   "name": "Json",
+   "area": "json",
+   "variants": [
+    {
+     "name": "Null",
+     "fields": [],
+     "meaning": "JSON `null`"
+    },
+    {
+     "name": "Boolean",
+     "fields": [
+      {
+       "name": "value",
+       "meaning": "`true` or `false`"
+      }
+     ],
+     "meaning": "a JSON boolean"
+    },
+    {
+     "name": "Number",
+     "fields": [
+      {
+       "name": "value",
+       "meaning": "the integer, exact at any size"
+      }
+     ],
+     "meaning": "a JSON number with neither a fraction nor an exponent"
+    },
+    {
+     "name": "Decimal",
+     "fields": [
+      {
+       "name": "text",
+       "meaning": "the number as written in the input, a `JsonNumber`"
+      }
+     ],
+     "meaning": "any other JSON number, so that `Number` and `Decimal` never hold the same number; two are equal when their texts are, so `1.0` and `1.00` differ"
+    },
+    {
+     "name": "Str",
+     "fields": [
+      {
+       "name": "value",
+       "meaning": "the string, unescaped"
+      }
+     ],
+     "meaning": "a JSON string; the positions of `Json` are unlabeled, so a labeled text given to `Str`, or a labeled value to any variant, is U4001, and a labeled text reaches JSON through a policy, `quote_json` or interpolation (`spec/23 §5`)"
+    },
+    {
+     "name": "Array",
+     "fields": [
+      {
+       "name": "items",
+       "meaning": "its values, in order"
+      }
+     ],
+     "meaning": "a JSON array"
+    },
+    {
+     "name": "Object",
+     "fields": [
+      {
+       "name": "fields",
+       "meaning": "its entries, by key"
+      }
+     ],
+     "meaning": "a JSON object, a map ordered by its keys, so the order of the input is not kept"
+    }
+   ],
+   "see_also": [
+    "prelude parse_json",
+    "prelude to_json",
+    "prelude JsonNumber"
+   ],
+   "example": "docs/std/examples/prelude/Json"
+  },
+  {
+   "module": "prelude",
+   "name": "JsonNumber",
+   "area": "json",
+   "definition": {
+    "type": "Text where is_json_number(it)",
+    "meaning": "the text of a JSON number with a fraction or an exponent, as `Decimal` holds it; since `is_json_number` is opaque, a `JsonNumber` is made by parsing, or in code by `checked`"
+   },
+   "see_also": [
+    "prelude is_json_number",
+    "prelude Json"
+   ],
+   "example": "docs/std/examples/prelude/JsonNumber"
+  },
+  {
+   "module": "prelude",
+   "name": "is_json_number",
+   "area": "json",
+   "params": [
+    {
+     "name": "t",
+     "meaning": "the text"
+    }
+   ],
+   "returns": {
+    "type": "Bool",
+    "meaning": "`true` exactly when `t` is one JSON number of RFC 8259 §6 with a fraction or an exponent; opaque: both engines evaluate it, and the verifier knows nothing more of it, so in code it is called only as the predicate of `checked`, and elsewhere in code is U2016; a kind's `where` clause, as in `JsonNumber`, the `requires` and `ensures` of a capability operation, and the body of another opaque predicate may name it (`spec/03 §4`, ADR 0042); `checked` counts against `[escape_budget] checked_per_module`, which is 0 unless `una.toml` raises it"
+   },
+   "see_also": [
+    "prelude JsonNumber"
+   ],
+   "example": "docs/std/examples/prelude/JsonNumber"
+  },
+  {
+   "module": "prelude",
+   "name": "parse_json",
+   "area": "json",
+   "params": [
+    {
+     "name": "t",
+     "meaning": "the text"
+    }
+   ],
+   "returns": {
+    "type": "Json",
+    "meaning": "the one JSON value that `t` writes, with optional white space (U+0020, U+0009, U+000A and U+000D) before and after it and nothing else; there is no limit on its size beyond the memory budget, and a run over it ends with U6003 at the call; when `t` is not one value, the failure is the first error in reading order; the result and the failure carry the labels of `t` (`spec/23 §5`), so with a labeled `t`, `if error pass` and `if error fail` are U4002, and `attempt` or `if error use` handles the failure"
+   },
+   "fails": [
+    {
+     "variant": "Syntax",
+     "when": "`t` is not one JSON value of RFC 8259: there are no comments, trailing commas, `NaN`, `Infinity`, single quotes or byte order mark, no leading `+` or leading zero in a number, and no lone surrogate, raw scalar value below U+0020 or unknown escape in a string; `at` is the scalar position, from 0, of the first scalar value where no JSON text can continue, or the length of `t` when it ends early"
+    },
+    {
+     "variant": "TooDeep",
+     "when": "arrays and objects nest more than 512 deep; `at` is the scalar position, from 0, of the bracket that opens the 513th level"
+    },
+    {
+     "variant": "DuplicateKey",
+     "when": "an object has two equal keys, compared after unescaping; `at` is the scalar position, from 0, of the second one"
+    },
+    {
+     "variant": "NumberTooLong",
+     "when": "an integer has more than 4300 digits; `at` is the scalar position, from 0, of its first character; a number with a fraction or an exponent has no such limit"
+    }
+   ],
+   "see_also": [
+    "prelude JsonError",
+    "prelude to_json",
+    "prelude Json"
+   ],
+   "cost": {
+    "time": "O(n + Σ k log k)",
+    "source": "spec/23 §6",
+    "terms": [
+     {
+      "symbol": "n",
+      "meaning": "the length of `t` in scalar values"
+     },
+     {
+      "symbol": "k",
+      "meaning": "the number of keys of one object; `Σ` sums `k log k` over the objects of `t`"
+     }
+    ]
+   },
+   "example": "docs/std/examples/prelude/parse_json"
+  },
+  {
+   "module": "prelude",
+   "name": "JsonError",
+   "area": "json",
+   "variants": [
+    {
+     "name": "Syntax",
+     "fields": [
+      {
+       "name": "at",
+       "meaning": "the scalar position, from 0, of the first scalar value where no JSON text can continue, or the length of the text when it ends early"
+      }
+     ],
+     "meaning": "the text is not one JSON value"
+    },
+    {
+     "name": "TooDeep",
+     "fields": [
+      {
+       "name": "at",
+       "meaning": "the scalar position, from 0, of the bracket that opens the 513th level"
+      }
+     ],
+     "meaning": "arrays and objects nest more than 512 deep"
+    },
+    {
+     "name": "DuplicateKey",
+     "fields": [
+      {
+       "name": "at",
+       "meaning": "the scalar position, from 0, of the second of two equal keys"
+      }
+     ],
+     "meaning": "an object has two equal keys, compared after unescaping"
+    },
+    {
+     "name": "NumberTooLong",
+     "fields": [
+      {
+       "name": "at",
+       "meaning": "the scalar position, from 0, of the integer's first character"
+      }
+     ],
+     "meaning": "an integer has more than 4300 digits"
+    }
+   ],
+   "see_also": [
+    "prelude parse_json"
+   ],
+   "example": "docs/std/examples/prelude/parse_json"
+  },
+  {
+   "module": "prelude",
+   "name": "to_json",
+   "area": "json",
+   "params": [
+    {
+     "name": "j",
+     "meaning": "the value"
+    }
+   ],
+   "returns": {
+    "type": "Text",
+    "meaning": "the canonical JSON text of `j`, with no white space: `Null` as `null`, a `Boolean` as `true` or `false`, a `Number` in decimal, a `Decimal` as its text, a `Str` as `quote_json` writes it, and an object's entries in key order; parsing it gives `j` back when its arrays and objects nest at most 512 deep and each `Number` has at most 4300 digits, since `parse_json` refuses a deeper value with `TooDeep` and a longer integer with `NumberTooLong`; the result carries the labels of `j` (`spec/23 §5`)"
+   },
+   "see_also": [
+    "prelude parse_json",
+    "prelude quote_json"
+   ],
+   "cost": {
+    "time": "O(n) time for an output of n scalar values, except that writing a Number of d digits takes O(d²)",
+    "source": "spec/23 §6",
+    "terms": [
+     {
+      "symbol": "n",
+      "meaning": "the length of the result in scalar values"
+     },
+     {
+      "symbol": "d",
+      "meaning": "the number of digits of a `Number`, which parsing bounds by 4300 but a program may make larger"
+     }
+    ]
+   },
+   "example": "docs/std/examples/prelude/to_json"
+  },
+  {
+   "module": "prelude",
+   "name": "quote_json",
+   "area": "json",
+   "params": [
+    {
+     "name": "t",
+     "meaning": "the text"
+    }
+   ],
+   "returns": {
+    "type": "Text",
+    "meaning": "`t` as a JSON string literal, between double quotes: the double quote and the backslash are escaped with a backslash; U+0008, U+000C, U+000A, U+000D and U+0009 are written as their short escapes; every other scalar value below U+0020, and U+007F, U+2028, U+2029, U+202A to U+202E and U+2066 to U+2069, as a `u` escape with four lowercase hex digits; and every other scalar value as itself; the result carries the labels of `t` (`spec/23 §5`); it escapes for a JSON string only, not for HTML, so `<`, `>`, `&` and `/` are written as themselves"
+   },
+   "see_also": [
+    "prelude to_json"
+   ],
+   "example": "docs/std/examples/prelude/quote_json"
+  },
+  {
+   "module": "prelude",
+   "name": "KeyError",
+   "area": "keys",
+   "variants": [
+    {
+     "name": "UnknownKey",
+     "fields": [],
+     "meaning": "the key file of the grant holds no key of that name"
+    }
+   ],
+   "example": "docs/std/examples/prelude/KeyError"
+  }
+ ]
+}

@@ -1,4 +1,4 @@
--- test: a where clause on a kind whose base is a function type is U2002 at the clause, once for the kind and its alias; range sugar binds to the result (N-006, ADR 0045)
+-- test: a where clause on a kind whose base is a function type is U2002 at the clause, once for the kind and its alias; range sugar binds to the result (ADR 0045)
 -- spec: spec/03 §3
 -- expect: error U2002 at 14:35
 -- expect: error U2002 at 16:30

@@ -1,4 +1,4 @@
--- test: a via function with a requires clause is U4005 at the clause, since the policy call checks only from (N-004)
+-- test: a via function with a requires clause is U4005 at the clause, since the policy call checks only from
 -- spec: spec/07 §5, §7
 -- expect: error U4005 at src/release.una:13:3
 module app

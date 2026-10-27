@@ -7,9 +7,9 @@ use una_diag::{Code, Escape, ObligationKind, Repair};
 use una_project::Edition;
 use una_syntax::Span;
 use una_syntax::ast::{
-    CapabilityDecl, ClauseKind, Convention, DeclKind, ExampleDecl, ExpectationKind, Expr,
-    FunctionDecl, HandlerCall, HandlerDecl, Ident, OpClauseKind, PolicyDecl, PredicateDecl,
-    UsesClause,
+    CapBindingValue, CapabilityDecl, ClauseKind, Convention, DeclKind, ExampleDecl,
+    ExpectationKind, Expr, FunctionDecl, HandlerCall, HandlerDecl, Ident, OpClauseKind, PolicyDecl,
+    PredicateDecl, UsesClause,
 };
 
 use super::authority::{Base, Bound, Collected, Frame, Pass};
@@ -82,6 +82,12 @@ pub(crate) struct Ctx {
     /// raises the program counter of every effect in the body (ADR 0038 D4, `spec/07 §7`
     /// rule 4).
     pub(crate) floor: Option<Label>,
+    /// Inside `e within d`, its timing label `τ(e)` and the `within`: the timing floor that
+    /// raises the program counter of every operation and every call with effects in `e`, since
+    /// the deadline can cut `e` before any of them (ADR 0117 IF2). Inside a branch of `first
+    /// of`, the join of `τ` of every branch and the race, since a sibling that wins can cut the
+    /// branch (IF3). The construct is the innermost one that raised the floor.
+    pub(crate) timing: Option<(Label, Span, super::within::Construct)>,
 }
 
 impl Ctx {
@@ -105,6 +111,7 @@ impl Ctx {
             pc_from: None,
             labels: true,
             floor: None,
+            timing: None,
         }
     }
 }
@@ -156,6 +163,21 @@ pub(crate) struct Local<'a> {
     pub(crate) refined: bool,
 }
 
+/// A `for` loop whose body is being checked, for its `stop` and `skip` (`spec/26 §3`, ADR
+/// 0116 rule 6, IF2, IF3).
+#[derive(Clone, Debug)]
+pub(crate) struct LoopFrame {
+    /// The program counter its body starts with (IF2).
+    pub(crate) pc: Label,
+    /// The task and lambda depths of its body: a `stop` or `skip` at a deeper one is U2034.
+    pub(crate) depth: (usize, usize),
+    /// The program counter that a `skip` under a branch raises the rest of the body to, and
+    /// the condition that raised it (IF3).
+    pub(crate) skipped: Option<(Label, Option<Span>)>,
+    /// The frame is the `on stop` block of its loop, where `stop` and `skip` are U2034.
+    pub(crate) on_stop: bool,
+}
+
 /// What a normal return path must satisfy, for pending obligations.
 #[derive(Clone, Debug)]
 pub(crate) struct Returning {
@@ -199,9 +221,38 @@ pub(crate) struct Checker<'c, 'a, 's> {
     /// Where the locals of the innermost enclosing `together` task start: a local before it
     /// is captured by the task, which cannot change it (U2023, `spec/19 §2` rule 3).
     pub(crate) task_mark: Option<usize>,
+    /// How many `together` tasks enclose the expression checked (`spec/26 §3`).
+    pub(crate) task_depth: usize,
+    /// What the innermost enclosing task is, for the messages of U2023: a `together` task or
+    /// a branch of `first of` (ADR 0117 rule 6).
+    pub(crate) task_word: &'static str,
+    /// The loops whose bodies enclose the statement checked, innermost last (`spec/26 §3`).
+    pub(crate) loops: Vec<LoopFrame>,
+    /// Inside an `on stop` block, whose statements must not fail (U3029, `spec/26 §5`).
+    pub(crate) in_on_stop: bool,
+    /// Inside the expression of a `start`, which must not fail after its handling clauses
+    /// (U3029, `spec/27 §7`).
+    pub(crate) in_start: bool,
+    /// The `tasks` statements whose blocks enclose the statement checked, innermost last: the
+    /// task depth and lambda depth at each, where a `start` of it may stand (U2035).
+    pub(crate) tasks_frames: Vec<(usize, usize)>,
+    /// Inside the body of a `for ever`, which runs no `for ever` and calls no `diverges`
+    /// function (U3027, `spec/26 §5`).
+    pub(crate) in_ever: bool,
+    /// In the `do` line of an example with a `stop after` line, which may run a `for ever`
+    /// loop until the stop (U3027, ADR 0116 rule 19).
+    pub(crate) do_stops: bool,
+    /// The sites whose timing label is being recorded, innermost last (ADR 0116 IF5).
+    pub(crate) timing: Vec<super::timing::TimingFrame>,
+    /// The `stop` and `skip` statements reported as U2034, after which no U2040 is reported.
+    pub(crate) misplaced_exits: Vec<Span>,
     /// The receiver of the method call being checked, with its call-site marker, for its
     /// parameter's convention and exclusivity (`spec/17 §3`).
     pub(crate) receiver_marker: Option<(Option<Convention>, Expr)>,
+    /// For the call being checked that passes the elements of a list literal as its arguments
+    /// (`spec/29 §17`): the position of the first of them among its arguments, how many there
+    /// are, and the parameter the first binds. The next ones bind the parameters after it.
+    pub(crate) spread: Option<(usize, usize, usize)>,
     /// The spans of the calls that are the whole expression of a statement, a `let` or an
     /// assignment: the only places for a call with `edit` or `take`, U3013 elsewhere
     /// (`spec/17 §3` rule 5), and where the desugar binds its tuple (`spec/17 §4`).
@@ -222,6 +273,11 @@ pub(crate) struct Checker<'c, 'a, 's> {
     pub(crate) call_targets: BTreeMap<Span, usize>,
     /// The types of the operands of the binary operations being checked.
     pub(crate) operands: Vec<Ty>,
+    /// The spans of the receiver and the arguments of a call of a dense kernel being checked,
+    /// whose units the kernel's own rule combines (ADR 0120 rule 64): there, a parameter and
+    /// an argument that differ only in their units unify, and the argument's type is kept for
+    /// that rule.
+    pub(crate) unit_blind: BTreeMap<Span, Option<Ty>>,
     /// The spans of the variants written without their fields (U2009), for the `is` repair of
     /// a comparison (#205).
     pub(crate) needs_fields: Vec<Span>,
@@ -346,7 +402,11 @@ struct Written<'w, 'c, 'a, 's>(&'w Checker<'c, 'a, 's>);
 
 impl Names for Written<'_, '_, '_, '_> {
     fn kind_name(&self, id: KindId) -> String {
-        self.0.env.kind_name(id).to_owned()
+        // A complex kind is written as its type, `Complex[F64]` (ADR 0120 rule 22).
+        self.0
+            .env
+            .complex_written(id)
+            .map_or_else(|| self.0.env.kind_name(id).to_owned(), ToOwned::to_owned)
     }
 
     fn param_name(&self, index: usize) -> String {
@@ -457,6 +517,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             pass,
             collected,
             receiver_marker: None,
+            spread: None,
             statement_calls: Vec::new(),
             inherited: 0,
             of_callee: None,
@@ -468,8 +529,19 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             unknown_callee_argument: false,
             prelude_lambda: false,
             task_mark: None,
+            task_depth: 0,
+            task_word: "`together` task",
+            loops: Vec::new(),
+            misplaced_exits: Vec::new(),
+            in_on_stop: false,
+            in_start: false,
+            tasks_frames: Vec::new(),
+            in_ever: false,
+            do_stops: false,
+            timing: Vec::new(),
             call_targets: BTreeMap::new(),
             operands: Vec::new(),
+            unit_blind: BTreeMap::new(),
             needs_fields: Vec::new(),
             pending_ops: BTreeMap::new(),
             records: Records::default(),
@@ -558,6 +630,19 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         // once the types are final.
         if !self.flow_hints.contains(&span) {
             self.record_flow(span, expected, found);
+        }
+        // A dense kernel's operand: its units are the kernel's rule's (ADR 0120 rule 64).
+        if let Some(slot) = self.unit_blind.get_mut(&span) {
+            *slot = Some(found.clone());
+            let (blind_expected, blind_found) = (self.labeled(expected), self.labeled(found));
+            if (blind_expected.has_units() || blind_found.has_units())
+                && self.vars.unify_expected(
+                    &blind_expected.without_units(),
+                    &blind_found.without_units(),
+                )
+            {
+                return true;
+            }
         }
         if self.vars.unify_expected(expected, found) {
             return true;
@@ -735,6 +820,11 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         match self.env.lower(self.module, name) {
             Some(Entity::Handler(id)) => {
                 self.resolved(call.span, Res::Handler { id });
+                self.graph_install(id);
+                if let Some(current) = self.current {
+                    self.findings.installs.insert((current, id));
+                }
+                self.timing_install(id);
                 let (params, capability, module, needs) = match self.env.handlers.get(id) {
                     Some(handler) => (
                         handler.params.clone(),
@@ -756,6 +846,13 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                 let checked =
                     self.arguments(&callee, &params, &[], None, &call.args, call.span, module);
                 self.argument_flows(&callee, checked);
+                // ADR 0117 rule 9: installing `limiter` carries `at_most >= 1`, `per >= 1` and
+                // `waiting >= 0`, a `refinement` obligation at each argument (`spec/27 §10`).
+                if Some(id) == self.env.limiter {
+                    for arg in &call.args {
+                        self.obligation(ObligationKind::Refinement, arg.value.span, None);
+                    }
+                }
                 let given = self.granting.pop().unwrap_or_default();
                 let install = match crossing {
                     Some(boundary) => Some(Install {
@@ -818,6 +915,24 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         }
     }
 
+    /// Whether a `with` binding's value installs `limiter` of `std.limit` (ADR 0117 rule 9).
+    pub(crate) fn installs_limiter(&self, value: &CapBindingValue) -> bool {
+        match value {
+            CapBindingValue::Handler(call) => self.installs_limiter_call(call),
+            CapBindingValue::Cap(_) | CapBindingValue::Narrowed { .. } => false,
+        }
+    }
+
+    /// Whether the handler call `call` names `limiter` of `std.limit`.
+    pub(crate) fn installs_limiter_call(&self, call: &HandlerCall) -> bool {
+        self.env.limiter.is_some_and(|limiter| {
+            matches!(
+                self.env.lower(self.module, self.name(&call.name)),
+                Some(Entity::Handler(id)) if id == limiter
+            )
+        })
+    }
+
     /// Records, in pass 2, what the expression or pattern at `span` resolves to.
     pub(crate) fn resolved(&mut self, span: Span, res: Res) {
         if self.pass == Pass::Check {
@@ -829,6 +944,14 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
     pub(crate) fn ordered(&mut self, span: Span, order: Vec<Option<usize>>) {
         if self.pass == Pass::Check {
             self.records.args.insert(span, order);
+        }
+    }
+
+    /// Records, in pass 2, that the call at `span` passes the elements of its argument at
+    /// `position`, a list literal, as its arguments (`spec/29 §17`).
+    pub(crate) fn spread_at(&mut self, span: Span, position: usize) {
+        if self.pass == Pass::Check {
+            self.records.spread.insert(span, position);
         }
     }
 
@@ -852,6 +975,15 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
     pub(crate) fn refit(&mut self, span: Span, from: Ty) {
         if self.pass == Pass::Check && self.env.edition >= Edition::V0_3 {
             self.records.refits.push((span, from));
+        }
+    }
+
+    /// Records, in pass 2 and edition `0.3`, that the call at `span` computes new elements
+    /// (ADR 0120, `super::dense::SYNTHESIZING`): its flows keep no refinement of the type
+    /// arguments a later unification settles, as elaboration does.
+    pub(crate) fn synthesized(&mut self, span: Span) {
+        if self.pass == Pass::Check && self.env.edition >= Edition::V0_3 {
+            self.records.synthesized.insert(span);
         }
     }
 
@@ -987,6 +1119,15 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                     let Some(def) = env.functions.get(current) else {
                         continue;
                     };
+                    // The contracts of the dense methods state the element equations of `get`
+                    // and `set` over any element type, which the verifier encodes as equality
+                    // of terms of the element's sort (`spec/29 §17`): no constraint is asked of
+                    // their callers.
+                    if def.module == env.prelude
+                        && def.name.starts_with(crate::names::prelude::DENSE_HIDDEN)
+                    {
+                        continue;
+                    }
                     let written = def.constraints_written.get(index).copied().unwrap_or(false);
                     let have = def.constraints.get(index).copied().unwrap_or_default();
                     if !def.public && !written {
@@ -1128,7 +1269,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                     |diagnostic| diagnostic.message.clone(),
                 );
                 self.report.error(
-                    Code::U7002,
+                    self.env.project_code,
                     entry.span,
                     format!(
                         "the lock of `{}` conditions `{op_name}` by `{}`, which is not a `Bool` of the refinement language over its parameters: {reason}",
@@ -1235,6 +1376,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                 ClauseKind::Fails(_)
                 | ClauseKind::UsesOf(_)
                 | ClauseKind::FailsOf(_)
+                | ClauseKind::Diverges
                 | ClauseKind::DerivedFrom(_) => {}
             }
         }
@@ -1710,9 +1852,43 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             }
         }
         self.ctx.in_do = true;
+        self.do_stops = example.stop_after.is_some();
         self.absorbed.clear();
+        // ADR 0117 rule 9, IF5: a `given` line that installs `limiter` of `std.limit` makes the
+        // `do` line a site, whose seed covers the handlers the `given` lines install.
+        let limiters: Vec<Span> = example
+            .givens
+            .iter()
+            .filter(|given| self.installs_limiter_call(&given.handler))
+            .map(|given| given.handler.span)
+            .collect();
+        if !limiters.is_empty() {
+            self.timing_start();
+            // The `do` line is the root of the test's run: placed, as `main` is.
+            self.timing_placed();
+            for given in &example.givens {
+                if let Some(Entity::Handler(id)) =
+                    self.env.lower(self.module, self.name(&given.handler.name))
+                {
+                    self.timing_install(id);
+                }
+            }
+        }
         let ty = self.expr(&example.action, None);
+        if !limiters.is_empty() {
+            let seed = self.timing_end();
+            if self.pass == Pass::Check {
+                for span in limiters {
+                    self.findings.limiter_sites.push(super::LimiterSite {
+                        span,
+                        function: None,
+                        seed: seed.clone(),
+                    });
+                }
+            }
+        }
         self.ctx.in_do = false;
+        self.do_stops = false;
         // The error kind of the `do` expression: the failures of its calls, except those that
         // `attempt` absorbs or that belong to a lambda (D-170).
         let action = example.action.span;

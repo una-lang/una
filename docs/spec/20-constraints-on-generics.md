@@ -7,7 +7,7 @@ A type parameter of a function may carry one of three built-in **constraints**: 
 **Editions.** The constructs of this chapter exist only in packages of edition `0.2` and later (`spec/13 §7`).
 - In edition `0.1`, type parameters stay unconstrained, equality on them keeps the inferred bound of `spec/10 §12` rule 9, and the prelude keeps its v0.1 signatures (`spec/14 §1`).
 - A single file has the default settings, and so edition `0.1`.
-- The Gate 1 benchmark stays on edition `0.1`.
+- The benchmark baseline stays on edition `0.1`.
 
 ## 1. The constraints
 
@@ -19,7 +19,7 @@ A type parameter of a function may carry one of three built-in **constraints**: 
 
 1. **Order.** `Ord` includes `Eq`, and `Integer` includes `Ord`: a type that satisfies a constraint satisfies the ones it includes. The order is fixed. A program declares no constraint of its own.
 2. **Type parameters.** A type parameter written with a constraint satisfies that constraint and the ones it includes. An unconstrained type parameter satisfies none.
-3. **Kinds.** A record or a sum satisfies `Eq` when its values hold no functions, whatever its type arguments are. It satisfies `Ord` only when it is a sum whose variants have no payload. Lists, options and results satisfy `Eq` when their element types do, and never `Ord`. (v0.2, ADR 0069.) A `Map[K, V]` satisfies `Eq` when `V` does, and never `Ord` (`spec/21 §1`).
+3. **Kinds.** A record or a sum satisfies `Eq` when its values hold no functions, whatever its type arguments are. It satisfies `Ord` only when it is a sum whose variants have no payload. Lists, options and results satisfy `Eq` when their element types do, and never `Ord`. (v0.2, ADR 0069.) A `Map[K, V]` satisfies `Eq` when `V` does, and never `Ord` (`spec/21 §1`). (v0.4, ADR 0119 rule 2.) `Stack[T]`, `Queue[T]` and `Set[T]` satisfy `Eq` when `T` does, and `BitSet` does; `HashMap`, `HashSet` and `PriorityQueue` never satisfy `Eq`, nor does a type that holds one at any position; none of them satisfies `Ord` (`spec/28 §3`).
 4. **Labels** do not take part in satisfaction: `secret Int` satisfies `Integer`.
 5. **Operators keep their meaning.** `==` is structural equality and `<` the built-in order of `spec/03 §1`, on every type that satisfies the constraint. Nothing redefines them (charter §6).
 6. **No arithmetic on `T`.** `+`, `-`, `*`, `/` and `%` stay undefined on a type parameter, constrained or not, so the `overflow` obligations of `spec/18 §5` stay on concrete types. `x.to_int()` on a `T: Integer` gives an `Int`, on which arithmetic is defined.

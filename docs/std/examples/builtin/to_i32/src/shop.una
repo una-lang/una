@@ -1,0 +1,9 @@
+module shop
+
+--- A daily price change in cents, widened before it is scaled.
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let change: I16 = -2000
+  let total = change.to_i32() * 100
+  @console.print("{total}")

@@ -49,9 +49,16 @@ fn violation(
         return Some((from, to));
     }
     match (found.unlabeled(), expected.unlabeled()) {
-        (Ty::List(x), Ty::List(y)) => violation(x, y, covariant, top, kinds),
+        (Ty::List(x), Ty::List(y)) | (Ty::Dense(_, x), Ty::Dense(_, y)) => {
+            violation(x, y, covariant, top, kinds)
+        }
         (Ty::Map(xk, xv), Ty::Map(yk, yv)) => violation(xk, yk, covariant, top, kinds)
             .or_else(|| violation(xv, yv, covariant, top, kinds)),
+        // A collection is a value, as a map is: its arguments are compared as data.
+        (Ty::Coll(i, xs), Ty::Coll(j, ys)) if i == j => xs
+            .iter()
+            .zip(ys.iter())
+            .find_map(|(x, y)| violation(x, y, covariant, top, kinds)),
         (Ty::Kind(i, xs), Ty::Kind(j, ys)) if i == j => {
             xs.iter().zip(ys).enumerate().find_map(|(index, (x, y))| {
                 violation(x, y, covariant, top, kinds).or_else(|| {
@@ -92,7 +99,7 @@ impl Checker<'_, '_, '_> {
 
     /// The deep label of `ty`, its solved variables replaced: the join of every label at a
     /// position that holds data, the labels its kinds' fields declare included (`spec/07 §7`
-    /// rule 3, re-review N-001).
+    /// rule 3).
     pub(crate) fn deep(&self, ty: &Ty) -> Label {
         self.labeled(ty).deep_label(&self.env.kind_labels)
     }
@@ -170,11 +177,12 @@ impl Checker<'_, '_, '_> {
             ShowLabeled(&found_ty, self).to_string(),
             ShowLabeled(&expected_ty, self).to_string(),
         );
+        let residue = self.residue_clause_for(&from, &to);
         let mut diagnostic = self.report.make(
             Code::U4001,
             span,
             format!(
-                "{into} is `{expected_shown}`, and this value is `{found_shown}`: a flow from `{from}` to `{to}`"
+                "{into} is `{expected_shown}`, and this value is `{found_shown}`: a flow from `{from}` to `{to}`{residue}"
             ),
         );
         if let Some(advice) = advice {
@@ -350,6 +358,11 @@ impl Checker<'_, '_, '_> {
         }
         let floor = self.ctx.floor.clone();
         let effect_pc = floor.as_ref().map_or_else(|| pc.clone(), |f| pc.join(f));
+        // ADR 0117 IF2: inside `e within d`, the timing floor raises it too.
+        let timing = self.ctx.timing.clone();
+        let effect_pc = timing
+            .as_ref()
+            .map_or_else(|| effect_pc.clone(), |(t, _, _)| effect_pc.join(t));
         if effect_pc.is_public() {
             return;
         }
@@ -366,6 +379,31 @@ impl Checker<'_, '_, '_> {
             return;
         };
         if effect_pc.flows_to(&bound) {
+            return;
+        }
+        let floored = floor.as_ref().map_or_else(|| pc.clone(), |f| pc.join(f));
+        if let Some((t, within, construct)) = timing
+            && floored.flows_to(&bound)
+        {
+            let place = match construct {
+                super::within::Construct::Within => "inside a `within` whose deadline can cut it",
+                super::within::Construct::FirstOf => {
+                    "in a branch of `first of`, which a sibling that wins can cut"
+                }
+            };
+            let words = construct.words();
+            let residue = self.residue_clause(&bound);
+            let mut diagnostic = self.report.make(
+                Code::U4002,
+                span,
+                format!(
+                    "{callee} has effects that accept at most `{bound}` data, and it is {action} {place}, depending on `{t}` timing, which whether its effects happen would reveal{residue}"
+                ),
+            );
+            diagnostic
+                .related
+                .push(self.report.related(within, format!("the `{words}`")));
+            self.report.push(diagnostic);
             return;
         }
         let message = match floor {
@@ -462,9 +500,41 @@ impl Checker<'_, '_, '_> {
         // ADR 0038 D4: in a handler operation body, the effect floor raises the program
         // counter to the operation's `accepts`.
         let floor = self.ctx.floor.clone();
-        let pc = floor
+        let floored = floor
             .as_ref()
             .map_or_else(|| self.ctx.pc.clone(), |f| self.ctx.pc.join(f));
+        // ADR 0117 IF2: inside `e within d`, the timing floor raises it too.
+        let timing = self.ctx.timing.clone();
+        let pc = timing
+            .as_ref()
+            .map_or_else(|| floored.clone(), |(t, _, _)| floored.join(t));
+        if let Some((t, within, construct)) = timing
+            && floored.flows_to(accepts)
+            && !pc.flows_to(accepts)
+        {
+            let place = match construct {
+                super::within::Construct::Within => {
+                    "inside a `within` whose deadline can cut the code before it"
+                }
+                super::within::Construct::FirstOf => {
+                    "in a branch of `first of`, which a sibling that wins can cut before it"
+                }
+            };
+            let words = construct.words();
+            let residue = self.residue_clause(accepts);
+            let mut diagnostic = self.report.make(
+                Code::U4003,
+                span,
+                format!(
+                    "{what} accepts `{accepts}` data, and it runs {place}, depending on `{t}` timing, which whether it runs would reveal{residue}"
+                ),
+            );
+            diagnostic
+                .related
+                .push(self.report.related(within, format!("the `{words}`")));
+            self.report.push(diagnostic);
+            return;
+        }
         if !pc.flows_to(accepts) {
             let message = match floor {
                 Some(floor) if self.ctx.pc.flows_to(accepts) => format!(
@@ -487,10 +557,13 @@ impl Checker<'_, '_, '_> {
         for (arg_span, ty) in args {
             let label = self.labeled(ty).sent_label(true, &self.env.kind_labels);
             if !below(&label, accepts, &self.top()) {
+                let residue = self.residue_clause_for(&label, accepts);
                 let mut diagnostic = self.report.make(
                     Code::U4003,
                     *arg_span,
-                    format!("{what} accepts `{accepts}` data, and this argument is `{label}`"),
+                    format!(
+                        "{what} accepts `{accepts}` data, and this argument is `{label}`{residue}"
+                    ),
                 );
                 // ADR 0095: sending only accepted data keeps the label; a policy, which
                 // widens the trusted base, comes last.

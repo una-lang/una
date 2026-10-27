@@ -70,7 +70,7 @@ pub fn diagnostics(
             goal: obligation.goal.clone(),
             status: outcome.status,
         });
-        // R-021: a ground goal has no binder to show; N-009: nor has a model without
+        // R-021: a ground goal has no binder to show: nor has a model without
         // bindings, as for a closed goal that is not a literal (`zero(1) > 0`).
         // #668: a refutation whose solver gave no values says so, rather than show a model
         // that is not one.
@@ -180,6 +180,34 @@ fn message(obligation: &Obligation, outcome: &Outcome) -> String {
             _ => base,
         };
     }
+    // ADR 0116 V1: the measure's obligations name the measure.
+    if matches!(
+        obligation.kind,
+        ObligationKind::DecreasesBound | ObligationKind::DecreasesStep
+    ) {
+        let base = if obligation.kind == ObligationKind::DecreasesBound {
+            format!(
+                "the measure `{}` may be negative where the loop continues",
+                obligation.goal
+            )
+        } else {
+            format!(
+                "the measure `{}` may not decrease in this iteration",
+                obligation.goal
+            )
+        };
+        return match outcome.status {
+            ObligationStatus::Unknown => {
+                let reason = outcome
+                    .reason
+                    .as_deref()
+                    .unwrap_or("unknown")
+                    .trim_matches(|c| c == '(' || c == ')');
+                format!("{base} ({reason})")
+            }
+            _ => base,
+        };
+    }
     let subject = match obligation.kind {
         ObligationKind::Postcondition => format!("postcondition of `{name}`"),
         ObligationKind::Precondition => match &obligation.site.function_value {
@@ -197,6 +225,9 @@ fn message(obligation: &Obligation, outcome: &Outcome) -> String {
             format!("effect condition `{}`", obligation.goal)
         }
         ObligationKind::ContractLock => format!("locked condition `{}`", obligation.goal),
+        ObligationKind::DecreasesBound | ObligationKind::DecreasesStep => {
+            format!("the measure `{}`", obligation.goal)
+        }
         ObligationKind::Exhaustive => {
             format!("exhaustiveness of this `when`, `{}`,", obligation.goal)
         }
@@ -292,6 +323,28 @@ fn repairs(obligation: &Obligation) -> Vec<Repair> {
             candidates.push((None, "adjust the `ensures` clause".to_owned()));
         }
         ObligationKind::EffectCondition | ObligationKind::ContractLock => {}
+        ObligationKind::DecreasesBound => {
+            candidates.push((
+                None,
+                format!("choose a measure that is at least 0 wherever the loop's condition is false, such as one that `{goal}` bounds"),
+            ));
+            candidates.push((
+                None,
+                "strengthen the loop's condition so that the loop ends before the measure is negative".to_owned(),
+            ));
+        }
+        ObligationKind::DecreasesStep => {
+            candidates.push((
+                None,
+                format!(
+                    "make every iteration that goes on decrease `{goal}`, or end it with `stop`"
+                ),
+            ));
+            candidates.push((
+                None,
+                "choose a measure that each iteration decreases".to_owned(),
+            ));
+        }
         // `spec/13 §3`: a `division` proposes a guard.
         ObligationKind::Division => {
             candidates.push((None, format!("guard the division with `if {goal}`")));
@@ -300,6 +353,12 @@ fn repairs(obligation: &Obligation) -> Vec<Repair> {
             None,
             "add an `else` arm, or arms for the values the others miss".to_owned(),
         )),
+        // ADR 0109 rule 3: on `Int` in a `systems` package, guard the operation, refine its
+        // operands, give the values a fixed-width type, or use its wrapping or saturating
+        // methods.
+        ObligationKind::Overflow if site.int => {
+            candidates.extend(int_overflow_repairs(site.guard.as_deref()));
+        }
         // `spec/18 §3`: guard the operation, give the value a wider type, or name the
         // wrapping or saturating arithmetic that is meant.
         ObligationKind::Overflow => {
@@ -326,6 +385,34 @@ fn repairs(obligation: &Obligation) -> Vec<Repair> {
             edit: None,
         })
         .collect()
+}
+
+/// The repairs of an `overflow` obligation on `Int` in a `systems` package, ranked (ADR 0109
+/// rule 3, `spec/18 §3`): a guard that bounds the operands, written as they are, never the
+/// result, whose test would be an `Int` operation of its own, when the site has one; a
+/// refinement of the operands; a fixed-width type, whose own obligations name its range; and,
+/// when that arithmetic is meant, the wrapping or saturating methods of a fixed-width type,
+/// since `Int` has none.
+fn int_overflow_repairs(guard: Option<&str>) -> Vec<(Option<Escape>, String)> {
+    let mut out: Vec<(Option<Escape>, String)> = guard
+        .map(|guard| (None, format!("guard the operation with `if {guard}`")))
+        .into_iter()
+        .collect();
+    out.extend([
+        (
+            None,
+            "bound the operands with a refined kind, as `kind Small = Int where it >= 0 and it <= 1000` for a parameter or a field, so that the exact result stays in the range".to_owned(),
+        ),
+        (
+            None,
+            "give the values a fixed-width type, as `I64`, converting them explicitly".to_owned(),
+        ),
+        (
+            None,
+            "if wrapping or saturating is meant, give the values a fixed-width type and use its `wrapping_add`, `saturating_add` or their siblings".to_owned(),
+        ),
+    ]);
+    out
 }
 
 /// ADR 0092, amendment of 2026-10-14: the first repair at a call or a `with` whose callee's

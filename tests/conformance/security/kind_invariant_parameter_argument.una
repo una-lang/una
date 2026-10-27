@@ -1,4 +1,4 @@
--- test: a Sink[Int] whose parameter is in a function parameter does not flow into Sink[secret Int] (N-002)
+-- test: a Sink[Int] whose parameter is in a function parameter does not flow into Sink[secret Int]
 -- spec: spec/07 §7
 -- expect: error U4001 at 19:40
 module rv_gen_kind_contravariant

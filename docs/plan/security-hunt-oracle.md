@@ -56,7 +56,7 @@ For every program and variation:
 
 1. **Check.** Run `una check --json`. Only an accepted program goes on. A rejected one feeds part (c).
 2. **Determinism check.** Each variant runs twice, alone. If a variant's two runs differ in what it shows any observer, it is nondeterministic (for example `Clock.now`, task order in `together`, a network response), and the program is set aside with the reason. Nothing it shows is a finding.
-3. **Runs.** Every variant runs on the interpreter, `una run --json` with the grants of §6. A sample of about 5% is also built with `una build` and run natively, with the same grants and flags.
+3. **Runs.** Every variant runs on the interpreter, `una run --json` with the grants of §6. A sample of about 5% is also built with `una build` and run natively, with the same grants and flags. The `hunt` release gate runs this sample since #792 (`scripts/security-hunt/hunt/native.py`, `docs/release-gates.md`).
 4. **State that outlives a run.** For programs that use `Files.write`, each variant also runs a second time on the directory its first run left. S-15's channel, where a write decides a later run's failure, is visible only that way.
 5. **Comparison.** Two variants are compared by the projection of §3, for every observer the variation tests. Separately, the interpreter's and the native run of one variant are compared on everything they show. A mismatch there breaks `spec/16 §5` and is reported as a backend divergence, which is a conformance bug, and a leak only if the native run is the one that differs where the interpreter does not.
 
@@ -82,6 +82,7 @@ Every run happens inside a sandbox:
 - **The mock Http server** is local, binds to loopback only, and answers from a table that the variation sets: deterministic statuses, headers and bodies per request. It logs every request for the internal view. It never forwards a request.
 - **A clean environment.** Each run starts with `env -i`, plus only the variables that the variation defines. Key files are written fresh into the run's directory.
 - **Limits.** Each run has a wall-clock timeout, and `--max-depth` and `--max-memory` set low enough that a run cannot hurt the machine.
+- **On Linux** (#793), the gate runs in a hardened container (`scripts/hunt-linux.sh`: no network, read-only root, no capability, not root), and Landlock replaces `sandbox-exec`: each run may write only under its own directory and connect only to the mock's port. `docs/release-gates.md` ("The Linux sandbox") states the rules and when the gate refuses to run.
 
 ## 7. Triage of a candidate
 

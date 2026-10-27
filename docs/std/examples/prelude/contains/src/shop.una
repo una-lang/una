@@ -1,0 +1,11 @@
+module shop
+
+--- Whether a cart holds an item.
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let cart = ["lamp", "desk"]
+  let desk = cart.contains(item: "desk")
+  @console.print("desk: {desk}")
+  let chair = cart.contains(item: "chair")
+  @console.print("chair: {chair}")

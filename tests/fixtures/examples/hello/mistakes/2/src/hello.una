@@ -1,0 +1,8 @@
+module hello
+
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @clock: Clock[now]
+=
+  let now = @clock.now()
+  @console.print("Hello, Una, at {now}")

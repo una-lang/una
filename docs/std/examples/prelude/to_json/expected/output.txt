@@ -1,0 +1,1 @@
+{"name":"Desk lamp","price":1999}

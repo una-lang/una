@@ -1,0 +1,5 @@
+'12': adjust the stock by 12
+'-3': adjust the stock by -3
+'': nothing typed
+'-': a sign and no digits
+'1x2': not a digit at 1

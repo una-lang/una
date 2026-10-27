@@ -1,0 +1,15 @@
+module shop
+
+--- The stock of an item, or a note that it is not stocked.
+describe(name: Text, units: Option[Int]) -> Text
+=
+  when units
+    is Some(n) -> "{name}: {n}"
+    is None -> "{name}: not stocked"
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let stock = empty_map().with(key: "lamp", value: 3).with(key: "desk", value: 1)
+  @console.print(describe("lamp", units: stock.get(key: "lamp")))
+  @console.print(describe("chair", units: stock.get(key: "chair")))

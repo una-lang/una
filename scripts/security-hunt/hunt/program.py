@@ -12,8 +12,8 @@ MUST_KEEP = "must-keep"
 # A program `una check` must accept: a rejection is over-strictness, for triage (#513).
 MUST_ACCEPT = "must-accept"
 OPEN = "open"
-# A program whose abort a secret decides, a termination channel T6 does not claim (N-132): its
-# verdicts are recorded, never judged clean (N-138).
+# A program whose abort a secret decides, a termination channel T6 does not claim: its
+# verdicts are recorded, never judged clean (#548).
 RESIDUAL = "residual"
 CLASSES = (MUST_REJECT, MUST_KEEP, MUST_ACCEPT, OPEN, RESIDUAL)
 
@@ -64,6 +64,9 @@ class Program:
     # or "outside"; empty for the other operators, which `differ` judges as before. The manifest
     # writes it as `expect_recheck`: `differ`'s rows use `recheck` for the re-check's lines.
     recheck: str = ""
+    # A residual program the full check must prove (family Q's twins, #813): any rejection of it
+    # is an error (`drivers.judge_residual`).
+    prove: bool = False
 
     def __post_init__(self):
         if self.cls not in CLASSES:
@@ -98,6 +101,7 @@ class Program:
             "variant": self.variant,
             "vary": self.vary,
             **({"expect_recheck": self.recheck} if self.recheck else {}),
+            **({"prove": True} if self.prove else {}),
         }
 
     def digest(self):

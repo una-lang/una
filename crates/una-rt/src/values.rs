@@ -23,12 +23,28 @@
 
 use std::cell::RefCell;
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
+use std::sync::Arc;
 
 use num_bigint::{BigInt, Sign};
 use una_core::Text;
 
 use crate::ffi::Code;
+
+mod collections;
+pub(crate) mod dense;
+mod hashes;
+
+pub use collections::{
+    bit_set_empty, bit_set_op, bit_set_op_owned, collection_len, priority_empty, priority_op,
+    priority_op_owned, seq_empty, seq_of, seq_op, seq_op_owned, set_empty, set_of, set_op,
+    set_op_owned,
+};
+pub(crate) use collections::{bit_set_members, collection_words};
+pub use hashes::{
+    hash_empty, hash_map_op, hash_map_op_owned, hash_of_list, hash_set_op, hash_set_op_owned,
+};
+pub(crate) use hashes::{hash_entries, read_process_key};
 
 /// The smallest integer that a tagged word holds.
 const SMALL_MIN: i64 = -(1 << 62);
@@ -57,6 +73,9 @@ enum Object {
     },
     /// A keyed hash.
     Hashed(Vec<u8>),
+    /// An `F64`, boxed, always canonical (ADR 0114 rule 9.6): every `F64` outside a register
+    /// is boxed until the raw cells of ADR 0107 land.
+    F64(f64),
     /// An instance of a capability (`spec/11 §2`): its id in traces, the code of each of its
     /// operations in the capability's order (none for a host instance), and the values and
     /// instances its handler holds.
@@ -67,6 +86,33 @@ enum Object {
     },
     /// A map, by the order of its keys (`spec/21 §5`): the word of each key, and of its value.
     Map(BTreeMap<MapKey, (i64, i64)>),
+    /// A dense value's header, an `Array`, `Matrix`, `Tensor` or `Lu` (`spec/29 §17`, ADR 0120
+    /// rule 28): its layout over its store, which it references as its one cell when the store
+    /// holds words ([`dense`]).
+    Dense(Box<dense::Dense>),
+    /// The store of a dense value's elements other than `F64`: words, counted non-atomically as
+    /// a list's items are, which views of one value share ([`dense`], design note D1).
+    Words(Vec<i64>),
+    /// A `Stack` or a `Queue` of `std.collections`, its own layout (ADR 0119 rule 19, ADR 0107
+    /// rule 2): a ring buffer of words, front first, a stack's top at its front.
+    Seq(VecDeque<i64>),
+    /// A `Set` of `std.collections`, its own layout: its items by their order (`spec/28 §6`),
+    /// each kept as its word for listing and rendering, as a map keeps its keys.
+    Set(BTreeMap<MapKey, i64>),
+    /// A `PriorityQueue` of `std.collections`, its own layout: a stable 4-ary heap of words
+    /// (`spec/28 §8`).
+    Priority(collections::PriorityHeap),
+    /// A `BitSet` of `std.collections`, its own layout: internal words that no walk reads as
+    /// values, its size and its count of members (`spec/28 §9`).
+    Bits(collections::Bits),
+    /// A `HashMap` of `std.collections`, its own layout: the ordered hash table of `una_hash`
+    /// over words, with its table's key (`spec/28 §7`). `None` only while an operation holds
+    /// the table outside the heap, to compare keys (`hashes`). Boxed, since a table inline would
+    /// grow every object, and so every slot of every heap, by its size.
+    HashMap(Option<Box<hashes::Table>>),
+    /// A `HashSet` of `std.collections`, its own layout: the same table, boxed, each item a key
+    /// whose value is `unit`.
+    HashSet(Option<Box<hashes::Table>>),
 }
 
 /// A map's key, copied out of the heap at insert: an integer, or a text. A variant
@@ -76,6 +122,8 @@ enum Object {
 enum MapKey {
     Int(BigInt),
     Text(String),
+    /// An `F64` by the key of totalOrder (ADR 0114 rule 9.5).
+    F64(i64),
 }
 
 impl MapKey {
@@ -87,6 +135,7 @@ impl MapKey {
         with(word, |object| match object {
             Object::Text(text) => MapKey::Text(text.as_str().to_owned()),
             Object::Int(value) => MapKey::Int(value.clone()),
+            Object::F64(x) => MapKey::F64(una_core::float::order_key(*x)),
             _ => MapKey::Int(BigInt::default()),
         })
         .unwrap_or(MapKey::Int(BigInt::default()))
@@ -101,26 +150,67 @@ impl Object {
                 .values()
                 .flat_map(|(key, value)| [*key, *value])
                 .collect(),
+            Object::Seq(items) => items.iter().copied().collect(),
+            Object::Set(items) => items.values().copied().collect(),
+            Object::Priority(heap) => heap.words().collect(),
+            Object::HashMap(table) => table.iter().flat_map(|t| t.words(false)).collect(),
+            Object::HashSet(table) => table.iter().flat_map(|t| t.words(true)).collect(),
             other => other.cells().to_vec(),
         }
+    }
+
+    /// Whether the object holds words that [`Object::cells`] does not give: a map's or a
+    /// collection's, which [`Object::children`] gives.
+    fn has_children_apart(&self) -> bool {
+        matches!(
+            self,
+            Object::Map(_)
+                | Object::Seq(_)
+                | Object::Set(_)
+                | Object::Priority(_)
+                | Object::HashMap(_)
+                | Object::HashSet(_)
+        )
     }
 
     /// The words the object references.
     fn cells(&self) -> &[i64] {
         match self {
-            Object::Int(_) | Object::Text(_) | Object::Hashed(_) | Object::Map(_) => &[],
+            Object::Int(_)
+            | Object::Text(_)
+            | Object::Hashed(_)
+            | Object::F64(_)
+            | Object::Map(_)
+            | Object::Seq(_)
+            | Object::Set(_)
+            | Object::Priority(_)
+            | Object::Bits(_)
+            | Object::HashMap(_)
+            | Object::HashSet(_) => &[],
             Object::Data { fields, .. } => fields,
-            Object::List(items) => items,
+            Object::List(items) | Object::Words(items) => items,
             Object::Closure { env, .. } => env,
             Object::Instance { cells, .. } => cells,
+            Object::Dense(header) => header.cells(),
         }
     }
 
     fn cells_mut(&mut self) -> Option<&mut Vec<i64>> {
         match self {
-            Object::Int(_) | Object::Text(_) | Object::Hashed(_) | Object::Map(_) => None,
+            Object::Int(_)
+            | Object::Text(_)
+            | Object::Hashed(_)
+            | Object::F64(_)
+            | Object::Map(_)
+            | Object::Dense(_)
+            | Object::Seq(_)
+            | Object::Set(_)
+            | Object::Priority(_)
+            | Object::Bits(_)
+            | Object::HashMap(_)
+            | Object::HashSet(_) => None,
             Object::Data { fields, .. } => Some(fields),
-            Object::List(items) => Some(items),
+            Object::List(items) | Object::Words(items) => Some(items),
             Object::Closure { env, .. } => Some(env),
             Object::Instance { cells, .. } => Some(cells),
         }
@@ -128,16 +218,45 @@ impl Object {
 }
 
 /// A slot of the heap: an object and its count of references, or a free slot.
+///
+/// The count is 32 bits, so that it and the mark of a copy (ADR 0113 rule 5) share the word a
+/// 64-bit count took and no slot grows. A count never passes [`COUNT_LIMIT`]: the retain that
+/// would pass it ends the process ([`crate::runtime::count_limit_reached`]).
 #[derive(Debug, Default)]
 struct Slot {
-    count: usize,
+    count: u32,
+    /// The mark of the export in progress: the object's node index plus 1, or 0 outside an
+    /// export (ADR 0113 rule 5).
+    mark: u32,
     object: Option<Object>,
+}
+
+/// The most references one object may have: every retain compares with it (ADR 0113).
+pub(crate) const COUNT_LIMIT: u32 = u32::MAX;
+
+/// The limit of a count, which the tests lower to reach it without 2^32 retains.
+#[cfg(test)]
+pub(crate) static TEST_COUNT_LIMIT: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(COUNT_LIMIT);
+
+/// The limit every retain compares with: [`COUNT_LIMIT`], or a lower one in tests.
+#[inline]
+fn count_limit() -> u32 {
+    #[cfg(test)]
+    {
+        TEST_COUNT_LIMIT.load(std::sync::atomic::Ordering::SeqCst)
+    }
+    #[cfg(not(test))]
+    {
+        COUNT_LIMIT
+    }
 }
 
 /// How many freed slots a debug build keeps unused before it reuses the oldest: a use of an
 /// object freed since is a fault rather than a read of another object, and a long run still
-/// holds a bounded heap (#201).
-const QUARANTINE: usize = 1 << 16;
+/// holds a bounded heap (#201). Under Miri it is small, so that the tests of slot reuse run there
+/// in reasonable time and Miri checks the reuse itself.
+const QUARANTINE: usize = if cfg!(miri) { 64 } else { 1 << 16 };
 
 #[derive(Default)]
 struct Heap {
@@ -164,10 +283,40 @@ struct Heap {
     /// the dying one (#30). Each is a constant cost, the fields being pushed in any case, so it
     /// is counted apart from the copies, which scaling tests bound (#292).
     fallbacks: usize,
+    /// How many times the imports grew the slot table (ADR 0113 rule 5).
+    slot_growths: usize,
+    /// How many slots hold a mark: 0 outside an export, which a debug build checks at the end
+    /// of each export (ADR 0113, I2) in constant time rather than by a scan of the heap.
+    marked: usize,
 }
 
 thread_local! {
     static HEAP: RefCell<Heap> = RefCell::new(Heap::default());
+}
+
+/// A task's heap, and its test counters, while it is parked (`sched`, ADR 0117 rule 2).
+#[derive(Default)]
+pub(crate) struct Slots {
+    heap: Heap,
+    #[cfg(test)]
+    counters: [usize; 3],
+}
+
+/// Exchanges the thread's heap and test counters with `slots`. A heap is never borrowed when a
+/// task parks or ends: a borrow here is a defect, which ends the process rather than mix two
+/// tasks' heaps.
+pub(crate) fn swap_slots(slots: &mut Slots) {
+    HEAP.with(|heap| match heap.try_borrow_mut() {
+        Ok(mut heap) => std::mem::swap(&mut *heap, &mut slots.heap),
+        Err(_) => std::process::abort(),
+    });
+    #[cfg(test)]
+    {
+        let [equality, objects, growth] = &mut slots.counters;
+        *equality = EQUALITY_STEPS.with(|cell| cell.replace(*equality));
+        *objects = OBJECT_STEPS.with(|cell| cell.replace(*objects));
+        *growth = MOST_GROWTH.with(|cell| cell.replace(*growth));
+    }
 }
 
 /// Whether `word` is a handle.
@@ -206,9 +355,14 @@ fn alloc(object: Object) -> i64 {
                 heap.slots.len() - 1
             }
         };
+        let stale = heap.slots.get(index).is_some_and(|slot| slot.mark != 0);
+        if stale {
+            heap.marked = heap.marked.saturating_sub(1);
+        }
         if let Some(slot) = heap.slots.get_mut(index) {
             *slot = Slot {
                 count: 1,
+                mark: 0,
                 object: Some(object),
             };
         }
@@ -234,17 +388,33 @@ fn with<R>(word: i64, f: impl FnOnce(&Object) -> R) -> Option<R> {
 }
 
 /// Adds a reference to `word`. Immediates have none.
+///
+/// A count at its limit is never incremented: the retain ends the process instead, after the
+/// borrow of the heap ends, and never returns, since a retain that returned without counting
+/// would let a later release free a value still referenced (ADR 0113 rule 5).
 pub fn retain(word: i64) {
     let Some(index) = slot(word) else {
         return;
     };
-    HEAP.with(|heap| {
+    let at_limit = HEAP.with(|heap| {
         let mut heap = heap.borrow_mut();
         match heap.slots.get_mut(index) {
-            Some(slot) if slot.object.is_some() => slot.count += 1,
-            _ => heap.faults += 1,
+            Some(slot) if slot.object.is_some() => {
+                if slot.count >= count_limit() {
+                    return true;
+                }
+                slot.count += 1;
+                false
+            }
+            _ => {
+                heap.faults += 1;
+                false
+            }
         }
     });
+    if at_limit {
+        crate::runtime::count_limit_reached();
+    }
 }
 
 /// Releases a reference to `word`, and frees what its last reference kept.
@@ -273,12 +443,46 @@ pub fn release(word: i64) {
             object
         });
         if let Some(object) = freed {
-            match &object {
-                Object::Map(_) => pending.extend(object.children()),
-                _ => pending.extend_from_slice(object.cells()),
+            if object.has_children_apart() {
+                pending.extend(object.children());
+            } else {
+                pending.extend_from_slice(object.cells());
             }
         }
     }
+}
+
+/// The literals whose count is not back to the one reference the heap keeps: 0 once `main`
+/// has returned, unless the generated code retained a literal without its release, or released
+/// one it did not retain. A debug build reports it as an internal error (ADR 0113: a count that
+/// drifts upward could otherwise reach its limit with no memory behind it).
+pub fn unbalanced_literals() -> usize {
+    HEAP.with(|heap| {
+        let heap = heap.borrow();
+        heap.literals
+            .values()
+            .chain(heap.int_literals.values())
+            .filter(|&&word| {
+                slot(word)
+                    .and_then(|index| heap.slots.get(index))
+                    .is_none_or(|slot| slot.count != 1)
+            })
+            .count()
+    })
+}
+
+/// Sets the count of the live object of `word` to `count`, so that a test reaches the limit of
+/// a count with the limit the runtime ships.
+#[cfg(test)]
+pub(crate) fn set_count_for_test(word: i64, count: u32) {
+    let Some(index) = slot(word) else {
+        return;
+    };
+    HEAP.with(|heap| {
+        if let Some(slot) = heap.borrow_mut().slots.get_mut(index) {
+            slot.count = count;
+        }
+    });
 }
 
 /// The number of objects that the program still references: every object but the literals,
@@ -537,8 +741,8 @@ pub fn text_len(a: i64) -> i64 {
 }
 
 /// An `Int` as text, in decimal.
-pub fn int_text(a: i64) -> i64 {
-    text_word(int_value(a).to_string())
+pub fn int_text(a: i64) -> Option<i64> {
+    una_core::int_text(&int_value(a)).map(text_word)
 }
 
 /// A `Bool` as text, `true` or `false`.
@@ -553,6 +757,30 @@ pub fn data(tag: i64) -> i64 {
         tag,
         fields: Vec::new(),
     })
+}
+
+/// The result list of a `together` block of `len` tasks (ADR 0113 rule 5): a record when
+/// `tuple`, else a list, with room for exactly `len` words, reserved as one step with its slot.
+pub(crate) fn result_list(len: usize, tuple: bool) -> Result<i64, Refused> {
+    reserve_slots(1)?;
+    let _step = step(len.saturating_mul(size_of::<i64>()))?;
+    let cells = Vec::with_capacity(len);
+    Ok(alloc(if tuple {
+        Object::Data {
+            tag: 0,
+            fields: cells,
+        }
+    } else {
+        Object::List(cells)
+    }))
+}
+
+/// Tears down this thread's heap whole, its objects freed together rather than released one by
+/// one, so that it does not grow its list of free slots (ADR 0113 rule 5): a task's heap, as its
+/// thread ends.
+pub(crate) fn tear_down() {
+    let heap = HEAP.with(|heap| std::mem::take(&mut *heap.borrow_mut()));
+    drop(heap);
 }
 
 /// A new empty list, whose items [`push`] adds in order.
@@ -640,61 +868,235 @@ pub fn count(list: i64) -> i64 {
         .unwrap_or(0)
 }
 
-/// Structural equality, `==` of `spec/03 §1`, of two values of one type: 1 or 0.
-pub fn equal(a: i64, b: i64) -> i64 {
-    i64::from(equal_words(a, b))
+/// The bytes a structural equality accounts for each pair of values with parts it holds,
+/// visited or pending, as the interpreter does (`una_interp`'s `EQUALITY_PAIR_BYTES`, ADR 0061,
+/// amendment of 2026-10-17, #815): the budget is checked from this fixed size, never from what
+/// the allocator holds.
+pub(crate) const EQUALITY_PAIR_BYTES: usize = 128;
+
+/// The steps a structural equality takes before it records the pairs it visits, as the
+/// interpreter does: a small comparison allocates no set (#815).
+const EQUALITY_STEPS_UNRECORDED: usize = 1024;
+
+#[cfg(test)]
+thread_local! {
+    /// The pairs of words the equalities of this thread compared, in tests (#815).
+    pub(crate) static EQUALITY_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// Structural equality over a worklist of pairs, never the native stack: a value can nest
-/// deeper than any call (ADR 0060, draft).
-fn equal_words(a: i64, b: i64) -> bool {
-    enum Shape {
+/// Structural equality, `==` of `spec/03 §1`, of two values of one type, at `site`: 1 or 0.
+/// Past the memory budget, the run or the task stops with U6003 at `site` (ADR 0061), and the
+/// answer is 0, which nothing reads once it stopped.
+pub fn equal(site: i64, a: i64, b: i64) -> i64 {
+    i64::from(equal_at(site, a, b) == Some(true))
+}
+
+/// Structural equality at `site` within the memory budget: `None` when it stopped the run or
+/// the task with U6003 there.
+pub(crate) fn equal_at(site: i64, a: i64, b: i64) -> Option<bool> {
+    let verdict = equal_words(a, b, crate::runtime::equality_pairs());
+    if verdict.is_none() {
+        crate::runtime::refuse(usize::try_from(site).unwrap_or(usize::MAX), None);
+    }
+    verdict
+}
+
+/// A value with parts, compared through a worklist: a variant with fields, a record, a
+/// non-empty list, map, stack, queue or set, or a dense value. Every other word is a leaf,
+/// compared as it is met, a bit set included, as the interpreter compares them (`spec/28 §3`
+/// rule 3).
+fn has_parts(word: i64) -> bool {
+    is_handle(word)
+        && with(word, |object| match object {
+            Object::Data { fields, .. } | Object::List(fields) => !fields.is_empty(),
+            Object::Map(entries) => !entries.is_empty(),
+            // Its shape is a part, even with no elements (ADR 0120 rule 27).
+            Object::Dense(_) => true,
+            Object::Seq(items) => !items.is_empty(),
+            Object::Set(items) => !items.is_empty(),
+            _ => false,
+        })
+        .unwrap_or(false)
+}
+
+/// The equality of two words with a leaf on either side: one word, or two leaves of the same
+/// value; a value with parts never equals a leaf.
+fn leaf_equal(a: i64, b: i64) -> bool {
+    /// A leaf's value, taken out of the heap, which one lookup borrows at a time.
+    #[derive(PartialEq)]
+    enum Leaf {
         Int(BigInt),
         Text(String),
         Bytes(Vec<u8>),
-        Cells(Option<i64>, Vec<i64>),
-        Map(Vec<MapKey>, Vec<i64>),
-        Opaque,
+        Float(u64),
+        Variant(i64),
+        List,
+        Map,
+        Seq,
+        Set,
+        /// A bit set's size and words: the same size and the same members (`spec/28 §3` rule
+        /// 3), compared at once, in O(size / 64), since they hold no values.
+        Bits(usize, Vec<u64>),
+        Other,
     }
-    let shape = |word: i64| {
+    if a == b {
+        return true;
+    }
+    if !is_handle(a) || !is_handle(b) {
+        return false;
+    }
+    let leaf = |word: i64| {
         with(word, |object| match object {
-            Object::Int(value) => Shape::Int(value.clone()),
-            Object::Text(text) => Shape::Text(text.as_str().to_owned()),
-            Object::Hashed(bytes) => Shape::Bytes(bytes.clone()),
-            Object::Data { tag, fields } => Shape::Cells(Some(*tag), fields.clone()),
-            Object::List(items) => Shape::Cells(None, items.clone()),
-            Object::Map(entries) => Shape::Map(
-                entries.keys().cloned().collect(),
-                entries.values().map(|(_, value)| *value).collect(),
-            ),
-            Object::Closure { .. } | Object::Instance { .. } => Shape::Opaque,
+            Object::Int(value) => Leaf::Int(value.clone()),
+            Object::Text(text) => Leaf::Text(text.as_str().to_owned()),
+            Object::Hashed(bytes) => Leaf::Bytes(bytes.clone()),
+            // `==` on `F64` is identity of the canonical bits (ADR 0114 rule 5.1).
+            Object::F64(x) => Leaf::Float(una_core::float::to_bits(*x)),
+            Object::Data { tag, fields } if fields.is_empty() => Leaf::Variant(*tag),
+            Object::List(items) if items.is_empty() => Leaf::List,
+            Object::Map(entries) if entries.is_empty() => Leaf::Map,
+            Object::Seq(items) if items.is_empty() => Leaf::Seq,
+            Object::Set(items) if items.is_empty() => Leaf::Set,
+            Object::Bits(bits) => Leaf::Bits(bits.size, bits.words.clone()),
+            _ => Leaf::Other,
         })
     };
-    let mut pending = vec![(a, b)];
+    match (leaf(a), leaf(b)) {
+        (Some(x), Some(y)) => x != Leaf::Other && x == y,
+        _ => false,
+    }
+}
+
+/// A pair met by a structural equality: `true` when it is equal at once (one word, or two equal
+/// leaves) or when it is a pair of values with parts, now pending; `false` when it differs.
+fn admit(a: i64, b: i64, pending: &mut Vec<(i64, i64)>) -> bool {
+    if a == b {
+        return true;
+    }
+    match (has_parts(a), has_parts(b)) {
+        (true, true) => {
+            pending.push((a, b));
+            true
+        }
+        (false, false) => leaf_equal(a, b),
+        _ => false,
+    }
+}
+
+/// Structural equality over a worklist of pairs, never the native stack: a value can nest
+/// deeper than any call (ADR 0060, draft). It holds at most `pairs` pairs of values with parts
+/// at once, those it has visited and its pending ones together, else `None`.
+///
+/// Leaves are compared as they are met, and one word on both sides, a shared value, is equal at
+/// once, so `x == x` takes no step. A pair of values with parts compared once, past the first
+/// [`EQUALITY_STEPS_UNRECORDED`] steps, is not compared again, so a value that shares its parts,
+/// such as `x = (y, y)` built over and over, takes a step per distinct pair, not per path: time
+/// and space are O(distinct pairs of values with parts) (#815).
+///
+/// Identity implies equality, in the shortcut and in the skip of a visited pair, because no
+/// value has a `==` that is not reflexive. A type with one, such as a float under IEEE `==`,
+/// where NaN differs from itself, must revisit both (#819).
+fn equal_words(a: i64, b: i64, pairs: usize) -> Option<bool> {
+    /// The parts of a value with parts: a variant's tag or a list's, a stack's or a queue's
+    /// `None`, then its words; a map's keys and values; a set's items, compared whole; or a
+    /// dense value's kind, shape and elements.
+    enum Parts {
+        Cells(Option<i64>, Vec<i64>),
+        Map(Vec<MapKey>, Vec<i64>),
+        Keys(Vec<MapKey>),
+        Dense(dense::Parts),
+        /// A dense value, whose parts are read after the heap's borrow ends.
+        DenseHeader,
+    }
+    let parts = |word: i64| {
+        let found = with(word, |object| match object {
+            Object::Data { tag, fields } => Some(Parts::Cells(Some(*tag), fields.clone())),
+            Object::List(items) => Some(Parts::Cells(None, items.clone())),
+            // The same elements in the same order, front first (`spec/28 §3` rule 3).
+            Object::Seq(items) => Some(Parts::Cells(None, items.iter().copied().collect())),
+            Object::Map(entries) => Some(Parts::Map(
+                entries.keys().cloned().collect(),
+                entries.values().map(|(_, value)| *value).collect(),
+            )),
+            Object::Dense(_) => Some(Parts::DenseHeader),
+            Object::Set(items) => Some(Parts::Keys(items.keys().cloned().collect())),
+            _ => None,
+        })
+        .flatten();
+        match found {
+            Some(Parts::DenseHeader) => dense::parts(word).map(Parts::Dense),
+            other => other,
+        }
+    };
+    let mut pending = Vec::new();
+    if !admit(a, b, &mut pending) {
+        return Some(false);
+    }
+    let mut visited: HashSet<(i64, i64)> = HashSet::new();
+    let mut steps = 0_usize;
     while let Some((a, b)) = pending.pop() {
-        if a == b {
+        #[cfg(test)]
+        EQUALITY_STEPS.with(|steps| steps.set(steps.get() + 1));
+        // What the comparison holds, each pair accounted at `EQUALITY_PAIR_BYTES`: the same count
+        // as the interpreter's, which pushes the same pairs in the same order.
+        if visited.len().saturating_add(pending.len()) > pairs {
+            return None;
+        }
+        steps += 1;
+        // A pair already visited is equal or still pending, its parts pushed: any mismatch
+        // anywhere ends the whole comparison with `false`, so skipping it is sound.
+        if steps > EQUALITY_STEPS_UNRECORDED && !visited.insert((a, b)) {
             continue;
         }
-        if !is_handle(a) || !is_handle(b) {
-            return false;
-        }
-        match (shape(a), shape(b)) {
-            (Some(Shape::Int(x)), Some(Shape::Int(y))) if x == y => {}
-            (Some(Shape::Text(x)), Some(Shape::Text(y))) if x == y => {}
-            (Some(Shape::Bytes(x)), Some(Shape::Bytes(y))) if x == y => {}
-            (Some(Shape::Cells(tx, x)), Some(Shape::Cells(ty, y)))
-                if tx == ty && x.len() == y.len() =>
-            {
-                pending.extend(x.into_iter().zip(y));
+        let same = match (parts(a), parts(b)) {
+            (Some(Parts::Cells(tx, x)), Some(Parts::Cells(ty, y))) => {
+                tx == ty
+                    && x.len() == y.len()
+                    && x.into_iter().zip(y).all(|(a, b)| admit(a, b, &mut pending))
             }
             // The same keys, each with an equal value (`spec/21 §1` rule 5).
-            (Some(Shape::Map(kx, x)), Some(Shape::Map(ky, y))) if kx == ky => {
-                pending.extend(x.into_iter().zip(y));
+            (Some(Parts::Map(kx, x)), Some(Parts::Map(ky, y))) => {
+                kx == ky && x.into_iter().zip(y).all(|(a, b)| admit(a, b, &mut pending))
             }
-            _ => return false,
+            // The same kind and shape, then each element by its own `==` in row-major order,
+            // whatever the views' offsets and strides (ADR 0120 rule 27): a raw `F64` by the
+            // identity of its canonical bits, as `==` on `F64` is (ADR 0114 rule 5.1), and an
+            // element that is a word joins this worklist and its budget, as a list's item does.
+            // Every element is compared and the answer decided after, so the time does not
+            // reveal where two values differ (rule 54).
+            (Some(Parts::Dense(x)), Some(Parts::Dense(y))) => {
+                x.layout.kind == y.layout.kind
+                    && x.layout.shape == y.layout.shape
+                    && x.elements.len() == y.elements.len()
+                    && {
+                        let mut same = true;
+                        for (a, b) in x.elements.into_iter().zip(y.elements) {
+                            same &= match (a, b) {
+                                (dense::Element::Raw(a), dense::Element::Raw(b)) => {
+                                    una_core::float::equal(a, b)
+                                }
+                                (dense::Element::Word(a), dense::Element::Word(b)) => {
+                                    admit(a, b, &mut pending)
+                                }
+                                (dense::Element::Raw(a), dense::Element::Word(b))
+                                | (dense::Element::Word(b), dense::Element::Raw(a)) => {
+                                    dense::boxed(b).is_some_and(|b| una_core::float::equal(a, b))
+                                }
+                            };
+                        }
+                        same
+                    }
+            }
+            // The same items in the same order (`spec/28 §3` rule 3): a set's items are keys,
+            // compared whole, so no pair is left pending, as in the interpreter.
+            (Some(Parts::Keys(x)), Some(Parts::Keys(y))) => x == y,
+            _ => false,
+        };
+        if !same {
+            return Some(false);
         }
     }
-    true
+    Some(true)
 }
 
 /// A new keyed hash.
@@ -788,6 +1190,7 @@ enum Node {
     Int(BigInt),
     Text(String),
     Hashed(Vec<u8>),
+    F64(u64),
     Data {
         tag: i64,
         fields: Vec<Cell>,
@@ -804,39 +1207,257 @@ enum Node {
         cells: Vec<Cell>,
     },
     Map(Vec<(Cell, Cell)>),
+    /// A stack's or a queue's elements, front first.
+    Seq(Vec<Cell>),
+    /// A set's items, in their order.
+    Set(Vec<Cell>),
+    /// A priority queue: its direction, the sequence number of its next push, and its entries
+    /// in heap order, each its sequence number, its priority and its item.
+    Priority {
+        highest: bool,
+        next: u64,
+        entries: Vec<(u64, Cell, Cell)>,
+    },
+    /// A bit set: its size, its count of members and its words.
+    Bits {
+        size: usize,
+        count: usize,
+        words: Vec<u64>,
+    },
+    /// A hash map or, when `set`, a hash set: its table's key, kept by the copy (ADR 0119 rule
+    /// 9), and its entries in insertion order, each its stored hash, its key and its value.
+    Hash {
+        set: bool,
+        key: (u64, u64),
+        entries: Vec<(u64, Cell, Cell)>,
+    },
+    /// A dense value's header and its store (design note D1).
+    Dense {
+        layout: Box<dense::Layout>,
+        store: NodeStore,
+    },
+    /// The words store of a dense value.
+    Words(Vec<Cell>),
 }
 
-/// The value of `word` and everything it holds, copied out of this heap. The walk uses a stack
-/// of its own, never the native stack, since a value can nest deeper than any call (ADR 0060).
-/// The memory budget is checked before each object is copied, at the block's `site` (#775):
-/// `None` when it stops the run or the task, so no copy grows past the allocator's ceiling in
-/// one step where the interpreter, which shares the value, would not.
-pub fn export(word: i64, site: usize) -> Option<Portable> {
-    let mut nodes = Vec::new();
-    let mut index: BTreeMap<i64, usize> = BTreeMap::new();
-    let mut pending = vec![(word, false)];
-    while let Some((word, children_done)) = pending.pop() {
-        if !is_handle(word) || index.contains_key(&word) {
-            continue;
+/// The store of a dense value in a portable value: the same `Arc` of raw `F64` elements, so the
+/// copy shares the buffer and charges its header only (ADR 0113 amendment of 2026-10-19), or
+/// the node of the words store, copied as a list is.
+#[derive(Debug)]
+enum NodeStore {
+    F64(Arc<Vec<f64>>),
+    Words(Cell),
+}
+
+/// The entries in each segment of a copy's pending stack (ADR 0113 rule 5).
+const SEGMENT: usize = 1024;
+
+/// A bound on the bytes one insertion into a map's tree allocates beyond its key: the splits of
+/// its nodes up to the tree's greatest height, which the step of each entry counts (ADR 0113
+/// rule 5, `S`). It also covers the 8 bytes of the digit an immediate integer key takes as a
+/// `BigInt`, which [`key_bytes`] does not count.
+pub(crate) const MAP_INSERT_BOUND: usize = 16 * 1024;
+
+/// The message of an export that would hold more objects than its marks can number.
+pub(crate) const EXPORT_LIMIT_MESSAGE: &str =
+    "this copy holds more objects than the native runtime copies at once (4294967295)";
+
+/// The most objects one export copies: its marks are 32 bits, the node index plus 1, with 0
+/// for unmarked (ADR 0113 rule 5).
+const EXPORT_LIMIT: u32 = u32::MAX;
+
+/// The export limit, which the tests lower to reach it.
+#[cfg(test)]
+pub(crate) static TEST_EXPORT_LIMIT: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(EXPORT_LIMIT);
+
+fn export_limit() -> u32 {
+    #[cfg(test)]
+    {
+        TEST_EXPORT_LIMIT.load(std::sync::atomic::Ordering::SeqCst)
+    }
+    #[cfg(not(test))]
+    {
+        EXPORT_LIMIT
+    }
+}
+
+/// A step of a copy that was refused (ADR 0113 rule 4): the message of the stop, or `None` for
+/// a call over the memory budget. The copy returns it with no borrow of the heap held, and its
+/// caller stops the run or the task at the block ([`crate::runtime::refuse`]).
+#[derive(Debug)]
+pub struct Refused(pub(crate) Option<String>);
+
+/// `W` of ADR 0113 rule 5: the most a step that copies one object grows a container by, one
+/// segment of a pending stack and the growth of the list of segments, or `S` for a map entry.
+#[cfg(test)]
+pub(crate) const W: usize = SEGMENT * size_of::<(i64, bool)>() + 4096;
+
+#[cfg(test)]
+thread_local! {
+    /// The steps of this thread's copies that made one object, or one node of a portable form,
+    /// in tests: the scaling tests count them (ADR 0113, I1).
+    static OBJECT_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// The largest growth of a pending stack's containers in one step on this thread, in tests.
+    static MOST_GROWTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Counts a step that made one object or node, in tests.
+fn object_step() {
+    #[cfg(test)]
+    OBJECT_STEPS.with(|steps| steps.set(steps.get() + 1));
+}
+
+/// The steps this thread's copies made one object or node in, so far.
+#[cfg(test)]
+pub(crate) fn object_steps() -> usize {
+    OBJECT_STEPS.with(std::cell::Cell::get)
+}
+
+/// Announces a step of `bytes` of a copy and checks it ([`crate::runtime::try_reserve`]).
+fn step(bytes: usize) -> Result<crate::runtime::Reservation, Refused> {
+    crate::runtime::try_reserve(bytes).ok_or(Refused(None))
+}
+
+/// The pending stack of a copy's walks, in segments of [`SEGMENT`] entries (ADR 0113 rule 5): a
+/// push that needs a new segment is a checked step of its size, and the segments stay for the
+/// export's next walk, which reuses them.
+struct Pending {
+    segments: Vec<Vec<(i64, bool)>>,
+    /// How many segments are in use; the last of them holds the top.
+    used: usize,
+}
+
+impl Pending {
+    fn new() -> Pending {
+        Pending {
+            segments: Vec::new(),
+            used: 0,
         }
-        if !children_done {
-            pending.push((word, true));
-            let children = with(word, Object::children).unwrap_or_default();
-            pending.extend(children.into_iter().map(|child| (child, false)));
-            continue;
+    }
+
+    /// Pushes `entry`; refused when the step of a new segment is.
+    fn push(&mut self, entry: (i64, bool)) -> Result<(), Refused> {
+        let full = self
+            .used
+            .checked_sub(1)
+            .and_then(|top| self.segments.get(top))
+            .is_none_or(|top| top.len() == SEGMENT);
+        if full {
+            if self.used == self.segments.len() {
+                let capacity = self.segments.capacity();
+                let grown = if self.segments.len() == capacity {
+                    capacity.max(4).saturating_mul(2)
+                } else {
+                    capacity
+                };
+                let bytes = SEGMENT * size_of::<(i64, bool)>()
+                    + (grown - capacity) * size_of::<Vec<(i64, bool)>>();
+                #[cfg(test)]
+                MOST_GROWTH.with(|most| most.set(most.get().max(bytes)));
+                let _step = step(bytes)?;
+                self.segments.reserve_exact(grown - self.segments.len());
+                self.segments.push(Vec::with_capacity(SEGMENT));
+            }
+            self.used += 1;
         }
-        if !crate::runtime::within_budget(site) {
-            return None;
+        if let Some(top) = self.segments.get_mut(self.used - 1) {
+            top.push(entry);
         }
-        let cell = |child: &i64| match index.get(child) {
-            Some(&node) => Cell::Node(node),
-            None => Cell::Word(*child),
-        };
-        let cells = |words: &[i64]| words.iter().map(cell).collect::<Vec<_>>();
-        let Some(node) = with(word, |object| match object {
+        Ok(())
+    }
+
+    fn pop(&mut self) -> Option<(i64, bool)> {
+        while self.used > 0 {
+            if let Some(entry) = self.segments.get_mut(self.used - 1).and_then(Vec::pop) {
+                return Some(entry);
+            }
+            self.used -= 1;
+        }
+        None
+    }
+}
+
+impl Object {
+    /// Calls `f` on each word the object references, a map's keys and values included, in
+    /// place: no list of them is made. Stops at the first refusal.
+    fn each_child(&self, mut f: impl FnMut(i64) -> Result<(), Refused>) -> Result<(), Refused> {
+        match self {
+            Object::Map(entries) => {
+                for (key, value) in entries.values() {
+                    f(*key)?;
+                    f(*value)?;
+                }
+            }
+            Object::Seq(items) => {
+                for &item in items {
+                    f(item)?;
+                }
+            }
+            Object::Set(items) => {
+                for &item in items.values() {
+                    f(item)?;
+                }
+            }
+            Object::Priority(heap) => {
+                for word in heap.words() {
+                    f(word)?;
+                }
+            }
+            Object::HashMap(table) | Object::HashSet(table) => {
+                let set = matches!(self, Object::HashSet(_));
+                for word in table.iter().flat_map(|t| t.words(set)) {
+                    f(word)?;
+                }
+            }
+            other => {
+                for &child in other.cells() {
+                    f(child)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The bytes the portable node of the object allocates: its cells, its text or bytes, its
+    /// digits.
+    fn node_bytes(&self) -> usize {
+        let cells = |n: usize| n * size_of::<Cell>();
+        match self {
+            Object::Int(value) => value.iter_u64_digits().len() * 8,
+            Object::Text(text) => text.as_str().len(),
+            Object::Hashed(bytes) => bytes.len(),
+            Object::F64(_) => 8,
+            Object::Data { fields, .. } => cells(fields.len()),
+            Object::List(items) => cells(items.len()),
+            Object::Closure { env, .. } => cells(env.len()),
+            Object::Instance {
+                id,
+                code,
+                cells: held,
+            } => id.len() + code.len() * size_of::<i64>() + cells(held.len()),
+            Object::Map(entries) => entries.len() * size_of::<(Cell, Cell)>(),
+            // The header only: an `F64` store is shared, and a words store is a node of its own.
+            Object::Dense(_) => dense::HEADER_BYTES,
+            Object::Words(items) => cells(items.len()),
+            Object::Seq(items) => cells(items.len()),
+            Object::Set(items) => cells(items.len()),
+            Object::Priority(heap) => heap.entries.len() * size_of::<(u64, Cell, Cell)>(),
+            Object::Bits(bits) => bits.words.len() * size_of::<u64>(),
+            Object::HashMap(table) | Object::HashSet(table) => {
+                table.as_ref().map_or(0, |t| t.entries.len()) * size_of::<(u64, Cell, Cell)>()
+            }
+        }
+    }
+
+    /// The portable node of the object, its words made cells by `cell`.
+    fn node(&self, cell: impl Fn(i64) -> Cell) -> Node {
+        let cells = |words: &[i64]| words.iter().map(|&word| cell(word)).collect::<Vec<_>>();
+        match self {
             Object::Int(value) => Node::Int(value.clone()),
             Object::Text(text) => Node::Text(text.as_str().to_owned()),
             Object::Hashed(bytes) => Node::Hashed(bytes.clone()),
+            Object::F64(x) => Node::F64(una_core::float::to_bits(*x)),
             Object::Data { tag, fields } => Node::Data {
                 tag: *tag,
                 fields: cells(fields),
@@ -859,91 +1480,827 @@ pub fn export(word: i64, site: usize) -> Option<Portable> {
             Object::Map(entries) => Node::Map(
                 entries
                     .values()
-                    .map(|(key, value)| (cell(key), cell(value)))
+                    .map(|(key, value)| (cell(*key), cell(*value)))
                     .collect(),
             ),
-        }) else {
-            continue;
-        };
-        index.insert(word, nodes.len());
-        nodes.push(node);
+            Object::Dense(header) => Node::Dense {
+                layout: Box::new(header.layout),
+                store: match &header.store {
+                    dense::Store::F64(items) => NodeStore::F64(Arc::clone(items)),
+                    dense::Store::Words(words) => NodeStore::Words(cell(*words)),
+                },
+            },
+            Object::Words(items) => Node::Words(cells(items)),
+            Object::Seq(items) => Node::Seq(items.iter().map(|&item| cell(item)).collect()),
+            Object::Set(items) => Node::Set(items.values().map(|&item| cell(item)).collect()),
+            Object::Priority(heap) => Node::Priority {
+                highest: heap.highest,
+                next: heap.next,
+                entries: heap
+                    .entries
+                    .iter()
+                    .map(|entry| (entry.sequence, cell(entry.priority), cell(entry.item)))
+                    .collect(),
+            },
+            Object::Bits(bits) => Node::Bits {
+                size: bits.size,
+                count: bits.count,
+                words: bits.words.clone(),
+            },
+            Object::HashMap(table) | Object::HashSet(table) => Node::Hash {
+                set: matches!(self, Object::HashSet(_)),
+                key: table.as_ref().map_or((0, 0), |t| t.key_words()),
+                entries: table.as_ref().map_or_else(Vec::new, |t| {
+                    t.entries
+                        .iter_hashed()
+                        .map(|(hash, key, value)| (hash, cell(*key), cell(*value)))
+                        .collect()
+                }),
+            },
+        }
     }
-    let root = match index.get(&word) {
-        Some(&node) => Cell::Node(node),
-        None => Cell::Word(word),
-    };
-    Some(Portable { nodes, root })
 }
 
-/// A portable value made into this heap: a word the caller owns. The memory budget is checked
-/// before each object is made, at the block's `site` (#775): `None` when it stops the run or
-/// the task, with what was made released.
-pub fn import(portable: &Portable, site: usize) -> Option<i64> {
-    let mut words: Vec<i64> = Vec::with_capacity(portable.nodes.len());
-    let word_of = |cell: &Cell, words: &[i64]| match *cell {
-        Cell::Word(word) => word,
-        Cell::Node(node) => words.get(node).copied().unwrap_or(0),
-    };
-    for node in &portable.nodes {
-        if !crate::runtime::within_budget(site) {
-            for &word in &words {
-                release(word);
+/// The value of `word` and everything it holds, copied out of this heap (ADR 0113 rule 5). The
+/// walks use a stack of their own, never the native stack, since a value can nest deeper than any
+/// call (ADR 0060), and read each object's children in place, holding the heap through the walk:
+/// no code runs on this heap while it copies.
+///
+/// - **The counting pass** marks each object with its node index plus 1, children first, so
+///   that an object several others hold is listed once and sharing survives the copy.
+/// - **The nodes** are then reserved exactly, as one step.
+/// - **The copy pass** walks again in the same order and makes each object's node, each a step.
+///   A debug build compares each node with its object as it is made (ADR 0113, I9).
+/// - **The reset pass** sets every mark back to 0, reusing the stack's segments. A debug build
+///   then checks that no slot of the heap holds a mark (I2).
+///
+/// Every step is announced and checked before it allocates ([`step`]). A refused step returns
+/// [`Refused`], with no borrow of the heap held, and its caller stops the run or the task at the
+/// block. A refused export leaves its marks: that stop ends the run or the task whose heap it is,
+/// so no later export reads them.
+pub fn export(word: i64) -> Result<Portable, Refused> {
+    if !is_handle(word) {
+        return Ok(Portable {
+            nodes: Vec::new(),
+            root: Cell::Word(word),
+        });
+    }
+    let mut pending = Pending::new();
+    let count = HEAP.with(|heap| {
+        let mut heap = heap.borrow_mut();
+        let heap = &mut *heap;
+        let mut count: u32 = 0;
+        pending.push((word, false))?;
+        while let Some((word, children_done)) = pending.pop() {
+            let Some(index) = slot(word) else {
+                continue;
+            };
+            let Some(found) = heap.slots.get(index).filter(|slot| slot.object.is_some()) else {
+                heap.faults += 1;
+                continue;
+            };
+            if found.mark != 0 {
+                continue;
             }
-            return None;
+            if !children_done {
+                pending.push((word, true))?;
+                let Some(object) = found.object.as_ref() else {
+                    continue;
+                };
+                let slots = &heap.slots;
+                object.each_child(|child| {
+                    let unmarked = slot(child)
+                        .and_then(|index| slots.get(index))
+                        .is_some_and(|slot| slot.mark == 0 && slot.object.is_some());
+                    if unmarked {
+                        pending.push((child, false))
+                    } else {
+                        Ok(())
+                    }
+                })?;
+                continue;
+            }
+            if count >= export_limit() {
+                return Err(Refused(Some(EXPORT_LIMIT_MESSAGE.to_owned())));
+            }
+            count += 1;
+            if let Some(slot) = heap.slots.get_mut(index) {
+                slot.mark = count;
+            }
+            heap.marked += 1;
         }
-        let made = match node {
-            Node::Int(value) => alloc(Object::Int(value.clone())),
-            Node::Text(text) => alloc(Object::Text(Text::new(text.clone()))),
-            Node::Hashed(bytes) => alloc(Object::Hashed(bytes.clone())),
-            Node::Data { tag, fields } => {
-                let object = data(*tag);
-                for field in fields {
-                    push(object, word_of(field, &words));
-                }
-                object
+        Ok(count)
+    })?;
+    if count == 0 {
+        // The root names no live object, a fault the walk counted: the copy carries the word
+        // 0, never a handle of this heap, which would name another object in the destination.
+        return Ok(Portable {
+            nodes: Vec::new(),
+            root: Cell::Word(0),
+        });
+    }
+    let count = usize::try_from(count).unwrap_or(usize::MAX);
+    let reserved = step(count.saturating_mul(size_of::<Node>()))?;
+    let mut nodes: Vec<Node> = Vec::with_capacity(count);
+    drop(reserved);
+    let mismatches = HEAP.with(|heap| {
+        let heap = heap.borrow();
+        let slots = &heap.slots;
+        let position = |word: i64| {
+            slot(word)
+                .and_then(|index| slots.get(index))
+                .filter(|slot| slot.mark != 0 && slot.object.is_some())
+                .map(|slot| (slot.mark - 1) as usize)
+        };
+        let mut mismatches = 0;
+        pending.push((word, false))?;
+        while let Some((word, children_done)) = pending.pop() {
+            let Some(at) = position(word) else {
+                continue;
+            };
+            if at < nodes.len() {
+                continue;
             }
-            Node::List(items) => {
-                let object = list();
-                for item in items {
-                    push(object, word_of(item, &words));
-                }
-                object
+            let Some(object) = slot(word)
+                .and_then(|index| slots.get(index))
+                .and_then(|slot| slot.object.as_ref())
+            else {
+                continue;
+            };
+            if !children_done {
+                pending.push((word, true))?;
+                object.each_child(|child| match position(child) {
+                    Some(at) if at >= nodes.len() => pending.push((child, false)),
+                    _ => Ok(()),
+                })?;
+                continue;
             }
-            Node::Closure { code, arity, env } => {
-                let object = closure(*code, i64::try_from(*arity).unwrap_or(-1));
-                for cell in env {
-                    push(object, word_of(cell, &words));
-                }
-                object
+            // INVARIANT: the copy pass finishes the objects in the counting pass's order, so
+            // the object finished now is the next node.
+            debug_assert_eq!(at, nodes.len());
+            let _step = step(object.node_bytes())?;
+            object_step();
+            let node = object.node(|child| carried(child, position(child)));
+            // I9, the export's half: the node has the object's contents, and each child is the
+            // node of an object listed before it, by its mark, or the word it carries.
+            if cfg!(debug_assertions) && !node_matches(object, &node, position) {
+                mismatches += 1;
             }
-            Node::Instance { id, code, cells } => {
-                let object = instance(id.clone());
-                for &op in code {
-                    push_op(object, op);
+            nodes.push(node);
+        }
+        Ok(mismatches)
+    })?;
+    HEAP.with(|heap| {
+        let mut heap = heap.borrow_mut();
+        let heap = &mut *heap;
+        heap.faults += mismatches;
+        pending.push((word, false))?;
+        while let Some((word, _)) = pending.pop() {
+            let Some(index) = slot(word) else {
+                continue;
+            };
+            let Some(found) = heap
+                .slots
+                .get_mut(index)
+                .filter(|slot| slot.mark != 0 && slot.object.is_some())
+            else {
+                continue;
+            };
+            found.mark = 0;
+            heap.marked = heap.marked.saturating_sub(1);
+            let Some(object) = heap.slots.get(index).and_then(|slot| slot.object.as_ref()) else {
+                continue;
+            };
+            let slots = &heap.slots;
+            object.each_child(|child| {
+                let marked = slot(child)
+                    .and_then(|index| slots.get(index))
+                    .is_some_and(|slot| slot.mark != 0 && slot.object.is_some());
+                if marked {
+                    pending.push((child, false))
+                } else {
+                    Ok(())
                 }
-                for cell in cells {
-                    push(object, word_of(cell, &words));
+            })?;
+        }
+        // I2: at the end of every export, no slot of the heap holds a mark.
+        if cfg!(debug_assertions) && heap.marked != 0 {
+            heap.faults += 1;
+        }
+        Ok(())
+    })?;
+    // INVARIANT: the copy pass makes one node for each object the counting pass marked, so a
+    // cell's node index is always in range (ADR 0113, I9).
+    debug_assert_eq!(nodes.len(), count);
+    // The root finishes last, children first.
+    let root = Cell::Node(nodes.len() - 1);
+    Ok(Portable { nodes, root })
+}
+
+/// The cell a copy carries for the word `child` of a copied object, whose node index is
+/// `index`: the node, the immediate itself, or 0 for a handle that names no live object, which
+/// only a fault of the generated code makes, so that no handle of this heap names another
+/// object in the destination.
+fn carried(child: i64, index: Option<usize>) -> Cell {
+    match index {
+        Some(at) => Cell::Node(at),
+        None if is_handle(child) => Cell::Word(0),
+        None => Cell::Word(child),
+    }
+}
+
+/// Whether `node` is the portable form of `object` (ADR 0113, I9): the same kind, contents and
+/// lengths, and each child of the object the cell the node holds for it, `Cell::Node(i)` when
+/// `index(child)` is `Some(i)`, else the word itself. It allocates nothing.
+fn node_matches(object: &Object, node: &Node, index: impl Fn(i64) -> Option<usize>) -> bool {
+    let cell_of = |word: i64| carried(word, index(word));
+    let same = |words: &[i64], cells: &[Cell]| {
+        words.len() == cells.len()
+            && words
+                .iter()
+                .zip(cells)
+                .all(|(&word, &cell)| cell_of(word) == cell)
+    };
+    match (object, node) {
+        (Object::Int(a), Node::Int(b)) => a == b,
+        (Object::Text(a), Node::Text(b)) => a.as_str() == b,
+        (Object::Hashed(a), Node::Hashed(b)) => a == b,
+        (Object::F64(a), Node::F64(b)) => una_core::float::to_bits(*a) == *b,
+        (Object::Data { tag, fields }, Node::Data { tag: t, fields: f }) => {
+            tag == t && same(fields, f)
+        }
+        (Object::List(items), Node::List(cells)) => same(items, cells),
+        (
+            Object::Closure { code, arity, env },
+            Node::Closure {
+                code: c,
+                arity: a,
+                env: e,
+            },
+        ) => code == c && arity == a && same(env, e),
+        (
+            Object::Instance { id, code, cells },
+            Node::Instance {
+                id: i,
+                code: c,
+                cells: held,
+            },
+        ) => id == i && code == c && same(cells, held),
+        (Object::Map(entries), Node::Map(pairs)) => {
+            entries.len() == pairs.len()
+                && entries
+                    .values()
+                    .zip(pairs)
+                    .all(|((key, value), &(k, v))| cell_of(*key) == k && cell_of(*value) == v)
+        }
+        (Object::Dense(header), Node::Dense { layout, store }) => {
+            header.layout == **layout
+                && match (&header.store, store) {
+                    (dense::Store::F64(a), NodeStore::F64(b)) => Arc::ptr_eq(a, b),
+                    (dense::Store::Words(words), NodeStore::Words(cell)) => {
+                        cell_of(*words) == *cell
+                    }
+                    _ => false,
                 }
-                object
+        }
+        (Object::Words(items), Node::Words(cells)) => same(items, cells),
+        (Object::Seq(items), Node::Seq(cells)) => {
+            items.len() == cells.len()
+                && items
+                    .iter()
+                    .zip(cells)
+                    .all(|(&item, &cell)| cell_of(item) == cell)
+        }
+        (Object::Set(items), Node::Set(cells)) => {
+            items.len() == cells.len()
+                && items
+                    .values()
+                    .zip(cells)
+                    .all(|(&item, &cell)| cell_of(item) == cell)
+        }
+        (
+            Object::Priority(heap),
+            Node::Priority {
+                highest,
+                next,
+                entries,
+            },
+        ) => {
+            heap.highest == *highest
+                && heap.next == *next
+                && heap.entries.len() == entries.len()
+                && heap.entries.iter().zip(entries).all(|(entry, &(s, p, i))| {
+                    entry.sequence == s && cell_of(entry.priority) == p && cell_of(entry.item) == i
+                })
+        }
+        (Object::Bits(bits), Node::Bits { size, count, words }) => {
+            bits.size == *size && bits.count == *count && bits.words == *words
+        }
+        (
+            Object::HashMap(Some(table)) | Object::HashSet(Some(table)),
+            Node::Hash { set, key, entries },
+        ) => {
+            matches!(object, Object::HashSet(_)) == *set
+                && table.key_words() == *key
+                && table.entries.len() == entries.len()
+                && table
+                    .entries
+                    .iter_hashed()
+                    .zip(entries)
+                    .all(|((hash, k, v), &(h, kc, vc))| {
+                        hash == h && cell_of(*k) == kc && cell_of(*v) == vc
+                    })
+        }
+        _ => false,
+    }
+}
+
+/// How many free slots an allocation can reuse: every one in a release build, and those past
+/// the quarantine in a debug build.
+fn reusable(free: usize) -> usize {
+    if cfg!(debug_assertions) {
+        free.saturating_sub(QUARANTINE)
+    } else {
+        free
+    }
+}
+
+/// Makes room in the heap's slot table for `objects` new objects, as one step (ADR 0113 rule
+/// 5): to at least twice its capacity, so that the imports of a join grow it O(log n) times, or,
+/// when that step is refused, to exactly what they need. Refused when that is refused too.
+fn reserve_slots(objects: usize) -> Result<(), Refused> {
+    let (len, capacity, free) = HEAP.with(|heap| {
+        let heap = heap.borrow();
+        (heap.slots.len(), heap.slots.capacity(), heap.free.len())
+    });
+    let pushed = objects.saturating_sub(reusable(free));
+    let needed = len.saturating_add(pushed);
+    if needed <= capacity {
+        return Ok(());
+    }
+    let grow = |target: usize, step: crate::runtime::Reservation| {
+        HEAP.with(|heap| {
+            let mut heap = heap.borrow_mut();
+            heap.slots.reserve_exact(target - len);
+            heap.slot_growths += 1;
+        });
+        drop(step);
+    };
+    let geometric = needed.max(capacity.saturating_mul(2));
+    if let Some(step) =
+        crate::runtime::try_reserve((geometric - capacity).saturating_mul(size_of::<Slot>()))
+    {
+        grow(geometric, step);
+        return Ok(());
+    }
+    let exact = step((needed - capacity).saturating_mul(size_of::<Slot>()))?;
+    grow(needed, exact);
+    Ok(())
+}
+
+/// Makes every import refuse its first step, in tests.
+#[cfg(test)]
+pub(crate) static TEST_REFUSE_IMPORT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Makes every import panic, in tests.
+#[cfg(test)]
+pub(crate) static TEST_PANIC_IN_IMPORT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Whether every slot of this thread's heap is unmarked, as between two exports.
+#[cfg(test)]
+fn marks_clear() -> bool {
+    HEAP.with(|heap| heap.borrow().slots.iter().all(|slot| slot.mark == 0))
+}
+
+/// Marks the object of `word` as an export would, in tests.
+#[cfg(test)]
+fn set_mark_for_test(word: i64, mark: u32) {
+    if let Some(index) = slot(word) {
+        HEAP.with(|heap| {
+            let mut heap = heap.borrow_mut();
+            let Some(slot) = heap.slots.get_mut(index) else {
+                return;
+            };
+            let was = slot.mark;
+            slot.mark = mark;
+            match (was, mark) {
+                (0, 0) => {}
+                (0, _) => heap.marked += 1,
+                (_, 0) => heap.marked = heap.marked.saturating_sub(1),
+                _ => {}
             }
-            Node::Map(entries) => {
-                let object = map_empty();
-                for (key, value) in entries {
-                    map_insert(object, word_of(key, &words), word_of(value, &words));
+        });
+    }
+}
+
+/// The mark of the object of `word`, in tests.
+#[cfg(test)]
+fn mark_for_test(word: i64) -> Option<u32> {
+    let index = slot(word)?;
+    HEAP.with(|heap| heap.borrow().slots.get(index).map(|slot| slot.mark))
+}
+
+/// How many times the imports grew the heap's slot table, in tests.
+#[cfg(test)]
+fn slot_growths() -> usize {
+    HEAP.with(|heap| heap.borrow().slot_growths)
+}
+
+/// A portable value made into this heap: a word the caller owns (ADR 0113 rule 5). The slot
+/// table and the index of the words made are reserved before the first object, each object is a
+/// step of its exact size, and a map's entries a step each. A refused step returns [`Refused`],
+/// with what was made released, and its caller stops the run or the task at the block. A debug
+/// build compares each object made with its node (ADR 0113, I9).
+pub fn import(portable: &Portable) -> Result<i64, Refused> {
+    #[cfg(test)]
+    {
+        use std::sync::atomic::Ordering;
+        if TEST_REFUSE_IMPORT.load(Ordering::SeqCst) {
+            return Err(Refused(None));
+        }
+        if TEST_PANIC_IN_IMPORT.load(Ordering::SeqCst) {
+            #[allow(clippy::panic)]
+            {
+                panic!("a test made the import panic");
+            }
+        }
+    }
+    let objects = portable.nodes.len();
+    reserve_slots(objects)?;
+    let capacity = HEAP.with(|heap| heap.borrow().slots.capacity());
+    let reserved = step(objects.saturating_mul(size_of::<i64>()))?;
+    let mut words: Vec<i64> = Vec::with_capacity(objects);
+    drop(reserved);
+    for node in &portable.nodes {
+        let made = match import_node(node, &words) {
+            Ok(made) => made,
+            Err(refused) => {
+                // Releasing what was made is no step: what it grows, its pending stack and the
+                // free list, is covered by the checks of `spec/11 §7` and the hard ceiling, as
+                // releasing a block's results on a later failure is (ADR 0113 rule 6), and the
+                // task stops right after.
+                for &word in &words {
+                    release(word);
                 }
-                object
+                return Err(refused);
             }
         };
         words.push(made);
     }
-    let root = word_of(&portable.root, &words);
+    // INVARIANT: the objects fit the slots reserved before the first, so no `alloc` grew the
+    // table while they were made, unannounced (ADR 0113 rule 5).
+    debug_assert_eq!(HEAP.with(|heap| heap.borrow().slots.capacity()), capacity);
+    // I9, the import's half: each object made has its node's contents, and holds the words made
+    // for the node's cells.
+    if cfg!(debug_assertions) {
+        let mismatches = portable
+            .nodes
+            .iter()
+            .zip(&words)
+            .filter(|&(node, &word)| {
+                !with(word, |object| node_matches_made(object, node, &words)).unwrap_or(false)
+            })
+            .count()
+            + usize::from(made_word(&portable.root, &words).is_none());
+        if mismatches > 0 {
+            HEAP.with(|heap| heap.borrow_mut().faults += mismatches);
+        }
+    }
+    let root = cell_word(&portable.root, &words);
     // Each object was made with the reference its builder held, and is held by its parents
     // now: the builder's references go, but the root's, which the caller owns.
     retain(root);
     for &word in &words {
         release(word);
     }
-    Some(root)
+    Ok(root)
+}
+
+/// Whether `object`, made by an import, is the object of `node` (ADR 0113, I9): its contents,
+/// and the word `cell_word` gives for each of the node's cells. It allocates nothing.
+fn node_matches_made(object: &Object, node: &Node, words: &[i64]) -> bool {
+    let same = |held: &[i64], cells: &[Cell]| {
+        held.len() == cells.len()
+            && held
+                .iter()
+                .zip(cells)
+                .all(|(&word, cell)| made_word(cell, words) == Some(word))
+    };
+    match (object, node) {
+        (Object::Int(a), Node::Int(b)) => a == b,
+        (Object::Text(a), Node::Text(b)) => a.as_str() == b,
+        (Object::Hashed(a), Node::Hashed(b)) => a == b,
+        (Object::F64(a), Node::F64(b)) => una_core::float::to_bits(*a) == *b,
+        (Object::Data { tag, fields }, Node::Data { tag: t, fields: f }) => {
+            tag == t && same(fields, f)
+        }
+        (Object::List(items), Node::List(cells)) => same(items, cells),
+        (
+            Object::Closure { code, arity, env },
+            Node::Closure {
+                code: c,
+                arity: a,
+                env: e,
+            },
+        ) => code == c && arity == a && same(env, e),
+        (
+            Object::Instance { id, code, cells },
+            Node::Instance {
+                id: i,
+                code: c,
+                cells: held,
+            },
+        ) => id == i && code == c && same(cells, held),
+        // A map's entries are in its keys' order, which the node keeps: each entry's key has
+        // the node's key's value, and its value is the word made for the node's value.
+        (Object::Map(entries), Node::Map(pairs)) => {
+            entries.len() == pairs.len()
+                && entries.values().zip(pairs).all(|((key, value), (k, v))| {
+                    made_word(k, words) == Some(*key) && made_word(v, words) == Some(*value)
+                })
+        }
+        (Object::Dense(header), Node::Dense { layout, store }) => {
+            header.layout == **layout
+                && match (&header.store, store) {
+                    (dense::Store::F64(a), NodeStore::F64(b)) => Arc::ptr_eq(a, b),
+                    (dense::Store::Words(held), NodeStore::Words(cell)) => {
+                        made_word(cell, words) == Some(*held)
+                    }
+                    _ => false,
+                }
+        }
+        (Object::Words(items), Node::Words(cells)) => same(items, cells),
+        (Object::Seq(items), Node::Seq(cells)) => {
+            items.len() == cells.len()
+                && items
+                    .iter()
+                    .zip(cells)
+                    .all(|(&item, cell)| made_word(cell, words) == Some(item))
+        }
+        // A set's items are in their order, which the node keeps.
+        (Object::Set(items), Node::Set(cells)) => {
+            items.len() == cells.len()
+                && items
+                    .values()
+                    .zip(cells)
+                    .all(|(&item, cell)| made_word(cell, words) == Some(item))
+        }
+        (
+            Object::Priority(heap),
+            Node::Priority {
+                highest,
+                next,
+                entries,
+            },
+        ) => {
+            heap.highest == *highest
+                && heap.next == *next
+                && heap.entries.len() == entries.len()
+                && heap.entries.iter().zip(entries).all(|(entry, (s, p, i))| {
+                    entry.sequence == *s
+                        && made_word(p, words) == Some(entry.priority)
+                        && made_word(i, words) == Some(entry.item)
+                })
+        }
+        (
+            Object::Bits(bits),
+            Node::Bits {
+                size,
+                count,
+                words: w,
+            },
+        ) => bits.size == *size && bits.count == *count && bits.words == *w,
+        (
+            Object::HashMap(Some(table)) | Object::HashSet(Some(table)),
+            Node::Hash { set, key, entries },
+        ) => {
+            matches!(object, Object::HashSet(_)) == *set
+                && table.key_words() == *key
+                && table.entries.len() == entries.len()
+                && table
+                    .entries
+                    .iter_hashed()
+                    .zip(entries)
+                    .all(|((hash, k, v), (h, kc, vc))| {
+                        hash == *h
+                            && made_word(kc, words) == Some(*k)
+                            && made_word(vc, words) == Some(*v)
+                    })
+        }
+        _ => false,
+    }
+}
+
+/// The word of `cell` among the `words` an import made, or `None` for a node index past them,
+/// which the debug comparison of I9 counts as a mismatch.
+fn made_word(cell: &Cell, words: &[i64]) -> Option<i64> {
+    match *cell {
+        Cell::Word(word) => Some(word),
+        Cell::Node(node) => words.get(node).copied(),
+    }
+}
+
+/// The word of `cell` among the `words` an import made.
+fn cell_word(cell: &Cell, words: &[i64]) -> i64 {
+    match *cell {
+        Cell::Word(word) => word,
+        Cell::Node(node) => words.get(node).copied().unwrap_or(0),
+    }
+}
+
+/// The object of `node`, made in this heap from the `words` made before it, as one step: its
+/// cells are made at their exact size and hold their words.
+fn import_node(node: &Node, words: &[i64]) -> Result<i64, Refused> {
+    object_step();
+    let held = |cells: &[Cell]| {
+        let mut out = Vec::with_capacity(cells.len());
+        for cell in cells {
+            let word = cell_word(cell, words);
+            retain(word);
+            out.push(word);
+        }
+        out
+    };
+    let cells = |n: usize| n * size_of::<i64>();
+    let made = match node {
+        Node::Int(value) => {
+            let _step = step(value.iter_u64_digits().len() * 8)?;
+            alloc(Object::Int(value.clone()))
+        }
+        Node::Text(text) => {
+            let _step = step(text.len())?;
+            alloc(Object::Text(Text::new(text.clone())))
+        }
+        Node::Hashed(bytes) => {
+            let _step = step(bytes.len())?;
+            alloc(Object::Hashed(bytes.clone()))
+        }
+        Node::F64(bits) => {
+            let _step = step(8)?;
+            alloc(Object::F64(f64::from_bits(*bits)))
+        }
+        Node::Data { tag, fields } => {
+            let _step = step(cells(fields.len()))?;
+            alloc(Object::Data {
+                tag: *tag,
+                fields: held(fields),
+            })
+        }
+        Node::List(items) => {
+            let _step = step(cells(items.len()))?;
+            alloc(Object::List(held(items)))
+        }
+        Node::Closure { code, arity, env } => {
+            let _step = step(cells(env.len()))?;
+            alloc(Object::Closure {
+                code: *code,
+                arity: *arity,
+                env: held(env),
+            })
+        }
+        Node::Instance {
+            id,
+            code,
+            cells: own,
+        } => {
+            let _step = step(id.len() + cells(code.len()) + cells(own.len()))?;
+            alloc(Object::Instance {
+                id: id.clone(),
+                code: code.clone(),
+                cells: held(own),
+            })
+        }
+        Node::Map(entries) => {
+            let map = map_empty();
+            for (key, value) in entries {
+                let key = cell_word(key, words);
+                let entry = match step(key_bytes(key).saturating_add(MAP_INSERT_BOUND)) {
+                    Ok(entry) => entry,
+                    Err(refused) => {
+                        release(map);
+                        return Err(refused);
+                    }
+                };
+                map_insert(map, key, cell_word(value, words));
+                drop(entry);
+            }
+            map
+        }
+        // The header, with the same `F64` buffer, its count one more: no element is copied
+        // (ADR 0113 amendment of 2026-10-19).
+        Node::Dense { layout, store } => {
+            let _step = step(dense::HEADER_BYTES)?;
+            let store = match store {
+                NodeStore::F64(items) => dense::Store::F64(Arc::clone(items)),
+                NodeStore::Words(cell) => {
+                    let word = cell_word(cell, words);
+                    retain(word);
+                    dense::Store::Words(word)
+                }
+            };
+            alloc(Object::Dense(Box::new(dense::Dense {
+                layout: **layout,
+                store,
+            })))
+        }
+        Node::Words(items) => {
+            let _step = step(cells(items.len()))?;
+            alloc(Object::Words(held(items)))
+        }
+        Node::Seq(items) => {
+            let _step = step(cells(items.len()))?;
+            let mut held_items = VecDeque::with_capacity(items.len());
+            for cell in items {
+                let word = cell_word(cell, words);
+                retain(word);
+                held_items.push_back(word);
+            }
+            alloc(Object::Seq(held_items))
+        }
+        // Each item a step, as a map's entry: its key is copied out of the item made before it.
+        Node::Set(items) => {
+            let set = alloc(Object::Set(BTreeMap::new()));
+            for cell in items {
+                let item = cell_word(cell, words);
+                let entry = match step(key_bytes(item).saturating_add(MAP_INSERT_BOUND)) {
+                    Ok(entry) => entry,
+                    Err(refused) => {
+                        release(set);
+                        return Err(refused);
+                    }
+                };
+                collections::set_insert(set, item);
+                drop(entry);
+            }
+            set
+        }
+        Node::Priority {
+            highest,
+            next,
+            entries,
+        } => {
+            let bytes = entries
+                .iter()
+                .map(|(_, priority, _)| key_bytes(cell_word(priority, words)))
+                .fold(
+                    entries.len() * size_of::<collections::Ranked>(),
+                    usize::saturating_add,
+                );
+            let _step = step(bytes)?;
+            alloc(Object::Priority(collections::PriorityHeap::imported(
+                *highest,
+                *next,
+                entries.iter().map(|(sequence, priority, item)| {
+                    (
+                        *sequence,
+                        cell_word(priority, words),
+                        cell_word(item, words),
+                    )
+                }),
+            )))
+        }
+        Node::Bits {
+            size,
+            count,
+            words: bits,
+        } => {
+            let _step = step(bits.len() * size_of::<u64>())?;
+            alloc(Object::Bits(collections::Bits {
+                words: bits.clone(),
+                size: *size,
+                count: *count,
+            }))
+        }
+        // The copy keeps its table's key and its order; each entry is placed by its stored
+        // hash, with no key hashed again, as one step.
+        Node::Hash { set, key, entries } => {
+            let _step = step(
+                entries
+                    .len()
+                    .saturating_mul(size_of::<(u64, i64, i64)>() + 2 * size_of::<u64>()),
+            )?;
+            alloc(hashes::Table::imported(
+                *set,
+                *key,
+                entries
+                    .iter()
+                    .map(|(hash, k, v)| (*hash, cell_word(k, words), cell_word(v, words))),
+            ))
+        }
+    };
+    Ok(made)
+}
+
+/// The bytes a map's copy of the key `word` takes: a text's bytes, or an integer's digits.
+fn key_bytes(word: i64) -> usize {
+    with(word, |object| match object {
+        Object::Text(text) => text.as_str().len(),
+        Object::Int(value) => value.iter_u64_digits().len() * 8,
+        _ => 0,
+    })
+    .unwrap_or(0)
 }
 
 /// The list of the integers from `low` to `high`, with `high` when `inclusive` is 1: the
@@ -995,6 +2352,323 @@ fn items(list: i64) -> Vec<i64> {
 /// The items of a list, borrowed.
 pub(crate) fn list_items(list: i64) -> Vec<i64> {
     items(list)
+}
+
+/// Whether `word` is a handle to an `F64`.
+pub(crate) fn is_f64(word: i64) -> bool {
+    is_handle(word) && with(word, |object| matches!(object, Object::F64(_))).unwrap_or(false)
+}
+
+// ----- `F64` (`spec/29`, ADR 0114), boxed until ADR 0107 (rule 9.6) -----
+
+/// A new `F64`, canonical, which the caller owns.
+pub fn f64_word(x: f64) -> i64 {
+    alloc(Object::F64(una_core::float::canonical(x)))
+}
+
+/// The `F64` of `word`; the canonical NaN, with a fault, for a word that holds none.
+pub fn f64_value(word: i64) -> f64 {
+    let found = with(word, |object| match object {
+        Object::F64(x) => Some(*x),
+        _ => None,
+    })
+    .flatten();
+    match found {
+        Some(x) => x,
+        None => {
+            HEAP.with(|heap| heap.borrow_mut().faults += 1);
+            f64::from_bits(una_core::float::CANONICAL_NAN)
+        }
+    }
+}
+
+/// The word of the float literal of `bits`, made once for each literal and kept for the whole
+/// run, as an integer literal is. The word is borrowed.
+pub fn f64_literal(bits: i64) -> i64 {
+    let bits = u64::from_ne_bytes(bits.to_ne_bytes());
+    let key = format!("f64:{bits:016x}");
+    if let Some(word) = HEAP.with(|heap| heap.borrow().int_literals.get(&key).copied()) {
+        return word;
+    }
+    let word = f64_word(f64::from_bits(bits));
+    HEAP.with(|heap| heap.borrow_mut().int_literals.insert(key, word));
+    word
+}
+
+/// The operation of `F64` at position `op` of `FloatOp::ALL` on `a`, `b` and `c`, each
+/// borrowed: the same routine of `una-core` as the interpreter's, so both engines give the
+/// same bits (ADR 0114 rule 6). A new reference, or `0`/`1` for a `Bool`. O(1), or O(m) for
+/// `to_f64()` of an `Int` of m limbs.
+pub fn f64_op(op: i64, a: i64, b: i64, c: i64) -> i64 {
+    use una_core::FloatOp;
+    use una_core::float as f;
+    let Some(op) = usize::try_from(op)
+        .ok()
+        .and_then(|i| FloatOp::ALL.get(i).copied())
+    else {
+        HEAP.with(|heap| heap.borrow_mut().faults += 1);
+        return 0;
+    };
+    if op == FloatOp::FromInt {
+        return f64_word(f::from_int(&int_value(a)));
+    }
+    let (x, y, z) = (
+        f64_value(a),
+        if op.params().is_empty() && !binary_operator(op) {
+            0.0
+        } else {
+            f64_value(b)
+        },
+        if op.params().len() == 2 {
+            f64_value(c)
+        } else {
+            0.0
+        },
+    );
+    let flag = |value: bool| i64::from(value);
+    match op {
+        FloatOp::Add => f64_word(f::add(x, y)),
+        FloatOp::Sub => f64_word(f::sub(x, y)),
+        FloatOp::Mul => f64_word(f::mul(x, y)),
+        FloatOp::Div => f64_word(f::div(x, y)),
+        FloatOp::Neg => f64_word(f::neg(x)),
+        FloatOp::Eq => flag(f::equal(x, y)),
+        FloatOp::Ne => flag(!f::equal(x, y)),
+        FloatOp::Lt => flag(f::total_cmp(x, y).is_lt()),
+        FloatOp::Le => flag(f::total_cmp(x, y).is_le()),
+        FloatOp::Gt => flag(f::total_cmp(x, y).is_gt()),
+        FloatOp::Ge => flag(f::total_cmp(x, y).is_ge()),
+        FloatOp::Abs => f64_word(f::abs(x)),
+        FloatOp::Sqrt => f64_word(f::sqrt(x)),
+        FloatOp::Fma => f64_word(f::fma(x, y, z)),
+        FloatOp::Rem => f64_word(f::rem(x, y)),
+        FloatOp::Floor => f64_word(f::floor(x)),
+        FloatOp::Ceil => f64_word(f::ceil(x)),
+        FloatOp::Trunc => f64_word(f::trunc(x)),
+        FloatOp::RoundHalfEven => f64_word(f::round_half_even(x)),
+        FloatOp::RoundHalfAway => f64_word(f::round_half_away(x)),
+        FloatOp::CopySign => f64_word(f::copy_sign(x, y)),
+        FloatOp::IeeeMin => f64_word(f::ieee_min(x, y)),
+        FloatOp::IeeeMax => f64_word(f::ieee_max(x, y)),
+        FloatOp::Clamp => f64_word(f::clamp(x, y, z)),
+        FloatOp::IeeeEq => flag(f::ieee_compare(f::IeeeCompare::Eq, x, y)),
+        FloatOp::IeeeNe => flag(f::ieee_compare(f::IeeeCompare::Ne, x, y)),
+        FloatOp::IeeeLt => flag(f::ieee_compare(f::IeeeCompare::Lt, x, y)),
+        FloatOp::IeeeLe => flag(f::ieee_compare(f::IeeeCompare::Le, x, y)),
+        FloatOp::IeeeGt => flag(f::ieee_compare(f::IeeeCompare::Gt, x, y)),
+        FloatOp::IeeeGe => flag(f::ieee_compare(f::IeeeCompare::Ge, x, y)),
+        FloatOp::IsNan => flag(x.is_nan()),
+        FloatOp::IsFinite => flag(x.is_finite()),
+        FloatOp::IsInfinite => flag(x.is_infinite()),
+        FloatOp::IsSignNegative => flag(f::to_bits(x) >> 63 == 1),
+        FloatOp::IsZero => flag(x == 0.0),
+        FloatOp::IsPositiveZero => flag(f::to_bits(x) == 0),
+        FloatOp::IsNegativeZero => flag(f::to_bits(x) == 1 << 63),
+        FloatOp::ToBits => int_word(&BigInt::from(f::to_bits(x))),
+        FloatOp::ToIntExact => match f::to_int_exact(x) {
+            Some(n) => some_owned(int_word(&n)),
+            None => NONE,
+        },
+        FloatOp::FromInt => f64_word(f::from_int(&int_value(a))),
+        FloatOp::ToText => text_word(f::render(x)),
+        FloatOp::ToF32 => f32_word(una_core::float32::from_f64(x)),
+        // Never generated under `Prim::Float`.
+        FloatOp::ToF64 => {
+            HEAP.with(|heap| heap.borrow_mut().faults += 1);
+            f64_word(x)
+        }
+    }
+}
+
+/// The word of an `F32`: the tagged word of the key of totalOrder of its canonical bits
+/// (ADR 0120 rule 10). The key determines the bits, its integer order is totalOrder and its
+/// equality is identity, so a word compares as an integer; it fits 63 bits, so it never
+/// allocates. O(1).
+pub fn f32_word(x: f32) -> i64 {
+    (i64::from(una_core::float32::order_key(x)) << 1) | 1
+}
+
+/// The `F32` of the word `word`; the canonical NaN, with a fault, for a word that holds none.
+pub fn f32_value(word: i64) -> f32 {
+    match i32::try_from(word >> 1) {
+        Ok(key) if word & 1 == 1 => una_core::float32::from_order_key(key),
+        _ => {
+            HEAP.with(|heap| heap.borrow_mut().faults += 1);
+            f32::from_bits(una_core::float32::CANONICAL_NAN)
+        }
+    }
+}
+
+/// The operation of `F32` at position `op` of `FloatOp::ALL` on the words `a`, `b` and `c`,
+/// each borrowed: the routine of `una_core::float32` that the interpreter calls, so both
+/// engines give the same bits (ADR 0120 rule 5). A word of an `F32`, `0`/`1` for a `Bool`, or a
+/// new reference (a text, an `Option[Int]`, an `F64`). O(1), or O(m) for `to_f32()` of an
+/// `Int` of m limbs.
+pub fn f32_op(op: i64, a: i64, b: i64, c: i64) -> i64 {
+    use una_core::FloatOp;
+    use una_core::float::IeeeCompare;
+    use una_core::float32 as f;
+    let Some(op) = usize::try_from(op)
+        .ok()
+        .and_then(|i| FloatOp::ALL.get(i).copied())
+    else {
+        HEAP.with(|heap| heap.borrow_mut().faults += 1);
+        return 0;
+    };
+    if op == FloatOp::FromInt {
+        return f32_word(f::from_int(&int_value(a)));
+    }
+    let x = f32_value(a);
+    let y = if op.params().is_empty() && !binary_operator(op) {
+        0.0
+    } else {
+        f32_value(b)
+    };
+    let z = if op.params().len() == 2 {
+        f32_value(c)
+    } else {
+        0.0
+    };
+    let flag = |value: bool| i64::from(value);
+    match op {
+        FloatOp::Add => f32_word(f::add(x, y)),
+        FloatOp::Sub => f32_word(f::sub(x, y)),
+        FloatOp::Mul => f32_word(f::mul(x, y)),
+        FloatOp::Div => f32_word(f::div(x, y)),
+        FloatOp::Neg => f32_word(f::neg(x)),
+        FloatOp::Eq => flag(f::equal(x, y)),
+        FloatOp::Ne => flag(!f::equal(x, y)),
+        FloatOp::Lt => flag(f::total_cmp(x, y).is_lt()),
+        FloatOp::Le => flag(f::total_cmp(x, y).is_le()),
+        FloatOp::Gt => flag(f::total_cmp(x, y).is_gt()),
+        FloatOp::Ge => flag(f::total_cmp(x, y).is_ge()),
+        FloatOp::Abs => f32_word(f::abs(x)),
+        FloatOp::Sqrt => f32_word(f::sqrt(x)),
+        FloatOp::Fma => f32_word(f::fma(x, y, z)),
+        FloatOp::Rem => f32_word(f::rem(x, y)),
+        FloatOp::Floor => f32_word(f::floor(x)),
+        FloatOp::Ceil => f32_word(f::ceil(x)),
+        FloatOp::Trunc => f32_word(f::trunc(x)),
+        FloatOp::RoundHalfEven => f32_word(f::round_half_even(x)),
+        FloatOp::RoundHalfAway => f32_word(f::round_half_away(x)),
+        FloatOp::CopySign => f32_word(f::copy_sign(x, y)),
+        FloatOp::IeeeMin => f32_word(f::ieee_min(x, y)),
+        FloatOp::IeeeMax => f32_word(f::ieee_max(x, y)),
+        FloatOp::Clamp => f32_word(f::clamp(x, y, z)),
+        FloatOp::IeeeEq => flag(f::ieee_compare(IeeeCompare::Eq, x, y)),
+        FloatOp::IeeeNe => flag(f::ieee_compare(IeeeCompare::Ne, x, y)),
+        FloatOp::IeeeLt => flag(f::ieee_compare(IeeeCompare::Lt, x, y)),
+        FloatOp::IeeeLe => flag(f::ieee_compare(IeeeCompare::Le, x, y)),
+        FloatOp::IeeeGt => flag(f::ieee_compare(IeeeCompare::Gt, x, y)),
+        FloatOp::IeeeGe => flag(f::ieee_compare(IeeeCompare::Ge, x, y)),
+        FloatOp::IsNan => flag(x.is_nan()),
+        FloatOp::IsFinite => flag(x.is_finite()),
+        FloatOp::IsInfinite => flag(x.is_infinite()),
+        FloatOp::IsSignNegative => flag(f::to_bits(x) >> 31 == 1),
+        FloatOp::IsZero => flag(x == 0.0),
+        FloatOp::IsPositiveZero => flag(f::to_bits(x) == 0),
+        FloatOp::IsNegativeZero => flag(f::to_bits(x) == 1 << 31),
+        FloatOp::ToBits => int_word(&BigInt::from(f::to_bits(x))),
+        FloatOp::ToIntExact => match f::to_int_exact(x) {
+            Some(n) => some_owned(int_word(&n)),
+            None => NONE,
+        },
+        FloatOp::FromInt => f32_word(f::from_int(&int_value(a))),
+        FloatOp::ToText => text_word(f::render(x)),
+        FloatOp::ToF64 => f64_word(f::to_f64(x)),
+        // Never generated under `Prim::Float32`.
+        FloatOp::ToF32 => {
+            HEAP.with(|heap| heap.borrow_mut().faults += 1);
+            f32_word(x)
+        }
+    }
+}
+
+/// `f32_from_bits(bits:)`: the value with those bits, any NaN canonical (ADR 0120 rule 5).
+pub fn f32_from_bits(bits: i64) -> i64 {
+    let bits = u32::try_from(&int_value(bits)).unwrap_or(0);
+    f32_word(una_core::float32::from_bits(bits))
+}
+
+/// `parse_f32(t)` of a text that `parse_f64_failure` accepts: the grammar is the same, and the
+/// value is rounded once to binary32.
+pub fn parse_f32(t: i64) -> i64 {
+    f32_word(una_core::float32::parse(&text_value(t)).unwrap_or(0.0))
+}
+
+/// Whether `op` is a binary operator, whose second operand is an `F64`.
+fn binary_operator(op: una_core::FloatOp) -> bool {
+    use una_core::FloatOp;
+    matches!(
+        op,
+        FloatOp::Add
+            | FloatOp::Sub
+            | FloatOp::Mul
+            | FloatOp::Div
+            | FloatOp::Eq
+            | FloatOp::Ne
+            | FloatOp::Lt
+            | FloatOp::Le
+            | FloatOp::Gt
+            | FloatOp::Ge
+    )
+}
+
+/// `f64_from_bits(bits:)`: the value with those bits, any NaN canonical. A new reference.
+pub fn f64_from_bits(bits: i64) -> i64 {
+    let bits = u64::try_from(&int_value(bits)).unwrap_or(0);
+    f64_word(una_core::float::from_bits(bits))
+}
+
+/// Why `parse_f64(t)` fails, as the `ParseError` it fails with, or 0 when it does not
+/// (`spec/29 §7`), as `parse_failure` says for `parse_int`.
+pub fn parse_f64_failure(t: i64) -> i64 {
+    use una_core::float::ParseFailure;
+    match una_core::float::parse(&text_value(t)) {
+        Ok(_) => 0,
+        Err(ParseFailure::Empty) => 1,
+        Err(ParseFailure::NoDigits) => (2 << 1) | 1,
+        Err(ParseFailure::NotADigit(at)) => {
+            let failure = data(1);
+            let at = int_word(&BigInt::from(at));
+            push(failure, at);
+            release(at);
+            failure
+        }
+    }
+}
+
+/// `parse_f64(t)` of a text that `parse_f64_failure` accepts. A new reference.
+pub fn parse_f64(t: i64) -> i64 {
+    f64_word(una_core::float::parse(&text_value(t)).unwrap_or(0.0))
+}
+
+/// `as_f64(j)` (`spec/29 §10`): `Some` of the nearest `F64` of a number, `None` otherwise.
+pub fn as_f64(j: i64) -> i64 {
+    match tag(j) {
+        // `Number(value: Int)`.
+        2 => some_owned(f64_word(una_core::float::from_int(&int_value(field(j, 0))))),
+        // `Decimal(text: JsonNumber)`.
+        3 => match una_core::float::parse(&text_value(field(j, 0))) {
+            Ok(x) => some_owned(f64_word(x)),
+            Err(_) => NONE,
+        },
+        _ => NONE,
+    }
+}
+
+/// `json_number(x)` (`spec/29 §10`): `Some(Decimal(t))` with `t` the rendering of a finite `x`,
+/// `None` for NaN and the infinities.
+pub fn json_number(x: i64) -> i64 {
+    let x = f64_value(x);
+    if !x.is_finite() {
+        return NONE;
+    }
+    let decimal = data(3);
+    let text = text_word(una_core::float::render(x));
+    push(decimal, text);
+    release(text);
+    some_owned(decimal)
 }
 
 /// Whether `word` is a handle to a big integer.
@@ -1187,7 +2861,8 @@ pub fn bytes_of(t: i64) -> i64 {
 
 /// Why `parse_int(t)` fails, as the `ParseError` it fails with, or 0 when it does not
 /// (`spec/22 §4`): `Empty`, `NotADigit(at: i)` at the first position that is neither the
-/// leading `-` nor a digit, or `NoDigits` for `-` alone.
+/// leading `-` nor a digit, `NoDigits` for `-` alone, or `TooLong` for more than
+/// `MAX_INT_DIGITS` digits, found in O(b) before the O(d²) conversion (#914).
 pub fn parse_failure(t: i64) -> i64 {
     let t = text_value(t);
     if t.is_empty() {
@@ -1209,6 +2884,9 @@ pub fn parse_failure(t: i64) -> i64 {
     if digits.is_empty() {
         return (2 << 1) | 1;
     }
+    if digits.len() > una_core::MAX_INT_DIGITS {
+        return (3 << 1) | 1;
+    }
     0
 }
 
@@ -1221,8 +2899,16 @@ pub fn parse_int(t: i64) -> i64 {
 pub fn to_int(t: i64) -> i64 {
     let text = text_value(t);
     let digits = text.strip_prefix('-').unwrap_or(&text);
+    // Checked in O(b) before the O(d²) conversion, which only a text of at most
+    // MAX_INT_DIGITS digits reaches (`spec/14 §1`, #914).
+    let valid = !digits.is_empty()
+        && digits.len() <= una_core::MAX_INT_DIGITS
+        && digits.bytes().all(|b| b.is_ascii_digit());
+    if !valid {
+        return NONE;
+    }
     match text.parse::<BigInt>() {
-        Ok(value) if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) => {
+        Ok(value) => {
             let word = int_word(&value);
             let option = some(word);
             release(word);
@@ -1406,8 +3092,16 @@ pub fn reuse(old: i64, tag: i64) -> i64 {
 }
 
 /// `contains(xs, item)` of the prelude.
-pub fn contains(xs: i64, item: i64) -> i64 {
-    bool_word(items(xs).into_iter().any(|x| equal_words(x, item)))
+pub fn contains(site: i64, xs: i64, item: i64) -> i64 {
+    for x in items(xs) {
+        // Each comparison within the budget; past it, the run or the task stopped at `site`.
+        match equal_at(site, x, item) {
+            Some(true) => return bool_word(true),
+            Some(false) => {}
+            None => return bool_word(false),
+        }
+    }
+    bool_word(false)
 }
 
 /// `sum(xs)` of the prelude.
@@ -1601,6 +3295,537 @@ pub(crate) fn map_words(map: i64) -> Vec<(i64, i64)> {
 mod tests {
     use super::*;
 
+    /// A record of two fields, made in this thread's heap.
+    fn record(a: i64, b: i64) -> i64 {
+        let word = data(0);
+        push(word, a);
+        push(word, b);
+        word
+    }
+
+    #[test]
+    fn i2_every_mark_is_0_after_each_export() {
+        // ADR 0113 rule 5: a reset pass clears the marks the counting pass set, so that no mark
+        // outlives its export. A value with sharing at several levels, a map and a text.
+        let text = text_word("shared".to_owned());
+        let shared = record(text, n(1));
+        let xs = list();
+        for _ in 0..3 {
+            push(xs, shared);
+        }
+        let map = map_empty();
+        map_insert(map, text, shared);
+        let top = record(xs, map);
+        for _ in 0..3 {
+            let portable = export(top).unwrap();
+            assert!(marks_clear(), "a mark outlived its export");
+            drop(portable);
+        }
+        for word in [top, map, xs, shared, text] {
+            release(word);
+        }
+    }
+
+    #[test]
+    fn i2_an_object_exported_after_a_million_exports_copies_right() {
+        // ADR 0113 rule 5: a mark is the node index of the export in progress, never an identity
+        // that wraps, so a value exported after many exports reads no stale mark.
+        // Miri runs a thousand: the same paths, in the time it has.
+        let exports = if cfg!(miri) { 1_000 } else { 1_000_000 };
+        let one = text_word("x".to_owned());
+        for _ in 0..exports {
+            drop(export(one).unwrap());
+        }
+        let pair = record(one, one);
+        let copy = import(&export(pair).unwrap()).unwrap();
+        assert_eq!(equal(0, copy, pair), 1);
+        assert_eq!(field(copy, 0), field(copy, 1), "sharing survives");
+        assert!(marks_clear());
+        for word in [copy, pair, one] {
+            release(word);
+        }
+    }
+
+    #[test]
+    fn i2_a_slot_alloc_hands_out_starts_unmarked() {
+        // ADR 0113 rule 5: a slot `alloc` reuses has mark 0, whatever the object before it had.
+        // A debug build reuses a slot only past its quarantine, so more than that are freed.
+        // Only the reused slots are checked: the freed slots still in quarantine keep their mark.
+        // The copies read marks of live objects only; `alloc` reads a freed slot's mark only to
+        // clear it and keep the count of marked slots.
+        let words: Vec<i64> = (0..QUARANTINE + 8)
+            .map(|i| text_word(i.to_string()))
+            .collect();
+        let marked: std::collections::BTreeSet<usize> =
+            words.iter().filter_map(|&word| slot(word)).collect();
+        for &word in &words {
+            set_mark_for_test(word, 7);
+            release(word);
+        }
+        let fresh: Vec<i64> = (0..8).map(|i| text_word(format!("fresh {i}"))).collect();
+        for &word in &fresh {
+            let index = slot(word).unwrap();
+            assert!(marked.contains(&index), "slot {index} is not a reused one");
+            assert_eq!(
+                mark_for_test(word),
+                Some(0),
+                "reused slot {index} kept its mark"
+            );
+        }
+        for word in fresh {
+            release(word);
+        }
+    }
+
+    #[test]
+    fn i9_an_import_of_an_export_has_the_values_and_the_sharing_of_the_original() {
+        // ADR 0113, I9: the same values, and two references to one object in the original are
+        // two references to one object in the copy. Shared sublists, a map whose values share
+        // one record, and levels each holding the level below twice, to a depth of 40.
+        let inner = list();
+        push(inner, n(1));
+        let outer = list();
+        push(outer, inner);
+        push(outer, inner);
+        let shared = record(n(2), text_word("t".to_owned()));
+        let map = map_empty();
+        let (one, two) = (text_word("a".to_owned()), text_word("b".to_owned()));
+        map_insert(map, one, shared);
+        map_insert(map, two, shared);
+        let mut level = n(0);
+        for _ in 0..40 {
+            let next = record(level, level);
+            release(level);
+            level = next;
+        }
+        let top = list();
+        for word in [outer, map, level] {
+            push(top, word);
+        }
+        let copy = import(&export(top).unwrap()).unwrap();
+        // `equal` walks every path (#815), so the chain, with 2^40 paths, is checked level by
+        // level: its sharing at each level and its last value.
+        assert_eq!(equal(0, field(copy, 0), outer), 1);
+        assert_eq!(equal(0, field(copy, 1), map), 1);
+        let copied_outer = field(copy, 0);
+        assert_eq!(field(copied_outer, 0), field(copied_outer, 1));
+        let mut copied_level = field(copy, 2);
+        for _ in 0..40 {
+            assert_eq!(field(copied_level, 0), field(copied_level, 1));
+            copied_level = field(copied_level, 0);
+        }
+        assert_eq!(equal(0, copied_level, n(0)), 1);
+        assert!(marks_clear());
+        for word in [copy, top, level, two, one, map, shared, outer, inner] {
+            release(word);
+        }
+    }
+
+    /// The steps an export and then an import of `value` make one object or node in.
+    fn steps_of(value: i64) -> (usize, usize) {
+        let before = object_steps();
+        let portable = export(value).unwrap();
+        let exported = object_steps() - before;
+        let copy = import(&portable).unwrap();
+        let imported = object_steps() - before - exported;
+        release(copy);
+        (exported, imported)
+    }
+
+    #[test]
+    fn i1_a_copy_makes_one_step_per_object_however_shared_and_however_many() {
+        // ADR 0113, I1, by counters: the steps a copy makes equal the objects it copies, counted
+        // once each. k levels each holding the level below twice are k + 1 objects, so k + 1
+        // steps each way, not 2^k; a list of n distinct texts is n + 1.
+        for k in [10, 20, 40] {
+            let mut level = text_word("leaf".to_owned());
+            for _ in 0..k {
+                let next = record(level, level);
+                release(level);
+                level = next;
+            }
+            assert_eq!(steps_of(level), (k + 1, k + 1), "k = {k}");
+            release(level);
+        }
+        let sizes: &[usize] = if cfg!(miri) {
+            &[10, 100]
+        } else {
+            &[1_000, 10_000, 100_000]
+        };
+        for &n in sizes {
+            let items = list();
+            for i in 0..n {
+                let text = text_word(i.to_string());
+                push(items, text);
+                release(text);
+            }
+            assert_eq!(steps_of(items), (n + 1, n + 1), "n = {n}");
+            release(items);
+        }
+    }
+
+    #[test]
+    fn i9_a_copy_of_every_kind_of_object_has_its_values_and_its_sharing() {
+        // ADR 0113, I9, over every kind of node: a big integer, a hash, a variant with a tag, a
+        // closure with an environment, an instance with its code and cells, and a map with
+        // integer keys whose two values are one record, which stay one object in the copy. A
+        // debug build compares each copy as it is made, and a mismatch counts as a fault.
+        let before = faults();
+        let big = int_word(&(BigInt::from(1) << 100));
+        let hash = hashed_word(vec![1, 2, 3]);
+        let variant = data(3);
+        push(variant, big);
+        let closure = closure(crate::ffi::Code::NONE, 1);
+        push(closure, hash);
+        let capability = instance("console#1".to_owned());
+        push_op(capability, 7);
+        push(capability, variant);
+        let shared = record(n(9), text_word("s".to_owned()));
+        let map = map_empty();
+        map_insert(map, n(5), shared);
+        map_insert(map, n(6), shared);
+        let top = list();
+        for word in [big, hash, variant, closure, capability, map] {
+            push(top, word);
+        }
+        let copy = import(&export(top).unwrap()).unwrap();
+        assert_eq!(faults(), before, "the debug comparison of each copy");
+        assert_eq!(int_value(field(copy, 0)), BigInt::from(1) << 100);
+        assert_eq!(bytes(field(copy, 1)), vec![1, 2, 3]);
+        assert_eq!(tag(field(copy, 2)), 3);
+        assert_eq!(
+            field(field(copy, 2), 0),
+            field(copy, 0),
+            "the variant holds the copy's int"
+        );
+        assert_eq!(
+            field(field(copy, 3), 0),
+            field(copy, 1),
+            "the closure holds the copy's hash"
+        );
+        assert_eq!(instance_id(field(copy, 4)), "console#1");
+        let (five, six) = (map_get(field(copy, 5), n(5)), map_get(field(copy, 5), n(6)));
+        assert_eq!(
+            field(five, 0),
+            field(six, 0),
+            "the map's two values are one object"
+        );
+        assert_eq!(equal(0, field(five, 0), shared), 1);
+        for word in [
+            five, six, copy, top, map, shared, capability, closure, variant, hash, big,
+        ] {
+            release(word);
+        }
+    }
+
+    #[test]
+    fn i9_the_debug_comparison_finds_a_node_that_differs() {
+        // The comparisons of I9 find a node of another kind, other contents, or another cell.
+        let text = text_word("x".to_owned());
+        let item = list();
+        push(item, text);
+        let no_index = |_: i64| None;
+        let first = |word: i64| (word == text).then_some(0);
+        with(item, |object| {
+            assert!(node_matches(
+                object,
+                &Node::List(vec![Cell::Node(0)]),
+                first
+            ));
+            assert!(!node_matches(
+                object,
+                &Node::List(vec![Cell::Node(1)]),
+                first
+            ));
+            assert!(!node_matches(object, &Node::List(Vec::new()), first));
+            assert!(!node_matches(object, &Node::Text("x".to_owned()), first));
+            // A handle with no node, which only a fault makes, is carried as the word 0, never
+            // as a handle of this heap.
+            assert!(node_matches(
+                object,
+                &Node::List(vec![Cell::Word(0)]),
+                no_index
+            ));
+            assert!(!node_matches(
+                object,
+                &Node::List(vec![Cell::Word(text)]),
+                no_index
+            ));
+            assert!(node_matches_made(
+                object,
+                &Node::List(vec![Cell::Node(0)]),
+                &[text]
+            ));
+            assert!(!node_matches_made(
+                object,
+                &Node::List(vec![Cell::Node(0)]),
+                &[n(1)]
+            ));
+            assert!(!node_matches_made(
+                object,
+                &Node::List(vec![Cell::Node(1)]),
+                &[text]
+            ));
+        });
+        release(item);
+        release(text);
+    }
+
+    #[test]
+    fn i2_a_debug_export_reports_a_mark_left_in_the_heap() {
+        // ADR 0113, I2: at the end of every export, a debug build checks that no slot of the
+        // heap holds a mark, and counts a fault when one does.
+        let stale = text_word("stale".to_owned());
+        let value = record(n(1), n(2));
+        let before = faults();
+        drop(export(value).unwrap());
+        assert_eq!(faults(), before, "a clean heap");
+        set_mark_for_test(stale, 5);
+        drop(export(value).unwrap());
+        assert_eq!(faults(), before + 1, "a mark left in the heap");
+        set_mark_for_test(stale, 0);
+        for word in [value, stale] {
+            release(word);
+        }
+    }
+
+    /// A value with every kind of step of an import: a list holding a big integer, a text, and
+    /// a map with two entries whose values are one record.
+    fn steps_value() -> i64 {
+        let shared = record(n(1), text_word("r".to_owned()));
+        let map = map_empty();
+        map_insert(map, n(1), shared);
+        map_insert(map, n(2), shared);
+        let top = list();
+        for word in [
+            int_word(&(BigInt::from(1) << 80)),
+            text_word("t".to_owned()),
+            map,
+        ] {
+            push(top, word);
+            release(word);
+        }
+        release(shared);
+        top
+    }
+
+    #[test]
+    fn i4_a_refused_step_at_any_point_of_an_import_releases_what_it_made() {
+        // ADR 0113 rules 4 and 5: an import refused at its k-th step, for every k, returns the
+        // refusal with every object it made released, no fault, and no reservation left, or
+        // completes when the refused step has a fallback; the first k it no longer reaches
+        // imports the whole value. Each k runs on a thread of its own, from the same empty
+        // heap, so that its k-th step is the same step every time.
+        let value = steps_value();
+        let portable = std::sync::Arc::new(export(value).unwrap());
+        release(value);
+        let mut refused = 0;
+        for k in 0.. {
+            let portable = std::sync::Arc::clone(&portable);
+            let (failed, reached) = std::thread::spawn(move || {
+                let baseline = live();
+                crate::runtime::REFUSE_STEP.with(|cell| cell.set(Some((k, 1))));
+                let result = import(&portable);
+                let reached = crate::runtime::REFUSE_STEP.with(|cell| cell.take().is_none());
+                assert_eq!(
+                    crate::runtime::LIVE_RESERVATIONS.with(std::cell::Cell::get),
+                    0,
+                    "k = {k}"
+                );
+                assert_eq!(faults(), 0, "k = {k}");
+                let failed = match result {
+                    Err(_) => true,
+                    Ok(word) => {
+                        release(word);
+                        false
+                    }
+                };
+                assert_eq!(live(), baseline, "k = {k}: what the import made");
+                (failed, reached)
+            })
+            .join()
+            .unwrap();
+            refused += usize::from(failed);
+            if !reached {
+                break;
+            }
+        }
+        assert!(refused >= 6, "the steps refused: {refused}");
+    }
+
+    #[test]
+    fn i4_a_refused_doubling_of_the_slot_table_falls_back_to_the_exact_growth() {
+        // ADR 0113 rule 5: when the step that doubles the slot table is refused, the step of
+        // exactly what the import needs is taken, and the import completes.
+        let value = record(n(1), text_word("x".to_owned()));
+        let portable = export(value).unwrap();
+        release(value);
+        std::thread::spawn(move || {
+            let objects = portable.nodes.len();
+            // A full table of at least 4 slots, so that the import needs more than its capacity
+            // and less than twice it.
+            let mut held = vec![text_word("0".to_owned())];
+            while HEAP.with(|heap| {
+                let heap = heap.borrow();
+                heap.slots.len() < heap.slots.capacity().max(4)
+            }) {
+                held.push(text_word(held.len().to_string()));
+            }
+            let len = HEAP.with(|heap| heap.borrow().slots.len());
+            crate::runtime::REFUSE_STEP.with(|cell| cell.set(Some((0, 1))));
+            let copy = import(&portable).unwrap();
+            crate::runtime::REFUSE_STEP.with(|cell| cell.set(None));
+            let grown = HEAP.with(|heap| heap.borrow().slots.capacity());
+            assert_eq!(grown, len + objects, "the exact growth, not the doubling");
+            assert_eq!(
+                crate::runtime::LIVE_RESERVATIONS.with(std::cell::Cell::get),
+                0
+            );
+            release(copy);
+            for word in held {
+                release(word);
+            }
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[test]
+    fn i4_an_import_refused_both_growths_of_the_slot_table_stops_and_releases_all() {
+        // ADR 0113 rule 5: when the doubling of the slot table and the exact growth are both
+        // refused, the import returns the refusal before it makes any object.
+        let value = record(n(1), text_word("x".to_owned()));
+        let portable = export(value).unwrap();
+        release(value);
+        std::thread::spawn(move || {
+            let mut held = vec![text_word("0".to_owned())];
+            while HEAP.with(|heap| {
+                let heap = heap.borrow();
+                heap.slots.len() < heap.slots.capacity().max(4)
+            }) {
+                held.push(text_word(held.len().to_string()));
+            }
+            let (baseline, capacity) = (live(), HEAP.with(|heap| heap.borrow().slots.capacity()));
+            crate::runtime::REFUSE_STEP.with(|cell| cell.set(Some((0, 2))));
+            assert!(import(&portable).is_err());
+            crate::runtime::REFUSE_STEP.with(|cell| cell.set(None));
+            assert_eq!(live(), baseline);
+            assert_eq!(HEAP.with(|heap| heap.borrow().slots.capacity()), capacity);
+            assert_eq!(
+                crate::runtime::LIVE_RESERVATIONS.with(std::cell::Cell::get),
+                0
+            );
+            for word in held {
+                release(word);
+            }
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[test]
+    fn i4_a_panic_between_a_step_and_its_allocation_leaves_no_reservation() {
+        // ADR 0113 rule 4: a reservation is released when a panic unwinds past it.
+        std::thread::spawn(|| {
+            let result = crate::runtime::guarded(crate::runtime::COPY, || {
+                let _step = step(64).unwrap();
+                #[allow(clippy::panic)]
+                {
+                    panic!("a test panics with a step announced");
+                }
+            });
+            assert!(result.is_err());
+            assert_eq!(
+                crate::runtime::LIVE_RESERVATIONS.with(std::cell::Cell::get),
+                0
+            );
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[test]
+    fn i1_the_imports_grow_the_slot_table_a_logarithmic_number_of_times() {
+        // ADR 0113 rule 5: the slot table grows geometrically, so N imports of one object each
+        // into one heap grow it O(log N) times; exact growth would grow it N times.
+        // Miri runs smaller sizes: the same growth, in the time it has.
+        let sizes: &[usize] = if cfg!(miri) {
+            &[100, 1_000]
+        } else {
+            &[1_000, 10_000, 100_000]
+        };
+        for &size in sizes {
+            let growths = std::thread::spawn(move || {
+                let one = record(n(1), n(2));
+                let portable = export(one).unwrap();
+                release(one);
+                let mut held = Vec::with_capacity(size);
+                let before = slot_growths();
+                for _ in 0..size {
+                    held.push(import(&portable).unwrap());
+                }
+                let growths = slot_growths() - before;
+                for word in held {
+                    release(word);
+                }
+                growths
+            })
+            .join()
+            .unwrap();
+            let bound = usize::BITS - size.leading_zeros() + 2;
+            assert!(
+                growths <= bound as usize,
+                "{size} imports grew the table {growths} times"
+            );
+        }
+    }
+
+    #[test]
+    fn i1_a_value_deeper_than_any_stack_segment_is_copied() {
+        // ADR 0113 rule 5: the walks' pending stack grows a segment at a time, never on the
+        // native stack, each step within `W`: a list nested 100000 deep is exported and
+        // imported whole. Miri runs three segments deep, which still crosses from one segment to
+        // the next.
+        let depth = if cfg!(miri) { 3 * SEGMENT } else { 100_000 };
+        let mut value = list();
+        for _ in 0..depth {
+            let outer = list();
+            push(outer, value);
+            release(value);
+            value = outer;
+        }
+        let copy = import(&export(value).unwrap()).unwrap();
+        let most = MOST_GROWTH.with(std::cell::Cell::get);
+        assert!(most > 0 && most <= W, "{most} > {W}");
+        assert_eq!(equal(0, copy, value), 1);
+        release(copy);
+        release(value);
+    }
+
+    #[test]
+    fn i2_the_count_and_a_mark_fit_the_word_a_64_bit_count_took() {
+        // ADR 0113 rule 5: the count is 32 bits, so that it and a 32-bit mark take the word the
+        // count took before, and no slot grows.
+        assert_eq!(2 * size_of::<u32>(), size_of::<usize>());
+        assert_eq!(
+            size_of::<Slot>(),
+            size_of::<usize>() + size_of::<Option<Object>>()
+        );
+    }
+
+    #[test]
+    fn no_collection_layout_grows_the_slot() {
+        // Every heap's slot table holds one slot per object, live or free, and the budget
+        // counts it: a collection's layout that is larger than a capability instance's
+        // (`id`, `code` and `cells`, nine words) is boxed, so that no slot of any program
+        // grows with it.
+        assert!(
+            size_of::<Object>() <= 9 * size_of::<usize>(),
+            "{}",
+            size_of::<Object>()
+        );
+    }
+
     #[test]
     fn find_is_some_exactly_when_contains_text_holds_at_a_match() {
         // The verifier gives both one uninterpreted symbol, which holds because both
@@ -1650,6 +3875,47 @@ mod tests {
         int_word(&BigInt::from(value))
     }
 
+    /// The position of `op` in `FloatOp::ALL`, the code the generated code passes.
+    fn code(op: una_core::FloatOp) -> i64 {
+        una_core::FloatOp::ALL
+            .iter()
+            .position(|x| *x == op)
+            .and_then(|i| i64::try_from(i).ok())
+            .unwrap_or(-1)
+    }
+
+    #[test]
+    fn floats_compute_as_the_interpreter_does_and_keep_one_nan() {
+        use una_core::FloatOp;
+        let zero = f64_literal(0);
+        let one = f64_literal(1f64.to_bits() as i64);
+        let nan = f64_op(code(FloatOp::Div), zero, zero, 0);
+        assert_eq!(
+            int_value(f64_op(code(FloatOp::ToBits), nan, 0, 0)),
+            BigInt::from(una_core::float::CANONICAL_NAN)
+        );
+        assert_eq!(f64_op(code(FloatOp::Eq), nan, nan, 0), 1);
+        assert_eq!(f64_op(code(FloatOp::Lt), one, nan, 0), 1);
+        let negative = f64_op(code(FloatOp::Neg), zero, 0, 0);
+        assert_eq!(f64_op(code(FloatOp::Eq), negative, zero, 0), 0);
+        assert_eq!(f64_op(code(FloatOp::IeeeEq), negative, zero, 0), 1);
+        let text = f64_op(code(FloatOp::ToText), negative, 0, 0);
+        assert_eq!(text_value(text), "-0.0");
+        let fused = f64_op(code(FloatOp::Fma), one, one, negative);
+        assert_eq!(
+            text_value(f64_op(code(FloatOp::ToText), fused, 0, 0)),
+            "1.0"
+        );
+        assert_eq!(parse_f64_failure(text_word("1.".to_owned())) & 1, 0);
+        assert_eq!(parse_f64_failure(text_word(String::new())), 1);
+        assert_eq!(
+            f64_value(parse_f64(text_word("-0".to_owned()))).to_bits(),
+            1 << 63
+        );
+        assert_eq!(f64_literal(0), zero, "a literal is made once");
+        assert!(leaf_equal(nan, f64_op(code(FloatOp::Div), zero, zero, 0)));
+    }
+
     #[test]
     fn integers_are_tagged_when_they_fit_and_promoted_when_they_do_not() {
         assert_eq!(n(5), 11);
@@ -1681,7 +3947,7 @@ mod tests {
         assert_eq!(int(text_len(concat(a, b))), "5");
         assert_eq!(text_compare(a, b), -1);
         assert_eq!(text_equal(a, text_word("hé".to_owned())), 1);
-        assert_eq!(text_value(int_text(n(-42))), "-42");
+        assert_eq!(text_value(int_text(n(-42)).unwrap()), "-42");
         assert_eq!(text_value(bool_text(1)), "true");
     }
 
@@ -1735,9 +4001,9 @@ mod tests {
         // Under Miri (#766), which runs each step slowly, the same walks at a smaller depth.
         let depth = if cfg!(miri) { 1_000 } else { 1_000_000 };
         let (a, b) = (chain(depth), chain(depth));
-        assert_eq!(equal(a, b), 1);
+        assert_eq!(equal(0, a, b), 1);
         let shorter = chain(depth - 1);
-        assert_eq!(equal(a, shorter), 0);
+        assert_eq!(equal(0, a, shorter), 0);
         for value in [a, b, shorter] {
             release(value);
         }
@@ -1826,10 +4092,10 @@ mod tests {
         push(items, NONE);
         release(record);
         release(shared);
-        let portable = export(items, 0).unwrap();
+        let portable = export(items).unwrap();
         // Across threads, as a task's heap is (`spec/19 §8`).
         let copied = std::thread::spawn(move || {
-            let word = import(&portable, 0).unwrap();
+            let word = import(&portable).unwrap();
             let shown = (
                 count(word),
                 tag(field(word, 0)),
@@ -1870,9 +4136,9 @@ mod tests {
             release(chain);
             chain = cell;
         }
-        let portable = export(chain, 0).unwrap();
-        let back = import(&portable, 0).unwrap();
-        assert_eq!(equal(back, chain), 1);
+        let portable = export(chain).unwrap();
+        let back = import(&portable).unwrap();
+        assert_eq!(equal(0, back, chain), 1);
         release(back);
         release(chain);
         assert_eq!(live(), before);
@@ -1893,6 +4159,15 @@ mod tests {
         assert_eq!(int(big), "99999999999999999999999");
         assert_eq!(int_literal("7"), n(7));
         assert_eq!(live(), before);
+        // ADR 0113: each literal's count is back to the heap's one reference; a retain without
+        // its release is counted, and its release makes it balanced again.
+        assert_eq!(unbalanced_literals(), 0);
+        retain(text);
+        retain(big);
+        assert_eq!(unbalanced_literals(), 2);
+        release(text);
+        release(big);
+        assert_eq!(unbalanced_literals(), 0);
     }
 
     #[test]
@@ -1904,8 +4179,8 @@ mod tests {
         let longer = append(xs, n(4));
         assert_eq!(count(longer), 4);
         assert_eq!(int(sum(longer)), "10");
-        assert_eq!(contains(longer, n(4)), 1);
-        assert_eq!(contains(xs, n(4)), 0);
+        assert_eq!(contains(0, longer, n(4)), 1);
+        assert_eq!(contains(0, xs, n(4)), 0);
         let found = at(longer, n(3));
         assert_eq!(tag(found), 0);
         assert_eq!(int(field(found, 0)), "4");
@@ -1914,11 +4189,177 @@ mod tests {
         let parsed = to_int(text_word("-12".to_owned()));
         assert_eq!(int(or_else(parsed, n(0))), "-12");
         assert_eq!(to_int(text_word("1x".to_owned())), NONE);
-        assert_eq!(equal(xs, append(xs, n(4))), 0);
+        assert_eq!(equal(0, xs, append(xs, n(4))), 0);
         let same = list();
         for value in [3, 1, 2] {
             push(same, n(value));
         }
-        assert_eq!(equal(xs, same), 1);
+        assert_eq!(equal(0, xs, same), 1);
+    }
+
+    #[test]
+    fn a_text_of_more_than_max_int_digits_is_refused_before_any_conversion() {
+        // #914: converting d digits takes O(d²), so `parse_int` fails with `TooLong` and
+        // `to_int` is `None` past `MAX_INT_DIGITS` digits, both found in one O(b) scan. The
+        // sign does not count; leading zeros do.
+        let cap = una_core::MAX_INT_DIGITS;
+        let at_cap = format!("-{}", "9".repeat(cap));
+        assert_eq!(parse_failure(text_word(at_cap.clone())), 0);
+        assert_eq!(int(parse_int(text_word(at_cap.clone()))), at_cap);
+        assert_eq!(
+            int(or_else(to_int(text_word(at_cap.clone())), n(0))),
+            at_cap
+        );
+        let too_long = (3 << 1) | 1;
+        let zeros = "0".repeat(cap + 1);
+        assert_eq!(parse_failure(text_word(zeros.clone())), too_long);
+        assert_eq!(to_int(text_word(zeros)), NONE);
+        // A wrong character is found first, wherever it is.
+        let wrong = format!("{}x", "1".repeat(cap + 1));
+        assert_eq!(tag(parse_failure(text_word(wrong))), 1);
+        // Linear: a text ten times longer takes about ten times as long, far from the hundred
+        // times of a quadratic conversion.
+        // Both sizes are over the cap, Miri's too.
+        let sizes = if cfg!(miri) {
+            [cap + 1, 4 * cap]
+        } else {
+            [100_000, 1_000_000]
+        };
+        // The shortest of several runs per size, so a preemption of the test thread (the
+        // library's tests run in parallel) inflates no measurement; the claim stays linear.
+        // Five runs on the full sizes; one on Miri's small ones (it is slow, and times nothing).
+        let runs = if sizes[0] >= 100_000 { 5 } else { 1 };
+        let times: Vec<std::time::Duration> = sizes
+            .iter()
+            .map(|&size| {
+                let digits = "7".repeat(size);
+                (0..runs)
+                    .map(|_| {
+                        let started = std::time::Instant::now();
+                        assert_eq!(parse_failure(text_word(digits.clone())), too_long);
+                        assert_eq!(to_int(text_word(digits.clone())), NONE);
+                        started.elapsed()
+                    })
+                    .min()
+                    .unwrap_or_default()
+            })
+            .collect();
+        if !cfg!(miri) {
+            assert!(
+                times[1].as_secs_f64() <= 30.0 * times[0].as_secs_f64() + 0.05,
+                "{} digits took {:?}, {} took {:?}",
+                sizes[1],
+                times[1],
+                sizes[0],
+                times[0]
+            );
+        }
+    }
+
+    /// `x0 = [leaf]`, `x(k+1) = [xk, xk]`: a value of `depth` levels whose every level shares
+    /// its one child, 2^depth paths through `depth + 1` distinct lists.
+    fn doubled(depth: usize, leaf: i64) -> i64 {
+        let mut value = list();
+        push(value, n(leaf));
+        for _ in 0..depth {
+            let next = list();
+            retain(value);
+            push(next, value);
+            push(next, value);
+            value = next;
+        }
+        value
+    }
+
+    /// The steps `equal_words` takes to compare `a` and `b`, and its verdict.
+    fn steps(a: i64, b: i64) -> (usize, Option<bool>) {
+        let before = EQUALITY_STEPS.with(std::cell::Cell::get);
+        let verdict = equal_words(a, b, usize::MAX);
+        (EQUALITY_STEPS.with(std::cell::Cell::get) - before, verdict)
+    }
+
+    #[test]
+    fn a_value_equals_itself_at_once() {
+        for depth in [8, 16, 32, 64] {
+            let x = doubled(depth, 1);
+            assert_eq!(steps(x, x), (0, Some(true)), "depth {depth}");
+            release(x);
+        }
+    }
+
+    #[test]
+    fn shared_parts_are_compared_once_however_deep() {
+        // #815: two values built apart, each sharing its parts, compare in a number of steps
+        // linear in their depth past the unrecorded ones, not in their 2^depth paths.
+        for depth in [8, 16, 32, 64] {
+            let (a, b) = (doubled(depth, 1), doubled(depth, 1));
+            let (taken, verdict) = steps(a, b);
+            assert_eq!(verdict, Some(true), "depth {depth}");
+            let bound = EQUALITY_STEPS_UNRECORDED + 3 * (depth + 2);
+            assert!(taken <= bound, "depth {depth}: {taken} steps");
+            release(a);
+            release(b);
+        }
+    }
+
+    #[test]
+    fn a_difference_under_a_shared_part_is_found() {
+        // The skip of a visited pair must not hide a difference: one side shares a part, the
+        // other holds a near copy whose deepest leaf differs.
+        for depth in [1, 8, 16, 32, 64] {
+            let a = doubled(depth, 1);
+            let b = doubled(depth, 2);
+            assert_eq!(steps(a, b).1, Some(false), "depth {depth}");
+            // One branch the same as `a`'s, the other differing deep down.
+            let mixed = list();
+            push(mixed, doubled(depth, 1));
+            push(mixed, doubled(depth, 2));
+            let shared = list();
+            retain(a);
+            push(shared, a);
+            push(shared, a);
+            assert_eq!(steps(shared, mixed).1, Some(false), "depth {depth}");
+            assert_eq!(steps(shared, shared), (0, Some(true)));
+            for word in [b, mixed, shared] {
+                release(word);
+            }
+        }
+    }
+
+    #[test]
+    fn leaves_are_compared_at_once_and_never_held() {
+        // Two flat lists hold one pair, their own, however long: a budget of one pair compares
+        // lists of any length, and a difference in a leaf is found.
+        let flat = |count: i64, last: i64| {
+            let xs = list();
+            for i in 0..count {
+                push(xs, n(if i == count - 1 { last } else { i }));
+            }
+            xs
+        };
+        let count = if cfg!(miri) { 1_000 } else { 100_000 };
+        let (a, b, c) = (flat(count, 7), flat(count, 7), flat(count, 8));
+        assert_eq!(equal_words(a, b, 1), Some(true));
+        assert_eq!(steps(a, b), (1, Some(true)));
+        assert_eq!(equal_words(a, c, 1), Some(false));
+        // A leaf never equals a value with parts.
+        let (empty, other, one) = (list(), list(), flat(1, 0));
+        assert_eq!(equal_words(empty, one, 1), Some(false));
+        assert_eq!(equal_words(empty, other, 0), Some(true));
+        for word in [a, b, c, empty, other, one] {
+            release(word);
+        }
+    }
+
+    #[test]
+    fn a_comparison_past_its_budget_of_pairs_stops() {
+        let (a, b) = (doubled(40, 1), doubled(40, 1));
+        assert_eq!(equal_words(a, b, 10), None);
+        assert_eq!(equal_words(a, b, 1000), Some(true));
+        assert_eq!(equal_words(a, a, 0), Some(true));
+        // Outside a run, no budget: `equal` compares.
+        assert_eq!(equal(0, a, b), 1);
+        release(a);
+        release(b);
     }
 }

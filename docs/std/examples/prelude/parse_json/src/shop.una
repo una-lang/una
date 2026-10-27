@@ -1,0 +1,29 @@
+module shop
+
+--- An order read from JSON, and why a text is not one JSON value.
+order(raw: Text) -> Text
+=
+  let outcome = attempt parse_json(raw)
+  when outcome
+    is Ok(value) -> written(value)
+    is Err(failure) -> reason(failure)
+
+written(value: Json) -> Text
+=
+  let text = value.to_json()
+  "read {text}"
+
+reason(failure: JsonError) -> Text
+=
+  when failure
+    is Syntax(at) -> "not JSON at {at}"
+    is TooDeep(at) -> "nested too deep at {at}"
+    is DuplicateKey(at) -> "a key twice at {at}"
+    is NumberTooLong(at) -> "a number too long at {at}"
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print(order("\{\"lamp\": 3, \"desk\": 1\}"))
+  @console.print(order("[1, 2,]"))
+  @console.print(order("\{\"lamp\": 3, \"lamp\": 4\}"))

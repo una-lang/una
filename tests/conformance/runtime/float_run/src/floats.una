@@ -1,0 +1,63 @@
+-- test: F64 runs bit for bit as IEEE binary64 in roundTiesToEven with one canonical NaN: arithmetic, division by both zeros, signed zeros, the methods on special values, conversions, rendering by the shortest round-trip text, parsing, totalOrder in `sort` and map keys, and JSON
+-- spec: spec/29 §3, §5, §7
+-- grant: console
+-- expect: run-output "sum 0.30000000000000004 0.3 0.3333333333333333"
+-- expect: run-output "div inf -inf nan 9221120237041090560 9221120237041090560"
+-- expect: run-output "zeros 0.0 -0.0 -0.0 -0.0 -0.0 -0.0"
+-- expect: run-output "round [0.0, 2.0, 2.0, -0.0] [3.0, -1.0, 0.0]"
+-- expect: run-output "floor [-2.0, 1.0, -1.0, 2.0, inf]"
+-- expect: run-output "nan true false true false true false true"
+-- expect: run-output "fma -4.930380657631324e-32 nan"
+-- expect: run-output "minmax -0.0 0.0 nan 1.0 1.0"
+-- expect: run-output "render [5.0e-324, 1.7976931348623157e308, 1.0e-7, 0.000001, 1.0e21, 100000000000000000000.0, 123456.789]"
+-- expect: run-output "convert 9007199254740992.0 -7.0 Some(100000000000000001097906362944045541740492309677311846336810682903157585404911491537163328978494688899061249669721172515611590283743140088328307009198146046031271664502933027185697489699588559043338384466165001178426897626212945177628091195786707458122783970171784415105291802893207873272974885715430223118336) None Some(0) None"
+-- expect: run-output "fixed 255.0 1.0 9221120237041090560"
+-- expect: run-output "sorted [-inf, -1.0, -0.0, 0.0, 1.0, inf, nan]"
+-- expect: run-output "map 3 [-0.0, 0.0, nan] true"
+-- expect: run-output "parse Ok(-0.0) Ok(100000.0) Err(NotADigit(2)) Ok(2.225073858507201e-308) Ok(inf)"
+-- expect: run-output "json Some(Decimal(\"0.1\")) Some(Decimal(\"-0.0\")) None Some(3.0) Some(inf) Some(-0.0) None"
+module floats
+
+pub kind Point
+  x: F64
+  y: F64
+
+show(xs: List[F64]) -> Text = "{xs}"
+
+bits(x: F64) -> Text = "{x.to_bits()}"
+
+decoded(t: Text) -> Option[F64]
+=
+  let parsed = attempt parse_json(t)
+  when parsed
+    is Ok(j) -> as_f64(j)
+    is Err(e) -> None
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let zero = 0.0
+  let nz = -zero
+  @console.print("sum {0.1 + 0.2} {0.3} {1.0 / 3.0}")
+  @console.print("div {1.0 / zero} {1.0 / nz} {zero / zero} {bits(zero / zero)} {bits(nan())}")
+  @console.print("zeros {zero + nz} {nz + nz} {nz * 5.0} {nz.sqrt()} {(-0.5).ceil()} {(-1.0).rem(by: 1.0)}")
+  @console.print("round {show([0.5.round_half_even(), 1.5.round_half_even(), 2.5.round_half_even(), (-0.5).round_half_even()])} {show([2.5.round_half_away(), (-0.5).round_half_away(), 0.49999999999999994.round_half_away()])}")
+  @console.print("floor {show([(-1.5).floor(), 1.5.floor(), (-1.5).trunc(), 1.2.ceil(), infinity().floor()])}")
+  @console.print("nan {nan() == nan()} {nz == zero} {nz < zero} {nan().ieee_eq(other: nan())} {nz.ieee_eq(other: zero)} {nan().is_sign_negative()} {(-1.0).sqrt().is_nan()}")
+  @console.print("fma {(1.0 + 2.220446049250313e-16).fma(times: 1.0 - 2.220446049250313e-16, plus: -1.0)} {infinity().fma(times: 0.0, plus: 1.0)}")
+  @console.print("minmax {nz.ieee_min(other: zero)} {nz.ieee_max(other: zero)} {nan().clamp(lo: 0.0, hi: 1.0)} {min(max(nan(), b: 0.0), b: 1.0)} {min(nan(), b: 1.0)}")
+  @console.print("render {show([5.0e-324, 1.7976931348623157e308, 1.0e-7, 0.000001, 1.0e21, 100000000000000000000.0, 123456.789])}")
+  @console.print("convert {9007199254740993.to_f64()} {(-7).to_f64()} {1.0e308.to_int_exact()} {0.5.to_int_exact()} {nz.to_int_exact()} {nan().to_int_exact()}")
+  @console.print("fixed {255.to_u8().to_f64()} {f64_from_bits(bits: 4607182418800017408.to_u64())} {f64_from_bits(bits: 18444492273895866368.to_u64()).to_bits()}")
+  @console.print("sorted {show(sort([nan(), 1.0, zero, -infinity(), nz, infinity(), -1.0]))}")
+  let m = empty_map().with(key: zero, value: "pos").with(key: nz, value: "neg").with(key: nan(), value: "nan").with(key: zero / zero, value: "nan again")
+  @console.print("map {m.len} {m.keys()} {Point(x: nan(), y: nz) == Point(x: zero / zero, y: -0.0)}")
+  let p = attempt parse_f64("-0")
+  let q = attempt parse_f64("1E+5")
+  let r = attempt parse_f64("1.")
+  let s = attempt parse_f64("2.2250738585072011e-308")
+  let t = attempt parse_f64("inf")
+  @console.print("parse {p} {q} {r} {s} {t}")
+  let big = decoded("1e400")
+  let small = decoded("-0.0")
+  @console.print("json {json_number(0.1)} {json_number(nz)} {json_number(nan())} {as_f64(Number(value: 3))} {big} {small} {as_f64(Null)}")

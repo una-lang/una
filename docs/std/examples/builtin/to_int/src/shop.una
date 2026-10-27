@@ -1,0 +1,9 @@
+module shop
+
+--- The largest `I64` total, widened to an `Int`, which has no largest value.
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let total: I64 = 9223372036854775807
+  let more = total.to_int() + 1
+  @console.print("{more}")

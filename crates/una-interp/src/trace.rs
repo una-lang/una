@@ -24,7 +24,8 @@ impl Serialize for Pairs<'_> {
 #[derive(Serialize)]
 pub struct EventDoc<'a> {
     seq: usize,
-    /// The task's path, only inside a `together` task (`spec/19 §7` rule 1).
+    /// The task's path, only inside a task of `together`, `first of` or `start` (`spec/19 §7`
+    /// rule 1, `spec/27 §6`, `§7`).
     #[serde(skip_serializing_if = "str::is_empty")]
     task: &'a str,
     /// The operation; absent from a `cancelled` event, which names none (`spec/19 §7` rule 3).
@@ -41,7 +42,13 @@ pub struct EventDoc<'a> {
 
 impl<'a> From<&'a Event> for EventDoc<'a> {
     fn from(event: &'a Event) -> Self {
-        let operation = !matches!(event.outcome, EventOutcome::Cancelled);
+        let operation = !matches!(
+            event.outcome,
+            EventOutcome::Cancelled
+                | EventOutcome::Stop
+                | EventOutcome::Timeout
+                | EventOutcome::TaskAborted
+        );
         EventDoc {
             seq: event.seq,
             task: &event.task,
@@ -52,8 +59,13 @@ impl<'a> From<&'a Event> for EventDoc<'a> {
             outcome: match &event.outcome {
                 EventOutcome::Ok(value) => OutcomeDoc::Ok { value },
                 EventOutcome::Fail { variant, value } => OutcomeDoc::Fail { variant, value },
-                EventOutcome::Aborted => OutcomeDoc::Aborted,
+                // A started task that ended alone has the outcome of an abort, and names no
+                // operation (ADR 0117 rule 10).
+                EventOutcome::Aborted | EventOutcome::TaskAborted => OutcomeDoc::Aborted,
                 EventOutcome::Cancelled => OutcomeDoc::Cancelled,
+                EventOutcome::Stop => OutcomeDoc::Stop,
+                EventOutcome::Timeout => OutcomeDoc::Timeout,
+                EventOutcome::Interrupted => OutcomeDoc::Interrupted,
             },
         }
     }
@@ -79,6 +91,20 @@ pub enum OutcomeDoc<'a> {
     Aborted,
     /// The task was cancelled (`spec/19 §7` rule 3).
     Cancelled,
+    /// A loop stopped at the start of an iteration (ADR 0116 rule 14).
+    Stop,
+    /// An iteration of a `for ever within`, or a `within`, passed its deadline (ADR 0116 rule
+    /// 11, ADR 0117 rule 5).
+    Timeout,
+    /// An interruptible operation was waiting when its task was cancelled (ADR 0117 rules 4 and
+    /// 10).
+    Interrupted,
+}
+
+/// One event as JSON, compact, as an element of [`trace_json`]: a trace written as it happens is
+/// `[`, the events separated by `,`, and `]` (ADR 0117 rule 10).
+pub fn event_json(event: &Event) -> String {
+    serde_json::to_string(&EventDoc::from(event)).unwrap_or_else(|_| "{}".to_owned())
 }
 
 /// A trace as a JSON array of events, compact, as `una run --json` writes its `trace`.

@@ -1,0 +1,1 @@
+- **spec/30 and spec/21 clarified** (#1085). `una ita lock` locks path dependencies (§12) and refuses only a need of a registry or of a workspace member; each problem of a need is reported at its line in `ita.una`; `initial` of a map's `update` has the map's value type, so `initial: []` takes it.

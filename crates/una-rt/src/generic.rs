@@ -53,7 +53,7 @@ pub fn composite(ty: i64, params: i64) -> i64 {
 }
 
 /// The type description and parameter descriptors of a composite entry.
-fn entry(entry: usize) -> Option<(usize, Vec<i64>)> {
+pub(crate) fn entry(entry: usize) -> Option<(usize, Vec<i64>)> {
     COMPOSITES.lock().ok()?.entries.get(entry).cloned()
 }
 
@@ -63,6 +63,10 @@ pub(crate) enum Written {
     Int,
     /// A text, quoted.
     Text,
+    /// An `F64`, by its shortest round-trip text.
+    F64,
+    /// An `F32`, by its shortest round-trip text (ADR 0120 rule 5).
+    F32,
     /// By the type description at this index, with these parameter descriptors.
     Typed(usize, Vec<i64>),
 }
@@ -73,7 +77,11 @@ pub(crate) fn shape_of(desc: i64) -> Option<Written> {
     Some(match Descriptor::from_word(desc)? {
         Descriptor::Int | Descriptor::Fixed(_) => Written::Int,
         Descriptor::Text => Written::Text,
-        Descriptor::Sum(ty) | Descriptor::Structural(ty) => Written::Typed(ty, Vec::new()),
+        Descriptor::F64 => Written::F64,
+        Descriptor::F32 => Written::F32,
+        Descriptor::Sum(ty) | Descriptor::Structural(ty) | Descriptor::Decimal(ty) => {
+            Written::Typed(ty, Vec::new())
+        }
         Descriptor::Composite(index) => {
             let (ty, params) = entry(index)?;
             Written::Typed(ty, params)
@@ -85,7 +93,10 @@ pub(crate) fn shape_of(desc: i64) -> Option<Written> {
 /// no order or does not fit them.
 fn order(desc: i64, a: i64, b: i64) -> Option<Ordering> {
     let found = match Descriptor::from_word(desc) {
-        Some(Descriptor::Int) if is_int(a) && is_int(b) => Some(int_value(a).cmp(&int_value(b))),
+        // The values of one decimal type share their scale: their coefficients order them.
+        Some(Descriptor::Int | Descriptor::Decimal(_)) if is_int(a) && is_int(b) => {
+            Some(int_value(a).cmp(&int_value(b)))
+        }
         Some(Descriptor::Fixed(int)) if in_range(a, int) && in_range(b, int) => {
             Some(int_value(a).cmp(&int_value(b)))
         }
@@ -95,6 +106,12 @@ fn order(desc: i64, a: i64, b: i64) -> Option<Ordering> {
         Some(Descriptor::Sum(_)) if values::is_data(a) && values::is_data(b) => {
             Some(tag(a).cmp(&tag(b)))
         }
+        // IEEE totalOrder on canonical values (ADR 0114 rule 5.2).
+        Some(Descriptor::F64) if values::is_f64(a) && values::is_f64(b) => Some(
+            una_core::float::total_cmp(values::f64_value(a), values::f64_value(b)),
+        ),
+        // An `F32` word is the tagged key of totalOrder (ADR 0120 rule 10).
+        Some(Descriptor::F32) if a & 1 == 1 && b & 1 == 1 => Some(a.cmp(&b)),
         _ => None,
     };
     if found.is_none() {
@@ -130,11 +147,16 @@ pub fn compare(desc: i64, a: i64, b: i64) -> i64 {
 }
 
 /// 1 when `a == b`, else 0, on a `T: Eq`: structural equality, as on every type
-/// (`spec/20 §1` rule 5), checked against the descriptor.
-pub fn equal(desc: i64, a: i64, b: i64) -> i64 {
+/// (`spec/20 §1` rule 5), checked against the descriptor, at `site` within the memory budget.
+pub fn equal(site: i64, desc: i64, a: i64, b: i64) -> i64 {
+    i64::from(equal_at(site, desc, a, b) == Some(true))
+}
+
+/// `equal`, or `None` when its structural comparison stopped the run or the task at `site`.
+fn equal_at(site: i64, desc: i64, a: i64, b: i64) -> Option<bool> {
     match Descriptor::from_word(desc) {
-        Some(Descriptor::Structural(_) | Descriptor::Composite(_)) => values::equal(a, b),
-        _ => i64::from(order(desc, a, b).is_none_or(Ordering::is_eq)),
+        Some(Descriptor::Structural(_) | Descriptor::Composite(_)) => values::equal_at(site, a, b),
+        _ => Some(order(desc, a, b).is_none_or(Ordering::is_eq)),
     }
 }
 
@@ -155,16 +177,20 @@ pub fn to_int(desc: i64, x: i64) -> i64 {
 /// `x` written as text by interpolation, on a `T: Eq` (`spec/11 §5`, ADR 0068): an integer
 /// in decimal, a `Text` as it is, any other value in its Una form, by the type description that
 /// its descriptor carries. A new reference.
-pub fn write(desc: i64, x: i64) -> i64 {
+pub fn write(site: i64, desc: i64, x: i64) -> i64 {
     match Descriptor::from_word(desc) {
-        Some(Descriptor::Int | Descriptor::Fixed(_)) => values::int_text(x),
+        Some(Descriptor::Int | Descriptor::Fixed(_)) => runtime::int_text(site, x),
         Some(Descriptor::Text) => {
             retain(x);
             x
         }
-        Some(Descriptor::Sum(ty) | Descriptor::Structural(ty)) => runtime::written(ty, x, &[]),
+        Some(Descriptor::F64) => values::text_word(una_core::float::render(values::f64_value(x))),
+        Some(Descriptor::F32) => values::text_word(una_core::float32::render(values::f32_value(x))),
+        Some(Descriptor::Sum(ty) | Descriptor::Structural(ty) | Descriptor::Decimal(ty)) => {
+            runtime::written(site, ty, x, &[])
+        }
         Some(Descriptor::Composite(index)) => match entry(index) {
-            Some((ty, params)) => runtime::written(ty, x, &params),
+            Some((ty, params)) => runtime::written(site, ty, x, &params),
             None => {
                 fault();
                 values::text_word(String::new())
@@ -191,13 +217,16 @@ pub fn max(desc: i64, a: i64, b: i64) -> i64 {
     greatest
 }
 
-/// `contains(xs, item)` of the prelude of edition 0.2.
-pub fn contains(desc: i64, xs: i64, item: i64) -> i64 {
-    i64::from(
-        values::list_items(xs)
-            .into_iter()
-            .any(|x| equal(desc, x, item) == 1),
-    )
+/// `contains(xs, item)` of the prelude of edition 0.2, at `site` within the memory budget.
+pub fn contains(site: i64, desc: i64, xs: i64, item: i64) -> i64 {
+    for x in values::list_items(xs) {
+        match equal_at(site, desc, x, item) {
+            Some(true) => return 1,
+            Some(false) => {}
+            None => return 0,
+        }
+    }
+    0
 }
 
 /// `sum(xs)` of the prelude of edition 0.2: the values of the elements added as `Int`.
@@ -247,7 +276,7 @@ mod tests {
         assert_eq!(compare(int, small, large), -1);
         assert_eq!(compare(text, pear, apple), 1);
         assert_eq!(compare(sum, high, low), 1);
-        assert_eq!(equal(structural, low, values::data(0)), 1);
+        assert_eq!(equal(0, structural, low, values::data(0)), 1);
         assert_eq!(values::faults(), before);
         // A wrong descriptor never passes silently: the value is outside `U8`, the words are
         // no texts, the texts are no variants, and a structural descriptor gives no order.

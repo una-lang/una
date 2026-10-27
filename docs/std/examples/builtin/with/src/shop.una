@@ -1,0 +1,8 @@
+module shop
+
+--- A price list built one entry at a time.
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let prices = empty_map().with(key: "lamp", value: 1999).with(key: "desk", value: 4999)
+  @console.print("{prices.len} prices")

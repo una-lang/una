@@ -18,29 +18,63 @@ use std::alloc::System;
 
 use cap::Cap;
 
+pub mod deadline;
+pub mod decimal;
 #[allow(unsafe_code)]
 pub mod ffi;
 pub mod generic;
 pub mod host;
+mod interrupt;
 mod json;
+mod reactor;
 pub mod render;
 pub mod runtime;
+mod sched;
+mod sockets;
+mod started;
 pub mod tasks;
+mod timer;
 pub mod values;
+pub mod wheel;
 
 /// The allocator of the executable, which counts the bytes it holds and fails past a ceiling,
 /// for the memory limit of runs (ADR 0061). The `cap` crate wraps the system allocator, so the
 /// runtime writes no `unsafe` for it.
+#[cfg(not(debug_assertions))]
 #[global_allocator]
 static ALLOCATOR: Cap<System> = Cap::new(System, usize::MAX);
 
+/// The allocator of a debug build: the same `Cap<System>`, wrapped to keep the high-water mark
+/// of what the process holds and each thread's allocations (ADR 0113, I3).
+#[cfg(debug_assertions)]
+#[global_allocator]
+static ALLOCATOR: ffi::Peak = ffi::Peak::new(Cap::new(System, usize::MAX));
+
+/// The `Cap<System>` that counts and limits the process's heap, in either build.
+fn cap() -> &'static Cap<System> {
+    #[cfg(debug_assertions)]
+    {
+        ALLOCATOR.inner()
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        &ALLOCATOR
+    }
+}
+
 /// The bytes the process holds on the heap.
 pub(crate) fn held() -> usize {
-    ALLOCATOR.allocated()
+    cap().allocated()
+}
+
+/// The most bytes the process held at any point so far, in a debug build's tests (ADR 0113, I3).
+#[cfg(all(debug_assertions, test))]
+pub(crate) fn peak() -> usize {
+    ALLOCATOR.peak()
 }
 
 /// Sets the ceiling past which an allocation fails; `usize::MAX` lifts it. A ceiling below what
 /// is held already is refused, and the next check reports the run.
 pub(crate) fn ceiling(bytes: usize) {
-    let _ = ALLOCATOR.set_limit(bytes);
+    let _ = cap().set_limit(bytes);
 }

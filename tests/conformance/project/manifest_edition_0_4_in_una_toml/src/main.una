@@ -1,0 +1,6 @@
+-- test: una.toml naming edition 0.4 is refused with `una migrate` as its repair; the package is still checked in edition 0.4
+-- spec: spec/30 §2
+-- expect: error U7002 at una.toml:4:11
+module main
+
+pub small(n: I32) -> I32 = n

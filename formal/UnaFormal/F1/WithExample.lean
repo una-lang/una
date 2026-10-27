@@ -1,5 +1,5 @@
 /-
-Non-vacuity of #538 and of the coordinator's ruling E: **a `with` scope charges what the handler
+Non-vacuity of #538 and of ruling E: **a `with` scope charges what the handler
 it installs does where it installs it.**
 
 The program has one operation of a `with` scope, `Bell.ring(n: Int) -> Unit`, which accepts

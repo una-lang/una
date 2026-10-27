@@ -1,0 +1,12 @@
+module shop
+
+--- Products that stop at the largest value of the type.
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let boxes: U16 = 300
+  let units = boxes.saturating_mul(by: 300)
+  let bottom: I8 = -128
+  let flipped = bottom.saturating_mul(by: -1)
+  @console.print("{units}")
+  @console.print("{flipped}")

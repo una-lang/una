@@ -13,7 +13,7 @@ Tiers 2 (quantified laws) and 3 (property tests, benchmarks) are deferred (`plan
 
 ## 2. The decidable fragment
 
-Every v0.1 query is in **QF_UFLIA**: quantifier-free linear integer arithmetic with uninterpreted functions and Booleans. `div` and `mod` appear only with nonzero literal divisors in RL. General division by a variable is allowed in code and produces a nonzero obligation; since QF_UFLIA has no nonlinear terms, its result is the uninterpreted function `i!div!Int` or `i!mod!Int`, as the product of two values that are not literals is `i!mul!Int` (ADR 0033, §4). A literal here is an integer literal or `-` applied to one: `x * -2` is linear multiplication, and `a div -k` and `a mod -k` divide by a literal, with no nonzero obligation (#10).
+Every v0.1 query is in **QF_UFLIA** (a query with an `F64` term, from edition `0.3`, is in `ALL`, `spec/29 §8`): quantifier-free linear integer arithmetic with uninterpreted functions and Booleans. `div` and `mod` appear only with nonzero literal divisors in RL. General division by a variable is allowed in code and produces a nonzero obligation; since QF_UFLIA has no nonlinear terms, its result is the uninterpreted function `i!div!Int` or `i!mod!Int`, as the product of two values that are not literals is `i!mul!Int` (ADR 0033, §4). A literal here is an integer literal or `-` applied to one: `x * -2` is linear multiplication, and `a div -k` and `a mod -k` divide by a literal, with no nonzero obligation (#10).
 
 No query ever contains a quantifier. Axioms that would need quantifiers are instantiated as ground facts for the terms that occur in the query (§4).
 
@@ -46,11 +46,13 @@ Obligations are generated from Core IR by a traversal that maintains a **path co
 | `division` | `div`, `mod` with non-literal divisor | divisor ≠ 0 |
 | `exhaustive` | `when` with range or literal arms and no `else` | disjunction of arm conditions |
 
-(v0.2, ADR 0057.) The kind `overflow` joins this table. It is generated at each arithmetic operator on a fixed-width integer type and at each narrowing conversion, and its goal is that the exact result lies in the type's range (`spec/18 §3`).
+(v0.2, ADR 0057.) The kind `overflow` joins this table. It is generated at each arithmetic operator on a fixed-width integer type and at each narrowing conversion, and its goal is that the exact result lies in the type's range (`spec/18 §3`). (v0.3, ADR 0109 rule 3.) In a `systems` package it is also generated at each arithmetic operator and unary `-` on `Int` outside clauses, at `convert()` on an `Int` magnitude, at an `Int` literal outside -2^62 to 2^62 - 1, and at calls of `sum`, `abs` and `to_int()` on `I64` and `U64`: its goal is that the exact result lies in -2^62 to 2^62 - 1 (`spec/18 §3` rule 5).
 
 (v0.3, ADR 0092.) The kind `effect_condition` joins this table. It is generated where an operation conditioned by `where` (`spec/05 §3` rule 4) may run: at the operation, at a call of a named function or of a function value that receives the binding, and at a `with` that installs a handler using it. Its goal is ground: the condition, or the callee's condition implying it.
 
 (v0.3, ADR 0092 rule 8.) The kind `contract_lock` joins this table. It is generated for each operation that a function's lock in `una.toml` conditions by `C_lock` and that the header grants (`spec/05 §3` rule 5), at the operation in the header: its goal is `C_src ⇒ C_lock` over the parameters on entry, with `C_src` the header's condition, `true` when it writes none. Refuted, it is U3023; unknown, U5002. The type checker rejects a `C_lock` outside the refinement language as U7002 at the lock's entry, before any obligation. Should one reach the verifier outside the encoding (§2), it is no goal, so the obligation is never proven by it: a refutation then makes it unknown, U5002 at the lock's entry in `una.toml`, naming the condition, with the header's operation as the related location. A `C_src` outside the encoding is dropped, which only strengthens the goal.
+
+(Edition 0.4, ADR 0116 V1.) The kinds `decreases_bound` and `decreases_step` join this table, for each `for until c decreases m` (`spec/26 §4`). `decreases_bound` is generated at the start of an iteration, with `not c` assumed when `c` is in the refinement language: its goal is `m >= 0`. `decreases_step` is generated at the end of each path from the start of an iteration to the end of the body or a `skip`: its goal is that `m` there is less than `m` at the start. A path that ends at `stop` carries neither. Both are reported at the word `decreases`, as "the measure `m` may be negative where the loop continues" and "the measure `m` may not decrease in this iteration": refuted, U5001; unknown, U5002.
 
 Each obligation is `Π ⊢ goal`, sent to the solver as the satisfiability check of `Π ∧ ¬goal`. An `ensures` clause, and the refinement of a declared result type, give one obligation over every normal return path, `Π ∧ (path₁ ∨ … ∨ pathₙ) ∧ ¬goal`, whose diagnostic points at the returned expression of the path the model takes; every other obligation belongs to one site.
 
@@ -166,6 +168,11 @@ The bindings cover the parameters, `result`, named `let`s, pattern variables and
 
 Each obligation has a stable id: `ob-` followed by the first 12 hex digits of SHA-256 over the module path, enclosing declaration, kind and normalized goal text. Ids survive edits that do not change the obligation, and two obligations of the same kind and goal in one declaration share one. Goals print in the surface syntax, with `it` replaced by the source text of the value; the normalized goal collapses white space (ADR 0033).
 
+The normalized goal depends on the package's edition (ADR 0125, amendment of 2026-10-25):
+
+- In editions 0.1 to 0.3, it collapses white space, as above and unchanged, so the ids of their sources stay what they were. The hypotheses an obligation lists show their source text as written.
+- In edition 0.4, whose canonical form wraps long lines (`spec/15 §2`), white space that holds a line break right before a `)` or `]` token is erased first, and then white space collapses. A `)` or `]` inside a text literal is no token and is left alone. A wrapped line therefore gives the same goal and id as the same line on one line. The hypotheses an obligation lists, and the header and clauses that `una contract` shows, are normalized the same way. The normalization lexes the text once and reads each closer once: linear time and space.
+
 ## 9. Lock file and cache
 
 `verification.lock` sits at the package root and is committed:
@@ -179,11 +186,17 @@ step_budget      = 5000000
 random_seed      = 0
 ```
 
+`logic` is the logic of every query without an `F64` term. A query with one (edition `0.3`) declares the logic `ALL` and is sent with the step budget 5,000,000, a constant of the encoding `una-smt-1`, whatever `step_budget` sets (`spec/29 §8`).
+
 The proof cache lives in `.una/cache/proofs/` (not committed). The key is SHA-256 over the lock file contents and the exact query text; the value is the status, reason and model. Changing the lock invalidates the cache. Each entry is one JSON file named by the key in hex, written through a temporary file and a rename; an unreadable entry is solved again, and `unknown` with reason `wallclock` is never cached (ADR 0033). (v0.2, ADR 0064.) Each entry carries an HMAC-SHA-256 tag, under the user's secret key, over its key and its answer:
 - An entry whose tag is missing or does not match is not an answer. The query is solved again, and the entry is rewritten.
 - The key lives outside the package, in the file `UNA_PROOF_KEY` names, else `$HOME/.una/proof-cache.key`. `una` makes it on first use with 32 random bytes, readable by the user only.
 - With no key to read or make, a run uses no cache.
+- (ADR 0064, amendment of 2026-10-25; advisory UNA-SA-018.) An existing key file is used only when it is a regular file, not a symbolic link, with exactly one link, owned by the user running `una`, whose mode grants nothing to group or others, and of 16 to 4096 bytes, checked on the name and again on the opened file. Otherwise the run uses no cache, and `una` prints a note naming the key file and the reason, except under `--json` (`spec/13 §5`), where the report's `tcb.proof_cache_key` is `null`.
+- An entry is read only when it is a regular file of at most 64 KiB; anything else is a miss. An entry is written through a fresh temporary file renamed onto its own name: a link at that name is replaced, never followed.
 - The key file, not the cache, is part of the Trusted zone (`00-charter.md §3`).
+
+(v0.4, ADR 0122 rule 48.) For a package of edition `0.4`, the key is the domain-tagged, length-prefixed hash of the lock's `solver` section and the query of `spec/30 §7`, not the whole lock, so adding a dependency invalidates nothing; the tag keeps it apart from the key above.
 
 The build report counts the results that came from the cache (ADR 0041). Removing `.una/` verifies every obligation again. (In v0.1, entries were not authenticated, and the cache itself was in the Trusted zone.)
 

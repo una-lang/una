@@ -1,4 +1,4 @@
--- test: U3016 is at the effectful or failing argument, not at the pure one that fixed the type argument first (N-011)
+-- test: U3016 is at the effectful or failing argument, not at the pure one that fixed the type argument first
 -- spec: spec/05 §6
 -- expect: error U3016 at 35:29
 -- expect: error U3016 at 40:28

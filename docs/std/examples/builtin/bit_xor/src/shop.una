@@ -1,0 +1,9 @@
+module shop
+
+--- An item's flags with every one of the eight flipped.
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let flags: U8 = 250
+  let flipped = flags.bit_xor(mask: 255)
+  @console.print("{flipped}")

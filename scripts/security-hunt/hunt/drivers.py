@@ -52,8 +52,8 @@ def parse_check(run):
 
 
 def check(una, pkg_dir, root, timeout):
-    r = sandbox.run([una, "--json", "check", "--tier", "0", "."], cwd=pkg_dir, writable=root,
-                    timeout=timeout)
+    r = sandbox.run_fresh([una, "--json", "check", "--tier", "0", "."], cwd=pkg_dir, root=root,
+                          timeout=timeout)
     return parse_check(r)
 
 
@@ -77,7 +77,9 @@ def must_reject(rows, una, root, timeout, out, build=None):
         prog = (build or rebuild)(row)
         v = check(una, prog.write(root), root, timeout)
         result = dict(row, **v.row())
-        if row["class"] == MUST_REJECT:
+        if row["class"] == MUST_REJECT or (row["class"] == OPEN and row["expect"]):
+            # An open program with an expected code is a closed call (#813): a correct checker
+            # rejects it with that code, so an acceptance is a finding, as for must-reject.
             result["finding"] = v.kind == "accepted"
             got = {c[0] for c in v.codes}
             result["expect_seen"] = bool(got & set(row["expect"])) if row["expect"] else None
@@ -114,7 +116,7 @@ def must_keep(rows, una, root, timeout, out, refactors=("R6", "R9")):
             changed = (base.kind == "accepted") != (v.kind == "accepted")
             result = {
                 "name": prog.name, "op": prog.op, "seed": prog.seed, "edition": prog.edition,
-                "refactor": rid, "refactor_seed": rseed,
+                "refactor": rid, "refactor_seed": rseed, "expect": list(prog.expect),
                 "base": base.row(), "twin": v.row(), "finding": changed,
                 "direction": ("rejected-to-accepted" if v.kind == "accepted" else
                               "accepted-to-rejected") if changed else None,
@@ -143,7 +145,7 @@ FIXED_PRIMITIVE = "the primitive `fixed`"
 
 
 def judge_differ(exp, core_text, rec, main=None, expect_main=""):
-    """Part (b)'s verdict on one program `una check` accepted, fail-closed (N-99's rule, Una-2's
+    """Part (b)'s verdict on one program `una check` accepted, fail-closed (from a
     review of #527): `finding` when the re-check rejects a declaration, `clean` only when the
     export is complete and read, the re-check ran to its end, and every function of the export
     has its line; anything else is `unknown`, with why, and blocks "no finding".
@@ -167,7 +169,7 @@ def judge_differ(exp, core_text, rec, main=None, expect_main=""):
     outcomes = [r["outcome"] for r in rows]
     if "rejected" in outcomes:
         # A rejection the re-check printed is a finding even if it then timed out or crashed
-        # (Una-2's review of #527): the abnormal end goes into the detail, never hides it.
+        # (from the review of #527): the abnormal end goes into the detail, never hides it.
         out["kind"] = "finding"
         if rec is not None and (rec.timed_out or rec.code not in (0, 1)):
             out["detail"] = ("a rejected declaration, then the re-check timed out" if rec.timed_out
@@ -195,7 +197,7 @@ def judge_differ(exp, core_text, rec, main=None, expect_main=""):
     if missing:
         out["detail"] = f"the re-check has no line for {', '.join(missing[:3])}"
         return out
-    # A predicate's line says exactly "outside the flow model" (Una-2's review of #540), unless
+    # A predicate's line says exactly "outside the flow model" (from the review of #540), unless
     # the whole document fell back to one outcome: every line "not re-checked" for one reason
     # (`checkDocument`'s fallbacks, `docs/plan/formal-track-status.md`).
     fallback = (bool(rows) and all(r["outcome"] == "not re-checked" for r in rows)
@@ -211,7 +213,7 @@ def judge_differ(exp, core_text, rec, main=None, expect_main=""):
     if odd:
         out["detail"] = f"the re-check printed the outcome {odd[0]!r}"
         return out
-    # F8 (N-138): what the re-check says of the program's own declaration is part of the verdict.
+    # F8: what the re-check says of the program's own declaration is part of the verdict.
     # "not-rechecked" is clean only when it is not re-checked for its operands' unknown types, and
     # "outside" is `unknown`, out of F1, by design; either accepted is a finding (fail closed).
     if main is not None and expect_main in ("not-rechecked", "outside"):
@@ -233,7 +235,7 @@ def judge_differ(exp, core_text, rec, main=None, expect_main=""):
             return out
         out["kind"] = "clean"
         return out
-    # Family F stays inside the re-check's vocabulary by design (Una-2's review of #547): its
+    # Family F stays inside the re-check's vocabulary by design (from the review of #547): its
     # program's own declaration not re-checked is not a comparison, so it is `unknown`.
     if main is not None and any(r["decl"] == main and r["outcome"] == "not re-checked"
                                 for r in rows):
@@ -243,9 +245,14 @@ def judge_differ(exp, core_text, rec, main=None, expect_main=""):
     return out
 
 
+# The re-check's environment: a Lean panic aborts it, so the gate reads an abnormal end, never a
+# continued run after a panic.
+RECHECK_ENV = {"LEAN_ABORT_ON_PANIC": "1"}
+
+
 def differ(rows, una, core_check, root, timeout, out, z3=None):
     """Part (b): for each program `una check` accepts, exports its Core and runs the re-check on
-    it, and judges with `judge_differ`. A `finding` goes to the coordinator before any
+    it, and judges with `judge_differ`. A `finding` is reported privately before any
     interpretation; an `unknown` blocks the campaign's "no finding" until it is understood.
     Programs `una check` rejects are recorded only: the reverse direction is #514's."""
     tally = Counter()
@@ -254,7 +261,7 @@ def differ(rows, una, core_check, root, timeout, out, z3=None):
         pkg = prog.write(root)
         v = check(una, pkg, root, timeout)
         # The class is the generator's own, so a manifest written before a program was classified
-        # is judged by its class today (Una-2's review of #547).
+        # is judged by its class today (from the review of #547).
         result = dict(row, **v.row(), **{"class": prog.cls, "expect": prog.expect})
         result["differ"] = None
         result["finding"] = False
@@ -268,25 +275,27 @@ def differ(rows, una, core_check, root, timeout, out, z3=None):
             result["over_strict"] = v.kind != "accepted"
             tally[(row["op"], MUST_ACCEPT, v.kind)] += 1
         elif prog.cls == RESIDUAL:
-            # Descriptive (N-138): both tiers' verdicts are recorded. The full check is where the
+            # Descriptive: both tiers' verdicts are recorded. The full check is where the
             # `overflow` and `division` obligations are decided, the guard of this channel, so it
             # needs the solver (`judge_residual`).
             fv = None
             if z3:
-                fv = parse_check(sandbox.run([una, "--json", "check", "."], cwd=pkg, writable=root,
-                                             timeout=timeout, env_extra=solver_env(z3)))
-            r = judge_residual(v.kind, fv, prog.variant)
+                fv = parse_check(sandbox.run_fresh(
+                    [una, "--json", "check", ".", "--solver-wallclock", str(FULL_CHECK_WALLCLOCK)],
+                    cwd=pkg, root=root, timeout=timeout, env_extra=solver_env(z3)))
+            r = judge_residual(v.kind, fv, prog.variant, prog.expect, prog.prove)
             result.update(full=None if fv is None else fv.row(), **r)
             tally[(row["op"], RESIDUAL, "tier0 " + v.kind, "full " + r["full_kind"])] += 1
         if v.kind == "accepted":
-            exp = sandbox.run([una, "--json", "core", "."], cwd=pkg, writable=root,
-                              timeout=timeout)
+            exp = sandbox.run_fresh([una, "--json", "core", "."], cwd=pkg, root=root,
+                                    timeout=timeout)
             core = os.path.join(pkg, "core.json")
             with open(core, "w", encoding="utf-8") as f:
                 f.write(exp.stdout)
             rec = None
             if not exp.timed_out and exp.code == 0:
-                rec = sandbox.run([core_check, core], cwd=pkg, writable=root, timeout=timeout)
+                rec = sandbox.run_fresh([core_check, core], cwd=pkg, root=root, timeout=timeout,
+                                        env_extra=RECHECK_ENV)
             main = "app.main.run" if row["op"].startswith("F") else None
             j = judge_differ(exp, exp.stdout, rec, main=main, expect_main=prog.recheck)
             result.update(differ=j["kind"], differ_detail=j["detail"], recheck=j["recheck"],
@@ -295,7 +304,7 @@ def differ(rows, una, core_check, root, timeout, out, z3=None):
                           recheck_code=None if rec is None else rec.code,
                           recheck_timed_out=None if rec is None else rec.timed_out)
             if prog.cls == RESIDUAL:
-                # Never a clean comparison, in the rows file as in the tally (N-146): the
+                # Never a clean comparison, in the rows file as in the tally (#548): the
                 # re-check's own verdict stays in `differ_raw`.
                 result.update(differ="residual", differ_raw=j["kind"])
             if j["kind"] == "unknown" and not j.get("expected"):
@@ -315,30 +324,54 @@ def differ(rows, una, core_check, root, timeout, out, z3=None):
     return tally
 
 
-# The full check's codes that decide a residual program: its obligation refuted or unknown.
-OBLIGATION_CODES = {"U5001", "U5002"}
+# The full check's code that decides a residual program: its obligation refuted. An obligation
+# left unknown (U5002) decides nothing, so a row with it is invalid (#818).
+OBLIGATION_CODES = {"U5001"}
+# The solver's wall clock per query in that check, half its time limit (`gate.CHECK_TIMEOUT`, 60
+# seconds): a single query the solver does not decide ends as U5002, an invalid row. A check slower
+# in total, from several slow queries, still reaches the limit, and its timeout is invalid too, so
+# either way the row fails the gate.
+FULL_CHECK_WALLCLOCK = 30
 
 
-def judge_residual(tier0, full, variant):
-    """A residual program's verdicts (N-138, N-146), fail-closed. `tier0` is `una check --tier 0`'s
+def judge_residual(tier0, full, variant, expect=(), prove=False):
+    """A residual program's verdicts (#548), fail-closed. `tier0` is `una check --tier 0`'s
     kind, `full` the full check's `Verdict`, or None when no solver was given. The row is invalid,
     and the batch is rerun, unless the full check ran with the solver to an acceptance or to a
-    rejection by an obligation: no solver, U5003, a timeout, an ICE, a usage error, an unreadable
-    or inconsistent output, or a rejection by other codes, which tests nothing of the channel. A
-    public print after the step goes to triage when either check accepts it."""
+    rejection by a refuted obligation: no solver, U5003, an obligation left unknown (U5002), a
+    timeout, an ICE, a usage error, an unreadable or inconsistent output, or a rejection by other
+    codes, which tests nothing of the channel. A
+    public print after the step goes to triage when either check accepts it.
+
+    A row with `expect` (family Q, #813) is one the full check must reject with those codes and no
+    other, U5002 included: a rejection by any other code is invalid, and an acceptance is `missed`,
+    a finding. A row with `prove`, the twin of such a row, is one the full check must accept: any
+    rejection of it is invalid, so a full check that rejected every conditioned use, or left one
+    unknown, fails the gate."""
     after = variant.endswith("-print-after")
+    allowed = OBLIGATION_CODES | set(expect)
+    codes = {c[0] for c in full.codes} if full is not None else set()
     if full is None:
         kind = "invalid (no solver)"
     elif any(c[0] == "U5003" for c in full.codes):
         kind = "invalid (U5003)"
+    elif any(c[0] == "U5002" for c in full.codes):
+        kind = "invalid (U5002, the solver did not decide)"
     elif full.kind not in ("accepted", "rejected"):
         kind = f"invalid ({full.kind})"
-    elif full.kind == "rejected" and not {c[0] for c in full.codes} <= OBLIGATION_CODES:
-        kind = "invalid (rejected by " + ", ".join(sorted({c[0] for c in full.codes})) + ")"
+    elif full.kind == "rejected" and prove:
+        kind = ("invalid (a twin the full check must prove, rejected by "
+                + ", ".join(sorted(codes)) + ")")
+    elif full.kind == "rejected" and expect and (not codes or not codes <= set(expect)):
+        kind = ("invalid (rejected by " + ", ".join(sorted(codes)) + ", not only "
+                + ", ".join(expect) + ")")
+    elif full.kind == "rejected" and not codes <= allowed:
+        kind = "invalid (rejected by " + ", ".join(sorted(codes)) + ")"
     else:
         kind = full.kind
     return {"full_kind": kind, "invalid": kind.startswith("invalid"),
-            "triage": kind == "accepted" and after, "triage_tier0": tier0 == "accepted" and after}
+            "triage": kind == "accepted" and after, "triage_tier0": tier0 == "accepted" and after,
+            "missed": bool(expect) and kind == "accepted"}
 
 
 def solver_env(z3):

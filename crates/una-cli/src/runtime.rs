@@ -17,11 +17,12 @@ use una_interp::{
     Abort, Completion, EventDoc, ExampleRun, FileFault, Grant, Host, NotText, OutcomeDoc, Pairs,
     World,
 };
+use una_syntax::ast::Convention;
 use una_syntax::{SourceDb, Span};
 
 use crate::contract::Modules;
 use crate::verification::tier_one;
-use crate::{Analysis, Environment, ExitStatus, Package, analyze, load, on_large_stack};
+use crate::{Analysis, Environment, ExitStatus, Package, analyze, on_large_stack};
 
 /// The exit status of a package that the checks reject: 3 for an internal error, 1 otherwise.
 pub(crate) fn rejected_status(diagnostics: &[Diagnostic]) -> ExitStatus {
@@ -49,8 +50,13 @@ pub(crate) struct RunOptions<'a> {
     pub(crate) grants: &'a [String],
     /// `--max-depth`.
     pub(crate) max_depth: usize,
-    /// `--max-memory`, in MiB.
+    /// `--workers`, `--task-depth`, `--io-threads` and `--file-threads`, as given.
+    pub(crate) tasks: TaskFlags,
+    /// The memory budget, in MiB: `--max-memory` or its default, until the package's declared
+    /// budget applies ([`with_budget`]).
     pub(crate) max_memory: usize,
+    /// Whether `--max-memory` was given (ADR 0109 rule 4).
+    pub(crate) max_memory_given: bool,
     /// `--max-response` and `--http-timeout` (`spec/24 §4`).
     pub(crate) http: una_http::client::Settings,
     /// The heap of the process, as the binary counts it.
@@ -63,19 +69,120 @@ pub(crate) struct RunOptions<'a> {
     pub(crate) environment: Environment<'a>,
     /// How tier 1 runs the solver (ADR 0064).
     pub(crate) solving: crate::verification::Solving,
+    /// `--stop-after-iterations`: the host's stop after this many iterations have started
+    /// (ADR 0116 rule 19).
+    pub(crate) stop_after: Option<u64>,
+    /// `--virtual-time`: the run's clock is virtual (ADR 0116 rule 19, `spec/26 §8`). A test's
+    /// clock is virtual whatever this says.
+    pub(crate) virtual_time: bool,
+    /// `--deadline`: a host stop request after this many seconds (ADR 0116 rule 14).
+    pub(crate) deadline: Option<u64>,
+    /// `--stop-grace`: the seconds from the first host stop request to the hard stop (rule 16).
+    pub(crate) stop_grace: u64,
+    /// `--trace <file>`: the trace, written to the file as it happens (ADR 0117 rule 10).
+    pub(crate) trace: Option<&'a Path>,
+}
+
+/// The flags of tasks as given on the command line, each `None` when absent (ADR 0117).
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct TaskFlags {
+    pub(crate) workers: Option<usize>,
+    pub(crate) task_depth: Option<usize>,
+    pub(crate) io_threads: Option<usize>,
+    pub(crate) file_threads: Option<usize>,
+}
+
+impl TaskFlags {
+    /// The checked settings for a run of `max_depth`, or the message of the usage error. The
+    /// interpreter runs no coroutine before `first of` and `start` (ADR 0117 rule 11), so it
+    /// only checks them, and refuses what the executable refuses.
+    fn check(self, max_depth: usize) -> Result<una_interp::Concurrency, String> {
+        una_interp::Concurrency::from_flags(
+            max_depth,
+            self.workers,
+            self.task_depth,
+            self.io_threads,
+            self.file_threads,
+        )
+    }
+}
+
+/// A line for the thread that writes the output: to stdout, or to stderr.
+enum Line {
+    Out(String),
+    Err(String),
+}
+
+/// The trace file of `--trace`, written as the run goes (ADR 0117 rule 10): `[`, the events
+/// separated by `,`, then `]` once the run has ended, so a finished file is one JSON array.
+struct TraceFile {
+    file: io::BufWriter<std::fs::File>,
+    written: usize,
+    failed: Option<io::Error>,
+}
+
+impl TraceFile {
+    fn start(path: &Path) -> io::Result<TraceFile> {
+        Ok(TraceFile {
+            file: io::BufWriter::new(std::fs::File::create(path)?),
+            written: 0,
+            failed: None,
+        })
+    }
+
+    fn event(&mut self, event: &una_interp::Event) {
+        if self.failed.is_some() {
+            return;
+        }
+        let separator = if self.written == 0 { "[" } else { "," };
+        self.written += 1;
+        if let Err(error) = write!(self.file, "{separator}{}", una_interp::event_json(event)) {
+            self.failed = Some(error);
+        }
+    }
+
+    /// Closes the array and flushes the file: the error of the first write that failed.
+    fn finish(mut self) -> io::Result<()> {
+        if let Some(error) = self.failed.take() {
+            return Err(error);
+        }
+        let opening = if self.written == 0 { "[" } else { "" };
+        write!(self.file, "{opening}]")?;
+        self.file.flush()
+    }
 }
 
 /// The world of `una run`: printed lines go to the thread that writes stdout, environment
 /// variables come from the binary, and the other host operations reach the machine directly.
 struct HostWorld<'a> {
-    lines: Sender<String>,
+    lines: Sender<Line>,
     environment: Environment<'a>,
+    /// The trace file, and whether the run keeps its events too, for `--json`.
+    trace: Option<TraceFile>,
+    keep: bool,
+    /// The sources, for the position of a started task that ends alone.
+    sources: &'a SourceDb,
 }
 
 impl World for HostWorld<'_> {
     fn print(&mut self, line: &str) {
         // The receiver only goes away once stdout has failed, and that is reported then.
-        let _ = self.lines.send(line.to_owned());
+        let _ = self.lines.send(Line::Out(line.to_owned()));
+    }
+
+    /// The run keeps an event only for the document of `--json`: without it, the trace goes to
+    /// the file of `--trace`, or nowhere, so a long run's trace never grows in memory.
+    fn trace_event(&mut self, event: &una_interp::Event) -> bool {
+        if let Some(file) = &mut self.trace {
+            file.event(event);
+        }
+        !self.keep
+    }
+
+    fn task_aborted(&mut self, path: &str, abort: &Abort) {
+        let _ = self
+            .lines
+            .send(Line::Err(task_aborted_line(path, abort, self.sources)));
     }
 
     fn now(&mut self) -> i64 {
@@ -133,12 +240,23 @@ fn file_fault(error: io::Error) -> FileFault {
 }
 
 /// The limits of a run (`spec/11 §7`, ADR 0061).
-fn limits<'a>(options: &RunOptions<'a>) -> una_interp::Limits<'a> {
+fn limits<'a>(
+    options: &RunOptions<'a>,
+    stop: Option<&'a std::sync::Arc<una_interp::stopping::RunStop>>,
+) -> una_interp::Limits<'a> {
     una_interp::Limits {
         max_depth: options.max_depth,
         max_memory: options.max_memory,
         held: options.heap.held,
         http: options.http,
+        stop_after: options.stop_after,
+        // Checked before the run starts, as a usage error.
+        task_depth: options
+            .tasks
+            .check(options.max_depth)
+            .map_or(options.max_depth, |settings| settings.task_depth),
+        stop,
+        kernels: &una_core::dense::variants::Kernels::BASELINE,
     }
 }
 
@@ -178,6 +296,47 @@ impl Drop for Ceiling<'_> {
     }
 }
 
+/// The budget of a run of a package that declares one (ADR 0109 rule 4): the declared value,
+/// which `--max-memory` (`given`) may lower and never raise; without a declared budget, the
+/// flag's value or `default`. `Err` is the usage error when the flag asks for more. O(1).
+pub(crate) fn declared_budget(
+    given: Option<usize>,
+    default: usize,
+    declared: Option<u64>,
+) -> Result<usize, String> {
+    let Some(declared) = declared else {
+        return Ok(given.unwrap_or(default));
+    };
+    let declared_mib = usize::try_from(declared).unwrap_or(usize::MAX);
+    match given {
+        Some(flag) if flag > declared_mib => Err(format!(
+            "--max-memory {flag} is above the package's declared max_memory of {declared} MiB; it may lower the budget, never raise it"
+        )),
+        Some(flag) => Ok(flag),
+        None => Ok(declared_mib),
+    }
+}
+
+/// `options` with the package's declared budget applied, or the usage error written to
+/// `stderr` and exit code 2 (ADR 0109 rule 4).
+fn with_budget<'a>(
+    mut options: RunOptions<'a>,
+    declared: Option<u64>,
+    stderr: &mut dyn Write,
+) -> io::Result<Result<RunOptions<'a>, ExitStatus>> {
+    let given = options.max_memory_given.then_some(options.max_memory);
+    match declared_budget(given, options.max_memory, declared) {
+        Ok(budget) => {
+            options.max_memory = budget;
+            Ok(Ok(options))
+        }
+        Err(message) => {
+            writeln!(stderr, "error: {message}")?;
+            Ok(Err(ExitStatus::Usage))
+        }
+    }
+}
+
 /// `una run [path]`: checks the package at tier 1 with the grants of `[run] grants` and
 /// `--grant` (U3012), then runs `main` of the entry module (`spec/04 §8`).
 pub(crate) fn run_command(
@@ -186,7 +345,11 @@ pub(crate) fn run_command(
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> io::Result<ExitStatus> {
-    let package = match load(path) {
+    let package = match crate::package::load_in(
+        path,
+        &std::collections::BTreeMap::new(),
+        options.solving.itaoca.as_ref(),
+    ) {
         Ok(package) => package,
         Err(error) => {
             writeln!(stderr, "error: {error}")?;
@@ -196,6 +359,11 @@ pub(crate) fn run_command(
     // `[run] grants` resolve against the package root, `--grant` flags against
     // the current directory, and they add up.
     let (manifest, _) = crate::package::project(&package);
+    // The declared budget applies before anything runs (ADR 0109 rule 4).
+    let options = match with_budget(options, manifest.max_memory, stderr)? {
+        Ok(options) => options,
+        Err(status) => return Ok(status),
+    };
     let root = package
         .manifest
         .and_then(|id| package.disk_paths.get(&id))
@@ -226,6 +394,24 @@ pub(crate) fn run_command(
         let found = tier_one(&package, &analysis.program, &options.solving);
         analysis.diagnostics = found.diagnostics;
     }
+    // A `--grant` with limits needs edition 0.4 and `L_lim` at most `internal` (ADR 0117 IF4,
+    // `spec/27 §9` rule 5): a usage error before `main` starts. The manifest's grants are
+    // `una check`'s to report (U4001).
+    if analysis.diagnostics.is_empty() {
+        let label = analysis.limit_label.to_string();
+        let limit = (manifest.edition >= una_project::Edition::V0_4).then(|| {
+            (
+                label.as_str(),
+                analysis
+                    .limit_label
+                    .flows_to(&crate::build::internal_label()),
+            )
+        });
+        if let Err(message) = una_interp::check_limited_flags(options.grants, limit) {
+            writeln!(stderr, "error: {message}")?;
+            return Ok(ExitStatus::Usage);
+        }
+    }
     if !analysis.diagnostics.is_empty() {
         let document = RunDocument::rejected(&analysis.diagnostics);
         let status = rejected_status(&analysis.diagnostics);
@@ -238,20 +424,37 @@ pub(crate) fn run_command(
             status,
         );
     }
-    // The entry is `[run] entry`, or the module of a single file.
-    let Some(entry) = analysis.entry.clone() else {
-        writeln!(
-            stderr,
-            "error: una.toml has no `[run] entry`; name the module whose `main` runs"
-        )?;
-        return Ok(ExitStatus::Usage);
-    };
-    let Some(main) = entry_main(&analysis, &package.sources, &entry) else {
-        writeln!(
-            stderr,
-            "error: the module `{entry}` has no `pub main() -> Unit` to run"
-        )?;
-        return Ok(ExitStatus::Usage);
+    // The module the host drives (ADR 0116 rule 3), whose `init` starts the run; or the entry,
+    // `[run] entry` or the module of a single file, whose `main` runs.
+    let drive = manifest.drive.as_ref().map(|drive| una_interp::Drive {
+        ticks: drive.ticks,
+        budget: drive.budget,
+    });
+    let (entry, start) = if let Some(driven) = &manifest.drive {
+        let module = driven.module.value.clone();
+        match driven_init(&analysis, &package.sources, &module) {
+            Ok(init) => (module, init),
+            Err(message) => {
+                writeln!(stderr, "error: {message}")?;
+                return Ok(ExitStatus::Usage);
+            }
+        }
+    } else {
+        let Some(entry) = analysis.entry.clone() else {
+            writeln!(
+                stderr,
+                "error: una.toml has no `[run] entry`; name the module whose `main` runs"
+            )?;
+            return Ok(ExitStatus::Usage);
+        };
+        let Some(main) = entry_main(&analysis, &package.sources, &entry) else {
+            writeln!(
+                stderr,
+                "error: the module `{entry}` has no `pub main() -> Unit` to run"
+            )?;
+            return Ok(ExitStatus::Usage);
+        };
+        (entry, main)
     };
     let keys = match load_keys(&grants) {
         Ok(keys) => keys,
@@ -260,7 +463,32 @@ pub(crate) fn run_command(
             return Ok(ExitStatus::Usage);
         }
     };
-    let host = Host { grants, keys };
+    // ADR 0116 amendment, P8 (#1148): the client's TLS settings are built before `main` when
+    // the grants include `Http`, as a native executable builds them, never at a first request.
+    if grants
+        .iter()
+        .any(|grant| matches!(grant, una_interp::Grant::Http(_)))
+    {
+        una_http::client::prepare();
+        // The client's lookup and connect pools, all their threads at once (`spec/24 §4` rule 2).
+        let io_threads = options
+            .tasks
+            .io_threads
+            .unwrap_or(una_interp::concurrency::DEFAULT_IO_THREADS);
+        if una_http::resolve::start(io_threads).is_err() {
+            writeln!(
+                stderr,
+                "[{}] Error: the lookup and connect threads of this run's requests could not be made",
+                Code::U6003
+            )?;
+            return Ok(ExitStatus::Errors);
+        }
+    }
+    let host = Host {
+        grants,
+        keys,
+        virtual_time: options.virtual_time,
+    };
     let Some(stack) = una_interp::stack_bytes(options.max_depth) else {
         writeln!(
             stderr,
@@ -269,12 +497,60 @@ pub(crate) fn run_command(
         )?;
         return Ok(ExitStatus::Usage);
     };
-    let (sender, receiver) = channel::<String>();
+    if let Err(message) = options.tasks.check(options.max_depth) {
+        writeln!(stderr, "error: {message}")?;
+        return Ok(ExitStatus::Usage);
+    }
+    // ADR 0116 rule 18: a run that can reach a `for ever` or runs a driver installs the
+    // handlers of SIGINT and SIGTERM; any other keeps their default actions.
+    // The run's host stop state is made first, so a signal that comes while the handlers are
+    // installed counts for the run.
+    let stops = takes_stops(&analysis, &package.sources, &entry, drive.is_some());
+    let stop = una_interp::stopping::RunStop::new(options.stop_grace);
+    if stops && let Err(una_sys::signals::InstallError(message)) = una_sys::signals::install() {
+        writeln!(stderr, "internal compiler error (U8001): {message}")?;
+        return Ok(ExitStatus::Internal);
+    }
+    // The run's watcher when a request can come: a signal, or the deadline (rules 14 and 16).
+    // Its guard ends the watch on every way out, a panic's included.
+    let watching = if stops || options.deadline.is_some() {
+        match stop.watch(options.deadline.map(std::time::Duration::from_secs)) {
+            Ok(watching) => Some(watching),
+            Err(error) => {
+                writeln!(
+                    stderr,
+                    "internal compiler error (U8001): cannot start the watcher of host stops: {error}"
+                )?;
+                return Ok(ExitStatus::Internal);
+            }
+        }
+    } else {
+        None
+    };
+    // The trace file of `--trace` is made before the run starts: one that cannot be made is
+    // a usage error, as for the executable (`spec/16 §3` rule 4).
+    let trace_file = match options.trace {
+        Some(path) => match TraceFile::start(path) {
+            Ok(file) => Some(file),
+            Err(error) => {
+                writeln!(
+                    stderr,
+                    "error: cannot write the trace to `{}`: {error}",
+                    path.display()
+                )?;
+                return Ok(ExitStatus::Usage);
+            }
+        },
+        None => None,
+    };
+    let keep = options.json;
+    let sources = &package.sources;
+    let (sender, receiver) = channel::<Line>();
     let program = &analysis.program;
     let entry_path = entry.as_str();
     let host = &host;
     let max_depth = options.max_depth;
-    let limits = limits(&options);
+    let limits = limits(&options, Some(&stop));
     let environment = options.environment;
     let mut output = Vec::new();
     let mut write_error = None;
@@ -287,16 +563,34 @@ pub(crate) fn run_command(
                 let mut world = HostWorld {
                     lines: sender,
                     environment,
+                    trace: trace_file,
+                    keep,
+                    sources,
                 };
-                una_interp::run_main(program, entry_path, &mut world, host, limits)
+                let run = match drive {
+                    Some(drive) => {
+                        una_interp::run_drive(program, entry_path, &mut world, host, limits, drive)
+                            .ok()
+                    }
+                    None => una_interp::run_main(program, entry_path, &mut world, host, limits),
+                };
+                let traced = world.trace.take().map(TraceFile::finish);
+                (run, traced)
             })?;
         for line in receiver {
-            if options.json {
-                output.push(line);
-            } else if write_error.is_none()
-                && let Err(error) = writeln!(stdout, "{line}").and_then(|()| stdout.flush())
-            {
-                write_error = Some(error);
+            match line {
+                Line::Out(line) if options.json => output.push(line),
+                Line::Out(line) => {
+                    if write_error.is_none()
+                        && let Err(error) = writeln!(stdout, "{line}").and_then(|()| stdout.flush())
+                    {
+                        write_error = Some(error);
+                    }
+                }
+                // A started task that ended alone (`spec/27 §7`): its line as it happens.
+                Line::Err(line) => {
+                    let _ = writeln!(stderr, "{line}").and_then(|()| stderr.flush());
+                }
             }
         }
         Ok::<_, io::Error>(
@@ -306,6 +600,23 @@ pub(crate) fn run_command(
         )
     });
     drop(ceiling);
+    drop(watching);
+    let (evaluated, traced) = match evaluated {
+        Ok((run, traced)) => (Ok(run), traced),
+        Err(error) => (Err(error), None),
+    };
+    // A trace file that could not be written is reported after the run, with exit code 2, as
+    // for the executable.
+    if let Some(Err(error)) = traced
+        && let Some(path) = options.trace
+    {
+        writeln!(
+            stderr,
+            "error: cannot write the trace to `{}`: {error}",
+            path.display()
+        )?;
+        return Ok(ExitStatus::Usage);
+    }
     let run = match evaluated {
         Ok(Some(run)) => run,
         Ok(None) => {
@@ -321,10 +632,14 @@ pub(crate) fn run_command(
         }
     };
     let root_location = root_location(&package);
-    let diagnostics: Vec<Diagnostic> =
-        completion_diagnostic(&run.completion, main.span, &package.sources, &root_location)
-            .into_iter()
-            .collect();
+    let diagnostics: Vec<Diagnostic> = completion_diagnostic(
+        &run.completion,
+        start.span,
+        &package.sources,
+        &root_location,
+    )
+    .into_iter()
+    .collect();
     // The program ran to its end after stdout failed. Its failure or abort is still reported,
     // then the failed write, with exit code 2, as the native executable does (#199).
     if let Some(error) = write_error {
@@ -346,7 +661,12 @@ pub(crate) fn run_command(
             Abort::Depth { .. }
             | Abort::Memory { .. }
             | Abort::HeaderValue { .. }
-            | Abort::NotText { .. },
+            | Abort::NotText { .. }
+            | Abort::NoRandomBytes
+            | Abort::Tables { .. }
+            | Abort::IntText { .. }
+            | Abort::HostStop { .. }
+            | Abort::Unstarted { .. },
         ) => ExitStatus::Errors,
         Completion::Aborted(Abort::Fault { .. }) => ExitStatus::Internal,
     };
@@ -424,6 +744,7 @@ pub(crate) fn entry_main<'a>(
         sources,
         interner: &analysis.interner,
         trees: &analysis.trees,
+        mounts: &analysis.mounts,
     };
     let (_, _, function) = modules.function(&format!("{entry}.main"))?;
     if !function.public || !function.params.is_empty() || !function.type_params.is_empty() {
@@ -438,6 +759,145 @@ pub(crate) fn entry_main<'a>(
         }
     )
     .then_some(main)
+}
+
+/// The message of U6007, which says why the hard stop came (ADR 0116 rule 16): the same in
+/// both engines.
+pub(crate) fn host_stop_message(hard: una_interp::stopping::HardStop) -> String {
+    una_interp::stopping::hard_stop_message(hard)
+}
+
+/// Whether a run of the package can take a host stop, so that it installs the handlers of
+/// SIGINT and SIGTERM (ADR 0116 rule 18): it runs a driver, or its `main` says `diverges`,
+/// the only way a run reaches a `for ever` (U3027, rule 8).
+pub(crate) fn takes_stops(
+    analysis: &Analysis,
+    sources: &SourceDb,
+    entry: &str,
+    driven: bool,
+) -> bool {
+    let modules = Modules {
+        sources,
+        interner: &analysis.interner,
+        trees: &analysis.trees,
+        mounts: &analysis.mounts,
+    };
+    driven
+        || modules
+            .function(&format!("{entry}.main"))
+            .is_some_and(|(_, _, main)| {
+                main.clauses
+                    .iter()
+                    .any(|clause| matches!(clause.kind, una_syntax::ast::ClauseKind::Diverges))
+            })
+}
+
+/// `init` of the driven module `module`, when the module has the shapes of ADR 0116 rule 2:
+/// `pub init() -> S`, `pub step(edit state: S, input: Tick) -> Unit` and, when declared,
+/// `pub on_stop(state: S) -> Unit`, with `Tick` of `std.drive`. Otherwise the message of the
+/// usage error.
+pub(crate) fn driven_init<'a>(
+    analysis: &'a Analysis,
+    sources: &SourceDb,
+    module: &str,
+) -> Result<&'a Fun, String> {
+    let modules = Modules {
+        sources,
+        interner: &analysis.interner,
+        trees: &analysis.trees,
+        mounts: &analysis.mounts,
+    };
+    let header = |name: &str| {
+        modules
+            .function(&format!("{module}.{name}"))
+            .map(|(_, _, function)| function)
+            .filter(|function| function.public && function.type_params.is_empty())
+    };
+    let core = |name: &str| {
+        let found = analysis.program.modules.iter().find(|m| m.path == module)?;
+        found.decls.iter().find_map(|decl| match decl {
+            Decl::Fun(fun) if fun.name == name => Some(fun.as_ref()),
+            _ => None,
+        })
+    };
+    let init = header("init")
+        .filter(|function| function.params.is_empty())
+        .and(core("init"))
+        .ok_or_else(|| format!("the driven module `{module}` has no `pub init() -> S` to start"))?;
+    let state = &init.result;
+    let step = header("step").is_some_and(|function| {
+        matches!(function.params.as_slice(), [held, input]
+            if held.convention == Some(Convention::Edit) && input.convention.is_none())
+    }) && core("step").is_some_and(|step| {
+        // `step(edit state: S, input)` returns `(S, Unit)` in Core (`spec/17 §3`).
+        matches!(step.params.as_slice(), [(_, held), (_, input)]
+            if same_type(held, state) && is_tick(input))
+            && matches!(&step.result, Type::Base { base: Base::Tuple(parts), .. }
+                if matches!(parts.as_slice(), [held, done] if same_type(held, state) && is_unit(done)))
+    });
+    if !step {
+        return Err(format!(
+            "the driven module `{module}` has no `pub step(edit state: S, input: Tick) -> Unit`, with S the result of `init`"
+        ));
+    }
+    let on_stop = match modules.function(&format!("{module}.on_stop")) {
+        None => true,
+        Some(_) => header("on_stop").is_some_and(
+            |function| matches!(function.params.as_slice(), [held] if held.convention.is_none()),
+        ) && core("on_stop").is_some_and(|on_stop| {
+            matches!(on_stop.params.as_slice(), [(_, held)] if same_type(held, state))
+                && is_unit(&on_stop.result)
+        }),
+    };
+    if !on_stop {
+        return Err(format!(
+            "`on_stop` of the driven module `{module}` is not `pub on_stop(state: S) -> Unit`, with S the result of `init`"
+        ));
+    }
+    Ok(init)
+}
+
+/// Whether two types are the same, labels and refinements aside.
+fn same_type(a: &Type, b: &Type) -> bool {
+    let all = |xs: &[Type], ys: &[Type]| {
+        xs.len() == ys.len() && xs.iter().zip(ys).all(|(x, y)| same_type(x, y))
+    };
+    match (a, b) {
+        (Type::Base { base: x, .. }, Type::Base { base: y, .. }) => match (x, y) {
+            (
+                Base::Named {
+                    module: m,
+                    name: n,
+                    args: xs,
+                },
+                Base::Named {
+                    module: k,
+                    name: o,
+                    args: ys,
+                },
+            ) => m == k && n == o && all(xs, ys),
+            (Base::Tuple(xs), Base::Tuple(ys)) => all(xs, ys),
+            _ => x == y,
+        },
+        _ => a == b,
+    }
+}
+
+/// Whether `ty` is `Tick` of `std.drive`.
+fn is_tick(ty: &Type) -> bool {
+    matches!(ty, Type::Base { base: Base::Named { module, name, .. }, .. }
+        if module == "std.drive" && name == "Tick")
+}
+
+/// Whether `ty` is `Unit`.
+fn is_unit(ty: &Type) -> bool {
+    matches!(
+        ty,
+        Type::Base {
+            base: Base::Unit,
+            ..
+        }
+    )
 }
 
 fn main_of<'a>(program: &'a Program, entry: &str) -> Option<&'a Fun> {
@@ -483,7 +943,8 @@ fn root_location(package: &Package) -> Location {
 }
 
 /// U6001 when `main` failed, U6003 when a call went too deep, U6004 for a header value with a
-/// control character, U6005 for host text that is not valid UTF-8, U8001 on a fault.
+/// control character, U6005 for host text that is not valid UTF-8, U6009 when the host gave no
+/// random bytes for keyed hashing, U8001 on a fault.
 fn completion_diagnostic(
     completion: &Completion,
     main: Span,
@@ -515,6 +976,26 @@ fn completion_diagnostic(
     }
 }
 
+/// The one line on stderr of a started task at `path` that ended alone after `abort` (`spec/27
+/// §7`).
+fn task_aborted_line(path: &str, abort: &Abort, sources: &SourceDb) -> String {
+    let (message, span) = match abort {
+        Abort::Depth { span, limit } => (
+            format!("this call exceeds the maximum call depth of {limit}"),
+            Some(*span),
+        ),
+        _ => ("it stopped".to_owned(), None),
+    };
+    let location = span.map(|span| sources.location(span));
+    una_interp::concurrency::ended_alone(
+        path,
+        &message,
+        location
+            .as_ref()
+            .map(|at| (at.file.as_str(), at.start.line, at.start.col)),
+    )
+}
+
 fn abort_diagnostic(abort: &Abort, sources: &SourceDb, root: &Location) -> Diagnostic {
     match abort {
         Abort::Depth { span, limit } => Diagnostic::error(
@@ -535,6 +1016,42 @@ fn abort_diagnostic(abort: &Abort, sources: &SourceDb, root: &Location) -> Diagn
         Abort::NotText { span, message } => {
             Diagnostic::error(Code::U6005, *message, sources.location(*span))
         }
+        // Before any code runs, so with no position of its own (`spec/13 §5`).
+        Abort::NoRandomBytes => Diagnostic::error(
+            Code::U6009,
+            "the host gave no random bytes for keyed hashing",
+            root.clone(),
+        ),
+        Abort::Tables { span } => Diagnostic::error(
+            Code::U6003,
+            "this call makes a hash table after the run's table counter reached its limit",
+            sources.location(*span),
+        ),
+        // A final value of `main` has no position of its own (`spec/11 §7`, #923).
+        Abort::IntText { span } => Diagnostic::error(
+            Code::U6003,
+            una_core::INT_TEXT_LIMIT_MESSAGE,
+            span.map_or_else(|| root.clone(), |span| sources.location(span)),
+        ),
+        Abort::HostStop { span, hard } => Diagnostic::error(
+            Code::U6007,
+            host_stop_message(*hard),
+            sources.location(*span),
+        ),
+        Abort::Unstarted { span, cap } => Diagnostic::error(
+            Code::U6003,
+            match cap {
+                Some(cap) => format!(
+                    "this `start` exceeds the {cap} started tasks this system allows at once, a quarter of `vm.max_map_count`"
+                ),
+                None if span.is_some() => {
+                    "this `start` could not run its task: no stack could be mapped for it"
+                        .to_owned()
+                }
+                None => "the root task could not run: no stack could be mapped for it".to_owned(),
+            },
+            span.map_or_else(|| root.clone(), |span| sources.location(span)),
+        ),
         Abort::Fault { message, span } => Diagnostic::error(
             Code::U8001,
             format!("evaluation stopped: {message}"),
@@ -551,16 +1068,26 @@ pub(crate) fn test_command(
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> io::Result<ExitStatus> {
-    let package = match load(path) {
+    let package = match crate::package::load_in(
+        path,
+        &std::collections::BTreeMap::new(),
+        options.solving.itaoca.as_ref(),
+    ) {
         Ok(package) => package,
         Err(error) => {
             writeln!(stderr, "error: {error}")?;
             return Ok(ExitStatus::Usage);
         }
     };
+    let (manifest, _) = crate::package::project(&package);
+    // The declared budget applies before any example runs (ADR 0109 rule 4).
+    let options = match with_budget(options, manifest.max_memory, stderr)? {
+        Ok(options) => options,
+        Err(status) => return Ok(status),
+    };
     // Edition `0.1` redacts labeled fields in an example's results and reasons; edition `0.2`
     // shows every field, since an example's data come from the source (ADR 0078).
-    let redact = crate::package::project(&package).0.edition == una_project::Edition::V0_1;
+    let redact = manifest.edition == una_project::Edition::V0_1;
     let mut analysis = on_large_stack(|| analyze(&package, None));
     if analysis.diagnostics.is_empty() {
         let found = tier_one(&package, &analysis.program, &options.solving);
@@ -594,9 +1121,28 @@ pub(crate) fn test_command(
         )?;
         return Ok(ExitStatus::Usage);
     };
-    let program = &analysis.program;
+    if let Err(message) = options.tasks.check(options.max_depth) {
+        writeln!(stderr, "error: {message}")?;
+        return Ok(ExitStatus::Usage);
+    }
+    // `una test` runs the examples of the root's modules only: a dependency's examples are
+    // checked as its own, and never run with the root's authority (ADR 0122 rule 52).
+    let mounts = crate::package::project(&package).0.mounts;
+    let mut tested = analysis.program.clone();
+    for module in &mut tested.modules {
+        let dependency = mounts.iter().any(|mount| {
+            module
+                .path
+                .strip_prefix(mount.local.as_str())
+                .is_some_and(|rest| rest.starts_with('.'))
+        });
+        if dependency {
+            module.examples.clear();
+        }
+    }
+    let program = &tested;
     let max_depth = options.max_depth;
-    let limits = limits(&options);
+    let limits = limits(&options, None);
     let ceiling = Ceiling::raise(&options);
     let evaluated = std::thread::scope(|scope| {
         let worker = std::thread::Builder::new()
@@ -716,7 +1262,17 @@ fn module_files(analysis: &Analysis, sources: &SourceDb) -> BTreeMap<String, Str
                 .iter()
                 .map(|segment| analysis.interner.resolve(segment.name))
                 .collect();
-            Some((path.join("."), sources.file(*id).path().to_owned()))
+            let file = sources.file(*id).path();
+            // A dependency's module `m` is `<local>.m` in the program (ADR 0122 rule 47).
+            let path = match analysis
+                .mounts
+                .iter()
+                .find(|mount| file.starts_with(&mount.src))
+            {
+                Some(mount) => format!("{}.{}", mount.local, path.join(".")),
+                None => path.join("."),
+            };
+            Some((path, file.to_owned()))
         })
         .collect()
 }

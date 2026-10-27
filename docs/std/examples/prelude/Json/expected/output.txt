@@ -1,0 +1,7 @@
+nothing
+yes or no: true
+a whole number: 12
+a decimal: 9.95
+a text: lamp
+a list of 2
+an object of 1

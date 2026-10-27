@@ -6,14 +6,16 @@
 //! parses and names a schema the CLI prints. Each `una` or `./` line of a `sh` block exits with
 //! 0, or with the code of its `# exit N`, from the repository root, the directory of its
 //! `# in <dir>`, or a fresh copy of the directory of a `# copy <dir>` earlier in the block.
-//! Each example package's `README.md` holds only such `sh` blocks and the output of `una run`
-//! (#586). Every repository path that a guide writes in inline code names a file or directory
+//! Each example package's `README.md` holds only such `sh` blocks and `text` blocks, each of
+//! which names what it shows: a command's output or an excerpt of a file of the package (#586,
+//! #827). Every repository path that a guide writes in inline code names a file or directory
 //! of the repository (#651).
 //! Tier 1 needs Z3 at the version of `verification.lock` on the path.
 
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -64,6 +66,135 @@ struct Block {
     path: Option<String>,
     /// The package the block belongs to, numbered in order.
     package: Option<usize>,
+}
+
+impl Block {
+    /// The block's language: the first word after its opening fence.
+    fn kind(&self) -> &str {
+        self.lang.split_whitespace().next().unwrap_or("")
+    }
+
+    /// The attributes after the language, `key="value"` words separated by spaces (#827), or a
+    /// message saying what does not have that form.
+    fn attributes(&self) -> Result<Vec<(&str, &str)>, String> {
+        let mut rest = self.lang.trim_start()[self.kind().len()..].trim_start();
+        let mut out = Vec::new();
+        while !rest.is_empty() {
+            let (key, after) = rest
+                .split_once("=\"")
+                .ok_or_else(|| format!("`{rest}` is not key=\"value\""))?;
+            let (value, after) = after
+                .split_once('"')
+                .ok_or_else(|| format!("the value of `{key}` has no closing quote"))?;
+            if key.is_empty() || !key.chars().all(|c| c.is_ascii_lowercase()) {
+                return Err(format!("`{key}` is not an attribute name"));
+            }
+            if !(after.is_empty() || after.starts_with(' ')) {
+                return Err(format!("`{after}` follows the value of `{key}`"));
+            }
+            out.push((key, value));
+            rest = after.trim_start();
+        }
+        Ok(out)
+    }
+}
+
+/// Whether `excerpt` is an excerpt of `whole` (`compiler/testing.md §6`): with trailing spaces
+/// removed from every line, its lines are consecutive lines of `whole`, except that a line that
+/// is exactly `...` stands for any number of lines, none included. An `anchored` excerpt, the
+/// output of a command, also starts at `whole`'s first line, unless its own first line is
+/// `...`, and ends at its last line, unless its own last line is `...`. An excerpt with no line
+/// but blank ones and `...` shows nothing, and is not one.
+fn is_excerpt(excerpt: &str, whole: &str, anchored: bool) -> bool {
+    let lines: Vec<&str> = whole.lines().map(str::trim_end).collect();
+    let shown: Vec<&str> = excerpt.lines().map(str::trim_end).collect();
+    if shown.iter().all(|line| line.is_empty() || *line == "...") {
+        return false;
+    }
+    let open_start = !anchored || shown.first() == Some(&"...");
+    let open_end = !anchored || shown.last() == Some(&"...");
+    let segments: Vec<&[&str]> = shown
+        .split(|line| *line == "...")
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    let mut from = 0;
+    for (k, segment) in segments.iter().enumerate() {
+        let fits = |at: usize| {
+            lines.len() >= at + segment.len() && lines[at..at + segment.len()] == **segment
+        };
+        let last = k + 1 == segments.len();
+        let at = if k == 0 && !open_start {
+            Some(0).filter(|&at| fits(at))
+        } else if last && !open_end {
+            // The last run ends at the last line.
+            lines
+                .len()
+                .checked_sub(segment.len())
+                .filter(|&at| at >= from && fits(at))
+        } else {
+            // The earliest place for each run leaves the most room for the runs after it.
+            (from..=lines.len().saturating_sub(segment.len())).find(|&at| fits(at))
+        };
+        match at {
+            Some(at) => from = at + segment.len(),
+            None => return false,
+        }
+        if k == 0 && last && !open_end && from != lines.len() {
+            return false;
+        }
+    }
+    true
+}
+
+#[test]
+fn an_excerpt_is_a_run_of_lines_with_dots_for_the_lines_left_out() {
+    let whole = "a\nb  \nc\nd\ne\n";
+    // Unanchored, an excerpt of a file: anywhere.
+    for excerpt in [
+        "a\nb\n",
+        "b\nc\n",
+        "e\n",
+        "a\n...\nd\n",
+        "...\nc\n...\n",
+        "b \n...\ne\n",
+    ] {
+        assert!(is_excerpt(excerpt, whole, false), "{excerpt:?}");
+    }
+    for excerpt in [
+        "a\nc\n",
+        "d\nc\n",
+        "c\n...\nb\n",
+        "f\n",
+        "a\n..\nd\n",
+        "e\nf\n",
+        "a\n ...\nd\n",
+        "",
+        "...\n",
+        "\n...\n\n",
+    ] {
+        assert!(!is_excerpt(excerpt, whole, false), "{excerpt:?}");
+    }
+    // Anchored, the output of a command: from its first line to its last, but where `...` says.
+    for excerpt in [
+        "a\nb\nc\nd\ne\n",
+        "a\n...\ne\n",
+        "...\nd\ne\n",
+        "a\nb\n...\n",
+        "...\nc\n...\n",
+        "a\n...\nc\n...\ne\n",
+    ] {
+        assert!(is_excerpt(excerpt, whole, true), "{excerpt:?}");
+    }
+    for excerpt in [
+        "a\nb\n",
+        "d\ne\n",
+        "b\n...\ne\n",
+        "a\n...\nd\n",
+        "c\n",
+        "...\n",
+    ] {
+        assert!(!is_excerpt(excerpt, whole, true), "{excerpt:?}");
+    }
 }
 
 /// The blocks of `text`. A line holding only a path in backticks names the file of the next
@@ -126,6 +257,7 @@ fn scratch(line: usize) -> PathBuf {
 fn check(target: &Path) -> (Output, Vec<String>) {
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
         .args(["--json", "check", target.to_str().unwrap()])
         .output()
         .unwrap();
@@ -186,6 +318,28 @@ fn module_file(body: &str) -> PathBuf {
 /// Writes `una.toml` of `edition` and the lock of the repository into `dir`, each unless the
 /// package has its own: a page may show a lock, such as one naming another solver version.
 fn complete(dir: &Path, edition: &str) {
+    // From edition 0.4 a package is described by `ita.una` and pinned by `ita.lock` (ADR 0122):
+    // a package that gives `ita.una`, or a block of edition 0.4, gets the default lock and,
+    // when it gives none, a default `ita.una`.
+    let ita = dir.join("ita.una").exists()
+        || (edition.starts_with("0.") && edition >= "0.4" && !dir.join("una.toml").exists());
+    if ita {
+        if !dir.join("ita.una").exists() {
+            std::fs::write(
+                dir.join("ita.una"),
+                format!("ita demo\n  version 0.1.0\n  edition {edition}\n"),
+            )
+            .unwrap();
+        }
+        if !dir.join("ita.lock").exists() {
+            std::fs::write(
+                dir.join("ita.lock"),
+                "lock 1\n\nsolver\n  encoding \"una-smt-1\"\n  name \"z3\"\n  version \"5.1.0\"\n  logic \"QF_UFLIA\"\n  steps 5000000\n  seed 0\n",
+            )
+            .unwrap();
+        }
+        return;
+    }
     if !dir.join("una.toml").exists() {
         std::fs::write(dir.join("una.toml"), manifest(edition)).unwrap();
     }
@@ -202,6 +356,7 @@ fn complete(dir: &Path, edition: &str) {
 fn canonical(dir: &Path) -> Output {
     Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
         .args(["fmt", "--check", dir.to_str().unwrap()])
         .output()
         .unwrap()
@@ -268,6 +423,7 @@ fn run_commands(block: &Block, scratch_base: usize) {
         };
         let output = Command::new(&program)
             .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+            .env_remove("UNA_PROOF_KEY")
             .args(parts)
             .current_dir(&dir)
             .output()
@@ -299,11 +455,11 @@ fn check_guide(path: &str, scratch_base: usize) -> [usize; 4] {
         }
         let at = block.line;
         assert!(
-            ["una", "json", "sh", "text", "ebnf"].contains(&block.lang.as_str()),
+            ["una", "json", "sh", "text", "ebnf"].contains(&block.kind()),
             "{path}, block at line {at}: a `{}` block outside a package is not checked",
             block.lang
         );
-        match block.lang.as_str() {
+        match block.kind() {
             "una" => {
                 let (fails, edition) = directives(&block.body);
                 let dir = scratch(scratch_base + at);
@@ -666,7 +822,77 @@ fn every_construct_page_follows_the_template_and_its_blocks_check() {
                 "{relative}: {code} has no explain text"
             );
         }
+        let editions: BTreeSet<&str> = front
+            .lines()
+            .find_map(|line| line.strip_prefix("editions: "))
+            .unwrap_or_else(|| panic!("{relative}: the front matter has no `editions`"))
+            .trim_matches(|c| c == '[' || c == ']')
+            .split(',')
+            .map(str::trim)
+            .map(|edition| edition.trim_matches('"'))
+            .filter(|edition| !edition.is_empty())
+            .collect();
         let page_blocks = blocks(&text);
+        let mut packages: BTreeMap<usize, Vec<&Block>> = BTreeMap::new();
+        for block in &page_blocks {
+            if let Some(package) = block.package {
+                packages.entry(package).or_default().push(block);
+            }
+        }
+        for files in packages.values() {
+            if !files.iter().any(|file| file.lang == "una") {
+                continue;
+            }
+            let fails = files
+                .iter()
+                .filter(|file| file.lang == "una")
+                .find_map(|file| directives(&file.body).0);
+            if fails.is_some() {
+                continue;
+            }
+            let manifest_block = files
+                .iter()
+                .find(|file| matches!(file.path.as_deref(), Some("una.toml" | "ita.una")));
+            let edition = match manifest_block {
+                Some(file) if file.path.as_deref() == Some("una.toml") => {
+                    let (manifest, errors) = una_project::parse_manifest(&file.body);
+                    assert!(
+                        errors.is_empty(),
+                        "{relative}, package manifest at line {} has errors: {errors:?}",
+                        file.line
+                    );
+                    manifest.edition.name()
+                }
+                Some(file) => {
+                    let (manifest, errors) = una_project::ita::parse_ita_manifest(&file.body);
+                    assert!(
+                        errors.is_empty(),
+                        "{relative}, package manifest at line {} has errors: {errors:?}",
+                        file.line
+                    );
+                    manifest.edition.name()
+                }
+                None => "0.2",
+            };
+            assert!(
+                editions.contains(edition),
+                "{relative}, package at line {}: edition {edition} is not in the page's front matter `editions`",
+                files[0].line
+            );
+        }
+        for block in page_blocks
+            .iter()
+            .filter(|block| block.package.is_none() && block.lang == "una")
+        {
+            let (fails, edition) = directives(&block.body);
+            if fails.is_none() {
+                assert!(
+                    editions.contains(edition),
+                    "{relative}, block at line {}: edition {edition} is not in the page's front matter `editions`",
+                    block.line
+                );
+            }
+        }
         for block in page_blocks.iter().filter(|block| block.lang == "una") {
             if let (Some(code), _) = directives(&block.body) {
                 assert!(
@@ -687,9 +913,10 @@ fn every_construct_page_follows_the_template_and_its_blocks_check() {
 #[test]
 fn every_example_has_a_readme_whose_commands_run() {
     // #586: each package of `examples/` has a `README.md`. Its code is only `sh` blocks, whose
-    // commands run as the guides' do, and the `text` block after them, which is what `una run`
-    // prints. Its `Edition` part names the edition of the package's `una.toml`, and each of
-    // its relative links leads to a file of the repository.
+    // commands run as the guides' do, and `text` blocks, each of which names what it shows
+    // (#827): one is what `una run` prints, the others what a command prints or an excerpt of a
+    // file of the package. Its `Edition` part names the edition of the package's `una.toml`,
+    // and each of its relative links leads to a file of the repository.
     let root = repository();
     let mut names: Vec<String> = std::fs::read_dir(root.join("examples"))
         .unwrap()
@@ -700,27 +927,83 @@ fn every_example_has_a_readme_whose_commands_run() {
         .collect();
     names.sort();
     assert!(!names.is_empty(), "no example packages");
+    // Every excerpt that does not match, so one run lists them all.
+    let mut mismatches: Vec<String> = Vec::new();
+    // The changes the READMEs show, as NAME/mistakes/N, and the pinned change files used.
+    let mut shown_changes: BTreeSet<String> = BTreeSet::new();
+    let mut pinned_used: BTreeSet<String> = BTreeSet::new();
     for (index, name) in names.iter().enumerate() {
         let package = root.join("examples").join(name);
         let relative = format!("examples/{name}/README.md");
         let text = std::fs::read_to_string(package.join("README.md"))
             .unwrap_or_else(|_| panic!("{relative} is missing"));
+        // Only fences of backticks at the start of a line are read as blocks: a fence of tildes,
+        // or an indented one, would be skipped, so it fails (#827).
+        for (number, line) in text.lines().enumerate() {
+            let fence = line.trim_start();
+            assert!(
+                !(fence.starts_with("~~~")
+                    || (fence.starts_with("```") && fence.len() != line.len())),
+                "{relative}, line {}: a fence of tildes, or an indented fence, is not read; write ``` at the start of the line",
+                number + 1
+            );
+        }
         let readme_blocks = blocks(&text);
         for block in &readme_blocks {
             assert!(
-                ["sh", "text"].contains(&block.lang.as_str()),
+                ["sh", "text"].contains(&block.kind()),
                 "{relative}, block at line {}: a `{}` block is not checked",
                 block.line,
                 block.lang
             );
         }
+        // Each `text` block says what it shows (#827): the output of a command run in the
+        // package, `una="ARGS"`; an excerpt of one of its files, `file="PATH"`; or, with
+        // `after="mistakes/N"`, what a change to the package shows.
+        let excerpts: Vec<(&Block, Vec<(&str, &str)>)> = readme_blocks
+            .iter()
+            .filter(|block| block.kind() == "text")
+            .map(|block| {
+                let attributes = block.attributes().unwrap_or_else(|why| {
+                    panic!("{relative}, block at line {}: {why}", block.line)
+                });
+                for (key, _) in &attributes {
+                    assert!(
+                        ["una", "file", "after"].contains(key),
+                        "{relative}, block at line {}: no attribute `{key}`",
+                        block.line
+                    );
+                }
+                let shows = attributes.iter().filter(|(key, _)| *key != "after").count();
+                assert_eq!(
+                    shows,
+                    1,
+                    "{relative}, block at line {}: a `text` block names what it shows, una=\"ARGS\" or file=\"PATH\", once",
+                    block.line
+                );
+                (block, attributes)
+            })
+            .collect();
+        let value = |attributes: &[(&str, &str)], wanted: &str| {
+            attributes
+                .iter()
+                .find(|(key, _)| *key == wanted)
+                .map(|(_, value)| value.to_string())
+        };
         let checked = check_guide(&relative, 2_000_000 + index * 10_000);
         assert!(checked[2] > 0, "{relative}: no commands");
 
-        let printed = readme_blocks
+        let runs: Vec<&Block> = excerpts
             .iter()
-            .find(|block| block.lang == "text")
-            .unwrap_or_else(|| panic!("{relative}: no `text` block of what `una run` prints"));
+            .filter(|(_, attributes)| value(attributes, "una").as_deref() == Some("run ."))
+            .map(|(block, _)| *block)
+            .collect();
+        assert_eq!(
+            runs.len(),
+            1,
+            "{relative}: one `text una=\"run .\"` block of what `una run` prints"
+        );
+        let printed = runs[0];
         // `[package]` requires `name` and `edition` (`spec/13 §7`).
         let manifest = std::fs::read_to_string(package.join("una.toml")).unwrap();
         let key = |wanted: &str| -> String {
@@ -739,6 +1022,7 @@ fn every_example_has_a_readme_whose_commands_run() {
         let una = |args: &[&str]| {
             Command::new(env!("CARGO_BIN_EXE_una"))
                 .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+                .env_remove("UNA_PROOF_KEY")
                 .args(args)
                 .current_dir(&copy)
                 .output()
@@ -759,6 +1043,7 @@ fn every_example_has_a_readme_whose_commands_run() {
         );
         let output = Command::new(copy.join("target/una").join(key("name")))
             .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+            .env_remove("UNA_PROOF_KEY")
             .current_dir(&copy)
             .output()
             .unwrap();
@@ -767,6 +1052,229 @@ fn every_example_has_a_readme_whose_commands_run() {
             printed.body,
             "{relative}: what the native executable prints"
         );
+        // The other excerpts, in the README's order, in the same copy, after `una run .`,
+        // `una build .` and `una check .` (so `una obligations .` reads the cache the README says
+        // it reads). Each command must exit with 0.
+        let clean = una(&["--color", "never", "check", "."]);
+        assert!(clean.status.success(), "{relative}: `una check .` fails");
+        // The README's common mistakes, the `### ` items under `## Common mistakes`, which a block
+        // `after="mistakes/N"` names by number.
+        let mistakes = text
+            .split("\n## Common mistakes\n")
+            .nth(1)
+            .map(|part| {
+                part.split("\n## ")
+                    .next()
+                    .unwrap()
+                    .lines()
+                    .filter(|line| line.starts_with("### "))
+                    .count()
+            })
+            .unwrap_or(0);
+        // A file of the package that a block names: a relative path below it, no `..`.
+        let package_file = |at: usize, file: &str| -> PathBuf {
+            let named = Path::new(file);
+            assert!(
+                named.is_relative()
+                    && named
+                        .components()
+                        .all(|part| matches!(part, std::path::Component::Normal(_))),
+                "{relative}, block at line {at}: file=\"{file}\" is not a path inside the package"
+            );
+            let path = package.join(named);
+            assert!(
+                path.is_file()
+                    && path
+                        .canonicalize()
+                        .unwrap()
+                        .starts_with(package.canonicalize().unwrap()),
+                "{relative}, block at line {at}: no file {file} in the package"
+            );
+            named.to_path_buf()
+        };
+        // The lines of the `### ` items under `## Common mistakes`, in order: a block
+        // `after="mistakes/N"` sits under the Nth (#827).
+        let lines: Vec<&str> = text.lines().collect();
+        let section = lines.iter().position(|line| *line == "## Common mistakes");
+        let mut headings: Vec<usize> = Vec::new();
+        let mut section_end = lines.len() + 1;
+        if let Some(start) = section {
+            for (k, line) in lines.iter().enumerate().skip(start + 1) {
+                if line.starts_with("## ") {
+                    section_end = k + 1;
+                    break;
+                }
+                if line.starts_with("### ") {
+                    headings.push(k + 1);
+                }
+            }
+        }
+        let mut diagnosed: BTreeSet<String> = BTreeSet::new();
+        // The package after each change a README shows (#827): the files of
+        // `tests/fixtures/examples/NAME/mistakes/N/`, each replacing a file of the package, laid
+        // over a fresh copy, and what `una --color never check .` prints for it, which must
+        // reject it.
+        let mut changed: BTreeMap<String, (PathBuf, Vec<String>, String)> = BTreeMap::new();
+        for (block, attributes) in &excerpts {
+            let at = block.line;
+            let Some(after) = value(attributes, "after") else {
+                continue;
+            };
+            let number = after
+                .strip_prefix("mistakes/")
+                .filter(|n| {
+                    !n.is_empty() && !n.starts_with('0') && n.chars().all(|c| c.is_ascii_digit())
+                })
+                .and_then(|n| n.parse::<usize>().ok());
+            assert!(
+                number.is_some_and(|n| (1..=mistakes).contains(&n)),
+                "{relative}, block at line {at}: after=\"{after}\" names none of the {mistakes} common mistakes (mistakes/1 to mistakes/{mistakes})"
+            );
+            let n = number.unwrap();
+            let under = headings[n - 1];
+            let next = headings.get(n).copied().unwrap_or(section_end);
+            assert!(
+                under < at && at < next,
+                "{relative}, block at line {at}: after=\"{after}\" is not under the common mistake it names, the one at line {under}"
+            );
+            if changed.contains_key(&after) {
+                continue;
+            }
+            let overlay = root.join("tests/fixtures/examples").join(name).join(&after);
+            assert!(
+                overlay.is_dir(),
+                "{relative}, block at line {at}: no tests/fixtures/examples/{name}/{after}"
+            );
+            let files = overlay_files(&overlay, &overlay);
+            assert!(
+                !files.is_empty(),
+                "tests/fixtures/examples/{name}/{after} holds no file"
+            );
+            let dir = scratch(2_000_000 + index * 10_000 + 9_000 + changed.len()).join(name);
+            copy_dir(&package, &dir);
+            for file in &files {
+                assert!(
+                    package.join(file).is_file(),
+                    "tests/fixtures/examples/{name}/{after}/{file} replaces no file of the package"
+                );
+                // The change is made on the package's file as it is now: outside one region of at
+                // most a few lines, the two are the same, so an edit of the example elsewhere
+                // fails here rather than leaving the README checked against an old copy.
+                let original = std::fs::read_to_string(package.join(file)).unwrap();
+                let replacement = std::fs::read_to_string(overlay.join(file)).unwrap();
+                let key = format!("{name}/{after}/{file}");
+                let pinned = CHANGES.iter().find(|(change, _, _)| *change == key);
+                let region = change_region(&original, &replacement);
+                assert!(
+                    pinned.is_some_and(|(_, removed, added)| region == (*removed, *added)),
+                    "tests/fixtures/examples/{key}: replaces {} line(s) of the package's file with {}, where CHANGES pins {:?}; if the example changed, make the change again on the current file",
+                    region.0,
+                    region.1,
+                    pinned.map(|(_, removed, added)| (removed, added))
+                );
+                pinned_used.insert(key);
+                std::fs::copy(overlay.join(file), dir.join(file)).unwrap();
+            }
+            let output = Command::new(env!("CARGO_BIN_EXE_una"))
+                .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+                .env_remove("UNA_PROOF_KEY")
+                .args(["--color", "never", "check", "."])
+                .current_dir(&dir)
+                .output()
+                .unwrap();
+            assert!(
+                !output.status.success(),
+                "{relative}: `una check .` accepts the package after {after}"
+            );
+            assert!(
+                output.stdout.is_empty(),
+                "{relative}: `una check .` prints on standard output after {after}"
+            );
+            let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+            changed.insert(after, (dir, files, stderr));
+        }
+        for (block, attributes) in &excerpts {
+            let at = block.line;
+            if let Some(after) = value(attributes, "after") {
+                let (dir, files, stderr) = &changed[&after];
+                shown_changes.insert(format!("{name}/{after}"));
+                if let Some(file) = value(attributes, "file") {
+                    let named = package_file(at, &file);
+                    assert!(
+                        files.contains(&file),
+                        "{relative}, block at line {at}: {after} does not change {file}"
+                    );
+                    let whole = std::fs::read_to_string(dir.join(named)).unwrap();
+                    if !is_excerpt(&block.body, &whole, false) {
+                        mismatches.push(format!(
+                            "{relative}, block at line {at}: not an excerpt of {file} after {after}:\n{}",
+                            block.body
+                        ));
+                    }
+                } else {
+                    let args = value(attributes, "una").unwrap();
+                    assert_eq!(
+                        args, "check .",
+                        "{relative}, block at line {at}: after a change, a block shows what `una check .` prints"
+                    );
+                    diagnosed.insert(after.clone());
+                    if !is_excerpt(&block.body, stderr, true) {
+                        mismatches.push(format!(
+                            "{relative}, block at line {at}: not an excerpt of what `una check .` prints after {after}:\n{}\nIt prints:\n{stderr}",
+                            block.body
+                        ));
+                    }
+                }
+                continue;
+            }
+            if let Some(file) = value(attributes, "file") {
+                let whole = std::fs::read_to_string(package.join(package_file(at, &file))).unwrap();
+                if !is_excerpt(&block.body, &whole, false) {
+                    mismatches.push(format!(
+                        "{relative}, block at line {at}: not an excerpt of {file}:\n{}",
+                        block.body
+                    ));
+                }
+                continue;
+            }
+            let args = value(attributes, "una").unwrap();
+            if args == "run ." {
+                continue;
+            }
+            let words: Vec<&str> = args.split_whitespace().collect();
+            let mut command = vec!["--color", "never"];
+            command.extend(&words);
+            let output = una(&command);
+            assert!(
+                output.status.success(),
+                "{relative}, block at line {at}: `una {args}` fails: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let shown = String::from_utf8_lossy(&output.stdout);
+            if !is_excerpt(&block.body, &shown, true) {
+                mismatches.push(format!(
+                    "{relative}, block at line {at}: not an excerpt of what `una {args}` prints:\n{}\nIt prints:\n{shown}",
+                    block.body
+                ));
+            }
+        }
+
+        // Every common mistake has its change and a block of what `una check .` prints after it.
+        for n in 1..=mistakes {
+            let after = format!("mistakes/{n}");
+            assert!(
+                root.join("tests/fixtures/examples")
+                    .join(name)
+                    .join(&after)
+                    .is_dir(),
+                "{relative}: common mistake {n} has no tests/fixtures/examples/{name}/{after}"
+            );
+            assert!(
+                diagnosed.contains(&after),
+                "{relative}: common mistake {n} has no `text una=\"check .\" after=\"{after}\"` block"
+            );
+        }
+
         let part = text
             .split("\n## Edition\n")
             .nth(1)
@@ -798,6 +1306,138 @@ fn every_example_has_a_readme_whose_commands_run() {
         );
         assert!(links > 0, "{relative}: no links");
     }
+    assert!(mismatches.is_empty(), "{}", mismatches.join("\n\n"));
+    // Every change under tests/fixtures/examples is one a README shows.
+    let fixtures = root.join("tests/fixtures/examples");
+    for entry in std::fs::read_dir(&fixtures).unwrap() {
+        let name = entry.unwrap().file_name().to_str().unwrap().to_owned();
+        assert!(
+            !name.starts_with('.'),
+            "tests/fixtures/examples/{name}: a hidden file among the examples' changes, such as .DS_Store; remove it"
+        );
+        assert!(
+            names.contains(&name),
+            "tests/fixtures/examples/{name}: no such example"
+        );
+        for change in std::fs::read_dir(fixtures.join(&name).join("mistakes")).unwrap() {
+            let number = change.unwrap().file_name().to_str().unwrap().to_owned();
+            assert!(
+                !number.starts_with('.'),
+                "tests/fixtures/examples/{name}/mistakes/{number}: a hidden file among the changes, such as .DS_Store; remove it"
+            );
+            let after = format!("mistakes/{number}");
+            assert!(
+                shown_changes.contains(&format!("{name}/{after}")),
+                "tests/fixtures/examples/{name}/{after}: no block of its README shows it"
+            );
+        }
+    }
+    for (change, _, _) in CHANGES {
+        assert!(
+            pinned_used.contains(*change),
+            "CHANGES pins tests/fixtures/examples/{change}, which no change holds"
+        );
+    }
+}
+
+/// Each change file of `tests/fixtures/examples` (#827): how many lines of the package's file it
+/// replaces, and with how many, in its one region. Pinned, so an edit of the example anywhere,
+/// next to the change too, fails until the change is made again on the current file.
+const CHANGES: &[(&str, usize, usize)] = &[
+    ("events/mistakes/1/src/events/checkin.una", 1, 1),
+    ("events/mistakes/2/src/events/checkin.una", 1, 1),
+    ("events/mistakes/3/src/events/keys.una", 1, 2),
+    ("greenhouse/mistakes/1/src/greenhouse/climate.una", 1, 1),
+    ("greenhouse/mistakes/2/src/greenhouse/climate.una", 1, 1),
+    ("greenhouse/mistakes/3/src/greenhouse/climate.una", 1, 1),
+    ("hello/mistakes/1/src/hello.una", 4, 1),
+    ("hello/mistakes/2/src/hello.una", 2, 4),
+    ("journal/mistakes/1/src/journal/main.una", 1, 1),
+    ("journal/mistakes/2/src/journal/main.una", 1, 1),
+    ("pantry/mistakes/1/src/pantry/stock.una", 1, 0),
+    ("pantry/mistakes/2/src/pantry/stock.una", 1, 1),
+    ("pantry/mistakes/3/src/pantry/stock.una", 1, 0),
+    ("shortlinks/mistakes/1/src/shortlinks/links.una", 1, 1),
+    ("shortlinks/mistakes/2/src/shortlinks/links.una", 2, 1),
+    ("shortlinks/mistakes/3/src/shortlinks/links.una", 1, 1),
+    ("toolshelf/mistakes/1/src/toolshelf/tools.una", 1, 0),
+    ("toolshelf/mistakes/2/src/toolshelf/tools.una", 1, 1),
+    ("toolshelf/mistakes/3/src/toolshelf/main.una", 1, 1),
+    ("wordfreq/mistakes/1/src/wordfreq.una", 1, 0),
+    ("wordfreq/mistakes/2/src/wordfreq.una", 1, 1),
+    ("wordfreq/mistakes/3/src/wordfreq.una", 1, 0),
+];
+
+/// The one region in which `changed` differs from `original`: how many of `original`'s lines it
+/// replaces, and with how many, with the lines before and after it the same in both.
+fn change_region(original: &str, changed: &str) -> (usize, usize) {
+    let a: Vec<&str> = original.split('\n').collect();
+    let b: Vec<&str> = changed.split('\n').collect();
+    let prefix = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
+    let room = a.len().min(b.len()) - prefix;
+    let suffix = a
+        .iter()
+        .rev()
+        .zip(b.iter().rev())
+        .take(room)
+        .take_while(|(x, y)| x == y)
+        .count();
+    (a.len() - prefix - suffix, b.len() - prefix - suffix)
+}
+
+#[test]
+fn a_change_region_counts_the_lines_replaced_and_their_replacement() {
+    let original = "module a\n\npub f() -> Int = 1\n\npub g() -> Int = 2\n";
+    let one = "module a\n\npub f() -> Int = 3\n\npub g() -> Int = 2\n";
+    assert_eq!(change_region(original, one), (1, 1));
+    assert_eq!(
+        change_region(original, "module a\n\npub g() -> Int = 2\n"),
+        (2, 0)
+    );
+    assert_eq!(change_region(original, original), (0, 0));
+    // Two changes apart make one region that holds both.
+    let two = "module b\n\npub f() -> Int = 3\n\npub g() -> Int = 2\n";
+    assert_eq!(change_region(original, two), (3, 3));
+}
+
+/// The files under `dir`, as paths relative to `root` with `/` between their parts, sorted.
+fn overlay_files(root: &Path, dir: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let entry = entry.unwrap();
+        let path = entry.path();
+        let shown = path.strip_prefix(root).unwrap().display().to_string();
+        assert!(
+            !entry.file_name().to_str().unwrap().starts_with('.'),
+            "{}: a hidden file in a change, such as .DS_Store; remove it",
+            path.display()
+        );
+        assert!(
+            !entry.file_type().unwrap().is_symlink(),
+            "{}: a symbolic link in a change; a change holds files only",
+            path.display()
+        );
+        if path.is_dir() {
+            out.extend(overlay_files(root, &path));
+        } else {
+            assert!(
+                shown.starts_with("src/")
+                    || shown.starts_with(&format!("src{}", std::path::MAIN_SEPARATOR)),
+                "{}: a change replaces files under src/ only",
+                path.display()
+            );
+            let relative = path.strip_prefix(root).unwrap();
+            out.push(
+                relative
+                    .components()
+                    .map(|part| part.as_os_str().to_str().unwrap())
+                    .collect::<Vec<_>>()
+                    .join("/"),
+            );
+        }
+    }
+    out.sort();
+    out
 }
 
 /// The repository paths that `text` writes in inline code outside fenced blocks (#651): a code

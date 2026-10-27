@@ -1,0 +1,16 @@
+-- test: a `when` nested in the arm of a `when` over an `Option`, testing the payload against a text literal that interpolates a `secret` value, is U4008 (S-28)
+-- spec: spec/07 §7
+-- expect: error U4008 at src/main.una:14:12
+module main
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let s: secret Text = "abc"
+  let o = Some("abc")
+  when o
+    is Some(x) ->
+      when x
+        is "{s}" -> @console.print("yes")
+        else -> @console.print("no")
+    is None -> @console.print("none")

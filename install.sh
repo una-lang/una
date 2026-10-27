@@ -43,7 +43,7 @@ set -eu
 
 # The release this script installs by default, and the Z3 it pins; a test keeps them equal to
 # the workspace version and to verification.lock and scripts/install-z3.sh.
-DEFAULT_VERSION=0.3.14
+DEFAULT_VERSION=0.3.16
 Z3_VERSION=5.1.0
 
 say() { printf '%s\n' "una install: $*"; }

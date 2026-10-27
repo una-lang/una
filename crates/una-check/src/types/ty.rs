@@ -4,7 +4,7 @@ use std::fmt;
 
 use una_syntax::Span;
 
-use una_core::IntType;
+use una_core::{Coll, IntType};
 
 use super::label::Label;
 pub(crate) use super::shared::{Flagged, Flags, Shared};
@@ -17,7 +17,7 @@ pub(crate) type AliasId = usize;
 pub(crate) type CapId = usize;
 
 /// What the label rules need to know of each record and sum kind, from the types of its fields
-/// and variant fields (re-review N-001, ADR 0046).
+/// and variant fields (ADR 0046).
 /// D-168: the labels a kind's fields declare count at positions that hold data, as
 /// in [`Ty::deep_label`]; the labels inside a field of function type do not, since every use of
 /// the field's function reads them from its declared type. The type arguments of a kind count
@@ -110,8 +110,11 @@ impl KindLabels {
         match ty {
             Ty::Labeled(label, inner) => label.join(&self.written(inner)),
             Ty::Refined(_, inner) => self.written(inner),
-            Ty::List(element) => self.written(element),
+            Ty::List(element) | Ty::Dense(_, element) => self.written(element),
             Ty::Map(key, value) => self.written(key).join(&self.written(value)),
+            Ty::Coll(_, args) => args
+                .iter()
+                .fold(Label::public(), |label, arg| label.join(&self.written(arg))),
             Ty::Kind(id, args) => args
                 .iter()
                 .fold(self.own(*id), |label, arg| label.join(&self.written(arg))),
@@ -129,10 +132,15 @@ impl KindLabels {
                     out.push(*index);
                 }
             }
-            Ty::List(element) => self.occurrences(element, in_fn, out),
+            Ty::List(element) | Ty::Dense(_, element) => self.occurrences(element, in_fn, out),
             Ty::Map(key, value) => {
                 self.occurrences(key, in_fn, out);
                 self.occurrences(value, in_fn, out);
+            }
+            Ty::Coll(_, args) => {
+                for arg in args.iter() {
+                    self.occurrences(arg, in_fn, out);
+                }
             }
             Ty::Kind(id, args) => {
                 for (index, arg) in args.iter().enumerate() {
@@ -201,14 +209,29 @@ pub(crate) enum Ty {
     Int,
     /// A fixed-width integer type of edition 0.2 (`spec/18`).
     Fixed(IntType),
+    /// `F64`, IEEE binary64, edition 0.3 (`spec/29`, ADR 0114).
+    F64,
+    /// `Decimal[s]`, an exact decimal of scale s from 0 to 38, edition 0.4 (`spec/29 §16`,
+    /// ADR 0120 rule 12).
+    Decimal(u8),
+    /// `F32`, IEEE binary32, edition 0.4 (`spec/29`, ADR 0120 rule 5).
+    F32,
     Bool,
     Text,
     Unit,
     Hashed,
     List(Shared<Ty>),
+    /// A dense value of edition 0.4, `Array[T]`, `Matrix[T]`, `Tensor[T]` or `Lu[T]`
+    /// (`spec/29 §17`, ADR 0120 rules 26 to 38): its shape is the top position, its elements
+    /// the element position, so its labels are a list's.
+    Dense(Dense, Shared<Ty>),
     /// `Map[K, V]`, keyed by an `Ord` type, from edition 0.2 (`spec/21 §1`). Its keys are part
     /// of its shape, so a read takes the labels of the key position with the top label (§3).
     Map(Shared<Ty>, Shared<Ty>),
+    /// A collection type of `std.collections` and its type arguments, edition 0.4 (ADR 0119).
+    /// The arguments that are part of its shape ([`Coll::is_shape`]) are read with its top
+    /// label, as a map's keys are.
+    Coll(Coll, Shared<[Ty]>),
     /// A record or sum kind and its type arguments; nominal (`spec/03 §2.1`).
     Kind(KindId, Shared<[Ty]>),
     /// The type parameter with this index in the declaration being checked.
@@ -225,10 +248,11 @@ pub(crate) enum Ty {
     /// A type whose top position carries a label above `public` (`spec/03 §5`, `spec/09 §2`).
     /// Type equality ignores labels.
     Labeled(Label, Shared<Ty>),
-    /// An integer type with a unit of measure, edition 0.3 (ADR 0104 rule 2): `Int` or a
-    /// fixed-width integer type, never labeled itself (a label wraps the measured type). A
-    /// type of its own: it equals another measured type with the same unit and magnitude
-    /// type, and nothing else.
+    /// A number type with a unit of measure (ADR 0104 rule 2): `Int` or a fixed-width integer
+    /// type from edition 0.3, `F64` from edition 0.3 (ADR 0114 rule 12), and `F32`,
+    /// `Decimal[s]`, `Complex[F64]` and `Complex[F32]` in edition 0.4 (ADR 0120 rule 61). The
+    /// magnitude is never labeled itself (a label wraps the measured type). A type of its own:
+    /// it equals another measured type with the same unit and magnitude type, and nothing else.
     Measured(Shared<super::units::Unit>, Shared<Ty>),
     /// A nested position whose values satisfy `refinements` (ADR 0103): an argument of a type
     /// written or instantiated with a refined kind or a range, in edition 0.3. It sits inside
@@ -237,6 +261,32 @@ pub(crate) enum Ty {
     /// ignore labels; the verifier proves every flow into it and assumes it where values are
     /// read from it.
     Refined(Shared<[Refinement]>, Shared<Ty>),
+}
+
+/// The dense types of edition 0.4 (`spec/29 §17`, ADR 0120 rules 26, 30 and 38).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Dense {
+    /// `Array[T]`, the one fixed-length array, of any element type.
+    Array,
+    /// `Matrix[T]`, of a numeric element type.
+    Matrix,
+    /// `Tensor[T]`, of a numeric element type, with a rank from 1 to 8.
+    Tensor,
+    /// `Lu[T]`, the opaque LU factorization of a square matrix of float elements: its size is
+    /// its top position, as a matrix's shape is, and its factors its element position.
+    Lu,
+}
+
+impl Dense {
+    /// The type's name, as source writes it.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Dense::Array => "Array",
+            Dense::Matrix => "Matrix",
+            Dense::Tensor => "Tensor",
+            Dense::Lu => "Lu",
+        }
+    }
 }
 
 /// A function type `fn(params) -> result uses ... fails ...`.
@@ -473,9 +523,9 @@ impl Flagged for Ty {
                 var: true,
                 ..Flags::LEAF
             },
-            Ty::List(element) => element.flags(),
+            Ty::List(element) | Ty::Dense(_, element) => element.flags(),
             Ty::Map(key, value) => key.flags().and(value.flags()),
-            Ty::Kind(_, args) => args.flags(),
+            Ty::Kind(_, args) | Ty::Coll(_, args) => args.flags(),
             Ty::Fn(function) => function.flags(),
             Ty::Refined(_, inner) => Flags {
                 refined: true,
@@ -504,6 +554,9 @@ impl Flagged for Ty {
             | Ty::Text
             | Ty::Unit
             | Ty::Hashed
+            | Ty::F64
+            | Ty::Decimal(_)
+            | Ty::F32
             | Ty::Param(_)
             | Ty::Never
             | Ty::Error(_) => Flags::LEAF,
@@ -552,8 +605,10 @@ impl Ty {
     pub(crate) fn same(&self, other: &Ty) -> bool {
         match (self, other) {
             (Ty::List(a), Ty::List(b)) => Shared::ptr_eq(a, b),
+            (Ty::Dense(x, a), Ty::Dense(y, b)) => x == y && Shared::ptr_eq(a, b),
             (Ty::Map(a, b), Ty::Map(c, d)) => Shared::ptr_eq(a, c) && Shared::ptr_eq(b, d),
             (Ty::Kind(i, a), Ty::Kind(j, b)) => i == j && Shared::ptr_eq(a, b),
+            (Ty::Coll(i, a), Ty::Coll(j, b)) => i == j && Shared::ptr_eq(a, b),
             (Ty::Fn(a), Ty::Fn(b)) => Shared::ptr_eq(a, b),
             (Ty::Labeled(l, a), Ty::Labeled(m, b)) => Shared::ptr_eq(a, b) && l == m,
             (Ty::Refined(r, a), Ty::Refined(q, b)) => Shared::ptr_eq(a, b) && r == q,
@@ -562,9 +617,12 @@ impl Ty {
             | (Ty::Text, Ty::Text)
             | (Ty::Unit, Ty::Unit)
             | (Ty::Hashed, Ty::Hashed)
+            | (Ty::F64, Ty::F64)
+            | (Ty::F32, Ty::F32)
             | (Ty::Never, Ty::Never)
             | (Ty::Error(_), Ty::Error(_)) => true,
             (Ty::Fixed(a), Ty::Fixed(b)) => a == b,
+            (Ty::Decimal(a), Ty::Decimal(b)) => a == b,
             (Ty::Measured(u, a), Ty::Measured(v, b)) => u == v && a == b,
             (Ty::Param(a), Ty::Param(b)) | (Ty::Var(a), Ty::Var(b)) => a == b,
             _ => false,
@@ -642,14 +700,42 @@ impl Ty {
         }
     }
 
-    /// The measured type of `unit` over `magnitude`, `Int` or a fixed-width type without a
-    /// label: a label wraps the measured type, never its magnitude (ADR 0104, ADR 0077).
+    /// The measured type of `unit` over `magnitude`, a number type without a label: `Int`, a
+    /// fixed-width type, `F64`, `F32`, `Decimal[s]` or a complex kind. A label wraps the
+    /// measured type, never its magnitude (ADR 0104, ADR 0077, ADR 0120 rule 61).
     pub(crate) fn measured(unit: super::units::Unit, magnitude: Ty) -> Ty {
         debug_assert!(
-            matches!(magnitude, Ty::Int | Ty::Fixed(_)),
-            "a magnitude is an unlabeled integer type: {magnitude:?}"
+            matches!(
+                magnitude,
+                Ty::Int | Ty::Fixed(_) | Ty::F64 | Ty::F32 | Ty::Decimal(_) | Ty::Kind(..)
+            ),
+            "a magnitude is an unlabeled number type: {magnitude:?}"
         );
         Ty::Measured(Shared::new(unit), Shared::new(magnitude))
+    }
+
+    /// `self`, a number type, measured in `unit` in place of any unit it has, its top label
+    /// kept outside the unit (ADR 0104, ADR 0120 rule 61). No unit, or the unit one, leaves
+    /// the magnitude unitless; a type that is not a number type is returned as it is, so an
+    /// error type stays one.
+    pub(crate) fn in_unit(self, unit: Option<&super::units::Unit>) -> Ty {
+        let magnitude = self.magnitude().clone();
+        let number = match &magnitude {
+            Ty::Int | Ty::Fixed(_) | Ty::F64 | Ty::F32 | Ty::Decimal(_) => true,
+            // A complex kind has no type argument (ADR 0120 rule 22).
+            Ty::Kind(_, args) => args.is_empty(),
+            _ => false,
+        };
+        if !number {
+            return self;
+        }
+        let label = self.top_label();
+        match unit {
+            Some(unit) if !unit.is_one() => {
+                Ty::measured(unit.clone(), magnitude).with_label(&label)
+            }
+            _ => magnitude.with_label(&label),
+        }
     }
 
     /// The type with every unit removed, at every position (ADR 0104): what a unit-only
@@ -667,12 +753,20 @@ impl Ty {
                 Ty::Labeled(label.clone(), Shared::new(inner.without_units()))
             }
             Ty::List(element) => Ty::List(Shared::new(element.without_units())),
+            Ty::Dense(dense, element) => Ty::Dense(*dense, Shared::new(element.without_units())),
             Ty::Map(key, value) => Ty::Map(
                 Shared::new(key.without_units()),
                 Shared::new(value.without_units()),
             ),
             Ty::Kind(id, args) => Ty::Kind(
                 *id,
+                args.iter()
+                    .map(Ty::without_units)
+                    .collect::<Vec<_>>()
+                    .into(),
+            ),
+            Ty::Coll(coll, args) => Ty::Coll(
+                *coll,
                 args.iter()
                     .map(Ty::without_units)
                     .collect::<Vec<_>>()
@@ -725,10 +819,15 @@ impl Ty {
         let label = self.top_label();
         let shape = match (self.unlabeled(), final_ty.unlabeled()) {
             (Ty::List(a), Ty::List(b)) => Ty::List(Shared::new(a.refit(b))),
+            (Ty::Dense(dense, a), Ty::Dense(_, b)) => Ty::Dense(*dense, Shared::new(a.refit(b))),
             (Ty::Map(ak, av), Ty::Map(bk, bv)) => {
                 Ty::Map(Shared::new(ak.refit(bk)), Shared::new(av.refit(bv)))
             }
             (Ty::Kind(i, a), Ty::Kind(j, b)) if i == j && a.len() == b.len() => Ty::Kind(
+                *i,
+                a.iter().zip(b.iter()).map(|(x, y)| x.refit(y)).collect(),
+            ),
+            (Ty::Coll(i, a), Ty::Coll(j, b)) if i == j && a.len() == b.len() => Ty::Coll(
                 *i,
                 a.iter().zip(b.iter()).map(|(x, y)| x.refit(y)).collect(),
             ),
@@ -773,11 +872,15 @@ impl Ty {
                 }
             }
             Ty::List(element) => Ty::List(reuse(element, element.without_refinements())),
+            Ty::Dense(dense, element) => {
+                Ty::Dense(*dense, reuse(element, element.without_refinements()))
+            }
             Ty::Map(key, value) => Ty::Map(
                 reuse(key, key.without_refinements()),
                 reuse(value, value.without_refinements()),
             ),
             Ty::Kind(id, args) => Ty::Kind(*id, map_args(args, Ty::without_refinements)),
+            Ty::Coll(coll, args) => Ty::Coll(*coll, map_args(args, Ty::without_refinements)),
             Ty::Fn(function) => Ty::Fn(map_function(
                 function,
                 Ty::without_refinements,
@@ -790,7 +893,7 @@ impl Ty {
 
     /// The join of the labels of every position that holds data: the top, list elements, kind
     /// arguments and the labels that the fields and variant fields of a kind declare,
-    /// instantiated and through the kinds they contain (`spec/07 §7` rule 3, re-review N-001).
+    /// instantiated and through the kinds they contain (`spec/07 §7` rule 3).
     /// A function type holds its top label only.
     pub(crate) fn deep_label(&self, kinds: &KindLabels) -> Label {
         match self {
@@ -799,9 +902,12 @@ impl Ty {
             }
             Ty::Labeled(label, inner) => label.join(&inner.deep_label(kinds)),
             Ty::Refined(_, inner) => inner.deep_label(kinds),
-            Ty::List(element) => element.deep_label(kinds),
+            Ty::List(element) | Ty::Dense(_, element) => element.deep_label(kinds),
             Ty::Map(key, value) => key.deep_label(kinds).join(&value.deep_label(kinds)),
             Ty::Kind(id, args) => args.iter().fold(kinds.own(*id), |label, arg| {
+                label.join(&arg.deep_label(kinds))
+            }),
+            Ty::Coll(_, args) => args.iter().fold(Label::public(), |label, arg| {
                 label.join(&arg.deep_label(kinds))
             }),
             _ => Label::public(),
@@ -809,9 +915,11 @@ impl Ty {
     }
 
     /// [`Ty::deep_label`] without the labels that kinds' fields declare: what Core IR records
-    /// for the arguments of an operation and interpolated values, since the runtime redacts
-    /// the fields of a kind value by their own declared labels (`spec/11 §5`).
-    /// D-165: traces keep redacting field by field, as before N-001.
+    /// for the arguments of an operation, since the runtime redacts the fields of a kind value
+    /// by their own declared labels (`spec/11 §5`).
+    /// D-165: traces keep redacting field by field, as before kinds' fields were labeled (ADR 0046).
+    /// A value computed from a whole value of the type, such as its interpolated text, has no
+    /// fields left to redact, so its label is [`Ty::computed_label`] instead (S-27).
     ///
     /// The label sits on a position that is not a type parameter, an argument or a `Text`
     /// temporary, so a symbolic label it joins is starred: a plain `ℓ_T` labels only a position
@@ -819,6 +927,16 @@ impl Ty {
     /// only whether the label is `public`, which starring does not change.
     pub(crate) fn argument_label(&self) -> Label {
         starred(&self.deep_label(&KindLabels::default()))
+    }
+
+    /// The label of a value computed from a whole value of this type: the join of every label of
+    /// the type, deep, the labels that kinds' fields declare included, as the checker labels it.
+    /// The text that interpolating the value writes renders those fields without redaction in
+    /// edition 0.2 and later (`spec/10 §12` rule 14), and a comparison with the value depends on
+    /// all of it, so leaving the fields' labels out would export the result under a lower label
+    /// than what it holds (S-27). Starred as [`Ty::argument_label`] is.
+    pub(crate) fn computed_label(&self, kinds: &KindLabels) -> Label {
+        starred(&self.deep_label(kinds))
     }
 
     /// The join of every label of the type, at every position: [`Ty::deep_label`] and the
@@ -829,9 +947,12 @@ impl Ty {
         match self {
             Ty::Labeled(label, inner) => label.join(&inner.every_label(kinds)),
             Ty::Refined(_, inner) => inner.every_label(kinds),
-            Ty::List(element) => element.every_label(kinds),
+            Ty::List(element) | Ty::Dense(_, element) => element.every_label(kinds),
             Ty::Map(key, value) => key.every_label(kinds).join(&value.every_label(kinds)),
             Ty::Kind(id, args) => args.iter().fold(kinds.own(*id), |label, arg| {
+                label.join(&arg.every_label(kinds))
+            }),
+            Ty::Coll(_, args) => args.iter().fold(Label::public(), |label, arg| {
                 label.join(&arg.every_label(kinds))
             }),
             Ty::Fn(function) => function
@@ -852,6 +973,10 @@ impl Ty {
     /// function types, and invariant kind arguments keep their declared labels.
     pub(crate) fn op_parameter(&self, positive: bool, top: &Label, kinds: &KindLabels) -> Ty {
         let inner = match self.unlabeled() {
+            Ty::Dense(dense, element) => Ty::Dense(
+                *dense,
+                reuse(element, element.op_parameter(positive, top, kinds)),
+            ),
             Ty::List(element) => {
                 Ty::List(reuse(element, element.op_parameter(positive, top, kinds)))
             }
@@ -874,6 +999,10 @@ impl Ty {
                     }),
                 )
             }
+            Ty::Coll(coll, args) => Ty::Coll(
+                *coll,
+                map_args(args, |arg| arg.op_parameter(positive, top, kinds)),
+            ),
             Ty::Fn(function) => Ty::Fn(map_function(
                 function,
                 |p| p.op_parameter(!positive, top, kinds),
@@ -903,7 +1032,7 @@ impl Ty {
             Label::public()
         };
         let inner = match self.unlabeled() {
-            Ty::List(element) => element.sent_label(positive, kinds),
+            Ty::List(element) | Ty::Dense(_, element) => element.sent_label(positive, kinds),
             Ty::Map(key, value) => key
                 .sent_label(positive, kinds)
                 .join(&value.sent_label(positive, kinds)),
@@ -921,6 +1050,9 @@ impl Ty {
                     })
                 },
             ),
+            Ty::Coll(_, args) => args.iter().fold(Label::public(), |label, arg| {
+                label.join(&arg.sent_label(positive, kinds))
+            }),
             Ty::Fn(function) => function.params.iter().fold(
                 function.result.sent_label(positive, kinds),
                 |label, param| label.join(&param.sent_label(!positive, kinds)),
@@ -934,11 +1066,15 @@ impl Ty {
     pub(crate) fn raise_deep(&self, label: &Label) -> Ty {
         let inner = match self.unlabeled() {
             Ty::List(element) => Ty::List(reuse(element, element.raise_deep(label))),
+            Ty::Dense(dense, element) => {
+                Ty::Dense(*dense, reuse(element, element.raise_deep(label)))
+            }
             Ty::Map(key, value) => Ty::Map(
                 reuse(key, key.raise_deep(label)),
                 reuse(value, value.raise_deep(label)),
             ),
             Ty::Kind(id, args) => Ty::Kind(*id, map_args(args, |a| a.raise_deep(label))),
+            Ty::Coll(coll, args) => Ty::Coll(*coll, map_args(args, |a| a.raise_deep(label))),
             other => other.clone(),
         };
         self.relabeled(inner, &self.top_label().join(label))
@@ -959,8 +1095,10 @@ impl Ty {
                 Ty::Refined(refinements.clone(), reuse(inner, inner.erase()))
             }
             Ty::List(element) => Ty::List(reuse(element, element.erase())),
+            Ty::Dense(dense, element) => Ty::Dense(*dense, reuse(element, element.erase())),
             Ty::Map(key, value) => Ty::Map(reuse(key, key.erase()), reuse(value, value.erase())),
             Ty::Kind(id, args) => Ty::Kind(*id, map_args(args, Ty::erase)),
+            Ty::Coll(coll, args) => Ty::Coll(*coll, map_args(args, Ty::erase)),
             Ty::Fn(function) => Ty::Fn(map_function(
                 function,
                 Ty::erase,
@@ -985,12 +1123,18 @@ impl Ty {
             ),
             Ty::Param(index) => args.get(*index).cloned().unwrap_or(Ty::error()),
             Ty::List(element) => Ty::List(reuse(element, element.substitute(args))),
+            Ty::Dense(dense, element) => {
+                Ty::Dense(*dense, reuse(element, element.substitute(args)))
+            }
             Ty::Map(key, value) => Ty::Map(
                 reuse(key, key.substitute(args)),
                 reuse(value, value.substitute(args)),
             ),
             Ty::Kind(id, kind_args) => {
                 Ty::Kind(*id, map_args(kind_args, |arg| arg.substitute(args)))
+            }
+            Ty::Coll(coll, coll_args) => {
+                Ty::Coll(*coll, map_args(coll_args, |arg| arg.substitute(args)))
             }
             Ty::Fn(function) => Ty::Fn(map_function(
                 function,
@@ -1014,11 +1158,13 @@ impl Ty {
                 Ty::Refined(refinements.clone(), reuse(inner, inner.map_labels(f)))
             }
             Ty::List(element) => Ty::List(reuse(element, element.map_labels(f))),
+            Ty::Dense(dense, element) => Ty::Dense(*dense, reuse(element, element.map_labels(f))),
             Ty::Map(key, value) => Ty::Map(
                 reuse(key, key.map_labels(f)),
                 reuse(value, value.map_labels(f)),
             ),
             Ty::Kind(id, args) => Ty::Kind(*id, map_args(args, |a| a.map_labels(f))),
+            Ty::Coll(coll, args) => Ty::Coll(*coll, map_args(args, |a| a.map_labels(f))),
             Ty::Fn(function) => Ty::Fn(map_function(
                 function,
                 |p| p.map_labels(f),
@@ -1043,6 +1189,7 @@ impl Ty {
                 None => Ty::Param(*index),
             },
             Ty::List(element) => Ty::List(reuse(element, element.symbolic(names))),
+            Ty::Dense(dense, element) => Ty::Dense(*dense, reuse(element, element.symbolic(names))),
             // A key of type `T` carries `ℓ*_T` (`spec/21 §3` rule 5): it is a scalar of `T`'s
             // argument, whose every label is its top.
             Ty::Map(key, value) => Ty::Map(
@@ -1050,6 +1197,23 @@ impl Ty {
                 reuse(value, value.symbolic(names)),
             ),
             Ty::Kind(id, args) => Ty::Kind(*id, map_args(args, |a| a.symbolic(names))),
+            // The positions of a collection's shape carry `ℓ*_T`, as a map's keys do (ADR 0119
+            // IF2 to IF4).
+            Ty::Coll(coll, args) => {
+                let mut index = 0;
+                Ty::Coll(
+                    *coll,
+                    map_args(args, |a| {
+                        let mapped = if coll.is_shape(index) {
+                            a.symbolic(names).map_labels(&starred)
+                        } else {
+                            a.symbolic(names)
+                        };
+                        index += 1;
+                        mapped
+                    }),
+                )
+            }
             Ty::Fn(function) => Ty::Fn(map_function(
                 function,
                 |p| p.symbolic(names),
@@ -1067,9 +1231,9 @@ impl Ty {
     pub(crate) fn second_class(&self) -> bool {
         match self {
             Ty::Labeled(_, inner) | Ty::Refined(_, inner) => inner.second_class(),
-            Ty::List(element) => element.second_class(),
+            Ty::List(element) | Ty::Dense(_, element) => element.second_class(),
             Ty::Map(key, value) => key.second_class() || value.second_class(),
-            Ty::Kind(_, args) => args.iter().any(Ty::second_class),
+            Ty::Kind(_, args) | Ty::Coll(_, args) => args.iter().any(Ty::second_class),
             Ty::Fn(function) => {
                 !function.uses.is_empty()
                     || function.fails.is_some()
@@ -1085,12 +1249,12 @@ impl Ty {
         match self {
             Ty::Labeled(_, inner) | Ty::Refined(_, inner) => inner.params(params),
             Ty::Param(index) => params.push(*index),
-            Ty::List(element) => element.params(params),
+            Ty::List(element) | Ty::Dense(_, element) => element.params(params),
             Ty::Map(key, value) => {
                 key.params(params);
                 value.params(params);
             }
-            Ty::Kind(_, args) => args.iter().for_each(|arg| arg.params(params)),
+            Ty::Kind(_, args) | Ty::Coll(_, args) => args.iter().for_each(|arg| arg.params(params)),
             Ty::Fn(function) => {
                 function
                     .params
@@ -1132,8 +1296,14 @@ pub(crate) enum View<'t, T> {
     Text,
     Unit,
     Hashed,
+    F64,
+    Decimal(u8),
+    F32,
     List(&'t T),
+    Dense(Dense, &'t T),
     Map(&'t T, &'t T),
+    /// A collection type of `std.collections` (ADR 0119).
+    Coll(Coll, &'t [T]),
     Kind(KindId, &'t [T]),
     Param(usize),
     /// A function type's parameters and result: its `uses`, `fails` and refinements are not
@@ -1162,9 +1332,14 @@ impl TypeView for Ty {
             Ty::Text => View::Text,
             Ty::Unit => View::Unit,
             Ty::Hashed => View::Hashed,
+            Ty::F64 => View::F64,
+            Ty::Decimal(scale) => View::Decimal(*scale),
+            Ty::F32 => View::F32,
             Ty::List(element) => View::List(element),
+            Ty::Dense(dense, element) => View::Dense(*dense, element),
             Ty::Map(key, value) => View::Map(key, value),
             Ty::Kind(id, args) => View::Kind(*id, args),
+            Ty::Coll(coll, args) => View::Coll(*coll, args),
             Ty::Param(index) => View::Param(*index),
             Ty::Fn(function) => View::Fn(&function.params, &function.result),
             Ty::Var(_) => View::Var,
@@ -1197,12 +1372,29 @@ impl<T: TypeView, N: Names> fmt::Display for Show<'_, '_, T, N> {
             View::Text => write!(f, "Text"),
             View::Unit => write!(f, "Unit"),
             View::Hashed => write!(f, "Hashed"),
+            View::F64 => write!(f, "F64"),
+            View::Decimal(scale) => write!(f, "Decimal[{scale}]"),
+            View::F32 => write!(f, "F32"),
             View::List(element) => write!(f, "List[{}]", Show(element, names)),
+            View::Dense(dense, element) => {
+                write!(f, "{}[{}]", dense.as_str(), Show(element, names))
+            }
             View::Map(key, value) => {
                 write!(f, "Map[{}, {}]", Show(key, names), Show(value, names))
             }
             View::Kind(id, args) => {
                 write!(f, "{}", names.kind_name(id))?;
+                if !args.is_empty() {
+                    let args: Vec<String> = args
+                        .iter()
+                        .map(|arg| Show(arg, names).to_string())
+                        .collect();
+                    write!(f, "[{}]", args.join(", "))?;
+                }
+                Ok(())
+            }
+            View::Coll(coll, args) => {
+                write!(f, "{}", coll.as_str())?;
                 if !args.is_empty() {
                     let args: Vec<String> = args
                         .iter()
@@ -1244,6 +1436,9 @@ impl<T: TypeView, N: Names> fmt::Display for ShowLabeled<'_, '_, T, N> {
                 }
             }
             View::List(element) => write!(f, "List[{}]", ShowLabeled(element, names)),
+            View::Dense(dense, element) => {
+                write!(f, "{}[{}]", dense.as_str(), ShowLabeled(element, names))
+            }
             View::Map(key, value) => write!(
                 f,
                 "Map[{}, {}]",
@@ -1256,6 +1451,13 @@ impl<T: TypeView, N: Names> fmt::Display for ShowLabeled<'_, '_, T, N> {
                     .map(|arg| ShowLabeled(arg, names).to_string())
                     .collect();
                 write!(f, "{}[{}]", names.kind_name(id), args.join(", "))
+            }
+            View::Coll(coll, args) if !args.is_empty() => {
+                let args: Vec<String> = args
+                    .iter()
+                    .map(|arg| ShowLabeled(arg, names).to_string())
+                    .collect();
+                write!(f, "{}[{}]", coll.as_str(), args.join(", "))
             }
             View::Fn(params, result) => {
                 let params: Vec<String> = params

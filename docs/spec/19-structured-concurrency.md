@@ -7,7 +7,7 @@ A `together` block runs its branches as concurrent **tasks**, and `together for`
 **Editions.** The constructs of this chapter exist only in packages of edition `0.2` and later (`spec/13 §7`).
 - In edition `0.1`, `together` keeps its v0.1 reservation (`spec/01 §5`), so it is U0103.
 - A single file has the default settings, and so edition `0.1`.
-- The Gate 1 benchmark stays on edition `0.1`.
+- The benchmark baseline stays on edition `0.1`.
 
 ## 1. Syntax
 
@@ -36,7 +36,7 @@ let pages = together for id in ids
 3. **Malformed bodies.** A `together` body that holds a statement other than `let`, or fewer than two `let` statements, is U2024 at `together`.
 4. **Placement.** `together` followed by a newline is a statement. Written as an expression, as `let x = together` with branches, it is U0101 with the message `` `together` with branches is a statement; write `together for` to build a list ``.
 5. **Nesting.** A task may contain a `together` block or a `together for`, inside a called function or inside the expression of its branch.
-6. There are no task values, no detached tasks, no `race` or `select`, no timeouts and no channels.
+6. There are no task values, no detached tasks, no `race` or `select`, no timeouts and no channels. (Edition 0.4, ADR 0117.) `first of` races branches, `within` bounds an expression's time, and `tasks` and `start` run a dynamic number of tasks, all ended before their statement (`spec/27 §5` to `§7`); there are still no task values and no channels.
 
 ## 2. Static semantics
 
@@ -90,6 +90,7 @@ Each `eᵢ` is closed over the bindings before the block and not over the other 
    - When a task fails, every task after it is **cancelled**. The tasks before it run on, and may fail in turn.
    - Once every task has returned, failed or stopped, the block fails with the failure of the lowest-indexed task that failed.
    - So the result of the block is the result of evaluating the tasks one after another, in order, stopping at the first failure.
+   - (v0.2, ADR 0113, 2026-10-16.) In native code, a task that stops with U8001, an internal error of the runtime (`spec/13 §5`), decides its block before any failure or abort, whatever its index, and cancels every other task of the block, the lower-indexed ones included, so the run ends with U8001 once those tasks reach a check (§8 rule 2). The interpreter makes no such stop.
 4. **Cancellation is cooperative.** A cancelled task stops at its next call, operation or loop iteration. An operation in progress completes, and effects already performed stay (`spec/17 §7` rule 2). A cancelled task that has not started never starts, and a cancelled task's result is dropped. A task after the failed one that had already ended is not cancelled: its events stay in the trace, with no `cancelled` event, and its result is dropped.
 5. **The reported trace (C6).** The trace of the block is `t₁ · t₂ · ... · tₙ`, the traces of the tasks in index order, whatever the interleaving. The trace of a cancelled task that had started is the prefix it performed, followed by a `cancelled` event (§7).
 6. **The sequential schedule.** Evaluating the tasks one after another, in index order, is one legal interleaving. Under it no task after a failed one starts.
@@ -110,12 +111,12 @@ These rules extend `spec/11 §5`.
 ## 8. Runtimes
 
 1. **The interpreter** runs the tasks of a block sequentially, in index order (§6 rule 6). It stays single-threaded and is the deterministic reference of `spec/11 §1`.
-2. **The native backend** runs each task on its own operating-system thread, with a stack sized from `--max-depth` (`spec/16 §3` rule 3).
+2. **The native backend** runs each task on a coroutine, with a stack sized from `--max-depth` (`spec/16 §3` rule 3), run by one of `--workers` operating-system threads that it never leaves (`spec/27 §1`, ADR 0117).
    - Each task has its own heap. At the fork, the values a task captures are copied into its heap, and at the join its result is copied back into the heap of the task that runs the block. Reference counts stay non-atomic (`spec/16 §4` rule 1).
    - The grants and keys of the run are read-only, and each task's state holds them.
    - Each task records its events in its own buffer. The join appends the buffers in task order, then numbers `seq` and the installation ids (§7 rule 2).
-   - Each task has a cancellation flag, checked at each call, operation and loop iteration. Inside an operation in progress, including the body of a Una handler's operation, only the flags of tasks the operation itself starts are checked: the operation completes and keeps its outcome (§6 rule 4, §7 rule 3), and the cancellation takes effect at the next check after it. The limits of rule 3 still apply inside it.
-   - The host capabilities of `una-rt` are safe to call from several tasks at once. A host operation blocks only its own task's thread.
+   - Each task carries a cancellation entry for its own block and for each block above it, checked at each call, operation and loop iteration: each block keeps the lowest index of a task of it that failed or aborted, and a task after that index is cancelled; after a task of the block stops with U8001, every other task of the block is cancelled, the lower-indexed ones included (ADR 0113 rule 1). Inside an operation in progress, including the body of a Una handler's operation, only the entries of tasks the operation itself starts are checked: the operation completes and keeps its outcome (§6 rule 4, §7 rule 3), and the cancellation takes effect at the next check after it. The limits of rule 3 still apply inside it.
+   - The host capabilities of `una-rt` are safe to call from several tasks at once. A host operation that may block parks only its own task, while a helper thread performs it (`spec/27 §2`).
 3. **Limits.** `--max-depth` bounds each task's call depth, counted from the depth of the block that started it. `--max-memory` bounds the heaps of all tasks together (`spec/11 §7`).
 4. **Equivalence** (`spec/16 §5`). For a run that starts tasks:
    - the exit status and the failure MUST equal the interpreter's;
@@ -130,6 +131,8 @@ These rules extend `spec/11 §5`.
 | --- | --- |
 | `parallel`, `actor` | reserved for a later version (concurrency beyond `together`) |
 | `async`, `await` | not supported; use `together` |
+
+(Edition 0.4, ADR 0117 rule 7.) In edition `0.4`, the message of `async` and `await` is `` not supported; use `tasks` and `start`, or `together` ``.
 
 ## 10. Diagnostic codes
 

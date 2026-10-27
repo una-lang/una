@@ -1,0 +1,15 @@
+module shop
+
+--- A stock adjustment typed by hand: a sign is allowed, so `-3` writes off three units.
+adjustment(raw: Text) -> Text
+=
+  when to_int(raw)
+    is Some(n) -> "'{raw}': adjust the stock by {n}"
+    is None -> "'{raw}': not an adjustment"
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print(adjustment("12"))
+  @console.print(adjustment("-3"))
+  @console.print(adjustment("+3"))

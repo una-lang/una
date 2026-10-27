@@ -1,0 +1,13 @@
+-- test: a `when` arm whose text literal interpolates a `secret` value would decide which line is printed by the secret; a pattern is a constant, so it is U4008 (S-28), edition 0.3
+-- spec: spec/07 §7
+-- expect: error U4008 at src/main.una:12:8
+module main
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let s: secret Text = "abc"
+  let g = "abc"
+  when g
+    is "{s}" -> @console.print("yes")
+    else -> @console.print("no")

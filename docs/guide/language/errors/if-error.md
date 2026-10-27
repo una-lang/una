@@ -2,17 +2,19 @@
 construct: if error and if none
 editions: ["0.1", "0.2"]
 spec: ["spec/06 §1", "spec/06 §3", "spec/06 §5", "spec/02 §6", "spec/02 §8", "spec/04 §4", "spec/07 §3", "spec/07 §7", "spec/06 §2"]
-codes: [U0101, U0102, U2001, U2013, U3007, U3008, U3009, U3013, U3025]
+codes: [U0101, U0102, U2001, U2013, U3007, U3008, U3009, U3013, U3025, U4002]
 ---
 
 # `if error` and `if none`
 
 ## What it does
 
-A statement whose expression can fail is followed by a handling clause, which says what the failure becomes at that line (`spec/06 §3`). There is no implicit propagation, so every failure is visible where it can occur. `if none` handles an `Option` the same way, at the same place.
+A statement whose expression can fail is followed by a handling clause, which says what the failure becomes at that line. There is no implicit propagation, so every failure is visible where it can occur. `if none` handles an `Option` (a value that is either `Some` of something or `None`) the same way, at the same place.
+
+Learn more: [Handling a failure: the clauses](/learn/failure/handling-a-failure-the-clauses/).
 
 ```una
-module demo
+module shop
 
 pub kind Registration
   name: Text
@@ -37,13 +39,15 @@ pub lookup(key: Text) -> Registration
 
 ## Forms
 
+In the grammar below, each rule gives a name, `=`, what the name stands for and `;`, quoted words are written as shown, NEWLINE, INDENT and DEDENT stand for a line break and for one more or one less level of indentation, `[ ]` marks an optional part, `{ }` a part that may repeat, `|` separates alternatives, `( )` groups them, and `(* *)` holds a comment.
+
 ```ebnf
 handled         = line_expr [ with_clause ] NEWLINE [ INDENT handling { handling } DEDENT ] ;
 handling        = "if" "error" ( "fail" variant_expr | "pass" | "use" line_expr ) NEWLINE
                 | "if" "none" ( "fail" variant_expr | "use" line_expr ) NEWLINE ;
 ```
 
-This is `spec/02 §6`. The clauses and their meaning are those of `spec/06 §3`:
+The clauses and their meaning, where a fallible expression is one that can fail:
 
 | Clause | Applies to | Meaning |
 | --- | --- | --- |
@@ -53,58 +57,58 @@ This is `spec/02 §6`. The clauses and their meaning are those of `spec/06 §3`:
 | `if none fail V(...)` | Expression of type `Option[T]` | `None` becomes failure `V`; the result has type `T` |
 | `if none use e` | Expression of type `Option[T]` | `None` becomes `e`; the result has type `T` |
 
-A clause stands on its own line, one level below the statement it handles. A statement may be a `let`, a bare statement or a block's final expression (`spec/02 §6`).
+A clause stands on its own line, one level below the statement it handles. A statement may be a `let`, a bare statement or a block's final expression.
 
 ## Examples
 
-`if error pass` propagates a failure of the same kind, and `if error use` recovers with a value (`spec/06 §3`):
+`if error pass` propagates a failure of the same kind, and `if error use` recovers with a value:
 
 ```una
-module demo
+module shop
 
-pub kind Oops = | TooLarge
+pub kind OrderError = | TooMany
 
-pub bump(n: Int) -> Int
-  fails Oops
+pub add_units(units: Int) -> Int
+  fails OrderError
 =
-  if n > 100 then fail TooLarge else n + 1
+  if units > 100 then fail TooMany else units + 1
 
-pub bump_twice(n: Int) -> Int
-  fails Oops
+pub add_twice(units: Int) -> Int
+  fails OrderError
 =
-  let once = bump(n)
+  let once = add_units(units)
     if error pass
-  bump(once)
+  add_units(once)
     if error pass
 
-pub bump_or_zero(n: Int) -> Int
+pub add_or_zero(units: Int) -> Int
 =
-  bump(n)
+  add_units(units)
     if error use 0
 ```
 
-`error` names the original failure inside `if error fail`, so it can travel as a payload (`spec/06 §3`):
+`error` names the original failure inside `if error fail`, so it can travel as a payload:
 
 ```una
-module demo
+module shop
 
-pub kind A = | One
+pub kind StockError = | OutOfStock
 
-pub kind B = Wrapped(cause: A) | Other
+pub kind CheckoutError = Stock(cause: StockError) | Declined
 
-inner(n: Int) -> Int = if n > 1 then fail One else n
+reserve(units: Int) -> Int = if units > 10 then fail OutOfStock else units
 
-pub outer(n: Int) -> Int
-  fails B
+pub checkout(units: Int) -> Int
+  fails CheckoutError
 =
-  inner(n)
-    if error fail Wrapped(cause: error)
+  reserve(units)
+    if error fail Stock(cause: error)
 ```
 
-`if none use` gives a default for an `Option`, and an operation's failure can be recovered at the same line:
+`if none use` gives a default for an `Option`, and an operation's failure can be recovered at the same line. Here `if error use None` turns a failure of `get` into `None`, and `if none use ""` then turns any `None`, from a failure or from a missing key, into the empty text:
 
 ```una
-module demo
+module shop
 
 pub kind StoreError = | Timeout
 
@@ -121,138 +125,158 @@ pub cached(key: Text) -> Text
   found
 ```
 
-A fallible call without a clause is rejected (`spec/06 §3`):
+Inside `if error use`, `error` names the failure too, so the recovered value can come from it:
+
+```una
+module shop
+
+pub kind StockError = | OutOfStock(left: Int)
+
+reserve(units: Int) -> Int = if units > 10 then fail OutOfStock(left: 10) else units
+
+left_of(failure: StockError) -> Int
+=
+  when failure
+    is OutOfStock(left) -> left
+
+pub reserve_what_is_left(units: Int) -> Int
+=
+  reserve(units)
+    if error use left_of(error)
+```
+
+A fallible call without a clause is rejected:
 
 ```una
 -- fails with U3007
-module demo
+module shop
 
-pub kind Oops = | TooLarge
+pub kind OrderError = | TooMany
 
-pub bump(n: Int) -> Int
-  fails Oops
+pub add_units(units: Int) -> Int
+  fails OrderError
 =
-  if n > 100 then fail TooLarge else n + 1
+  if units > 100 then fail TooMany else units + 1
 
-pub bump_twice(n: Int) -> Int
-  fails Oops
+pub add_twice(units: Int) -> Int
+  fails OrderError
 =
-  let once = bump(n)
-  bump(once)
+  let once = add_units(units)
+  add_units(once)
     if error pass
 ```
 
 ## Edge cases
 
-**`if error pass` needs equal error kinds.** A function has one error kind, so a failure of another kind is converted with `if error fail` (`spec/06 §1, §3`):
+**`if error pass` needs equal error kinds.** A function has one error kind, so a failure of another kind is converted with `if error fail`:
 
 ```una
 -- fails with U3008
-module demo
+module shop
 
-pub kind A = | One
+pub kind StockError = | OutOfStock
 
-pub kind B = | Two
+pub kind CheckoutError = | Declined
 
-inner(n: Int) -> Int = if n > 1 then fail One else n
+reserve(units: Int) -> Int = if units > 10 then fail OutOfStock else units
 
-pub outer(n: Int) -> Int
-  fails B
+pub checkout(units: Int) -> Int
+  fails CheckoutError
 =
-  inner(n)
+  reserve(units)
     if error pass
 ```
 
-**Order and repetition.** Each clause appears at most once, and `if error` comes before `if none` (`spec/06 §3`):
+**Order and repetition.** Each clause appears at most once, and `if error` comes before `if none`:
 
 ```una
 -- fails with U0102
-module demo
+module shop
 
-pub kind A = | One
+pub kind StoreError = | Timeout
 
-pub kind B = | Missing
+pub kind LookupError = | Missing
 
-find(n: Int) -> Option[Int] = if n > 1 then fail One else Some(n)
+price_of(sku: Int) -> Option[Int] = if sku > 999 then fail Timeout else Some(sku)
 
-pub outer(n: Int) -> Int
-  fails B
+pub price(sku: Int) -> Int
+  fails LookupError
 =
-  let found = find(n)
+  let found = price_of(sku)
     if none fail Missing
     if error fail Missing
   found
 ```
 
-**A clause on its own line.** A clause written on the statement's line is a syntax error (`spec/02 §6`):
+**A clause on its own line.** A clause written on the statement's line is a syntax error:
 
 ```una
 -- fails with U0101
-module demo
+module shop
 
-pub kind A = | One
+pub kind StockError = | OutOfStock
 
-inner(n: Int) -> Int = if n > 1 then fail One else n
+reserve(units: Int) -> Int = if units > 10 then fail OutOfStock else units
 
-pub outer(n: Int) -> Int
-  fails A
+pub checkout(units: Int) -> Int
+  fails StockError
 =
-  inner(n) if error pass
+  reserve(units) if error pass
 ```
 
-**`if none` needs an `Option`** (`spec/06 §3`):
+**`if none` needs an `Option`**:
 
 ```una
 -- fails with U2001
-module demo
+module shop
 
-pub kind B = | Missing
+pub kind LookupError = | Missing
 
-pub outer(n: Int) -> Int
-  fails B
+pub price(cents: Int) -> Int
+  fails LookupError
 =
-  let found = n
+  let found = cents
     if none fail Missing
   found
 ```
 
-**The recovered value has the expression's type** (`spec/06 §3`):
+**The recovered value has the expression's type**:
 
 ```una
 -- fails with U2001
-module demo
+module shop
 
-pub kind A = | One
+pub kind StockError = | OutOfStock
 
-inner(n: Int) -> Int = if n > 1 then fail One else n
+reserve(units: Int) -> Int = if units > 10 then fail OutOfStock else units
 
-pub outer(n: Int) -> Int
+pub reserved(units: Int) -> Int
 =
-  inner(n)
-    if error use "zero"
+  reserve(units)
+    if error use "none"
 ```
 
-**`error` only inside a clause.** `error` is valid only in the `fail` or `use` part of an `if error` clause (`spec/02 §8`):
+**`error` only inside a clause.** `error` is valid only in the `fail` or `use` part of an `if error` clause:
 
 ```una
 -- fails with U2013
-module demo
+module shop
 
-pub kind A = | One
+pub kind StockError = | OutOfStock
 
-pub f(n: Int) -> Int
-  fails A
+pub reserve(units: Int) -> Int
+  fails StockError
 =
-  if n > 1 then fail One else error
+  if units > 10 then fail OutOfStock else error
 ```
 
 Further rules:
 
-- **One effect per line.** A fallible call is the whole expression of its statement, `let` or final expression, so that its clause has one site (`spec/04 §4`, U3013). Bind its result with `let` first.
-- **The `fail` of a clause** obeys the rules of `fail`: its variant belongs to the function's error kind (U3009, `spec/06 §2`), and it is allowed only under a `public` program counter (U4002, `spec/07 §3` rule 3).
-- **Labeled failures.** A failure decided by labeled data, such as an `Http` request's, carries that label. `if error use` then runs under it, and `if error pass` and `if error fail` are U4002 when it is above `public` (`spec/07 §7` rule 4).
-- **An `if error` clause on a statement that cannot fail.** In edition `0.3`, an `if error` clause after a statement that cannot fail, such as `let x = n + 1`, is U3025, and `una fix` deletes it (`spec/06 §3`, ADR 0100). An `if none` clause on the same statement is not affected. Editions `0.1` and `0.2` accept it.
-- **Alternative.** `attempt` handles a failure by turning it into a `Result` value instead (`spec/06 §5`). See [`attempt`](attempt.md).
+- **One effect per line.** A fallible call is the whole expression of its statement, `let` or final expression, so that its clause has one site (U3013). Bind its result with `let` first.
+- **The `fail` of a clause** obeys the rules of `fail`: its variant belongs to the function's error kind (U3009), and it is allowed only when the [Branches and failures: implicit flows](/learn/information-flow/branches-and-failures-implicit-flows/), the label of the conditions that decided whether this line runs, is `public` (U4002).
+- **Labeled failures.** A failure decided by labeled data (data marked with a label above `public`, such as `internal` or `secret`), such as an `Http` request's, carries that label. `if error use` then runs under it, and `if error pass` and `if error fail` are U4002 when it is above `public`.
+- **An `if error` clause on a statement that cannot fail.** In edition `0.3`, an `if error` clause after a statement that cannot fail, such as `let x = n + 1`, is U3025, and `una fix` deletes it. Only `if error` is judged: on an `Option` that cannot fail, such as `let first = codes.first()`, an `if none` clause stays. Editions `0.1` and `0.2` accept the `if error` clause.
+- **Alternative.** `attempt` handles a failure by turning it into a `Result` value instead. See [`attempt`](attempt.md).
 
 ## Diagnostics
 
@@ -265,14 +289,16 @@ Further rules:
 - [U3009](../../../../crates/una-explain/explain/U3009.md): the variant of `if error fail` or `if none fail` outside the function's error kind.
 - [U3013](../../../../crates/una-explain/explain/U3013.md): a fallible call nested inside another expression.
 - [U3025](../../../../crates/una-explain/explain/U3025.md): in edition `0.3`, an `if error` clause on an expression that cannot fail.
+- [U4002](../../../../crates/una-explain/explain/U4002.md): the `fail` of a clause under a program counter above `public`, or `if error pass` or `if error fail` on a failure labeled above `public`.
 
 ## Edition
 
-The handling clauses are the same in editions `0.1` and `0.2`. Edition `0.3` adds U3025 for an `if error` clause on an expression that cannot fail (ADR 0100).
+The handling clauses are the same in editions `0.1` and `0.2`. Edition `0.3` adds U3025 for an `if error` clause on an expression that cannot fail.
 
 ## Normative source
 
-- `spec/06 §3`: handling clauses.
+- `spec/06 §3`: handling clauses, their order, and, in edition `0.3`, a clause on a statement that cannot fail; `spec/06 §1`: one error kind per function; `spec/06 §2`: the variant of a `fail`; `spec/06 §5`: `attempt`.
 - `spec/02 §6`: the grammar of `handled` and `handling`; `spec/02 §8`: where `error` may appear.
 - `spec/04 §4`: one effect per line.
 - `spec/07 §3` rule 3: failures under the program counter; `spec/07 §7` rule 4: labeled failures of operations.
+- Decision record: [ADR 0100](../../../adr/0100-failure-handling-on-code-that-cannot-fail.md), for U3025.

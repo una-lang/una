@@ -14,7 +14,7 @@ Status: Normative for the reference implementation.
 
 ## 2. Conformance case format
 
-Single-module cases are one file, compiled as a package containing only that module, with default `una.toml` settings and without the module path check (U1008). Multi-module cases are a directory with `una.toml` and `src/`.
+Single-module cases are one file, compiled as a package containing only that module, with default `una.toml` settings and without the module path check (U1008). Multi-module cases are a directory with `una.toml` and `src/`, or, for edition `0.4`, with `ita.una`, `ita.lock` and `src/` (ADR 0122).
 
 ```text
 tests/conformance/<area>/<case>.una
@@ -78,7 +78,7 @@ Exactly one `.una` file under the case's `src/` carries the directive block; the
 
 ### Discovery
 
-Every directory directly under `tests/conformance/` MUST be one of the areas above; files there (such as `README.md`) are not cases. Inside an area, every `.una` file is a single-module case and every directory containing `una.toml` is a multi-module case; any other entry is malformed. A run that discovers no case fails. Entries whose names start with `.` are ignored everywhere: at the root, inside areas and among the files of a multi-module case (ADR 0013, D6).
+Every directory directly under `tests/conformance/` MUST be one of the areas above; files there (such as `README.md`) are not cases. Inside an area, every `.una` file is a single-module case and every directory containing `una.toml` or `ita.una` is a multi-module case; any other entry is malformed. A run that discovers no case fails. Entries whose names start with `.` are ignored everywhere: at the root, inside areas and among the files of a multi-module case (ADR 0013, D6).
 
 ### Pending cases
 
@@ -110,4 +110,24 @@ Tests that reach tier 1 require Z3 at the version in the repository's `verificat
 ## 6. Examples and the guide
 
 - `crates/una-cli/tests/examples.rs` checks every package of `examples/`: canonical form, tier 1 with every obligation proven, every declared example passing, no trivial `ensures` in the report, and the output of `una run` for a package with `[run]`. It also checks that the examples together contain every construct of the language list of charter §5, one source pattern per construct, and that each pattern tells programs apart (ADR 0035 rule 1).
+- `crates/una-cli/tests/guide.rs` checks each example's `README.md` (#586, #827). Its code is `sh` blocks, whose commands run, and `text` blocks, each of which names what it shows in its fence's info string:
+  - `una="ARGS"`: what `una --color never ARGS` prints on standard output in a copy of the package. The command must exit with 0. The commands run in the README's order, in one copy shared by all of them, after `una run .`, `una build .` and `una check .`. The `una="run ."` block is the whole output of `una run .`, and of the native executable.
+  - `file="PATH"`: an excerpt of that file of the package, a relative path inside it with no `..`.
+  - `after="mistakes/N"`, beside one of the two: what the package shows after the change that the README's `N`th item under `## Common mistakes` describes. Any other value fails. The change is the files of `tests/fixtures/examples/NAME/mistakes/N/`, outside the shipped examples, each replacing one of the package's files, laid over a fresh copy of it. `una --color never check .` must reject the changed copy and print nothing on standard output. After a change, `una="check ."` is the only command: such a block is an excerpt of what it prints on standard error, anchored as an output is. A `file="PATH"` block is an excerpt of a file the change replaces. A change holds files under `src/` only, no hidden file or symbolic link, and each is the package's current file with one change, whose size, the lines it replaces and the lines it puts in their place, is pinned in `crates/una-cli/tests/guide.rs` (`CHANGES`), so an edit of the example, next to the change too, makes the change fail rather than go stale. Every common mistake has its change and a block of what the check prints after it, each block sits under the mistake it names, and every directory of changes is one its README shows.
+
+  An excerpt is checked with one rule. With trailing spaces removed from every line, its lines are consecutive lines of the file or the output, except that a line that is exactly `...` stands for any number of lines, none included. It is the only wildcard. An excerpt of an output is anchored: it starts at the output's first line and ends at its last, unless it starts or ends with `...`. An excerpt of a file may be anywhere in it. An excerpt with no line but blank ones and `...` fails. So does a `text` block without a marker, with another attribute, or with both `una` and `file`, and a fence of tildes or an indented fence, which the check would not read. Every mismatch is listed together. The website shows the blocks unchanged: its renderer reads only the language and its own attributes.
 - `crates/una-cli/tests/guide.rs` checks every block of `docs/guide/una-for-agents.md`: a `una` block is a whole module that checks clean at tier 1, or yields only the code its first line names (`-- fails with U####`); blocks after file paths form a package that checks clean; a `json` block parses and names a schema the CLI prints; each `una` line of a `sh` block exits with 0, or with the code of its `# exit N`, from the repository root or the directory of its `# in <dir>` (ADR 0035 rule 2). It also checks that every `una` block of `README.md` is copied from a checked file or checks clean.
+- `scripts/no-libm.sh` checks that no part of Una reaches the C math library (#1092, `docs/release-gates.md`, the `build` gate). It reads release artifacts only, built for the check, since a test build unifies the features of dev-dependencies in and is not what ships: `scripts/local-ci.sh`, after its tests, runs `cargo build --locked --release -p una-cli -p una-rt`, then `scripts/no-libm-build.sh`, which links with `target/release/una` every runnable program of `tests/conformance/runtime` that `tests/native/unsupported.txt` does not list, chosen as the native differential chooses them, into a fresh `target/no-libm`, then `scripts/no-libm.sh` on `target/release/una`, `target/release/libuna_rt.a` and those executables. It asserts that the release graph enables no `std` feature of num-bigint, num-integer and num-traits, and fails on any symbol of the C math library that one of the artifacts leaves undefined, with no exception. The conformance package `tests/conformance/runtime/no_libm_run` gives it an executable that uses big `Int`, `F64`, text, lists and maps.
+
+## 7. Memory budgets in native tests
+
+Native tests link the debug build of `una-rt`. In debug builds only, the runtime reuses a freed slot only after 65,536 newer ones have been freed, so that a use after free is a fault and not a read of another object (#201). A program that frees many values therefore holds a fixed extra amount once about 65,000 values have been freed. One example is a `for` loop, which frees its state tuple at each iteration.
+
+Measured on a `List[Int]` built by `append` in a `for` loop (#878):
+
+- **Debug builds:** a plateau of about 14 MB above the list itself. The smallest budgets were 2 MiB at 10,000 elements, 16 MiB at 100,000 and 24 MiB at 1,000,000.
+- **Release builds:** linear, about 12 bytes per element at the peak. That is the list's 8-byte words, plus the old buffer while it grows.
+
+The loop makes no copy at any size: `a_list_built_by_append_in_a_loop_is_never_copied_at_any_size` pins it through the debug copy counter.
+
+The rule follows: a native test that sets `--max-memory` uses a budget above this plateau, or compares its outcome with `una run` rather than with a budget near the program's own size. To test a budget close to a program's data, build the data without garbage per iteration, for example with `together for`.

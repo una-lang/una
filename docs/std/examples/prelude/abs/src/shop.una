@@ -1,0 +1,8 @@
+module shop
+
+--- How far a counted stock is from the book stock, either way.
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let gap = abs(18 - 21)
+  @console.print("off by {gap}")

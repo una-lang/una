@@ -39,13 +39,22 @@ pub(crate) fn mentions(expr: &Expr, name: &str, resolve: &dyn Fn(&Ident) -> Stri
     };
     match &expr.kind {
         ExprKind::Name(ident) => resolve(ident) == name,
+        ExprKind::Attempt {
+            operand,
+            within: Some(within),
+        } => mentions(operand, name, resolve) || mentions(within, name, resolve),
         ExprKind::Paren(inner)
-        | ExprKind::Attempt(inner)
+        | ExprKind::Attempt {
+            operand: inner,
+            within: None,
+        }
         | ExprKind::Old(inner)
         | ExprKind::Unary { operand: inner, .. } => mentions(inner, name, resolve),
         ExprKind::Field { target, .. } | ExprKind::In { value: target, .. } => {
             mentions(target, name, resolve)
         }
+        // `is` reads only its value: its literal is a constant, since interpolating in it is U4008
+        // (`spec/07 §7` rule 3, S-28), so `value` alone is complete.
         ExprKind::Is { value, .. } => mentions(value, name, resolve),
         ExprKind::Binary { left, right, .. } => {
             mentions(left, name, resolve) || mentions(right, name, resolve)
@@ -95,13 +104,24 @@ pub(crate) fn reads(expr: &Expr, resolve: &dyn Fn(&Ident) -> String, out: &mut V
     };
     match &expr.kind {
         ExprKind::Name(ident) => out.push(resolve(ident)),
+        ExprKind::Attempt {
+            operand,
+            within: Some(within),
+        } => {
+            reads(operand, resolve, out);
+            reads(within, resolve, out);
+        }
         ExprKind::Paren(inner)
-        | ExprKind::Attempt(inner)
+        | ExprKind::Attempt {
+            operand: inner,
+            within: None,
+        }
         | ExprKind::Old(inner)
         | ExprKind::Unary { operand: inner, .. } => reads(inner, resolve, out),
         ExprKind::Field { target, .. } | ExprKind::In { value: target, .. } => {
             reads(target, resolve, out);
         }
+        // As in `mentions`: an `is` literal is a constant (U4008, S-28).
         ExprKind::Is { value, .. } => reads(value, resolve, out),
         ExprKind::Binary { left, right, .. } => {
             reads(left, resolve, out);
@@ -434,11 +454,12 @@ impl<'a> Checker<'_, 'a, '_> {
         if index >= mark {
             return false;
         }
+        let task = self.task_word;
         self.report.error(
             Code::U2023,
             span,
             format!(
-                "`{name}` is declared outside this `together` task, which captures its value and cannot change it, so it cannot be {what} here; return the new value from the task instead"
+                "`{name}` is declared outside this {task}, which captures its value and cannot change it, so it cannot be {what} here; return the new value from the task instead"
             ),
         );
         true

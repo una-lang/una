@@ -1,0 +1,16 @@
+module shop
+
+--- The range of an SKU, the part before its dash. `find` gives a position that `slice` is
+--- proved to accept.
+range_of(sku: Text) -> Text
+=
+  when sku.find(text: "-")
+    is Some(at) -> sku.slice(start: 0, end: at)
+    is None -> sku
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print(range_of("LAMP-01"))
+  @console.print(range_of("CAFÉ-01"))
+  @console.print(range_of("GIFTCARD"))

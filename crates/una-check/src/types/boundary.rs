@@ -9,7 +9,6 @@
 
 use std::collections::BTreeMap;
 
-use una_diag::Code;
 use una_project::Manifest;
 use una_syntax::{FileId, Span};
 
@@ -24,6 +23,8 @@ pub(crate) struct Resolved {
     pub(crate) key: String,
     /// The ceiling: each capability, with the operations it allows.
     pub(crate) ceiling: BTreeMap<CapId, Vec<String>>,
+    /// Whether it is a dependency's package extent (ADR 0122 rule 51).
+    pub(crate) package: bool,
 }
 
 /// The boundaries of the package, and the boundary that holds each module, by index.
@@ -84,10 +85,18 @@ pub(crate) fn resolve(
     let mut listed: Vec<Option<usize>> = Vec::with_capacity(settings.boundaries.len());
     for boundary in &settings.boundaries {
         let key = &boundary.module;
-        let Some(&home) = by_path.get(key.value.as_str()) else {
+        // A dependency's package extent has no module of its own: its ceiling, the root's `may`
+        // lines, names host capabilities, resolved where `std.host` declares them (ADR 0122
+        // rule 51).
+        let home = if boundary.package {
+            Some(env.prelude)
+        } else {
+            by_path.get(key.value.as_str()).copied()
+        };
+        let Some(home) = home else {
             if let Some(span) = at(&key.range) {
                 report.error(
-                    Code::U7002,
+                    settings.format.code(),
                     span,
                     format!(
                         "[boundaries] lists `{}`, which is not a module of this package",
@@ -112,11 +121,17 @@ pub(crate) fn resolve(
             let Some(id) = capability else {
                 if let Some(span) = at(&entry.at.range) {
                     report.error(
-                        Code::U7002,
+                        settings.format.code(),
                         span,
                         format!(
-                            "the ceiling of `{}` names `{}`, which is not a capability that module `{}` sees",
-                            key.value, entry.capability, key.value
+                            "the ceiling of `{}` names `{}`, which is not a capability that {} sees",
+                            key.value,
+                            entry.capability,
+                            if boundary.package {
+                                "the standard module `std.host`".to_owned()
+                            } else {
+                                format!("module `{}`", key.value)
+                            }
                         ),
                     );
                 }
@@ -127,7 +142,7 @@ pub(crate) fn resolve(
             if let Some(first) = written.get(&id) {
                 if let Some(span) = at(&entry.at.range) {
                     report.error(
-                        Code::U7002,
+                        settings.format.code(),
                         span,
                         format!(
                             "the ceiling of `{}` names one capability twice, as `{first}` and `{}`",
@@ -144,7 +159,7 @@ pub(crate) fn resolve(
                 if declared.is_some_and(|c| !c.ops.iter().any(|o| o.name == op.as_str())) {
                     if let Some(span) = at(&entry.at.range) {
                         report.error(
-                            Code::U7002,
+                            settings.format.code(),
                             span,
                             format!(
                                 "the ceiling of `{}` allows `{}.{op}`, which `{}` does not declare",
@@ -161,6 +176,7 @@ pub(crate) fn resolve(
         boundaries.list.push(Resolved {
             key: key.value.clone(),
             ceiling,
+            package: boundary.package,
         });
     }
     // ADR 0093 rule 9: one lookup per segment of each module's path.
@@ -213,11 +229,16 @@ mod tests {
                 tree: &parsed.file,
                 interner: &interner,
                 reports: true,
+                mount: None,
             }],
             standard.source(&standard.prelude),
-            standard.source(&standard.testing),
+            standard.after_prelude(),
+            None,
+            None,
+            None,
             Vec::new(),
             Edition::V0_3,
+            una_project::Profile::App,
             &mut report,
         );
         assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);

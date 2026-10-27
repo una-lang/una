@@ -9,33 +9,37 @@ codes: [U0101, U0103, U2023, U2024, U4002]
 
 ## What it does
 
-In edition `0.2`, `together` runs independent work as concurrent tasks, and every task ends before its block does (`spec/19`). The result is that of running the tasks one after another, in order, stopping at the first failure, and the reported trace lists each task's events in index order, whatever the interleaving (`spec/19 §6` rules 3 and 5).
+From edition `0.2`, `together` runs independent work as concurrent tasks, pieces of work that may run at the same time, and every task ends before its block does. The result is that of running the tasks one after another, in order, stopping at the first failure, and the reported trace (the record of what the program did outside itself) lists each task's events in index order, whatever the interleaving, the order in which the tasks' steps happened to mix.
 
-- **`together`** with two or more `let` branches runs each branch as a task. The branches' bindings are in scope after the block (`spec/19 §1, §2`).
-- **`together for x in xs`** runs one task per element, and gives the list of their results in element order (`spec/19 §1`, `spec/19 §6` rule 3).
+Learn more: [Running work at the same time: together](/learn/concurrency/running-work-at-the-same-time-together/).
+
+- **`together`** with two or more `let` branches runs each branch as a task. The branches' bindings are in scope after the block.
+- **`together for x in xs`** runs one task per element, and gives the list of their results in element order.
 
 ```una
-module demo
+module shop
 
-pub capability Sensor
-  op reading() -> Int
+pub capability Warehouse
+  op stock_level() -> Int
 
-pub warmest() -> Int
-  uses @north: Sensor[reading]
-  uses @south: Sensor[reading]
+pub largest_stock() -> Int
+  uses @east: Warehouse[stock_level]
+  uses @west: Warehouse[stock_level]
 =
   together
-    let north = reading() with @sensor = @north
-    let south = reading() with @sensor = @south
-  max(north, b: south)
+    let east = stock_level() with @warehouse = @east
+    let west = stock_level() with @warehouse = @west
+  max(east, b: west)
 
-reading() -> Int
-  uses @sensor: Sensor[reading]
+stock_level() -> Int
+  uses @warehouse: Warehouse[stock_level]
 =
-  @sensor.reading()
+  @warehouse.stock_level()
 ```
 
 ## Forms
+
+In the grammar below, each rule gives a name, `=`, what the name stands for and `;`, quoted words are written as shown, NEWLINE, INDENT and DEDENT stand for a line break and for one more or one less level of indentation, `[ ]` marks an optional part, `{ }` a part that may repeat, `|` separates alternatives, `( )` groups them, and `(* *)` holds a comment.
 
 ```ebnf
 statement       = let_stmt | assign_stmt | for_stmt | if_stmt | together_stmt | handled ;
@@ -44,92 +48,90 @@ block_expr      = when_expr | if_block | together_for ;
 together_for    = "together" "for" lower_ident "in" ( line_expr | range_expr ) NEWLINE INDENT block DEDENT ;
 ```
 
-This is `spec/19 §1`.
-
-- **`together`** is a statement: its body holds only `let` statements, at least two. Each `let`, with its `with` bindings and handling clauses, is a branch (`spec/19 §1` rules 1 and 3).
-- **`together for`** stands where a block expression can: as the value of a `let` or of an assignment. Its body is a block whose final expression is the element's result (`spec/19 §1` rule 2).
+- **`together`** is a statement: its body holds only `let` statements, at least two. Each `let`, with its `with` bindings and handling clauses, is a branch.
+- **`together for`** stands where a block expression can: as the value of a `let` or of an assignment. Its body is a block whose final expression is the element's result.
 
 ## Examples
 
-One task per element, with failures passed on (`spec/19 §2` rule 5):
+One task per element, with failures passed on:
 
 ```una
-module demo
+module shop
 
 pub kind FetchError = Missing | Gone
 
-fetch(id: Int) -> Int
+fetch_price(sku: Int) -> Int
   fails FetchError
 =
-  if id < 0
+  if sku < 0
     fail Missing
   else
-    id * 10
+    sku * 10
 
-pub pages(ids: List[Int]) -> List[Int]
+pub prices(skus: List[Int]) -> List[Int]
   fails FetchError
 =
-  let pages = together for id in ids
-    fetch(id)
+  let found = together for sku in skus
+    fetch_price(sku)
       if error pass
-  pages
+  found
 ```
 
-A `together` with one branch is rejected: write a plain `let` (`spec/19 §1` rule 3):
+A `together` with one branch is rejected: write a plain `let`:
 
 ```una
 -- fails with U2024
-module demo
+module shop
 
-pub pair(a: Int) -> Int
+pub prepare(units: Int) -> Int
 =
   together
-    let x = a + 1
-  x
+    let boxes = units + 1
+  boxes
 ```
 
 ## Edge cases
 
-**A task cannot change outer bindings.** It captures the values it reads, as a lambda does. Assigning a binding declared outside it, or passing one as `edit` or `take`, is rejected; return the new value from the task instead (`spec/19 §2` rule 3):
+**A task cannot change outer bindings.** It captures the values it reads, as a lambda does. Assigning a binding declared outside it, or passing one as `edit` or `take`, is rejected; return the new value from the task instead:
 
 ```una
 -- fails with U2023
-module demo
+module shop
 
-pub bad(ids: List[Int]) -> Int
+pub sum_skus(skus: List[Int]) -> Int
 =
   let edit total = 0
-  let out = together for id in ids
-    total = total + id
-    id
+  let copies = together for sku in skus
+    total = total + sku
+    sku
   total
 ```
 
 The outer code may update its own bindings after the block, from the branches' results:
 
 ```una
-module demo
+module shop
 
-pub pair(a: Int) -> Int
+pub prepare(units: Int) -> Int
 =
   let edit total = 0
   together
-    let x = a + 1
-    let y = a + 2
-  total = x + y
+    let boxes = units + 1
+    let labels = units + 2
+  total = boxes + labels
   total
 ```
 
 Further rules:
 
-- **Scope.** A branch sees the bindings in scope before the block, and none of its siblings' (`spec/19 §2` rule 1).
-- **Failure and cancellation.** When a task fails, every task after it is cancelled, and the block fails with the failure of the lowest-indexed task that failed. Cancellation is cooperative: a cancelled task stops at its next call, operation or loop iteration, and effects already performed stay (`spec/19 §6` rules 3 and 4).
-- **The trace** of a block is the traces of its tasks in index order, whatever the interleaving (`spec/19 §6` rule 5).
-- **Verification.** Each branch is verified with the facts known before the block and none of its siblings' (`spec/19 §4`).
-- **Labels.** Each branch runs under the block's program counter. A `together for` over a labeled list, or a range with labeled bounds, runs its body under that label, so `fail` and calls that can fail are U4002 there (`spec/19 §3` rule 1).
-- **Timing is out of the model.** The relative order of the effects of different tasks, and how far a cancelled task got, depend on timing (`spec/19 §3` rule 3).
-- **No task values.** There are no detached tasks, no `race` or `select`, no timeouts and no channels (`spec/19 §1` rule 6).
-- **A statement, not an expression.** `let x = together` with branches is U0101: write `together for` to build a list (`spec/19 §1` rule 4).
+- **Scope.** A branch sees the bindings in scope before the block, and none of its siblings'.
+- **Failure and cancellation.** When a task fails, every task after it is cancelled, and the block fails with the failure of the lowest-indexed task that failed. Cancellation is cooperative, which means a task is never stopped in the middle of a step: a cancelled task stops at its next call, operation or loop iteration, and effects already performed stay.
+- **The trace** of a block is the traces of its tasks in index order, whatever the interleaving.
+- **Verification.** Each branch is verified with the facts known before the block and none of its siblings'.
+- **Labels.** Each branch runs under the block's program counter (the label of the conditions that decide whether a line runs; see [Branches and failures: implicit flows](/learn/information-flow/branches-and-failures-implicit-flows/)). A `together for` over a labeled list, or a range with labeled bounds, runs its body under that label, so `fail` and calls that can fail are U4002 there.
+- **Timing is out of the model.** The relative order of the effects of different tasks, and how far a cancelled task got, depend on timing.
+- **No task values.** There are no detached tasks, no `race` or `select`, no timeouts and no channels.
+- **A statement, not an expression.** `let x = together` with branches is U0101: write `together for` to build a list.
 
 ## Diagnostics
 
@@ -141,18 +143,18 @@ Further rules:
 
 ## Edition
 
-`together` exists from edition `0.2` on (ADR 0065). In edition `0.1` it is reserved:
+`together` exists from edition `0.2` on. In edition `0.1` it is reserved:
 
 ```una
 -- edition 0.1
 -- fails with U0103
-module demo
+module shop
 
-pub squares(ids: List[Int]) -> List[Int]
+pub hash_skus(skus: List[Int]) -> List[Int]
 =
-  let out = together for id in ids
-    id * id
-  out
+  let codes = together for sku in skus
+    sku * sku
+  codes
 ```
 
 ## Normative source
@@ -160,3 +162,4 @@ pub squares(ids: List[Int]) -> List[Int]
 - `spec/19 §1`: syntax and rules 1 to 6; `spec/19 §2`: static semantics; `spec/19 §3`: information flow; `spec/19 §4`: verification.
 - `spec/19 §6`: dynamic semantics; `spec/19 §7`: traces.
 - `spec/17 §5` rule 4: captures, as for lambdas.
+- Decision record: [ADR 0065](../../../adr/0065-structured-concurrency.md), for structured concurrency.

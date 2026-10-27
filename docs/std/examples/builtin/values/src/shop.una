@@ -1,0 +1,9 @@
+module shop
+
+--- A stock report, from the map's values.
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let stock = empty_map().with(key: "lamp", value: 3).with(key: "desk", value: 1)
+  let total = stock.values().sum()
+  @console.print("{total} units")

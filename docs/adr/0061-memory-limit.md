@@ -54,3 +54,30 @@ The native backend (ADR 0055) sizes the stack of its `main` the same way, and it
 ## Amendment (2026-10-06)
 
 The native runtime's heap budget depends on the `cap` allocator crate (rule 4), which is `unsafe` code outside ADR 0058's single `unsafe` module, `crates/una-rt/src/ffi.rs`. The repository still writes no `unsafe` for it, but the crate's allocator wraps every allocation of `una` and of every native executable, so `cap` is part of the trusted base, with the runtime (Leonardo, 2026-10-06, on MEM-4 of the independent v0.2 native review #176, issue #185). `spec/16 §4` and the Trusted row of charter §3 name it.
+
+## Amendment (2026-10-15, ADR 0113)
+
+Rule 2 gains a check point in native code only: each step of the copies a `together` block makes checks `held() + reserved` against the budget before it allocates, and a refusal stops the run with U6003 at the block. The interpreter's checks do not change.
+
+## Amendment (2026-10-16, ADR 0113)
+
+The check point of the Amendment of 2026-10-15 also covers, in native code, each allocation of a `together` block's bookkeeping (its result list, the state of each batch of its tasks and each adoption of a batch's events) and each start of its task threads: each checks `held() + reserved` against the budget before it allocates, and a refusal stops the run with U6003 at the block. The interpreter's checks do not change.
+
+## Amendment (2026-10-17, #815)
+
+Rule 2 gains a check point in both engines.
+
+- **What the comparison does.** A structural comparison (`==`, `!=` and the prelude's `contains`, on values that are not scalars) compares leaves as it meets them: scalars, texts, keyed hashes, variants without fields, and empty lists and maps. It compares each distinct pair of values with parts once.
+- **What it holds.** It holds a list of the pairs of values with parts it has yet to compare. After its first 1024 steps, it also holds a set of those it has compared.
+- **The check.** Before each step it counts these pairs at a fixed 128 bytes each, in both engines. When that count is over the budget, it aborts the run with U6003 at the comparison, or stops the task there.
+  - The 128 bytes cover the interpreter's peak per pair: an entry of the set while the set grows, about 86 bytes, and a pending entry, up to 32.
+  - The count is checked on its own, not added to the bytes the heap holds, so rule 3's ceiling still bounds the total.
+- **Determinism.** The count depends on the two values and the parts they share, never on the allocator. Within one engine, it is the same on every run, target and build.
+  - Which parts are shared follows how each engine builds and copies values. For one program, the point of U6003 can therefore differ between the engines, as the other check points' can (rule 5, and ADR 0113's exemption for the copies of `together`).
+  - When the program's own `let` bindings and lists fix the sharing, both engines count the same pairs and abort at the same comparison.
+- **Complexity.** A comparison takes time and space in the number of distinct pairs of values with parts it meets. That is never more than the product of the two values' distinct parts with parts, plus its first 1024 steps. It no longer grows with the number of paths through their shared parts.
+- **Information flow.** Like the other check points, whether a comparison of labeled values reaches the budget can depend on their contents. That is at most one bit through termination, outside the noninterference model (`spec/07 §1`).
+
+## Amendment (2026-10-18, ADR 0117)
+
+Rule 1's cap on the stack reservation holds for every task. The stack a task uses counts toward the memory budget of rule 2, measured at each depth check (ADR 0117 rule 2). The tasks of `first of` and `start` take their depth limit from `--task-depth`.

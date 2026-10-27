@@ -13,6 +13,7 @@ They are Python 3 with the standard library only.
 - `hunt/families/handlers.py` and `keys.py`: families H (handler bodies and the effect floor, H1 to H6) and K (`Keys.hmac`, K1 to K4).
 - `hunt/families/payloads.py`, `generics.py`, `concurrency.py`, `sums.py` and `ordering.py`: families P (failure payloads), G (kind parameters and invariance), C (`together`, edition 0.2), S (user sum types, `is` and `in`) and O (`Ord`, `sort`, `min`, `max`), the blind rows of `docs/reviews/security-hunt/coverage.md`.
 - `hunt/families/composed.py` and `composed2.py`: the composed families, two blind rows at once: CS (`together` over user sum types), PG (payloads of generic kinds), TC (policies in tasks), CP (payload failures in tasks) and GS (generic sums at secret instances).
+- `hunt/families/boundaries.py` and `conditions.py`: families B (authority boundaries, ADR 0093) and Q (conditions on allowed effects and contract locks, ADR 0092), the rules of edition 0.3, generated in editions 0.2, as the edition gate's probe, and 0.3 (`OPERATOR_EDITIONS`).
 - `hunt/families/fragment.py`: family F, programs inside the formal re-check's vocabulary, for part (b).
 - `hunt/refactor.py`: family R, refactors that keep every label. R6 renames, interpolations included; R9 reorders declarations.
 - `hunt/drivers.py`: two judges that need only `una check --tier 0`:
@@ -20,8 +21,9 @@ They are Python 3 with the standard library only.
   - **must-keep:** a refactor that changes the verdict is a finding;
   - **differ** (part b), which also needs `una-core-check` (`formal/.lake/build/bin`): for a program `una check` accepts, a declaration the re-check rejects is a finding, even when the re-check then times out or crashes. `clean` needs every condition: a complete export, a normal exit, a line for every function and every refinement predicate, each predicate's line `outside the flow model` (unless the whole document fell back to one reason), and only known outcomes. Anything else is `unknown`.
 - `hunt/oracle.py`: the two-run oracle's part that the release gate runs: for an accepted program, each varied secret literal is replaced by other values of its type, every variant runs twice on the interpreter, and what an observer below the literal's label sees (at `public` and `internal`, events filtered by their operation's `accepts`) must not change. Two runs of one variant that differ, or a run that ends in an unknown way, are errors; a pair where only one side aborts on a resource limit (U6003, U6004, U6005) or the time limit is recorded as a termination pair, outside T6.
-- `hunt/gate.py`: the `hunt` release gate (`docs/release-gates.md`): the fixed, seeded run through must-reject, must-keep and the oracle, its two canaries, and `summary.json`. It fails closed.
-- `hunt/sandbox.py`: every compiler run happens under `sandbox-exec`. The only writable directory is the campaign's root, there is no network, and the environment is clean. Without `sandbox-exec`, nothing runs.
+- `hunt/native.py`: the oracle's native sample (#792): a stratified, fixed sample of its programs, by the hash of their names and one per compared family, also runs as native executables, every variant, and the exit code, standard output, standard error and trace must equal the interpreter's, by the rules of `crates/una-cli/tests/native.rs`. A difference is a backend divergence. The programs the native backend does not compile are pinned by name in `native-unsupported.txt`.
+- `hunt/gate.py`: the `hunt` release gate (`docs/release-gates.md`): the fixed, seeded run through must-reject, must-keep, the oracle and its native sample, and the re-check comparison (`differ`), its canaries, and `summary.json`. It fails closed.
+- `hunt/sandbox.py`: every compiler run happens in a sandbox: `sandbox-exec` on macOS, and on Linux Landlock (`hunt/landlock.py`) inside the hardened container of `scripts/hunt-linux.sh`, which the sandbox verifies before any run (#793). The only writable directory is the run's, there is no network but the mock's port, and the environment is clean. Without its sandbox, nothing runs.
 - `tests/`: tests that need no compiler.
 
 ## Use
@@ -39,5 +41,5 @@ python3 -B -m hunt gate --una /abs/path/to/una --out DIR --tip SHA            # 
 
 - **Reproduction.** Every program is rebuilt from its operator, seed and edition. A program's seed comes from the campaign seed, the operator and the index, nothing else. Each manifest row records a digest of the program's files, and the drivers rebuild every program and compare it with that digest before they run it.
 - **Machine slots.** `reject`, `keep` and `differ` run the compiler, which is heavy work. They run only in a machine slot between benchmark runs.
-- **Findings.** A finding goes to the coordinator first, with its minimized repro, before any fix.
+- **Findings.** A finding is reported privately first, with its minimized repro, before any fix.
 - **Nothing generated is committed.** Campaigns write outside the repository.

@@ -10,7 +10,10 @@ outside code blocks and inline code, every link that is not a URL, inline or in 
 definition `[ref]: target` (#719):
 - names a file or directory that git tracks (#305), so it exists on GitHub; an image included;
 - with a `#fragment`, names a heading of its target document, or of the document itself, when
-  the target is one of these documents.
+  the target is one of these documents;
+- or, when it starts with `/`, is a page of the website's Learn section: `/learn/` and lowercase
+  route segments, each ending in `/`, with an optional plain `#anchor` (#859). The website build
+  checks that the route exists (its learn-pages.json); here only its form is checked.
 A percent-encoded path or fragment is decoded first, and a malformed escape is refused.
 
 A heading's fragment is the id the website gives it (una-lang/website,
@@ -78,18 +81,114 @@ def tracked(root):
     return files, dirs
 
 
-FENCE = re.compile(r"^\s*```")
+# The block structure the website's Markdown gives a document, as far as headings and code
+# need it (#843): block quotes and list items, nested both ways, fenced code (backticks or tildes)
+# and indented code, ATX headings, thematic breaks and paragraphs, with lazy continuation. Tabs
+# count to the next multiple of 4 columns. HTML blocks and setext headings are not read; the
+# `site` gate compares every document's heading ids with the website's, so a gap shows there.
+QUOTE = re.compile(r"^ {0,3}> ?")
+LIST = re.compile(r"^( {0,3})([-+*]|(\d{1,9})[.)])( {1,5}|$)")
+OPENER = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+BREAK = re.compile(r"^ {0,3}([-*_])(?:[ ]*\1){2,}[ ]*$")
+
+
+def blocks(text):
+    """Each line of `text` with its number and what it is: ("heading", number, the heading's
+    text after its markers), ("code", number, line) or ("text", number, line), the line as
+    written."""
+    stack = []  # open containers: ("quote",) or ("list", content indent)
+    fence = None  # (character, length, number of containers it is in)
+    para = False
+    for number, raw in enumerate(text.split("\n"), 1):
+        line = raw.expandtabs(4)
+        rest = line
+        matched = 0
+        for kind in stack:
+            if kind[0] == "quote":
+                m = QUOTE.match(rest)
+                if not m:
+                    break
+                rest = rest[m.end():]
+            else:
+                if rest.strip() and len(rest) - len(rest.lstrip(" ")) < kind[1]:
+                    break
+                rest = rest[kind[1]:] if rest.strip() else ""
+            matched += 1
+        if fence is not None:
+            if matched < fence[2]:
+                # The fence's container ended, and the fence with it.
+                fence = None
+            else:
+                m = re.match(r"^ {0,3}(" + re.escape(fence[0]) + "{" + str(fence[1]) + r",})[ ]*$", rest)
+                if m:
+                    fence = None
+                yield "code", number, raw
+                continue
+        if matched < len(stack):
+            lazy = para and rest.strip() and not (
+                QUOTE.match(rest) or LIST.match(rest) or OPENER.match(rest) or BREAK.match(rest)
+                or HEADING.match(rest))
+            if lazy:
+                yield "text", number, raw
+                continue
+            del stack[matched:]
+            para = False
+        # New containers.
+        while True:
+            m = QUOTE.match(rest)
+            if m:
+                stack.append(("quote",))
+                rest = rest[m.end():]
+                para = False
+                continue
+            m = LIST.match(rest)
+            if m and not BREAK.match(rest):
+                indent, marker, digits, spaces = m.groups()
+                empty = rest[m.end():].strip() == "" and spaces != ""
+                if para and ((digits is not None and int(digits) != 1) or not rest[m.end():].strip()):
+                    break  # it cannot interrupt a paragraph
+                width = len(indent) + len(marker)
+                if spaces == "" or len(spaces) == 5 or empty:
+                    width += 1  # code after the marker, or nothing: content one column on
+                    rest = rest[m.end() - len(spaces) + (1 if spaces else 0):]
+                else:
+                    width += len(spaces)
+                    rest = rest[m.end():]
+                stack.append(("list", width))
+                para = False
+                continue
+            break
+        if not rest.strip():
+            para = False
+            yield "text", number, raw
+            continue
+        if not para and len(rest) - len(rest.lstrip(" ")) >= 4:
+            yield "code", number, raw
+            continue
+        m = OPENER.match(rest)
+        if m and not (m.group(1)[0] == "`" and "`" in m.group(2)):
+            fence = (m.group(1)[0], len(m.group(1)), len(stack))
+            para = False
+            yield "code", number, raw
+            continue
+        m = HEADING.match(rest)
+        if m:
+            para = False
+            yield "heading", number, m.group(2) or ""
+            continue
+        if BREAK.match(rest):
+            para = False
+            yield "text", number, raw
+            continue
+        para = True
+        yield "text", number, raw
 
 
 def prose(text):
     """Each line outside code blocks, with its number, as (number, line, [stretches outside
     inline code])."""
-    fence = False
-    for number, line in enumerate(text.split("\n"), 1):
-        if FENCE.match(line):
-            fence = not fence
-            continue
-        if fence:
+    for kind, number, line in blocks(text):
+        if kind == "code":
             continue
         yield number, line, line.split("`")[0::2]
 
@@ -135,17 +234,10 @@ def anchors(text, spec):
     """The ids of the headings of a document, in order."""
     used = set()
     ids = []
-    fence = False
-    for line in text.split("\n"):
-        if FENCE.match(line):
-            fence = not fence
+    for kind, _, heading in blocks(text):
+        if kind != "heading":
             continue
-        if fence:
-            continue
-        m = HEADING.match(line)
-        if not m:
-            continue
-        words = heading_text(m.group(2) or "")
+        words = heading_text(heading)
         numbered = SPEC_NUMBER.match(words)
         name = "s" + numbered.group(1).replace(".", "-") if spec and numbered else slug(words)
         while name in used:
@@ -166,6 +258,8 @@ REFERENCE = re.compile(
     r"(?:[ \t]+(?:\"[^\"]*\"|'[^']*'|\([^)]*\)))?[ \t]*$"
 )
 MALFORMED_ESCAPE = re.compile(r"%(?![0-9A-Fa-f]{2})")
+# A link to a page of the website's Learn section (#859).
+LEARN = re.compile(r"/learn/(?:[a-z0-9]+(?:-[a-z0-9]+)*/)*(?:#[a-z0-9]+(?:-[a-z0-9]+)*)?")
 
 
 def resolve(page, target):
@@ -192,6 +286,10 @@ def problems(root, docs, files, dirs):
     def target_problem(page, target):
         if re.match(r"^[a-z]+:", target) or target.startswith("//"):
             return None
+        if target.startswith("/"):
+            if LEARN.fullmatch(target):
+                return None
+            return "is a root-relative link that is not a /learn/ route with an optional anchor"
         if MALFORMED_ESCAPE.search(target):
             return "has a malformed percent escape"
         path, _, fragment = target.partition("#")
@@ -246,6 +344,8 @@ def self_test():
         '[angle]: <sub/i.png> "A title"\n'
         "[web]: https://example.org/x\n"
         "[encoded]: b.md#part%2Dtwo\n"
+        "Learn more: [uses](/learn/capabilities/declaring-what-a-function-may-do-uses/), "
+        "[a part](/learn/failure/handling-a-failure-the-five-clauses/#s6-2) and [Learn](/learn/).\n"
     )
     bad = {
         "a repository link to an untracked file": "[x](missing.md)",
@@ -261,6 +361,13 @@ def self_test():
         "a percent-encoded fragment that names no heading": "[x](b.md#part%2Dthree)",
         "a malformed percent escape": "[x](sub/i%zz.png)",
         "a percent escape that is not UTF-8": "[x](sub/%FF.png)",
+        "a root-relative link outside /learn/": "[x](/docs/spec/)",
+        "a /learn/ link that climbs out": "[x](/learn/../x/)",
+        "a /learn/ link with an empty segment": "[x](/learn//x/)",
+        "a /learn/ link with an uppercase route": "[x](/learn/Capabilities/)",
+        "a /learn/ link without its trailing slash": "[x](/learn/capabilities)",
+        "a /learn/ link with a query": "[x](/learn/capabilities/?x=1)",
+        "a /learn/ link with markup in its anchor": "[x](/learn/capabilities/#<b>)",
     }
     # `i%zz.png` is tracked, so the malformed escape that names it is refused for the escape alone.
     files = {"docs/a.md", "docs/b.md", "docs/sub/i.png", "docs/sub/a b.png", "docs/sub/i%zz.png"}

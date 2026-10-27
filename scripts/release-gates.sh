@@ -6,7 +6,12 @@
 #
 # Gates, in order (all of them when none is named):
 #   clone        a fresh clone of the commit, from the repository's remote
-#   build        cargo build --release -p una-cli -p una-rt, then cargo test --workspace, cold
+#   build        cargo build --release -p una-cli -p una-rt, then cargo test --workspace, cold,
+#                then scripts/no-libm-build.sh and scripts/no-libm.sh (#1092): the release
+#                `una` links the runtime conformance programs, and no C math library symbol
+#                in that `una`, the release `libuna_rt.a` or those executables
+#                then scripts/load-commands.sh (#1103): that `una` and examples/hello it links
+#                load only what scripts/load-commands.txt lists
 #   deps         scripts/deps-audit.sh (#770): cargo-deny at its pinned version against the
 #                advisory database fetched now (advisories, licenses, bans, crates.io only), and
 #                the supply-chain review record; the database's commit goes into the record
@@ -21,13 +26,21 @@
 #                twice, compared
 #   native       the interpreter against the native executable, on every runnable program of
 #                the repository (spec/16 §5): the equivalence test of crates/una-cli/tests/native.rs
+#   timing-channels
+#                the security timing oracles (#1145): `cargo test --release --locked -p una-cli --test
+#                timing_channels -- --ignored --test-threads=1 --nocapture`, the real-clock tests that a timing
+#                channel stays closed, which the ordinary test run ignores; it runs right after
+#                `native`, with no Docker gate running, so the machine is as quiet as the run gets
+#   owner-replay the exhaustive models of the replay of an owner's chain (spec/30 §14 rule 5)
+#                and of yanks against it (spec/30 §15 rule 6), both to depth 5: `cargo test
+#                --release --locked -p una-project --lib -- --ignored --exact
+#                tlog::owner::model::owner_replay_holds_its_contract_to_depth_five --nocapture`,
+#                then the same with registry::yank_model::yanks_hold_their_invariants_to_depth_five;
+#                the ordinary test run checks both to depth 3, and the gate passes only when both
+#                pass
 #   sanitize     scripts/sanitize.sh (#766): Miri on the unit tests of una-rt, and the native
 #                equivalence test against una-rt built with AddressSanitizer, with the checking
 #                toolchain of scripts/check-toolchain.toml; macOS only for now
-#   hunt         the security hunt's fixed, seeded run (scripts/security-hunt, `python3 -m hunt
-#                gate`): its generators through the must-reject and must-keep drivers and the
-#                two-run oracle, with two canaries, failing closed (#767). macOS only: every
-#                compiler run is under sandbox-exec. Its summary is OUT/hunt/summary.json
 #   site         scripts/doc-links.py: its self-test, then every link of the repository's
 #                documents names a tracked file and every fragment a heading (#708). Then (#584)
 #                scripts/site-bundle.sh writes the docs bundle into OUT/site-bundle with the
@@ -40,6 +53,17 @@
 #                npm, or no access to the website's or the examples' repository, is a FAIL
 #   formal       scripts/formal.sh: the Lean development of the formal track builds with its pinned
 #                toolchain, and no stated theorem depends on `sorry` (#46)
+#   hunt         the security hunt's fixed, seeded run (scripts/security-hunt, `python3 -m hunt
+#                gate`): its generators through the must-reject and must-keep drivers, the
+#                two-run oracle and the comparison with the formal model's re-check, with five
+#                canaries, failing closed (#767, #791). It runs after `formal`, and builds the
+#                re-check's executable (`lake build una-core-check`) with the same pinned Lean.
+#                On macOS every compiler run is under sandbox-exec. Its summary is
+#                OUT/hunt/summary.json
+#   hunt-linux-arm64
+#                the same fixed run on linux/arm64 (scripts/hunt-linux.sh, #793): the container
+#                is the gate's sandbox (no network, read-only root, no capability, not root) and
+#                Landlock confines each run. Its summary is OUT/hunt-linux-arm64/summary.json
 #
 # Output, in OUT: results.tsv (gate, sha, PASS or FAIL, seconds, sha256 of the gate's log),
 # logs/<gate>.log, record.md, the full validation record, and, when the record names its
@@ -49,7 +73,10 @@
 #
 # UNA_GATES_SOURCE overrides where the clone comes from (default: the remote `origin`), and
 # UNA_GATES_Z3 where the pinned solver is (default: target/z3 of this checkout or of the clone).
-# Exit code: 0 when no gate failed, 1 when one did, 2 for a usage error.
+# The Docker gates run on Docker Desktop's context only: run them with
+# DOCKER_CONTEXT=desktop-linux (#1082, below).
+# Exit code: 0 when no gate failed, 1 when one did, 2 for a usage error or a refused Docker
+# context.
 #
 # Usage: scripts/release-gates.sh SHA OUT [GATE...]
 set -u
@@ -66,7 +93,7 @@ esac
 unset BASH_ENV ENV
 ulimit -c 0
 
-ALL=(clone build deps mac linux linux-arm64 release reproducible determinism native sanitize hunt site formal)
+ALL=(clone build deps mac linux linux-arm64 release reproducible determinism native timing-channels owner-replay sanitize site formal hunt hunt-linux-arm64)
 
 usage() {
     echo "usage: scripts/release-gates.sh SHA OUT [GATE...]; SHA is a full 40-digit commit, GATE is one of: ${ALL[*]}" >&2
@@ -85,6 +112,39 @@ for gate in "${GATES[@]}"; do
 done
 
 REPO=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+
+# The Docker backend (#1082): the Docker gates run on Docker Desktop's context desktop-linux,
+# never on whichever context happens to be active, since another runtime on the same machine can
+# hold it. When a requested gate needs Docker, the run refuses before any gate unless
+# DOCKER_CONTEXT, or else the active context, is desktop-linux, and DOCKER_HOST, which would
+# override the context, is unset. The context is then exported, so that every gate and its
+# children use it even if the active context changes during the run. The record names the
+# context and the server's version.
+DOCKER_GATES=" linux linux-arm64 release reproducible hunt-linux-arm64 "
+DOCKER_REQUIRED=desktop-linux
+NEEDS_DOCKER=0
+for gate in "${GATES[@]}"; do
+    case "$DOCKER_GATES" in *" $gate "*) NEEDS_DOCKER=1 ;; esac
+done
+docker_context() {
+    if [ -n "${DOCKER_CONTEXT:-}" ]; then
+        printf '%s' "$DOCKER_CONTEXT"
+    else
+        docker context show 2> /dev/null
+    fi
+}
+if [ $NEEDS_DOCKER = 1 ]; then
+    if [ -n "${DOCKER_HOST:-}" ]; then
+        echo "release gates: DOCKER_HOST is set, and it would override the Docker context; unset it and run with DOCKER_CONTEXT=$DOCKER_REQUIRED (#1082)" >&2
+        exit 2
+    fi
+    context=$(docker_context)
+    if [ "$context" != "$DOCKER_REQUIRED" ]; then
+        echo "release gates: the Docker gates run on the context $DOCKER_REQUIRED, and the context is ${context:-unknown}; run with DOCKER_CONTEXT=$DOCKER_REQUIRED (#1082)" >&2
+        exit 2
+    fi
+    export DOCKER_CONTEXT=$DOCKER_REQUIRED
+fi
 
 # The two patterns of this run (docs/release-gates.md §3): the privacy pattern of the public
 # summary (#717) and the neutrality pattern of the public pages (ADR 0088, #789). Each comes
@@ -168,6 +228,9 @@ export UNA_RELEASED_SECTIONS_SCOPE=ancestors
 # documents' links (#708), whatever the caller's shell exports.
 unset UNA_SKIP_RELEASED_SECTIONS UNA_LOCAL_CI_RELEASED_SECTIONS_ON_HOST UNA_LOCAL_CI_ADVISORIES_ON_HOST \
     UNA_LOCAL_CI_DOC_LINKS_ON_HOST
+# Nor does the site gate build or compare anything but what the locks pin: the website and Una by
+# Example from their repositories, and the Learn release as published (#831).
+unset UNA_SITE_WEBSITE_SOURCE UNA_SITE_LEARN_SOURCE UNA_SITE_LEARN_RELEASE_DIR UNA_SITE_LEARN_UNA_DIR
 
 digest() { shasum -a 256 "$1" | cut -d' ' -f1; }
 
@@ -225,11 +288,21 @@ gate_clone() {
 }
 
 gate_build() {
+    # Then no C math library symbol (#1092), in what ships: the release `una` just built links
+    # every runnable program of tests/conformance/runtime that the native backend compiles
+    # (scripts/no-libm-build.sh, into target/no-libm; target/ is ignored, so the clone stays
+    # exact), and scripts/no-libm.sh reads the release graph's features and the undefined symbols
+    # of that `una`, of the release `libuna_rt.a` and of those executables, strictly.
     run build sh -c '
         if [ ! -x "'"$Z3"'/bin/z3" ]; then scripts/install-z3.sh "'"$Z3"'" || exit 1; fi
+        no_libm=$(pwd)/target/no-libm
+        rm -rf "${no_libm:?}"
         scripts/check-solver.sh \
             && cargo build --locked --release -p una-cli -p una-rt \
-            && cargo test --workspace --locked'
+            && cargo test --workspace --locked \
+            && scripts/no-libm-build.sh target/release/una "$no_libm" \
+            && scripts/no-libm.sh target/release/una target/release/libuna_rt.a "$no_libm/executables" \
+            && scripts/load-commands.sh target/release/una'
 }
 
 gate_deps() { run deps scripts/deps-audit.sh; }
@@ -328,11 +401,29 @@ gate_hunt() {
     rm -rf "${hunt:?}"
     # The output directory and the commit go in as positional arguments, never spliced into the
     # script's text.
+    # The re-check's executable comes from the pinned Lean, as scripts/formal.sh finds it; a
+    # missing executable fails the gate.
     run hunt sh -c '
+        scripts/check-solver.sh || exit 1
         [ -x target/release/una ] || cargo build --locked --release -p una-cli || exit 1
         una=$(pwd)/target/release/una
+        root=$(pwd)
+        . scripts/lean-env.sh || exit 1
+        (cd formal && lake build una-core-check) || exit 1
+        core_check=$(pwd)/formal/.lake/build/bin/una-core-check
+        [ -x "$core_check" ] || { echo "no una-core-check at $core_check"; exit 1; }
         cd scripts/security-hunt && PYTHONDONTWRITEBYTECODE=1 python3 -B -m hunt gate \
-            --una "$una" --out "$1" --tip "$2"' sh "$hunt" "$SHA"
+            --una "$una" --out "$1" --tip "$2" --core-check "$core_check" --z3 "$3/bin/z3"' \
+        sh "$hunt" "$SHA" "$Z3"
+}
+
+gate_hunt-linux-arm64() {
+    # The hunt gate on linux/arm64 (#793): scripts/hunt-linux.sh builds the release `una` and
+    # the re-check in the image of scripts/local-ci.sh, then runs the gate in a hardened
+    # container, its evidence in OUT/hunt-linux-arm64.
+    local hunt=$OUT/hunt-linux-arm64
+    rm -rf "${hunt:?}"
+    run hunt-linux-arm64 scripts/hunt-linux.sh --linux-arm64 "$hunt" "$SHA"
 }
 
 gate_site() {
@@ -357,11 +448,33 @@ gate_site() {
         }
         version=$(sed -n "s/^version = \"\(.*\)\"$/\1/p" Cargo.toml | head -n 1)
         scripts/doc-links.py --self-test \
+            && scripts/site-learn-release.sh --self-test \
+            && scripts/site-learn-una.sh --self-test \
             && scripts/doc-links.py \
             && with_pattern env UNA_BIN=target/release/una scripts/site-bundle.sh "'"$OUT"'/site-bundle" \
-            && with_pattern env UNA_BIN=target/release/una scripts/site-website.sh "'"$OUT"'/site-bundle/una-docs-$version" "'"$OUT"'/site-website"'
+            && with_pattern env UNA_SITE_LEARN_SAME_VERSION=1 UNA_BIN=target/release/una scripts/site-website.sh "'"$OUT"'/site-bundle/una-docs-$version" "'"$OUT"'/site-website"'
 }
 gate_formal() { run formal scripts/formal.sh; }
+
+gate_timing-channels() {
+    # The security timing oracles (#1145, crates/una-cli/tests/timing_channels.rs): each test is
+    # ignored in the ordinary run and runs only here and in the step of the same name of
+    # scripts/local-ci.sh, one at a time, on the real clock of a native host.
+    run timing-channels cargo test --release --locked -p una-cli --test timing_channels -- --ignored --test-threads=1 --nocapture
+}
+
+gate_owner-replay() {
+    # The exhaustive model of the replay of an owner's chain (spec/30 §14 rule 5), then the
+    # model of yanks against it (spec/30 §15 rule 6): both ignored in the ordinary run, which
+    # checks each to depth 3, and both run here to depth 5; the gate passes only when both
+    # pass. They are unit tests of una-project, since the model of signatures that stands in
+    # for Ed25519 exists only in that crate's test build; `--release`, for their millions of
+    # replays; `--nocapture`, so the log holds their counts.
+    run owner-replay sh -c '
+        cargo test --release --locked -p una-project --lib -- --ignored --exact tlog::owner::model::owner_replay_holds_its_contract_to_depth_five --nocapture &&
+        cargo test --release --locked -p una-project --lib -- --ignored --exact registry::yank_model::yanks_hold_their_invariants_to_depth_five --nocapture
+    '
+}
 
 # #766: Miri on the runtime's unit tests, and the native equivalence test against the runtime
 # built with AddressSanitizer, by the checking toolchain of scripts/check-toolchain.toml, which
@@ -373,8 +486,9 @@ for gate in "${GATES[@]}"; do
 done
 
 # The Docker volume that local-ci made for this clone's target directory (named from its
-# path), so that runs do not pile volumes up.
-if command -v docker > /dev/null 2>&1; then
+# path), so that runs do not pile volumes up. Only a run that used Docker removes them, on the
+# context it checked.
+if [ $NEEDS_DOCKER = 1 ] && command -v docker > /dev/null 2>&1; then
     checkout=$(printf '%s' "$CLONE" | shasum -a 256 | cut -c1-12)
     docker volume rm "una-local-ci-target-$checkout" "una-local-ci-target-$checkout-arm64" \
         > /dev/null 2>&1 || true
@@ -388,6 +502,14 @@ fi
     subject=$(git -C "$CLONE" log -1 --format=%s "$SHA" 2>/dev/null || echo unknown)
     echo "- Subject: $subject"
     echo "- Run: $(date -u +%Y-%m-%dT%H:%M:%SZ), $(uname -sm), $(rustc --version 2>/dev/null || echo 'rustc unknown'), $(docker --version 2>/dev/null || echo 'Docker unavailable')"
+    if command -v docker > /dev/null 2>&1; then
+        server=$(docker version --format '{{.Server.Version}}' 2> /dev/null) || server=""
+        line="context ${context:-$(docker_context)}, server ${server:-unavailable}"
+    else
+        line="unavailable"
+    fi
+    [ $NEEDS_DOCKER = 1 ] || line="$line (no Docker gate ran)"
+    echo "- Docker: $line"
     echo "- Script: \`scripts/release-gates.sh\` at \`$(git -C "$REPO" rev-parse HEAD 2>/dev/null || echo unknown)\`"
     echo
     echo "| Gate | Result | Seconds | Log sha256 |"
@@ -427,8 +549,10 @@ fi
 import json, sys
 s = json.load(open(sys.argv[1]))
 print("- Verdict: %s; seed %s, %s programs, una tip `%s`" % (s["verdict"], s["seed"], s["sizes"]["programs"], s["tip"]))
-for key in ("reject", "keep", "oracle"):
+for key in ("reject", "keep", "oracle", "differ"):
     print("- %s: %s of %s cases judged" % (key, s["sizes"][key]["judged"], s["sizes"][key]["expected"]))
+d = s["sizes"]["differ"]
+print("- Re-check comparison: %s programs read clean, %s pinned unknown, %s residual" % (d["clean"], d["unknown"], d["residual"]))
 o = s["sizes"]["oracle"]
 print("- Oracle: %s programs and %s variants compared, %s live, %s programs set aside" % (o["programs_compared"], o["variants_compared"], o["live"], o["set_aside"]))
 print("- Termination pairs (outside the noninterference guarantee, recorded): %s" % s["termination_pairs"]["count"])

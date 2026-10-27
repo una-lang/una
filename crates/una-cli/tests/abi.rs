@@ -18,6 +18,7 @@ fn repository() -> PathBuf {
 fn una_in(dir: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
         .args(args)
         .current_dir(repository().join(dir))
         .output()
@@ -48,16 +49,22 @@ fn the_report_of_the_events_example() {
     let output = una(&["--json", "report", "examples/events"]);
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     assert_eq!(stderr(&output), "");
-    // The `native` section names the host target (ADR 0055), which differs between runners.
+    // The `native` section names the host target (ADR 0055) and the kernel variants compiled
+    // for it (ADR 0120 rule 56), which differ between runners.
     let target = una_codegen::host_target();
-    let text =
-        stdout(&output).replace(&format!("\"target\":\"{target}\""), "\"target\":\"<host>\"");
+    let variants = serde_json::to_string(una_core::dense::variants::variant_names()).unwrap();
+    let text = stdout(&output)
+        .replace(&format!("\"target\":\"{target}\""), "\"target\":\"<host>\"")
+        .replace(
+            &format!("\"variants\":{variants}"),
+            "\"variants\":\"<host>\"",
+        );
     insta::assert_snapshot!("report_events_json", text);
     let report = json(&output);
     assert_eq!(report["schema"], "una.report/2");
     assert_eq!(
         report["package"],
-        json!({"name": "events-example", "version": "0.1.0"})
+        json!({"name": "events-example", "version": "0.1.0", "profile": "app"})
     );
     assert_eq!(
         report["obligations"],
@@ -101,9 +108,12 @@ fn the_report_of_the_events_example() {
         .map(String::as_str)
         .collect();
     // ADR 0067 added `generic_results`, after `native`; ADR 0081 `handler_authority`, after
-    // `authority`.
-    assert_eq!(keys.len(), 16);
+    // `authority`; ADR 0122 `dependencies`, after `handler_authority`, always present.
+    assert_eq!(keys.len(), 17);
     assert_eq!(report["generic_results"], json!([]));
+    assert_eq!(report["dependencies"], json!([]));
+    assert_eq!(report["tcb"]["registries"], json!([]));
+    assert_eq!(report["tcb"]["dependency_trust"], json!([]));
     assert_eq!(report["handler_authority"], json!([]));
     assert_eq!(report["native"]["target"], target.as_str());
     // `clamp_seats` returns `Seats`, `Int in 0..5000`, a machine width (FW-1); its parameter
@@ -111,6 +121,14 @@ fn the_report_of_the_events_example() {
     assert_eq!(
         report["native"]["arbitrary_precision"],
         json!(["events.seating.clamp_seats.raw"])
+    );
+    assert_eq!(
+        report["native"]["kernels"]["variants"],
+        json!(una_core::dense::variants::variant_names())
+    );
+    assert_eq!(
+        report["native"]["kernels"]["fma_allowlist"],
+        json!(una_core::dense::variants::ALLOWLIST)
     );
     let output = una(&["report", "examples/events"]);
     assert_eq!(output.status.code(), Some(0));
@@ -128,6 +146,12 @@ fn the_report_of_the_events_example() {
     );
     assert!(
         stdout(&output).contains("\n  proof cache: .una/cache/\n"),
+        "{}",
+        stdout(&output)
+    );
+    // ADR 0109 rule 7: the profile follows the package's name, `app` by default.
+    assert!(
+        stdout(&output).starts_with("package events-example 0.1.0\nprofile: app\nlock: "),
         "{}",
         stdout(&output)
     );
@@ -157,6 +181,11 @@ fn the_out_of_model_list_is_the_one_of_the_spec() {
             "races between the check and the use of a file path",
             "hard links",
             "order of effects across concurrent tasks",
+            "the time of a host stop",
+            "interference of the host's load with the timing of an expression",
+            "uncatchable termination",
+            "waits at limits and at `start`",
+            "which branch of `first of` wins, beyond its label",
         ]
     );
     let (last, first) = channels.split_last().unwrap();
@@ -235,7 +264,7 @@ pub bounded(x: Int) -> Int
     let report = json(&output);
     assert_eq!(
         report["package"],
-        json!({"name": "trivial", "version": "1.2.3"})
+        json!({"name": "trivial", "version": "1.2.3", "profile": "app"})
     );
     assert_eq!(
         report["coverage"],
@@ -266,7 +295,7 @@ pub next(x: Int) -> Int
     let report = json(&output);
     assert_eq!(
         report["package"],
-        json!({"name": "tally", "version": "0.0.0"})
+        json!({"name": "tally", "version": "0.0.0", "profile": "app"})
     );
     assert_eq!(
         report["obligations"],
@@ -320,6 +349,7 @@ pub double(x: Int) -> Int
     let una = |args: &[&str]| {
         Command::new(env!("CARGO_BIN_EXE_una"))
             .env("HOME", &home)
+            .env_remove("UNA_PROOF_KEY")
             .args(args)
             .current_dir(repository())
             .output()
@@ -338,6 +368,7 @@ pub double(x: Int) -> Int
     assert!(stderr(&output).contains("U5001"), "{}", stderr(&output));
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", &home)
+        .env_remove("UNA_PROOF_KEY")
         .args(["--json", "trace", "NUM_1"])
         .current_dir(&root)
         .output()
@@ -491,6 +522,7 @@ fn json_outputs_are_byte_identical_across_runs_and_thread_counts() {
         let second = una_in(dir, &args);
         let single = Command::new(env!("CARGO_BIN_EXE_una"))
             .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+            .env_remove("UNA_PROOF_KEY")
             .args(&args)
             .env("RAYON_NUM_THREADS", "1")
             .current_dir(repository().join(dir))

@@ -372,6 +372,7 @@ impl Checker<'_, '_, '_> {
     /// known here (rule 8, fail closed). A local bound inside the lambda takes its value from
     /// what the lambda receives or computes, which is checked where it is written.
     pub(crate) fn captured_value(&mut self, name: &str, span: Span) {
+        self.timing_read(name);
         if self.pass != Pass::Check {
             return;
         }
@@ -401,10 +402,12 @@ impl Checker<'_, '_, '_> {
     pub(crate) fn holds_function(&self, ty: &Ty) -> bool {
         match self.resolve(ty) {
             Ty::Fn(_) => true,
-            Ty::List(inner) | Ty::Labeled(_, inner) | Ty::Refined(_, inner) => {
-                self.holds_function(&inner)
-            }
+            Ty::List(inner)
+            | Ty::Dense(_, inner)
+            | Ty::Labeled(_, inner)
+            | Ty::Refined(_, inner) => self.holds_function(&inner),
             Ty::Map(key, value) => self.holds_function(&key) || self.holds_function(&value),
+            Ty::Coll(_, args) => args.iter().any(|arg| self.holds_function(arg)),
             Ty::Kind(id, args) => {
                 self.env
                     .boundaries
@@ -687,11 +690,12 @@ impl Checker<'_, '_, '_> {
         }
         if let Some((given, name)) = granting.opaque_uses {
             let key = self.boundary_key(boundary);
+            let manifest = self.env.manifest_file;
             let mut diagnostic = self.report.make(
                 Code::U3021,
                 span,
                 format!(
-                    "{what} gives `{key}` `{name}`, which runs the effects that its caller chooses, so the ceiling in `una.toml` cannot bound them"
+                    "{what} gives `{key}` `{name}`, which runs the effects that its caller chooses, so the ceiling in `{manifest}` cannot bound them"
                 ),
             );
             diagnostic
@@ -701,11 +705,12 @@ impl Checker<'_, '_, '_> {
         }
         if let Some((given, name)) = unseen {
             let key = self.boundary_key(boundary);
+            let manifest = self.env.manifest_file;
             let mut diagnostic = self.report.make(
                 Code::U3021,
                 span,
                 format!(
-                    "{what} gives `{key}` a function value that runs on `@{name}`, a binding captured where this check does not follow it, so the ceiling in `una.toml` cannot bound what it holds"
+                    "{what} gives `{key}` a function value that runs on `@{name}`, a binding captured where this check does not follow it, so the ceiling in `{manifest}` cannot bound what it holds"
                 ),
             );
             diagnostic
@@ -840,6 +845,17 @@ impl Checker<'_, '_, '_> {
         let Some(boundary) = self.env.boundaries.extent(self.module) else {
             return;
         };
+        // A dependency's examples are checked as its own, with no consumer ceiling on their
+        // `given` lines, since they never run with the root's authority (ADR 0122 rule 52).
+        if self
+            .env
+            .boundaries
+            .list
+            .get(boundary)
+            .is_some_and(|resolved| resolved.package)
+        {
+            return;
+        }
         let grants = self.handler_uses(handler);
         self.ceiling_site(
             boundary,
@@ -1109,11 +1125,12 @@ fn installations(
                 report.push(diagnostic);
             }
             if let Some((given, name)) = installed.and_then(|i| i.unseen.clone()) {
+                let manifest = env.manifest_file;
                 let mut diagnostic = report.make(
                     Code::U3021,
                     site.span,
                     format!(
-                        "{into} gives the boundary a function value that runs on `@{name}`, a binding captured where this check does not follow it, so the ceiling in `una.toml` cannot bound what it holds"
+                        "{into} gives the boundary a function value that runs on `@{name}`, a binding captured where this check does not follow it, so the ceiling in `{manifest}` cannot bound what it holds"
                     ),
                 );
                 diagnostic
@@ -1181,7 +1198,7 @@ fn handler_uses(env: &Env<'_>, handler: usize) -> Vec<(CapId, Vec<String>)> {
 }
 
 /// For each capability of `grants` with an operation outside the ceiling of `boundary`, the
-/// end of a message: "grants `C[ops]` to `key`, whose ceiling in `una.toml` allows ...". Merged
+/// end of a message: "grants `C[ops]` to `key`, whose ceiling in `una.toml` (or `ita.una`) allows ...". Merged
 /// by capability, so each is reported once, its operations in declaration order.
 fn excess(env: &Env<'_>, boundary: usize, grants: &[(CapId, Vec<String>)]) -> Vec<String> {
     let mut merged: BTreeMap<CapId, Vec<String>> = BTreeMap::new();
@@ -1216,9 +1233,10 @@ fn excess(env: &Env<'_>, boundary: usize, grants: &[(CapId, Vec<String>)]) -> Ve
             _ => format!("no operation of `{name}`"),
         };
         messages.push(format!(
-            "grants `{name}[{}]` to `{}`, whose ceiling in `una.toml` allows {allows}",
+            "grants `{name}[{}]` to `{}`, whose ceiling in `{}` allows {allows}",
             in_order(env, capability, &ops).join(", "),
-            resolved.key
+            resolved.key,
+            env.manifest_file
         ));
     }
     messages
@@ -1251,10 +1269,20 @@ pub(crate) fn function_kinds(env: &Env<'_>) -> Vec<bool> {
     fn walk(ty: &Ty, kinds: &mut Vec<usize>) -> bool {
         match ty {
             Ty::Fn(_) => true,
-            Ty::List(inner) | Ty::Labeled(_, inner) | Ty::Refined(_, inner) => walk(inner, kinds),
+            Ty::List(inner)
+            | Ty::Dense(_, inner)
+            | Ty::Labeled(_, inner)
+            | Ty::Refined(_, inner) => walk(inner, kinds),
             Ty::Map(key, value) => {
                 let key = walk(key, kinds);
                 walk(value, kinds) || key
+            }
+            Ty::Coll(_, args) => {
+                let mut found = false;
+                for arg in args.iter() {
+                    found |= walk(arg, kinds);
+                }
+                found
             }
             Ty::Kind(id, args) => {
                 kinds.push(*id);

@@ -1,0 +1,12 @@
+module shop
+
+--- Why signing a receipt with a named key failed.
+reason(failure: KeyError) -> Text
+=
+  when failure
+    is UnknownKey -> "the key file holds no key of that name"
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print(reason(UnknownKey))

@@ -1,0 +1,9 @@
+module shop
+
+--- The characters of a product name, one by one: `é` is one scalar value.
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let letters = "Café".chars()
+  @console.print(join(letters, separator: "|"))
+  @console.print("{letters.len} characters")

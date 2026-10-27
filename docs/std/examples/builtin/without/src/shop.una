@@ -1,0 +1,9 @@
+module shop
+
+--- A price list without one item, and the list it came from.
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let stock = empty_map().with(key: "lamp", value: 3).with(key: "desk", value: 1)
+  let fewer = stock.without(key: "desk")
+  @console.print("{fewer.len} of {stock.len}")

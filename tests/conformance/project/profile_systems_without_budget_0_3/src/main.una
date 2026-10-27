@@ -1,0 +1,9 @@
+-- test: a systems package of edition 0.3 with a [run] entry and no [run] max_memory is U7002 at the entry (ADR 0109 rule 4)
+-- spec: spec/13 §7
+-- expect: error U7002 at una.toml:8:9
+module main
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print("hello")

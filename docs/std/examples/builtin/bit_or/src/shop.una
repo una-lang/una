@@ -1,0 +1,9 @@
+module shop
+
+--- An item's flags with two more set.
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let flags: U8 = 8
+  let marked = flags.bit_or(mask: 3)
+  @console.print("{marked}")

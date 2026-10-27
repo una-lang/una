@@ -4,8 +4,8 @@ Programs stay inside the importer's vocabulary (one `Console.print`, `Files`, li
 `filter`, `fold` and `first_where`, lambdas, generic functions, records, `Option`, `Result`), so the
 formal re-check reads them. A secret value travels through a carrier and reaches an ending. Every
 program is open: the judge is the comparison of `una check` with the re-check (`differ` driver),
-and a declaration `una check` accepts that the re-check rejects is a candidate for the
-coordinator, never interpreted before that.
+and a declaration `una check` accepts that the re-check rejects is a candidate finding, reported
+privately first, never interpreted before that.
 """
 
 from ..program import MUST_ACCEPT, MUST_REJECT, OPEN, RESIDUAL, Program, rng_for
@@ -52,7 +52,7 @@ ENDINGS = {
 }
 
 
-# The endings that reveal `t` at `public` (Una-2's review of #547): a program whose `t` carries
+# The endings that reveal `t` at `public` (from the review of #547): a program whose `t` carries
 # the secret must be rejected there, by `una check` alone, whatever the re-check says.
 PUBLIC_ENDINGS = ("public-result", "print", "print-under")
 LEAK_CODES = ["U4001", "U4003"]
@@ -106,7 +106,7 @@ PRELUDE_CARRIERS = {
     # Structural: `is_ok` carries the result's top label only, so `t` is public here.
     "is-ok": ("  let r: Result[secret Int, Int] = Ok(s)\n"
               "  let t = if r.is_ok() then 1 else 0\n"),
-    # The coordinator's counterpart: a result chosen under a secret condition, so its top label,
+    # The counterpart: a result chosen under a secret condition, so its top label,
     # and `is_ok`'s `Bool`, are secret.
     "is-ok-top": ("  let r: secret Result[Int, Int] = if s > 0 then Ok(1) else Err(0)\n"
                   "  let t = if r.is_ok() then 1 else 0\n"),
@@ -135,7 +135,7 @@ def f7(seed, edition):
 
 
 # F8: carriers through fixed-width integers, which F1 reads since #548
-# (`docs/plan/formal-track-fixed.md`); the coordinator's conditions are N-138's. Tables of their
+# (`docs/plan/formal-track-fixed.md`); its conditions are #548's. Tables of their
 # own, so that F1's and F7's programs, and the ones old seeds rebuild to, stay unchanged.
 # Each carrier: the parameter's type, its `requires` (empty for none), the statements binding
 # `t`, and `t`'s type. A `requires` bounds the secret so that no step can abort. A `let` over `s`
@@ -172,7 +172,7 @@ FIXED_OUTSIDE = {
     "bit": ("U8", "", "  let t = s.bit_and(mask: 15)\n", "U8"),
     "shift": ("U8", "", "  let t = s.shift_right(by: 1)\n", "U8"),
 }
-# The residual (N-132, N-138 condition 1): the secret decides whether a step aborts, a termination
+# The residual (#548): the secret decides whether a step aborts, a termination
 # channel T6 does not claim. No `requires`: the obligation is where Una guards it.
 FIXED_RESIDUAL = {
     "overflow": ("U8", "", "  let t: secret U8 = s + 200\n", "U8"),
@@ -219,7 +219,7 @@ def f8(seed, edition):
         note = "edition 0.1 has no fixed-width types"
     elif recheck == "residual":
         cls, expect = RESIDUAL, []
-        note = "a secret decides whether a step aborts: descriptive, never clean (N-138)"
+        note = "a secret decides whether a step aborts: descriptive, never clean (#548)"
     elif ending in PUBLIC_ENDINGS and carrier != "public":
         cls, expect = MUST_REJECT, list(LEAK_CODES)
     else:

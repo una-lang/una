@@ -1,7 +1,7 @@
 ---
 construct: "verification.lock"
 editions: ["0.1", "0.2"]
-spec: ["spec/13 §7", "spec/12 §9", "spec/12 §5", "spec/12 §10"]
+spec: ["spec/13 §7", "spec/12 §9", "spec/12 §5", "spec/12 §10", "spec/13 §5"]
 codes: [U5003, U7004]
 ---
 
@@ -9,13 +9,15 @@ codes: [U5003, U7004]
 
 ## What it does
 
-`verification.lock` pins the solver and its settings, so that a proof means the same on every machine (`spec/12 §9`). It sits at the package root, beside `una.toml`, and is committed. The proof cache is keyed by its contents, so changing it verifies every obligation again (`spec/12 §9`).
+Una proves a program's obligations, the facts each line needs to be safe, such as a value staying in its range, with a solver: a separate program, Z3, that decides whether such a fact always holds. `verification.lock` pins which Z3 and which settings, so that a proof means the same on every machine. It sits at the package root, beside `una.toml`, and is committed. Proofs already found are kept in the proof cache, a folder of saved answers keyed by the lock's contents, so changing the lock verifies every obligation again.
+
+Learn more: [The manifest and the lock](/learn/packages/the-manifest-and-the-lock/) and [What the verifier proves](/learn/contracts/what-the-verifier-proves/).
 
 `una.toml`
 
 ```toml
 [package]
-name = "demo"
+name = "shop"
 version = "0.1.0"
 edition = "0.2"
 ```
@@ -31,10 +33,10 @@ step_budget      = 5000000
 random_seed      = 0
 ```
 
-`src/demo.una`
+`src/shop.una`
 
 ```una
-module demo
+module shop
 
 pub kind Seats = Int in 0..5000
 
@@ -52,17 +54,17 @@ step_budget      = <an integer of at least 1>
 random_seed      = <an integer of at least 0>
 ```
 
-Exactly these six keys (`spec/13 §7`, `spec/12 §9`).
+Exactly these six keys.
 
 ## Examples
 
-A solver at another version than the lock names is rejected once there is something to prove. Verification never passes silently (`spec/12 §5`):
+A missing Z3, or Z3 at a version other than the one the lock names, is rejected once there is something to prove. Verification never passes silently. Here the lock names a version the machine does not have:
 
 `una.toml`
 
 ```toml
 [package]
-name = "demo"
+name = "shop"
 version = "0.1.0"
 edition = "0.2"
 ```
@@ -78,11 +80,11 @@ step_budget      = 5000000
 random_seed      = 0
 ```
 
-`src/demo.una`
+`src/shop.una`
 
 ```una
 -- fails with U5003
-module demo
+module shop
 
 pub kind Seats = Int in 0..5000
 
@@ -91,13 +93,13 @@ pub cap(raw: Int) -> Seats = if raw < 0 then 0 else if raw > 5000 then 5000 else
 
 ## Edge cases
 
-**Exactly the six keys** (`spec/13 §7`):
+**Exactly the six keys**:
 
 `una.toml`
 
 ```toml
 [package]
-name = "demo"
+name = "shop"
 version = "0.1.0"
 edition = "0.2"
 ```
@@ -112,11 +114,11 @@ logic            = "QF_UFLIA"
 step_budget      = 5000000
 ```
 
-`src/demo.una`
+`src/shop.una`
 
 ```una
 -- fails with U7004
-module demo
+module shop
 
 pub kind Seats = Int in 0..5000
 
@@ -125,12 +127,12 @@ pub cap(raw: Int) -> Seats = if raw < 0 then 0 else if raw > 5000 then 5000 else
 
 Further rules:
 
-- **A single file** uses the default lock, which holds the values of the repository's `verification.lock` (`spec/13 §7`).
-- **Determinism.** For identical sources, `una.toml` and `verification.lock`, checking produces identical diagnostics, statuses and reports, except obligations that ran out of wall-clock time (`spec/12 §10`).
+- **A single file** uses the default lock, the lock built into `una`, whose solver version `una --version` prints.
+- **Determinism.** For identical sources, `una.toml` and `verification.lock`, checking produces identical diagnostics, statuses and reports, except obligations that ran out of wall-clock time.
 
 ## Diagnostics
 
-- [U5003](../../../crates/una-explain/explain/U5003.md): a solver at another version than the lock names.
+- [U5003](../../../crates/una-explain/explain/U5003.md): a missing Z3, or Z3 at a version other than the one the lock names.
 - [U7004](../../../crates/una-explain/explain/U7004.md): a missing lock, a syntax error, a missing or unknown key, or a wrong value.
 
 ## Edition
@@ -140,4 +142,4 @@ The lock is the same in editions `0.1` and `0.2`.
 ## Normative source
 
 - `spec/12 §9`: the lock file and cache; `spec/12 §5`: the solver protocol; `spec/12 §10`: determinism.
-- `spec/13 §7`: project files.
+- `spec/13 §7`: project files; `spec/13 §5`: `una --version` and the default lock.

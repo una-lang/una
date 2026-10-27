@@ -1,0 +1,10 @@
+module shop
+
+--- How many bytes a product name takes in UTF-8.
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let plain = "Lamp".bytes().len
+  @console.print("Lamp: {plain} bytes")
+  let accented = "Café".bytes().len
+  @console.print("Café: {accented} bytes")

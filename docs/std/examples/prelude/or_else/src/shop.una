@@ -1,0 +1,9 @@
+module shop
+
+--- The first item of a cart, or a placeholder.
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let empty: List[Text] = []
+  let shown = empty.first().or_else(default: "nothing yet")
+  @console.print(shown)

@@ -1,4 +1,4 @@
--- test: a handler result of Sink[Int] for an operation declared to return Sink[secret Int] (N-002)
+-- test: a handler result of Sink[Int] for an operation declared to return Sink[secret Int]
 -- spec: spec/07 §7
 -- expect: error U4001 at 13:31
 module rv_hdl_result_kind_variance

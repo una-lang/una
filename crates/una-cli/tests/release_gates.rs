@@ -126,7 +126,7 @@ fn the_clone_gate_checks_out_exactly_the_commit_and_records_it() {
     // A run of some gates is not a validation of the commit.
     assert!(
         record.contains(
-            "Verdict: INCOMPLETE (not run: build, deps, mac, linux, linux-arm64, release, reproducible, determinism, native, sanitize, hunt, site, formal)"
+            "Verdict: INCOMPLETE (not run: build, deps, mac, linux, linux-arm64, release, reproducible, determinism, native, timing-channels, owner-replay, sanitize, site, formal, hunt, hunt-linux-arm64)"
         ),
         "{record}"
     );
@@ -148,6 +148,53 @@ fn a_failing_gate_does_not_stop_the_next_one() {
     let record = std::fs::read_to_string(out.join("record.md")).unwrap();
     assert!(record.contains("Verdict: FAIL (clone)"), "{record}");
     let _ = std::fs::remove_dir_all(&out);
+}
+
+#[test]
+fn the_summary_knows_exactly_the_gates_the_script_runs_in_its_order() {
+    // The summary refuses a gate row it does not know, so a gate added to
+    // scripts/release-gates.sh and not to scripts/release-summary.py would fail a release's
+    // summary only once that release's gates ran. Both lists are read as text; nothing runs.
+    let script = std::fs::read_to_string(root().join("scripts/release-gates.sh")).unwrap();
+    let all: Vec<&str> = script
+        .lines()
+        .find_map(|line| line.strip_prefix("ALL=("))
+        .and_then(|rest| rest.strip_suffix(')'))
+        .expect("an ALL=(...) line in scripts/release-gates.sh")
+        .split_whitespace()
+        .collect();
+    let summary = std::fs::read_to_string(root().join("scripts/release-summary.py")).unwrap();
+    let start = summary
+        .find("\nGATES = [")
+        .expect("a GATES list in scripts/release-summary.py");
+    let list = &summary[start..];
+    let list = &list[..list.find(']').expect("the end of the GATES list")];
+    let gates: Vec<&str> = list.split('"').skip(1).step_by(2).collect();
+    assert!(!all.is_empty());
+    assert_eq!(gates, all);
+}
+
+#[test]
+fn every_timing_oracle_is_ignored_with_the_reason_that_names_its_steps() {
+    // `crates/una-cli/tests/timing_channels.rs` holds only security timing oracles, which the
+    // ordinary test run must not run and the step and gate named in their reason must (#1145).
+    // Read as text: each `#[test]` is followed by exactly this attribute.
+    const IGNORE: &str = "#[ignore = \"security timing oracle: run by the timing-channels step of local-ci and the release gates\"]";
+    let source =
+        std::fs::read_to_string(root().join("crates/una-cli/tests/timing_channels.rs")).unwrap();
+    let lines: Vec<&str> = source.lines().map(str::trim).collect();
+    let tests: Vec<usize> = (0..lines.len())
+        .filter(|&at| lines[at] == "#[test]")
+        .collect();
+    assert!(!tests.is_empty(), "timing_channels.rs holds no test");
+    for at in tests {
+        assert_eq!(
+            lines.get(at + 1).copied(),
+            Some(IGNORE),
+            "the test at line {} of timing_channels.rs",
+            at + 1
+        );
+    }
 }
 
 #[test]
@@ -852,4 +899,130 @@ fn the_bundle_fails_on_a_pattern_grep_cannot_apply() {
     );
     assert!(!stderr.contains("sentinel-3c8e"), "the pattern was printed");
     let _ = std::fs::remove_dir_all(&out);
+}
+
+/// Runs the script on `sha` with `gates`, as `gates` does, with a fake `docker` in front of PATH
+/// whose active context is `active` and whose server is version 29.0.0, and with
+/// `DOCKER_CONTEXT` and `DOCKER_HOST` set only when given (#1082).
+fn gates_with_docker(
+    sha: &str,
+    out: &Path,
+    gates: &[&str],
+    active: &str,
+    context: Option<&str>,
+    host: Option<&str>,
+) -> Output {
+    let _ = std::fs::remove_dir_all(out);
+    let bin = out.with_extension("bin");
+    let _ = std::fs::remove_dir_all(&bin);
+    std::fs::create_dir_all(&bin).unwrap();
+    let fake = bin.join("docker");
+    std::fs::write(
+        &fake,
+        format!(
+            "#!/bin/sh\ncase \"$1 $2\" in\n  'context show') echo '{active}' ;;\n  'version --format') echo 29.0.0 ;;\n  '--version ') echo 'Docker version 29.0.0' ;;\n  *) exit 9 ;;\nesac\n"
+        ),
+    )
+    .unwrap();
+    let status = Command::new("chmod")
+        .arg("755")
+        .arg(&fake)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    // The test's own PATH, with the fake in front (compiler/conventions.md §1 covers libraries).
+    #[allow(clippy::disallowed_methods)]
+    let inherited = std::env::var("PATH").unwrap();
+    let mut command = Command::new("bash");
+    command
+        .arg(root().join("scripts/release-gates.sh"))
+        .arg(sha)
+        .arg(out)
+        .args(gates)
+        .env("UNA_GATES_SOURCE", root())
+        .env("PATH", format!("{}:{inherited}", bin.display()))
+        .env_remove("UNA_PRIVACY_PATTERN")
+        .env("UNA_GATES_UNCHECKED", "1")
+        .env_remove("DOCKER_CONTEXT")
+        .env_remove("DOCKER_HOST");
+    if let Some(context) = context {
+        command.env("DOCKER_CONTEXT", context);
+    }
+    if let Some(host) = host {
+        command.env("DOCKER_HOST", host);
+    }
+    command.output().unwrap()
+}
+
+#[test]
+fn the_docker_gates_refuse_any_context_but_docker_desktops() {
+    let Some(sha) = head() else {
+        return;
+    };
+    let out = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("gates-docker");
+    // Another runtime's context is active, and nothing pins Docker Desktop's: a Docker gate
+    // does not run there, and the run stops before any gate, with nothing written.
+    for gate in [
+        "linux",
+        "linux-arm64",
+        "release",
+        "reproducible",
+        "hunt-linux-arm64",
+    ] {
+        let output = gates_with_docker(&sha, &out, &["clone", gate], "other-runtime", None, None);
+        assert_eq!(output.status.code(), Some(2), "{gate}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("the context is other-runtime; run with DOCKER_CONTEXT=desktop-linux"),
+            "{gate}: {stderr}"
+        );
+        assert!(
+            !out.exists(),
+            "{gate}: the refused run wrote {}",
+            out.display()
+        );
+    }
+    // A DOCKER_CONTEXT of another runtime is refused too, whatever the active context is.
+    let output = gates_with_docker(
+        &sha,
+        &out,
+        &["linux"],
+        "desktop-linux",
+        Some("other-runtime"),
+        None,
+    );
+    assert_eq!(output.status.code(), Some(2));
+    assert!(!out.exists());
+    // So is a DOCKER_HOST, which would override the context.
+    let output = gates_with_docker(
+        &sha,
+        &out,
+        &["linux"],
+        "desktop-linux",
+        Some("desktop-linux"),
+        Some("unix:///tmp/other.sock"),
+    );
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("DOCKER_HOST is set"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!out.exists());
+    // A run without a Docker gate is not refused, and its record names the active context and
+    // the server's version, and that no Docker gate ran.
+    let output = gates_with_docker(&sha, &out, &["clone"], "other-runtime", None, None);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let record = std::fs::read_to_string(out.join("record.md")).unwrap();
+    assert!(
+        record.contains("- Docker: context other-runtime, server 29.0.0 (no Docker gate ran)\n"),
+        "{record}"
+    );
+    let _ = std::fs::remove_dir_all(&out);
+    let _ = std::fs::remove_dir_all(out.with_extension("bin"));
 }

@@ -183,3 +183,7 @@ let pages = together for id in ids
 ```
 
 (#202.)
+
+## Amendment (2026-10-18, ADR 0117)
+
+C1 rule 5's "no `race` or `select`" and rule 13's deferral of timeouts give way to `first of` and `within` (ADR 0117). Started tasks exist, and C1 C still holds: there are no task handles. C6 A keeps the trace in branch order for `together`, `together for` and `first of`. The events of the root task and of started tasks, in a run that executes a `tasks` statement, are in the order they happen, and such runs compare across engines under `--virtual-time` (ADR 0117 rules 10 and 12). C7 A's threads become coroutines.

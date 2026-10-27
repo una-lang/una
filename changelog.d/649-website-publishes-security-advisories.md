@@ -1,1 +1,0 @@
-- **The website publishes the security advisories** (#649). `site/website.lock` pins una-lang/website at the commit that builds `/docs/security/advisories/` from `docs/security/advisories.md`, linked from the security model page, when the docs bundle lists the file; a bundle that does not list it builds no such page (website#28).

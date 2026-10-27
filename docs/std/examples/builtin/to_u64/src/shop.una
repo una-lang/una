@@ -1,0 +1,9 @@
+module shop
+
+--- A large price, widened before it is turned into cents.
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let price: U32 = 4000000000
+  let cents = price.to_u64() * 100
+  @console.print("{cents}")

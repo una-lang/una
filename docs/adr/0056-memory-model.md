@@ -105,3 +105,11 @@ The preview promise that edition `0.3` only gets stricter concerns the programs 
 - **New constructs.** A later `0.3.x` release may also accept a construct that a rule targeting edition `0.3` adds and that earlier releases reject as a syntax error, such as the condition on an operation of ADR 0092 rule 1.
 - **Erasure.** Such a construct only narrows what a program may do: erasing it gives a program that edition `0.2` accepts, with no fewer allowed behaviors. The constructs of ADRs 0093 and 0094 must have the same property when they land.
 - **Test.** The edition test of the conformance suite lists each edition `0.2` package that writes such a construct, with the exact result of both editions and its erasure twin, and every other edition `0.2` package checks byte-identically in edition `0.3`.
+
+## Amendment (2026-10-16): a type that does not erase (ADR 0114)
+
+The erasure clause of the second amendment of 2026-10-13, that a construct edition `0.3` adds only narrows what a program may do and erases to a program that edition `0.2` accepts, does not apply to the type `F64` of ADR 0114 and to the constructs that only it admits: float literals, the methods and conversions of `F64`, `to_f64()` on integers, the prelude functions `nan`, `infinity`, `f64_from_bits`, `parse_f64`, `as_f64` and `json_number`, and `F64 of` a unit. A program that uses them has no counterpart in edition `0.2`.
+
+- A program that edition `0.2` can express keeps its result in edition `0.3`, or gains errors. The errors that `F64` adds to such a program are U1002 for a declaration named `F64`, and U1002 for a package function named `to_f64` whose first parameter has an integer type or is a type parameter, or an import of one, since the built-in `to_f64()` resolves ahead of it in edition `0.3`. The queries of a program without `F64` are unchanged.
+- The edition test lists each edition `0.2` package that declares a name `F64` or such a `to_f64`, with the exact result of both editions.
+- A later `0.3.x` release MAY accept these constructs in a package of edition `0.3`. Editions `0.1` and `0.2` never do.

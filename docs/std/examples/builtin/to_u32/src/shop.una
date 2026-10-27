@@ -1,0 +1,9 @@
+module shop
+
+--- A full two-byte counter, widened before one more unit.
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let units: U16 = 65535
+  let next = units.to_u32() + 1
+  @console.print("{next}")

@@ -14,12 +14,19 @@ pub enum Descriptor {
     Fixed(IntType),
     /// `Text`, in the order of `spec/03 §1`.
     Text,
+    /// `F64`: equality by its bits, and IEEE totalOrder (ADR 0114 rule 9.4).
+    F64,
+    /// `F32`: equality by its bits, and IEEE totalOrder (ADR 0120 rule 10).
+    F32,
     /// A sum whose variants have no payload, by the position of the variant, with the index of
     /// its type description, which interpolation writes it by (ADR 0068).
     Sum(usize),
     /// Any other type that satisfies `Eq`: structural equality, and no order, with the index of
     /// its type description.
     Structural(usize),
+    /// `Decimal[s]`, by its coefficient, in order, with the index of its type description,
+    /// which writes it with its scale (`spec/29 §16`).
+    Decimal(usize),
     /// A type that holds type parameters of the caller, as `Box[T]` or `List[T]`: an entry of
     /// the runtime's table of composite descriptors, which holds the type's description and
     /// the descriptor of each of its parameters (ADR 0068 D6).
@@ -40,9 +47,12 @@ impl Descriptor {
         let payload = match self {
             Descriptor::Int => 0,
             Descriptor::Text => 1,
+            Descriptor::F64 => 6,
+            Descriptor::F32 => 7,
             Descriptor::Sum(ty) => 2 | index(ty),
             Descriptor::Structural(ty) => 3 | index(ty),
             Descriptor::Composite(entry) => 4 | index(entry),
+            Descriptor::Decimal(ty) => 5 | index(ty),
             Descriptor::Fixed(int) => {
                 FIXED
                     + IntType::ALL
@@ -68,6 +78,9 @@ impl Descriptor {
             2 => Some(Descriptor::Sum(ty)),
             3 => Some(Descriptor::Structural(ty)),
             4 => Some(Descriptor::Composite(ty)),
+            5 => Some(Descriptor::Decimal(ty)),
+            6 if ty == 0 => Some(Descriptor::F64),
+            7 if ty == 0 => Some(Descriptor::F32),
             code if ty == 0 => usize::try_from(code - FIXED)
                 .ok()
                 .and_then(|i| IntType::ALL.get(i).copied())
@@ -86,12 +99,16 @@ mod tests {
         let mut all = vec![
             Descriptor::Int,
             Descriptor::Text,
+            Descriptor::F64,
+            Descriptor::F32,
             Descriptor::Sum(0),
             Descriptor::Sum(41),
             Descriptor::Structural(0),
             Descriptor::Structural(7),
             Descriptor::Composite(0),
             Descriptor::Composite(3),
+            Descriptor::Decimal(0),
+            Descriptor::Decimal(9),
         ];
         all.extend(IntType::ALL.iter().copied().map(Descriptor::Fixed));
         let mut words = std::collections::BTreeSet::new();
@@ -102,6 +119,11 @@ mod tests {
             assert_eq!(Descriptor::from_word(word), Some(descriptor));
         }
         assert_eq!(Descriptor::from_word(2), None);
-        assert_eq!(Descriptor::from_word((5 << 1) | 1), None);
+        // Every code below the fixed-width ones is taken; a type index on a code that takes none
+        // is no descriptor.
+        assert_eq!(
+            Descriptor::from_word((((1 << CODE_BITS) | 6) << 1) | 1),
+            None
+        );
     }
 }
