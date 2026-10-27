@@ -7,6 +7,19 @@
 # the release only keeps the bytes available. The recipe is supply-chain/z3/, and
 # scripts/build-z3.sh builds it after checking the digest. A test keeps `version` equal to
 # verification.lock's solver_version (crates/una-cli/tests/z3_lock.rs).
+#
+# Provenance of the commit, for a reviewer to tie this archive to upstream without trusting the
+# machine that made it (checked 2026-10-27): `commit` is what the upstream tag z3-5.1.0 of
+# https://github.com/Z3Prover/z3 points to. That tag is lightweight, so it carries no signature;
+# the commit is a merge made on github.com and is signed by GitHub's web-flow key
+# (B5690EEEBB952194, committer "GitHub <noreply@github.com>"), not by a maintainer's key. The Z3
+# project publishes no source tarball of its own for the release (its z3_solver-5.1.0.0.tar.gz
+# asset is the Python package); the archive GitHub generates on request for the tag,
+# https://github.com/Z3Prover/z3/archive/refs/tags/z3-5.1.0.tar.gz, had the SHA-256
+# c433e1add0431c5edf1644bd9951c40588024d2d288f0e4215e5fcb6e3b4277d on that day and the same
+# files as this tarball under the top directory z3-z3-5.1.0/ instead of z3-5.1.0/; its bytes are
+# not promised to stay the same, which is why it is not the pin. `tree` is what to compare:
+# `git rev-parse z3-5.1.0^{tree}` in an upstream clone, and the tree of this tarball's contents.
 version = "5.1.0"
 tag = "z3-5.1.0"
 commit = "0b6cdcdbc65da25ef0f73ac9da210574d0f66cf8"
