@@ -21,8 +21,8 @@
           "docs": [
             "Built in on `Text` and `List` and, from edition 0.2 on, on `Map` (`spec/14 §2`,",
             "`spec/21 §2`). On a `Text` it counts Unicode scalar values (`spec/14 §1`); a map's is",
-            "never negative (`spec/21 §2`). From edition 0.4 on, a `Stack`, a `Queue` and a `Set`",
-            "count their items, in O(1) (`spec/28 §5`, `§6`)."
+            "never negative (`spec/21 §2`). From edition 0.4 on, a `Stack`, a `Queue`, a `Set`, a",
+            "`HashMap` and a `HashSet` count their items, in O(1) (`spec/28 §5`, `§6`, `§7`)."
           ]
         },
         {
@@ -34,20 +34,20 @@
           "docs": [
             "Built in on `Text` and `List` and, from edition 0.2 on, on `Map` (`spec/14 §2`,",
             "`spec/21 §2`). On a `Text` it counts Unicode scalar values (`spec/14 §1`); a map's is",
-            "never negative (`spec/21 §2`). From edition 0.4 on, a `Stack`, a `Queue` and a `Set`",
-            "count their items, in O(1) (`spec/28 §5`, `§6`)."
+            "never negative (`spec/21 §2`). From edition 0.4 on, a `Stack`, a `Queue`, a `Set`, a",
+            "`HashMap` and a `HashSet` count their items, in O(1) (`spec/28 §5`, `§6`, `§7`)."
           ]
         },
         {
           "editions": [
             "0.4"
           ],
-          "declaration": "t.len -> Int\n  where t: Text\nxs.len -> Int\n  where xs: List[T]\nm.len -> Int\n  where m: Map[K, V]\ns.len -> Int\n  where s: Set[T]",
+          "declaration": "t.len -> Int\n  where t: Text\nxs.len -> Int\n  where xs: List[T]\nm.len -> Int\n  where m: Map[K, V]\ns.len -> Int\n  where s: Set[T]\nm.len -> Int\n  where m: HashMap[K, V]\ns.len -> Int\n  where s: HashSet[T]",
           "docs": [
             "Built in on `Text` and `List` and, from edition 0.2 on, on `Map` (`spec/14 §2`,",
             "`spec/21 §2`). On a `Text` it counts Unicode scalar values (`spec/14 §1`); a map's is",
-            "never negative (`spec/21 §2`). From edition 0.4 on, a `Stack`, a `Queue` and a `Set`",
-            "count their items, in O(1) (`spec/28 §5`, `§6`)."
+            "never negative (`spec/21 §2`). From edition 0.4 on, a `Stack`, a `Queue`, a `Set`, a",
+            "`HashMap` and a `HashSet` count their items, in O(1) (`spec/28 §5`, `§6`, `§7`)."
           ]
         }
       ]
@@ -59,7 +59,8 @@
       "spec": [
         "spec/21 §2",
         "spec/21 §4",
-        "spec/28 §6"
+        "spec/28 §6",
+        "spec/28 §7"
       ],
       "variants": [
         {
@@ -71,18 +72,20 @@
           "docs": [
             "Whether `m` has `key`. Like `m.len`, it may appear in `requires`, `ensures`, `where`",
             "and predicates (`spec/21 §2`, `spec/21 §4`). On a `Set`, from edition 0.4 on, whether",
-            "`s` holds `item`, in O(log n) (`spec/28 §6`)."
+            "`s` holds `item`, in O(log n) (`spec/28 §6`). On a `HashMap` and a `HashSet`, the same",
+            "in O(|k|) expected, outside contracts in edition 0.4 (`spec/28 §7`)."
           ]
         },
         {
           "editions": [
             "0.4"
           ],
-          "declaration": "m.has(key: K) -> Bool\n  where m: Map[K, V]\ns.has(item: T) -> Bool\n  where s: Set[T]",
+          "declaration": "m.has(key: K) -> Bool\n  where m: Map[K, V]\ns.has(item: T) -> Bool\n  where s: Set[T]\nm.has(key: K) -> Bool\n  where m: HashMap[K, V]\ns.has(item: T) -> Bool\n  where s: HashSet[T]",
           "docs": [
             "Whether `m` has `key`. Like `m.len`, it may appear in `requires`, `ensures`, `where`",
             "and predicates (`spec/21 §2`, `spec/21 §4`). On a `Set`, from edition 0.4 on, whether",
-            "`s` holds `item`, in O(log n) (`spec/28 §6`)."
+            "`s` holds `item`, in O(log n) (`spec/28 §6`). On a `HashMap` and a `HashSet`, the same",
+            "in O(|k|) expected, outside contracts in edition 0.4 (`spec/28 §7`)."
           ]
         }
       ]
@@ -92,19 +95,29 @@
       "module": "builtin",
       "kind": "method",
       "spec": [
-        "spec/21 §2"
+        "spec/21 §2",
+        "spec/28 §7"
       ],
       "variants": [
         {
           "editions": [
             "0.2",
-            "0.3",
-            "0.4"
+            "0.3"
           ],
           "declaration": "m.get(key: K) -> Option[V]\n  where m: Map[K, V]",
           "docs": [
             "`Some` exactly when `m.has(key: k)`. A missing key gives `None`, not a failure",
-            "(`spec/21 §2`)."
+            "(`spec/21 §2`). On a `HashMap`, in O(|k|) expected (`spec/28 §7`)."
+          ]
+        },
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "m.get(key: K) -> Option[V]\n  where m: Map[K, V]\nm.get(key: K) -> Option[V]\n  where m: HashMap[K, V]",
+          "docs": [
+            "`Some` exactly when `m.has(key: k)`. A missing key gives `None`, not a failure",
+            "(`spec/21 §2`). On a `HashMap`, in O(|k|) expected (`spec/28 §7`)."
           ]
         }
       ]
@@ -114,20 +127,33 @@
       "module": "builtin",
       "kind": "method",
       "spec": [
-        "spec/21 §2"
+        "spec/21 §2",
+        "spec/28 §7"
       ],
       "variants": [
         {
           "editions": [
             "0.2",
-            "0.3",
-            "0.4"
+            "0.3"
           ],
           "declaration": "edit m.set(key: K, value: V) -> Unit\n  where m: Map[K, V]",
           "docs": [
             "Updates `m` in place, written `edit m.set(...)`: afterwards `m.has(key: k)` and",
             "`m.get(key: k) == Some(v)`, and `m.len` grows by one when the key was not there",
-            "(`spec/21 §2`)."
+            "(`spec/21 §2`). On a `HashMap`, a key already there keeps its place in the listing,",
+            "in O(|k|) expected, amortized (`spec/28 §7`)."
+          ]
+        },
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "edit m.set(key: K, value: V) -> Unit\n  where m: Map[K, V]\nedit m.set(key: K, value: V) -> Unit\n  where m: HashMap[K, V]",
+          "docs": [
+            "Updates `m` in place, written `edit m.set(...)`: afterwards `m.has(key: k)` and",
+            "`m.get(key: k) == Some(v)`, and `m.len` grows by one when the key was not there",
+            "(`spec/21 §2`). On a `HashMap`, a key already there keeps its place in the listing,",
+            "in O(|k|) expected, amortized (`spec/28 §7`)."
           ]
         }
       ]
@@ -138,7 +164,8 @@
       "kind": "method",
       "spec": [
         "spec/21 §2",
-        "spec/28 §6"
+        "spec/28 §6",
+        "spec/28 §7"
       ],
       "variants": [
         {
@@ -150,18 +177,20 @@
           "docs": [
             "Updates `m` in place, written `edit m.remove(...)`: afterwards `not m.has(key: k)`,",
             "and `m.len` shrinks by one when the key was there (`spec/21 §2`). On a `Set`, written",
-            "`edit s.remove(...)`, afterwards `not s.has(item: x)`, in O(log n) (`spec/28 §6`)."
+            "`edit s.remove(...)`, afterwards `not s.has(item: x)`, in O(log n) (`spec/28 §6`). On a",
+            "`HashMap` and a `HashSet`, the same in O(|k|) expected, amortized (`spec/28 §7`)."
           ]
         },
         {
           "editions": [
             "0.4"
           ],
-          "declaration": "edit m.remove(key: K) -> Unit\n  where m: Map[K, V]\nedit s.remove(item: T) -> Unit\n  where s: Set[T]",
+          "declaration": "edit m.remove(key: K) -> Unit\n  where m: Map[K, V]\nedit s.remove(item: T) -> Unit\n  where s: Set[T]\nedit m.remove(key: K) -> Unit\n  where m: HashMap[K, V]\nedit s.remove(item: T) -> Unit\n  where s: HashSet[T]",
           "docs": [
             "Updates `m` in place, written `edit m.remove(...)`: afterwards `not m.has(key: k)`,",
             "and `m.len` shrinks by one when the key was there (`spec/21 §2`). On a `Set`, written",
-            "`edit s.remove(...)`, afterwards `not s.has(item: x)`, in O(log n) (`spec/28 §6`)."
+            "`edit s.remove(...)`, afterwards `not s.has(item: x)`, in O(log n) (`spec/28 §6`). On a",
+            "`HashMap` and a `HashSet`, the same in O(|k|) expected, amortized (`spec/28 §7`)."
           ]
         }
       ]
@@ -172,7 +201,8 @@
       "kind": "method",
       "spec": [
         "spec/21 §2",
-        "spec/28 §6"
+        "spec/28 §6",
+        "spec/28 §7"
       ],
       "variants": [
         {
@@ -183,17 +213,19 @@
           "declaration": "m.with(key: K, value: V) -> Map[K, V]\n  where m: Map[K, V]",
           "docs": [
             "A map with the contract of `set`, for the result (`spec/21 §2`). On a `Set`, a set",
-            "with the contract of `add`, for the result (`spec/28 §6`)."
+            "with the contract of `add`, for the result (`spec/28 §6`); on a `HashMap` and a",
+            "`HashSet`, the same for the hash table (`spec/28 §7`)."
           ]
         },
         {
           "editions": [
             "0.4"
           ],
-          "declaration": "m.with(key: K, value: V) -> Map[K, V]\n  where m: Map[K, V]\ns.with(item: T) -> Set[T]\n  where s: Set[T]",
+          "declaration": "m.with(key: K, value: V) -> Map[K, V]\n  where m: Map[K, V]\ns.with(item: T) -> Set[T]\n  where s: Set[T]\nm.with(key: K, value: V) -> HashMap[K, V]\n  where m: HashMap[K, V]\ns.with(item: T) -> HashSet[T]\n  where s: HashSet[T]",
           "docs": [
             "A map with the contract of `set`, for the result (`spec/21 §2`). On a `Set`, a set",
-            "with the contract of `add`, for the result (`spec/28 §6`)."
+            "with the contract of `add`, for the result (`spec/28 §6`); on a `HashMap` and a",
+            "`HashSet`, the same for the hash table (`spec/28 §7`)."
           ]
         }
       ]
@@ -204,7 +236,8 @@
       "kind": "method",
       "spec": [
         "spec/21 §2",
-        "spec/28 §6"
+        "spec/28 §6",
+        "spec/28 §7"
       ],
       "variants": [
         {
@@ -215,17 +248,19 @@
           "declaration": "m.without(key: K) -> Map[K, V]\n  where m: Map[K, V]",
           "docs": [
             "A map with the contract of `remove`, for the result (`spec/21 §2`). On a `Set`, a set",
-            "with the contract of `remove`, for the result (`spec/28 §6`)."
+            "with the contract of `remove`, for the result (`spec/28 §6`); on a `HashMap` and a",
+            "`HashSet`, the same for the hash table (`spec/28 §7`)."
           ]
         },
         {
           "editions": [
             "0.4"
           ],
-          "declaration": "m.without(key: K) -> Map[K, V]\n  where m: Map[K, V]\ns.without(item: T) -> Set[T]\n  where s: Set[T]",
+          "declaration": "m.without(key: K) -> Map[K, V]\n  where m: Map[K, V]\ns.without(item: T) -> Set[T]\n  where s: Set[T]\nm.without(key: K) -> HashMap[K, V]\n  where m: HashMap[K, V]\ns.without(item: T) -> HashSet[T]\n  where s: HashSet[T]",
           "docs": [
             "A map with the contract of `remove`, for the result (`spec/21 §2`). On a `Set`, a set",
-            "with the contract of `remove`, for the result (`spec/28 §6`)."
+            "with the contract of `remove`, for the result (`spec/28 §6`); on a `HashMap` and a",
+            "`HashSet`, the same for the hash table (`spec/28 §7`)."
           ]
         }
       ]
@@ -235,18 +270,29 @@
       "module": "builtin",
       "kind": "method",
       "spec": [
-        "spec/21 §2"
+        "spec/21 §2",
+        "spec/28 §7"
       ],
       "variants": [
         {
           "editions": [
             "0.2",
-            "0.3",
-            "0.4"
+            "0.3"
           ],
           "declaration": "m.keys() -> List[K]\n  where m: Map[K, V]",
           "docs": [
-            "The keys of `m`, in key order, as many as `m.len` (`spec/21 §2`)."
+            "The keys of `m`, in key order, as many as `m.len` (`spec/21 §2`). On a `HashMap`, in",
+            "the order the keys were first added, in O(n) (`spec/28 §7`)."
+          ]
+        },
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "m.keys() -> List[K]\n  where m: Map[K, V]\nm.keys() -> List[K]\n  where m: HashMap[K, V]",
+          "docs": [
+            "The keys of `m`, in key order, as many as `m.len` (`spec/21 §2`). On a `HashMap`, in",
+            "the order the keys were first added, in O(n) (`spec/28 §7`)."
           ]
         }
       ]
@@ -256,18 +302,29 @@
       "module": "builtin",
       "kind": "method",
       "spec": [
-        "spec/21 §2"
+        "spec/21 §2",
+        "spec/28 §7"
       ],
       "variants": [
         {
           "editions": [
             "0.2",
-            "0.3",
-            "0.4"
+            "0.3"
           ],
           "declaration": "m.values() -> List[V]\n  where m: Map[K, V]",
           "docs": [
-            "The values of `m`, in the order of their keys, as many as `m.len` (`spec/21 §2`)."
+            "The values of `m`, in the order of their keys, as many as `m.len` (`spec/21 §2`). On",
+            "a `HashMap`, in the order the keys were first added, in O(n) (`spec/28 §7`)."
+          ]
+        },
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "m.values() -> List[V]\n  where m: Map[K, V]\nm.values() -> List[V]\n  where m: HashMap[K, V]",
+          "docs": [
+            "The values of `m`, in the order of their keys, as many as `m.len` (`spec/21 §2`). On",
+            "a `HashMap`, in the order the keys were first added, in O(n) (`spec/28 §7`)."
           ]
         }
       ]
@@ -277,19 +334,31 @@
       "module": "builtin",
       "kind": "method",
       "spec": [
-        "spec/21 §2"
+        "spec/21 §2",
+        "spec/28 §7"
       ],
       "variants": [
         {
           "editions": [
             "0.2",
-            "0.3",
-            "0.4"
+            "0.3"
           ],
           "declaration": "m.entries() -> List[Entry[K, V]]\n  where m: Map[K, V]",
           "docs": [
             "The entries of `m` as `Entry` values, in key order, as many as `m.len`",
-            "(`spec/21 §2`)."
+            "(`spec/21 §2`). On a `HashMap`, in the order the keys were first added, in O(n)",
+            "(`spec/28 §7`)."
+          ]
+        },
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "m.entries() -> List[Entry[K, V]]\n  where m: Map[K, V]\nm.entries() -> List[Entry[K, V]]\n  where m: HashMap[K, V]",
+          "docs": [
+            "The entries of `m` as `Entry` values, in key order, as many as `m.len`",
+            "(`spec/21 §2`). On a `HashMap`, in the order the keys were first added, in O(n)",
+            "(`spec/28 §7`)."
           ]
         }
       ]
@@ -299,18 +368,20 @@
       "module": "builtin",
       "kind": "method",
       "spec": [
-        "spec/21 §2"
+        "spec/21 §2",
+        "spec/28 §7"
       ],
       "variants": [
         {
           "editions": [
             "0.4"
           ],
-          "declaration": "edit m.update(key: K, initial: V, change: fn(V) -> V) -> Unit\n  where m: Map[K, V]",
+          "declaration": "edit m.update(key: K, initial: V, change: fn(V) -> V) -> Unit\n  where m: Map[K, V]\nedit m.update(key: K, initial: V, change: fn(V) -> V) -> Unit\n  where m: HashMap[K, V]",
           "docs": [
             "Updates `m` in place, written `edit m.update(...)`: sets `key` to `change(v)`, where",
             "`v` is its value, or `initial` when `m` has no `key`. `change` is called exactly once,",
-            "and when it fails, `m` keeps its value from before the call (`spec/21 §2`)."
+            "and when it fails, `m` keeps its value from before the call (`spec/21 §2`). On a",
+            "`HashMap`, the same in O(|k|) expected, amortized (`spec/28 §7`)."
           ]
         }
       ]
@@ -383,18 +454,20 @@
       "kind": "method",
       "spec": [
         "spec/28 §5",
-        "spec/28 §6"
+        "spec/28 §6",
+        "spec/28 §7"
       ],
       "variants": [
         {
           "editions": [
             "0.4"
           ],
-          "declaration": "s.items() -> List[T]\n  where s: Stack[T]\nq.items() -> List[T]\n  where q: Queue[T]\ns.items() -> List[T]\n  where s: Set[T]",
+          "declaration": "s.items() -> List[T]\n  where s: Stack[T]\nq.items() -> List[T]\n  where q: Queue[T]\ns.items() -> List[T]\n  where s: Set[T]\ns.items() -> List[T]\n  where s: HashSet[T]",
           "docs": [
             "The items as a list: a `Stack` top first and a `Queue` front first, as many as its",
             "`len`, in O(n) time (`spec/28 §5`); a `Set`'s in ascending order, as many as its",
-            "`len`, in O(n) time (`spec/28 §6`)."
+            "`len`, in O(n) time (`spec/28 §6`); a `HashSet`'s in the order its items were first",
+            "added, in O(n) time (`spec/28 §7`)."
           ]
         }
       ]
@@ -465,17 +538,19 @@
       "module": "builtin",
       "kind": "method",
       "spec": [
-        "spec/28 §6"
+        "spec/28 §6",
+        "spec/28 §7"
       ],
       "variants": [
         {
           "editions": [
             "0.4"
           ],
-          "declaration": "edit s.add(item: T) -> Unit\n  where s: Set[T]",
+          "declaration": "edit s.add(item: T) -> Unit\n  where s: Set[T]\nedit s.add(item: T) -> Unit\n  where s: HashSet[T]",
           "docs": [
             "Updates `s` in place, written `edit s.add(...)`: afterwards `s.has(item: x)`, and",
-            "`s.len` grows by one when the item was not there. O(log n) (`spec/28 §6`)."
+            "`s.len` grows by one when the item was not there. O(log n) (`spec/28 §6`); on a",
+            "`HashSet`, O(|k|) expected, amortized (`spec/28 §7`)."
           ]
         }
       ]
@@ -543,17 +618,19 @@
       "module": "builtin",
       "kind": "method",
       "spec": [
-        "spec/28 §6"
+        "spec/28 §6",
+        "spec/28 §7"
       ],
       "variants": [
         {
           "editions": [
             "0.4"
           ],
-          "declaration": "s.union(other: Set[T]) -> Set[T]\n  where s: Set[T]",
+          "declaration": "s.union(other: Set[T]) -> Set[T]\n  where s: Set[T]\ns.union(other: HashSet[T]) -> HashSet[T]\n  where s: HashSet[T]",
           "docs": [
             "The items of `s` and those of `other`. O(n + m), or less when `other` is much smaller",
-            "(`spec/28 §6`)."
+            "(`spec/28 §6`). On a `HashSet`, the receiver's items, then the other's it lacks, in",
+            "the other's order (`spec/28 §7`)."
           ]
         }
       ]
@@ -563,17 +640,18 @@
       "module": "builtin",
       "kind": "method",
       "spec": [
-        "spec/28 §6"
+        "spec/28 §6",
+        "spec/28 §7"
       ],
       "variants": [
         {
           "editions": [
             "0.4"
           ],
-          "declaration": "s.intersection(other: Set[T]) -> Set[T]\n  where s: Set[T]",
+          "declaration": "s.intersection(other: Set[T]) -> Set[T]\n  where s: Set[T]\ns.intersection(other: HashSet[T]) -> HashSet[T]\n  where s: HashSet[T]",
           "docs": [
             "The items of `s` that `other` holds. O(n + m), or less when one of the sets is much",
-            "smaller (`spec/28 §6`)."
+            "smaller (`spec/28 §6`). On a `HashSet`, in the receiver's order (`spec/28 §7`)."
           ]
         }
       ]
@@ -583,17 +661,18 @@
       "module": "builtin",
       "kind": "method",
       "spec": [
-        "spec/28 §6"
+        "spec/28 §6",
+        "spec/28 §7"
       ],
       "variants": [
         {
           "editions": [
             "0.4"
           ],
-          "declaration": "s.difference(other: Set[T]) -> Set[T]\n  where s: Set[T]",
+          "declaration": "s.difference(other: Set[T]) -> Set[T]\n  where s: Set[T]\ns.difference(other: HashSet[T]) -> HashSet[T]\n  where s: HashSet[T]",
           "docs": [
             "The items of `s` that `other` does not hold. O(n + m), or less when `other` is much",
-            "smaller (`spec/28 §6`)."
+            "smaller (`spec/28 §6`). On a `HashSet`, in the receiver's order (`spec/28 §7`)."
           ]
         }
       ]
@@ -603,17 +682,59 @@
       "module": "builtin",
       "kind": "method",
       "spec": [
-        "spec/28 §6"
+        "spec/28 §6",
+        "spec/28 §7"
       ],
       "variants": [
         {
           "editions": [
             "0.4"
           ],
-          "declaration": "s.is_subset(of: Set[T]) -> Bool\n  where s: Set[T]",
+          "declaration": "s.is_subset(of: Set[T]) -> Bool\n  where s: Set[T]\ns.is_subset(of: HashSet[T]) -> Bool\n  where s: HashSet[T]",
           "docs": [
             "Whether `of` holds every item of `s`. O(n + m), or less when `s` is much smaller",
-            "(`spec/28 §6`)."
+            "(`spec/28 §6`). On a `HashSet`, O(n · |k|) expected (`spec/28 §7`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "same_entries",
+      "module": "builtin",
+      "kind": "method",
+      "spec": [
+        "spec/28 §7"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "m.same_entries(as: HashMap[K, V]) -> Bool\n  where m: HashMap[K, V]",
+          "docs": [
+            "Whether `m` and `as` have the same keys, each with an equal value, whatever the order",
+            "they were added in; `V` must satisfy `Eq`. A hash map has no `==`. O(n · |k|)",
+            "expected (`spec/28 §7`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "same_items",
+      "module": "builtin",
+      "kind": "method",
+      "spec": [
+        "spec/28 §7"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "s.same_items(as: HashSet[T]) -> Bool\n  where s: HashSet[T]",
+          "docs": [
+            "Whether `s` and `as` hold the same items, whatever the order they were added in. A",
+            "hash set has no `==`. O(n · |k|) expected (`spec/28 §7`)."
           ]
         }
       ]

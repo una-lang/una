@@ -32,6 +32,7 @@ mod fixed;
 mod float;
 mod flow;
 mod generic;
+mod hash;
 mod hover;
 mod index;
 mod label;
@@ -186,12 +187,13 @@ pub struct StandardSource {
 }
 
 /// The built-in methods and properties that the checker resolves by the type of their
-/// receiver, as `(receiver, name)`: `.len` on `Text`, `List`, `Map` (`spec/14 §2`) and `Set`,
-/// the methods of maps (`spec/21 §2`), of `Stack` and of `Queue` (`spec/28 §5`) and of sets
-/// (`spec/28 §6`), the conversions (`spec/18 §4`), and the wrapping, saturating and bit
-/// operations of the fixed-width integers (`spec/18 §5`). The receivers are `"len"`, `"Map"`,
-/// `"Stack"`, `"Queue"`, `"Set"`, `"conversion"` and `"fixed"`. Read-only: it is built from the
-/// tables the checker resolves them with, for the standard library reference (#690).
+/// receiver, as `(receiver, name)`: `.len` on `Text`, `List`, `Map` (`spec/14 §2`) and the
+/// collections, the methods of maps (`spec/21 §2`), of `Stack` and of `Queue` (`spec/28 §5`), of
+/// sets (`spec/28 §6`) and of hash maps and hash sets (`spec/28 §7`), the conversions (`spec/18
+/// §4`), and the wrapping, saturating and bit operations of the fixed-width integers (`spec/18
+/// §5`). The receivers are `"len"`, `"Map"`, `"Stack"`, `"Queue"`, `"Set"`, `"HashMap"`,
+/// `"HashSet"`, `"conversion"` and `"fixed"`. Read-only: it is built from the tables the
+/// checker resolves them with, for the standard library reference (#690).
 pub fn builtin_methods() -> Vec<(&'static str, String)> {
     let mut methods = vec![("len", "len".to_owned())];
     methods.extend(
@@ -217,6 +219,19 @@ pub fn builtin_methods() -> Vec<(&'static str, String)> {
         set::SET_METHODS
             .iter()
             .map(|(name, ..)| ("Set", (*name).to_owned())),
+    );
+    // Edition 0.4: the methods of `HashMap`, with `update`, and of `HashSet` (ADR 0119 rule
+    // 12).
+    methods.extend(
+        hash::HASH_MAP_METHODS
+            .iter()
+            .map(|(name, ..)| ("HashMap", (*name).to_owned())),
+    );
+    methods.push(("HashMap", "update".to_owned()));
+    methods.extend(
+        hash::HASH_SET_METHODS
+            .iter()
+            .map(|(name, ..)| ("HashSet", (*name).to_owned())),
     );
     methods.extend(una_core::IntType::ALL.iter().map(|t| {
         (

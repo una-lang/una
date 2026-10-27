@@ -25,7 +25,7 @@ Status: Normative, edition `0.4` (ADR 0119). This chapter grows with the impleme
 ## 2. The module `std.collections`
 
 1. **Edition.** `std.collections` exists only in edition `0.4`. In earlier editions an import of it is U1001 at the module path (`spec/10 §11` rule 10), and the names it would export are ordinary names.
-2. **Exports.** In edition `0.4`, `std.collections` is an importable standard module (`spec/10 §11` rule 10). It exports the types `Stack`, `Queue`, `Set`, `HashMap`, `HashSet`, `PriorityQueue` and `BitSet`, and the kind `Ranked[T, P]`, a record with the fields `item: T` and `priority: P`. It exports the functions `empty_stack` and `empty_queue` (§5) and `empty_set` (§6); its other functions join the exports with the types they make, as ADR 0119 lands.
+2. **Exports.** In edition `0.4`, `std.collections` is an importable standard module (`spec/10 §11` rule 10). It exports the types `Stack`, `Queue`, `Set`, `HashMap`, `HashSet`, `PriorityQueue` and `BitSet`, and the kind `Ranked[T, P]`, a record with the fields `item: T` and `priority: P`. It exports the functions `empty_stack` and `empty_queue` (§5), `empty_set` (§6), and `empty_hash_map` and `empty_hash_set` (§7); its other functions join the exports with the types they make, as ADR 0119 lands.
 3. **Names are not reserved.** A module that does not import a name of `std.collections` may declare its own `Queue` or `Set`. A module that imports one and declares the same name is U1002, as for any import (`spec/10 §11`).
 4. **Methods need no import.** The operations of each type are built-in methods resolved by the receiver, as a map's are (`spec/21 §2`). Only names written in the source, a type in an annotation or a function called by name, are imported.
 5. **Functions named like a built-in method.** A built-in method resolves ahead of a function of the same name in scope (`spec/04 §3`, `spec/21 §2`), so such a function could never be reached by method syntax on the type. In edition `0.4`, a package function is U1002 at its name when its name is a built-in method of a type of this chapter and its first parameter has that type, refined or not, or is a type parameter; so is an import of such a function, at the imported name. The message names the built-in method: "`pop` is a built-in method of `Queue`; rename this function". The names are `push`, `pop`, `peek`, `push_front`, `pop_back`, `peek_back`, `items`, `has`, `add`, `remove`, `with`, `without`, `first`, `last`, `between`, `union`, `intersection`, `difference`, `is_subset`, `get`, `set`, `update`, `keys`, `values`, `entries`, `same_entries`, `same_items`, `pop_ranked` and `peek_priority`. A function `update` whose first parameter is a `Map` is U1002 likewise (`spec/21 §2` rule 5).
@@ -146,4 +146,69 @@ pub passing(scores: List[Int]) -> List[Int]
   for score in scores
     edit seen.add(item: score)
   seen.between(low: 80, high: 100)
+```
+
+## 7. `HashMap` and `HashSet`
+
+`HashMap[K, V]` and `HashSet[T]` are hash tables (ADR 0119 rules 8 to 12). Their key type `K` and item type `T` MUST satisfy `Eq` (§3 rule 2): any type whose values hold no function and no table of this section, records, sums, lists, `Map`, `Set` and `F64` included. Their keys are placed by the keyed hash of §1. Their listing order is the order in which their keys were first added, and their Una forms list them in that order, `{"a": 1, "b": 2}` and `{1, 2}`, or `{}` when empty (ADR 0119 rule 3). Neither type satisfies `Eq` (§3 rules 3 and 4): `same_entries(as:)` and `same_items(as:)` compare as sets.
+
+The operations are functions of `std.collections`, `empty_hash_map` and `empty_hash_set`, and built-in methods resolved by the receiver (§2 rule 4). Every argument after the receiver is labeled. n is the receiver's size, m the other table's, and |k| the size of a key's hash encoding (§1 rule 2), of the largest key for an operation between two tables. "Expected" is over the random key of the table: every cost holds for every input chosen by a party that does not know the key.
+
+**`HashMap[K, V]`:**
+
+| Operation | Type | Contract | Cost |
+| --- | --- | --- | --- |
+| `empty_hash_map()` | `HashMap[K, V]`, from the expected type | the map holds no entry | O(1) |
+| `m.len` | `Int` | `m.len >= 0` | O(1) |
+| `m.has(key: k)` | `Bool` | whether `m` has an entry at `k` | O(\|k\|) expected |
+| `m.get(key: k)` | `Option[V]` | `Some` exactly when `m.has(key: k)` | O(\|k\|) expected |
+| `edit m.set(key: k, value: v)` | `Unit` | afterwards `m.get(key: k) == Some(v)`; `m.len` grows by one when `k` was not there | O(\|k\|) expected, amortized |
+| `edit m.remove(key: k)` | `Unit` | afterwards `not m.has(key: k)`; `m.len` shrinks by one when `k` was there | O(\|k\|) expected, amortized |
+| `m.with(key: k, value: v)`, `m.without(key: k)` | `HashMap[K, V]` | the contract of `set` and of `remove`, for the result | as `set` when `m` is given up, else O(n) |
+| `edit m.update(key: k, initial: i, change: f)` | `Unit` | sets `k` to `f(v)`, where `v` is the value of `k`, or `i` when `m` has no `k`; the length as for `set` | O(\|k\|) expected, amortized, and one call of `f` |
+| `m.keys()`, `m.values()`, `m.entries()` | `List[K]`, `List[V]`, `List[Entry[K, V]]` | as many as `m.len`, in insertion order | O(n) |
+| `m.same_entries(as: b)` | `Bool` | whether `m` and `b` have the same keys, each with an equal value | O(n · \|k\|) expected |
+
+**`HashSet[T]`:**
+
+| Operation | Type | Contract | Cost |
+| --- | --- | --- | --- |
+| `empty_hash_set()` | `HashSet[T]`, from the expected type | the set holds no item | O(1) |
+| `s.len` | `Int` | `s.len >= 0` | O(1) |
+| `s.has(item: x)` | `Bool` | whether `s` holds `x` | O(\|k\|) expected |
+| `edit s.add(item: x)` | `Unit` | afterwards `s.has(item: x)`; `s.len` grows by one when `x` was not there | O(\|k\|) expected, amortized |
+| `edit s.remove(item: x)` | `Unit` | afterwards `not s.has(item: x)`; `s.len` shrinks by one when `x` was there | O(\|k\|) expected, amortized |
+| `s.with(item: x)`, `s.without(item: x)` | `HashSet[T]` | the contract of `add` and of `remove`, for the result | as `add` when `s` is given up, else O(n) |
+| `s.items()` | `List[T]` | every item, as many as `s.len`, in insertion order | O(n) |
+| `s.union(other: t)` | `HashSet[T]` | the items of `s`, then those of `t` that `s` lacks, in the order of `t` | O(m · \|k\|) expected when `s` is given up, else O((n + m) · \|k\|) |
+| `s.intersection(other: t)` | `HashSet[T]` | the items of `s` that `t` holds, in the order of `s` | O(min(n, m) · \|k\| + r log r) expected, r the result's size, or O(n · \|k\|) when that is smaller |
+| `s.difference(other: t)` | `HashSet[T]` | the items of `s` that `t` does not hold, in the order of `s` | O(m · \|k\|) expected when `s` is given up, else O(n · \|k\|) |
+| `s.is_subset(of: t)` | `Bool` | whether `t` holds every item of `s` | O(n · \|k\|) expected, and O(1) when n > m |
+| `s.same_items(as: t)` | `Bool` | whether `s` and `t` hold the same items | O(n · \|k\|) expected |
+
+1. **Updates.** `set`, `remove`, `add` and `update` take the receiver as `edit` and follow `spec/17 §3`: the receiver is a place, and the call is the whole expression of its statement, U3013 otherwise. Such a call without `edit` is U2020, and so is `edit` on a method that reads the table. A wrong number of arguments is U2001.
+2. **Insertion order.** `set` of a key already present keeps its place; `remove` and then `set` of the same key puts it last; `with` and `without` keep the order as `set` and `remove` would; `union` lists the receiver's items, then the other's items it lacks, in the other's order; `intersection` and `difference` keep the receiver's order. So the order depends only on the sequence of operations, never on the key of a table or on hashes (ADR 0119 rule 10).
+3. **Values.** A table is a value. An update, and a method that gives a new table, happens in place when the table is uniquely held, or given up at the call by its last use, and on a copy otherwise, in O(n), which keeps the table's key (§1 rule 4). Every other binding that held the old table keeps it. A table that an operation between two tables gives is under the receiver's key, and the other table's keys are hashed again under it.
+4. **`update`.** It calls `change` exactly once, with the value of `key`, or with `initial` when the map has no `key`, and sets `key` to its result. It has the effects and the failures of `change`, as `map` does (`spec/14 §1`): when `change` fails, the map keeps its value from before the call (`spec/17 §7` rule 1).
+5. **`same_entries` and `same_items`.** They compare as sets, whatever the order: `same_entries` holds when both maps have the same keys, each with an equal value, and `V` MUST satisfy `Eq` (U2025); `same_items` holds when both sets hold the same items. They are not the verifier's equality, so it never concludes from them that two tables list alike.
+6. **Refined keys, values and items** (ADR 0103). `set`, `with` and `update` store the key and the value at `K` and `V`, and `add`, `with` and `union` store their items at `T`, each a flow site with a `refinement` obligation (`spec/12 §3`). A lookup stores nothing: `has`, `get`, `remove` and `without` take their key or item at the base of its type, and so do `intersection`, `difference`, `is_subset`, `same_entries` and `same_items` for the other table. What `get`, `keys`, `values`, `entries` and `items` give back carries its position's refinement as a fact.
+7. **Labels** (`spec/07`, ADR 0119 IF2, IF3, IF5, IF7 and IF8). The keys of a map and the items of a set are its shape, as a map's keys are (`spec/21 §3` rule 1):
+   - every label of the key or item position, the labels that a kind's fields declare included, since the hash reads every field, is below the table's top label (§4 rule 2). `.len`, `keys()`, `values()`, `entries()` and `items()` carry that top label, and their elements the labels of their positions;
+   - `has` and the top of `get` carry the top label joined with `ℓ*` of the key or item; the `Some` payload of `get` carries the value position's labels;
+   - `set`, `remove`, `add`, `with` and `without` raise the top label by `ℓ*` of the key or item. An editable binding keeps its declared labels (`spec/17 §6` rule 1), so an update whose key or item is labeled above the binding's top label, with the labels of its key or item position, is U4001 at the key or item;
+   - `union`, `intersection`, `difference` and `is_subset` carry the top labels of both sets, each with its item position's labels, and `same_entries` and `same_items` every label of both tables' types;
+   - `update` runs `change` under the map's top label joined with its key position's labels and `ℓ*` of the key, since whether `change` sees `initial` depends on the presence of the key; its result flows into the value position;
+   - a table lists in the order of its updates, each made under a program counter at most its top label, so its order is covered by its top label too.
+8. **The refinement language.** In this edition, `.len` and the methods of a table are outside the refinement language (`spec/03 §3`): a contract, a `where` clause or a predicate that uses one is U2014. ADR 0119 V5 adds `.len`, `m.has(key: k)` and `s.has(item: x)` to it.
+9. **Runs.** The interpreter runs both types. Native code reports them as not supported until their layout (ADR 0119 rule 19).
+
+```una
+import std.collections (HashMap, empty_hash_map)
+
+pub count_words(words: List[Text]) -> HashMap[Text, Int]
+=
+  let edit counts: HashMap[Text, Int] = empty_hash_map()
+  for word in words
+    edit counts.update(key: word, initial: 0, change: fn(n) -> n + 1)
+  counts
 ```
