@@ -72,6 +72,9 @@ enum Kind {
     /// A handle to a tuple: the state of a loop, or the results of a call with `edit`
     /// parameters (`spec/17 §4`).
     Tuple,
+    /// A handle to a dense value, an `Array`, `Matrix`, `Tensor` or `Lu` (`spec/29 §17`, ADR
+    /// 0120 rule 28): the runtime's header over its store.
+    Dense,
     /// A value of a type parameter: any of the above.
     Any,
 }
@@ -86,7 +89,14 @@ impl Kind {
     fn handle(self) -> bool {
         matches!(
             self,
-            Kind::Text | Kind::List | Kind::Map | Kind::Fn | Kind::Hashed | Kind::Tuple | Kind::F64
+            Kind::Text
+                | Kind::List
+                | Kind::Map
+                | Kind::Fn
+                | Kind::Hashed
+                | Kind::Tuple
+                | Kind::F64
+                | Kind::Dense
         )
     }
 }
@@ -122,12 +132,12 @@ fn kind(ty: &Type) -> Result<Kind, CodegenError> {
             Base::Named { module, name, .. } if module == PRELUDE_MODULE && name == "Map" => {
                 Ok(Kind::Map)
             }
-            // Dense values wait for their native step (`spec/29 §17`, ADR 0120 rule 28).
+            // A counted handle to the runtime's header (`spec/29 §17`, ADR 0120 rule 28).
             Base::Named { module, name, .. }
                 if module == PRELUDE_MODULE
                     && matches!(name.as_str(), "Array" | "Matrix" | "Tensor" | "Lu") =>
             {
-                Err(unsupported("dense values (spec/29)"))
+                Ok(Kind::Dense)
             }
             // `Stack` and `Queue` wait for their native layout (`spec/28 §5`, ADR 0119 rule 19).
             Base::Named { module, name, .. }
@@ -157,6 +167,49 @@ fn kind(ty: &Type) -> Result<Kind, CodegenError> {
         },
         Type::Fn { .. } => Ok(Kind::Fn),
     }
+}
+
+/// Whether the prelude function `name` is a constructor or a method of dense values
+/// (`spec/29 §17`), as the interpreter's `is_dense`.
+pub(crate) fn is_dense(name: &str) -> bool {
+    matches!(
+        name,
+        "array"
+            | "array_filled"
+            | "matrix"
+            | "matrix_filled"
+            | "matrix_diagonal"
+            | "tensor"
+            | "tensor_filled"
+    ) || name.starts_with("dense_")
+}
+
+/// The method of the dense prelude function `name` after its type's prefix, without a
+/// tensor's rank: `dense_tensor_get_3` is `get`, as the interpreter's `method_of`.
+pub(crate) fn dense_method(name: &str) -> &str {
+    let method = ["dense_array_", "dense_matrix_", "dense_tensor_", "dense_lu_"]
+        .iter()
+        .find_map(|prefix| name.strip_prefix(prefix))
+        .unwrap_or(name);
+    match method.rsplit_once('_') {
+        Some((base, rank))
+            if name.starts_with("dense_tensor_")
+                && rank.parse::<usize>().is_ok_and(|rank| (1..=8).contains(&rank)) =>
+        {
+            base
+        }
+        _ => method,
+    }
+}
+
+/// Whether the dense prelude function `name` takes its receiver by `edit` (ADR 0120 rule 31):
+/// at the receiver's last use it moves in, and is updated in place when held once.
+pub(crate) fn dense_edits(name: &str) -> bool {
+    name.starts_with("dense_")
+        && matches!(
+            dense_method(name),
+            "set" | "update" | "add_product" | "add_scaled" | "scale"
+        )
 }
 
 /// The binding of the type descriptor of the type parameter `param` (`spec/20 §7`): `$T`, which
@@ -2438,6 +2491,19 @@ impl<'p> Lowerer<'_, 'p, '_> {
                         return self.call(runtime, &operands);
                     }
                 }
+                // Dense values (`spec/29 §17`, ADR 0120): the runtime's entry points.
+                if function.module == PRELUDE_MODULE && is_dense(&function.name) {
+                    return self.dense_call(
+                        &function.name,
+                        args,
+                        &values,
+                        *span,
+                        env,
+                        scope,
+                        catch,
+                        rest,
+                    );
+                }
                 if function.module == PRELUDE_MODULE {
                     // `append` and `set` at the last use of their list take it over, and update
                     // it in place when nothing else holds it (#30).
@@ -2889,6 +2955,19 @@ impl<'p> Lowerer<'_, 'p, '_> {
         span: Span,
     ) -> Result<Value, CodegenError> {
         let site = self.site(span);
+        self.sited(function, site, args)
+    }
+
+    /// The runtime function `function` applied to the call's `site`, then `args`, as [`set`]
+    /// calls it: a task stopped by it stops here.
+    ///
+    /// [`set`]: Self::set
+    fn sited(
+        &mut self,
+        function: &'static str,
+        site: Value,
+        args: &[Value],
+    ) -> Result<Value, CodegenError> {
         let mut operands = vec![site];
         operands.extend_from_slice(args);
         let value = self.call(function, &operands)?;
@@ -3258,6 +3337,185 @@ impl<'p> Lowerer<'_, 'p, '_> {
         }
     }
 
+    /// A dense function of the prelude (`spec/29 §17`, ADR 0120; design note
+    /// `docs/plan/0120-s6-design.md`): its entry point `una_rt_<name>`, the call's site first,
+    /// so a refusal of the memory budget (U6003) or a precondition that fails (U8001) stops
+    /// there. A method that takes its receiver by `edit`, at the receiver's last use, takes it
+    /// over through its `_owned` entry point, which updates it in place when it and its store
+    /// are held once (D3, rule 31). `map`, `zip_map`, `update` and `fold` are loops
+    /// ([`Self::dense_loop`], D6).
+    #[allow(clippy::too_many_arguments)]
+    fn dense_call(
+        &mut self,
+        name: &str,
+        args: &[Atom],
+        values: &[Value],
+        span: Span,
+        env: &Env,
+        scope: &mut Scope,
+        catch: &Catch,
+        rest: &Expr,
+    ) -> Result<Value, CodegenError> {
+        let method = dense_method(name);
+        if name.starts_with("dense_") && matches!(method, "map" | "zip_map" | "update" | "fold") {
+            // The receiver of `update`, and the initial state of `fold` unless it is the value
+            // folded over, which the loop still reads, move in at their last use.
+            let moving = match method {
+                "update" => args.first(),
+                "fold" if values.get(1).is_some() && values.first() != values.get(1) => {
+                    args.get(1)
+                }
+                _ => None,
+            };
+            let moved = match moving {
+                Some(atom) => self.moving(atom, env, scope, catch, rest),
+                None => None,
+            };
+            if let Some(position) = moved {
+                scope.remove(position);
+            }
+            let site = self.site(span);
+            return self.dense_loop(method, values, site, moved.is_some(), scope, catch);
+        }
+        let mut runtime = format!("una_rt_{name}");
+        if dense_edits(name)
+            && let Some(position) = args
+                .first()
+                .and_then(|receiver| self.moving(receiver, env, scope, catch, rest))
+        {
+            scope.remove(position);
+            runtime.push_str("_owned");
+        }
+        let function = self
+            .emitter
+            .runtime
+            .get_key_value(runtime.as_str())
+            .map(|(function, _)| *function)
+            .ok_or_else(|| unsupported(format!("`{name}` of the prelude")))?;
+        self.set(function, values, span)
+    }
+
+    /// `map`, `zip_map`, `update` and `fold` of a dense value (design note D6): a loop over its
+    /// elements in row-major order that applies the function to each through the uniform word,
+    /// as a function value that is not an inline lambda is (ADR 0120 rule 35). `map` and
+    /// `zip_map` store each result in a builder of the receiver's kind and shape, whose store
+    /// the first result chooses and reserves; `update` writes each into the receiver held once
+    /// (rule 31), which `moved` says the caller gave up; `fold` carries its state, which
+    /// `moved` says moved in. A failure of the function stops the loop, releases what it made,
+    /// and goes to `catch`, as the prelude's loops over lists do (ADR 0062). O(size) calls.
+    fn dense_loop(
+        &mut self,
+        method: &str,
+        args: &[Value],
+        site: Value,
+        moved: bool,
+        scope: &Scope,
+        catch: &Catch,
+    ) -> Result<Value, CodegenError> {
+        let (Some(&dense), Some(&function)) = (args.first(), args.last()) else {
+            return Err(internal(format!("`{method}` lacks an argument")));
+        };
+        let second = || {
+            args.get(1)
+                .copied()
+                .ok_or_else(|| internal(format!("`{method}` lacks an argument")))
+        };
+        let (source, initial) = match method {
+            "map" => (dense, self.sited("una_rt_dense_builder", site, &[dense])?),
+            "zip_map" => {
+                let other = second()?;
+                let builder = self.sited("una_rt_dense_zip_builder", site, &[dense, other])?;
+                (dense, builder)
+            }
+            "update" => {
+                // The call takes a reference: the caller's when it moved in.
+                if !moved {
+                    self.retain(dense, Kind::Dense);
+                }
+                let owned = self.sited("una_rt_dense_unique", site, &[dense])?;
+                (owned, owned)
+            }
+            _ => {
+                let initial = second()?;
+                if !moved {
+                    self.retain(initial, Kind::Any);
+                }
+                (dense, initial)
+            }
+        };
+        let count = self.call("una_rt_dense_count", &[source])?;
+        let head = self.builder.create_block();
+        let body = self.builder.create_block();
+        let exit = self.join();
+        self.builder.append_block_param(head, types::I64);
+        self.builder.append_block_param(head, types::I64);
+        let zero = self.builder.ins().iconst(types::I64, 0);
+        self.builder
+            .ins()
+            .jump(head, &[zero.into(), initial.into()]);
+
+        self.builder.switch_to_block(head);
+        let params = self.builder.block_params(head).to_vec();
+        let (Some(&index), Some(&carried)) = (params.first(), params.get(1)) else {
+            return Err(internal("a loop lost its parameters"));
+        };
+        let more = self.builder.ins().icmp(IntCC::SignedLessThan, index, count);
+        self.builder
+            .ins()
+            .brif(more, body, &[], exit, &[carried.into()]);
+
+        self.builder.switch_to_block(body);
+        // The function owns the element it is given: a new boxed `F64`, or the word retained.
+        let item = self.call("una_rt_dense_item", &[source, index])?;
+        let next_index = self.builder.ins().iadd_imm_s(index, 1);
+        match method {
+            "map" | "zip_map" => {
+                let mut operands = vec![item];
+                if method == "zip_map" {
+                    let other = second()?;
+                    operands.push(self.call("una_rt_dense_item", &[other, index])?);
+                }
+                let (mapped, failed) = self.apply(function, &operands, site)?;
+                self.stop_on_failure(mapped, failed, &[(carried, Kind::Dense)], scope, catch);
+                self.sited("una_rt_dense_push", site, &[carried, mapped])?;
+                self.release(mapped, Kind::Any);
+                self.builder
+                    .ins()
+                    .jump(head, &[next_index.into(), carried.into()]);
+            }
+            "update" => {
+                let (new, failed) = self.apply(function, &[item], site)?;
+                self.stop_on_failure(new, failed, &[(carried, Kind::Dense)], scope, catch);
+                self.runtime("una_rt_dense_write", &[carried, index, new]);
+                self.release(new, Kind::Any);
+                self.builder
+                    .ins()
+                    .jump(head, &[next_index.into(), carried.into()]);
+            }
+            _ => {
+                // The state moves into the step, which releases it on a failure too.
+                let (step, failed) = self.apply(function, &[carried, item], site)?;
+                self.stop_on_failure(step, failed, &[], scope, catch);
+                self.builder
+                    .ins()
+                    .jump(head, &[next_index.into(), step.into()]);
+            }
+        }
+
+        self.builder.switch_to_block(exit);
+        let result = self.param(exit)?;
+        if method != "update" {
+            return Ok(result);
+        }
+        // The new value of the `edit` receiver, with the result, `unit` (`spec/17 §4`).
+        let zero = self.builder.ins().iconst(types::I64, 0);
+        let tuple = self.call("una_rt_data", &[zero])?;
+        self.runtime("una_rt_push", &[tuple, result]);
+        self.release(result, Kind::Dense);
+        self.runtime("una_rt_push", &[tuple, zero]);
+        Ok(tuple)
+    }
+
     /// The owned result of `prim` on `args`, whose operands and result `width` says are proven
     /// to fit a tagged word (`range`).
     /// Continues when `failed` is 0; otherwise releases `owned`, what a loop of the prelude
@@ -3372,8 +3630,20 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 let (a, b, c) = (word(0), word(1), word(2));
                 self.call("una_rt_f64_op", &[code, a, b, c])
             }
-            // Dense values have no native representation yet (`spec/29 §17`).
-            Prim::Shape(_) => Err(unsupported("dense values (spec/29)")),
+            // The shape functions of a dense value (`spec/29 §17`, ADR 0120 rules 33 and 38), by
+            // the runtime: an axis's length, -1 for the rank, -2 for the number of elements. An
+            // `Lu[T]` of size n holds n + 1 rows of n, so its size is its columns.
+            Prim::Shape(fun) => {
+                let (a, _) = operand(first)?;
+                let axis = match fun {
+                    una_core::ShapeFun::Rows => 0,
+                    una_core::ShapeFun::Columns | una_core::ShapeFun::Size => 1,
+                    una_core::ShapeFun::Rank => -1,
+                    una_core::ShapeFun::Count => -2,
+                };
+                let axis = self.builder.ins().iconst(types::I64, axis);
+                self.call("una_rt_dense_shape", &[a, axis])
+            }
             // Every operation of `Decimal` is the runtime's, on coefficients, with the
             // operation's static scales, and its conversions with `F64` on boxed values
             // (`spec/29 §16`).
@@ -3490,6 +3760,11 @@ impl<'p> Lowerer<'_, 'p, '_> {
                     Kind::Text => self.call("una_rt_text_len", &[a]),
                     Kind::List => self.call("una_rt_list_len", &[a]),
                     Kind::Map => self.call("una_rt_map_len", &[a]),
+                    // An array's length, its one axis (`spec/29 §17`).
+                    Kind::Dense => {
+                        let axis = self.builder.ins().iconst(types::I64, 0);
+                        self.call("una_rt_dense_shape", &[a, axis])
+                    }
                     _ => Err(unsupported("this length")),
                 }
             }
