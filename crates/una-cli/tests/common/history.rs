@@ -92,7 +92,7 @@ crunch(key: {label}Int) -> {label}Int
 =
   let edit total: {label}Int = 0
   for i in 0..<key
-    total = total + i % 7
+    total = total + i mod 7
   total
 
 run(url: Text, key: {label}Int) -> Unit
