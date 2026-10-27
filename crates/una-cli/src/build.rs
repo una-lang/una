@@ -548,6 +548,14 @@ fn runtime_library(environment: crate::Environment<'_>) -> Result<PathBuf, Strin
         .ok_or_else(|| missing_runtime(&dir))
 }
 
+/// The label `internal`, the most `L_lim` may be for grants with limits (ADR 0117 IF4).
+pub(crate) fn internal_label() -> una_core::Label {
+    una_core::Label {
+        level: una_syntax::ast::Level::Internal,
+        ..una_core::Label::public()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -615,13 +623,5 @@ mod tests {
             None
         );
         assert_eq!(stale_runtime_hint("ld: library not found", runtime), None);
-    }
-}
-
-/// The label `internal`, the most `L_lim` may be for grants with limits (ADR 0117 IF4).
-pub(crate) fn internal_label() -> una_core::Label {
-    una_core::Label {
-        level: una_syntax::ast::Level::Internal,
-        ..una_core::Label::public()
     }
 }
