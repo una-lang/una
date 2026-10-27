@@ -1,0 +1,19 @@
+-- test: a function named as a value runs on the bindings in scope, so naming one that reads a labeled operation lower is U3022 at the reference (ADR 0094 rule 3)
+-- spec: spec/05 §4
+-- expect: error U3022 at src/m.una:17:11
+module m
+
+pub capability Files
+  op owner(file: Text) -> Text
+  op role(file: Text) -> Text
+
+owner_seen(file: Text) -> Text
+  uses @files: Files[owner]
+=
+  @files.owner(file)
+
+pub pick() -> fn(Text) -> Text uses @files: Files[owner]
+  uses @files: Files[owner gives internal[Service]]
+=
+  let f = owner_seen
+  f

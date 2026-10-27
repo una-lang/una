@@ -384,7 +384,8 @@ pub(crate) struct FnUse {
     pub(crate) ops: Vec<String>,
     /// The label each operation gives through this binding, `op gives l` (ADR 0094 rule 1),
     /// in the capability's declaration order; an operation absent here gives `public`. A
-    /// function type never labels an operation, so a value's `uses` leave it empty.
+    /// function type never labels an operation, so a value's `uses` clear it
+    /// (`function_value`), and a lambda's are seeded from the body that captures them.
     pub(crate) gives: Vec<(String, Label)>,
 }
 

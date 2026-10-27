@@ -1859,7 +1859,11 @@ impl<'a> Env<'a> {
             };
             let lowered = self.lower_label(module, label, report);
             if !lowered.is_public() && ops.iter().any(|known| known.as_str() == *op) {
-                gives.push(((*op).to_owned(), lowered));
+                match gives.iter_mut().find(|(known, _)| known == *op) {
+                    // An operation listed twice gives the join of its labels.
+                    Some((_, known)) => *known = known.join(&lowered),
+                    None => gives.push(((*op).to_owned(), lowered)),
+                }
             }
         }
         gives.sort_by_key(|(op, _)| ops.iter().position(|listed| listed == op));

@@ -320,6 +320,54 @@ impl<'a> Checker<'_, 'a, '_> {
             })
     }
 
+    /// ADR 0094 rule 3: the callee `callee` reads each operation of `need` at the label its
+    /// own header gives it, `public` when it writes none, so the binding `@declared`, which
+    /// gives `gives`, is refused when one of its operations gives more: U3022 at `span`, once
+    /// per need, listing the operations. The callee would read those answers below their
+    /// label. One label comparison per operation. Neither repair lowers a label (rule 7):
+    /// another binding of the caller whose operations give within what the callee reads, then
+    /// the callee's header raised to the join, which changes its callers' flows; the second is
+    /// offered only to a callee with a header, which a lambda, a function value or a parameter
+    /// of function type is not.
+    fn labels_site(
+        &mut self,
+        callee: &str,
+        need: &FnUse,
+        span: Span,
+        declared: &str,
+        capability: Option<CapId>,
+        gives: &[(String, Label)],
+    ) {
+        let mut above: Vec<String> = Vec::new();
+        let mut raised: Vec<String> = Vec::new();
+        for op in &need.ops {
+            let gives_here = given(gives, op);
+            let read = given(&need.gives, op);
+            if gives_here.flows_to(&read) {
+                continue;
+            }
+            above.push(format!(
+                "`@{declared}.{op}` gives `{gives_here}`, which is not within what {callee} reads it at (`{read}`)"
+            ));
+            raised.push(format!("`@{}.{op}` to `{}`", need.name, read.join(&gives_here)));
+        }
+        if above.is_empty() {
+            return;
+        }
+        let mut diagnostic = self.report.make(Code::U3022, span, above.join("; "));
+        diagnostic
+            .repairs
+            .extend(self.rebinding(span, need, declared, capability));
+        let headed = !callee.starts_with("this ") && !callee.contains("used as a value");
+        if headed {
+            diagnostic.repairs.push(Report::advice(format!(
+                "raise the `gives` of {} in the header of {callee}, which changes what its callers receive",
+                raised.join(", ")
+            )));
+        }
+        self.report.push(diagnostic);
+    }
+
     /// Whether diagnostics of this milestone are reported here.
     pub(crate) fn authority(&self) -> bool {
         self.pass == Pass::Check && self.base != Base::Quiet
@@ -541,35 +589,6 @@ impl<'a> Checker<'_, 'a, '_> {
                     if !self.authority() {
                         continue;
                     }
-                    // ADR 0094 rule 3: the callee reads each operation's answers at the label
-                    // its own header writes, `public` when it writes none, so a binding whose
-                    // operation gives more is refused: the callee would read the answer below
-                    // its label. One comparison per operation of the need.
-                    for op in &need.ops {
-                        let gives_here = given(&gives, op);
-                        let read = given(&need.gives, op);
-                        if gives_here.flows_to(&read) {
-                            continue;
-                        }
-                        let mut diagnostic = self.report.make(
-                            Code::U3022,
-                            span,
-                            format!(
-                                "`@{declared}.{op}` gives `{gives_here}`, which is not within what {callee} reads it at (`{read}`)"
-                            ),
-                        );
-                        // Neither repair lowers a label (rule 7): another binding of the
-                        // caller whose operations give within what the callee reads, then the
-                        // callee's header, which changes its callers' flows.
-                        diagnostic
-                            .repairs
-                            .extend(self.rebinding(span, need, &declared, capability));
-                        diagnostic.repairs.push(Report::advice(format!(
-                            "raise the `gives` of `@{}.{op}` in the header of {callee} to `{gives_here}`, which changes what its callers receive",
-                            need.name
-                        )));
-                        self.report.push(diagnostic);
-                    }
                     if need.capability.is_some()
                         && capability.is_some()
                         && capability != need.capability
@@ -614,7 +633,11 @@ impl<'a> Checker<'_, 'a, '_> {
                                 self.widen(clause, &declared, capability, &ops, &missing),
                             );
                             self.report.push(diagnostic);
+                        } else {
+                            self.labels_site(callee, need, span, &declared, capability, &gives);
                         }
+                    } else {
+                        self.labels_site(callee, need, span, &declared, capability, &gives);
                     }
                 }
                 Resolved::Handler {
@@ -1508,11 +1531,14 @@ pub(crate) fn infer(env: &mut Env<'_>, collected: &Collected, report: &mut Repor
             let Some(span) = span.or_else(|| env.functions.get(id).map(|f| f.result_span)) else {
                 continue;
             };
+            // ADR 0094 rule 3: an inferred header reads every operation at `public` until
+            // its labels are inferred (#566, part 2).
             uses.push(super::env::Need {
                 usage: FnUse {
                     name,
                     capability,
                     ops,
+                    gives: Vec::new(),
                 },
                 span,
             });

@@ -732,7 +732,16 @@ impl<'a> Checker<'_, 'a, '_> {
             } else {
                 self.generic_value_result(id, &args)
             },
-            uses: def.uses.iter().map(|need| need.usage.clone()).collect(),
+            // A function type carries no operation labels (ADR 0094 rule 1); a function whose
+            // `uses` label one is not a value (U3006).
+            uses: def
+                .uses
+                .iter()
+                .map(|need| FnUse {
+                    gives: Vec::new(),
+                    ..need.usage.clone()
+                })
+                .collect(),
             fails: def.fails.clone(),
             // ADR 0037 rule 1: the refinements of the function's header.
             refinements: FnRefinements {
@@ -1927,10 +1936,23 @@ impl<'a> Checker<'_, 'a, '_> {
         }
         let result = shape.as_ref().map(|f| f.result.clone());
         let fails = shape.as_ref().and_then(|f| f.fails.clone());
-        let uses: Vec<FnUse> = shape.as_ref().map(|f| f.uses.clone()).unwrap_or_default();
+        let mut uses: Vec<FnUse> = shape.as_ref().map(|f| f.uses.clone()).unwrap_or_default();
         // The capabilities a lambda uses are captured where it is written (`spec/04 §6` rule 3);
-        // with effects or failures it may only be an argument.
+        // with effects or failures it may only be an argument. ADR 0094 rule 3: a function
+        // type carries no `gives`, so the lambda reads each captured operation at the label
+        // the enclosing body gives it: its answers then carry that label into the lambda's
+        // result (U4001) and decisions (U4002), and the capture itself is not refused.
         let level = self.frames.len();
+        for need in &mut uses {
+            if let super::authority::Resolved::Cap { gives, .. } =
+                super::authority::resolve_in(&self.frames, level, &need.name)
+            {
+                need.gives = gives
+                    .into_iter()
+                    .filter(|(op, _)| need.ops.contains(op))
+                    .collect();
+            }
+        }
         self.needs_site("this lambda", &uses, span, level);
         self.summary_needs(Owner::Lambda(span), &uses, level);
         self.captured_needs(&uses, span);

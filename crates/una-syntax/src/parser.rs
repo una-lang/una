@@ -1592,7 +1592,7 @@ impl<'a> Parser<'a> {
         let start = self.advance();
         let cap = self.cap_name()?;
         self.expect(&TokenKind::Colon, "`:` and the capability type")?;
-        let cap_type = self.cap_type(conditions && self.v0_3)?;
+        let cap_type = self.cap_type(conditions)?;
         Ok(UsesClause {
             cap,
             cap_type,
@@ -1616,7 +1616,10 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn cap_type(&mut self, conditions: bool) -> Parse<CapType> {
+    /// `header` says whether the clause is a function's or a handler's header's, which may
+    /// condition and label its operations in edition 0.3; a function type's never does.
+    fn cap_type(&mut self, header: bool) -> Parse<CapType> {
+        let conditions = header && self.v0_3;
         let start = self.span();
         let name = self.upper_name("a capability name")?;
         let mut ops = Vec::new();
@@ -1631,18 +1634,18 @@ impl<'a> Parser<'a> {
                 // type, which carries no operation labels, U0101.
                 gives.push(if self.at_word("gives") {
                     let span = self.span();
+                    if !header {
+                        return self.fail(
+                            span,
+                            "`gives` is not allowed in a function type's `uses`, which carries no operation labels",
+                        );
+                    }
                     if !self.v0_3 {
                         return Err(self.report_error(SyntaxError::new(
                             Code::U0103,
                             span,
                             "`gives` is a keyword of edition 0.3 (operation labels)",
                         )));
-                    }
-                    if !conditions {
-                        return self.fail(
-                            span,
-                            "`gives` is not allowed in a function type's `uses`, which carries no operation labels",
-                        );
                     }
                     self.advance();
                     let Some(level) = level(self.peek()) else {

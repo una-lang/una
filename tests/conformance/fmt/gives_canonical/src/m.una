@@ -5,9 +5,11 @@ module m
 
 pub capability Files
   op owner(file: Text) -> Text
-  op role(file: Text) -> Text
+  op note(line: Text) -> Unit
 
 pub refusal(file: Text, dry_run: Bool) -> internal[Service] Text
-  uses @service_files: Files[owner gives internal[Service] where not dry_run, role]
+  uses @service_files: Files[owner gives internal[Service], note gives internal[Service] where not dry_run]
 =
+  if not dry_run
+    @service_files.note("looked up {file}")
   @service_files.owner(file)
