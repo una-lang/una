@@ -306,13 +306,22 @@ pub enum Term {
         /// The indices, one per axis.
         indices: Vec<Term>,
     },
-    /// `m.has(key: k)` of a map (`spec/21 §4` rule 4).
+    /// `m.has(key: k)` of a map (`spec/21 §4` rule 4), or of a `HashMap` (ADR 0119 V5).
     Has {
         /// The map.
         map: Box<Term>,
         /// The key.
         key: Box<Term>,
     },
+    /// `s.has(item: x)` of a `Set`, a `HashSet` or a `BitSet` (ADR 0119 V5).
+    Member {
+        /// The set.
+        set: Box<Term>,
+        /// The item.
+        item: Box<Term>,
+    },
+    /// `b.size` of a `BitSet` (ADR 0119 V5).
+    Size(Box<Term>),
     /// The component `index` of a tuple, as `result` of a function with `edit` parameters
     /// (`spec/17 §4`).
     Proj {
@@ -548,6 +557,19 @@ pub enum Prim {
     /// A built-in method of a `Set` of `std.collections` (`spec/28 §6`, ADR 0119 rule 7);
     /// `add` and `remove` are rebinds to `With` and `Without`.
     Set(SetOp),
+    /// A built-in method of a `HashMap` of `std.collections` (`spec/28 §7`, ADR 0119 rules 8 to
+    /// 12); `set` and `remove` are rebinds to `With` and `Without`, and `update` is a lookup,
+    /// a call and a `With`.
+    HashMap(HashMapOp),
+    /// A built-in method of a `HashSet` of `std.collections` (`spec/28 §7`, ADR 0119 rules 8 to
+    /// 12); `add` and `remove` are rebinds to `With` and `Without`.
+    HashSet(HashSetOp),
+    /// A built-in method of a `PriorityQueue` of `std.collections` (`spec/28 §8`, ADR 0119 rule
+    /// 13); `push`, `pop` and `pop_ranked` are rebinds of the receiver to the new queue.
+    Priority(PriorityOp),
+    /// A built-in method or property of a `BitSet` of `std.collections` (`spec/28 §9`, ADR 0119
+    /// rule 14); `add` and `remove` are rebinds to `With` and `Without`.
+    BitSet(BitSetOp),
     /// An operator, method or conversion of `F64` (`spec/29`, ADR 0114): its own kind, so no
     /// existing primitive changes meaning.
     Float(FloatOp),
@@ -1238,6 +1260,18 @@ pub enum SeqOp {
 }
 
 impl SeqOp {
+    /// Every operation, in a fixed order: the native backend passes an operation to the
+    /// runtime as its position here (ADR 0119 rule 19).
+    pub const ALL: [SeqOp; 7] = [
+        SeqOp::PushFront,
+        SeqOp::PushBack,
+        SeqOp::PopFront,
+        SeqOp::PopBack,
+        SeqOp::PeekFront,
+        SeqOp::PeekBack,
+        SeqOp::Items,
+    ];
+
     /// The operation's name in Core.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -1300,6 +1334,22 @@ pub enum SetOp {
 }
 
 impl SetOp {
+    /// Every operation, in a fixed order: the native backend passes an operation to the
+    /// runtime as its position here (ADR 0119 rule 19).
+    pub const ALL: [SetOp; 11] = [
+        SetOp::Has,
+        SetOp::With,
+        SetOp::Without,
+        SetOp::First,
+        SetOp::Last,
+        SetOp::Between,
+        SetOp::Items,
+        SetOp::Union,
+        SetOp::Intersection,
+        SetOp::Difference,
+        SetOp::IsSubset,
+    ];
+
     /// The method's name in the source.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -1323,6 +1373,270 @@ impl SetOp {
         matches!(
             self,
             SetOp::With | SetOp::Without | SetOp::Union | SetOp::Intersection | SetOp::Difference
+        )
+    }
+}
+
+/// The built-in methods of `HashMap[K, V]` (`spec/28 §7`, ADR 0119 rule 12), each over the
+/// map in its first argument. Lookups and updates are O(|k|) expected, the listings O(n).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum HashMapOp {
+    /// `has(key:)`.
+    Has,
+    /// `get(key:)`.
+    Get,
+    /// `with(key:, value:)`, and `edit set`.
+    With,
+    /// `without(key:)`, and `edit remove`.
+    Without,
+    /// `keys()`, in insertion order.
+    Keys,
+    /// `values()`, in insertion order.
+    Values,
+    /// `entries()`, in insertion order.
+    Entries,
+    /// `same_entries(as:)`, whatever the order.
+    SameEntries,
+}
+
+impl HashMapOp {
+    /// Every operation, in a fixed order: the native backend passes an operation to the
+    /// runtime as its position here (ADR 0119 rule 19).
+    pub const ALL: [HashMapOp; 8] = [
+        HashMapOp::Has,
+        HashMapOp::Get,
+        HashMapOp::With,
+        HashMapOp::Without,
+        HashMapOp::Keys,
+        HashMapOp::Values,
+        HashMapOp::Entries,
+        HashMapOp::SameEntries,
+    ];
+
+    /// The method's name in the source.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            HashMapOp::Has => "has",
+            HashMapOp::Get => "get",
+            HashMapOp::With => "with",
+            HashMapOp::Without => "without",
+            HashMapOp::Keys => "keys",
+            HashMapOp::Values => "values",
+            HashMapOp::Entries => "entries",
+            HashMapOp::SameEntries => "same_entries",
+        }
+    }
+
+    /// Whether the operation gives a new map built from its receiver, which it may update in
+    /// place when the receiver is given up (ADR 0119 rule 1).
+    pub fn rebuilds(self) -> bool {
+        matches!(self, HashMapOp::With | HashMapOp::Without)
+    }
+}
+
+/// The built-in methods of `HashSet[T]` (`spec/28 §7`, ADR 0119 rule 12), each over the set in
+/// its first argument.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum HashSetOp {
+    /// `has(item:)`.
+    Has,
+    /// `with(item:)`, and `edit add`.
+    With,
+    /// `without(item:)`, and `edit remove`.
+    Without,
+    /// `items()`, in insertion order.
+    Items,
+    /// `union(other:)`.
+    Union,
+    /// `intersection(other:)`.
+    Intersection,
+    /// `difference(other:)`.
+    Difference,
+    /// `is_subset(of:)`.
+    IsSubset,
+    /// `same_items(as:)`, whatever the order.
+    SameItems,
+}
+
+impl HashSetOp {
+    /// Every operation, in a fixed order: the native backend passes an operation to the
+    /// runtime as its position here (ADR 0119 rule 19).
+    pub const ALL: [HashSetOp; 9] = [
+        HashSetOp::Has,
+        HashSetOp::With,
+        HashSetOp::Without,
+        HashSetOp::Items,
+        HashSetOp::Union,
+        HashSetOp::Intersection,
+        HashSetOp::Difference,
+        HashSetOp::IsSubset,
+        HashSetOp::SameItems,
+    ];
+
+    /// The method's name in the source.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            HashSetOp::Has => "has",
+            HashSetOp::With => "with",
+            HashSetOp::Without => "without",
+            HashSetOp::Items => "items",
+            HashSetOp::Union => "union",
+            HashSetOp::Intersection => "intersection",
+            HashSetOp::Difference => "difference",
+            HashSetOp::IsSubset => "is_subset",
+            HashSetOp::SameItems => "same_items",
+        }
+    }
+
+    /// Whether the operation gives a new set built from its receiver, which it may update in
+    /// place when the receiver is given up (ADR 0119 rule 1).
+    pub fn rebuilds(self) -> bool {
+        matches!(
+            self,
+            HashSetOp::With
+                | HashSetOp::Without
+                | HashSetOp::Union
+                | HashSetOp::Intersection
+                | HashSetOp::Difference
+        )
+    }
+}
+
+/// The operations of the stable heap that holds a `PriorityQueue[T, P]` (`spec/28 §8`, ADR 0119
+/// rules 13 and 19), each over the queue in its first argument. The first item is the one of the
+/// least priority for a queue made by `lowest_first`, of the greatest for one made by
+/// `highest_first`, and among equal priorities the one pushed first. `Push` and `Pop` are
+/// O(log n) comparisons, amortized, `Items` O(n log n), and the reads O(1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum PriorityOp {
+    /// The queue with `item` added at `priority`: `push(item:, priority:)`.
+    Push,
+    /// The queue without its first item, the same queue when it is empty: the update of `pop`
+    /// and of `pop_ranked`.
+    Pop,
+    /// `Some` of the first item, `None` when empty: `peek`, and the result of `pop`.
+    Peek,
+    /// `Some` of the first item's priority, `None` when empty: `peek_priority`.
+    PeekPriority,
+    /// `Some` of the first item with its priority, a `Ranked`, `None` when empty: the result of
+    /// `pop_ranked`.
+    PeekRanked,
+    /// The items in the order of the pops, as a `List`: `items()`.
+    Items,
+}
+
+impl PriorityOp {
+    /// Every operation, in a fixed order: the native backend passes an operation to the
+    /// runtime as its position here (ADR 0119 rule 19).
+    pub const ALL: [PriorityOp; 6] = [
+        PriorityOp::Push,
+        PriorityOp::Pop,
+        PriorityOp::Peek,
+        PriorityOp::PeekPriority,
+        PriorityOp::PeekRanked,
+        PriorityOp::Items,
+    ];
+
+    /// The operation's name in Core.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PriorityOp::Push => "push",
+            PriorityOp::Pop => "pop",
+            PriorityOp::Peek => "peek",
+            PriorityOp::PeekPriority => "peek_priority",
+            PriorityOp::PeekRanked => "peek_ranked",
+            PriorityOp::Items => "items",
+        }
+    }
+
+    /// Whether the operation gives a new queue built from its receiver, which it may update in
+    /// place when the receiver is given up (`spec/28 §8`, ADR 0119 rule 1).
+    pub fn rebuilds(self) -> bool {
+        matches!(self, PriorityOp::Push | PriorityOp::Pop)
+    }
+}
+
+/// The built-in methods of `BitSet` (`spec/28 §9`, ADR 0119 rule 14), each over the bit set in
+/// its first argument, with its property `size`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum BitSetOp {
+    /// `.size`, the number of bits, fixed when the bit set is made.
+    Size,
+    /// `has(item:)`, `false` outside the range.
+    Has,
+    /// `with(item:)`, and `edit add`: the item MUST be in the range.
+    With,
+    /// `without(item:)`, and `edit remove`: an item outside the range changes nothing.
+    Without,
+    /// `union(other:)`, of two bit sets of one size.
+    Union,
+    /// `intersection(other:)`, of two bit sets of one size.
+    Intersection,
+    /// `difference(other:)`, of two bit sets of one size.
+    Difference,
+    /// `is_subset(of:)`, of two bit sets of one size.
+    IsSubset,
+    /// `first()`, the least member.
+    First,
+    /// `last()`, the greatest member.
+    Last,
+    /// `items()`, ascending.
+    Items,
+}
+
+impl BitSetOp {
+    /// Every operation, in a fixed order: the native backend passes an operation to the
+    /// runtime as its position here (ADR 0119 rule 19).
+    pub const ALL: [BitSetOp; 11] = [
+        BitSetOp::Size,
+        BitSetOp::Has,
+        BitSetOp::With,
+        BitSetOp::Without,
+        BitSetOp::Union,
+        BitSetOp::Intersection,
+        BitSetOp::Difference,
+        BitSetOp::IsSubset,
+        BitSetOp::First,
+        BitSetOp::Last,
+        BitSetOp::Items,
+    ];
+
+    /// The method's or the property's name in the source.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            BitSetOp::Size => "size",
+            BitSetOp::Has => "has",
+            BitSetOp::With => "with",
+            BitSetOp::Without => "without",
+            BitSetOp::Union => "union",
+            BitSetOp::Intersection => "intersection",
+            BitSetOp::Difference => "difference",
+            BitSetOp::IsSubset => "is_subset",
+            BitSetOp::First => "first",
+            BitSetOp::Last => "last",
+            BitSetOp::Items => "items",
+        }
+    }
+
+    /// Whether the operation gives a new bit set built from its receiver, which it may update in
+    /// place when the receiver is given up (`spec/28 §9`, ADR 0119 rule 1).
+    pub fn rebuilds(self) -> bool {
+        matches!(
+            self,
+            BitSetOp::With
+                | BitSetOp::Without
+                | BitSetOp::Union
+                | BitSetOp::Intersection
+                | BitSetOp::Difference
+        )
+    }
+
+    /// Whether its other operand is a bit set that MUST have the receiver's size (ADR 0119
+    /// rule 14).
+    pub fn pairs(self) -> bool {
+        matches!(
+            self,
+            BitSetOp::Union | BitSetOp::Intersection | BitSetOp::Difference | BitSetOp::IsSubset
         )
     }
 }
@@ -1451,6 +1765,10 @@ impl Prim {
             Prim::Map(op) => op.as_str(),
             Prim::Seq(op) => op.as_str(),
             Prim::Set(op) => op.as_str(),
+            Prim::HashMap(op) => op.as_str(),
+            Prim::HashSet(op) => op.as_str(),
+            Prim::Priority(op) => op.as_str(),
+            Prim::BitSet(op) => op.as_str(),
             Prim::Float(op) => op.as_str(),
             Prim::Shape(fun) => fun.as_str(),
             Prim::Decimal(op) => op.as_str(),
@@ -1800,6 +2118,40 @@ pub enum Expr {
         /// The task of one element.
         task: Box<Expr>,
         /// The expression in the source.
+        span: Span,
+    },
+    /// `first_of(e₁ | ... | eₙ)`: the branches of a `first of` race (`spec/27 §6`, ADR 0117
+    /// rule 6), each a task closed over the bindings before it. Its value is the result of the
+    /// first branch to return, and the other branches are cancelled; when every branch fails,
+    /// it fails with the failure of the lowest-indexed one. The interpreter runs the branches
+    /// in index order and stops at the first that returns, one legal schedule.
+    FirstOf {
+        /// The branches, in index order.
+        tasks: Vec<Expr>,
+        /// The expression in the source.
+        span: Span,
+    },
+    /// `tasks(b) e`: the block of a `tasks` statement (`spec/27 §7`, ADR 0117 rule 7), run in
+    /// the current task. The `start`s inside `e`, outside any task of it, start tasks that run
+    /// beside it; the statement ends once `e` has ended and every task it started has ended,
+    /// also when `e` fails, after cancelling them, or leaves by an `exit` of an enclosing loop.
+    /// Its value is `e`'s: the tuple of the outer bindings `e` updates, or `unit`.
+    Tasks {
+        /// The bound of `at most b at once`, an `Int` bound before the statement, and where it
+        /// is written, for its obligation `b >= 1`; none for the default bound.
+        bound: Option<(Atom, Span)>,
+        /// The block.
+        body: Box<Expr>,
+        /// The statement in the source.
+        span: Span,
+    },
+    /// `start e`: starts a task for `e`, a `Unit` that cannot fail, closed over the bindings
+    /// before it, and goes on; once as many tasks as its `tasks` statement's bound run, it
+    /// first waits until one ends (`spec/27 §7`, ADR 0117 rule 7). Its value is `unit`.
+    Start {
+        /// The started expression, with its deadline and handling clauses.
+        task: Box<Expr>,
+        /// The statement in the source.
         span: Span,
     },
     /// `if a then e else e`.
@@ -2161,6 +2513,10 @@ pub struct Program {
     /// `with`s, in site order (ADR 0092, amendment of 2026-10-14). Not exported: `una core`
     /// derives nothing from them.
     pub condition_edits: Vec<ConditionEdit>,
+    /// Whether the verifier keeps a map's other keys across its updates: the frame facts of
+    /// ADR 0119 V3 on `Map`, in edition `0.4` and later only (ADR 0069, amendment of
+    /// 2026-10-19). Not exported: `una core` derives nothing from it.
+    pub map_frames: bool,
 }
 
 /// The condition that a call or a `with` asks of its callee or handler, written on the callee's
@@ -2252,6 +2608,16 @@ pub fn prelude_variants(kind: &str) -> Option<&'static [PreludeVariant]> {
 /// The module path of the collections of edition `0.4` (ADR 0119 rule 0): their types are
 /// `Named` in it, and its kind `Ranked` is a [`Decl::Data`] of it.
 pub const COLLECTIONS_MODULE: &str = "std.collections";
+
+/// The module path of rate limits computed in code, edition `0.4` (ADR 0117 rule 9): its kind
+/// `Limited` is a [`Decl::Data`] of it, its capability `Limit` a [`Decl::Cap`], and the handler
+/// [`LIMITER`] is provided by each engine, so no [`Decl::Handler`] of it exists.
+pub const LIMIT_MODULE: &str = "std.limit";
+
+/// The handler of [`LIMIT_MODULE`] that each engine provides (ADR 0117 rule 9): a `with` or a
+/// `given` of it is `Source::Handler` with this name in that module, and its arguments are
+/// `at_most`, `per` and `waiting`, in that order.
+pub const LIMITER: &str = "limiter";
 
 /// A collection type of `std.collections`, edition `0.4` (ADR 0119). Each engine knows its
 /// values itself, as it knows a list's and a map's.

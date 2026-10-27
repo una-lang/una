@@ -400,6 +400,9 @@ pub(crate) struct Env<'a> {
     /// probe of pass 2 found, read by the checks of pass 2; a site absent here is `public` (the
     /// first probe).
     pub(crate) within_timing: BTreeMap<Span, Label>,
+    /// The residue label `L_res` (ADR 0116 P9) that the probe of pass 2 found, already joined
+    /// into [`Self::within_timing`], with its sources, which the messages of pass 2 name.
+    pub(crate) residue: super::timing::Residue,
     /// What a check of pass 2 records for the file-state label: each `Files.write`, with the
     /// labels of its path and the program counter, and the code it is in; each direct call
     /// of a function, with the program counter; the functions used as values, which a caller
@@ -460,6 +463,12 @@ pub(crate) struct Env<'a> {
     /// The module `std.collections`, when a package of edition 0.4 imports it (ADR 0119
     /// rule 0).
     pub(crate) collections: Option<usize>,
+    /// The hidden function `update` of that module, which only method syntax on a hash map
+    /// reaches (ADR 0119 rule 12).
+    pub(crate) hash_map_update: Option<usize>,
+    /// The handler `limiter` of `std.limit`, when a package of edition 0.4 imports the module
+    /// (ADR 0117 rule 9): the runtime provides it, and its installation is checked for IF5.
+    pub(crate) limiter: Option<usize>,
 }
 
 /// The key type of a written `Map[K, V]`, or an argument of a written collection type that
@@ -531,6 +540,7 @@ impl<'a> Env<'a> {
         after_prelude: Vec<Source<'a>>,
         map_0_4: Option<Source<'a>>,
         collections: Option<Source<'a>>,
+        limit: Option<Source<'a>>,
         categories: Vec<String>,
         edition: Edition,
         report: &mut Report<'_>,
@@ -559,6 +569,7 @@ impl<'a> Env<'a> {
             files_written: false,
             file_state: Label::public(),
             within_timing: BTreeMap::new(),
+            residue: super::timing::Residue::none(),
             file_writes: Vec::new(),
             file_calls: Vec::new(),
             file_escaped: BTreeSet::new(),
@@ -581,6 +592,8 @@ impl<'a> Env<'a> {
             map_module: None,
             map_update: None,
             collections: None,
+            hash_map_update: None,
+            limiter: None,
         };
         for source in package
             .into_iter()
@@ -597,8 +610,27 @@ impl<'a> Env<'a> {
             env.collections = Some(env.modules.len());
             env.register(source);
         }
+        // ADR 0117 rule 9: `std.limit` is in scope only for a package of edition 0.4 that
+        // imports it, so no other package's checks or Core IR change.
+        if let Some(source) = limit {
+            let index = env.modules.len();
+            env.register(source);
+            env.limiter =
+                env.modules
+                    .get(index)
+                    .and_then(|module| match module.lower.get("limiter") {
+                        Some(Entity::Handler(id)) => Some(*id),
+                        _ => None,
+                    });
+        }
         env.map_update =
             env.map_module
+                .and_then(|index| match env.modules.get(index)?.lower.get("update") {
+                    Some(Entity::Function(id)) => Some(*id),
+                    _ => None,
+                });
+        env.hash_map_update =
+            env.collections
                 .and_then(|index| match env.modules.get(index)?.lower.get("update") {
                     Some(Entity::Function(id)) => Some(*id),
                     _ => None,
@@ -912,7 +944,8 @@ impl<'a> Env<'a> {
                     || time
                     || joined == "std.testing"
                     || joined == prelude::STD_DRIVE
-                    || joined == prelude::STD_COLLECTIONS;
+                    || joined == prelude::STD_COLLECTIONS
+                    || joined == prelude::STD_LIMIT;
                 // A dependency's module imports its own modules and the standard ones, never
                 // the root's (ADR 0122 rule 47).
                 let key = match module.mount {

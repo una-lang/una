@@ -43,6 +43,29 @@ pub(crate) enum Res {
     SetMethod(una_core::SetOp),
     /// `edit s.add(...)` or `edit s.remove(...)`: the set rebound to `With` or `Without`.
     SetUpdate(una_core::SetOp),
+    /// A built-in method of a `HashMap` that reads it or gives a new map (`spec/28 §7`).
+    HashMapMethod(una_core::HashMapOp),
+    /// `edit m.set(...)` or `edit m.remove(...)` on a `HashMap`: the map rebound to `With` or
+    /// `Without`.
+    HashMapUpdate(una_core::HashMapOp),
+    /// A built-in method of a `HashSet` that reads it or gives a new set (`spec/28 §7`).
+    HashSetMethod(una_core::HashSetOp),
+    /// `edit s.add(...)` or `edit s.remove(...)` on a `HashSet`: the set rebound to `With` or
+    /// `Without`.
+    HashSetUpdate(una_core::HashSetOp),
+    /// A built-in method of a `PriorityQueue` that reads it (`spec/28 §8`).
+    PriorityMethod(una_core::PriorityOp),
+    /// `edit q.push(...)`, `edit q.pop()` or `edit q.pop_ranked()`: the queue rebound to `op`'s
+    /// result, and for a removal, the first item read first by `read` as the call's value.
+    PriorityUpdate {
+        op: una_core::PriorityOp,
+        read: Option<una_core::PriorityOp>,
+    },
+    /// A built-in method of a `BitSet` that reads it or gives a new bit set, or its property
+    /// `size` (`spec/28 §9`).
+    BitSetMethod(una_core::BitSetOp),
+    /// `edit b.add(...)` or `edit b.remove(...)`: the bit set rebound to `With` or `Without`.
+    BitSetUpdate(una_core::BitSetOp),
     /// A record field.
     Field { kind: KindId, index: usize },
     /// An operation of a capability.

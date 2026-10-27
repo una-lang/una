@@ -693,6 +693,19 @@ impl<'a> Resolver<'_, '_, 'a> {
                 }
             }
             Stmt::OnStop(on_stop) => self.block(&on_stop.block),
+            // The bound is evaluated once, before the block (`spec/27 §7`).
+            Stmt::Tasks(stmt) => {
+                if let Some(bound) = &stmt.bound {
+                    self.expr(bound);
+                }
+                self.block(&stmt.block);
+            }
+            // The started expression sees the names before it, in a scope of its own.
+            Stmt::Start(stmt) => {
+                self.enter();
+                self.handled(&stmt.handled);
+                self.leave();
+            }
         }
     }
 
@@ -758,6 +771,15 @@ impl<'a> Resolver<'_, '_, 'a> {
                 self.bind(&together.var, "local", true);
                 self.block(&together.block);
                 self.leave();
+            }
+            // Each branch sees the names before the block, in a scope of its own (ADR 0117
+            // rule 6).
+            BlockExpr::FirstOf(first) => {
+                for branch in &first.body {
+                    self.enter();
+                    self.stmt(branch);
+                    self.leave();
+                }
             }
         }
     }
