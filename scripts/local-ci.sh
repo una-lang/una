@@ -1,7 +1,8 @@
 #!/bin/sh
 # Runs what .github/workflows/ci.yml runs, in the same order, on this machine: the solver check,
 # the released sections of CHANGELOG.md against their tags, fmt, clippy with warnings denied,
-# the tests, then packing and checking the release archive of the host's target. With --linux,
+# the tests, the C math library check of release artifacts (#1092), then packing and checking
+# the release archive of the host's target. With --linux,
 # it runs the same inside a linux/amd64 container of CI's Ubuntu image
 # (scripts/local-ci/Dockerfile), emulated on an arm64 Mac, so it is slow and runs the tests one
 # at a time (#286); with --linux-arm64, inside a linux/arm64 one, native on such a Mac (#241),
@@ -158,6 +159,20 @@ else
     step "Timing channels (security oracles)" \
         cargo test --release --locked -p una-cli --test timing_channels -- --ignored --test-threads=1 --nocapture
 fi
+# No C math library symbol (#1092), in what ships: a test build unifies the features of
+# dev-dependencies in, so the check builds its own release `una` and `libuna_rt.a`, links with
+# that `una` every runnable program of tests/conformance/runtime that the native backend
+# compiles (scripts/no-libm-build.sh, into a fresh target/no-libm), and reads the release
+# graph's features and the undefined symbols of all of them (scripts/no-libm.sh), strictly.
+step "Build (release) for the C math library check" \
+    env CARGO_TARGET_DIR="$root/target" cargo build --locked --release -p una-cli -p una-rt
+no_libm="$root/target/no-libm"
+rm -rf "${no_libm:?}"
+step "Native executables of the release una" \
+    scripts/no-libm-build.sh "$root/target/release/una" "$no_libm"
+step "No C math library symbol" \
+    scripts/no-libm.sh "$root/target/release/una" "$root/target/release/libuna_rt.a" \
+    "$no_libm/executables"
 # The documents' links (#708): every link of the documents names a tracked file or directory,
 # and every fragment a heading of its document; the check's own test refuses each kind of
 # broken link first. It needs only Python 3 and git, so it runs everywhere, the containers
