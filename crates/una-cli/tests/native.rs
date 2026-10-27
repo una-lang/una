@@ -978,11 +978,25 @@ fn completes_or_u6003(name: &str, output: &Output) {
     assert!(!stderr.contains("memory allocation"), "{name}: {stderr}");
 }
 
+/// Whether the tests run under Rosetta, Apple's x86-64 emulator, on Linux: its mappings show
+/// in `/proc/self/maps`. Rosetta's own VM tracker kills a program that starts a million tasks
+/// ("VmTracker slab allocator has run out of memory", VMAllocationTracker.cpp:659), which
+/// completes natively on arm64 Linux and on macOS, so that one test skips itself there (#1246).
+fn under_rosetta() -> bool {
+    std::fs::read_to_string("/proc/self/maps").is_ok_and(|maps| maps.contains("rosetta"))
+}
+
 #[test]
 fn i1_i8_a_block_of_a_million_tasks_completes_or_stops_with_u6003() {
     // ADR 0113 rules 1, 2 and 5: a `together for` over 10^6 small integers under `--max-memory
     // 64` reserves its result list exactly, each batch's state and each task's start, so it
     // either completes or stops with U6003 at the block, and never aborts the process.
+    if under_rosetta() {
+        println!(
+            "skipped under Rosetta: the emulator's VM tracker kills a million-task program (not the program)"
+        );
+        return;
+    }
     let main = "pub main() -> Unit\n  uses @console: Console[print]\n=\n";
     let name = "million_tasks";
     let dir = copies_program(
