@@ -999,6 +999,8 @@ impl<'a> Checker<'_, 'a, '_> {
         }
         if def.module == self.env.prelude {
             self.dense_result(&result, span);
+            // ADR 0109 rule 3: `sum` and `abs` compute an `Int` by arithmetic.
+            self.prelude_overflow_site(def.name, span);
         }
         if let Some(fails) = &call_fails {
             self.call_fails.insert(span, fails.clone());

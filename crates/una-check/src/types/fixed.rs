@@ -3,7 +3,7 @@
 
 use una_core::{FixedOp, IntType, Prim};
 use una_diag::{Code, ObligationKind};
-use una_project::Edition;
+use una_project::{Edition, Profile};
 use una_syntax::Span;
 use una_syntax::ast::{Arg, Expr, ExprKind, Literal, Range, UnaryOp};
 
@@ -35,6 +35,16 @@ pub(crate) fn literal_value(expr: &Expr) -> Option<(bool, &str)> {
     }
 }
 
+/// The digits of `expr` when it is an integer literal, in parentheses or not: the operand of a
+/// unary `-` that the Core IR negates as a literal (ADR 0109 rule 3).
+pub(crate) fn plain_literal(expr: &Expr) -> Option<&str> {
+    match &expr.kind {
+        ExprKind::Literal(Literal::Int(digits)) => Some(digits.as_str()),
+        ExprKind::Paren(inner) => plain_literal(inner),
+        _ => None,
+    }
+}
+
 /// Whether `expr` is a constant expression: integer literals combined by `+`, `-`, `*`, `/`,
 /// `mod`, unary `-` and parentheses. It takes the unit its context expects, as one literal
 /// does (ADR 0104 rule 3).
@@ -56,6 +66,23 @@ pub(crate) fn is_constant(expr: &Expr) -> bool {
         }
         _ => false,
     }
+}
+
+/// The least value of `Int` that stays in a machine word, `-2^62`: the tagged range that no
+/// result of `Int` arithmetic leaves in a `systems` package (ADR 0109 rule 3, `spec/18 §3`).
+pub(crate) const INT_LEAST: i128 = -(1 << 62);
+
+/// The greatest value of `Int` that stays in a machine word, `2^62 - 1` (ADR 0109 rule 3).
+pub(crate) const INT_GREATEST: i128 = (1 << 62) - 1;
+
+/// Whether the integer `-digits` (when `negative`) or `digits` lies in the tagged range of
+/// `Int`, [`INT_LEAST`] to [`INT_GREATEST`]. A literal too long for 128 bits lies outside it.
+pub(crate) fn fits_word(negative: bool, digits: &str) -> bool {
+    let Ok(magnitude) = digits.parse::<i128>() else {
+        return false;
+    };
+    let value = if negative { -magnitude } else { magnitude };
+    (INT_LEAST..=INT_GREATEST).contains(&value)
 }
 
 /// Whether `ty` is an integer type: `Int` or a fixed-width type.
@@ -122,6 +149,12 @@ impl Checker<'_, '_, '_> {
             return Ty::F64;
         }
         let Some(int) = self.expected_fixed(expected) else {
+            // ADR 0109 rule 3: in a `systems` package, an `Int` literal outside the tagged
+            // range is an `overflow` site, refuted at once; a negated literal is one literal.
+            if self.int_word() && !fits_word(negative, digits) {
+                self.obligation(ObligationKind::Overflow, span, None);
+                self.findings.int_literals.insert(span);
+            }
             return Ty::Int;
         };
         if !fits(int, negative, digits) && !self.exact_integers() {
@@ -152,13 +185,48 @@ impl Checker<'_, '_, '_> {
         }
     }
 
-    /// Records the `overflow` obligation of an operation of type `ty` at `span`, where integer
-    /// arithmetic is not exact (`spec/18 §3`).
+    /// Records the `overflow` obligation of an operation of the fixed-width type `ty` at
+    /// `span`, where integer arithmetic is not exact (`spec/18 §3`). An `Int` operation gets
+    /// none here, even in a `systems` package: the element-wise operators of dense values call
+    /// this one, and ADR 0120 rule 34 states their obligation for fixed-width elements only.
     pub(crate) fn overflow_site(&mut self, ty: &Ty, span: Span) {
         if self.exact_integers() {
             return;
         }
         if matches!(self.resolve(ty).magnitude(), Ty::Fixed(_)) {
+            self.obligation(ObligationKind::Overflow, span, None);
+        }
+    }
+
+    /// Whether `Int` arithmetic stays in a machine word where the expression being checked is:
+    /// in a `systems` package, outside clauses and the bodies of `reflect` predicates, which
+    /// compute exactly (ADR 0109 rule 3, `spec/18 §3`).
+    pub(crate) fn int_word(&self) -> bool {
+        self.env.profile == Profile::Systems && !self.exact_integers()
+    }
+
+    /// Records the `overflow` obligation of an operator or a conversion of type `ty` at `span`:
+    /// on a fixed-width type as [`Self::overflow_site`] does, and on `Int`, or a measured `Int`,
+    /// in a `systems` package (ADR 0109 rule 3). Called by the arithmetic operators, unary `-`
+    /// and `convert()`, not by the element-wise operators of dense values.
+    pub(crate) fn int_overflow_site(&mut self, ty: &Ty, span: Span) {
+        if self.exact_integers() {
+            return;
+        }
+        let int = matches!(self.resolve(ty).magnitude(), Ty::Int);
+        if int && self.int_word() {
+            self.obligation(ObligationKind::Overflow, span, None);
+        } else {
+            self.overflow_site(ty, span);
+        }
+    }
+
+    /// Records the `overflow` obligation of a call of a prelude function that computes an
+    /// `Int` by arithmetic, `sum` and `abs`, at the call, in a `systems` package (ADR 0109
+    /// rule 3). The entry points (`to_int` of a text, `parse_int`, JSON's `Number`,
+    /// `Clock.now()`) and the functions bounded by a size, as `len`, record none.
+    pub(crate) fn prelude_overflow_site(&mut self, name: &str, span: Span) {
+        if matches!(name, "sum" | "abs") && self.int_word() {
             self.obligation(ObligationKind::Overflow, span, None);
         }
     }
@@ -245,6 +313,14 @@ impl Checker<'_, '_, '_> {
             };
             if narrowing {
                 self.overflow_site(&result, span);
+            }
+            // ADR 0109 rule 3: `to_int()` on `I64` and `U64`, whose values can lie outside the
+            // tagged range, carries an `overflow` obligation in a `systems` package.
+            if target_int.is_none()
+                && matches!(int, Ty::Fixed(IntType::I64 | IntType::U64))
+                && self.int_word()
+            {
+                self.obligation(ObligationKind::Overflow, span, None);
             }
             self.resolved(span, Res::IntMethod(Prim::Convert(target_int)));
             return Some(result.with_label(&label));
@@ -413,8 +489,10 @@ impl Checker<'_, '_, '_> {
                 }
             }
         };
+        // `convert()` multiplies by its ratio: on a fixed-width magnitude, and on an `Int` one
+        // in a `systems` package (ADR 0109 rule 3).
         if ratio > 1 {
-            self.overflow_site(&magnitude, span);
+            self.int_overflow_site(&magnitude, span);
         }
         self.resolved(span, Res::UnitMethod { ratio });
         result.with_label(&label)

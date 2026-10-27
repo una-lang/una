@@ -970,6 +970,11 @@ fn headers(env: &Env<'_>) -> Vec<Header> {
 pub(crate) struct Findings {
     /// Pending obligations: kind, primary span and the span of the declared type.
     pub(crate) obligations: Vec<(ObligationKind, Span, Option<Span>)>,
+    /// The `Int` literals of a `systems` package outside the tagged range, each an `overflow`
+    /// site (ADR 0109 rule 3): elaboration binds each to its own temporary at its span, so the
+    /// verifier finds the site in Core IR. A negated literal is recorded at the negation, which
+    /// Core IR keeps as the negation of a literal.
+    pub(crate) int_literals: std::collections::BTreeSet<Span>,
     /// The edits of a callee's condition that the sites of `effect_condition` obligations ask
     /// for, each with its callee, before condition (d)'s function values are known (ADR 0092,
     /// amendment of 2026-10-14).
