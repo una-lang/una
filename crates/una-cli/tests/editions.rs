@@ -229,6 +229,12 @@ const EXPECTED_DIFFERENCES_0_4: &[Difference04] = &[
         added: &[("U1002", "src/a.una:6:5")],
         removed: &[],
     },
+    // ADR 0117 rule 6: `first of` is an expression from edition 0.4.
+    Difference04 {
+        case: "syntax/first_of_before_0_4",
+        added: &[],
+        removed: &[("U0101", "src/late.una:10:17")],
+    },
     // ADR 0116 rule 0: `diverges` and `within` are reserved words.
     Difference04 {
         case: "syntax/long_running_words_in_0_3",

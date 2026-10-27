@@ -53,6 +53,10 @@ pub(crate) struct Run<'p, 'w> {
     pub(crate) reads: RefCell<HashMap<*const Expr, Rc<BTreeSet<String>>>>,
     /// The names each loop body binds, computed once (`una_core::binders`).
     pub(crate) binders: RefCell<HashMap<*const Expr, Rc<BTreeSet<&'p str>>>>,
+    /// The process key of keyed hashing, read before the run when its code can make a hash
+    /// table (`spec/28 §1` rule 3), else `None`. Each new table, in any task, takes a key from
+    /// it.
+    pub(crate) hashing: RefCell<Option<una_hash::ProcessKey>>,
     /// The events written so far that the world did not take (ADR 0117 rule 10), and how many
     /// were written, which numbers `seq`.
     trace: RefCell<Vec<Event>>,
@@ -89,6 +93,7 @@ impl<'p, 'w> Run<'p, 'w> {
             next_within: Cell::new(0),
             reads: RefCell::new(HashMap::new()),
             binders: RefCell::new(HashMap::new()),
+            hashing: RefCell::new(None),
             trace: RefCell::new(Vec::new()),
             written: Cell::new(0),
             sched: RefCell::new(Sched::default()),
