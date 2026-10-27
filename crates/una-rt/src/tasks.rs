@@ -340,7 +340,7 @@ pub(crate) fn warm_up(workers: usize) -> usize {
     }
     let (block, status) = run(
         Tasks::Over { closure, items },
-        false,
+        Shape::List,
         WARM_SITE,
         warm_invoke,
     );

@@ -311,7 +311,8 @@ pub main() -> Unit
   uses @http: Http[get]
 =
   let first = attempt @http.get("http://127.0.0.1:{port}/a", headers: [], key_name: None)
-  let second = attempt @http.get("http://127.0.0.1:{port}/b", headers: [], key_name: None) within 100 * millisecond
+  let url = "http://127.0.0.1:{port}/b"
+  let second = attempt @http.get(url, headers: [], key_name: None) within 100 * millisecond
   @console.print("done")
 "#
     );
