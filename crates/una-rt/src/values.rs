@@ -837,12 +837,15 @@ pub(crate) fn equal_at(site: i64, a: i64, b: i64) -> Option<bool> {
 }
 
 /// A value with parts, compared through a worklist: a variant with fields, a record, a
-/// non-empty list or a non-empty map. Every other word is a leaf, compared as it is met.
+/// non-empty list, a non-empty map or a dense value. Every other word is a leaf, compared as it
+/// is met.
 fn has_parts(word: i64) -> bool {
     is_handle(word)
         && with(word, |object| match object {
             Object::Data { fields, .. } | Object::List(fields) => !fields.is_empty(),
             Object::Map(entries) => !entries.is_empty(),
+            // Its shape is a part, even with no elements (ADR 0120 rule 27).
+            Object::Dense(_) => true,
             _ => false,
         })
         .unwrap_or(false)
@@ -919,22 +922,30 @@ fn admit(a: i64, b: i64, pending: &mut Vec<(i64, i64)>) -> bool {
 /// where NaN differs from itself, must revisit both (#819).
 fn equal_words(a: i64, b: i64, pairs: usize) -> Option<bool> {
     /// The parts of a value with parts: a variant's tag or a list's `None`, then its words, or
-    /// a map's keys and values.
+    /// a map's keys and values, or a dense value's kind, shape and elements.
     enum Parts {
         Cells(Option<i64>, Vec<i64>),
         Map(Vec<MapKey>, Vec<i64>),
+        Dense(dense::Parts),
+        /// A dense value, whose parts are read after the heap's borrow ends.
+        DenseHeader,
     }
     let parts = |word: i64| {
-        with(word, |object| match object {
+        let found = with(word, |object| match object {
             Object::Data { tag, fields } => Some(Parts::Cells(Some(*tag), fields.clone())),
             Object::List(items) => Some(Parts::Cells(None, items.clone())),
             Object::Map(entries) => Some(Parts::Map(
                 entries.keys().cloned().collect(),
                 entries.values().map(|(_, value)| *value).collect(),
             )),
+            Object::Dense(_) => Some(Parts::DenseHeader),
             _ => None,
         })
-        .flatten()
+        .flatten();
+        match found {
+            Some(Parts::DenseHeader) => dense::parts(word).map(Parts::Dense),
+            other => other,
+        }
     };
     let mut pending = Vec::new();
     if !admit(a, b, &mut pending) {
@@ -965,6 +976,35 @@ fn equal_words(a: i64, b: i64, pairs: usize) -> Option<bool> {
             // The same keys, each with an equal value (`spec/21 §1` rule 5).
             (Some(Parts::Map(kx, x)), Some(Parts::Map(ky, y))) => {
                 kx == ky && x.into_iter().zip(y).all(|(a, b)| admit(a, b, &mut pending))
+            }
+            // The same kind and shape, then each element by its own `==` in row-major order,
+            // whatever the views' offsets and strides (ADR 0120 rule 27): a raw `F64` by the
+            // identity of its canonical bits, as `==` on `F64` is (ADR 0114 rule 5.1), and an
+            // element that is a word joins this worklist and its budget, as a list's item does.
+            // Every element is compared and the answer decided after, so the time does not
+            // reveal where two values differ (rule 54).
+            (Some(Parts::Dense(x)), Some(Parts::Dense(y))) => {
+                x.layout.kind == y.layout.kind
+                    && x.layout.shape == y.layout.shape
+                    && x.elements.len() == y.elements.len()
+                    && {
+                        let mut same = true;
+                        for (a, b) in x.elements.into_iter().zip(y.elements) {
+                            same &= match (a, b) {
+                                (dense::Element::Raw(a), dense::Element::Raw(b)) => {
+                                    una_core::float::equal(a, b)
+                                }
+                                (dense::Element::Word(a), dense::Element::Word(b)) => {
+                                    admit(a, b, &mut pending)
+                                }
+                                (dense::Element::Raw(a), dense::Element::Word(b))
+                                | (dense::Element::Word(b), dense::Element::Raw(a)) => {
+                                    dense::boxed(b).is_some_and(|b| una_core::float::equal(a, b))
+                                }
+                            };
+                        }
+                        same
+                    }
             }
             _ => false,
         };
