@@ -783,6 +783,127 @@ fn a_wide_range_over_the_budget_is_u6003_in_both_backends() {
 }
 
 #[test]
+fn a_declared_budget_holds_in_both_backends_and_the_flag_only_lowers_it() {
+    // ADR 0109 rule 4: `[run] max_memory` is the budget of `una run`, `una test` and the
+    // executable `una build` makes, and `--max-memory` may lower it, never raise it. The
+    // program holds more than any of these budgets, so U6003 names the budget in force.
+    let program = "module budget\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let n: I64 = 5000000\n  let xs = together for i in 0..<n\n    i\n  @console.print(\"{xs.len}\")\n";
+    let dir = package("budget", "", &[("src/budget.una", program)]);
+    std::fs::write(
+        dir.join("una.toml"),
+        "[package]\nname = \"budget\"\nversion = \"0.1.0\"\nedition = \"0.3\"\nprofile = \"systems\"\n\n[run]\nentry = \"budget\"\ngrants = [\"console\"]\nmax_memory = 8\n",
+    )
+    .unwrap();
+    let built = una(&dir, &["build"]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    let native = |args: &[&str]| {
+        Command::new(dir.join("target/una/budget"))
+            .args(args)
+            .current_dir(&dir)
+            .output()
+            .unwrap()
+    };
+    for (flag, mib) in [(None, 8), (Some("4"), 4), (Some("8"), 8)] {
+        let args: Vec<&str> = flag.map_or(Vec::new(), |flag| vec!["--max-memory", flag]);
+        let expected = format!("[U6003] Error: this call exceeds the memory limit of {mib} MiB\n");
+        let run = una(&dir, &[&["run"][..], &args].concat());
+        let run_stderr = String::from_utf8_lossy(&run.stderr);
+        assert_eq!(run.status.code(), Some(1), "{flag:?}: {run_stderr}");
+        assert!(run_stderr.starts_with(&expected), "{flag:?}: {run_stderr}");
+        let native = native(&args);
+        let stderr = String::from_utf8_lossy(&native.stderr);
+        assert_eq!(native.status.code(), Some(1), "{flag:?}: {stderr}");
+        assert!(stderr.starts_with(&expected), "{flag:?}: {stderr}");
+    }
+    let raise = "error: --max-memory 16 is above the package's declared max_memory of 8 MiB; it may lower the budget, never raise it\n";
+    let run = una(&dir, &["run", "--max-memory", "16"]);
+    assert_eq!(run.status.code(), Some(2), "{run:?}");
+    assert_eq!(String::from_utf8_lossy(&run.stderr), raise);
+    assert!(run.stdout.is_empty());
+    let test = una(&dir, &["test", "--max-memory", "16"]);
+    assert_eq!(test.status.code(), Some(2), "{test:?}");
+    assert_eq!(String::from_utf8_lossy(&test.stderr), raise);
+    assert!(test.stdout.is_empty());
+    let lowered = una(&dir, &["test", "--max-memory", "4"]);
+    assert_ne!(lowered.status.code(), Some(2), "{lowered:?}");
+    let native = native(&["--max-memory", "16"]);
+    assert_eq!(native.status.code(), Some(2), "{native:?}");
+    assert_eq!(String::from_utf8_lossy(&native.stderr), raise);
+    assert!(native.stdout.is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_budget_declared_in_ita_una_holds_in_both_backends() {
+    // ADR 0109 rule 4 in edition 0.4: the `run` line `max_memory` is the same budget, carried
+    // into the executable's description.
+    let program = "module budget\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let n: I64 = 5000000\n  let xs = together for i in 0..<n\n    i\n  @console.print(\"{xs.len}\")\n";
+    let dir = package("budget_ita", "", &[("src/budget.una", program)]);
+    std::fs::remove_file(dir.join("una.toml")).unwrap();
+    std::fs::remove_file(dir.join("verification.lock")).unwrap();
+    std::fs::write(
+        dir.join("ita.una"),
+        "ita budget\n  version 0.1.0\n  edition 0.4\n  profile systems\n\nrun\n  entry budget\n  max_memory 8\n  grants\n    console\n",
+    )
+    .unwrap();
+    std::fs::copy(
+        root().join("tests/conformance/project/profile_systems_budget/ita.lock"),
+        dir.join("ita.lock"),
+    )
+    .unwrap();
+    let built = una(&dir, &["build"]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    let expected = "[U6003] Error: this call exceeds the memory limit of 8 MiB\n";
+    let run = una(&dir, &["run"]);
+    let run_stderr = String::from_utf8_lossy(&run.stderr);
+    assert_eq!(run.status.code(), Some(1), "{run_stderr}");
+    assert!(run_stderr.starts_with(expected), "{run_stderr}");
+    let native = |args: &[&str]| {
+        Command::new(dir.join("target/una/budget"))
+            .args(args)
+            .current_dir(&dir)
+            .output()
+            .unwrap()
+    };
+    let run_native = native(&[]);
+    let stderr = String::from_utf8_lossy(&run_native.stderr);
+    assert_eq!(run_native.status.code(), Some(1), "{stderr}");
+    assert!(stderr.starts_with(expected), "{stderr}");
+    let raise = "error: --max-memory 9 is above the package's declared max_memory of 8 MiB; it may lower the budget, never raise it\n";
+    let run = una(&dir, &["run", "--max-memory", "9"]);
+    assert_eq!(run.status.code(), Some(2), "{run:?}");
+    assert_eq!(String::from_utf8_lossy(&run.stderr), raise);
+    let raised = native(&["--max-memory", "9"]);
+    assert_eq!(raised.status.code(), Some(2), "{raised:?}");
+    assert_eq!(String::from_utf8_lossy(&raised.stderr), raise);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn without_a_declared_budget_the_flag_keeps_its_meaning() {
+    // ADR 0109 rule 4: without the key, `--max-memory 8192` is accepted as before, and the
+    // executable's description carries no budget.
+    let dir = package(
+        "budget_none",
+        "\n[run]\nentry = \"hello\"\ngrants = [\"console\"]\n",
+        &[("src/hello.una", HELLO)],
+    );
+    let run = una(&dir, &["run", "--max-memory", "8192"]);
+    assert_eq!(run.status.code(), Some(0), "{run:?}");
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "Hello, Una\n");
+    let built = una(&dir, &["build"]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    let native = Command::new(dir.join("target/una/hello"))
+        .args(["--max-memory", "8192"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert_eq!(native.status.code(), Some(0), "{native:?}");
+    assert_eq!(String::from_utf8_lossy(&native.stdout), "Hello, Una\n");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn a_wide_range_in_a_task_stops_it_with_u6003_in_both_backends() {
     // #773, in a task: the range is made by a branch of a `together`, so the abort stops that
     // task, and its block reports it. Both backends end the run the same way, after the output
