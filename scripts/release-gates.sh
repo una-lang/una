@@ -10,6 +10,8 @@
 #                then scripts/no-libm-build.sh and scripts/no-libm.sh (#1092): the release
 #                `una` links the runtime conformance programs, and no C math library symbol
 #                in that `una`, the release `libuna_rt.a` or those executables
+#                then scripts/load-commands.sh (#1103): that `una` and examples/hello it links
+#                load only what scripts/load-commands.txt lists
 #   deps         scripts/deps-audit.sh (#770): cargo-deny at its pinned version against the
 #                advisory database fetched now (advisories, licenses, bans, crates.io only), and
 #                the supply-chain review record; the database's commit goes into the record
@@ -240,7 +242,8 @@ gate_build() {
             && cargo build --locked --release -p una-cli -p una-rt \
             && cargo test --workspace --locked \
             && scripts/no-libm-build.sh target/release/una "$no_libm" \
-            && scripts/no-libm.sh target/release/una target/release/libuna_rt.a "$no_libm/executables"'
+            && scripts/no-libm.sh target/release/una target/release/libuna_rt.a "$no_libm/executables" \
+            && scripts/load-commands.sh target/release/una'
 }
 
 gate_deps() { run deps scripts/deps-audit.sh; }

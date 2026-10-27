@@ -1,8 +1,9 @@
 #!/bin/sh
 # Runs what .github/workflows/ci.yml runs, in the same order, on this machine: the solver check,
 # the released sections of CHANGELOG.md against their tags, fmt, clippy with warnings denied,
-# the tests, the C math library check of release artifacts (#1092), then packing and checking
-# the release archive of the host's target. With --linux,
+# the tests, the C math library check of release artifacts (#1092), then packing the release
+# archive of the host's target, the load commands of its `una` and of a program it links
+# (#1103), and checking the archive. With --linux,
 # it runs the same inside a linux/amd64 container of CI's Ubuntu image
 # (scripts/local-ci/Dockerfile), emulated on an arm64 Mac, so it is slow and runs the tests one
 # at a time (#286); with --linux-arm64, inside a linux/arm64 one, native on such a Mac (#241),
@@ -201,6 +202,9 @@ step "Formal replay" docs/reviews/formal-m2-replay/check.sh
 # A release build never trusts the test certificate authority of una-http (ADR 0074, N-28).
 step "Test (release, TLS trust)" cargo test --release --locked -p una-http --test tls
 step "Pack the release archive of $target" scripts/release.sh "$target"
+# The release `una` just packed, and examples/hello that it links, ask the dynamic loader only
+# for what scripts/load-commands.txt lists (#1103).
+step "Load commands" scripts/load-commands.sh "$root/target/release-remapped/release/una"
 # Under emulation the check runs the packed `una` with one verifier thread, as the serial tests do
 # (#286): a `una run` that starts several solver processes from many threads at once can deadlock
 # inside the translator (#1133). The check's own time limits and single retry are a second guard.
