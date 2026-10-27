@@ -261,6 +261,30 @@ fn the_grammar_is_closed() {
             "ita x\n  version 0.1.0\n  edition 0.4\n\nescapes\n  checked 1\n",
             "checked per module",
         ),
+        (
+            "ita x\n  version 0.1.0\n  edition 0.4\n\nrun\n  max_memory \"64\"\n",
+            "the value of `max_memory`",
+        ),
+        (
+            "ita x\n  version 0.1.0\n  edition 0.4\n\nrun\n  max_memory 64 MiB\n",
+            "`MiB`",
+        ),
+        (
+            "ita x\n  version 0.1.0\n  edition 0.4\n\nrun\n  max_memory 64\n  max_memory 32\n",
+            "`max_memory` appears twice",
+        ),
+        (
+            "ita x\n  version 0.1.0\n  edition 0.4\n\nrun\n  grants\n    console\n  max_memory 64\n",
+            "`max_memory` comes before `grants`",
+        ),
+        (
+            "ita x\n  version 0.1.0\n  edition 0.4\n\nrun\n  max_memory 64\n  entry main\n",
+            "`entry` comes before `max_memory`",
+        ),
+        (
+            "ita x\n  version 0.1.0\n  edition 0.4\n\nrun\n  memory 64\n",
+            "`max_memory <MiB>`",
+        ),
         ("needs\n", "starts with `ita <name>`"),
     ];
     for (text, expected) in cases {
@@ -422,4 +446,20 @@ fn files_past_their_bound_are_refused_whole() {
     let (_, errors) = parse_manifest(&big);
     assert_eq!(errors.len(), 1);
     assert_eq!(errors[0].range, 0..0);
+}
+
+#[test]
+fn the_run_section_declares_a_memory_budget() {
+    // ADR 0109 rule 4 under ADR 0122: `max_memory <MiB>` after `entry`, before `grants`; its
+    // range is the project crate's check, so any integer reads here.
+    let text = "ita x\n  version 0.1.0\n  edition 0.4\n  profile systems\n\nrun\n  entry main\n  max_memory 0\n  grants\n    console\n";
+    let (manifest, errors) = parse_manifest(text);
+    assert_eq!(messages(&errors), Vec::<String>::new());
+    assert_eq!(manifest.profile.unwrap().value, "systems");
+    let run = manifest.run.unwrap();
+    let budget = run.max_memory.unwrap();
+    assert_eq!(budget.value, 0);
+    assert_eq!(&text[budget.range], "0");
+    assert_eq!(run.grants.len(), 1);
+    assert_eq!(format(text).as_deref(), Some(text));
 }

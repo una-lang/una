@@ -11,8 +11,9 @@ use una_syntax::ita::{self, At, CapType, LockOrigin, Origin, PkgName};
 
 use crate::lock::Lock;
 use crate::manifest::{
-    Boundary, Ceiling, Contract, Drive, Edition, Format, MAX_DRIVE_MILLISECONDS, Manifest,
-    boundary_conflicts, is_grant, is_module_path, is_upper_camel, upper_camel,
+    Boundary, Ceiling, Contract, Drive, Edition, Format, MAX_DRIVE_MILLISECONDS, MAX_MEMORY_CAP,
+    Manifest, Profile, boundary_conflicts, budget_missing, budget_out_of_range, is_grant,
+    is_module_path, is_upper_camel, upper_camel,
 };
 use crate::names::{is_name_word, reserved_like};
 use crate::version::{Line, Version};
@@ -121,21 +122,17 @@ pub fn parse_ita_manifest(text: &str) -> (Manifest, Vec<ProjectError>) {
             )),
         }
     }
+    // `app`, the default, or `systems` (ADR 0109 rule 1, `spec/30 §2` rule 4).
     if let Some(profile) = &read.profile {
-        match profile.value.as_str() {
-            "app" => {}
-            // Profiles are not implemented by this release. Checking a `systems` package as
-            // `app` would leave out the obligations that profile adds (ADR 0109 rule 2), so it
-            // is refused rather than ignored.
-            "systems" => errors.push(error(
+        match Profile::parse(&profile.value) {
+            Some(found) => manifest.profile = found,
+            None => errors.push(error(
                 code,
                 profile.range.clone(),
-                "the profile `systems` is not supported by this release; remove the line to check the package as `app`",
-            )),
-            other => errors.push(error(
-                code,
-                profile.range.clone(),
-                format!("unknown profile `{other}`; the profiles are `app` and `systems`"),
+                format!(
+                    "unknown profile `{}`; the profiles are `app` and `systems`",
+                    profile.value
+                ),
             )),
         }
     }
@@ -226,6 +223,18 @@ pub fn parse_ita_manifest(text: &str) -> (Manifest, Vec<ProjectError>) {
         if let Some(entry) = &run.entry {
             manifest.entry = Some(located(entry));
         }
+        // The declared budget, from 1 to the cap (ADR 0109 rule 4).
+        if let Some(budget) = &run.max_memory {
+            if (1..=MAX_MEMORY_CAP).contains(&budget.value) {
+                manifest.max_memory = Some(budget.value);
+            } else {
+                errors.push(error(
+                    code,
+                    budget.range.clone(),
+                    budget_out_of_range(Format::Ita, &budget.value.to_string()),
+                ));
+            }
+        }
         for grant in &run.grants {
             if !is_grant(&grant.spec) {
                 errors.push(error(
@@ -302,6 +311,19 @@ pub fn parse_ita_manifest(text: &str) -> (Manifest, Vec<ProjectError>) {
     }
     if !manifest.boundaries.is_empty() {
         boundary_conflicts(&manifest, &mut errors);
+    }
+    // A `systems` package that runs declares its budget (ADR 0109 rule 4), at the entry. A
+    // budget out of range was reported at its line, so it is not reported twice.
+    if manifest.profile == Profile::Systems
+        && manifest.max_memory.is_none()
+        && let Some(entry) = &manifest.entry
+        && read.run.as_ref().is_none_or(|run| run.max_memory.is_none())
+    {
+        errors.push(error(
+            code,
+            entry.range.clone(),
+            budget_missing(Format::Ita),
+        ));
     }
     manifest.ita = Some(Box::new(read));
     (manifest, errors)

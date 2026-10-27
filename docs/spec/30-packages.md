@@ -60,6 +60,7 @@ From edition `0.4`, a package describes itself in `ita.una`, a declarative file 
    contracts    = "contracts" NEWLINE INDENT { module_path NEWLINE
                   INDENT uses_item { uses_item } DEDENT } DEDENT ;
    run          = "run" NEWLINE INDENT [ "entry" module_path NEWLINE ]
+                  [ "max_memory" int_lit NEWLINE ]
                   [ "grants" NEWLINE INDENT grant { grant } DEDENT ] DEDENT ;
    grant        = ( "console" | "clock" | "env"
                   | "keys" text_lit
@@ -77,7 +78,7 @@ From edition `0.4`, a package describes itself in `ita.una`, a declarative file 
    - `ita <name>`: `name` is a `lower_ident` with no `__` and no trailing `_`, of at most 64 bytes, or `owner/name` with an owner of 2 to 39 bytes by the same rule.
    - `version` is a full version, `MAJOR.MINOR.PATCH` with an optional pre-release, each numeric part at most 2^31 − 1, and no build metadata.
    - `edition` is `0.4` or a later edition the release serves. An earlier edition is U7008: that package keeps `una.toml`.
-   - `profile` is `app`, the default. `systems` is U7008 in this release, which does not implement profiles: checking a `systems` package as `app` would leave out the obligations that profile adds.
+   - `profile` is `app`, the default, or `systems` (ADR 0109): a `systems` package with `entry` declares `max_memory`.
    - `about` and `license` are non-empty texts, `home` an `https://` URL, and `publish to` names `itaty` or a source of `sources`.
 5. **The sections that `una.toml` has.** Each has the meaning and the checks of `spec/13 §7` and of the records it names. Every error that `spec/13 §7` makes U7002 for a key of `una.toml` is U7008 at the corresponding line of `ita.una`; the codes of other domains stay (U1005 and U1002 for categories, U7005 for trusted modules).
    - `labels`: the categories, one per line.
@@ -85,7 +86,7 @@ From edition `0.4`, a package describes itself in `ita.una`, a declarative file 
    - `escapes`: `checked per module <n>`, `[escape_budget] checked_per_module`.
    - `boundaries` (ADR 0093): a module path, then its ceiling as `may` lines; no `may` line is the empty ceiling.
    - `contracts` (ADR 0092 rule 8): a function's qualified name, then its locked `uses` clauses, one per line, each parsed by the production a header uses.
-   - `run`: `entry`, then `grants`, one grant per line, each the grant spec of `spec/13 §5` it corresponds to: `console`, `clock`, `env`, `keys "<file>"`, `files "<path>" read, write`, and `http "<origin>" get, post`. Paths resolve against the package root.
+   - `run`: `entry`, then `max_memory`, the declared memory budget in MiB from 1 to 4096 (`[run] max_memory`, ADR 0109 rule 4), then `grants`, one grant per line, each the grant spec of `spec/13 §5` it corresponds to: `console`, `clock`, `env`, `keys "<file>"`, `files "<path>" read, write`, and `http "<origin>" get, post`. Paths resolve against the package root. A `max_memory` outside that range, and a `systems` package with `entry` and no `max_memory` (at the `entry` line), are U7008.
    - The limit lines under a grant (ADR 0117) are U7008 in this release, which does not implement them: a grant read without its limit would allow more than written. The `drive` section names the module the host drives (`spec/26 §2`): `module`, `ticks` and an optional `budget`, each of `ticks` and `budget` from 1 to 86,400,000 milliseconds; a missing key, a value out of range, a `run entry` beside it and a module that is not in the package are U7008.
 6. **Canonical form.** `una fmt ita.una` and `una fmt itaty.una` rewrite the file in its canonical form: two spaces per level; one blank line between top-level blocks and none inside them; the head's lines in the order of the production `head_line`; one space between words, none before `,`, `.`, `:`, `/` or `]`, none after `[`, `.` or `/`, and none between a capability and its `[`; a comment kept before the line it precedes, or two spaces after the line it ends. A line whose tokens this spacing would join into others, such as `1.` before `2`, keeps one space between every two tokens. `una fmt --check ita.una` reports U7001 where the file differs. `una fmt` of a package directory does not touch `ita.una`, and `una fix` never edits `ita.una`, `ita.lock` or `itaty.una`.
 
@@ -171,13 +172,14 @@ For a package of edition `0.4`, the key of a proof cache entry (`spec/12 §9`) i
    | `una.toml` / `verification.lock` | `ita.una` / `ita.lock` |
    | --- | --- |
    | `[package] name = "events-example"` | `ita events_example`: `-` becomes `_`; a name that is still not a package name needs `--name` |
-   | `version`, `edition` | head lines; `edition` becomes `0.4`; a version that is not `MAJOR.MINOR.PATCH` is refused |
+   | `version`, `edition`, `profile` | head lines; `edition` becomes `0.4`; a version that is not `MAJOR.MINOR.PATCH` is refused; `profile` is written when it is `systems` |
    | `[labels] categories` | `labels`, one per line |
    | `[trusted] modules` | `trusted` |
    | `[escape_budget] checked_per_module` | `escapes`, `checked per module <n>`, when not 0 |
    | `[boundaries]` | `boundaries`, with `may` lines |
    | `[contracts]` | `contracts`, the clause strings as lines |
    | `[run] entry`, `grants` | `run`, `entry`, `grants` with one line per spec, as `files "data/" read, write` |
+   | `[run] max_memory` | `max_memory`, in `run` after `entry` |
    | `verification.lock` | the `solver` section of `ita.lock`; the release's default when the package has none |
 
    A text is written with `"`, `\`, `{` and `}` escaped, and every control or bidirectional character as `\u{…}`.

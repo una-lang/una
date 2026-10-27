@@ -354,6 +354,16 @@ pub fn parse_manifest(text: &str) -> (Manifest, Vec<ProjectError>) {
     // amended, and ADR 0093): earlier editions report them as the unknown tables they always
     // were, so their output does not change.
     let edition_0_3 = declared_edition(document.get_ref()) >= Edition::V0_3;
+    // Whether `[run] max_memory` is written, valid or not: one that is out of range is
+    // reported at its value, not again as missing.
+    let budget_written = edition_0_3
+        && document
+            .get_ref()
+            .get("run")
+            .is_some_and(|run| match run.get_ref() {
+                toml::de::DeValue::Table(table) => table.contains_key("max_memory"),
+                _ => false,
+            });
     for (key, value) in document.get_ref().iter() {
         let Some(table) = Table::of(key, value, Code::U7002, &mut errors) else {
             continue;
@@ -388,7 +398,7 @@ pub fn parse_manifest(text: &str) -> (Manifest, Vec<ProjectError>) {
     }
     // A `systems` package that runs declares its budget (ADR 0109 rule 4), at the entry.
     if manifest.profile == Profile::Systems
-        && manifest.max_memory.is_none()
+        && !budget_written
         && let Some(entry) = &manifest.entry
     {
         errors.push(ProjectError::new(
