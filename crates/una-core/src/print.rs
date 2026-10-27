@@ -682,6 +682,26 @@ impl Printer {
                     self.expr(indent + 2, task);
                 }
             }
+            Expr::FirstOf { tasks, .. } => {
+                self.line(indent, "first_of");
+                for task in tasks {
+                    self.line(indent + 1, "branch");
+                    self.expr(indent + 2, task);
+                }
+            }
+            Expr::Tasks { bound, body, .. } => {
+                match bound {
+                    Some((bound, _)) => {
+                        self.line(indent, &format!("tasks at most {}", print_atom(bound)));
+                    }
+                    None => self.line(indent, "tasks"),
+                }
+                self.expr(indent + 1, body);
+            }
+            Expr::Start { task, .. } => {
+                self.line(indent, "start");
+                self.expr(indent + 1, task);
+            }
             Expr::TogetherFor {
                 source, var, task, ..
             } => {

@@ -312,6 +312,16 @@ impl Normalizer<'_> {
                 }
             }
             Stmt::OnStop(on_stop) => self.block(&mut on_stop.block),
+            Stmt::Tasks(stmt) => {
+                if let Some(bound) = &mut stmt.bound {
+                    self.expr(bound);
+                }
+                self.block(&mut stmt.block);
+            }
+            Stmt::Start(stmt) => {
+                self.expr(&mut stmt.handled.expr);
+                self.handlings(&mut stmt.handled);
+            }
         }
     }
 
@@ -360,6 +370,11 @@ impl Normalizer<'_> {
             BlockExpr::TogetherFor(together) => {
                 self.source(&mut together.source);
                 self.block(&mut together.block);
+            }
+            BlockExpr::FirstOf(first) => {
+                for branch in &mut first.body {
+                    self.stmt(branch);
+                }
             }
         }
     }

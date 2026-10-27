@@ -676,6 +676,29 @@ pub struct ContractEntry {
     pub clauses: Vec<At<String>>,
 }
 
+/// The kind of a limit line (ADR 0117 rule 8, `spec/27 §9`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LimitKind {
+    /// `at most <n> per second|minute|hour`, with the period's word.
+    Rate(String),
+    /// `at most <n> at once`.
+    AtOnce,
+    /// `waiting at most <n>`.
+    Waiting,
+}
+
+/// A limit line under an `http` grant (ADR 0117 rule 8): its kind, its count as written, and
+/// its line. The count's range is checked by the reader of the manifest (U7008).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Limit {
+    /// The kind.
+    pub kind: LimitKind,
+    /// The count.
+    pub count: At<u64>,
+    /// The line.
+    pub range: Range<usize>,
+}
+
 /// A grant of `run grants` (ADR 0122 rule 12).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Grant {
@@ -683,8 +706,8 @@ pub struct Grant {
     pub spec: String,
     /// The grant's line.
     pub range: Range<usize>,
-    /// The limit lines below it (ADR 0117 rule 8), each the range of its line.
-    pub limits: Vec<Range<usize>>,
+    /// The limit lines below it that parse (ADR 0117 rule 8); each that does not is an error.
+    pub limits: Vec<Limit>,
 }
 
 /// The `run` section (ADR 0122 rules 11 and 12).
@@ -1382,7 +1405,7 @@ fn run(line: &Line, errors: &mut Vec<Error>) -> Run {
             }
             grants_seen = true;
             for grant_line in &child.children {
-                match grant(grant_line) {
+                match grant(grant_line, errors) {
                     Ok(grant) => run.grants.push(grant),
                     Err(error) => errors.push(error),
                 }
@@ -1397,7 +1420,52 @@ fn run(line: &Line, errors: &mut Vec<Error>) -> Run {
     run
 }
 
-fn grant(line: &Line) -> Result<Grant, Error> {
+/// A limit line (ADR 0117 rule 8): `at most <n> per second|minute|hour`, `at most <n> at once`
+/// or `waiting at most <n>`, with no lines below it.
+fn limit(line: &Line, errors: &mut Vec<Error>) -> Result<Limit, Error> {
+    no_children(line, errors);
+    let mut cursor = Cursor::new(line);
+    let form = "a limit: `at most <n> per second`, `minute` or `hour`, `at most <n> at once`, or `waiting at most <n>`";
+    let waiting = cursor.eat_word("waiting");
+    if !cursor.eat_word("at") {
+        return Err(expected(form, cursor.peek(), cursor.here()));
+    }
+    if !cursor.eat_word("most") {
+        return Err(expected("`most` after `at`", cursor.peek(), cursor.here()));
+    }
+    let count = cursor.int("the count of the limit")?;
+    let kind = if waiting {
+        LimitKind::Waiting
+    } else if cursor.eat_word("per") {
+        let period = cursor.word("`second`, `minute` or `hour`")?;
+        if !matches!(period.value.as_str(), "second" | "minute" | "hour") {
+            return Err(Error::new(
+                period.range,
+                "a rate's period is `second`, `minute` or `hour`",
+            ));
+        }
+        LimitKind::Rate(period.value)
+    } else if cursor.eat_word("at") {
+        if !cursor.eat_word("once") {
+            return Err(expected("`once` after `at`", cursor.peek(), cursor.here()));
+        }
+        LimitKind::AtOnce
+    } else {
+        return Err(expected(
+            "`per second`, `per minute`, `per hour` or `at once`",
+            cursor.peek(),
+            cursor.here(),
+        ));
+    };
+    cursor.end()?;
+    Ok(Limit {
+        kind,
+        count,
+        range: line.range.clone(),
+    })
+}
+
+fn grant(line: &Line, errors: &mut Vec<Error>) -> Result<Grant, Error> {
     let mut cursor = Cursor::new(line);
     let kind = cursor.word("a grant: `console`, `clock`, `env`, `keys`, `files` or `http`")?;
     let spec = match kind.value.as_str() {
@@ -1479,11 +1547,23 @@ fn grant(line: &Line) -> Result<Grant, Error> {
         }
     };
     cursor.end()?;
-    let limits = line
-        .children
-        .iter()
-        .map(|limit| limit.range.clone())
-        .collect();
+    // A grant whose limit lines do not all parse is dropped: read without one of its limits,
+    // it would allow more than written.
+    let mut limits = Vec::new();
+    let mut failed: Option<Error> = None;
+    for child in &line.children {
+        match limit(child, errors) {
+            Ok(limit) => limits.push(limit),
+            Err(error) => {
+                if let Some(earlier) = failed.replace(error) {
+                    errors.push(earlier);
+                }
+            }
+        }
+    }
+    if let Some(error) = failed {
+        return Err(error);
+    }
     Ok(Grant {
         spec,
         range: line.range.clone(),

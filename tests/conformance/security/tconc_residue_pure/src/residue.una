@@ -1,0 +1,33 @@
+-- test: the residue of a cancelled request beside a site that makes no request (ADR 0116 P9): a started task works on a `secret` before its request, and a helper that its cancellation leaves working spends the machine's cores beside any later code, so `L_res` is `secret` and joins the timing label of every site; a `within` over pure work, in a function no task reaches, then has a `secret` outcome, which an `internal` binding refuses (U4001)
+-- spec: spec/27 §5
+-- expect: error U4001 at src/residue.una:31:25
+module residue
+
+import std.time (millisecond)
+
+crunch(key: secret Int) -> secret Int = key * 3
+
+--- Work on `key`, then a request, in a started task.
+churn(key: secret Int, url: Text) -> Unit
+  uses @http: Http[get]
+=
+  let spent = crunch(key)
+  let outcome = attempt @http.get(url, headers: [], key_name: None)
+  unit
+
+--- Starts `churn`, whose request a cancellation of the task can leave on a helper.
+pub serve(key: secret Int, url: Text) -> Unit
+  uses @http: Http[get]
+=
+  tasks
+    start churn(key, url)
+  unit
+
+step(n: Int) -> Int = n + 1
+
+--- Pure work under a deadline, in a function no task reaches.
+pub measured(n: Int) -> internal Int
+=
+  let v: internal Int = step(n) within 10 * millisecond
+    if error use 0
+  v

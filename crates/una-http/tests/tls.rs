@@ -216,13 +216,18 @@ impl una_http::client::Interrupt for NeverStopped {
 
     fn wait(
         &self,
-        socket: std::os::fd::RawFd,
+        socket: std::os::fd::BorrowedFd<'_>,
         write: bool,
         timeout: Duration,
     ) -> una_http::client::Waited {
         use una_http::client::Waited;
         use una_sys::signals::Readiness;
-        match una_sys::signals::wait(Some(socket), write, false, timeout) {
+        match una_sys::signals::wait(
+            Some(std::os::fd::AsRawFd::as_raw_fd(&socket)),
+            write,
+            false,
+            timeout,
+        ) {
             Readiness::Ready => Waited::Ready,
             Readiness::TimedOut | Readiness::Woken => Waited::TimedOut,
             Readiness::Failed => Waited::Failed,

@@ -664,8 +664,8 @@ pub fn text_len(a: i64) -> i64 {
 }
 
 /// An `Int` as text, in decimal.
-pub fn int_text(a: i64) -> i64 {
-    text_word(int_value(a).to_string())
+pub fn int_text(a: i64) -> Option<i64> {
+    una_core::int_text(&int_value(a)).map(text_word)
 }
 
 /// A `Bool` as text, `true` or `false`.
@@ -3344,7 +3344,7 @@ mod tests {
         assert_eq!(int(text_len(concat(a, b))), "5");
         assert_eq!(text_compare(a, b), -1);
         assert_eq!(text_equal(a, text_word("hé".to_owned())), 1);
-        assert_eq!(text_value(int_text(n(-42))), "-42");
+        assert_eq!(text_value(int_text(n(-42)).unwrap()), "-42");
         assert_eq!(text_value(bool_text(1)), "true");
     }
 
