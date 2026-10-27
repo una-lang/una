@@ -105,6 +105,12 @@ struct NativeDoc {
 struct PackageDoc {
     name: String,
     version: String,
+    /// `app` or `systems` (ADR 0109 rule 7).
+    profile: String,
+    /// The declared memory budget in MiB, present only when the manifest declares one (ADR
+    /// 0109 rule 4).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_memory: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -445,6 +451,8 @@ fn build(
             .version
             .as_ref()
             .map_or_else(|| "0.0.0".to_owned(), |version| version.value.clone()),
+        profile: manifest.profile.name().to_owned(),
+        max_memory: manifest.max_memory,
     };
     let public: BTreeMap<String, bool> = program
         .modules
@@ -986,6 +994,10 @@ fn human(report: &Report) -> String {
         "package {} {}",
         report.package.name, report.package.version
     ));
+    line(format!("profile: {}", report.package.profile));
+    if let Some(max_memory) = report.package.max_memory {
+        line(format!("max memory: {max_memory} MiB"));
+    }
     line(format!(
         "lock: z3 {}, sha256 {}",
         report.lock.solver_version, report.lock.hash

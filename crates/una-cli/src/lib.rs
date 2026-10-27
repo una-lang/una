@@ -1397,6 +1397,7 @@ fn core_command(
             &of_lambdas,
             &file_state,
             manifest.edition,
+            manifest.profile,
             complete,
             rejected.as_deref(),
         ) {

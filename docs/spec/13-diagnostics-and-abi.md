@@ -321,7 +321,7 @@ Every command prints one JSON document with `--json`, its `schema` key first (AD
 ```json
 {
   "schema": "una.report/2",
-  "package": { "name": "events-example", "version": "0.1.0" },
+  "package": { "name": "events-example", "version": "0.1.0", "profile": "app" },
   "lock": { "solver_version": "...", "hash": "..." },
   "proven": { "semantic": 14, "security": "by typing", "authority": "by typing" },
   "obligations": { "proven": 14, "refuted": 0, "unknown": 0, "cached": 14 },
@@ -343,7 +343,7 @@ Every command prints one JSON document with `--json`, its `schema` key first (AD
 
 `una report [path]` checks the package at tier 1. When the checks report diagnostics, it prints them as `una check` does; otherwise it prints the report, and exits with code 1 when an obligation is not proven. Its sections, in the order of the example (ADR 0034):
 
-- `package`: the name and version of `una.toml`; a single file is named after its module, with version `0.0.0`.
+- `package`: the name and version of `una.toml`; a single file is named after its module, with version `0.0.0`. (v0.3, ADR 0109 rules 4 and 7.) Then `profile`, `"app"` or `"systems"`, and `max_memory`, the declared memory budget in MiB, only when the manifest declares one; the human form prints them as `profile: systems` and `max memory: 256 MiB`. Both keys are additive, and the schema stays `una.report/2`.
 - `lock`: the solver version, and the hex SHA-256 of the lock's contents (for a single file, of the default lock's text).
 - `proven`: the number of proven obligations as `semantic`; `security` and `authority` are `"by typing"`. `obligations`: the counts by status, then `cached`, how many of these results came from the proof cache of `spec/12 §9` rather than from the solver (ADR 0041).
 - `authority`: every function of the package with `uses`, by qualified name, with `public`, its `uses` as written in a header, and whether they are inferred. (v0.2, ADR 0062.) A `uses of p` clause is listed as written, as `"of each"`. The effects of a lambda count for the function that writes it, within its `uses`.
@@ -424,6 +424,7 @@ Project errors do not stop checking: the modules are still checked, with the def
 {
   "schema": "una.core/1",
   "edition": "0.2",
+  "profile": "app",
   "complete": true,
   "modules": [ { "path": "app", "decls": [ ... ], "examples": [ ... ] } ],
   "library": [ ... ],
@@ -431,6 +432,7 @@ Project errors do not stop checking: the modules are still checked, with the def
 }
 ```
 
+- (ADR 0109 rule 6.) `profile` is the package's profile, `"app"` or `"systems"`, so the re-check of the formal track sees it; its theorems do not depend on it. The key is additive under ADR 0076.
 - `complete` is `true` when the package checked clean at tier 0, so Core holds every declaration; otherwise Core holds only the declarations without diagnostics, which go to stderr, and the exit code follows them.
 - `modules` are in the order of Core IR; `library` holds the prelude's signatures and `host` the host capabilities' declarations.
 - (ADR 0091.) With `--with-rejected`, the document has one more key, `rejected`, after `file_state`: a list of `{"module": "app", "decl": { ... }, "diagnostics": [{"code": "U4003", "span": { ... }}]}`, in path order, then declaration order. It holds each declaration with at least one diagnostic, every one of which is in the `security` domain, and whose elaboration is complete; `decl` is its Core, encoded as `modules[].decls` are, and `diagnostics` are its diagnostics, each with its code and its primary location, which the declaration holds. These declarations are never in `modules`, and `complete` keeps its meaning. Without the flag, the key is absent and the document is unchanged; a consumer that ignores unknown keys reads the same document either way. No other command reads these declarations.

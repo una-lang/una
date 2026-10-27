@@ -58,7 +58,7 @@ fn the_report_of_the_events_example() {
     assert_eq!(report["schema"], "una.report/2");
     assert_eq!(
         report["package"],
-        json!({"name": "events-example", "version": "0.1.0"})
+        json!({"name": "events-example", "version": "0.1.0", "profile": "app"})
     );
     assert_eq!(
         report["obligations"],
@@ -132,6 +132,12 @@ fn the_report_of_the_events_example() {
     );
     assert!(
         stdout(&output).contains("\n  proof cache: .una/cache/\n"),
+        "{}",
+        stdout(&output)
+    );
+    // ADR 0109 rule 7: the profile follows the package's name, `app` by default.
+    assert!(
+        stdout(&output).starts_with("package events-example 0.1.0\nprofile: app\nlock: "),
         "{}",
         stdout(&output)
     );
@@ -242,7 +248,7 @@ pub bounded(x: Int) -> Int
     let report = json(&output);
     assert_eq!(
         report["package"],
-        json!({"name": "trivial", "version": "1.2.3"})
+        json!({"name": "trivial", "version": "1.2.3", "profile": "app"})
     );
     assert_eq!(
         report["coverage"],
@@ -273,7 +279,7 @@ pub next(x: Int) -> Int
     let report = json(&output);
     assert_eq!(
         report["package"],
-        json!({"name": "tally", "version": "0.0.0"})
+        json!({"name": "tally", "version": "0.0.0", "profile": "app"})
     );
     assert_eq!(
         report["obligations"],
