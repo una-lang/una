@@ -16,6 +16,13 @@ artifacts from the same objects, defines and flags:
 - `bin/z3`: the standalone front end from the same build, for the `solver-identity` gate (rule 31),
   which compares the solver child's output with it byte for byte.
 
+## Pristine source, patches with digests
+
+The tarball is upstream's tree, unmodified. Every change of ours is a patch file in this directory,
+listed in the lock's `[patches]` table with its SHA-256 and applied in that order by the script, after
+the archive's digest check and only if the patch's own digest matches. A reviewer audits upstream plus
+a readable diff, never a modified archive.
+
 ## The settings
 
 - `cmake-options.txt`: the CMake cache settings, in full: Z3's release configuration (`-O3`,

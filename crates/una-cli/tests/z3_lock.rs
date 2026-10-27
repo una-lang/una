@@ -9,6 +9,8 @@
 
 use std::collections::BTreeMap;
 use std::fs;
+
+use sha2::Digest;
 use std::path::{Path, PathBuf};
 
 fn root() -> PathBuf {
@@ -106,6 +108,25 @@ fn the_recipe_builds_a_static_library_without_gmp_and_patches_only_the_shell() {
         );
         assert_ne!(key, "Z3_USE_LIB_GMP", "{option}");
     }
+    // Every patch is listed in the lock with its digest, which is the file's.
+    let lock = read("supply-chain/z3.lock");
+    let table = lock.split("[patches]\n").nth(1).expect("a [patches] table");
+    let patches: Vec<(&str, &str)> = table
+        .lines()
+        .take_while(|line| !line.starts_with('['))
+        .filter_map(|line| {
+            let (name, sha) = line.split_once('=')?;
+            Some((name.trim().trim_matches('"'), sha.trim().trim_matches('"')))
+        })
+        .collect();
+    assert_eq!(patches.len(), 1, "one patch");
+    for (name, sha) in &patches {
+        assert!(is_hex(sha, 64), "{name}: a digest");
+        let bytes = fs::read(root().join("supply-chain/z3").join(name)).unwrap();
+        let actual = format!("{:x}", sha2::Sha256::digest(&bytes));
+        assert_eq!(&actual, sha, "{name}: the lock's digest is the file's");
+    }
+    assert_eq!(patches[0].0, "shell-library.patch");
     // The patch adds the library target and the renamed entry, and touches only src/shell/.
     let patch = read("supply-chain/z3/shell-library.patch");
     let files: Vec<&str> = patch
@@ -152,10 +173,16 @@ fn the_build_script_reads_the_lock_and_the_recipe() {
     }
     // The digest is checked before anything is extracted or compiled (rule 1).
     let check = script.find("SHA-256 mismatch for $source").unwrap();
+    let patch_check = script
+        .find("SHA-256 mismatch for supply-chain/z3/$name")
+        .unwrap();
     let extract = script.find("tar -xzf").unwrap();
+    let apply = script
+        .find("git -C \"$src\" apply \"$recipe/$name\"")
+        .unwrap();
     assert!(
-        check < extract,
-        "the digest check comes before the extraction"
+        check < extract && patch_check < extract && extract < apply,
+        "the digest checks come before the extraction, which comes before the patches"
     );
     assert!(!script.contains("-ffp-contract"), "not adopted (rule 1)");
     let exec = Path::new(&root()).join("scripts/build-z3.sh");

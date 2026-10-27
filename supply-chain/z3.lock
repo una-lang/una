@@ -8,18 +8,24 @@
 # scripts/build-z3.sh builds it after checking the digest. A test keeps `version` equal to
 # verification.lock's solver_version (crates/una-cli/tests/z3_lock.rs).
 #
-# Provenance of the commit, for a reviewer to tie this archive to upstream without trusting the
-# machine that made it (checked 2026-10-27): `commit` is what the upstream tag z3-5.1.0 of
-# https://github.com/Z3Prover/z3 points to. That tag is lightweight, so it carries no signature;
-# the commit is a merge made on github.com and is signed by GitHub's web-flow key
-# (B5690EEEBB952194, committer "GitHub <noreply@github.com>"), not by a maintainer's key. The Z3
-# project publishes no source tarball of its own for the release (its z3_solver-5.1.0.0.tar.gz
-# asset is the Python package); the archive GitHub generates on request for the tag,
-# https://github.com/Z3Prover/z3/archive/refs/tags/z3-5.1.0.tar.gz, had the SHA-256
-# c433e1add0431c5edf1644bd9951c40588024d2d288f0e4215e5fcb6e3b4277d on that day and the same
-# files as this tarball under the top directory z3-z3-5.1.0/ instead of z3-5.1.0/; its bytes are
-# not promised to stay the same, which is why it is not the pin. `tree` is what to compare:
-# `git rev-parse z3-5.1.0^{tree}` in an upstream clone, and the tree of this tarball's contents.
+# Provenance, for a reviewer to tie this archive to upstream without trusting the machine that
+# made it (checked 2026-10-27). The tarball is the pristine upstream tree: nothing of ours is in
+# it, and every change of ours is a patch file under supply-chain/z3/, listed below with its
+# digest, that scripts/build-z3.sh applies after the archive's digest check. `commit` is what
+# the upstream tag z3-5.1.0 of https://github.com/Z3Prover/z3 points to. That tag is
+# lightweight, so it carries no signature; the commit is a merge made on github.com and is
+# signed by GitHub's web-flow key (B5690EEEBB952194, committer "GitHub <noreply@github.com>"),
+# not by a maintainer's key. The Z3 project publishes no source tarball of its own for the
+# release (its z3_solver-5.1.0.0.tar.gz asset is the Python package). To reproduce: in a clone
+# of upstream, `git archive --format=tar --prefix=z3-5.1.0/ <commit> | sha256sum` gives
+# source_tar_sha256, and `| gzip -n -9 | sha256sum` gives source_sha256 (git 2.46.2, gzip 1.x
+# or Apple gzip); and the files of this tarball are byte for byte those of the archive GitHub
+# generates on request for the tag, https://github.com/Z3Prover/z3/archive/refs/tags/z3-5.1.0.tar.gz
+# (SHA-256 c433e1add0431c5edf1644bd9951c40588024d2d288f0e4215e5fcb6e3b4277d on that day, top
+# directory z3-z3-5.1.0/ instead of z3-5.1.0/), whose bytes are not promised to stay the same,
+# which is why it is not the pin. Re-importing the files with `git add` does not give `tree`
+# back, since upstream's .gitattributes normalizes line endings on import; the archive digest
+# is the comparison.
 version = "5.1.0"
 tag = "z3-5.1.0"
 commit = "0b6cdcdbc65da25ef0f73ac9da210574d0f66cf8"
@@ -29,6 +35,13 @@ source_sha256 = "e621ef190d1486759306b83619ffd66ce3ee19cfdb799d17399953e7b0849b7
 # The digest of the uncompressed tar, which no gzip implementation can change.
 source_tar_sha256 = "9579acc80f89f03ec04c6a54d468143fb940139b13e901821c335e268ee611b0"
 mirror = "https://github.com/una-lang/una/releases/download/mirror/z3-5.1.0/z3-5.1.0.tar.gz"
+
+# Our changes to the source, each a patch file in supply-chain/z3/ with its SHA-256, applied in
+# this order by scripts/build-z3.sh after the archive's digest check; a patch whose digest
+# differs stops the build. shell-library.patch: the SMT-LIB front end also built as a static
+# library with its entry renamed (src/shell/ only, removes nothing).
+[patches]
+"shell-library.patch" = "16e2806457033cb16efb38b9f7c987a51d466174e23722c999a76538127676a7"
 
 # The SHA-256 of lib/libz3shell.a per target, shown reproducible by two cold builds with equal
 # digests (scripts/build-z3.sh --reproducible) and stored in the project's release storage under

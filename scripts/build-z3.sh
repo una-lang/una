@@ -11,7 +11,8 @@
 #   --reproducible  two cold builds; fails unless both libraries have the same digest
 #
 # The tarball's digest is checked against the lock before anything is extracted or compiled,
-# and a mismatch stops the build. Nothing is written outside the output root and a temporary
+# and each patch's digest before it is applied; a mismatch stops the build. The tarball is the
+# pristine upstream tree; every change of ours is a patch listed in the lock. Nothing is written outside the output root and a temporary
 # directory. It needs cmake, make, a C++20 compiler and git (which applies the recipe's patch).
 set -eu
 
@@ -59,9 +60,17 @@ mirror=$(setting mirror)
 for v in version commit tree source source_sha256 source_tar_sha256 mirror; do
     eval "[ -n \"\$$v\" ]" || fail "supply-chain/z3.lock has no $v"
 done
-for f in cmake-options.txt shell-library.patch; do
-    [ -f "$recipe/$f" ] || fail "supply-chain/z3/$f is missing"
-done
+[ -f "$recipe/cmake-options.txt" ] || fail "supply-chain/z3/cmake-options.txt is missing"
+# The patches of the lock's [patches] table, `"name" = "sha256"`, in order, each checked
+# against its digest before anything is applied.
+patches=$(sed -n '/^\[patches\]$/,/^\[/s/^"\([^"]*\)" *= *"\([0-9a-f]*\)"$/\1 \2/p' "$lock")
+[ -n "$patches" ] || fail "supply-chain/z3.lock has no [patches] table"
+printf '%s\n' "$patches" | while read -r name sha; do
+    [ -f "$recipe/$name" ] || fail "supply-chain/z3/$name is missing"
+    actual=$(digest "$recipe/$name")
+    [ "$actual" = "$sha" ] \
+        || fail "SHA-256 mismatch for supply-chain/z3/$name: the lock pins $sha, the file is $actual"
+done || exit 1
 for tool in cmake make git; do
     command -v "$tool" >/dev/null 2>&1 || fail "$tool is not installed"
 done
@@ -98,10 +107,12 @@ build() {
     tar -xzf "$tarball" -C "$src"
     src="$src/z3-$version"
     [ -d "$src" ] || fail "$source does not unpack to z3-$version/"
-    # The recipe's patch: the front end as a library with its entry renamed, nothing else.
-    git -C "$src" apply --check "$recipe/shell-library.patch" \
-        || fail "supply-chain/z3/shell-library.patch does not apply to z3 $version"
-    git -C "$src" apply "$recipe/shell-library.patch"
+    # Our patches, in the lock's order, on the pristine tree: each checked, then applied.
+    printf '%s\n' "$patches" | while read -r name sha; do
+        git -C "$src" apply --check "$recipe/$name" \
+            || fail "supply-chain/z3/$name does not apply to z3 $version"
+        git -C "$src" apply "$recipe/$name"
+    done || exit 1
     # The CMake settings, one -D per non-comment line of the recipe.
     set --
     while IFS= read -r line; do
