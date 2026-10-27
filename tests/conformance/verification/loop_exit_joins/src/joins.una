@@ -1,0 +1,35 @@
+-- test: `stop` and `skip` are joins of the bindings the body updates: their refinements hold there as at the end of the body, the path past `stop when c` knows `not c`, and the bindings are fresh after the loop (spec/26 §3, ADR 0116 V2)
+-- spec: spec/26 §3
+-- expect: error U5001 at src/joins.una:24:9
+-- expect: error U5002 at src/joins.una:29:11
+module joins
+
+pub kind Pos = Int where it > 0
+
+pub kept(xs: List[Int]) -> Pos
+=
+  let edit n: Pos = 1
+  for x in xs
+    if x > 3
+      n = n + 1
+      skip
+    stop when x < 0
+    n = n + x
+  n
+
+pub broken(xs: List[Int]) -> Pos
+=
+  let edit n: Pos = 1
+  for x in xs
+    n = n - 1
+    skip
+  n
+
+pub fresh(xs: List[Int]) -> Int
+  ensures result == 1
+=
+  let edit n = 1
+  for x in xs
+    n = n + 0
+    stop
+  n

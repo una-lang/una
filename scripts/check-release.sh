@@ -46,6 +46,29 @@ if [ "$contents" != "LICENSE README.md docs lib una " ]; then
     echo "error: $name.tar.gz holds $contents; expected LICENSE README.md docs lib una" >&2
     exit 1
 fi
+# Keyed hashing's test hooks (a fixed key, a probe counter, a constant hash) exist only in the
+# toolchain's own test builds (ADR 0119 rule 9). Their module holds a marker that its key path
+# keeps: neither the symbol, by `nm`, nor its bytes, which a stripped binary still holds, may be
+# in the shipped `una` or `libuna_rt.a`.
+marker=UNA_HASH_TEST_HOOKS_MARKER
+for artifact in "$tmp/$name/una" "$tmp/$name/lib/libuna_rt.a"; do
+    if nm -a "$artifact" 2>/dev/null | grep -q "$marker" || LC_ALL=C grep -a -q "$marker" "$artifact"; then
+        echo "error: $artifact was built with keyed hashing's test hooks (ADR 0119 rule 9)" >&2
+        exit 1
+    fi
+done
+# AddressSanitizer's fiber interface and its unpoisoning are declared only in builds with
+# `--cfg una_asan`, which scripts/sanitize.sh alone sets (#1145): no shipped `una` or
+# `libuna_rt.a` may refer to them, by symbol or by bytes.
+asan_symbols="-e __sanitizer_start_switch_fiber -e __sanitizer_finish_switch_fiber -e __asan_unpoison_memory_region"
+for artifact in "$tmp/$name/una" "$tmp/$name/lib/libuna_rt.a"; do
+    # shellcheck disable=SC2086 # the patterns are split on purpose
+    if nm -a "$artifact" 2>/dev/null | grep -q $asan_symbols \
+        || LC_ALL=C grep -a -q $asan_symbols "$artifact"; then
+        echo "error: $artifact refers to AddressSanitizer's interface (#1145)" >&2
+        exit 1
+    fi
+done
 # The guides, byte for byte the tree's, and nothing else under docs/ (#410, N-65): an agent's
 # first contact with Una is the archive.
 guides=$(cd "$tmp/$name/docs" && LC_ALL=C find . -type f | LC_ALL=C sort | tr '\n' ' ')

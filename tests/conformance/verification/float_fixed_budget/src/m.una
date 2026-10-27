@@ -1,0 +1,25 @@
+-- test: a float query runs with the fixed step budget of the encoding whatever the lock sets: with a raised step_budget, facts that the solver proves only beyond the fixed budget stay U5002 with the float reason, among them the finiteness of an `I32` in a reflect predicate, whose conversion is guarded by its range (the same fact in code is proven, `float_encoding`)
+-- spec: spec/29 §8
+-- expect: error U5002 at src/m.una:11:11
+-- expect: error U5002 at src/m.una:16:11
+-- expect: error U5002 at src/m.una:23:11
+module m
+
+pub kind Unit01 = F64 where it.ieee_ge(other: 0.0) and it <= 1.0
+
+pub root(x: Unit01) -> F64
+  ensures result.ieee_ge(other: x)
+=
+  x.sqrt()
+
+pub wide(n: I64) -> F64
+  ensures result.is_finite()
+=
+  n.to_f64()
+
+pub predicate reflect finite32(n: I32) -> Bool = n.to_f64().is_finite()
+
+pub whole(n: I32) -> Bool
+  ensures finite32(n)
+=
+  true

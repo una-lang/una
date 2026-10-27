@@ -62,7 +62,7 @@ Higher-order prelude functions accept only pure, non-failing lambdas in v0.1 (ef
   - `filter` and `first_where`: the top labels of `xs` and `keep`, and the label of `keep`'s declared result. A predicate's result flows into that declared `Bool`, so a predicate over labeled element values is rejected there (U4001).
     (v0.2, ADR 0067.) In edition `0.2`, the predicate's result is not checked against `Bool`'s label: its label, symbolic labels included, joins the top label of the result instead, since which elements remain, or which one is found, depends on it. `first_where` calls `keep` only up to the first accepted element, so a predicate with effects or failures whose result is labeled is U4002 there (`spec/07 §3` rule 4).
   `.len` takes the top label of its operand (`spec/07 §7` rule 3).
-- **The other functions** read element or argument values, and their result is labeled with the join of every label of their arguments, element types included: `contains`, `sum`, `or_else`, `min`, `max`, `abs` and the text functions `is_digits`, `starts_with`, `trim` and `to_int`.
+- **The other functions** read element or argument values, and their result is labeled with the join of every label of their arguments, element types included: `contains`, `sum`, `or_else`, `min`, `max`, `abs` and the text functions `is_digits`, `starts_with`, `trim` and `to_int`. (v0.3, ADR 0114.) In edition `0.3`, so do `parse_f64`, `f64_from_bits`, `as_f64` and `json_number` (`spec/29`), and the failure of `parse_f64`, as `parse_int`'s.
 
 The native implementations declare these labels explicitly.
 
@@ -80,7 +80,7 @@ Text works on Unicode scalar values: `.len` counts them; `is_digits` holds when 
 - `map`, `filter`, `first_where` and `fold` call their function parameter on the elements from first to last, at most once per element: `first_where` stops after the first element it accepts, and in edition `0.2` and later each stops at the first failure of its function (§1).
 - `sum(xs)` is the exact sum of the elements as an `Int`, and `0` when `xs` is empty. `Int` has no bound, so the sum never overflows. Edition `0.2` keeps this meaning for its generic `sum` (`spec/20 §6` rule 1).
 - `or_else(o, default)` is the value `v` when `o` is `Some(v)`, and `default` when `o` is `None`. `default` is an argument like any other, a value by the time of the call whatever `o` is (`spec/11 §4`); a call with effects is bound with `let` before it is given (U3013).
-- `to_int(t)` is `Some(n)` when `t` is an optional `-` followed by one or more ASCII digits, leading zeros allowed, where `n` is the integer they write (`"-0"` is `0`). It is `None` for any other text, among them the empty text, `"-"`, a leading `+`, whitespace and digits outside ASCII. `Int` has no bound, so a text of many digits is never `None` for its length.
+- `to_int(t)` is `Some(n)` when `t` is an optional `-` followed by one or more ASCII digits, leading zeros allowed, where `n` is the integer they write (`"-0"` is `0`). It is `None` for any other text, among them the empty text, `"-"`, a leading `+`, whitespace and digits outside ASCII. (Security fix, 2026-10-18, #914, in every edition.) A text of more than 4300 digits, the sign excluded and leading zeros included, is `None`, the bound of `parse_int` (`spec/22 §4`) and of a JSON integer (`spec/23 §3`): converting d digits takes O(d²), so a longer text is refused before any conversion.
 
 The prelude's types mean:
 
@@ -137,3 +137,4 @@ Usable only in test code (ADR 0028, ADR 0043):
 | Signature | Purpose |
 | --- | --- |
 | `fake_hash(seed: Int) -> internal Hashed` | Deterministic `Hashed` value for tests; equal seeds give equal values |
+| `elapse(d: Int of Millisecond) -> Unit`, `requires d >= 0` | (Edition 0.4, ADR 0116 rule 19.) Moves the test's virtual clock forward by `d` at once, without waiting (`spec/26 §8`) |

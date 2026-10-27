@@ -31,7 +31,10 @@ enum Node {
     /// A measured type (ADR 0104): its unit, owned, and its magnitude type.
     Measured(super::units::Unit, HoverType),
     List(HoverType),
+    Dense(super::ty::Dense, HoverType),
     Map(HoverType, HoverType),
+    /// A collection type of `std.collections` (ADR 0119).
+    Coll(una_core::Coll, Arc<[HoverType]>),
     Kind(KindId, Arc<[HoverType]>),
     Param(usize),
     Fn(Arc<[HoverType]>, HoverType),
@@ -46,6 +49,8 @@ enum Leaf {
     Text,
     Unit,
     Hashed,
+    F64,
+    Decimal(u8),
     Var,
     Never,
     Error,
@@ -61,6 +66,8 @@ impl TypeView for HoverType {
                 Leaf::Text => View::Text,
                 Leaf::Unit => View::Unit,
                 Leaf::Hashed => View::Hashed,
+                Leaf::F64 => View::F64,
+                Leaf::Decimal(scale) => View::Decimal(scale),
                 Leaf::Var => View::Var,
                 Leaf::Never => View::Never,
                 Leaf::Error => View::Error,
@@ -68,8 +75,10 @@ impl TypeView for HoverType {
             Node::Labeled(label, inner) => View::Labeled(label, inner),
             Node::Measured(unit, inner) => View::Measured(unit, inner),
             Node::List(element) => View::List(element),
+            Node::Dense(dense, element) => View::Dense(*dense, element),
             Node::Map(key, value) => View::Map(key, value),
             Node::Kind(id, args) => View::Kind(*id, args),
+            Node::Coll(coll, args) => View::Coll(*coll, args),
             Node::Param(index) => View::Param(*index),
             Node::Fn(params, result) => View::Fn(params, result),
         }
@@ -159,6 +168,8 @@ impl Snapshots {
             Ty::Text => self.leaf(Leaf::Text),
             Ty::Unit => self.leaf(Leaf::Unit),
             Ty::Hashed => self.leaf(Leaf::Hashed),
+            Ty::F64 => self.leaf(Leaf::F64),
+            Ty::Decimal(scale) => self.leaf(Leaf::Decimal(*scale)),
             Ty::Var(_) => self.leaf(Leaf::Var),
             Ty::Never => self.leaf(Leaf::Never),
             Ty::Error(_) => self.leaf(Leaf::Error),
@@ -176,6 +187,10 @@ impl Snapshots {
                 let element = self.shared(element);
                 self.node(Node::List(element))
             }
+            Ty::Dense(dense, element) => {
+                let element = self.shared(element);
+                self.node(Node::Dense(*dense, element))
+            }
             Ty::Map(key, value) => {
                 let (key, value) = (self.shared(key), self.shared(value));
                 self.node(Node::Map(key, value))
@@ -183,6 +198,10 @@ impl Snapshots {
             Ty::Kind(id, args) => {
                 let args = self.list(args);
                 self.node(Node::Kind(*id, args))
+            }
+            Ty::Coll(coll, args) => {
+                let args = self.list(args);
+                self.node(Node::Coll(*coll, args))
             }
             Ty::Param(index) => self.node(Node::Param(*index)),
             Ty::Fn(function) => self.function(function),
@@ -300,6 +319,7 @@ mod tests {
             Ty::Text,
             Ty::Unit,
             Ty::Hashed,
+            Ty::F64,
             Ty::Var(3),
             Ty::Never,
             Ty::error(),
@@ -311,6 +331,11 @@ mod tests {
             Ty::Kind(0, Vec::new().into()),
             Ty::Kind(1, args.clone()),
             Ty::Kind(9, args),
+            Ty::Coll(
+                una_core::Coll::HashMap,
+                vec![Ty::Text, labeled.clone()].into(),
+            ),
+            Ty::Coll(una_core::Coll::BitSet, Vec::new().into()),
             function.clone(),
             Ty::Labeled(secret(), Shared::new(function)),
             Ty::List(Shared::new(Ty::List(Shared::new(Ty::List(text))))),

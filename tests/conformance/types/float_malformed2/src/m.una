@@ -1,0 +1,12 @@
+-- test: a misplaced `_` in a float literal is U0007 with an edit: at the end of the integer part, doubled in the fraction, in the exponent
+-- spec: spec/29 §2
+-- expect: error U0007 at src/m.una:8:18
+-- expect: error U0007 at src/m.una:10:18
+-- expect: error U0007 at src/m.una:12:18
+module m
+
+pub a() -> F64 = 1_.5
+
+pub b() -> F64 = 1.5__5
+
+pub c() -> F64 = 1.0e5_0

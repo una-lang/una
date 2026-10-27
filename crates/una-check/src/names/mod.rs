@@ -143,6 +143,7 @@ fn check_names_with(
         .map(|module| checker.declarations(module))
         .collect();
     let paths = checker.module_paths(&tables);
+    checker.local_name_clashes(&tables);
     checker.requirements();
     for index in 0..tables.len() {
         checker.imports(&mut tables, index, &paths);
@@ -246,6 +247,14 @@ impl<'p, 'a> Checker<'p, 'a> {
         self.poison
             .and_then(|poison| poison.get(&file))
             .is_some_and(|poison| poison.unnamed || poison.names.contains(name))
+    }
+
+    /// The local name of the dependency whose module is the file `id`, if it is one.
+    fn mount(&self, id: FileId) -> Option<&'a str> {
+        let settings: &'a Manifest = self.package.settings;
+        settings
+            .mount_of(self.package.sources.file(id).path())
+            .map(|mount| mount.local.as_str())
     }
 
     fn name(&self, ident: &Ident) -> &'a str {
@@ -397,7 +406,11 @@ impl<'p, 'a> Checker<'p, 'a> {
                     .iter()
                     .map(|segment| self.name(segment))
                     .collect();
-                names.join(".")
+                // A dependency's module `m` is `<local>.m` in the program (ADR 0122 rule 47).
+                match self.mount(module.id) {
+                    Some(local) => format!("{local}.{}", names.join(".")),
+                    None => names.join("."),
+                }
             }),
             upper: BTreeMap::new(),
             lower: BTreeMap::new(),
@@ -559,6 +572,46 @@ impl<'p, 'a> Checker<'p, 'a> {
             );
             self.diagnostics.push(diagnostic);
         }
+        // Edition 0.4: `Decimal` is built in (`spec/29 §16`, ADR 0120 rule 3).
+        if upper && self.package.settings.edition >= Edition::V0_4 && name == "Decimal" {
+            let diagnostic = self.make(
+                Code::U1002,
+                ident.span,
+                format!(
+                    "`Decimal` is a built-in decimal type from edition 0.4, so a {} cannot take its name",
+                    what.word()
+                ),
+            );
+            self.diagnostics.push(diagnostic);
+        }
+        // Edition 0.3: `F64` is built in (`spec/29`, ADR 0114 rule 1.4).
+        if upper && self.package.settings.edition >= Edition::V0_3 && name == "F64" {
+            let diagnostic = self.make(
+                Code::U1002,
+                ident.span,
+                format!(
+                    "`F64` is a built-in floating-point type from edition 0.3, so a {} cannot take its name",
+                    what.word()
+                ),
+            );
+            self.diagnostics.push(diagnostic);
+        }
+        // Edition 0.4: the dense types are built in, and `Tensor` and `Lu` are reserved for
+        // them (`spec/29 §17`, ADR 0120 rule 3).
+        if upper
+            && self.package.settings.edition >= Edition::V0_4
+            && matches!(name, "Array" | "Matrix" | "Tensor" | "Lu")
+        {
+            let diagnostic = self.make(
+                Code::U1002,
+                ident.span,
+                format!(
+                    "`{name}` is a built-in dense type from edition 0.4, so a {} cannot take its name",
+                    what.word()
+                ),
+            );
+            self.diagnostics.push(diagnostic);
+        }
         // Edition 0.2: the built-in types, and the types of the prelude that every program
         // uses, cannot be shadowed by a declaration (`spec/03 §1`, ADR 0079): in edition 0.1 a
         // kind named `Int` silently replaced it (#130).
@@ -699,8 +752,13 @@ impl<'p, 'a> Checker<'p, 'a> {
             return;
         }
         let file = self.package.sources.file(module.id).path();
+        // A dependency's modules are under its own `src/` (ADR 0122 rule 47).
+        let settings: &'a Manifest = self.package.settings;
+        let src = settings
+            .mount_of(file)
+            .map_or("src/", |mount| mount.src.as_str());
         let expected = file
-            .strip_prefix("src/")
+            .strip_prefix(src)
             .and_then(|rest| rest.strip_suffix(".una"))
             .map(|rest| rest.replace('/', "."))
             .unwrap_or_default();
@@ -731,6 +789,33 @@ impl<'p, 'a> Checker<'p, 'a> {
             ));
         }
         self.diagnostics.push(diagnostic);
+    }
+
+    /// U1010: a module of the root whose first path segment is a dependency's local name, so
+    /// its path could be a dependency's (ADR 0122 rule 47). O(m) for m modules.
+    fn local_name_clashes(&mut self, tables: &[Table<'a>]) {
+        let settings: &'a Manifest = self.package.settings;
+        if settings.mounts.is_empty() {
+            return;
+        }
+        for table in tables {
+            let (Some(path), Some(header)) = (&table.path, &table.module.tree.module) else {
+                continue;
+            };
+            if self.mount(table.module.id).is_some() {
+                continue;
+            }
+            let first = path.split('.').next().unwrap_or("");
+            if settings.mounts.iter().any(|mount| mount.local == first) {
+                self.error(
+                    Code::U1010,
+                    header.path.span,
+                    format!(
+                        "module `{path}` starts with `{first}`, the local name of a dependency; give the need another local name with `as`"
+                    ),
+                );
+            }
+        }
     }
 
     /// The modules by path; a path declared by two modules is U1002.
@@ -858,27 +943,48 @@ impl<'p, 'a> Checker<'p, 'a> {
                 .map(|segment| self.name(segment))
                 .collect();
             let path = names.join(".");
-            let target = paths.get(&path).copied();
+            // A dependency's module imports its own modules by their own paths, and the
+            // standard modules; never a module of the root (ADR 0122 rule 47).
+            let mount = tables
+                .get(index)
+                .and_then(|table| self.mount(table.module.id));
+            let is_standard = path == prelude::STD_TESTING || path == prelude::STD_HOST;
+            let target = match mount {
+                Some(local) if !is_standard => paths.get(&format!("{local}.{path}")).copied(),
+                _ => paths.get(&path).copied(),
+            };
             if let Some(target) = target
                 && let Some(table) = tables.get_mut(index)
             {
                 table.edges.push((target, import.module.span));
             }
-            // The importable standard modules (`spec/10 §11` rule 10).
+            // The importable standard modules (`spec/10 §11` rule 10), `std.collections` among
+            // them from edition 0.4 (ADR 0119 rule 0).
+            let edition = self.package.settings.edition;
+            let importable = prelude::importable(edition);
+            let is_std = importable.contains(&path.as_str());
             let standard: &[&str] = match path.as_str() {
-                prelude::STD_TESTING => &prelude::STD_TESTING_NAMES,
-                prelude::STD_HOST => prelude::std_host_names(self.package.settings.edition),
+                _ if !is_std => &[],
+                prelude::STD_TESTING => prelude::std_testing_names(edition),
+                prelude::STD_HOST => prelude::std_host_names(edition),
+                prelude::STD_TIME => &prelude::STD_TIME_NAMES,
+                prelude::STD_DRIVE => &prelude::STD_DRIVE_NAMES,
+                prelude::STD_COLLECTIONS => &prelude::STD_COLLECTIONS_NAMES,
                 _ => &[],
             };
-            let is_std = path == prelude::STD_TESTING || path == prelude::STD_HOST;
             if target.is_none() && !is_std {
+                let listed: Vec<String> = importable.iter().map(|m| format!("`{m}`")).collect();
+                let listed = match listed.split_last() {
+                    Some((last, rest)) if !rest.is_empty() => {
+                        format!("{} and {last}", rest.join(", "))
+                    }
+                    _ => listed.join(""),
+                };
                 self.error(
                     Code::U1001,
                     import.module.span,
                     format!(
-                        "module `{path}` is not a module of this package; the standard modules that can be imported are `{}` and `{}`",
-                        prelude::STD_HOST,
-                        prelude::STD_TESTING
+                        "module `{path}` is not a module of this package; the standard modules that can be imported are {listed}"
                     ),
                 );
                 continue;
@@ -1032,6 +1138,23 @@ impl<'p, 'a> Checker<'p, 'a> {
     /// `[run] entry` that is not a module of the package.
     fn trusted(&mut self, tables: &[Table<'a>], paths: &BTreeMap<String, usize>) {
         let settings = self.package.settings;
+        // How the messages name the list of trusted modules of each manifest.
+        let (listing, list_in, quoted_list) = match settings.format {
+            una_project::Format::Toml => (
+                "una.toml [trusted] modules",
+                "under `[trusted] modules` in `una.toml`",
+                "`[trusted] modules`",
+            ),
+            una_project::Format::Ita => (
+                "the `trusted` section of ita.una",
+                "under `trusted` in `ita.una`",
+                "`trusted` in `ita.una`",
+            ),
+        };
+        let list_name = match settings.format {
+            una_project::Format::Toml => "[trusted] modules",
+            una_project::Format::Ita => "the `trusted` section",
+        };
         for table in tables {
             let (Some(header), Some(path)) = (&table.module.tree.module, &table.path) else {
                 continue;
@@ -1050,7 +1173,7 @@ impl<'p, 'a> Checker<'p, 'a> {
                     )
                 } else {
                     format!(
-                        "module `{path}` is `trusted` in its header but not listed in una.toml [trusted] modules"
+                        "module `{path}` is `trusted` in its header but not listed in {listing}"
                     )
                 };
                 // ADR 0095: removing `trusted` keeps the trusted base, since a policy outside
@@ -1063,7 +1186,7 @@ impl<'p, 'a> Checker<'p, 'a> {
                 if !self.package.single {
                     diagnostic.repairs.push(Self::escape(
                         Escape::Trusted,
-                        format!("list `{path}` under `[trusted] modules` in `una.toml`"),
+                        format!("list `{path}` {list_in}"),
                     ));
                 }
                 self.diagnostics.push(diagnostic);
@@ -1088,10 +1211,10 @@ impl<'p, 'a> Checker<'p, 'a> {
                         let mut diagnostic = self.make(
                             Code::U7005,
                             span,
-                            format!("[trusted] modules lists `{}`, whose header does not say `trusted module`", entry.value),
+                            format!("{list_name} lists `{}`, whose header does not say `trusted module`", entry.value),
                         );
                         diagnostic.repairs.push(Self::advice(format!(
-                            "remove `{}` from `[trusted] modules`{}",
+                            "remove `{}` from {quoted_list}{}",
                             entry.value,
                             then_u4004(table)
                         )));
@@ -1110,12 +1233,12 @@ impl<'p, 'a> Checker<'p, 'a> {
                         Code::U7005,
                         span,
                         format!(
-                            "[trusted] modules lists `{}`, which is not a module of this package",
+                            "{list_name} lists `{}`, which is not a module of this package",
                             entry.value
                         ),
                     );
                     diagnostic.repairs.push(Self::advice(format!(
-                        "remove `{}` from `[trusted] modules`",
+                        "remove `{}` from {quoted_list}",
                         entry.value
                     )));
                     self.diagnostics.push(diagnostic);
@@ -1136,11 +1259,28 @@ impl<'p, 'a> Checker<'p, 'a> {
             && !unparsed_entry(&entry.value)
         {
             self.error(
-                Code::U7002,
+                settings.format.code(),
                 Span::new(manifest, entry.range.start, entry.range.end),
                 format!(
-                    "[run] entry `{}` is not a module of this package",
+                    "{} `{}` is not a module of this package",
+                    settings.format.section("[run] entry"),
                     entry.value
+                ),
+            );
+        }
+        // ADR 0116 rule 1: the `drive` section's module is a module of the package, as `run
+        // entry` is.
+        if let Some(drive) = &settings.drive
+            && !paths.contains_key(&drive.module.value)
+            && !unparsed_entry(&drive.module.value)
+        {
+            self.error(
+                settings.format.code(),
+                Span::new(manifest, drive.module.range.start, drive.module.range.end),
+                format!(
+                    "{} `{}` is not a module of this package",
+                    settings.format.section("[drive] module"),
+                    drive.module.value
                 ),
             );
         }

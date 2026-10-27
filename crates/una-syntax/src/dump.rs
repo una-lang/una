@@ -191,6 +191,7 @@ impl Dumper<'_> {
                         ClauseKind::Fails(kind) => list("fails", [atom(self.name(kind))]),
                         ClauseKind::UsesOf(param) => list("uses-of", [atom(self.name(param))]),
                         ClauseKind::FailsOf(param) => list("fails-of", [atom(self.name(param))]),
+                        ClauseKind::Diverges => atom("diverges"),
                         ClauseKind::DerivedFrom(requirements) => list(
                             "derived-from",
                             requirements.iter().map(|id| atom(self.name(id))),
@@ -314,6 +315,12 @@ impl Dumper<'_> {
                         ExpectationKind::Holds(expr) => list("expect", [self.expr(expr)]),
                     });
                 }
+                if let Some(stop_after) = &example.stop_after {
+                    items.push(list(
+                        "stop-after",
+                        [atom(stop_after.iterations.to_string())],
+                    ));
+                }
                 items
             }
             DeclKind::Measure(measure) => {
@@ -427,6 +434,7 @@ impl Dumper<'_> {
                 }
             }
             TypeCore::List(element) => format!("[{}]", self.type_text(element)),
+            TypeCore::Decimal { scale, .. } => format!("Decimal[{scale}]"),
             TypeCore::Function {
                 params,
                 result,
@@ -542,11 +550,36 @@ impl Dumper<'_> {
             Stmt::Together(stmt) => list("together", stmt.body.iter().map(|s| self.stmt(s))),
             Stmt::Handled(handled) => self.handled(handled),
             Stmt::BlockExpr(expr) => self.block_expr(expr),
+            Stmt::Stop(stmt) => match &stmt.condition {
+                Some(condition) => list("stop-when", [self.expr(condition)]),
+                None => atom("stop"),
+            },
+            Stmt::Skip(_) => atom("skip"),
+            Stmt::Ever(stmt) => {
+                let mut items = vec![atom("for-ever")];
+                if let Some(within) = &stmt.within {
+                    items.push(list("within", [self.expr(within)]));
+                }
+                items.push(self.block(&stmt.block));
+                if let Some(on_stop) = &stmt.on_stop {
+                    items.push(list("on-stop", [self.block(&on_stop.block)]));
+                }
+                Node::List(items)
+            }
+            Stmt::OnStop(on_stop) => list("on-stop", [self.block(&on_stop.block)]),
+            Stmt::Until(stmt) => list(
+                "for-until",
+                [
+                    self.expr(&stmt.condition),
+                    self.expr(&stmt.measure),
+                    self.block(&stmt.block),
+                ],
+            ),
         }
     }
 
     fn handled(&self, handled: &Handled) -> Node {
-        if handled.with.is_empty() && handled.handlings.is_empty() {
+        if handled.with.is_empty() && handled.within.is_none() && handled.handlings.is_empty() {
             return self.expr(&handled.expr);
         }
         let mut items = vec![atom("handled"), self.expr(&handled.expr)];
@@ -555,6 +588,9 @@ impl Dumper<'_> {
                 "with",
                 handled.with.iter().map(|binding| self.cap_binding(binding)),
             ));
+        }
+        if let Some(within) = &handled.within {
+            items.push(list("within", [self.expr(within)]));
         }
         for handling in &handled.handlings {
             items.push(match &handling.kind {
@@ -691,7 +727,7 @@ impl Dumper<'_> {
 
     fn literal(&self, literal: &Literal) -> Node {
         match literal {
-            Literal::Int(digits) => atom(digits.clone()),
+            Literal::Int(digits) | Literal::Float(digits) => atom(digits.clone()),
             Literal::Text(text) => self.text(text),
             Literal::Bool(value) => atom(if *value { "true" } else { "false" }),
             Literal::Unit => atom("unit"),
@@ -727,7 +763,17 @@ impl Dumper<'_> {
                     list("fail", [self.variant(failure)]),
                 ],
             ),
-            ExprKind::Attempt(operand) => list("attempt", [self.expr(operand)]),
+            ExprKind::Attempt {
+                operand,
+                within: None,
+            } => list("attempt", [self.expr(operand)]),
+            ExprKind::Attempt {
+                operand,
+                within: Some(within),
+            } => list(
+                "attempt",
+                [self.expr(operand), list("within", [self.expr(within)])],
+            ),
             ExprKind::Fail(variant) => list("fail", [self.variant(variant)]),
             ExprKind::Binary { op, left, right } => {
                 list(binary_text(*op), [self.expr(left), self.expr(right)])

@@ -36,6 +36,7 @@ fn run(files: &[(&str, &str)], single: bool) -> (Vec<Diagnostic>, TypeCheck) {
             Edition::V0_1 => KeywordSet::V0_1,
             Edition::V0_2 => KeywordSet::V0_2,
             Edition::V0_3 => KeywordSet::V0_3,
+            Edition::V0_4 => KeywordSet::V0_4,
         };
         let lexed = lex_in(db.file(id), id, &mut interner, keywords);
         let parsed = parse(&lexed, id, &interner);

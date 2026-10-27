@@ -25,14 +25,21 @@ una-lsp.workspace = true
 una-project.workspace = true
 una-report.workspace = true
 una-syntax.workspace = true
+una-sys.workspace = true
 una-verify.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 
 [dev-dependencies]
+# The tests' own registry signs root metadata, checkpoints and release statements (ADR 0122).
+ed25519-dalek.workspace = true
 insta.workspace = true
 pretty_assertions.workspace = true
+# The test hooks of keyed hashing (ADR 0119 rule 9): a fixed process key, the probe counter, the
+# constant-hash mode and a missing random source, for in-process tests only. A dev-dependency
+# never reaches a shipped `una`.
+una-hash = { workspace = true, features = ["test-hooks"] }
 
 [lints]
 workspace = true

@@ -1,0 +1,6 @@
+-- test: in edition 0.3, `Decimal[2]` is a syntax error (U0101)
+-- spec: spec/29 §16
+-- expect: error U0101 at src/m.una:6:22
+module m
+
+pub price(x: Decimal[2]) -> Int = 0

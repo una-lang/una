@@ -1,13 +1,13 @@
 //! Runtime values (`spec/11 §2`).
 
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::rc::Rc;
 
 use num_bigint::BigInt;
 use una_core::{Ctor, Expr, Name};
 
-use crate::machine::{Caps, Env};
+use crate::machine::{Caps, Env, Instance};
 pub(crate) use una_core::Text;
 
 /// A value of the Una Abstract Machine; `'p` is the program's lifetime.
@@ -15,6 +15,11 @@ pub(crate) use una_core::Text;
 pub(crate) enum Value<'p> {
     /// An arbitrary-precision integer (ADR 0004).
     Int(BigInt),
+    /// An `F64`, always canonical: its NaN is the canonical NaN (`spec/29`, ADR 0114 rule 9.8).
+    F64(f64),
+    /// A `Decimal[s]`: its coefficient and its scale (`spec/29 §16`, ADR 0120 rule 12). The
+    /// scale is the type's, so every value of one type has the same.
+    Decimal(BigInt, u8),
     /// A boolean.
     Bool(bool),
     /// A text.
@@ -34,6 +39,111 @@ pub(crate) enum Value<'p> {
     /// A map, in the order of its keys (`spec/21 §5`): each entry keeps its key as a value,
     /// for listing and rendering.
     Map(Rc<Entries<'p>>),
+    /// A `Stack` or a `Queue` of `std.collections`, a ring buffer front first (`spec/28 §5`,
+    /// ADR 0119 rule 19): a stack's top is its front.
+    Seq(Rc<VecDeque<Value<'p>>>),
+    /// A `Set` of `std.collections`, in the order of its items (`spec/28 §6`, ADR 0119 rule
+    /// 19): each item keeps its value, for listing and rendering, as a map's key does.
+    Set(Rc<Items<'p>>),
+    /// A `HashMap` of `std.collections`, in insertion order (`spec/28 §7`, ADR 0119 rule 19):
+    /// the ordered hash table of `una_hash`, with the key of its table.
+    HashMap(Rc<HashTable<'p>>),
+    /// A `HashSet` of `std.collections`: the same table, each item a key whose value is
+    /// `unit`.
+    HashSet(Rc<HashTable<'p>>),
+    /// A dense value of edition 0.4, `Array[T]` or `Matrix[T]` (`spec/29 §17`): a view of a
+    /// buffer, with its own offset, shape and strides, so a view shares its parent's storage.
+    Dense(Rc<Dense<'p>>),
+}
+
+/// Which dense type a [`Dense`] is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DenseKind {
+    /// `Array[T]`: one axis.
+    Array,
+    /// `Matrix[T]`: rows, then columns.
+    Matrix,
+}
+
+/// The storage of a dense value (ADR 0120 rule 28): `F64` elements as raw numbers, every other
+/// element as a value. The representation is not observable (`spec/16 §4`).
+#[derive(Clone, Debug)]
+pub(crate) enum Elements<'p> {
+    /// Canonical `F64` values.
+    F64(Vec<f64>),
+    /// Any other elements.
+    Values(Vec<Value<'p>>),
+}
+
+impl<'p> Elements<'p> {
+    /// The element at `position` of the buffer.
+    pub(crate) fn get(&self, position: usize) -> Option<Value<'p>> {
+        match self {
+            Elements::F64(items) => items.get(position).map(|x| Value::F64(*x)),
+            Elements::Values(items) => items.get(position).cloned(),
+        }
+    }
+}
+
+/// A dense value: `buffer[offset + Σ index_k × strides_k]` is the element at the indices, for
+/// each index below its axis's length in `shape` (ADR 0120 rules 28 and 29).
+#[derive(Clone, Debug)]
+pub(crate) struct Dense<'p> {
+    /// `Array` or `Matrix`.
+    pub(crate) kind: DenseKind,
+    /// The storage, shared by the views of one value.
+    pub(crate) buffer: Rc<Elements<'p>>,
+    /// The position of the first element.
+    pub(crate) offset: usize,
+    /// The length of each axis: `[len]`, or `[rows, columns]`.
+    pub(crate) shape: Vec<usize>,
+    /// The distance between consecutive indices of each axis, in the buffer.
+    pub(crate) strides: Vec<usize>,
+}
+
+/// The items of a set, by their order.
+pub(crate) type Items<'p> = BTreeMap<Key, Value<'p>>;
+
+/// A hash table of `std.collections` (`spec/28 §1`, ADR 0119 rules 9 and 19): its entries in
+/// insertion order with their index, and the 128-bit key that places its keys. A copy keeps the
+/// key; a new table takes a key of its own. No operation reads the key but the hash.
+#[derive(Clone)]
+pub(crate) struct HashTable<'p> {
+    /// The key of the table, derived from the process key when the table was made.
+    pub(crate) key: una_hash::SipKey,
+    /// The entries: each key with its value, `unit` for a set's item.
+    pub(crate) entries: una_hash::OrderedTable<Value<'p>, Value<'p>>,
+}
+
+// No key in a message: a table shows its size only (ADR 0119 rule 9).
+impl std::fmt::Debug for HashTable<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "HashTable({} entries)", self.entries.len())
+    }
+}
+
+impl<'p> HashTable<'p> {
+    /// An empty table under `key`.
+    pub(crate) fn new(key: una_hash::SipKey) -> HashTable<'p> {
+        HashTable {
+            key,
+            entries: una_hash::OrderedTable::new(),
+        }
+    }
+}
+
+// A table of tables built by a loop is as deep as the loop ran: its entries drop without
+// recursion, as a list's do.
+impl Drop for HashTable<'_> {
+    fn drop(&mut self) {
+        let entries = std::mem::take(&mut self.entries);
+        let mut pending = Vec::new();
+        for (key, value) in entries.into_entries() {
+            pending.push(key);
+            pending.push(value);
+        }
+        unwind(pending, Vec::new());
+    }
 }
 
 /// The entries of a map, by the order of their keys.
@@ -45,6 +155,8 @@ pub(crate) type Entries<'p> = BTreeMap<Key, (Value<'p>, Value<'p>)>;
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Key {
     Int(BigInt),
+    /// An `F64` by the key of totalOrder (ADR 0114 rule 9.5).
+    F64(i64),
     Text(Rc<Text>),
     Variant(usize),
 }
@@ -54,6 +166,10 @@ impl Key {
     pub(crate) fn of(value: &Value<'_>) -> Option<Key> {
         match value {
             Value::Int(n) => Some(Key::Int(n.clone())),
+            Value::F64(x) => Some(Key::F64(una_core::float::order_key(*x))),
+            // The keys of one map share their type, so their scale: the coefficient orders
+            // them by value (ADR 0120 rule 18).
+            Value::Decimal(c, _) => Some(Key::Int(c.clone())),
             Value::Text(t) => Some(Key::Text(t.clone())),
             Value::Data(data) if data.fields.is_empty() => Some(Key::Variant(data.ctor.index)),
             _ => None,
@@ -75,8 +191,44 @@ pub(crate) struct Data<'p> {
 // would overflow (ADR 0032).
 impl Drop for Data<'_> {
     fn drop(&mut self) {
-        let mut pending = std::mem::take(&mut self.fields);
-        while let Some(value) = pending.pop() {
+        unwind(std::mem::take(&mut self.fields), Vec::new());
+    }
+}
+
+// The same for a dense value whose elements are values (ADR 0120): an array of arrays built
+// by a loop is as deep as the loop ran.
+impl Drop for Dense<'_> {
+    fn drop(&mut self) {
+        if let Some(items) = take_values(self) {
+            unwind(items, Vec::new());
+        }
+    }
+}
+
+/// The elements of `dense`'s buffer when it holds the only reference to a buffer of values,
+/// left empty: what dropping it frees.
+fn take_values<'p>(dense: &mut Dense<'p>) -> Option<Vec<Value<'p>>> {
+    let buffer = std::mem::replace(&mut dense.buffer, Rc::new(Elements::F64(Vec::new())));
+    match Rc::try_unwrap(buffer) {
+        Ok(Elements::Values(items)) => Some(items),
+        _ => None,
+    }
+}
+
+// A function value holds the values it closes over and the handlers of its capabilities, whose
+// arguments are values too, so a loop nests values through function values as deep as through
+// records; they drop by the same worklist (S-30).
+impl Drop for Closure<'_> {
+    fn drop(&mut self) {
+        unwind(self.env.take_values(), vec![std::mem::take(&mut self.caps)]);
+    }
+}
+
+/// Drops `pending` and the capabilities in `caps`, with everything only they hold, by a worklist
+/// instead of recursion. A value or a capability held elsewhere too is only released.
+fn unwind<'p>(mut pending: Vec<Value<'p>>, mut caps: Vec<Caps<'p>>) {
+    loop {
+        if let Some(value) = pending.pop() {
             match value {
                 Value::Data(data) => {
                     if let Ok(mut data) = Rc::try_unwrap(data) {
@@ -96,8 +248,56 @@ impl Drop for Data<'_> {
                         }
                     }
                 }
+                Value::Seq(items) => {
+                    if let Ok(items) = Rc::try_unwrap(items) {
+                        pending.extend(items);
+                    }
+                }
+                Value::Set(items) => {
+                    if let Ok(items) = Rc::try_unwrap(items) {
+                        pending.extend(items.into_values());
+                    }
+                }
+                Value::HashMap(table) | Value::HashSet(table) => {
+                    if let Ok(mut table) = Rc::try_unwrap(table) {
+                        let entries = std::mem::take(&mut table.entries);
+                        for (key, value) in entries.into_entries() {
+                            pending.push(key);
+                            pending.push(value);
+                        }
+                    }
+                }
+                Value::Dense(dense) => {
+                    if let Ok(mut dense) = Rc::try_unwrap(dense)
+                        && let Some(items) = take_values(&mut dense)
+                    {
+                        pending.extend(items);
+                    }
+                }
+                Value::Closure(closure) => {
+                    if let Ok(mut closure) = Rc::try_unwrap(closure) {
+                        pending.extend(closure.env.take_values());
+                        caps.push(std::mem::take(&mut closure.caps));
+                    }
+                }
                 _ => {}
             }
+        } else if let Some(held) = caps.pop() {
+            if let Ok(held) = Rc::try_unwrap(held) {
+                for (_, instance) in held {
+                    if let Ok(Instance::Handled {
+                        values,
+                        caps: inner,
+                        ..
+                    }) = Rc::try_unwrap(instance)
+                    {
+                        pending.extend(values);
+                        caps.push(inner);
+                    }
+                }
+            }
+        } else {
+            return;
         }
     }
 }
@@ -160,6 +360,9 @@ fn composite(value: &Value<'_>) -> Option<(u8, usize)> {
         Value::List(x) if !x.is_empty() => Some((1, Rc::as_ptr(x) as usize)),
         Value::Tuple(x) if !x.is_empty() => Some((2, Rc::as_ptr(x) as usize)),
         Value::Map(x) if !x.is_empty() => Some((3, Rc::as_ptr(x) as usize)),
+        Value::Dense(x) => Some((4, Rc::as_ptr(x) as usize)),
+        Value::Seq(x) if !x.is_empty() => Some((5, Rc::as_ptr(x) as usize)),
+        Value::Set(x) if !x.is_empty() => Some((4, Rc::as_ptr(x) as usize)),
         _ => None,
     }
 }
@@ -169,6 +372,8 @@ fn composite(value: &Value<'_>) -> Option<(u8, usize)> {
 fn leaf_equal(a: &Value<'_>, b: &Value<'_>) -> bool {
     match (a, b) {
         (Value::Int(x), Value::Int(y)) => x == y,
+        (Value::F64(x), Value::F64(y)) => una_core::float::equal(*x, *y),
+        (Value::Decimal(..), Value::Decimal(..)) => decimal_cmp(a, b) == Ordering::Equal,
         (Value::Bool(x), Value::Bool(y)) => x == y,
         (Value::Text(x), Value::Text(y)) => Rc::ptr_eq(x, y) || x == y,
         (Value::Unit, Value::Unit) => true,
@@ -183,6 +388,8 @@ fn leaf_equal(a: &Value<'_>, b: &Value<'_>) -> bool {
             x.is_empty() && y.is_empty()
         }
         (Value::Map(x), Value::Map(y)) => x.is_empty() && y.is_empty(),
+        (Value::Seq(x), Value::Seq(y)) => x.is_empty() && y.is_empty(),
+        (Value::Set(x), Value::Set(y)) => x.is_empty() && y.is_empty(),
         _ => false,
     }
 }
@@ -261,6 +468,33 @@ pub(crate) fn equal_within(a: &Value<'_>, b: &Value<'_>, pairs: usize) -> Option
                         .zip(y.iter())
                         .all(|(a, b)| admit(a, b, &mut pending))
             }
+            // The same shape, then each element by its `==` (ADR 0120 rule 27), in row-major
+            // order, whatever the views' offsets and strides. Raw `F64` elements compare at
+            // once; elements that are values join this one worklist, its visited pairs and its
+            // budget, as a list's do (#815).
+            (Value::Dense(x), Value::Dense(y)) => {
+                // Every element is compared, with a flag, and the answer decided after: the
+                // time does not reveal where two values differ (ADR 0120 rule 54).
+                x.kind == y.kind && x.shape == y.shape && {
+                    let mut same = true;
+                    for k in 0..x.count() {
+                        same &= match (dense_element(x, k), dense_element(y, k)) {
+                            (Some(Element::Raw(a)), Some(Element::Raw(b))) => {
+                                una_core::float::equal(a, b)
+                            }
+                            (Some(Element::Value(a)), Some(Element::Value(b))) => {
+                                admit(a, b, &mut pending)
+                            }
+                            (Some(Element::Raw(a)), Some(Element::Value(Value::F64(b))))
+                            | (Some(Element::Value(Value::F64(b))), Some(Element::Raw(a))) => {
+                                una_core::float::equal(a, *b)
+                            }
+                            _ => false,
+                        };
+                    }
+                    same
+                }
+            }
             // The same keys, each with an equal value (`spec/21 §1` rule 5).
             (Value::Map(x), Value::Map(y)) => {
                 x.len() == y.len()
@@ -269,6 +503,16 @@ pub(crate) fn equal_within(a: &Value<'_>, b: &Value<'_>, pairs: usize) -> Option
                         .zip(y.values())
                         .all(|((_, a), (_, b))| admit(a, b, &mut pending))
             }
+            // The same elements in the same order, front first (`spec/28 §3` rule 3).
+            (Value::Seq(x), Value::Seq(y)) => {
+                x.len() == y.len()
+                    && x.iter()
+                        .zip(y.iter())
+                        .all(|(a, b)| admit(a, b, &mut pending))
+            }
+            // The same items in the same order (`spec/28 §3` rule 3): a set's items are keys,
+            // compared whole, so no pair is left pending.
+            (Value::Set(x), Value::Set(y)) => x.len() == y.len() && x.keys().eq(y.keys()),
             _ => false,
         };
         if !same {
@@ -278,13 +522,99 @@ pub(crate) fn equal_within(a: &Value<'_>, b: &Value<'_>, pairs: usize) -> Option
     Some(true)
 }
 
+/// An element of a dense value as its buffer holds it: a raw `F64`, or a value borrowed from
+/// the buffer for as long as the dense value.
+enum Element<'v, 'p> {
+    Raw(f64),
+    Value(&'v Value<'p>),
+}
+
+/// The element of `dense` at row-major position `k`, without copying it.
+fn dense_element<'v, 'p>(dense: &'v Dense<'p>, k: usize) -> Option<Element<'v, 'p>> {
+    let position = dense.position_at(k)?;
+    match dense.buffer.as_ref() {
+        Elements::F64(items) => items.get(position).map(|x| Element::Raw(*x)),
+        Elements::Values(items) => items.get(position).map(Element::Value),
+    }
+}
+
+impl<'p> Dense<'p> {
+    /// The number of elements: the product of the axes' lengths.
+    pub(crate) fn count(&self) -> usize {
+        self.shape.iter().product()
+    }
+
+    /// The position in the buffer of the element at `indices`, one per axis, when each is in
+    /// range.
+    pub(crate) fn position(&self, indices: &[usize]) -> Option<usize> {
+        if indices.len() != self.shape.len() {
+            return None;
+        }
+        let mut position = self.offset;
+        for ((index, length), stride) in indices.iter().zip(&self.shape).zip(&self.strides) {
+            if index >= length {
+                return None;
+            }
+            position = position.checked_add(index.checked_mul(*stride)?)?;
+        }
+        Some(position)
+    }
+
+    /// The element at row-major position `k`, from 0 to `count() - 1`.
+    pub(crate) fn element(&self, k: usize) -> Option<Value<'p>> {
+        self.buffer.get(self.position_at(k)?)
+    }
+
+    /// The position in the buffer of the element at row-major position `k`, without
+    /// allocating.
+    pub(crate) fn position_at(&self, k: usize) -> Option<usize> {
+        let mut rest = k;
+        let mut position = self.offset;
+        for (length, stride) in self.shape.iter().zip(&self.strides).rev() {
+            if *length == 0 {
+                return None;
+            }
+            position = position.checked_add((rest % length).checked_mul(*stride)?)?;
+            rest /= length;
+        }
+        (rest == 0).then_some(position)
+    }
+
+    /// The indices of row-major position `k`.
+    pub(crate) fn indices(&self, k: usize) -> Option<Vec<usize>> {
+        let mut rest = k;
+        let mut indices = vec![0; self.shape.len()];
+        for (slot, length) in indices.iter_mut().zip(&self.shape).rev() {
+            if *length == 0 {
+                return None;
+            }
+            *slot = rest % length;
+            rest /= length;
+        }
+        (rest == 0).then_some(indices)
+    }
+}
+
 /// The order of `<`: integers, texts by scalar values, and variants without fields by
 /// declaration (`spec/03 §1`).
 pub(crate) fn compare(a: &Value<'_>, b: &Value<'_>) -> Ordering {
     match (a, b) {
         (Value::Int(x), Value::Int(y)) => x.cmp(y),
+        (Value::F64(x), Value::F64(y)) => una_core::float::total_cmp(*x, *y),
+        (Value::Decimal(..), Value::Decimal(..)) => decimal_cmp(a, b),
         (Value::Text(x), Value::Text(y)) => x.cmp(y),
         (Value::Data(x), Value::Data(y)) => x.ctor.index.cmp(&y.ctor.index),
+        _ => Ordering::Equal,
+    }
+}
+
+/// The order of two decimals by value, aligned to the larger scale (ADR 0120 rule 13).
+pub(crate) fn decimal_cmp(a: &Value<'_>, b: &Value<'_>) -> Ordering {
+    match (a, b) {
+        (Value::Decimal(x, s), Value::Decimal(y, t)) => {
+            let m = (*s).max(*t);
+            una_core::decimal::widen(x, *s, m).cmp(&una_core::decimal::widen(y, *t, m))
+        }
         _ => Ordering::Equal,
     }
 }
@@ -310,6 +640,70 @@ mod tests {
         let before = EQUALITY_STEPS.with(std::cell::Cell::get);
         let verdict = equal_within(a, b, usize::MAX);
         (EQUALITY_STEPS.with(std::cell::Cell::get) - before, verdict)
+    }
+
+    /// An array of `items`, held as values.
+    fn array(items: Vec<Value<'static>>) -> Value<'static> {
+        let n = items.len();
+        Value::Dense(Rc::new(Dense {
+            kind: DenseKind::Array,
+            buffer: Rc::new(Elements::Values(items)),
+            offset: 0,
+            shape: vec![n],
+            strides: vec![1],
+        }))
+    }
+
+    /// `doubled` through arrays: `x(k+1) = array([xk, xk])`.
+    fn doubled_arrays(depth: usize, leaf: i64) -> Value<'static> {
+        let mut value = array(vec![Value::int(leaf)]);
+        for _ in 0..depth {
+            value = array(vec![value.clone(), value]);
+        }
+        value
+    }
+
+    #[test]
+    fn dense_values_share_the_one_worklist_of_an_equality() {
+        // Review of #1048, H2: the elements of an array join the comparison's worklist and its
+        // visited pairs, so shared structure through arrays compares in linear steps, as
+        // through lists (#815).
+        for depth in [8, 16, 32, 60] {
+            let (a, b) = (doubled_arrays(depth, 1), doubled_arrays(depth, 1));
+            let (taken, verdict) = steps(&a, &b);
+            assert_eq!(verdict, Some(true), "depth {depth}");
+            let bound = EQUALITY_STEPS_UNRECORDED + 3 * (depth + 2);
+            assert!(taken <= bound, "depth {depth}: {taken} steps");
+            let c = doubled_arrays(depth, 2);
+            assert_eq!(steps(&a, &c).1, Some(false), "depth {depth}");
+        }
+    }
+
+    #[test]
+    fn a_deep_dense_value_compares_without_native_recursion_and_within_its_budget() {
+        // H2: depth costs heap, never native stack; a budget too small is `None` (U6003 at
+        // the comparison), never `false`.
+        let outcome = std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(|| {
+                let deep = |leaf: i64| {
+                    let mut value = array(vec![Value::int(leaf)]);
+                    for _ in 0..100_000 {
+                        value = array(vec![value]);
+                    }
+                    value
+                };
+                let (a, b) = (deep(1), deep(1));
+                let equal = equal_within(&a, &b, usize::MAX);
+                let small = equal_within(&a, &b, 10);
+                // Dropping a deep value does not recurse either.
+                drop((a, b));
+                (equal, small)
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(outcome, (Some(true), None));
     }
 
     #[test]
@@ -376,5 +770,56 @@ mod tests {
         assert_eq!(equal_within(&a, &b, 10), None);
         assert_eq!(equal_within(&a, &b, 1000), Some(true));
         assert_eq!(equal_within(&a, &a, 0), Some(true));
+    }
+
+    #[test]
+    fn a_deep_chain_of_function_values_drops_without_native_recursion() {
+        // S-30: a function value that closes over the previous one, in a record or not, as a
+        // loop builds it, and one whose capability's handler holds it, drop by the worklist on
+        // a small stack.
+        let dropped = std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(|| {
+                let mut sources = una_syntax::SourceDb::new();
+                let file = sources.add("chain.una", b"");
+                let body: &'static Expr = Box::leak(Box::new(Expr::Atom {
+                    atom: una_core::Atom::Unit,
+                    span: una_syntax::Span::new(file, 0, 0),
+                }));
+                let closing = |value: Value<'static>, caps: Caps<'static>| {
+                    let mut env = Env::new();
+                    env.push(("prev", value));
+                    Value::Closure(Rc::new(Closure {
+                        params: Vec::new(),
+                        body,
+                        env,
+                        caps,
+                    }))
+                };
+                let node = Ctor {
+                    kind: una_core::Path {
+                        module: "chain".to_owned(),
+                        name: "F".to_owned(),
+                    },
+                    name: "L".to_owned(),
+                    index: 1,
+                };
+                let mut through_records = Value::Unit;
+                for _ in 0..100_000 {
+                    let closure = closing(through_records, Rc::default());
+                    through_records = Value::data(node.clone(), vec![closure]);
+                }
+                drop(through_records);
+                let mut through_closures = Value::Unit;
+                for _ in 0..100_000 {
+                    through_closures = closing(through_closures, Rc::default());
+                }
+                drop(through_closures);
+                true
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert!(dropped);
     }
 }

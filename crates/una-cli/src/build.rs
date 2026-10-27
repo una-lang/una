@@ -13,9 +13,9 @@ use una_diag::{Diagnostic, render_human};
 use una_syntax::ast::ClauseKind;
 
 use crate::contract::Modules;
-use crate::runtime::{entry_main, rejected_status};
+use crate::runtime::{driven_init, entry_main, rejected_status, takes_stops};
 use crate::verification::tier_one;
-use crate::{ExitStatus, analyze, load, on_large_stack};
+use crate::{ExitStatus, analyze, on_large_stack};
 
 /// The JSON schema of `una build --json` (`spec/16 §2`).
 const BUILD_SCHEMA: &str = "una.build/1";
@@ -56,7 +56,11 @@ pub(crate) fn build_command(
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> io::Result<ExitStatus> {
-    let package = match load(path) {
+    let package = match crate::package::load_in(
+        path,
+        &std::collections::BTreeMap::new(),
+        options.solving.itaoca.as_ref(),
+    ) {
         Ok(package) => package,
         Err(error) => {
             writeln!(stderr, "error: {error}")?;
@@ -95,65 +99,103 @@ pub(crate) fn build_command(
         }
         return Ok(status);
     }
-    let Some(entry) = analysis.entry.clone() else {
-        writeln!(
-            stderr,
-            "error: una.toml has no `[run] entry`; name the module whose `main` runs"
-        )?;
-        return Ok(ExitStatus::Usage);
-    };
-    let Some(main) = entry_main(&analysis, &package.sources, &entry) else {
-        writeln!(
-            stderr,
-            "error: the module `{entry}` has no `pub main() -> Unit` to run"
-        )?;
-        return Ok(ExitStatus::Usage);
+    // The module the host drives (ADR 0116 rule 3), whose `init` starts the run; or the entry,
+    // whose `main` runs.
+    let (manifest, _) = crate::package::project(&package);
+    let (entry, main, started) = if let Some(driven) = &manifest.drive {
+        let module = driven.module.value.clone();
+        match driven_init(&analysis, &package.sources, &module) {
+            Ok(init) => (module, init, ["init", "step", "on_stop"].as_slice()),
+            Err(message) => {
+                writeln!(stderr, "error: {message}")?;
+                return Ok(ExitStatus::Usage);
+            }
+        }
+    } else {
+        let Some(entry) = analysis.entry.clone() else {
+            writeln!(
+                stderr,
+                "error: una.toml has no `[run] entry`; name the module whose `main` runs"
+            )?;
+            return Ok(ExitStatus::Usage);
+        };
+        let Some(main) = entry_main(&analysis, &package.sources, &entry) else {
+            writeln!(
+                stderr,
+                "error: the module `{entry}` has no `pub main() -> Unit` to run"
+            )?;
+            return Ok(ExitStatus::Usage);
+        };
+        (entry, main, ["main"].as_slice())
     };
     // The description the executable reads at start: `[run] grants`, and every `uses` of
-    // `main` with where it is written, for U3012 (`spec/16 §3`).
-    let (manifest, _) = crate::package::project(&package);
+    // `main`, or of the driven functions, with where it is written, for U3012 (`spec/16 §3`).
     let modules = Modules {
         sources: &package.sources,
         interner: &analysis.interner,
         trees: &analysis.trees,
+        mounts: &analysis.mounts,
     };
-    let clauses: Vec<(String, una_syntax::Span)> = modules
-        .function(&format!("{entry}.main"))
-        .map(|(_, _, function)| {
-            function
-                .clauses
-                .iter()
-                .filter_map(|clause| match &clause.kind {
-                    ClauseKind::Uses(uses) => Some((
-                        analysis.interner.resolve(uses.cap.name).to_owned(),
-                        uses.span,
-                    )),
-                    _ => None,
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    let uses: Vec<serde_json::Value> = main
-        .uses
-        .iter()
-        .map(|need| {
+    let mut uses: Vec<serde_json::Value> = Vec::new();
+    for name in started {
+        let Some(function) = analysis
+            .program
+            .modules
+            .iter()
+            .filter(|m| m.path == entry)
+            .flat_map(|m| &m.decls)
+            .find_map(|decl| match decl {
+                una_core::Decl::Fun(fun) if fun.name == *name => Some(fun.as_ref()),
+                _ => None,
+            })
+        else {
+            continue;
+        };
+        let clauses: Vec<(String, una_syntax::Span)> = modules
+            .function(&format!("{entry}.{name}"))
+            .map(|(_, _, function)| {
+                function
+                    .clauses
+                    .iter()
+                    .filter_map(|clause| match &clause.kind {
+                        ClauseKind::Uses(uses) => Some((
+                            analysis.interner.resolve(uses.cap.name).to_owned(),
+                            uses.span,
+                        )),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        uses.extend(function.uses.iter().map(|need| {
             let span = clauses
                 .iter()
                 .find(|(name, _)| *name == need.cap)
-                .map_or(main.span, |(_, span)| *span);
+                .map_or(function.span, |(_, span)| *span);
             json!({
+                "function": name,
                 "name": need.cap,
                 "capability": need.capability,
                 "ops": need.ops,
                 "location": package.sources.location(span),
             })
-        })
-        .collect();
+        }));
+    }
     let grants: Vec<&str> = manifest.grants.iter().map(|g| g.value.as_str()).collect();
+    let drive = manifest
+        .drive
+        .as_ref()
+        .map(|drive| json!({ "ticks": drive.ticks, "budget": drive.budget }));
     // What the generated code refers to by index: the calls' locations, for U6003 at the call
     // that exceeds the maximum depth, the types the runtime renders, the operations a trace
-    // records, and where `main` is named, for U6001.
+    // records, and where `main`, or `init`, is named, for U6001.
     let main_location = package.sources.location(main.span);
+    let stops = takes_stops(
+        &analysis,
+        &package.sources,
+        &entry,
+        manifest.drive.is_some(),
+    );
     let meta = |described: &una_codegen::Described<'_>| {
         let sites: Vec<una_diag::Location> = described
             .sites
@@ -161,21 +203,49 @@ pub(crate) fn build_command(
             .map(|span| package.sources.location(*span))
             .collect();
         let mut meta = json!({
+            "grants_section": match manifest.format.section("[run] grants") {
+                section if section.starts_with('`') => section,
+                section => format!("`{section}`"),
+            },
+            "stops": stops,
             "grants": grants,
             "uses": uses,
             "sites": sites,
             "types": described.types,
             "ops": described.ops,
         });
+        // ADR 0114 rule 6.4: an executable of edition 0.3 writes and tests the floating-point
+        // environment; one of an earlier edition never does.
+        if manifest.edition >= una_project::Edition::V0_3
+            && let Some(object) = meta.as_object_mut()
+        {
+            object.insert("float_environment".to_owned(), json!(true));
+        }
+        // ADR 0116 amendment, P8 (#1145): a program with a task construct or a `for ever`
+        // starts its workers and helper pools before `main`, so no thread starts inside a
+        // construct, at a moment that earlier code could have decided.
+        if described.threads
+            && let Some(object) = meta.as_object_mut()
+        {
+            object.insert("threads".to_owned(), json!(true));
+        }
         if let (Some(root), Some(object)) = (described.failure, meta.as_object_mut()) {
             object.insert(
                 "failure".to_owned(),
                 json!({ "location": main_location, "root": root }),
             );
         }
+        if let (Some(drive), Some(object)) = (&drive, meta.as_object_mut()) {
+            object.insert("drive".to_owned(), drive.clone());
+        }
         meta.to_string()
     };
-    let object = match una_codegen::compile(&analysis.program, &entry, &meta) {
+    let compiled = if manifest.drive.is_some() {
+        una_codegen::compile_drive(&analysis.program, &entry, &meta)
+    } else {
+        una_codegen::compile(&analysis.program, &entry, &meta)
+    };
+    let object = match compiled {
         Ok(object) => object,
         Err(CodegenError::NoMain) => {
             writeln!(
@@ -207,17 +277,28 @@ pub(crate) fn build_command(
             )
         }
     };
-    if let Some(parent) = output.parent().filter(|p| !p.as_os_str().is_empty()) {
-        std::fs::create_dir_all(parent)?;
-    }
-    let object_path = output.with_extension("o");
-    std::fs::write(&object_path, object)?;
-    let linked = link(&object_path, &output, options.environment);
-    let _ = std::fs::remove_file(&object_path);
-    if let Err(message) = linked {
+    // #1160: the object and the executable are written only inside the package, or inside the
+    // directory `--out` names, never through a link planted there that leads elsewhere. The
+    // linker writes into a private directory, and the executable is installed from there.
+    let placed = match placed(&root, options.out.is_some(), &output, &object) {
+        Ok(placed) => placed,
+        Err(error) => {
+            writeln!(stderr, "error: cannot write `{shown}`: {error}")?;
+            return Ok(ExitStatus::Usage);
+        }
+    };
+    if let Err(message) = link(&placed.object, &placed.produced, options.environment) {
+        // Dropping `placed` removes the private directory.
         writeln!(stderr, "error: {message}")?;
         return Ok(ExitStatus::Usage);
     }
+    if let Err(error) =
+        una_diag::safe_write::install(&placed.root, &placed.produced, &placed.output)
+    {
+        writeln!(stderr, "error: cannot write `{shown}`: {error}")?;
+        return Ok(ExitStatus::Usage);
+    }
+    drop(placed);
     if options.json {
         let document = BuildDocument {
             schema: BUILD_SCHEMA,
@@ -247,6 +328,96 @@ fn print_json(
         )?,
     }
     stdout.flush()
+}
+
+/// Where `una build` writes (#1160): the root its writes stay inside, the checked path of the
+/// executable, and the private directory the linker writes in, with the object file and the
+/// executable as the linker produces them there.
+struct Placed {
+    /// The package root, or the directory `--out` names.
+    root: PathBuf,
+    /// The executable's final path, in its canonical directory.
+    output: PathBuf,
+    /// The object file, in the private directory.
+    object: PathBuf,
+    /// The executable as the linker writes it, under its final name in the private directory,
+    /// since a linker may record that name in what it writes.
+    produced: PathBuf,
+    /// The private directory, removed when this value is dropped, on every path.
+    _private: una_diag::safe_write::PrivateDir,
+}
+
+/// Creates the directory of `output`, a fresh private directory next to it, and the object
+/// file in that directory, and returns where the linker reads and writes (#1160).
+///
+/// The default output, `target/una/<name>`, is placed inside the package root `root`: each
+/// level of `target/una` is created one at a time, and a link among them that leads outside the
+/// package is refused. An absolute `--out` path (`explicit`), or a relative one with `..`, is
+/// placed inside the directory it names, which is created as the user asked; a plain relative
+/// one is rooted at the current directory, and its directories are created there as
+/// `target/una` is in the package. The executable's path, and `<name>.o` beside it, are
+/// checked by [`una_diag::safe_write::checked_output`] before the linker starts, for an early
+/// error on a link at either. The linker never writes a name the package could have planted: the object, written
+/// through [`una_diag::safe_write::write_atomically`], and the executable both live in a
+/// [`una_diag::safe_write::private_dir`] until [`una_diag::safe_write::install`] moves the
+/// executable into place.
+fn placed(root: &Path, explicit: bool, output: &Path, object: &[u8]) -> io::Result<Placed> {
+    let write_root = if explicit {
+        let directory = match output.parent().filter(|p| !p.as_os_str().is_empty()) {
+            Some(parent) => parent.to_path_buf(),
+            None => PathBuf::from("."),
+        };
+        let typed = output.is_absolute()
+            || output
+                .components()
+                .any(|component| component == std::path::Component::ParentDir);
+        if typed {
+            // An absolute directory, or a relative one with `..`, is a path the user typed on
+            // the command line, which a repository cannot inject: created as given, and the
+            // root of the writes in it.
+            std::fs::create_dir_all(&directory)?;
+            directory
+        } else {
+            // A plain relative one is rooted at the current directory, often the package
+            // itself, so it is created one level at a time: a committed `target` link cannot
+            // redirect it.
+            let here = Path::new(".");
+            una_diag::safe_write::create_dir_inside(here, &here.join(&directory))?;
+            here.to_path_buf()
+        }
+    } else {
+        let root = if root.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            root
+        };
+        una_diag::safe_write::create_dir_inside(root, &root.join("target").join("una"))?;
+        root.to_path_buf()
+    };
+    let output = una_diag::safe_write::checked_output(&write_root, output)?;
+    // The object's former name, `<name>.o` next to the executable, is no longer written, but a
+    // link there is refused all the same, as at the executable's name: build outputs are not
+    // sources, so a link at one is never written through (R-024 does not apply).
+    una_diag::safe_write::checked_output(&write_root, &output.with_extension("o"))?;
+    let private = una_diag::safe_write::private_dir(&write_root, &output)?;
+    let name = output.file_name().unwrap_or_default();
+    let produced = private.path().join(name);
+    // `<name>.o`, unless the executable's own name already ends in `.o`.
+    let object_path = match produced.with_extension("o") {
+        same if same == produced => {
+            let stem = same.file_stem().unwrap_or_default().to_string_lossy();
+            private.path().join(format!("{stem}-object.o"))
+        }
+        other => other,
+    };
+    una_diag::safe_write::write_atomically(&write_root, &object_path, object, true, true)?;
+    Ok(Placed {
+        root: write_root,
+        output,
+        object: object_path,
+        produced,
+        _private: private,
+    })
 }
 
 /// The directory of `una.toml`, or of the file of a single-file package.
@@ -361,6 +532,42 @@ fn runtime_library(environment: crate::Environment<'_>) -> Result<PathBuf, Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn the_linker_writes_only_in_a_private_directory_removed_on_every_path() {
+        // #1160: `cc -o` names a file in a fresh private directory inside `target/una`, never
+        // the final path, and the directory goes away with the placement.
+        let dir = std::env::temp_dir().join(format!("una-placed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = std::fs::canonicalize(&dir).unwrap();
+        let output = dir.join("target/una/app");
+        let placed = placed(&dir, false, &output, b"object").unwrap();
+        let private = placed.produced.parent().unwrap().to_path_buf();
+        assert_eq!(placed.output, output);
+        assert_ne!(placed.produced, output);
+        assert_eq!(placed.produced.file_name(), output.file_name());
+        assert_eq!(private.parent(), Some(dir.join("target/una").as_path()));
+        assert_eq!(placed.object, private.join("app.o"));
+        assert_eq!(std::fs::read(&placed.object).unwrap(), b"object");
+        assert!(!dir.join("target/una/app.o").exists());
+        drop(placed);
+        assert!(!private.exists());
+        assert_eq!(
+            std::fs::read_dir(dir.join("target/una")).unwrap().count(),
+            0
+        );
+        // A link at the final path is refused before anything is written.
+        std::os::unix::fs::symlink(dir.join("elsewhere"), &output).unwrap();
+        assert!(placed_err(&dir, &output));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    fn placed_err(root: &Path, output: &Path) -> bool {
+        placed(root, false, output, b"object").is_err()
+    }
 
     #[test]
     fn a_missing_runtime_names_the_command_that_builds_it() {

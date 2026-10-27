@@ -1,0 +1,20 @@
+-- `std.time` (spec/26 §2), edition 0.4: the units of time. The constants `millisecond`,
+-- `second` and `minute` are built-in names of this module (ADR 0116 rule 0, amended
+-- 2026-10-19), since Una declares no module-level values.
+module std.time
+
+--- A second, the base unit of time.
+pub measure Second
+
+--- A thousandth of a second, the unit of every duration of the host's clock and driver.
+pub measure Millisecond = Second / 1000
+
+--- Sixty seconds.
+pub measure Minute = 60 * Second
+
+--- The failure of `e within d` when `e` can fail with `E` (ADR 0117 rule 5): `TimedOut` when
+--- the deadline passed first, `Failed(error: x)` when `e` failed with `x` in time.
+pub kind Timed[E] = TimedOut | Failed(error: E)
+
+--- The failure of `e within d` when `e` cannot fail: the deadline passed first.
+pub kind Deadline = | Expired

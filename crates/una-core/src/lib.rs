@@ -4,7 +4,10 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+pub mod decimal;
+pub mod dense;
 mod descriptor;
+pub mod float;
 pub mod flow;
 pub mod http;
 mod ir;
@@ -14,13 +17,20 @@ mod names;
 mod print;
 mod text;
 
+/// The most decimal digits of an integer that a text may write, its sign excluded and leading
+/// zeros included, for JSON (`spec/23 §3`), `parse_int` (`spec/22 §4`) and `to_int`
+/// (`spec/14 §1`): converting d digits to an exact integer takes O(d²), so a longer text is
+/// refused before any conversion, as in CPython (#914).
+pub const MAX_INT_DIGITS: usize = 4300;
+
 pub use descriptor::Descriptor;
 pub use ir::{
-    Arm, Atom, Base, BinOp, Bound, CapOp, Clause, ConditionEdit, Constraint, Ctor, DataVariant,
-    Decl, Example, Expectation, Expr, FixedOp, Fun, HOST_MODULE, HandlerOp, IntType, Lock,
-    LoopSource, MapOp, Module, Name, PRELUDE_ENGINE_KINDS, PRELUDE_MODULE, Path, PreludeField,
-    PreludeVariant, Prim, Program, Refinement, Rhs, Signature, Source, Term, Type, Use,
-    prelude_variants,
+    Arm, Atom, Base, BinOp, Bound, COLLECTIONS_MODULE, CapOp, Clause, Coll, ConditionEdit,
+    Constraint, Ctor, DataVariant, DecimalOp, Decl, Example, ExitTag, Expectation, Expr, FixedOp,
+    FloatOp, FloatResult, Fun, HOST_MODULE, HandlerOp, HashMapOp, HashSetOp, IntType, Lock,
+    LoopSource, MapOp, Module, Name, OnStop, PRELUDE_ENGINE_KINDS, PRELUDE_MODULE, Path,
+    PreludeField, PreludeVariant, Prim, Program, Refinement, Rhs, SeqOp, SetOp, ShapeFun,
+    Signature, Source, Term, Type, Use, prelude_variants,
 };
 pub use label::{Accepts, Label, Level, Names, counters as label_counters};
 pub use names::{binders, rhs_vars, vars};

@@ -46,7 +46,7 @@ clause          = "requires" line_expr NEWLINE
 - A function may have any number of `ensures` clauses. They all hold together.
 - They come after every `requires` and before `uses`, `fails` and `derived from`.
 - The expression is in the refinement language (the expressions that a type's condition may use, which the solver can reason about), over the parameters and `result`.
-- **`old(x)`** (edition `0.2`): for an [`edit` parameter](/learn/memory-and-concurrency/passing-a-value-in-and-out-edit/) `x` (one the function may change for its caller), `x` in `ensures` denotes its final value, and `old(x)` its value on entry.
+- **`old(x)`** (edition `0.2`): for an [Passing a value in and out: edit](/learn/memory/passing-a-value-in-and-out-edit/) `x` (one the function may change for its caller), `x` in `ensures` denotes its final value, and `old(x)` its value on entry.
 
 ## Examples
 

@@ -11,7 +11,9 @@ mod build;
 mod contract;
 mod core_json;
 mod fix;
+mod ita;
 mod lsp;
+mod migrate;
 mod package;
 mod proof_key;
 mod recovery;
@@ -24,7 +26,7 @@ mod verification;
 
 use std::ffi::OsString;
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use clap::Parser;
@@ -36,7 +38,7 @@ use una_diag::{Code, Diagnostic, render_human, render_json};
 use una_syntax::ast::File;
 use una_syntax::{FileId, Interner, KeywordSet, Lexed, SourceDb, Span, lex_in, parse};
 
-use crate::args::{Cli, ColorChoice, Command, TierArg};
+use crate::args::{Cli, ColorChoice, Command, ItaCommand, TierArg};
 pub use crate::package::{LoadError, Package, load};
 pub use crate::std_builtins::{
     Builtin, STD_BUILTINS_SCHEMA, builtin_docs, builtins, std_builtin_items, std_builtins,
@@ -104,7 +106,11 @@ pub fn check(path: &Path, tier: Tier) -> Result<Checked, LoadError> {
 /// Loads and checks the file or package at `path`: tier 0, then, at tier 1 and when tier 0
 /// reports nothing, every proof obligation.
 pub fn check_with(path: &Path, tier: Tier, solving: &Solving) -> Result<Checked, LoadError> {
-    let package = load(path)?;
+    let package = package::load_in(
+        path,
+        &std::collections::BTreeMap::new(),
+        solving.itaoca.as_ref(),
+    )?;
     let (mut diagnostics, program, pending) = on_large_stack(|| {
         let analysis = analyze(&package, None);
         (analysis.diagnostics, analysis.program, analysis.pending)
@@ -143,6 +149,10 @@ struct Analysis {
     of_lambdas: Vec<(una_syntax::Span, bool, bool)>,
     /// The package's file-state label (ADR 0085), which `una core` exports (#467).
     file_state: una_core::Label,
+    /// The mounted dependencies of the program (ADR 0122 rule 47).
+    mounts: Vec<una_project::Mount>,
+    /// The sites with deadlines and their timing labels (ADR 0116 rule 21), for the report.
+    timing: Vec<una_check::TimingSite>,
 }
 
 /// Checks `package`; with `run_grants`, for `una run`, whose grants are final (U3012).
@@ -159,6 +169,13 @@ fn analyze_and(
     with_rejected: bool,
 ) -> (Analysis, Vec<Rejected>) {
     let (manifest, mut diagnostics) = package::project(package);
+    // ADR 0114 rule 6.4: a package of edition 0.3 may hold floats, whose literals the checker
+    // converts, so the environment is tested before any source is read; U6006 stops here.
+    if manifest.edition >= una_project::Edition::V0_3
+        && let Err(probe) = una_core::float::probe_environment()
+    {
+        return (environment_failure(probe), Vec::new());
+    }
     let mut interner = Interner::new();
     let mut trees = Vec::new();
     let keywords = keyword_set(manifest.edition);
@@ -166,7 +183,26 @@ fn analyze_and(
     // declarations.
     let mut poison = std::collections::BTreeMap::new();
     let mut broken_files = std::collections::BTreeMap::new();
-    for checked in check_files(&package.sources, &package.modules, &mut interner, keywords) {
+    // The program's modules: the root's, then those of each mounted dependency (ADR 0122
+    // rule 48). A dependency that is not mounted is never checked as part of the program.
+    let modules: Vec<FileId> = package
+        .modules
+        .iter()
+        .copied()
+        .chain(
+            package
+                .dependencies
+                .iter()
+                .filter(|dependency| {
+                    manifest
+                        .mounts
+                        .iter()
+                        .any(|mount| mount.src == format!("{}/src/", dependency.dir))
+                })
+                .flat_map(|dependency| dependency.modules.iter().copied()),
+        )
+        .collect();
+    for checked in check_files(&package.sources, &modules, &mut interner, keywords) {
         // A module is broken as a whole only when its header is (ADR 0096 rule 7).
         let whole = checked.broken.as_ref().is_some_and(|broken| broken.whole);
         diagnostics.extend(checked.syntax);
@@ -246,12 +282,14 @@ fn analyze_and(
     if !broken_files.is_empty() {
         withhold_dependents(
             &package.sources,
-            &package.modules,
+            &modules,
+            &manifest,
             &broken_files,
             &mut diagnostics,
         );
     }
     let analysis = Analysis {
+        mounts: manifest.mounts.clone(),
         diagnostics,
         trees: trees.into_iter().map(|(id, tree, _)| (id, tree)).collect(),
         interner,
@@ -263,8 +301,41 @@ fn analyze_and(
         index: types.index,
         of_lambdas: types.of_lambdas,
         file_state: types.file_state,
+        timing: types.timing,
     };
     (analysis, rejected)
+}
+
+/// The analysis of a package of edition 0.3 whose floating-point environment failed the probe
+/// `probe` (ADR 0114 rule 6.4): U6006 alone, at the start of `una.toml`, and nothing checked.
+fn environment_failure(probe: &str) -> Analysis {
+    let start = una_diag::Position { line: 1, col: 1 };
+    let location = una_diag::Location {
+        file: "una.toml".to_owned(),
+        start,
+        end: start,
+    };
+    Analysis {
+        diagnostics: vec![Diagnostic::error(
+            Code::U6006,
+            format!(
+                "the floating-point environment of this platform is not the default one ({probe})"
+            ),
+            location,
+        )],
+        trees: Vec::new(),
+        interner: Interner::new(),
+        headers: Vec::new(),
+        program: una_core::Program::default(),
+        entry: None,
+        pending: Vec::new(),
+        references: Vec::new(),
+        index: una_check::Index::default(),
+        of_lambdas: Vec::new(),
+        file_state: una_core::Label::public(),
+        mounts: Vec::new(),
+        timing: Vec::new(),
+    }
 }
 
 /// The locked functions of `[contracts]`, each clause parsed where its string is written
@@ -295,9 +366,14 @@ fn locks(
                 .iter()
                 .map(|clause| {
                     let span = Span::new(file, clause.range.start, clause.range.end);
-                    let offsets = written
-                        .get(clause.range.clone())
-                        .and_then(|literal| una_project::literal::offsets(literal, &clause.value));
+                    let offsets = if manifest.format == una_project::Format::Ita {
+                        // In `ita.una` a clause is its own line: no quotes and no escapes.
+                        Some(una_project::literal::Offsets::identity(clause.value.len()))
+                    } else {
+                        written.get(clause.range.clone()).and_then(|literal| {
+                            una_project::literal::offsets(literal, &clause.value)
+                        })
+                    };
                     let parsed = match &offsets {
                         Some(offsets) => {
                             let base = clause.range.start;
@@ -345,6 +421,7 @@ fn locks(
 fn withhold_dependents(
     sources: &SourceDb,
     modules: &[FileId],
+    manifest: &una_project::Manifest,
     broken_files: &std::collections::BTreeMap<FileId, recovery::BrokenFile>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
@@ -353,6 +430,36 @@ fn withhold_dependents(
         .iter()
         .filter(|id| !broken_files.contains_key(id))
         .map(|&id| (id, una_syntax::declarations(sources.file(id).text())))
+        .collect();
+    // A dependency's module `m` is `<local>.m` in the program, and so are the modules it
+    // imports, but the standard ones (ADR 0122 rule 47).
+    let mounted: std::collections::BTreeMap<FileId, Vec<una_syntax::Declaration>> = modules
+        .iter()
+        .filter_map(|&id| {
+            let local = &manifest.mount_of(sources.file(id).path())?.local;
+            let declarations = match broken_files.get(&id) {
+                Some(file) => file.declarations.clone(),
+                None => clean.iter().find(|(c, _)| *c == id)?.1.clone(),
+            };
+            let renamed = declarations
+                .into_iter()
+                .map(|mut declaration| {
+                    let rename = match declaration.what {
+                        una_syntax::DeclarationKind::Header => true,
+                        una_syntax::DeclarationKind::Import => declaration
+                            .module
+                            .as_deref()
+                            .is_some_and(|module| !module.starts_with("std.")),
+                        _ => false,
+                    };
+                    if rename && let Some(module) = &declaration.module {
+                        declaration.module = Some(format!("{local}.{module}"));
+                    }
+                    declaration
+                })
+                .collect();
+            Some((id, renamed))
+        })
         .collect();
     let mut texts = Vec::new();
     for &id in modules {
@@ -363,6 +470,7 @@ fn withhold_dependents(
                 None => continue,
             },
         };
+        let declarations = mounted.get(&id).map_or(declarations, Vec::as_slice);
         let module = declarations
             .iter()
             .find(|d| d.what == una_syntax::DeclarationKind::Header)
@@ -561,6 +669,14 @@ pub(crate) fn variable(environment: Environment<'_>, name: &str) -> Option<Strin
     environment(name).ok().flatten()
 }
 
+/// Itaoca, the store of fetched packages (ADR 0122 rule 30): the directory `UNA_ITAOCA` names
+/// when it is set and not empty, else `.una/itaoca` in `HOME`.
+pub(crate) fn itaoca(environment: Environment<'_>) -> Option<una_project::itaoca::Itaoca> {
+    let dir = variable(environment, "UNA_ITAOCA");
+    let home = variable(environment, "HOME");
+    una_project::itaoca::Itaoca::at(dir.as_deref(), home.as_deref().map(Path::new))
+}
+
 /// The heap of the process, as the binary counts it (ADR 0061): the bytes it holds, and how to
 /// set the ceiling past which an allocation fails. The library never touches the allocator.
 #[derive(Clone, Copy)]
@@ -601,7 +717,12 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
-    let args: Vec<OsString> = args.into_iter().map(Into::into).collect();
+    let mut args: Vec<OsString> = args.into_iter().map(Into::into).collect();
+    // The same binary invoked as `ita` is `una ita` (ADR 0122 rule 1): `ita lock` is
+    // `una ita lock`.
+    if invoked_as_ita(args.first()) {
+        args.insert(1, OsString::from("ita"));
+    }
     // `--json` is a global flag without a value, so its presence decides the shape of the
     // report even when parsing is what panicked.
     let json = args.iter().skip(1).any(|arg| arg == "--json");
@@ -627,6 +748,13 @@ where
     })
 }
 
+/// Whether the program name, `argv[0]`, has the basename `ita`, or `ita.exe`.
+fn invoked_as_ita(program: Option<&OsString>) -> bool {
+    program
+        .and_then(|program| Path::new(program).file_name())
+        .is_some_and(|name| name == "ita" || name == "ita.exe")
+}
+
 /// Where U8001 for a panic goes (ADR 0022 rule 2): 1:1 of the `una.toml` of the package the
 /// command checks, or of the checked file for a package of one file, as the commands locate
 /// a diagnostic without a source position. A command without a package (`una explain`,
@@ -642,11 +770,24 @@ fn panic_location(command: Option<&Command>) -> una_diag::Location {
             | Command::Report { path, .. }
             | Command::Obligations { path, .. }
             | Command::Fmt { path, .. }
+            | Command::Migrate { path, .. }
             | Command::Fix { path, .. }
             | Command::Run { path, .. }
             | Command::Build { path, .. }
             | Command::Test { path, .. },
         ) => Some(path.clone()),
+        Some(Command::Ita {
+            command:
+                ItaCommand::Lock { path, .. }
+                | ItaCommand::Tree { path }
+                | ItaCommand::Vendor { path }
+                | ItaCommand::Verify { path }
+                | ItaCommand::Remove { path, .. },
+        }) => Some(path.clone()),
+        // `una ita add` and `update` work on the package in the current directory.
+        Some(Command::Ita {
+            command: ItaCommand::Add { .. } | ItaCommand::Update { .. },
+        }) => Some(".".into()),
         // `una trace` and `una contract` read the package in the current directory.
         Some(Command::Trace { .. } | Command::Contract { .. }) => Some(".".into()),
         _ => None,
@@ -655,6 +796,8 @@ fn panic_location(command: Option<&Command>) -> una_diag::Location {
         if root.is_file() {
             root.file_name()
                 .map(|name| name.to_string_lossy().into_owned())
+        } else if root.join("ita.una").is_file() {
+            Some("ita.una".to_owned())
         } else if root.join("una.toml").is_file() {
             Some("una.toml".to_owned())
         } else {
@@ -764,10 +907,31 @@ fn run_command(
     heap: Heap<'_>,
 ) -> ExitStatus {
     // The key of the proof cache is resolved when a command verifies, and not before: `una fmt`
-    // never makes one (ADR 0064).
-    let solving = |seconds: u64| Solving {
+    // never makes one (ADR 0064). A key file that exists but is refused turns the cache off,
+    // with a note on stderr (#1164), except under `--json`, whose stderr stays empty
+    // (`spec/13 §5`, ADR 0015 rule 3): the report's `tcb.proof_cache_key: null` is the signal.
+    let solving = |seconds: u64, json: bool, stderr: &mut dyn Write| Solving {
         wallclock: Duration::from_secs(seconds),
-        proof_key: proof_key::resolve(environment),
+        proof_key: match proof_key::resolve(environment) {
+            Ok(key) => key,
+            Err(refused) => {
+                if !json {
+                    let hint = refused
+                        .reason
+                        .hint()
+                        .map(|hint| format!(" ({hint})"))
+                        .unwrap_or_default();
+                    // A note that cannot be written changes nothing about the command.
+                    let _ = writeln!(
+                        stderr,
+                        "note: the proof cache key `{}` is not used, since {}; the proof cache is off{hint}",
+                        refused.shown, refused.reason
+                    );
+                }
+                None
+            }
+        },
+        itaoca: itaoca(environment),
     };
     let status = match Cli::try_parse_from(args) {
         Ok(cli) if cli.version => version_command(cli.json, stdout),
@@ -799,7 +963,7 @@ fn run_command(
                     },
                     json,
                     color: use_color(color, stderr_is_terminal),
-                    solving: solving(solver_wallclock),
+                    solving: solving(solver_wallclock, json, stderr),
                 };
                 check_command(&path, options, dump_core.as_deref(), stdout, stderr)
             }
@@ -821,7 +985,7 @@ fn run_command(
                 let options = trace::TraceOptions {
                     json,
                     color: use_color(color, stderr_is_terminal),
-                    solving: solving(solver_wallclock),
+                    solving: solving(solver_wallclock, json, stderr),
                 };
                 trace::trace_command(&requirement, options, stdout, stderr)
             }
@@ -832,7 +996,7 @@ fn run_command(
                 let options = report::ReportOptions {
                     json,
                     color: use_color(color, stderr_is_terminal),
-                    solving: solving(solver_wallclock),
+                    solving: solving(solver_wallclock, json, stderr),
                 };
                 report::report_command(&path, options, stdout, stderr)
             }
@@ -843,7 +1007,7 @@ fn run_command(
                 let options = verification::ObligationsOptions {
                     json,
                     color: use_color(color, stderr_is_terminal),
-                    solving: solving(solver_wallclock),
+                    solving: solving(solver_wallclock, json, stderr),
                 };
                 verification::obligations_command(&path, options, stdout, stderr)
             }
@@ -861,9 +1025,113 @@ fn run_command(
                     dry_run,
                     json,
                     color: use_color(color, stderr_is_terminal),
-                    solving: solving(solver_wallclock),
+                    solving: solving(solver_wallclock, json, stderr),
                 };
                 fix::fix_command(&path, options, stdout, stderr)
+            }
+            Command::Fmt { path, check } if ita::is_project_file(&path) => {
+                let output = ita::Output {
+                    json,
+                    color: use_color(color, stderr_is_terminal),
+                    stdout,
+                    stderr,
+                };
+                ita::fmt_command(&path, check, output)
+            }
+            Command::Migrate {
+                path,
+                dry_run,
+                name,
+            } => {
+                let options = migrate::MigrateOptions {
+                    dry_run,
+                    name: name.as_deref(),
+                    json,
+                    color: use_color(color, stderr_is_terminal),
+                };
+                migrate::migrate_command(&path, options, stdout, stderr)
+            }
+            Command::Ita { command } => {
+                let output = ita::Output {
+                    json,
+                    color: use_color(color, stderr_is_terminal),
+                    stdout,
+                    stderr,
+                };
+                match command {
+                    ItaCommand::Tree { path } => ita::tree_command(&path, output),
+                    ItaCommand::Remove { name, path } => ita::remove_command(&name, &path, output),
+                    ItaCommand::Lock {
+                        path,
+                        check,
+                        accept_authority,
+                        accept_trust,
+                        dry_run,
+                    } => ita::lock_command(
+                        &path,
+                        ita::LockOptions::lock(check, dry_run, &accept_authority, &accept_trust),
+                        output,
+                    ),
+                    ItaCommand::Update {
+                        names,
+                        cooldown,
+                        now,
+                        accept_authority,
+                        accept_trust,
+                        dry_run,
+                    } => {
+                        let options = ita::LockOptions {
+                            command: "update",
+                            cooldown: if now {
+                                0
+                            } else {
+                                cooldown.map_or(una_project::resolve::COOLDOWN, |hours| {
+                                    hours.saturating_mul(3600)
+                                })
+                            },
+                            ..ita::LockOptions::lock(
+                                false,
+                                dry_run,
+                                &accept_authority,
+                                &accept_trust,
+                            )
+                        };
+                        ita::update_command(&names, Path::new("."), options, output)
+                    }
+                    ItaCommand::Add {
+                        name,
+                        version,
+                        local,
+                        from,
+                        now,
+                        dry_run,
+                    } => {
+                        let options = ita::LockOptions {
+                            command: "add",
+                            cooldown: if now {
+                                0
+                            } else {
+                                una_project::resolve::COOLDOWN
+                            },
+                            ..ita::LockOptions::lock(false, dry_run, &[], &[])
+                        };
+                        ita::add_command(
+                            &name,
+                            version.as_deref(),
+                            local.as_deref(),
+                            from.as_deref(),
+                            Path::new("."),
+                            options,
+                            output,
+                        )
+                    }
+                    ItaCommand::Vendor { path } => {
+                        ita::vendor_command(&path, itaoca(environment).as_ref(), output)
+                    }
+                    ItaCommand::Verify { path } => {
+                        ita::verify_command(&path, itaoca(environment).as_ref(), output)
+                    }
+                }
             }
             Command::Fmt { path, check } => {
                 let options = FmtOptions {
@@ -884,18 +1152,36 @@ fn run_command(
                 max_memory,
                 max_response,
                 http_timeout,
+                workers,
+                task_depth,
+                io_threads,
+                file_threads,
                 solver_wallclock,
+                stop_after_iterations,
+                virtual_time,
+                deadline,
+                stop_grace,
             } => {
                 let options = runtime::RunOptions {
                     grants: &grants,
                     max_depth,
+                    tasks: runtime::TaskFlags {
+                        workers,
+                        task_depth,
+                        io_threads,
+                        file_threads,
+                    },
                     max_memory,
                     http: runtime::http_settings(max_response, http_timeout),
                     heap,
                     json,
                     color: use_color(color, stderr_is_terminal),
                     environment,
-                    solving: solving(solver_wallclock),
+                    solving: solving(solver_wallclock, json, stderr),
+                    stop_after: stop_after_iterations,
+                    virtual_time,
+                    deadline,
+                    stop_grace,
                 };
                 runtime::run_command(&path, options, stdout, stderr)
             }
@@ -908,7 +1194,7 @@ fn run_command(
                     out,
                     json,
                     color: use_color(color, stderr_is_terminal),
-                    solving: solving(solver_wallclock),
+                    solving: solving(solver_wallclock, json, stderr),
                     environment,
                 };
                 build::build_command(&path, &options, stdout, stderr)
@@ -917,23 +1203,38 @@ fn run_command(
                 path,
                 max_depth,
                 max_memory,
+                workers,
+                task_depth,
+                io_threads,
+                file_threads,
                 solver_wallclock,
             } => {
                 let options = runtime::RunOptions {
                     grants: &[],
                     max_depth,
+                    tasks: runtime::TaskFlags {
+                        workers,
+                        task_depth,
+                        io_threads,
+                        file_threads,
+                    },
                     max_memory,
                     http: una_http::client::Settings::default(),
                     heap,
                     json,
                     color: use_color(color, stderr_is_terminal),
                     environment,
-                    solving: solving(solver_wallclock),
+                    solving: solving(solver_wallclock, json, stderr),
+                    stop_after: None,
+                    // Time in a test is always virtual (ADR 0116 rule 19).
+                    virtual_time: true,
+                    deadline: None,
+                    stop_grace: una_interp::stopping::DEFAULT_GRACE_SECS,
                 };
                 runtime::test_command(&path, options, stdout, stderr)
             }
             Command::Explain { code } => explain_command(&code, json, stdout, stderr),
-            Command::Lsp => lsp::serve(stdout, solving(DEFAULT_WALLCLOCK.as_secs())),
+            Command::Lsp => lsp::serve(stdout, solving(DEFAULT_WALLCLOCK.as_secs(), false, stderr)),
         },
         // clap reports `--help` as an error that belongs on stdout with exit code 0.
         Err(error) => {
@@ -1064,6 +1365,15 @@ fn core_command(
         }
     };
     let (manifest, _) = package::project(&package);
+    // A program of several packages is a `una.core/2` document (ADR 0122 rule 59), which this
+    // release does not write yet: the export is refused rather than written as one package.
+    if !manifest.mounts.is_empty() {
+        writeln!(
+            stderr,
+            "error: the package has dependencies, whose Core export (`una.core/2`) this release does not write yet"
+        )?;
+        return Ok(ExitStatus::Usage);
+    }
     let (diagnostics, program, headers, of_lambdas, file_state, rejected) = on_large_stack(|| {
         let (analysis, rejected) = analyze_and(&package, None, with_rejected);
         (
@@ -1199,9 +1509,10 @@ struct FmtOptions {
 /// `una fmt [path]` and `una fmt --check [path]` (`spec/13 §5`, ADR 0020).
 ///
 /// Files with syntax errors are reported and left untouched; the others are
-/// rewritten when they differ from their canonical form, each through a temporary file and a
-/// rename onto the file itself or, for a symbolic link, onto its resolved target, and nothing is
-/// printed on success. `--check` reports U7001 instead of writing.
+/// rewritten when they differ from their canonical form, each through a fresh temporary file
+/// and a rename onto the file itself or, for a symbolic link that resolves inside the package,
+/// onto its resolved target (a link leading outside it is refused), and nothing is printed on
+/// success. `--check` reports U7001 instead of writing.
 fn fmt_command(
     path: &Path,
     options: FmtOptions,
@@ -1240,7 +1551,7 @@ fn fmt_command(
         let Some(target) = package.disk_paths.get(&id) else {
             continue;
         };
-        if let Err(error) = write_through_rename(target, &canonical) {
+        if let Err(error) = write_through_rename(&write_root(path), target, &canonical) {
             writeln!(
                 stderr,
                 "error: cannot write `{}`: {error}",
@@ -1259,29 +1570,44 @@ fn fmt_command(
     )
 }
 
-/// Replaces the file `target` with `text`, writing a hidden temporary file next to it first so
-/// that an interrupted write never leaves a truncated source.
+/// Writes `text` to `target`, which need not exist yet, through a fresh temporary file and a
+/// rename, so a reader never sees a partial file (ADR 0122 rule 14). `root` is the package
+/// directory the command works on; see [`write_through_rename`] for the rules on links.
+pub(crate) fn write_through_rename_or_create(
+    root: &Path,
+    target: &Path,
+    text: &str,
+) -> io::Result<()> {
+    una_diag::safe_write::write_atomically(root, target, text.as_bytes(), true, true)
+}
+
+/// Replaces the file `target` with `text` through a fresh temporary file and a rename, so an
+/// interrupted write never leaves a truncated file, as [`una_diag::safe_write::write_atomically`]
+/// writes it.
 ///
-/// A symbolic link is resolved first, so the rename lands on the file the link points to and
-/// the link itself is kept (review finding R-024).
-fn write_through_rename(target: &Path, text: &str) -> io::Result<()> {
-    let resolved;
-    let target = if std::fs::symlink_metadata(target)?.file_type().is_symlink() {
-        resolved = std::fs::canonicalize(target)?;
-        resolved.as_path()
-    } else {
-        target
-    };
-    let name = target
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let temporary = target.with_file_name(format!(".{name}.fmt-tmp"));
-    std::fs::write(&temporary, text)?;
-    if let Ok(metadata) = std::fs::metadata(target) {
-        std::fs::set_permissions(&temporary, metadata.permissions())?;
+/// The temporary file is created next to the destination with `create_new` (`O_CREAT|O_EXCL`,
+/// which never follows a symbolic link at its name), under a name unique to this process and
+/// write, with mode 0600 on Unix until it takes the destination's permissions. Anything already
+/// at that name, a planted link included, is never written through (#1160).
+///
+/// A symbolic link at `target` is written through onto the file it resolves to (review finding
+/// R-024) only when that file, and the directory it lives in, resolve inside `root`. Otherwise
+/// the write is refused, naming the link and where it leads: a cloned repository can choose a
+/// target link as easily as a temporary one.
+pub(crate) fn write_through_rename(root: &Path, target: &Path, text: &str) -> io::Result<()> {
+    una_diag::safe_write::write_atomically(root, target, text.as_bytes(), false, true)
+}
+
+/// The package directory a command given `path` writes in: `path` itself, or the directory of a
+/// single file.
+pub(crate) fn write_root(path: &Path) -> PathBuf {
+    if path.is_dir() {
+        return path.to_path_buf();
     }
-    std::fs::rename(&temporary, target)
+    match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
+        _ => PathBuf::from("."),
+    }
 }
 
 /// `una contract <qualified.name>` (`spec/13 §5`, ADR 0029): checks the package in the current
@@ -1318,6 +1644,7 @@ fn contract_command(
         sources: &package.sources,
         interner: &analysis.interner,
         trees: &analysis.trees,
+        mounts: &analysis.mounts,
     };
     let Some((module, decl, function)) = modules.function(name) else {
         writeln!(
@@ -1331,7 +1658,8 @@ fn contract_command(
         .headers
         .iter()
         .find(|h| h.module == module && h.name == function_name);
-    let contract = contract::contract(&modules, &module, decl, function, header);
+    let layout = verification::source_layout(&package);
+    let contract = contract::contract(&modules, &module, decl, function, header, layout);
     if json {
         match serde_json::to_string(&contract) {
             Ok(document) => writeln!(stdout, "{document}")?,
@@ -1418,6 +1746,7 @@ fn keyword_set(edition: una_project::Edition) -> KeywordSet {
         una_project::Edition::V0_1 => KeywordSet::V0_1,
         una_project::Edition::V0_2 => KeywordSet::V0_2,
         una_project::Edition::V0_3 => KeywordSet::V0_3,
+        una_project::Edition::V0_4 => KeywordSet::V0_4,
     }
 }
 

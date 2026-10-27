@@ -1,0 +1,5 @@
+module say
+
+import main (greet)
+
+pub say(line: Text) -> Text = greet()

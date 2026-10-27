@@ -1,0 +1,49 @@
+-- test: a text of at most 4,300 digits parses, sign excluded and leading zeros included, and a longer one fails with TooLong in parse_int and is None in to_int, before any conversion; a wrong character is reported first, in both engines (spec/22 §4, spec/14 §1)
+-- spec: spec/22 §4
+-- grant: console
+-- expect: run-output "4300 4300 4301"
+-- expect: run-output "Err(TooLong) None"
+-- expect: run-output "Err(TooLong) None"
+-- expect: run-output "Err(NotADigit(4301))"
+module cap
+
+digits(t: Text) -> Int
+=
+  let n = t.parse_int()
+    if error use 0
+  let written = "{n}"
+  written.len
+
+read(t: Text) -> Int
+=
+  let n = or_else(t.to_int(), default: 0)
+  let written = "{n}"
+  written.len
+
+found(t: Text) -> Text
+=
+  when t.to_int()
+    is Some(n) -> "Some"
+    is None -> "None"
+
+described(t: Text) -> Text
+=
+  let outcome = attempt t.parse_int()
+  "{outcome} {found(t)}"
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let edit nines = ""
+  for i in 0..<4300
+    nines = "{nines}9"
+  let edit zeros = "1"
+  for i in 0..<4300
+    zeros = "{zeros}0"
+  let signed = "-{nines}"
+  @console.print("{digits(nines)} {read(nines)} {digits(signed)}")
+  @console.print(described("{nines}9"))
+  @console.print(described("0{nines}"))
+  let wrong = "{zeros}x"
+  let outcome = attempt wrong.parse_int()
+  @console.print("{outcome}")

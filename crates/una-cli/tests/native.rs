@@ -11,50 +11,18 @@
 //! the test until it leaves the list, so the list stays exact.
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
 
+#[path = "common/native_build.rs"]
+mod native_build;
 #[path = "common/timing.rs"]
 mod timing;
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::sync::OnceLock;
 
 use serde_json::Value;
 
-/// The repository root.
-fn root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .canonicalize()
-        .unwrap()
-}
-
-/// Builds the runtime library next to the `una` binary, once: `cargo test` builds `una-rt`'s
-/// static library only when asked.
-fn runtime() {
-    static BUILT: OnceLock<()> = OnceLock::new();
-    BUILT.get_or_init(|| {
-        let status = Command::new(env!("CARGO"))
-            .args(["build", "--quiet", "-p", "una-rt"])
-            .current_dir(root())
-            .status()
-            .unwrap();
-        assert!(status.success(), "cargo build -p una-rt failed");
-    });
-}
-
-/// Runs `una` in `dir`, once the runtime library is built: `una build` links it, and cargo
-/// builds the test binaries before the staticlib on a cold target directory.
-fn una(dir: &Path, args: &[&str]) -> Output {
-    runtime();
-    Command::new(env!("CARGO_BIN_EXE_una"))
-        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
-        .args(args)
-        .current_dir(dir)
-        .env("NO_COLOR", "1")
-        .output()
-        .unwrap()
-}
+use native_build::{root, runtime, una};
 
 /// A fresh copy of `source`, a package directory or a single file, in a temporary directory:
 /// builds and proof caches never touch the repository.
@@ -100,8 +68,12 @@ fn candidates() -> Vec<Program> {
             .filter_map(|d| d.strip_prefix("-- grant: "))
             .map(str::to_owned)
             .collect();
-        // A case of several modules is the directory above its `src`.
-        let path = match case.ancestors().find(|a| a.join("una.toml").is_file()) {
+        // A case of several modules is the directory above its `src`, described by `una.toml`
+        // or, from edition 0.4, by `ita.una` (ADR 0122).
+        let path = match case
+            .ancestors()
+            .find(|a| a.join("una.toml").is_file() || a.join("ita.una").is_file())
+        {
             Some(package) if package.starts_with(root.join("tests/conformance")) => {
                 package.to_path_buf()
             }
@@ -475,6 +447,88 @@ fn una_build_writes_the_executable_and_prints_una_build_1() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[cfg(unix)]
+#[test]
+fn una_build_never_writes_through_a_link_leading_outside_the_package_1160() {
+    // #1160: a repository can commit `target/una/<name>.o`, `target/una/<name>` or `target`
+    // itself as a link to somewhere outside it. `una build` refuses each before it writes,
+    // and before the linker starts, and the file the link leads to stays as it was.
+    let dir = package(
+        "planted",
+        "\n[run]\nentry = \"hello\"\ngrants = [\"console\"]\n",
+        &[("src/hello.una", HELLO)],
+    );
+    let outside = dir.with_extension("outside");
+    let _ = std::fs::remove_dir_all(&outside);
+    std::fs::create_dir_all(&outside).unwrap();
+    let victim = outside.join("victim");
+    std::fs::write(&victim, "untouched").unwrap();
+    let refused = |expected: &str| {
+        let output = una(&dir, &["build"]);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(2), "{stderr}");
+        assert!(stderr.contains(expected), "{stderr}");
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "untouched");
+    };
+    // The object's name: build outputs are not sources, so any link there is refused.
+    std::fs::create_dir_all(dir.join("target/una")).unwrap();
+    std::os::unix::fs::symlink(&victim, dir.join("target/una/planted.o")).unwrap();
+    refused("is a symbolic link");
+    assert!(std::fs::symlink_metadata(dir.join("target/una/planted")).is_err());
+    // The executable's name, which the linker would write.
+    std::fs::remove_file(dir.join("target/una/planted.o")).unwrap();
+    std::os::unix::fs::symlink(&victim, dir.join("target/una/planted")).unwrap();
+    refused("is a symbolic link");
+    assert!(std::fs::symlink_metadata(dir.join("target/una/planted.o")).is_err());
+    // `target` itself: nothing is created outside.
+    std::fs::remove_dir_all(dir.join("target")).unwrap();
+    std::os::unix::fs::symlink(&outside, dir.join("target")).unwrap();
+    refused("outside the package");
+    assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 1);
+    // A relative `--out` through that link is refused too: it is rooted at the current
+    // directory, here the package.
+    let output = una(&dir, &["build", "--out", "target/una/planted"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("outside the package"), "{stderr}");
+    assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 1);
+    // A relative `--out` with `..` is the user's own typed path, created as given.
+    let typed = format!(
+        "../{}/typed/planted",
+        outside.file_name().unwrap().to_string_lossy()
+    );
+    let output = una(&dir, &["build", "--out", &typed]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(outside.join("typed/planted").is_file());
+    std::fs::remove_dir_all(outside.join("typed")).unwrap();
+    // Without links, the build succeeds and leaves only the executable: the linker wrote in a
+    // private directory, which is gone.
+    std::fs::remove_file(dir.join("target")).unwrap();
+    let output = una(&dir, &["build"]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let left: Vec<String> = std::fs::read_dir(dir.join("target/una"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(left, ["planted"]);
+    let run = Command::new(dir.join("target/una/planted"))
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "Hello, Una\n");
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&outside);
+}
+
 #[test]
 fn una_build_finds_the_runtime_through_a_symlinked_una() {
     // HOST-5 (#185): `una` installed as a symlink, as a package manager links it into `bin/`,
@@ -492,6 +546,7 @@ fn una_build_finds_the_runtime_through_a_symlinked_una() {
     std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_una"), &link).unwrap();
     let output = Command::new(&link)
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
         .env_remove("UNA_RT_LIB")
         .args(["build"])
         .current_dir(&dir)
@@ -535,6 +590,7 @@ fn an_executable_does_not_depend_on_where_una_and_its_runtime_are_installed() {
         let out = dir.join(install).join("out");
         let output = Command::new(env!("CARGO_BIN_EXE_una"))
             .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+            .env_remove("UNA_PROOF_KEY")
             .env("UNA_RT_LIB", lib.join("libuna_rt.a"))
             .args(["build", "--out"])
             .arg(out.join("hello"))
@@ -1335,7 +1391,7 @@ fn a_list_built_by_append_in_a_loop_is_never_copied_at_any_size() {
         );
         edition_0_2(&dir);
         let expected = format!("{n} {}\n", n + 1);
-        let interpreted = una(&dir, &["run"]);
+        let interpreted = una(&dir, &["run", "."]);
         assert_eq!(interpreted.status.code(), Some(0), "{n}: {interpreted:?}");
         assert_eq!(
             String::from_utf8_lossy(&interpreted.stdout),
@@ -1561,6 +1617,7 @@ fn a_closed_output_pipe_is_a_failed_write_not_a_signal() {
     let (_, interpreted) = first_line(
         Command::new(env!("CARGO_BIN_EXE_una"))
             .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+            .env_remove("UNA_PROOF_KEY")
             .args(["run", "."]),
     );
     assert_eq!(interpreted.status.code(), native.status.code());
@@ -1601,6 +1658,7 @@ fn a_failed_write_to_stderr_exits_as_una_run_does() {
         let interpreted = closed(
             Command::new(env!("CARGO_BIN_EXE_una"))
                 .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+                .env_remove("UNA_PROOF_KEY")
                 .arg("run")
                 .arg(".")
                 .args(args),
@@ -1640,6 +1698,7 @@ fn a_closed_stdout_is_reported_on_stderr_by_both_engines() {
     let interpreted = closed(
         Command::new(env!("CARGO_BIN_EXE_una"))
             .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+            .env_remove("UNA_PROOF_KEY")
             .args(["run", "."]),
     );
     let native = closed(&mut Command::new(dir.join("target/una/closed")));
@@ -1738,6 +1797,152 @@ fn tasks_package(name: &str, module: &str, program: &str) -> PathBuf {
     let built = una(&dir, &["build"]);
     assert_eq!(built.status.code(), Some(0), "{built:?}");
     dir
+}
+
+#[test]
+fn one_worker_runs_blocks_nested_three_levels_deep_without_deadlock() {
+    // ADR 0117 rule 3 and its Conformance section: a join parks its task, so a `together` whose
+    // parent and children share the one worker, nested three levels deep, ends with the
+    // interpreter's results, with one worker and with several.
+    let program = "module nest\n\nleaf(label: Text, n: Int) -> Int\n  uses @console: Console[print]\n=\n  @console.print(label)\n  n\n\nmiddle(label: Text, n: Int) -> Int\n  uses @console: Console[print]\n=\n  together\n    let x = leaf(\"{label}.1\", n: n)\n    let y = leaf(\"{label}.2\", n: n + 1)\n  x + y\n\ntop(label: Text, n: Int) -> Int\n  uses @console: Console[print]\n=\n  together\n    let x = middle(\"{label}.1\", n: n)\n    let y = middle(\"{label}.2\", n: n + 10)\n  x + y\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  together\n    let a = top(\"a\", n: 1)\n    let b = top(\"b\", n: 100)\n  @console.print(\"{a} {b}\")\n";
+    let dir = tasks_package("nest", "nest", program);
+    let exe = dir.join("target/una/nest");
+    for workers in ["1", "2", "64"] {
+        let native = Command::new(&exe)
+            .args(["--workers", workers])
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        assert_eq!(
+            native.status.code(),
+            Some(0),
+            "--workers {workers}: {native:?}"
+        );
+        let stdout = String::from_utf8_lossy(&native.stdout);
+        let mut lines: Vec<&str> = stdout.lines().collect();
+        assert_eq!(lines.pop(), Some("26 422"), "--workers {workers}: {stdout}");
+        lines.sort_unstable();
+        assert_eq!(
+            lines,
+            [
+                "a.1.1", "a.1.2", "a.2.1", "a.2.2", "b.1.1", "b.1.2", "b.2.1", "b.2.2"
+            ],
+            "--workers {workers}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Whether the executable at `exe` embeds the description key that starts its threads before
+/// `main` (#1145): `una build` writes the description as compact JSON, so the key reads
+/// `"threads":true` in the binary, and the runtime's own code never holds that text.
+fn embeds_threads(exe: &Path) -> bool {
+    let bytes = std::fs::read(exe).unwrap();
+    bytes
+        .windows(br#""threads":true"#.len())
+        .any(|window| window == br#""threads":true"#)
+}
+
+#[test]
+fn the_description_starts_threads_exactly_for_tasks_and_for_ever() {
+    // #1145, ADR 0116 amendment P8, `spec/27 §1` rule 4: codegen marks a program that holds a
+    // `together`, a `together for`, a `for ever` or a `within`, and `una build` embeds `"threads": true`,
+    // which makes the runtime start its threads and fill its stack pool before `main`; a
+    // program with none of them has no such key and starts no thread.
+    let cases = [
+        (
+            "flagtogether",
+            "module flagtogether\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  together\n    let a = 1\n    let b = 2\n  @console.print(\"{a} {b}\")\n",
+            true,
+        ),
+        (
+            "flagfor",
+            "module flagfor\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let squares = together for i in 1..3\n    i * i\n  @console.print(\"{squares.len}\")\n",
+            true,
+        ),
+        (
+            "flagnone",
+            "module flagnone\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  @console.print(\"plain\")\n",
+            false,
+        ),
+    ];
+    for (name, program, threads) in cases {
+        let dir = tasks_package(name, name, program);
+        let exe = dir.join(format!("target/una/{name}"));
+        assert_eq!(embeds_threads(&exe), threads, "{name}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    // `for ever`, from its conformance case, in edition 0.4.
+    let scratch = std::env::temp_dir().join(format!("una-flag-ever-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).unwrap();
+    let dir = copy(
+        &root().join("tests/conformance/runtime/for_ever_on_stop"),
+        &scratch,
+    );
+    let built = una(&dir, &["build", "."]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    assert!(embeds_threads(&dir.join("target/una/for_ever_on_stop")));
+    // `within`, from its conformance case, in edition 0.4: a deadline counts as a task
+    // construct for P8, so its program starts its threads before `main` too.
+    let within = copy(
+        &root().join("tests/conformance/runtime/within_runs"),
+        &scratch,
+    );
+    let built = una(&within, &["build", "."]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    assert!(embeds_threads(&within.join("target/una/within_runs")));
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+#[test]
+fn the_flags_of_tasks_out_of_range_are_usage_errors_in_both_engines() {
+    // ADR 0117, Diagnostics: a `--workers`, `--task-depth`, `--io-threads` or `--file-threads`
+    // that is not a number or is out of its range is a usage error, exit code 2, before `main`.
+    let program = "module flags\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  @console.print(\"ran\")\n";
+    let dir = tasks_package("flags", "flags", program);
+    let exe = dir.join("target/una/flags");
+    for args in [
+        &["--workers", "0"][..],
+        &["--workers", "1025"],
+        &["--workers", "many"],
+        &["--max-depth", "50", "--task-depth", "51"],
+        &["--io-threads", "4097"],
+        &["--file-threads", "257"],
+    ] {
+        let native = Command::new(&exe)
+            .args(args)
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        assert_eq!(native.status.code(), Some(2), "{args:?}: {native:?}");
+        assert!(native.stdout.is_empty(), "{args:?}");
+        let mut run = vec!["run", "."];
+        run.extend_from_slice(args);
+        let interpreted = una(&dir, &run);
+        assert_eq!(
+            interpreted.status.code(),
+            Some(2),
+            "{args:?}: {interpreted:?}"
+        );
+    }
+    let native = Command::new(&exe)
+        .args([
+            "--workers",
+            "1",
+            "--task-depth",
+            "7",
+            "--io-threads",
+            "1",
+            "--file-threads",
+            "1",
+        ])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert_eq!(native.status.code(), Some(0), "{native:?}");
+    assert_eq!(String::from_utf8_lossy(&native.stdout), "ran\n");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -2307,7 +2512,7 @@ fn a_call_that_would_retain_every_owned_argument_takes_the_borrowed_entry() {
             &[("src/rc.una", &program)],
         );
         edition_0_2(&dir);
-        let interpreted = una(&dir, &["run"]);
+        let interpreted = una(&dir, &["run", "."]);
         assert_eq!(
             interpreted.status.code(),
             Some(0),
@@ -2796,6 +3001,908 @@ fn records_made_anew_grow_with_the_loop_and_copies_do_not_292() {
             *first_copies.get_or_insert(copies),
             copies,
             "{steps}: {output:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// A package of edition 0.4, with `ita.una` holding `sections` after its head, and the lock of
+/// the conformance cases.
+fn ita_package(name: &str, sections: &str, files: &[(&str, &str)]) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("una-native-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(
+        dir.join("ita.una"),
+        format!("ita {name}\n  version 0.1.0\n  edition 0.4\n{sections}"),
+    )
+    .unwrap();
+    std::fs::copy(
+        root().join("tests/conformance/types/float_edition_0_4/ita.lock"),
+        dir.join("ita.lock"),
+    )
+    .unwrap();
+    for (path, text) in files {
+        std::fs::write(dir.join(path), text).unwrap();
+    }
+    dir
+}
+
+const COUNTER: &str = "module counter
+
+import std.drive (Tick)
+
+pub init() -> Int = 0
+
+pub step(edit count: Int, input: Tick) -> Unit
+  uses @console: Console[print]
+=
+  count = count + 1
+  @console.print(\"step {count}\")
+
+pub on_stop(count: Int) -> Unit
+  uses @console: Console[print]
+=
+  @console.print(\"stopped after {count}\")
+";
+
+const DRIVE: &str = "\nrun\n  grants\n    console\n\ndrive\n  module counter\n  ticks 1\n";
+
+#[test]
+fn a_driven_counter_runs_alike_in_both_engines() {
+    // ADR 0116 rule 3, `spec/26 §2`: `init`, `step` per tick, the stop at the start of the
+    // fourth iteration, then `on_stop`, with the same output and trace in both engines.
+    runtime();
+    let dir = ita_package("counter", DRIVE, &[("src/counter.una", COUNTER)]);
+    let run = una(&dir, &["--json", "run", "--stop-after-iterations", "3"]);
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let document: Value = serde_json::from_slice(&run.stdout).unwrap();
+    assert_eq!(
+        document["output"],
+        serde_json::json!(["step 1", "step 2", "step 3", "stopped after 3"])
+    );
+    assert_eq!(document["trace"][3]["outcome"]["kind"], "stop");
+    let built = una(&dir, &["build"]);
+    assert_eq!(
+        built.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let trace = dir.join("trace.json");
+    let native = Command::new(dir.join("target/una/counter"))
+        .current_dir(&dir)
+        .args(["--stop-after-iterations", "3", "--trace"])
+        .arg(&trace)
+        .output()
+        .unwrap();
+    assert_eq!(
+        native.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&native.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&native.stdout),
+        "step 1\nstep 2\nstep 3\nstopped after 3\n"
+    );
+    let native_trace: Value = serde_json::from_slice(&std::fs::read(&trace).unwrap()).unwrap();
+    assert_eq!(timeless(native_trace), timeless(document["trace"].clone()));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A step that prints its tick and the clock's reading, a tick a day.
+const CLOCKED: &str = "module counter
+
+import std.drive (Tick)
+
+pub init() -> Int = 0
+
+pub step(edit count: Int, input: Tick) -> Unit
+  uses @console: Console[print]
+  uses @clock: Clock[now]
+=
+  count = count + 1
+  let now = @clock.now()
+  @console.print(\"step {count} at {input.at} missed {input.missed} now {now}\")
+";
+
+const CLOCKED_DRIVE: &str =
+    "\nrun\n  grants\n    console\n    clock\n\ndrive\n  module counter\n  ticks 86400000\n";
+
+#[test]
+fn under_virtual_time_both_engines_read_the_same_clock_and_never_wait() {
+    // ADR 0116 rule 19, `spec/26 §8`: under `--virtual-time` the clock starts at 0 and only the
+    // driver's waits move it, so a tick a day runs at once, and the output and the whole trace,
+    // the clock's readings included, are identical in both engines.
+    runtime();
+    let dir = ita_package("clocked", CLOCKED_DRIVE, &[("src/counter.una", CLOCKED)]);
+    let started = std::time::Instant::now();
+    let run = una(
+        &dir,
+        &[
+            "--json",
+            "run",
+            "--virtual-time",
+            "--stop-after-iterations",
+            "3",
+        ],
+    );
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let document: Value = serde_json::from_slice(&run.stdout).unwrap();
+    let expected = [
+        "step 1 at 0 missed 0 now 0",
+        "step 2 at 86400000 missed 0 now 86400000",
+        "step 3 at 172800000 missed 0 now 172800000",
+    ];
+    assert_eq!(document["output"], serde_json::json!(expected));
+    let built = una(&dir, &["build"]);
+    assert_eq!(
+        built.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let trace = dir.join("trace.json");
+    let native = Command::new(dir.join("target/una/clocked"))
+        .current_dir(&dir)
+        .args(["--virtual-time", "--stop-after-iterations", "3", "--trace"])
+        .arg(&trace)
+        .output()
+        .unwrap();
+    assert_eq!(
+        native.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&native.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&native.stdout),
+        format!("{}\n", expected.join("\n"))
+    );
+    let native_trace: Value = serde_json::from_slice(&std::fs::read(&trace).unwrap()).unwrap();
+    // Not `timeless`: virtual readings agree exactly.
+    assert_eq!(native_trace, document["trace"]);
+    // Two days of ticks took no real time.
+    assert!(started.elapsed() < std::time::Duration::from_secs(600));
+    let flagged = Command::new(dir.join("target/una/clocked"))
+        .current_dir(&dir)
+        .arg("--virtual-time=yes")
+        .output()
+        .unwrap();
+    assert_eq!(flagged.status.code(), Some(2));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_driven_module_without_its_shapes_or_a_bad_stop_count_is_a_usage_error() {
+    // ADR 0116 rules 2 and 19: a usage error, exit code 2, in `una run` and `una build`, and
+    // `--stop-after-iterations` from 1 to 2^63 - 1, in `una run` and the executable.
+    runtime();
+    let dir = ita_package(
+        "shapeless",
+        "\ndrive\n  module counter\n  ticks 1\n",
+        &[(
+            "src/counter.una",
+            "module counter\n\npub init() -> Int = 0\n",
+        )],
+    );
+    for args in [&["run", "--stop-after-iterations", "1"][..], &["build"][..]] {
+        let output = una(&dir, args);
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("has no `pub step("),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    let dir = ita_package("bounds", DRIVE, &[("src/counter.una", COUNTER)]);
+    for count in ["0", "9223372036854775808", "many"] {
+        let output = una(&dir, &["run", "--stop-after-iterations", count]);
+        assert_eq!(output.status.code(), Some(2), "{count}");
+    }
+    let built = una(&dir, &["build"]);
+    assert_eq!(built.status.code(), Some(0));
+    for count in ["0", "9223372036854775808", "many"] {
+        let output = Command::new(dir.join("target/una/bounds"))
+            .current_dir(&dir)
+            .args(["--stop-after-iterations", count])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2), "{count}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The `run` section of a `for ever` program whose entry is `name`, granted the console.
+fn ever_run(name: &str) -> String {
+    format!("\nrun\n  entry {name}\n  grants\n    console\n")
+}
+
+/// Two `for ever` loops in a row: a stop that reaches the first stays for the second.
+const TWICE: &str = "module twice
+
+pub main() -> Unit
+  uses @console: Console[print]
+  diverges
+=
+  let edit n = 0
+  for ever
+    @console.print(\"first {n}\")
+    n = n + 1
+  on stop
+    @console.print(\"first stopped at {n}\")
+  for ever
+    @console.print(\"second {n}\")
+    n = n + 1
+  on stop
+    @console.print(\"second stopped at {n}\")
+";
+
+/// A `for ever` that says `started` once, then counts without printing until a host stop.
+const QUIET: &str = "module quiet
+
+pub main() -> Unit
+  uses @console: Console[print]
+  diverges
+=
+  let edit n = 0
+  for ever
+    if n == 0
+      @console.print(\"started\")
+    n = n + 1
+  on stop
+    @console.print(\"stopped\")
+  @console.print(\"after\")
+";
+
+/// A `for ever` whose `on stop` counts far past any grace period.
+const SLOW_STOP: &str = "module slow
+
+pub main() -> Unit
+  uses @console: Console[print]
+  diverges
+=
+  let edit n = 0
+  for ever
+    if n == 0
+      @console.print(\"started\")
+    n = n + 1
+  on stop
+    for i in 0..<1000000000000
+      n = n + 1
+  @console.print(\"after\")
+";
+
+/// A program that does not say `diverges`, so its run keeps the default action of SIGTERM.
+const PLAIN: &str = "module plain
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print(\"started\")
+  let edit n = 0
+  for i in 0..<1000000000000
+    n = n + 1
+  @console.print(\"after\")
+";
+
+/// Starts `command` with stdout and stderr piped, waits for its first line on stdout, then
+/// sends it SIGTERM `signals` times, `gap` apart, and returns its exit status with all its
+/// stdout, the first line included, and its stderr.
+fn signalled(
+    mut command: Command,
+    signals: usize,
+    gap: std::time::Duration,
+) -> (std::process::ExitStatus, String, String) {
+    use std::io::{BufRead, Read};
+    let mut child = command
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut out = std::io::BufReader::new(child.stdout.take().unwrap());
+    let mut stdout = String::new();
+    out.read_line(&mut stdout).unwrap();
+    assert_eq!(stdout, "started\n");
+    for n in 0..signals {
+        if n > 0 {
+            std::thread::sleep(gap);
+        }
+        let killed = Command::new("kill")
+            .args(["-TERM", &child.id().to_string()])
+            .status()
+            .unwrap();
+        assert!(killed.success());
+    }
+    out.read_to_string(&mut stdout).unwrap();
+    let mut stderr = String::new();
+    child
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut stderr)
+        .unwrap();
+    (child.wait().unwrap(), stdout, stderr)
+}
+
+/// `una run`, and the executable `una build` writes, of the package in `dir`, as commands.
+fn engines(dir: &Path, name: &str, args: &[&str]) -> [Command; 2] {
+    runtime();
+    let mut run = Command::new(env!("CARGO_BIN_EXE_una"));
+    run.env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env("NO_COLOR", "1")
+        .current_dir(dir)
+        .arg("run")
+        .args(args);
+    let built = una(dir, &["build"]);
+    assert_eq!(
+        built.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let mut native = Command::new(dir.join("target/una").join(name));
+    native.current_dir(dir).args(args);
+    [run, native]
+}
+
+#[test]
+fn a_sticky_stop_after_iterations_runs_alike_in_both_engines() {
+    // ADR 0116 rules 14 and 19, `spec/26 §6`: the run's own stop arrives once two iterations
+    // have started, ends the first loop at the third iteration start, and stays for the second
+    // loop, which stops at its first; same output and trace in both engines.
+    runtime();
+    let dir = ita_package("twice", &ever_run("twice"), &[("src/twice.una", TWICE)]);
+    let run = una(&dir, &["--json", "run", "--stop-after-iterations", "2"]);
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let document: Value = serde_json::from_slice(&run.stdout).unwrap();
+    assert_eq!(
+        document["output"],
+        serde_json::json!([
+            "first 0",
+            "first 1",
+            "first stopped at 2",
+            "second stopped at 2"
+        ])
+    );
+    assert_eq!(document["trace"][2]["outcome"]["kind"], "stop");
+    assert_eq!(document["trace"][4]["outcome"]["kind"], "stop");
+    let built = una(&dir, &["build"]);
+    assert_eq!(built.status.code(), Some(0));
+    let trace = dir.join("trace.json");
+    let native = Command::new(dir.join("target/una/twice"))
+        .current_dir(&dir)
+        .args(["--stop-after-iterations", "2", "--trace"])
+        .arg(&trace)
+        .output()
+        .unwrap();
+    assert_eq!(
+        native.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&native.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&native.stdout),
+        "first 0\nfirst 1\nfirst stopped at 2\nsecond stopped at 2\n"
+    );
+    let native_trace: Value = serde_json::from_slice(&std::fs::read(&trace).unwrap()).unwrap();
+    assert_eq!(native_trace, document["trace"]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn sigterm_runs_on_stop_writes_the_trace_and_exits_0_in_both_engines() {
+    // ADR 0116 rules 14 and 18, `spec/26 §6`: a `for ever` program installs the handlers, so
+    // SIGTERM ends the loop at its next iteration start, `on stop` and the code after the loop
+    // run, and the run exits 0; the executable writes its trace, which ends with the stop.
+    let dir = ita_package("quiet", &ever_run("quiet"), &[("src/quiet.una", QUIET)]);
+    let trace = dir.join("trace.json");
+    let trace_arg = trace.to_str().unwrap().to_owned();
+    let [run, native] = engines(&dir, "quiet", &[]);
+    let (status, stdout, stderr) = signalled(run, 1, std::time::Duration::ZERO);
+    assert_eq!(status.code(), Some(0), "{stderr}");
+    assert_eq!(stdout, "started\nstopped\nafter\n");
+    let mut native = native;
+    native.args(["--trace", &trace_arg]);
+    let (status, stdout, stderr) = signalled(native, 1, std::time::Duration::ZERO);
+    assert_eq!(status.code(), Some(0), "{stderr}");
+    assert_eq!(stdout, "started\nstopped\nafter\n");
+    let events: Value = serde_json::from_slice(&std::fs::read(&trace).unwrap()).unwrap();
+    let kinds: Vec<&str> = events
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|event| event["outcome"]["kind"].as_str().unwrap())
+        .collect();
+    assert_eq!(kinds, ["ok", "stop", "ok", "ok"]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn sigterm_stops_a_driven_program_which_runs_on_stop_and_exits_0() {
+    // ADR 0116 rule 3, `spec/26 §2` rule 4: a host stop interrupts the driver's wait for a
+    // tick, the loop stops at its next iteration start, `on_stop` runs, and the run exits 0.
+    let program = COUNTER.replace("\"step {count}\"", "\"started\"");
+    let program = program.replace(
+        "  count = count + 1\n  @console.print(\"started\")",
+        "  count = count + 1\n  if count == 1\n    @console.print(\"started\")",
+    );
+    let dir = ita_package(
+        "driven",
+        &DRIVE.replace("ticks 1", "ticks 50"),
+        &[("src/counter.una", &program)],
+    );
+    for command in engines(&dir, "driven", &[]) {
+        let (status, stdout, stderr) = signalled(command, 1, std::time::Duration::ZERO);
+        assert_eq!(status.code(), Some(0), "{stderr}");
+        assert!(stdout.starts_with("started\nstopped after "), "{stdout}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_second_sigterm_brings_the_hard_stop_with_u6007_in_both_engines() {
+    // ADR 0116 rule 16, `spec/26 §6` rule 6: a second request during a long `on stop` cancels
+    // the run at its next check point with U6007, exit code 1.
+    let dir = ita_package("slow", &ever_run("slow"), &[("src/slow.una", SLOW_STOP)]);
+    for command in engines(&dir, "slow", &["--stop-grace", "60"]) {
+        let (status, stdout, stderr) = signalled(command, 2, std::time::Duration::from_millis(500));
+        assert_eq!(status.code(), Some(1), "{stderr}");
+        assert_eq!(stdout, "started\n");
+        assert!(stderr.contains("U6007"), "{stderr}");
+        assert!(
+            stderr.contains(
+                "the host stopped the run before it finished, at a second host stop request"
+            ),
+            "{stderr}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_deadline_and_its_grace_period_end_in_u6007_or_a_clean_stop_in_both_engines() {
+    // ADR 0116 rules 14 and 16, `spec/26 §6`: `--deadline 1` is a host stop request; an
+    // `on stop` that outlasts `--stop-grace 1` is cancelled with U6007, exit code 1, and a short
+    // one ends the run normally.
+    let dir = ita_package("slow", &ever_run("slow"), &[("src/slow.una", SLOW_STOP)]);
+    let trace = dir.join("trace.json");
+    for (n, mut command) in engines(&dir, "slow", &["--deadline", "1", "--stop-grace", "1"])
+        .into_iter()
+        .enumerate()
+    {
+        if n == 1 {
+            command.arg("--trace").arg(&trace);
+        }
+        let output = command.output().unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(1), "{stderr}");
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "started\n");
+        assert!(
+            stderr.contains(
+                "the host stopped the run before it finished, after the grace period of 1 second"
+            ),
+            "{stderr}"
+        );
+    }
+    // The trace of an abort: the stop event, then nothing of `on stop`.
+    let events: Value = serde_json::from_slice(&std::fs::read(&trace).unwrap()).unwrap();
+    assert_eq!(events[1]["outcome"]["kind"], "stop");
+    let _ = std::fs::remove_dir_all(&dir);
+    let dir = ita_package("quick", &ever_run("quiet"), &[("src/quiet.una", QUIET)]);
+    for mut command in engines(&dir, "quick", &["--deadline", "1", "--stop-grace", "1"]) {
+        let output = command.output().unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            "started\nstopped\nafter\n"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_program_that_cannot_reach_for_ever_keeps_the_default_action_of_sigterm() {
+    // ADR 0116 rule 18: no handlers without `diverges` or a driver, so SIGTERM ends the run
+    // by its default action, in both engines.
+    use std::os::unix::process::ExitStatusExt;
+    let dir = ita_package("plain", &ever_run("plain"), &[("src/plain.una", PLAIN)]);
+    for command in engines(&dir, "plain", &[]) {
+        let (status, stdout, _) = signalled(command, 1, std::time::Duration::ZERO);
+        assert_eq!(status.signal(), Some(15), "{status:?}");
+        assert_eq!(stdout, "started\n");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn deadlines_and_grace_periods_out_of_range_are_usage_errors() {
+    // ADR 0116 Diagnostics, `spec/26 §6` rule 2: `--deadline` from 1 to 31536000 and
+    // `--stop-grace` from 1 to 86400, in `una run` and the executable.
+    let dir = ita_package("ranges", &ever_run("quiet"), &[("src/quiet.una", QUIET)]);
+    let [_, _] = engines(&dir, "ranges", &[]);
+    for args in [
+        ["--deadline", "0"],
+        ["--deadline", "31536001"],
+        ["--deadline", "soon"],
+        ["--stop-grace", "0"],
+        ["--stop-grace", "86401"],
+        ["--stop-grace", "-1"],
+    ] {
+        let run = una(&dir, &["run", args[0], args[1]]);
+        assert_eq!(run.status.code(), Some(2), "{args:?}");
+        let native = Command::new(dir.join("target/una/ranges"))
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert_eq!(native.status.code(), Some(2), "{args:?}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_host_stop_interrupts_a_waiting_request_in_a_for_ever_body_in_both_engines() {
+    // ADR 0116 rules 12 and 14, `spec/26 §6` rule 4: a request that waits on a server that
+    // never answers fails with `Interrupted` at SIGTERM, the trace records the failure, the
+    // next iteration start stops, and the run exits 0, long before the request's deadline.
+    use std::io::Read;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let program = format!(
+        "module poll
+
+pub main() -> Unit
+  uses @http: Http[get]
+  diverges
+=
+  for ever
+    let reply = attempt @http.get(\"http://127.0.0.1:{port}/\", headers: [], key_name: None)
+    unit
+"
+    );
+    let dir = ita_package(
+        "poll",
+        &format!("\nrun\n  entry poll\n  grants\n    http \"http://127.0.0.1:{port}\" get\n"),
+        &[("src/poll.una", &program)],
+    );
+    let trace = dir.join("trace.json");
+    let [mut run, mut native] = engines(&dir, "poll", &["--http-timeout", "600"]);
+    run.arg("--json");
+    native.arg("--trace").arg(&trace);
+    let mut traces = Vec::new();
+    for mut command in [run, native] {
+        let started = std::time::Instant::now();
+        let child = command
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        // The request has reached the server, which reads it and never answers.
+        let (mut connection, _) = listener.accept().unwrap();
+        let mut head = [0u8; 16];
+        let _ = connection.read(&mut head).unwrap();
+        let killed = Command::new("kill")
+            .args(["-TERM", &child.id().to_string()])
+            .status()
+            .unwrap();
+        assert!(killed.success());
+        let output = child.wait_with_output().unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(120));
+        traces.push(if traces.is_empty() {
+            serde_json::from_slice::<Value>(&output.stdout).unwrap()["trace"].clone()
+        } else {
+            serde_json::from_slice::<Value>(&std::fs::read(&trace).unwrap()).unwrap()
+        });
+        drop(connection);
+    }
+    for events in &traces {
+        assert_eq!(events[0]["op"], "get", "{events}");
+        assert_eq!(events[0]["outcome"]["kind"], "fail", "{events}");
+        assert_eq!(events[0]["outcome"]["variant"], "Interrupted", "{events}");
+        assert_eq!(events[1]["outcome"]["kind"], "stop", "{events}");
+        assert_eq!(events.as_array().unwrap().len(), 2, "{events}");
+    }
+    assert_eq!(traces[0], traces[1]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A package of edition 0.4, in `ita.una`, whose `run` entry is `module`, built.
+fn within_package(name: &str, module: &str, program: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("una-native-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(
+        dir.join("ita.una"),
+        format!(
+            "ita {name}\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry {module}\n  grants\n    console\n"
+        ),
+    )
+    .unwrap();
+    std::fs::copy(
+        root().join("tests/conformance/runtime/within_runs/ita.lock"),
+        dir.join("ita.lock"),
+    )
+    .unwrap();
+    std::fs::write(dir.join(format!("src/{module}.una")), program).unwrap();
+    let built = una(&dir, &["build", "."]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    dir
+}
+
+#[test]
+fn a_deadline_cuts_a_long_computation_at_a_check_point_in_both_engines() {
+    // `spec/27 §5`, ADR 0117 rule 5: once the deadline passes, the expression is cancelled at
+    // its next check point, here an iteration of a loop that would run for minutes, and the
+    // `within` fails with its time-out, `Deadline.Expired`, which `if error use` handles. The
+    // timing label is `public`, so the result prints. The trace has the `timeout` event, then
+    // the print.
+    let program = "module busy\n\nimport std.time (millisecond)\n\nspin(n: Int) -> Int\n=\n  let edit total = 0\n  for i in 1..n\n    total = total + 1\n  total\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let total = spin(4000000000) within 20 * millisecond\n    if error use -1\n  @console.print(\"total {total}\")\n";
+    let dir = within_package("busy", "busy", program);
+    let started = std::time::Instant::now();
+    let interpreted = una(&dir, &["--json", "run", "."]);
+    assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
+    let document: Value = serde_json::from_slice(&interpreted.stdout).unwrap();
+    assert_eq!(
+        document["output"],
+        serde_json::json!(["total -1"]),
+        "{document}"
+    );
+    assert_eq!(
+        document["trace"],
+        serde_json::json!([
+            {"seq": 1, "outcome": {"kind": "timeout"}},
+            {
+                "seq": 2,
+                "instance": "host:Console",
+                "capability": "Console",
+                "op": "print",
+                "args": {"line": "\"total -1\""},
+                "outcome": {"kind": "ok", "value": "unit"}
+            }
+        ])
+    );
+    let exe = dir.join("target/una/busy");
+    for workers in ["1", "4"] {
+        let trace = dir.join(format!("trace-{workers}.json"));
+        let native = Command::new(&exe)
+            .args(["--workers", workers, "--trace"])
+            .arg(&trace)
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        assert_eq!(native.status.code(), Some(0), "{native:?}");
+        assert_eq!(String::from_utf8_lossy(&native.stdout), "total -1\n");
+        let written: Value =
+            serde_json::from_str(&std::fs::read_to_string(&trace).unwrap()).unwrap();
+        assert_eq!(written, document["trace"]);
+    }
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(60),
+        "the deadline cut nothing"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_deadline_cancels_the_tasks_started_inside_its_expression() {
+    // ADR 0117 rule 5 and `spec/27 §5` rule 7: tasks started inside `e` are cancelled with it,
+    // and `e` ends once they have stopped; the `within` then fails with its time-out. Every task
+    // of the block that had not returned ends with its `cancelled` event, started or not, in
+    // task order, so the trace is the interpreter's whatever the number of workers.
+    let program = "module tasks\n\nimport std.time (millisecond)\n\nspin(n: Int) -> Int\n=\n  let edit total = 0\n  for i in 1..n\n    total = total + 1\n  total\n\npair(n: Int) -> Int\n=\n  together\n    let a = spin(n)\n    let b = spin(n)\n    let c = spin(n)\n  a + b + c\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let total = pair(4000000000) within 20 * millisecond\n    if error use -1\n  @console.print(\"total {total}\")\n";
+    let dir = within_package("tasks", "tasks", program);
+    let started = std::time::Instant::now();
+    let interpreted = una(&dir, &["--json", "run", "."]);
+    assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
+    let document: Value = serde_json::from_slice(&interpreted.stdout).unwrap();
+    assert_eq!(
+        document["output"],
+        serde_json::json!(["total -1"]),
+        "{document}"
+    );
+    let kinds: Vec<String> = document["trace"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|event| {
+            format!(
+                "{}:{}",
+                event["task"].as_str().unwrap_or(""),
+                event["outcome"]["kind"].as_str().unwrap_or("")
+            )
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            "1:cancelled",
+            "2:cancelled",
+            "3:cancelled",
+            ":timeout",
+            ":ok"
+        ],
+        "{document}"
+    );
+    let exe = dir.join("target/una/tasks");
+    for workers in ["1", "4"] {
+        let trace = dir.join(format!("trace-{workers}.json"));
+        let native = Command::new(&exe)
+            .args(["--workers", workers, "--trace"])
+            .arg(&trace)
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        assert_eq!(
+            native.status.code(),
+            Some(0),
+            "--workers {workers}: {native:?}"
+        );
+        assert_eq!(String::from_utf8_lossy(&native.stdout), "total -1\n");
+        let written: Value =
+            serde_json::from_str(&std::fs::read_to_string(&trace).unwrap()).unwrap();
+        assert_eq!(written, document["trace"], "--workers {workers}");
+    }
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(60),
+        "the deadline cut nothing"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn tasks_inside_a_within_have_one_trace_under_virtual_time() {
+    // `spec/27 §5` rule 7 and `spec/26 §8`: under `--virtual-time` no deadline passes inside
+    // `e`, so a `within` over a block of tasks that print has the same output and trace in both
+    // engines, with one worker and with several.
+    let program = "module vt\n\nimport std.time (second)\n\nleaf(label: Text, n: Int) -> Int\n  uses @console: Console[print]\n=\n  @console.print(label)\n  n\n\npair(n: Int) -> Int\n  uses @console: Console[print]\n=\n  together\n    let a = leaf(\"a\", n: n)\n    let b = leaf(\"b\", n: n + 1)\n  a + b\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let total = pair(20) within 1 * second\n    if error use -1\n  @console.print(\"total {total}\")\n";
+    let dir = within_package("vt", "vt", program);
+    let interpreted = una(&dir, &["--json", "run", ".", "--virtual-time"]);
+    assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
+    let document: Value = serde_json::from_slice(&interpreted.stdout).unwrap();
+    assert_eq!(
+        document["output"],
+        serde_json::json!(["a", "b", "total 41"]),
+        "{document}"
+    );
+    for workers in ["1", "4"] {
+        let trace = dir.join(format!("trace-{workers}.json"));
+        let native = Command::new(dir.join("target/una/vt"))
+            .args(["--virtual-time", "--workers", workers, "--trace"])
+            .arg(&trace)
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        assert_eq!(
+            native.status.code(),
+            Some(0),
+            "--workers {workers}: {native:?}"
+        );
+        let mut lines: Vec<String> = String::from_utf8_lossy(&native.stdout)
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(lines.pop().as_deref(), Some("total 41"));
+        lines.sort();
+        assert_eq!(lines, ["a", "b"], "--workers {workers}");
+        let written: Value =
+            serde_json::from_str(&std::fs::read_to_string(&trace).unwrap()).unwrap();
+        assert_eq!(written, document["trace"], "--workers {workers}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_deadline_met_keeps_the_value_under_virtual_time_in_both_engines() {
+    // `spec/27 §5` and `spec/26 §8`: under `--virtual-time` nothing but the run's own waits
+    // moves the clock, so a computation meets any deadline, and both engines give the same
+    // output and trace.
+    let program = "module met\n\nimport std.time (millisecond)\n\nspin(n: Int) -> Int\n=\n  let edit total = 0\n  for i in 1..n\n    total = total + 1\n  total\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let total = spin(100000) within 1 * millisecond\n    if error use -1\n  @console.print(\"total {total}\")\n";
+    let dir = within_package("met", "met", program);
+    let interpreted = una(&dir, &["--json", "run", ".", "--virtual-time"]);
+    assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
+    let document: Value = serde_json::from_slice(&interpreted.stdout).unwrap();
+    assert_eq!(
+        document["output"],
+        serde_json::json!(["total 100000"]),
+        "{document}"
+    );
+    let trace = dir.join("trace.json");
+    let native = Command::new(dir.join("target/una/met"))
+        .args(["--virtual-time", "--trace"])
+        .arg(&trace)
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert_eq!(native.status.code(), Some(0), "{native:?}");
+    assert_eq!(String::from_utf8_lossy(&native.stdout), "total 100000\n");
+    let written: Value = serde_json::from_str(&std::fs::read_to_string(&trace).unwrap()).unwrap();
+    assert_eq!(written, document["trace"]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A program that runs `rounds` `within`s, each over an expression that builds a list of a
+/// thousand items and then computes for minutes, so its deadline of 1 ms cuts it with the list
+/// alive, and prints how many were cut.
+fn cuts_program(rounds: u64) -> String {
+    format!(
+        "module cuts\n\nimport std.time (millisecond)\n\nkeep(items: List[Int], total: Int) -> Int = total\n\ngrow(n: Int) -> Int\n=\n  let edit items = [0]\n  for i in 1..1000\n    items = items.append(item: i)\n  let edit total = 0\n  for i in 1..n\n    total = total + 1\n  keep(items, total: total)\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let edit cut = 0\n  for round in 1..{rounds}\n    let got = grow(4000000000) within 1 * millisecond\n      if error use -1\n    if got == -1\n      cut = cut + 1\n  @console.print(\"cut {{cut}}\")\n"
+    )
+}
+
+#[test]
+fn ten_thousand_cuts_release_what_they_cut_in_both_engines() {
+    // ADR 0117 rule 5 and its amendment of 2026-10-19: a cut leaves each frame of the
+    // expression by the path a failure takes, so each frame releases its words. Ten thousand
+    // cuts, each abandoning a list of a thousand items, about 16 KiB, run under a 16 MiB budget,
+    // which a leak would exceed some ten times over (U6003). The same program with no cut needs
+    // between 8 and 16 MiB in a debug build, whatever the number of rounds.
+    let dir = within_package("cuts", "cuts", &cuts_program(10_000));
+    let interpreted = una(&dir, &["run", ".", "--max-memory", "16"]);
+    assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
+    assert_eq!(String::from_utf8_lossy(&interpreted.stdout), "cut 10000\n");
+    for workers in ["1", "4"] {
+        let native = Command::new(dir.join("target/una/cuts"))
+            .args(["--max-memory", "16", "--workers", workers])
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        assert_eq!(
+            native.status.code(),
+            Some(0),
+            "--workers {workers}: {native:?}"
+        );
+        assert_eq!(String::from_utf8_lossy(&native.stdout), "cut 10000\n");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_memory_that_cuts_hold_stays_flat_as_they_grow() {
+    // The same program at growing numbers of cuts, natively, under one budget that the
+    // program with no cut needs anyway (16 MiB in a debug build): memory that grew with the cuts
+    // would pass at the smallest number and fail at the largest. Each cut abandons about 16 KiB;
+    // at 10,000 cuts a leak of a tenth of it would need another 16 MiB.
+    for rounds in [500_u64, 2_000, 10_000] {
+        let dir = within_package(&format!("cuts{rounds}"), "cuts", &cuts_program(rounds));
+        let native = Command::new(dir.join(format!("target/una/cuts{rounds}")))
+            .args(["--max-memory", "16"])
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        assert_eq!(native.status.code(), Some(0), "{rounds} cuts: {native:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&native.stdout),
+            format!("cut {rounds}\n")
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

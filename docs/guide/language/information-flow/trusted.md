@@ -139,7 +139,7 @@ Further rules:
 
 ## Edition
 
-Trusted modules are the same in editions `0.1` and `0.2`. Edition `0.3`, a preview, adds boundaries (groups of modules whose authority `una.toml` caps): a module inside a boundary is never trusted, and a call into a boundary that could reach a policy call is rejected. See [`[boundaries]`](../../configure/boundaries.md) and [Edition 0.3 preview: conditions and boundaries](/learn/capabilities/edition-0-3-preview-conditions-and-boundaries/).
+Trusted modules are the same in editions `0.1` and `0.2`. Edition `0.3`, a preview, adds boundaries (groups of modules whose authority `una.toml` caps): a module inside a boundary is never trusted, and a call into a boundary that could reach a policy call is rejected. See [`[boundaries]`](../../configure/boundaries.md) and [A ceiling for a module: boundaries](/learn/authority/a-ceiling-for-a-module-boundaries/).
 
 ## Normative source
 

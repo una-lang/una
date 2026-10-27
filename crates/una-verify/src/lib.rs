@@ -11,7 +11,10 @@ mod run;
 mod smt;
 mod solver;
 
-pub use cache::ProofCache;
-pub use generate::{Effect, EffectAt, Obligation, Site, Within, obligations, trivial_ensures};
+pub use cache::{KEY_DOMAIN, ProofCache};
+pub use generate::{
+    Effect, EffectAt, Obligation, Site, SourceLayout, Within, obligations, trivial_ensures,
+    unwrap_layout,
+};
 pub use report::diagnostics;
 pub use run::{Lock, Outcome, Problem, Settings, queries, verify};

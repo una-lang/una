@@ -1,0 +1,292 @@
+
+--- How a decimal operation rounds an exact value to the units of its result's scale
+--- (`spec/29 §16`): on the magnitude, then the sign. No operation has a default mode.
+pub kind Rounding = HalfEven | HalfAwayFromZero | HalfTowardZero | TowardZero | AwayFromZero | TowardPositive | TowardNegative
+
+--- The `Decimal[s]` that `t` writes at the scale `s` of the literal `scale`, or why it writes
+--- none (`spec/29 §16`).
+pub parse_decimal(t: Text, scale: Int) -> Decimal[0]
+  fails ParseError
+=
+  fail Empty
+
+--- The `Decimal[s]` of a JSON number at the scale `s` of the literal `scale`, `None` when it
+--- has no exact value there, and for any other `Json` (`spec/29 §16`).
+pub as_decimal(j: Json, scale: Int) -> Option[Decimal[0]] = None
+
+--- A `Decimal[s]` as a JSON number: `Number` at scale 0, `Decimal` otherwise (`spec/29 §16`).
+pub json_decimal[T](x: T) -> Json = Null
+
+--- An array of the elements of `xs`, in order (`spec/29 §17`, ADR 0120 rule 32). O(n).
+pub array[T](xs: List[T]) -> Array[T]
+  ensures result.len == xs.len
+=
+  array(xs)
+
+--- An array of `length` elements, each `value` (`spec/29 §17`). O(n).
+pub array_filled[T](length: Int, value: T) -> Array[T]
+  requires length >= 0
+  ensures result.len == length
+=
+  array_filled(length: length, value: value)
+
+--- A matrix of `rows` rows and `columns` columns, the elements of `elements` in row-major
+--- order (`spec/29 §17`). O(n).
+pub matrix[T](rows: Int, columns: Int, elements: List[T]) -> Matrix[T]
+  requires rows >= 0 and columns >= 0 and elements.len == rows * columns
+  ensures result.rows == rows and result.columns == columns
+=
+  matrix(rows: rows, columns: columns, elements: elements)
+
+--- A matrix of `rows` rows and `columns` columns, each element `value` (`spec/29 §17`). O(n).
+pub matrix_filled[T](rows: Int, columns: Int, value: T) -> Matrix[T]
+  requires rows >= 0 and columns >= 0
+  ensures result.rows == rows and result.columns == columns
+=
+  matrix_filled(rows: rows, columns: columns, value: value)
+
+--- The square matrix with `values` on its diagonal and `+0` of the element type elsewhere
+--- (`spec/29 §17`). O(n²).
+pub matrix_diagonal[T](values: Array[T]) -> Matrix[T]
+  ensures result.rows == values.len and result.columns == values.len
+=
+  matrix_diagonal(values)
+
+-- The methods of `Array[T]` (`spec/29 §17`), which the checker resolves by the receiver.
+
+pub dense_array_get[T](a: Array[T], index: Int) -> T
+  requires 0 <= index and index < a.len
+  ensures result == a.get(index: index)
+=
+  dense_array_get(a, index: index)
+
+pub dense_array_set[T](edit a: Array[T], index: Int, item: T) -> Unit
+  requires 0 <= index and index < a.len
+  ensures a.len == old(a).len
+  ensures a.get(index: index) == item
+=
+  unit
+
+pub dense_array_at[T](a: Array[T], index: Int) -> Option[T]
+  ensures (result is None) == (index < 0 or index >= a.len)
+=
+  dense_array_at(a, index: index)
+
+pub dense_array_slice[T](a: Array[T], from_: Int, until: Int) -> Array[T]
+  requires 0 <= from_ and from_ <= until and until <= a.len
+  ensures result.len == until - from_
+=
+  dense_array_slice(a, from: from_, until: until)
+
+pub dense_array_compact[T](a: Array[T]) -> Array[T]
+  ensures result.len == a.len
+=
+  dense_array_compact(a)
+
+pub dense_array_to_list[T](a: Array[T]) -> List[T]
+  ensures result.len == a.len
+=
+  dense_array_to_list(a)
+
+pub dense_array_map[T, U](a: Array[T], each: fn(T) -> U) -> Array[U]
+  ensures result.len == a.len
+=
+  dense_array_map(a, each: each)
+
+pub dense_array_zip_map[T, U, V](a: Array[T], with_: Array[U], each: fn(T, U) -> V) -> Array[V]
+  requires a.len == with_.len
+  ensures result.len == a.len
+=
+  dense_array_zip_map(a, with: with_, each: each)
+
+pub dense_array_update[T](edit a: Array[T], each: fn(T) -> T) -> Unit
+  ensures a.len == old(a).len
+=
+  dense_array_update(edit a, each: each)
+
+pub dense_array_fold[T, U](a: Array[T], initial: U, step: fn(U, T) -> U) -> U
+=
+  dense_array_fold(a, initial: initial, step: step)
+
+pub dense_array_multiply_elements[T](a: Array[T], by: Array[T]) -> Array[T]
+  requires a.len == by.len
+  ensures result.len == a.len
+=
+  dense_array_multiply_elements(a, by: by)
+
+pub dense_array_divide_elements[T](a: Array[T], by: Array[T]) -> Array[T]
+  requires a.len == by.len
+  ensures result.len == a.len
+=
+  dense_array_divide_elements(a, by: by)
+
+pub dense_array_sum[T](a: Array[T]) -> T
+=
+  dense_array_sum(a)
+
+pub dense_array_dot[T](a: Array[T], with_: Array[T]) -> T
+  requires a.len == with_.len
+=
+  dense_array_dot(a, with: with_)
+
+pub dense_array_norm2[T](a: Array[T]) -> T
+=
+  dense_array_norm2(a)
+
+pub dense_array_all_finite[T](a: Array[T]) -> Bool
+=
+  dense_array_all_finite(a)
+
+pub dense_array_sum_exact[T](a: Array[T]) -> Int
+=
+  dense_array_sum_exact(a)
+
+pub dense_array_dot_exact[T](a: Array[T], with_: Array[T]) -> Int
+  requires a.len == with_.len
+=
+  dense_array_dot_exact(a, with: with_)
+
+pub dense_array_add_scaled[T](edit a: Array[T], x: Array[T], by: T) -> Unit
+  requires a.len == x.len
+  ensures a.len == old(a).len
+=
+  unit
+
+pub dense_array_scale[T](edit a: Array[T], by: T) -> Unit
+  ensures a.len == old(a).len
+=
+  unit
+
+-- The methods of `Matrix[T]` (`spec/29 §17`), which the checker resolves by the receiver.
+
+pub dense_matrix_get[T](m: Matrix[T], row: Int, column: Int) -> T
+  requires 0 <= row and row < m.rows and 0 <= column and column < m.columns
+  ensures result == m.get(row: row, column: column)
+=
+  dense_matrix_get(m, row: row, column: column)
+
+pub dense_matrix_set[T](edit m: Matrix[T], row: Int, column: Int, item: T) -> Unit
+  requires 0 <= row and row < m.rows and 0 <= column and column < m.columns
+  ensures m.rows == old(m).rows
+  ensures m.columns == old(m).columns
+  ensures m.get(row: row, column: column) == item
+=
+  unit
+
+pub dense_matrix_at[T](m: Matrix[T], row: Int, column: Int) -> Option[T]
+  ensures (result is None) == (row < 0 or row >= m.rows or column < 0 or column >= m.columns)
+=
+  dense_matrix_at(m, row: row, column: column)
+
+pub dense_matrix_row[T](m: Matrix[T], index: Int) -> Array[T]
+  requires 0 <= index and index < m.rows
+  ensures result.len == m.columns
+=
+  dense_matrix_row(m, index: index)
+
+pub dense_matrix_column[T](m: Matrix[T], index: Int) -> Array[T]
+  requires 0 <= index and index < m.columns
+  ensures result.len == m.rows
+=
+  dense_matrix_column(m, index: index)
+
+pub dense_matrix_block[T](m: Matrix[T], row_from: Int, row_until: Int, column_from: Int,
+  column_until: Int
+) -> Matrix[T]
+  requires 0 <= row_from and row_from <= row_until and row_until <= m.rows
+  requires 0 <= column_from and column_from <= column_until and column_until <= m.columns
+  ensures result.rows == row_until - row_from and result.columns == column_until - column_from
+=
+  dense_matrix_block(m, row_from: row_from, row_until: row_until, column_from: column_from,
+    column_until: column_until
+  )
+
+pub dense_matrix_transpose[T](m: Matrix[T]) -> Matrix[T]
+  ensures result.rows == m.columns and result.columns == m.rows
+=
+  dense_matrix_transpose(m)
+
+pub dense_matrix_compact[T](m: Matrix[T]) -> Matrix[T]
+  ensures result.rows == m.rows and result.columns == m.columns
+=
+  dense_matrix_compact(m)
+
+pub dense_matrix_map[T, U](m: Matrix[T], each: fn(T) -> U) -> Matrix[U]
+  ensures result.rows == m.rows and result.columns == m.columns
+=
+  dense_matrix_map(m, each: each)
+
+pub dense_matrix_zip_map[T, U, V](m: Matrix[T], with_: Matrix[U], each: fn(T, U) -> V) -> Matrix[V]
+  requires m.rows == with_.rows and m.columns == with_.columns
+  ensures result.rows == m.rows and result.columns == m.columns
+=
+  dense_matrix_zip_map(m, with: with_, each: each)
+
+pub dense_matrix_update[T](edit m: Matrix[T], each: fn(T) -> T) -> Unit
+  ensures m.rows == old(m).rows
+  ensures m.columns == old(m).columns
+=
+  dense_matrix_update(edit m, each: each)
+
+pub dense_matrix_fold[T, U](m: Matrix[T], initial: U, step: fn(U, T) -> U) -> U
+=
+  dense_matrix_fold(m, initial: initial, step: step)
+
+pub dense_matrix_multiply_elements[T](m: Matrix[T], by: Matrix[T]) -> Matrix[T]
+  requires m.rows == by.rows and m.columns == by.columns
+  ensures result.rows == m.rows and result.columns == m.columns
+=
+  dense_matrix_multiply_elements(m, by: by)
+
+pub dense_matrix_divide_elements[T](m: Matrix[T], by: Matrix[T]) -> Matrix[T]
+  requires m.rows == by.rows and m.columns == by.columns
+  ensures result.rows == m.rows and result.columns == m.columns
+=
+  dense_matrix_divide_elements(m, by: by)
+
+pub dense_matrix_sum[T](m: Matrix[T]) -> T
+=
+  dense_matrix_sum(m)
+
+pub dense_matrix_row_sums[T](m: Matrix[T]) -> Array[T]
+  ensures result.len == m.rows
+=
+  dense_matrix_row_sums(m)
+
+pub dense_matrix_column_sums[T](m: Matrix[T]) -> Array[T]
+  ensures result.len == m.columns
+=
+  dense_matrix_column_sums(m)
+
+pub dense_matrix_all_finite[T](m: Matrix[T]) -> Bool
+=
+  dense_matrix_all_finite(m)
+
+pub dense_matrix_sum_exact[T](m: Matrix[T]) -> Int
+=
+  dense_matrix_sum_exact(m)
+
+pub dense_matrix_multiply[T](m: Matrix[T], by: Matrix[T]) -> Matrix[T]
+  requires m.columns == by.rows
+  ensures result.rows == m.rows and result.columns == by.columns
+=
+  dense_matrix_multiply(m, by: by)
+
+pub dense_matrix_multiply_array[T](m: Matrix[T], by: Array[T]) -> Array[T]
+  requires m.columns == by.len
+  ensures result.len == m.rows
+=
+  dense_matrix_multiply_array(m, by: by)
+
+pub dense_matrix_add_product[T](edit m: Matrix[T], of: Matrix[T], and_: Matrix[T]) -> Unit
+  requires m.rows == of.rows and of.columns == and_.rows and and_.columns == m.columns
+  ensures m.rows == old(m).rows
+  ensures m.columns == old(m).columns
+=
+  unit
+
+pub dense_matrix_scale[T](edit m: Matrix[T], by: T) -> Unit
+  ensures m.rows == old(m).rows
+  ensures m.columns == old(m).columns
+=
+  unit

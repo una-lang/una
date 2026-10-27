@@ -248,9 +248,11 @@ fn plain(
 fn holds_function(ty: &Ty) -> bool {
     match ty {
         Ty::Fn(_) => true,
-        Ty::Labeled(_, inner) | Ty::Refined(_, inner) | Ty::List(inner) => holds_function(inner),
+        Ty::Labeled(_, inner) | Ty::Refined(_, inner) | Ty::List(inner) | Ty::Dense(_, inner) => {
+            holds_function(inner)
+        }
         Ty::Map(key, value) => holds_function(key) || holds_function(value),
-        Ty::Kind(_, args) => args.iter().any(holds_function),
+        Ty::Kind(_, args) | Ty::Coll(_, args) => args.iter().any(holds_function),
         _ => false,
     }
 }

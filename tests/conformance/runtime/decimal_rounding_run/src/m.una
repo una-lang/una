@@ -1,0 +1,50 @@
+-- test: rescale by each rounding mode at ties, beyond them and below, on both signs, the same in both engines
+-- spec: spec/29 §16
+-- grant: console
+-- expect: run-output "[2.2, 2.4, -2.2, -2.4, 2.2, -2.3, 2.2]"
+-- expect: run-output "[2.3, 2.4, -2.3, -2.4, 2.2, -2.3, 2.2]"
+-- expect: run-output "[2.2, 2.3, -2.2, -2.3, 2.2, -2.3, 2.2]"
+-- expect: run-output "[2.2, 2.3, -2.2, -2.3, 2.2, -2.2, 2.2]"
+-- expect: run-output "[2.3, 2.4, -2.3, -2.4, 2.3, -2.3, 2.2]"
+-- expect: run-output "[2.3, 2.4, -2.2, -2.3, 2.3, -2.2, 2.2]"
+-- expect: run-output "[2.2, 2.3, -2.3, -2.4, 2.2, -2.3, 2.2]"
+module m
+
+d(t: Text) -> Decimal[2]
+=
+  let parsed = attempt parse_decimal(t, scale: 2)
+  when parsed
+    is Ok(x) -> x
+    is Err(e) -> 0.00
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let halfeven = map([d("2.25"), d("2.35"), d("-2.25"), d("-2.35"), d("2.21"), d("-2.29"),
+      d("2.20")
+    ], each: fn(x) -> x.rescale(scale: 1, rounding: HalfEven))
+  @console.print("{halfeven}")
+  let halfawayfromzero = map([d("2.25"), d("2.35"), d("-2.25"), d("-2.35"), d("2.21"), d("-2.29"),
+      d("2.20")
+    ], each: fn(x) -> x.rescale(scale: 1, rounding: HalfAwayFromZero))
+  @console.print("{halfawayfromzero}")
+  let halftowardzero = map([d("2.25"), d("2.35"), d("-2.25"), d("-2.35"), d("2.21"), d("-2.29"),
+      d("2.20")
+    ], each: fn(x) -> x.rescale(scale: 1, rounding: HalfTowardZero))
+  @console.print("{halftowardzero}")
+  let towardzero = map([d("2.25"), d("2.35"), d("-2.25"), d("-2.35"), d("2.21"), d("-2.29"),
+      d("2.20")
+    ], each: fn(x) -> x.rescale(scale: 1, rounding: TowardZero))
+  @console.print("{towardzero}")
+  let awayfromzero = map([d("2.25"), d("2.35"), d("-2.25"), d("-2.35"), d("2.21"), d("-2.29"),
+      d("2.20")
+    ], each: fn(x) -> x.rescale(scale: 1, rounding: AwayFromZero))
+  @console.print("{awayfromzero}")
+  let towardpositive = map([d("2.25"), d("2.35"), d("-2.25"), d("-2.35"), d("2.21"), d("-2.29"),
+      d("2.20")
+    ], each: fn(x) -> x.rescale(scale: 1, rounding: TowardPositive))
+  @console.print("{towardpositive}")
+  let towardnegative = map([d("2.25"), d("2.35"), d("-2.25"), d("-2.35"), d("2.21"), d("-2.29"),
+      d("2.20")
+    ], each: fn(x) -> x.rescale(scale: 1, rounding: TowardNegative))
+  @console.print("{towardnegative}")

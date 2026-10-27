@@ -148,3 +148,7 @@ With M1 to M8 and M10 as A, and M9 as `BTreeMap`:
 The B and C options under each question. Also:
 - **A `Set[T]` type.** It is close to `Map[T, Unit]`, which `has`, `with` and `keys` already serve. It can follow as a thin layer.
 - **A map in the standard library written in Una,** over a sorted `List[Entry]`. It needs no compiler change, but it is linear for lookup and insertion, and it cannot give the refinement-language facts of M8 or the in-place update of M9.
+
+## Amendment (2026-10-19): the map in edition `0.4` (ADR 0119)
+
+In edition `0.4`, `Map[K, V]` gains the method `edit m.update(key: k, initial: i, change: f)`, with the contract, labels and failure rule of `HashMap`'s (ADR 0119 rule 12, IF7) and a cost of O(log n). A package function named `update` whose first parameter is a `Map`, refined or not, or a type parameter, is U1002 at its declaration in edition `0.4`, and so is an import of one; the edition test of ADR 0119 rule 0 lists the packages that declare one. The verifier gains, in edition `0.4` only, the frame facts of ADR 0119 V3 for `set`, `remove`, `with`, `without` and `update`: each keeps `has` and `get` at every other key term of the query, guarded by disequality. Editions `0.2` and `0.3` keep M3 and M8 as written. `Set[T]`, which the Alternatives of this record name as a thin layer, is ADR 0119 rule 7.

@@ -200,7 +200,7 @@ impl Checker<'_, '_, '_> {
     }
 
     /// The prelude kind `name` at `args`, or `Error` when the prelude lacks it.
-    fn prelude_kind_of(&self, name: &str, args: Vec<Ty>) -> Ty {
+    pub(crate) fn prelude_kind_of(&self, name: &str, args: Vec<Ty>) -> Ty {
         match self.env.prelude_kind(name) {
             Some(id) => Ty::Kind(id, args.into()),
             None => Ty::error(),

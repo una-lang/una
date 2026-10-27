@@ -17,10 +17,11 @@ use una_syntax::{Interner, Span, Symbol};
 
 use super::Report;
 use super::closest;
+use super::dense::dense_numeric;
 use super::label::{Accepts, Label};
 use super::ty::{
-    AliasId, CapId, Declared, FnRefinements, FnTy, FnUse, KindId, KindLabels, Names, Refinement,
-    Shared, Show, Ty,
+    AliasId, CapId, Declared, Dense, FnRefinements, FnTy, FnUse, KindId, KindLabels, Names,
+    Refinement, Shared, Show, Ty,
 };
 use crate::names::prelude;
 
@@ -31,8 +32,10 @@ pub(crate) struct Module<'a> {
     /// Whether problems in it are reported: a package module without syntax errors (ADR 0023
     /// rule 7). The standard modules are never reported.
     pub(crate) reports: bool,
-    /// Its path, from its header.
+    /// Its path, from its header; a dependency's module `m` is `<local>.m` (ADR 0122 rule 47).
     pub(crate) path: String,
+    /// The local name of the dependency it is a module of, if any.
+    pub(crate) mount: Option<&'a str>,
     pub(crate) upper: BTreeMap<&'a str, Entity>,
     pub(crate) lower: BTreeMap<&'a str, Entity>,
     /// Names imported explicitly.
@@ -56,6 +59,12 @@ pub(crate) enum Entity {
     Builtin(Builtin),
     /// A unit of measure, edition 0.3 (ADR 0104 rule 1).
     Unit(usize),
+    /// A built-in constant of `std.time`, edition 0.4: its value in the unit `unit`, an index
+    /// of `units` (ADR 0116 rule 0, amended 2026-10-19).
+    Constant {
+        value: i64,
+        unit: usize,
+    },
 }
 
 /// The built-in types (`spec/03 §1`).
@@ -71,6 +80,10 @@ pub(crate) enum Builtin {
     List,
     /// `Map[K, V]`, built in from edition 0.2 (`spec/21 §1`).
     Map,
+    /// `F64`, built in from edition 0.3 (`spec/29`, ADR 0114 rule 1).
+    F64,
+    /// A collection type that `std.collections` exports, edition 0.4 (ADR 0119 rule 0).
+    Coll(una_core::Coll),
 }
 
 const BUILTINS: [(&str, Builtin); 6] = [
@@ -218,6 +231,8 @@ pub(crate) struct FnDef<'a> {
     pub(crate) infer_uses: bool,
     /// Whether its `fails` is inferred: a private function without `fails` (ADR 0007).
     pub(crate) infer_fails: bool,
+    /// Whether the header says `diverges`, edition 0.4 (`spec/26 §5`): never inferred.
+    pub(crate) diverges: bool,
     /// The parameters of function type whose effects it performs, by `uses of p`, written or
     /// inferred (ADR 0062).
     pub(crate) uses_of: Vec<usize>,
@@ -309,6 +324,8 @@ pub(crate) struct Source<'a> {
     pub(crate) tree: &'a File,
     pub(crate) interner: &'a Interner,
     pub(crate) reports: bool,
+    /// The local name of the dependency it is a module of, if any (ADR 0122 rule 47).
+    pub(crate) mount: Option<&'a str>,
 }
 
 /// How far the base of an alias has been lowered, to find aliases defined through themselves.
@@ -377,6 +394,10 @@ pub(crate) struct Env<'a> {
     /// the package writes, and whether it runs, whatever run it happens in, which labels the failure of every
     /// `Files` operation (S-14, ADR 0085). Public until the probe of pass 2 sets it.
     pub(crate) file_state: Label,
+    /// The timing label `τ(e)` of each `e within d`, by the span of `d` (ADR 0117 IF2): what the
+    /// probe of pass 2 found, read by the checks of pass 2; a site absent here is `public` (the
+    /// first probe).
+    pub(crate) within_timing: BTreeMap<Span, Label>,
     /// What a check of pass 2 records for the file-state label: each `Files.write`, with the
     /// labels of its path and the program counter, and the code it is in; each direct call
     /// of a function, with the program counter; the functions used as values, which a caller
@@ -413,6 +434,12 @@ pub(crate) struct Env<'a> {
     /// module is trusted only when its header says so and it is listed here. Empty for a file
     /// checked on its own.
     pub(crate) trusted_listed: BTreeSet<String>,
+    /// The modules of dependencies the root trusts by a trust line (ADR 0122 rule 53.1), by
+    /// index: a release whose policy one declares is not a release into a boundary.
+    pub(crate) trusted_dependencies: BTreeSet<usize>,
+    /// The code of an invalid project setting: U7002 in `una.toml`, U7008 in `ita.una`
+    /// (ADR 0122 rule 13).
+    pub(crate) project_code: Code,
     /// The boundaries of `una.toml`, and the boundary whose extent holds each package module
     /// (ADR 0093 rules 1 and 9); empty before edition 0.3.
     pub(crate) boundaries: super::boundary::Boundaries,
@@ -423,15 +450,44 @@ pub(crate) struct Env<'a> {
     /// declaration and examples keeps from it, by function id: the handler's name and the first
     /// place it is named, which the U4002 at a call of their policy shows.
     pub(crate) blocked_vias: BTreeMap<usize, (String, Span)>,
+    /// The module of the map's built-in method `update`, in edition 0.4 (ADR 0119 rule 18):
+    /// in no scope, so only method syntax on a map reaches it.
+    pub(crate) map_module: Option<usize>,
+    /// The function `update` of that module.
+    pub(crate) map_update: Option<usize>,
+    /// The module `std.collections`, when a package of edition 0.4 imports it (ADR 0119
+    /// rule 0).
+    pub(crate) collections: Option<usize>,
+    /// The hidden function `update` of that module, which only method syntax on a hash map
+    /// reaches (ADR 0119 rule 12).
+    pub(crate) hash_map_update: Option<usize>,
 }
 
-/// The key type of a written `Map[K, V]`, where it is written, and the function whose type
-/// parameters it may name.
+/// The key type of a written `Map[K, V]`, or an argument of a written collection type that
+/// must satisfy a constraint (ADR 0119 rules 7, 8 and 13), where it is written, and the
+/// function whose type parameters it may name.
 #[derive(Clone, Debug)]
 pub(crate) struct MapKey {
     pub(crate) key: Ty,
     pub(crate) span: Span,
     pub(crate) owner: Option<usize>,
+    /// The collection type and the index of the argument; `None` for a map's key.
+    pub(crate) of: Option<(una_core::Coll, usize)>,
+}
+
+impl MapKey {
+    /// The constraint the argument must satisfy: `Ord` for a map's key.
+    pub(crate) fn need(&self) -> Constraint {
+        match self.of {
+            None => Constraint::Ord,
+            Some((coll, index)) => match coll.needs(index) {
+                una_core::Constraint::Eq => Constraint::Eq,
+                una_core::Constraint::Ord => Constraint::Ord,
+                una_core::Constraint::Integer => Constraint::Integer,
+                una_core::Constraint::None => Constraint::None,
+            },
+        }
+    }
 }
 
 /// A step from a position of a type to a position inside it (ADR 0067).
@@ -466,12 +522,16 @@ pub(crate) fn position_text(path: &[Step]) -> String {
 }
 
 impl<'a> Env<'a> {
-    /// Builds the environment of the package modules, then the prelude and `std.testing`, and
-    /// lowers every signature.
+    /// Builds the environment of the package modules, then the prelude, `std.testing`, in
+    /// edition 0.4 the module of the map's `update` and, when the package imports it,
+    /// `std.collections`, and lowers every signature.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn build(
         package: Vec<Source<'a>>,
         prelude: Source<'a>,
-        testing: Source<'a>,
+        after_prelude: Vec<Source<'a>>,
+        map_0_4: Option<Source<'a>>,
+        collections: Option<Source<'a>>,
         categories: Vec<String>,
         edition: Edition,
         report: &mut Report<'_>,
@@ -499,6 +559,7 @@ impl<'a> Env<'a> {
             edit_label_spans: BTreeMap::new(),
             files_written: false,
             file_state: Label::public(),
+            within_timing: BTreeMap::new(),
             file_writes: Vec::new(),
             file_calls: Vec::new(),
             file_escaped: BTreeSet::new(),
@@ -513,12 +574,51 @@ impl<'a> Env<'a> {
             map_keys: Vec::new(),
             opaque_plain: BTreeSet::new(),
             trusted_listed: BTreeSet::new(),
+            trusted_dependencies: BTreeSet::new(),
+            project_code: Code::U7002,
             boundaries: super::boundary::Boundaries::default(),
             plain_vias: BTreeSet::new(),
             blocked_vias: BTreeMap::new(),
+            map_module: None,
+            map_update: None,
+            collections: None,
+            hash_map_update: None,
         };
-        for source in package.into_iter().chain([prelude, testing]) {
+        for source in package
+            .into_iter()
+            .chain(std::iter::once(prelude))
+            .chain(after_prelude)
+        {
             env.register(source);
+        }
+        if let Some(source) = map_0_4 {
+            env.map_module = Some(env.modules.len());
+            env.register(source);
+        }
+        if let Some(source) = collections {
+            env.collections = Some(env.modules.len());
+            env.register(source);
+        }
+        env.map_update =
+            env.map_module
+                .and_then(|index| match env.modules.get(index)?.lower.get("update") {
+                    Some(Entity::Function(id)) => Some(*id),
+                    _ => None,
+                });
+        env.hash_map_update =
+            env.collections
+                .and_then(|index| match env.modules.get(index)?.lower.get("update") {
+                    Some(Entity::Function(id)) => Some(*id),
+                    _ => None,
+                });
+        // ADR 0119 rule 0: `std.collections` exports its built-in types beside its kinds.
+        if let Some(module) = env.collections.and_then(|index| env.modules.get_mut(index)) {
+            for coll in una_core::Coll::ALL {
+                module
+                    .upper
+                    .entry(coll.as_str())
+                    .or_insert(Entity::Builtin(Builtin::Coll(coll)));
+            }
         }
         if let Some(module) = env.modules.get_mut(count) {
             for (name, builtin) in BUILTINS {
@@ -535,6 +635,12 @@ impl<'a> Env<'a> {
                     .upper
                     .entry("Map")
                     .or_insert(Entity::Builtin(Builtin::Map));
+            }
+            if edition >= Edition::V0_3 {
+                module
+                    .upper
+                    .entry("F64")
+                    .or_insert(Entity::Builtin(Builtin::F64));
             }
         }
         env.imports(count);
@@ -605,13 +711,17 @@ impl<'a> Env<'a> {
             .as_ref()
             .map_or_else(String::new, |header| {
                 let segments: Vec<&str> = header.path.segments.iter().map(name).collect();
-                segments.join(".")
+                match source.mount {
+                    Some(local) => format!("{local}.{}", segments.join(".")),
+                    None => segments.join("."),
+                }
             });
         let mut module = Module {
             tree: source.tree,
             interner,
             reports: source.reports,
             path,
+            mount: source.mount,
             upper: BTreeMap::new(),
             lower: BTreeMap::new(),
             imports: BTreeMap::new(),
@@ -757,6 +867,7 @@ impl<'a> Env<'a> {
             constraints: Vec::new(),
             constraints_written: Vec::new(),
             infer_fails: false,
+            diverges: false,
             uses_of: Vec::new(),
             fails_of: None,
             requires: false,
@@ -766,17 +877,24 @@ impl<'a> Env<'a> {
         self.functions.len() - 1
     }
 
-    /// Resolves the imports of the package modules, the first `count` modules. Imports that
-    /// resolve to nothing were reported by M3 and are skipped.
+    /// Resolves the imports of the package modules, the first `count` modules, and of the
+    /// standard modules from `std.testing` on, which may import one another (`std.drive` and,
+    /// in edition 0.4, `std.testing` import `std.time`). Imports that resolve to nothing were reported by M3 and are skipped.
     fn imports(&mut self, count: usize) {
         let mut paths: BTreeMap<String, usize> = BTreeMap::new();
         for (index, module) in self.modules.iter().enumerate().take(count) {
             paths.entry(module.path.clone()).or_insert(index);
         }
         paths.insert("std.testing".to_owned(), count + 1);
+        // The standard modules of edition 0.4, after `std.testing` (ADR 0116).
+        for (index, module) in self.modules.iter().enumerate().skip(count + 2) {
+            paths.insert(module.path.clone(), index);
+        }
         // `std.host` is the prelude's host declarations (`spec/10 §11` rule 10).
         paths.insert(prelude::STD_HOST.to_owned(), count);
-        for index in 0..count {
+        // `std.testing` imports `Millisecond` from `std.time` in edition 0.4 (ADR 0116 rule 19).
+        let later = (count + 2)..self.modules.len();
+        for index in (0..count).chain(std::iter::once(count + 1)).chain(later) {
             let Some(module) = self.modules.get(index) else {
                 continue;
             };
@@ -789,16 +907,38 @@ impl<'a> Env<'a> {
                     .iter()
                     .map(|segment| module.interner.resolve(segment.name))
                     .collect();
-                let Some(target) = paths
-                    .get(&path.join("."))
-                    .and_then(|&t| self.modules.get(t))
-                else {
+                let joined = path.join(".");
+                let host = joined == prelude::STD_HOST;
+                let time = joined == prelude::STD_TIME;
+                let standard = host
+                    || time
+                    || joined == "std.testing"
+                    || joined == prelude::STD_DRIVE
+                    || joined == prelude::STD_COLLECTIONS;
+                // A dependency's module imports its own modules and the standard ones, never
+                // the root's (ADR 0122 rule 47).
+                let key = match module.mount {
+                    Some(local) if !standard => format!("{local}.{joined}"),
+                    _ => joined,
+                };
+                let Some(target) = paths.get(&key).and_then(|&t| self.modules.get(t)) else {
                     continue;
                 };
-                let host = path.join(".") == prelude::STD_HOST;
                 for ident in &import.names {
                     let name = module.interner.resolve(ident.name);
                     if host && !prelude::std_host_names(self.edition).contains(&name) {
+                        continue;
+                    }
+                    // `millisecond`, `second` and `minute` are built-in names of `std.time`, of
+                    // type `Int of Millisecond` (ADR 0116 rule 0, amended 2026-10-19).
+                    if time
+                        && let Some(&(_, value)) =
+                            prelude::STD_TIME_CONSTANTS.iter().find(|(c, _)| *c == name)
+                        && let Some(&Entity::Unit(unit)) = target.upper.get("Millisecond")
+                    {
+                        if !(module.upper.contains_key(name) || module.lower.contains_key(name)) {
+                            imports.insert(name, Entity::Constant { value, unit });
+                        }
                         continue;
                     }
                     let Some(&entity) = target.upper.get(name).or_else(|| target.lower.get(name))
@@ -826,6 +966,19 @@ impl<'a> Env<'a> {
                 module.imports = imports;
                 module.imported_variants = variants;
             }
+        }
+    }
+
+    /// The dense type that `name` names in a type, in edition 0.4 (ADR 0120 rule 3): `Array`
+    /// and `Matrix` are built in, ahead of any declaration and of the variant `Json.Array`.
+    pub(crate) fn dense_name(&self, name: &str) -> Option<Dense> {
+        if self.edition < Edition::V0_4 {
+            return None;
+        }
+        match name {
+            "Array" => Some(Dense::Array),
+            "Matrix" => Some(Dense::Matrix),
+            _ => None,
         }
     }
 
@@ -859,11 +1012,37 @@ impl<'a> Env<'a> {
             .get(name)
             .or_else(|| scope.imports.get(name))
             .or_else(|| {
+                // The prelude functions of dense methods are reached by their receiver only
+                // (`spec/29 §17`): no name in a program finds them.
+                if name.starts_with(prelude::DENSE_HIDDEN) {
+                    return None;
+                }
                 self.modules
                     .get(self.prelude)
                     .and_then(|p| p.lower.get(name))
             })
             .copied()
+    }
+
+    /// The prelude function `name`, whatever scopes a program declares: the functions that the
+    /// methods of dense values resolve to (`spec/29 §17`).
+    pub(crate) fn prelude_function(&self, name: &str) -> Option<usize> {
+        match self.modules.get(self.prelude)?.lower.get(name)? {
+            Entity::Function(id) => Some(*id),
+            _ => None,
+        }
+    }
+
+    /// The kind `name` of `std.time`, `Timed` or `Deadline` (ADR 0117 rule 5), in edition 0.4.
+    pub(crate) fn std_time_kind(&self, name: &str) -> Option<KindId> {
+        let module = self
+            .modules
+            .iter()
+            .find(|module| module.path == crate::names::prelude::STD_TIME)?;
+        match module.upper.get(name)? {
+            Entity::Kind(id) => Some(*id),
+            _ => None,
+        }
     }
 
     /// The kind `name` of the prelude, such as `Option` or `Result`.
@@ -1125,6 +1304,8 @@ impl<'a> Env<'a> {
         for id in 0..self.functions.len() {
             self.function_signature(id, report);
         }
+        self.no_function_to_f64(report);
+        self.no_function_to_decimal(report);
         // A policy fails and uses capabilities as its `via` function does (`spec/10 §7`).
         for id in 0..self.functions.len() {
             let Some((module, FnAst::Policy(policy))) =
@@ -1217,6 +1398,93 @@ impl<'a> Env<'a> {
         }
         if let Some(def) = self.capabilities.get_mut(id) {
             def.ops = ops;
+        }
+    }
+
+    /// ADR 0114 rule 4.1: in edition 0.3, `n.to_f64()` on an integer is built in, ahead of a
+    /// function of that name, so a package function `to_f64` whose first parameter has an
+    /// integer type, a refinement or a measured one, or is a type parameter, is U1002 at its
+    /// name: no program changes meaning silently.
+    fn no_function_to_f64(&self, report: &mut Report<'_>) {
+        if self.edition < Edition::V0_3 {
+            return;
+        }
+        for def in &self.functions {
+            let FnAst::Function(function) = def.ast else {
+                continue;
+            };
+            if def.name != "to_f64" || !self.reports(def.module) {
+                continue;
+            }
+            let integer = def.params.first().is_some_and(|param| {
+                matches!(
+                    param.ty.base.unlabeled(),
+                    Ty::Int | Ty::Fixed(_) | Ty::Param(_) | Ty::Measured(..)
+                )
+            });
+            if integer {
+                report.error(
+                    Code::U1002,
+                    function.name.span,
+                    "`to_f64` on an integer is a built-in conversion from edition 0.3, so a function cannot take its name for an integer or a type parameter".to_owned(),
+                );
+            }
+        }
+    }
+
+    /// ADR 0120 rule 4: in edition 0.4, `to_decimal` on an integer and on an `F64` is built
+    /// in, ahead of a function of that name, so a package function `to_decimal` whose first
+    /// parameter has an integer type, a refinement or a measured one, `F64`, or a type
+    /// parameter, is U1002 at its name: no program changes meaning silently.
+    fn no_function_to_decimal(&self, report: &mut Report<'_>) {
+        if self.edition < Edition::V0_4 {
+            return;
+        }
+        let built_in = |def: &FnDef<'_>| {
+            def.name == "to_decimal"
+                && def.params.first().is_some_and(|param| {
+                    matches!(
+                        param.ty.base.unlabeled(),
+                        Ty::Int | Ty::Fixed(_) | Ty::F64 | Ty::Param(_) | Ty::Measured(..)
+                    )
+                })
+        };
+        for def in &self.functions {
+            let FnAst::Function(function) = def.ast else {
+                continue;
+            };
+            if self.reports(def.module) && built_in(def) {
+                report.error(
+                    Code::U1002,
+                    function.name.span,
+                    "`to_decimal` on an integer or an `F64` is a built-in conversion from edition 0.4, so a function cannot take its name for an integer, an `F64` or a type parameter".to_owned(),
+                );
+            }
+        }
+        // An import of such a function, from a dependency or another module, is U1002 at the
+        // name it imports: the built-in would resolve ahead of it there too.
+        for module in self.modules.iter().filter(|module| module.reports) {
+            for import in &module.tree.imports {
+                for ident in &import.names {
+                    if module.interner.resolve(ident.name) != "to_decimal" {
+                        continue;
+                    }
+                    let Some(Entity::Function(id)) = module.imports.get("to_decimal") else {
+                        continue;
+                    };
+                    let foreign = self
+                        .functions
+                        .get(*id)
+                        .is_some_and(|def| built_in(def) && !self.reports(def.module));
+                    if foreign {
+                        report.error(
+                            Code::U1002,
+                            ident.span,
+                            "`to_decimal` on an integer or an `F64` is a built-in conversion from edition 0.4, so an imported function of that name for an integer, an `F64` or a type parameter would never be called".to_owned(),
+                        );
+                    }
+                }
+            }
         }
     }
 
@@ -1316,6 +1584,10 @@ impl<'a> Env<'a> {
                     def.uses = uses;
                     def.uses_of = uses_of;
                     def.fails_of = fails_of;
+                    def.diverges = function
+                        .clauses
+                        .iter()
+                        .any(|clause| matches!(clause.kind, ClauseKind::Diverges));
                 }
             }
             FnAst::Predicate(predicate) => {
@@ -1685,6 +1957,25 @@ impl<'a> Env<'a> {
                 let lowered = lowered.into_iter().map(|arg| self.nested(arg)).collect();
                 self.named(module, name, lowered, ty.span, type_params, report)
             }
+            TypeCore::Decimal {
+                scale, scale_span, ..
+            } => match scale.parse::<u8>() {
+                Ok(scale) if scale <= una_core::decimal::MAX_SCALE => {
+                    Declared::plain(Ty::Decimal(scale))
+                }
+                _ => {
+                    if self.reports(module) {
+                        report.error(
+                            Code::U2037,
+                            *scale_span,
+                            format!(
+                                "the scale of `Decimal[{scale}]` is not an integer from 0 to 38, the scales of a decimal"
+                            ),
+                        );
+                    }
+                    Declared::error()
+                }
+            },
             TypeCore::List(element) => {
                 let lowered = self.lower_type(module, element, type_params, report);
                 self.type_argument(module, element.span, &lowered.base, report);
@@ -2017,12 +2308,58 @@ impl<'a> Env<'a> {
             }
             return Declared::plain(Ty::Param(index));
         }
+        // Edition 0.4: `Decimal` is the decimal type only with its scale, an integer literal,
+        // in brackets (ADR 0120 rule 2); the name alone is the `Json` variant.
+        if self.edition >= Edition::V0_4 && name == "Decimal" {
+            if reports {
+                report.error(
+                    Code::U2037,
+                    span,
+                    "the scale of `Decimal` is an integer literal from 0 to 38 in brackets, as in `Decimal[2]`".to_owned(),
+                );
+            }
+            return Declared::error();
+        }
         let bases: Vec<Ty> = args.into_iter().map(|arg| arg.base).collect();
+        // Edition 0.4 (ADR 0120 rule 3): `Array` and `Matrix` are built-in types, which no
+        // declaration can hide; the prelude's variant `Json.Array` is a constructor, written
+        // with parentheses, so it never meets the type, written with brackets.
+        if let Some(dense) = self.dense_name(name) {
+            if bases.len() != 1 {
+                return arity(1, bases.len());
+            }
+            let element = bases.into_iter().next().unwrap_or(Ty::error());
+            // The prelude declares the methods of `Matrix[T]` over a type parameter, whose element types
+            // its callers' receivers decide.
+            if dense == Dense::Matrix
+                && reports
+                && module != self.prelude
+                && !dense_numeric(&element)
+            {
+                report.error(
+                    Code::U2002,
+                    span,
+                    format!(
+                        "`Matrix` takes a numeric element type, `F64` or one of `I8` to `U64`, and `{}` is not one",
+                        Show(
+                            &element,
+                            &LowerNames {
+                                env: self,
+                                type_params,
+                            }
+                        )
+                    ),
+                );
+                return Declared::error();
+            }
+            return Declared::plain(Ty::Dense(dense, Shared::new(element)));
+        }
         let problem = match self.upper(module, name).first().copied() {
             Some(Entity::Builtin(builtin)) => {
                 let expected = match builtin {
                     Builtin::List => 1,
                     Builtin::Map => 2,
+                    Builtin::Coll(coll) => coll.arity(),
                     _ => 0,
                 };
                 if bases.len() != expected {
@@ -2035,6 +2372,7 @@ impl<'a> Env<'a> {
                     Builtin::Text => Ty::Text,
                     Builtin::Unit => Ty::Unit,
                     Builtin::Hashed => Ty::Hashed,
+                    Builtin::F64 => Ty::F64,
                     Builtin::List => {
                         Ty::List(Shared::new(bases.into_iter().next().unwrap_or(Ty::error())))
                     }
@@ -2047,9 +2385,27 @@ impl<'a> Env<'a> {
                                 key: key.clone(),
                                 span,
                                 owner: self.owner,
+                                of: None,
                             });
                         }
                         Ty::Map(Shared::new(key), Shared::new(value))
+                    }
+                    // ADR 0119: a set's item and a priority must satisfy `Ord`, and a hash key
+                    // or item `Eq`, where the type is written, as a map's key must.
+                    Builtin::Coll(coll) => {
+                        if reports {
+                            for (index, arg) in bases.iter().enumerate() {
+                                if coll.needs(index) != una_core::Constraint::None {
+                                    self.map_keys.push(MapKey {
+                                        key: arg.clone(),
+                                        span,
+                                        owner: self.owner,
+                                        of: Some((coll, index)),
+                                    });
+                                }
+                            }
+                        }
+                        Ty::Coll(coll, bases.into())
                     }
                 };
                 return Declared::plain(base);
@@ -2081,6 +2437,7 @@ impl<'a> Env<'a> {
             Some(Entity::Unit(_)) => {
                 format!("`{name}` is a unit, not a type; write `Int of {name}`")
             }
+            Some(Entity::Constant { .. }) => return Declared::error(),
             // Unknown names are U1001, reported by M3.
             None => return Declared::unknown(),
             Some(Entity::Function(_) | Entity::Handler(_)) => return Declared::error(),

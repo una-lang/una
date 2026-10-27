@@ -46,17 +46,26 @@ pub fn vars(expr: &Expr, out: &mut BTreeSet<String>) {
             }
         }
         Expr::Fail { args, .. } => atoms(args, out),
+        Expr::Exit { state, .. } => atoms(state, out),
         Expr::Handle { body, handler, .. } => {
             vars(body, out);
             vars(handler, out);
         }
         Expr::Attempt { body, .. } => vars(body, out),
+        Expr::Within { deadline, body, .. } => {
+            atoms(std::slice::from_ref(deadline), out);
+            vars(body, out);
+        }
         Expr::LetTuple { value, body, .. } => {
             atoms(std::slice::from_ref(value), out);
             vars(body, out);
         }
         Expr::Loop {
-            source, init, body, ..
+            source,
+            init,
+            body,
+            on_stop,
+            ..
         } => {
             match source.as_ref() {
                 LoopSource::List(list) => atoms(std::slice::from_ref(list), out),
@@ -64,9 +73,18 @@ pub fn vars(expr: &Expr, out: &mut BTreeSet<String>) {
                     atoms(std::slice::from_ref(low), out);
                     atoms(std::slice::from_ref(high), out);
                 }
+                LoopSource::Until { cond, .. } => vars(cond, out),
+                LoopSource::Ever { within } => {
+                    if let Some((deadline, _)) = within {
+                        atoms(std::slice::from_ref(deadline), out);
+                    }
+                }
             }
             atoms(init, out);
             vars(body, out);
+            if let Some(on_stop) = on_stop {
+                vars(&on_stop.body, out);
+            }
         }
         Expr::Together { tasks, .. } => {
             for task in tasks {
@@ -79,6 +97,12 @@ pub fn vars(expr: &Expr, out: &mut BTreeSet<String>) {
                 LoopSource::Range { low, high, .. } => {
                     atoms(std::slice::from_ref(low), out);
                     atoms(std::slice::from_ref(high), out);
+                }
+                LoopSource::Until { cond, .. } => vars(cond, out),
+                LoopSource::Ever { within } => {
+                    if let Some((deadline, _)) = within {
+                        atoms(std::slice::from_ref(deadline), out);
+                    }
                 }
             }
             vars(task, out);
@@ -144,7 +168,7 @@ pub fn binders<'e>(expr: &'e Expr, out: &mut BTreeSet<&'e str>) {
         _ => {}
     };
     match expr {
-        Expr::Atom { .. } | Expr::Fail { .. } | Expr::Unreachable { .. } => {}
+        Expr::Atom { .. } | Expr::Fail { .. } | Expr::Exit { .. } | Expr::Unreachable { .. } => {}
         Expr::Let {
             name, value, body, ..
         } => {
@@ -160,11 +184,23 @@ pub fn binders<'e>(expr: &'e Expr, out: &mut BTreeSet<&'e str>) {
             binders(body, out);
         }
         Expr::Loop {
-            var, state, body, ..
+            source,
+            var,
+            state,
+            body,
+            on_stop,
+            ..
         } => {
             out.insert(var.0.as_str());
             out.extend(state.iter().map(|(name, _)| name.as_str()));
+            if let LoopSource::Until { cond, .. } = source.as_ref() {
+                binders(cond, out);
+            }
             binders(body, out);
+            if let Some(on_stop) = on_stop {
+                out.extend(on_stop.state.iter().map(|(name, _)| name.as_str()));
+                binders(&on_stop.body, out);
+            }
         }
         Expr::Together { tasks, .. } => tasks.iter().for_each(|task| binders(task, out)),
         Expr::TogetherFor { var, task, .. } => {
@@ -197,7 +233,7 @@ pub fn binders<'e>(expr: &'e Expr, out: &mut BTreeSet<&'e str>) {
             binders(body, out);
             binders(handler, out);
         }
-        Expr::Attempt { body, .. } => binders(body, out),
+        Expr::Attempt { body, .. } | Expr::Within { body, .. } => binders(body, out),
         Expr::With { cap, body, .. } => {
             out.insert(cap.as_str());
             binders(body, out);

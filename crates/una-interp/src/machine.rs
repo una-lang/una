@@ -1,18 +1,24 @@
 //! The evaluation of Core IR: the rules of `spec/11 §4`, big-step, call-by-value, left to
 //! right, with the capability environment, the world and the trace.
 
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use num_bigint::{BigInt, Sign};
 use una_core::json::Halt;
 use una_core::{
-    Atom, Bound, CapOp, Ctor, Decl, Expr, FixedOp, Fun, HandlerOp, IntType, Label, Level,
-    LoopSource, MapOp, Name, Path, Prim, Program, Rhs, Source, Type, Use,
+    Atom, Bound, CapOp, Ctor, DecimalOp, Decl, ExitTag, Expr, FixedOp, FloatOp, Fun, HandlerOp,
+    IntType, Label, Level, LoopSource, MapOp, Name, Path, Prim, Program, Rhs, Source, Type, Use,
 };
 use una_syntax::Span;
 
+mod dense;
+
+use crate::clock::Clock;
 use crate::host::{self, FileFault, Grant, World};
+use crate::stopping::{HardStop, RunStop};
 use crate::value::{Closure, EQUALITY_PAIR_BYTES, Key, Value, compare, equal_within};
 
 /// The environment `ρ`: binders and their values, innermost last. Core binders are unique
@@ -92,6 +98,50 @@ pub enum EventOutcome {
     /// failed one, which names no operation. The interpreter, which runs tasks one after
     /// another, never cancels one; a native run can.
     Cancelled,
+    /// A loop of the host stopped at the start of an iteration (ADR 0116 rule 14): the driver's,
+    /// when the run's stop came. Like `Cancelled`, it names no operation.
+    Stop,
+    /// An iteration of a `for ever within` passed its deadline (ADR 0116 rule 11): the event
+    /// after the first operation that the deadline made fail in the iteration. Like `Stop`, it
+    /// names no operation. Also the event of a `within` that timed out, after the outcomes of
+    /// the operations it interrupted (ADR 0117 rule 5).
+    Timeout,
+}
+
+/// The deadline of the iteration of a `for ever within` in progress (ADR 0116 rule 11), on the
+/// run's clock: under virtual time, only the virtual clock passes it (rule 19, `spec/26 §8`).
+#[derive(Clone, Debug)]
+pub(crate) struct Deadline {
+    /// When it passes, in milliseconds of the run's clock; `None` when it is beyond what the
+    /// clock can hold.
+    pub(crate) at: Option<u64>,
+    /// The path of the task that runs the loop, whose control flow observes the deadline's
+    /// failures (`spec/26 §7`).
+    pub(crate) owner: Vec<usize>,
+    /// Whether a task the iteration started met the deadline, for the join of its block.
+    pub(crate) hit: bool,
+    /// Whether the iteration's `timeout` event is in the trace already.
+    pub(crate) reported: bool,
+}
+
+impl Deadline {
+    /// The deadline `ms` milliseconds from now on `clock`, of a loop run by the task at
+    /// `owner`.
+    pub(crate) fn after(ms: u64, owner: Vec<usize>, clock: &Clock) -> Deadline {
+        Deadline {
+            at: clock.now().checked_add(ms),
+            owner,
+            hit: false,
+            reported: false,
+        }
+    }
+
+    /// The time left before it on `clock`, zero once it has passed; `None` for a deadline
+    /// that never passes.
+    pub(crate) fn left(&self, clock: &Clock) -> Option<std::time::Duration> {
+        self.at
+            .map(|at| std::time::Duration::from_millis(at.saturating_sub(clock.now())))
+    }
 }
 
 /// Why a run stops without a value or a failure.
@@ -126,6 +176,23 @@ pub enum Abort {
         /// The message, which names what the bytes were.
         message: &'static str,
     },
+    /// The host gave no random bytes for the process key of keyed hashing, before the run
+    /// started (U6009, `spec/28 §1` rule 3, ADR 0119 rule 9).
+    NoRandomBytes,
+    /// The call at this span makes a hash table after the run's table counter reached its
+    /// limit (U6003, `spec/28 §1` rule 4).
+    Tables {
+        /// The call.
+        span: Span,
+    },
+    /// The hard stop of the host came at the check point at this span: a call or a loop
+    /// iteration (U6007, ADR 0116 rule 16).
+    HostStop {
+        /// The check point.
+        span: Span,
+        /// Why the hard stop came.
+        hard: HardStop,
+    },
     /// A fault that a checked and verified program cannot reach, such as a division by zero
     /// while proof obligations are not verified yet (ADR 0027).
     Fault {
@@ -142,10 +209,23 @@ pub(crate) enum Stop<'p> {
     Fail(Value<'p>),
     /// An abort.
     Abort(Abort),
+    /// `exit_k(b, ...)`: the end of an iteration of the innermost loop, by `skip` or `stop`,
+    /// with the loop's state (`spec/26 §3`); the loop catches it.
+    Exit(ExitTag, Vec<Value<'p>>),
+    /// The deadline of the `within` with this id passed: its expression is cancelled at a
+    /// check point, and nothing inside runs further, until that `within` catches it and fails
+    /// with its time-out (`spec/27 §5`, ADR 0117 rule 5).
+    Cut(u64),
 }
 
 /// The result of evaluating an expression.
 pub(crate) type Flow<'p> = Result<Value<'p>, Stop<'p>>;
+
+mod seqs;
+
+mod sets;
+
+pub(crate) mod hashes;
 
 /// The fault of a `slice` outside the text (#693).
 const SLICE_OUTSIDE: &str = "`slice` outside the text, which its precondition excludes";
@@ -307,6 +387,8 @@ impl<'p> Index<'p> {
             let mut parts: Vec<Task<'_, '_>> = Vec::new();
             match value {
                 Value::Int(n) => out.push_str(&n.to_string()),
+                Value::F64(x) => out.push_str(&una_core::float::render(*x)),
+                Value::Decimal(c, s) => out.push_str(&una_core::decimal::render(c, *s)),
                 Value::Bool(b) => out.push_str(&b.to_string()),
                 Value::Text(t) => out.push_str(&una_core::quote(t)),
                 Value::Unit => out.push_str("unit"),
@@ -330,6 +412,39 @@ impl<'p> Index<'p> {
                     }
                     parts.push(Task::Text(close.to_owned()));
                 }
+                // The construction call that rebuilds a dense value, its elements in
+                // row-major order (ADR 0120 rule 41), each a task like a list's, so a deep
+                // value never recurses on the native stack.
+                Value::Dense(dense) => {
+                    let open = match (dense.kind, dense.shape.as_slice()) {
+                        (crate::value::DenseKind::Matrix, [rows, columns]) => {
+                            format!("matrix(rows: {rows}, columns: {columns}, elements: [")
+                        }
+                        _ => "array([".to_owned(),
+                    };
+                    parts.push(Task::Text(open));
+                    for k in 0..dense.count() {
+                        if k > 0 {
+                            parts.push(Task::Text(", ".to_owned()));
+                        }
+                        let Some(position) = dense.position_at(k) else {
+                            continue;
+                        };
+                        match dense.buffer.as_ref() {
+                            crate::value::Elements::F64(items) => {
+                                if let Some(x) = items.get(position) {
+                                    parts.push(Task::Text(una_core::float::render(*x)));
+                                }
+                            }
+                            crate::value::Elements::Values(items) => {
+                                if let Some(item) = items.get(position) {
+                                    parts.push(Task::Value(item));
+                                }
+                            }
+                        }
+                    }
+                    parts.push(Task::Text("])".to_owned()));
+                }
                 // `{k: v, ...}` in key order, `{}` when empty (`spec/21 §2` rule 4).
                 Value::Map(entries) => {
                     parts.push(Task::Text("{".to_owned()));
@@ -340,6 +455,53 @@ impl<'p> Index<'p> {
                         parts.push(Task::Value(key));
                         parts.push(Task::Text(": ".to_owned()));
                         parts.push(Task::Value(value));
+                    }
+                    parts.push(Task::Text("}".to_owned()));
+                }
+                // A `Stack` or a `Queue` as a list, front first (`spec/28 §4`, ADR 0119 rule 3).
+                Value::Seq(items) => {
+                    parts.push(Task::Text("[".to_owned()));
+                    for (i, item) in items.iter().enumerate() {
+                        if i > 0 {
+                            parts.push(Task::Text(", ".to_owned()));
+                        }
+                        parts.push(Task::Value(item));
+                    }
+                    parts.push(Task::Text("]".to_owned()));
+                }
+                // `{1, 2, 3}` in ascending order, `{}` when empty (`spec/28 §4`, ADR 0119
+                // rule 3).
+                Value::Set(items) => {
+                    parts.push(Task::Text("{".to_owned()));
+                    for (i, item) in items.values().enumerate() {
+                        if i > 0 {
+                            parts.push(Task::Text(", ".to_owned()));
+                        }
+                        parts.push(Task::Value(item));
+                    }
+                    parts.push(Task::Text("}".to_owned()));
+                }
+                // `{k: v, ...}` and `{a, b}` in insertion order, `{}` when empty (`spec/28 §4`,
+                // ADR 0119 rules 3 and 10): never in the order of the hashes.
+                Value::HashMap(table) => {
+                    parts.push(Task::Text("{".to_owned()));
+                    for (i, (key, value)) in table.entries.iter().enumerate() {
+                        if i > 0 {
+                            parts.push(Task::Text(", ".to_owned()));
+                        }
+                        parts.push(Task::Value(key));
+                        parts.push(Task::Text(": ".to_owned()));
+                        parts.push(Task::Value(value));
+                    }
+                    parts.push(Task::Text("}".to_owned()));
+                }
+                Value::HashSet(table) => {
+                    parts.push(Task::Text("{".to_owned()));
+                    for (i, (item, _)) in table.entries.iter().enumerate() {
+                        if i > 0 {
+                            parts.push(Task::Text(", ".to_owned()));
+                        }
+                        parts.push(Task::Value(item));
                     }
                     parts.push(Task::Text("}".to_owned()));
                 }
@@ -472,6 +634,16 @@ pub(crate) enum Form {
     Shown,
 }
 
+/// The host-driven step's settings (ADR 0116 rules 1 and 3, `spec/26 §2`): the tick period and
+/// the step budget in milliseconds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Drive {
+    /// The tick period, from 1 millisecond.
+    pub ticks: u64,
+    /// The step budget, when one is set.
+    pub budget: Option<u64>,
+}
+
 /// The limits of a run (`spec/11 §7`): its maximum call depth, and its memory budget, in MiB,
 /// with a probe of the bytes the process holds on the heap (ADR 0061). The machine never
 /// touches the allocator: the binary that counts allocations passes the probe.
@@ -485,6 +657,12 @@ pub struct Limits<'a> {
     pub held: &'a (dyn Fn() -> usize + Sync),
     /// The limits and deadline of each HTTP request (`spec/24 §4`).
     pub http: una_http::client::Settings,
+    /// `--stop-after-iterations`: the run's own host stop request, once this many iterations
+    /// of `for ever` loops, the driver's included, have started (ADR 0116 rule 19).
+    pub stop_after: Option<u64>,
+    /// The run's host stop state, which its watcher shares (ADR 0116 rules 14 and 16); a run
+    /// without one makes its own, which only its own stop reaches.
+    pub stop: Option<&'a Arc<RunStop>>,
 }
 
 impl Limits<'_> {
@@ -496,6 +674,8 @@ impl Limits<'_> {
             max_memory: usize::MAX,
             held: &unmeasured,
             http: una_http::client::Settings::default(),
+            stop_after: None,
+            stop: None,
         }
     }
 }
@@ -525,6 +705,21 @@ pub(crate) struct Machine<'p, 'w> {
     pub(crate) trace: Vec<Event>,
     depth: usize,
     max_depth: usize,
+    /// The run's clock, real or virtual (ADR 0116 rule 19, `spec/26 §8`).
+    pub(crate) clock: Clock,
+    /// The run's host stop state (ADR 0116 rules 14 and 16).
+    stop: Arc<RunStop>,
+    /// `--stop-after-iterations`, and the iterations of `for ever` loops started so far, the
+    /// driver's included (rule 19).
+    pub(crate) stop_after: Option<u64>,
+    iterations: u64,
+    /// Whether evaluation is in the body of a `for ever`, in that body's own task, callees
+    /// included: its `Http` operations are interruptible there (rule 14). No `for ever` holds
+    /// another one, so a flag suffices.
+    in_ever: bool,
+    /// The thread's attention word, and its value at the last check point (rule 18).
+    word: una_sys::attention::Word,
+    seen: Cell<u64>,
     /// The memory budget in MiB, the probe of the heap, and what the heap held when the run
     /// started, which does not count.
     max_memory: usize,
@@ -539,6 +734,17 @@ pub(crate) struct Machine<'p, 'w> {
     /// The path of the `together` task in progress, one 1-based index per enclosing block
     /// (`spec/19 §6`).
     task: Vec<usize>,
+    /// The deadline of the iteration of the `for ever within` in progress (ADR 0116 rule 11).
+    deadline: Option<Deadline>,
+    /// The `within`s in progress, outermost first: each one's id and when its deadline passes
+    /// on the run's clock, `None` beyond it (`spec/27 §5`).
+    withins: Vec<(u64, Option<u64>)>,
+    /// The id of the next `within`.
+    next_within: u64,
+    /// The `within`s an operation in progress shields, the first ones of `withins`: an
+    /// operation completes whatever deadline passes meanwhile (`spec/19 §6` rule 4, `spec/26
+    /// §7` rule 3), and only the `within`s its handler's own code starts can cut that code.
+    within_shield: usize,
     /// What the function in progress evaluates after the expression in progress, innermost
     /// last, with the names that each rebinds before reading them: a binding none of them
     /// reads is dead once the expression no longer reads it (#201).
@@ -549,6 +755,9 @@ pub(crate) struct Machine<'p, 'w> {
     reads: HashMap<*const Expr, Rc<BTreeSet<String>>>,
     /// The names each loop body binds, computed once (`una_core::binders`).
     binders: HashMap<*const Expr, Rc<BTreeSet<&'p str>>>,
+    /// The process key of keyed hashing, read before the run when its code can make a hash
+    /// table (`spec/28 §1` rule 3), else `None`. Each new table takes a key from it.
+    pub(crate) hashing: Option<una_hash::ProcessKey>,
 }
 
 impl<'p, 'w> Machine<'p, 'w> {
@@ -562,6 +771,20 @@ impl<'p, 'w> Machine<'p, 'w> {
         limits: Limits<'w>,
     ) -> Machine<'p, 'w> {
         let max_depth = limits.max_depth;
+        let stop = limits.stop.map_or_else(
+            || RunStop::new(crate::stopping::DEFAULT_GRACE_SECS),
+            Arc::clone,
+        );
+        // The thread's attention word as it stands, read before the hard stop is: a hard stop
+        // after the read raises the word, and one before it is seen here, with a value no word
+        // holds, so the first check point takes the slow path.
+        let word = una_sys::attention::register();
+        let seen = word.load();
+        let seen = if stop.hard().is_some() {
+            u64::MAX
+        } else {
+            seen
+        };
         Machine {
             index,
             world,
@@ -570,6 +793,13 @@ impl<'p, 'w> Machine<'p, 'w> {
             trace: Vec::new(),
             depth: 0,
             max_depth,
+            clock: Clock::real(),
+            stop,
+            stop_after: limits.stop_after,
+            iterations: 0,
+            in_ever: false,
+            word,
+            seen: Cell::new(seen),
             max_memory: limits.max_memory,
             http: limits.http,
             held: limits.held,
@@ -578,12 +808,17 @@ impl<'p, 'w> Machine<'p, 'w> {
             stack_budget: crate::stack_bytes(max_depth)
                 .map_or(usize::MAX, |bytes| bytes.saturating_sub(STACK_RESERVE)),
             installs: BTreeMap::new(),
+            deadline: None,
+            withins: Vec::new(),
+            next_within: 0,
+            within_shield: 0,
             frames: Vec::new(),
             task: Vec::new(),
             later: Vec::new(),
             callers: Vec::new(),
             reads: HashMap::new(),
             binders: HashMap::new(),
+            hashing: None,
         }
     }
 
@@ -602,6 +837,135 @@ impl<'p, 'w> Machine<'p, 'w> {
         let result = self.locate(result);
         self.frames.pop();
         result
+    }
+
+    /// Calls `fun`, a function the host calls, with `args` and the host capabilities of its
+    /// `uses`, as `main` is run.
+    fn call_hosted(&mut self, fun: &'p Fun, args: Vec<Value<'p>>) -> Flow<'p> {
+        let caps: BTreeMap<&'p str, Rc<Instance<'p>>> = fun
+            .uses
+            .iter()
+            .map(|u| {
+                let id = format!("host:{}", u.capability);
+                (u.cap.as_str(), Rc::new(Instance::Host { id }))
+            })
+            .collect();
+        self.frames.push(fun.span);
+        let mut env: Env<'p> = fun
+            .params
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .zip(args)
+            .collect();
+        let result = self.eval(&mut env, &Rc::new(caps), &fun.body);
+        let result = self.locate(result);
+        self.frames.pop();
+        result
+    }
+
+    /// Runs the host-driven step (ADR 0116 rule 3): `init` once, then `step` once per tick of
+    /// `drive.ticks` milliseconds on the run's clock (real or virtual), delivering the latest due tick with the
+    /// count of the due ticks skipped before it, then `on_stop` when one is declared. The loop
+    /// stops at the start of an iteration once `drive.stop_after` iterations have started (the
+    /// stop of `--stop-after-iterations`, rule 19); until host stops land, that is its only
+    /// stop. A failure of `init` ends the run as one of `main` does; `step` and `on_stop`
+    /// cannot fail (U3029).
+    pub(crate) fn drive(
+        &mut self,
+        init: &'p Fun,
+        step: &'p Fun,
+        on_stop: Option<&'p Fun>,
+        drive: &Drive,
+    ) -> Flow<'p> {
+        let mut state = self.call_hosted(init, Vec::new())?;
+        // Tick `k` is due `k * ticks` after `init` returns, on the run's clock: the monotonic
+        // one, or the virtual one, which the wait moves at once (ADR 0116 rule 19).
+        let origin = self.clock.now();
+        let period = drive.ticks.max(1);
+        let mut next: u64 = 0;
+        let ended = loop {
+            if self.ever_start() {
+                let slot = self.trace.len();
+                self.trace.push(Event {
+                    seq: slot + 1,
+                    task: String::new(),
+                    instance: String::new(),
+                    capability: String::new(),
+                    op: String::new(),
+                    args: Vec::new(),
+                    outcome: EventOutcome::Stop,
+                });
+                break Ok(());
+            }
+            // Tick `k` is due `k * ticks` after the first: wait for the next one, or deliver the
+            // latest one due, with the count of those skipped. On the virtual clock the wait
+            // moves the clock to the tick at once (rule 19); on the real one a host stop
+            // interrupts it, and the next iteration start stops (rule 3).
+            let due = origin.saturating_add(next.saturating_mul(period));
+            if self.clock.is_virtual() {
+                self.clock.wait_until(due);
+            } else {
+                let now = self.clock.now();
+                if now < due
+                    && !crate::stopping::wait_tick(
+                        &self.stop,
+                        std::time::Duration::from_millis(due - now),
+                    )
+                {
+                    continue;
+                }
+            }
+            let elapsed = self.clock.now().saturating_sub(origin);
+            let latest = (elapsed / period).max(next);
+            let missed = latest - next;
+            let at = latest.saturating_mul(drive.ticks);
+            next = latest + 1;
+            let tick = Value::data(
+                Ctor {
+                    kind: Path {
+                        module: "std.drive".to_owned(),
+                        name: "Tick".to_owned(),
+                    },
+                    name: "Tick".to_owned(),
+                    index: 0,
+                },
+                vec![
+                    Value::int(i64::try_from(at).unwrap_or(i64::MAX)),
+                    Value::int(i64::try_from(missed).unwrap_or(i64::MAX)),
+                ],
+            );
+            // `step(edit state, input)` returns `(state', unit)` in Core (`spec/17 §3`). It is
+            // the body of the host's `for ever`, so a host stop interrupts its `Http` waits.
+            self.in_ever = true;
+            let stepped = self.call_hosted(step, vec![state.clone(), tick]);
+            self.in_ever = false;
+            match stepped {
+                Ok(Value::Tuple(parts)) => match parts.first() {
+                    Some(updated) => state = updated.clone(),
+                    None => {
+                        break Err(Stop::Abort(Abort::Fault {
+                            message: "`step` returned no state".to_owned(),
+                            span: Some(step.span),
+                        }));
+                    }
+                },
+                Ok(_) => {
+                    break Err(Stop::Abort(Abort::Fault {
+                        message: "`step` returned no state".to_owned(),
+                        span: Some(step.span),
+                    }));
+                }
+                Err(stop) => break Err(stop),
+            }
+        };
+        ended?;
+        match on_stop {
+            Some(on_stop) => {
+                self.call_hosted(on_stop, vec![state])?;
+                Ok(Value::Unit)
+            }
+            None => Ok(Value::Unit),
+        }
     }
 
     /// Evaluates `expr` in `env` without capabilities: an example's body, whose `given` lines
@@ -646,6 +1010,14 @@ impl<'p, 'w> Machine<'p, 'w> {
     /// Whether the heap the run holds is within its budget (ADR 0061): checked at each call
     /// and at each iteration of a `for` loop, at `span`, else the run aborts with U6003.
     fn within_budget(&self, span: Span) -> Result<(), Stop<'p>> {
+        // ADR 0116 rule 16: the hard stop cancels the run at its next check point, found on
+        // the slow path when the thread's attention word changed (rule 18).
+        if let Some(now) = self.word.changed_since(self.seen.get()) {
+            self.seen.set(now);
+            if let Some(hard) = self.stop.hard() {
+                return Err(Stop::Abort(Abort::HostStop { span, hard }));
+            }
+        }
         let budget = self.max_memory.saturating_mul(1024 * 1024);
         if (self.held)().saturating_sub(self.baseline) > budget {
             return Err(Stop::Abort(Abort::Memory {
@@ -653,7 +1025,113 @@ impl<'p, 'w> Machine<'p, 'w> {
                 limit: self.max_memory,
             }));
         }
+        // `spec/27 §5`: past the deadline of a `within` in progress, its expression is
+        // cancelled here; the outermost one that passed reports it (rule 5, Nesting).
+        if let Some(id) = self.passed_within(self.within_shield) {
+            return Err(Stop::Cut(id));
+        }
         Ok(())
+    }
+
+    /// The outermost `within` in progress from position `from` on whose deadline has passed on
+    /// the run's clock. O(withins), and no clock reading without one.
+    fn passed_within(&self, from: usize) -> Option<u64> {
+        if self.withins.len() <= from {
+            return None;
+        }
+        let now = self.clock.now();
+        self.withins
+            .iter()
+            .skip(from)
+            .find(|(_, at)| at.is_some_and(|at| at <= now))
+            .map(|(id, _)| *id)
+    }
+
+    /// The time left before the earliest deadline of the `within`s in progress, zero once it
+    /// has passed; `None` without one that passes.
+    fn within_left(&self) -> Option<std::time::Duration> {
+        let at = self.withins.iter().filter_map(|(_, at)| *at).min()?;
+        Some(std::time::Duration::from_millis(
+            at.saturating_sub(self.clock.now()),
+        ))
+    }
+
+    /// `e within d` (`spec/27 §5`, ADR 0117 rule 5): `body` bounded by the deadline `ms`
+    /// milliseconds after now. Its outcome stands when it returns before the deadline, which is
+    /// checked once more when it returns; past it, the `within` fails with `timeout` after its
+    /// `timeout` event. A failure `x` in time fails as `wrap(x)`, or as `x` without a `wrap`.
+    /// An outer `within` whose deadline passed too reports instead.
+    fn within(
+        &mut self,
+        env: &mut Env<'p>,
+        caps: &Caps<'p>,
+        ms: u64,
+        body: &'p Expr,
+        timeout: &'p Ctor,
+        wrap: Option<&'p Ctor>,
+    ) -> Flow<'p> {
+        let id = self.next_within;
+        self.next_within += 1;
+        let at = self.clock.now().checked_add(ms);
+        let depth = self.withins.len();
+        self.withins.push((id, at));
+        let result = self.eval(env, caps, body);
+        self.withins.truncate(depth);
+        let timed_out = |machine: &mut Self| {
+            machine.within_timeout_event();
+            Err(Stop::Fail(Value::data(timeout.clone(), Vec::new())))
+        };
+        match result {
+            Err(Stop::Cut(cut)) if cut == id => timed_out(self),
+            Err(stop @ (Stop::Cut(_) | Stop::Abort(_) | Stop::Exit(..))) => Err(stop),
+            result => {
+                if let Some(outer) = self.passed_within(self.within_shield) {
+                    return Err(Stop::Cut(outer));
+                }
+                if at.is_some_and(|at| at <= self.clock.now()) {
+                    return timed_out(self);
+                }
+                match (result, wrap) {
+                    (Err(Stop::Fail(failure)), Some(wrap)) => {
+                        Err(Stop::Fail(Value::data(wrap.clone(), vec![failure])))
+                    }
+                    (result, _) => result,
+                }
+            }
+        }
+    }
+
+    /// The `cancelled` events of the tasks `from..to` of the block in progress, which a cut
+    /// stopped or kept from starting (`spec/27 §5`), in task order: each task the cut stops ends
+    /// with one, as natively, whatever had started.
+    fn cut_events(&mut self, from: usize, to: usize) {
+        for index in from..to {
+            let mut path: Vec<String> = self.task.iter().map(ToString::to_string).collect();
+            path.push((index + 1).to_string());
+            self.trace.push(Event {
+                seq: self.trace.len() + 1,
+                task: path.join("."),
+                instance: String::new(),
+                capability: String::new(),
+                op: String::new(),
+                args: Vec::new(),
+                outcome: EventOutcome::Cancelled,
+            });
+        }
+    }
+
+    /// Appends the `timeout` event of a `within` of the task in progress (`spec/27 §5`).
+    fn within_timeout_event(&mut self) {
+        let task: Vec<String> = self.task.iter().map(ToString::to_string).collect();
+        self.trace.push(Event {
+            seq: self.trace.len() + 1,
+            task: task.join("."),
+            instance: String::new(),
+            capability: String::new(),
+            op: String::new(),
+            args: Vec::new(),
+            outcome: EventOutcome::Timeout,
+        });
     }
 
     /// Structural equality at `span`, within the memory budget: a comparison visits at most as
@@ -791,6 +1269,30 @@ impl<'p, 'w> Machine<'p, 'w> {
                 args,
                 ..
             } => args.get(..1)?,
+            // A `Stack` or a `Queue` given up to a push or a removal (`spec/28 §5`).
+            Rhs::Prim {
+                prim: Prim::Seq(op),
+                args,
+                ..
+            } if op.rebuilds() => args.get(..1)?,
+            // A set given up to `add`, `remove`, `with`, `without` or a set operation that
+            // builds on its receiver (`spec/28 §6`).
+            Rhs::Prim {
+                prim: Prim::Set(op),
+                args,
+                ..
+            } if op.rebuilds() => args.get(..1)?,
+            // A hash map or a hash set given up the same way (`spec/28 §7`).
+            Rhs::Prim {
+                prim: Prim::HashMap(op),
+                args,
+                ..
+            } if op.rebuilds() => args.get(..1)?,
+            Rhs::Prim {
+                prim: Prim::HashSet(op),
+                args,
+                ..
+            } if op.rebuilds() => args.get(..1)?,
             _ => return None,
         };
         let all = match rhs {
@@ -869,6 +1371,19 @@ impl<'p, 'w> Machine<'p, 'w> {
                                         prim: Prim::Map(op),
                                         ..
                                     } => map_apply(*op, args)?,
+                                    Rhs::Prim {
+                                        prim: Prim::Seq(op),
+                                        ..
+                                    } => seqs::seq_apply(*op, args)?,
+                                    Rhs::Prim {
+                                        prim: Prim::Set(op),
+                                        ..
+                                    } => sets::set_apply(*op, args)?,
+                                    Rhs::Prim {
+                                        prim: prim @ (Prim::HashMap(_) | Prim::HashSet(_)),
+                                        span,
+                                        ..
+                                    } => self.hash_apply(*prim, args, *span)?,
                                     _ => return Err(fault("an update that is not one")),
                                 }
                             }
@@ -895,16 +1410,26 @@ impl<'p, 'w> Machine<'p, 'w> {
                     state,
                     init,
                     body,
+                    on_stop,
                     span,
                 } => {
                     let mut current = self.atoms(env, init)?;
+                    // `on stop` runs after a failure of the body with the state from before
+                    // the loop (ADR 0116 rule 10).
+                    let before = on_stop.as_ref().map(|_| current.clone());
                     // The next iterations read the bindings the body reads, but for the item,
                     // the state and the binders of the body, which each iteration binds anew
                     // before reading them: Core binders are unique (#261).
+                    let until = match source.as_ref() {
+                        LoopSource::Until { cond, .. } => Some(cond.as_ref()),
+                        _ => None,
+                    };
+                    let in_cond = until.map(|cond| self.binders(cond));
                     let rebound = std::iter::once(var.as_ref())
                         .chain(state.iter())
                         .map(|(name, _)| name.as_str())
                         .chain(self.binders(body).iter().copied())
+                        .chain(in_cond.iter().flat_map(|names| names.iter().copied()))
                         .collect();
                     self.later.push((body, rebound));
                     let result = self.iterations(
@@ -920,8 +1445,32 @@ impl<'p, 'w> Machine<'p, 'w> {
                         current,
                     );
                     self.later.pop();
-                    current = result?;
-                    return Ok(Value::Tuple(Rc::new(current)));
+                    let Some(on_stop) = on_stop else {
+                        current = result?;
+                        return Ok(Value::Tuple(Rc::new(current)));
+                    };
+                    return match result {
+                        Ok(last) => {
+                            let last = self.on_stop(env, &caps, on_stop, last)?;
+                            Ok(Value::Tuple(Rc::new(last)))
+                        }
+                        Err(Stop::Fail(failure)) => {
+                            self.on_stop(env, &caps, on_stop, before.unwrap_or_default())?;
+                            Err(Stop::Fail(failure))
+                        }
+                        // A `within` around the loop passed its deadline: the loop ends as after
+                        // a failure, and its `on stop` runs, shielded from that deadline, before
+                        // the cut goes on (ADR 0116 rule 15, ADR 0117 rule 5).
+                        Err(Stop::Cut(id)) => {
+                            let shield =
+                                std::mem::replace(&mut self.within_shield, self.withins.len());
+                            let ran = self.on_stop(env, &caps, on_stop, before.unwrap_or_default());
+                            self.within_shield = shield;
+                            ran?;
+                            Err(Stop::Cut(id))
+                        }
+                        Err(other) => Err(other),
+                    };
                 }
                 // The tasks of a `together` block (`spec/19 §6`), run one after another in
                 // branch order, the sequential schedule: a failure stops the block before
@@ -934,15 +1483,26 @@ impl<'p, 'w> Machine<'p, 'w> {
                     self.later.push((expr, rebound));
                     let mut results = Vec::with_capacity(tasks.len());
                     for (index, task) in tasks.iter().enumerate() {
-                        match self.task(env, &caps, index, task) {
+                        let result = match self.passed_within(self.within_shield) {
+                            Some(id) => Err(Stop::Cut(id)),
+                            None => self.task(env, &caps, index, task),
+                        };
+                        match result {
                             Ok(result) => results.push(result),
                             Err(stop) => {
                                 self.later.pop();
+                                if matches!(stop, Stop::Fail(_)) {
+                                    self.joined();
+                                }
+                                if matches!(stop, Stop::Cut(_)) {
+                                    self.cut_events(index, tasks.len());
+                                }
                                 return Err(stop);
                             }
                         }
                     }
                     self.later.pop();
+                    self.joined();
                     return Ok(Value::Tuple(Rc::new(results)));
                 }
                 // `together for` (`spec/19 §6`): one task per element, in element order.
@@ -957,20 +1517,31 @@ impl<'p, 'w> Machine<'p, 'w> {
                     // As for `together`, and the element too, which each task binds anew (#263).
                     let rebound = self.binders(expr).iter().copied().collect();
                     self.later.push((expr, rebound));
+                    let count = items.len();
                     for (index, item) in items.into_iter().enumerate() {
                         let mark = env.len();
                         env.push((var.0.as_str(), item));
-                        let result = self.task(env, &caps, index, task);
+                        let result = match self.passed_within(self.within_shield) {
+                            Some(id) => Err(Stop::Cut(id)),
+                            None => self.task(env, &caps, index, task),
+                        };
                         env.truncate(mark);
                         match result {
                             Ok(result) => results.push(result),
                             Err(stop) => {
                                 self.later.pop();
+                                if matches!(stop, Stop::Fail(_)) {
+                                    self.joined();
+                                }
+                                if matches!(stop, Stop::Cut(_)) {
+                                    self.cut_events(index, count);
+                                }
                                 return Err(stop);
                             }
                         }
                     }
                     self.later.pop();
+                    self.joined();
                     return Ok(Value::List(Rc::new(results)));
                 }
                 // `let (x, ...) = a in e` (`spec/17 §4`).
@@ -1027,6 +1598,10 @@ impl<'p, 'w> Machine<'p, 'w> {
                     let fields = self.atoms(env, args)?;
                     return Err(Stop::Fail(Value::data(ctor.clone(), fields)));
                 }
+                Expr::Exit { tag, state, .. } => {
+                    let values = self.atoms(env, state)?;
+                    return Err(Stop::Exit(*tag, values));
+                }
                 Expr::Handle {
                     body,
                     error,
@@ -1052,6 +1627,27 @@ impl<'p, 'w> Machine<'p, 'w> {
                         }
                         Err(abort) => Err(abort),
                     };
+                }
+                Expr::Within {
+                    deadline,
+                    body,
+                    timeout,
+                    wrap,
+                    ..
+                } => {
+                    // A deadline below 1 is refuted by verification, and has passed at once; one
+                    // that does not fit `u64` never passes.
+                    let ms = match self.atom(env, deadline)? {
+                        Value::Int(n) => {
+                            if n.sign() == Sign::Minus {
+                                0
+                            } else {
+                                u64::try_from(&n).unwrap_or(u64::MAX)
+                            }
+                        }
+                        _ => return Err(fault("a deadline that is not an `Int`")),
+                    };
+                    return self.within(env, &caps, ms, body, timeout, wrap.as_deref());
                 }
                 Expr::With { cap, source, body } => {
                     let instance = self.instance(env, &caps, cap, source)?;
@@ -1119,6 +1715,13 @@ impl<'p, 'w> Machine<'p, 'w> {
                     .parse::<BigInt>()
                     .map_err(|_| fault(format!("`{digits}` is not an integer")))?,
             ),
+            Atom::F64(bits) => Value::F64(una_core::float::from_bits(*bits)),
+            Atom::Decimal { coefficient, scale } => Value::Decimal(
+                coefficient
+                    .parse::<BigInt>()
+                    .map_err(|_| fault(format!("`{coefficient}` is not a coefficient")))?,
+                *scale,
+            ),
             Atom::Bool(b) => Value::Bool(*b),
             Atom::Text(text) => Value::text(text),
             Atom::Unit => Value::Unit,
@@ -1135,13 +1738,84 @@ impl<'p, 'w> Machine<'p, 'w> {
         mut current: Vec<Value<'p>>,
     ) -> Result<Vec<Value<'p>>, Stop<'p>> {
         match source {
+            // `ever`: until `stop`, a failure, or a host stop at the start of an iteration
+            // (`spec/26 §5`, ADR 0116 rules 13 and 14). With `within d`, each iteration has the
+            // deadline `d` after its start, which every interruptible operation it waits on or
+            // starts honors (`spec/26 §7`).
+            LoopSource::Ever { within } => {
+                let period = match within {
+                    Some((deadline, _)) => match self.atom(env, deadline)? {
+                        // A deadline below 1 is refuted by verification; one that does not
+                        // fit `u64` never passes.
+                        Value::Int(n) => Some(if n.sign() == Sign::Minus {
+                            0
+                        } else {
+                            u64::try_from(&n).unwrap_or(u64::MAX)
+                        }),
+                        _ => return Err(fault("a deadline that is not an `Int`")),
+                    },
+                    None => None,
+                };
+                let outer = self.deadline.take();
+                let ended = loop {
+                    if self.ever_start() {
+                        self.stop_event();
+                        break Ok(());
+                    }
+                    if let Err(stop) = self.within_budget(span) {
+                        break Err(stop);
+                    }
+                    self.in_ever = true;
+                    self.deadline =
+                        period.map(|ms| Deadline::after(ms, self.task.clone(), &self.clock));
+                    let taken = std::mem::take(&mut current);
+                    match self.iteration(env, caps, var, state, taken, &Value::Unit, body) {
+                        Ok((next, stopped)) => {
+                            current = next;
+                            if stopped {
+                                break Ok(());
+                            }
+                        }
+                        Err(stop) => break Err(stop),
+                    }
+                };
+                self.in_ever = false;
+                self.deadline = outer;
+                ended?;
+            }
+            // `until(c)`: `c` with the state bound, before each iteration (`spec/26 §4`).
+            LoopSource::Until { cond, .. } => loop {
+                self.within_budget(span)?;
+                let mark = env.len();
+                for ((name, _), value) in state.iter().zip(&current) {
+                    env.push((name.as_str(), value.clone()));
+                }
+                let holds = self.eval(env, caps, cond);
+                env.truncate(mark);
+                match holds? {
+                    Value::Bool(true) => break,
+                    Value::Bool(false) => {}
+                    _ => return Err(fault("an `until` condition that is not a `Bool`")),
+                }
+                let stopped;
+                (current, stopped) =
+                    self.iteration(env, caps, var, state, current, &Value::Unit, body)?;
+                if stopped {
+                    break;
+                }
+            },
             LoopSource::List(list) => {
                 let Value::List(items) = self.atom(env, list)? else {
                     return Err(fault("a loop over a value that is not a list"));
                 };
                 for item in items.iter() {
                     self.within_budget(span)?;
-                    current = self.iteration(env, caps, var, state, current, item, body)?;
+                    let stopped;
+                    (current, stopped) =
+                        self.iteration(env, caps, var, state, current, item, body)?;
+                    if stopped {
+                        break;
+                    }
                 }
             }
             LoopSource::Range {
@@ -1166,7 +1840,12 @@ impl<'p, 'w> Machine<'p, 'w> {
                     }
                     let item = Value::Int(index.clone());
                     self.within_budget(span)?;
-                    current = self.iteration(env, caps, var, state, current, &item, body)?;
+                    let stopped;
+                    (current, stopped) =
+                        self.iteration(env, caps, var, state, current, &item, body)?;
+                    if stopped {
+                        break;
+                    }
                     // The successor of the upper bound is never computed, so a
                     // range up to the greatest value of a type stops there.
                     if index == high {
@@ -1179,8 +1858,64 @@ impl<'p, 'w> Machine<'p, 'w> {
         Ok(current)
     }
 
+    /// Whether the loop of the host, or a `for ever`, stops at the iteration that starts now
+    /// (ADR 0116 rules 13, 14 and 19): a host stop request has reached the run, which is
+    /// sticky; or `--stop-after-iterations` iterations have started, which makes the run's own
+    /// request now. Otherwise the iteration counts as started.
+    pub(crate) fn ever_start(&mut self) -> bool {
+        if self.stop.stopped() {
+            return true;
+        }
+        if self
+            .stop_after
+            .is_some_and(|limit| self.iterations >= limit)
+        {
+            self.stop.request_local();
+            return true;
+        }
+        self.iterations = self.iterations.saturating_add(1);
+        false
+    }
+
+    /// Appends the `stop` event of a loop that stops at the start of an iteration (ADR 0116
+    /// rule 14), in the current task.
+    pub(crate) fn stop_event(&mut self) {
+        let seq = self.trace.len() + 1;
+        let task: Vec<String> = self.task.iter().map(ToString::to_string).collect();
+        self.trace.push(Event {
+            seq,
+            task: task.join("."),
+            instance: String::new(),
+            capability: String::new(),
+            op: String::new(),
+            args: Vec::new(),
+            outcome: EventOutcome::Stop,
+        });
+    }
+
+    /// The `on stop` block of a loop with the state `current` bound; returns the state it gives
+    /// (`spec/26 §5`).
+    fn on_stop(
+        &mut self,
+        env: &mut Env<'p>,
+        caps: &Caps<'p>,
+        on_stop: &'p una_core::OnStop,
+        current: Vec<Value<'p>>,
+    ) -> Result<Vec<Value<'p>>, Stop<'p>> {
+        let mark = env.len();
+        for ((name, _), value) in on_stop.state.iter().zip(current) {
+            env.push((name.as_str(), value));
+        }
+        let result = self.eval(env, caps, &on_stop.body);
+        env.truncate(mark);
+        match result? {
+            Value::Tuple(items) if items.len() == on_stop.state.len() => Ok(items.as_ref().clone()),
+            _ => Err(fault("an `on stop` block whose value is not its state")),
+        }
+    }
+
     /// One iteration of a loop: the body with the loop variable and the current state bound;
-    /// returns the new state.
+    /// returns the new state, and whether a `stop` ended the loop (`spec/26 §3`).
     #[allow(clippy::too_many_arguments)]
     fn iteration(
         &mut self,
@@ -1191,7 +1926,7 @@ impl<'p, 'w> Machine<'p, 'w> {
         current: Vec<Value<'p>>,
         item: &Value<'p>,
         body: &'p Expr,
-    ) -> Result<Vec<Value<'p>>, Stop<'p>> {
+    ) -> Result<(Vec<Value<'p>>, bool), Stop<'p>> {
         let mark = env.len();
         env.push((var.0.as_str(), item.clone()));
         for ((name, _), value) in state.iter().zip(current) {
@@ -1199,9 +1934,15 @@ impl<'p, 'w> Machine<'p, 'w> {
         }
         let result = self.eval(env, caps, body);
         env.truncate(mark);
-        match result? {
-            Value::Tuple(items) if items.len() == state.len() => Ok(items.as_ref().clone()),
-            _ => Err(fault("a loop body whose value is not its state")),
+        match result {
+            Ok(Value::Tuple(items)) if items.len() == state.len() => {
+                Ok((items.as_ref().clone(), false))
+            }
+            Err(Stop::Exit(tag, values)) if values.len() == state.len() => {
+                Ok((values, tag == ExitTag::Stop))
+            }
+            Err(Stop::Exit(..)) | Ok(_) => Err(fault("a loop body whose value is not its state")),
+            Err(stop) => Err(stop),
         }
     }
 
@@ -1214,9 +1955,13 @@ impl<'p, 'w> Machine<'p, 'w> {
         task: &'p Expr,
     ) -> Flow<'p> {
         self.task.push(index + 1);
+        // A started task is a task of its own: a host stop reaches it only through its own
+        // `for ever` loops (ADR 0116 rule 14).
+        let in_ever = std::mem::replace(&mut self.in_ever, false);
         let mark = env.len();
         let result = self.eval(env, caps, task);
         env.truncate(mark);
+        self.in_ever = in_ever;
         self.task.pop();
         result
     }
@@ -1233,6 +1978,9 @@ impl<'p, 'w> Machine<'p, 'w> {
                 Value::List(items) => Ok(items.as_ref().clone()),
                 _ => Err(fault("a `together for` over a value that is not a list")),
             },
+            LoopSource::Until { .. } | LoopSource::Ever { .. } => {
+                Err(fault("a `together for` with an `until` or `ever` source"))
+            }
             LoopSource::Range {
                 low,
                 high,
@@ -1279,6 +2027,11 @@ impl<'p, 'w> Machine<'p, 'w> {
                 prim, args, span, ..
             } => {
                 let args = self.atoms(env, args)?;
+                // A hash table's operations compare keys within the memory budget, as `==`
+                // does (`spec/28 §7`).
+                if matches!(prim, Prim::HashMap(_) | Prim::HashSet(_)) {
+                    return self.hash_apply(*prim, args, *span);
+                }
                 if let (Prim::Eq | Prim::Ne, [a, b]) = (*prim, args.as_slice()) {
                     let same = self.equal_at(a, b, *span)?;
                     return Ok(Value::Bool(same == (*prim == Prim::Eq)));
@@ -1392,12 +2145,34 @@ impl<'p, 'w> Machine<'p, 'w> {
     ) -> Flow<'p> {
         match function.module.as_str() {
             "prelude" => return self.prelude(&function.name, args, span),
+            una_core::COLLECTIONS_MODULE => {
+                if let Some(made) = self.collections(&function.name, span) {
+                    return made;
+                }
+            }
             "std.testing" if function.name == "fake_hash" => {
                 return match args.first() {
                     Some(Value::Int(seed)) => {
                         Ok(Value::Hashed(Rc::from(host::fake_hash(&seed.to_string()))))
                     }
                     _ => Err(fault("`fake_hash` without an `Int` seed")),
+                };
+            }
+            // `elapse(d)` moves the test's virtual clock forward by `d` milliseconds at once
+            // (ADR 0116 rule 19, `spec/14 §4`). Its `requires d >= 0` is verified at each call,
+            // and only tests call it, whose clock is always virtual.
+            "std.testing" if function.name == "elapse" => {
+                let by = match args.first() {
+                    Some(Value::Int(d)) if d.sign() != Sign::Minus => {
+                        u64::try_from(d).unwrap_or(u64::MAX)
+                    }
+                    _ => return Err(fault("`elapse` without a duration of at least 0")),
+                };
+                return match self.clock.elapse(by) {
+                    Ok(_) => Ok(Value::Unit),
+                    Err(crate::clock::NotVirtual) => {
+                        Err(fault("`elapse` outside a test, on the real clock"))
+                    }
                 };
             }
             _ => {}
@@ -1426,6 +2201,46 @@ impl<'p, 'w> Machine<'p, 'w> {
         self.leave(result)
     }
 
+    /// A function of `std.collections` whose body is native (`spec/28`, ADR 0119), called at
+    /// `span`, or `None` for one the module declares in Una.
+    fn collections(&mut self, name: &str, span: Span) -> Option<Flow<'p>> {
+        Some(Ok(match name {
+            // O(1): an empty ring buffer allocates nothing.
+            "empty_stack" | "empty_queue" => Value::Seq(Rc::default()),
+            // O(1).
+            "empty_set" => Value::Set(Rc::default()),
+            // O(1): a new table with a key of its own (`spec/28 §1` rule 4).
+            "empty_hash_map" | "empty_hash_set" => {
+                let key = match hashes::table_key(self.hashing.as_ref(), span) {
+                    Ok(key) => key,
+                    Err(stop) => return Some(Err(stop)),
+                };
+                let table = Rc::new(crate::value::HashTable::new(key));
+                if name == "empty_hash_map" {
+                    Value::HashMap(table)
+                } else {
+                    Value::HashSet(table)
+                }
+            }
+            _ => return None,
+        }))
+    }
+
+    /// A method of a hash map or a hash set at `span`, its keys compared by `==` within the
+    /// memory budget, as `equal_at` compares (`spec/28 §7`).
+    fn hash_apply(&self, prim: Prim, args: Vec<Value<'p>>, span: Span) -> Flow<'p> {
+        let budget = hashes::Budget {
+            pairs: self.max_memory.saturating_mul(1024 * 1024) / EQUALITY_PAIR_BYTES,
+            span,
+            limit: self.max_memory,
+        };
+        match prim {
+            Prim::HashMap(op) => hashes::map_apply(op, args, &budget),
+            Prim::HashSet(op) => hashes::set_apply(op, args, &budget),
+            _ => Err(fault("a hash table operation of another primitive")),
+        }
+    }
+
     /// A call of a function value.
     fn apply(&mut self, callee: &Value<'p>, args: Vec<Value<'p>>, span: Span) -> Flow<'p> {
         let Value::Closure(closure) = callee else {
@@ -1449,6 +2264,11 @@ impl<'p, 'w> Machine<'p, 'w> {
             span,
             ..
         } = *request;
+        // A `within` whose deadline has passed cancels its expression before an operation
+        // starts, as native code polls before each one (`spec/27 §5`, `spec/19 §6` rule 4).
+        if let Some(id) = self.passed_within(self.within_shield) {
+            return Err(Stop::Cut(id));
+        }
         let instance = caps
             .get(cap)
             .cloned()
@@ -1507,7 +2327,9 @@ impl<'p, 'w> Machine<'p, 'w> {
                     .zip(values.iter().cloned())
                     .collect();
                 env.extend(implementation.params.iter().map(String::as_str).zip(args));
+                let shield = std::mem::replace(&mut self.within_shield, self.withins.len());
                 let result = self.eval(&mut env, own, &implementation.body);
+                self.within_shield = shield;
                 self.leave(result)
             }
         };
@@ -1517,7 +2339,10 @@ impl<'p, 'w> Machine<'p, 'w> {
                 variant: variant(failure),
                 value: self.index.render(failure),
             },
-            Err(Stop::Abort(_)) => EventOutcome::Aborted,
+            // An operation in progress completes (`spec/19 §6` rule 4): a cut inside its
+            // handler is only one of a `within` that the handler's own code started, which
+            // catches it there.
+            Err(Stop::Abort(_) | Stop::Exit(..) | Stop::Cut(_)) => EventOutcome::Aborted,
         };
         if let Some(event) = self.trace.get_mut(slot) {
             event.outcome = outcome;
@@ -1525,9 +2350,58 @@ impl<'p, 'w> Machine<'p, 'w> {
         result
     }
 
+    /// An operation failed because the deadline of the iteration in progress passed (ADR 0116
+    /// rule 11). In the task that runs the loop, the iteration observes it here; in a task it
+    /// started, at the join of that task's block ([`Self::joined`]).
+    fn timeout_event(&mut self) {
+        let Some(deadline) = self.deadline.as_mut() else {
+            return;
+        };
+        if self.task != deadline.owner {
+            deadline.hit = true;
+            return;
+        }
+        self.timeout_observed();
+    }
+
+    /// The join of a `together` or `together for` block: when the task that runs the loop
+    /// joins a block one of whose tasks met the deadline, the iteration observes it here.
+    fn joined(&mut self) {
+        if self
+            .deadline
+            .as_ref()
+            .is_some_and(|deadline| deadline.hit && self.task == deadline.owner)
+        {
+            self.timeout_observed();
+        }
+    }
+
+    /// Appends the iteration's one `timeout` event, with the path of the task that runs the
+    /// loop, the first time its control flow observes a failure the deadline caused: a trace
+    /// does not depend on which task met the deadline first (`spec/26 §7`).
+    fn timeout_observed(&mut self) {
+        let Some(deadline) = self.deadline.as_mut() else {
+            return;
+        };
+        if deadline.reported {
+            return;
+        }
+        deadline.reported = true;
+        let task: Vec<String> = deadline.owner.iter().map(ToString::to_string).collect();
+        self.trace.push(Event {
+            seq: self.trace.len() + 1,
+            task: task.join("."),
+            instance: String::new(),
+            capability: String::new(),
+            op: String::new(),
+            args: Vec::new(),
+            outcome: EventOutcome::Timeout,
+        });
+    }
+
     /// An operation of `Http` (`spec/24`), by the client that native code shares.
     fn http(&mut self, op: &str, args: &[Value<'p>], span: Span) -> Flow<'p> {
-        use una_http::client::{Error, Request, send};
+        use una_http::client::{Error, Request, send, send_interruptible};
         use una_http::grant::Method;
         let fail = |error: Error| {
             let (name, index) = match error {
@@ -1539,6 +2413,8 @@ impl<'p, 'w> Machine<'p, 'w> {
                 Error::TooLarge => ("TooLarge", 5),
                 Error::Tls => ("Tls", 6),
                 Error::Protocol => ("Protocol", 7),
+                // Edition 0.4 only: no operation of an earlier edition runs in a `for ever`.
+                Error::Interrupted => ("Interrupted", 8),
                 // Not a failure: the run aborts.
                 Error::HeaderValue => return Stop::Abort(Abort::HeaderValue { span }),
             };
@@ -1603,7 +2479,45 @@ impl<'p, 'w> Machine<'p, 'w> {
             body: body.as_bytes(),
             bearer: bearer.as_deref(),
         };
-        let response = send(&request, &grants, &self.http).map_err(fail)?;
+        // The deadline of a `for ever within` iteration (`spec/26 §7`): past it, the request
+        // fails at once with `TimedOut`; before it, it waits no longer than the time left. In
+        // the body of a `for ever`, a host stop interrupts the request too (ADR 0116 rule 12):
+        // whichever comes first cuts the wait, in the same poll.
+        //
+        // Under virtual time, a network wait takes no virtual time (ADR 0116 rule 19), so only a
+        // deadline the virtual clock has already reached cuts the request, at once.
+        // The deadlines of the `within`s in progress bound the wait the same way (`spec/27 §5`);
+        // a cut by one is observed at the next check point, or when its expression returns.
+        let mut settings = self.http;
+        let mut cut = false;
+        let ever = self
+            .deadline
+            .as_ref()
+            .and_then(|deadline| deadline.left(&self.clock));
+        let within = self.within_left();
+        let (left, by_ever) = match (ever, within) {
+            (Some(ever), Some(within)) if within < ever => (Some(within), false),
+            (Some(ever), _) => (Some(ever), true),
+            (None, within) => (within, false),
+        };
+        if let Some(left) = left
+            && left < settings.timeout
+            && (left.is_zero() || !self.clock.is_virtual())
+        {
+            settings.timeout = left;
+            cut = true;
+        }
+        let sent = if cut && settings.timeout.is_zero() {
+            Err(Error::TimedOut)
+        } else if self.in_ever {
+            send_interruptible(&request, &grants, &settings, &self.stop.interrupt())
+        } else {
+            send(&request, &grants, &settings)
+        };
+        if cut && by_ever && sent == Err(Error::TimedOut) {
+            self.timeout_event();
+        }
+        let response = sent.map_err(fail)?;
         let headers: Vec<Value<'p>> = response
             .headers
             .iter()
@@ -1641,7 +2555,13 @@ impl<'p, 'w> Machine<'p, 'w> {
                 self.world.print(&text(0));
                 Ok(Value::Unit)
             }
-            ("Clock", "now") => Ok(Value::int(self.world.now())),
+            // Under virtual time, the run's virtual clock, from 0 at its start, instead of the
+            // wall clock (ADR 0116 rule 19, `spec/26 §8`).
+            ("Clock", "now") => Ok(Value::int(if self.clock.is_virtual() {
+                i64::try_from(self.clock.now()).unwrap_or(i64::MAX)
+            } else {
+                self.world.now()
+            })),
             // A value that is not valid UTF-8 aborts the run: its content, not the name,
             // would decide the `Option`'s `public` tag (S-16, ADR 0086).
             ("Env", "get") => match self.world.env_var(&text(0)) {
@@ -1710,6 +2630,10 @@ impl<'p, 'w> Machine<'p, 'w> {
     fn prelude(&mut self, name: &str, args: Vec<Value<'p>>, span: Span) -> Flow<'p> {
         if matches!(name, "append" | "set") {
             return update(name, args, span);
+        }
+        // Dense values (`spec/29 §17`, ADR 0120).
+        if dense::is_dense(name) {
+            return self.dense_call(name, args, span);
         }
         let bad = || fault(format!("`{name}` applied to values of the wrong types"));
         let int = |i: usize| match args.get(i) {
@@ -1867,6 +2791,65 @@ impl<'p, 'w> Machine<'p, 'w> {
                     .collect(),
             )),
             "parse_int" => return parse_int(&text(0)?),
+            // The functions of `F64` (`spec/29`, ADR 0114 rule 3.9).
+            "nan" => Value::F64(f64::from_bits(una_core::float::CANONICAL_NAN)),
+            "infinity" => Value::F64(f64::INFINITY),
+            "f64_from_bits" => {
+                let bits = u64::try_from(&int(0)?).map_err(|_| bad())?;
+                Value::F64(una_core::float::from_bits(bits))
+            }
+            "parse_f64" => return parse_f64(&text(0)?),
+            // The functions of `Decimal` (`spec/29 §16`, ADR 0120 rules 16 and 17): the scale
+            // is the `scale:` literal, an `Int` operand.
+            "parse_decimal" => {
+                let scale = u8::try_from(&int(1)?).map_err(|_| bad())?;
+                return parse_decimal(&text(0)?, scale);
+            }
+            // Elaboration writes `json_decimal(x)` as an operation that carries the scale of
+            // `x` (`spec/29 §16`): a call of the prelude's stub is an internal error.
+            "json_decimal" => {
+                return Err(fault(
+                    "`json_decimal` reached the prelude's stub, without the scale of its argument",
+                ));
+            }
+            "as_decimal" => {
+                let scale = u8::try_from(&int(1)?).map_err(|_| bad())?;
+                match arg(0)? {
+                    Value::Data(data) => match (data.ctor.name.as_str(), data.fields.first()) {
+                        ("Number", Some(Value::Int(n))) => {
+                            some(Value::Decimal(una_core::decimal::widen(n, 0, scale), scale))
+                        }
+                        ("Decimal", Some(Value::Text(t))) => {
+                            match una_core::decimal::from_json_number(t, scale) {
+                                Some(c) => some(Value::Decimal(c, scale)),
+                                None => none(),
+                            }
+                        }
+                        _ => none(),
+                    },
+                    _ => return Err(bad()),
+                }
+            }
+            "as_f64" => match arg(0)? {
+                Value::Data(data) => match (data.ctor.name.as_str(), data.fields.first()) {
+                    ("Number", Some(Value::Int(n))) => {
+                        some(Value::F64(una_core::float::from_int(n)))
+                    }
+                    ("Decimal", Some(Value::Text(t))) => match una_core::float::parse(t) {
+                        Ok(x) => some(Value::F64(x)),
+                        Err(_) => return Err(bad()),
+                    },
+                    _ => none(),
+                },
+                _ => return Err(bad()),
+            },
+            "json_number" => match arg(0)? {
+                Value::F64(x) if x.is_finite() => {
+                    some(crate::json::decimal(&una_core::float::render(x)))
+                }
+                Value::F64(_) => none(),
+                _ => return Err(bad()),
+            },
             "trim_start" => Value::text(text(0)?.trim_start()),
             "trim_end" => Value::text(text(0)?.trim_end()),
             "bytes" => Value::List(Rc::new(
@@ -1875,11 +2858,16 @@ impl<'p, 'w> Machine<'p, 'w> {
             "to_int" => {
                 let t = text(0)?;
                 let digits = t.strip_prefix('-').unwrap_or(&t);
-                match t.parse::<BigInt>() {
-                    Ok(n) if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) => {
-                        some(Value::Int(n))
-                    }
-                    _ => none(),
+                // Checked in O(b) before the O(d²) conversion, which only a text of at most
+                // MAX_INT_DIGITS digits reaches (`spec/14 §1`, #914).
+                let valid = !digits.is_empty()
+                    && digits.len() <= una_core::MAX_INT_DIGITS
+                    && digits.bytes().all(|b| b.is_ascii_digit());
+                if valid {
+                    t.parse::<BigInt>()
+                        .map_or_else(|_| none(), |n| some(Value::Int(n)))
+                } else {
+                    none()
                 }
             }
             "is_empty" => Value::Bool(list(0)?.is_empty()),
@@ -2158,7 +3146,20 @@ fn prim_apply<'p>(prim: Prim, args: &[Value<'p>]) -> Flow<'p> {
             Value::Text(t) => Value::Int(BigInt::from(t.scalars())),
             Value::List(items) => Value::Int(BigInt::from(items.len())),
             Value::Map(entries) => Value::Int(BigInt::from(entries.len())),
-            _ => return Err(fault("`len` of a value that is not a text, list or map")),
+            Value::Seq(items) => Value::Int(BigInt::from(items.len())),
+            Value::Set(items) => Value::Int(BigInt::from(items.len())),
+            Value::HashMap(table) | Value::HashSet(table) => {
+                Value::Int(BigInt::from(table.entries.len()))
+            }
+            // An array's length (`spec/29 §17`).
+            Value::Dense(dense) => {
+                Value::Int(BigInt::from(dense.shape.first().copied().unwrap_or(0)))
+            }
+            _ => {
+                return Err(fault(
+                    "`len` of a value that is not a text, list, map, sequence, set, hash table or array",
+                ));
+            }
         },
         Prim::Concat => {
             let mut out = String::new();
@@ -2187,6 +3188,26 @@ fn prim_apply<'p>(prim: Prim, args: &[Value<'p>]) -> Flow<'p> {
         // A copy of the map when another name holds it; a binding at its last use gives it up
         // first, in `Machine::eval`.
         Prim::Map(op) => return map_apply(op, args.to_vec()),
+        Prim::Seq(op) => return seqs::seq_apply(op, args.to_vec()),
+        Prim::Set(op) => return sets::set_apply(op, args.to_vec()),
+        // `Machine::rhs` applies them, with the memory budget of their key comparisons.
+        Prim::HashMap(_) | Prim::HashSet(_) => {
+            return Err(fault("a hash table operation outside the machine"));
+        }
+        Prim::Float(op) => return float_apply(op, args),
+        Prim::Decimal(op) => return decimal_apply(op, args),
+        // The shape of a matrix (`spec/29 §17`).
+        Prim::Shape(fun) => match arg(0)? {
+            Value::Dense(dense) => {
+                let axis = match fun {
+                    una_core::ShapeFun::Rows => 0,
+                    una_core::ShapeFun::Columns => 1,
+                };
+                // Exact, as `len` is: a dimension is the one the program gave.
+                Value::Int(BigInt::from(dense.shape.get(axis).copied().unwrap_or(0)))
+            }
+            _ => return Err(fault("a shape of a value that is not a matrix")),
+        },
         Prim::ToText => match arg(0)? {
             Value::Int(n) => Value::text(&n.to_string()),
             Value::Bool(b) => Value::text(&b.to_string()),
@@ -2266,8 +3287,9 @@ fn search(t: &str, part: &str) -> Option<usize> {
 }
 
 /// `parse_int(t)` (`spec/22 §4`): an optional `-` and one or more ASCII digits, or a failure
-/// that says why: `Empty`, `NoDigits` for `-` alone, or `NotADigit(at: i)` at the first
-/// position that is neither.
+/// that says why: `Empty`, `NoDigits` for `-` alone, `NotADigit(at: i)` at the first
+/// position that is neither, or `TooLong` for more than `MAX_INT_DIGITS` digits, found in O(b)
+/// before the O(d²) conversion (#914).
 fn parse_int<'p>(t: &str) -> Flow<'p> {
     let failure = |name: &str, index: usize, fields: Vec<Value<'p>>| {
         Err(Stop::Fail(Value::data(
@@ -2295,10 +3317,230 @@ fn parse_int<'p>(t: &str) -> Flow<'p> {
     if digits.is_empty() {
         return failure("NoDigits", 2, Vec::new());
     }
+    if digits.len() > una_core::MAX_INT_DIGITS {
+        return failure("TooLong", 3, Vec::new());
+    }
     match t.parse::<BigInt>() {
         Ok(n) => Ok(Value::Int(n)),
         Err(_) => failure("NoDigits", 2, Vec::new()),
     }
+}
+
+/// `parse_decimal(t, scale: s)` (`spec/29 §16`, ADR 0120 rule 16): a failure says why, as
+/// `parse_int`'s does, `TooLong` past the shared digit cap.
+fn parse_decimal<'p>(t: &str, scale: u8) -> Flow<'p> {
+    use una_core::decimal::ParseFailure;
+    let failure = |name: &str, index: usize, fields: Vec<Value<'p>>| {
+        Err(Stop::Fail(Value::data(
+            prelude_ctor("ParseError", name, index),
+            fields,
+        )))
+    };
+    match una_core::decimal::parse(t, scale) {
+        Ok(c) => Ok(Value::Decimal(c, scale)),
+        Err(ParseFailure::Empty) => failure("Empty", 0, Vec::new()),
+        Err(ParseFailure::NoDigits) => failure("NoDigits", 2, Vec::new()),
+        Err(ParseFailure::NotADigit(at)) => failure(
+            "NotADigit",
+            1,
+            vec![Value::int(i64::try_from(at).unwrap_or(i64::MAX))],
+        ),
+        Err(ParseFailure::TooLong) => failure("TooLong", 3, Vec::new()),
+    }
+}
+
+/// An operation of `Decimal[s]` (`spec/29 §16`, ADR 0120 rules 13 to 17), exact, with the
+/// static scales of its operands; each rounding is the `Rounding` operand's mode.
+fn decimal_apply<'p>(op: DecimalOp, args: &[Value<'p>]) -> Flow<'p> {
+    use una_core::decimal as d;
+    let bad = || {
+        fault(format!(
+            "`{}` applied to values of the wrong types",
+            op.as_str()
+        ))
+    };
+    let coefficient = |i: usize| match args.get(i) {
+        Some(Value::Decimal(c, _)) => Ok(c),
+        _ => Err(bad()),
+    };
+    let rounding = |i: usize| match args.get(i) {
+        Some(Value::Data(data)) => d::Rounding::from_index(data.ctor.index).ok_or_else(bad),
+        _ => Err(bad()),
+    };
+    let compare = |a: u8, b: u8| -> Result<std::cmp::Ordering, Stop<'p>> {
+        let m = a.max(b);
+        Ok(d::widen(coefficient(0)?, a, m).cmp(&d::widen(coefficient(1)?, b, m)))
+    };
+    let division_by_zero =
+        || fault("a decimal divided by zero, which its `division` obligation excludes");
+    Ok(match op {
+        DecimalOp::Add(a, b) | DecimalOp::Sub(a, b) => {
+            let m = a.max(b);
+            let (x, y) = (
+                d::widen(coefficient(0)?, a, m),
+                d::widen(coefficient(1)?, b, m),
+            );
+            let c = if matches!(op, DecimalOp::Add(..)) {
+                x + y
+            } else {
+                x - y
+            };
+            Value::Decimal(c, m)
+        }
+        DecimalOp::Mul => match (args.first(), args.get(1)) {
+            (Some(Value::Decimal(x, a)), Some(Value::Decimal(y, b))) => {
+                Value::Decimal(x * y, a.saturating_add(*b))
+            }
+            _ => return Err(bad()),
+        },
+        DecimalOp::Neg => match args.first() {
+            Some(Value::Decimal(x, a)) => Value::Decimal(-x, *a),
+            _ => return Err(bad()),
+        },
+        DecimalOp::Abs => match args.first() {
+            Some(Value::Decimal(x, a)) => Value::Decimal(
+                BigInt::from_biguint(num_bigint::Sign::Plus, x.magnitude().clone()),
+                *a,
+            ),
+            _ => return Err(bad()),
+        },
+        DecimalOp::Eq(a, b) => Value::Bool(compare(a, b)?.is_eq()),
+        DecimalOp::Ne(a, b) => Value::Bool(compare(a, b)?.is_ne()),
+        DecimalOp::Lt(a, b) => Value::Bool(compare(a, b)?.is_lt()),
+        DecimalOp::Le(a, b) => Value::Bool(compare(a, b)?.is_le()),
+        DecimalOp::Gt(a, b) => Value::Bool(compare(a, b)?.is_gt()),
+        DecimalOp::Ge(a, b) => Value::Bool(compare(a, b)?.is_ge()),
+        DecimalOp::Widen(a, s) => Value::Decimal(d::widen(coefficient(0)?, a, s), s),
+        DecimalOp::Rescale(a, s) => {
+            Value::Decimal(d::rescale(coefficient(0)?, a, s, rounding(1)?), s)
+        }
+        DecimalOp::RescaleExact(a, s) => {
+            let c = coefficient(0)?;
+            if !d::rescales_exactly(c, a, s) {
+                return Err(fault(
+                    "`rescale_exact` dropped a nonzero digit, which its precondition excludes",
+                ));
+            }
+            Value::Decimal(d::rescale(c, a, s, d::Rounding::TowardZero), s)
+        }
+        DecimalOp::Divide(a, b, s) => Value::Decimal(
+            d::divide(coefficient(0)?, a, coefficient(1)?, b, s, rounding(2)?)
+                .ok_or_else(division_by_zero)?,
+            s,
+        ),
+        DecimalOp::Remainder(a, b, s) => Value::Decimal(
+            d::remainder(coefficient(0)?, a, coefficient(1)?, b, s).ok_or_else(division_by_zero)?,
+            d::remainder_scale(a, b, s),
+        ),
+        DecimalOp::ToInt(a) => Value::Int(d::rescale(coefficient(0)?, a, 0, rounding(1)?)),
+        DecimalOp::Coefficient => Value::Int(coefficient(0)?.clone()),
+        DecimalOp::FromInt => match args.first() {
+            Some(Value::Int(n)) => Value::Decimal(n.clone(), 0),
+            _ => return Err(bad()),
+        },
+        DecimalOp::FromF64(s) => match args.first() {
+            Some(Value::F64(x)) => match d::from_f64_bits(x.to_bits(), s, rounding(1)?) {
+                Some(c) => some(Value::Decimal(c, s)),
+                None => none(),
+            },
+            _ => return Err(bad()),
+        },
+        DecimalOp::ToF64(a) => Value::F64(d::to_f64(coefficient(0)?, a)),
+        DecimalOp::ToText(a) => Value::text(&d::render(coefficient(0)?, a)),
+        DecimalOp::ToJson(a) => {
+            let c = coefficient(0)?;
+            if a == 0 {
+                crate::json::number(c.clone())
+            } else {
+                crate::json::decimal(&d::render(c, a))
+            }
+        }
+        // Calls of the prelude, never primitives.
+        DecimalOp::Parse(_) | DecimalOp::FromJson(_) => return Err(bad()),
+    })
+}
+
+/// `parse_f64(t)` (`spec/29`, ADR 0114 rule 7.3): a failure says why, as `parse_int`'s does.
+fn parse_f64<'p>(t: &str) -> Flow<'p> {
+    use una_core::float::ParseFailure;
+    let failure = |name: &str, index: usize, fields: Vec<Value<'p>>| {
+        Err(Stop::Fail(Value::data(
+            prelude_ctor("ParseError", name, index),
+            fields,
+        )))
+    };
+    match una_core::float::parse(t) {
+        Ok(x) => Ok(Value::F64(x)),
+        Err(ParseFailure::Empty) => failure("Empty", 0, Vec::new()),
+        Err(ParseFailure::NoDigits) => failure("NoDigits", 2, Vec::new()),
+        Err(ParseFailure::NotADigit(at)) => failure(
+            "NotADigit",
+            1,
+            vec![Value::int(i64::try_from(at).unwrap_or(i64::MAX))],
+        ),
+    }
+}
+
+/// An operation of `F64` (`spec/29`, ADR 0114 rules 3 to 5), each O(1), each `F64` result
+/// canonical (rule 9.8).
+fn float_apply<'p>(op: FloatOp, args: &[Value<'p>]) -> Flow<'p> {
+    use una_core::float as f;
+    let x = |i: usize| match args.get(i) {
+        Some(Value::F64(x)) => Ok(*x),
+        _ => Err(fault(format!(
+            "`{}` applied to a value that is not an `F64`",
+            op.as_str()
+        ))),
+    };
+    Ok(match op {
+        FloatOp::Add => Value::F64(f::add(x(0)?, x(1)?)),
+        FloatOp::Sub => Value::F64(f::sub(x(0)?, x(1)?)),
+        FloatOp::Mul => Value::F64(f::mul(x(0)?, x(1)?)),
+        FloatOp::Div => Value::F64(f::div(x(0)?, x(1)?)),
+        FloatOp::Neg => Value::F64(f::neg(x(0)?)),
+        FloatOp::Eq => Value::Bool(f::equal(x(0)?, x(1)?)),
+        FloatOp::Ne => Value::Bool(!f::equal(x(0)?, x(1)?)),
+        FloatOp::Lt => Value::Bool(f::total_cmp(x(0)?, x(1)?).is_lt()),
+        FloatOp::Le => Value::Bool(f::total_cmp(x(0)?, x(1)?).is_le()),
+        FloatOp::Gt => Value::Bool(f::total_cmp(x(0)?, x(1)?).is_gt()),
+        FloatOp::Ge => Value::Bool(f::total_cmp(x(0)?, x(1)?).is_ge()),
+        FloatOp::Abs => Value::F64(f::abs(x(0)?)),
+        FloatOp::Sqrt => Value::F64(f::sqrt(x(0)?)),
+        FloatOp::Fma => Value::F64(f::fma(x(0)?, x(1)?, x(2)?)),
+        FloatOp::Rem => Value::F64(f::rem(x(0)?, x(1)?)),
+        FloatOp::Floor => Value::F64(f::floor(x(0)?)),
+        FloatOp::Ceil => Value::F64(f::ceil(x(0)?)),
+        FloatOp::Trunc => Value::F64(f::trunc(x(0)?)),
+        FloatOp::RoundHalfEven => Value::F64(f::round_half_even(x(0)?)),
+        FloatOp::RoundHalfAway => Value::F64(f::round_half_away(x(0)?)),
+        FloatOp::CopySign => Value::F64(f::copy_sign(x(0)?, x(1)?)),
+        FloatOp::IeeeMin => Value::F64(f::ieee_min(x(0)?, x(1)?)),
+        FloatOp::IeeeMax => Value::F64(f::ieee_max(x(0)?, x(1)?)),
+        FloatOp::Clamp => Value::F64(f::clamp(x(0)?, x(1)?, x(2)?)),
+        FloatOp::IeeeEq => Value::Bool(f::ieee_compare(f::IeeeCompare::Eq, x(0)?, x(1)?)),
+        FloatOp::IeeeNe => Value::Bool(f::ieee_compare(f::IeeeCompare::Ne, x(0)?, x(1)?)),
+        FloatOp::IeeeLt => Value::Bool(f::ieee_compare(f::IeeeCompare::Lt, x(0)?, x(1)?)),
+        FloatOp::IeeeLe => Value::Bool(f::ieee_compare(f::IeeeCompare::Le, x(0)?, x(1)?)),
+        FloatOp::IeeeGt => Value::Bool(f::ieee_compare(f::IeeeCompare::Gt, x(0)?, x(1)?)),
+        FloatOp::IeeeGe => Value::Bool(f::ieee_compare(f::IeeeCompare::Ge, x(0)?, x(1)?)),
+        FloatOp::IsNan => Value::Bool(x(0)?.is_nan()),
+        FloatOp::IsFinite => Value::Bool(x(0)?.is_finite()),
+        FloatOp::IsInfinite => Value::Bool(x(0)?.is_infinite()),
+        FloatOp::IsSignNegative => Value::Bool(f::to_bits(x(0)?) >> 63 == 1),
+        FloatOp::IsZero => Value::Bool(x(0)? == 0.0),
+        FloatOp::IsPositiveZero => Value::Bool(f::to_bits(x(0)?) == 0),
+        FloatOp::IsNegativeZero => Value::Bool(f::to_bits(x(0)?) == 1 << 63),
+        FloatOp::ToBits => Value::Int(BigInt::from(f::to_bits(x(0)?))),
+        FloatOp::ToIntExact => match f::to_int_exact(x(0)?) {
+            Some(n) => some(Value::Int(n)),
+            None => none(),
+        },
+        FloatOp::FromInt => match args.first() {
+            Some(Value::Int(n)) => Value::F64(f::from_int(n)),
+            _ => return Err(fault("`to_f64` applied to a value that is not an integer")),
+        },
+        FloatOp::ToText => Value::text(&f::render(x(0)?)),
+    })
 }
 
 /// `append` and `set` of the prelude (`spec/14 §1`, `spec/17 §4`). They update the list in
@@ -2507,6 +3749,8 @@ mod tests {
             max_depth: 10,
             max_memory: 2,
             held: &probe,
+            stop_after: None,
+            stop: None,
         };
         let mut machine = Machine::new(&index, &mut world, &[], &keys, limits);
         held.store(

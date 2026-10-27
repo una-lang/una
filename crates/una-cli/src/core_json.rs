@@ -15,9 +15,9 @@ use std::collections::BTreeMap;
 use serde::ser::{Serialize, SerializeMap, SerializeSeq, Serializer};
 use una_check::Header;
 use una_core::{
-    Arm, Atom, Base, BinOp, Bound, CapOp, Clause, Constraint, Ctor, DataVariant, Decl, Example,
-    Expectation, Expr, FixedOp, Fun, HandlerOp, IntType, Label, LoopSource, MapOp, Module, Path,
-    Prim, Program, Refinement, Rhs, Signature, Source, Term, Type, Use,
+    Arm, Atom, Base, BinOp, Bound, CapOp, Clause, Constraint, Ctor, DataVariant, DecimalOp, Decl,
+    Example, Expectation, Expr, FixedOp, Fun, HandlerOp, IntType, Label, LoopSource, MapOp, Module,
+    Path, Prim, Program, Refinement, Rhs, Signature, Source, Term, Type, Use,
 };
 use una_project::Edition;
 use una_syntax::{SourceDb, Span};
@@ -214,6 +214,10 @@ impl Writer<'_> {
             Base::Text => node!(Text),
             Base::Unit => node!(Unit),
             Base::Hashed => node!(Hashed),
+            // ADR 0114 rule 17: the kind `f64`.
+            Base::F64 => J::Obj(vec![("kind", s("f64"))]),
+            // ADR 0120: the kind `decimal`, with its scale.
+            Base::Decimal(scale) => node!(Decimal, "scale" => n(usize::from(*scale))),
             Base::Named { module, name, args } => node!(Named,
                 "module" => s(module),
                 "name" => s(name),
@@ -275,6 +279,14 @@ impl Writer<'_> {
             ),
             Term::Len(value) => node!(Len, "value" => self.term(value)),
             Term::Has { map, key } => node!(Has, "map" => self.term(map), "key" => self.term(key)),
+            // ADR 0120 rule 33: the shape functions and the elements of a dense value.
+            Term::Shape { fun, value } => {
+                node!(Shape, "fun" => s(fun.as_str()), "value" => self.term(value))
+            }
+            Term::Element { value, indices } => node!(Element,
+                "value" => self.term(value),
+                "indices" => J::Arr(indices.iter().map(|index| self.term(index)).collect()),
+            ),
             Term::Proj { value, index } => {
                 node!(Proj, "value" => self.term(value), "index" => n(*index))
             }
@@ -302,6 +314,22 @@ impl Writer<'_> {
             Term::Call { predicate, args } => node!(Call,
                 "predicate" => self.path(predicate),
                 "args" => list(args, |a| self.term(a)),
+            ),
+            // ADR 0114 rule 17: a float literal by its bits, an operation by its `FloatOp`.
+            Term::F64(bits) => J::Obj(vec![
+                ("kind", s("f64")),
+                ("bits", J::Str(format!("{bits:016x}"))),
+            ]),
+            Term::Float { op, args } => node!(Float,
+                "op" => J::Obj(vec![(
+                    "kind",
+                    s(op.as_str().strip_prefix("f64_").unwrap_or(op.as_str()))
+                )]),
+                "args" => list(args, |a| self.term(a)),
+            ),
+            Term::ToF64 { value, from } => node!(ToF64,
+                "value" => self.term(value),
+                "from" => opt(from.as_ref(), |i| self.int_type(*i)),
             ),
         }
     }
@@ -348,6 +376,16 @@ impl Writer<'_> {
         match atom {
             Atom::Var(name) => node!(Var, "value" => s(name)),
             Atom::Int(digits) => node!(Int, "value" => s(digits)),
+            // ADR 0114 rule 17: its bits as 16 lowercase hex digits.
+            Atom::F64(bits) => J::Obj(vec![
+                ("kind", s("f64")),
+                ("bits", J::Str(format!("{bits:016x}"))),
+            ]),
+            // ADR 0120: a decimal literal, its coefficient and its scale.
+            Atom::Decimal { coefficient, scale } => node!(Decimal,
+                "coefficient" => s(coefficient),
+                "scale" => n(usize::from(*scale)),
+            ),
             Atom::Bool(b) => node!(Bool, "value" => J::Bool(*b)),
             Atom::Text(text) => node!(Text, "value" => s(text)),
             Atom::Unit => node!(Unit),
@@ -383,7 +421,64 @@ impl Writer<'_> {
                 "values" => J::Arr(vec![self.fixed_op(*op), self.int_type(*int)]),
             ),
             Prim::Map(op) => node!(Map, "value" => self.map_op(*op)),
+            // ADR 0119 rules 5 and 6: the operations of the sequence that holds a `Stack` or a
+            // `Queue`, by their Core names.
+            Prim::Seq(op) => node!(Seq, "value" => J::Obj(vec![("kind", s(op.as_str()))])),
+            // ADR 0119 rule 7: the methods of `Set`, by their source names.
+            Prim::Set(op) => node!(Set, "value" => J::Obj(vec![("kind", s(op.as_str()))])),
+            // ADR 0119 rule 12: the methods of `HashMap` and `HashSet`, by their source names.
+            Prim::HashMap(op) => {
+                node!(HashMap, "value" => J::Obj(vec![("kind", s(op.as_str()))]))
+            }
+            Prim::HashSet(op) => {
+                node!(HashSet, "value" => J::Obj(vec![("kind", s(op.as_str()))]))
+            }
+            // ADR 0114 rule 17: the operations of `F64` are kinds of their own, under `float`.
+            Prim::Float(op) => node!(Float, "value" => J::Obj(vec![(
+                "kind",
+                s(op.as_str().strip_prefix("f64_").unwrap_or(op.as_str()))
+            )])),
+            Prim::Shape(fun) => node!(Shape, "fun" => s(fun.as_str())),
+            // ADR 0120: an operation of `Decimal`, its `DecimalOp` with its static scales.
+            Prim::Decimal(op) => node!(Decimal, "value" => self.decimal_op(*op)),
         }
+    }
+
+    fn decimal_op(&self, op: DecimalOp) -> J {
+        let kind = match op {
+            DecimalOp::Add(..) => "add",
+            DecimalOp::Sub(..) => "sub",
+            DecimalOp::Mul => "mul",
+            DecimalOp::Neg => "neg",
+            DecimalOp::Eq(..) => "eq",
+            DecimalOp::Ne(..) => "ne",
+            DecimalOp::Lt(..) => "lt",
+            DecimalOp::Le(..) => "le",
+            DecimalOp::Gt(..) => "gt",
+            DecimalOp::Ge(..) => "ge",
+            DecimalOp::Widen(..) => "widen",
+            DecimalOp::Rescale(..) => "rescale",
+            DecimalOp::RescaleExact(..) => "rescale_exact",
+            DecimalOp::Divide(..) => "divide",
+            DecimalOp::Remainder(..) => "remainder",
+            DecimalOp::ToInt(_) => "to_int",
+            DecimalOp::Abs => "abs",
+            DecimalOp::Coefficient => "coefficient",
+            DecimalOp::FromInt => "from_int",
+            DecimalOp::FromF64(_) => "from_f64",
+            DecimalOp::ToF64(_) => "to_f64",
+            DecimalOp::ToText(_) => "to_text",
+            DecimalOp::Parse(_) => "parse",
+            DecimalOp::FromJson(_) => "from_json",
+            DecimalOp::ToJson(_) => "to_json",
+        };
+        J::Obj(vec![
+            ("kind", s(kind)),
+            (
+                "scales",
+                J::Arr(op.scales().into_iter().map(|x| n(usize::from(x))).collect()),
+            ),
+        ])
     }
 
     fn map_op(&self, op: MapOp) -> J {
@@ -584,6 +679,24 @@ impl Writer<'_> {
                 "high" => self.atom(high),
                 "inclusive" => J::Bool(*inclusive),
             ),
+            LoopSource::Until {
+                cond,
+                holds,
+                measure,
+                decreases,
+            } => node!(Until,
+                "cond" => self.expr(cond),
+                "holds" => opt(holds.as_ref(), |c| self.clause(c)),
+                "measure" => self.clause(measure),
+                "decreases" => self.span(*decreases),
+            ),
+            LoopSource::Ever { within: None } => node!(Ever),
+            LoopSource::Ever {
+                within: Some((deadline, span)),
+            } => node!(Ever,
+                "within" => self.atom(deadline),
+                "within_span" => self.span(*span),
+            ),
         }
     }
 
@@ -640,15 +753,29 @@ impl Writer<'_> {
                 state,
                 init,
                 body,
+                on_stop,
                 span,
-            } => node!(Loop,
-                "source" => self.loop_source(source),
-                "var" => self.binder(var),
-                "state" => self.binders(state),
-                "init" => self.atoms(init),
-                "body" => self.expr(body),
-                "span" => self.span(*span),
-            ),
+            } => {
+                let mut node = node!(Loop,
+                    "source" => self.loop_source(source),
+                    "var" => self.binder(var),
+                    "state" => self.binders(state),
+                    "init" => self.atoms(init),
+                    "body" => self.expr(body),
+                    "span" => self.span(*span),
+                );
+                // The `on stop` of a `for ever`, an additive key (ADR 0116 rule 20).
+                if let (Some(on_stop), J::Obj(fields)) = (on_stop, &mut node) {
+                    fields.push((
+                        "on_stop",
+                        J::Obj(vec![
+                            ("state", self.binders(&on_stop.state)),
+                            ("body", self.expr(&on_stop.body)),
+                        ]),
+                    ));
+                }
+                node
+            }
             Expr::Together { tasks, span } => node!(Together,
                 "tasks" => list(tasks, |t| self.expr(t)),
                 "span" => self.span(*span),
@@ -693,6 +820,11 @@ impl Writer<'_> {
                 "arg_spans" => self.spans(arg_spans),
                 "span" => self.span(*span),
             ),
+            Expr::Exit { tag, state, span } => node!(Exit,
+                "tag" => s(tag.as_str()),
+                "state" => self.atoms(state),
+                "span" => self.span(*span),
+            ),
             Expr::Handle {
                 body,
                 error,
@@ -705,6 +837,21 @@ impl Writer<'_> {
             Expr::Attempt { body, span } => {
                 node!(Attempt, "body" => self.expr(body), "span" => self.span(*span))
             }
+            Expr::Within {
+                deadline,
+                deadline_span,
+                body,
+                timeout,
+                wrap,
+                span,
+            } => node!(Within,
+                "deadline" => self.atom(deadline),
+                "deadline_span" => self.span(*deadline_span),
+                "body" => self.expr(body),
+                "timeout" => self.ctor(timeout),
+                "wrap" => opt(wrap.as_deref(), |c| self.ctor(c)),
+                "span" => self.span(*span),
+            ),
             Expr::With { cap, source, body } => node!(With,
                 "cap" => s(cap),
                 "source" => self.source(source),
@@ -919,14 +1066,20 @@ impl Writer<'_> {
     }
 
     fn example(&self, example: &Example) -> J {
-        J::Obj(vec![
+        let mut fields = vec![
             ("name", s(&example.name)),
             ("body", self.expr(&example.body)),
             (
                 "expectations",
                 list(&example.expectations, |e| self.expectation(e)),
             ),
-        ])
+        ];
+        // Only an example with a `stop after` line has the key (ADR 0116 rule 19), so the
+        // export of every other example is unchanged.
+        if let Some(iterations) = example.stop_after {
+            fields.push(("stop_after", J::Num(iterations)));
+        }
+        J::Obj(fields)
     }
 
     /// A declaration of the module `module`: a function with what its header adds (`fun_in`).
@@ -1116,9 +1269,11 @@ mod tests {
                 listed.insert(name, kinds);
             }
         }
-        // Enums that are not nodes of Core: the prelude's field types (#415).
+        // Enums that are not nodes of Core: the prelude's field types (#415), and what an
+        // operation of `F64` returns.
         let mut declared = declared;
         declared.remove("PreludeField");
+        declared.remove("FloatResult");
         assert_eq!(listed, declared);
     }
 }

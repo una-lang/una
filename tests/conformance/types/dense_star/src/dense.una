@@ -1,0 +1,14 @@
+-- test: `*` and `/` between two dense values are U2001, with the matrix product and the element-wise operation as repairs; a scalar `*` and `/` by a scalar check
+-- spec: spec/29 §17
+-- expect: error U2001 at src/dense.una:8:62
+-- expect: error U2001 at src/dense.una:10:57
+-- expect: error U2001 at src/dense.una:12:56
+module dense
+
+pub product(a: Matrix[F64], b: Matrix[F64]) -> Matrix[F64] = a * b
+
+pub ratio(a: Array[F64], b: Array[F64]) -> Array[F64] = a / b
+
+pub ints(a: Array[I32], b: Array[I32]) -> Array[I32] = a * b
+
+pub scaled(a: Matrix[F64], k: F64) -> Matrix[F64] = k * a * 2.0 / k

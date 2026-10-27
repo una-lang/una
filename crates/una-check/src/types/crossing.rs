@@ -372,6 +372,7 @@ impl Checker<'_, '_, '_> {
     /// known here (rule 8, fail closed). A local bound inside the lambda takes its value from
     /// what the lambda receives or computes, which is checked where it is written.
     pub(crate) fn captured_value(&mut self, name: &str, span: Span) {
+        self.timing_read(name);
         if self.pass != Pass::Check {
             return;
         }
@@ -401,10 +402,12 @@ impl Checker<'_, '_, '_> {
     pub(crate) fn holds_function(&self, ty: &Ty) -> bool {
         match self.resolve(ty) {
             Ty::Fn(_) => true,
-            Ty::List(inner) | Ty::Labeled(_, inner) | Ty::Refined(_, inner) => {
-                self.holds_function(&inner)
-            }
+            Ty::List(inner)
+            | Ty::Dense(_, inner)
+            | Ty::Labeled(_, inner)
+            | Ty::Refined(_, inner) => self.holds_function(&inner),
             Ty::Map(key, value) => self.holds_function(&key) || self.holds_function(&value),
+            Ty::Coll(_, args) => args.iter().any(|arg| self.holds_function(arg)),
             Ty::Kind(id, args) => {
                 self.env
                     .boundaries
@@ -840,6 +843,17 @@ impl Checker<'_, '_, '_> {
         let Some(boundary) = self.env.boundaries.extent(self.module) else {
             return;
         };
+        // A dependency's examples are checked as its own, with no consumer ceiling on their
+        // `given` lines, since they never run with the root's authority (ADR 0122 rule 52).
+        if self
+            .env
+            .boundaries
+            .list
+            .get(boundary)
+            .is_some_and(|resolved| resolved.package)
+        {
+            return;
+        }
         let grants = self.handler_uses(handler);
         self.ceiling_site(
             boundary,
@@ -1251,10 +1265,20 @@ pub(crate) fn function_kinds(env: &Env<'_>) -> Vec<bool> {
     fn walk(ty: &Ty, kinds: &mut Vec<usize>) -> bool {
         match ty {
             Ty::Fn(_) => true,
-            Ty::List(inner) | Ty::Labeled(_, inner) | Ty::Refined(_, inner) => walk(inner, kinds),
+            Ty::List(inner)
+            | Ty::Dense(_, inner)
+            | Ty::Labeled(_, inner)
+            | Ty::Refined(_, inner) => walk(inner, kinds),
             Ty::Map(key, value) => {
                 let key = walk(key, kinds);
                 walk(value, kinds) || key
+            }
+            Ty::Coll(_, args) => {
+                let mut found = false;
+                for arg in args.iter() {
+                    found |= walk(arg, kinds);
+                }
+                found
             }
             Ty::Kind(id, args) => {
                 kinds.push(*id);

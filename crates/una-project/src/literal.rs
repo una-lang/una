@@ -15,6 +15,16 @@ pub struct Offsets {
 }
 
 impl Offsets {
+    /// The offsets of text written as itself, with no delimiters or escapes: a `uses` clause
+    /// on its own line of `ita.una` (ADR 0122 rule 11), where byte `i` of the value is byte
+    /// `i` of the text.
+    pub fn identity(len: usize) -> Offsets {
+        Offsets {
+            starts: (0..=len).collect(),
+            ends: (0..=len).collect(),
+        }
+    }
+
     /// Where the bytes `start..end` of the value are written in the literal. A boundary past
     /// the value is the closing delimiter.
     pub fn place(&self, start: usize, end: usize) -> (usize, usize) {
