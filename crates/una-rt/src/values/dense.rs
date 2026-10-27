@@ -2472,3 +2472,165 @@ pub(crate) fn dense_shape(d: i64, axis: i64) -> i64 {
     int_word(&BigInt::from(value))
 }
 
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
+
+    use super::*;
+    use crate::runtime::{LIVE_RESERVATIONS, REFUSE_STEP};
+    use crate::values::list;
+
+    fn elements_for_test(d: i64) -> Vec<Element> {
+        parts(d).map(|parts| parts.elements).unwrap_or_default()
+    }
+
+    fn f(x: f64) -> i64 {
+        f64_word(x)
+    }
+
+    fn floats(d: i64) -> Vec<f64> {
+        elements_for_test(d)
+            .into_iter()
+            .map(|e| match e {
+                Element::Raw(x) => x,
+                Element::Word(w) => boxed(w).unwrap_or(f64::NAN),
+            })
+            .collect()
+    }
+
+    fn array_of(xs: &[f64]) -> i64 {
+        let items = list();
+        for x in xs {
+            let word = f(*x);
+            push(items, word);
+            release(word);
+        }
+        let made = array(0, items);
+        release(items);
+        made
+    }
+
+    fn arc_count(d: i64) -> usize {
+        with(d, |object| match object {
+            Object::Dense(dense) => match &dense.store {
+                Store::F64(items) => Arc::strong_count(items),
+                Store::Words(_) => 0,
+            },
+            _ => 0,
+        })
+        .unwrap_or(0)
+    }
+
+    /// The new value in a tuple an `edit` method returned, retained, and the tuple released.
+    fn take(tuple: i64) -> i64 {
+        let value = field(tuple, 0);
+        retain(value);
+        release(tuple);
+        value
+    }
+
+    #[test]
+    fn a_view_shares_its_parents_store() {
+        let a = array_of(&[1.0, 2.0, 3.0, 4.0]);
+        let s = array_slice(0, a, int_word(&1.into()), int_word(&3.into()));
+        assert_eq!(arc_count(a), 2);
+        assert_eq!(floats(s), vec![2.0, 3.0]);
+        let m = matrix_filled(0, int_word(&2.into()), int_word(&3.into()), f(0.5));
+        let t = matrix_transpose(0, m);
+        assert_eq!(arc_count(m), 2);
+        assert_eq!(layout(t).unwrap().0.shape.as_slice(), &[3, 2]);
+        for word in [a, s, m, t] {
+            release(word);
+        }
+    }
+
+    #[test]
+    fn a_set_of_a_shared_value_copies_and_of_a_held_one_writes_in_place() {
+        let a = array_of(&[1.0, 2.0, 3.0]);
+        let s = array_slice(0, a, int_word(&1.into()), int_word(&3.into()));
+        // Shared with the view: the owned set copies the array's own elements first.
+        retain(a);
+        let before = super::super::copies();
+        let b = take(array_set_owned(0, a, int_word(&1.into()), f(9.0)));
+        assert_eq!(super::super::copies(), before + 1);
+        assert_eq!(floats(a), vec![1.0, 2.0, 3.0]);
+        assert_eq!(floats(b), vec![1.0, 9.0, 3.0]);
+        assert_eq!(floats(s), vec![2.0, 3.0]);
+        // Held once with its store: in place, no copy.
+        let c = take(array_set_owned(0, b, int_word(&0.into()), f(7.0)));
+        assert_eq!(super::super::copies(), before + 1);
+        assert_eq!(floats(c), vec![7.0, 9.0, 3.0]);
+        // The borrowed set always copies.
+        let d = take(array_set(0, c, int_word(&2.into()), f(5.0)));
+        assert_eq!(floats(c), vec![7.0, 9.0, 3.0]);
+        assert_eq!(floats(d), vec![7.0, 9.0, 5.0]);
+        for word in [a, s, c, d] {
+            release(word);
+        }
+    }
+
+    #[test]
+    fn a_refused_buffer_allocates_nothing_and_leaves_no_reservation() {
+        // Outside a run the refusal reports nothing; the value is 0 and nothing is held.
+        let live = super::super::live();
+        REFUSE_STEP.with(|cell| cell.set(Some((0, 1))));
+        let made = array_filled(0, int_word(&1000.into()), f(1.0));
+        assert_eq!(made, 0);
+        assert_eq!(LIVE_RESERVATIONS.with(std::cell::Cell::get), 0);
+        // Only the boxed `F64` argument is live.
+        assert_eq!(super::super::live(), live + 1);
+        // A size whose bytes overflow is refused before any reservation.
+        let huge = array_filled(0, int_word(&BigInt::from(1_u64 << 61)), f(1.0));
+        assert_eq!(huge, 0);
+        assert_eq!(LIVE_RESERVATIONS.with(std::cell::Cell::get), 0);
+    }
+
+    #[test]
+    fn an_f64_store_crosses_a_copy_shared_and_charged_for_its_header_only() {
+        let a = array_of(&[1.0, 2.0, 3.0]);
+        let node_bytes = with(a, Object::node_bytes).unwrap();
+        assert_eq!(node_bytes, HEADER_BYTES);
+        let portable = super::super::export(a).unwrap();
+        assert_eq!(arc_count(a), 2, "the export holds the same buffer");
+        let copy = super::super::import(&portable).unwrap();
+        assert_eq!(arc_count(a), 3, "the import holds it too");
+        drop(portable);
+        assert_eq!(arc_count(a), 2);
+        assert_eq!(floats(copy), vec![1.0, 2.0, 3.0]);
+        release(copy);
+        assert_eq!(arc_count(a), 1);
+        release(a);
+    }
+
+    #[test]
+    fn a_words_store_crosses_a_copy_as_a_list_does() {
+        let items = list();
+        for n in [1_i64, 2, 3] {
+            push(items, int_word(&n.into()));
+        }
+        let a = array(0, items);
+        release(items);
+        let portable = super::super::export(a).unwrap();
+        let copy = super::super::import(&portable).unwrap();
+        assert_eq!(super::super::equal(0, a, copy), 1);
+        let (_, words) = layout(copy).unwrap();
+        assert!(words.is_some());
+        release(copy);
+        release(a);
+    }
+
+    #[test]
+    fn equality_compares_the_shape_then_each_element() {
+        let a = array_of(&[1.0, f64::NAN]);
+        let b = array_of(&[1.0, f64::NAN]);
+        let c = array_of(&[1.0]);
+        assert_eq!(super::super::equal(0, a, b), 1);
+        assert_eq!(super::super::equal(0, a, c), 0);
+        let t = array_to_tensor(0, a);
+        // An array and a tensor of the same elements are values of different types.
+        assert_eq!(super::super::equal(0, a, t), 0);
+        for word in [a, b, c, t] {
+            release(word);
+        }
+    }
+}

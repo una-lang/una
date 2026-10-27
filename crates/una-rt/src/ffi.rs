@@ -1168,8 +1168,8 @@ mod tests {
         *state
     }
 
-    /// The number of words of [`word_pool`]: 26 chosen, then 16 drawn.
-    const WORD_POOL_LEN: usize = 42;
+    /// The number of words of [`word_pool`]: 28 chosen, then 16 drawn.
+    const WORD_POOL_LEN: usize = 44;
 
     /// One call of the word tests: the entry point's name, its function on words, the words.
     type WordCase = (&'static str, fn(&[i64]) -> i64, Vec<i64>);
@@ -1177,7 +1177,8 @@ mod tests {
     /// The calls of the word tests (#766), in a fixed order: every entry point of the table but
     /// the host operations, whose effects (output, files, network) need a run's grants and are
     /// tested with them. All tuples of `pool` for an arity of two or less, and `drawn` tuples
-    /// drawn with a fixed seed above. `range` takes its words from `bounds` when given.
+    /// drawn with a fixed seed above. `range` and the dense values filled from one element take
+    /// their words from `bounds` when given.
     fn word_cases(pool: &[i64], bounds: Option<&[i64]>, drawn: usize) -> Vec<WordCase> {
         let mut state: u64 = 0x766;
         let mut cases = Vec::new();
@@ -1185,8 +1186,10 @@ mod tests {
             if function.starts_with("host") {
                 continue;
             }
+            // Outside a run no memory budget bounds a range's list, or a dense value filled
+            // from one element (#989): they take small bounds there.
             let words = match bounds {
-                Some(bounds) if name == "una_rt_range" => bounds,
+                Some(bounds) if name == "una_rt_range" || name.contains("_filled") => bounds,
                 _ => pool,
             };
             let mut tuples: Vec<Vec<i64>> = Vec::new();
@@ -1257,6 +1260,9 @@ mod tests {
             some_list,
             values::data(3),
             values::map_empty(),
+            // Dense values (#989): an array of raw `F64` elements, and a matrix of words.
+            values::dense::array_filled(0, int(3), values::f64_word(0.5)),
+            values::dense::matrix_filled(0, int(2), int(2), int(7)),
         ];
         let mut state: u64 = 0x0766_0766;
         for _ in 0..16 {
