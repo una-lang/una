@@ -1,6 +1,7 @@
 //! `std.limit` in both engines (ADR 0117 rule 9, `spec/27 §10`): the same program, interpreted
 //! and native, under `--virtual-time`, where a wait for a refill moves the clock and takes no
-//! wall time, so both engines print the same `Clock.now` readings and agree on the trace.
+//! wall time, so both engines print the same `Clock.now` readings and agree on the trace. The
+//! program would wait 15 s on the real clock; each engine must finish well under that.
 
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
@@ -13,6 +14,19 @@ use std::time::{Duration, Instant};
 mod native_build;
 
 use native_build::{root, una};
+
+/// `una` itself in `dir`, with no runtime library built first: the interpreter needs none, and
+/// a timed run must not include cargo's check of it.
+fn una_direct(dir: &std::path::Path, args: &[&str]) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_una"))
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
+        .args(args)
+        .current_dir(dir)
+        .env("NO_COLOR", "1")
+        .output()
+        .unwrap()
+}
 
 /// A package of edition 0.4 named `name`, granted `console` and `clock`, whose one module
 /// `name` is `program`.
@@ -48,11 +62,12 @@ tick(n: Int) -> Unit
   uses @console: Console[print]
 =
   let got = attempt @gate.acquire()
+  let now = @clock.now()
   when got
-    is Ok(took) -> @console.print("{n} at {@clock.now()}")
+    is Ok(took) -> @console.print("{n} at {now}")
     is Err(failure) -> @console.print("{n} limited")
 
---- Five calls at two per second: at 0, 0, 500, 1000 and 1500 milliseconds.
+--- Five calls at two per ten seconds: at 0, 0, 5, 10 and 15 seconds of the run's clock.
 run() -> Unit
   uses @gate: Limit[acquire]
   uses @clock: Clock[now]
@@ -65,7 +80,7 @@ pub main() -> Unit
   uses @clock: Clock[now]
   uses @console: Console[print]
 =
-  run() with @gate = limiter(at_most: 2, per: second, waiting: 8)
+  run() with @gate = limiter(at_most: 2, per: 10 * second, waiting: 8)
   @console.print("done")
 "#;
 
@@ -75,14 +90,14 @@ fn a_limiter_under_virtual_time_gives_the_same_readings_in_both_engines() {
     let expected = [
         "1 at 0",
         "2 at 0",
-        "3 at 500",
-        "4 at 1000",
-        "5 at 1500",
+        "3 at 5000",
+        "4 at 10000",
+        "5 at 15000",
         "done",
     ];
 
     let started = Instant::now();
-    let interpreted = una(&dir, &["--json", "run", ".", "--virtual-time"]);
+    let interpreted = una_direct(&dir, &["--json", "run", ".", "--virtual-time"]);
     let interpreted_time = started.elapsed();
     assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
     let document: serde_json::Value = serde_json::from_slice(&interpreted.stdout).unwrap();
@@ -92,7 +107,7 @@ fn a_limiter_under_virtual_time_gives_the_same_readings_in_both_engines() {
         "{document}"
     );
     assert!(
-        interpreted_time < Duration::from_millis(1_500),
+        interpreted_time < Duration::from_secs(5),
         "the interpreter waited on the wall clock: {interpreted_time:?}"
     );
 
@@ -114,7 +129,7 @@ fn a_limiter_under_virtual_time_gives_the_same_readings_in_both_engines() {
         .collect();
     assert_eq!(printed, expected);
     assert!(
-        native_time < Duration::from_millis(1_500),
+        native_time < Duration::from_secs(5),
         "the executable waited on the wall clock: {native_time:?}"
     );
     let native_trace: serde_json::Value =

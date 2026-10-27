@@ -1819,6 +1819,8 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             .collect();
         if !limiters.is_empty() {
             self.timing_start();
+            // The `do` line is the root of the test's run: placed, as `main` is.
+            self.timing_placed();
             for given in &example.givens {
                 if let Some(Entity::Handler(id)) =
                     self.env.lower(self.module, self.name(&given.handler.name))
