@@ -5,7 +5,12 @@
 //! end, which is what `shell-library.patch` is for. The test reads files and runs nothing.
 
 // Tests may unwrap freely (compiler/conventions.md §1).
-#![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
+#![allow(
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::unwrap_used
+)]
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -106,7 +111,10 @@ fn the_recipe_builds_a_static_library_without_gmp_and_patches_only_the_shell() {
             !(key.contains("BINDINGS") && value == "ON"),
             "{option}: no bindings are built"
         );
-        assert_ne!(key, "Z3_USE_LIB_GMP", "{option}");
+        assert!(
+            !(key == "Z3_USE_LIB_GMP" && value == "ON"),
+            "{option}: nothing under the LGPL is linked"
+        );
     }
     // Every patch is listed in the lock with its digest, which is the file's.
     let lock = read("supply-chain/z3.lock");
@@ -161,7 +169,7 @@ fn the_build_script_reads_the_lock_and_the_recipe() {
     for needed in [
         "supply-chain/z3.lock",
         "cmake-options.txt",
-        "shell-library.patch",
+        "[patches]",
         "--reproducible",
         "libz3shell.a",
         "-ffile-prefix-map=",
