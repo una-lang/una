@@ -1,0 +1,8 @@
+[package]
+name = "generic_fold_run"
+version = "0.1.0"
+edition = "0.2"
+
+[run]
+entry = "fold"
+grants = ["console"]

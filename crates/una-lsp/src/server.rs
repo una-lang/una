@@ -8,10 +8,37 @@ use std::sync::mpsc::Sender;
 use std::thread::JoinHandle;
 
 use serde_json::{Value, json};
-use una_diag::{Diagnostic, Location, Severity, in_output_order};
+use una_diag::{Diagnostic, Location, Repair, Severity, in_output_order};
 
 use crate::position::{Encoding, field, from_lsp, to_lsp};
 use crate::uri::{path_of, uri_of};
+
+/// The visible cost marker shared by diagnostics and code actions (ADR 0095/0097).
+fn repair_marker(repair: &Repair) -> Option<String> {
+    let mut costs = Vec::new();
+    if let Some(escape) = repair.escape {
+        costs.push(format!(
+            "escape: {}; cost: {}",
+            escape.kind(),
+            escape.cost()
+        ));
+    }
+    if let Some(widening) = repair.widens {
+        costs.push(format!(
+            "widens {}; cost: {}",
+            widening.kind(),
+            widening.cost()
+        ));
+    }
+    (!costs.is_empty()).then(|| format!("[{}]", costs.join("; ")))
+}
+
+fn repair_title(repair: &Repair) -> String {
+    match repair_marker(repair) {
+        Some(marker) => format!("{marker} {}", repair.description),
+        None => repair.description.clone(),
+    }
+}
 
 /// What the server needs from the compiler: the checks and the formatter of the CLI, so the
 /// editor never disagrees with `una check` (ADR 0063 rule 8).
@@ -510,7 +537,9 @@ impl<W: Workspace> Server<W> {
             }
         }
         for repair in diagnostic.repairs.iter().filter(|r| r.edit.is_none()) {
-            message.push_str(&format!("\nhelp: {}", repair.description));
+            let marker =
+                repair_marker(repair).map_or_else(String::new, |value| format!(" {value}"));
+            message.push_str(&format!("\nhelp{marker}: {}", repair.description));
         }
         let related: Vec<Value> = diagnostic
             .related
@@ -579,7 +608,7 @@ impl<W: Workspace> Server<W> {
                 };
                 let target = base.join(&edit.location.file);
                 actions.push(json!({
-                    "title": repair.description,
+                    "title": repair_title(repair),
                     "kind": "quickfix",
                     "diagnostics": [self.lsp_diagnostic(&base, diagnostic)],
                     "edit": { "changes": { uri_of(&target): [{

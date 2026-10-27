@@ -1,6 +1,6 @@
 ---
 construct: ensures
-editions: ["0.1", "0.2"]
+editions: ["0.1", "0.2", "0.3"]
 spec: ["spec/04 §2", "spec/02 §3", "spec/02 §8", "spec/03 §3", "spec/12 §3", "spec/12 §6", "spec/12 §7", "spec/05 §2", "spec/17 §3"]
 codes: [U0102, U2012, U2014, U5001, U5002]
 ---
@@ -97,6 +97,80 @@ pub record_visit(edit visits: Visits) -> Unit
 =
   visits.seen = visits.seen + 1
 ```
+
+## Promise versus coverage
+
+A contract is a promise the implementation must prove; it does not establish that the promise captures the product requirement. This example is valid but weak: the body returns `SoldOut` for every input, and its single postcondition says nothing about positive inventory.
+
+`una.toml`
+
+```toml
+[package]
+name = "demo"
+version = "0.1.0"
+edition = "0.3"
+```
+
+`src/demo.una`
+
+```una
+module demo
+
+pub kind Availability = SoldOut | Few | Open
+
+pub classify(seats: Int) -> Availability
+  requires seats >= 0
+  ensures seats == 0 implies result is SoldOut
+=
+  SoldOut
+```
+
+A complete contract states each intended band, and the implementation must prove them:
+
+```una
+module demo
+
+pub kind Availability = SoldOut | Few | Open
+
+pub classify(seats: Int) -> Availability
+  requires seats >= 0
+  ensures seats == 0 implies result is SoldOut
+  ensures seats > 0 and seats < 20 implies result is Few
+  ensures seats >= 20 implies result is Open
+=
+  if seats == 0 then SoldOut else if seats < 20 then Few else Open
+
+example "zero"
+  do classify(0)
+  expect result is SoldOut
+
+example "lower band"
+  do classify(1)
+  expect result is Few
+
+example "upper band"
+  do classify(20)
+  expect result is Open
+```
+
+The examples give concrete runtime checks; the proof obligation is the contract. This deliberately broken implementation is refuted with U5001:
+
+```una
+-- fails with U5001
+module demo
+
+pub kind Availability = SoldOut | Few | Open
+
+pub classify(seats: Int) -> Availability
+  requires seats >= 0
+  ensures seats == 0 implies result is SoldOut
+  ensures seats > 0 and seats < 20 implies result is Few
+  ensures seats >= 20 implies result is Open
+=
+  SoldOut
+```
+
+Neither passing examples nor proving postconditions establishes that they capture the complete business requirement. Review `requires` and `ensures` against the requirement and its owner. The report can mark a trivial `ensures` such as `ensures true`; it does not infer semantic completeness.
 
 ## Edge cases
 

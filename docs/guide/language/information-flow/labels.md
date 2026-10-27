@@ -1,6 +1,6 @@
 ---
 construct: Labels
-editions: ["0.1", "0.2"]
+editions: ["0.1", "0.2", "0.3"]
 spec: ["spec/07 §1", "spec/07 §2", "spec/07 §3", "spec/07 §4", "spec/07 §7", "spec/03 §5", "spec/02 §2", "spec/13 §7"]
 codes: [U4001, U4002, U4003, U4007]
 ---
@@ -91,6 +91,47 @@ pub tagged(birth_year: secret[PII] Int) -> secret[PII] Int = birth_year
 
 pub wider(birth_year: secret[PII] Int) -> restricted[PII] Int = birth_year
 ```
+
+## Validating sensitive data without revealing validity
+
+A validator can return a `Result` whose success payload and outer result are labeled `internal`, while keeping the error variant public. This lets a caller process the result without making a secret-dependent failure observable:
+
+```una
+-- edition 0.3
+module demo
+
+pub kind Positive = Int where it > 0
+
+pub kind ValidationError = | NonPositive
+
+pub validate(value: internal Int) -> internal Result[internal Positive, ValidationError] = if value > 0 then Ok(value) else Err(NonPositive)
+
+example "valid"
+  do validate(3)
+  expect result is Ok
+
+example "invalid"
+  do validate(0)
+  expect result is Err
+```
+
+The success payload is constrained at its own position; the error type stays public, and the enclosing `Result` is internal. Returning `Err` on the invalid branch avoids a secret-dependent `fail`. The contrasting implementation below fails with U4002 because failure itself reveals the internal condition:
+
+```una
+-- fails with U4002
+module demo
+
+pub kind Positive = Int where it > 0
+
+pub kind ValidationError = | NonPositive
+
+pub validate(value: internal Int) -> internal Positive
+  fails ValidationError
+=
+  if value > 0 then value else fail NonPositive
+```
+
+
 
 ## Edge cases
 
