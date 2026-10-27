@@ -49,10 +49,16 @@ fn the_report_of_the_events_example() {
     let output = una(&["--json", "report", "examples/events"]);
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     assert_eq!(stderr(&output), "");
-    // The `native` section names the host target (ADR 0055), which differs between runners.
+    // The `native` section names the host target (ADR 0055) and the kernel variants compiled
+    // for it (ADR 0120 rule 56), which differ between runners.
     let target = una_codegen::host_target();
-    let text =
-        stdout(&output).replace(&format!("\"target\":\"{target}\""), "\"target\":\"<host>\"");
+    let variants = serde_json::to_string(una_core::dense::variants::variant_names()).unwrap();
+    let text = stdout(&output)
+        .replace(&format!("\"target\":\"{target}\""), "\"target\":\"<host>\"")
+        .replace(
+            &format!("\"variants\":{variants}"),
+            "\"variants\":\"<host>\"",
+        );
     insta::assert_snapshot!("report_events_json", text);
     let report = json(&output);
     assert_eq!(report["schema"], "una.report/2");
@@ -115,6 +121,14 @@ fn the_report_of_the_events_example() {
     assert_eq!(
         report["native"]["arbitrary_precision"],
         json!(["events.seating.clamp_seats.raw"])
+    );
+    assert_eq!(
+        report["native"]["kernels"]["variants"],
+        json!(una_core::dense::variants::variant_names())
+    );
+    assert_eq!(
+        report["native"]["kernels"]["fma_allowlist"],
+        json!(una_core::dense::variants::ALLOWLIST)
     );
     let output = una(&["report", "examples/events"]);
     assert_eq!(output.status.code(), Some(0));
