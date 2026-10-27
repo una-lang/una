@@ -1974,14 +1974,44 @@ pub(crate) fn within_budget(site: usize) -> bool {
 /// The text of `word`, a value of the type at `ty` in the program's type descriptions, as
 /// interpolation writes it, with every field (`spec/11 §5`, ADR 0068). A new reference.
 /// `params` are the descriptors of the type parameters that the type holds, by position.
-pub fn written(ty: usize, word: i64, params: &[i64]) -> i64 {
-    let text = with_state(|state| state.types.written(ty, word, params)).unwrap_or_default();
-    values::text_word(text)
+pub fn written(site: i64, ty: usize, word: i64, params: &[i64]) -> i64 {
+    let text =
+        with_state(|state| state.types.written(ty, word, params)).unwrap_or(Some(String::new()));
+    match text {
+        Some(text) => values::text_word(text),
+        None => {
+            int_text_abort(site);
+            values::text_word(String::new())
+        }
+    }
 }
 
-/// `written` of the type at `ty`, as the generated code passes it.
-pub fn write(ty: i64, word: i64) -> i64 {
-    written(usize::try_from(ty).unwrap_or(usize::MAX), word, &[])
+/// `written` of the type at `ty`, as the generated code passes it, at `site`.
+pub fn write(site: i64, ty: i64, word: i64) -> i64 {
+    written(site, usize::try_from(ty).unwrap_or(usize::MAX), word, &[])
+}
+
+/// An `Int` as text, at `site` ([`values::int_text`]): one of more than `MAX_INT_DIGITS`
+/// digits is never written, the run aborting with U6003 there (`spec/11 §7`, #923).
+pub fn int_text(site: i64, a: i64) -> i64 {
+    match values::int_text(a) {
+        Some(text) => text,
+        None => {
+            int_text_abort(site);
+            values::text_word(String::new())
+        }
+    }
+}
+
+/// Aborts the run, or stops the task, with U6003 at `site`: an integer of more than
+/// `MAX_INT_DIGITS` digits was to be written as text (`spec/11 §7`, #923). The caller returns
+/// a value the stopped task never uses.
+pub(crate) fn int_text_abort(site: i64) {
+    abort_at(
+        usize::try_from(site).unwrap_or(usize::MAX),
+        Code::U6003,
+        una_core::INT_TEXT_LIMIT_MESSAGE.to_owned(),
+    );
 }
 
 /// Returns 1 when the task must stop before an operation, having been cancelled, and 0
@@ -2323,7 +2353,10 @@ pub fn main_failed(failure: i64) {
             Code::U6001,
             format!(
                 "`main` failed with `{}`",
-                state.types.shown(described.root, failure)
+                state
+                    .types
+                    .shown(described.root, failure)
+                    .unwrap_or_else(|| "<an integer of more than 4300 digits>".to_owned())
             ),
             described.location.clone(),
         ))
