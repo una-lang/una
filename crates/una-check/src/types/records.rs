@@ -29,6 +29,14 @@ pub(crate) enum Res {
     /// `measured()`, `magnitude()` or `convert()` (ADR 0104 rule 4): erased to the receiver,
     /// multiplied by `ratio` when it is not 1 (rule 5).
     UnitMethod { ratio: u128 },
+    /// `convert()` on a magnitude that is not an integer, by a ratio that is not 1 (ADR 0114
+    /// rule 12.5, ADR 0120 rule 63): erased to the receiver multiplied by `ratio`, or divided
+    /// by it when `divide`, as an operation of `number` with a literal `ratio`.
+    Convert {
+        ratio: u128,
+        divide: bool,
+        number: ConvertNumber,
+    },
     /// A built-in method of a map that reads it (`spec/21 §2`).
     MapMethod(una_core::MapOp),
     /// A method of `Complex[F64]` or `Complex[F32]`, which elaborates to the operations of the
@@ -86,6 +94,17 @@ pub(crate) enum Res {
     /// An operator of dense values, elaborated as `map` or `zip_map` (the prelude function
     /// `id`) with a lambda that applies the element type's operator (ADR 0120 rule 34).
     DenseOp { id: usize, op: DenseOp },
+}
+
+/// The magnitude of a [`Res::Convert`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ConvertNumber {
+    /// `F64`: `*` or `/` by the `F64` literal of the ratio.
+    F64,
+    /// `F32`: `*` or `/` by the `F32` literal of the ratio.
+    F32,
+    /// `Decimal[s]`: `*` by the `Decimal[0]` literal of the ratio, which keeps the scale.
+    Decimal(u8),
 }
 
 /// The operator of a [`Res::DenseOp`], as its lambda applies it to each element.

@@ -20,6 +20,7 @@ use super::check::{Checker, Role, Site};
 use super::label::Label;
 use super::records::{DenseOp, Res};
 use super::ty::{Dense, Shared, Ty};
+use super::units::Unit;
 use crate::names::prelude::DENSE_HIDDEN;
 
 /// The element types a method of a dense value takes (ADR 0120 rule 26).
@@ -228,6 +229,48 @@ pub(crate) const SYNTHESIZING: [&str; 21] = [
     "dense_array_all_finite",
 ];
 
+/// The methods of dense values whose units are a rule of their own (ADR 0120 rule 64): they
+/// multiply or divide the units of their operands, or add a product to their receiver. Every
+/// other method is generic in its element type, unit included.
+const UNIT_KERNELS: [&str; 9] = [
+    "multiply_elements",
+    "divide_elements",
+    "dot",
+    "dot_exact",
+    "add_scaled",
+    "scale",
+    "multiply",
+    "multiply_array",
+    "add_product",
+];
+
+/// `ty`, a dense type, with its element in `unit` in place of its own, labels and
+/// refinements kept: `x.magnitude()` and `x.measured()` of a dense value, and the products,
+/// whose representation is the same (ADR 0120 rule 64).
+pub(crate) fn dense_in_unit(ty: &Ty, unit: Option<&Unit>) -> Ty {
+    match ty {
+        Ty::Labeled(label, inner) => {
+            Ty::Labeled(label.clone(), Shared::new(dense_in_unit(inner, unit)))
+        }
+        Ty::Dense(dense, element) => Ty::Dense(*dense, Shared::new(element_in_unit(element, unit))),
+        other => other.clone(),
+    }
+}
+
+/// An element type in `unit` in place of its own, its labels and refinements kept.
+fn element_in_unit(element: &Ty, unit: Option<&Unit>) -> Ty {
+    match element {
+        Ty::Labeled(label, inner) => {
+            Ty::Labeled(label.clone(), Shared::new(element_in_unit(inner, unit)))
+        }
+        Ty::Refined(refinements, inner) => Ty::Refined(
+            refinements.clone(),
+            Shared::new(element_in_unit(inner, unit)),
+        ),
+        other => other.clone().in_unit(unit),
+    }
+}
+
 /// Whether `def`, a function of module `module`, computes new values of its element type
 /// ([`SYNTHESIZING`]).
 pub(crate) fn synthesizes(prelude: usize, module: usize, name: &str) -> bool {
@@ -247,11 +290,13 @@ pub(crate) fn dense_display(name: &str) -> Option<&'static str> {
 }
 
 /// Whether `ty`, a written element type with its labels and refinements, is numeric: `F64` or
-/// a fixed-width integer type (ADR 0120 rule 26). An error type is numeric, so one mistake
-/// gives one diagnostic.
+/// a fixed-width integer type, or a measured version of one (ADR 0120 rules 26 and 64). An
+/// error type is numeric, so one mistake gives one diagnostic.
 pub(crate) fn dense_numeric(ty: &Ty) -> bool {
     match ty {
-        Ty::Labeled(_, inner) | Ty::Refined(_, inner) => dense_numeric(inner),
+        Ty::Labeled(_, inner) | Ty::Refined(_, inner) | Ty::Measured(_, inner) => {
+            dense_numeric(inner)
+        }
         Ty::F64 | Ty::Fixed(_) | Ty::Error(_) => true,
         _ => false,
     }
@@ -276,10 +321,10 @@ impl Needs {
 }
 
 impl Checker<'_, '_, '_> {
-    /// The class of the element type `element`, through its solved variables, labels and
-    /// refinements: `None` when it is not numeric.
+    /// The class of the element type `element`, through its solved variables, labels,
+    /// refinements and unit (ADR 0120 rule 64): `None` when it is not numeric.
     fn element_class(&self, element: &Ty) -> Option<Class> {
-        match self.vars.peel(element) {
+        match self.vars.peel(element).magnitude() {
             Ty::F64 => Some(Class::Float),
             Ty::Fixed(_) => Some(Class::Integer),
             _ => None,
@@ -342,13 +387,143 @@ impl Checker<'_, '_, '_> {
             return Some(self.element_term(dense, &element, target_ty, args, span));
         }
         let id = self.env.prelude_function(function)?;
+        // A kernel combines the units of its operands by its own rule (ADR 0120 rule 64), so
+        // the call is typed on their magnitudes, and the rule gives the result's unit.
+        let kernel = UNIT_KERNELS.contains(&method);
+        if kernel {
+            self.unit_blind.insert(target.span, None);
+            for arg in args {
+                self.unit_blind.insert(arg.value.span, None);
+            }
+        }
         self.receiver_marker = Some((marker, target.clone()));
         let ty = self.call_function(id, Some((target.span, target_ty.clone())), args, span, site);
         self.receiver_marker = None;
+        let ty = if kernel {
+            self.unit_blind.remove(&target.span);
+            let found: Vec<(String, Option<Ty>, Span)> = args
+                .iter()
+                .map(|arg| {
+                    let name = match (&arg.label, &arg.value.kind) {
+                        (Some(label), _) => self.name(label).to_owned(),
+                        (None, ExprKind::Name(ident)) => self.name(ident).to_owned(),
+                        (None, _) => String::new(),
+                    };
+                    let found = self.unit_blind.remove(&arg.value.span).flatten();
+                    (name, found, arg.value.span)
+                })
+                .collect();
+            self.kernel_units(method, target_ty, &found, ty, span)
+        } else {
+            ty
+        };
         if matches!(method, "add_scaled" | "add_product") {
             self.kernel_inputs(target_ty, args);
         }
         Some(ty)
+    }
+
+    /// The unit of the element of `ty` when it is a dense value, or of `ty` when it is a
+    /// scalar.
+    fn element_unit(&self, ty: &Ty) -> Option<Unit> {
+        match self.vars.peel(ty) {
+            Ty::Dense(_, element) => self.unit_of(&element),
+            other => other.unit().cloned(),
+        }
+    }
+
+    /// The type `ty` of a call of the kernel `method` on `receiver`, typed on the magnitudes,
+    /// with the units of ADR 0120 rule 64: `multiply_elements`, `multiply`, `multiply_array` and
+    /// `dot` multiply the units of the receiver and `by` or `with`, `divide_elements` divides
+    /// them; `add_scaled` and `add_product` add a product to their receiver, which must have
+    /// its unit, and `scale` scales its receiver in place by a unitless factor (U2028
+    /// otherwise, at the argument). `found` holds each argument's label, type and span.
+    fn kernel_units(
+        &mut self,
+        method: &str,
+        receiver: &Ty,
+        found: &[(String, Option<Ty>, Span)],
+        ty: Ty,
+        span: Span,
+    ) -> Ty {
+        let own = self.element_unit(receiver);
+        let arg = |name: &str| {
+            found
+                .iter()
+                .find(|(label, ..)| label == name)
+                .and_then(|(_, ty, _)| ty.as_ref())
+        };
+        // Where a unit error of the argument `name` is reported: at it, else at the call.
+        let at = |name: &str| {
+            found
+                .iter()
+                .find(|(label, ..)| label == name)
+                .map_or(span, |(.., at)| *at)
+        };
+        let units: Vec<Option<Unit>> = ["by", "with", "x", "of", "and"]
+            .iter()
+            .map(|name| arg(name).and_then(|ty| self.element_unit(ty)))
+            .collect();
+        let [by, with, x, of, and] = units.as_slice() else {
+            return ty;
+        };
+        if own.is_none() && units.iter().all(Option::is_none) {
+            return ty;
+        }
+        let result = self.labeled(&ty);
+        match method {
+            "multiply_elements" | "multiply" | "multiply_array" => {
+                let unit = self.product_unit(own.as_ref(), by.as_ref(), span);
+                dense_in_unit(&result, unit.as_ref())
+            }
+            "divide_elements" => {
+                let unit = self.quotient_unit(own.as_ref(), by.as_ref(), span);
+                dense_in_unit(&result, unit.as_ref())
+            }
+            "dot" | "dot_exact" => {
+                let unit = self.product_unit(own.as_ref(), with.as_ref(), span);
+                result.in_unit(unit.as_ref())
+            }
+            "add_scaled" | "add_product" => {
+                let (a, b, last) = if method == "add_scaled" {
+                    (by, x, at("by"))
+                } else {
+                    (of, and, at("and"))
+                };
+                let product = self.product_unit(a.as_ref(), b.as_ref(), span);
+                if product != own {
+                    let shown = |u: &Option<Unit>| {
+                        u.as_ref()
+                            .map_or_else(|| "no unit".to_owned(), |u| format!("`{u}`"))
+                    };
+                    self.report.error(
+                        Code::U2028,
+                        last,
+                        format!(
+                            "`{method}` adds a product in {} to elements in {}, which need one unit",
+                            shown(&product),
+                            shown(&own)
+                        ),
+                    );
+                }
+                result
+            }
+            // `scale`: in place, so the receiver's type, unit included, does not change.
+            _ => {
+                if by.is_some() {
+                    let mut diagnostic = self.report.make(
+                        Code::U2028,
+                        at("by"),
+                        "`scale` changes its receiver in place, so its factor `by` is unitless",
+                    );
+                    diagnostic.repairs.push(super::Report::advice(
+                        "multiply with `*` for a result in another unit, as in `let y = x * k`",
+                    ));
+                    self.report.push(diagnostic);
+                }
+                result
+            }
+        }
     }
 
     /// `a.get(index: i)` or `m.get(row: i, column: j)` in a clause: the element term (ADR
@@ -489,6 +664,9 @@ impl Checker<'_, '_, '_> {
             None => {
                 let hint = match (op, &first_dense) {
                     (BinaryOp::Add | BinaryOp::Sub, _) => Some(first_ty.clone()),
+                    // A scalar is unitless unless it says otherwise: its unit multiplies the
+                    // elements' (ADR 0120 rule 64), so the hint is the magnitude.
+                    (_, Some((_, element))) if element.has_units() => Some(self.number_of(element)),
                     (_, Some((_, element))) => Some(element.as_ref().clone()),
                     _ => None,
                 };
@@ -614,6 +792,16 @@ impl Checker<'_, '_, '_> {
                 }
                 let base = self.element_base(element);
                 let scalar_base = self.resolve(scalar_ty);
+                // The scalar's unit multiplies the elements', or divides them (ADR 0120 rule
+                // 64): the magnitudes are one type.
+                let units = base.has_units() || scalar_base.has_units();
+                let (element_unit, scalar_unit) =
+                    (base.unit().cloned(), scalar_base.unit().cloned());
+                let (base, scalar_base) = if units {
+                    (base.magnitude().clone(), scalar_base.magnitude().clone())
+                } else {
+                    (base, scalar_base)
+                };
                 if !self.unify_at(
                     scalar.span,
                     &base,
@@ -622,6 +810,16 @@ impl Checker<'_, '_, '_> {
                 ) {
                     return Ty::error();
                 }
+                let base = if !units {
+                    base
+                } else if op == BinaryOp::Div {
+                    let unit =
+                        self.quotient_unit(element_unit.as_ref(), scalar_unit.as_ref(), span);
+                    base.in_unit(unit.as_ref())
+                } else {
+                    let unit = self.product_unit(element_unit.as_ref(), scalar_unit.as_ref(), span);
+                    base.in_unit(unit.as_ref())
+                };
                 self.overflow_site(&base, span);
                 if op == BinaryOp::Div
                     && self.element_class(element) == Some(Class::Integer)

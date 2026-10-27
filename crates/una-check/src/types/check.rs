@@ -269,6 +269,11 @@ pub(crate) struct Checker<'c, 'a, 's> {
     pub(crate) call_targets: BTreeMap<Span, usize>,
     /// The types of the operands of the binary operations being checked.
     pub(crate) operands: Vec<Ty>,
+    /// The spans of the receiver and the arguments of a call of a dense kernel being checked,
+    /// whose units the kernel's own rule combines (ADR 0120 rule 64): there, a parameter and
+    /// an argument that differ only in their units unify, and the argument's type is kept for
+    /// that rule.
+    pub(crate) unit_blind: BTreeMap<Span, Option<Ty>>,
     /// The spans of the variants written without their fields (U2009), for the `is` repair of
     /// a comparison (#205).
     pub(crate) needs_fields: Vec<Span>,
@@ -531,6 +536,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             timing: Vec::new(),
             call_targets: BTreeMap::new(),
             operands: Vec::new(),
+            unit_blind: BTreeMap::new(),
             needs_fields: Vec::new(),
             pending_ops: BTreeMap::new(),
             records: Records::default(),
@@ -619,6 +625,19 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         // once the types are final.
         if !self.flow_hints.contains(&span) {
             self.record_flow(span, expected, found);
+        }
+        // A dense kernel's operand: its units are the kernel's rule's (ADR 0120 rule 64).
+        if let Some(slot) = self.unit_blind.get_mut(&span) {
+            *slot = Some(found.clone());
+            let (blind_expected, blind_found) = (self.labeled(expected), self.labeled(found));
+            if (blind_expected.has_units() || blind_found.has_units())
+                && self.vars.unify_expected(
+                    &blind_expected.without_units(),
+                    &blind_found.without_units(),
+                )
+            {
+                return true;
+            }
         }
         if self.vars.unify_expected(expected, found) {
             return true;

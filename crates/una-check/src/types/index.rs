@@ -108,6 +108,7 @@ pub(crate) fn build(env: &Env<'_>, findings: &Findings) -> Index {
             | Res::Len
             | Res::IntMethod(_)
             | Res::UnitMethod { .. }
+            | Res::Convert { .. }
             | Res::MapMethod(_)
             | Res::MapUpdate(_)
             | Res::SeqMethod(_)

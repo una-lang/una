@@ -18,6 +18,7 @@ use una_syntax::ast::{Arg, Expr, ExprKind, Literal, UnaryOp};
 use super::check::{Checker, Role};
 use super::records::Res;
 use super::ty::Ty;
+use super::units::Unit;
 
 /// Whether `expr` is a float literal of value zero, with or without unary `-` and
 /// parentheses: `0.0`, `-0.0`, `0.000` (ADR 0114 rule 5.5).
@@ -134,10 +135,10 @@ impl Checker<'_, '_, '_> {
         matches!(self.resolve(ty).unlabeled(), Ty::F32)
     }
 
-    /// The name of the float type of `a`, or else of `b`: `F32` when either is one, `F64`
-    /// otherwise.
+    /// The name of the float type of `a`, or else of `b`, measured or not: `F32` when either
+    /// is one, `F64` otherwise.
     pub(crate) fn float_name_of(&self, a: &Ty, b: &Ty) -> &'static str {
-        if self.is_f32(a) || self.is_f32(b) {
+        if matches!(self.number_of(a), Ty::F32) || matches!(self.number_of(b), Ty::F32) {
             "F32"
         } else {
             "F64"
@@ -340,25 +341,29 @@ impl Checker<'_, '_, '_> {
         let edition_0_4 = self.env.edition >= Edition::V0_4;
         let receiver = self.resolve(target);
         let label = self.deep(target);
-        let float = match receiver.unlabeled() {
+        // A measured receiver takes its magnitude's methods, with the units of ADR 0114 rule
+        // 12 (ADR 0120 rule 62): a conversion between number types keeps the unit (12.6).
+        let unit = receiver.unit().cloned();
+        let keep = |ty: Ty| ty.in_unit(unit.as_ref());
+        let float = match receiver.magnitude() {
             // ADR 0114 rule 4.1: `n.to_f64()` on an integer, ahead of a function of that name.
             Ty::Int | Ty::Fixed(_) if method == "to_f64" && args.is_empty() => {
                 self.resolved(span, Res::IntMethod(Prim::Float(FloatOp::FromInt)));
-                return Some(Ty::F64.with_label(&label));
+                return Some(keep(Ty::F64.with_label(&label)));
             }
             // ADR 0120 rule 8: `n.to_f32()` on an integer, the same in edition 0.4.
             Ty::Int | Ty::Fixed(_) if edition_0_4 && method == "to_f32" && args.is_empty() => {
                 self.resolved(span, Res::IntMethod(Prim::Float32(FloatOp::FromInt)));
-                return Some(Ty::F32.with_label(&label));
+                return Some(keep(Ty::F32.with_label(&label)));
             }
             // ADR 0120 rule 8: the conversions between the float types.
             Ty::F64 if edition_0_4 && method == "to_f32" && args.is_empty() => {
                 self.resolved(span, Res::IntMethod(Prim::Float(FloatOp::ToF32)));
-                return Some(Ty::F32.with_label(&label));
+                return Some(keep(Ty::F32.with_label(&label)));
             }
             Ty::F32 if method == "to_f64" && args.is_empty() => {
                 self.resolved(span, Res::IntMethod(Prim::Float32(FloatOp::ToF64)));
-                return Some(Ty::F64.with_label(&label));
+                return Some(keep(Ty::F64.with_label(&label)));
             }
             Ty::F64 => Ty::F64,
             Ty::F32 => Ty::F32,
@@ -371,13 +376,56 @@ impl Checker<'_, '_, '_> {
         if !op.in_refinement_language() {
             self.outside_rl(span, || format!("the method `{method}`"));
         }
+        // ADR 0114 rule 12.2: `to_bits` needs a unitless receiver.
+        if unit.is_some() && op == FloatOp::ToBits {
+            let mut diagnostic = self.report.make(
+                Code::U2028,
+                span,
+                format!("`{method}` takes a unitless value, and this one has a unit"),
+            );
+            diagnostic.repairs.push(super::Report::advice(format!(
+                "write `x.magnitude().{method}()`"
+            )));
+            self.report.push(diagnostic);
+        }
         let params = op.params();
         let mut label = label;
+        // The receiver's type with its unit: what an argument in the receiver's unit is.
+        let measured = keep(float.clone());
+        // `fma`: the unit of `times`, then the unit of `x * times`, which `plus` and the
+        // result have.
+        let mut times_unit: Option<Option<Unit>> = None;
+        let mut fma_unit: Option<Option<Unit>> = None;
         if args.len() == params.len() {
             for (arg, param) in args.iter().zip(params) {
                 self.method_label(method, param, arg);
                 let what = format!("argument `{param}` of `{method}`");
-                let found = self.expr_as(&arg.value, Some(&float), Role::Condition(&what));
+                let found = match (op, *param) {
+                    // Any unit (rule 12.2): `copy_sign` reads only the sign of `from`, and the
+                    // unit of `times` multiplies the receiver's.
+                    (FloatOp::CopySign, _) | (FloatOp::Fma, "times") => {
+                        let found = self.infer(&arg.value, Some(&float));
+                        if self.number_of(&found) != float {
+                            self.unify_at(arg.value.span, &float, &found, Role::Condition(&what));
+                        }
+                        if op == FloatOp::Fma {
+                            times_unit = Some(self.unit_of(&found));
+                        }
+                        found
+                    }
+                    // `plus` is in the unit of `x * times`.
+                    (FloatOp::Fma, _) => {
+                        let product = match &times_unit {
+                            Some(times) => self.product_unit(unit.as_ref(), times.as_ref(), span),
+                            None => unit.clone(),
+                        };
+                        let expected = float.clone().in_unit(product.as_ref());
+                        fma_unit = Some(product);
+                        self.expr_as(&arg.value, Some(&expected), Role::Condition(&what))
+                    }
+                    // Every other argument is in the receiver's unit.
+                    _ => self.expr_as(&arg.value, Some(&measured), Role::Condition(&what)),
+                };
                 label = label.join(&self.deep(&found));
             }
         } else {
@@ -410,9 +458,26 @@ impl Checker<'_, '_, '_> {
             FloatResult::U64 if name == "F32" => Ty::Fixed(una_core::IntType::U32),
             FloatResult::U64 => Ty::Fixed(una_core::IntType::U64),
             FloatResult::OptionInt => match self.env.prelude_kind("Option") {
-                Some(id) => Ty::Kind(id, vec![Ty::Int].into()),
+                // `to_int_exact()` keeps the unit inside the option (rule 12.6).
+                Some(id) => Ty::Kind(id, vec![keep(Ty::Int)].into()),
                 None => Ty::error(),
             },
+        };
+        // The unit of the result (rule 12.2 and 12.3).
+        let result = match (op.result(), op) {
+            (FloatResult::F64 | FloatResult::Other, FloatOp::Sqrt) => {
+                match self.sqrt_unit(unit.as_ref(), method, span) {
+                    Some(root) => result.in_unit(root.as_ref()),
+                    // U2028, reported: nothing more follows from the result.
+                    None => Ty::error(),
+                }
+            }
+            (FloatResult::F64 | FloatResult::Other, FloatOp::Fma) => {
+                let product = fma_unit.unwrap_or_else(|| unit.clone());
+                result.in_unit(product.as_ref())
+            }
+            (FloatResult::F64 | FloatResult::Other, _) => keep(result),
+            _ => result,
         };
         Some(result.with_label(&label))
     }

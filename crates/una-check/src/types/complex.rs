@@ -19,6 +19,7 @@ use super::check::{Checker, Role};
 use super::label::Label;
 use super::records::Res;
 use super::ty::{KindId, Ty};
+use super::units::Unit;
 
 /// The component type of a complex type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -215,7 +216,11 @@ impl Checker<'_, '_, '_> {
         // `re` first, so that `im` takes its type; arguments of no parameter last.
         let mut sorted: Vec<&(&Expr, Option<usize>, Option<Ty>)> = values.iter().collect();
         sorted.sort_by_key(|(_, target, _)| target.unwrap_or(usize::MAX));
-        let mut width = expected.and_then(|e| self.complex_width(e));
+        let mut width = expected.and_then(|e| self.complex_width(&self.number_of(e)));
+        // A measured complex type expected gives its unit to the components (ADR 0120 rule
+        // 64), which share one unit, the result's.
+        let expected_unit = expected.and_then(|e| self.unit_of(e));
+        let mut units: Vec<(Span, Option<Unit>)> = Vec::new();
         let mut label = Label::public();
         for (value, target, typed) in sorted {
             let Some(target) = *target else {
@@ -227,13 +232,14 @@ impl Checker<'_, '_, '_> {
             let found = match typed {
                 Some(typed) => typed.clone(),
                 None => {
-                    let hint = width.map(Width::component);
+                    let hint = width.map(|w| w.component().in_unit(expected_unit.as_ref()));
                     self.infer(value, hint.as_ref())
                 }
             };
             label = label.join(&self.deep(&found));
             let resolved = self.resolve(&found);
-            match (width, Width::of(resolved.unlabeled())) {
+            units.push((value.span, resolved.unit().cloned()));
+            match (width, Width::of(resolved.magnitude())) {
                 (None, Some(own)) => width = Some(own),
                 (Some(w), Some(own)) if w != own => {
                     let component = w.component();
@@ -298,7 +304,32 @@ impl Checker<'_, '_, '_> {
                 variant: None,
             },
         );
-        Some(Ty::Kind(kind, Vec::new().into()).with_label(&label))
+        // One unit for both components (ADR 0120 rule 64): the result's.
+        let unit = match units.as_slice() {
+            [(_, a), (at, b), ..] if a != b => {
+                let shown = |u: &Option<Unit>| {
+                    u.as_ref()
+                        .map_or_else(|| "no unit".to_owned(), |u| format!("`{u}`"))
+                };
+                self.report.error(
+                    Code::U2028,
+                    *at,
+                    format!(
+                        "both components of {callee} need one unit, and these have {} and {}",
+                        shown(a),
+                        shown(b)
+                    ),
+                );
+                a.clone()
+            }
+            [(_, a), ..] => a.clone(),
+            [] => None,
+        };
+        Some(
+            Ty::Kind(kind, Vec::new().into())
+                .in_unit(unit.as_ref())
+                .with_label(&label),
+        )
     }
 
     /// `x.conj()`, `x.scale(by: k)` and `x.norm_sqr()` on a complex `x` in edition 0.4 (ADR
@@ -315,7 +346,11 @@ impl Checker<'_, '_, '_> {
         if self.env.edition < Edition::V0_4 {
             return None;
         }
-        let width = self.complex_width(target)?;
+        // A measured receiver (ADR 0120 rule 64): `conj` keeps its unit, `scale(by:)`
+        // multiplies it by the scalar's, and `norm_sqr()` squares it.
+        let width = self.complex_width(&self.number_of(target))?;
+        let unit = self.unit_of(target);
+        let mut by_unit = None;
         let (op, params) = match method {
             "conj" => (ComplexMethod::Conj, NO_PARAMS),
             "scale" => (ComplexMethod::Scale, SCALE_PARAMS),
@@ -331,7 +366,12 @@ impl Checker<'_, '_, '_> {
                 self.method_label(method, param, arg);
                 let what = format!("argument `{param}` of `{method}`");
                 let component = width.component();
-                let found = self.expr_as(&arg.value, Some(&component), Role::Condition(&what));
+                // The scalar may have any unit.
+                let found = self.infer(&arg.value, Some(&component));
+                if self.number_of(&found) != component {
+                    self.unify_at(arg.value.span, &component, &found, Role::Condition(&what));
+                }
+                by_unit = self.unit_of(&found);
                 label = label.join(&self.deep(&found));
             }
         } else {
@@ -352,8 +392,15 @@ impl Checker<'_, '_, '_> {
         }
         self.resolved(span, Res::Complex(op));
         let result = match op {
-            ComplexMethod::NormSqr => width.component(),
-            ComplexMethod::Conj | ComplexMethod::Scale => self.complex_ty(width),
+            ComplexMethod::NormSqr => {
+                let square = self.product_unit(unit.as_ref(), unit.as_ref(), span);
+                width.component().in_unit(square.as_ref())
+            }
+            ComplexMethod::Conj => self.complex_ty(width).in_unit(unit.as_ref()),
+            ComplexMethod::Scale => {
+                let product = self.product_unit(unit.as_ref(), by_unit.as_ref(), span);
+                self.complex_ty(width).in_unit(product.as_ref())
+            }
         };
         Some(result.with_label(&label))
     }
@@ -377,9 +424,11 @@ impl Checker<'_, '_, '_> {
         self.outside_rl(span, || format!("arithmetic on `{}`", width.written()));
         let mark = self.report.count();
         let second_ty = self.infer(second, Some(&complex));
-        if self.complex_width(&second_ty) != Some(width) {
+        // The units of the operands are compared by the caller (ADR 0120 rule 64).
+        let second_number = self.number_of(&second_ty);
+        if self.complex_width(&second_number) != Some(width) {
             self.unify_at(second.span, &complex, &second_ty, Role::Condition(operand));
-            if matches!(self.resolve(&second_ty).unlabeled(), Ty::F64 | Ty::F32) {
+            if matches!(second_number, Ty::F64 | Ty::F32) {
                 self.real_operand_repair(mark, second.span, op, first, second, span);
             }
         }

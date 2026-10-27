@@ -248,10 +248,11 @@ pub(crate) enum Ty {
     /// A type whose top position carries a label above `public` (`spec/03 §5`, `spec/09 §2`).
     /// Type equality ignores labels.
     Labeled(Label, Shared<Ty>),
-    /// An integer type with a unit of measure, edition 0.3 (ADR 0104 rule 2): `Int` or a
-    /// fixed-width integer type, never labeled itself (a label wraps the measured type). A
-    /// type of its own: it equals another measured type with the same unit and magnitude
-    /// type, and nothing else.
+    /// A number type with a unit of measure (ADR 0104 rule 2): `Int` or a fixed-width integer
+    /// type from edition 0.3, `F64` from edition 0.3 (ADR 0114 rule 12), and `F32`,
+    /// `Decimal[s]`, `Complex[F64]` and `Complex[F32]` in edition 0.4 (ADR 0120 rule 61). The
+    /// magnitude is never labeled itself (a label wraps the measured type). A type of its own:
+    /// it equals another measured type with the same unit and magnitude type, and nothing else.
     Measured(Shared<super::units::Unit>, Shared<Ty>),
     /// A nested position whose values satisfy `refinements` (ADR 0103): an argument of a type
     /// written or instantiated with a refined kind or a range, in edition 0.3. It sits inside
@@ -692,14 +693,42 @@ impl Ty {
         }
     }
 
-    /// The measured type of `unit` over `magnitude`, `Int` or a fixed-width type without a
-    /// label: a label wraps the measured type, never its magnitude (ADR 0104, ADR 0077).
+    /// The measured type of `unit` over `magnitude`, a number type without a label: `Int`, a
+    /// fixed-width type, `F64`, `F32`, `Decimal[s]` or a complex kind. A label wraps the
+    /// measured type, never its magnitude (ADR 0104, ADR 0077, ADR 0120 rule 61).
     pub(crate) fn measured(unit: super::units::Unit, magnitude: Ty) -> Ty {
         debug_assert!(
-            matches!(magnitude, Ty::Int | Ty::Fixed(_)),
-            "a magnitude is an unlabeled integer type: {magnitude:?}"
+            matches!(
+                magnitude,
+                Ty::Int | Ty::Fixed(_) | Ty::F64 | Ty::F32 | Ty::Decimal(_) | Ty::Kind(..)
+            ),
+            "a magnitude is an unlabeled number type: {magnitude:?}"
         );
         Ty::Measured(Shared::new(unit), Shared::new(magnitude))
+    }
+
+    /// `self`, a number type, measured in `unit` in place of any unit it has, its top label
+    /// kept outside the unit (ADR 0104, ADR 0120 rule 61). No unit, or the unit one, leaves
+    /// the magnitude unitless; a type that is not a number type is returned as it is, so an
+    /// error type stays one.
+    pub(crate) fn in_unit(self, unit: Option<&super::units::Unit>) -> Ty {
+        let magnitude = self.magnitude().clone();
+        let number = match &magnitude {
+            Ty::Int | Ty::Fixed(_) | Ty::F64 | Ty::F32 | Ty::Decimal(_) => true,
+            // A complex kind has no type argument (ADR 0120 rule 22).
+            Ty::Kind(_, args) => args.is_empty(),
+            _ => false,
+        };
+        if !number {
+            return self;
+        }
+        let label = self.top_label();
+        match unit {
+            Some(unit) if !unit.is_one() => {
+                Ty::measured(unit.clone(), magnitude).with_label(&label)
+            }
+            _ => magnitude.with_label(&label),
+        }
     }
 
     /// The type with every unit removed, at every position (ADR 0104): what a unit-only
