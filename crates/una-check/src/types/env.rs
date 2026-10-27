@@ -1858,7 +1858,7 @@ impl<'a> Env<'a> {
                 continue;
             };
             let lowered = self.lower_label(module, label, report);
-            if !lowered.is_public() && ops.iter().any(|listed| listed == op) {
+            if !lowered.is_public() && ops.iter().any(|known| known.as_str() == *op) {
                 gives.push(((*op).to_owned(), lowered));
             }
         }

@@ -1,6 +1,6 @@
 -- test: before edition 0.3 `gives` after an operation of a header's `uses` is U0103 at the word, and it is not reserved as a name (ADR 0094 rule 6)
 -- spec: spec/01 §5
--- expect: error U0103 at src/m.una:12:36
+-- expect: error U0103 at src/m.una:13:36
 module m
 
 pub capability Files
