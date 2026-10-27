@@ -13,7 +13,10 @@
 //! Matrices are row-major slices: element (i, j) of a matrix of `n` columns is at `i * n + j`.
 //! The kernels take their sizes from their callers, which check the shapes first; a slice too
 //! short for its sizes leaves the output as it is and, for a factorization, reports failure.
-//! The `_with` forms take the `fma` as a parameter, so a test can count the operations.
+//! The `_with` forms take the `fma` as a parameter, so a test can count the operations and
+//! each target variant of [`super::variants`] passes the processor's instruction. They are
+//! `#[inline(always)]`, so a variant's symbol holds its whole loop, compiled with the
+//! variant's target features (ADR 0120 rules 53 and 56).
 
 use super::{KB, LANES_F64, Triangle, fma};
 use crate::float;
@@ -53,6 +56,13 @@ fn tiles(from: usize, until: usize) -> impl Iterator<Item = (usize, usize)> {
 /// The lane-blocked sum of rule 45 over `items`, the reference [`super::sum_f64`]: element k
 /// added to lane `k mod 32`, then the fixed tree. O(n) time, 256 bytes of lanes.
 pub fn sum(items: &[f64]) -> f64 {
+    sum_lanes(items)
+}
+
+/// The body of [`sum`], inlined into each target variant, whose features let the lanes run
+/// as vector additions: the same additions in the same order, so the same bits (rule 44).
+#[inline(always)]
+pub(crate) fn sum_lanes(items: &[f64]) -> f64 {
     let mut lanes = [0.0_f64; LANES_F64];
     for chunk in items.chunks(LANES_F64) {
         for (lane, x) in lanes.iter_mut().zip(chunk) {
@@ -86,7 +96,8 @@ pub fn dot(x: &[f64], y: &[f64]) -> f64 {
 }
 
 /// [`dot_from`] with the `fma` `f`.
-fn dot_from_with(start: f64, x: &[f64], y: &[f64], f: impl Fn(f64, f64, f64) -> f64) -> f64 {
+#[inline(always)]
+pub(crate) fn dot_from_with(start: f64, x: &[f64], y: &[f64], f: impl Fn(f64, f64, f64) -> f64) -> f64 {
     let mut s = start;
     for (xs, ys) in x.chunks(KB).zip(y.chunks(KB)) {
         let mut p = 0.0_f64;
@@ -101,11 +112,21 @@ fn dot_from_with(start: f64, x: &[f64], y: &[f64], f: impl Fn(f64, f64, f64) -> 
 /// The inner product of rule 46 over the pairs of `pairs` from `start`, for factors that are
 /// not in two slices (the elements of a contraction): the chain of [`dot_from`]. O(K).
 pub fn dot_pairs<I: IntoIterator<Item = (f64, f64)>>(start: f64, pairs: I) -> f64 {
+    dot_pairs_with(start, pairs, fma::baseline)
+}
+
+/// [`dot_pairs`] with the `fma` `f`.
+#[inline(always)]
+pub(crate) fn dot_pairs_with<I: IntoIterator<Item = (f64, f64)>>(
+    start: f64,
+    pairs: I,
+    f: impl Fn(f64, f64, f64) -> f64,
+) -> f64 {
     let mut s = start;
     let mut p = 0.0_f64;
     let mut in_block = 0;
     for (x, y) in pairs {
-        p = fma::baseline(x, y, p);
+        p = f(x, y, p);
         in_block += 1;
         if in_block == KB {
             s += p;
@@ -124,10 +145,20 @@ pub fn dot_pairs<I: IntoIterator<Item = (f64, f64)>>(start: f64, pairs: I) -> f6
 /// of the values `ldexp(x_k, -e)` with themselves, then `ldexp(sqrt(that), e)`. Two passes over
 /// `items`, which it clones, O(n) time, O(1) space.
 pub fn norm2<I: Iterator<Item = f64> + Clone>(items: I) -> f64 {
+    norm2_with(items.clone(), items, fma::baseline)
+}
+
+/// [`norm2`] with the `fma` `f`, over two passes of the same elements: `scan` finds M and
+/// `items` gives the terms. O(n) time, O(1) space.
+#[inline(always)]
+pub(crate) fn norm2_with(
+    scan: impl Iterator<Item = f64>,
+    items: impl Iterator<Item = f64>,
+    f: impl Fn(f64, f64, f64) -> f64,
+) -> f64 {
     // The magnitudes are nonnegative or the canonical NaN, so totalOrder is the order of their
     // bits; the whole scan runs (rule 54).
-    let largest = items
-        .clone()
+    let largest = scan
         .map(|x| float::abs(x).to_bits())
         .max()
         .map_or(0.0, f64::from_bits);
@@ -139,7 +170,7 @@ pub fn norm2<I: Iterator<Item = f64> + Clone>(items: I) -> f64 {
     }
     let e = super::exponent(largest);
     let scaled = items.map(|x| scale(x, -e));
-    let sum = dot_pairs(0.0, scaled.map(|x| (x, x)));
+    let sum = dot_pairs_with(0.0, scaled.map(|x| (x, x)), f);
     float::ldexp(float::sqrt(sum), e)
 }
 
@@ -168,7 +199,8 @@ pub fn add_product(c: &mut [f64], a: &[f64], b: &[f64], m: usize, k: usize, n: u
 }
 
 /// [`add_product`] with the `fma` `f`.
-fn add_product_with(
+#[inline(always)]
+pub(crate) fn add_product_with(
     c: &mut [f64],
     a: &[f64],
     b: &[f64],
@@ -213,6 +245,19 @@ fn add_product_with(
 /// `m.multiply_array(by: v)`, rule 46: element i is [`dot`] of row i of the row-major m × k
 /// matrix `a` and `v`, into `out`. O(mk) time, O(1) space beyond `out`.
 pub fn multiply_array(a: &[f64], m: usize, k: usize, v: &[f64], out: &mut [f64]) {
+    multiply_array_with(a, m, k, v, out, fma::baseline);
+}
+
+/// [`multiply_array`] with the `fma` `f`.
+#[inline(always)]
+pub(crate) fn multiply_array_with(
+    a: &[f64],
+    m: usize,
+    k: usize,
+    v: &[f64],
+    out: &mut [f64],
+    f: impl Fn(f64, f64, f64) -> f64 + Copy,
+) {
     if k == 0 {
         for slot in out.iter_mut().take(m) {
             *slot = 0.0;
@@ -220,7 +265,7 @@ pub fn multiply_array(a: &[f64], m: usize, k: usize, v: &[f64], out: &mut [f64])
         return;
     }
     for (slot, row) in out.iter_mut().zip(a.chunks_exact(k)).take(m) {
-        *slot = dot(row, v);
+        *slot = dot_from_with(0.0, row, v, f);
     }
 }
 
@@ -243,7 +288,8 @@ pub fn lu(a: &mut [f64], n: usize, pivots: &mut [usize]) -> bool {
 }
 
 /// [`lu`] with the `fma` `f`.
-fn lu_with(
+#[inline(always)]
+pub(crate) fn lu_with(
     a: &mut [f64],
     n: usize,
     pivots: &mut [usize],
@@ -378,7 +424,8 @@ pub fn cholesky(a: &mut [f64], n: usize) -> bool {
 }
 
 /// [`cholesky`] with the `fma` `f`.
-fn cholesky_with(a: &mut [f64], n: usize, f: impl Fn(f64, f64, f64) -> f64 + Copy) -> bool {
+#[inline(always)]
+pub(crate) fn cholesky_with(a: &mut [f64], n: usize, f: impl Fn(f64, f64, f64) -> f64 + Copy) -> bool {
     // Only the n × n elements are the matrix.
     let Some(a) = n.checked_mul(n).and_then(|size| a.get_mut(..size)) else {
         return false;
@@ -480,7 +527,8 @@ pub fn solve_triangular(
 }
 
 /// [`solve_triangular`] with the `fma` `f`.
-fn solve_triangular_with(
+#[inline(always)]
+pub(crate) fn solve_triangular_with(
     t: &[f64],
     n: usize,
     b: &mut [f64],
@@ -562,6 +610,19 @@ fn solve_triangular_with(
 /// the row exchanges of `pivots` in order, then [`solve_triangular`] with L and a unit
 /// diagonal, then with U. `factors` is what [`lu`] leaves. O(n²r) time, O(1) space beyond `b`.
 pub fn lu_solve(factors: &[f64], pivots: &[usize], n: usize, b: &mut [f64], r: usize) {
+    lu_solve_with(factors, pivots, n, b, r, fma::baseline);
+}
+
+/// [`lu_solve`] with the `fma` `f`.
+#[inline(always)]
+pub(crate) fn lu_solve_with(
+    factors: &[f64],
+    pivots: &[usize],
+    n: usize,
+    b: &mut [f64],
+    r: usize,
+    f: impl Fn(f64, f64, f64) -> f64 + Copy,
+) {
     if n.checked_mul(r).is_none_or(|size| b.len() < size) {
         return;
     }
@@ -573,8 +634,8 @@ pub fn lu_solve(factors: &[f64], pivots: &[usize], n: usize, b: &mut [f64], r: u
             low.swap_with_slice(high);
         }
     }
-    solve_triangular(factors, n, b, r, Triangle::Lower, true);
-    solve_triangular(factors, n, b, r, Triangle::Upper, false);
+    solve_triangular_with(factors, n, b, r, Triangle::Lower, true, f);
+    solve_triangular_with(factors, n, b, r, Triangle::Upper, false, f);
 }
 
 #[cfg(test)]
