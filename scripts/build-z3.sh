@@ -87,11 +87,15 @@ done
 cxx=${CXX:-c++}
 command -v "$cxx" >/dev/null 2>&1 || fail "no C++ compiler: $cxx"
 
-# The cache key: the pin (tarball and patches, by digest) and the toolchain that compiles it.
+# The cache key: the pin (tarball and patches, by digest), the recipe's settings and this
+# script (both by digest, so a change of either builds again), the toolchain that compiles it,
+# and the flags the environment adds to it.
 cxx_version=$("$cxx" --version 2>/dev/null | head -n 1)
 cmake_version=$(cmake --version | head -n 1)
 machine="$(uname -s) $(uname -m)"
-key=$(printf '%s\n%s\n%s\n%s\n%s\n' "$source_sha256" "$patches" "$cxx_version" "$cmake_version" "$machine" | digest_stdin)
+options_sha256=$(digest "$recipe/cmake-options.txt")
+script_sha256=$(digest "$root/scripts/build-z3.sh")
+key=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' "$source_sha256" "$patches" "$options_sha256" "$script_sha256" "$cxx_version" "$cmake_version" "$machine" "${CXXFLAGS:-}" "${MACOSX_DEPLOYMENT_TARGET:-}" | digest_stdin)
 dest="$out/$key"
 if [ "$key_only" = 1 ]; then
     echo "$key"
@@ -169,13 +173,17 @@ if [ "$reproducible" = 1 ]; then
     echo "ok: two cold builds of libz3shell.a gave the same digest"
 fi
 
-# 2. The output, under the cache key, with its record and the library's digest; a half-written
-# entry never counts, since the digest file is written last.
-rm -rf "${dest:?}"
-mkdir -p "$dest/lib" "$dest/bin"
-cp "$work/one/build/libz3shell.a" "$dest/lib/libz3shell.a"
-cp "$work/one/build/z3" "$dest/bin/z3"
-chmod 755 "$dest/bin/z3"
+# 2. The output, under the cache key, with its record and the library's digest: staged
+# beside the entry and moved into place in one step, so that a concurrent build or reader
+# never sees a half-written entry, and an entry already there with the same library (another
+# build that finished first) is kept, while one with another digest (refused by the reader) is
+# set aside and replaced.
+staged="$out/.staging.$$.$key"
+rm -rf "${staged:?}"
+mkdir -p "$staged/lib" "$staged/bin"
+cp "$work/one/build/libz3shell.a" "$staged/lib/libz3shell.a"
+cp "$work/one/build/z3" "$staged/bin/z3"
+chmod 755 "$staged/bin/z3"
 {
     echo "z3_version $version"
     echo "z3_tag z3-$version"
@@ -192,9 +200,19 @@ chmod 755 "$dest/bin/z3"
     [ "$reproducible" = 1 ] && echo "reproducible yes, two cold builds, second build $(cat "$work/two/seconds") s"
     echo "built $(date -u +%Y-%m-%dT%H:%M:%SZ)"
     sed -n 's/^-- \(Z3_COMPONENT_CXX_FLAGS: .*\)$/\1/p; s/^-- \(Z3_COMPONENT_CXX_DEFINES: .*\)$/\1/p' "$work/one/configure.log"
-} > "$dest/build-record.txt"
-cp "$work/one/configure.log" "$dest/configure.log"
-echo "$lib_sha256" > "$dest/library.sha256"
+} > "$staged/build-record.txt"
+cp "$work/one/configure.log" "$staged/configure.log"
+echo "$lib_sha256" > "$staged/library.sha256"
+if [ -f "$dest/library.sha256" ] && [ "$(cat "$dest/library.sha256")" = "$lib_sha256" ]; then
+    rm -rf "${staged:?}"
+    echo "an entry with the same library is already in place; kept"
+else
+    if [ -e "$dest" ]; then
+        mv "$dest" "$out/.refused.$$.$key"
+        rm -rf "$out/.refused.$$.$key"
+    fi
+    mv "$staged" "$dest"
+fi
 echo "built z3 $version in $(cat "$work/one/seconds") s"
 echo "key $key"
 echo "libz3shell.a sha256 $lib_sha256"

@@ -644,6 +644,8 @@ fn over_weight(obligation: &Obligation) -> Option<Answer> {
         values: Vec::new(),
         values_error: None,
     detail: None,
+    error_after_sat: false,
+    model_unavailable_only: false,
     })
 }
 
@@ -1336,6 +1338,8 @@ mod missing_values_tests {
             values: values.iter().map(|v| (*v).to_owned()).collect(),
             values_error: values_error.map(str::to_owned),
             detail: None,
+            error_after_sat: false,
+            model_unavailable_only: false,
         }
     }
 
@@ -1547,6 +1551,8 @@ mod missing_values_tests {
             values: Vec::new(),
             values_error: None,
             detail: None,
+            error_after_sat: false,
+            model_unavailable_only: false,
         };
         let vacuous = outcome(&obligation, &[], &proof, None, false);
         assert_eq!(vacuous.status, ObligationStatus::Proven);

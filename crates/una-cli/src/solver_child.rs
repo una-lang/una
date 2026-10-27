@@ -31,6 +31,13 @@ const HANDSHAKE_BYTES: usize = 256;
 const HANDSHAKE_WITHIN: Duration = Duration::from_secs(2);
 /// How much of the child's stderr the parent keeps, for the reason of a crash (rule 5).
 const STDERR_KEPT: usize = 4096;
+/// The most stdout the parent keeps from a child: a model is never this large, and a child
+/// that writes more is ended and reported, so no child inflates the parent's memory.
+const STDOUT_LIMIT: usize = 64 * 1024 * 1024;
+/// How many consecutive failures to read the child's footprint end the child (macOS): the
+/// memory limit must never be silently off.
+#[cfg(target_os = "macos")]
+const FOOTPRINT_FAILURES: u32 = 100;
 /// How often the parent looks at the child.
 const POLL: Duration = Duration::from_millis(2);
 /// How often the parent reads the child's footprint on macOS (rule 6), and the margin above
@@ -234,6 +241,15 @@ impl Solver for Launcher {
         }
         .map_err(|_| "an argument of the solver child holds a NUL byte".to_owned())?;
         let args: Vec<&CStr> = args.iter().map(CString::as_c_str).collect();
+        // A run that was cancelled before its child started starts none.
+        if cancel.is_some_and(|cancel| cancel.load(Ordering::Relaxed)) {
+            return Ok(Raw {
+                stdout: String::new(),
+                stderr: String::new(),
+                ended: Ended::Cancelled,
+                outer_denied: None,
+            });
+        }
         let (stdin_reader, mut stdin_writer) = std::io::pipe().map_err(|e| e.to_string())?;
         let (mut stdout_reader, stdout_writer) = std::io::pipe().map_err(|e| e.to_string())?;
         let (mut stderr_reader, stderr_writer) = std::io::pipe().map_err(|e| e.to_string())?;
@@ -252,58 +268,100 @@ impl Solver for Launcher {
         // (a child that never reads leaves a write blocked, which the kill below ends with a
         // broken pipe), the first line of stdout comes out as soon as it is complete, and
         // stderr is drained with only its head kept.
+        // A thread that cannot be started leaves a child to end: the spawn is fallible, and a
+        // failure kills and reaps the child before it is reported.
         let script = script.to_owned();
-        let writer = std::thread::spawn(move || {
-            let _ = stdin_writer.write_all(script.as_bytes());
-        });
+        let writer = std::thread::Builder::new()
+            .name("una-solver-stdin".to_owned())
+            .spawn(move || {
+                let _ = stdin_writer.write_all(script.as_bytes());
+            });
+        let writer = match writer {
+            Ok(writer) => writer,
+            Err(e) => {
+                kill_and_wait(pid);
+                return Err(format!("cannot start a thread for the solver child: {e}"));
+            }
+        };
         let (first_line, lines) = mpsc::channel::<Result<String, String>>();
-        let reader = std::thread::spawn(move || {
-            let mut all = Vec::new();
-            let mut sent = false;
-            let mut chunk = [0_u8; 4096];
-            loop {
-                let read = match stdout_reader.read(&mut chunk) {
-                    Ok(0) | Err(_) => break,
-                    Ok(read) => read,
-                };
-                all.extend_from_slice(chunk.get(..read).unwrap_or(&[]));
-                if !sent {
-                    if let Some(end) = all.iter().position(|b| *b == b'\n') {
-                        sent = true;
-                        let line =
-                            String::from_utf8_lossy(all.get(..end).unwrap_or(&[])).into_owned();
-                        let _ = first_line.send(Ok(line));
-                    } else if all.len() > HANDSHAKE_BYTES {
-                        sent = true;
-                        let _ = first_line.send(Err("the first line exceeds 256 bytes".to_owned()));
+        let reader = std::thread::Builder::new()
+            .name("una-solver-stdout".to_owned())
+            .spawn(move || {
+                let mut all = Vec::new();
+                let mut sent = false;
+                let mut overflowed = false;
+                let mut chunk = [0_u8; 4096];
+                loop {
+                    let read = match stdout_reader.read(&mut chunk) {
+                        Ok(0) | Err(_) => break,
+                        Ok(read) => read,
+                    };
+                    // Past the limit the pipe is still drained, so the child never blocks on it,
+                    // but nothing more is kept.
+                    if all.len() + read > STDOUT_LIMIT {
+                        overflowed = true;
+                        continue;
+                    }
+                    all.extend_from_slice(chunk.get(..read).unwrap_or(&[]));
+                    if !sent {
+                        if let Some(end) = all.iter().position(|b| *b == b'\n') {
+                            sent = true;
+                            let line =
+                                String::from_utf8_lossy(all.get(..end).unwrap_or(&[])).into_owned();
+                            let _ = first_line.send(Ok(line));
+                        } else if all.len() > HANDSHAKE_BYTES {
+                            sent = true;
+                            let _ =
+                                first_line.send(Err("the first line exceeds 256 bytes".to_owned()));
+                        }
                     }
                 }
-            }
-            if !sent {
-                let _ = first_line.send(Err("no handshake".to_owned()));
-            }
-            all
-        });
-        let errors = std::thread::spawn(move || {
-            let mut kept = Vec::new();
-            let mut chunk = [0_u8; 4096];
-            while let Ok(read) = stderr_reader.read(&mut chunk) {
-                if read == 0 {
-                    break;
+                if !sent {
+                    let _ = first_line.send(Err("no handshake".to_owned()));
                 }
-                if kept.len() < STDERR_KEPT {
-                    let take = read.min(STDERR_KEPT - kept.len());
-                    kept.extend_from_slice(chunk.get(..take).unwrap_or(&[]));
-                }
+                (all, overflowed)
+            });
+        let reader = match reader {
+            Ok(reader) => reader,
+            Err(e) => {
+                kill_and_wait(pid);
+                let _ = writer.join();
+                return Err(format!("cannot start a thread for the solver child: {e}"));
             }
-            String::from_utf8_lossy(&kept).into_owned()
-        });
+        };
+        let errors = std::thread::Builder::new()
+            .name("una-solver-stderr".to_owned())
+            .spawn(move || {
+                let mut kept = Vec::new();
+                let mut chunk = [0_u8; 4096];
+                while let Ok(read) = stderr_reader.read(&mut chunk) {
+                    if read == 0 {
+                        break;
+                    }
+                    if kept.len() < STDERR_KEPT {
+                        let take = read.min(STDERR_KEPT - kept.len());
+                        kept.extend_from_slice(chunk.get(..take).unwrap_or(&[]));
+                    }
+                }
+                String::from_utf8_lossy(&kept).into_owned()
+            });
+        let errors = match errors {
+            Ok(errors) => errors,
+            Err(e) => {
+                kill_and_wait(pid);
+                let _ = writer.join();
+                let _ = reader.join();
+                return Err(format!("cannot start a thread for the solver child: {e}"));
+            }
+        };
         // The wait: the deadline first, then the exit, the cancellation, the handshake and,
         // on macOS, the footprint.
         let mut handshake_seen = false;
         let mut handshake_failure: Option<String> = None;
         #[cfg(target_os = "macos")]
         let mut footprint_read = Instant::now();
+        #[cfg(target_os = "macos")]
+        let mut footprint_failures: u32 = 0;
         let ended = loop {
             if Instant::now() >= deadline {
                 kill_and_wait(pid);
@@ -314,7 +372,11 @@ impl Solver for Launcher {
                 Ok(Some(Spawned::Signaled(signal))) => break Ended::Signaled(signal),
                 Ok(None) => {}
                 Err(e) => {
-                    kill_and_wait(pid);
+                    // A child this process can no longer wait for (`ECHILD`) is not killed:
+                    // its id may already name another process.
+                    if e.raw_os_error() != Some(ECHILD) {
+                        kill_and_wait(pid);
+                    }
                     return Err(format!("cannot wait for the solver child: {e}"));
                 }
             }
@@ -325,9 +387,7 @@ impl Solver for Launcher {
             if !handshake_seen {
                 match lines.try_recv() {
                     Ok(Ok(line)) if line == handshake => handshake_seen = true,
-                    Ok(Ok(line)) => {
-                        handshake_failure = Some(format!("its first line is `{}`", line.trim()));
-                    }
+                    Ok(Ok(line)) => handshake_failure = Some(shown_first_line(&line)),
                     Ok(Err(reason)) => handshake_failure = Some(reason),
                     Err(_) if started.elapsed() > HANDSHAKE_WITHIN => {
                         handshake_failure = Some("no handshake within 2 seconds".to_owned());
@@ -346,30 +406,67 @@ impl Solver for Launcher {
                     .memory_mib
                     .saturating_add(FOOTPRINT_MARGIN_MIB)
                     .saturating_mul(1024 * 1024);
-                if let Ok(footprint) = una_sys::solver::footprint::physical_footprint(pid)
-                    && footprint > limit
-                {
-                    kill_and_wait(pid);
-                    break Ended::Memory;
+                match una_sys::solver::footprint::physical_footprint(pid) {
+                    Ok(footprint) if footprint > limit => {
+                        kill_and_wait(pid);
+                        break Ended::Memory;
+                    }
+                    Ok(_) => footprint_failures = 0,
+                    Err(e) => {
+                        // The limit is never silently off: a footprint that cannot be read
+                        // for a second ends the child, and the run says so.
+                        footprint_failures += 1;
+                        if footprint_failures >= FOOTPRINT_FAILURES {
+                            kill_and_wait(pid);
+                            let _ = writer.join();
+                            let _ = reader.join();
+                            let _ = errors.join();
+                            return Err(format!("cannot read the solver child's footprint: {e}"));
+                        }
+                    }
                 }
             }
             std::thread::sleep(POLL);
         };
         let _ = writer.join();
-        let output = reader.join().unwrap_or_default();
+        let (output, overflowed) = reader.join().unwrap_or_default();
         let stderr = errors.join().unwrap_or_default();
+        // A child the parent ended for its time, or because the run no longer needs it, is
+        // reported as such whatever it had written: `--solver-wallclock 0` is `wallclock`
+        // (#189), not a missing handshake.
+        if matches!(ended, Ended::Wallclock | Ended::Cancelled) {
+            return Ok(Raw {
+                stdout: String::new(),
+                stderr,
+                ended,
+                outer_denied: None,
+            });
+        }
+        // A child that ended on its own before the loop read its first line still has its
+        // verdict in the channel, since the reader sends one before it ends: it is read here,
+        // never decided from the exit alone.
+        if !handshake_seen && handshake_failure.is_none() {
+            match lines.recv() {
+                Ok(Ok(line)) if line == handshake => handshake_seen = true,
+                Ok(Ok(line)) => handshake_failure = Some(shown_first_line(&line)),
+                Ok(Err(reason)) => handshake_failure = Some(reason),
+                Err(_) => handshake_failure = Some("no handshake".to_owned()),
+            }
+        }
         if let Some(reason) = handshake_failure {
+            let stderr = stderr.trim();
+            // Before any line, the child's own reason: it could not confine itself, or has
+            // no solver.
+            if reason == "no handshake" && !stderr.is_empty() {
+                return Err(stderr.to_owned());
+            }
             return Err(format!("the solver child is not this `una`: {reason}"));
         }
-        if !handshake_seen {
-            // The child ended before any line: it could not confine itself, or has no solver;
-            // its stderr says why.
-            let reason = stderr.trim();
-            return Err(if reason.is_empty() {
-                "the solver child is not this `una`: it wrote no handshake".to_owned()
-            } else {
-                reason.to_owned()
-            });
+        if overflowed {
+            return Err(format!(
+                "the solver child wrote more than {} MiB on stdout",
+                STDOUT_LIMIT / (1024 * 1024)
+            ));
         }
         // The handshake line, and the outer-sandbox line when there is one, are stripped.
         let text = String::from_utf8_lossy(&output);
@@ -377,7 +474,13 @@ impl Solver for Launcher {
         let mut outer_denied = None;
         if let Some(line) = rest.strip_prefix("una-solver-outer ") {
             let (denied, after) = line.split_once('\n').unwrap_or((line, ""));
-            outer_denied = Some(denied.split(',').map(str::to_owned).collect());
+            outer_denied = Some(
+                denied
+                    .split(',')
+                    .filter(|op| !op.is_empty())
+                    .map(str::to_owned)
+                    .collect(),
+            );
             rest = after;
         }
         Ok(Raw {
@@ -387,6 +490,22 @@ impl Solver for Launcher {
             outer_denied,
         })
     }
+}
+
+/// `ECHILD`: no child to wait for.
+const ECHILD: i32 = 10;
+
+/// A first line that is not the handshake, as the message shows it: at most 64 characters,
+/// control characters escaped, so that a child's output never forges a line of the message.
+fn shown_first_line(line: &str) -> String {
+    let shown: String = line
+        .chars()
+        .take(64)
+        .collect::<String>()
+        .escape_debug()
+        .to_string();
+    let more = if line.chars().count() > 64 { "..." } else { "" };
+    format!("its first line is `{shown}{more}`")
 }
 
 /// Ends the child and reaps it: a kill that fails leaves nothing to wait for.

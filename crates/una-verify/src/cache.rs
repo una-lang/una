@@ -269,6 +269,8 @@ mod tests {
             values: Vec::new(),
             values_error: None,
             detail: None,
+            error_after_sat: false,
+            model_unavailable_only: false,
         }
     }
 
@@ -372,6 +374,8 @@ mod tests {
             values: vec!["0".to_owned()],
             values_error: None,
             detail: None,
+            error_after_sat: false,
+            model_unavailable_only: false,
         };
         write(&serde_json::to_string(&current).unwrap());
         assert_eq!(get(&mine, &query), Some(current));
@@ -393,6 +397,8 @@ mod tests {
             values: vec!["0".to_owned()],
             values_error: None,
             detail: None,
+            error_after_sat: false,
+            model_unavailable_only: false,
         };
         let query = key("lock", "(check-sat)");
         put(&mine, &query, &refuted);
@@ -458,6 +464,8 @@ mod tests {
             values: vec!["0".to_owned()],
             values_error: None,
             detail: None,
+            error_after_sat: false,
+            model_unavailable_only: false,
         };
         put(&mine, &query, &refuted);
         assert!(std::fs::symlink_metadata(&file).unwrap().is_file());

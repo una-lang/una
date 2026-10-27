@@ -108,6 +108,15 @@ pub(crate) struct Answer {
     /// (ADR 0124 rule 8). Never cached, since such an answer is not.
     #[serde(default)]
     pub(crate) detail: Option<String>,
+    /// Whether an `(error ...)` line followed `sat` on stdout: the refutation of ADR 0101,
+    /// which Z3 ends with status 1 (probe P4). Read at parsing, never cached.
+    #[serde(skip)]
+    pub(crate) error_after_sat: bool,
+    /// Whether every `(error ...)` line after the status says the model is not available:
+    /// what `(get-model)` and `(get-value ...)` answer after `unsat`, which makes Z3 exit
+    /// with status 1 although the proof is sound (rule 8 as amended). Never cached.
+    #[serde(skip)]
+    pub(crate) model_unavailable_only: bool,
 }
 
 /// Why the solver could not answer: the query is not valid SMT-LIB for it, which is a bug of
@@ -116,10 +125,13 @@ pub(crate) struct Answer {
 pub(crate) struct Failure(pub(crate) String);
 
 /// The answer of a query from what its child wrote and how it ended (ADR 0124 rule 8).
-/// Proven needs the handshake (checked by the [`Solver`]), a normal exit with status 0 and
-/// `unsat`; refuted a `sat` with status 0, or status 1 when an `(error ...)` followed `sat`;
-/// a limit or a crash is `unknown` with its reason, never a proof, never cached, and never
-/// U8001; a `SIGSYS` is U5003; an `(error ...)` before the status stays U8001.
+/// Proven needs the handshake (checked by the [`Solver`]), `unsat`, and a normal exit: with
+/// status 0, or with status 1 when every `(error ...)` after `unsat` says the model is not
+/// available, which is what the script's `(get-model)` and `(get-value ...)` answer after a
+/// proof and what makes Z3 5.1.0 exit with 1; refuted needs `sat` with status 0, or status 1
+/// when an `(error ...)` followed `sat`; a limit or a crash is `unknown` with its reason,
+/// never a proof, never cached, and never U8001; a `SIGSYS` is U5003; an `(error ...)` before
+/// the status stays U8001, whatever the exit status.
 pub(crate) fn answer(raw: &Raw, values: usize) -> Result<Answer, Refused> {
     let unknown = |reason: &str, detail: Option<String>| {
         Ok(Answer {
@@ -128,6 +140,8 @@ pub(crate) fn answer(raw: &Raw, values: usize) -> Result<Answer, Refused> {
             values: Vec::new(),
             values_error: None,
             detail,
+            error_after_sat: false,
+            model_unavailable_only: false,
         })
     };
     let status = match raw.ended {
@@ -179,7 +193,8 @@ pub(crate) fn answer(raw: &Raw, values: usize) -> Result<Answer, Refused> {
     };
     match (parsed.status, status) {
         (Status::Proven | Status::Refuted, 0) | (Status::Unknown, _) => Ok(parsed),
-        (Status::Refuted, 1) if parsed.values_error.is_some() => Ok(parsed),
+        (Status::Proven, 1) if parsed.model_unavailable_only => Ok(parsed),
+        (Status::Refuted, 1) if parsed.error_after_sat => Ok(parsed),
         (_, status) => unknown(
             "crash",
             Some(format!(
@@ -189,12 +204,13 @@ pub(crate) fn answer(raw: &Raw, values: usize) -> Result<Answer, Refused> {
     }
 }
 
-/// Whether the output starts with a status word.
+/// Whether a status word is among the output's items, wherever it is: Z3 exits with 1 after
+/// any error, so an error before the status with status 1 is still a rejected query (U8001),
+/// and only an output with no status at all is a crash.
 fn has_status(output: &str) -> bool {
-    matches!(
-        output.split_whitespace().next(),
-        Some("sat" | "unsat" | "unknown")
-    )
+    tokens(output)
+        .iter()
+        .any(|item| matches!(item, Sexp::Atom(atom) if matches!(atom.as_str(), "sat" | "unsat" | "unknown")))
 }
 
 /// A solver's output as s-expressions.
@@ -311,7 +327,21 @@ fn parse(output: &str, values: usize) -> Result<Answer, Failure> {
     let mut reason = None;
     let mut found = Vec::new();
     let mut values_error = None;
+    let mut errors_after_status: Vec<String> = Vec::new();
     for item in &items {
+        if status.is_some()
+            && let Sexp::List(parts) = item
+            && item.head() == Some("error")
+        {
+            errors_after_status.push(
+                parts
+                    .get(1)
+                    .map_or_else(|| item.text(), Sexp::text)
+                    .trim_matches('"')
+                    .trim()
+                    .to_owned(),
+            );
+        }
         match (status, item) {
             (None, Sexp::Atom(atom)) => {
                 status = match atom.as_str() {
@@ -373,6 +403,12 @@ fn parse(output: &str, values: usize) -> Result<Answer, Failure> {
             output.trim()
         )));
     };
+    let error_after_sat = status == Status::Refuted && !errors_after_status.is_empty();
+    let model_unavailable_only = status == Status::Proven
+        && !errors_after_status.is_empty()
+        && errors_after_status
+            .iter()
+            .all(|error| error.ends_with("model is not available"));
     // A refutation whose values do not answer every requested term, or that the solver
     // followed with an error, has no model to show: none is kept, never empty values (#668).
     // The other statuses keep no values at all.
@@ -399,6 +435,8 @@ fn parse(output: &str, values: usize) -> Result<Answer, Failure> {
         },
         values_error: values_error.filter(|_| status == Status::Refuted),
         detail: None,
+        error_after_sat,
+        model_unavailable_only,
     })
 }
 
@@ -421,6 +459,8 @@ mod tests {
                 ],
                 values_error: None,
                 detail: None,
+                error_after_sat: false,
+                model_unavailable_only: false,
             })
         );
         let proven =
@@ -433,6 +473,8 @@ mod tests {
                 values: Vec::new(),
                 values_error: None,
                 detail: None,
+                error_after_sat: false,
+                model_unavailable_only: false,
             })
         );
         let rejected_values = "sat\n(\n  (define-fun |e| () Int\n    0)\n)\n(error \"line 12 column 14: unknown constant\")\n(:reason-unknown \"\")\n";
@@ -444,6 +486,8 @@ mod tests {
                 values: Vec::new(),
                 values_error: Some("line 12 column 14: unknown constant".to_owned()),
                 detail: None,
+                error_after_sat: false,
+                model_unavailable_only: false,
             })
         );
         // Fewer values than requested terms are no model either.
@@ -455,6 +499,8 @@ mod tests {
                 values: Vec::new(),
                 values_error: Some("1 values for 2 requested terms".to_owned()),
                 detail: None,
+                error_after_sat: false,
+                model_unavailable_only: false,
             })
         );
         let unknown = "unknown\n(error \"model is not available\")\n(:reason-unknown \"(resource limits reached)\")\n";
@@ -491,6 +537,25 @@ mod tests {
     }
 
     #[test]
+    fn a_proof_tolerates_status_one_only_for_model_not_available_errors() {
+        // What Z3 5.1.0 writes for the script of a proven obligation: `unsat`, then the
+        // errors of `(get-model)` and `(get-value ...)`, which it answers with status 1.
+        let transcript = "unsat\n(error \"line 9 column 10: model is not available\")\n(error \"line 10 column 12: model is not available\")\n(:reason-unknown \"\")\n";
+        let proven = answer(&raw(transcript, "", Ended::Exited(1)), 2).unwrap();
+        assert_eq!(proven.status, Status::Proven);
+        // Any other error after `unsat` with status 1 is not a proof.
+        let other = "unsat\n(error \"line 9 column 10: model is not available\")\n(error \"line 11: unknown constant\")\n";
+        let crashed = answer(&raw(other, "", Ended::Exited(1)), 2).unwrap();
+        assert_eq!(crashed.reason.as_deref(), Some("crash"));
+        // An error before the status, with status 1 as Z3 exits, is still a rejected query.
+        let rejected = "(error \"line 2 column 11: unknown constant y\")\nsat\n";
+        assert!(matches!(
+            answer(&raw(rejected, "", Ended::Exited(1)), 0),
+            Err(Refused::Query(_))
+        ));
+    }
+
+    #[test]
     fn a_refutation_tolerates_status_one_only_after_an_error_following_sat() {
         let refuted = answer(&raw("sat\n((|e| 1))\n", "", Ended::Exited(0)), 1).unwrap();
         assert_eq!(refuted.status, Status::Refuted);
@@ -507,9 +572,12 @@ mod tests {
         .unwrap();
         assert_eq!(after_error.status, Status::Refuted);
         assert!(after_error.values_error.is_some());
-        // `sat` with status 1 and no error line is a crash.
+        // `sat` with status 1 and no error line is a crash, and so is `sat` with too few
+        // values and status 1: a short model is not the error line that excuses the status.
         let crashed = answer(&raw("sat\n((|e| 1))\n", "", Ended::Exited(1)), 1).unwrap();
         assert_eq!(crashed.reason.as_deref(), Some("crash"));
+        let short = answer(&raw("sat\n((|e| 1))\n", "", Ended::Exited(1)), 2).unwrap();
+        assert_eq!(short.reason.as_deref(), Some("crash"));
     }
 
     #[test]
