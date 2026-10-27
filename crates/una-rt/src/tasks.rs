@@ -1,8 +1,12 @@
-//! The tasks of `together` and `together for` (`spec/19 §6` to `§8`, ADR 0065 C7).
+//! The tasks of `together` and `together for` (`spec/19 §6` to `§8`, ADR 0065 C7), and the
+//! branches of `first of` (`spec/27 §6`, ADR 0117 rule 6).
 //!
-//! Each task runs on its own operating-system thread, with its own heap: [`crate::values`]
-//! keeps its heap per thread, so reference counts stay non-atomic. The values a task captures
-//! are copied into its heap at the fork, and its result is copied back at the join.
+//! Each task runs on a coroutine of its own, pinned to one worker of the run's scheduler
+//! ([`crate::sched`], ADR 0117 rules 1 to 3), with its own heap: [`crate::values`] keeps a heap
+//! per thread, and the worker swaps the task's heap in while it runs, so reference counts stay
+//! non-atomic. The values a task captures are copied into its heap at the fork, and its result
+//! is copied back at the join. Every wait of the fork and the join parks the waiting task, so
+//! its worker runs other tasks meanwhile (ADR 0113 amendment of 2026-10-18).
 //!
 //! - **State.** Each task has a copy of the run's settings, its own trace buffer, its path, and
 //!   its cancellation entries, its own block's and its ancestors' (ADR 0113 rule 1).
@@ -18,18 +22,26 @@
 //!   that failed.
 //! - **Aborts.** A task that runs out of depth or memory stops, and the abort goes up to the
 //!   block, which aborts the run with the trace so far.
+//! - **Races.** The branches of `first of` run as one batch. The first branch to return wins: it
+//!   takes the block's winner slot with one atomic step, and lowers the block's count to 0,
+//!   which cancels every other branch and wakes those parked on an interruptible operation
+//!   ([`crate::interrupt`]). A failure cancels nothing. The join adopts the winner's events
+//!   first, then the others' in index order, and copies the winner's value in; when every
+//!   branch failed, the block fails with the lowest-indexed failure. Under virtual time the
+//!   branches run one after another, in index order, each to its end, up to the first that
+//!   returns, as the interpreter runs them (ADR 0117 rule 12).
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::io;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 
 use una_diag::{Code, Location};
 use una_interp::Event;
 
 use crate::runtime::{self, TaskTemplate, with_state};
+use crate::sched::{self, Receiver, Sender};
 use crate::values::{self, Portable};
 
 /// Calls the compiled closure `closure` with `arg` when it takes one: its value, and 0, 1 when
@@ -38,7 +50,7 @@ use crate::values::{self, Portable};
 pub type Invoke = fn(closure: i64, arg: Option<i64>, site: usize) -> (i64, i64);
 
 /// How many tasks a batch holds at most (ADR 0113 rule 1): the next batch forks only once the
-/// whole batch has been joined. Each task still has its own thread (`spec/19 §8`).
+/// whole batch has been joined. Each task has its own coroutine (`spec/27 §1`).
 const WAVE: usize = 64;
 
 /// The uses of released values, and the values left referenced, in the heaps of tasks that
@@ -187,6 +199,37 @@ thread_local! {
     static STATUS: Cell<i64> = const { Cell::new(0) };
 }
 
+/// A task's thread-locals of this module while it is parked (`sched`): the status of its last
+/// block, and in tests its counters and switches.
+#[derive(Default)]
+pub(crate) struct Slots {
+    status: i64,
+    #[cfg(test)]
+    counters: [usize; 2],
+    #[cfg(test)]
+    wave: Option<usize>,
+    #[cfg(test)]
+    switches: [bool; 5],
+}
+
+/// Exchanges the thread's values of this module's thread-locals with `slots`.
+pub(crate) fn swap_slots(slots: &mut Slots) {
+    slots.status = STATUS.with(|cell| cell.replace(slots.status));
+    #[cfg(test)]
+    {
+        let [checks, most] = &mut slots.counters;
+        *checks = CHECKS_HERE.with(|cell| cell.replace(*checks));
+        *most = MOST_START.with(|cell| cell.replace(*most));
+        slots.wave = TEST_WAVE.with(|cell| cell.replace(slots.wave));
+        let [start, adoption, after, refuse_start, refuse_adoption] = &mut slots.switches;
+        *start = TEST_PANIC_IN_START.with(|cell| cell.replace(*start));
+        *adoption = TEST_PANIC_IN_ADOPTION.with(|cell| cell.replace(*adoption));
+        *after = TEST_PANIC_AFTER_REPORT.with(|cell| cell.replace(*after));
+        *refuse_start = TEST_REFUSE_START.with(|cell| cell.replace(*refuse_start));
+        *refuse_adoption = TEST_REFUSE_ADOPTION.with(|cell| cell.replace(*refuse_adoption));
+    }
+}
+
 /// How the last block that the thread ran ended, as [`run`] returns it.
 pub fn status() -> i64 {
     STATUS.with(Cell::get)
@@ -197,7 +240,19 @@ pub fn status() -> i64 {
 pub fn together(closures: i64, site: usize) -> i64 {
     finish(run(
         Tasks::Closures(closures),
-        true,
+        Shape::Tuple,
+        site,
+        crate::ffi::invoke,
+    ))
+}
+
+/// Runs the branches of `first of` at `site`, the closures of the list `closures`, which the
+/// caller keeps: the winner's value, or the failure of the lowest-indexed branch when every
+/// branch failed, a word the caller owns, and [`status`] says how it ended (`spec/27 §6`).
+pub fn first_of(closures: i64, site: usize) -> i64 {
+    finish(run(
+        Tasks::Closures(closures),
+        Shape::Race,
         site,
         crate::ffi::invoke,
     ))
@@ -208,10 +263,99 @@ pub fn together(closures: i64, site: usize) -> i64 {
 pub fn together_for(closure: i64, items: i64, site: usize) -> i64 {
     finish(run(
         Tasks::Over { closure, items },
-        false,
+        Shape::List,
         site,
         crate::ffi::invoke,
     ))
+}
+
+/// What a block of tasks makes of its tasks' results.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Shape {
+    /// The tuple of `together`.
+    Tuple,
+    /// The list of `together for`.
+    List,
+    /// The winner of `first of`.
+    Race,
+}
+
+/// No branch of a race has won yet: the value of its winner slot until one does.
+const NO_WINNER: usize = usize::MAX;
+
+/// The mark of a race's cancellation entries, and of its count until it decides: the entry of
+/// branch `i` is `(i + 1) | RACE_ENTRY`, and the count starts at `(n + 1) | RACE_ENTRY`, so a
+/// branch is cancelled exactly when the count drops to 0, which only a winner, an abort or a
+/// defect makes it. Only these entries interrupt a waiting operation (ADR 0117 rule 4): a
+/// cancellation by a failed task of `together` lets it complete, as before (`spec/19 §6` rule
+/// 4).
+pub(crate) const RACE_ENTRY: usize = 1 << (usize::BITS - 1);
+
+/// How a block is decided, by the task at an offset of its batch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Decision {
+    /// The task aborted, or stopped with U8001.
+    Abort,
+    /// The task failed: the lowest-indexed failure of `together`, or of a race whose every
+    /// branch failed.
+    Fail,
+    /// The task won the race.
+    Win,
+}
+
+/// The site of the warm-up block (#1254): past the program's sites, so that its location is
+/// the runtime's own (`runtime::site_location`).
+const WARM_SITE: usize = usize::MAX;
+
+/// The task of the warm-up block: it gives its argument back and returns `unit`.
+fn warm_invoke(_closure: i64, arg: Option<i64>, _site: usize) -> (i64, i64) {
+    if let Some(arg) = arg {
+        values::release(arg);
+    }
+    (0, 0)
+}
+
+/// Runs one real task on every worker before `main`, `workers` of them (#1254; ADR 0116
+/// amendment, P8; `spec/27 §1` rule 4): a `together for` over the integers below `workers`,
+/// each applying [`warm_invoke`], through the path every block of the program takes: the
+/// start's reservation, the five channels of its signals, the export and import of its inputs,
+/// the task's state on its worker, its park in `go` and its resume, its report, the export of
+/// its value, the adoption and the join. Part `i + 1` runs on worker `(i + 1) mod N` from the
+/// root, so every worker runs one. What a task's first run on a worker makes and keeps, in the
+/// runtime's thread-locals and in the system allocator's per-thread caches, then exists before
+/// `main` on every worker whatever earlier code starts: the no-op coroutine of the scheduler's
+/// warm-up left those untouched, so a public block that followed `secret` code paid them, or
+/// not, by how many tasks that code had started. The block runs with the trace taken out, so it
+/// leaves no event, and its value is released, so it leaves no object; the caller lifts the
+/// memory budget around it. O(N) tasks in batches of [`WAVE`], once per run. Returns how many
+/// tasks returned.
+pub(crate) fn warm_up(workers: usize) -> usize {
+    let trace = with_state(|state| state.trace.take()).flatten();
+    let closure = values::int_word(&num_bigint::BigInt::from(0));
+    let items = values::list();
+    for item in 0..workers.max(1) {
+        let word = values::int_word(&num_bigint::BigInt::from(item));
+        values::push(items, word);
+        values::release(word);
+    }
+    let (block, status) = run(
+        Tasks::Over { closure, items },
+        Shape::List,
+        WARM_SITE,
+        warm_invoke,
+    );
+    let returned = if status == 0 {
+        usize::try_from(values::count(block)).unwrap_or(0)
+    } else {
+        0
+    };
+    if status != 2 {
+        values::release(block);
+    }
+    values::release(items);
+    values::release(closure);
+    with_state(|state| state.trace = trace);
+    returned
 }
 
 /// The width of a batch: [`WAVE`], or a narrower one that a test sets on the block's thread.
@@ -355,23 +499,25 @@ enum Transfer {
 /// The block's ends of a forked task's signals: its answer once it imported its inputs, the
 /// signal to run, its report once its code ended, the order to export its value (`true`) or
 /// to exit (`false`), and the exported value.
-struct Forked<'scope> {
+struct Forked {
     offset: usize,
-    handle: std::thread::ScopedJoinHandle<'scope, ()>,
-    go: SyncSender<bool>,
+    /// Whether the task's coroutine ended in a panic, sent as its body ends, after its heap's
+    /// teardown: what joining its thread was (ADR 0113 amendment of 2026-10-18).
+    done: Receiver<bool>,
+    go: Sender<bool>,
     report: Receiver<Outcome>,
-    order: SyncSender<bool>,
+    order: Sender<bool>,
     form: Receiver<Transfer>,
 }
 
 /// The task's ends of the same signals; its answer carries the bytes its start allocated on its
 /// thread, which a debug build checks against the start's reservation.
 struct Signals {
-    answer: SyncSender<usize>,
+    answer: Sender<usize>,
     go: Receiver<bool>,
-    report: SyncSender<Outcome>,
+    report: Sender<Outcome>,
     order: Receiver<bool>,
-    form: SyncSender<Transfer>,
+    form: Sender<Transfer>,
 }
 
 /// Runs a block's tasks: closures and their arguments, words of the calling task's heap
@@ -386,35 +532,58 @@ struct Signals {
 /// next one copies out. So no copy of the block is made while one of its tasks runs code, and
 /// the site of a copy's stop does not depend on how threads are scheduled (#777). Across
 /// batches, the block keeps only its result list and the count that cancels its tasks.
-fn run(tasks: Tasks, tuple: bool, site: usize, invoke: Invoke) -> (i64, i64) {
+fn run(tasks: Tasks, shape: Shape, site: usize, invoke: Invoke) -> (i64, i64) {
     // #773: a task that a check already stopped, such as the budget while a range was made
     // for this block, runs no task and stops at once, as the interpreter's does.
     if with_state(|state| state.stopped.is_some()).unwrap_or(false) {
         return (0, 2);
     }
-    let Some(template) = with_state(|state| state.for_tasks(site)) else {
+    let race = shape == Shape::Race;
+    let Some(template) = with_state(|state| {
+        if race {
+            state.for_race(site)
+        } else {
+            state.for_tasks(site)
+        }
+    }) else {
         return (0, 2);
     };
     let total = tasks.len();
+    // The checker refuses a race of fewer than two branches (U2035).
+    if race && total == 0 {
+        let location = template.location.clone();
+        let message = "internal error: a `first of` without branches".to_owned();
+        return (runtime::abort_from_task(Code::U8001, location, message), 2);
+    }
     // The count of ADR 0113 rule 1, with indices from 1: task i's entry is i + 1, a task that
     // fails or aborts lowers the count to its own entry, and a task whose entry is above the
     // count is cancelled. It starts at `total + 1`, so no task is. A task that stops with
     // U8001, a defect of the runtime, lowers it to 0, which cancels every task of the block,
     // lower ones included, so that the run ends with U8001 once they reach a check (`report`).
-    let Some(limit) = total.checked_add(1) else {
+    let Some(limit) = total.checked_add(1).filter(|limit| *limit < RACE_ENTRY) else {
         runtime::refuse(site, None);
         return (0, 2);
     };
+    let limit = if race { limit | RACE_ENTRY } else { limit };
     let count = Arc::new(AtomicUsize::new(limit));
+    // A race's winner slot: the index of the branch that returned first.
+    let winner = race.then(|| Arc::new(AtomicUsize::new(NO_WINNER)));
     // The block's result list is reserved exactly, as one step, before the first batch forks
-    // (ADR 0113 rule 5).
-    let block = match values::result_list(total, tuple) {
-        Ok(block) => block,
-        Err(values::Refused(message)) => {
-            runtime::refuse(site, message);
-            return (0, 2);
+    // (ADR 0113 rule 5). A race keeps no list: its value is its winner's.
+    let block = if race {
+        0
+    } else {
+        match values::result_list(total, shape == Shape::Tuple) {
+            Ok(block) => block,
+            Err(values::Refused(message)) => {
+                runtime::refuse(site, message);
+                return (0, 2);
+            }
         }
     };
+    // Under virtual time a block runs its tasks one after another, each to its end, as the
+    // interpreter does (ADR 0117 rule 12).
+    let sequential = runtime::clock().is_virtual();
     let counters = Counters::new();
     let mut first = 0;
     while first < total {
@@ -422,13 +591,26 @@ fn run(tasks: Tasks, tuple: bool, site: usize, invoke: Invoke) -> (i64, i64) {
         // and the block stops as a cancelled task.
         if template.cancelled() {
             values::release(block);
+            // A cut (`spec/27 §5`): every task of the block that has not returned ends with its
+            // `cancelled` event, started or not, in task order, so the trace does not depend on
+            // how many tasks the workers had started.
+            if crate::deadline::cut() {
+                cut_events(&template, first, total, site);
+            }
             return (0, 2);
         }
-        let width = wave().min(total - first);
+        // A race is one batch: its branches all run at once.
+        let width = if race {
+            total - first
+        } else {
+            wave().min(total - first)
+        };
         let block_ctx = Block {
             tasks,
             template: &template,
             count: &count,
+            winner: winner.as_ref(),
+            sequential,
             counters: &counters,
             site,
             invoke,
@@ -446,6 +628,10 @@ struct Block<'a> {
     tasks: Tasks,
     template: &'a TaskTemplate,
     count: &'a Arc<AtomicUsize>,
+    /// A race's winner slot; none for `together`.
+    winner: Option<&'a Arc<AtomicUsize>>,
+    /// Whether the race runs its branches one after another, under virtual time.
+    sequential: bool,
     /// The block's debug counters (I4, I5).
     counters: &'a Counters,
     site: usize,
@@ -483,18 +669,17 @@ impl Block<'_> {
     /// results copied into `block`, the block's result list. `None` when every task of the
     /// batch returned, so the next batch forks; else the block's value and status.
     fn batch(&self, first: usize, width: usize, block: i64) -> Option<(i64, i64)> {
-        std::thread::scope(|scope| {
+        {
             // The batch's state, its threads and their outcomes, is reserved exactly, as one
             // step, before the batch forks (ADR 0113 rule 5).
-            let bytes = width.saturating_mul(
-                size_of::<Forked<'static>>().saturating_add(size_of::<Option<Outcome>>()),
-            );
+            let bytes = width
+                .saturating_mul(size_of::<Forked>().saturating_add(size_of::<Option<Outcome>>()));
             let Some(state) = runtime::try_reserve(bytes) else {
                 values::release(block);
                 runtime::refuse(self.site, None);
                 return Some((0, 2));
             };
-            let mut forked: Vec<Forked<'_>> = Vec::with_capacity(width);
+            let mut forked: Vec<Forked> = Vec::with_capacity(width);
             let mut ended: Vec<Option<Outcome>> = (0..width).map(|_| None).collect();
             drop(state);
             let mut fork = Fork::Ran;
@@ -502,6 +687,8 @@ impl Block<'_> {
             // a thread that could not start. The join treats it as cancelled when its code is
             // U6003 and the block's own task was cancelled meanwhile.
             let mut refused = None;
+            // The tasks already run and reported, in a race under virtual time.
+            let mut handled = 0;
             for offset in 0..width {
                 let index = first + offset;
                 // A task cancelled before its fork never starts (`spec/19 §6` rule 4).
@@ -511,7 +698,7 @@ impl Block<'_> {
                     }
                     continue;
                 }
-                match self.fork(scope, index, offset) {
+                match self.fork(index, offset) {
                     Ok(task) => {
                         // The thread answers once it imported, or drops its sender on a stop
                         // or a panic: the wait always ends.
@@ -521,6 +708,19 @@ impl Block<'_> {
                             refused = Some(offset);
                             fork = Fork::Stopped;
                             break;
+                        }
+                        // Under virtual time a race runs each branch to its end before the
+                        // next forks: a branch that returned won, and one that aborted stopped
+                        // the race, so no later branch starts (ADR 0117 rule 12).
+                        if self.sequential
+                            && let Some(task) = forked.last()
+                        {
+                            task.go.send(true);
+                            let outcome = self.reported(task);
+                            if let Some(cell) = ended.get_mut(offset) {
+                                *cell = Some(outcome);
+                            }
+                            handled = forked.len();
                         }
                     }
                     Err(outcome) => {
@@ -539,37 +739,36 @@ impl Block<'_> {
             // exit without running otherwise. No barrier, so no failure leaves a thread
             // waiting.
             let go = matches!(fork, Fork::Ran);
-            for task in &forked {
-                let _ = task.go.send(go);
+            for task in forked.iter().skip(handled) {
+                task.go.send(go);
             }
-            for task in &forked {
-                // A thread that panicked outside a copy drops its sender: a defect of the
-                // runtime, U8001.
-                let outcome = task.report.recv().unwrap_or_else(|_| {
-                    aborted(
-                        self.template,
-                        Code::U8001,
-                        "internal error: the thread of a task of `together` panicked".to_owned(),
-                    )
-                });
+            for task in forked.iter().skip(handled) {
+                let outcome = self.reported(task);
                 if let Some(cell) = ended.get_mut(task.offset) {
                     *cell = Some(outcome);
                 }
             }
             // The tasks after a stopped fork never started: their cells stay empty.
             self.join(first, ended, forked, block, refused)
+        }
+    }
+
+    /// The report of `task` once its code ended. A thread that panicked outside a copy drops its
+    /// sender: a defect of the runtime, U8001.
+    fn reported(&self, task: &Forked) -> Outcome {
+        task.report.recv().unwrap_or_else(|| {
+            aborted(
+                self.template,
+                Code::U8001,
+                "internal error: the thread of a task of `together` panicked".to_owned(),
+            )
         })
     }
 
     /// Forks task `index`, the `offset`th of its batch: exports its inputs, starts its thread and
     /// waits for its answer. The task's ends of its signals and whether it imported, or the
     /// outcome of a fork that stopped before the thread started.
-    fn fork<'scope, 'env>(
-        &self,
-        scope: &'scope std::thread::Scope<'scope, 'env>,
-        index: usize,
-        offset: usize,
-    ) -> Result<(Forked<'scope>, bool), Box<Outcome>> {
+    fn fork(&self, index: usize, offset: usize) -> Result<(Forked, bool), Box<Outcome>> {
         let (closure, arg) = self.tasks.get(index);
         self.counters.no_code_running();
         let forms = runtime::guarded(runtime::COPY, || {
@@ -615,11 +814,11 @@ impl Block<'_> {
             return Err(Box::new(aborted(self.template, Code::U6003, message)));
         };
         let before = thread_allocated();
-        let (answer, answered) = sync_channel::<usize>(1);
-        let (go, wait_go) = sync_channel::<bool>(1);
-        let (report, reported) = sync_channel::<Outcome>(1);
-        let (order, wait_order) = sync_channel::<bool>(1);
-        let (form, formed) = sync_channel::<Transfer>(1);
+        let (answer, answered) = sched::channel::<usize>();
+        let (go, wait_go) = sched::channel::<bool>();
+        let (report, reported) = sched::channel::<Outcome>();
+        let (order, wait_order) = sched::channel::<bool>();
+        let (form, formed) = sched::channel::<Transfer>();
         let signals = Signals {
             answer,
             go: wait_go,
@@ -638,28 +837,51 @@ impl Block<'_> {
                 }
             }
             let template = self.template.clone();
-            let entry = (Arc::clone(self.count), index + 1);
+            let mark = if self.winner.is_some() { RACE_ENTRY } else { 0 };
+            let entry = (Arc::clone(self.count), (index + 1) | mark);
+            let winner = self.winner.map(Arc::clone);
             let counters = self.counters.clone();
             let (site, invoke) = (self.site, self.invoke);
-            std::thread::Builder::new()
-                .name(format!("una-task-{}", index + 1))
-                .stack_size(template.stack)
-                .spawn_scoped(scope, move || {
-                    // ADR 0114 rule 6.4: each task's thread writes the environment first.
-                    if runtime::FLOATS.load(std::sync::atomic::Ordering::SeqCst) {
-                        crate::ffi::write_float_environment();
-                    }
-                    let _stack = runtime::StackCount::new(template.stack);
-                    task(
-                        index,
-                        Inputs { closure, arg },
-                        &template,
-                        entry,
-                        &counters,
-                        (site, invoke),
-                        signals,
-                    );
-                })
+            let (done, finished) = sched::channel::<bool>();
+            let panicked = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let caught = Arc::clone(&panicked);
+            let stack = template.stack;
+            let sched = Arc::clone(&template.sched);
+            // The task's index in its block places it: part `index + 1`, counted from 1 (ADR 0116
+            // amendment, P6), runs on worker `(w + index + 1) mod N`, `w` being this task's
+            // worker, 0 for the root, whatever earlier code forked (`spec/27 §1` rule 2, #1145).
+            sched
+                .spawn(
+                    index + 1,
+                    stack,
+                    move || {
+                        // A panic of the runtime is caught on the task's own stack, so nothing
+                        // unwinds across a switch; the block reports it as U8001, as it reported
+                        // a task thread that panicked.
+                        let outcome =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                // ADR 0114 rule 6.4: each task writes the environment of its
+                                // worker first; every task of the run writes the same one.
+                                if runtime::FLOATS.load(Ordering::SeqCst) {
+                                    crate::ffi::write_float_environment();
+                                }
+                                let _stack = runtime::StackCount::new(template.stack);
+                                task(
+                                    index,
+                                    Inputs { closure, arg },
+                                    &template,
+                                    (entry, winner),
+                                    &counters,
+                                    (site, invoke),
+                                    signals,
+                                );
+                            }));
+                        caught.store(outcome.is_err(), Ordering::SeqCst);
+                    },
+                    // Sent once the task's thread-locals are gone, as a join returned.
+                    move || done.send(panicked.load(Ordering::SeqCst)),
+                )
+                .map(|()| finished)
         });
         let allocated = thread_allocated().saturating_sub(before);
         let spawned = match spawned {
@@ -667,8 +889,8 @@ impl Block<'_> {
             Err(message) => return Err(Box::new(aborted(self.template, Code::U8001, message))),
         };
         match spawned {
-            Ok(handle) => {
-                let answer = answered.recv().ok();
+            Ok(done) => {
+                let answer = answered.recv();
                 drop(start);
                 // A debug build checks the start's allocations, on this thread and on the new
                 // one, against its reservation.
@@ -686,7 +908,7 @@ impl Block<'_> {
                 Ok((
                     Forked {
                         offset,
-                        handle,
+                        done,
                         go,
                         report: reported,
                         order,
@@ -709,16 +931,39 @@ impl Block<'_> {
     /// lets the next batch fork. Otherwise the block's value and status, with every thread of the
     /// batch joined and `block` released before the block stops. A block whose own task was
     /// cancelled copies nothing, unless an abort decides it.
+    ///
+    /// A race (`spec/27 §6`) adopts its winner's events first, then the others' in index order,
+    /// and copies only the winner's value, its status 0, or, when every branch failed, the
+    /// lowest-indexed failure.
     fn join(
         &self,
         first: usize,
-        ended: Vec<Option<Outcome>>,
-        mut forked: Vec<Forked<'_>>,
+        mut ended: Vec<Option<Outcome>>,
+        mut forked: Vec<Forked>,
         block: i64,
         refused: Option<usize>,
     ) -> Option<(i64, i64)> {
-        let decided = decide(&ended);
-        // With no failure and no abort, a task stops only when the task that runs the block was
+        let decided = match self.winner {
+            Some(slot) => {
+                let won = slot.load(Ordering::SeqCst);
+                let winner = (won != NO_WINNER).then(|| won.saturating_sub(first));
+                decide_race(&ended, winner)
+            }
+            None => decide(&ended).map(|(at, abort)| {
+                (
+                    at,
+                    if abort {
+                        Decision::Abort
+                    } else {
+                        Decision::Fail
+                    },
+                )
+            }),
+        };
+        let aborts = matches!(decided, Some((_, Decision::Abort)));
+        // Whether the block's tasks were stopped by a cut (`spec/27 §5`).
+        let cut = crate::deadline::cut();
+        // With no failure, win or abort, a task stops only when the task that runs the block was
         // cancelled: the block stops in turn, after recording what its tasks did.
         let stopped = decided.is_none()
             && ended.iter().any(|outcome| {
@@ -729,15 +974,17 @@ impl Block<'_> {
         // The block's own task was cancelled while the batch ran: its result is dropped, so no
         // value is copied (I7), and it stops as a cancelled task (`spec/19 §6` rule 4). A
         // cancellation only ever comes once, so what is read here holds below.
-        let stopped = stopped || (!matches!(decided, Some((_, true))) && self.template.cancelled());
+        let stopped = stopped || (!aborts && self.template.cancelled());
         // The threads whose values will not be copied exit, and are joined, before the adoption
         // reserves its bound: a task that failed or stopped may hold all the budget left, and
-        // its heap goes with its thread. Only a deciding failure's thread stays, for its value,
-        // and only when the block is not stopped.
+        // its heap goes with its thread. Only a deciding failure's or winner's thread stays, for
+        // its value, and only when the block is not stopped.
         let mut early = false;
         if decided.is_some() || stopped {
             let keep = match decided {
-                Some((at, false)) if !stopped => forked.iter().position(|task| task.offset == at),
+                Some((at, Decision::Fail | Decision::Win)) if !stopped => {
+                    forked.iter().position(|task| task.offset == at)
+                }
                 _ => None,
             };
             if let Some(position) = keep {
@@ -746,6 +993,14 @@ impl Block<'_> {
             for task in forked.drain(usize::from(keep.is_some())..) {
                 early |= exit(task);
             }
+        }
+        // The order of adoption: task order, or a race's winner first.
+        let mut order: Vec<usize> = (0..ended.len()).collect();
+        if let Some((at, Decision::Win)) = decided
+            && let Some(position) = order.iter().position(|&offset| offset == at)
+        {
+            order.remove(position);
+            order.insert(0, at);
         }
         // The adoption is a checked step: its bound is reserved before it, outside the state's
         // borrow, and a refusal stops the block with none of the batch's events adopted (ADR
@@ -811,8 +1066,8 @@ impl Block<'_> {
                 if let Some(target) = target {
                     state.grow_trace(target);
                 }
-                for (offset, outcome) in ended.into_iter().enumerate() {
-                    let Some(outcome) = outcome else {
+                for &offset in &order {
+                    let Some(outcome) = ended.get_mut(offset).and_then(Option::take) else {
                         continue;
                     };
                     #[cfg(test)]
@@ -827,12 +1082,18 @@ impl Block<'_> {
                     {
                         state.failed_write = Some(error);
                     }
-                    if let Ended::Stopped = outcome.ended {
-                        if decided.is_some_and(|(at, is_abort)| at == offset && is_abort) {
-                            abort = outcome.abort;
-                        } else if outcome.abort.is_none() {
-                            state.cancelled_event(path);
+                    match outcome.ended {
+                        Ended::Stopped => {
+                            if decided == Some((offset, Decision::Abort)) {
+                                abort = outcome.abort;
+                            } else if outcome.abort.is_none() {
+                                state.cancelled_event(path);
+                            }
                         }
+                        // A task that a cut kept from starting ends with its `cancelled` event
+                        // too (`spec/27 §5`); the bound above counts one event for it.
+                        Ended::NotStarted if cut => state.cancelled_event(path),
+                        _ => {}
                     }
                 }
             });
@@ -847,6 +1108,9 @@ impl Block<'_> {
         {
             failed_check();
         }
+        // A task that writes its events as they happen writes the adopted ones now, once no
+        // event of an operation of it is open (ADR 0117 rule 10).
+        with_state(runtime::State::flush);
         if let Err(message) = adopted {
             exit_all(forked.into_iter());
             values::release(block);
@@ -855,14 +1119,14 @@ impl Block<'_> {
         }
         let mut forked = forked.into_iter();
         // A cancellation of the block's own task since the early exit stops it the same way.
-        let stopped = stopped || (!matches!(decided, Some((_, true))) && self.template.cancelled());
+        let stopped = stopped || (!aborts && self.template.cancelled());
         // A task's thread that panicked after its report is joined with an error: a defect of
         // the runtime, U8001 at the block, which outranks how the batch would otherwise end.
         let ending = match decided {
             // The block's own fork was refused by the budget, and its task was cancelled
             // meanwhile: it stops as cancelled rather than with U6003, its value dropped either
             // way (I10).
-            Some((at, true))
+            Some((at, Decision::Abort))
                 if refused == Some(at)
                     && matches!(&abort, Some((Code::U6003, _, _)))
                     && self.template.cancelled() =>
@@ -871,7 +1135,7 @@ impl Block<'_> {
             }
             // An abort, U8001 first: every thread exits without exporting, nothing is copied,
             // and the block aborts as the deciding task did.
-            Some((_, true)) => {
+            Some((_, Decision::Abort)) => {
                 let panicked = early | exit_all(forked);
                 match abort {
                     // A deciding U8001 keeps its own message, which names the step that panicked.
@@ -883,10 +1147,13 @@ impl Block<'_> {
                     None => Ending::Stopped(panicked),
                 }
             }
-            None | Some((_, false)) if stopped => Ending::Stopped(early | exit_all(forked)),
-            // A failure: every other thread exits without exporting, the results so far are
-            // released, then the deciding task's value alone is copied in.
-            Some((at, false)) => {
+            None | Some((_, Decision::Fail | Decision::Win)) if stopped => {
+                Ending::Stopped(early | exit_all(forked))
+            }
+            // A failure, or a race's winner: every other thread exits without exporting, the
+            // results so far are released, then the deciding task's value alone is copied in.
+            Some((at, decision @ (Decision::Fail | Decision::Win))) => {
+                let status = if decision == Decision::Win { 0 } else { 1 };
                 let mut deciding = None;
                 let mut panicked = early;
                 for task in forked {
@@ -905,12 +1172,17 @@ impl Block<'_> {
                         self.defect()
                     }
                     Some(task) => match self.transfer(task) {
-                        Ok(word) => (word, 1),
+                        Ok(word) => (word, status),
                         Err(stop) => self.stop(stop),
                     },
                     None if panicked => self.defect(),
                     None => (0, 2),
                 });
+            }
+            // A race always decides, or stops: reaching here is a defect of the runtime.
+            None if self.winner.is_some() => {
+                exit_all(forked);
+                Ending::Stopped(true)
             }
             // Every task returned: one transfer at a time, in task order. A debug build checks
             // that the task heaps whose code ended are at most the batch's, and that each transfer
@@ -989,7 +1261,7 @@ impl Block<'_> {
     }
 
     /// Copies the value of `task` into `block`, the result list, as [`Block::transfer`] does.
-    fn transfer_into(&self, task: Forked<'_>, block: i64) -> Result<(), Stop> {
+    fn transfer_into(&self, task: Forked, block: i64) -> Result<(), Stop> {
         let word = self.transfer(task)?;
         runtime::guarded(runtime::COPY, || {
             values::push(block, word);
@@ -1002,17 +1274,17 @@ impl Block<'_> {
     /// task waits, then exits, and is joined, its heap gone, before the import (ADR 0113 rule
     /// 3, I5). The word, which the caller owns, or why the copy stopped, which the caller turns
     /// into the block's stop once the batch's other threads are joined.
-    fn transfer(&self, task: Forked<'_>) -> Result<i64, Stop> {
+    fn transfer(&self, task: Forked) -> Result<i64, Stop> {
         self.counters.no_code_running();
-        let _ = task.order.send(true);
-        let transfer = task.form.recv().unwrap_or_else(|_| {
+        task.order.send(true);
+        let transfer = task.form.recv().unwrap_or_else(|| {
             Transfer::Panicked(
                 "internal error: the thread of a task of `together` panicked".to_owned(),
             )
         });
         // A thread that panicked after it sent its form, as it released its heap, is a defect
         // too, whatever its form held.
-        let transfer = if task.handle.join().is_err() {
+        let transfer = if task.done.recv().unwrap_or(true) {
             Transfer::Panicked(
                 "internal error: the thread of a task of `together` panicked".to_owned(),
             )
@@ -1034,14 +1306,14 @@ impl Block<'_> {
 
 /// Tells `task` to exit without exporting, and joins its thread: whether the thread panicked, a
 /// defect of the runtime that the block reports as U8001.
-fn exit(task: Forked<'_>) -> bool {
-    let _ = task.order.send(false);
-    task.handle.join().is_err()
+fn exit(task: Forked) -> bool {
+    task.order.send(false);
+    task.done.recv().unwrap_or(true)
 }
 
 /// Tells each of `tasks` to exit without exporting, and joins their threads: whether one
 /// panicked.
-fn exit_all<'scope>(tasks: impl Iterator<Item = Forked<'scope>>) -> bool {
+fn exit_all(tasks: impl Iterator<Item = Forked>) -> bool {
     let mut panicked = false;
     for task in tasks {
         panicked |= exit(task);
@@ -1058,23 +1330,44 @@ fn task_path(template: &TaskTemplate, index: usize) -> String {
         path.push_str(&template.path);
         path.push('.');
     }
+    // A branch of the `c`-th `first of` of its task: `p.f<c>.<i>` (`spec/27 §6`).
+    if let Some(race) = template.race {
+        let _ = std::fmt::Write::write_fmt(&mut path, format_args!("f{race}."));
+    }
     let _ = std::fmt::Write::write_fmt(&mut path, format_args!("{}", index + 1));
     path
 }
 
 /// The length of the path of task `index` of the block that `template` describes.
 fn path_len(template: &TaskTemplate, index: usize) -> usize {
-    let own = runtime::digits(index + 1);
-    if template.path.is_empty() {
-        own
-    } else {
-        template.path.len() + 1 + own
-    }
+    template.path_prefix_len() + runtime::digits(index + 1)
 }
 
 /// The task that decides a batch, by its offset, and whether it aborted: a task that stopped
 /// with U8001, a defect of the runtime, decides whatever its index; else the lowest-indexed task
 /// that failed or aborted (`spec/19 §6` rule 3). A task stopped by a cancellation never decides.
+/// The branch that decides a race, by its offset (`spec/27 §6`): a task that stopped with U8001
+/// first, then the lowest-indexed abort, then the winner, the branch that took the winner slot;
+/// with no winner, the lowest-indexed failure when every branch failed. `None` when a branch
+/// stopped with none of these: the task that runs the race was cancelled.
+fn decide_race(ended: &[Option<Outcome>], winner: Option<usize>) -> Option<(usize, Decision)> {
+    if let Some((at, true)) = decide(ended) {
+        return Some((at, Decision::Abort));
+    }
+    if let Some(at) = winner {
+        return Some((at, Decision::Win));
+    }
+    let every_failed = ended.iter().all(|outcome| {
+        outcome
+            .as_ref()
+            .is_some_and(|o| matches!(o.ended, Ended::Failed))
+    });
+    if every_failed && !ended.is_empty() {
+        return Some((0, Decision::Fail));
+    }
+    None
+}
+
 fn decide(ended: &[Option<Outcome>]) -> Option<(usize, bool)> {
     let defect = ended.iter().position(|outcome| {
         outcome.as_ref().is_some_and(|outcome| {
@@ -1119,12 +1412,13 @@ fn task(
     index: usize,
     inputs: Inputs,
     template: &TaskTemplate,
-    entry: (Arc<AtomicUsize>, usize),
+    (entry, winner): ((Arc<AtomicUsize>, usize), Option<Arc<AtomicUsize>>),
     counters: &Counters,
     (site, invoke): (usize, Invoke),
     signals: Signals,
 ) {
     let count = Arc::clone(&entry.0);
+    let race = winner.as_deref();
     let _defect = Defect(Arc::clone(&count));
     let path = task_path(template, index);
     #[cfg(test)]
@@ -1159,27 +1453,41 @@ fn task(
             }
             drop(signals.answer);
             runtime::refuse(site, message);
-            let _ = signals.report.send(report(index, &count, Ended::Stopped));
+            signals
+                .report
+                .send(report(index, (&count, race), Ended::Stopped));
             return exit_task();
         }
         Err(message) => {
             drop(signals.answer);
             runtime::abort_from_task(Code::U8001, template.location.clone(), message);
-            let _ = signals.report.send(report(index, &count, Ended::Stopped));
+            signals
+                .report
+                .send(report(index, (&count, race), Ended::Stopped));
             return exit_task();
         }
     };
-    let _ = signals.answer.send(started);
+    signals.answer.send(started);
     // A task starts when it receives its signal to run; one told to exit, or cancelled since
     // it imported, never starts and leaves no event.
-    let go = signals.go.recv().unwrap_or(false);
+    let (go, parked) = signals.go.recv_parked();
+    let go = go.unwrap_or(false);
+    // A branch of a race that got its signal before it parked runs on without waiting, ahead
+    // of the branches before it whose resumes are queued: it lets them run first, so that on
+    // one worker the branches start in index order, as the interpreter runs them, and a winner
+    // before it is seen below. A branch that parked was resumed in its turn and runs on: were
+    // it to yield too, it would queue behind a later branch that got its signal while running,
+    // which on one worker then runs to its end before it (#1188).
+    if go && !parked && race.is_some() {
+        sched::yield_now();
+    }
     let cancelled = count.load(Ordering::SeqCst) <= index || template.cancelled();
     if !go || cancelled {
         values::release(closure);
         if let Some(arg) = arg {
             values::release(arg);
         }
-        let _ = signals.report.send(not_started());
+        signals.report.send(not_started());
         return exit_task();
     }
     let code = counters.running();
@@ -1193,7 +1501,7 @@ fn task(
         _ => Ended::Stopped,
     };
     let holds = status != 2;
-    let _ = signals.report.send(report(index, &count, ended));
+    signals.report.send(report(index, (&count, race), ended));
     // The value waits in this heap until the join orders its export, one task at a time, or
     // this thread's exit (ADR 0113 rule 3).
     if holds {
@@ -1206,7 +1514,7 @@ fn task(
                 Ok(Err(values::Refused(message))) => Transfer::Refused(message),
                 Err(message) => Transfer::Panicked(message),
             };
-            let _ = signals.form.send(transfer);
+            signals.form.send(transfer);
         }
         values::release(value);
         values::release(closure);
@@ -1247,10 +1555,29 @@ impl Drop for Defect {
 /// every other task of the block, the lower ones included, so that the defect ends the run once
 /// its siblings reach a check: a sibling inside an operation in progress, a handler's or the
 /// host's, sees the cancellation when that operation returns (`spec/19 §8` rule 2).
-fn report(index: usize, count: &AtomicUsize, ended: Ended) -> Outcome {
+///
+/// In a race (`race` its winner slot), the first branch to return takes the slot with one
+/// atomic step and lowers the count to 0, which cancels every other branch, and wakes those
+/// parked on an interruptible operation (ADR 0117 rules 4 and 6); an abort does the same, and
+/// a failure cancels nothing, since the race fails only when every branch fails.
+fn report(
+    index: usize,
+    (count, race): (&AtomicUsize, Option<&AtomicUsize>),
+    ended: Ended,
+) -> Outcome {
     let (events, installs, failed_write, abort) = runtime::take_report().unwrap_or_default();
     if matches!(&abort, Some((Code::U8001, _, _))) {
         count.fetch_min(0, Ordering::SeqCst);
+        crate::interrupt::lowered(count);
+    } else if let Some(winner) = race {
+        let won = matches!(ended, Ended::Returned)
+            && winner
+                .compare_exchange(NO_WINNER, index, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok();
+        if won || abort.is_some() {
+            count.fetch_min(0, Ordering::SeqCst);
+            crate::interrupt::lowered(count);
+        }
     } else if matches!(ended, Ended::Failed) || abort.is_some() {
         count.fetch_min(index + 1, Ordering::SeqCst);
     }
@@ -1271,7 +1598,7 @@ fn report(index: usize, count: &AtomicUsize, ended: Ended) -> Outcome {
 /// a debug build, whatever the task's end, a stop included, so that a fault in a task that
 /// stopped is reported (#424), then tears the heap down whole, its objects freed together
 /// rather than released one by one (ADR 0113 rule 5).
-fn exit_task() {
+pub(crate) fn exit_task() {
     let _ = runtime::leave_task();
     if cfg!(debug_assertions) {
         TASK_FAULTS.fetch_add(values::faults(), Ordering::SeqCst);
@@ -1334,6 +1661,42 @@ thread_local! {
     static TEST_REFUSE_START: Cell<bool> = const { Cell::new(false) };
     /// Refuses the adoption of every batch of the blocks this thread runs, in tests.
     static TEST_REFUSE_ADOPTION: Cell<bool> = const { Cell::new(false) };
+}
+
+/// The `cancelled` events of the tasks `first..total` of a block that a cut stops before they
+/// were forked (`spec/27 §5`), in task order, their bytes reserved first: a refusal stops the
+/// block over the budget (U6003), as any adoption does (ADR 0113 rule 3).
+fn cut_events(template: &TaskTemplate, first: usize, total: usize, site: usize) {
+    let tracing = with_state(|state| state.trace.is_some()).unwrap_or(false);
+    if !tracing || first >= total {
+        return;
+    }
+    let mut bytes: usize = 0;
+    for index in first..total {
+        bytes = bytes.saturating_add(path_len(template, index).saturating_mul(2) + 3);
+    }
+    let events = total - first;
+    let growth = with_state(|state| state.trace_growth(events)).flatten();
+    let trace_bytes = growth.map_or(0, |(capacity, _, exact)| {
+        exact
+            .saturating_sub(capacity)
+            .saturating_mul(size_of::<Event>())
+    });
+    let Some(step) = runtime::try_reserve(bytes.saturating_add(trace_bytes)) else {
+        runtime::refuse(site, None);
+        return;
+    };
+    with_state(|state| {
+        if let Some((_, _, exact)) = growth {
+            state.grow_trace(exact);
+        }
+        for index in first..total {
+            state.cancelled_event(task_path(template, index));
+        }
+    });
+    drop(step);
+    // A task that writes its events as they happen writes these now (ADR 0117 rule 10).
+    with_state(runtime::State::flush);
 }
 
 /// The bound on what adopting the batch whose first task is `first` allocates (ADR 0113 rule 3),
@@ -1474,7 +1837,7 @@ mod tests {
             values::push(items, (number << 1) | 1);
         }
         let closure = values::closure(crate::ffi::Code::NONE, 1);
-        let result = run(Tasks::Over { closure, items }, false, 0, code);
+        let result = run(Tasks::Over { closure, items }, Shape::List, 0, code);
         values::release(closure);
         values::release(items);
         result
@@ -1524,6 +1887,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
     fn i5_i7_a_block_joins_batch_by_batch_and_keeps_its_results_in_task_order() {
         // ADR 0113 rules 1 and 3, in process, so that Miri checks the staged fork and join: a
         // block over more than one batch, of 2 tasks here, copies each task's result into its
@@ -1546,7 +1910,114 @@ mod tests {
         assert_eq!(stopped.map(|(code, _)| code), Some(Code::U6004));
     }
 
+    /// A race of `code` over the integers `numbers`, on a thread of its own with the state of a
+    /// task `1`: the text of its value when it has one, its status, and the abort that stopped
+    /// it.
+    fn in_race(numbers: Vec<i64>, code: Invoke) -> (Option<String>, i64, Option<(Code, String)>) {
+        std::thread::spawn(move || {
+            runtime::install_panic_hook();
+            runtime::install_test_state_as("1".to_owned(), false, String::new());
+            let items = values::list();
+            for &number in &numbers {
+                values::push(items, (number << 1) | 1);
+            }
+            let closure = values::closure(crate::ffi::Code::NONE, 1);
+            let (value, status) = run(Tasks::Over { closure, items }, Shape::Race, 0, code);
+            values::release(closure);
+            values::release(items);
+            let text = (status != 2).then(|| values::text_value(value));
+            values::release(value);
+            let stopped = runtime::test_stopped();
+            let _ = runtime::leave_task();
+            (text, status, stopped)
+        })
+        .join()
+        .unwrap()
+    }
+
+    /// Whether [`racing`]'s waiting branch runs, and whether it saw its cancellation.
+    static RACE_WAITING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    static RACE_SAW_CANCEL: std::sync::atomic::AtomicBool =
+        std::sync::atomic::AtomicBool::new(false);
+
+    /// A branch's code for the race test: the element 0 waits, at most about 10 s, until its
+    /// branch is cancelled; any other element waits until the element 0 runs, then is
+    /// [`texts`].
+    fn racing(closure: i64, arg: Option<i64>, site: usize) -> (i64, i64) {
+        let number = arg.map_or(0, |word| word >> 1);
+        if number == 0 {
+            if let Some(arg) = arg {
+                values::release(arg);
+            }
+            RACE_WAITING.store(true, Ordering::SeqCst);
+            for _ in 0..10_000 {
+                if runtime::poll() == 1 {
+                    RACE_SAW_CANCEL.store(true, Ordering::SeqCst);
+                    return (0, 2);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            return (values::text_word("never cancelled".to_owned()), 0);
+        }
+        for _ in 0..10_000 {
+            if RACE_WAITING.load(Ordering::SeqCst) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        texts(closure, arg, site)
+    }
+
     #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
+    fn a_race_gives_its_winner_and_fails_only_when_every_branch_fails() {
+        // `spec/27 §6`: the branch that returns wins, and a failure cancels nothing; when every
+        // branch fails, the race fails with the lowest-indexed failure; an abort decides the
+        // race and aborts it.
+        let (text, status, stopped) = in_race(vec![1, 5], texts);
+        assert_eq!((text.as_deref(), status, stopped), (Some("5"), 0, None));
+        let (text, status, stopped) = in_race(vec![1, 1, 1], texts);
+        assert_eq!((text.as_deref(), status, stopped), (Some("fails"), 1, None));
+        let (_, status, stopped) = in_race(vec![3, 3], texts);
+        assert_eq!(status, 2);
+        assert_eq!(stopped.map(|(code, _)| code), Some(Code::U6004));
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
+    fn a_race_cancels_its_losers_once_a_branch_wins() {
+        // `spec/27 §6`, ADR 0117 rule 6: the winner lowers the race's count to 0, so a loser
+        // that runs sees its cancellation at its next check, and the race gives the winner's
+        // value.
+        RACE_WAITING.store(false, Ordering::SeqCst);
+        RACE_SAW_CANCEL.store(false, Ordering::SeqCst);
+        let (text, status, stopped) = in_race(vec![0, 6], racing);
+        assert_eq!((text.as_deref(), status, stopped), (Some("6"), 0, None));
+        assert!(
+            RACE_SAW_CANCEL.load(Ordering::SeqCst),
+            "the loser was cancelled"
+        );
+    }
+
+    #[test]
+    fn race_paths_count_the_races_of_their_task() {
+        // `spec/27 §6` rule 5: the `i`-th branch of the `c`-th race of the task `p` is
+        // `p.f<c>.<i>`, at its exact length.
+        std::thread::spawn(|| {
+            runtime::install_test_state_as("1".to_owned(), false, String::new());
+            let first = with_state(|state| state.for_race(0)).unwrap();
+            let second = with_state(|state| state.for_race(0)).unwrap();
+            assert_eq!(task_path(&first, 0), "1.f1.1");
+            assert_eq!(task_path(&second, 2), "1.f2.3");
+            assert_eq!(path_len(&second, 2), "1.f2.3".len());
+            let _ = runtime::leave_task();
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
     fn i11_a_defect_cancels_every_task_of_its_block_and_decides_it() {
         // ADR 0113 I11: a task stopped with U8001 cancels every task of its block, the lower
         // ones included, so that a lower task that would run on cannot hide the defect; the
@@ -1563,6 +2034,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
     fn i11_a_panic_in_a_start_or_an_adoption_is_u8001_at_the_block() {
         // ADR 0113 I11: a task's start and the adoption of a batch's events run inside
         // `guarded`, so a panic there stops the block with U8001, never unwinding through the
@@ -1613,6 +2085,7 @@ mod tests {
     static SEVEN_STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
     #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
     fn i11_a_thread_that_panics_after_its_report_stops_the_block_with_u8001() {
         // ADR 0113 I11: a task's thread that panics after it reported, as it releases its heap,
         // is joined with an error, which the block reports as U8001 rather than as a
@@ -1634,6 +2107,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
     fn i11_a_thread_that_panics_after_its_report_is_u8001_when_its_block_fails() {
         // ADR 0113 I11, through the threads the join tells to exit: a failing batch whose other
         // task panicked after its report stops with U8001, not with the failure; and when the
@@ -1650,6 +2124,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
     fn i10_a_refused_import_while_its_block_s_task_is_cancelled_stops_as_cancelled() {
         // ADR 0113 I10, through a real refused import: the copy into the task's heap is refused,
         // and the block's own task is cancelled before its join; the block stops as cancelled,
@@ -1690,6 +2165,8 @@ mod tests {
                 tasks: Tasks::Closures(0),
                 template: &template,
                 count: &count,
+                winner: None,
+                sequential: false,
                 counters: &counters,
                 site: 0,
                 invoke: texts,
@@ -1734,7 +2211,7 @@ mod tests {
         }
         let items = values::list();
         values::push(items, ((depth - 1) << 1) | 1);
-        let (value, status) = run(Tasks::Over { closure, items }, false, site, nested);
+        let (value, status) = run(Tasks::Over { closure, items }, Shape::List, site, nested);
         values::release(items);
         (value, status)
     }
@@ -1767,7 +2244,12 @@ mod tests {
         for _ in 0..if depth == 1 { 2 } else { 1 } {
             values::push(items, ((depth - 1) << 1) | 1);
         }
-        let (value, status) = run(Tasks::Over { closure, items }, false, site, nested_installs);
+        let (value, status) = run(
+            Tasks::Over { closure, items },
+            Shape::List,
+            site,
+            nested_installs,
+        );
         values::release(items);
         (value, status)
     }
@@ -1796,6 +2278,22 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
+    fn the_warm_up_runs_one_real_task_per_item_and_leaves_nothing_behind() {
+        // #1254: the block runs through the real path, returns every task, and leaves no
+        // object, no event and no stop in the state that ran it.
+        let ((returned, live), stopped, trace) = in_task_as("1", true, String::new(), || {
+            let returned = warm_up(5);
+            (returned, values::live())
+        });
+        assert_eq!(returned, 5);
+        assert_eq!(live, 0);
+        assert_eq!(stopped, None);
+        assert_eq!(trace, Vec::<String>::new());
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
     fn i1_i3_every_start_allocates_within_its_reservation_at_any_depth_and_path() {
         // ADR 0113 rule 2: the debug counters check each start, on the block's task and on the
         // new thread, against `K + T`, in blocks nested 1, 10, 50 and 200 deep and with a long
@@ -1850,6 +2348,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
     fn i1_i10_an_adoption_reserves_what_it_allocates_and_renumbers_the_handlers() {
         // ADR 0113 rule 3: a batch whose tasks each install a handler and record an event adopts
         // their events in task order, the handlers renumbered from the block's counts, within
@@ -1876,6 +2375,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
     fn i1_i10_an_adoption_inside_nested_blocks_renumbers_within_what_it_reserved() {
         // ADR 0113 rule 3, where the block's path is not empty: blocks nested 4 deep in a traced
         // task whose bottom block's two tasks each install a handler and record an event. Each
@@ -1892,6 +2392,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
     fn i1_a_traced_run_grows_its_trace_a_logarithmic_number_of_times() {
         // ADR 0113 rule 5, by counter: the trace grows as the slot table does, to twice its
         // capacity, so k blocks whose tasks each record an event grow it O(log k) times, not k
@@ -1919,6 +2420,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
     fn i1_a_block_s_copies_make_the_sum_of_its_tasks_steps() {
         // ADR 0113, I1, by counters: on the block's thread, a block of t tasks over integers
         // exports t closures, one object each, and imports t results, one text each.

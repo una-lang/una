@@ -24,6 +24,18 @@
 #                twice, compared
 #   native       the interpreter against the native executable, on every runnable program of
 #                the repository (spec/16 §5): the equivalence test of crates/una-cli/tests/native.rs
+#   timing-channels
+#                the security timing oracles (#1145): `cargo test --release --locked -p una-cli --test
+#                timing_channels -- --ignored --test-threads=1 --nocapture`, the real-clock tests that a timing
+#                channel stays closed, which the ordinary test run ignores; it runs right after
+#                `native`, with no Docker gate running, so the machine is as quiet as the run gets
+#   owner-replay the exhaustive models of the replay of an owner's chain (spec/30 §14 rule 5)
+#                and of yanks against it (spec/30 §15 rule 6), both to depth 5: `cargo test
+#                --release --locked -p una-project --lib -- --ignored --exact
+#                tlog::owner::model::owner_replay_holds_its_contract_to_depth_five --nocapture`,
+#                then the same with registry::yank_model::yanks_hold_their_invariants_to_depth_five;
+#                the ordinary test run checks both to depth 3, and the gate passes only when both
+#                pass
 #   sanitize     scripts/sanitize.sh (#766): Miri on the unit tests of una-rt, and the native
 #                equivalence test against una-rt built with AddressSanitizer, with the checking
 #                toolchain of scripts/check-toolchain.toml; macOS only for now
@@ -67,7 +79,7 @@
 # Usage: scripts/release-gates.sh SHA OUT [GATE...]
 set -u
 
-ALL=(clone build deps mac linux linux-arm64 release reproducible determinism native sanitize site formal hunt hunt-linux-arm64)
+ALL=(clone build deps mac linux linux-arm64 release reproducible determinism native timing-channels owner-replay sanitize site formal hunt hunt-linux-arm64)
 
 usage() {
     echo "usage: scripts/release-gates.sh SHA OUT [GATE...]; SHA is a full 40-digit commit, GATE is one of: ${ALL[*]}" >&2
@@ -363,6 +375,26 @@ gate_site() {
             && UNA_SITE_LEARN_SAME_VERSION=1 UNA_BIN=target/release/una scripts/site-website.sh "'"$OUT"'/site-bundle/una-docs-$version" "'"$OUT"'/site-website"'
 }
 gate_formal() { run formal scripts/formal.sh; }
+
+gate_timing-channels() {
+    # The security timing oracles (#1145, crates/una-cli/tests/timing_channels.rs): each test is
+    # ignored in the ordinary run and runs only here and in the step of the same name of
+    # scripts/local-ci.sh, one at a time, on the real clock of a native host.
+    run timing-channels cargo test --release --locked -p una-cli --test timing_channels -- --ignored --test-threads=1 --nocapture
+}
+
+gate_owner-replay() {
+    # The exhaustive model of the replay of an owner's chain (spec/30 §14 rule 5), then the
+    # model of yanks against it (spec/30 §15 rule 6): both ignored in the ordinary run, which
+    # checks each to depth 3, and both run here to depth 5; the gate passes only when both
+    # pass. They are unit tests of una-project, since the model of signatures that stands in
+    # for Ed25519 exists only in that crate's test build; `--release`, for their millions of
+    # replays; `--nocapture`, so the log holds their counts.
+    run owner-replay sh -c '
+        cargo test --release --locked -p una-project --lib -- --ignored --exact tlog::owner::model::owner_replay_holds_its_contract_to_depth_five --nocapture &&
+        cargo test --release --locked -p una-project --lib -- --ignored --exact registry::yank_model::yanks_hold_their_invariants_to_depth_five --nocapture
+    '
+}
 
 # #766: Miri on the runtime's unit tests, and the native equivalence test against the runtime
 # built with AddressSanitizer, by the checking toolchain of scripts/check-toolchain.toml, which

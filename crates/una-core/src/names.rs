@@ -52,6 +52,17 @@ pub fn vars(expr: &Expr, out: &mut BTreeSet<String>) {
             vars(handler, out);
         }
         Expr::Attempt { body, .. } => vars(body, out),
+        Expr::Within { deadline, body, .. } => {
+            atoms(std::slice::from_ref(deadline), out);
+            vars(body, out);
+        }
+        Expr::Tasks { bound, body, .. } => {
+            if let Some((bound, _)) = bound {
+                atoms(std::slice::from_ref(bound), out);
+            }
+            vars(body, out);
+        }
+        Expr::Start { task, .. } => vars(task, out),
         Expr::LetTuple { value, body, .. } => {
             atoms(std::slice::from_ref(value), out);
             vars(body, out);
@@ -82,7 +93,7 @@ pub fn vars(expr: &Expr, out: &mut BTreeSet<String>) {
                 vars(&on_stop.body, out);
             }
         }
-        Expr::Together { tasks, .. } => {
+        Expr::Together { tasks, .. } | Expr::FirstOf { tasks, .. } => {
             for task in tasks {
                 vars(task, out);
             }
@@ -198,7 +209,9 @@ pub fn binders<'e>(expr: &'e Expr, out: &mut BTreeSet<&'e str>) {
                 binders(&on_stop.body, out);
             }
         }
-        Expr::Together { tasks, .. } => tasks.iter().for_each(|task| binders(task, out)),
+        Expr::Together { tasks, .. } | Expr::FirstOf { tasks, .. } => {
+            tasks.iter().for_each(|task| binders(task, out));
+        }
         Expr::TogetherFor { var, task, .. } => {
             out.insert(var.0.as_str());
             binders(task, out);
@@ -229,10 +242,90 @@ pub fn binders<'e>(expr: &'e Expr, out: &mut BTreeSet<&'e str>) {
             binders(body, out);
             binders(handler, out);
         }
-        Expr::Attempt { body, .. } => binders(body, out),
+        Expr::Attempt { body, .. } | Expr::Within { body, .. } | Expr::Tasks { body, .. } => {
+            binders(body, out);
+        }
+        Expr::Start { task, .. } => binders(task, out),
         Expr::With { cap, body, .. } => {
             out.insert(cap.as_str());
             binders(body, out);
         }
     }
+}
+
+/// Whether `program` has a `tasks` statement in a function or a handler's operation (`spec/27
+/// §7`): a run of it runs its root task as a coroutine, so that its started tasks take turns
+/// with it (ADR 0117 rule 11). O(size of the program), with no recursion on the native stack.
+pub fn has_tasks(program: &crate::Program) -> bool {
+    let mut pending: Vec<&Expr> = Vec::new();
+    for module in &program.modules {
+        for decl in &module.decls {
+            match decl {
+                crate::Decl::Fun(fun) => pending.push(&fun.body),
+                crate::Decl::Handler { ops, .. } => pending.extend(ops.iter().map(|op| &op.body)),
+                _ => {}
+            }
+        }
+    }
+    /// The expression a right-hand side holds: a lambda's body, a `checked` predicate.
+    fn rhs(rhs: &Rhs) -> Option<&Expr> {
+        match rhs {
+            Rhs::Lambda { body, .. } => Some(body),
+            Rhs::Checked { predicate, .. } => Some(predicate),
+            _ => None,
+        }
+    }
+    while let Some(expr) = pending.pop() {
+        match expr {
+            Expr::Tasks { .. } => return true,
+            Expr::Atom { .. }
+            | Expr::Fail { .. }
+            | Expr::Exit { .. }
+            | Expr::Unreachable { .. } => {}
+            Expr::Let { value, body, .. } => {
+                match value.as_ref() {
+                    Bound::Rhs(inner) => pending.extend(rhs(inner)),
+                    Bound::Expr(inner) => pending.push(inner),
+                }
+                pending.push(body);
+            }
+            Expr::LetTuple { body, .. }
+            | Expr::Attempt { body, .. }
+            | Expr::Within { body, .. }
+            | Expr::With { body, .. } => pending.push(body),
+            Expr::Start { task, .. } | Expr::TogetherFor { task, .. } => pending.push(task),
+            Expr::Loop {
+                source,
+                body,
+                on_stop,
+                ..
+            } => {
+                if let LoopSource::Until { cond, .. } = source.as_ref() {
+                    pending.push(cond);
+                }
+                pending.push(body);
+                if let Some(on_stop) = on_stop {
+                    pending.push(&on_stop.body);
+                }
+            }
+            Expr::Together { tasks, .. } | Expr::FirstOf { tasks, .. } => pending.extend(tasks),
+            Expr::If {
+                then, otherwise, ..
+            } => {
+                pending.push(then);
+                pending.push(otherwise);
+            }
+            Expr::Case {
+                arms, otherwise, ..
+            } => {
+                pending.extend(arms.iter().map(|arm| &arm.body));
+                pending.extend(otherwise.as_deref());
+            }
+            Expr::Handle { body, handler, .. } => {
+                pending.push(body);
+                pending.push(handler);
+            }
+        }
+    }
+    false
 }

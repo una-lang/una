@@ -7,6 +7,10 @@ use una_diag::Code;
 use crate::document::{Table, integer, parse, string, strings};
 use crate::{Located, ProjectError};
 
+/// A package's profile (ADR 0109): the one type of Core IR, which elaboration records in the
+/// program (rule 6), re-exported so that both manifest formats read into it.
+pub use una_core::Profile;
+
 /// The settings of a package's `una.toml`, or their defaults (ADR 0021 rule 2).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Manifest {
@@ -33,12 +37,23 @@ pub struct Manifest {
     pub contracts: Vec<Contract>,
     /// `[boundaries]`: the boundary modules and their ceilings, in edition `0.3` (ADR 0093).
     pub boundaries: Vec<Boundary>,
+    /// `[package] profile` in edition `0.3`, the head line `profile` in `ita.una`: `app`, the
+    /// default, or `systems` (ADR 0109 rule 1).
+    pub profile: Profile,
+    /// `[run] max_memory` in edition `0.3`, the `run` line `max_memory` in `ita.una`: the
+    /// declared memory budget in MiB, from 1 to [`MAX_MEMORY_CAP`], which `--max-memory` may
+    /// lower and never raise (ADR 0109 rule 4).
+    pub max_memory: Option<u64>,
     /// The file the settings were read from: `una.toml`, or `ita.una` from edition `0.4`.
     pub format: Format,
     /// The path dependencies mounted into the program (ADR 0122 rule 47): each one's local
     /// name, under which its modules are named, and where its files are. Filled when the
     /// dependencies are loaded, empty otherwise.
     pub mounts: Vec<Mount>,
+    /// The modules of dependencies that a trust line of the root names and the lock consents
+    /// to, by their paths in the program, `<local>.m` (ADR 0122 rule 53): each is an extent of
+    /// its own, and a release whose policy it declares is never U3024 (rule 53.1).
+    pub dependency_trusted: Vec<String>,
     /// For `ita.una`, the file as read, with what only it writes: the head's `about`,
     /// `license`, `home` and `publish to`, and the sections `sources`, `needs`, `replace` and
     /// `trust` (ADR 0122).
@@ -111,6 +126,28 @@ impl Format {
             Format::Ita => "ita.una",
         }
     }
+}
+
+/// The largest declared memory budget, in MiB, while edition `0.3` is a preview: the default of
+/// `--max-memory`, so a declared budget never widens edition `0.2` (ADR 0109 rule 4).
+pub const MAX_MEMORY_CAP: u64 = 4096;
+
+/// The message of a `systems` package with an entry and no declared budget (ADR 0109 rule 4),
+/// in the words of `format`.
+pub(crate) fn budget_missing(format: Format) -> String {
+    format!(
+        "a `systems` package with a {} declares {}, its memory budget in MiB",
+        format.section("[run] entry"),
+        format.section("[run] max_memory")
+    )
+}
+
+/// The message of a declared budget outside 1 to [`MAX_MEMORY_CAP`] (ADR 0109 rule 4).
+pub(crate) fn budget_out_of_range(format: Format, value: &str) -> String {
+    format!(
+        "{} is a number of MiB from 1 to {MAX_MEMORY_CAP}, not {value}",
+        format.section("[run] max_memory")
+    )
 }
 
 /// The longest tick period and step budget of `[drive]`, in milliseconds: a day (ADR 0116 rule
@@ -291,6 +328,16 @@ pub fn parse_manifest(text: &str) -> (Manifest, Vec<ProjectError>) {
     // amended, and ADR 0093): earlier editions report them as the unknown tables they always
     // were, so their output does not change.
     let edition_0_3 = declared_edition(document.get_ref()) >= Edition::V0_3;
+    // Whether `[run] max_memory` is written, valid or not: one that is out of range is
+    // reported at its value, not again as missing.
+    let budget_written = edition_0_3
+        && document
+            .get_ref()
+            .get("run")
+            .is_some_and(|run| match run.get_ref() {
+                toml::de::DeValue::Table(table) => table.contains_key("max_memory"),
+                _ => false,
+            });
     for (key, value) in document.get_ref().iter() {
         let Some(table) = Table::of(key, value, Code::U7002, &mut errors) else {
             continue;
@@ -298,12 +345,12 @@ pub fn parse_manifest(text: &str) -> (Manifest, Vec<ProjectError>) {
         match key.get_ref().as_ref() {
             "package" => {
                 package = true;
-                package_table(&table, &mut manifest, &mut errors);
+                package_table(&table, edition_0_3, &mut manifest, &mut errors);
             }
             "labels" => labels(&table, &mut manifest, &mut errors),
             "trusted" => trusted(&table, &mut manifest, &mut errors),
             "escape_budget" => escape_budget(&table, &mut manifest, &mut errors),
-            "run" => run(&table, &mut manifest, &mut errors),
+            "run" => run(&table, edition_0_3, &mut manifest, &mut errors),
             "contracts" if edition_0_3 => contracts(&table, &mut manifest, &mut errors),
             "boundaries" if edition_0_3 => boundaries(&table, &mut manifest, &mut errors),
             other => errors.push(ProjectError::new(
@@ -322,6 +369,17 @@ pub fn parse_manifest(text: &str) -> (Manifest, Vec<ProjectError>) {
     }
     if !manifest.boundaries.is_empty() {
         boundary_conflicts(&manifest, &mut errors);
+    }
+    // A `systems` package that runs declares its budget (ADR 0109 rule 4), at the entry.
+    if manifest.profile == Profile::Systems
+        && !budget_written
+        && let Some(entry) = &manifest.entry
+    {
+        errors.push(ProjectError::new(
+            Code::U7002,
+            entry.range.clone(),
+            budget_missing(Format::Toml),
+        ));
     }
     (manifest, errors)
 }
@@ -357,11 +415,34 @@ fn contracts(table: &Table<'_, '_>, manifest: &mut Manifest, errors: &mut Vec<Pr
     }
 }
 
-fn package_table(table: &Table<'_, '_>, manifest: &mut Manifest, errors: &mut Vec<ProjectError>) {
+fn package_table(
+    table: &Table<'_, '_>,
+    edition_0_3: bool,
+    manifest: &mut Manifest,
+    errors: &mut Vec<ProjectError>,
+) {
     let mut seen = Vec::new();
     for (key, value) in table.entries.iter() {
         let name = key.get_ref().as_ref();
         match name {
+            // Edition 0.3 only (ADR 0109 rule 1): earlier editions report it as the unknown key
+            // it always was, and their packages are `app`.
+            "profile" if edition_0_3 => {
+                let Some(located) = string(name, value, Code::U7002, errors) else {
+                    continue;
+                };
+                match Profile::parse(&located.value) {
+                    Some(profile) => manifest.profile = profile,
+                    None => errors.push(ProjectError::new(
+                        Code::U7002,
+                        located.range,
+                        format!(
+                            "unknown profile `{}`; the profiles are \"app\" and \"systems\"",
+                            located.value
+                        ),
+                    )),
+                }
+            }
             "name" | "version" | "edition" => {
                 seen.push(name.to_owned());
                 let Some(located) = string(name, value, Code::U7002, errors) else {
@@ -484,9 +565,29 @@ fn escape_budget(table: &Table<'_, '_>, manifest: &mut Manifest, errors: &mut Ve
     }
 }
 
-fn run(table: &Table<'_, '_>, manifest: &mut Manifest, errors: &mut Vec<ProjectError>) {
+fn run(
+    table: &Table<'_, '_>,
+    edition_0_3: bool,
+    manifest: &mut Manifest,
+    errors: &mut Vec<ProjectError>,
+) {
     for (key, value) in table.entries.iter() {
         match key.get_ref().as_ref() {
+            // Edition 0.3 only (ADR 0109 rule 4), from 1 to the cap.
+            "max_memory" if edition_0_3 => {
+                if let Some(budget) = integer("max_memory", value, Code::U7002, errors) {
+                    match u64::try_from(budget) {
+                        Ok(budget) if (1..=MAX_MEMORY_CAP).contains(&budget) => {
+                            manifest.max_memory = Some(budget);
+                        }
+                        _ => errors.push(ProjectError::new(
+                            Code::U7002,
+                            value.span(),
+                            budget_out_of_range(Format::Toml, &budget.to_string()),
+                        )),
+                    }
+                }
+            }
             "entry" => {
                 let Some(entry) = string("entry", value, Code::U7002, errors) else {
                     continue;

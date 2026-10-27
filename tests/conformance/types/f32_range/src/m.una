@@ -1,0 +1,23 @@
+-- test: an F32 literal that rounds to an infinity, or is not zero and rounds to zero, is U2031 at the binary32 bounds: `3.4028235677973366e38`, just below the midpoint 2^128 - 2^103, `1.0e-45` and a literal just above 2^-150 are accepted; `3.4028235677973367e38`, the exact midpoint, 2^-150 itself and `1.0e-46` are not; the same literals as F64 are accepted
+-- spec: spec/29 §18
+-- expect: error U2031 at src/m.una:15:26
+-- expect: error U2031 at src/m.una:17:25
+-- expect: error U2031 at src/m.una:19:30
+-- expect: error U2031 at src/m.una:21:26
+module m
+
+pub largest() -> F32 = 3.4028235677973366e38
+
+pub smallest() -> F32 = 1.0e-45
+
+pub above_half() -> F32 = 7.0064923216240854e-46
+
+pub too_large() -> F32 = 3.4028235677973367e38
+
+pub midpoint() -> F32 = 340282356779733661637539395458142568448.0
+
+pub half_smallest() -> F32 = 7.00649232162408535461864791644958065640130970938257885878534141944895541342930300743319094181060791015625e-46
+
+pub too_small() -> F32 = 1.0e-46
+
+pub wide() -> List[F64] = [3.4028235677973367e38, 1.0e-46]

@@ -1,0 +1,49 @@
+-- test: Decimal[s] takes units in edition 0.4 (ADR 0120 rule 63): a currency is a unit, `+`, `-` and comparisons in one unit across scales, an exchange rate of a quotient unit, `divide` dividing the units, `remainder` and the methods that keep the unit, `convert()` by an integer ratio, conversions keeping the unit, `measured()` and `magnitude()`, all accepted
+-- spec: spec/25 §9
+-- expect: ok
+module m
+
+pub measure Usd
+
+pub measure Eur
+
+pub measure Cent = Usd / 100
+
+pub total(a: Decimal[2] of Usd, b: Decimal[2] of Usd) -> Decimal[2] of Usd = a + b - 0.05
+
+pub converted(price: Decimal[2] of Usd,
+  rate: Decimal[6] of Eur / Usd
+) -> Decimal[2] of Eur = (price * rate).rescale(scale: 2, rounding: HalfEven)
+
+pub doubled(a: Decimal[2] of Usd) -> Decimal[4] of Usd = a * 2.0
+
+pub cents(d: Decimal[2] of Usd) -> Decimal[2] of Cent = d.convert()
+
+pub share(a: Decimal[2] of Usd, b: Decimal[2] of Usd) -> Decimal[4]
+  requires b != 0.00
+=
+  a.divide(by: b, scale: 4, rounding: HalfEven)
+
+pub per_unit(a: Decimal[2] of Usd, n: Decimal[0]) -> Decimal[2] of Usd
+  requires n != 0.0
+=
+  a.divide(by: n, scale: 2, rounding: TowardZero)
+
+pub left(a: Decimal[2] of Usd, b: Decimal[2] of Usd) -> Decimal[2] of Usd
+  requires b != 0.00
+=
+  a.remainder(by: b, scale: 0)
+
+pub methods(a: Decimal[2] of Usd) -> Decimal[4] of Usd = a.widen(scale: 4) + a.abs() - -a
+
+pub whole(a: Decimal[2] of Usd) -> Int of Usd = a.to_int(rounding: HalfEven)
+
+pub rough(a: Decimal[2] of Usd) -> F64 of Usd = a.to_f64()
+
+pub cheaper(a: Decimal[2] of Usd, b: Decimal[4] of Usd) -> Bool = a < b or a == 1.5 or 0.25 <= a
+
+pub tagged(x: Decimal[2]) -> Decimal[2] of Usd = x.measured()
+
+pub raw(a: Decimal[2] of Usd) -> Decimal[2] = a.magnitude()
+
+pub counted(n: Int of Usd) -> Decimal[0] of Usd = n.to_decimal()

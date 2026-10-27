@@ -108,7 +108,7 @@ fn the_clone_gate_checks_out_exactly_the_commit_and_records_it() {
     // A run of some gates is not a validation of the commit.
     assert!(
         record.contains(
-            "Verdict: INCOMPLETE (not run: build, deps, mac, linux, linux-arm64, release, reproducible, determinism, native, sanitize, site, formal, hunt, hunt-linux-arm64)"
+            "Verdict: INCOMPLETE (not run: build, deps, mac, linux, linux-arm64, release, reproducible, determinism, native, timing-channels, owner-replay, sanitize, site, formal, hunt, hunt-linux-arm64)"
         ),
         "{record}"
     );
@@ -130,6 +130,53 @@ fn a_failing_gate_does_not_stop_the_next_one() {
     let record = std::fs::read_to_string(out.join("record.md")).unwrap();
     assert!(record.contains("Verdict: FAIL (clone)"), "{record}");
     let _ = std::fs::remove_dir_all(&out);
+}
+
+#[test]
+fn the_summary_knows_exactly_the_gates_the_script_runs_in_its_order() {
+    // The summary refuses a gate row it does not know, so a gate added to
+    // scripts/release-gates.sh and not to scripts/release-summary.py would fail a release's
+    // summary only once that release's gates ran. Both lists are read as text; nothing runs.
+    let script = std::fs::read_to_string(root().join("scripts/release-gates.sh")).unwrap();
+    let all: Vec<&str> = script
+        .lines()
+        .find_map(|line| line.strip_prefix("ALL=("))
+        .and_then(|rest| rest.strip_suffix(')'))
+        .expect("an ALL=(...) line in scripts/release-gates.sh")
+        .split_whitespace()
+        .collect();
+    let summary = std::fs::read_to_string(root().join("scripts/release-summary.py")).unwrap();
+    let start = summary
+        .find("\nGATES = [")
+        .expect("a GATES list in scripts/release-summary.py");
+    let list = &summary[start..];
+    let list = &list[..list.find(']').expect("the end of the GATES list")];
+    let gates: Vec<&str> = list.split('"').skip(1).step_by(2).collect();
+    assert!(!all.is_empty());
+    assert_eq!(gates, all);
+}
+
+#[test]
+fn every_timing_oracle_is_ignored_with_the_reason_that_names_its_steps() {
+    // `crates/una-cli/tests/timing_channels.rs` holds only security timing oracles, which the
+    // ordinary test run must not run and the step and gate named in their reason must (#1145).
+    // Read as text: each `#[test]` is followed by exactly this attribute.
+    const IGNORE: &str = "#[ignore = \"security timing oracle: run by the timing-channels step of local-ci and the release gates\"]";
+    let source =
+        std::fs::read_to_string(root().join("crates/una-cli/tests/timing_channels.rs")).unwrap();
+    let lines: Vec<&str> = source.lines().map(str::trim).collect();
+    let tests: Vec<usize> = (0..lines.len())
+        .filter(|&at| lines[at] == "#[test]")
+        .collect();
+    assert!(!tests.is_empty(), "timing_channels.rs holds no test");
+    for at in tests {
+        assert_eq!(
+            lines.get(at + 1).copied(),
+            Some(IGNORE),
+            "the test at line {} of timing_channels.rs",
+            at + 1
+        );
+    }
 }
 
 #[test]

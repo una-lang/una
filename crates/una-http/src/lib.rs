@@ -3,9 +3,11 @@
 //! responses, and the strict framing of the server of `HttpServer` (`spec/31`, ADR 0123).
 
 pub mod client;
+pub mod limit;
 pub mod parse;
 pub mod reply;
 pub mod request;
+pub mod resolve;
 pub mod strict;
 
 /// URLs and grants, which `una-core` holds for every crate that reads grants.

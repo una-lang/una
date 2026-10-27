@@ -5,18 +5,24 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
-description = "The unsafe code that the Una runtime and interpreter share: signal handlers and attention words (ADR 0116 rule 18, ADR 0058 Appendix A)"
+description = "The unsafe code that the Una runtime and interpreter share: signal handlers, attention words, coroutines, a write-readiness check and the reactor's kqueue or epoll instance (ADR 0116 rule 18, ADR 0117)"
 
 [dependencies]
 libc.workspace = true
 
-# The workspace lints, except `unsafe_code`: ADR 0058 (Appendix A of ADR 0116) allows `unsafe`
-# in this crate, in the one module that calls the operating system, `signals.rs`, which opts in.
-# Every other module keeps the rule of compiler/conventions.md §1.
+# The workspace lints, except `unsafe_code`: ADR 0058 (amended by ADRs 0116 and 0117) allows
+# `unsafe` in this crate, in the modules that call the operating system or switch stacks:
+# `signals.rs`, `coroutine.rs` (Rust `naked_asm!` only, no assembly files, no build script, no C),
+# `io.rs` and `poll.rs` (kqueue or epoll, ADR 0117 slice S7), each of which opts in. Every other
+# module keeps compiler/conventions.md §1. The crate stays under 1,200 lines, one assembly
+# instruction per line (ADR 0116 amendment).
 [lints.rust]
 unsafe_code = "deny"
 unsafe_op_in_unsafe_fn = "deny"
 missing_docs = "deny"
+# `una_asan`: set only by scripts/sanitize.sh for its AddressSanitizer builds, where the
+# coroutine switch is announced through the sanitizer's fiber interface (#1145).
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(una_asan)"] }
 
 [lints.clippy]
 dbg_macro = "deny"

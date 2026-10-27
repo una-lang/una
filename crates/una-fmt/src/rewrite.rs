@@ -255,6 +255,7 @@ fn plain_line(block: &Block) -> Option<&Expr> {
     match block.stmts.as_slice() {
         [Stmt::Handled(handled)]
             if handled.with.is_empty()
+                && handled.within.is_none()
                 && handled.handlings.is_empty()
                 && !marked(&handled.expr) =>
         {
@@ -578,6 +579,13 @@ impl Collector<'_> {
                 }
             }
             Stmt::OnStop(on_stop) => self.block(&on_stop.block),
+            Stmt::Tasks(stmt) => {
+                if let Some(bound) = &stmt.bound {
+                    self.expr(bound);
+                }
+                self.block(&stmt.block);
+            }
+            Stmt::Start(stmt) => self.handled(&stmt.handled),
         }
     }
 
@@ -597,6 +605,9 @@ impl Collector<'_> {
             if let CapBindingValue::Handler(call) = &binding.value {
                 self.args(&call.args);
             }
+        }
+        if let Some(within) = &handled.within {
+            self.expr(within);
         }
         for handling in &handled.handlings {
             match &handling.kind {
@@ -634,6 +645,11 @@ impl Collector<'_> {
             BlockExpr::TogetherFor(together) => {
                 self.for_source(&together.source);
                 self.block(&together.block);
+            }
+            BlockExpr::FirstOf(first) => {
+                for branch in &first.body {
+                    self.stmt(branch);
+                }
             }
         }
     }
@@ -689,10 +705,15 @@ impl Collector<'_> {
                 self.expr(predicate);
                 self.variant(failure);
             }
-            ExprKind::Attempt(operand)
-            | ExprKind::Unary { operand, .. }
-            | ExprKind::Old(operand)
-            | ExprKind::Paren(operand) => self.expr(operand),
+            ExprKind::Attempt { operand, within } => {
+                self.expr(operand);
+                if let Some(within) = within {
+                    self.expr(within);
+                }
+            }
+            ExprKind::Unary { operand, .. } | ExprKind::Old(operand) | ExprKind::Paren(operand) => {
+                self.expr(operand)
+            }
             ExprKind::Fail(variant) => self.variant(variant),
             ExprKind::Binary { left, right, .. } => {
                 self.expr(left);
