@@ -232,6 +232,27 @@ fn a_variant_compared_in_a_clause_is_repaired_once_f1() {
 }
 
 #[test]
+fn then_at_the_end_of_a_line_before_an_else_if_chain_is_repaired_exactly() {
+    // #935: the exact edit of U0101 for `if c then` at the end of a line keeps the `else if`
+    // chain that follows, with its blocks, so the repaired program checks and runs.
+    let root = package(
+        "then-chain",
+        "0.2",
+        "module m\n\n--- The box a parcel needs.\nbox_for(grams: Int) -> Text\n=\n  if grams <= 1_000 then\n    \"small box\"\n  else if grams <= 5_000\n    let kilos = (grams + 999) / 1_000\n    \"medium box for {kilos} kg\"\n  else\n    \"large box\"\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  @console.print(\"{box_for(800)}; {box_for(3_200)}; {box_for(9_000)}\")\n",
+    );
+    assert_eq!(
+        apply_all(&root),
+        Vec::<String>::new(),
+        "{}",
+        repaired(&root)
+    );
+    assert!(repaired(&root).contains(
+        "  if grams <= 1_000\n    \"small box\"\n  else if grams <= 5_000\n    let kilos"
+    ));
+    assert_eq!(run(&root), "small box; medium box for 4 kg; large box\n");
+}
+
+#[test]
 fn a_misspelled_operation_is_one_code_with_one_edit_in_a_body_and_an_example() {
     // ADR 0082: an operation the capability does not declare is U1001 with the closest
     // operation as an edit, in a body and after `expect performed` alike, in both editions.
