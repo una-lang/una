@@ -13,10 +13,12 @@
 //! rules of `spec/12 §3` create. They stay pending until the verifier (M8) discharges them.
 
 mod authority;
+mod bit_set;
 mod boundary;
 mod call;
 mod check;
 mod collections;
+mod complex;
 mod conditions;
 mod crossing;
 mod dead;
@@ -39,7 +41,9 @@ mod label;
 mod locals;
 mod lock;
 mod map;
+mod measured;
 mod memory;
+mod priority;
 mod records;
 mod seq;
 mod set;
@@ -75,14 +79,19 @@ const PRELUDE_0_2: &str = include_str!("../std/prelude_0_2.una");
 /// ADR 0114 rule 3.9), appended after those of edition 0.2.
 const PRELUDE_0_3: &str = include_str!("../std/prelude_0_3.una");
 /// The declarations that edition 0.4 adds to the prelude: `Rounding` and the functions of
-/// `Decimal` (`spec/29 §16`), then the constructors of dense values and the functions their
-/// methods resolve to (`spec/29 §17`, ADR 0120), appended after those of edition 0.3.
+/// `Decimal` (`spec/29 §16`), the constructors of dense values and the functions their
+/// methods resolve to (`spec/29 §17`, ADR 0120), then the functions of `F32` and the finite
+/// kinds (ADR 0120 rules 5 and 11), appended after those of edition 0.3.
 const PRELUDE_0_4: &str = include_str!("../std/prelude_0_4.una");
 
 /// The declaration of `HttpError` in `PRELUDE_0_2`, and the one edition 0.4 replaces it with,
-/// which adds `Interrupted` last, so the earlier variants keep their indices (ADR 0116 rule 12).
-/// The text occurs exactly once in `PRELUDE_0_2` (a test checks it).
-const HTTP_ERROR_0_4: (&str, &str) = ("| Tls | Protocol\n", "| Tls | Protocol | Interrupted\n");
+/// which adds `Interrupted` (ADR 0116 rule 12) and then `RateLimited` (ADR 0117 rule 8) last,
+/// so the earlier variants keep their indices. The text occurs exactly once in `PRELUDE_0_2` (a
+/// test checks it).
+const HTTP_ERROR_0_4: (&str, &str) = (
+    "| Tls | Protocol\n",
+    "| Tls | Protocol | Interrupted | RateLimited\n",
+);
 
 /// The rewrites of the prelude in edition 0.2, each a text of `PRELUDE` and its replacement:
 /// `map`, `filter`, `first_where` and `fold` take effectful and failing functions (ADR 0062,
@@ -169,6 +178,11 @@ const COLLECTIONS: &str = include_str!("../std/collections.una");
 /// module that no scope holds: method syntax on a map reaches it, its name never does.
 const MAP_0_4: &str = include_str!("../std/map_0_4.una");
 
+/// `std.limit` (ADR 0117 rule 9, `spec/27 §10`) as Una source: the capability `Limit`, its
+/// failure kind and the handler `limiter`, which the runtime provides. The checker loads it only
+/// for a package of edition 0.4 that imports it.
+const LIMIT: &str = include_str!("../std/limit.una");
+
 /// The standard modules as the checker reads them in one edition: the prelude's source, with
 /// the declarations edition 0.2 rewrites and adds, `std.testing`'s source, and the keyword
 /// set the prelude is lexed with (`spec/14`). Read-only: the checker loads exactly this text
@@ -189,11 +203,13 @@ pub struct StandardSource {
 /// The built-in methods and properties that the checker resolves by the type of their
 /// receiver, as `(receiver, name)`: `.len` on `Text`, `List`, `Map` (`spec/14 §2`) and the
 /// collections, the methods of maps (`spec/21 §2`), of `Stack` and of `Queue` (`spec/28 §5`), of
-/// sets (`spec/28 §6`) and of hash maps and hash sets (`spec/28 §7`), the conversions (`spec/18
-/// §4`), and the wrapping, saturating and bit operations of the fixed-width integers (`spec/18
-/// §5`). The receivers are `"len"`, `"Map"`, `"Stack"`, `"Queue"`, `"Set"`, `"HashMap"`,
-/// `"HashSet"`, `"conversion"` and `"fixed"`. Read-only: it is built from the tables the
-/// checker resolves them with, for the standard library reference (#690).
+/// sets (`spec/28 §6`), of hash maps and hash sets (`spec/28 §7`), of priority queues
+/// (`spec/28 §8`) and of bit sets with their `.size` (`spec/28 §9`), the conversions
+/// (`spec/18 §4`), and the wrapping, saturating and bit operations of the fixed-width integers
+/// (`spec/18 §5`). The receivers are `"len"`, `"Map"`, `"Stack"`, `"Queue"`, `"Set"`,
+/// `"HashMap"`, `"HashSet"`, `"PriorityQueue"`, `"BitSet"`, `"conversion"` and `"fixed"`.
+/// Read-only: it is built from the tables the checker resolves them with, for the standard
+/// library reference (#690).
 pub fn builtin_methods() -> Vec<(&'static str, String)> {
     let mut methods = vec![("len", "len".to_owned())];
     methods.extend(
@@ -232,6 +248,19 @@ pub fn builtin_methods() -> Vec<(&'static str, String)> {
         hash::HASH_SET_METHODS
             .iter()
             .map(|(name, ..)| ("HashSet", (*name).to_owned())),
+    );
+    // Edition 0.4: the methods of `PriorityQueue` (ADR 0119 rule 13).
+    methods.extend(
+        priority::PRIORITY_METHODS
+            .iter()
+            .map(|(name, ..)| ("PriorityQueue", (*name).to_owned())),
+    );
+    // Edition 0.4: `.size` and the methods of `BitSet` (ADR 0119 rule 14).
+    methods.push(("BitSet", "size".to_owned()));
+    methods.extend(
+        bit_set::BIT_SET_METHODS
+            .iter()
+            .map(|(name, ..)| ("BitSet", (*name).to_owned())),
     );
     methods.extend(una_core::IntType::ALL.iter().map(|t| {
         (
@@ -368,6 +397,10 @@ pub struct TypeCheck {
     /// The sites whose deadlines turn timing into values, in source order, with their timing
     /// labels: each `for ever within` (ADR 0116 rule 21), for the report's `timing` list.
     pub timing: Vec<TimingSite>,
+    /// `L_lim` (ADR 0117 IF4): the timing label of the package's `Http` requests, which a grant
+    /// with limits needs at most `internal`; `public` without such a request. `una build`
+    /// embeds it, and `una run` checks a limited `--grant` against it (`spec/27 §9` rule 5).
+    pub limit_label: una_core::Label,
 }
 
 /// A site with a deadline and its timing label (ADR 0116 IF5, rule 21).
@@ -396,6 +429,7 @@ impl Default for TypeCheck {
             program: una_core::Program::default(),
             index: Index::default(),
             timing: Vec::new(),
+            limit_label: una_core::Label::public(),
         }
     }
 }
@@ -449,25 +483,31 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
         .map(|category| category.value.clone())
         .collect();
     // ADR 0119 rule 0: `std.collections` is in scope only for a package of edition 0.4 that
-    // imports it, so no other package's checks or Core IR change.
-    let imports_collections = package.settings.edition >= Edition::V0_4
-        && package.modules.iter().any(|module| {
-            module.tree.imports.iter().any(|import| {
-                let path: Vec<&str> = import
-                    .module
-                    .segments
-                    .iter()
-                    .map(|segment| package.interner.resolve(segment.name))
-                    .collect();
-                path.join(".") == una_core::COLLECTIONS_MODULE
+    // imports it, so no other package's checks or Core IR change; `std.limit` the same (ADR
+    // 0117 rule 9).
+    let imports = |standard: &str| {
+        package.settings.edition >= Edition::V0_4
+            && package.modules.iter().any(|module| {
+                module.tree.imports.iter().any(|import| {
+                    let path: Vec<&str> = import
+                        .module
+                        .segments
+                        .iter()
+                        .map(|segment| package.interner.resolve(segment.name))
+                        .collect();
+                    path.join(".") == standard
+                })
             })
-        });
+    };
+    let imports_collections = imports(una_core::COLLECTIONS_MODULE);
+    let imports_limit = imports(una_core::LIMIT_MODULE);
     let mut env = Env::build(
         sources,
         standard.source(&standard.prelude),
         standard.after_prelude(),
         (package.settings.edition >= Edition::V0_4).then(|| standard.source(&standard.map_0_4)),
         imports_collections.then(|| standard.source(&standard.collections)),
+        imports_limit.then(|| standard.source(&standard.limit)),
         categories,
         package.settings.edition,
         package.settings.profile,
@@ -649,11 +689,13 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
                     );
                 }
             }
-            let labels = if withins {
+            let (labels, residue) = if withins {
                 authority::within_labels(&env, &probe)
             } else {
-                std::collections::BTreeMap::new()
+                (std::collections::BTreeMap::new(), timing::Residue::none())
             };
+            // ADR 0116 P9: what the messages of pass 2 name when `L_res` raises a label.
+            env.residue = residue;
             let state = if env.files_written {
                 env.file_state.join(&file_state(&env).0)
             } else {
@@ -682,7 +724,7 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
                     report.error(
                         Code::U8001,
                         site.span,
-                        "internal error: the timing labels of `within` and the file-state label did not reach a fixpoint (ADR 0117 IF2, ADR 0085)".to_owned(),
+                        "internal error: the timing labels of `within` and `first of` and the file-state label did not reach a fixpoint (ADR 0117 IF2, IF3, ADR 0085)".to_owned(),
                     );
                 }
                 break;
@@ -748,9 +790,19 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
     }
     authority::grants(&env, package.settings, package.run, &mut report);
     authority::drive_failures(&env, package.settings, &mut report);
-    authority::drive_timing(&env, &findings, package.settings, &mut report);
-    let mut timing_sites = authority::deadline_timing(&env, &findings, &mut report);
-    timing_sites.extend(authority::within_timing(&env, &findings, &mut report));
+    // `L_res` of the checked package, computed once for every site that joins it (ADR 0116 P9).
+    let residue = timing::residue_of(&env, &findings);
+    authority::drive_timing(&env, &findings, package.settings, &residue, &mut report);
+    let limit_label =
+        authority::limit_timing(&env, &findings, package.settings, &residue, &mut report);
+    authority::limiter_timing(&env, &findings, &residue, &mut report);
+    let mut timing_sites = authority::deadline_timing(&env, &findings, &residue, &mut report);
+    timing_sites.extend(authority::within_timing(
+        &env,
+        &findings,
+        &residue,
+        &mut report,
+    ));
     timing_sites.sort_by_key(|(_, _, span, _)| (span.file, span.start, span.end));
     authority::budget(&env, &findings, package.settings, &mut report);
     // Edition 0.3 (ADR 0100): last, once every other error of the package is known.
@@ -839,6 +891,7 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
         Vec::new()
     };
     let check = TypeCheck {
+        limit_label,
         timing: timing_sites
             .into_iter()
             .map(|(construct, function, span, label)| TimingSite {
@@ -1005,6 +1058,24 @@ pub(crate) struct Findings {
     /// The `within`s checked (ADR 0117 rule 5, IF2): each one's deadline, span, function and
     /// the seed of its timing label.
     pub(crate) withins: Vec<within::WithinSite>,
+    /// The operations of the host's `Http` checked, for `L_lim` (ADR 0117 IF4).
+    pub(crate) http_sites: Vec<timing::HttpSite>,
+    /// The `tasks` statements checked, each with the seed of `κ` of the whole statement, for
+    /// the residue label `L_res` (ADR 0116 P9).
+    pub(crate) tasks_sites: Vec<timing::TasksSite>,
+    /// The installations of `limiter` of `std.limit` by `with` or `given` (ADR 0117 rule 9,
+    /// IF5): each one's binding, its function and the seed of the timing label of the statement
+    /// it scopes over.
+    pub(crate) limiter_sites: Vec<LimiterSite>,
+    /// The calls of the call graph of ADR 0116 P1: from a function's body, a handler's
+    /// operations or a lambda (`Λ`), to a function called or named.
+    pub(crate) calls: std::collections::BTreeSet<(timing::Caller, usize)>,
+    /// The nodes of that graph that call a function value, and so reach `Λ`.
+    pub(crate) value_calls: std::collections::BTreeSet<timing::Caller>,
+    /// The handlers each node of that graph installs.
+    pub(crate) caller_installs: std::collections::BTreeSet<(timing::Caller, usize)>,
+    /// The operations each node of that graph performs, those of lambdas included (#1148).
+    pub(crate) caller_ops: std::collections::BTreeSet<(timing::Caller, ty::CapId, String)>,
     /// Names bound by selfified `let`s.
     pub(crate) selfified: Vec<Span>,
     /// The conditions of `for until` loops that are in the refinement language, which the
@@ -1083,6 +1154,8 @@ struct Standard {
     collections: File,
     /// The hidden module of the built-in `update` of maps in edition 0.4 (ADR 0119 rule 18).
     map_0_4: File,
+    /// `std.limit` (ADR 0117 rule 9), loaded when a package of edition 0.4 imports it.
+    limit: File,
 }
 
 impl Standard {
@@ -1102,6 +1175,7 @@ impl Standard {
         let testing = sources.add("std/testing.una", testing.as_bytes());
         let collections = sources.add("std/collections.una", COLLECTIONS.as_bytes());
         let map_0_4 = sources.add("std/map_0_4.una", MAP_0_4.as_bytes());
+        let limit = sources.add("std/limit.una", LIMIT.as_bytes());
         let prelude = parse_standard(&sources, prelude, &mut interner, keywords);
         let testing = parse_standard(&sources, testing, &mut interner, keywords);
         // The modules of edition 0.4 declare measures, a construct of edition 0.3.
@@ -1116,6 +1190,8 @@ impl Standard {
         // `empty_set[T: Ord]` writes a constraint, which edition 0.2's syntax has.
         let collections = parse_standard(&sources, collections, &mut interner, KeywordSet::V0_2);
         let map_0_4 = parse_standard(&sources, map_0_4, &mut interner, KeywordSet::V0_2);
+        // `std.limit` writes a measure, `Int of Millisecond`, and a handler of edition 0.4.
+        let limit = parse_standard(&sources, limit, &mut interner, KeywordSet::V0_4);
         Standard {
             sources,
             interner,
@@ -1124,6 +1200,7 @@ impl Standard {
             later,
             collections,
             map_0_4,
+            limit,
         }
     }
 
@@ -1529,8 +1606,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn interrupted_is_a_variant_of_http_error_in_edition_0_4_only() {
-        // ADR 0116 rule 12: added last, so the eight variants keep their indices.
+    fn interrupted_and_rate_limited_are_variants_of_http_error_in_edition_0_4_only() {
+        // ADR 0116 rule 12 and ADR 0117 rule 8: added last, so the eight variants keep their
+        // indices.
         assert_eq!(PRELUDE_0_2.matches(HTTP_ERROR_0_4.0).count(), 1);
         let line = |edition| {
             standard_source(edition)
@@ -1542,11 +1620,12 @@ mod tests {
         assert_eq!(
             line(Edition::V0_4).as_deref(),
             Some(
-                "pub kind HttpError = Denied | BadUrl | BadRequest | Unreachable | TimedOut | TooLarge | Tls | Protocol | Interrupted"
+                "pub kind HttpError = Denied | BadUrl | BadRequest | Unreachable | TimedOut | TooLarge | Tls | Protocol | Interrupted | RateLimited"
             )
         );
         for edition in [Edition::V0_2, Edition::V0_3] {
             assert!(line(edition).is_some_and(|line| !line.contains("Interrupted")));
+            assert!(line(edition).is_some_and(|line| !line.contains("RateLimited")));
         }
     }
 
@@ -1577,7 +1656,8 @@ mod tests {
         for edition in &Edition::ALL {
             let source = standard_source(*edition);
             let (prelude, keywords) = if *edition >= Edition::V0_4 {
-                // `HttpError` gains `Interrupted` (ADR 0116 rule 12).
+                // `HttpError` gains `Interrupted` and `RateLimited` (ADR 0116 rule 12, ADR 0117
+                // rule 8).
                 let http = PRELUDE_0_2.replace(HTTP_ERROR_0_4.0, HTTP_ERROR_0_4.1);
                 (
                     format!("{}\n{http}{PRELUDE_0_3}{PRELUDE_0_4}", of_prelude()),
@@ -1729,7 +1809,7 @@ mod tests {
         for kind in una_core::PRELUDE_ENGINE_KINDS {
             assert!(
                 kinds.iter().any(|k| k == kind)
-                    || ["List", "Map", "Array", "Matrix"].contains(&kind),
+                    || ["List", "Map", "Array", "Matrix", "Tensor", "Lu"].contains(&kind),
                 "`{kind}` is not a kind of the prelude"
             );
         }
@@ -1806,7 +1886,7 @@ mod tests {
         }
         let mut expected: Vec<String> = una_core::PRELUDE_ENGINE_KINDS
             .iter()
-            .filter(|kind| !["List", "Map", "Array", "Matrix"].contains(kind))
+            .filter(|kind| !["List", "Map", "Array", "Matrix", "Tensor", "Lu"].contains(kind))
             .map(|kind| (*kind).to_owned())
             .collect();
         expected.sort();
@@ -1838,6 +1918,7 @@ mod tests {
                 .collect(),
             (edition >= Edition::V0_4).then(|| source(&standard.map_0_4)),
             (edition >= Edition::V0_4).then(|| source(&standard.collections)),
+            (edition >= Edition::V0_4).then(|| source(&standard.limit)),
             Vec::new(),
             edition,
             una_project::Profile::App,
@@ -2210,5 +2291,19 @@ pub(crate) struct DeadlineLoop {
     /// The function whose body holds it.
     pub(crate) function: Option<usize>,
     /// The seed of the timing label of its body, the deadline's label included.
+    pub(crate) seed: timing::TimingSeed,
+}
+
+/// An installation of `limiter` of `std.limit` (ADR 0117 rule 9, IF5): whether a token is left
+/// depends on the timing of the code that shares the instance, so `τ` of the statement the
+/// `with` scopes over, or of the example's `do` line for a `given` line, must flow to
+/// `internal`, the label `Limited` carries.
+#[derive(Clone, Debug)]
+pub(crate) struct LimiterSite {
+    /// The `with` binding, or the `given` line.
+    pub(crate) span: Span,
+    /// The function whose body holds it.
+    pub(crate) function: Option<usize>,
+    /// The seed of the timing label of the statement, the handlers it installs included.
     pub(crate) seed: timing::TimingSeed,
 }

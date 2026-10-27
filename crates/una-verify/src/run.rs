@@ -486,6 +486,12 @@ const I64_END: &str = "9223372036854775808";
 /// The reason of a refutation through the conversion of an `Int` beyond 64 bits to `F64`.
 pub(crate) const TO_F64_UNCHECKED: &str = "the refutation depends on the conversion of an `Int` outside -2^63..2^63 to `F64`, which the encoding leaves uninterpreted; give the integer a range refinement or a fixed-width type";
 
+/// Whether `name` is an uninterpreted conversion of an `Int` beyond 64 bits: `i!to_f64!Int`,
+/// or `i!to_f32!Int` (ADR 0120 V1).
+fn is_beyond_conversion(name: &str) -> bool {
+    name == "i!to_f64!Int" || name == "i!to_f32!Int"
+}
+
 /// The arguments of the uninterpreted conversion `i!to_f64!Int` in `query` and in `entry`,
 /// each once. A defined function is a macro the solver expands at each application, so a
 /// conversion in a definition is instantiated with the arguments of each application, through
@@ -510,7 +516,7 @@ fn collect_conversions(terms: &[F], query: &crate::smt::Query, depth: usize, out
         let F::App { fun, args } = term else {
             continue;
         };
-        if fun.name == "i!to_f64!Int" {
+        if is_beyond_conversion(&fun.name) {
             for argument in args {
                 if !out.contains(argument) {
                     out.push(argument.clone());
@@ -610,16 +616,21 @@ fn weight_of_terms<'q>(
                 "fp.mul" | "fp.div" | "fp.sqrt" => 4,
                 "fp.add" | "fp.sub" => 1,
                 op if op.contains("to_fp") => {
-                    // The integer of a conversion through `int2bv`, once per integer.
-                    let integer = args.iter().find_map(|a| match a {
-                        F::Op { op, args }
-                            if op.contains("int2bv") && !is_literal_conversion(a) =>
-                        {
-                            args.first().map(F::text)
+                    // The value converted: an integer through `int2bv`, its two forms once per
+                    // integer, or a value of the other float format (ADR 0120 V1); a literal
+                    // weighs nothing.
+                    let value = args.iter().skip(1).find_map(|a| match a {
+                        F::Op { op, args } if op.contains("int2bv") => {
+                            if is_literal_conversion(a) {
+                                None
+                            } else {
+                                args.first().map(F::text)
+                            }
                         }
-                        _ => None,
+                        F::Float(_) | F::Float32(_) | F::Int(_) => None,
+                        other => Some(other.text()),
                     });
-                    match integer {
+                    match value {
                         Some(text) => {
                             if converted.insert(text) {
                                 4
@@ -655,9 +666,14 @@ fn weight_of_terms<'q>(
     weight
 }
 
-/// Whether `f`, the argument of a conversion, is `((_ int2bv w) n)` of an integer literal.
+/// Whether `f`, the argument of a conversion after its rounding mode, is a literal: a float
+/// literal, or `((_ int2bv w) n)` of an integer literal.
 fn is_literal_conversion(f: &F) -> bool {
-    matches!(f, F::Op { args, .. } if matches!(args.as_slice(), [F::Int(_)]))
+    match f {
+        F::Float(_) | F::Float32(_) | F::Int(_) => true,
+        F::Op { args, .. } => matches!(args.as_slice(), [F::Int(_)]),
+        _ => false,
+    }
 }
 
 /// The answer of a float query that weighs more than the bound, which is never sent.
@@ -1124,10 +1140,8 @@ fn shown_bindings(shown: &[Shown], requested: &[F], answer: &Answer) -> Vec<Bind
                 match texts.iter().find(|(v, _)| *v == raw) {
                     Some((_, text)) => serde_json::Value::String(una_core::quote(text)),
                     // An `F64` shows its rendering, as a JSON string (ADR 0114 rule 8.6).
-                    None => match float_value(&raw) {
-                        Some(bits) => {
-                            serde_json::Value::String(una_core::float::render(f64::from_bits(bits)))
-                        }
+                    None => match float_rendering(&raw) {
+                        Some(text) => serde_json::Value::String(text),
                         None => serde_json::Value::String(identity(kind, &raw)),
                     },
                 }
@@ -1152,8 +1166,8 @@ fn number_or_bool(text: &str) -> serde_json::Value {
     }
     // An `F64` shows its rendering, as a JSON string: JSON has no NaN, and a JSON number
     // would be read back rounded (ADR 0114 rule 8.6).
-    if let Some(bits) = float_value(text) {
-        return serde_json::Value::String(una_core::float::render(f64::from_bits(bits)));
+    if let Some(rendered) = float_rendering(text) {
+        return serde_json::Value::String(rendered);
     }
     let digits = match text.strip_prefix("(- ").and_then(|t| t.strip_suffix(')')) {
         Some(positive) => format!("-{}", positive.trim()),
@@ -1163,6 +1177,52 @@ fn number_or_bool(text: &str) -> serde_json::Value {
         Ok(n) => serde_json::Value::from(n),
         Err(_) => serde_json::Value::String(digits),
     }
+}
+
+/// The rendering of a float value as the solver prints it, of `Float64` (`spec/29 §7`) or of
+/// `Float32` (ADR 0120 rule 5), by its width.
+pub(crate) fn float_rendering(text: &str) -> Option<String> {
+    if let Some(bits) = float_value(text) {
+        return Some(una_core::float::render(f64::from_bits(bits)));
+    }
+    float32_value(text).map(|bits| una_core::float32::render(f32::from_bits(bits)))
+}
+
+/// The bits of a value of `Float32` as the solver prints it, as [`float_value`] reads one of
+/// `Float64`.
+pub(crate) fn float32_value(text: &str) -> Option<u32> {
+    let text = text.trim();
+    match text {
+        "(_ +zero 8 24)" => return Some(0),
+        "(_ -zero 8 24)" => return Some(1 << 31),
+        "(_ +oo 8 24)" => return Some(f32::INFINITY.to_bits()),
+        "(_ -oo 8 24)" => return Some(f32::NEG_INFINITY.to_bits()),
+        "(_ NaN 8 24)" => return Some(una_core::float32::CANONICAL_NAN),
+        _ => {}
+    }
+    let (bits, width) = fp_parts(text)?;
+    (width == 32)
+        .then(|| u32::try_from(bits).ok())
+        .flatten()
+        .map(|bits| una_core::float32::to_bits(f32::from_bits(bits)))
+}
+
+/// The concatenated bits and their width of `(fp #b.. #b.. #x..)`.
+fn fp_parts(text: &str) -> Option<(u64, usize)> {
+    let inner = text.strip_prefix("(fp ")?.strip_suffix(')')?;
+    let mut bits: u64 = 0;
+    let mut width = 0;
+    for part in inner.split_whitespace() {
+        let (value, size) = if let Some(binary) = part.strip_prefix("#b") {
+            (u64::from_str_radix(binary, 2).ok()?, binary.len())
+        } else {
+            let hex = part.strip_prefix("#x")?;
+            (u64::from_str_radix(hex, 16).ok()?, hex.len() * 4)
+        };
+        bits = bits.checked_shl(u32::try_from(size).ok()?).unwrap_or(0) | value;
+        width += size;
+    }
+    Some((bits, width))
 }
 
 /// The bits of a value of `Float64` as the solver prints it: `(fp #b0 #b... #x...)`, with
@@ -1178,19 +1238,7 @@ pub(crate) fn float_value(text: &str) -> Option<u64> {
         "(_ NaN 11 53)" => return Some(una_core::float::CANONICAL_NAN),
         _ => {}
     }
-    let inner = text.strip_prefix("(fp ")?.strip_suffix(')')?;
-    let mut bits: u64 = 0;
-    let mut width = 0;
-    for part in inner.split_whitespace() {
-        let (value, size) = if let Some(binary) = part.strip_prefix("#b") {
-            (u64::from_str_radix(binary, 2).ok()?, binary.len())
-        } else {
-            let hex = part.strip_prefix("#x")?;
-            (u64::from_str_radix(hex, 16).ok()?, hex.len() * 4)
-        };
-        bits = bits.checked_shl(u32::try_from(size).ok()?).unwrap_or(0) | value;
-        width += size;
-    }
+    let (bits, width) = fp_parts(text)?;
     (width == 64).then(|| una_core::float::to_bits(f64::from_bits(bits)))
 }
 

@@ -417,7 +417,11 @@ fn the_edited_manifests_force_the_profile_and_add_the_budget() {
         "ita case\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry main\n  max_memory 64\n"
     );
     assert_eq!(
-        edited("ita case\n  edition 0.4\n  profile kernel\n", Format::Ita, true),
+        edited(
+            "ita case\n  edition 0.4\n  profile kernel\n",
+            Format::Ita,
+            true
+        ),
         None
     );
 }

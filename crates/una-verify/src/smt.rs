@@ -14,24 +14,23 @@ pub(crate) type Sort = String;
 
 /// The sorts that SMT-LIB defines, which queries never declare.
 fn builtin(sort: &str) -> bool {
-    matches!(sort, "Int" | "Bool" | FLOAT64)
+    matches!(sort, "Int" | "Bool" | FLOAT64 | FLOAT32)
 }
 
 /// The sort of `F64`: `(_ FloatingPoint 11 53)` of the FloatingPoint theory (`spec/29 §8`).
 pub(crate) const FLOAT64: &str = "Float64";
 
-/// The operators of the FloatingPoint theory whose result is a `Float64`.
-const FLOAT_OPS: [&str; 9] = [
-    "fp.add",
-    "fp.sub",
-    "fp.mul",
-    "fp.div",
-    "fp.neg",
-    "fp.abs",
-    "fp.sqrt",
-    "(_ to_fp 11 53)",
-    "(_ to_fp_unsigned 11 53)",
-];
+/// The sort of `F32`: `(_ FloatingPoint 8 24)` (ADR 0120 V1).
+pub(crate) const FLOAT32: &str = "Float32";
+
+/// Whether `sort` is a float sort, of `F64` or `F32`.
+pub(crate) fn is_float_sort(sort: &str) -> bool {
+    sort == FLOAT64 || sort == FLOAT32
+}
+
+/// The rounded operators of the FloatingPoint theory, whose result has the sort of their
+/// operand after the rounding mode.
+const ROUNDED_OPS: [&str; 5] = ["fp.add", "fp.sub", "fp.mul", "fp.div", "fp.sqrt"];
 
 /// The sort of `Text`.
 pub(crate) const TEXT: &str = "i!Text";
@@ -50,6 +49,10 @@ pub(crate) const MAP: &str = "i!Map_";
 pub(crate) const ARRAY: &str = "i!Array_";
 /// The prefix of the sorts of matrices, `i!Matrix_<T>` (`spec/29 §17`, ADR 0120 V4).
 pub(crate) const MATRIX: &str = "i!Matrix_";
+/// The prefix of the sorts of tensors, `i!Tensor_<T>` (`spec/29 §17`, ADR 0120 V4).
+pub(crate) const TENSOR: &str = "i!Tensor_";
+/// The prefix of the sorts of LU factorizations, `i!Lu_<T>` (`spec/29 §17`, ADR 0120 V4).
+pub(crate) const LU: &str = "i!Lu_";
 
 /// A term or formula of the solver's logic.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -58,6 +61,8 @@ pub(crate) enum F {
     Int(String),
     /// An `F64` literal, as its bits: `(fp #b<sign> #b<exponent> #b<significand>)`.
     Float(u64),
+    /// An `F32` literal, as its bits (ADR 0120 V1).
+    Float32(u32),
     /// `true` or `false`.
     Bool(bool),
     /// A declared constant.
@@ -141,8 +146,9 @@ pub(crate) enum FunRole {
     },
     /// `.len`: at least 0.
     Len,
-    /// A shape function of a dense value beside `len`, `rows` or `columns`: at least 0
-    /// (ADR 0120 V4).
+    /// A shape function of a dense value beside `len`: `rows`, `columns`, `rank`, `count`,
+    /// `size` and `dim`, at least 0, and a rank from 1 to 8 (ADR 0120 V4), or the `size` of a
+    /// bit set (ADR 0119 V1): at least 0.
     Shape,
     /// The element of a dense value at its indices, `i!get!<Sort>`, uninterpreted (ADR 0120
     /// V4).
@@ -157,10 +163,62 @@ pub(crate) enum FunRole {
     Has,
     /// `m.get(key: k)` of a map, uninterpreted.
     Get,
+    /// A read of a collection of ADR 0119 that gives an `Option` of an item, `i!<read>!<Sort>`,
+    /// uninterpreted (V1): `peek` and `peekback` of a `Stack`, a `Queue` or a
+    /// `PriorityQueue`, `first` and `last` of a `Set` or a `BitSet`. It is `None` exactly when
+    /// the collection is empty (V2).
+    Peek,
+    /// Another function of a collection of ADR 0119 (V1), uninterpreted and without facts of
+    /// its own: `below` of a `Stack`, the stack under its top, and `same` of `same_entries`
+    /// and `same_items`. It shows as a call.
+    Collection,
+    /// The record that the collection `s'` is the collection `s` updated at the key `x` only,
+    /// `i!frame!<Sort>(s, s', x)` (ADR 0119 V3), asserted where the update happens. For each
+    /// term `y` of the key's sort in a query, it gives `y != x => has(s', y) = has(s, y)`, and
+    /// for a map, whose `get` has the option sort `get`, the same of `get`. Every run makes it
+    /// true, so each fact is an instance of a valid law, and no quantifier enters the query.
+    Frame {
+        /// The sort of `get`'s result, for a map; `None` for a set.
+        get: Option<Sort>,
+    },
+    /// The record that a set is the union, intersection or difference of two others, or that
+    /// one set is a subset of another (ADR 0119 V4), over the items of the sort `item`. Each
+    /// term `y` of that sort in a query gives its membership law at `y`.
+    Combine {
+        /// Which relation.
+        op: Combine,
+        /// The sort of the items.
+        item: Sort,
+    },
     /// A predicate; a reflect one has a definition.
     Predicate,
     /// Any other function, without facts: nonlinear arithmetic, text ordering.
     Other,
+}
+
+/// A relation between sets of ADR 0119 V4, the role of `i!<op>!<Sort>`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Combine {
+    /// `union(s, t, r)`: `has(r, y) = has(s, y) or has(t, y)`.
+    Union,
+    /// `intersection(s, t, r)`: `has(r, y) = has(s, y) and has(t, y)`.
+    Intersection,
+    /// `difference(s, t, r)`: `has(r, y) = has(s, y) and not has(t, y)`.
+    Difference,
+    /// `subset(s, t)`: `has(s, y) => has(t, y)`.
+    Subset,
+}
+
+impl Combine {
+    /// The relation's name in its symbol.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Combine::Union => "union",
+            Combine::Intersection => "intersection",
+            Combine::Difference => "difference",
+            Combine::Subset => "subset",
+        }
+    }
 }
 
 impl F {
@@ -169,13 +227,19 @@ impl F {
         match self {
             F::Int(_) => "Int".to_owned(),
             F::Float(_) => FLOAT64.to_owned(),
+            F::Float32(_) => FLOAT32.to_owned(),
             F::Bool(_) => "Bool".to_owned(),
             F::Const(c) => c.sort.clone(),
             F::Local { sort, .. } => sort.clone(),
             F::App { fun, .. } => fun.result.clone(),
             F::Op { op, args } => match *op {
                 "+" | "-" | "*" | "div" | "mod" => "Int".to_owned(),
-                op if FLOAT_OPS.contains(&op) => FLOAT64.to_owned(),
+                op if ROUNDED_OPS.contains(&op) => {
+                    args.get(1).map_or_else(|| FLOAT64.to_owned(), F::sort)
+                }
+                "fp.neg" | "fp.abs" => args.first().map_or_else(|| FLOAT64.to_owned(), F::sort),
+                "(_ to_fp 11 53)" | "(_ to_fp_unsigned 11 53)" => FLOAT64.to_owned(),
+                "(_ to_fp 8 24)" | "(_ to_fp_unsigned 8 24)" => FLOAT32.to_owned(),
                 // The rounding mode and the bit-vectors of a conversion have sorts of their
                 // own, so nothing reads them as Booleans (the abstraction of `spec/29 §8`).
                 "RNE" => "RoundingMode".to_owned(),
@@ -236,7 +300,7 @@ impl F {
                 out.push(self);
             }
             F::Const(_) => out.push(self),
-            F::Int(_) | F::Float(_) | F::Bool(_) | F::Local { .. } => {}
+            F::Int(_) | F::Float(_) | F::Float32(_) | F::Bool(_) | F::Local { .. } => {}
         }
     }
 
@@ -256,6 +320,15 @@ impl F {
                     bits >> 63,
                     (bits >> 52) & 0x7FF,
                     bits & ((1 << 52) - 1)
+                );
+            }
+            F::Float32(bits) => {
+                let _ = write!(
+                    out,
+                    "(fp #b{:01b} #b{:08b} #b{:023b})",
+                    bits >> 31,
+                    (bits >> 23) & 0xFF,
+                    bits & ((1 << 23) - 1)
                 );
             }
             F::Bool(value) => out.push_str(if *value { "true" } else { "false" }),
@@ -292,13 +365,13 @@ impl F {
     /// application of the sort `Float64`, or an operator of the FloatingPoint theory.
     pub(crate) fn mentions_float(&self) -> bool {
         match self {
-            F::Float(_) => true,
+            F::Float(_) | F::Float32(_) => true,
             F::Int(_) | F::Bool(_) => false,
-            F::Const(c) => c.sort == FLOAT64,
-            F::Local { sort, .. } => sort == FLOAT64,
+            F::Const(c) => is_float_sort(&c.sort),
+            F::Local { sort, .. } => is_float_sort(sort),
             F::App { fun, args } => {
-                fun.result == FLOAT64
-                    || fun.args.iter().any(|sort| sort == FLOAT64)
+                is_float_sort(&fun.result)
+                    || fun.args.iter().any(|sort| is_float_sort(sort))
                     || args.iter().any(F::mentions_float)
             }
             F::Op { op, args } => {
@@ -352,7 +425,7 @@ impl Query {
             || self
                 .definitions
                 .values()
-                .any(|d| d.body.mentions_float() || d.params.iter().any(|(_, s)| s == FLOAT64))
+                .any(|d| d.body.mentions_float() || d.params.iter().any(|(_, s)| is_float_sort(s)))
     }
 
     /// The declarations and assertions as SMT-LIB text: sorts, constants and functions sorted

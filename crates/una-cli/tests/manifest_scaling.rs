@@ -17,9 +17,8 @@ use una_project::{Profile, parse_manifest};
 
 /// `ita.una` of a `systems` package with a run entry, its budget, and `n` needs.
 fn ita_text(n: usize) -> String {
-    let mut text = String::from(
-        "ita scaling\n  version 0.1.0\n  edition 0.4\n  profile systems\n\nneeds\n",
-    );
+    let mut text =
+        String::from("ita scaling\n  version 0.1.0\n  edition 0.4\n  profile systems\n\nneeds\n");
     for i in 0..n {
         text.push_str(&format!("  dep{i} 1.0\n"));
     }

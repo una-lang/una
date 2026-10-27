@@ -1,0 +1,37 @@
+-- test: a grant of `run grants` with limits needs `L_lim`, the timing label of every `Http` request, at most `internal`, since `RateLimited` reveals when each request was made (ADR 0117 IF4): a request in a body whose time depends on a `secret` parameter, or on a handler installed with a `secret` argument, is U4001 at the request; one on `internal` data is accepted
+-- spec: spec/27 §9
+-- expect: error U4001 at src/fetch.una:27:25
+-- expect: error U4001 at src/fetch.una:36:25
+module fetch
+
+capability Store
+  op get(key: Text) -> Int
+
+handler hidden(seed: secret Int) for Store
+  op get(key) = 0
+
+--- A request on `internal` data only.
+pub openly(url: Text) -> internal Bool
+  uses @http: Http[get]
+=
+  let outcome = attempt @http.get(url, headers: [], key_name: None)
+  when outcome
+    is Ok(response) -> true
+    is Err(failure) -> false
+
+--- A request after work on a `secret` parameter: when it is made depends on the secret.
+pub keyed(url: Text, key: secret Int) -> Unit
+  uses @http: Http[get]
+=
+  let doubled = key * 2
+  let outcome = attempt @http.get(url, headers: [], key_name: None)
+  unit
+
+--- A request after an operation that a handler installed with a `secret` argument can serve.
+pub stored(url: Text) -> Unit
+  uses @store: Store[get]
+  uses @http: Http[get]
+=
+  let value = @store.get("k")
+  let outcome = attempt @http.get(url, headers: [], key_name: None)
+  unit

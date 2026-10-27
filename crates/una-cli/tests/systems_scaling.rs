@@ -37,7 +37,8 @@ fn package(dir: &Path, source: &str) {
 /// A module whose `n` functions each add two bounded `Int` values: one `overflow` obligation
 /// each, proven from the refinement of the operands.
 fn additions(n: usize) -> String {
-    let mut out = String::from("module main\n\npub kind Small = Int where it >= 0 and it <= 1000\n");
+    let mut out =
+        String::from("module main\n\npub kind Small = Int where it >= 0 and it <= 1000\n");
     for i in 0..n {
         out.push_str(&format!("\npub f{i}(a: Small, b: Small) -> Int = a + b\n"));
     }

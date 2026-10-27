@@ -1,0 +1,32 @@
+-- test: factorizations run by the chains of ADR 0120 rules 48 to 50: LU with partial pivoting, its factors, pivots and solve, the solve with its unit lower triangle, a singular matrix and a matrix that holds a NaN, Cholesky of a definite and an indefinite matrix, and an upper triangular solve; an Lu renders as `<lu size n>`
+-- spec: spec/29 §17
+-- grant: console
+-- expect: run-output "lu <lu size 2> 2 [1, 1] matrix(rows: 2, columns: 2, elements: [6.0, 3.0, 0.6666666666666666, 1.0]) matrix(rows: 2, columns: 1, elements: [0.0, 1.0]) matrix(rows: 2, columns: 1, elements: [3.0, 1.0]) true"
+-- expect: run-output "solve Some(array([0.0, 1.0])) Some(matrix(rows: 2, columns: 1, elements: [0.0, 1.0])) None None"
+-- expect: run-output "nan Some(<lu size 2>)"
+-- expect: run-output "cholesky Some(matrix(rows: 2, columns: 2, elements: [2.0, 0.0, 1.0, 1.4142135623730951])) None"
+-- expect: run-output "upper matrix(rows: 2, columns: 1, elements: [1.125, 0.75])"
+module dense
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let xs: List[F64] = [4.0, 3.0, 6.0, 3.0]
+  let a = matrix(rows: 2, columns: 2, elements: xs)
+  let rhs: List[F64] = [3.0, 3.0]
+  let b = matrix(rows: 2, columns: 1, elements: rhs)
+  let shown = when a.lu()
+    is Some(f) -> "lu {f} {f.size} {f.pivots()} {f.factors()} {f.solve(rhs: b)} {f.factors().solve_lower(rhs: b, unit_diagonal: true)} {f == f}"
+    is None -> "singular"
+  @console.print(shown)
+  let v: Array[F64] = array(rhs)
+  let flat: List[F64] = [1.0, 2.0, 2.0, 4.0]
+  let s = matrix(rows: 2, columns: 2, elements: flat)
+  @console.print("solve {a.solve_array(rhs: v)} {a.solve(rhs: b)} {s.lu()} {s.solve(rhs: b)}")
+  let odd: List[F64] = [nan(), 1.0, 1.0, 1.0]
+  @console.print("nan {matrix(rows: 2, columns: 2, elements: odd).lu()}")
+  let spd: List[F64] = [4.0, 2.0, 2.0, 3.0]
+  let bad: List[F64] = [1.0, 2.0, 2.0, 1.0]
+  @console.print("cholesky {matrix(rows: 2, columns: 2, elements: spd).cholesky()} {matrix(rows: 2, columns: 2, elements: bad).cholesky()}")
+  let upper: List[F64] = [2.0, 1.0, 0.0, 4.0]
+  @console.print("upper {matrix(rows: 2, columns: 2, elements: upper).solve_upper(rhs: b, unit_diagonal: false)}")

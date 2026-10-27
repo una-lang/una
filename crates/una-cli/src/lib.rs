@@ -153,6 +153,8 @@ struct Analysis {
     mounts: Vec<una_project::Mount>,
     /// The sites with deadlines and their timing labels (ADR 0116 rule 21), for the report.
     timing: Vec<una_check::TimingSite>,
+    /// `L_lim` (ADR 0117 IF4), which a grant with limits needs at most `internal`.
+    limit_label: una_core::Label,
 }
 
 /// Checks `package`; with `run_grants`, for `una run`, whose grants are final (U3012).
@@ -173,6 +175,12 @@ fn analyze_and(
     // converts, so the environment is tested before any source is read; U6006 stops here.
     if manifest.edition >= una_project::Edition::V0_3
         && let Err(probe) = una_core::float::probe_environment()
+    {
+        return (environment_failure(probe), Vec::new());
+    }
+    // ADR 0120 rule 5: edition 0.4 adds the binary32 probes, for its `F32` literals.
+    if manifest.edition >= una_project::Edition::V0_4
+        && let Err(probe) = una_core::float32::probe_environment()
     {
         return (environment_failure(probe), Vec::new());
     }
@@ -302,6 +310,7 @@ fn analyze_and(
         of_lambdas: types.of_lambdas,
         file_state: types.file_state,
         timing: types.timing,
+        limit_label: types.limit_label,
     };
     (analysis, rejected)
 }
@@ -335,6 +344,7 @@ fn environment_failure(probe: &str) -> Analysis {
         file_state: una_core::Label::public(),
         mounts: Vec::new(),
         timing: Vec::new(),
+        limit_label: una_core::Label::public(),
     }
 }
 
@@ -1161,6 +1171,7 @@ fn run_command(
                 virtual_time,
                 deadline,
                 stop_grace,
+                trace,
             } => {
                 let options = runtime::RunOptions {
                     grants: &grants,
@@ -1183,6 +1194,7 @@ fn run_command(
                     virtual_time,
                     deadline,
                     stop_grace,
+                    trace: trace.as_deref(),
                 };
                 runtime::run_command(&path, options, stdout, stderr)
             }
@@ -1232,6 +1244,7 @@ fn run_command(
                     virtual_time: true,
                     deadline: None,
                     stop_grace: una_interp::stopping::DEFAULT_GRACE_SECS,
+                    trace: None,
                 };
                 runtime::test_command(&path, options, stdout, stderr)
             }

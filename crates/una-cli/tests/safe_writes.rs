@@ -30,7 +30,7 @@ const RAW_WRITES: [&str; 10] = [
 const CRATES: [&str; 4] = ["una-cli", "una-verify", "una-codegen", "una-project"];
 
 /// The raw writes that remain, by file and call, with how many there are and why each is safe.
-const ALLOWED: [(&str, &str, usize, &str); 11] = [
+const ALLOWED: [(&str, &str, usize, &str); 12] = [
     (
         "crates/una-cli/src/build.rs",
         "create_dir_all(",
@@ -106,6 +106,14 @@ const ALLOWED: [(&str, &str, usize, &str); 11] = [
         "the package store of `una ita` (ADR 0122 rules 14 and 30), under Itaoca or the vendor \
          directory: a stored provenance linked to its name, which fails when anything is \
          there, so it is never replaced",
+    ),
+    (
+        "crates/una-cli/src/runtime.rs",
+        "File::create(",
+        1,
+        "the trace file of `una run --trace`, streamed as the run goes (ADR 0117 rule 10): the \
+         path the user names on the command line, not one the package chooses, as for `una build \
+         --out`",
     ),
     (
         "crates/una-cli/src/runtime.rs",

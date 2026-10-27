@@ -407,7 +407,10 @@ fn a_systems_package_that_runs_declares_its_budget() {
         ["U7002 8:14 [run] max_memory is a number of MiB from 1 to 4096, not 0"]
     );
     for (package, run) in [
-        ("profile = \"systems\"", "entry = \"app.main\"\nmax_memory = 64"),
+        (
+            "profile = \"systems\"",
+            "entry = \"app.main\"\nmax_memory = 64",
+        ),
         ("profile = \"systems\"", ""),
         ("", "entry = \"app.main\""),
         ("profile = \"app\"", "entry = \"app.main\"\nmax_memory = 64"),

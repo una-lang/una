@@ -280,13 +280,24 @@ fn trust_lines_are_checked() {
 }
 
 #[test]
-fn unsupported_settings_are_refused_not_ignored() {
+fn limits_on_http_grants_are_read_and_refused_elsewhere() {
+    // ADR 0117 rule 8 (slice S5): a limit line under an `http` grant is read into the grant's
+    // text form, never dropped; under another grant it is refused, since the grant would
+    // otherwise allow more than written.
+    let (manifest, errors) = parse_ita_manifest(&format!(
+        "{HEAD}\nrun\n  grants\n    http \"https://a.example\" get\n      at most 1 per minute\n"
+    ));
+    assert_eq!(render(&errors), Vec::<String>::new());
+    assert_eq!(manifest.grants.len(), 1);
+    assert!(
+        manifest.grants[0].value.ends_with(";1/minute"),
+        "{:?}",
+        manifest.grants[0].value
+    );
     has(
-        &format!(
-            "{HEAD}\nrun\n  grants\n    http \"https://a.example\" get\n      at most 1 per minute\n"
-        ),
+        &format!("{HEAD}\nrun\n  grants\n    console\n      at most 1 per minute\n"),
         Code::U7008,
-        "limits on grants",
+        "limits apply to `http` grants only",
     );
 }
 

@@ -218,6 +218,8 @@ impl Writer<'_> {
             Base::F64 => J::Obj(vec![("kind", s("f64"))]),
             // ADR 0120: the kind `decimal`, with its scale.
             Base::Decimal(scale) => node!(Decimal, "scale" => n(usize::from(*scale))),
+            // ADR 0120 rule 5: the kind `f32`.
+            Base::F32 => J::Obj(vec![("kind", s("f32"))]),
             Base::Named { module, name, args } => node!(Named,
                 "module" => s(module),
                 "name" => s(name),
@@ -279,14 +281,27 @@ impl Writer<'_> {
             ),
             Term::Len(value) => node!(Len, "value" => self.term(value)),
             Term::Has { map, key } => node!(Has, "map" => self.term(map), "key" => self.term(key)),
+            // ADR 0119 V5: membership of a set and the size of a bit set.
+            Term::Member { set, item } => {
+                node!(Member, "set" => self.term(set), "item" => self.term(item))
+            }
+            Term::Size(value) => node!(Size, "value" => self.term(value)),
             // ADR 0120 rule 33: the shape functions and the elements of a dense value.
             Term::Shape { fun, value } => {
                 node!(Shape, "fun" => s(fun.as_str()), "value" => self.term(value))
             }
-            Term::Element { value, indices } => node!(Element,
+            Term::Element {
+                value,
+                indices,
+                tensor,
+            } => node!(Element,
                 "value" => self.term(value),
                 "indices" => J::Arr(indices.iter().map(|index| self.term(index)).collect()),
+                "tensor" => J::Bool(*tensor),
             ),
+            Term::Dim { value, axis } => {
+                node!(Dim, "value" => self.term(value), "axis" => self.term(axis))
+            }
             Term::Proj { value, index } => {
                 node!(Proj, "value" => self.term(value), "index" => n(*index))
             }
@@ -330,6 +345,29 @@ impl Writer<'_> {
             Term::ToF64 { value, from } => node!(ToF64,
                 "value" => self.term(value),
                 "from" => opt(from.as_ref(), |i| self.int_type(*i)),
+            ),
+            // ADR 0120 rule 5: `F32` by its bits as 8 lowercase hex digits, its operations
+            // under `float32`.
+            Term::F32(bits) => J::Obj(vec![
+                ("kind", s("f32")),
+                ("bits", J::Str(format!("{bits:08x}"))),
+            ]),
+            Term::Float32 { op, args } => node!(Float32,
+                "op" => J::Obj(vec![(
+                    "kind",
+                    s(op.as_str().strip_prefix("f64_").unwrap_or(op.as_str()))
+                )]),
+                "args" => list(args, |a| self.term(a)),
+            ),
+            Term::ToF32 { value, from } => node!(ToF32,
+                "value" => self.term(value),
+                "from" => opt(from.as_ref(), |i| self.int_type(*i)),
+            ),
+            // ADR 0120 V3: `complex(re:, im:)` with the record constructor of its kind.
+            Term::Complex { ctor, re, im } => node!(Complex,
+                "ctor" => self.ctor(ctor),
+                "re" => self.term(re),
+                "im" => self.term(im),
             ),
         }
     }
@@ -386,6 +424,10 @@ impl Writer<'_> {
                 "coefficient" => s(coefficient),
                 "scale" => n(usize::from(*scale)),
             ),
+            Atom::F32(bits) => J::Obj(vec![
+                ("kind", s("f32")),
+                ("bits", J::Str(format!("{bits:08x}"))),
+            ]),
             Atom::Bool(b) => node!(Bool, "value" => J::Bool(*b)),
             Atom::Text(text) => node!(Text, "value" => s(text)),
             Atom::Unit => node!(Unit),
@@ -433,6 +475,14 @@ impl Writer<'_> {
             Prim::HashSet(op) => {
                 node!(HashSet, "value" => J::Obj(vec![("kind", s(op.as_str()))]))
             }
+            // ADR 0119 rule 13: the operations of the heap that holds a `PriorityQueue`, by
+            // their Core names.
+            Prim::Priority(op) => {
+                node!(Priority, "value" => J::Obj(vec![("kind", s(op.as_str()))]))
+            }
+            // ADR 0119 rule 14: the methods and the property `size` of `BitSet`, by their
+            // source names.
+            Prim::BitSet(op) => node!(BitSet, "value" => J::Obj(vec![("kind", s(op.as_str()))])),
             // ADR 0114 rule 17: the operations of `F64` are kinds of their own, under `float`.
             Prim::Float(op) => node!(Float, "value" => J::Obj(vec![(
                 "kind",
@@ -441,6 +491,11 @@ impl Writer<'_> {
             Prim::Shape(fun) => node!(Shape, "fun" => s(fun.as_str())),
             // ADR 0120: an operation of `Decimal`, its `DecimalOp` with its static scales.
             Prim::Decimal(op) => node!(Decimal, "value" => self.decimal_op(*op)),
+            // ADR 0120 rule 5: the operations of `F32`, under `float32`, by the same names.
+            Prim::Float32(op) => node!(Float32, "value" => J::Obj(vec![(
+                "kind",
+                s(op.as_str().strip_prefix("f64_").unwrap_or(op.as_str()))
+            )])),
         }
     }
 
@@ -778,6 +833,20 @@ impl Writer<'_> {
             }
             Expr::Together { tasks, span } => node!(Together,
                 "tasks" => list(tasks, |t| self.expr(t)),
+                "span" => self.span(*span),
+            ),
+            Expr::FirstOf { tasks, span } => node!(FirstOf,
+                "tasks" => list(tasks, |t| self.expr(t)),
+                "span" => self.span(*span),
+            ),
+            Expr::Tasks { bound, body, span } => node!(Tasks,
+                "bound" => opt(bound.as_ref(), |(b, _)| self.atom(b)),
+                "bound_span" => opt(bound.as_ref(), |(_, at)| self.span(*at)),
+                "body" => self.expr(body),
+                "span" => self.span(*span),
+            ),
+            Expr::Start { task, span } => node!(Start,
+                "task" => self.expr(task),
                 "span" => self.span(*span),
             ),
             Expr::TogetherFor {

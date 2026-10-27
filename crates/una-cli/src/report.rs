@@ -29,8 +29,8 @@ const PROOF_CACHE: &str = ".una/cache/";
 /// in their order (R-041; the last entry is ADR 0038 D9 rule 4). `una.report/2` says "stack
 /// exhaustion", since native executables exhaust their stack too (ADR 0055), and ends with the
 /// order of effects across `together` tasks (ADR 0065, `spec/19 §3`), then the three entries of
-/// long-running programs (ADR 0116 rule 21).
-const OUT_OF_MODEL: [&str; 11] = [
+/// long-running programs (ADR 0116 rule 21), then the two of ADR 0117 rule 13.
+const OUT_OF_MODEL: [&str; 13] = [
     "timing",
     "termination and divergence",
     "resource consumption and allocation",
@@ -42,6 +42,8 @@ const OUT_OF_MODEL: [&str; 11] = [
     "the time of a host stop",
     "interference of the host's load with the timing of an expression",
     "uncatchable termination",
+    "waits at limits and at `start`",
+    "which branch of `first of` wins, beyond its label",
 ];
 
 /// The capabilities of the prelude, whose implementations the host provides (`spec/14 §3`).
@@ -67,7 +69,7 @@ struct Report {
     coverage: CoverageDoc,
     native: NativeDoc,
     generic_results: Vec<GenericResultDoc>,
-    out_of_model: [&'static str; 11],
+    out_of_model: [&'static str; 13],
 }
 
 /// A public generic function and its result summary (ADR 0067, `spec/13 §6`).
@@ -93,12 +95,23 @@ struct ResultLabelDoc {
     from: Vec<String>,
 }
 
-/// The native backend (ADR 0055): the host target, and the bindings whose `Int` stays
-/// arbitrary precision in native code.
+/// The native backend (ADR 0055): the host target, the bindings whose `Int` stays
+/// arbitrary precision in native code, and the dense kernels' variants (ADR 0120).
 #[derive(Serialize)]
 struct NativeDoc {
     target: String,
     arbitrary_precision: Vec<String>,
+    kernels: KernelsDoc,
+}
+
+/// The variants of the dense kernels that an executable for the host target holds and chooses
+/// among at start (ADR 0120 rules 56 and 57), and the allowlist of the FMA disassembly gate:
+/// the demangled prefixes of the symbols where an x86-64 executable may hold an FMA
+/// instruction (ADR 0120 Appendix A, the amendment of ADR 0106 item 3).
+#[derive(Serialize)]
+struct KernelsDoc {
+    variants: Vec<String>,
+    fma_allowlist: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -754,6 +767,16 @@ fn build(
         native: NativeDoc {
             target: una_codegen::host_target(),
             arbitrary_precision: arbitrary_precision(program),
+            kernels: KernelsDoc {
+                variants: una_core::dense::variants::variant_names()
+                    .iter()
+                    .map(|name| (*name).to_owned())
+                    .collect(),
+                fma_allowlist: una_core::dense::variants::ALLOWLIST
+                    .iter()
+                    .map(|prefix| (*prefix).to_owned())
+                    .collect(),
+            },
         },
         generic_results,
         out_of_model: OUT_OF_MODEL,
@@ -825,7 +848,7 @@ impl Sites {
                 self.expr(body);
             }
             Expr::LetTuple { body, .. } | Expr::Loop { body, .. } => self.expr(body),
-            Expr::Together { tasks, .. } => {
+            Expr::Together { tasks, .. } | Expr::FirstOf { tasks, .. } => {
                 for task in tasks {
                     self.expr(task);
                 }
@@ -851,9 +874,13 @@ impl Sites {
                 self.expr(body);
                 self.expr(handler);
             }
-            Expr::Attempt { body, .. } | Expr::With { body, .. } | Expr::Within { body, .. } => {
+            Expr::Attempt { body, .. }
+            | Expr::With { body, .. }
+            | Expr::Within { body, .. }
+            | Expr::Tasks { body, .. } => {
                 self.expr(body);
             }
+            Expr::Start { task, .. } => self.expr(task),
             Expr::Atom { .. }
             | Expr::Fail { .. }
             | Expr::Exit { .. }
@@ -1125,6 +1152,14 @@ fn human(report: &Report) -> String {
     line(format!(
         "  arbitrary precision: {}",
         report.native.arbitrary_precision.join(", ")
+    ));
+    line(format!(
+        "  kernels: {}",
+        report.native.kernels.variants.join(", ")
+    ));
+    line(format!(
+        "  fma allowlist: {}",
+        report.native.kernels.fma_allowlist.join(", ")
     ));
     for generic in &report.generic_results {
         let parts: Vec<String> = generic

@@ -189,7 +189,7 @@ pub(crate) enum Command {
         #[arg(long, value_name = "N", value_parser = task_number)]
         task_depth: Option<usize>,
 
-        /// The helper threads of `Http`, from 1 to 4096; by default 64 (ADR 0117)
+        /// The helper threads of `Http`, from 1 to 4096; by default 64 (ADR 0117). A run granted `Http` starts 2 x N + max(2, N / 4) threads for its requests before `main`, besides --workers and --file-threads, so a large N can pass the system's limit on a process's threads, and the run then stops with U6003
         #[arg(long, value_name = "N", value_parser = task_number)]
         io_threads: Option<usize>,
 
@@ -217,6 +217,10 @@ pub(crate) enum Command {
         /// (ADR 0116)
         #[arg(long, value_name = "SECONDS", default_value_t = una_interp::stopping::DEFAULT_GRACE_SECS, value_parser = stop_grace)]
         stop_grace: u64,
+
+        /// Write the trace to this file as a JSON array, each event as it happens (ADR 0117)
+        #[arg(long, value_name = "FILE")]
+        trace: Option<PathBuf>,
     },
     /// Compile `main` of the `[run] entry` module into a native executable
     Build {
@@ -255,7 +259,7 @@ pub(crate) enum Command {
         #[arg(long, value_name = "N", value_parser = task_number)]
         task_depth: Option<usize>,
 
-        /// The helper threads of `Http`, from 1 to 4096; by default 64 (ADR 0117)
+        /// The helper threads of `Http`, from 1 to 4096; by default 64 (ADR 0117). A run granted `Http` starts 2 x N + max(2, N / 4) threads for its requests before `main`, besides --workers and --file-threads, so a large N can pass the system's limit on a process's threads, and the run then stops with U6003
         #[arg(long, value_name = "N", value_parser = task_number)]
         io_threads: Option<usize>,
 
