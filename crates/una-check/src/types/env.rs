@@ -464,6 +464,9 @@ pub(crate) struct Env<'a> {
     /// The hidden function `update` of that module, which only method syntax on a hash map
     /// reaches (ADR 0119 rule 12).
     pub(crate) hash_map_update: Option<usize>,
+    /// The handler `limiter` of `std.limit`, when a package of edition 0.4 imports the module
+    /// (ADR 0117 rule 9): the runtime provides it, and its installation is checked for IF5.
+    pub(crate) limiter: Option<usize>,
 }
 
 /// The key type of a written `Map[K, V]`, or an argument of a written collection type that
@@ -535,6 +538,7 @@ impl<'a> Env<'a> {
         after_prelude: Vec<Source<'a>>,
         map_0_4: Option<Source<'a>>,
         collections: Option<Source<'a>>,
+        limit: Option<Source<'a>>,
         categories: Vec<String>,
         edition: Edition,
         report: &mut Report<'_>,
@@ -587,6 +591,7 @@ impl<'a> Env<'a> {
             map_update: None,
             collections: None,
             hash_map_update: None,
+            limiter: None,
         };
         for source in package
             .into_iter()
@@ -602,6 +607,19 @@ impl<'a> Env<'a> {
         if let Some(source) = collections {
             env.collections = Some(env.modules.len());
             env.register(source);
+        }
+        // ADR 0117 rule 9: `std.limit` is in scope only for a package of edition 0.4 that
+        // imports it, so no other package's checks or Core IR change.
+        if let Some(source) = limit {
+            let index = env.modules.len();
+            env.register(source);
+            env.limiter =
+                env.modules
+                    .get(index)
+                    .and_then(|module| match module.lower.get("limiter") {
+                        Some(Entity::Handler(id)) => Some(*id),
+                        _ => None,
+                    });
         }
         env.map_update =
             env.map_module
@@ -918,7 +936,8 @@ impl<'a> Env<'a> {
                     || time
                     || joined == "std.testing"
                     || joined == prelude::STD_DRIVE
-                    || joined == prelude::STD_COLLECTIONS;
+                    || joined == prelude::STD_COLLECTIONS
+                    || joined == prelude::STD_LIMIT;
                 // A dependency's module imports its own modules and the standard ones, never
                 // the root's (ADR 0122 rule 47).
                 let key = match module.mount {

@@ -119,7 +119,7 @@ struct TraceFile {
 }
 
 impl TraceFile {
-    fn create(path: &Path) -> io::Result<TraceFile> {
+    fn start(path: &Path) -> io::Result<TraceFile> {
         Ok(TraceFile {
             file: io::BufWriter::new(std::fs::File::create(path)?),
             written: 0,
@@ -480,7 +480,7 @@ pub(crate) fn run_command(
     // The trace file of `--trace` is made before the run starts: one that cannot be made is
     // a usage error, as for the executable (`spec/16 §3` rule 4).
     let trace_file = match options.trace {
-        Some(path) => match TraceFile::create(path) {
+        Some(path) => match TraceFile::start(path) {
             Ok(file) => Some(file),
             Err(error) => {
                 writeln!(

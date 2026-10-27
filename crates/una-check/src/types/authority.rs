@@ -2424,6 +2424,59 @@ pub(crate) fn deadline_timing(
     sites
 }
 
+/// IF5 (ADR 0117): at each installation of `limiter` of `std.limit`, whether a token is left
+/// depends on the timing of the code that shares the instance: the statement the `with` scopes
+/// over, or the `do` line of the example whose `given` line installs it, and, through
+/// `τ_conc`, the program's other tasks. `Limited` is labeled `internal`, so `τ` of that
+/// statement MUST flow to `internal`; U4001 at the binding otherwise, naming what raised it
+/// (`spec/27 §10`). The label is joined with the residue label `L_res` (ADR 0116 P9), as at
+/// every timing site. O(sites × (functions + call edges + operations)).
+pub(crate) fn limiter_timing(
+    env: &Env<'_>,
+    findings: &Findings,
+    residue: &super::timing::Residue,
+    report: &mut Report<'_>,
+) {
+    if findings.limiter_sites.is_empty() {
+        return;
+    }
+    let concurrent = super::timing::concurrent_functions(findings);
+    let internal = Label {
+        level: una_syntax::ast::Level::Internal,
+        ..Label::public()
+    };
+    let mut sites: Vec<&super::LimiterSite> = findings.limiter_sites.iter().collect();
+    sites.sort_by_key(|site| (site.span.file, site.span.start, site.span.end));
+    sites.dedup_by_key(|site| site.span);
+    for site in sites {
+        let timing = super::timing::timing(
+            env,
+            findings,
+            &site.seed,
+            site.function,
+            super::timing::HostHandlers::All,
+            &concurrent,
+        );
+        let timing = residue.join_into(timing);
+        if timing.label.flows_to(&internal) {
+            continue;
+        }
+        let tau = &timing.label;
+        let culprit = timing.culprit(&internal);
+        let mut diagnostic = report.make(
+            Code::U4001,
+            site.span,
+            format!(
+                "whether `acquire` of this `limiter` finds a token depends on {culprit}, labeled above the `internal` that `Limited` carries; the statement's timing label is `{tau}`"
+            ),
+        );
+        diagnostic.repairs.push(Report::advice(
+            "move the work on data above `internal` out of the statement the `limiter` scopes over, or install the `limiter` around a statement that does not compute on it".to_owned(),
+        ));
+        report.push(diagnostic);
+    }
+}
+
 /// The timing label `τ(e)` of each `within` and `first of` that `findings` recorded, by the
 /// span of its deadline or its words (ADR 0117 IF2, IF3, ADR 0116 IF5 and IF6), each joined with
 /// the residue label `L_res` (ADR 0116 P9 and C), which is returned too, for the messages of pass
