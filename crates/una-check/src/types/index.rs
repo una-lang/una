@@ -125,6 +125,7 @@ pub(crate) fn build(env: &Env<'_>, findings: &Findings) -> Index {
             | Res::Constant(_)
             | Res::Shape(_)
             | Res::DenseElement(_)
+            | Res::Complex(_)
             | Res::DenseOp { .. } => None,
         };
         // Only declarations of the package have a place to go to; the standard modules are
@@ -137,7 +138,11 @@ pub(crate) fn build(env: &Env<'_>, findings: &Findings) -> Index {
     // types, and printed only when a hover asks for it; kinds are named as declared.
     let names = Arc::new(HoverNames {
         kinds: (0..env.kinds.len())
-            .map(|id: KindId| env.kind_name(id).to_owned())
+            .map(|id: KindId| {
+                // A complex kind is written as its type, `Complex[F64]` (ADR 0120 rule 22).
+                env.complex_written(id)
+                    .map_or_else(|| env.kind_name(id).to_owned(), ToOwned::to_owned)
+            })
             .collect(),
     });
     let mut snapshots = Snapshots::default();

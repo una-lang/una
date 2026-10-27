@@ -31,6 +31,9 @@ pub(crate) enum Res {
     UnitMethod { ratio: u128 },
     /// A built-in method of a map that reads it (`spec/21 §2`).
     MapMethod(una_core::MapOp),
+    /// A method of `Complex[F64]` or `Complex[F32]`, which elaborates to the operations of the
+    /// components (`spec/29 §19`, ADR 0120 rule 23).
+    Complex(super::complex::ComplexMethod),
     /// `edit m.set(...)` or `edit m.remove(...)`: the map rebound to `With` or `Without`.
     MapUpdate(una_core::MapOp),
     /// A built-in method of a `Stack` or a `Queue` that reads it (`spec/28 §5`).

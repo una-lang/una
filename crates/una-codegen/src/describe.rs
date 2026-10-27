@@ -246,7 +246,13 @@ impl<'p> Types<'p> {
                         field(name, ty, redacted, shown)
                     })
                     .collect();
-                variant(&v.name, fields)
+                // A complex value is written `complex(re: ..., im: ...)` (ADR 0120 rule 24).
+                let name = if una_core::complex::is_kind(module, name) {
+                    una_core::complex::CONSTRUCTOR
+                } else {
+                    v.name.as_str()
+                };
+                variant(name, fields)
             })
             .collect();
         Some(data(variants))

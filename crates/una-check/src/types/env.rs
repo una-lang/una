@@ -86,6 +86,10 @@ pub(crate) enum Builtin {
     F32,
     /// A collection type that `std.collections` exports, edition 0.4 (ADR 0119 rule 0).
     Coll(una_core::Coll),
+    /// `Complex[F64]` and `Complex[F32]`, built in from edition 0.4 (`spec/29 §19`, ADR 0120
+    /// rule 22): two types, each a record kind of the prelude, written with their component
+    /// type in brackets.
+    Complex,
 }
 
 const BUILTINS: [(&str, Builtin); 6] = [
@@ -671,6 +675,10 @@ impl<'a> Env<'a> {
                     .upper
                     .entry("F32")
                     .or_insert(Entity::Builtin(Builtin::F32));
+                module
+                    .upper
+                    .entry("Complex")
+                    .or_insert(Entity::Builtin(Builtin::Complex));
             }
         }
         env.imports(count);
@@ -1064,6 +1072,48 @@ impl<'a> Env<'a> {
         }
     }
 
+    /// How a program writes the type of kind `id` when it is a complex kind of the prelude:
+    /// `Complex[F64]` or `Complex[F32]` (ADR 0120 rule 22).
+    pub(crate) fn complex_written(&self, id: KindId) -> Option<&'static str> {
+        let kind = self.kinds.get(id)?;
+        if kind.module != self.prelude {
+            return None;
+        }
+        una_core::complex::written(kind.name)
+    }
+
+    /// `Complex[T]` with the type arguments `bases`: the prelude's record kind of `T`, `F64` or
+    /// `F32` without a label; any other argument is U2002 (ADR 0120 rule 2). A label inside the
+    /// brackets would hide the components' labels, so the type is labeled as a whole.
+    fn complex_type(
+        &self,
+        bases: &[Ty],
+        span: Span,
+        reports: bool,
+        report: &mut Report<'_>,
+    ) -> Declared {
+        let name = match bases.first() {
+            Some(Ty::F64) => una_core::complex::COMPLEX_F64,
+            Some(Ty::F32) => una_core::complex::COMPLEX_F32,
+            // Reported where it was lowered.
+            Some(Ty::Error(_)) => return Declared::error(),
+            _ => {
+                if reports {
+                    report.error(
+                        Code::U2002,
+                        span,
+                        "`Complex` takes `F64` or `F32`, unlabeled, as in `Complex[F64]` or `secret Complex[F32]`".to_owned(),
+                    );
+                }
+                return Declared::error();
+            }
+        };
+        match self.prelude_kind(name) {
+            Some(id) => Declared::plain(Ty::Kind(id, Vec::new().into())),
+            None => Declared::error(),
+        }
+    }
+
     /// The kind `name` of `std.time`, `Timed` or `Deadline` (ADR 0117 rule 5), in edition 0.4.
     pub(crate) fn std_time_kind(&self, name: &str) -> Option<KindId> {
         let module = self
@@ -1102,6 +1152,11 @@ impl<'a> Env<'a> {
     }
 
     pub(crate) fn kind_display(&self, id: KindId) -> String {
+        // A complex kind of the prelude is written as its type, `Complex[F64]` (ADR 0120
+        // rule 22).
+        if let Some(written) = self.complex_written(id) {
+            return written.to_owned();
+        }
         match self.kinds.get(id) {
             Some(kind) if self.shared_kind_names.get(id).copied().unwrap_or(false) => {
                 self.qualified(kind.module, kind.name)
@@ -2421,13 +2476,16 @@ impl<'a> Env<'a> {
         let problem = match self.upper(module, name).first().copied() {
             Some(Entity::Builtin(builtin)) => {
                 let expected = match builtin {
-                    Builtin::List => 1,
+                    Builtin::List | Builtin::Complex => 1,
                     Builtin::Map => 2,
                     Builtin::Coll(coll) => coll.arity(),
                     _ => 0,
                 };
                 if bases.len() != expected {
                     return arity(expected, bases.len());
+                }
+                if builtin == Builtin::Complex {
+                    return self.complex_type(&bases, span, reports, report);
                 }
                 let base = match builtin {
                     Builtin::Int => Ty::Int,
@@ -2438,6 +2496,8 @@ impl<'a> Env<'a> {
                     Builtin::Hashed => Ty::Hashed,
                     Builtin::F64 => Ty::F64,
                     Builtin::F32 => Ty::F32,
+                    // Lowered above.
+                    Builtin::Complex => Ty::error(),
                     Builtin::List => {
                         Ty::List(Shared::new(bases.into_iter().next().unwrap_or(Ty::error())))
                     }

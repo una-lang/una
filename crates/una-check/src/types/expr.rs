@@ -100,6 +100,7 @@ impl<'a> Checker<'_, 'a, '_> {
                             Some(Ty::F64) => Some(Ty::F64),
                             Some(Ty::Decimal(scale)) => Some(Ty::Decimal(scale)),
                             Some(Ty::F32) => Some(Ty::F32),
+                            Some(complex) if self.is_complex(&complex) => Some(complex),
                             _ => self.expected_fixed(expected).map(Ty::Fixed),
                         };
                         let found = self.infer(operand, hint.as_ref());
@@ -119,6 +120,12 @@ impl<'a> Checker<'_, 'a, '_> {
                             // `-x` of a decimal negates its coefficient (ADR 0120 rule 13).
                             Ty::Decimal(scale) => Ty::Decimal(scale),
                             Ty::F32 => Ty::F32,
+                            // `-x` of a complex value negates both components, code only (ADR
+                            // 0120 rule 23).
+                            complex if self.is_complex(&complex) => {
+                                self.outside_rl(span, || "negation of a complex value".to_owned());
+                                complex
+                            }
                             _ => {
                                 self.unify_at(
                                     operand.span,
@@ -486,6 +493,7 @@ impl<'a> Checker<'_, 'a, '_> {
             Some(Entity::Function(id)) => {
                 self.outside_rl(ident.span, || format!("function `{name}` used as a value"));
                 self.decimal_function_value(id, ident.span);
+                self.complex_function_value(id, ident.span);
                 let (module, effects) = self.env.functions.get(id).map_or((0, false), |f| {
                     (f.module, !f.uses.is_empty() || f.fails.is_some())
                 });
@@ -1085,9 +1093,11 @@ impl<'a> Checker<'_, 'a, '_> {
                         || (self.env.edition >= Edition::V0_4
                             && super::decimal::is_float_literal(e))
                 };
+                // A complex product reported its own U2014 (ADR 0120 V3).
                 if !literal(left)
                     && !literal(right)
                     && !self.is_float(&ty)
+                    && !self.is_complex(&ty)
                     && self.module != self.env.prelude
                 {
                     self.outside_rl(span, || {
@@ -1109,6 +1119,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 if int_literal(right) != Some(true)
                     && !self.is_float(&ty)
                     && !self.is_decimal(&ty)
+                    && !self.is_complex(&ty)
                     && self.dense_of(&ty).is_none()
                 {
                     self.outside_rl(span, || {
@@ -1172,6 +1183,8 @@ impl<'a> Checker<'_, 'a, '_> {
             match (&combine, &expected_magnitude) {
                 (_, Some(Ty::F64)) => Some(Ty::F64),
                 (_, Some(Ty::F32)) => Some(Ty::F32),
+                // A complex type expected gives its component type to literals (ADR 0120).
+                (_, Some(complex)) if self.is_complex(complex) => Some(complex.clone()),
                 (Combine::Same, Some(ty @ Ty::Fixed(_))) => Some(ty.clone()),
                 _ => self
                     .expected_fixed(expected_magnitude.as_ref())
@@ -1195,8 +1208,13 @@ impl<'a> Checker<'_, 'a, '_> {
                 second,
                 operand,
                 span,
-                combine,
             );
+        }
+        // `Complex[F64]` and `Complex[F32]` (ADR 0120 rule 23).
+        if let Ty::Kind(id, _) = first_top.magnitude()
+            && let Some(width) = self.complex_kind(*id)
+        {
+            return self.complex_arithmetic(width, first, first_ty, second, operand, span, op);
         }
         if let Ty::Decimal(a) = first_top.magnitude() {
             let a = *a;
@@ -1337,7 +1355,9 @@ impl<'a> Checker<'_, 'a, '_> {
 
     /// The second operand and the type of an arithmetic operator whose first operand is an
     /// `F64` (ADR 0114 rule 3.1): both are `F64`, an integer operand is U2001 with a repair
-    /// that converts it by `to_f64()`, and `mod` is U2001 with a repair to `rem`.
+    /// that converts it by `to_f64()`, and `mod` is U2001 with a repair to `rem`. A complex
+    /// second operand makes the real first one the mistake: U2001 at it, with the repairs of ADR
+    /// 0120 rule 23, and the result is the complex type.
     #[allow(clippy::too_many_arguments)]
     fn float_arithmetic(
         &mut self,
@@ -1348,7 +1368,6 @@ impl<'a> Checker<'_, 'a, '_> {
         second: &Expr,
         operand: &str,
         span: Span,
-        combine: Combine,
     ) -> Ty {
         let mark = self.report.count();
         let second_ty = self.infer(second, Some(&float));
@@ -1366,6 +1385,12 @@ impl<'a> Checker<'_, 'a, '_> {
             );
         }
         let second_magnitude = second_top.magnitude().clone();
+        // A complex second operand: the real first one is the mistake (ADR 0120 rule 23).
+        if let Some(width) = self.complex_width(&second_magnitude) {
+            return self.real_complex_arithmetic(
+                width, first, first_ty, second, second_ty, operand, span, op,
+            );
+        }
         if second_magnitude != float {
             self.unify_at(second.span, &float, &second_ty, Role::Condition(operand));
             let method = if float == Ty::F32 { "to_f32" } else { "to_f64" };
@@ -1393,7 +1418,7 @@ impl<'a> Checker<'_, 'a, '_> {
         }
         self.operands.push(first_ty);
         self.operands.push(second_ty);
-        if matches!(combine, Combine::Same) && operand.contains("`mod`") {
+        if op == BinaryOp::Mod {
             let mut diagnostic = self.report.make(
                 Code::U2001,
                 span,

@@ -401,6 +401,16 @@ pub enum Term {
         /// Its fixed-width type, or `None` for `Int`.
         from: Option<IntType>,
     },
+    /// `complex(re: a, im: b)`, a `Complex[F64]` or a `Complex[F32]` built from its components
+    /// (`spec/29 §19`, ADR 0120 V3).
+    Complex {
+        /// The record constructor of the complex kind.
+        ctor: Ctor,
+        /// The real component.
+        re: Box<Term>,
+        /// The imaginary component.
+        im: Box<Term>,
+    },
 }
 
 /// A binary operator of the refinement language.

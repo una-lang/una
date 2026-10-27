@@ -307,3 +307,19 @@ pub kind Finite64 = F64 where it.is_finite()
 
 --- An `F32` that is neither NaN nor an infinity (`spec/29 §18`, ADR 0120 rule 11).
 pub kind Finite32 = F32 where it.is_finite()
+
+--- `Complex[F64]`, which no program names this way: a flat record of two components
+--- (`spec/29 §19`, ADR 0120 rules 22 and 25).
+kind Complex_F64
+  re: F64
+  im: F64
+
+--- `Complex[F32]`, as `Complex[F64]` with `F32` components (`spec/29 §19`).
+kind Complex_F32
+  re: F32
+  im: F32
+
+--- `complex(re: x, im: y)` builds a `Complex[F64]` from two `F64` and a `Complex[F32]` from
+--- two `F32` (`spec/29 §19`): the checker resolves every call to the kind of its arguments,
+--- and this placeholder is never called.
+complex[T](re: T, im: T) -> T = re

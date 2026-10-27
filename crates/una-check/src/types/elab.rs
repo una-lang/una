@@ -21,9 +21,36 @@ use una_syntax::ast::{
 use una_syntax::{SourceDb, Span};
 
 use super::Findings;
+use super::complex::ComplexMethod;
 use super::env::{Constraint, Entity, Env, FnAst, FnDef, FnKind, Need};
 use super::records::{DenseOp, Records, Res};
 use super::ty::{Declared, FnUse, Refinement, Ty};
+
+/// A complex operation whose operands are one complex value, and a factor for `scale`
+/// (ADR 0120 rule 23).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ComplexStep {
+    /// `-x`.
+    Neg,
+    /// `x.conj()`.
+    Conj,
+    /// `x.scale(by: k)`.
+    Scale,
+    /// `x.norm_sqr()`.
+    NormSqr,
+}
+
+/// What the elaboration of a complex operation at `span` builds with: the complex type, its
+/// component type, whether that is `F32`, the label of the result, which every temporary
+/// carries, and the record constructor of the complex kind.
+struct ComplexParts {
+    ty: Type,
+    component: Type,
+    f32: bool,
+    label: Label,
+    ctor: Ctor,
+    span: Span,
+}
 
 /// One binding of a `let` chain being built.
 struct Let {
@@ -300,15 +327,17 @@ pub(crate) fn rejected(
 }
 
 /// The kinds of the prelude that Core IR declares, in the module `prelude`; the others are
-/// [`una_core::PRELUDE_ENGINE_KINDS`], which each engine knows itself (#407). `Rounding` is
-/// edition 0.4's (`spec/29 §16`).
-pub(crate) const PRELUDE_CORE_KINDS: [&str; 6] = [
+/// [`una_core::PRELUDE_ENGINE_KINDS`], which each engine knows itself (#407). `Rounding` and
+/// the two complex kinds are edition 0.4's (`spec/29 §16`, `§19`).
+pub(crate) const PRELUDE_CORE_KINDS: [&str; 8] = [
     "Json",
     "JsonError",
     "Header",
     "Response",
     "HttpError",
     "Rounding",
+    una_core::complex::COMPLEX_F64,
+    una_core::complex::COMPLEX_F32,
 ];
 
 /// The kinds of JSON and their opaque predicate `is_json_number`, which the prelude declares in
@@ -1072,6 +1101,20 @@ impl<'e, 'a> Fx<'e, 'a> {
         )
     }
 
+    /// Whether the expression at `span` is a complex value: `Some(true)` for a `Complex[F32]`,
+    /// `Some(false)` for a `Complex[F64]` (ADR 0120 rule 22).
+    fn complex_at(&self, span: Span) -> Option<bool> {
+        match self.type_at(span) {
+            Type::Base {
+                base: Base::Named { module, name, .. },
+                ..
+            } if una_core::complex::is_kind(&module, &name) => {
+                Some(name == una_core::complex::COMPLEX_F32)
+            }
+            _ => None,
+        }
+    }
+
     /// The recorded type of the expression or binder at `span`.
     fn type_at(&self, span: Span) -> Type {
         self.records
@@ -1449,6 +1492,12 @@ impl<'e, 'a> Fx<'e, 'a> {
                     terms.extend(args.iter().map(|arg| self.term(&arg.value)));
                     Term::Float32 { op, args: terms }
                 }
+                // `x.complex(im: y)` (ADR 0120 V3).
+                Some(Res::Ctor { kind, variant }) => {
+                    let receiver = self.term(target);
+                    let parts = self.ordered_terms(expr.span, Some(receiver), args);
+                    self.complex_term(kind, variant, parts)
+                }
                 // `s.has(item: x)` of a set, a hash set or a bit set (ADR 0119 V5).
                 Some(
                     Res::SetMethod(una_core::SetOp::Has)
@@ -1507,7 +1556,30 @@ impl<'e, 'a> Fx<'e, 'a> {
                         args,
                     }
                 }
+                // `complex(re: x, im: y)` (ADR 0120 V3).
+                Some(Res::Ctor { kind, variant }) => {
+                    let parts = self.ordered_terms(expr.span, None, args);
+                    self.complex_term(kind, variant, parts)
+                }
                 _ => self.outside(),
+            },
+            _ => self.outside(),
+        }
+    }
+
+    /// `complex(re: a, im: b)` as a term, from its components in parameter order (ADR 0120
+    /// V3); the checker admits no other construction in a clause.
+    fn complex_term(&mut self, kind: usize, variant: Option<usize>, parts: Vec<Term>) -> Term {
+        let ctor = self.ctor(kind, variant);
+        if !una_core::complex::is_kind(&ctor.kind.module, &ctor.kind.name) {
+            return self.outside();
+        }
+        let mut parts = parts.into_iter();
+        match (parts.next(), parts.next(), parts.next()) {
+            (Some(re), Some(im), None) => Term::Complex {
+                ctor,
+                re: Box::new(re),
+                im: Box::new(im),
             },
             _ => self.outside(),
         }
@@ -4418,6 +4490,13 @@ impl<'e, 'a> Fx<'e, 'a> {
             {
                 self.dense_op(lets, span, &[operand])
             }
+            ExprKind::Unary {
+                op: UnaryOp::Neg,
+                operand,
+            } if self.complex_at(operand.span).is_some() => {
+                let value = self.atom(lets, operand);
+                self.complex_unary(lets, ComplexStep::Neg, value, None, span)
+            }
             ExprKind::Unary { op, operand } => {
                 let operand_span = operand.span;
                 let float = self.is_f64_at(operand_span);
@@ -4687,6 +4766,33 @@ impl<'e, 'a> Fx<'e, 'a> {
                         },
                     )
                 }
+                // `x.conj()`, `x.scale(by: k)` and `x.norm_sqr()` (ADR 0120 rule 23).
+                Some(Res::Complex(method)) => {
+                    let value = self.atom(lets, target);
+                    let factor = args.first().map(|arg| self.atom(lets, &arg.value));
+                    let step = match method {
+                        ComplexMethod::Conj => ComplexStep::Conj,
+                        ComplexMethod::Scale => ComplexStep::Scale,
+                        ComplexMethod::NormSqr => ComplexStep::NormSqr,
+                    };
+                    self.complex_unary(lets, step, value, factor, span)
+                }
+                // `x.complex(im: y)` (ADR 0120 rule 22).
+                Some(Res::Ctor { kind, variant }) => {
+                    let receiver = self.atom(lets, target);
+                    let (args, arg_spans) =
+                        self.ordered_values(lets, span, Some((receiver, target.span)), args);
+                    let ctor = self.ctor(kind, variant);
+                    self.push(
+                        lets,
+                        span,
+                        Rhs::Construct {
+                            ctor,
+                            args,
+                            arg_spans,
+                        },
+                    )
+                }
                 Some(Res::FieldFn { kind, index }) => {
                     let value = self.atom(lets, target);
                     let (_, field) = self.field(kind, index);
@@ -4947,6 +5053,17 @@ impl<'e, 'a> Fx<'e, 'a> {
             };
             return self.push_expr(lets, span, test);
         }
+        // The arithmetic of `Complex[F64]` and `Complex[F32]` is that of their components (ADR
+        // 0120 rule 23); `==` and `!=` are the records' equality.
+        if matches!(
+            op,
+            BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div
+        ) && self.complex_at(span).is_some()
+        {
+            let x = self.atom(lets, left);
+            let y = self.atom(lets, right);
+            return self.complex_binary(lets, op, x, y, span);
+        }
         let arg_spans = vec![left.span, right.span];
         let float = self.is_f64_at(left.span) && self.is_f64_at(right.span);
         let float32 = self.is_f32_at(left.span) && self.is_f32_at(right.span);
@@ -5001,6 +5118,335 @@ impl<'e, 'a> Fx<'e, 'a> {
                 span,
             },
         )
+    }
+
+    // ----- `Complex[F64]` and `Complex[F32]` -----
+
+    /// The complex type recorded at `span`, its width (`true` for `Complex[F32]`), its label,
+    /// and the record constructor of its kind.
+    fn complex_shape(&mut self, span: Span) -> (Type, bool, Label, Ctor) {
+        let ty = self.type_at(span);
+        let (f32, label, ctor) = match &ty {
+            Type::Base {
+                base: Base::Named { module, name, .. },
+                label,
+                ..
+            } => (
+                name == una_core::complex::COMPLEX_F32,
+                label.clone(),
+                Ctor {
+                    kind: Path {
+                        module: module.clone(),
+                        name: name.clone(),
+                    },
+                    name: name.clone(),
+                    index: 0,
+                },
+            ),
+            _ => {
+                self.broken.set(true);
+                (
+                    false,
+                    Label::public(),
+                    Ctor {
+                        kind: self.path(self.module, "?"),
+                        name: "?".to_owned(),
+                        index: 0,
+                    },
+                )
+            }
+        };
+        (ty, f32, label, ctor)
+    }
+
+    /// Binds `rhs` to a fresh temporary of type `ty`.
+    fn push_typed(&mut self, lets: &mut Vec<Let>, span: Span, ty: Type, rhs: Rhs) -> Atom {
+        let t = self.temp();
+        lets.push(Let::inferred(t.clone(), ty, Bound::Rhs(rhs), span));
+        Atom::Var(t)
+    }
+
+    /// The components `re` and `im` of the complex value `value`, each read into a temporary.
+    fn complex_parts(
+        &mut self,
+        lets: &mut Vec<Let>,
+        parts: &ComplexParts,
+        value: Atom,
+    ) -> (Atom, Atom) {
+        let re = self.push_typed(
+            lets,
+            parts.span,
+            parts.component.clone(),
+            Rhs::Field {
+                value: value.clone(),
+                field: "re".to_owned(),
+                index: 0,
+            },
+        );
+        let im = self.push_typed(
+            lets,
+            parts.span,
+            parts.component.clone(),
+            Rhs::Field {
+                value,
+                field: "im".to_owned(),
+                index: 1,
+            },
+        );
+        (re, im)
+    }
+
+    /// The operation `op` of the component type on `args`, bound to a temporary of type `ty`:
+    /// one rounding, never fused with another (ADR 0120 rule 23).
+    fn component_op(
+        &mut self,
+        lets: &mut Vec<Let>,
+        parts: &ComplexParts,
+        op: FloatOp,
+        args: Vec<Atom>,
+        ty: Type,
+    ) -> Atom {
+        let prim = if parts.f32 {
+            Prim::Float32(op)
+        } else {
+            Prim::Float(op)
+        };
+        let arg_spans = vec![parts.span; args.len()];
+        self.push_typed(
+            lets,
+            parts.span,
+            ty,
+            Rhs::Prim {
+                prim,
+                args,
+                arg_spans,
+                span: parts.span,
+            },
+        )
+    }
+
+    /// [`Fx::component_op`] with a result of the component type.
+    fn component(
+        &mut self,
+        lets: &mut Vec<Let>,
+        parts: &ComplexParts,
+        op: FloatOp,
+        args: Vec<Atom>,
+    ) -> Atom {
+        let ty = parts.component.clone();
+        self.component_op(lets, parts, op, args, ty)
+    }
+
+    /// The binary operation `op` of the component type on `x` and `y`.
+    fn op2(
+        &mut self,
+        lets: &mut Vec<Let>,
+        parts: &ComplexParts,
+        op: FloatOp,
+        x: &Atom,
+        y: &Atom,
+    ) -> Atom {
+        self.component(lets, parts, op, vec![x.clone(), y.clone()])
+    }
+
+    /// `complex(re: re, im: im)`, bound to a temporary of the complex type.
+    fn complex_value(
+        &mut self,
+        lets: &mut Vec<Let>,
+        parts: &ComplexParts,
+        re: Atom,
+        im: Atom,
+    ) -> Atom {
+        self.push_typed(
+            lets,
+            parts.span,
+            parts.ty.clone(),
+            Rhs::Construct {
+                ctor: parts.ctor.clone(),
+                args: vec![re, im],
+                arg_spans: vec![parts.span, parts.span],
+            },
+        )
+    }
+
+    /// `-x`, `x.conj()`, `x.scale(by: k)` and `x.norm_sqr()` at `span`, by the operations of
+    /// the components (ADR 0120 rule 23): O(1).
+    fn complex_unary(
+        &mut self,
+        lets: &mut Vec<Let>,
+        step: ComplexStep,
+        value: Atom,
+        factor: Option<Atom>,
+        span: Span,
+    ) -> Atom {
+        // The receiver's type: the result of `norm_sqr()` is a component.
+        let parts = self.complex_parts_at(span, step);
+        let (a, b) = self.complex_parts(lets, &parts, value);
+        match step {
+            ComplexStep::Neg => {
+                let re = self.component(lets, &parts, FloatOp::Neg, vec![a]);
+                let im = self.component(lets, &parts, FloatOp::Neg, vec![b]);
+                self.complex_value(lets, &parts, re, im)
+            }
+            ComplexStep::Conj => {
+                let im = self.component(lets, &parts, FloatOp::Neg, vec![b]);
+                self.complex_value(lets, &parts, a, im)
+            }
+            ComplexStep::Scale => {
+                let Some(k) = factor else {
+                    self.broken.set(true);
+                    return Atom::Unit;
+                };
+                let re = self.component(lets, &parts, FloatOp::Mul, vec![a, k.clone()]);
+                let im = self.component(lets, &parts, FloatOp::Mul, vec![b, k]);
+                self.complex_value(lets, &parts, re, im)
+            }
+            ComplexStep::NormSqr => {
+                let aa = self.component(lets, &parts, FloatOp::Mul, vec![a.clone(), a]);
+                let bb = self.component(lets, &parts, FloatOp::Mul, vec![b.clone(), b]);
+                self.component(lets, &parts, FloatOp::Add, vec![aa, bb])
+            }
+        }
+    }
+
+    /// The shape of the complex values of the operation `step` at `span`: the result's, or,
+    /// for `norm_sqr()`, whose result is a component, the complex type of that component.
+    fn complex_parts_at(&mut self, span: Span, step: ComplexStep) -> ComplexParts {
+        if step != ComplexStep::NormSqr {
+            return self.complex_parts_of(span);
+        }
+        let ty = self.type_at(span);
+        let (f32, label) = match &ty {
+            Type::Base {
+                base: Base::F32,
+                label,
+                ..
+            } => (true, label.clone()),
+            Type::Base { label, .. } => (false, label.clone()),
+            Type::Fn { .. } => (false, Label::public()),
+        };
+        let name = if f32 {
+            una_core::complex::COMPLEX_F32
+        } else {
+            una_core::complex::COMPLEX_F64
+        };
+        let kind = Path {
+            module: una_core::PRELUDE_MODULE.to_owned(),
+            name: name.to_owned(),
+        };
+        ComplexParts {
+            ty: with_label(
+                plain(Base::Named {
+                    module: kind.module.clone(),
+                    name: kind.name.clone(),
+                    args: Vec::new(),
+                }),
+                &label,
+            ),
+            component: ty,
+            f32,
+            label,
+            ctor: Ctor {
+                kind,
+                name: name.to_owned(),
+                index: 0,
+            },
+            span,
+        }
+    }
+
+    /// The shape of the complex value of the expression at `span`.
+    fn complex_parts_of(&mut self, span: Span) -> ComplexParts {
+        let (ty, f32, label, ctor) = self.complex_shape(span);
+        let base = if f32 { Base::F32 } else { Base::F64 };
+        ComplexParts {
+            ty,
+            component: with_label(plain(base), &label),
+            f32,
+            label,
+            ctor,
+            span,
+        }
+    }
+
+    /// `x + y`, `x - y`, `x * y` and `x / y` of two complex values at `span`, by the operations
+    /// of the components in the order of ADR 0120 rule 23, with no contraction; division is
+    /// Smith's algorithm, with its two branches chosen by `c.abs().ieee_ge(other: d.abs())`.
+    /// O(1).
+    fn complex_binary(
+        &mut self,
+        lets: &mut Vec<Let>,
+        op: BinaryOp,
+        x: Atom,
+        y: Atom,
+        span: Span,
+    ) -> Atom {
+        let parts = self.complex_parts_of(span);
+        let (a, b) = self.complex_parts(lets, &parts, x);
+        let (c, d) = self.complex_parts(lets, &parts, y);
+        match op {
+            BinaryOp::Add | BinaryOp::Sub => {
+                let float = if op == BinaryOp::Add {
+                    FloatOp::Add
+                } else {
+                    FloatOp::Sub
+                };
+                let re = self.component(lets, &parts, float, vec![a, c]);
+                let im = self.component(lets, &parts, float, vec![b, d]);
+                self.complex_value(lets, &parts, re, im)
+            }
+            BinaryOp::Mul => {
+                // `re = a * c - b * d`, `im = a * d + b * c`.
+                let ac = self.op2(lets, &parts, FloatOp::Mul, &a, &c);
+                let bd = self.op2(lets, &parts, FloatOp::Mul, &b, &d);
+                let re = self.op2(lets, &parts, FloatOp::Sub, &ac, &bd);
+                let ad = self.op2(lets, &parts, FloatOp::Mul, &a, &d);
+                let bc = self.op2(lets, &parts, FloatOp::Mul, &b, &c);
+                let im = self.op2(lets, &parts, FloatOp::Add, &ad, &bc);
+                self.complex_value(lets, &parts, re, im)
+            }
+            _ => {
+                let c_abs = self.component(lets, &parts, FloatOp::Abs, vec![c.clone()]);
+                let d_abs = self.component(lets, &parts, FloatOp::Abs, vec![d.clone()]);
+                let flag = with_label(bool_ty(), &parts.label);
+                let wide =
+                    self.component_op(lets, &parts, FloatOp::IeeeGe, vec![c_abs, d_abs], flag);
+                // `|c| >= |d|`: `t = d / c`, `n = c + d * t`, `re = (a + b * t) / n`,
+                // `im = (b - a * t) / n`.
+                let mut first = Vec::new();
+                let t = self.op2(&mut first, &parts, FloatOp::Div, &d, &c);
+                let dt = self.op2(&mut first, &parts, FloatOp::Mul, &d, &t);
+                let n = self.op2(&mut first, &parts, FloatOp::Add, &c, &dt);
+                let bt = self.op2(&mut first, &parts, FloatOp::Mul, &b, &t);
+                let p = self.op2(&mut first, &parts, FloatOp::Add, &a, &bt);
+                let re = self.op2(&mut first, &parts, FloatOp::Div, &p, &n);
+                let at = self.op2(&mut first, &parts, FloatOp::Mul, &a, &t);
+                let q = self.op2(&mut first, &parts, FloatOp::Sub, &b, &at);
+                let im = self.op2(&mut first, &parts, FloatOp::Div, &q, &n);
+                let r = self.complex_value(&mut first, &parts, re, im);
+                // Otherwise: `t = c / d`, `n = c * t + d`, `re = (a * t + b) / n`,
+                // `im = (b * t - a) / n`.
+                let mut second = Vec::new();
+                let t = self.op2(&mut second, &parts, FloatOp::Div, &c, &d);
+                let ct = self.op2(&mut second, &parts, FloatOp::Mul, &c, &t);
+                let n = self.op2(&mut second, &parts, FloatOp::Add, &ct, &d);
+                let at = self.op2(&mut second, &parts, FloatOp::Mul, &a, &t);
+                let p = self.op2(&mut second, &parts, FloatOp::Add, &at, &b);
+                let re = self.op2(&mut second, &parts, FloatOp::Div, &p, &n);
+                let bt = self.op2(&mut second, &parts, FloatOp::Mul, &b, &t);
+                let q = self.op2(&mut second, &parts, FloatOp::Sub, &bt, &a);
+                let im = self.op2(&mut second, &parts, FloatOp::Div, &q, &n);
+                let s = self.complex_value(&mut second, &parts, re, im);
+                let quotient = CoreExpr::If {
+                    cond: wide,
+                    then: Box::new(close(first, CoreExpr::Atom { atom: r, span })),
+                    otherwise: Box::new(close(second, CoreExpr::Atom { atom: s, span })),
+                };
+                let t = self.temp();
+                bind_expr(lets, t.clone(), parts.ty.clone(), quotient, span, false);
+                Atom::Var(t)
+            }
+        }
     }
 
     /// A call of a declared function, predicate or policy; a policy call is `declassify`.

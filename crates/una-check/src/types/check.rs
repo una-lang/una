@@ -393,7 +393,11 @@ struct Written<'w, 'c, 'a, 's>(&'w Checker<'c, 'a, 's>);
 
 impl Names for Written<'_, '_, '_, '_> {
     fn kind_name(&self, id: KindId) -> String {
-        self.0.env.kind_name(id).to_owned()
+        // A complex kind is written as its type, `Complex[F64]` (ADR 0120 rule 22).
+        self.0
+            .env
+            .complex_written(id)
+            .map_or_else(|| self.0.env.kind_name(id).to_owned(), ToOwned::to_owned)
     }
 
     fn param_name(&self, index: usize) -> String {

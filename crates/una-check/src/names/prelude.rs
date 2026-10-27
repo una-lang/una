@@ -262,8 +262,13 @@ pub(crate) const ROUNDING_0_4: [&str; 8] = [
 /// The functions of `F32` that edition 0.4 adds to the prelude (`spec/29`, ADR 0120 rule 5).
 pub(crate) const FLOAT_0_4: [&str; 2] = ["f32_from_bits", "parse_f32"];
 
-/// The upper names that edition 0.4 adds: `F32` and the finite kinds (ADR 0120 rules 5, 11).
-pub(crate) const UPPER_0_4: [&str; 3] = ["F32", "Finite64", "Finite32"];
+/// The function of `Complex` that edition 0.4 adds to the prelude (`spec/29 §19`, ADR 0120
+/// rule 22).
+pub(crate) const COMPLEX_0_4: [&str; 1] = ["complex"];
+
+/// The upper names that edition 0.4 adds: `F32`, the finite kinds and `Complex` (ADR 0120
+/// rules 5, 11 and 22).
+pub(crate) const UPPER_0_4: [&str; 4] = ["F32", "Finite64", "Finite32", "Complex"];
 
 /// The variants that edition 0.4 adds to `HttpError`: an operation that a host stop
 /// interrupts (ADR 0116 rule 12), and a request whose limit's queue is full (ADR 0117 rule 8).

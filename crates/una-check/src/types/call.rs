@@ -223,6 +223,9 @@ impl<'a> Checker<'_, 'a, '_> {
         if let Some(ty) = self.decimal_method(&target_ty, method, args, span) {
             return ty;
         }
+        if let Some(ty) = self.complex_method(&target_ty, method, args, span) {
+            return ty;
+        }
         if let Some(ty) = self.float_method(&target_ty, method, args, span) {
             return ty;
         }
@@ -336,6 +339,12 @@ impl<'a> Checker<'_, 'a, '_> {
         }
         match self.env.lower(self.module, method) {
             Some(Entity::Function(id)) => {
+                // `x.complex(im: y)` (ADR 0120 rule 22).
+                if let Some(ty) =
+                    self.complex_call(id, Some((target, &target_ty)), args, span, expected)
+                {
+                    return ty;
+                }
                 self.receiver_marker = Some((marker, target.clone()));
                 let ty = self.call_function(id, Some((target.span, target_ty)), args, span, site);
                 self.receiver_marker = None;
@@ -404,6 +413,10 @@ impl<'a> Checker<'_, 'a, '_> {
                 }
                 match self.env.lower(self.module, name) {
                     Some(Entity::Function(id)) => {
+                        // `complex(re: x, im: y)` (ADR 0120 rule 22).
+                        if let Some(ty) = self.complex_call(id, None, args, span, expected) {
+                            return ty;
+                        }
                         let ty = self.call_function(id, None, args, span, site);
                         self.decimal_call(id, None, args, span, ty)
                     }
@@ -1683,7 +1696,7 @@ impl<'a> Checker<'_, 'a, '_> {
     /// The parameter an unlabeled argument names by punning (`spec/04 §3` rule 3): a bare name
     /// equal to a parameter's name counts as labeled with it. In a call, it applies from the
     /// second argument on (ADR 0049).
-    fn punned(&self, arg: &Arg, names: &[&str]) -> Option<usize> {
+    pub(crate) fn punned(&self, arg: &Arg, names: &[&str]) -> Option<usize> {
         if arg.label.is_some() {
             return None;
         }
@@ -2037,7 +2050,7 @@ impl<'a> Checker<'_, 'a, '_> {
 
     /// U2005: a label that names no parameter; `names` are the parameters that no other
     /// argument gives, which the repair may suggest.
-    fn unknown_label(&mut self, callee: &str, names: &[&str], label: &Ident) {
+    pub(crate) fn unknown_label(&mut self, callee: &str, names: &[&str], label: &Ident) {
         let label_name = self.name(label);
         let mut diagnostic = self.report.make(
             Code::U2005,
@@ -2066,7 +2079,13 @@ impl<'a> Checker<'_, 'a, '_> {
 
     /// U2004: an argument after the first without a label, with an edit that labels it with
     /// the parameter at its position.
-    fn missing_label(&mut self, callee: &str, names: &[&str], arg: &Arg, position: usize) {
+    pub(crate) fn missing_label(
+        &mut self,
+        callee: &str,
+        names: &[&str],
+        arg: &Arg,
+        position: usize,
+    ) {
         let mut diagnostic = self.report.make(
             Code::U2004,
             arg.span,
