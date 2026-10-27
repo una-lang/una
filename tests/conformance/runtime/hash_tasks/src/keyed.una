@@ -22,7 +22,7 @@ count(words: List[Text]) -> Unit
     edit counts.update(key: word, initial: 0, change: fn(n) -> n + 1)
   show("started", m: counts)
 
-main() -> Unit
+pub main() -> Unit
   uses @console: Console[print]
 =
   tasks
