@@ -139,7 +139,10 @@ fn read_entry(path: &Path) -> Option<String> {
 /// leads inside the package: the link itself is replaced by the entry.
 pub(crate) fn put(cache: &ProofCache, key: &str, answer: &Answer) {
     if answer.status == Status::Unknown
-        && matches!(answer.reason.as_deref(), Some("wallclock" | "cancelled"))
+        && matches!(
+            answer.reason.as_deref(),
+            Some("wallclock" | "cancelled" | "cpu" | "memout" | "crash")
+        )
     {
         return;
     }
@@ -265,6 +268,7 @@ mod tests {
             reason: None,
             values: Vec::new(),
             values_error: None,
+            detail: None,
         }
     }
 
@@ -367,6 +371,7 @@ mod tests {
             reason: None,
             values: vec!["0".to_owned()],
             values_error: None,
+            detail: None,
         };
         write(&serde_json::to_string(&current).unwrap());
         assert_eq!(get(&mine, &query), Some(current));
@@ -387,6 +392,7 @@ mod tests {
             reason: None,
             values: vec!["0".to_owned()],
             values_error: None,
+            detail: None,
         };
         let query = key("lock", "(check-sat)");
         put(&mine, &query, &refuted);
@@ -451,6 +457,7 @@ mod tests {
             reason: None,
             values: vec!["0".to_owned()],
             values_error: None,
+            detail: None,
         };
         put(&mine, &query, &refuted);
         assert!(std::fs::symlink_metadata(&file).unwrap().is_file());

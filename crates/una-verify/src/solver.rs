@@ -1,13 +1,86 @@
-//! The solver protocol of `spec/12 §5`: Z3 at the version of `verification.lock`, one
-//! `z3 -in -smt2` process per query with its whole script.
+//! The solver protocol of `spec/12 §5`: the Z3 built into `una`, at the version of
+//! `verification.lock`, one child process per query with its whole script (ADR 0124). The
+//! child is started, fed and waited for by the [`Solver`] the caller supplies (`una-cli`'s,
+//! which re-executes `una` in its solver mode); this module reads what it answered and applies
+//! the proof condition of ADR 0124 rule 8: a proof needs a normal exit with status 0 and
+//! `unsat`, and anything else is not one.
 
-use std::io::{Read, Write};
-use std::path::Path;
-use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use std::fmt;
+use std::sync::atomic::AtomicBool;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+
+/// How the parent runs one query (ADR 0124 rules 4 to 7): it starts the solver child, writes
+/// the script to its stdin, reads its stdout and the head of its stderr, kills it past the
+/// wall-clock guard or on cancellation, and says how it ended.
+pub trait Solver: Send + Sync + fmt::Debug {
+    /// The Z3 version this `una` can run, or why it cannot (U5003).
+    fn version(&self) -> Result<String, String>;
+    /// How this `una` names itself in a U5003 message, as `this una (0.4.0)`.
+    fn describe(&self) -> String;
+    /// Runs `script` on a fresh child within `wallclock`, stopping early when `cancel` is set.
+    ///
+    /// # Errors
+    ///
+    /// U5003: the child could not be started, or is not this `una` (the handshake of rule 4).
+    fn run(
+        &self,
+        script: &str,
+        wallclock: Duration,
+        cancel: Option<&AtomicBool>,
+    ) -> Result<Raw, String>;
+}
+
+/// What a child wrote and how it ended, before the proof condition is applied.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Raw {
+    /// Everything the child wrote on stdout after its handshake lines.
+    pub stdout: String,
+    /// The first 4 KiB the child wrote on stderr.
+    pub stderr: String,
+    /// How it ended.
+    pub ended: Ended,
+    /// When an outer sandbox confines the child (macOS), the operations it denies, in the
+    /// order of rule 7; `None` when the child confined itself.
+    pub outer_denied: Option<Vec<String>>,
+}
+
+/// How a child ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ended {
+    /// By its own exit, with this status.
+    Exited(i32),
+    /// By this signal.
+    Signaled(i32),
+    /// Killed by the parent at the wall-clock guard.
+    Wallclock,
+    /// Killed by the parent because the run no longer needs the answer.
+    Cancelled,
+    /// Killed by the parent past the memory limit (macOS, by the footprint).
+    Memory,
+}
+
+/// Why no answer could be made of what the child wrote.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Refused {
+    /// The query is not valid SMT-LIB for the solver: a bug of the encoding (U8001).
+    Query(String),
+    /// The child broke its confinement: a security event (U5003).
+    Solver(String),
+}
+
+/// `SIGSYS`, by which the filter kills a child that made a forbidden call.
+#[cfg(target_os = "linux")]
+const SIGSYS: i32 = 31;
+#[cfg(not(target_os = "linux"))]
+const SIGSYS: i32 = 12;
+/// `SIGXCPU`, the end of a child past its processor-time limit.
+const SIGXCPU: i32 = 24;
+/// The exit status of Z3 5.1.0's front end past `memory_max_size`, with the message below on
+/// stderr and nothing on stdout (probe P4 of ADR 0124).
+const MEMOUT_STATUS: i32 = 101;
+const MEMOUT_MESSAGE: &str = "(error \"out of memory\")";
 
 /// The status of a query: `unsat` proves the obligation, `sat` refutes it (`spec/12 §5, §6`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -31,6 +104,10 @@ pub(crate) struct Answer {
     /// proof cache entry written before the field fails its tag and is solved again.
     #[serde(default)]
     pub(crate) values_error: Option<String>,
+    /// What ended a child whose answer is `crash` or `memout`: the signal or the exit status
+    /// (ADR 0124 rule 8). Never cached, since such an answer is not.
+    #[serde(default)]
+    pub(crate) detail: Option<String>,
 }
 
 /// Why the solver could not answer: the query is not valid SMT-LIB for it, which is a bug of
@@ -38,122 +115,86 @@ pub(crate) struct Answer {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Failure(pub(crate) String);
 
-/// The version the solver at `solver` reports, `5.1.0` for `Z3 version 5.1.0 - 64 bit`.
-pub(crate) fn version(solver: &Path) -> Result<String, String> {
-    let output = Command::new(solver)
-        .arg("--version")
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .map_err(|error| error.to_string())?;
-    let text = String::from_utf8_lossy(&output.stdout);
-    text.split_whitespace()
-        .skip_while(|word| *word != "version")
-        .nth(1)
-        .map(str::to_owned)
-        .ok_or_else(|| format!("`{}` printed no version", text.trim()))
-}
-
-/// Runs `script` and reads its answer; `values` is the number of terms whose values the script
-/// requests after a `sat`. Past `wallclock` the process is killed and the answer is `unknown`
-/// with reason `wallclock` (`spec/12 §5`).
-pub(crate) fn run(
-    solver: &Path,
-    script: &str,
-    values: usize,
-    wallclock: Duration,
-    cancel: Option<&AtomicBool>,
-) -> Result<Answer, Failure> {
-    // The deadline runs from before the solver starts, and holds while the query is written:
-    // a solver that does not read its input must not keep the run past its time (#286).
-    let deadline = Instant::now() + wallclock;
-    let mut child = Command::new(solver)
-        .args(["-in", "-smt2"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|error| Failure(format!("cannot start the solver: {error}")))?;
-    let stdin = child.stdin.take();
-    let stdout = child.stdout.take();
-    let (waited, output) = std::thread::scope(|scope| {
-        // Read and write on threads of their own, so that a full pipe in either direction
-        // blocks neither the solver nor the wait. The writer drops the solver's input when it
-        // is done; killing the solver ends a write it does not read with a broken pipe.
-        let reader = stdout.map(|mut stdout| {
-            scope.spawn(move || {
-                let mut text = String::new();
-                let _ = stdout.read_to_string(&mut text);
-                text
-            })
-        });
-        if let Some(mut stdin) = stdin {
-            scope.spawn(move || {
-                let _ = stdin.write_all(script.as_bytes());
-            });
-        }
-        let waited = wait(|| !matches!(child.try_wait(), Ok(None)), deadline, cancel);
-        if waited != Waited::Exited {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-        let output = reader
-            .and_then(|reader| reader.join().ok())
-            .unwrap_or_default();
-        (waited, output)
-    });
-    let (timed_out, cancelled) = (waited == Waited::Wallclock, waited == Waited::Cancelled);
-    if cancelled {
-        return Ok(Answer {
+/// The answer of a query from what its child wrote and how it ended (ADR 0124 rule 8).
+/// Proven needs the handshake (checked by the [`Solver`]), a normal exit with status 0 and
+/// `unsat`; refuted a `sat` with status 0, or status 1 when an `(error ...)` followed `sat`;
+/// a limit or a crash is `unknown` with its reason, never a proof, never cached, and never
+/// U8001; a `SIGSYS` is U5003; an `(error ...)` before the status stays U8001.
+pub(crate) fn answer(raw: &Raw, values: usize) -> Result<Answer, Refused> {
+    let unknown = |reason: &str, detail: Option<String>| {
+        Ok(Answer {
             status: Status::Unknown,
-            reason: Some("cancelled".to_owned()),
+            reason: Some(reason.to_owned()),
             values: Vec::new(),
             values_error: None,
-        });
+            detail,
+        })
+    };
+    let status = match raw.ended {
+        Ended::Wallclock => return unknown("wallclock", None),
+        Ended::Cancelled => return unknown("cancelled", None),
+        Ended::Memory => {
+            return unknown("memout", Some("killed past the memory limit".to_owned()));
+        }
+        Ended::Signaled(SIGSYS) => {
+            return Err(Refused::Solver(
+                "the solver child broke its confinement (SIGSYS); this is a security event, report it"
+                    .to_owned(),
+            ));
+        }
+        Ended::Signaled(SIGXCPU) => return unknown("cpu", None),
+        Ended::Signaled(signal) => {
+            return unknown(
+                "crash",
+                Some(format!("the solver child ended by signal {signal}")),
+            );
+        }
+        Ended::Exited(MEMOUT_STATUS) => {
+            return if raw.stdout.trim().is_empty() && raw.stderr.contains(MEMOUT_MESSAGE) {
+                unknown("memout", None)
+            } else {
+                unknown(
+                    "crash",
+                    Some(format!(
+                        "the solver child exited with status {MEMOUT_STATUS}"
+                    )),
+                )
+            };
+        }
+        Ended::Exited(status) => status,
+    };
+    let parsed = match parse(&raw.stdout, values) {
+        Ok(parsed) => parsed,
+        // No status at all from a child that did not end normally is a crash, not a bad query.
+        Err(failure) if status != 0 && !has_status(&raw.stdout) => {
+            return unknown(
+                "crash",
+                Some(format!(
+                    "the solver child exited with status {status}: {}",
+                    failure.0
+                )),
+            );
+        }
+        Err(failure) => return Err(Refused::Query(failure.0)),
+    };
+    match (parsed.status, status) {
+        (Status::Proven | Status::Refuted, 0) | (Status::Unknown, _) => Ok(parsed),
+        (Status::Refuted, 1) if parsed.values_error.is_some() => Ok(parsed),
+        (_, status) => unknown(
+            "crash",
+            Some(format!(
+                "the solver child exited with status {status} after its answer"
+            )),
+        ),
     }
-    if timed_out {
-        return Ok(Answer {
-            status: Status::Unknown,
-            reason: Some("wallclock".to_owned()),
-            values: Vec::new(),
-            values_error: None,
-        });
-    }
-    parse(&output, values)
 }
 
-/// How waiting for the solver ended.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Waited {
-    /// It exited, with its answer, within its time.
-    Exited,
-    /// Its time ran out (`--solver-wallclock`).
-    Wallclock,
-    /// The run no longer needs its answer.
-    Cancelled,
-}
-
-/// Waits for the solver, `exited` telling whether it has exited, until `deadline` or until
-/// `cancel` is set. The deadline comes first: a solver's answer counts only when it came within
-/// its time, so `--solver-wallclock 0` makes every query unknown, however fast the solver is
-/// (`spec/12 §5`, #189).
-fn wait(
-    mut exited: impl FnMut() -> bool,
-    deadline: Instant,
-    cancel: Option<&AtomicBool>,
-) -> Waited {
-    loop {
-        if Instant::now() >= deadline {
-            return Waited::Wallclock;
-        }
-        if exited() {
-            return Waited::Exited;
-        }
-        if cancel.is_some_and(|cancel| cancel.load(Ordering::Relaxed)) {
-            return Waited::Cancelled;
-        }
-        std::thread::sleep(Duration::from_millis(2));
-    }
+/// Whether the output starts with a status word.
+fn has_status(output: &str) -> bool {
+    matches!(
+        output.split_whitespace().next(),
+        Some("sat" | "unsat" | "unknown")
+    )
 }
 
 /// A solver's output as s-expressions.
@@ -357,33 +398,13 @@ fn parse(output: &str, values: usize) -> Result<Answer, Failure> {
             Vec::new()
         },
         values_error: values_error.filter(|_| status == Status::Refuted),
+        detail: None,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_solver_past_its_wallclock_is_unknown_even_if_it_has_answered() {
-        // #189: with `--solver-wallclock 0` every query is unknown with reason `wallclock`,
-        // however fast the solver is: the deadline is checked before the solver's exit, so a
-        // solver that has already answered when the first check comes is still past its time.
-        let past = Instant::now();
-        assert_eq!(wait(|| true, past, None), Waited::Wallclock);
-        let cancel = AtomicBool::new(true);
-        assert_eq!(wait(|| true, past, Some(&cancel)), Waited::Wallclock);
-        // Within the deadline, an exit is the answer, and a cancellation stops the solver.
-        let later = Instant::now() + Duration::from_secs(60);
-        assert_eq!(wait(|| true, later, None), Waited::Exited);
-        assert_eq!(wait(|| false, later, Some(&cancel)), Waited::Cancelled);
-        let mut polls = 0;
-        let exits_third = || {
-            polls += 1;
-            polls == 3
-        };
-        assert_eq!(wait(exits_third, later, None), Waited::Exited);
-    }
 
     #[test]
     fn answers_are_read_from_the_solver_output() {
@@ -399,6 +420,7 @@ mod tests {
                     "true".to_owned()
                 ],
                 values_error: None,
+                detail: None,
             })
         );
         let proven =
@@ -410,6 +432,7 @@ mod tests {
                 reason: None,
                 values: Vec::new(),
                 values_error: None,
+                detail: None,
             })
         );
         let rejected_values = "sat\n(\n  (define-fun |e| () Int\n    0)\n)\n(error \"line 12 column 14: unknown constant\")\n(:reason-unknown \"\")\n";
@@ -420,6 +443,7 @@ mod tests {
                 reason: None,
                 values: Vec::new(),
                 values_error: Some("line 12 column 14: unknown constant".to_owned()),
+                detail: None,
             })
         );
         // Fewer values than requested terms are no model either.
@@ -430,6 +454,7 @@ mod tests {
                 reason: None,
                 values: Vec::new(),
                 values_error: Some("1 values for 2 requested terms".to_owned()),
+                detail: None,
             })
         );
         let unknown = "unknown\n(error \"model is not available\")\n(:reason-unknown \"(resource limits reached)\")\n";
@@ -442,28 +467,87 @@ mod tests {
         assert!(parse(broken, 0).is_err());
     }
 
-    #[cfg(unix)]
+    fn raw(stdout: &str, stderr: &str, ended: Ended) -> Raw {
+        Raw {
+            stdout: stdout.to_owned(),
+            stderr: stderr.to_owned(),
+            ended,
+            outer_denied: None,
+        }
+    }
+
     #[test]
-    fn a_solver_that_reads_no_query_is_stopped_at_its_wallclock() {
-        // #286: the deadline holds while the query is being written. A solver that never reads
-        // its input leaves a query larger than a pipe unwritten; the write must not keep the
-        // run past the wallclock.
-        use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("una-solver-mute-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let solver = dir.join("mute");
-        let staged = dir.join("mute.tmp");
-        std::fs::write(&staged, "#!/bin/sh\nexec sleep 30\n").unwrap();
-        std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755)).unwrap();
-        std::fs::rename(&staged, &solver).unwrap();
-        let script = ";".repeat(4 * 1024 * 1024);
-        let started = Instant::now();
-        let answer = run(&solver, &script, 0, Duration::from_millis(300), None).unwrap();
-        let took = started.elapsed();
-        assert_eq!(answer.status, Status::Unknown);
-        assert_eq!(answer.reason.as_deref(), Some("wallclock"));
-        assert!(took < Duration::from_secs(5), "took {took:?}");
-        let _ = std::fs::remove_dir_all(&dir);
+    fn a_proof_needs_a_normal_exit_with_status_zero_and_unsat() {
+        // ADR 0124 rule 8: `unsat` from a child that exited with status 1, or was killed, is
+        // not a proof; it is `unknown` with reason `crash`, never cached.
+        let proven = answer(&raw("unsat\n", "", Ended::Exited(0)), 0).unwrap();
+        assert_eq!(proven.status, Status::Proven);
+        for ended in [Ended::Exited(1), Ended::Signaled(9), Ended::Exited(3)] {
+            let not_proven = answer(&raw("unsat\n", "", ended), 0).unwrap();
+            assert_eq!(not_proven.status, Status::Unknown, "{ended:?}");
+            assert_eq!(not_proven.reason.as_deref(), Some("crash"), "{ended:?}");
+            assert!(not_proven.detail.is_some(), "{ended:?}");
+        }
+    }
+
+    #[test]
+    fn a_refutation_tolerates_status_one_only_after_an_error_following_sat() {
+        let refuted = answer(&raw("sat\n((|e| 1))\n", "", Ended::Exited(0)), 1).unwrap();
+        assert_eq!(refuted.status, Status::Refuted);
+        assert_eq!(refuted.values, vec!["1".to_owned()]);
+        // ADR 0101: `sat`, then an error, exit status 1: still refuted, with no values.
+        let after_error = answer(
+            &raw(
+                "sat\n(error \"line 2: unknown constant\")\n",
+                "",
+                Ended::Exited(1),
+            ),
+            1,
+        )
+        .unwrap();
+        assert_eq!(after_error.status, Status::Refuted);
+        assert!(after_error.values_error.is_some());
+        // `sat` with status 1 and no error line is a crash.
+        let crashed = answer(&raw("sat\n((|e| 1))\n", "", Ended::Exited(1)), 1).unwrap();
+        assert_eq!(crashed.reason.as_deref(), Some("crash"));
+    }
+
+    #[test]
+    fn limits_and_crashes_are_unknown_with_their_reason_and_a_sigsys_is_refused() {
+        let cases = [
+            (Ended::Wallclock, "wallclock"),
+            (Ended::Cancelled, "cancelled"),
+            (Ended::Memory, "memout"),
+            (Ended::Signaled(SIGXCPU), "cpu"),
+            (Ended::Signaled(11), "crash"),
+        ];
+        for (ended, reason) in cases {
+            let answer = answer(&raw("", "", ended), 0).unwrap();
+            assert_eq!(answer.status, Status::Unknown, "{ended:?}");
+            assert_eq!(answer.reason.as_deref(), Some(reason), "{ended:?}");
+        }
+        // Z3 5.1.0 past `memory_max_size`: status 101, the message on stderr, nothing on
+        // stdout (probe P4); status 101 with another stderr is a crash.
+        let memout = answer(
+            &raw("", "(error \"out of memory\")\n", Ended::Exited(101)),
+            0,
+        )
+        .unwrap();
+        assert_eq!(memout.reason.as_deref(), Some("memout"));
+        let other = answer(&raw("", "segmentation fault\n", Ended::Exited(101)), 0).unwrap();
+        assert_eq!(other.reason.as_deref(), Some("crash"));
+        // A child killed by the filter is a security event, never a status.
+        assert!(matches!(
+            answer(&raw("", "", Ended::Signaled(SIGSYS)), 0),
+            Err(Refused::Solver(message)) if message.contains("broke its confinement")
+        ));
+        // An error before the status is a bad query, whatever the exit status; no status at
+        // all from a child that exited abnormally is a crash.
+        assert!(matches!(
+            answer(&raw("(error \"line 1: bad\")\n", "", Ended::Exited(0)), 0),
+            Err(Refused::Query(_))
+        ));
+        let silent = answer(&raw("", "", Ended::Exited(2)), 0).unwrap();
+        assert_eq!(silent.reason.as_deref(), Some("crash"));
     }
 }

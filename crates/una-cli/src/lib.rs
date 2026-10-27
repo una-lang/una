@@ -45,6 +45,7 @@ pub use crate::std_builtins::{
 };
 pub use crate::std_listing::{Item, STD_LISTING_SCHEMA, Variant, std_items, std_listing};
 pub use crate::verification::{DEFAULT_WALLCLOCK, Solving, Verification};
+pub mod solver_child;
 
 /// The exit status of a `una` command (`spec/13 §5`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

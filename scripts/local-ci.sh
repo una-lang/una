@@ -108,6 +108,23 @@ fi
 PATH="$z3/bin:$PATH"
 export PATH
 
+# The Z3 built into una (ADR 0124 rules 1 and 19): the library of supply-chain/z3.lock, built
+# once per pin by scripts/build-z3.sh into target/z3/<source digest>/ (a cold build of 10 to 20
+# minutes; UNA_Z3_SOURCE names a local copy of the pinned tarball until the mirror release
+# exists), and named to every cargo step by UNA_Z3_LIB. Without it, `una check` would be U5003.
+z3_digest=$(sed -n 's/^source_sha256 *= *"\([^"]*\)"$/\1/p' supply-chain/z3.lock)
+z3_lib="$root/target/z3/$z3_digest/lib/libz3shell.a"
+if [ ! -f "$z3_lib" ]; then
+    echo "== building the Z3 library of supply-chain/z3.lock"
+    if [ -n "${UNA_Z3_SOURCE:-}" ]; then
+        scripts/build-z3.sh --source "$UNA_Z3_SOURCE" || fail "building the Z3 library"
+    else
+        scripts/build-z3.sh || fail "building the Z3 library"
+    fi
+fi
+UNA_Z3_LIB=$z3_lib
+export UNA_Z3_LIB
+
 target=$(rustc -vV | sed -n 's/^host: //p')
 step() {
     name=$1

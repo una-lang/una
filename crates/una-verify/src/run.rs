@@ -3,7 +3,6 @@
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
-use std::path::PathBuf;
 use std::time::Duration;
 
 use rayon::prelude::*;
@@ -31,8 +30,8 @@ pub struct Lock {
 /// How obligations are discharged.
 #[derive(Clone, Debug)]
 pub struct Settings {
-    /// The solver binary, `z3` on the path.
-    pub solver: PathBuf,
+    /// How a query's child is run: `una` itself, re-executed in its solver mode (ADR 0124).
+    pub solver: std::sync::Arc<dyn solver::Solver>,
     /// The lock.
     pub lock: Lock,
     /// The wall-clock guard (`spec/12 §5`).
@@ -301,24 +300,37 @@ pub fn queries(obligations: &[Obligation], lock: &Lock) -> Vec<String> {
         .collect()
 }
 
-/// U5003 when the solver is missing or reports another version than the lock.
+/// U5003 when this `una` has no solver, or another version than the lock pins (ADR 0124
+/// rule 10): compared with no process started.
 fn check_version(settings: &Settings) -> Result<(), Problem> {
-    match solver::version(&settings.solver) {
+    match settings.solver.version() {
         Ok(found) if found == settings.lock.solver_version => {}
         Ok(found) => {
             return Err(Problem::Solver(format!(
-                "the solver is z3 {found}, and verification.lock pins z3 {}; install the pinned version with scripts/install-z3.sh",
-                settings.lock.solver_version
+                "verification.lock pins z3 {}, and {} has z3 {found} built in",
+                settings.lock.solver_version,
+                settings.solver.describe()
             )));
         }
-        Err(reason) => {
-            return Err(Problem::Solver(format!(
-                "z3 {} is not available ({reason}); install it with scripts/install-z3.sh and put it on the path",
-                settings.lock.solver_version
-            )));
-        }
+        Err(reason) => return Err(Problem::Solver(reason)),
     }
     Ok(())
+}
+
+/// Runs `text` through the settings' solver and applies the proof condition; `id` names the
+/// obligation of a query the solver rejected.
+fn solve(settings: &Settings, id: &str, text: &str, values: usize) -> Result<Answer, Problem> {
+    let raw = settings
+        .solver
+        .run(text, settings.wallclock, settings.cancel.as_deref())
+        .map_err(Problem::Solver)?;
+    solver::answer(&raw, values).map_err(|refused| match refused {
+        solver::Refused::Query(message) => Problem::Query {
+            id: id.to_owned(),
+            message,
+        },
+        solver::Refused::Solver(message) => Problem::Solver(message),
+    })
 }
 
 /// Discharges `obligations`: cached answers first, then the solver for the others, in
@@ -631,6 +643,7 @@ fn over_weight(obligation: &Obligation) -> Option<Answer> {
         )),
         values: Vec::new(),
         values_error: None,
+    detail: None,
     })
 }
 
@@ -667,17 +680,7 @@ fn verify_once(obligations: &[Obligation], settings: &Settings) -> Result<Vec<Ou
             if let Some(answer) = cached {
                 return Ok((answer, true));
             }
-            let answer = solver::run(
-                &settings.solver,
-                text,
-                requested.len(),
-                settings.wallclock,
-                settings.cancel.as_deref(),
-            )
-            .map_err(|failure| Problem::Query {
-                id: obligation.id.clone(),
-                message: failure.0,
-            })?;
+            let answer = solve(settings, &obligation.id, text, requested.len())?;
             if let Some(cache) = &settings.cache {
                 cache::put(cache, key, &answer);
             }
@@ -731,17 +734,7 @@ fn verify_once(obligations: &[Obligation], settings: &Settings) -> Result<Vec<Ou
             if let Some(answer) = cached {
                 return Ok(Some(answer));
             }
-            let answer = solver::run(
-                &settings.solver,
-                text,
-                requested.len(),
-                settings.wallclock,
-                settings.cancel.as_deref(),
-            )
-            .map_err(|failure| Problem::Query {
-                id: obligation.id.clone(),
-                message: failure.0,
-            })?;
+            let answer = solve(settings, &obligation.id, text, requested.len())?;
             if let Some(cache) = &settings.cache {
                 cache::put(cache, key, &answer);
             }
@@ -804,17 +797,7 @@ fn verify_once(obligations: &[Obligation], settings: &Settings) -> Result<Vec<Ou
             let answer = match cached {
                 Some(answer) => answer,
                 None => {
-                    let answer = solver::run(
-                        &settings.solver,
-                        &text,
-                        requested.len(),
-                        settings.wallclock,
-                        settings.cancel.as_deref(),
-                    )
-                    .map_err(|failure| Problem::Query {
-                        id: first.id.clone(),
-                        message: failure.0,
-                    })?;
+                    let answer = solve(settings, &first.id, &text, requested.len())?;
                     if let Some(cache) = &settings.cache {
                         cache::put(cache, &key, &answer);
                     }
@@ -1352,6 +1335,7 @@ mod missing_values_tests {
             reason: None,
             values: values.iter().map(|v| (*v).to_owned()).collect(),
             values_error: values_error.map(str::to_owned),
+            detail: None,
         }
     }
 
@@ -1562,6 +1546,7 @@ mod missing_values_tests {
             reason: None,
             values: Vec::new(),
             values_error: None,
+            detail: None,
         };
         let vacuous = outcome(&obligation, &[], &proof, None, false);
         assert_eq!(vacuous.status, ObligationStatus::Proven);

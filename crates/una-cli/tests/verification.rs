@@ -310,32 +310,40 @@ pub first() -> Int = book(4321)
 ",
         )],
     );
+    // ADR 0124 rule 11: nothing on PATH is ever run. A build with the solver linked in proves
+    // with an empty PATH; a development build without it is U5003 at the lock's pin, naming
+    // the script that builds the library (rule 19).
     let empty = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("no-solver-path");
     std::fs::create_dir_all(&empty).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
         .env_remove("UNA_PROOF_KEY")
+        .env_remove("UNA_SOLVER_STAND_IN")
         .args(["--json", "check", root.to_str().unwrap()])
         .env("PATH", &empty)
         .output()
         .unwrap();
-    assert_eq!(output.status.code(), Some(1));
     let document: Value = serde_json::from_str(stdout(&output)).unwrap();
-    let diagnostic = &document["diagnostics"][0];
-    assert_eq!(diagnostic["code"], "U5003");
-    assert_eq!(diagnostic["primary"]["file"], "verification.lock");
-    assert_eq!(
-        diagnostic["primary"]["start"],
-        json!({"line": 3, "col": 20})
-    );
-    assert!(
-        diagnostic["message"]
-            .as_str()
-            .unwrap()
-            .contains("install it with scripts/install-z3.sh"),
-        "{}",
-        stdout(&output)
-    );
+    if una_z3::BUILD.linked {
+        assert_eq!(output.status.code(), Some(0), "{}", stdout(&output));
+    } else {
+        assert_eq!(output.status.code(), Some(1));
+        let diagnostic = &document["diagnostics"][0];
+        assert_eq!(diagnostic["code"], "U5003");
+        assert_eq!(diagnostic["primary"]["file"], "verification.lock");
+        assert_eq!(
+            diagnostic["primary"]["start"],
+            json!({"line": 3, "col": 20})
+        );
+        assert!(
+            diagnostic["message"]
+                .as_str()
+                .unwrap()
+                .contains("no solver built in; run scripts/build-z3.sh"),
+            "{}",
+            stdout(&output)
+        );
+    }
     // Tier 0 needs no solver.
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
@@ -463,9 +471,11 @@ fn a_query_the_solver_rejects_is_u8001_and_exits_with_3() {
     // Written under another name and renamed into place, so that no process can execute the
     // file while it is still open for writing ("text file busy", #286).
     let staged = bin.join("z3.staged");
+    // A stand-in for the solver child (ADR 0124; the test hooks): it writes the handshake it
+    // is given, reads the query and rejects it.
     std::fs::write(
         &staged,
-        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'Z3 version 5.1.0 - 64 bit'; exit 0; fi\ncat > /dev/null\necho '(error \"line 1 column 1: rejected\")'\n",
+        "#!/bin/sh\necho \"$1\"\ncat > /dev/null\necho '(error \"line 1 column 1: rejected\")'\n",
     )
     .unwrap();
     std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -474,8 +484,8 @@ fn a_query_the_solver_rejects_is_u8001_and_exits_with_3() {
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
         .env_remove("UNA_PROOF_KEY")
+        .env("UNA_SOLVER_STAND_IN", &solver)
         .args(["--json", "check", root.to_str().unwrap()])
-        .env("PATH", &bin)
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(3), "{}", stdout(&output));
@@ -1757,11 +1767,13 @@ fn a_query_the_solver_rejects_is_an_internal_error_11() {
         .unwrap()
         .to_owned();
     let staged = bin.join("z3.tmp");
+    // A stand-in for the solver child (ADR 0124; the test hooks): it writes the handshake it
+    // is given, reads the query and rejects it. The version check is against the solver built
+    // into `una`, with no process started (rule 10), so the pinned version is not printed.
+    let _ = version;
     std::fs::write(
         &staged,
-        format!(
-            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo \"Z3 version {version} - 64 bit\"; exit 0; fi\ncat > /dev/null\necho '(error \"line 1 column 1: unknown constant\")'\n"
-        ),
+        "#!/bin/sh\necho \"$1\"\ncat > /dev/null\necho '(error \"line 1 column 1: unknown constant\")'\n",
     )
     .unwrap();
     std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -1773,13 +1785,10 @@ fn a_query_the_solver_rejects_is_an_internal_error_11() {
             "module app\n\npub kind Pos = Int where it > 0\n\npub one() -> Pos = 1\n",
         )],
     );
-    // The stand-in first, and the system's own `cat` for it to read the query with.
-    let path = format!("{}:/usr/bin:/bin", bin.display());
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", scratch.join("home"))
         .env_remove("UNA_PROOF_KEY")
-        .env("PATH", path)
-        .env_remove("UNA_PROOF_KEY")
+        .env("UNA_SOLVER_STAND_IN", bin.join("z3"))
         .args(["--json", "check"])
         .arg(&root)
         .output()

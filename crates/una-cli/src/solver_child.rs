@@ -1,0 +1,434 @@
+//! The solver child (ADR 0124 rules 3 to 8): `una` re-executed as `una __solver`, which
+//! confines itself, writes its handshake and runs the Z3 front end built into it on the query
+//! it reads from stdin; and the parent's side, the [`Launcher`], which starts that child with
+//! an empty environment and three pipes, checks the handshake, feeds the script, bounds the
+//! child in time (and in memory, on macOS, by its footprint), and gives the verifier what the
+//! child wrote and how it ended. The proof condition itself is the verifier's
+//! (`una_verify::solver`).
+//!
+//! The handshake is the child's first line, `una-solver 1 z3 <version> <build>`, where
+//! `<build>` is the SHA-256 of this `una`'s build record (rule 4): it detects an accidental
+//! replacement of `una` during a run, not a malicious one. Under an outer sandbox (macOS) a
+//! second line, `una-solver-outer <op>,<op>,...`, lists what the outer profile denies.
+
+use std::ffi::{CStr, CString};
+use std::io::{Read, Write};
+use std::os::fd::AsFd;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
+
+use sha2::{Digest, Sha256};
+use una_sys::solver::spawn::{self, Ended as Spawned};
+use una_sys::solver::{Confinement, Limits, confine};
+use una_verify::{Ended, Raw, Solver};
+
+/// The protocol version of the handshake.
+const PROTOCOL: u32 = 1;
+/// The most bytes the parent reads for the handshake, and the time it waits for it (rule 4).
+const HANDSHAKE_BYTES: usize = 256;
+const HANDSHAKE_WITHIN: Duration = Duration::from_secs(2);
+/// How much of the child's stderr the parent keeps, for the reason of a crash (rule 5).
+const STDERR_KEPT: usize = 4096;
+/// How often the parent looks at the child.
+const POLL: Duration = Duration::from_millis(2);
+/// How often the parent reads the child's footprint on macOS (rule 6), and the margin above
+/// the memory limit past which it kills the child.
+#[cfg(target_os = "macos")]
+const FOOTPRINT_EVERY: Duration = Duration::from_millis(10);
+#[cfg(target_os = "macos")]
+const FOOTPRINT_MARGIN_MIB: u64 = 1024;
+/// The default memory limit of a solver child in MiB (`--solver-memory`, Question 4).
+pub const DEFAULT_MEMORY_MIB: u64 = 4096;
+/// The exit status of a child that could not confine itself or has no solver: it writes no
+/// handshake, and the parent reports U5003 with its stderr.
+const NOT_CONFINED: u8 = 4;
+
+/// The SHA-256 of this `una`'s build record, in hex: the `<build>` of the handshake.
+pub(crate) fn build_digest() -> String {
+    format!("{:x}", Sha256::digest(crate::build_record().as_bytes()))
+}
+
+/// The handshake line this `una` expects from its child.
+fn expected_handshake() -> String {
+    format!(
+        "una-solver {PROTOCOL} z3 {} {}",
+        una_z3::BUILD.version,
+        build_digest()
+    )
+}
+
+/// `una __solver <cpu-seconds> <memory-mib> <outside-temp> [--no-address-space-backstop]`:
+/// the child. Confines itself, writes the handshake, runs the front end on stdin, and exits
+/// with the front end's status; a step that fails writes its reason on stderr and exits with
+/// [`NOT_CONFINED`], with no handshake.
+pub fn serve(args: &[String]) -> u8 {
+    let (cpu_seconds, memory_mib, outside_temp) = match args {
+        [cpu, memory, outside, ..] => match (cpu.parse::<u64>(), memory.parse::<u64>()) {
+            (Ok(cpu), Ok(memory)) => (cpu, memory, outside.clone()),
+            _ => return refuse("the solver mode's limits are not integers"),
+        },
+        _ => return refuse("the solver mode needs its limits and a path"),
+    };
+    let backstop = !args.iter().any(|a| a == "--no-address-space-backstop");
+    let Ok(outside) = CString::new(outside_temp) else {
+        return refuse("the path outside the temporary directory holds a NUL byte");
+    };
+    let limits = Limits {
+        cpu_seconds,
+        memory_mib,
+        address_space_backstop: backstop,
+    };
+    let confinement = match confine(&limits, &outside) {
+        Ok(confinement) => confinement,
+        Err(error) => return refuse(&format!("the solver could not be confined: {error}")),
+    };
+    let mut stdout = std::io::stdout().lock();
+    let mut lines = expected_handshake();
+    if let Confinement::Outer { denied } = &confinement {
+        lines.push_str("\nuna-solver-outer ");
+        lines.push_str(&denied.join(","));
+    }
+    lines.push('\n');
+    if stdout.write_all(lines.as_bytes()).is_err() || stdout.flush().is_err() {
+        return refuse("cannot write the handshake");
+    }
+    drop(stdout);
+    let memory = format!("memory_max_size={memory_mib}");
+    match una_z3::run(&["-in", "-smt2", &memory]) {
+        Ok(status) => u8::try_from(status).unwrap_or(u8::MAX),
+        Err(refusal) => refuse(&refusal.to_string()),
+    }
+}
+
+/// Writes `reason` on stderr and gives the exit status of a child that wrote no handshake.
+fn refuse(reason: &str) -> u8 {
+    let _ = writeln!(std::io::stderr(), "{reason}");
+    NOT_CONFINED
+}
+
+/// The parent's side: starts solver children and bounds them.
+#[derive(Clone, Debug)]
+pub struct Launcher {
+    /// The memory limit of each child in MiB.
+    memory_mib: u64,
+    /// Whether the children set the address-space backstop (not under AddressSanitizer).
+    address_space_backstop: bool,
+    /// A stand-in for `una` itself, in the toolchain's own test builds only: a program run
+    /// in the child's place with the expected handshake line as its first argument, then
+    /// `-in -smt2`, so that tests can answer anything.
+    #[cfg(feature = "test-hooks")]
+    stand_in: Option<PathBuf>,
+}
+
+impl Launcher {
+    /// A launcher for children limited to `memory_mib`.
+    pub fn new(memory_mib: u64) -> Launcher {
+        Launcher {
+            memory_mib,
+            address_space_backstop: !cfg!(una_asan),
+            #[cfg(feature = "test-hooks")]
+            stand_in: None,
+        }
+    }
+
+    /// With a stand-in program in the child's place (test builds only, `UNA_SOLVER_STAND_IN`).
+    #[cfg(feature = "test-hooks")]
+    pub fn with_stand_in(mut self, program: Option<PathBuf>) -> Launcher {
+        self.stand_in = program;
+        self
+    }
+
+    #[cfg(feature = "test-hooks")]
+    fn stand_in(&self) -> Option<&Path> {
+        self.stand_in.as_deref()
+    }
+
+    #[cfg(not(feature = "test-hooks"))]
+    fn stand_in(&self) -> Option<&Path> {
+        None
+    }
+
+    /// The executable to start: this `una` itself, by the path that names the running file
+    /// (rule 5).
+    fn executable(&self) -> Result<PathBuf, String> {
+        if let Some(program) = self.stand_in() {
+            return Ok(program.to_path_buf());
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let exe = Path::new("/proc/self/exe");
+            if !exe.exists() {
+                return Err("cannot re-execute `una`: /proc is not mounted".to_owned());
+            }
+            Ok(exe.to_path_buf())
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            std::env::current_exe().map_err(|e| format!("cannot re-execute `una`: {e}"))
+        }
+    }
+
+    /// A path outside the temporary directory, for the outer-sandbox check (rule 7).
+    fn outside_temp() -> String {
+        std::env::current_dir()
+            .ok()
+            .filter(|dir| !dir.starts_with(std::env::temp_dir()))
+            .map_or_else(|| "/".to_owned(), |dir| dir.display().to_string())
+    }
+}
+
+impl Solver for Launcher {
+    fn version(&self) -> Result<String, String> {
+        if una_z3::BUILD.linked || self.stand_in().is_some() {
+            Ok(una_z3::BUILD.version.to_owned())
+        } else {
+            Err(una_z3::Refusal::NoSolver.to_string())
+        }
+    }
+
+    fn describe(&self) -> String {
+        format!("this una ({})", env!("CARGO_PKG_VERSION"))
+    }
+
+    fn run(
+        &self,
+        script: &str,
+        wallclock: Duration,
+        cancel: Option<&AtomicBool>,
+    ) -> Result<Raw, String> {
+        // The deadline runs from before the child starts, and holds while the query is written:
+        // a child that does not read its input must not keep the run past its time (#286).
+        let started = Instant::now();
+        let deadline = started + wallclock;
+        let exe = self.executable()?;
+        let exe_c = CString::new(exe.as_os_str().as_encoded_bytes())
+            .map_err(|_| "the path of `una` holds a NUL byte".to_owned())?;
+        let cpu = wallclock.as_secs().saturating_add(1).to_string();
+        let memory = self.memory_mib.to_string();
+        let outside = Self::outside_temp();
+        let handshake = expected_handshake();
+        let args: Vec<CString> = if self.stand_in().is_some() {
+            [
+                exe.display().to_string(),
+                handshake.clone(),
+                "-in".to_owned(),
+                "-smt2".to_owned(),
+            ]
+            .into_iter()
+            .map(CString::new)
+            .collect::<Result<_, _>>()
+        } else {
+            let mut args = vec![
+                "una".to_owned(),
+                "__solver".to_owned(),
+                cpu,
+                memory,
+                outside,
+            ];
+            if !self.address_space_backstop {
+                args.push("--no-address-space-backstop".to_owned());
+            }
+            args.into_iter().map(CString::new).collect::<Result<_, _>>()
+        }
+        .map_err(|_| "an argument of the solver child holds a NUL byte".to_owned())?;
+        let args: Vec<&CStr> = args.iter().map(CString::as_c_str).collect();
+        let (stdin_reader, mut stdin_writer) = std::io::pipe().map_err(|e| e.to_string())?;
+        let (mut stdout_reader, stdout_writer) = std::io::pipe().map_err(|e| e.to_string())?;
+        let (mut stderr_reader, stderr_writer) = std::io::pipe().map_err(|e| e.to_string())?;
+        let pid = spawn::spawn(
+            &exe_c,
+            &args,
+            stdin_reader.as_fd(),
+            stdout_writer.as_fd(),
+            stderr_writer.as_fd(),
+        )
+        .map_err(|e| format!("cannot start the solver child: {e}"))?;
+        drop(stdin_reader);
+        drop(stdout_writer);
+        drop(stderr_writer);
+        // Three threads, so that no pipe fills while the parent waits: the script goes in
+        // (a child that never reads leaves a write blocked, which the kill below ends with a
+        // broken pipe), the first line of stdout comes out as soon as it is complete, and
+        // stderr is drained with only its head kept.
+        let script = script.to_owned();
+        let writer = std::thread::spawn(move || {
+            let _ = stdin_writer.write_all(script.as_bytes());
+        });
+        let (first_line, lines) = mpsc::channel::<Result<String, String>>();
+        let reader = std::thread::spawn(move || {
+            let mut all = Vec::new();
+            let mut sent = false;
+            let mut chunk = [0_u8; 4096];
+            loop {
+                let read = match stdout_reader.read(&mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(read) => read,
+                };
+                all.extend_from_slice(chunk.get(..read).unwrap_or(&[]));
+                if !sent {
+                    if let Some(end) = all.iter().position(|b| *b == b'\n') {
+                        sent = true;
+                        let line =
+                            String::from_utf8_lossy(all.get(..end).unwrap_or(&[])).into_owned();
+                        let _ = first_line.send(Ok(line));
+                    } else if all.len() > HANDSHAKE_BYTES {
+                        sent = true;
+                        let _ = first_line.send(Err("the first line exceeds 256 bytes".to_owned()));
+                    }
+                }
+            }
+            if !sent {
+                let _ = first_line.send(Err("no handshake".to_owned()));
+            }
+            all
+        });
+        let errors = std::thread::spawn(move || {
+            let mut kept = Vec::new();
+            let mut chunk = [0_u8; 4096];
+            while let Ok(read) = stderr_reader.read(&mut chunk) {
+                if read == 0 {
+                    break;
+                }
+                if kept.len() < STDERR_KEPT {
+                    let take = read.min(STDERR_KEPT - kept.len());
+                    kept.extend_from_slice(chunk.get(..take).unwrap_or(&[]));
+                }
+            }
+            String::from_utf8_lossy(&kept).into_owned()
+        });
+        // The wait: the deadline first, then the exit, the cancellation, the handshake and,
+        // on macOS, the footprint.
+        let mut handshake_seen = false;
+        let mut handshake_failure: Option<String> = None;
+        #[cfg(target_os = "macos")]
+        let mut footprint_read = Instant::now();
+        let ended = loop {
+            if Instant::now() >= deadline {
+                kill_and_wait(pid);
+                break Ended::Wallclock;
+            }
+            match spawn::try_wait(pid) {
+                Ok(Some(Spawned::Exited(status))) => break Ended::Exited(status),
+                Ok(Some(Spawned::Signaled(signal))) => break Ended::Signaled(signal),
+                Ok(None) => {}
+                Err(e) => {
+                    kill_and_wait(pid);
+                    return Err(format!("cannot wait for the solver child: {e}"));
+                }
+            }
+            if cancel.is_some_and(|cancel| cancel.load(Ordering::Relaxed)) {
+                kill_and_wait(pid);
+                break Ended::Cancelled;
+            }
+            if !handshake_seen {
+                match lines.try_recv() {
+                    Ok(Ok(line)) if line == handshake => handshake_seen = true,
+                    Ok(Ok(line)) => {
+                        handshake_failure = Some(format!("its first line is `{}`", line.trim()));
+                    }
+                    Ok(Err(reason)) => handshake_failure = Some(reason),
+                    Err(_) if started.elapsed() > HANDSHAKE_WITHIN => {
+                        handshake_failure = Some("no handshake within 2 seconds".to_owned());
+                    }
+                    Err(_) => {}
+                }
+                if handshake_failure.is_some() {
+                    kill_and_wait(pid);
+                    break Ended::Exited(-1);
+                }
+            }
+            #[cfg(target_os = "macos")]
+            if footprint_read.elapsed() >= FOOTPRINT_EVERY {
+                footprint_read = Instant::now();
+                let limit = self
+                    .memory_mib
+                    .saturating_add(FOOTPRINT_MARGIN_MIB)
+                    .saturating_mul(1024 * 1024);
+                if let Ok(footprint) = una_sys::solver::footprint::physical_footprint(pid)
+                    && footprint > limit
+                {
+                    kill_and_wait(pid);
+                    break Ended::Memory;
+                }
+            }
+            std::thread::sleep(POLL);
+        };
+        let _ = writer.join();
+        let output = reader.join().unwrap_or_default();
+        let stderr = errors.join().unwrap_or_default();
+        if let Some(reason) = handshake_failure {
+            return Err(format!("the solver child is not this `una`: {reason}"));
+        }
+        if !handshake_seen {
+            // The child ended before any line: it could not confine itself, or has no solver;
+            // its stderr says why.
+            let reason = stderr.trim();
+            return Err(if reason.is_empty() {
+                "the solver child is not this `una`: it wrote no handshake".to_owned()
+            } else {
+                reason.to_owned()
+            });
+        }
+        // The handshake line, and the outer-sandbox line when there is one, are stripped.
+        let text = String::from_utf8_lossy(&output);
+        let mut rest = text.split_once('\n').map_or("", |(_, rest)| rest);
+        let mut outer_denied = None;
+        if let Some(line) = rest.strip_prefix("una-solver-outer ") {
+            let (denied, after) = line.split_once('\n').unwrap_or((line, ""));
+            outer_denied = Some(denied.split(',').map(str::to_owned).collect());
+            rest = after;
+        }
+        Ok(Raw {
+            stdout: rest.to_owned(),
+            stderr,
+            ended,
+            outer_denied,
+        })
+    }
+}
+
+/// Ends the child and reaps it: a kill that fails leaves nothing to wait for.
+fn kill_and_wait(pid: i32) {
+    if spawn::kill(pid).is_ok() {
+        let _ = spawn::wait(pid);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_handshake_names_the_protocol_the_version_and_the_build() {
+        let line = expected_handshake();
+        let parts: Vec<&str> = line.split(' ').collect();
+        assert_eq!(parts.len(), 5, "{line}");
+        assert_eq!(parts.first().copied(), Some("una-solver"));
+        assert_eq!(parts.get(1).copied(), Some("1"));
+        assert_eq!(parts.get(2).copied(), Some("z3"));
+        assert_eq!(parts.get(3).copied(), Some(una_z3::BUILD.version));
+        assert_eq!(parts.get(4).map(str::len), Some(64));
+        assert!(line.len() <= HANDSHAKE_BYTES);
+        // The digest is of the build record, so it changes with the solver's library.
+        assert_eq!(parts.get(4).copied(), Some(build_digest().as_str()));
+    }
+
+    #[test]
+    fn a_development_build_without_a_solver_says_so() {
+        let launcher = Launcher::new(DEFAULT_MEMORY_MIB);
+        if !una_z3::BUILD.linked {
+            assert_eq!(
+                launcher.version(),
+                Err(
+                    "this development build has no solver built in; run scripts/build-z3.sh"
+                        .to_owned()
+                )
+            );
+        } else {
+            assert_eq!(launcher.version(), Ok(una_z3::BUILD.version.to_owned()));
+        }
+        assert!(launcher.describe().starts_with("this una ("));
+    }
+}
