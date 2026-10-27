@@ -77,8 +77,9 @@ const PRELUDE_0_2: &str = include_str!("../std/prelude_0_2.una");
 /// ADR 0114 rule 3.9), appended after those of edition 0.2.
 const PRELUDE_0_3: &str = include_str!("../std/prelude_0_3.una");
 /// The declarations that edition 0.4 adds to the prelude: `Rounding` and the functions of
-/// `Decimal` (`spec/29 §16`), then the constructors of dense values and the functions their
-/// methods resolve to (`spec/29 §17`, ADR 0120), appended after those of edition 0.3.
+/// `Decimal` (`spec/29 §16`), the constructors of dense values and the functions their
+/// methods resolve to (`spec/29 §17`, ADR 0120), then the functions of `F32` and the finite
+/// kinds (ADR 0120 rules 5 and 11), appended after those of edition 0.3.
 const PRELUDE_0_4: &str = include_str!("../std/prelude_0_4.una");
 
 /// The declaration of `HttpError` in `PRELUDE_0_2`, and the one edition 0.4 replaces it with,

@@ -8,6 +8,7 @@
 //! ADR 0114 rule 8.4).
 
 use una_core::float::{self, Literal as FloatLiteral};
+use una_core::float32::{self, Literal as Float32Literal};
 use una_core::{FloatOp, FloatResult, Prim};
 use una_diag::Code;
 use una_project::Edition;
@@ -32,6 +33,15 @@ pub(crate) fn is_zero_literal(expr: &Expr) -> bool {
     }
 }
 
+/// The name of the float type `ty`, `F32` or `F64`.
+fn float_name(ty: &Ty) -> &'static str {
+    if matches!(ty.unlabeled(), Ty::F32) {
+        "F32"
+    } else {
+        "F64"
+    }
+}
+
 /// Whether the float literal `text` has the value zero.
 pub(crate) fn float_literal_is_zero(text: &str) -> bool {
     let mantissa = text.split(['e', 'E']).next().unwrap_or("");
@@ -39,9 +49,13 @@ pub(crate) fn float_literal_is_zero(text: &str) -> bool {
 }
 
 impl Checker<'_, '_, '_> {
-    /// The type of the float literal `text` at `span`: `F64`, after U2031 when it rounds to
-    /// an infinity, or is not zero and rounds to zero (ADR 0114 rule 2.5).
-    pub(crate) fn float_literal(&mut self, text: &str, span: Span) -> Ty {
+    /// The type of the float literal `text` at `span`: `F32` where `expected` is an `F32`
+    /// (ADR 0120 rule 6), `F64` elsewhere, after U2031 when it rounds to an infinity, or is
+    /// not zero and rounds to zero (ADR 0114 rule 2.5).
+    pub(crate) fn float_literal(&mut self, text: &str, span: Span, expected: Option<&Ty>) -> Ty {
+        if expected.is_some_and(|e| self.is_f32(e)) {
+            return self.f32_literal(text, span);
+        }
         match float::literal(text) {
             FloatLiteral::Value(_) => {}
             FloatLiteral::Overflows => {
@@ -74,20 +88,113 @@ impl Checker<'_, '_, '_> {
         Ty::F64
     }
 
+    /// The type of the float literal `text` at `span` where an `F32` is expected: `F32`,
+    /// rounded once from its decimal value, after U2031 at the binary32 bounds (ADR 0120
+    /// rule 5).
+    fn f32_literal(&mut self, text: &str, span: Span) -> Ty {
+        match float32::literal(text) {
+            Float32Literal::Value(_) => {}
+            Float32Literal::Overflows => {
+                let mut diagnostic = self.report.make(
+                    Code::U2031,
+                    span,
+                    format!(
+                        "the float literal `{text}` rounds to an infinity as an `F32`; the largest finite `F32` is `3.4028235e38`"
+                    ),
+                );
+                diagnostic.repairs.push(super::Report::advice(
+                    "write `infinity().to_f32()` if an infinity is meant, or write the value in range",
+                ));
+                self.report.push(diagnostic);
+            }
+            Float32Literal::Underflows => {
+                let mut diagnostic = self.report.make(
+                    Code::U2031,
+                    span,
+                    format!(
+                        "the float literal `{text}` is not zero and rounds to zero as an `F32`; the smallest positive `F32` is `1.0e-45`"
+                    ),
+                );
+                diagnostic
+                    .repairs
+                    .push(self.report.edit("write `0.0`", span, "0.0"));
+                self.report.push(diagnostic);
+            }
+        }
+        Ty::F32
+    }
+
     /// Whether `ty`, resolved, is `F64` under its label.
     pub(crate) fn is_f64(&self, ty: &Ty) -> bool {
         matches!(self.resolve(ty).unlabeled(), Ty::F64)
     }
 
+    /// Whether `ty`, resolved, is `F32` under its label and refinement.
+    pub(crate) fn is_f32(&self, ty: &Ty) -> bool {
+        matches!(self.resolve(ty).unlabeled(), Ty::F32)
+    }
+
+    /// The name of the float type of `a`, or else of `b`: `F32` when either is one, `F64`
+    /// otherwise.
+    pub(crate) fn float_name_of(&self, a: &Ty, b: &Ty) -> &'static str {
+        if self.is_f32(a) || self.is_f32(b) {
+            "F32"
+        } else {
+            "F64"
+        }
+    }
+
+    /// Whether `ty`, resolved, is `F64` or `F32`.
+    pub(crate) fn is_float(&self, ty: &Ty) -> bool {
+        matches!(self.resolve(ty).unlabeled(), Ty::F64 | Ty::F32)
+    }
+
+    /// The repair of a comparison of an `F64` with an `F32` that `same` reported since `mark`:
+    /// convert the second operand to the first one's type (ADR 0120 rule 7).
+    pub(crate) fn mixed_floats(
+        &mut self,
+        mark: usize,
+        span: Span,
+        right: &Expr,
+        left_ty: &Ty,
+        right_ty: &Ty,
+    ) {
+        let (l, r) = (self.resolve(left_ty), self.resolve(right_ty));
+        let method = match (l.unlabeled(), r.unlabeled()) {
+            (Ty::F64, Ty::F32) => "to_f64",
+            (Ty::F32, Ty::F64) => "to_f32",
+            _ => return,
+        };
+        let text = self.report.text(right.span).to_owned();
+        let repair = self.report.edit(
+            format!("convert it with `{method}()`"),
+            right.span,
+            format!("({text}).{method}()"),
+        );
+        self.report.repair_since(mark, Code::U2001, span, repair);
+    }
+
     /// U2001 for the integer literal `digits` at `span` where `F64` is expected, with an edit
-    /// to the float literal (ADR 0114 rule 2.6): an integer literal never takes the type `F64`.
+    /// to the float literal (ADR 0114 rule 2.6): an integer literal never takes the type `F64`,
+    /// nor `F32` (ADR 0120 rule 6).
     pub(crate) fn int_literal_for_f64(&mut self, negative: bool, digits: &str, span: Span) {
+        self.int_literal_for_float("F64", negative, digits, span);
+    }
+
+    /// [`Self::int_literal_for_f64`] where the float type `name` is expected.
+    pub(crate) fn int_literal_for_float(
+        &mut self,
+        name: &str,
+        negative: bool,
+        digits: &str,
+        span: Span,
+    ) {
         let sign = if negative { "-" } else { "" };
         let mut diagnostic = self.report.make(
             Code::U2001,
             span,
             format!(
-                "the integer literal `{sign}{digits}` is not an `F64`; a float literal has a point"
+                "the integer literal `{sign}{digits}` is not an `{name}`; a float literal has a point"
             ),
         );
         if digits.chars().all(|c| c == '0') {
@@ -110,6 +217,7 @@ impl Checker<'_, '_, '_> {
     /// whether it is `==`, `!=` or `is`.
     pub(crate) fn zero_comparison(
         &mut self,
+        name: &str,
         symbol: &str,
         left: &Expr,
         right: &Expr,
@@ -144,7 +252,7 @@ impl Checker<'_, '_, '_> {
             Code::U2033,
             span,
             format!(
-                "`{symbol}` compares an `F64` with a literal zero, which tells `-0.0` from `0.0` by the order of `F64`"
+                "`{symbol}` compares an `{name}` with a literal zero, which tells `-0.0` from `0.0` by the order of `{name}`"
             ),
         );
         if equality {
@@ -187,13 +295,13 @@ impl Checker<'_, '_, '_> {
 
     /// U2032 for a float literal other than zero as a pattern (`is` or a `when` arm) at `span`
     /// (ADR 0114 rule 5.6); a literal zero is U2033 (rule 5.5).
-    pub(crate) fn float_pattern(&mut self, text: &str, span: Span) {
+    pub(crate) fn float_pattern(&mut self, name: &str, text: &str, span: Span) {
         if float_literal_is_zero(text) {
             let mut diagnostic = self.report.make(
                 Code::U2033,
                 span,
                 format!(
-                    "the pattern `{text}` compares an `F64` with a literal zero, which tells `-0.0` from `0.0` by the order of `F64`"
+                    "the pattern `{text}` compares an `{name}` with a literal zero, which tells `-0.0` from `0.0` by the order of `{name}`"
                 ),
             );
             diagnostic.repairs.push(super::Report::advice(
@@ -205,7 +313,7 @@ impl Checker<'_, '_, '_> {
                 Code::U2032,
                 span,
                 format!(
-                    "the float literal `{text}` is not a pattern; a computed `F64` rarely equals a literal"
+                    "the float literal `{text}` is not a pattern; a computed `{name}` rarely equals a literal"
                 ),
             );
             diagnostic.repairs.push(super::Report::advice(format!(
@@ -215,9 +323,10 @@ impl Checker<'_, '_, '_> {
         }
     }
 
-    /// `e.m(args)` when `e` is an `F64` and `m` a method of `F64`, or `e` an integer and `m`
-    /// `to_f64()`, in edition 0.3 (ADR 0114 rules 3 and 4). `None` when it is neither, so the
-    /// call resolves as before.
+    /// `e.m(args)` when `e` is an `F64` or an `F32` and `m` one of its methods, or `e` an
+    /// integer and `m` `to_f64()` (edition 0.3) or `to_f32()` (edition 0.4), or a conversion
+    /// between the float types (ADR 0114 rules 3 and 4, ADR 0120 rules 5 and 8). `None` when it
+    /// is neither, so the call resolves as before.
     pub(crate) fn float_method(
         &mut self,
         target: &Ty,
@@ -228,67 +337,96 @@ impl Checker<'_, '_, '_> {
         if self.env.edition < Edition::V0_3 {
             return None;
         }
+        let edition_0_4 = self.env.edition >= Edition::V0_4;
         let receiver = self.resolve(target);
         let label = self.deep(target);
-        match receiver.unlabeled() {
+        let float = match receiver.unlabeled() {
             // ADR 0114 rule 4.1: `n.to_f64()` on an integer, ahead of a function of that name.
             Ty::Int | Ty::Fixed(_) if method == "to_f64" && args.is_empty() => {
                 self.resolved(span, Res::IntMethod(Prim::Float(FloatOp::FromInt)));
-                Some(Ty::F64.with_label(&label))
+                return Some(Ty::F64.with_label(&label));
             }
-            Ty::F64 => {
-                let Some(op) = FloatOp::from_method(method) else {
-                    return self.no_float_method(method, args, span);
-                };
-                if !op.in_refinement_language() {
-                    self.outside_rl(span, || format!("the method `{method}`"));
-                }
-                let params = op.params();
-                let mut label = label;
-                if args.len() == params.len() {
-                    for (arg, param) in args.iter().zip(params) {
-                        self.method_label(method, param, arg);
-                        let what = format!("argument `{param}` of `{method}`");
-                        let found =
-                            self.expr_as(&arg.value, Some(&Ty::F64), Role::Condition(&what));
-                        label = label.join(&self.deep(&found));
-                    }
-                } else {
-                    let shape = params
-                        .iter()
-                        .map(|param| format!("{param}: y"))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    self.report.error(
-                        Code::U2001,
-                        span,
-                        format!(
-                            "`{method}` takes {} argument(s), as in `x.{method}({shape})`",
-                            params.len()
-                        ),
-                    );
-                    self.unchecked_args(args);
-                }
-                self.resolved(span, Res::IntMethod(Prim::Float(op)));
-                let result = match op.result() {
-                    FloatResult::F64 => Ty::F64,
-                    FloatResult::Bool => Ty::Bool,
-                    FloatResult::U64 => Ty::Fixed(una_core::IntType::U64),
-                    FloatResult::OptionInt => match self.env.prelude_kind("Option") {
-                        Some(id) => Ty::Kind(id, vec![Ty::Int].into()),
-                        None => Ty::error(),
-                    },
-                };
-                Some(result.with_label(&label))
+            // ADR 0120 rule 8: `n.to_f32()` on an integer, the same in edition 0.4.
+            Ty::Int | Ty::Fixed(_) if edition_0_4 && method == "to_f32" && args.is_empty() => {
+                self.resolved(span, Res::IntMethod(Prim::Float32(FloatOp::FromInt)));
+                return Some(Ty::F32.with_label(&label));
             }
-            _ => None,
+            // ADR 0120 rule 8: the conversions between the float types.
+            Ty::F64 if edition_0_4 && method == "to_f32" && args.is_empty() => {
+                self.resolved(span, Res::IntMethod(Prim::Float(FloatOp::ToF32)));
+                return Some(Ty::F32.with_label(&label));
+            }
+            Ty::F32 if method == "to_f64" && args.is_empty() => {
+                self.resolved(span, Res::IntMethod(Prim::Float32(FloatOp::ToF64)));
+                return Some(Ty::F64.with_label(&label));
+            }
+            Ty::F64 => Ty::F64,
+            Ty::F32 => Ty::F32,
+            _ => return None,
+        };
+        let name = float_name(&float);
+        let Some(op) = FloatOp::from_method(method) else {
+            return self.no_float_method(name, method, args, span);
+        };
+        if !op.in_refinement_language() {
+            self.outside_rl(span, || format!("the method `{method}`"));
         }
+        let params = op.params();
+        let mut label = label;
+        if args.len() == params.len() {
+            for (arg, param) in args.iter().zip(params) {
+                self.method_label(method, param, arg);
+                let what = format!("argument `{param}` of `{method}`");
+                let found = self.expr_as(&arg.value, Some(&float), Role::Condition(&what));
+                label = label.join(&self.deep(&found));
+            }
+        } else {
+            let shape = params
+                .iter()
+                .map(|param| format!("{param}: y"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            self.report.error(
+                Code::U2001,
+                span,
+                format!(
+                    "`{method}` takes {} argument(s), as in `x.{method}({shape})`",
+                    params.len()
+                ),
+            );
+            self.unchecked_args(args);
+        }
+        let prim = if float == Ty::F32 {
+            Prim::Float32(op)
+        } else {
+            Prim::Float(op)
+        };
+        self.resolved(span, Res::IntMethod(prim));
+        let result = match op.result() {
+            FloatResult::F64 => float,
+            FloatResult::Other if name == "F32" => Ty::F64,
+            FloatResult::Other => Ty::F32,
+            FloatResult::Bool => Ty::Bool,
+            FloatResult::U64 if name == "F32" => Ty::Fixed(una_core::IntType::U32),
+            FloatResult::U64 => Ty::Fixed(una_core::IntType::U64),
+            FloatResult::OptionInt => match self.env.prelude_kind("Option") {
+                Some(id) => Ty::Kind(id, vec![Ty::Int].into()),
+                None => Ty::error(),
+            },
+        };
+        Some(result.with_label(&label))
     }
 
     /// A method of `F64`'s receiver that is not one of its methods: the conversions to
     /// integers other than `to_int_exact()` are U2001 with their repair (ADR 0114 rule 4.3);
     /// any other name resolves as a function of the package (`spec/10 §5`).
-    fn no_float_method(&mut self, method: &str, args: &[Arg], span: Span) -> Option<Ty> {
+    fn no_float_method(
+        &mut self,
+        name: &str,
+        method: &str,
+        args: &[Arg],
+        span: Span,
+    ) -> Option<Ty> {
         let conversion = method == "to_int"
             || method
                 .strip_prefix("to_")
@@ -300,7 +438,7 @@ impl Checker<'_, '_, '_> {
             Code::U2001,
             span,
             format!(
-                "`{method}` is not a conversion of `F64`; `to_int_exact()` gives `Some` of an integral value and `None` otherwise"
+                "`{method}` is not a conversion of `{name}`; `to_int_exact()` gives `Some` of an integral value and `None` otherwise"
             ),
         );
         diagnostic.repairs.push(super::Report::advice(

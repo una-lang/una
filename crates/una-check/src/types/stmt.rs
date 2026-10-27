@@ -1783,10 +1783,11 @@ impl<'a> Checker<'_, 'a, '_> {
                             self.int_literal_type(false, digits, pattern, Some(&Ty::Fixed(int)))
                         }
                         // A float literal is never a pattern (ADR 0114 rules 5.5 and 5.6).
-                        (Literal::Float(text), _) => {
-                            self.float_pattern(text, pattern);
+                        (Literal::Float(text), scrutinee_ty) => {
+                            let name = self.float_name_of(&scrutinee_ty, &scrutinee_ty);
+                            self.float_pattern(name, text, pattern);
                             problem = true;
-                            Ty::F64
+                            if name == "F32" { Ty::F32 } else { Ty::F64 }
                         }
                         _ => literal_type(literal),
                     };
@@ -1821,12 +1822,16 @@ impl<'a> Checker<'_, 'a, '_> {
                     // (`spec/18 §2`).
                     if let Ty::Fixed(int) = self.resolve(&scrutinee) {
                         self.range_bounds(range, int);
-                    } else if self.is_f64(&scrutinee) {
-                        // ADR 0114 rule 5.6: a range is never a pattern over an `F64`.
+                    } else if self.is_float(&scrutinee) {
+                        // ADR 0114 rule 5.6: a range is never a pattern over an `F64`, nor over
+                        // an `F32` (ADR 0120 rule 5).
+                        let name = self.float_name_of(&scrutinee, &scrutinee);
                         let mut diagnostic = self.report.make(
                             Code::U2032,
                             pattern,
-                            "a range is not a pattern over an `F64`; compare in an `if`",
+                            format!(
+                                "a range is not a pattern over an `{name}`; compare in an `if`"
+                            ),
                         );
                         diagnostic.repairs.push(super::Report::advice(
                             "write an `if` that compares with `<=` and `>=`, or with the IEEE methods, such as `x.ieee_ge(other: lo) and x.ieee_le(other: hi)`",

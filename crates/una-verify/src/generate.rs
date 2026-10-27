@@ -17,8 +17,8 @@ use una_syntax::{Interner, KeywordSet, SourceDb, Span, TokenKind, lex_in};
 
 use crate::run::Problem;
 use crate::smt::{
-    ARRAY, Combine, Const, ConstRole, Definition, F, FLOAT64, Fun as SmtFun, FunRole, HASHED, LIST,
-    MAP, MATRIX, Query, Sort, TEXT, UNIT, kind_sort, path_selector,
+    ARRAY, Combine, Const, ConstRole, Definition, F, FLOAT32, FLOAT64, Fun as SmtFun, FunRole,
+    HASHED, LIST, MAP, MATRIX, Query, Sort, TEXT, UNIT, kind_sort, path_selector,
 };
 
 /// How the source text of an obligation's goal and hypotheses is normalized: by the edition of
@@ -901,6 +901,8 @@ pub(crate) fn sort(ty: &Type) -> Sort {
             Base::F64 => FLOAT64.to_owned(),
             // A decimal is its coefficient, an `Int` (ADR 0120 V2): its queries stay linear.
             Base::Decimal(_) => "Int".to_owned(),
+            // `(_ FloatingPoint 8 24)` (ADR 0120 V1).
+            Base::F32 => FLOAT32.to_owned(),
             Base::Named { module, name, args } => {
                 let args: Vec<Sort> = args.iter().map(sort).collect();
                 if is_prelude(module) || is_collection(module, name) {
@@ -928,53 +930,107 @@ fn rne() -> F {
     F::op("RNE", Vec::new())
 }
 
-/// The defined functions `i!lt!F64` and `i!le!F64`: IEEE totalOrder on the canonical values of
-/// `F64`, which the FloatingPoint theory's one NaN and two zeros are (ADR 0114 rule 8.1).
+/// A binary floating-point format of the encoding: `F64` or `F32` (ADR 0120 V1).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Fmt {
+    F64,
+    F32,
+}
+
+impl Fmt {
+    /// The SMT sort.
+    fn sort(self) -> &'static str {
+        match self {
+            Fmt::F64 => FLOAT64,
+            Fmt::F32 => FLOAT32,
+        }
+    }
+
+    /// The defined function of `<` on the format.
+    fn lt(self) -> &'static str {
+        match self {
+            Fmt::F64 => "i!lt!F64",
+            Fmt::F32 => "i!lt!F32",
+        }
+    }
+
+    /// The defined function of `<=` on the format.
+    fn le(self) -> &'static str {
+        match self {
+            Fmt::F64 => "i!le!F64",
+            Fmt::F32 => "i!le!F32",
+        }
+    }
+
+    /// The conversion to the format, signed or unsigned.
+    fn to_fp(self, signed: bool) -> &'static str {
+        match (self, signed) {
+            (Fmt::F64, true) => "(_ to_fp 11 53)",
+            (Fmt::F64, false) => "(_ to_fp_unsigned 11 53)",
+            (Fmt::F32, true) => "(_ to_fp 8 24)",
+            (Fmt::F32, false) => "(_ to_fp_unsigned 8 24)",
+        }
+    }
+
+    /// The uninterpreted conversion of an `Int` beyond 64 bits.
+    fn beyond(self) -> &'static str {
+        match self {
+            Fmt::F64 => "i!to_f64!Int",
+            Fmt::F32 => "i!to_f32!Int",
+        }
+    }
+}
+
+/// The defined functions `i!lt!F64`, `i!le!F64`, `i!lt!F32` and `i!le!F32`: IEEE totalOrder on
+/// the canonical values of each format, which the FloatingPoint theory's one NaN and two zeros
+/// are (ADR 0114 rule 8.1, ADR 0120 V1). A query holds only those it uses.
 fn float_order_definitions() -> BTreeMap<String, Definition> {
-    let local = |name: &str| F::Local {
-        name: name.to_owned(),
-        sort: FLOAT64.to_owned(),
-    };
-    let (a, b) = (local("a"), local("b"));
-    let lt = F::and(vec![
-        F::not(F::op("fp.isNaN", vec![a.clone()])),
-        F::or(vec![
-            F::op("fp.isNaN", vec![b.clone()]),
-            F::op("fp.lt", vec![a.clone(), b.clone()]),
-            F::and(vec![
-                F::op("fp.isZero", vec![a.clone()]),
-                F::op("fp.isZero", vec![b.clone()]),
-                F::op("fp.isNegative", vec![a.clone()]),
-                F::op("fp.isPositive", vec![b.clone()]),
-            ]),
-        ]),
-    ]);
-    let params = vec![
-        ("a".to_owned(), FLOAT64.to_owned()),
-        ("b".to_owned(), FLOAT64.to_owned()),
-    ];
-    let le = F::or(vec![
-        float_order("i!lt!F64", a.clone(), b.clone()),
-        F::eq(a, b),
-    ]);
     let mut definitions = BTreeMap::new();
-    definitions.insert(
-        "i!lt!F64".to_owned(),
-        Definition {
-            params: params.clone(),
-            body: lt,
-        },
-    );
-    definitions.insert("i!le!F64".to_owned(), Definition { params, body: le });
+    for fmt in [Fmt::F64, Fmt::F32] {
+        let local = |name: &str| F::Local {
+            name: name.to_owned(),
+            sort: fmt.sort().to_owned(),
+        };
+        let (a, b) = (local("a"), local("b"));
+        let lt = F::and(vec![
+            F::not(F::op("fp.isNaN", vec![a.clone()])),
+            F::or(vec![
+                F::op("fp.isNaN", vec![b.clone()]),
+                F::op("fp.lt", vec![a.clone(), b.clone()]),
+                F::and(vec![
+                    F::op("fp.isZero", vec![a.clone()]),
+                    F::op("fp.isZero", vec![b.clone()]),
+                    F::op("fp.isNegative", vec![a.clone()]),
+                    F::op("fp.isPositive", vec![b.clone()]),
+                ]),
+            ]),
+        ]);
+        let params = vec![
+            ("a".to_owned(), fmt.sort().to_owned()),
+            ("b".to_owned(), fmt.sort().to_owned()),
+        ];
+        let le = F::or(vec![
+            float_order(fmt, fmt.lt(), a.clone(), b.clone()),
+            F::eq(a, b),
+        ]);
+        definitions.insert(
+            fmt.lt().to_owned(),
+            Definition {
+                params: params.clone(),
+                body: lt,
+            },
+        );
+        definitions.insert(fmt.le().to_owned(), Definition { params, body: le });
+    }
     definitions
 }
 
-/// An application of `i!lt!F64` or `i!le!F64`.
-fn float_order(name: &str, a: F, b: F) -> F {
+/// An application of the order function `name` of the format `fmt`.
+fn float_order(fmt: Fmt, name: &str, a: F, b: F) -> F {
     F::App {
         fun: SmtFun {
             name: name.to_owned(),
-            args: vec![FLOAT64.to_owned(), FLOAT64.to_owned()],
+            args: vec![fmt.sort().to_owned(), fmt.sort().to_owned()],
             result: "Bool".to_owned(),
             role: FunRole::Predicate,
         },
@@ -984,7 +1040,7 @@ fn float_order(name: &str, a: F, b: F) -> F {
 
 /// The term of an operation of `F64` of the refinement language on `args`, the receiver first
 /// (ADR 0114 rule 8.1); `None` for a code-only method, whose result is a fresh binder.
-fn float_term(op: FloatOp, args: &[F]) -> Option<F> {
+fn float_term(fmt: Fmt, op: FloatOp, args: &[F]) -> Option<F> {
     let arg = |i: usize| args.get(i).cloned();
     let rounded =
         |name: &'static str| -> Option<F> { Some(F::op(name, vec![rne(), arg(0)?, arg(1)?])) };
@@ -1001,10 +1057,14 @@ fn float_term(op: FloatOp, args: &[F]) -> Option<F> {
         // SMT `=` on `Float64` is identity, exactly `==` (ADR 0114 rule 5.1).
         FloatOp::Eq => F::eq(arg(0)?, arg(1)?),
         FloatOp::Ne => F::not(F::eq(arg(0)?, arg(1)?)),
-        FloatOp::Lt => float_order("i!lt!F64", arg(0)?, arg(1)?),
-        FloatOp::Le => float_order("i!le!F64", arg(0)?, arg(1)?),
-        FloatOp::Gt => float_order("i!lt!F64", arg(1)?, arg(0)?),
-        FloatOp::Ge => float_order("i!le!F64", arg(1)?, arg(0)?),
+        FloatOp::Lt => float_order(fmt, fmt.lt(), arg(0)?, arg(1)?),
+        FloatOp::Le => float_order(fmt, fmt.le(), arg(0)?, arg(1)?),
+        FloatOp::Gt => float_order(fmt, fmt.lt(), arg(1)?, arg(0)?),
+        FloatOp::Ge => float_order(fmt, fmt.le(), arg(1)?, arg(0)?),
+        // The conversions between the formats, `convertFormat` in RNE (ADR 0120 V1).
+        FloatOp::ToF32 if fmt == Fmt::F64 => F::op(Fmt::F32.to_fp(true), vec![rne(), arg(0)?]),
+        FloatOp::ToF64 if fmt == Fmt::F32 => F::op(Fmt::F64.to_fp(true), vec![rne(), arg(0)?]),
+        FloatOp::ToF32 | FloatOp::ToF64 => return None,
         FloatOp::IeeeEq => binary("fp.eq")?,
         FloatOp::IeeeNe => F::not(binary("fp.eq")?),
         FloatOp::IeeeLt => binary("fp.lt")?,
@@ -1049,9 +1109,10 @@ fn integer_type(ty: &Type) -> Option<IntType> {
     }
 }
 
-/// `n.to_f64()` (ADR 0114 rule 8.1): through a bit-vector of the integer type's own width,
-/// signed or unsigned, exact for every value of the type; for an `Int`, interpreted for
-/// `-2^63 <= n < 2^63` and the uninterpreted `i!to_f64!Int` beyond.
+/// `n.to_f64()` (ADR 0114 rule 8.1) or `n.to_f32()` (ADR 0120 V1): through a bit-vector of
+/// the integer type's own width, signed or unsigned, exact for every value of the type, and
+/// rounded once to the format; for an `Int`, interpreted for `-2^63 <= n < 2^63` and the
+/// uninterpreted `i!to_f64!Int` or `i!to_f32!Int` beyond.
 ///
 /// The narrow form applies only where `n` lies in its type's range: `int2bv w` takes
 /// `n mod 2^w`, and a term the language computes exactly (the body of a `reflect` predicate, a
@@ -1060,11 +1121,11 @@ fn integer_type(ty: &Type) -> Option<IntType> {
 /// `(ite (in range) <narrow> <the Int form>)`: exact for every integer, and the narrow form, the
 /// one the solver decides fast, wherever the range holds.
 ///
-/// `guarded` is false only for a conversion in code (`Prim::Float(FloatOp::FromInt)`), whose
+/// `guarded` is false only for a conversion in code (`FloatOp::FromInt` as a primitive), whose
 /// operand is a value of its type: a parameter, a field, or the result of an operation with an
 /// `overflow` obligation (`spec/18 §3`), so it lies in the range by construction, and the
 /// narrow form is exact unguarded (a program whose obligation fails is rejected).
-fn to_f64(n: F, from: Option<IntType>, guarded: bool) -> Option<F> {
+fn to_float(fmt: Fmt, n: F, from: Option<IntType>, guarded: bool) -> Option<F> {
     let through = |width: u32, signed: bool, n: F| -> F {
         let int2bv: &'static str = match width {
             8 => "(_ int2bv 8)",
@@ -1072,12 +1133,7 @@ fn to_f64(n: F, from: Option<IntType>, guarded: bool) -> Option<F> {
             32 => "(_ int2bv 32)",
             _ => "(_ int2bv 64)",
         };
-        let convert = if signed {
-            "(_ to_fp 11 53)"
-        } else {
-            "(_ to_fp_unsigned 11 53)"
-        };
-        F::op(convert, vec![rne(), F::op(int2bv, vec![n])])
+        F::op(fmt.to_fp(signed), vec![rne(), F::op(int2bv, vec![n])])
     };
     let range = |low: i128, high: i128, n: &F| {
         F::and(vec![
@@ -1088,9 +1144,9 @@ fn to_f64(n: F, from: Option<IntType>, guarded: bool) -> Option<F> {
     let int_form = |n: F| -> F {
         let beyond = F::App {
             fun: SmtFun {
-                name: "i!to_f64!Int".to_owned(),
+                name: fmt.beyond().to_owned(),
                 args: vec!["Int".to_owned()],
-                result: FLOAT64.to_owned(),
+                result: fmt.sort().to_owned(),
                 role: FunRole::Other,
             },
             args: vec![n.clone()],
@@ -1153,6 +1209,7 @@ fn type_name(ty: &Type) -> String {
             Base::Unit => "Unit".to_owned(),
             Base::Hashed => "Hashed".to_owned(),
             Base::F64 => "F64".to_owned(),
+            Base::F32 => "F32".to_owned(),
             Base::Decimal(scale) => format!("Decimal[{scale}]"),
             Base::Named { name, .. } | Base::Param(name) => name.clone(),
             Base::Tuple(_) => "Tuple".to_owned(),
@@ -3596,6 +3653,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                 | Prim::Fixed(..)
                 | Prim::Float(_)
                 | Prim::Shape(_)
+                | Prim::Float32(_)
                 // A decimal's `Option` results have no fact behind their nested positions.
                 | Prim::Decimal(_)
                 // A bit set's items are `Int`, with no refinement: nothing it gives back has a
@@ -4286,6 +4344,10 @@ impl<'p, 'i> Walker<'p, 'i> {
             Atom::F64(bits) => Tv {
                 f: F::Float(*bits),
                 ty: base_type(Base::F64),
+            },
+            Atom::F32(bits) => Tv {
+                f: F::Float32(*bits),
+                ty: base_type(Base::F32),
             },
             Atom::Unit => Tv {
                 f: F::Const(Const {
@@ -5431,13 +5493,21 @@ impl<'p, 'i> Walker<'p, 'i> {
             // `n.to_f64()` of an integer, by the integer's type (ADR 0114 rule 8.1).
             Prim::Float(FloatOp::FromInt) => {
                 let value = arg(0)?;
-                to_f64(value.f, integer_type(&value.ty), false)?
+                to_float(Fmt::F64, value.f, integer_type(&value.ty), false)?
+            }
+            Prim::Float32(FloatOp::FromInt) => {
+                let value = arg(0)?;
+                to_float(Fmt::F32, value.f, integer_type(&value.ty), false)?
             }
             // The other operations of the refinement language; a code-only method's result is
             // a fresh binder (ADR 0114 rule 8.1).
             Prim::Float(op) => {
                 let args: Vec<F> = values.iter().map(|v| v.f.clone()).collect();
-                float_term(op, &args)?
+                float_term(Fmt::F64, op, &args)?
+            }
+            Prim::Float32(op) => {
+                let args: Vec<F> = values.iter().map(|v| v.f.clone()).collect();
+                float_term(Fmt::F32, op, &args)?
             }
             // Membership of a set, a hash set and a hash map is a term, `i!has!<Sort>` (ADR
             // 0119 V1), as a bit set's is below.
@@ -5623,14 +5693,15 @@ impl<'p, 'i> Walker<'p, 'i> {
         }
         // `F64` by IEEE totalOrder, also for a type parameter instantiated with it (ADR 0114
         // rules 8.1 and 8.7).
-        if sort == FLOAT64 {
+        if sort == FLOAT64 || sort == FLOAT32 {
+            let fmt = if sort == FLOAT32 { Fmt::F32 } else { Fmt::F64 };
             let float_op = match op {
                 BinOp::Lt => FloatOp::Lt,
                 BinOp::Le => FloatOp::Le,
                 BinOp::Gt => FloatOp::Gt,
                 _ => FloatOp::Ge,
             };
-            return float_term(float_op, &[a.f.clone(), b.f.clone()]);
+            return float_term(fmt, float_op, &[a.f.clone(), b.f.clone()]);
         }
         if sort == TEXT || is_param_sort(&sort) {
             let relation = match op {
@@ -5744,14 +5815,26 @@ impl<'p, 'i> Walker<'p, 'i> {
                 f: F::Float(*bits),
                 ty: base_type(Base::F64),
             },
-            Term::Float { op, args } => {
+            Term::F32(bits) => Tv {
+                f: F::Float32(*bits),
+                ty: base_type(Base::F32),
+            },
+            Term::Float { op, args } | Term::Float32 { op, args } => {
+                let fmt = if matches!(term, Term::Float32 { .. }) {
+                    Fmt::F32
+                } else {
+                    Fmt::F64
+                };
                 let values: Vec<F> = args
                     .iter()
                     .map(|a| self.term(a, env).map(|v| v.f))
                     .collect::<Option<_>>()?;
-                let f = float_term(*op, &values)?;
-                let ty = if f.sort() == FLOAT64 {
+                let f = float_term(fmt, *op, &values)?;
+                let sort = f.sort();
+                let ty = if sort == FLOAT64 {
                     base_type(Base::F64)
+                } else if sort == FLOAT32 {
+                    base_type(Base::F32)
                 } else {
                     boolean()
                 };
@@ -5760,8 +5843,15 @@ impl<'p, 'i> Walker<'p, 'i> {
             Term::ToF64 { value, from } => {
                 let value = self.term(value, env)?;
                 Tv {
-                    f: to_f64(value.f, *from, true)?,
+                    f: to_float(Fmt::F64, value.f, *from, true)?,
                     ty: base_type(Base::F64),
+                }
+            }
+            Term::ToF32 { value, from } => {
+                let value = self.term(value, env)?;
+                Tv {
+                    f: to_float(Fmt::F32, value.f, *from, true)?,
+                    ty: base_type(Base::F32),
                 }
             }
             Term::Unit => return None,
@@ -7064,6 +7154,11 @@ impl<'p, 'i> Walker<'p, 'i> {
                 let level = if text.starts_with('-') { 2 } else { 1 };
                 (text, level)
             }
+            F::Float32(bits) => {
+                let text = una_core::float32::render(f32::from_bits(*bits));
+                let level = if text.starts_with('-') { 2 } else { 1 };
+                (text, level)
+            }
             F::Const(Const { name, role, .. }) => match role {
                 ConstRole::Text(text) => (una_core::quote(text), 1),
                 _ => self.show_binder(name),
@@ -7814,7 +7909,9 @@ fn slice_floats(assertions: Vec<F>, let_defs: &BTreeSet<F>) -> (Vec<F>, Option<(
         let mut terms = Vec::new();
         f.visit(&mut terms);
         for term in terms {
-            if matches!(term, F::Const(_) | F::App { .. }) && term.sort() == FLOAT64 {
+            if matches!(term, F::Const(_) | F::App { .. })
+                && crate::smt::is_float_sort(&term.sort())
+            {
                 out.push(term.text());
             }
         }

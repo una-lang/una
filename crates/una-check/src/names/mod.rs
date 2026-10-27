@@ -612,6 +612,29 @@ impl<'p, 'a> Checker<'p, 'a> {
             );
             self.diagnostics.push(diagnostic);
         }
+        // Edition 0.4: the other types of the numeric foundation are built in (`spec/29`, ADR
+        // 0120 rule 3), as `F64` is; `Decimal` and the dense types have their own messages above.
+        if upper
+            && self.package.settings.edition >= Edition::V0_4
+            && matches!(name, "F32" | "Complex")
+        {
+            let mut diagnostic = self.make(
+                Code::U1002,
+                ident.span,
+                format!(
+                    "`{name}` is a built-in numeric type from edition 0.4, so a {} cannot take its name",
+                    what.word()
+                ),
+            );
+            diagnostic.repairs.push(Repair {
+                rank: 1,
+                escape: None,
+                description: format!("rename the declaration, for example to `{name}Kind`"),
+                edit: None,
+                widens: None,
+            });
+            self.diagnostics.push(diagnostic);
+        }
         // Edition 0.2: the built-in types, and the types of the prelude that every program
         // uses, cannot be shadowed by a declaration (`spec/03 §1`, ADR 0079): in edition 0.1 a
         // kind named `Int` silently replaced it (#130).

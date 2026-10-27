@@ -2349,7 +2349,129 @@ pub fn f64_op(op: i64, a: i64, b: i64, c: i64) -> i64 {
         },
         FloatOp::FromInt => f64_word(f::from_int(&int_value(a))),
         FloatOp::ToText => text_word(f::render(x)),
+        FloatOp::ToF32 => f32_word(una_core::float32::from_f64(x)),
+        // Never generated under `Prim::Float`.
+        FloatOp::ToF64 => {
+            HEAP.with(|heap| heap.borrow_mut().faults += 1);
+            f64_word(x)
+        }
     }
+}
+
+/// The word of an `F32`: the tagged word of the key of totalOrder of its canonical bits
+/// (ADR 0120 rule 10). The key determines the bits, its integer order is totalOrder and its
+/// equality is identity, so a word compares as an integer; it fits 63 bits, so it never
+/// allocates. O(1).
+pub fn f32_word(x: f32) -> i64 {
+    (i64::from(una_core::float32::order_key(x)) << 1) | 1
+}
+
+/// The `F32` of the word `word`; the canonical NaN, with a fault, for a word that holds none.
+pub fn f32_value(word: i64) -> f32 {
+    match i32::try_from(word >> 1) {
+        Ok(key) if word & 1 == 1 => una_core::float32::from_order_key(key),
+        _ => {
+            HEAP.with(|heap| heap.borrow_mut().faults += 1);
+            f32::from_bits(una_core::float32::CANONICAL_NAN)
+        }
+    }
+}
+
+/// The operation of `F32` at position `op` of `FloatOp::ALL` on the words `a`, `b` and `c`,
+/// each borrowed: the routine of `una_core::float32` that the interpreter calls, so both
+/// engines give the same bits (ADR 0120 rule 5). A word of an `F32`, `0`/`1` for a `Bool`, or a
+/// new reference (a text, an `Option[Int]`, an `F64`). O(1), or O(m) for `to_f32()` of an
+/// `Int` of m limbs.
+pub fn f32_op(op: i64, a: i64, b: i64, c: i64) -> i64 {
+    use una_core::FloatOp;
+    use una_core::float::IeeeCompare;
+    use una_core::float32 as f;
+    let Some(op) = usize::try_from(op)
+        .ok()
+        .and_then(|i| FloatOp::ALL.get(i).copied())
+    else {
+        HEAP.with(|heap| heap.borrow_mut().faults += 1);
+        return 0;
+    };
+    if op == FloatOp::FromInt {
+        return f32_word(f::from_int(&int_value(a)));
+    }
+    let x = f32_value(a);
+    let y = if op.params().is_empty() && !binary_operator(op) {
+        0.0
+    } else {
+        f32_value(b)
+    };
+    let z = if op.params().len() == 2 {
+        f32_value(c)
+    } else {
+        0.0
+    };
+    let flag = |value: bool| i64::from(value);
+    match op {
+        FloatOp::Add => f32_word(f::add(x, y)),
+        FloatOp::Sub => f32_word(f::sub(x, y)),
+        FloatOp::Mul => f32_word(f::mul(x, y)),
+        FloatOp::Div => f32_word(f::div(x, y)),
+        FloatOp::Neg => f32_word(f::neg(x)),
+        FloatOp::Eq => flag(f::equal(x, y)),
+        FloatOp::Ne => flag(!f::equal(x, y)),
+        FloatOp::Lt => flag(f::total_cmp(x, y).is_lt()),
+        FloatOp::Le => flag(f::total_cmp(x, y).is_le()),
+        FloatOp::Gt => flag(f::total_cmp(x, y).is_gt()),
+        FloatOp::Ge => flag(f::total_cmp(x, y).is_ge()),
+        FloatOp::Abs => f32_word(f::abs(x)),
+        FloatOp::Sqrt => f32_word(f::sqrt(x)),
+        FloatOp::Fma => f32_word(f::fma(x, y, z)),
+        FloatOp::Rem => f32_word(f::rem(x, y)),
+        FloatOp::Floor => f32_word(f::floor(x)),
+        FloatOp::Ceil => f32_word(f::ceil(x)),
+        FloatOp::Trunc => f32_word(f::trunc(x)),
+        FloatOp::RoundHalfEven => f32_word(f::round_half_even(x)),
+        FloatOp::RoundHalfAway => f32_word(f::round_half_away(x)),
+        FloatOp::CopySign => f32_word(f::copy_sign(x, y)),
+        FloatOp::IeeeMin => f32_word(f::ieee_min(x, y)),
+        FloatOp::IeeeMax => f32_word(f::ieee_max(x, y)),
+        FloatOp::Clamp => f32_word(f::clamp(x, y, z)),
+        FloatOp::IeeeEq => flag(f::ieee_compare(IeeeCompare::Eq, x, y)),
+        FloatOp::IeeeNe => flag(f::ieee_compare(IeeeCompare::Ne, x, y)),
+        FloatOp::IeeeLt => flag(f::ieee_compare(IeeeCompare::Lt, x, y)),
+        FloatOp::IeeeLe => flag(f::ieee_compare(IeeeCompare::Le, x, y)),
+        FloatOp::IeeeGt => flag(f::ieee_compare(IeeeCompare::Gt, x, y)),
+        FloatOp::IeeeGe => flag(f::ieee_compare(IeeeCompare::Ge, x, y)),
+        FloatOp::IsNan => flag(x.is_nan()),
+        FloatOp::IsFinite => flag(x.is_finite()),
+        FloatOp::IsInfinite => flag(x.is_infinite()),
+        FloatOp::IsSignNegative => flag(f::to_bits(x) >> 31 == 1),
+        FloatOp::IsZero => flag(x == 0.0),
+        FloatOp::IsPositiveZero => flag(f::to_bits(x) == 0),
+        FloatOp::IsNegativeZero => flag(f::to_bits(x) == 1 << 31),
+        FloatOp::ToBits => int_word(&BigInt::from(f::to_bits(x))),
+        FloatOp::ToIntExact => match f::to_int_exact(x) {
+            Some(n) => some_owned(int_word(&n)),
+            None => NONE,
+        },
+        FloatOp::FromInt => f32_word(f::from_int(&int_value(a))),
+        FloatOp::ToText => text_word(f::render(x)),
+        FloatOp::ToF64 => f64_word(f::to_f64(x)),
+        // Never generated under `Prim::Float32`.
+        FloatOp::ToF32 => {
+            HEAP.with(|heap| heap.borrow_mut().faults += 1);
+            f32_word(x)
+        }
+    }
+}
+
+/// `f32_from_bits(bits:)`: the value with those bits, any NaN canonical (ADR 0120 rule 5).
+pub fn f32_from_bits(bits: i64) -> i64 {
+    let bits = u32::try_from(&int_value(bits)).unwrap_or(0);
+    f32_word(una_core::float32::from_bits(bits))
+}
+
+/// `parse_f32(t)` of a text that `parse_f64_failure` accepts: the grammar is the same, and the
+/// value is rounded once to binary32.
+pub fn parse_f32(t: i64) -> i64 {
+    f32_word(una_core::float32::parse(&text_value(t)).unwrap_or(0.0))
 }
 
 /// Whether `op` is a binary operator, whose second operand is an `F64`.

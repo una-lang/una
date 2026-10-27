@@ -330,6 +330,13 @@ fn encode<S: Sink>(types: &Types, encoder: &mut Encoder<'_, S>, desc: i64, word:
                     encoder.f64_bits(una_core::float::to_bits(super::f64_value(word)));
                     continue;
                 }
+                // The integer whose value is its 32 canonical bits (`spec/28 §1` rule 2).
+                Some(Descriptor::F32) => {
+                    encoder.uint(u64::from(una_core::float32::to_bits(super::f32_value(
+                        word,
+                    ))));
+                    continue;
+                }
                 Some(
                     Descriptor::Sum(ty) | Descriptor::Structural(ty) | Descriptor::Decimal(ty),
                 ) => (ty, Rc::new(Vec::new()), word),
@@ -350,6 +357,12 @@ fn encode<S: Sink>(types: &Types, encoder: &mut Encoder<'_, S>, desc: i64, word:
             // Every `F64` is canonical, so every NaN encodes alike, and `-0.0` and `0.0` differ,
             // as their `==` does (ADR 0114 rule 6.1).
             Some(Shape::F64) => encoder.f64_bits(una_core::float::to_bits(super::f64_value(word))),
+            // The integer whose value is its 32 canonical bits (`spec/28 §1` rule 2).
+            Some(Shape::F32) => {
+                encoder.uint(u64::from(una_core::float32::to_bits(super::f32_value(
+                    word,
+                ))));
+            }
             // Its length, then its elements in its listing order: a list, a stack or a queue
             // front first, a set ascending.
             Some(Shape::List(of) | Shape::Seq(of) | Shape::Set(of)) => {

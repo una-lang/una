@@ -226,6 +226,12 @@ pub(crate) fn build_command(
         {
             object.insert("float_environment".to_owned(), json!(true));
         }
+        // ADR 0120 rule 5: edition 0.4 adds the binary32 probes.
+        if manifest.edition >= una_project::Edition::V0_4
+            && let Some(object) = meta.as_object_mut()
+        {
+            object.insert("float32_probes".to_owned(), json!(true));
+        }
         // ADR 0119 rule 9: an executable whose code can make a hash table reads the process key
         // of keyed hashing before `main`; one that makes none never reads it.
         if described.hashing

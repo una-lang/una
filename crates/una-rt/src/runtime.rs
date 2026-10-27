@@ -413,6 +413,9 @@ pub struct Meta {
     /// before `main`, so that no thread starts at a moment that earlier code decided (ADR 0116
     /// amendment, P8; `spec/27 §1` rule 4; #1145, #1151).
     pub threads: bool,
+    /// Whether the program is of edition 0.4, whose self-test adds the binary32 probes (ADR
+    /// 0120 rule 5).
+    pub float32_probes: bool,
 }
 
 /// The `drive` section of a driven program, as `una build` embeds it (ADR 0116 rule 1).
@@ -520,6 +523,10 @@ impl Meta {
             Some(section) => section.as_str()?.to_owned(),
             None => "`[run] grants`".to_owned(),
         };
+        let float32_probes = value
+            .get("float32_probes")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         let stops = value.get("stops").and_then(Value::as_bool).unwrap_or(false);
         let tasks = value.get("tasks").and_then(Value::as_bool).unwrap_or(false);
         // A description that says nothing of elision was built before it existed, without it.
@@ -557,6 +564,7 @@ impl Meta {
             hashing,
             drive,
             grants_section,
+            float32_probes,
         })
     }
 }
@@ -1995,7 +2003,15 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
         crate::ffi::write_float_environment();
         // A failed probe is U6006, exit code 1, with no position, written as the runtime's
         // other stops before `main` are.
-        if let Err(probe) = una_core::float::probe_environment() {
+        // Edition 0.4 adds the binary32 probes (ADR 0120 rule 5).
+        let probed = una_core::float::probe_environment().and_then(|()| {
+            if meta.float32_probes {
+                una_core::float32::probe_environment()
+            } else {
+                Ok(())
+            }
+        });
+        if let Err(probe) = probed {
             let written = writeln!(
                 stderr,
                 "[{}] Error: the floating-point environment of this platform is not the default one ({probe})",

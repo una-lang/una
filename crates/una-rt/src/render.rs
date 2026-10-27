@@ -28,6 +28,8 @@ pub enum Shape {
     Hashed,
     /// `F64`, by its shortest round-trip text (`spec/29 §7`).
     F64,
+    /// `F32`, by its shortest round-trip text (ADR 0120 rule 5).
+    F32,
     /// A function.
     Fn,
     /// `List` of the type at this index.
@@ -205,6 +207,9 @@ fn render(types: &[Shape], ty: usize, word: i64, redact: bool, params: &[i64]) -
             Some(Shape::F64) => {
                 out.push_str(&una_core::float::render(values::f64_value(word)));
             }
+            Some(Shape::F32) => {
+                out.push_str(&una_core::float32::render(values::f32_value(word)));
+            }
             Some(Shape::Hashed) if !redact => out.push_str("<hashed>"),
             Some(Shape::Hashed) => {
                 out.push_str("hashed:");
@@ -334,6 +339,9 @@ fn render(types: &[Shape], ty: usize, word: i64, redact: bool, params: &[i64]) -
                     Some(crate::generic::Written::F64) => {
                         out.push_str(&una_core::float::render(values::f64_value(word)));
                     }
+                    Some(crate::generic::Written::F32) => {
+                        out.push_str(&una_core::float32::render(values::f32_value(word)));
+                    }
                     Some(crate::generic::Written::Typed(ty, inner)) => {
                         parts.push(Task::Value(ty, word, std::rc::Rc::new(inner)));
                     }
@@ -369,6 +377,7 @@ fn shape(value: &Value) -> Option<Shape> {
         "unit" => Shape::Unit,
         "hashed" => Shape::Hashed,
         "f64" => Shape::F64,
+        "f32" => Shape::F32,
         "fn" => Shape::Fn,
         "list" => Shape::List(index(value, "item")?),
         "map" => Shape::Map(index(value, "key")?, index(value, "value")?),

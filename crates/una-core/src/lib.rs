@@ -8,6 +8,7 @@ pub mod decimal;
 pub mod dense;
 mod descriptor;
 pub mod float;
+pub mod float32;
 pub mod flow;
 pub mod http;
 mod ir;

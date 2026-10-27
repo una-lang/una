@@ -178,6 +178,12 @@ fn analyze_and(
     {
         return (environment_failure(probe), Vec::new());
     }
+    // ADR 0120 rule 5: edition 0.4 adds the binary32 probes, for its `F32` literals.
+    if manifest.edition >= una_project::Edition::V0_4
+        && let Err(probe) = una_core::float32::probe_environment()
+    {
+        return (environment_failure(probe), Vec::new());
+    }
     let mut interner = Interner::new();
     let mut trees = Vec::new();
     let keywords = keyword_set(manifest.edition);

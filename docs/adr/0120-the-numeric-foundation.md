@@ -877,3 +877,16 @@ The first step of section E, `Array[T]` and `Matrix[T]` (`spec/29 §17`), settle
 4. **Rule 40's `to_list`, and rule 35's `map`, `zip_map`, `update` and `fold`, are on numeric elements,** as rule 26 says of rules 34 to 43. An `Array` of another element type has `get`, `set`, `at`, `slice`, `compact` and `len` (rules 29 and 30). Whether `to_list`, `map` and `fold` extend to every element type, which rule 43's route to JSON would use, is left to a later record.
 
 And one rule the text implies, stated: **a trusted function that computes new elements keeps no refinement of its element type in its result.** ADR 0103 rule 5 lets a refinement flow through a generic call's covariant result because the callee can only return values it was given; `matrix_diagonal`'s `+0`, the reductions and the products compute new values, so their results are over the element type's base (`spec/29 §17` rule 6).
+
+## Amendment (2026-10-19): the binary32 overflow boundary of rule 5
+
+Found while implementing rule 5 (issue #984).
+
+Rule 5 names `3.4028235677973366e38` as the midpoint between the largest finite binary32 value and 2^128. That text is not the midpoint: it lies just below it.
+
+1. **The midpoint** is exactly 2^128 - 2^103 = 340282356779733661637539395458142568448. It is a tie between the largest finite value, 2^128 - 2^104 = 340282346638528859811704183484516925440 (`3.4028235e38`), and 2^128, and a tie rounds to even, so the midpoint itself rounds to an infinity.
+2. **Its neighbors.** `3.4028235677973366e38` is the midpoint less about 1.6 × 10^21: it rounds to the largest finite value and is accepted. `3.4028235677973367e38` is the midpoint plus about 8.4 × 10^21: it rounds to an infinity and is U2031.
+3. **Rule 5's bound reads:** U2031 for a literal whose value is at least 2^128 - 2^103, which rounds to an infinity. The underflow bound, 2^-150, is unchanged.
+4. **The Conformance section's** "U2031 on both sides of `3.4028235677973366e38`" reads "on both sides of 2^128 - 2^103: `3.4028235677973366e38` accepted, and the exact midpoint and `3.4028235677973367e38` refused".
+
+The unit test `literals_round_once_to_binary32` of `crates/una-core/src/float32.rs` pins both sides of the midpoint, and the conformance case `tests/conformance/types/f32_range` checks them through the checker.

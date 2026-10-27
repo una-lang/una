@@ -731,6 +731,7 @@ impl<'e, 'a> Fx<'e, 'a> {
             Ty::Hashed => Base::Hashed,
             Ty::F64 => Base::F64,
             Ty::Decimal(scale) => Base::Decimal(*scale),
+            Ty::F32 => Base::F32,
             Ty::List(element) => Base::Named {
                 module: "prelude".to_owned(),
                 name: "List".to_owned(),
@@ -1060,6 +1061,17 @@ impl<'e, 'a> Fx<'e, 'a> {
         }
     }
 
+    /// Whether the expression at `span` is an `F32` (ADR 0120 rule 5).
+    fn is_f32_at(&self, span: Span) -> bool {
+        matches!(
+            self.type_at(span),
+            Type::Base {
+                base: Base::F32,
+                ..
+            }
+        )
+    }
+
     /// The recorded type of the expression or binder at `span`.
     fn type_at(&self, span: Span) -> Type {
         self.records
@@ -1217,7 +1229,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                     _ => self.outside(),
                 }
             }
-            ExprKind::Literal(literal) => self.literal_term(literal),
+            ExprKind::Literal(literal) => self.literal_term(literal, expr.span),
             ExprKind::Name(ident) => {
                 let name = self.name(ident);
                 // In `ensures`, an `edit` parameter is its final value, a component of the
@@ -1262,8 +1274,10 @@ impl<'e, 'a> Fx<'e, 'a> {
             },
             ExprKind::It => Term::It,
             ExprKind::Binary { op, left, right }
-                if self.is_f64_at(left.span) && self.is_f64_at(right.span) =>
+                if (self.is_f64_at(left.span) && self.is_f64_at(right.span))
+                    || (self.is_f32_at(left.span) && self.is_f32_at(right.span)) =>
             {
+                let f32 = self.is_f32_at(left.span);
                 let op = match op {
                     BinaryOp::Add => FloatOp::Add,
                     BinaryOp::Sub => FloatOp::Sub,
@@ -1277,9 +1291,11 @@ impl<'e, 'a> Fx<'e, 'a> {
                     BinaryOp::Ge => FloatOp::Ge,
                     _ => return self.outside(),
                 };
-                Term::Float {
-                    op,
-                    args: vec![self.term(left), self.term(right)],
+                let args = vec![self.term(left), self.term(right)];
+                if f32 {
+                    Term::Float32 { op, args }
+                } else {
+                    Term::Float { op, args }
                 }
             }
             ExprKind::Binary { op, left, right } => {
@@ -1307,6 +1323,13 @@ impl<'e, 'a> Fx<'e, 'a> {
                 op: FloatOp::Neg,
                 args: vec![self.term(operand)],
             },
+            ExprKind::Unary {
+                op: UnaryOp::Neg,
+                operand,
+            } if self.is_f32_at(operand.span) => Term::Float32 {
+                op: FloatOp::Neg,
+                args: vec![self.term(operand)],
+            },
             ExprKind::Unary { op, operand } => {
                 let operand = Box::new(self.term(operand));
                 match op {
@@ -1327,7 +1350,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                     IsTarget::Literal(literal) => Term::Binary {
                         op: BinOp::Eq,
                         left: value,
-                        right: Box::new(self.literal_term(literal)),
+                        right: Box::new(self.literal_term(literal, expr.span)),
                     },
                 }
             }
@@ -1390,7 +1413,19 @@ impl<'e, 'a> Fx<'e, 'a> {
                         _ => None,
                     },
                 },
-                // A method of `F64` of the refinement language (ADR 0114 rule 8.4).
+                // `n.to_f32()` of an integer (ADR 0120 V1), with its type's width.
+                Some(Res::IntMethod(Prim::Float32(FloatOp::FromInt))) => Term::ToF32 {
+                    value: Box::new(self.term(target)),
+                    from: match self.type_at(target.span) {
+                        Type::Base {
+                            base: Base::Fixed(int),
+                            ..
+                        } => Some(int),
+                        _ => None,
+                    },
+                },
+                // A method of `F64` of the refinement language (ADR 0114 rule 8.4), `to_f32()`
+                // of an `F64` included (ADR 0120 V1).
                 Some(Res::IntMethod(Prim::Float(op))) if op.in_refinement_language() => {
                     let mut terms = vec![self.term(target)];
                     terms.extend(args.iter().map(|arg| self.term(&arg.value)));
@@ -1407,6 +1442,12 @@ impl<'e, 'a> Fx<'e, 'a> {
                         }
                     }
                     Term::Element { value, indices }
+                }
+                // A method of `F32` of the refinement language, `to_f64()` included.
+                Some(Res::IntMethod(Prim::Float32(op))) if op.in_refinement_language() => {
+                    let mut terms = vec![self.term(target)];
+                    terms.extend(args.iter().map(|arg| self.term(&arg.value)));
+                    Term::Float32 { op, args: terms }
                 }
                 // `s.has(item: x)` of a set, a hash set or a bit set (ADR 0119 V5).
                 Some(
@@ -1472,10 +1513,16 @@ impl<'e, 'a> Fx<'e, 'a> {
         }
     }
 
-    fn literal_term(&mut self, literal: &Literal) -> Term {
+    fn literal_term(&mut self, literal: &Literal, span: Span) -> Term {
         match literal {
             Literal::Int(digits) => Term::Int(digits.clone()),
-            // No float term is in the refinement language yet (`spec/29 §8`).
+            // A float literal by its exact bits, at the type it took (ADR 0120 rule 6).
+            Literal::Float(text) if self.is_f32_at(span) => {
+                match una_core::float32::literal(text) {
+                    una_core::float32::Literal::Value(value) => Term::F32(value.to_bits()),
+                    _ => self.outside(),
+                }
+            }
             Literal::Float(text) => match una_core::float::literal(text) {
                 una_core::float::Literal::Value(value) => Term::F64(value.to_bits()),
                 _ => self.outside(),
@@ -4375,9 +4422,11 @@ impl<'e, 'a> Fx<'e, 'a> {
                 let operand_span = operand.span;
                 let float = self.is_f64_at(operand_span);
                 let decimal = self.decimal_at(operand_span).is_some();
+                let float32 = self.is_f32_at(operand_span);
                 let operand = self.atom(lets, operand);
                 let prim = match op {
                     UnaryOp::Neg if float => Prim::Float(una_core::FloatOp::Neg),
+                    UnaryOp::Neg if float32 => Prim::Float32(una_core::FloatOp::Neg),
                     UnaryOp::Neg if decimal => Prim::Decimal(una_core::DecimalOp::Neg),
                     UnaryOp::Neg => Prim::Neg,
                     UnaryOp::Not => Prim::Not,
@@ -4775,6 +4824,16 @@ impl<'e, 'a> Fx<'e, 'a> {
                     }
                 }
             }
+            Literal::Float(text) if self.is_f32_at(span) => {
+                match una_core::float32::literal(text) {
+                    una_core::float32::Literal::Value(value) => Atom::F32(value.to_bits()),
+                    // U2031, which the checker reported.
+                    _ => {
+                        self.broken.set(true);
+                        Atom::F32(0)
+                    }
+                }
+            }
             Literal::Float(text) => match una_core::float::literal(text) {
                 una_core::float::Literal::Value(value) => Atom::F64(value.to_bits()),
                 // U2031, which the checker reported.
@@ -4809,6 +4868,8 @@ impl<'e, 'a> Fx<'e, 'a> {
                     } else if let Some(scale) = self.decimal_at(expr.span) {
                         // A decimal is written with exactly its scale's digits (`spec/29 §16`).
                         Prim::Decimal(una_core::DecimalOp::ToText(scale))
+                    } else if self.is_f32_at(expr.span) {
+                        Prim::Float32(una_core::FloatOp::ToText)
                     } else {
                         Prim::ToText
                     };
@@ -4888,13 +4949,18 @@ impl<'e, 'a> Fx<'e, 'a> {
         }
         let arg_spans = vec![left.span, right.span];
         let float = self.is_f64_at(left.span) && self.is_f64_at(right.span);
+        let float32 = self.is_f32_at(left.span) && self.is_f32_at(right.span);
         let decimal = match (self.decimal_at(left.span), self.decimal_at(right.span)) {
             (Some(a), Some(b)) => decimal_op(op, a, b),
             _ => None,
         };
         let left = self.atom(lets, left);
         let right = self.atom(lets, right);
-        let prim = match (op, float) {
+        let wrap = |prim: Prim| match prim {
+            Prim::Float(op) if float32 => Prim::Float32(op),
+            other => other,
+        };
+        let prim = match (op, float || float32) {
             // The operators of `Decimal` carry their operands' scales (`spec/29 §16`).
             _ if decimal.is_some() => Prim::Decimal(decimal.unwrap_or(una_core::DecimalOp::Mul)),
             // The operators of `F64` are their own primitives (ADR 0114 rule 17).
@@ -4923,6 +4989,8 @@ impl<'e, 'a> Fx<'e, 'a> {
                 BinaryOp::And | BinaryOp::Or | BinaryOp::Implies => Prim::Eq,
             },
         };
+        // The same operators of `F32` are `Float32` primitives (ADR 0120 rule 5).
+        let prim = wrap(prim);
         self.push(
             lets,
             span,

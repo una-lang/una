@@ -353,6 +353,9 @@ exported! {
     una_rt_f64_literal => values::f64_literal, (bits);
     una_rt_f64_op => values::f64_op, (op, a, b, c);
     una_rt_f64_from_bits => values::f64_from_bits, (bits);
+    una_rt_f32_op => values::f32_op, (op, a, b, c);
+    una_rt_f32_from_bits => values::f32_from_bits, (bits);
+    una_rt_parse_f32 => values::parse_f32, (t);
     una_rt_parse_f64_failure => values::parse_f64_failure, (t);
     una_rt_parse_f64 => values::parse_f64, (t);
     una_rt_as_f64 => values::as_f64, (j);
