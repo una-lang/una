@@ -2287,6 +2287,9 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 ("Http", "delete") => ("una_rt_http_delete", true),
                 _ => return Err(unsupported(format!("`{capability}.{op}`"))),
             };
+            if capability_path.name == "Http" && !limit {
+                self.emitter.http = true;
+            }
             let sited = limit
                 || matches!(
                     (capability_path.name.as_str(), op.as_str()),

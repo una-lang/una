@@ -398,6 +398,9 @@ pub(crate) struct Env<'a> {
     /// probe of pass 2 found, read by the checks of pass 2; a site absent here is `public` (the
     /// first probe).
     pub(crate) within_timing: BTreeMap<Span, Label>,
+    /// The residue label `L_res` (ADR 0116 P9) that the probe of pass 2 found, already joined
+    /// into [`Self::within_timing`], with its sources, which the messages of pass 2 name.
+    pub(crate) residue: super::timing::Residue,
     /// What a check of pass 2 records for the file-state label: each `Files.write`, with the
     /// labels of its path and the program counter, and the code it is in; each direct call
     /// of a function, with the program counter; the functions used as values, which a caller
@@ -564,6 +567,7 @@ impl<'a> Env<'a> {
             files_written: false,
             file_state: Label::public(),
             within_timing: BTreeMap::new(),
+            residue: super::timing::Residue::none(),
             file_writes: Vec::new(),
             file_calls: Vec::new(),
             file_escaped: BTreeSet::new(),

@@ -446,6 +446,7 @@ const RUNTIME: &[(&str, usize, bool)] = &[
     ("una_rt_files_read", 2, true),
     ("una_rt_files_write", 2, true),
     ("una_rt_keys_hmac", 2, true),
+    ("una_rt_http_enable", 0, false),
     ("una_rt_http_get", 4, true),
     ("una_rt_http_post", 5, true),
     ("una_rt_http_put", 5, true),
@@ -516,6 +517,9 @@ struct Emitter<'p> {
     ops: Vec<serde_json::Value>,
     /// Whether a task construct or a `for ever` was compiled ([`Described::threads`]).
     threads: bool,
+    /// Whether an operation of `Http` was compiled: the C `main` then calls
+    /// `una_rt_http_enable`, the only path to the TLS stack (ADR 0074 H7, #1148).
+    http: bool,
 }
 
 impl<'p> Emitter<'p> {
@@ -549,6 +553,7 @@ impl<'p> Emitter<'p> {
             types: describe::Types::new(program),
             ops: Vec::new(),
             threads: false,
+            http: false,
         })
     }
 
@@ -1084,6 +1089,9 @@ impl<'p> Emitter<'p> {
                 .iconst(pointer, i64::try_from(meta.len()).map_err(internal)?);
             let una_main_ref = self.module.declare_func_in_func(una_main_id, builder.func);
             let una_main_address = builder.ins().func_addr(pointer, una_main_ref);
+            if self.http {
+                self.runtime_call(&mut builder, "una_rt_http_enable", &[])?;
+            }
             let start_ref = self.module.declare_func_in_func(start, builder.func);
             let call = builder.ins().call(
                 start_ref,

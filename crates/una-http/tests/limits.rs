@@ -217,14 +217,17 @@ fn the_request_deadline_covers_a_wait_and_the_request_is_never_sent() {
 }
 
 #[test]
-fn a_slot_stays_held_until_its_exchange_returns() {
-    // Abandoning a request ends only its wait at a limit: once in flight, its slot stays held
-    // until the exchange returns, so the count in flight is never understated (ADR 0117 rule 8,
-    // item 4).
+fn an_abandoned_exchange_ends_at_its_next_step_and_releases_its_slot() {
+    // ADR 0117 rule 8 item 4 read with ADR 0116 P9 (amendment of 2026-10-27, #1148): abandoning
+    // a request ends its wait at a limit, and an exchange in flight at its next I/O step, its
+    // socket shut down, so the helper returns and the slot is released then, not when the peer
+    // would have answered; a request waiting for the slot before that still waits, and the
+    // count in flight is never understated.
     let server = Server::start(Duration::from_millis(500), |_| ok());
     let g = governor(&[format!("http:{};1/once", server.origin())]);
     let url = format!("{}/slow", server.origin());
     let abandon = Abandon::new();
+    let started = Instant::now();
     let first = {
         let (g, url, abandon) = (Arc::clone(&g), url.clone(), abandon.clone());
         std::thread::spawn(move || get(&g, &url, Duration::from_secs(10), &abandon))
@@ -232,12 +235,20 @@ fn a_slot_stays_held_until_its_exchange_returns() {
     while server.seen() == 0 {
         std::thread::sleep(Duration::from_millis(5));
     }
-    abandon.abandon();
+    // While the first exchange holds the slot, a second request waits for it.
     assert_eq!(
         get(&g, &url, Duration::from_millis(150), &Abandon::new()),
         Err(Error::TimedOut)
     );
-    assert_eq!(first.join().unwrap(), Ok(200));
+    abandon.abandon();
+    // The first exchange ends at the abandon, long before the server's 500 ms answer.
+    assert_eq!(first.join().unwrap(), Err(Error::Interrupted));
+    assert!(
+        started.elapsed() < Duration::from_millis(450),
+        "{:?}",
+        started.elapsed()
+    );
+    // Its slot is free from then on.
     assert_eq!(
         get(&g, &url, Duration::from_secs(5), &Abandon::new()),
         Ok(200)

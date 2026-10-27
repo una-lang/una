@@ -293,6 +293,18 @@ pub(crate) fn guarded<R>(doing: &str, f: impl FnOnce() -> R) -> Result<R, String
 /// The trace file of the run, once `start` made it: a stop that writes no trace removes it.
 static TRACE_FILE: OnceLock<PathBuf> = OnceLock::new();
 
+/// How a run builds the client's TLS settings before `main`, set only by a program that
+/// performs an operation of `Http` ([`enable_http`]): the only reference to the TLS stack from
+/// the runtime's start, so an executable that never uses `Http` carries none of it (ADR 0074
+/// H7), while one that does builds them up front (ADR 0116 amendment, P8, #1148).
+static HTTP_PREPARE: OnceLock<fn()> = OnceLock::new();
+
+/// Lets the runs of this process build the client's TLS settings before `main` when their
+/// grants include `Http` (`una_rt_http_enable`).
+pub(crate) fn enable_http() {
+    let _ = HTTP_PREPARE.set(una_http::client::prepare);
+}
+
 /// The bytes that 2^32 − 1 references take, one word each: a count at its limit with less held
 /// in the heap and the stacks cannot be the program's (ADR 0113 rule 5).
 const COUNT_LIMIT_BYTES: usize = (values::COUNT_LIMIT as usize).saturating_mul(8);
@@ -1942,6 +1954,32 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
         concurrency: options.concurrency,
         sched: None,
     };
+    // ADR 0116 amendment, P8 (#1148): a run whose grants include `Http` builds the client's TLS
+    // settings here, before `main`, with the other state it starts up front. Built at the run's
+    // first `https` request, they would be state that earlier code left, saving a later request
+    // the time of building them. A run without such a grant never builds them, nor does a
+    // program that performs no operation of `Http`, which cannot make a request. The same run
+    // starts the client's pools here, `max(2, --io-threads / 4)` lookup threads and
+    // `--io-threads` connect threads, all at once, so whether such a thread exists is never
+    // history either; a thread that cannot start stops the run before `main` with U6003, as the
+    // scheduler's do (`spec/24 §4` rule 2).
+    if state
+        .grants
+        .iter()
+        .any(|grant| matches!(grant, Grant::Http(_)))
+    {
+        if let Some(prepare) = HTTP_PREPARE.get() {
+            prepare();
+        }
+        if una_http::resolve::start(state.concurrency.io_threads).is_err() {
+            let written = writeln!(
+                stderr,
+                "[{}] Error: the lookup and connect threads of this run's requests could not be made",
+                Code::U6003
+            );
+            return if written.is_ok() { 1 } else { USAGE };
+        }
+    }
     // ADR 0114 rule 6.4: write the default floating-point environment, then test it, before
     // any code of the program runs; each thread the program runs on writes it too.
     let floats = meta.float_environment;
@@ -3041,6 +3079,36 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "run by `the_tls_settings_exist_before_main_exactly_when_a_grant_includes_http`, in a process of its own"]
+    fn the_tls_settings_scenario() {
+        // A fresh process: nothing has built the TLS settings. A run without an `Http` grant
+        // builds none, before or during `main`; one with such a grant has them before `main`
+        // runs, before any request.
+        start(&[], r#"{"grants":[],"uses":[]}"#, || {
+            eprintln!(
+                "{STEP}: without http {} pools {:?}",
+                una_http::client::tls_ready(),
+                una_http::resolve::threads()
+            );
+            0
+        });
+        // The program performs an operation of `Http`, as its C `main` then says.
+        crate::ffi::una_rt_http_enable();
+        start(
+            &strings(&["--grant", "http:https://example.com", "--io-threads", "12"]),
+            r#"{"grants":[],"uses":[]}"#,
+            || {
+                eprintln!(
+                    "{STEP}: with http {} pools {:?}",
+                    una_http::client::tls_ready(),
+                    una_http::resolve::threads()
+                );
+                0
+            },
+        );
+    }
+
+    #[test]
     #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
     fn the_timer_thread_runs_before_main_and_no_within_starts_it_whatever_ran_before() {
         // #1151, ADR 0116 amendment P8, the deterministic guard of the lazy timer: in a program
@@ -3100,6 +3168,25 @@ mod tests {
                 (None, None),
             ]
         );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "runs a process of its own, which Miri cannot")]
+    fn the_tls_settings_exist_before_main_exactly_when_a_grant_includes_http() {
+        // #1148, ADR 0116 amendment P8: the client's TLS settings and resolver pool are state a run starts up
+        // front when its grants include `Http`, so no request after earlier `secret` code finds
+        // them built while another builds them. Before the fix they were built at the first
+        // `https` request, and `main` found none in either run.
+        let (code, stderr) = scenario("the_tls_settings_scenario");
+        assert_eq!(code, Some(0), "{stderr}");
+        assert_eq!(steps(&stderr), 2, "{stderr}");
+        // The client's pools too: none without the grant, and with it `max(2, 12 / 4)` lookup
+        // threads and 12 connect threads, all started before `main`.
+        assert!(
+            stderr.contains("without http false pools (0, 0)"),
+            "{stderr}"
+        );
+        assert!(stderr.contains("with http true pools (3, 12)"), "{stderr}");
     }
 
     #[test]

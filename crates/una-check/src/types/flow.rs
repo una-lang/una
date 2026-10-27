@@ -177,11 +177,12 @@ impl Checker<'_, '_, '_> {
             ShowLabeled(&found_ty, self).to_string(),
             ShowLabeled(&expected_ty, self).to_string(),
         );
+        let residue = self.residue_clause_for(&from, &to);
         let mut diagnostic = self.report.make(
             Code::U4001,
             span,
             format!(
-                "{into} is `{expected_shown}`, and this value is `{found_shown}`: a flow from `{from}` to `{to}`"
+                "{into} is `{expected_shown}`, and this value is `{found_shown}`: a flow from `{from}` to `{to}`{residue}"
             ),
         );
         if let Some(advice) = advice {
@@ -391,11 +392,12 @@ impl Checker<'_, '_, '_> {
                 }
             };
             let words = construct.words();
+            let residue = self.residue_clause(&bound);
             let mut diagnostic = self.report.make(
                 Code::U4002,
                 span,
                 format!(
-                    "{callee} has effects that accept at most `{bound}` data, and it is {action} {place}, depending on `{t}` timing, which whether its effects happen would reveal"
+                    "{callee} has effects that accept at most `{bound}` data, and it is {action} {place}, depending on `{t}` timing, which whether its effects happen would reveal{residue}"
                 ),
             );
             diagnostic
@@ -519,11 +521,12 @@ impl Checker<'_, '_, '_> {
                 }
             };
             let words = construct.words();
+            let residue = self.residue_clause(accepts);
             let mut diagnostic = self.report.make(
                 Code::U4003,
                 span,
                 format!(
-                    "{what} accepts `{accepts}` data, and it runs {place}, depending on `{t}` timing, which whether it runs would reveal"
+                    "{what} accepts `{accepts}` data, and it runs {place}, depending on `{t}` timing, which whether it runs would reveal{residue}"
                 ),
             );
             diagnostic
@@ -554,10 +557,13 @@ impl Checker<'_, '_, '_> {
         for (arg_span, ty) in args {
             let label = self.labeled(ty).sent_label(true, &self.env.kind_labels);
             if !below(&label, accepts, &self.top()) {
+                let residue = self.residue_clause_for(&label, accepts);
                 let mut diagnostic = self.report.make(
                     Code::U4003,
                     *arg_span,
-                    format!("{what} accepts `{accepts}` data, and this argument is `{label}`"),
+                    format!(
+                        "{what} accepts `{accepts}` data, and this argument is `{label}`{residue}"
+                    ),
                 );
                 // ADR 0095: sending only accepted data keeps the label; a policy, which
                 // widens the trusted base, comes last.

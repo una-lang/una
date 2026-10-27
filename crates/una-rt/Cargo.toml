@@ -21,6 +21,11 @@ una-http.workspace = true
 una-interp.workspace = true
 una-sys.workspace = true
 
+# The tests of the request pool use the test-only hooks of una-http (#1148); a dev-dependency
+# never reaches the shipped `libuna_rt.a`.
+[dev-dependencies]
+una-http = { workspace = true, features = ["test-hooks"] }
+
 # The workspace lints, except `unsafe_code`: ADR 0058 allows `unsafe` in one module, the
 # C ABI boundary of `ffi.rs`, which the generated code calls. `deny` lets that module opt in;
 # every other module keeps the rule of compiler/conventions.md §1.

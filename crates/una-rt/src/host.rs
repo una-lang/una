@@ -638,6 +638,73 @@ fn http_error_index(error: una_http::client::Error) -> i64 {
     }
 }
 
+/// The interruption of a request on its helper (ADR 0116 rule 12, amendment P9, #1148). It
+/// always waits, so the request's socket is non-blocking: every read, write and step of the TLS
+/// handshake that would block comes back here, and the client looks at the cancellation of the
+/// request's task between them (`una_http::client::send_covered`), so an interrupted exchange
+/// stops at its next I/O step. A host stop interrupts it only in the body of a `for ever`
+/// (`stop`), through the wake pipe, as `una_interp::stopping::OpInterrupt` does.
+///
+/// **No polling for a cancellation.** Outside a `for ever` body a wait is one `poll` of the
+/// socket for the whole time left: the abandon of a cancelled task shuts the socket down, which
+/// makes it ready and ends the wait at once, and the deadline ends it otherwise. Inside a `for
+/// ever` body a host stop also ends it: the wake pipe tells it at once, and, as for every
+/// interruptible wait of ADR 0116 rule 12, the wait looks at the run's stop state every
+/// `stopping::SLICE` (100 ms) for a stop the pipe cannot tell, such as one after another run of
+/// the process made the pipe readable. That slice is the host stop's, not a cancellation's.
+/// O(1) per `poll`.
+struct HelperWait {
+    stop: Option<&'static una_interp::stopping::RunStop>,
+    /// Whether the wake pipe was found readable without a stop of this run, as after another
+    /// run of the process: the wait then looks at the run's requests between slices only.
+    stale: std::cell::Cell<bool>,
+}
+
+impl una_http::client::Interrupt for HelperWait {
+    fn waits(&self) -> bool {
+        true
+    }
+
+    fn stopped(&self) -> bool {
+        self.stop.is_some_and(|stop| stop.stopped())
+    }
+
+    fn wait(
+        &self,
+        socket: std::os::fd::RawFd,
+        write: bool,
+        timeout: std::time::Duration,
+    ) -> una_http::client::Waited {
+        use una_http::client::Waited;
+        use una_sys::signals::Readiness;
+        let end = std::time::Instant::now().checked_add(timeout);
+        loop {
+            if self.stopped() {
+                return Waited::Stopped;
+            }
+            let left = end.map_or(timeout, |end| {
+                end.saturating_duration_since(std::time::Instant::now())
+            });
+            if left.is_zero() {
+                return Waited::TimedOut;
+            }
+            let pipe = self.stop.is_some() && !self.stale.get();
+            let slice = if self.stop.is_some() {
+                left.min(una_interp::stopping::SLICE)
+            } else {
+                left
+            };
+            match una_sys::signals::wait(Some(socket), write, pipe, slice) {
+                Readiness::Ready => return Waited::Ready,
+                Readiness::Failed => return Waited::Failed,
+                Readiness::TimedOut => {}
+                Readiness::Woken if self.stopped() => return Waited::Stopped,
+                Readiness::Woken => self.stale.set(true),
+            }
+        }
+    }
+}
+
 /// An operation of `Http` (`spec/24`), by the client that the interpreter shares: the response
 /// as a `Response` record, or an `HttpError`, which `una_rt_host_failed` then reports.
 fn http(
@@ -648,7 +715,7 @@ fn http(
     body: Option<i64>,
     key_name: i64,
 ) -> i64 {
-    use una_http::client::{Error, Request, send_governed};
+    use una_http::client::{Cover, Error, Request, send_covered};
     // The variants of `HttpError`, in declaration order, as words.
     let variant = |error: Error| (http_error_index(error) << 1) | 1;
     let url = values::text_value(url);
@@ -697,6 +764,17 @@ fn http(
         (at, bound)
     });
     let cover_at = cover.map(|(at, _)| at);
+    // The covering deadline itself, as an instant of the monotonic clock, under the real clock
+    // (#1148): the helper's exchange never runs past it, however long the request waited for a
+    // helper, whereas a duration would count from the helper's start. Under virtual time a
+    // network wait takes no virtual time, so only the run's clock bounds it.
+    let cover_instant = covering
+        .filter(|_| !crate::runtime::clock().is_virtual())
+        .and_then(|(left, _)| std::time::Instant::now().checked_add(left));
+    let covered = Cover {
+        at: cover_at,
+        instant: cover_instant,
+    };
     if let Some((left, bound)) = covering
         && left < settings.timeout
         && (left.is_zero() || !crate::runtime::clock().is_virtual())
@@ -721,29 +799,22 @@ fn http(
                 body: body.as_bytes(),
                 bearer: bearer.as_deref(),
             };
-            match stop {
-                Some(stop) => send_governed(
-                    &request,
-                    &governor,
-                    &settings,
-                    &stop.interrupt(),
-                    &waiting,
-                    cover_at,
-                ),
-                None => send_governed(
-                    &request,
-                    &governor,
-                    &settings,
-                    &una_http::client::Uninterrupted,
-                    &waiting,
-                    cover_at,
-                ),
-            }
+            // Non-blocking on every path (#1148), interrupted by a host stop in a `for ever`
+            // body only (ADR 0116 rule 12).
+            let interrupt = HelperWait {
+                stop,
+                stale: std::cell::Cell::new(false),
+            };
+            send_covered(
+                &request, &governor, &settings, &interrupt, &waiting, covered,
+            )
         };
         // A request is interruptible (ADR 0117 rule 4): a cancellation that comes while it
-        // waits ends it `interrupted`, and the task stops. The helper may still complete it, an
-        // effect in doubt; a request still waiting at a limit leaves its queues, never sent
-        // (rule 8).
+        // waits ends it `interrupted`, and the task stops. The cancellation reaches the client
+        // through `abandon` (ADR 0116 P9, #1148): a request still waiting at a limit leaves its
+        // queues, never sent (rule 8), and one whose exchange has begun stops at its next I/O
+        // step, its socket shut down, so its helper is free again within that step. What it
+        // sent is an effect in doubt.
         let entries = crate::runtime::interruptible_entries();
         let abandoned: crate::interrupt::Wake = Arc::new(move || abandon.abandon());
         match sched::blocking_interruptible(Pool::Io, &entries, Some(abandoned), job) {
@@ -754,6 +825,15 @@ fn http(
             }
         }
     };
+    // Under the real clock, a request whose exchange reached the covering instant was cut by
+    // it, even when its time-out was the shorter at the start (#1148).
+    if cut.is_none()
+        && sent == Err(Error::TimedOut)
+        && let (Some((_, bound)), Some(at)) = (covering, cover_instant)
+        && std::time::Instant::now() >= at
+    {
+        cut = Some(bound);
+    }
     // Under virtual time, a wait at a limit that moved the clock to the covering deadline was cut
     // by it, as a request is under the real clock.
     if cut.is_none()
