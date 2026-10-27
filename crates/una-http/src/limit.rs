@@ -155,10 +155,15 @@ impl Abandon {
     }
 }
 
-/// The state of one grant with limits.
+/// The state of one limit: a grant's, or a `limiter`'s of `std.limit` ([`Limiter`]).
 #[derive(Debug)]
 struct Slot {
-    limits: Limits,
+    /// The rate: at most `n` per period, the period in nanoseconds.
+    rate: Option<(u128, u128)>,
+    /// At most `n` in flight.
+    at_once: Option<u32>,
+    /// How many may wait.
+    queue_cap: u32,
     /// GCRA's theoretical arrival time, in units of `1/n` nanoseconds since the epoch.
     tat: u128,
     /// The hops in flight.
@@ -171,11 +176,24 @@ struct Slot {
 }
 
 impl Slot {
+    /// The slot of a grant's `limits`.
+    fn of(limits: &Limits) -> Slot {
+        Slot {
+            rate: limits
+                .rate
+                .map(|(count, period)| (u128::from(count), u128::from(period.nanos()))),
+            at_once: limits.at_once,
+            queue_cap: limits.queue(),
+            tat: 0,
+            in_flight: 0,
+            queue: VecDeque::new(),
+            waiting: 0,
+        }
+    }
+
     /// `t·n`, `T` and `τ = T·(n − 1)` of GCRA, in units of `1/n` nanoseconds, for a rate.
     fn gcra(&self, now: u128) -> Option<(u128, u128, u128)> {
-        let (count, period) = self.limits.rate?;
-        let n = u128::from(count);
-        let period = u128::from(period.nanos());
+        let (n, period) = self.rate?;
         Some((
             now.saturating_mul(n),
             period,
@@ -188,17 +206,17 @@ impl Slot {
         let token = self
             .gcra(now)
             .is_none_or(|(t, _, tau)| t.saturating_add(tau) >= self.tat);
-        let slot = self.limits.at_once.is_none_or(|n| self.in_flight < n);
+        let slot = self.at_once.is_none_or(|n| self.in_flight < n);
         token && slot
     }
 
     /// How long until the next token, when the rate is what blocks.
     fn token_in(&self, now: u128) -> Option<Duration> {
-        let (count, _) = self.limits.rate?;
+        let (count, _) = self.rate?;
         let (t, _, tau) = self.gcra(now)?;
         let due = self.tat.checked_sub(tau)?;
         let short = due.checked_sub(t).filter(|short| *short > 0)?;
-        let nanos = short.div_ceil(u128::from(count));
+        let nanos = short.div_ceil(count.max(1));
         Some(Duration::from_nanos(
             u64::try_from(nanos).unwrap_or(u64::MAX),
         ))
@@ -209,7 +227,7 @@ impl Slot {
         if let Some((t, period, _)) = self.gcra(now) {
             self.tat = self.tat.max(t).saturating_add(period);
         }
-        if self.limits.at_once.is_some() {
+        if self.at_once.is_some() {
             self.in_flight = self.in_flight.saturating_add(1);
         }
     }
@@ -319,15 +337,7 @@ impl Governor {
     pub fn with_clock(grants: Vec<Grant>, clock: Arc<dyn RunClock>) -> Governor {
         let slots = grants
             .iter()
-            .map(|grant| {
-                grant.limits().binding().then(|| Slot {
-                    limits: *grant.limits(),
-                    tat: 0,
-                    in_flight: 0,
-                    queue: VecDeque::new(),
-                    waiting: 0,
-                })
-            })
+            .map(|grant| grant.limits().binding().then(|| Slot::of(grant.limits())))
             .collect::<Vec<_>>();
         Governor {
             limited: slots.iter().any(Option::is_some),
@@ -403,6 +413,18 @@ impl Governor {
             .filter(|(_, grant)| grant.limits().binding() && grant.allows(url, method))
             .map(|(at, _)| at)
             .collect();
+        self.acquire_slots(grants, (deadline, until), interrupt, abandon)
+    }
+
+    /// A permit over the slots `grants`, by index: at once when every one is free and no
+    /// request waits at any of them, else in ticket order, as [`Governor::acquire_until`] says.
+    fn acquire_slots(
+        &self,
+        grants: Vec<usize>,
+        (deadline, until): (Instant, u64),
+        interrupt: &dyn Interrupt,
+        abandon: &Abandon,
+    ) -> Result<Permit<'_>, Error> {
         let mut inner = self.lock();
         let now = self.now();
         if inner.servable(None, &grants, now) {
@@ -413,7 +435,7 @@ impl Governor {
             });
         }
         let full = grants.iter().any(|&grant| match inner.slots.get(grant) {
-            Some(Some(slot)) => slot.waiting >= slot.limits.queue(),
+            Some(Some(slot)) => slot.waiting >= slot.queue_cap,
             _ => false,
         });
         if full {
@@ -485,6 +507,78 @@ impl Governor {
     }
 }
 
+/// A rate limit computed in code: the one bucket of an installation of `limiter` of `std.limit`
+/// (ADR 0117 rule 9, `spec/27 §10`), which every task that uses the binding shares, the started
+/// tasks of a `tasks` statement in the installing statement included. It is a governor of one
+/// slot with a rate and no count in flight, so `acquire` takes a token by the same GCRA, over the
+/// same run clock, with the same queue served by ticket, the same ending of a wait by a deadline,
+/// a host stop or an abandon, and the same move of the virtual clock to a refill.
+pub struct Limiter {
+    governor: Governor,
+}
+
+impl std::fmt::Debug for Limiter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Limiter")
+            .field("virtual", &self.governor.clock.is_virtual())
+            .finish_non_exhaustive()
+    }
+}
+
+impl Limiter {
+    /// A bucket of `at_most` tokens per `per` milliseconds, with at most `waiting` calls
+    /// waiting, on the run's `clock`. The installation's obligations give `at_most >= 1`,
+    /// `per >= 1` and `waiting >= 0`; a count beyond what a slot holds saturates, so a larger
+    /// one never wraps into a smaller limit.
+    pub fn new(at_most: u64, per: u64, waiting: u64, clock: Arc<dyn RunClock>) -> Limiter {
+        let slot = Slot {
+            rate: Some((
+                u128::from(at_most.max(1)),
+                u128::from(per.max(1)).saturating_mul(1_000_000),
+            )),
+            at_once: None,
+            queue_cap: u32::try_from(waiting).unwrap_or(u32::MAX),
+            tat: 0,
+            in_flight: 0,
+            queue: VecDeque::new(),
+            waiting: 0,
+        };
+        Limiter {
+            governor: Governor {
+                grants: Vec::new(),
+                limited: true,
+                clock,
+                inner: Mutex::new(Inner {
+                    next: 0,
+                    slots: vec![Some(slot)],
+                    waiters: HashMap::new(),
+                }),
+            },
+        }
+    }
+
+    /// The milliseconds since the run started, on its clock.
+    pub fn now_millis(&self) -> u64 {
+        self.governor.now_millis()
+    }
+
+    /// Takes a token: at once when one is left and no call waits, else in ticket order once
+    /// the bucket refills. Fails with `RateLimited` when `waiting` calls already wait, with
+    /// `TimedOut` at `deadline` on the wall clock or `until` in milliseconds of the run's clock,
+    /// and with `Interrupted` on a host stop or when `abandon` is raised; under virtual time a
+    /// wait for a refill moves the clock to the refill, or to `until` when that comes first.
+    pub fn acquire(
+        &self,
+        (deadline, until): (Instant, u64),
+        interrupt: &dyn Interrupt,
+        abandon: &Abandon,
+    ) -> Result<(), Error> {
+        self.governor
+            .acquire_slots(vec![0], (deadline, until), interrupt, abandon)
+            .map(drop)
+    }
+}
+
 /// The tokens and slots of one hop, held while it is in flight; dropping it releases the slots
 /// and wakes the first waiter of each queue.
 #[derive(Debug)]
@@ -501,7 +595,7 @@ impl Drop for Permit<'_> {
         let mut inner = self.governor.lock();
         for &grant in &self.grants {
             if let Some(Some(slot)) = inner.slots.get_mut(grant)
-                && slot.limits.at_once.is_some()
+                && slot.at_once.is_some()
             {
                 slot.in_flight = slot.in_flight.saturating_sub(1);
             }
@@ -848,5 +942,71 @@ mod tests {
         }
         let (small, large) = (times[0], times[1]);
         assert!(large < small * 40.0 + 0.05, "{small} then {large}");
+    }
+
+    #[test]
+    fn a_limiter_lets_its_burst_through_then_waits_for_its_refill() {
+        // Two per 100 ms: two at once, the third once a token comes, within 50 ms; a fourth
+        // whose deadline comes first fails with `TimedOut`, unsent.
+        let limiter = Limiter::new(2, 100, 8, Arc::new(Monotonic::new()));
+        let until = (soon(1_000), u64::MAX);
+        limiter.acquire(until, &Never, &Abandon::new()).unwrap();
+        limiter.acquire(until, &Never, &Abandon::new()).unwrap();
+        let started = Instant::now();
+        limiter
+            .acquire((soon(1_000), u64::MAX), &Never, &Abandon::new())
+            .unwrap();
+        assert!(started.elapsed() < Duration::from_millis(500));
+        let late = limiter.acquire((soon(5), u64::MAX), &Never, &Abandon::new());
+        assert_eq!(late.err(), Some(Error::TimedOut));
+    }
+
+    #[test]
+    fn a_limiter_with_a_full_queue_fails_at_once() {
+        // One per minute, nothing may wait: the second call fails with `RateLimited` at once.
+        let limiter = Limiter::new(1, 60_000, 0, Arc::new(Monotonic::new()));
+        limiter
+            .acquire((soon(100), u64::MAX), &Never, &Abandon::new())
+            .unwrap();
+        let started = Instant::now();
+        let full = limiter.acquire((soon(1_000), u64::MAX), &Never, &Abandon::new());
+        assert_eq!(full.err(), Some(Error::RateLimited));
+        assert!(started.elapsed() < Duration::from_millis(500));
+    }
+
+    #[test]
+    fn a_limiter_under_virtual_time_moves_the_clock_to_each_refill() {
+        // Two per second, five calls: at 0, 0, 500, 1000 and 1500 virtual milliseconds, in no
+        // wall time; a call whose deadline on the run's clock comes before its refill moves
+        // the clock to that deadline and fails.
+        let clock = Arc::new(Virtual::default());
+        let limiter = Limiter::new(2, 1_000, 8, Arc::clone(&clock) as Arc<dyn RunClock>);
+        let started = Instant::now();
+        let mut readings = Vec::new();
+        for _ in 0..5 {
+            limiter
+                .acquire((soon(10_000), u64::MAX), &Never, &Abandon::new())
+                .unwrap();
+            readings.push(clock.now_millis());
+        }
+        assert_eq!(readings, [0, 0, 500, 1_000, 1_500]);
+        assert!(started.elapsed() < Duration::from_millis(500));
+        let cut = limiter.acquire((soon(10_000), 1_700), &Never, &Abandon::new());
+        assert_eq!(cut.err(), Some(Error::TimedOut));
+        assert_eq!(clock.now_millis(), 1_700);
+    }
+
+    #[test]
+    fn a_limiter_s_wait_ends_on_a_host_stop_or_an_abandon() {
+        let limiter = Limiter::new(1, 60_000, 8, Arc::new(Monotonic::new()));
+        limiter
+            .acquire((soon(100), u64::MAX), &Never, &Abandon::new())
+            .unwrap();
+        let stopped = limiter.acquire((soon(1_000), u64::MAX), &Stopped, &Abandon::new());
+        assert_eq!(stopped.err(), Some(Error::Interrupted));
+        let abandon = Abandon::new();
+        abandon.abandon();
+        let abandoned = limiter.acquire((soon(1_000), u64::MAX), &Never, &abandon);
+        assert_eq!(abandoned.err(), Some(Error::Interrupted));
     }
 }

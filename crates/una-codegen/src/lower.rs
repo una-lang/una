@@ -2259,10 +2259,14 @@ impl<'p> Lowerer<'_, 'p, '_> {
         self.builder.append_block_param(done, types::I64);
         self.builder.ins().brif(code, handled, &[], host, &[]);
 
-        // A host instance has no code: the runtime performs the operation (`spec/14 §3`).
+        // A host instance has no code: the runtime performs the operation (`spec/14 §3`); so
+        // does the instance of `limiter` of `std.limit` (ADR 0117 rule 9, `spec/27 §10`).
         self.builder.switch_to_block(host);
-        if capability_path.module == HOST_MODULE {
+        let limit = capability_path.module == una_core::LIMIT_MODULE;
+        if capability_path.module == HOST_MODULE || limit {
             let (function, fails) = match (capability_path.name.as_str(), op.as_str()) {
+                ("Limit", "acquire") if limit => ("una_rt_limit_acquire", true),
+                _ if limit => return Err(unsupported(format!("`{capability}.{op}`"))),
                 ("Console", "print") => ("una_rt_console_print", false),
                 ("Clock", "now") => ("una_rt_clock_now", false),
                 ("Env", "get") => ("una_rt_env_get", false),
@@ -2275,16 +2279,22 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 ("Http", "delete") => ("una_rt_http_delete", true),
                 _ => return Err(unsupported(format!("`{capability}.{op}`"))),
             };
-            let sited = matches!(
-                (capability_path.name.as_str(), op.as_str()),
-                ("Http", _) | ("Env", "get") | ("Files", "read")
-            );
+            let sited = limit
+                || matches!(
+                    (capability_path.name.as_str(), op.as_str()),
+                    ("Http", _) | ("Env", "get") | ("Files", "read")
+                );
             let value = if sited {
                 // The call's site, where a header value with a control character aborts with
                 // U6004, and host text that is not valid UTF-8 with U6005 (S-16, ADR
-                // 0086); a task stopped by it stops here.
+                // 0086); a task stopped by it stops here, as one whose wait at a `limiter`
+                // was interrupted does.
                 let site = self.site(*span);
                 let mut operands = vec![site];
+                // `acquire` takes its instance, whose bucket the runtime holds.
+                if limit {
+                    operands.push(instance);
+                }
                 operands.extend_from_slice(&values);
                 let value = self.call(function, &operands)?;
                 let stopped = self.call("una_rt_stopped", &[])?;
@@ -2361,6 +2371,15 @@ impl<'p> Lowerer<'_, 'p, '_> {
     /// capability, in the capability's order, then the values `args` and the instances of its
     /// own capabilities, from those in scope.
     fn install(&mut self, handler: &Path, args: &[Atom], env: &Env) -> Result<Value, CodegenError> {
+        // `limiter` of `std.limit` (ADR 0117 rule 9, `spec/27 §10`): the runtime makes the
+        // instance, one bucket over the run's clock, from `at_most`, `per` and `waiting`.
+        if handler.module == una_core::LIMIT_MODULE && handler.name == una_core::LIMITER {
+            let mut operands = Vec::new();
+            for arg in args {
+                operands.push(self.atom(arg, env)?.0);
+            }
+            return self.call("una_rt_limiter_instance", &operands);
+        }
         let info = self
             .emitter
             .handler(handler)

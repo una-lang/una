@@ -458,6 +458,8 @@ const RUNTIME: &[(&str, usize, bool)] = &[
     ("una_rt_is_json_number", 1, true),
     ("una_rt_host_instance", 1, true),
     ("una_rt_handler_instance", 1, true),
+    ("una_rt_limiter_instance", 3, true),
+    ("una_rt_limit_acquire", 2, true),
     ("una_rt_event", 2, true),
     ("una_rt_push_op", 2, false),
     ("una_rt_event_arg", 4, false),

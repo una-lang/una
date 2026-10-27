@@ -41,12 +41,21 @@ pub(crate) enum Instance<'p> {
         caps: Caps<'p>,
         id: String,
     },
+    /// `limiter(at_most, per, waiting)` of `std.limit` (ADR 0117 rule 9, `spec/27 §10`): the
+    /// bucket of one installation, which every task that uses the binding shares, with the id
+    /// `with:limiter#<n>` or `given:<name>`.
+    Limiter {
+        limiter: Rc<una_http::limit::Limiter>,
+        id: String,
+    },
 }
 
 impl Instance<'_> {
     fn id(&self) -> &str {
         match self {
-            Instance::Host { id } | Instance::Handled { id, .. } => id,
+            Instance::Host { id } | Instance::Handled { id, .. } | Instance::Limiter { id, .. } => {
+                id
+            }
         }
     }
 }
@@ -615,6 +624,21 @@ pub(crate) fn prelude_ctor(kind: &str, name: &str, index: usize) -> Ctor {
 
 fn some(value: Value<'_>) -> Value<'_> {
     Value::data(prelude_ctor("Option", "Some", 0), vec![value])
+}
+
+/// The failure `RateLimited` of `Limited` of `std.limit` (ADR 0117 rule 9, `spec/27 §10`).
+fn rate_limited<'p>() -> Stop<'p> {
+    Stop::Fail(Value::data(
+        Ctor {
+            kind: Path {
+                module: una_core::LIMIT_MODULE.to_owned(),
+                name: "Limited".to_owned(),
+            },
+            name: "RateLimited".to_owned(),
+            index: 0,
+        },
+        Vec::new(),
+    ))
 }
 
 fn none<'p>() -> Value<'p> {
@@ -2089,17 +2113,23 @@ impl<'p, 'w> Machine<'p, 'w> {
                 ..
             } => {
                 let values = self.atoms(env, args)?;
+                let id = if *given {
+                    format!("given:{cap}")
+                } else {
+                    self.install_id(&handler.name)
+                };
+                // `limiter` of `std.limit` (ADR 0117 rule 9): the engine provides it, a bucket
+                // over the run's clock, so no handler declaration of it exists.
+                if handler.module == una_core::LIMIT_MODULE && handler.name == una_core::LIMITER {
+                    let limiter = Rc::new(self.limiter(&values));
+                    return Ok(Rc::new(Instance::Limiter { limiter, id }));
+                }
                 let info = self
                     .index
                     .handlers
                     .get(&(handler.module.as_str(), handler.name.as_str()))
                     .copied()
                     .ok_or_else(|| fault(format!("no handler `{}`", handler.qualified())))?;
-                let id = if *given {
-                    format!("given:{cap}")
-                } else {
-                    self.install_id(&handler.name)
-                };
                 Ok(Rc::new(Instance::Handled {
                     handler: info,
                     values,
@@ -2107,6 +2137,81 @@ impl<'p, 'w> Machine<'p, 'w> {
                     id,
                 }))
             }
+        }
+    }
+
+    /// The bucket of an installation of `limiter` (ADR 0117 rule 9, `spec/27 §10`) from its
+    /// arguments `at_most`, `per` and `waiting`, on the run's clock (ADR 0116 rule 19). The
+    /// installation's obligations give `at_most >= 1`, `per >= 1` and `waiting >= 0`; a count
+    /// beyond 2^64 − 1 saturates, so a larger one never wraps into a smaller limit.
+    fn limiter(&self, values: &[Value<'p>]) -> una_http::limit::Limiter {
+        let count = |i: usize| match values.get(i) {
+            Some(Value::Int(n)) => {
+                u64::try_from(n).unwrap_or(if n.sign() == Sign::Minus { 0 } else { u64::MAX })
+            }
+            _ => 0,
+        };
+        una_http::limit::Limiter::new(
+            count(0),
+            count(1),
+            count(2),
+            Arc::new(self.run.clock.clone()),
+        )
+    }
+
+    /// `acquire` of a `limiter` (ADR 0117 rule 9, `spec/27 §10`): takes a token, waiting for
+    /// one as a request waits at a limit (`spec/27 §9` rule 4), within the deadlines of the
+    /// `within`s in progress and of the `for ever within` iteration, interrupted by a host stop
+    /// in the body of a `for ever`. Past a covering deadline, or on a host stop, no token is
+    /// taken and the call fails with `RateLimited`, the one failure `Limited` has; so does a
+    /// call that finds `waiting` calls already waiting. Under virtual time a wait for a refill
+    /// moves the clock, to the refill or to the deadline, and takes no wall time.
+    fn acquire(&mut self, limiter: &una_http::limit::Limiter) -> Flow<'p> {
+        use una_http::client::Error;
+        use una_http::limit::Abandon;
+        let ever = self
+            .deadline
+            .as_ref()
+            .and_then(|deadline| deadline.left(&self.run.clock));
+        let within = self.within_left();
+        let (left, by_ever) = match (ever, within) {
+            (Some(ever), Some(within)) if within < ever => (Some(within), false),
+            (Some(ever), _) => (Some(ever), true),
+            (None, within) => (within, false),
+        };
+        let now = self.run.clock.now();
+        // The covering deadline on the run's clock, which the wait reaches at most; on the wall
+        // clock the same time, unless time is virtual, where only the run's clock bounds it.
+        let until = left.map_or(u64::MAX, |left| {
+            now.saturating_add(u64::try_from(left.as_millis()).unwrap_or(u64::MAX))
+        });
+        let wall = std::time::Instant::now();
+        let deadline = match left {
+            Some(left) if !self.run.clock.is_virtual() => wall.checked_add(left),
+            _ => wall.checked_add(std::time::Duration::from_secs(365 * 24 * 3600)),
+        }
+        .unwrap_or(wall);
+        // The interpreter runs one task at a time, so nothing abandons the wait but its
+        // deadline or a host stop.
+        let acquired = if self.in_ever {
+            limiter.acquire((deadline, until), &self.stop.interrupt(), &Abandon::new())
+        } else {
+            limiter.acquire(
+                (deadline, until),
+                &una_http::client::Uninterrupted,
+                &Abandon::new(),
+            )
+        };
+        match acquired {
+            Ok(()) => Ok(Value::Unit),
+            Err(Error::TimedOut) => {
+                // A `for ever within` iteration observes its deadline at the operation.
+                if by_ever {
+                    self.timeout_event();
+                }
+                Err(rate_limited())
+            }
+            Err(_) => Err(rate_limited()),
         }
     }
 
@@ -3000,6 +3105,10 @@ impl<'p, 'w> Machine<'p, 'w> {
     ) -> Flow<'p> {
         match instance {
             Instance::Host { .. } => self.host(capability, op, &args, span),
+            Instance::Limiter { limiter, .. } => {
+                let limiter = Rc::clone(limiter);
+                self.acquire(&limiter)
+            }
             Instance::Handled {
                 handler,
                 values,

@@ -38,6 +38,10 @@ pub(crate) struct RunShared {
     /// How many instances of each handler the streaming tasks installed, run-wide: their ids
     /// `with:<handler>#<n>` count in the order the installations happen.
     pub(crate) installs: Mutex<BTreeMap<String, usize>>,
+    /// The buckets of the installations of `limiter` of `std.limit` (ADR 0117 rule 9), by the
+    /// index each instance holds: every task that uses a binding, through a copy of the
+    /// instance on another worker too, shares the one bucket.
+    pub(crate) limiters: Mutex<Vec<Arc<una_http::limit::Limiter>>>,
     /// The trace's sink.
     sink: Mutex<Sink>,
     /// The started tasks of the run that have not ended, and the most this system allows at
@@ -58,6 +62,7 @@ impl RunShared {
     pub(crate) fn new() -> Arc<RunShared> {
         let shared = Arc::new(RunShared {
             installs: Mutex::new(BTreeMap::new()),
+            limiters: Mutex::new(Vec::new()),
             sink: Mutex::new(Sink {
                 file: None,
                 written: 0,

@@ -1,0 +1,18 @@
+-- test: installing a `limiter` carries the obligations `at_most >= 1`, `per >= 1` and `waiting >= 0` at its arguments: a bucket of no tokens and a negative queue are each refuted (spec/27 §10, ADR 0117 rule 9)
+-- spec: spec/27 §10
+-- expect: error U5001 at 17:41
+-- expect: error U5001 at 17:66
+module bounds
+
+import std.limit (Limit, limiter)
+import std.time (second)
+
+serve() -> Unit
+  uses @gate: Limit[acquire]
+=
+  let got = attempt @gate.acquire()
+  unit
+
+pub run() -> Unit
+=
+  serve() with @gate = limiter(at_most: 0, per: second, waiting: -1)
