@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use una_core::IntType;
 use una_diag::Code;
-use una_project::Edition;
+use una_project::{Edition, Profile};
 use una_syntax::ast::{
     CapabilityDecl, ClauseKind, Convention, DeclKind, Expr, Field, File, FnTypeClause,
     FunctionDecl, HandlerDecl, Ident, KindBody, KindDecl, Label as LabelAst, OpClauseKind, Param,
@@ -412,6 +412,10 @@ pub(crate) struct Env<'a> {
     alias_state: Vec<AliasState>,
     /// The package's edition (`spec/13 §7`).
     pub(crate) edition: Edition,
+    /// The package's profile (ADR 0109 rule 1): `app` for a single file and before edition
+    /// 0.3. No check reads it yet; slice S2 adds the `overflow` obligation of rule 3 on it.
+    #[allow(dead_code)]
+    pub(crate) profile: Profile,
     /// The result summary of each generic function declared outside the prelude, by function
     /// (ADR 0067, `spec/07 §7` rule 8); edition 0.2 only.
     pub(crate) summaries: BTreeMap<usize, Summary>,
@@ -534,6 +538,7 @@ impl<'a> Env<'a> {
         collections: Option<Source<'a>>,
         categories: Vec<String>,
         edition: Edition,
+        profile: Profile,
         report: &mut Report<'_>,
     ) -> Env<'a> {
         let count = package.len();
@@ -567,6 +572,7 @@ impl<'a> Env<'a> {
             edit_shapes: BTreeMap::new(),
             alias_state: Vec::new(),
             edition,
+            profile,
             summaries: BTreeMap::new(),
             summaries_grew: false,
             of_raises: BTreeMap::new(),

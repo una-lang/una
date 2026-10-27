@@ -470,6 +470,7 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
         imports_collections.then(|| standard.source(&standard.collections)),
         categories,
         package.settings.edition,
+        package.settings.profile,
         &mut report,
     );
     env.trusted_listed = package
@@ -1834,6 +1835,7 @@ mod tests {
             (edition >= Edition::V0_4).then(|| source(&standard.collections)),
             Vec::new(),
             edition,
+            una_project::Profile::App,
             &mut report,
         );
         let facts = facts::KindFacts::new(&env);
