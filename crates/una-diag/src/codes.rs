@@ -309,7 +309,7 @@ pub enum Code {
 
 impl Code {
     /// Every registered code, in the order of `spec/13 §4`.
-    pub const ALL: [Code; 115] = [
+    pub const ALL: [Code; 117] = [
         Code::U0001,
         Code::U0002,
         Code::U0003,
@@ -730,6 +730,7 @@ impl Code {
                 code: "U2038",
                 domain: Domain::Types,
                 meaning: "A tensor shape, index, permutation or axis out of place",
+            },
             Code::U2039 => &Entry {
                 code: "U2039",
                 domain: Domain::Types,
