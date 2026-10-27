@@ -1,6 +1,6 @@
 -- test: a `limiter` installed over a statement that computes on a `secret` is U4001 at the binding: whether `acquire` finds a token depends on the timing of that statement, and `Limited` carries `internal` (spec/27 §10, ADR 0117 rule 9, IF5)
 -- spec: spec/27 §10
--- expect: error U4001 at 20:19
+-- expect: error U4001 at src/paced.una:20:19
 module paced
 
 import std.limit (Limit, limiter)

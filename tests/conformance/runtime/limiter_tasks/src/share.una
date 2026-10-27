@@ -22,7 +22,7 @@ hit(n: Int) -> Unit
     is Err(failure) -> @console.print("task {n} busy")
 
 --- Three tasks, then one more call in the block's own task.
-all() -> Unit
+run_all() -> Unit
   uses @gate: Limit[acquire]
   uses @console: Console[print]
 =
@@ -37,5 +37,5 @@ all() -> Unit
 pub main() -> Unit
   uses @console: Console[print]
 =
-  all() with @gate = limiter(at_most: 3, per: minute, waiting: 0)
+  run_all() with @gate = limiter(at_most: 3, per: minute, waiting: 0)
   @console.print("done")

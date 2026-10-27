@@ -10,8 +10,11 @@ import std.time (second)
 serve(n: internal Int) -> Unit
   uses @gate: Limit[acquire]
 =
-  let got = if n > 0 then attempt @gate.acquire() else Ok(unit)
-  unit
+  if n > 0
+    let got = attempt @gate.acquire()
+    unit
+  else
+    unit
 
 serve_all(items: internal List[Int]) -> Unit
   uses @gate: Limit[acquire]
