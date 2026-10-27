@@ -2,15 +2,16 @@
 //! and only its three pipes, through `posix_spawn`. On macOS the attribute
 //! `POSIX_SPAWN_CLOEXEC_DEFAULT` makes every inherited descriptor close-on-exec, so the child
 //! starts with its three pipes and nothing else; on Linux the child closes the rest itself
-//! ([`crate::solver::descriptors`]). The signal mask is cleared, so the child does not inherit
-//! a mask that would block `SIGXCPU`. The child changes its own working directory to `/`
+//! ([`crate::solver::descriptors`]). The signal mask is cleared and every signal's action is
+//! reset to its default, so the child inherits neither a mask nor an ignore of `SIGXCPU` that
+//! would void its processor-time limit. The child changes its own working directory to `/`
 //! ([`crate::solver::confine`]). The standard library's `Command` cannot set the spawn
 //! attribute, and cannot wait with a deadline, which is why these are here.
 #![allow(unsafe_code)]
 
 use std::ffi::CStr;
 use std::io;
-use std::os::fd::{AsRawFd, BorrowedFd};
+use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 
 /// How a child ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -22,7 +23,8 @@ pub enum Ended {
 }
 
 /// Starts `program` with `args` (the first is its name), the three descriptors as its standard
-/// streams, an empty environment and a cleared signal mask, and gives its process id.
+/// streams, an empty environment, a cleared signal mask and default signal actions, and gives
+/// its process id.
 ///
 /// # Errors
 ///
@@ -34,6 +36,23 @@ pub fn spawn(
     stdout: BorrowedFd<'_>,
     stderr: BorrowedFd<'_>,
 ) -> io::Result<libc::pid_t> {
+    // A source below 3 would be overwritten by an earlier `dup2` of the actions, so each such
+    // source is first duplicated above 2 (close-on-exec), as the standard library does.
+    let mut raised: Vec<OwnedFd> = Vec::new();
+    let mut sources = [stdin.as_raw_fd(), stdout.as_raw_fd(), stderr.as_raw_fd()];
+    for source in &mut sources {
+        if *source < 3 {
+            // SAFETY: `fcntl` with `F_DUPFD_CLOEXEC` duplicates an open descriptor of the
+            // caller's to a number at least 3 and touches no memory.
+            let duplicate = unsafe { libc::fcntl(*source, libc::F_DUPFD_CLOEXEC, 3) };
+            if duplicate < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            // SAFETY: `duplicate` is a descriptor this function just made and owns alone.
+            raised.push(unsafe { OwnedFd::from_raw_fd(duplicate) });
+            *source = duplicate;
+        }
+    }
     let mut argv: Vec<*mut libc::c_char> = args.iter().map(|a| a.as_ptr().cast_mut()).collect();
     argv.push(std::ptr::null_mut());
     let mut envp: [*mut libc::c_char; 1] = [std::ptr::null_mut()];
@@ -41,45 +60,47 @@ pub fn spawn(
     let mut actions: libc::posix_spawn_file_actions_t = unsafe { std::mem::zeroed() };
     // SAFETY: zeroed attributes are the state the init call expects to fill.
     let mut attr: libc::posix_spawnattr_t = unsafe { std::mem::zeroed() };
-    // SAFETY: `actions` and `attr` are valid places that the init calls fill; each is destroyed
-    // below exactly once after its init succeeded.
+    // SAFETY: `actions` is a valid place the init call fills; it is destroyed below exactly
+    // once after its init succeeded.
     let status = unsafe { libc::posix_spawn_file_actions_init(&raw mut actions) };
     if status != 0 {
         return Err(io::Error::from_raw_os_error(status));
     }
     let result = (|| {
-        for (fd, target) in [(stdin, 0), (stdout, 1), (stderr, 2)] {
+        for (fd, target) in sources.iter().zip(0..) {
             // SAFETY: `actions` is initialized; the descriptors are open for the call's
-            // duration, borrowed by the caller.
-            let added = unsafe {
-                libc::posix_spawn_file_actions_adddup2(&raw mut actions, fd.as_raw_fd(), target)
-            };
+            // duration, borrowed by the caller or owned by `raised`.
+            let added =
+                unsafe { libc::posix_spawn_file_actions_adddup2(&raw mut actions, *fd, target) };
             if added != 0 {
                 return Err(io::Error::from_raw_os_error(added));
             }
         }
-        // SAFETY: `attr` is a valid place the init fills.
+        // SAFETY: `attr` is a valid place the init fills; destroyed below exactly once.
         let status = unsafe { libc::posix_spawnattr_init(&raw mut attr) };
         if status != 0 {
             return Err(io::Error::from_raw_os_error(status));
         }
         let attr_result = (|| {
-            let mut flags: libc::c_short = libc::POSIX_SPAWN_SETSIGMASK as libc::c_short;
-            #[cfg(target_os = "macos")]
-            {
-                flags |= libc::POSIX_SPAWN_CLOEXEC_DEFAULT as libc::c_short;
-            }
-            // SAFETY: zero is a valid `sigset_t` to empty; `attr` is initialized.
+            // SAFETY: zero is a valid `sigset_t` for the set calls to fill.
             let mut empty: libc::sigset_t = unsafe { std::mem::zeroed() };
-            // SAFETY: `empty` is a valid `sigset_t` owned here.
-            unsafe { libc::sigemptyset(&raw mut empty) };
-            // SAFETY: `attr` is initialized and `empty` a valid set that the call copies.
-            let set = unsafe { libc::posix_spawnattr_setsigmask(&raw mut attr, &raw const empty) };
+            // SAFETY: as above.
+            let mut all: libc::sigset_t = unsafe { std::mem::zeroed() };
+            // SAFETY: `empty` and `all` are valid sets owned here.
+            unsafe {
+                libc::sigemptyset(&raw mut empty);
+                libc::sigfillset(&raw mut all);
+            }
+            // SAFETY: `attr` is initialized and the sets are valid; the calls copy them.
+            let set = unsafe {
+                libc::posix_spawnattr_setsigmask(&raw mut attr, &raw const empty)
+                    | libc::posix_spawnattr_setsigdefault(&raw mut attr, &raw const all)
+            };
             if set != 0 {
                 return Err(io::Error::from_raw_os_error(set));
             }
             // SAFETY: `attr` is initialized.
-            let set = unsafe { libc::posix_spawnattr_setflags(&raw mut attr, flags) };
+            let set = unsafe { libc::posix_spawnattr_setflags(&raw mut attr, FLAGS) };
             if set != 0 {
                 return Err(io::Error::from_raw_os_error(set));
             }
@@ -108,15 +129,39 @@ pub fn spawn(
     })();
     // SAFETY: `actions` was initialized above and is destroyed once.
     unsafe { libc::posix_spawn_file_actions_destroy(&raw mut actions) };
+    drop(raised);
     result
+}
+
+/// The spawn attributes: a cleared mask, default actions, and on macOS close-on-exec for
+/// every inherited descriptor.
+#[cfg(target_os = "macos")]
+const FLAGS: libc::c_short = (libc::POSIX_SPAWN_SETSIGMASK
+    | libc::POSIX_SPAWN_SETSIGDEF
+    | libc::POSIX_SPAWN_CLOEXEC_DEFAULT) as libc::c_short;
+#[cfg(target_os = "linux")]
+const FLAGS: libc::c_short =
+    (libc::POSIX_SPAWN_SETSIGMASK | libc::POSIX_SPAWN_SETSIGDEF) as libc::c_short;
+
+/// Refuses a process id that names no single child: 0 and negative ids are groups.
+fn one_child(pid: libc::pid_t) -> io::Result<()> {
+    if pid > 0 {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "not the id of one child",
+        ))
+    }
 }
 
 /// Whether child `pid` has ended, without waiting.
 ///
 /// # Errors
 ///
-/// The error of `waitpid`.
+/// The error of `waitpid`, or an id that is not one child's.
 pub fn try_wait(pid: libc::pid_t) -> io::Result<Option<Ended>> {
+    one_child(pid)?;
     let mut status: libc::c_int = 0;
     // SAFETY: `status` is a valid place the call writes; `WNOHANG` returns at once.
     let waited = unsafe { libc::waitpid(pid, &raw mut status, libc::WNOHANG) };
@@ -138,8 +183,10 @@ pub fn try_wait(pid: libc::pid_t) -> io::Result<Option<Ended>> {
 ///
 /// # Errors
 ///
-/// The error of `waitpid`, other than an interruption, which is retried.
+/// The error of `waitpid`, other than an interruption, which is retried, or an id that is
+/// not one child's.
 pub fn wait(pid: libc::pid_t) -> io::Result<Ended> {
+    one_child(pid)?;
     loop {
         let mut status: libc::c_int = 0;
         // SAFETY: `status` is a valid place the call writes.
@@ -154,14 +201,16 @@ pub fn wait(pid: libc::pid_t) -> io::Result<Ended> {
     }
 }
 
-/// Ends child `pid` with `SIGKILL`; the caller then waits for it.
+/// Ends child `pid` with `SIGKILL`; the caller then waits for it. The caller MUST NOT call
+/// this after the child was waited for, since the id may then name another process.
 ///
 /// # Errors
 ///
-/// The error of `kill`, other than a child already gone.
+/// The error of `kill`, other than a child already gone, or an id that is not one child's.
 pub fn kill(pid: libc::pid_t) -> io::Result<()> {
-    // SAFETY: `kill` takes two integers; `pid` is a child this process spawned and has not
-    // yet waited for, so the id names it and no other process.
+    one_child(pid)?;
+    // SAFETY: `kill` takes two integers; `pid` is positive, so it names one process, the
+    // child this process spawned and has not yet waited for.
     if unsafe { libc::kill(pid, libc::SIGKILL) } == 0 {
         return Ok(());
     }

@@ -3,10 +3,10 @@
 //! When that fails because an outer sandbox already confines `una` (as the `hunt` gate's does,
 //! and some harnesses do), the child asks the system whether it is sandboxed, checks each
 //! operation of a fixed list with `sandbox_check`, and takes the outer sandbox as its
-//! confinement only if it denies at least outbound and inbound network access and writing
-//! files at `/` and outside the temporary directory. `sandbox_init` and `sandbox_check` are
-//! deprecated interfaces, used because they are the ones the system offers to a process
-//! confining itself; probe P5 showed them to behave as this module expects.
+//! confinement only if it denies at least outbound and inbound network access and writing,
+//! creating and removing files at `/` and outside the temporary directory. `sandbox_init` and
+//! `sandbox_check` are deprecated interfaces, used because they are the ones the system offers
+//! to a process confining itself; probe P5 showed them to behave as this module expects.
 #![allow(unsafe_code)]
 
 use std::ffi::{CStr, c_char, c_int};
@@ -32,7 +32,9 @@ pub const PROFILE: &CStr =
 /// `sandbox_check`'s filter kinds: none, and a path.
 const FILTER_NONE: c_int = 0;
 const FILTER_PATH: c_int = 1;
-/// Asks without reporting a denial as a violation to the system log.
+/// Asks without reporting a denial as a violation to the system log
+/// (`SANDBOX_CHECK_NO_REPORT`, a value the library has kept since it exposed the interface; a
+/// changed value would make every check answer -1, which fails closed below).
 const NO_REPORT: c_int = 0x4000_0000;
 
 /// Why the child is not confined.
@@ -64,7 +66,8 @@ impl fmt::Display for SandboxError {
 
 impl std::error::Error for SandboxError {}
 
-/// One operation of the fixed list, with its name in the report and its path filter.
+/// One operation of the fixed list, with its name in the report, its path filter, and
+/// whether rule 7's minimum requires the outer sandbox to deny it.
 struct Probe {
     name: &'static str,
     operation: &'static CStr,
@@ -79,8 +82,10 @@ enum Path {
     Shell,
 }
 
-/// The list of rule 7, in the order the report keeps.
-const PROBES: [Probe; 8] = [
+/// The list of rule 7, in the order the report keeps: the network, then writing, creating
+/// and removing files (a limit on the file size stops writing data but not removing or
+/// renaming files, so those are required too), then reads, exec and fork, which are recorded.
+const PROBES: [Probe; 12] = [
     Probe {
         name: "network-outbound",
         operation: c"network-outbound",
@@ -102,6 +107,30 @@ const PROBES: [Probe; 8] = [
     Probe {
         name: "file-write-data (outside the temporary directory)",
         operation: c"file-write-data",
+        path: Some(Path::Outside),
+        required: true,
+    },
+    Probe {
+        name: "file-write-create",
+        operation: c"file-write-create",
+        path: Some(Path::Root),
+        required: true,
+    },
+    Probe {
+        name: "file-write-create (outside the temporary directory)",
+        operation: c"file-write-create",
+        path: Some(Path::Outside),
+        required: true,
+    },
+    Probe {
+        name: "file-write-unlink",
+        operation: c"file-write-unlink",
+        path: Some(Path::Root),
+        required: true,
+    },
+    Probe {
+        name: "file-write-unlink (outside the temporary directory)",
+        operation: c"file-write-unlink",
         path: Some(Path::Outside),
         required: true,
     },
