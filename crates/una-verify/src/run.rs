@@ -112,10 +112,12 @@ fn script(obligation: &Obligation, lock: &Lock) -> (String, Vec<F>) {
         let _ = writeln!(out, "(set-option :rlimit {})", lock.step_budget);
         let _ = writeln!(out, "(set-logic QF_UFLIA)");
     }
-    out.push_str(&obligation.query.text());
+    // The declarations cover the requested terms too (#855), so that every term of the
+    // `(get-value ...)` below is known to the solver.
+    let requested = requested(obligation);
+    out.push_str(&obligation.query.text_with(&requested));
     let _ = writeln!(out, "(check-sat)");
     let _ = writeln!(out, "(get-model)");
-    let requested = requested(obligation);
     if !requested.is_empty() {
         let terms: Vec<String> = requested.iter().map(F::text).collect();
         let _ = writeln!(out, "(get-value ({}))", terms.join(" "));
