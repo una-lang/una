@@ -69,7 +69,7 @@
 # Usage: scripts/release-gates.sh SHA OUT [GATE...]
 set -u
 
-ALL=(clone build deps mac linux linux-arm64 release reproducible determinism native timing-channels sanitize site formal hunt hunt-linux-arm64)
+ALL=(clone build deps mac linux linux-arm64 release reproducible determinism native timing-channels sanitize site formal hunt hunt-linux-arm64 solver-identity limits toolchain-free)
 
 usage() {
     echo "usage: scripts/release-gates.sh SHA OUT [GATE...]; SHA is a full 40-digit commit, GATE is one of: ${ALL[*]}" >&2
@@ -96,7 +96,7 @@ REPO=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 # override the context, is unset. The context is then exported, so that every gate and its
 # children use it even if the active context changes during the run. The record names the
 # context and the server's version.
-DOCKER_GATES=" linux linux-arm64 release reproducible hunt-linux-arm64 "
+DOCKER_GATES=" linux linux-arm64 release reproducible hunt-linux-arm64 toolchain-free "
 DOCKER_REQUIRED=desktop-linux
 NEEDS_DOCKER=0
 for gate in "${GATES[@]}"; do
@@ -217,11 +217,49 @@ gate_clone() {
 }
 
 gate_build() {
+    # The Z3 library built into una (ADR 0124): from the cache, verified, or built once; every
+    # cargo step of the clone gets it by UNA_Z3_LIB. The standalone z3 of scripts/install-z3.sh
+    # serves the hunt gate alone.
     run build sh -c '
-        if [ ! -x "'"$Z3"'/bin/z3" ]; then scripts/install-z3.sh "'"$Z3"'" || exit 1; fi
-        scripts/check-solver.sh \
-            && cargo build --locked --release -p una-cli -p una-rt \
+        UNA_Z3_LIB=$(scripts/z3-library.sh) || exit 1
+        export UNA_Z3_LIB
+        cargo build --locked --release -p una-cli -p una-rt \
             && cargo test --workspace --locked'
+}
+
+gate_solver-identity() {
+    # ADR 0124 rule 31: the solver child against the standalone z3 built from the same library,
+    # byte for byte, over every query of the repository's obligations, each twice; against the
+    # Z3 project's own release (UNA_GATES_Z3_UPSTREAM, else the one scripts/install-z3.sh
+    # installs) by status, listed for review. The log keeps the counts.
+    run solver-identity sh -c '
+        UNA_Z3_LIB=$(scripts/z3-library.sh) || exit 1
+        export UNA_Z3_LIB
+        UNA_Z3_STANDALONE=$(dirname "$(dirname "$UNA_Z3_LIB")")/bin/z3
+        export UNA_Z3_STANDALONE
+        if [ ! -x "'"$Z3"'/bin/z3" ]; then scripts/install-z3.sh "'"$Z3"'" || exit 1; fi
+        UNA_Z3_UPSTREAM=${UNA_GATES_Z3_UPSTREAM:-'"$Z3"'/bin/z3}
+        export UNA_Z3_UPSTREAM
+        cargo test --release --locked -p una-cli --test solver_identity -- --ignored --nocapture'
+}
+
+gate_limits() {
+    # ADR 0124 rule 31: memout, cpu and wallclock each end as their reason with the parent intact.
+    run limits sh -c '
+        UNA_Z3_LIB=$(scripts/z3-library.sh) || exit 1
+        export UNA_Z3_LIB
+        cargo test --release --locked -p una-cli --test solver_limits -- --ignored --nocapture'
+}
+
+gate_toolchain-free() {
+    # ADR 0124 rule 31, the build phase for `una check` and `una test`: the release una alone,
+    # under a sandbox that execs nothing but una (macOS) and in a bare container (linux/arm64).
+    run toolchain-free sh -c '
+        UNA_Z3_LIB=$(scripts/z3-library.sh) || exit 1
+        export UNA_Z3_LIB
+        [ -x target/release/una ] || cargo build --locked --release -p una-cli || exit 1
+        scripts/toolchain-free.sh target/release/una examples/events \
+            && scripts/toolchain-free.sh target/release/una examples/events --linux-arm64'
 }
 
 gate_deps() { run deps scripts/deps-audit.sh; }

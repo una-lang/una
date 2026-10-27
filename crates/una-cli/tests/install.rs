@@ -1,6 +1,7 @@
 //! `install.sh` (#240): it installs only what the release's validation summary vouches for, and
-//! its pins follow the repository. The full installation, which downloads Z3, is tested by hand
-//! in a clean container and a clean `HOME` (docs/release-gates.md).
+//! its pins follow the repository. It downloads nothing but the archive: the solver is built
+//! into `una` (ADR 0124). The full installation is tested by hand in a clean container and a
+//! clean `HOME` (docs/release-gates.md).
 
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
@@ -35,31 +36,20 @@ fn the_installer_pins_follow_the_repository() {
         .unwrap()
         .trim_end_matches('"');
     assert_eq!(setting(&script, "DEFAULT_VERSION"), version);
-    let lock = read("verification.lock");
-    let solver = lock
-        .lines()
-        .find_map(|line| line.strip_prefix("solver_version"))
-        .unwrap()
-        .trim_start_matches([' ', '='])
-        .trim_matches('"')
-        .to_owned();
-    assert_eq!(setting(&script, "Z3_VERSION"), solver);
-    // Each Z3 asset and digest of the installer is the one scripts/install-z3.sh pins.
-    let pins = read("scripts/install-z3.sh");
-    let mut seen = 0;
-    for line in script.lines() {
-        for key in ["z3_asset=", "z3_sha256="] {
-            if let Some(value) = line.trim().strip_prefix(key) {
-                let value = value.trim_end_matches(" ;;");
-                assert!(
-                    pins.contains(value),
-                    "{value} is not pinned in install-z3.sh"
-                );
-                seen += 1;
-            }
-        }
+    // Nothing but the archive is downloaded: the installer names no Z3 asset, digest or
+    // release (ADR 0124 rule 32).
+    for forbidden in [
+        "z3_asset",
+        "z3_sha256",
+        "Z3_VERSION",
+        "UNA_Z3_RELEASES",
+        "unzip",
+    ] {
+        assert!(
+            !script.contains(forbidden),
+            "install.sh still has {forbidden}"
+        );
     }
-    assert_eq!(seen, 6);
 }
 
 /// The archive's target on this machine, as the installer names it, when it has releases.
@@ -119,8 +109,7 @@ fn release(dir: &Path, target: &str, version: &str, verdict: &str, listed: Optio
     .unwrap();
 }
 
-/// Runs the installer with `args` into `dir/home`, from the release under `dir`; no Z3 is
-/// reachable, so a run that passes the checks of the archive stops at Z3.
+/// Runs the installer with `args` into `dir/home`, from the release under `dir`.
 fn install(dir: &Path, version: &str, args: &[&str]) -> Output {
     let home = dir.join("home");
     std::fs::create_dir_all(&home).unwrap();
@@ -186,28 +175,26 @@ fn the_installer_installs_nothing_that_the_validation_summary_does_not_vouch_for
         stderr(&output)
     );
     assert!(!home.exists());
-    // A summary that vouches for the archive: the installer goes on, to Z3, which this test
-    // does not serve, and still installs nothing.
+    // A summary that vouches for the archive: the installer installs it, and nothing else.
     release(&dir, target, version, "PASS (every gate)", None);
     let output = install(&dir, version, &[]);
-    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(home.join("bin/una").exists() && home.join("lib/libuna_rt.a").exists());
+    assert!(!home.join("z3").exists() && !home.join("bin/z3").exists());
     assert!(
-        stderr(&output).contains("cannot download z3-"),
-        "{}",
-        stderr(&output)
+        !std::fs::read_to_string(home.join(".una-install"))
+            .unwrap()
+            .contains("z3")
     );
-    assert!(!home.exists());
+    std::fs::remove_dir_all(&home).unwrap();
     // A release tagged before summaries were committed: its summary is read from main.
     let tag = dir.join("records").join(format!("v{version}"));
     let main = dir.join("records/main");
     std::fs::rename(&tag, &main).unwrap();
     let output = install(&dir, version, &[]);
-    assert_eq!(output.status.code(), Some(1));
-    assert!(
-        stderr(&output).contains("cannot download z3-"),
-        "{}",
-        stderr(&output)
-    );
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(home.join("bin/una").exists());
+    std::fs::remove_dir_all(&home).unwrap();
     // No summary anywhere, as for 0.1.x: refused on every platform, with a message that says
     // why and what to do instead.
     std::fs::remove_dir_all(&main).unwrap();
@@ -292,17 +279,18 @@ fn a_repacked_archive_is_accepted_only_as_repacked_md_pairs_it() {
         }
         std::fs::write(&repacked, text).unwrap();
     };
-    // A pair for this archive and this summary digest: accepted, and the installer goes on
-    // to Z3, which this test does not serve.
+    // A pair for this archive and this summary digest: accepted, and the archive installs.
     table(&[(&name, &gated, &published)]);
     let output = install(&dir, version, &[]);
-    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(home.join("bin/una").exists() && home.join("lib/libuna_rt.a").exists());
+    assert!(!home.join("z3").exists() && !home.join("bin/z3").exists());
     assert!(
-        stderr(&output).contains("cannot download z3-"),
-        "{}",
-        stderr(&output)
+        !std::fs::read_to_string(home.join(".una-install"))
+            .unwrap()
+            .contains("z3")
     );
-    assert!(!home.exists());
+    std::fs::remove_dir_all(&home).unwrap();
     // A pair whose published digest is not the download's: refused.
     table(&[(&name, &gated, &"2".repeat(64))]);
     let output = install(&dir, version, &[]);
