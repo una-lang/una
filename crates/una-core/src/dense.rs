@@ -1,11 +1,18 @@
-//! The chains of dense values (`spec/29`, ADR 0120 rules 44 to 50), shared by both engines.
+//! The chains of dense values (`spec/29`, ADR 0120 rules 44 to 54), shared by both engines.
 //!
 //! Each element of a dense result is computed by a chain of `F64` operations whose operands and
 //! order the language fixes (rule 44): an implementation may block, vectorize and run
-//! independent chains in any order, and must never change one. These are the reference
-//! chains, written as plain loops: every faster kernel is tested bit for bit against them
-//! (rule 53). Every operation is the project's own routine of [`crate::float`], so every result
-//! is canonical.
+//! independent chains in any order, and must never change one. This module holds the reference
+//! chains, written as plain loops with the project's own routines of [`crate::float`], so every
+//! result is canonical; [`blocked`] holds the kernels for each target's baseline, which the
+//! interpreter runs, with the `fma` of [`fma`]. Every blocked kernel is tested bit for bit
+//! against these references, and both against the corpus of `tests/dense_corpus.txt` (rule 53).
+//!
+//! The kernels take canonical inputs, which every engine stores (ADR 0114 rule 6.1), and store
+//! only canonical values (rule 52).
+
+pub mod blocked;
+pub mod fma;
 
 use crate::float;
 

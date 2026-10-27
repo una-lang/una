@@ -1,7 +1,9 @@
 //! Dense values in the interpreter (`spec/29 §17`, ADR 0120 rules 26 to 54): construction,
 //! views, element-wise functions, reductions, products, factorizations and solves, by the
-//! reference chains of `una_core::dense`, so the interpreter gives the bits of every other
-//! implementation.
+//! blocked kernels of `una_core::dense::blocked` and their `fma` (ADR 0120 rule 53), whose
+//! chains are the references' of `una_core::dense`, so the interpreter gives the bits of every
+//! other implementation. A kernel reads a contiguous operand in place, and a view of another
+//! layout through a compact copy, reserved within the budget as the kernel's workspace.
 //!
 //! Every buffer is checked against the memory budget before it is allocated, in checked
 //! arithmetic, and allocated fallibly: a refused one is U6003, never an abort of the process
@@ -9,10 +11,11 @@
 //! when the value and its buffer are held once, and copies the view's own elements first
 //! otherwise (rule 31). Every shape a kernel ensures is checked before it returns (rule 53).
 
+use std::borrow::Cow;
 use std::rc::Rc;
 
 use num_bigint::BigInt;
-use una_core::dense as chains;
+use una_core::dense::{self as chains, blocked, fma};
 use una_core::float;
 use una_syntax::Span;
 
@@ -212,6 +215,18 @@ fn row_major(shape: &[usize]) -> Vec<usize> {
         step = step.saturating_mul(*length);
     }
     strides
+}
+
+/// The `F64` elements of `value` as one row-major run of its own storage, when it is laid out
+/// so: a compact value, or a row or a slice of one. O(rank).
+fn as_slice<'v>(value: &'v Dense<'_>) -> Option<&'v [f64]> {
+    let Elements::F64(items) = value.buffer.as_ref() else {
+        return None;
+    };
+    if value.strides != row_major(&value.shape) {
+        return None;
+    }
+    items.get(value.offset..value.offset.checked_add(value.count())?)
 }
 
 impl<'p> Dense<'p> {
@@ -519,6 +534,21 @@ impl<'p> Machine<'p, '_> {
         Ok(out)
     }
 
+    /// The `F64` elements of `value` in row-major order as one slice: its own storage when it is
+    /// contiguous ([`as_slice`]), and otherwise a compact copy, reserved within the budget, the
+    /// workspace of a kernel. O(1) or O(size).
+    fn slice_of<'v>(
+        &self,
+        value: &'v Dense<'p>,
+        name: &str,
+        span: Span,
+    ) -> Result<Cow<'v, [f64]>, Stop<'p>> {
+        match as_slice(value) {
+            Some(items) => Ok(Cow::Borrowed(items)),
+            None => Ok(Cow::Owned(self.f64_copy(value, 0, name, span)?)),
+        }
+    }
+
     /// The size of `value`, a square matrix, or a precondition failure.
     fn square(value: &Dense<'p>, name: &str, span: Span) -> Result<usize, Stop<'p>> {
         let (rows, columns) = matrix_shape(value);
@@ -547,7 +577,7 @@ impl<'p> Machine<'p, '_> {
         let mut factors = self.f64_copy(value, extra, "lu", span)?;
         let mut pivots: Vec<usize> = self.buffer(n, true, span)?;
         pivots.resize(n, 0);
-        let nonsingular = chains::lu_f64(&mut factors, n, &mut pivots);
+        let nonsingular = blocked::lu(&mut factors, n, &mut pivots);
         Ok(nonsingular.then_some((n, factors, pivots)))
     }
 
@@ -575,7 +605,7 @@ impl<'p> Machine<'p, '_> {
             ));
         }
         let mut x = self.f64_copy(rhs, 0, "solve", span)?;
-        chains::lu_solve_f64(factors, pivots, n, &mut x, r);
+        blocked::lu_solve(factors, pivots, n, &mut x, r);
         let value = compact(kind, shape.clone(), Elements::F64(x));
         ensure_shape(&value, &shape, "solve")?;
         Ok(value)
@@ -901,7 +931,10 @@ impl<'p> Machine<'p, '_> {
             }
             "sum" => {
                 let items = receiver.f64_iter().ok_or_else(|| bad(method))?;
-                Ok(Value::F64(chains::sum_f64(items)))
+                Ok(Value::F64(match as_slice(&receiver) {
+                    Some(x) => blocked::sum(x),
+                    None => chains::sum_f64(items),
+                }))
             }
             "dot" => {
                 let other = dense(args.get(1), method)?;
@@ -910,11 +943,14 @@ impl<'p> Machine<'p, '_> {
                     receiver.f64_iter().ok_or_else(|| bad(method))?,
                     other.f64_iter().ok_or_else(|| bad(method))?,
                 );
-                Ok(Value::F64(chains::dot_f64(a.zip(b))))
+                Ok(Value::F64(match (as_slice(&receiver), as_slice(other)) {
+                    (Some(x), Some(y)) => blocked::dot(x, y),
+                    _ => blocked::dot_pairs(0.0, a.zip(b)),
+                }))
             }
             "norm2" => {
                 let items = receiver.f64_iter().ok_or_else(|| bad(method))?;
-                Ok(Value::F64(chains::norm2_f64(items)))
+                Ok(Value::F64(blocked::norm2(items)))
             }
             "all_finite" => {
                 let items = receiver.f64_iter().ok_or_else(|| bad(method))?;
@@ -986,23 +1022,12 @@ impl<'p> Machine<'p, '_> {
                     return Err(bad(method));
                 }
                 let size = m.checked_mul(n).ok_or_else(|| self.over(span))?;
-                let element = |ij: usize| -> Result<f64, Stop<'p>> {
-                    let (i, j) = (ij / n.max(1), ij % n.max(1));
-                    let pairs = (0..k).map(|t| {
-                        (
-                            f64_at(&receiver, &[i, t]).unwrap_or(f64::NAN),
-                            f64_at(other, &[t, j]).unwrap_or(f64::NAN),
-                        )
-                    });
-                    Ok(chains::dot_f64(pairs))
-                };
-                let value = self.made_f64(
-                    DenseKind::Matrix,
-                    vec![m, n],
-                    size,
-                    (0..size).map(element),
-                    span,
-                )?;
+                let a = self.slice_of(&receiver, method, span)?;
+                let b = self.slice_of(other, method, span)?;
+                let mut out: Vec<f64> = self.buffer(size, true, span)?;
+                out.resize(size, 0.0);
+                blocked::add_product(&mut out, &a, &b, m, k, n);
+                let value = compact(DenseKind::Matrix, vec![m, n], Elements::F64(out));
                 ensure_shape(&value, &[m, n], method)?;
                 Ok(value)
             }
@@ -1015,18 +1040,15 @@ impl<'p> Machine<'p, '_> {
                         span,
                     ));
                 }
-                if receiver.f64_iter().is_none() {
+                if receiver.f64_iter().is_none() || other.f64_iter().is_none() {
                     return Err(bad(method));
                 }
-                let element = |i: usize| -> Result<f64, Stop<'p>> {
-                    let v = other.f64_iter().ok_or_else(|| bad(method))?;
-                    let pairs = v
-                        .enumerate()
-                        .map(|(t, y)| (f64_at(&receiver, &[i, t]).unwrap_or(f64::NAN), y));
-                    Ok(chains::dot_f64(pairs))
-                };
-                let value =
-                    self.made_f64(DenseKind::Array, vec![m], m, (0..m).map(element), span)?;
+                let a = self.slice_of(&receiver, method, span)?;
+                let v = self.slice_of(other, method, span)?;
+                let mut out: Vec<f64> = self.buffer(m, true, span)?;
+                out.resize(m, 0.0);
+                blocked::multiply_array(&a, m, k, &v, &mut out);
+                let value = compact(DenseKind::Array, vec![m], Elements::F64(out));
                 ensure_len(&value, m, method)?;
                 Ok(value)
             }
@@ -1047,18 +1069,31 @@ impl<'p> Machine<'p, '_> {
                     return Err(bad(method));
                 }
                 let mut owned = self.owned(receiver, span)?;
-                for i in 0..m {
-                    for j in 0..n {
-                        let start = f64_at(&owned, &[i, j]).ok_or_else(|| bad(method))?;
-                        let pairs = (0..k).map(|t| {
-                            (
-                                f64_at(&a, &[i, t]).unwrap_or(f64::NAN),
-                                f64_at(&b, &[t, j]).unwrap_or(f64::NAN),
-                            )
-                        });
-                        let value = chains::dot_from(start, pairs);
-                        store(&mut owned, &[i, j], value, method)?;
+                let count = owned.count();
+                if count == 0 {
+                    return Ok(updated(owned));
+                }
+                if as_slice(&owned).is_none() {
+                    // A view held once, of another layout: compacted first, so the kernel
+                    // updates one run of storage in place.
+                    let elements = self.copy(&owned, span)?;
+                    owned.strides = row_major(&owned.shape);
+                    owned.offset = 0;
+                    owned.buffer = Rc::new(elements);
+                }
+                let (x, y) = (
+                    self.slice_of(&a, method, span)?,
+                    self.slice_of(&b, method, span)?,
+                );
+                let start = owned.offset;
+                match Rc::get_mut(&mut owned.buffer) {
+                    Some(Elements::F64(items)) => {
+                        let c = items
+                            .get_mut(start..start + count)
+                            .ok_or_else(|| bad(method))?;
+                        blocked::add_product(c, &x, &y, m, k, n);
                     }
+                    _ => return Err(bad(method)),
                 }
                 Ok(updated(owned))
             }
@@ -1071,7 +1106,7 @@ impl<'p> Machine<'p, '_> {
                 let mut owned = self.owned(receiver, span)?;
                 for (i, xi) in xs.enumerate() {
                     let yi = f64_at(&owned, &[i]).ok_or_else(|| bad(method))?;
-                    store(&mut owned, &[i], float::fma(k, xi, yi), method)?;
+                    store(&mut owned, &[i], fma::baseline(k, xi, yi), method)?;
                 }
                 Ok(updated(owned))
             }
@@ -1303,7 +1338,7 @@ impl<'p> Machine<'p, '_> {
                             f64_at(&other, ui.get(..ru).unwrap_or(&[])).unwrap_or(f64::NAN),
                         )
                     });
-                    Ok(chains::dot_f64(pairs))
+                    Ok(blocked::dot_pairs(0.0, pairs))
                 };
                 let value = self.made_f64(
                     DenseKind::Tensor,
@@ -1382,7 +1417,7 @@ impl<'p> Machine<'p, '_> {
                 drop(args);
                 let n = Self::square(&receiver, method, span)?;
                 let mut factor = self.f64_copy(&receiver, 0, method, span)?;
-                if !chains::cholesky_f64(&mut factor, n) {
+                if !blocked::cholesky(&mut factor, n) {
                     return Ok(none());
                 }
                 let value = compact(DenseKind::Matrix, vec![n, n], Elements::F64(factor));
@@ -1411,7 +1446,7 @@ impl<'p> Machine<'p, '_> {
                 } else {
                     chains::Triangle::Upper
                 };
-                chains::solve_triangular_f64(&t, n, &mut x, r, triangle, unit);
+                blocked::solve_triangular(&t, n, &mut x, r, triangle, unit);
                 let value = compact(DenseKind::Matrix, vec![n, r], Elements::F64(x));
                 ensure_shape(&value, &[n, r], method)?;
                 Ok(value)
