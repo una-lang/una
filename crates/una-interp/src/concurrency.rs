@@ -83,6 +83,36 @@ impl Default for Concurrency {
     }
 }
 
+/// The most started tasks a run holds at once on this system (ADR 0117 rule 2): on Linux a
+/// quarter of `vm.max_map_count`, read when called, since each task's stack takes two memory
+/// mappings; `None` elsewhere, and when the setting cannot be read.
+pub fn task_cap() -> Option<usize> {
+    if cfg!(target_os = "linux") {
+        let text = std::fs::read_to_string("/proc/sys/vm/max_map_count").ok()?;
+        let count: usize = text.trim().parse().ok()?;
+        Some((count / 4).max(1))
+    } else {
+        None
+    }
+}
+
+/// The bound of a `tasks` statement written without one (ADR 0117 rule 7): `max(64, M)`, with
+/// `M` the memory budget in MiB, within `cap`, the cap of [`task_cap`].
+pub fn default_bound(max_memory: usize, cap: Option<usize>) -> usize {
+    let bound = max_memory.max(64);
+    cap.map_or(bound, |cap| bound.min(cap))
+}
+
+/// The one line on stderr of a started task that ran too deep and ended alone (`spec/27 §7`,
+/// ADR 0117 rule 7), as both engines write it: U6003, the task's path, why, and the position
+/// `file:line:column` of the call, when it is known.
+pub fn ended_alone(path: &str, message: &str, at: Option<(&str, u32, u32)>) -> String {
+    let at = at.map_or_else(String::new, |(file, line, col)| {
+        format!(" at {file}:{line}:{col}")
+    });
+    format!("[U6003] Error: the started task {path} ended alone: {message}{at}")
+}
+
 /// `n` when it is from 1 to `most`, or the message of the usage error for `flag`.
 fn within(flag: &str, n: usize, most: usize) -> Result<usize, String> {
     if n == 0 {
@@ -142,5 +172,18 @@ mod tests {
         }
         assert!(number("--workers", "many").is_err());
         assert_eq!(number("--workers", "3"), Ok(3));
+    }
+
+    #[test]
+    fn the_default_bound_of_tasks_is_the_budget_in_mib_within_the_cap() {
+        assert_eq!(default_bound(4096, None), 4096);
+        assert_eq!(default_bound(16, None), 64);
+        assert_eq!(default_bound(4096, Some(1000)), 1000);
+        assert_eq!(default_bound(16, Some(10)), 10);
+        if cfg!(target_os = "linux") {
+            assert!(task_cap().is_some_and(|cap| cap >= 1));
+        } else {
+            assert_eq!(task_cap(), None);
+        }
     }
 }

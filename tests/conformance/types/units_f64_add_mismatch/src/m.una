@@ -1,0 +1,10 @@
+-- test: adding an F64 of meters to an F64 of seconds is U2028 at the operation (ADR 0114 rule 12.2)
+-- spec: spec/25 §9
+-- expect: error U2028 at src/m.una:10:62
+module m
+
+pub measure Meter
+
+pub measure Second
+
+pub bad(a: F64 of Meter, b: F64 of Second) -> F64 of Meter = a + b

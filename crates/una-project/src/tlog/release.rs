@@ -237,3 +237,117 @@ pub fn within(new: &Statement, earlier: &Statement) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// What a release's code needs, computed by the checker from its archive: each capability with
+/// its operations.
+pub type Authority = BTreeMap<String, BTreeSet<String>>;
+
+/// Rule 37: the archive a statement names agrees with it. Its content digest is the statement's
+/// `digest`; its `ita.una` has the statement's `manifest` digest, parses, and names the
+/// statement's package, version and edition; its needs are the statement's, each of the
+/// release's own source and none of a path or a workspace (rule 42); its trusted modules are
+/// the statement's `trust`; and, when the checker computed it, what its code needs is within
+/// the statement's `authority`, so a statement can never advertise less than the code needs.
+/// O(b) for the b bytes of `ita.una`, and O(n log n) for its n needs.
+pub fn check_archive(
+    statement: &Statement,
+    tree: &crate::tree::VerifiedTree,
+    computed: Option<&Authority>,
+) -> Result<(), String> {
+    use una_syntax::ita::Origin;
+
+    let what = format!("{} {}", statement.name, statement.version);
+    if tree.digest() != statement.digest {
+        return Err(format!(
+            "the archive of {what} has the digest {}, not the statement's {}",
+            tree.digest(),
+            statement.digest
+        ));
+    }
+    let bytes = tree
+        .file("ita.una")
+        .ok_or_else(|| format!("the archive of {what} has no ita.una"))?;
+    if crate::provenance::sha256_digest(bytes) != statement.manifest {
+        return Err(format!(
+            "the ita.una of {what} is not the one its statement names"
+        ));
+    }
+    let text =
+        std::str::from_utf8(bytes).map_err(|_| format!("the ita.una of {what} is not UTF-8"))?;
+    let (read, errors) = una_syntax::ita::parse_manifest(text);
+    if let Some(error) = errors.first() {
+        return Err(format!(
+            "the ita.una of {what} does not parse: {}",
+            error.message
+        ));
+    }
+    let name = read.name.as_ref().map(|n| n.value.to_string());
+    if name.as_deref() != Some(statement.name.as_str()) {
+        return Err(format!("the ita.una of {what} names another package"));
+    }
+    let version = read
+        .version
+        .as_ref()
+        .and_then(|v| Version::parse_full(&v.value).ok());
+    if version.as_ref() != Some(&statement.version) {
+        return Err(format!("the ita.una of {what} gives another version"));
+    }
+    if read.edition.as_ref().map(|e| e.value.as_str()) != Some(statement.edition.as_str()) {
+        return Err(format!(
+            "the ita.una of {what} names another edition than its statement's {}",
+            statement.edition
+        ));
+    }
+    let mut needs: Vec<(String, Version)> = Vec::new();
+    for need in &read.needs {
+        match need.origin.as_ref().map(|o| &o.value) {
+            None => {}
+            Some(Origin::Source(source)) if *source == statement.source => {}
+            Some(_) => {
+                return Err(format!(
+                    "{what} needs `{}` from another origin than its own source, which a registry package may not",
+                    need.name.value
+                ));
+            }
+        }
+        let least = need
+            .version
+            .as_ref()
+            .and_then(|v| Version::parse(&v.value).ok())
+            .map(|written| written.version)
+            .ok_or_else(|| format!("{what} needs `{}` with no version", need.name.value))?;
+        needs.push((need.name.value.to_string(), least));
+    }
+    needs.sort();
+    let mut stated: Vec<(String, Version)> = statement
+        .needs
+        .iter()
+        .map(|(_, name, version)| (name.clone(), version.clone()))
+        .collect();
+    stated.sort();
+    if needs != stated {
+        return Err(format!(
+            "the needs of {what} in its ita.una are not the ones its statement gives"
+        ));
+    }
+    let trusted: BTreeSet<String> = read.trusted.iter().map(|t| t.value.clone()).collect();
+    if trusted != statement.trust {
+        return Err(format!(
+            "the trusted modules of {what} are not the ones its statement gives"
+        ));
+    }
+    if let Some(computed) = computed {
+        for (capability, ops) in computed {
+            let stated = statement.authority.get(capability);
+            if let Some(op) = ops
+                .iter()
+                .find(|op| !stated.is_some_and(|stated| stated.contains(*op)))
+            {
+                return Err(format!(
+                    "the code of {what} needs `{capability}[{op}]`, which its statement's authority does not give"
+                ));
+            }
+        }
+    }
+    Ok(())
+}

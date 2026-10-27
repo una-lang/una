@@ -1,0 +1,11 @@
+ita-release/1
+source acme
+name acme/ledger
+version 0.3.1
+previous none
+digest sha256:3b1f3b1f3b1f3b1f3b1f3b1f3b1f3b1f3b1f3b1f3b1f3b1f3b1f3b1f3b1f3b1f
+manifest sha256:77aa77aa77aa77aa77aa77aa77aa77aa77aa77aa77aa77aa77aa77aa77aa77aa
+edition 0.4
+needs acme json 2.1.0
+authority Http[get], ledger.store.Store[find, put]
+trust modules ledger.keys

@@ -1,6 +1,8 @@
-//! The guard of #1160: the non-test sources of `una-cli`, `una-verify` and `una-codegen` write
-//! into a package directory only through `una_diag::safe_write`, which never follows a link
-//! planted there out of the package. A raw write ([`RAW_WRITES`]: `fs::write`, `File::create`,
+//! The guard of #1160: the non-test sources of `una-cli`, `una-verify`, `una-codegen` and
+//! `una-project` write into a package directory only through `una_diag::safe_write`, which
+//! never follows a link planted there out of the package, or, for the package store of
+//! `una ita`, through `una-project`'s `tree` module, whose sites the allowlist names. A raw
+//! write ([`RAW_WRITES`]: `fs::write`, `File::create`,
 //! `.create(true)`, `create_dir_all`, `create_dir`, `OpenOptions::new`, `DirBuilder`,
 //! `fs::rename`, `fs::copy` or `hard_link`) fails this test unless the allowlist below names
 //! it, with its exact count and reason. The helper itself, `crates/una-diag/src/safe_write.rs`,
@@ -25,10 +27,10 @@ const RAW_WRITES: [&str; 10] = [
 ];
 
 /// The crates whose sources are read.
-const CRATES: [&str; 3] = ["una-cli", "una-verify", "una-codegen"];
+const CRATES: [&str; 4] = ["una-cli", "una-verify", "una-codegen", "una-project"];
 
 /// The raw writes that remain, by file and call, with how many there are and why each is safe.
-const ALLOWED: [(&str, &str, usize, &str); 5] = [
+const ALLOWED: [(&str, &str, usize, &str); 14] = [
     (
         "crates/una-cli/src/build.rs",
         "create_dir_all(",
@@ -56,6 +58,80 @@ const ALLOWED: [(&str, &str, usize, &str); 5] = [
         "hard_link(",
         1,
         "the staged key linked to its name, which fails when anything is at that name (#282)",
+    ),
+    (
+        "crates/una-project/src/tree.rs",
+        "DirBuilder",
+        2,
+        "the package store of `una ita` (ADR 0122 rules 14 and 30), under Itaoca or the vendor \
+         directory: the fresh private directory, created with `mkdir` and mode 0700, which \
+         fails when anything is at its name, a link included",
+    ),
+    (
+        "crates/una-project/src/tree.rs",
+        "OpenOptions::new(",
+        3,
+        "the package store of `una ita` (ADR 0122 rules 14 and 30), under Itaoca or the vendor \
+         directory: a package file opened for reading with `O_NOFOLLOW`, a file created in \
+         the fresh private directory with `create_new` and `O_NOFOLLOW`, mode 0600, and the \
+         floor lock of a registry in Itaoca (rule 39), opened with `O_NOFOLLOW`",
+    ),
+    (
+        "crates/una-project/src/tree.rs",
+        ".create(true)",
+        1,
+        "the floor lock of a registry in Itaoca (rule 39), outside any package: an empty file \
+         for an advisory lock, never truncated or written, mode 0600, opened with `O_NOFOLLOW` \
+         so a link at its name is refused",
+    ),
+    (
+        "crates/una-project/src/tree.rs",
+        "create_dir(",
+        2,
+        "the package store of `una ita` (ADR 0122 rules 14 and 30), under Itaoca or the vendor \
+         directory: `mkdir` of the fresh directory where the platform has no mode, and of \
+         each shared directory, each checked afterward to be a directory and not a link",
+    ),
+    (
+        "crates/una-project/src/tree.rs",
+        "create_dir_all(",
+        1,
+        "the package store of `una ita` (ADR 0122 rules 14 and 30), under Itaoca or the vendor \
+         directory: the store's base, which the user names and which must not be a link; \
+         every directory below it is checked not to be one",
+    ),
+    (
+        "crates/una-project/src/tree.rs",
+        "fs::rename(",
+        2,
+        "the package store of `una ita` (ADR 0122 rules 14 and 30), under Itaoca or the vendor \
+         directory: the fresh directory, or its one file, renamed into place after its \
+         identity is checked by device and inode; a rename replaces a link, never follows it",
+    ),
+    (
+        "crates/una-project/src/tree.rs",
+        "hard_link(",
+        1,
+        "the package store of `una ita` (ADR 0122 rules 14 and 30), under Itaoca or the vendor \
+         directory: a stored provenance linked to its name, which fails when anything is \
+         there, so it is never replaced",
+    ),
+    (
+        "crates/una-project/src/transport.rs",
+        "hard_link(",
+        1,
+        "a submission to a registry served from a local directory (ADR 0122 rule 57): the \
+         bytes are stored through `tree::store_file` under a staged name, then linked to their \
+         name, which fails when anything is there, a link included, so nothing is replaced or \
+         followed",
+    ),
+    (
+        "crates/una-cli/src/runtime.rs",
+        "File::create(",
+        1,
+        "the trace file of `una run --trace`, streamed as the run goes (ADR 0117 rule 10): the \
+         path the user names on the command line, not one the package chooses, as for `una build \
+         --out`",
     ),
     (
         "crates/una-cli/src/runtime.rs",
