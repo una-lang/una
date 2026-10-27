@@ -4662,14 +4662,12 @@ impl<'p, 'i> Walker<'p, 'i> {
         if self.index.profile != Profile::Systems || self.eta.is_some() {
             return;
         }
-        // The guard bounds the operand, never the result: `abs` leaves the range only at the
-        // least value. `sum` has none, as no test on its operands bounds its result.
+        // The guard bounds the operand, never the result: in the range and off the least
+        // value, `abs` stays in it. `sum` has none, as no test on its operands bounds its result.
         let (of, guard) = match name {
             "abs" => (
                 OverflowOf::Int,
-                arg_spans
-                    .first()
-                    .map(|at| format!("{} != {INT_LEAST}", self.text(*at))),
+                arg_spans.first().map(|at| off_least(&self.text(*at))),
             ),
             "sum" => (OverflowOf::Unbounded(name), None),
             _ => return,
@@ -6943,7 +6941,8 @@ fn operation_guard(prim: Prim, operand: &dyn Fn(usize) -> String, range: &str) -
 /// writes them (ADR 0109 rule 3): it bounds the operands, never the result, since a test on
 /// the exact result is itself an `Int` operation whose obligation could not be proven. For `+`
 /// and `-`, each operand in -2^61..2^61 - 1; for `*`, each in -(2^31 - 1)..2^31 - 1; for `/`
-/// and `mod`, `b != -1 or a != -2^62`; for unary `-`, `a != -2^62`. An operand that is a
+/// and `mod`, the dividend in -(2^62 - 1)..2^62 - 1, the divisor unbounded; for unary `-`, the
+/// operand in -(2^62 - 1)..2^62 - 1. An operand that is a
 /// literal within its bound needs no test; `None` when no operand does.
 fn int_guard(
     prim: Prim,
@@ -6971,14 +6970,16 @@ fn int_guard(
                 .collect();
             (!tests.is_empty()).then(|| tests.join(" and "))
         }
-        Prim::Div | Prim::Mod => Some(format!(
-            "{} != -1 or {} != {INT_LEAST}",
-            operand(1),
-            operand(0)
-        )),
-        Prim::Neg => Some(format!("{} != {INT_LEAST}", operand(0))),
+        // The dividend, or the operand of `-`, off the least value; the divisor needs no bound.
+        Prim::Div | Prim::Mod | Prim::Neg => Some(off_least(&operand(0))),
         _ => None,
     }
+}
+
+/// The guard that keeps `operand` in the tagged range but off its least value, -2^62, where
+/// `-`, `abs` and a division by -1 leave it (ADR 0109 rule 3).
+fn off_least(operand: &str) -> String {
+    format!("{operand} in {}..{INT_GREATEST}", INT_LEAST + 1)
 }
 
 /// `value` reduced into the range of `int` modulo `2^width`: `((value - least) mod 2^w) +
@@ -8051,7 +8052,7 @@ mod tests {
         // The guards bound the operands, never the result (ADR 0109 rule 3).
         let half = "-2305843009213693952..2305843009213693951";
         let sum_guard = format!("a in {half} and b in {half}");
-        let neg_guard = "x != -4611686018427387904";
+        let neg_guard = "x in -4611686018427387903..4611686018427387903";
         assert_eq!(
             overflow,
             [
@@ -8119,6 +8120,119 @@ mod tests {
             "{:?}",
             obligations.iter().map(|o| &o.goal).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn abs_as_a_function_value_is_unknown_with_no_query() {
+        // ADR 0109 rule 3: `abs` used as a value in a `systems` package, the lambda that stands
+        // for it at the reference, has an `overflow` obligation unknown by construction: its
+        // reason and its one repair are fixed, and `verify` sends no query, so a solver that
+        // does not exist is never started. In `app` there is none.
+        let text = "xs.map(each: abs)\n";
+        let mut sources = SourceDb::new();
+        let file = sources.add("m.una", text.as_bytes());
+        let start = text.find("abs").unwrap();
+        let at = Span::new(file, start, start + 3);
+        let int = || base(Base::Int);
+        let program = |profile: Profile| Program {
+            profile,
+            modules: vec![una_core::Module {
+                path: "m".to_owned(),
+                decls: vec![Decl::Fun(Box::new(Fun {
+                    name: "f".to_owned(),
+                    type_params: Vec::new(),
+                    constraints: Vec::new(),
+                    params: Vec::new(),
+                    result: base(Base::Unit),
+                    uses: Vec::new(),
+                    uses_of: Vec::new(),
+                    locks: Vec::new(),
+                    fails: None,
+                    error: None,
+                    requires: Vec::new(),
+                    ensures: Vec::new(),
+                    body: Expr::Let {
+                        name: "%1".to_owned(),
+                        ty: base(Base::Unit),
+                        value: Box::new(Bound::Rhs(Rhs::Lambda {
+                            params: vec![("x".to_owned(), int())],
+                            body: Box::new(Expr::Atom {
+                                atom: Atom::Var("x".to_owned()),
+                                span: at,
+                            }),
+                            function: Some(una_core::Path {
+                                module: una_core::PRELUDE_MODULE.to_owned(),
+                                name: "abs".to_owned(),
+                            }),
+                        })),
+                        body: Box::new(Expr::Atom {
+                            atom: Atom::Unit,
+                            span: at,
+                        }),
+                        span: at,
+                        written: false,
+                    },
+                    span: Span::new(file, 0, 1),
+                    public: false,
+                }))],
+                examples: Vec::new(),
+            }],
+            ..Program::default()
+        };
+        let systems = program(Profile::Systems);
+        let obligations = super::obligations(&systems, &sources, SourceLayout::Joined).unwrap();
+        let reason = "the operands of `abs` have no bounds at this use";
+        let repair = "write the call inside a lambda, `fn(x) -> abs(x)`, so its operand's bounds apply";
+        let overflow: Vec<&Obligation> = obligations
+            .iter()
+            .filter(|o| o.kind == ObligationKind::Overflow)
+            .collect();
+        assert_eq!(overflow.len(), 1, "{obligations:?}");
+        assert_eq!(overflow[0].source, at);
+        assert_eq!(overflow[0].site.unknown.as_deref(), Some(reason));
+        assert_eq!(overflow[0].site.flow.as_deref(), Some(repair));
+        let settings = crate::run::Settings {
+            solver: std::path::PathBuf::from("/nonexistent/una-no-solver"),
+            lock: crate::run::Lock {
+                text: String::new(),
+                solver_version: "0.0.0".to_owned(),
+                step_budget: 1,
+                random_seed: 0,
+            },
+            wallclock: std::time::Duration::from_secs(1),
+            cache: None,
+            cancel: None,
+        };
+        let outcomes = crate::run::verify(&obligations, &settings).unwrap();
+        assert_eq!(outcomes.len(), obligations.len());
+        assert!(outcomes.iter().all(|o| !o.cached));
+        let index = obligations
+            .iter()
+            .position(|o| o.kind == ObligationKind::Overflow)
+            .unwrap();
+        assert_eq!(outcomes[index].status, una_diag::ObligationStatus::Unknown);
+        assert_eq!(outcomes[index].reason.as_deref(), Some(reason));
+        let diagnostics = crate::report::diagnostics(
+            std::slice::from_ref(overflow[0]),
+            std::slice::from_ref(&outcomes[index]),
+            &sources,
+        );
+        assert_eq!(diagnostics[0].code, una_diag::Code::U5002);
+        assert_eq!(
+            diagnostics[0].message,
+            format!(
+                "overflow obligation `abs in -4611686018427387904..4611686018427387903` could not be proven ({reason})"
+            )
+        );
+        let repairs: Vec<&str> = diagnostics[0]
+            .repairs
+            .iter()
+            .map(|r| r.description.as_str())
+            .collect();
+        assert_eq!(repairs, [repair]);
+        let app = program(Profile::App);
+        let obligations = super::obligations(&app, &sources, SourceLayout::Joined).unwrap();
+        assert!(obligations.iter().all(|o| o.kind != ObligationKind::Overflow));
     }
 
     #[test]
