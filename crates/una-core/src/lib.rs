@@ -29,7 +29,7 @@ pub use ir::{
     Constraint, Ctor, DataVariant, DecimalOp, Decl, Example, ExitTag, Expectation, Expr, FixedOp,
     FloatOp, FloatResult, Fun, HOST_MODULE, HandlerOp, HashMapOp, HashSetOp, IntType, Lock,
     LoopSource, MapOp, Module, Name, OnStop, PRELUDE_ENGINE_KINDS, PRELUDE_MODULE, Path,
-    PreludeField, PreludeVariant, Prim, Program, Refinement, Rhs, SeqOp, SetOp, ShapeFun,
+    PreludeField, PreludeVariant, Prim, Profile, Program, Refinement, Rhs, SeqOp, SetOp, ShapeFun,
     Signature, Source, Term, Type, Use, prelude_variants,
 };
 pub use label::{Accepts, Label, Level, Names, counters as label_counters};

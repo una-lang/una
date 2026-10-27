@@ -111,6 +111,9 @@ pub(crate) fn program(
         .collect();
     let host = host(env, findings, dbs, &mut gaps.standard);
     let program = Program {
+        // ADR 0109 rule 6: the profile is part of the program, which the verifier and the
+        // Core export read.
+        profile: env.profile,
         modules,
         library,
         host,

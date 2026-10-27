@@ -7742,6 +7742,7 @@ mod tests {
             library: Vec::new(),
             host: vec![files(Vec::new())],
             condition_edits: Vec::new(),
+            ..Program::default()
         };
         let index = Index::new(&program);
         let ensures = |module: &str| {

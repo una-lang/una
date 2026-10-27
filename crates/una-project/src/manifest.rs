@@ -7,6 +7,10 @@ use una_diag::Code;
 use crate::document::{Table, integer, parse, string, strings};
 use crate::{Located, ProjectError};
 
+/// A package's profile (ADR 0109): the one type of Core IR, which elaboration records in the
+/// program (rule 6), re-exported so that both manifest formats read into it.
+pub use una_core::Profile;
+
 /// The settings of a package's `una.toml`, or their defaults (ADR 0021 rule 2).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Manifest {
@@ -120,36 +124,6 @@ impl Format {
         match self {
             Format::Toml => "una.toml",
             Format::Ita => "ita.una",
-        }
-    }
-}
-
-/// A package's profile (ADR 0109): `app`, the language as it is, or `systems`, which only adds
-/// obligations and declarations to the same program (rule 2).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Profile {
-    /// The default: the language as it is.
-    #[default]
-    App,
-    /// Stricter than or equal to `app` (ADR 0109 rule 2).
-    Systems,
-}
-
-impl Profile {
-    /// The profile's name, as both manifest formats write it.
-    pub fn name(self) -> &'static str {
-        match self {
-            Profile::App => "app",
-            Profile::Systems => "systems",
-        }
-    }
-
-    /// The profile named `text`, if it is one.
-    pub fn parse(text: &str) -> Option<Profile> {
-        match text {
-            "app" => Some(Profile::App),
-            "systems" => Some(Profile::Systems),
-            _ => None,
         }
     }
 }

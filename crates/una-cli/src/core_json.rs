@@ -19,7 +19,7 @@ use una_core::{
     Example, Expectation, Expr, FixedOp, Fun, HandlerOp, IntType, Label, LoopSource, MapOp, Module,
     Path, Prim, Program, Refinement, Rhs, Signature, Source, Term, Type, Use,
 };
-use una_project::{Edition, Profile};
+use una_project::Edition;
 use una_syntax::{SourceDb, Span};
 
 /// The schema of the document (ADR 0083).
@@ -1139,7 +1139,8 @@ fn location(location: &una_diag::Location) -> J {
 
 /// The `una.core/1` document of `program` (ADR 0083): `complete` when the package checked clean,
 /// so that Core holds every declaration. `file_state` is the package's file-state label
-/// (ADR 0085), an additive key (#467), and `profile` the package's profile (ADR 0109 rule 6).
+/// (ADR 0085), an additive key (#467); the header's `profile` is the one the program records
+/// (ADR 0109 rule 6).
 /// `rejected`, given by `--with-rejected` only, adds the declarations rejected for information
 /// flow, apart from Core (ADR 0091).
 // Each argument is one part of the document, in its key order (ADR 0083, 0085, 0091).
@@ -1151,7 +1152,6 @@ pub(crate) fn document(
     of_lambdas: &[(Span, bool, bool)],
     file_state: &Label,
     edition: Edition,
-    profile: Profile,
     complete: bool,
     rejected: Option<&[(una_check::Rejected, Vec<&una_diag::Diagnostic>)]>,
 ) -> Result<String, serde_json::Error> {
@@ -1167,8 +1167,9 @@ pub(crate) fn document(
     let mut keys = vec![
         ("schema", s(SCHEMA)),
         ("edition", s(edition.name())),
-        // ADR 0109 rule 6: the profile, an additive key under ADR 0076.
-        ("profile", s(profile.name())),
+        // ADR 0109 rule 6: the profile, as the program records it, an additive key under ADR
+        // 0076.
+        ("profile", s(program.profile.name())),
         ("complete", J::Bool(complete)),
         ("modules", list(&program.modules, |m| writer.module(m))),
         (
