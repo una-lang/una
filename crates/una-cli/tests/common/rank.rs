@@ -68,8 +68,34 @@ fn erfc(x: f64) -> f64 {
                         + t * (0.278_868_07
                             + t * (-1.135_203_98
                                 + t * (1.488_515_87 + t * (-0.822_152_23 + t * 0.170_872_77))))))));
-    let value = t * poly.exp();
+    let value = t * exp(poly);
     if x >= 0.0 { value } else { 2.0 - value }
+}
+
+/// `e^x` for the `x <= 0` that `erfc` takes, with no call into the platform C library: `x` is
+/// `k ln 2 + r` with `|r| <= ln 2`, `e^r` its Taylor series to the term that no longer changes the
+/// sum, and `2^k` the exponent bits. Relative error near one ulp; 0 below the normal range, which
+/// no p-value here can tell from it.
+fn exp(x: f64) -> f64 {
+    // Truncation toward zero by conversion, an instruction, not a libm call.
+    let k = (x / std::f64::consts::LN_2) as i64;
+    if k < -1021 {
+        return 0.0;
+    }
+    let r = x - k as f64 * std::f64::consts::LN_2;
+    let (mut sum, mut term, mut n) = (1.0_f64, 1.0_f64, 1.0_f64);
+    loop {
+        term *= r / n;
+        let next = sum + term;
+        if next == sum {
+            break;
+        }
+        sum = next;
+        n += 1.0;
+    }
+    // 2^k for k in -1021..=0: a normal number, its biased exponent k + 1023.
+    let scale = f64::from_bits(((k + 1023) as u64) << 52);
+    sum * scale
 }
 
 #[cfg(test)]
@@ -79,6 +105,15 @@ mod tests {
     /// Whether `actual` is within a relative `tolerance` of `expected`.
     fn close(actual: f64, expected: f64, tolerance: f64) -> bool {
         (actual - expected).abs() <= tolerance * expected.abs()
+    }
+
+    #[test]
+    fn exp_matches_known_values() {
+        assert_eq!(exp(0.0), 1.0);
+        assert!(close(exp(-1.0), 0.367_879_441_171_442_3, 1e-15));
+        assert!(close(exp(-10.0), 4.539_992_976_248_485e-5, 1e-14));
+        assert!(close(exp(-700.0), 9.859_676_543_759_77e-305, 1e-12));
+        assert_eq!(exp(-800.0), 0.0);
     }
 
     #[test]

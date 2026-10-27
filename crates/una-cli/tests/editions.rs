@@ -211,23 +211,74 @@ const EXPECTED_DIFFERENCES_0_4: &[Difference04] = &[
         added: &[],
         removed: &[("U1001", "src/m.una:6:8")],
     },
+    // ADR 0120 rule 4 (`spec/29 §18` rule 6, `§16` rule 5): the built-in `to_f32` and
+    // `to_decimal` resolve ahead of a package function of their name from edition 0.4, so one
+    // on an integer, an `F64` or a type parameter is refused there.
+    Difference04 {
+        case: "names/conversion_functions_in_0_3",
+        added: &[
+            ("U1002", "src/a.una:3:5"),
+            ("U1002", "src/b.una:3:5"),
+            ("U1002", "src/c.una:3:5"),
+            ("U1002", "src/d.una:3:5"),
+            ("U1002", "src/e.una:3:5"),
+            ("U1002", "src/m.una:6:5"),
+        ],
+        removed: &[],
+    },
     // ADR 0120 (`spec/29 §16`): `Decimal[s]` is a type from edition 0.4.
     Difference04 {
         case: "names/decimal_edition_0_3",
         added: &[],
         removed: &[("U0101", "src/m.una:6:22")],
     },
-    // ADR 0116 rule 12: `HttpError.Interrupted` is a variant from edition 0.4.
+    // ADR 0116 rule 12: `HttpError.Interrupted` is a variant from edition 0.4, and so is
+    // `RateLimited` (ADR 0117 rule 8), which the `when` then lacks.
     Difference04 {
         case: "names/http_interrupted_0_3",
-        added: &[],
+        added: &[("U2007", "src/poll.una:9:3")],
         removed: &[("U1001", "src/poll.una:18:8")],
+    },
+    // ADR 0117 rule 8: `HttpError.RateLimited` is a variant from edition 0.4, and so is
+    // `Interrupted` (ADR 0116 rule 12), which the `when` then lacks.
+    Difference04 {
+        case: "names/http_rate_limited_0_3",
+        added: &[("U2007", "src/poll.una:9:3")],
+        removed: &[("U1001", "src/poll.una:18:8")],
+    },
+    // ADR 0117 rule 9 (`spec/27 §10`): `std.limit` is an importable module from edition 0.4.
+    Difference04 {
+        case: "names/limit_0_3",
+        added: &[],
+        removed: &[("U1001", "src/gate.una:6:8")],
     },
     // ADR 0119 rule 18: a package function `update` whose first parameter is a `Map`.
     Difference04 {
         case: "names/map_update_function_in_0_3",
         added: &[("U1002", "src/a.una:6:5")],
         removed: &[],
+    },
+    // ADR 0120 rule 1 (`spec/29 §16` rule 1, `§17` rule 1, `§18` rule 1): `F32`, `Decimal`,
+    // `Complex`, `Array`, `Matrix`, `Tensor` and `Lu` are built-in names from edition 0.4, so a
+    // kind, variant or unit of one of those names is refused there.
+    Difference04 {
+        case: "names/numeric_names_in_0_3",
+        added: &[
+            ("U1002", "src/m.una:6:10"),
+            ("U1002", "src/m.una:8:10"),
+            ("U1002", "src/m.una:11:10"),
+            ("U1002", "src/m.una:14:10"),
+            ("U1002", "src/m.una:16:18"),
+            ("U1002", "src/m.una:16:27"),
+            ("U1002", "src/m.una:18:13"),
+        ],
+        removed: &[],
+    },
+    // ADR 0117 rule 6: `first of` is an expression from edition 0.4.
+    Difference04 {
+        case: "syntax/first_of_before_0_4",
+        added: &[],
+        removed: &[("U0101", "src/late.una:10:17")],
     },
     // ADR 0116 rule 0: `diverges` and `within` are reserved words.
     Difference04 {
@@ -246,11 +297,27 @@ const EXPECTED_DIFFERENCES_0_4: &[Difference04] = &[
         added: &[],
         removed: &[("U0101", "src/before.una:10:10")],
     },
+    // ADR 0120 rule 1 (`spec/01 §5`): `simd` is reserved before edition 0.4 and an identifier
+    // from it.
+    Difference04 {
+        case: "syntax/simd_word_in_0_3",
+        added: &[],
+        removed: &[
+            ("U0103", "src/simd03.una:9:7"),
+            ("U0103", "src/simd03.una:10:3"),
+        ],
+    },
     // ADR 0116 rule 19: an example's `stop after` line exists from edition 0.4.
     Difference04 {
         case: "syntax/stop_after_before_0_4",
         added: &[],
         removed: &[("U0101", "src/before.una:11:3")],
+    },
+    // ADR 0117 rules 1 and 2: `tasks` and `start` are statements from edition 0.4.
+    Difference04 {
+        case: "syntax/tasks_before_0_4",
+        added: &[],
+        removed: &[("U0101", "src/late.una:11:5")],
     },
     // ADR 0116 rule 7: `for until` is a loop form from edition 0.4.
     Difference04 {
@@ -266,13 +333,15 @@ const EXPECTED_DIFFERENCES_0_4: &[Difference04] = &[
         removed: &[("U0101", "src/late.una:10:19")],
     },
     // ADR 0120 (`spec/29 §17`): `Matrix`, `Tensor` and `Lu` are built in from edition 0.4, so a
-    // package that declares them is refused there.
+    // package that declares them is refused there, and `Lu(size: 3)` is U2001, since the type
+    // has no constructor (ADR 0120 rule 3, `spec/29 §17` rules 1 and 28).
     Difference04 {
         case: "types/dense_edition_0_3",
         added: &[
             ("U1002", "src/dense.una:6:10"),
             ("U1002", "src/dense.una:8:10"),
             ("U2003", "src/dense.una:13:33"),
+            ("U2001", "src/dense.una:15:36"),
         ],
         removed: &[],
     },

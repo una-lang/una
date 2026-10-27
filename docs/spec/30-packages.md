@@ -69,6 +69,8 @@ From edition `0.4`, a package describes itself in `ita.una`, a declarative file 
                   [ INDENT limit_line { limit_line } DEDENT ] ;
    file_mode    = "read" | "write" ;
    http_method  = "get" | "post" | "put" | "delete" ;
+   limit_line   = "at" "most" int_lit ( "per" ( "second" | "minute" | "hour" ) | "at" "once" ) NEWLINE
+                | "waiting" "at" "most" int_lit NEWLINE ;      (* spec/27 §9 *)
    drive        = "drive" NEWLINE INDENT "module" module_path NEWLINE
                   "ticks" int_lit NEWLINE [ "budget" int_lit NEWLINE ] DEDENT ;
    ```
@@ -87,7 +89,7 @@ From edition `0.4`, a package describes itself in `ita.una`, a declarative file 
    - `boundaries` (ADR 0093): a module path, then its ceiling as `may` lines; no `may` line is the empty ceiling.
    - `contracts` (ADR 0092 rule 8): a function's qualified name, then its locked `uses` clauses, one per line, each parsed by the production a header uses.
    - `run`: `entry`, then `max_memory`, the declared memory budget in MiB from 1 to 4096 (`[run] max_memory`, ADR 0109 rule 4), then `grants`, one grant per line, each the grant spec of `spec/13 §5` it corresponds to: `console`, `clock`, `env`, `keys "<file>"`, `files "<path>" read, write`, and `http "<origin>" get, post`. Paths resolve against the package root. A `max_memory` outside that range, and a `systems` package with `entry` and no `max_memory` (at the `entry` line), are U7008.
-   - The limit lines under a grant (ADR 0117) are U7008 in this release, which does not implement them: a grant read without its limit would allow more than written. The `drive` section names the module the host drives (`spec/26 §2`): `module`, `ticks` and an optional `budget`, each of `ticks` and `budget` from 1 to 86,400,000 milliseconds; a missing key, a value out of range, a `run entry` beside it and a module that is not in the package are U7008.
+   - The limit lines under an `http` grant (ADR 0117 rule 8) have the forms and the meaning of `spec/27 §9`: `at most <n> per second`, `minute` or `hour`, `at most <n> at once`, and `waiting at most <n>`. A line of another form or with lines below it, a count below 1 or above 2^31 − 1, a limit under a grant other than `http`, and a kind of limit given twice are U7008 at the line, or at the count for a count out of range; a grant with such a line is not read, since without its limit it would allow more than written. The `drive` section names the module the host drives (`spec/26 §2`): `module`, `ticks` and an optional `budget`, each of `ticks` and `budget` from 1 to 86,400,000 milliseconds; a missing key, a value out of range, a `run entry` beside it and a module that is not in the package are U7008.
 6. **Canonical form.** `una fmt ita.una` and `una fmt itaty.una` rewrite the file in its canonical form: two spaces per level; one blank line between top-level blocks and none inside them; the head's lines in the order of the production `head_line`; one space between words, none before `,`, `.`, `:`, `/` or `]`, none after `[`, `.` or `/`, and none between a capability and its `[`; a comment kept before the line it precedes, or two spaces after the line it ends. A line whose tokens this spacing would join into others, such as `1.` before `2`, keeps one space between every two tokens. `una fmt --check ita.una` reports U7001 where the file differs. `una fmt` of a package directory does not touch `ita.una`, and `una fix` never edits `ita.una`, `ita.lock` or `itaty.una`.
 
 ## 3. Needs and sources

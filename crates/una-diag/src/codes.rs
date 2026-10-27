@@ -172,8 +172,14 @@ pub enum Code {
     U2033,
     /// `stop` or `skip` outside a loop body, or across a task boundary.
     U2034,
+    /// `first of` with fewer than two branches, or a line that is not an expression; `start`
+    /// outside the block of a `tasks`, inside a task within it, or with a `with` clause (ADR
+    /// 0117 rules 6 and 7).
+    U2035,
     /// A decimal scale out of place (ADR 0120).
     U2037,
+    /// A tensor shape, index, permutation or axis out of place (ADR 0120).
+    U2038,
     /// A `map`, `zip_map` or `update` in a function with `simd required` whose lambda cannot be
     /// vectorized for a listed target (ADR 0120 rule 58). Registered by ADR 0109 slice S1;
     /// reported once the clause lands with its slice.
@@ -358,7 +364,9 @@ impl Code {
         Code::U2032,
         Code::U2033,
         Code::U2034,
+        Code::U2035,
         Code::U2037,
+        Code::U2038,
         Code::U2039,
         Code::U2040,
         Code::U3001,
@@ -708,11 +716,20 @@ impl Code {
                 domain: Domain::Types,
                 meaning: "`stop` or `skip` outside a loop body, or across a task boundary",
             },
+            Code::U2035 => &Entry {
+                code: "U2035",
+                domain: Domain::Types,
+                meaning: "`first of` with fewer than two branches, or a line that is not an expression; `start` outside the block of a `tasks`, inside a task within it, or with a `with` clause",
+            },
             Code::U2037 => &Entry {
                 code: "U2037",
                 domain: Domain::Types,
                 meaning: "A decimal scale out of place",
             },
+            Code::U2038 => &Entry {
+                code: "U2038",
+                domain: Domain::Types,
+                meaning: "A tensor shape, index, permutation or axis out of place",
             Code::U2039 => &Entry {
                 code: "U2039",
                 domain: Domain::Types,

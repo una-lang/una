@@ -20,6 +20,7 @@ use super::fixed;
 use super::label::Label;
 use super::records::Res;
 use super::ty::Ty;
+use super::units::Unit;
 
 /// Whether `expr` is a float literal, with or without unary `-` and parentheses.
 pub(crate) fn is_float_literal(expr: &Expr) -> bool {
@@ -156,11 +157,15 @@ impl Checker<'_, '_, '_> {
     /// scale is above 38 is U2037.
     pub(crate) fn comparison_literal(&mut self, literal: &Expr, other: &Ty) -> Ty {
         if self.env.edition >= Edition::V0_4
-            && self.is_decimal(other)
+            && self.is_decimal(&self.number_of(other))
             && let Some(text) = float_text(literal)
         {
             match decimal::literal_scale(text) {
-                Some(own) => return self.infer(literal, Some(&Ty::Decimal(own))),
+                // A measured decimal gives the literal its unit (ADR 0120 rule 63).
+                Some(own) => {
+                    let ty = Ty::Decimal(own).in_unit(self.unit_of(other).as_ref());
+                    return self.infer(literal, Some(&ty));
+                }
                 None => {
                     self.report.error(
                         Code::U2037,
@@ -208,7 +213,8 @@ impl Checker<'_, '_, '_> {
         self.operands.push(first_ty);
         self.operands.push(second_ty.clone());
         let resolved = self.resolve(&second_ty);
-        let b = match resolved.unlabeled() {
+        // The units of the operands are compared by the caller (ADR 0120 rule 63).
+        let b = match resolved.magnitude() {
             Ty::Decimal(b) => *b,
             Ty::Error(_) | Ty::Never => return Ty::Decimal(a),
             found => {
@@ -316,8 +322,8 @@ impl Checker<'_, '_, '_> {
     }
 
     /// The argument `by` of `method`, a decimal of any scale (a float literal takes the scale
-    /// of its own digits), its scale and its label.
-    fn by_arg(&mut self, method: &str, arg: &Arg) -> (Option<u8>, Label) {
+    /// of its own digits), its scale, its label and its unit (ADR 0120 rule 63).
+    fn by_arg(&mut self, method: &str, arg: &Arg) -> (Option<u8>, Label, Option<Unit>) {
         self.method_label(method, "by", arg);
         let found = match float_text(&arg.value).map(decimal::literal_scale) {
             Some(Some(own)) => self.infer(&arg.value, Some(&Ty::Decimal(own))),
@@ -331,14 +337,15 @@ impl Checker<'_, '_, '_> {
                     ),
                 );
                 self.infer(&arg.value, None);
-                return (None, Label::public());
+                return (None, Label::public(), None);
             }
             None => self.infer(&arg.value, None),
         };
         let label = self.deep(&found);
-        match self.resolve(&found).unlabeled() {
-            Ty::Decimal(b) => (Some(*b), label),
-            Ty::Error(_) | Ty::Never => (None, label),
+        let unit = self.unit_of(&found);
+        match self.resolve(&found).magnitude() {
+            Ty::Decimal(b) => (Some(*b), label, unit),
+            Ty::Error(_) | Ty::Never => (None, label, unit),
             other => {
                 let shown = self.show(other);
                 let mut diagnostic = self.report.make(
@@ -355,7 +362,7 @@ impl Checker<'_, '_, '_> {
                     ));
                 }
                 self.report.push(diagnostic);
-                (None, label)
+                (None, label, unit)
             }
         }
     }
@@ -375,7 +382,10 @@ impl Checker<'_, '_, '_> {
         }
         let receiver = self.resolve(target);
         let mut label = self.deep(target);
-        match receiver.unlabeled() {
+        // A measured receiver keeps its unit through a conversion between number types (ADR
+        // 0114 rule 12.6), and takes the units of ADR 0120 rule 63.
+        let unit = receiver.unit().cloned();
+        match receiver.magnitude() {
             // `n.to_decimal()` on an integer: exact, `Decimal[0]`.
             Ty::Int | Ty::Fixed(_) if method == "to_decimal" => {
                 self.outside_rl(span, || format!("the method `{method}`"));
@@ -388,7 +398,7 @@ impl Checker<'_, '_, '_> {
                     self.unchecked_args(args);
                 }
                 self.resolved(span, Res::IntMethod(Prim::Decimal(DecimalOp::FromInt)));
-                Some(Ty::Decimal(0).with_label(&label))
+                Some(Ty::Decimal(0).in_unit(unit.as_ref()).with_label(&label))
             }
             // `x.to_decimal(scale: s, rounding: r)` on an `F64`: `None` for NaN and the
             // infinities, else its exact binary value rounded once.
@@ -409,7 +419,7 @@ impl Checker<'_, '_, '_> {
                     return Some(Ty::error());
                 };
                 self.resolved(span, Res::IntMethod(Prim::Decimal(DecimalOp::FromF64(s))));
-                let decimal = Ty::Decimal(s).with_label(&label);
+                let decimal = Ty::Decimal(s).in_unit(unit.as_ref()).with_label(&label);
                 Some(match self.env.prelude_kind("Option") {
                     Some(id) => Ty::Kind(id, vec![decimal].into()).with_label(&label),
                     None => Ty::error(),
@@ -440,15 +450,19 @@ impl Checker<'_, '_, '_> {
                     self.unchecked_args(args);
                     return Some(Ty::error());
                 }
-                let result = self.decimal_method_args(a, method, args, span, &mut label)?;
+                let result =
+                    self.decimal_method_args(a, method, args, span, &mut label, unit.as_ref())?;
                 Some(result.with_label(&label))
             }
             _ => None,
         }
     }
 
-    /// The arguments and the result of the method `method` of a `Decimal[a]`, whose arity is
-    /// checked; `None` when a scale is not a literal, after its U2037.
+    /// The arguments and the result of the method `method` of a `Decimal[a]` in `unit`, whose
+    /// arity is checked; `None` when a scale is not a literal, after its U2037. The units of
+    /// ADR 0120 rule 63: `widen`, `rescale`, `rescale_exact`, `abs`, `to_int` and `to_f64`
+    /// keep the receiver's unit, `divide` divides it by the unit of `by`, `remainder` needs
+    /// one unit on both and keeps it, and `coefficient` needs a unitless receiver (U2028).
     fn decimal_method_args(
         &mut self,
         a: u8,
@@ -456,7 +470,9 @@ impl Checker<'_, '_, '_> {
         args: &[Arg],
         span: Span,
         label: &mut Label,
+        unit: Option<&Unit>,
     ) -> Option<Ty> {
+        let keep = |ty: Ty| ty.in_unit(unit);
         let resolve = |this: &mut Self, op: DecimalOp| {
             this.resolved(span, Res::IntMethod(Prim::Decimal(op)));
         };
@@ -480,7 +496,7 @@ impl Checker<'_, '_, '_> {
                     return Some(Ty::error());
                 }
                 resolve(self, DecimalOp::Widen(a, s));
-                Ty::Decimal(s)
+                keep(Ty::Decimal(s))
             }
             ("rescale" | "rescale_exact", [scale, rest @ ..]) => {
                 let s = self.scale_arg(method, scale);
@@ -511,10 +527,10 @@ impl Checker<'_, '_, '_> {
                     self.obligation(ObligationKind::Precondition, span, None);
                     resolve(self, DecimalOp::RescaleExact(a, s));
                 }
-                Ty::Decimal(s)
+                keep(Ty::Decimal(s))
             }
             ("divide" | "remainder", [by, scale, rest @ ..]) => {
-                let (b, by_label) = self.by_arg(method, by);
+                let (b, by_label, by_unit) = self.by_arg(method, by);
                 *label = label.join(&by_label);
                 let s = self.scale_arg(method, scale);
                 if let [rounding] = rest {
@@ -528,8 +544,23 @@ impl Checker<'_, '_, '_> {
                 };
                 if method == "divide" {
                     resolve(self, DecimalOp::Divide(a, b, s));
-                    Ty::Decimal(s)
+                    let quotient = self.quotient_unit(unit, by_unit.as_ref(), span);
+                    Ty::Decimal(s).in_unit(quotient.as_ref())
                 } else {
+                    if unit != by_unit.as_ref() {
+                        let shown = |u: Option<&Unit>| {
+                            u.map_or_else(|| "no unit".to_owned(), |u| format!("`{u}`"))
+                        };
+                        self.report.error(
+                            Code::U2028,
+                            by.value.span,
+                            format!(
+                                "`remainder` needs one unit on both operands, and these have {} and {}",
+                                shown(unit),
+                                shown(by_unit.as_ref())
+                            ),
+                        );
+                    }
                     let t = u16::from(a).max(u16::from(b) + u16::from(s));
                     if t > u16::from(MAX_SCALE) {
                         self.report.error(
@@ -542,23 +573,34 @@ impl Checker<'_, '_, '_> {
                         return Some(Ty::error());
                     }
                     resolve(self, DecimalOp::Remainder(a, b, s));
-                    Ty::Decimal(decimal::remainder_scale(a, b, s))
+                    keep(Ty::Decimal(decimal::remainder_scale(a, b, s)))
                 }
             }
             ("to_int", [rounding]) => {
                 *label = label.join(&self.rounding_arg(method, rounding));
                 resolve(self, DecimalOp::ToInt(a));
-                Ty::Int
+                keep(Ty::Int)
             }
             ("to_f64", []) => {
                 resolve(self, DecimalOp::ToF64(a));
-                Ty::F64
+                keep(Ty::F64)
             }
             ("abs", []) => {
                 resolve(self, DecimalOp::Abs);
-                Ty::Decimal(a)
+                keep(Ty::Decimal(a))
             }
             ("coefficient", []) => {
+                if unit.is_some() {
+                    let mut diagnostic = self.report.make(
+                        Code::U2028,
+                        span,
+                        "`coefficient` takes a unitless value, and this one has a unit",
+                    );
+                    diagnostic
+                        .repairs
+                        .push(super::Report::advice("write `x.magnitude().coefficient()`"));
+                    self.report.push(diagnostic);
+                }
                 resolve(self, DecimalOp::Coefficient);
                 Ty::Int
             }

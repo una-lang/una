@@ -1,0 +1,16 @@
+-- test: a path dependency's modules are checked with the package, so its task constructs count precisely in `L_res` (ADR 0116 P9), not as `⊤`: the dependency's `pick` races pure work that reaches no request, so no loser can leave one on a helper, `L_res` is `public`, and the outcome of the root's `within` over pure work is `public`, which the `internal` binding accepts; a rule that made every construct outside the root `⊤` would refuse it (U4001)
+-- spec: spec/26 §7
+-- expect: ok
+module main
+
+import std.time (millisecond)
+import util.race (pick)
+
+step(n: Int) -> Int = n + 1
+
+pub measured(n: Int) -> internal Int
+=
+  let chosen = pick(n)
+  let v: internal Int = step(n) within 10 * millisecond
+    if error use 0
+  v
