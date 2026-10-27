@@ -90,6 +90,16 @@ fn scene(base: &Path, extra: &[(&str, &[u8])]) -> (PathBuf, PathBuf, PathBuf) {
         root.join("scripts/site-website.sh"),
     )
     .unwrap();
+    // The helpers of the Learn step that main added (#1039, #831), stubbed as the commands are:
+    // the una the book pins is the una given, and the website's learn.lock names no release.
+    executable(
+        &root.join("scripts/site-learn-una.sh"),
+        "#!/bin/sh\nprintf '%s\\n' \"$2\"\n",
+    );
+    executable(
+        &root.join("scripts/site-learn-release.sh"),
+        "#!/bin/sh\nexit 0\n",
+    );
     write(
         &root.join("site/website.lock"),
         format!("repository = \"https://example.invalid/website.git\"\ncommit = \"{website}\"\n")
