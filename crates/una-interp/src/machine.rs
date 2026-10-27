@@ -1184,10 +1184,69 @@ impl<'p, 'w> Machine<'p, 'w> {
         if self.reads(rest).contains(name) {
             return false;
         }
-        let later = self.later.clone();
-        later
-            .into_iter()
-            .all(|(expr, rebound)| rebound.contains(&name) || !self.reads(expr).contains(name))
+        // Taken out and put back rather than cloned: each update asks this.
+        let later = std::mem::take(&mut self.later);
+        let dead = later
+            .iter()
+            .all(|(expr, rebound)| rebound.contains(&name) || !self.reads(expr).contains(name));
+        self.later = later;
+        dead
+    }
+
+    /// The bindings of `init`, the values a loop's state starts from, that nothing reads once
+    /// the loop has started, neither its source, its condition, its body, its `on stop` block
+    /// nor what follows it: they give their values up to the state, so that the body, holding
+    /// the only reference, updates a value in place, as a call's argument at its last use does
+    /// (#30, #201). Without this, a nested loop over an `edit` binding copies the value at each
+    /// entry of the inner loop, O(n) per entry. A value something else holds is still copied
+    /// when written.
+    fn give_up_init(
+        &mut self,
+        env: &mut Env<'p>,
+        source: &'p LoopSource,
+        init: &'p [Atom],
+        body: &'p Expr,
+        on_stop: Option<&'p una_core::OnStop>,
+    ) {
+        let mut read: Vec<&'p str> = Vec::new();
+        let mut var = |atom: &'p Atom| {
+            if let Atom::Var(name) = atom {
+                read.push(name.as_str());
+            }
+        };
+        let cond = match source {
+            LoopSource::List(list) => {
+                var(list);
+                None
+            }
+            LoopSource::Range { low, high, .. } => {
+                var(low);
+                var(high);
+                None
+            }
+            LoopSource::Until { cond, .. } => Some(self.reads(cond)),
+            LoopSource::Ever { within } => {
+                if let Some((deadline, _)) = within {
+                    var(deadline);
+                }
+                None
+            }
+        };
+        let block = on_stop.map(|on_stop| self.reads(&on_stop.body));
+        for atom in init {
+            let Atom::Var(name) = atom else {
+                continue;
+            };
+            let kept = read.contains(&name.as_str())
+                || cond.as_ref().is_some_and(|names| names.contains(name))
+                || block.as_ref().is_some_and(|names| names.contains(name));
+            if !kept
+                && self.dead_after(name, body)
+                && let Some(value) = env.lookup_mut(name)
+            {
+                *value = Value::Unit;
+            }
+        }
     }
 
     /// `let t2 = concat(t1, part, ...) in rest`, the interpolation `"{t}..."`, where the text of
@@ -1414,6 +1473,7 @@ impl<'p, 'w> Machine<'p, 'w> {
                     span,
                 } => {
                     let mut current = self.atoms(env, init)?;
+                    self.give_up_init(env, source, init, body, on_stop.as_deref());
                     // `on stop` runs after a failure of the body with the state from before
                     // the loop (ADR 0116 rule 10).
                     let before = on_stop.as_ref().map(|_| current.clone());
@@ -1560,8 +1620,18 @@ impl<'p, 'w> Machine<'p, 'w> {
                     if items.len() != names.len() {
                         return Err(fault("`let (...)` of a tuple of another length"));
                     }
-                    for ((name, _), item) in names.iter().zip(items.iter()) {
-                        env.push((name.as_str(), item.clone()));
+                    // A tuple binding at its last use, as the result of an update or of a
+                    // loop is, gives its items up: the names bound to them then hold them
+                    // once, and the next update of one happens in place (#30, #201).
+                    if let Atom::Var(tuple) = value
+                        && self.dead_after(tuple, body)
+                        && let Some(bound) = env.lookup_mut(tuple)
+                    {
+                        *bound = Value::Unit;
+                    }
+                    let items = Rc::try_unwrap(items).unwrap_or_else(|shared| (*shared).clone());
+                    for ((name, _), item) in names.iter().zip(items) {
+                        env.push((name.as_str(), item));
                     }
                     expr = body;
                 }
@@ -1941,9 +2011,10 @@ impl<'p, 'w> Machine<'p, 'w> {
         let result = self.eval(env, caps, body);
         env.truncate(mark);
         match result {
-            Ok(Value::Tuple(items)) if items.len() == state.len() => {
-                Ok((items.as_ref().clone(), false))
-            }
+            Ok(Value::Tuple(items)) if items.len() == state.len() => Ok((
+                Rc::try_unwrap(items).unwrap_or_else(|shared| (*shared).clone()),
+                false,
+            )),
             Err(Stop::Exit(tag, values)) if values.len() == state.len() => {
                 Ok((values, tag == ExitTag::Stop))
             }
