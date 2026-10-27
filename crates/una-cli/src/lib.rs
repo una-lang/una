@@ -106,7 +106,11 @@ pub fn check(path: &Path, tier: Tier) -> Result<Checked, LoadError> {
 /// Loads and checks the file or package at `path`: tier 0, then, at tier 1 and when tier 0
 /// reports nothing, every proof obligation.
 pub fn check_with(path: &Path, tier: Tier, solving: &Solving) -> Result<Checked, LoadError> {
-    let package = load(path)?;
+    let package = package::load_in(
+        path,
+        &std::collections::BTreeMap::new(),
+        solving.itaoca.as_ref(),
+    )?;
     let (mut diagnostics, program, pending) = on_large_stack(|| {
         let analysis = analyze(&package, None);
         (analysis.diagnostics, analysis.program, analysis.pending)
@@ -669,6 +673,14 @@ pub(crate) fn variable(environment: Environment<'_>, name: &str) -> Option<Strin
     environment(name).ok().flatten()
 }
 
+/// Itaoca, the store of fetched packages (ADR 0122 rule 30): the directory `UNA_ITAOCA` names
+/// when it is set and not empty, else `.una/itaoca` in `HOME`.
+pub(crate) fn itaoca(environment: Environment<'_>) -> Option<una_project::itaoca::Itaoca> {
+    let dir = variable(environment, "UNA_ITAOCA");
+    let home = variable(environment, "HOME");
+    una_project::itaoca::Itaoca::at(dir.as_deref(), home.as_deref().map(Path::new))
+}
+
 /// The heap of the process, as the binary counts it (ADR 0061): the bytes it holds, and how to
 /// set the ceiling past which an allocation fails. The library never touches the allocator.
 #[derive(Clone, Copy)]
@@ -769,8 +781,17 @@ fn panic_location(command: Option<&Command>) -> una_diag::Location {
             | Command::Test { path, .. },
         ) => Some(path.clone()),
         Some(Command::Ita {
-            command: ItaCommand::Lock { path, .. },
+            command:
+                ItaCommand::Lock { path, .. }
+                | ItaCommand::Tree { path }
+                | ItaCommand::Vendor { path }
+                | ItaCommand::Verify { path }
+                | ItaCommand::Remove { path, .. },
         }) => Some(path.clone()),
+        // `una ita add` and `update` work on the package in the current directory.
+        Some(Command::Ita {
+            command: ItaCommand::Add { .. } | ItaCommand::Update { .. },
+        }) => Some(".".into()),
         // `una trace` and `una contract` read the package in the current directory.
         Some(Command::Trace { .. } | Command::Contract { .. }) => Some(".".into()),
         _ => None,
@@ -914,6 +935,7 @@ fn run_command(
                 None
             }
         },
+        itaoca: itaoca(environment),
     };
     let status = match Cli::try_parse_from(args) {
         Ok(cli) if cli.version => version_command(cli.json, stdout),
@@ -1041,11 +1063,78 @@ fn run_command(
                     stderr,
                 };
                 match command {
+                    ItaCommand::Tree { path } => ita::tree_command(&path, output),
+                    ItaCommand::Remove { name, path } => ita::remove_command(&name, &path, output),
                     ItaCommand::Lock {
                         path,
                         check,
                         accept_authority,
-                    } => ita::lock_command(&path, check, accept_authority, output),
+                        accept_trust,
+                        dry_run,
+                    } => ita::lock_command(
+                        &path,
+                        ita::LockOptions::lock(check, dry_run, &accept_authority, &accept_trust),
+                        output,
+                    ),
+                    ItaCommand::Update {
+                        names,
+                        cooldown,
+                        now,
+                        accept_authority,
+                        accept_trust,
+                        dry_run,
+                    } => {
+                        let options = ita::LockOptions {
+                            command: "update",
+                            cooldown: if now {
+                                0
+                            } else {
+                                cooldown.map_or(una_project::resolve::COOLDOWN, |hours| {
+                                    hours.saturating_mul(3600)
+                                })
+                            },
+                            ..ita::LockOptions::lock(
+                                false,
+                                dry_run,
+                                &accept_authority,
+                                &accept_trust,
+                            )
+                        };
+                        ita::update_command(&names, Path::new("."), options, output)
+                    }
+                    ItaCommand::Add {
+                        name,
+                        version,
+                        local,
+                        from,
+                        now,
+                        dry_run,
+                    } => {
+                        let options = ita::LockOptions {
+                            command: "add",
+                            cooldown: if now {
+                                0
+                            } else {
+                                una_project::resolve::COOLDOWN
+                            },
+                            ..ita::LockOptions::lock(false, dry_run, &[], &[])
+                        };
+                        ita::add_command(
+                            &name,
+                            version.as_deref(),
+                            local.as_deref(),
+                            from.as_deref(),
+                            Path::new("."),
+                            options,
+                            output,
+                        )
+                    }
+                    ItaCommand::Vendor { path } => {
+                        ita::vendor_command(&path, itaoca(environment).as_ref(), output)
+                    }
+                    ItaCommand::Verify { path } => {
+                        ita::verify_command(&path, itaoca(environment).as_ref(), output)
+                    }
                 }
             }
             Command::Fmt { path, check } => {
@@ -1576,7 +1665,8 @@ fn contract_command(
         .headers
         .iter()
         .find(|h| h.module == module && h.name == function_name);
-    let contract = contract::contract(&modules, &module, decl, function, header);
+    let layout = verification::source_layout(&package);
+    let contract = contract::contract(&modules, &module, decl, function, header, layout);
     if json {
         match serde_json::to_string(&contract) {
             Ok(document) => writeln!(stdout, "{document}")?,

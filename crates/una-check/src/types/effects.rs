@@ -586,14 +586,17 @@ impl<'a> Checker<'_, 'a, '_> {
                 (self.labeled(&list).top_label(), false)
             }
             (Some("first_where"), Some(list)) => (self.deep(&list), true),
-            // The map's `update` calls `change` once, with the stored value or `initial`
-            // depending on whether the map holds the key: under the map's top label, its key
-            // position's labels and the key's (ADR 0119 IF7).
+            // The `update` of a map or a hash map calls `change` once, with the stored value or
+            // `initial` depending on whether the map holds the key: under the map's top label,
+            // its key position's labels and the key's (ADR 0119 IF7).
             (Some("update"), Some(map)) => {
                 let map = self.labeled(&map);
                 let kinds = self.env.kind_labels.clone();
                 let keys = match map.unlabeled() {
                     Ty::Map(key, _) => key.every_label(&kinds),
+                    Ty::Coll(una_core::Coll::HashMap, kv) => kv
+                        .first()
+                        .map_or_else(Label::public, |key| key.every_label(&kinds)),
                     _ => Label::public(),
                 };
                 let key = checked
