@@ -1,0 +1,10 @@
+-- test: a ratio of 2^54 is beyond the integers an F64 holds exactly, so the conversion is U2030 (ADR 0114 rule 12.5)
+-- spec: spec/25 §9
+-- expect: error U2030 at src/m.una:10:42
+module m
+
+pub measure Meter
+
+pub measure Far = 18014398509481984 * Meter
+
+pub bad(f: F64 of Far) -> F64 of Meter = f.convert()

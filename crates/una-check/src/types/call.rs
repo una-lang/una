@@ -59,14 +59,13 @@ impl<'a> Checker<'_, 'a, '_> {
             return Ty::Int.with_label(&top);
         }
         // A collection's size depends on its shape, so `.len` takes the labels of the type
-        // arguments that are part of it too (ADR 0119 IF2 to IF4). The refinement language gains
-        // `.len` of a collection with ADR 0119 V5; until then, it is outside it.
+        // arguments that are part of it too (ADR 0119 IF2 to IF4). It is in the refinement
+        // language (ADR 0119 V5).
         if field == "len"
             && let Ty::Coll(coll, args) = labeled.unlabeled()
             && super::collections::has_len(*coll)
         {
             self.resolved(span, Res::Len);
-            self.outside_rl(span, || format!("`.len` of a `{}`", coll.as_str()));
             let kinds = self.env.kind_labels.clone();
             let label = args
                 .iter()
@@ -74,6 +73,19 @@ impl<'a> Checker<'_, 'a, '_> {
                 .filter(|(index, _)| coll.is_shape(*index))
                 .fold(top, |label, (_, arg)| label.join(&arg.every_label(&kinds)));
             return Ty::Int.with_label(&label);
+        }
+        // `z.re` and `z.im` of a measured complex value have its unit (ADR 0120 rule 64).
+        if let Ty::Measured(unit, magnitude) = labeled.unlabeled()
+            && let Some(ty) = self.record_field(magnitude, field)
+        {
+            if let Some((kind, index)) = self.field_index(magnitude, field) {
+                self.resolved(span, Res::Field { kind, index });
+            }
+            return ty.in_unit(Some(&**unit)).with_label(&top);
+        }
+        // `b.size` of a bit set, labeled with its shape (`spec/28 §9`, ADR 0119 IF2).
+        if let Some(ty) = self.bit_set_size(&target_ty, field, span) {
+            return ty;
         }
         if let Some(ty) = self.record_field(labeled.unlabeled(), field) {
             if let Some((kind, index)) = self.field_index(&resolved, field) {
@@ -212,11 +224,15 @@ impl<'a> Checker<'_, 'a, '_> {
                 if let Some(current) = self.current {
                     self.findings.value_callers.insert(current);
                 }
+                self.graph_value_call();
                 self.timing_value_call();
             }
             return ty;
         }
         if let Some(ty) = self.decimal_method(&target_ty, method, args, span) {
+            return ty;
+        }
+        if let Some(ty) = self.complex_method(&target_ty, method, args, span) {
             return ty;
         }
         if let Some(ty) = self.float_method(&target_ty, method, args, span) {
@@ -283,6 +299,28 @@ impl<'a> Checker<'_, 'a, '_> {
         ) {
             return ty;
         }
+        if let Some(ty) = self.priority_method(
+            target,
+            &target_ty,
+            place.as_ref(),
+            marker,
+            method,
+            args,
+            span,
+        ) {
+            return ty;
+        }
+        if let Some(ty) = self.bit_set_method(
+            target,
+            &target_ty,
+            place.as_ref(),
+            marker,
+            method,
+            args,
+            span,
+        ) {
+            return ty;
+        }
         // Edition 0.4: `edit m.update(key:, initial:, change:)` on a map is a built-in method
         // (ADR 0119 rule 18), declared where no name reaches it, so it resolves ahead of any
         // function `update` in scope, as every built-in method does.
@@ -310,6 +348,12 @@ impl<'a> Checker<'_, 'a, '_> {
         }
         match self.env.lower(self.module, method) {
             Some(Entity::Function(id)) => {
+                // `x.complex(im: y)` (ADR 0120 rule 22).
+                if let Some(ty) =
+                    self.complex_call(id, Some((target, &target_ty)), args, span, expected)
+                {
+                    return ty;
+                }
                 self.receiver_marker = Some((marker, target.clone()));
                 let ty = self.call_function(id, Some((target.span, target_ty)), args, span, site);
                 self.receiver_marker = None;
@@ -380,6 +424,10 @@ impl<'a> Checker<'_, 'a, '_> {
                     Some(Entity::Function(id)) => {
                         // A tensor's shape selects the function of its rank (`spec/29 §17`).
                         if let Some(ty) = self.tensor_construct(id, args, span, site) {
+                            return ty;
+                        }
+                        // `complex(re: x, im: y)` (ADR 0120 rule 22).
+                        if let Some(ty) = self.complex_call(id, None, args, span, expected) {
                             return ty;
                         }
                         let ty = self.call_function(id, None, args, span, site);
@@ -487,6 +535,7 @@ impl<'a> Checker<'_, 'a, '_> {
         if let Some(current) = self.current {
             self.findings.value_callers.insert(current);
         }
+        self.graph_value_call();
         self.timing_value_call();
         self.ordered(span, (0..args.len()).map(Some).collect());
         let mut flows = Vec::new();
@@ -987,7 +1036,9 @@ impl<'a> Checker<'_, 'a, '_> {
             self.refined_vars_at_base(&result)
         };
         let decided = self.decided_callbacks(&callee, span, &needs, call_fails.is_some(), &checked);
-        let result = if prelude_labeled(self.env.prelude, &def) {
+        let result = if prelude_labeled(self.env.prelude, &def)
+            || collections_labeled(self.env.collections, &def)
+        {
             self.prelude_result(&callee, def.name, checked, result)
         } else {
             self.argument_flows(&callee, checked);
@@ -1477,6 +1528,9 @@ impl<'a> Checker<'_, 'a, '_> {
         let resolved = self.op_site(cap, op);
         if let Some(id) = resolved {
             self.timing_op(id, op_name);
+            // The edge of ADR 0116 P1 from the node whose code holds the operation, a lambda's
+            // included, to the operation: every operation call, whatever `uses` names (#1148).
+            self.graph_op(id, op_name);
         }
         let capability = resolved
             .and_then(|id| self.env.capabilities.get(id))
@@ -1495,6 +1549,10 @@ impl<'a> Checker<'_, 'a, '_> {
             self.unchecked_unknown(args);
             return Ty::unknown();
         };
+        // An operation of the host's `Http`, whose timing `L_lim` covers (ADR 0117 IF4).
+        if capability.module == self.env.prelude && capability.name == "Http" {
+            self.http_site(span);
+        }
         let Some(def) = capability.ops.iter().find(|o| o.name == op_name).cloned() else {
             let names: Vec<&str> = capability.ops.iter().map(|o| o.name).collect();
             let mut diagnostic = self.report.make(
@@ -1666,7 +1724,7 @@ impl<'a> Checker<'_, 'a, '_> {
     /// The parameter an unlabeled argument names by punning (`spec/04 §3` rule 3): a bare name
     /// equal to a parameter's name counts as labeled with it. In a call, it applies from the
     /// second argument on (ADR 0049).
-    fn punned(&self, arg: &Arg, names: &[&str]) -> Option<usize> {
+    pub(crate) fn punned(&self, arg: &Arg, names: &[&str]) -> Option<usize> {
         if arg.label.is_some() {
             return None;
         }
@@ -2031,7 +2089,7 @@ impl<'a> Checker<'_, 'a, '_> {
 
     /// U2005: a label that names no parameter; `names` are the parameters that no other
     /// argument gives, which the repair may suggest.
-    fn unknown_label(&mut self, callee: &str, names: &[&str], label: &Ident) {
+    pub(crate) fn unknown_label(&mut self, callee: &str, names: &[&str], label: &Ident) {
         let label_name = self.name(label);
         let mut diagnostic = self.report.make(
             Code::U2005,
@@ -2060,7 +2118,13 @@ impl<'a> Checker<'_, 'a, '_> {
 
     /// U2004: an argument after the first without a label, with an edit that labels it with
     /// the parameter at its position.
-    fn missing_label(&mut self, callee: &str, names: &[&str], arg: &Arg, position: usize) {
+    pub(crate) fn missing_label(
+        &mut self,
+        callee: &str,
+        names: &[&str],
+        arg: &Arg,
+        position: usize,
+    ) {
         let mut diagnostic = self.report.make(
             Code::U2004,
             arg.span,
@@ -2694,6 +2758,9 @@ const PRELUDE_LABELED: &[&str] = &[
     "dense_tensor_all_finite",
     "dense_tensor_sum_exact",
     "dense_tensor_contract",
+    // `F32` (ADR 0120 rule 5): the same for `parse_f32` and `f32_from_bits`.
+    "parse_f32",
+    "f32_from_bits",
 ];
 
 /// Whether `name` is `prefix` followed by a rank from 1 to 8: a function of the prelude of one
@@ -2721,6 +2788,12 @@ fn structural_inputs(name: &str) -> Option<&'static [(&'static str, bool)]> {
         // the labels of its type variable.
         "array" => &[("xs", false)],
         "array_filled" => &[("length", true)],
+        // `std.collections` (ADR 0119 IF1, IF2): a bit set's size is its shape, so the bit set
+        // takes every label of `size`; a conversion takes the list's top label, and its
+        // positions keep the labels of their type variables.
+        "empty_bit_set" => &[("size", true)],
+        "to_stack" | "to_queue" | "to_set" | "to_hash_set" => &[("xs", false)],
+        "to_hash_map" => &[("es", false)],
         "matrix" => &[("rows", true), ("columns", true), ("elements", false)],
         "matrix_filled" => &[("rows", true), ("columns", true)],
         "matrix_diagonal" => &[("values", false)],
@@ -2848,6 +2921,28 @@ const RANKED_LABELED: [&str; 6] = [
     "dense_tensor_permute_",
     "dense_tensor_reshape_",
 ];
+
+/// The functions of `std.collections` whose results carry the labels of their arguments, as
+/// the prelude's of `PRELUDE_LABELED` do: `empty_bit_set`, whose size is part of the bit set's
+/// shape (ADR 0119 IF2), and the conversions of rule 16, whose results hold the list's items in
+/// its order. Their bodies are placeholders that both engines replace, so no summary of a body
+/// could label them.
+const COLLECTIONS_LABELED: [&str; 6] = [
+    "empty_bit_set",
+    "to_stack",
+    "to_queue",
+    "to_set",
+    "to_hash_set",
+    "to_hash_map",
+];
+
+/// Whether `def` is a function of `std.collections` whose result is labeled by its arguments
+/// (`COLLECTIONS_LABELED`), with `structural_inputs`.
+fn collections_labeled(collections: Option<usize>, def: &FnDef<'_>) -> bool {
+    Some(def.module) == collections
+        && def.kind == FnKind::Function
+        && COLLECTIONS_LABELED.contains(&def.name)
+}
 
 /// Whether every type parameter of `ty` is at a covariant position (ADR 0103 rule 5): never
 /// inside a function type, nor in an argument of a kind's parameter that is invariant (ADR

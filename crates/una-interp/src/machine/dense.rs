@@ -269,8 +269,14 @@ type Factored = (usize, Vec<f64>, Vec<usize>);
 impl<'p> Machine<'p, '_> {
     /// Whether a buffer of `elements` elements of `bytes` each fits the memory budget, with
     /// what the run holds already: checked before the allocation, in checked arithmetic, so a
-    /// size whose computation overflows fails the check (ADR 0120, Security).
-    fn reserve(&self, elements: usize, bytes: usize, span: Span) -> Result<(), Stop<'p>> {
+    /// size whose computation overflows fails the check (ADR 0120, Security). A bit set's words
+    /// are checked by it too (`bitsets.rs`).
+    pub(super) fn reserve(
+        &self,
+        elements: usize,
+        bytes: usize,
+        span: Span,
+    ) -> Result<(), Stop<'p>> {
         self.reserve_with(elements, bytes, 0, span)
     }
 
