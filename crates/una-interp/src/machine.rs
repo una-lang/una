@@ -2,7 +2,7 @@
 //! right, with the capability environment, the world and the trace.
 
 use std::cell::Cell;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -19,6 +19,7 @@ mod dense;
 use crate::clock::Clock;
 use crate::host::{self, FileFault, Grant, World};
 use crate::stopping::{HardStop, RunStop};
+use crate::tasks::{Ending, Run, TasksScope};
 use crate::value::{Closure, EQUALITY_PAIR_BYTES, Key, Value, compare, equal_within};
 
 /// The environment `ρ`: binders and their values, innermost last. Core binders are unique
@@ -64,8 +65,8 @@ pub(crate) struct HandlerInfo<'p> {
 pub struct Event {
     /// Its position in the trace, from 1.
     pub seq: usize,
-    /// The path of the `together` task that performed it, as `2.1`, or empty outside any
-    /// task (`spec/19 §7`).
+    /// The path of the task that performed it, as `2.1`, `f1.2` or `s1.3`, or empty in the
+    /// root task (`spec/19 §7`, `spec/27 §6`, `§7`).
     pub task: String,
     /// The instance: `given:<name>`, `host:<Capability>` or `with:<handler>#<n>`.
     pub instance: String,
@@ -111,6 +112,9 @@ pub enum EventOutcome {
     /// effect in doubt. The interpreter, which runs branches one after another, never
     /// interrupts one; a native run can.
     Interrupted,
+    /// A started task ran too deep, past `--task-depth` or short of its stack, and ended alone
+    /// (`spec/27 §7`, ADR 0117 rules 7 and 10). Like `Cancelled`, it names no operation.
+    TaskAborted,
 }
 
 /// The deadline of the iteration of a `for ever within` in progress (ADR 0116 rule 11), on the
@@ -148,10 +152,6 @@ impl Deadline {
             .map(|at| std::time::Duration::from_millis(at.saturating_sub(clock.now())))
     }
 }
-
-/// A branch's events in the trace, from and to, and, per handler name, the ids it installed:
-/// how many before it, and how many it made (`Machine::winner_first`).
-type Part = (usize, usize, BTreeMap<String, (usize, usize)>);
 
 /// Why a run stops without a value or a failure.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -208,6 +208,16 @@ pub enum Abort {
         span: Span,
         /// Why the hard stop came.
         hard: HardStop,
+    },
+    /// The `start` at this span could not start its task (U6003, `spec/27 §7`): no stack could
+    /// be mapped for it, or, with `cap`, the run already holds as many started tasks as this
+    /// system allows at once (ADR 0117 rule 2). Without a span, the root task of a program with
+    /// a `tasks` statement could not get its stack.
+    Unstarted {
+        /// The `start`, if any.
+        span: Option<Span>,
+        /// The most started tasks the system allows at once, when that is why.
+        cap: Option<usize>,
     },
     /// A fault that a checked and verified program cannot reach, such as a division by zero
     /// while proof obligations are not verified yet (ADR 0027).
@@ -278,6 +288,9 @@ pub(crate) struct Index<'p> {
     handlers: BTreeMap<Qualified<'p>, HandlerInfo<'p>>,
     capabilities: BTreeMap<&'p str, &'p [CapOp]>,
     data: BTreeMap<Qualified<'p>, Variants<'p>>,
+    /// Whether the program has a `tasks` statement: its runs run their root task as a
+    /// coroutine (ADR 0117 rule 11).
+    pub(crate) tasks: bool,
 }
 
 impl<'p> Index<'p> {
@@ -289,6 +302,7 @@ impl<'p> Index<'p> {
             handlers: BTreeMap::new(),
             capabilities: BTreeMap::new(),
             data: BTreeMap::new(),
+            tasks: una_core::has_tasks(program),
         };
         for module in &program.modules {
             let path = module.path.as_str();
@@ -728,26 +742,42 @@ type LoopParts<'p> = (
     Span,
 );
 
-/// The Una Abstract Machine: one run of `main` or of one example.
+/// One branch of a `together`, `together for` or `first of` whose events the task holds until
+/// its block's join (`spec/19 §7`, ADR 0117 rule 10): where its events start, its path, and how
+/// many instances of each handler it installed, whose ids `with:<handler>#@<path>#<k>` the join
+/// renumbers, as native code's join does.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Buffer {
+    start: usize,
+    path: String,
+    installs: BTreeMap<String, usize>,
+}
+
+/// A branch that ended, for its block's join: its buffer, and where its events end.
+#[derive(Clone, Debug)]
+pub(crate) struct Part {
+    buffer: Buffer,
+    end: usize,
+}
+
+/// The id a cut carries when its task is cancelled rather than one of its `within`s timed out:
+/// no `within` has it, so nothing catches it (`spec/27 §7`).
+const CANCEL: u64 = u64::MAX;
+
+/// The Una Abstract Machine: one task of a run of `main` or of one example. The state of the
+/// run that its tasks share is in [`Run`] (ADR 0117 rule 11).
 pub(crate) struct Machine<'p, 'w> {
     index: &'w Index<'p>,
-    world: &'w mut dyn World,
     grants: &'w [Grant],
     keys: &'w BTreeMap<String, Vec<u8>>,
     /// The limits and deadline of each HTTP request.
     http: una_http::client::Settings,
-    /// The trace so far.
-    pub(crate) trace: Vec<Event>,
+    /// The state of the run that its tasks share.
+    pub(crate) run: Rc<Run<'p, 'w>>,
     depth: usize,
     max_depth: usize,
-    /// The run's clock, real or virtual (ADR 0116 rule 19, `spec/26 §8`).
-    pub(crate) clock: Clock,
     /// The run's host stop state (ADR 0116 rules 14 and 16).
     stop: Arc<RunStop>,
-    /// `--stop-after-iterations`, and the iterations of `for ever` loops started so far, the
-    /// driver's included (rule 19).
-    pub(crate) stop_after: Option<u64>,
-    iterations: u64,
     /// Whether evaluation is in the body of a `for ever`, in that body's own task, callees
     /// included: its `Http` operations are interruptible there (rule 14). No `for ever` holds
     /// another one, so a flag suffices.
@@ -761,56 +791,65 @@ pub(crate) struct Machine<'p, 'w> {
     held: &'w dyn Fn() -> usize,
     baseline: usize,
     /// Where the evaluator's stack starts, and how much of it evaluation may use.
-    stack_base: usize,
+    pub(crate) stack_base: usize,
     stack_budget: usize,
-    installs: BTreeMap<String, usize>,
     /// The name spans of the functions in progress, innermost last, to locate faults.
     frames: Vec<Span>,
     /// The path of the task in progress, one part per enclosing block (`spec/19 §6`): the
-    /// 1-based index of a `together` task, or, for a branch of the `c`-th `first of` its task
-    /// runs, `f<c>` and the branch's 1-based index (`spec/27 §6`).
+    /// 1-based index of a `together` task; for a branch of the `c`-th `first of` its task runs,
+    /// `f<c>` and the branch's 1-based index (`spec/27 §6`); for the `k`-th task of its task's
+    /// `c`-th `tasks` statement, `s<c>` and `k` (`spec/27 §7`).
     task: Vec<String>,
     /// How many `first of` blocks each task in progress has run, the root's first, for the
     /// paths of their branches (`spec/27 §6`).
     races: Vec<usize>,
-    /// `--task-depth`: the calls a branch of `first of` may make below its block (`spec/27
-    /// §3`).
+    /// How many `tasks` statements each task in progress has run, for the paths of the tasks
+    /// they start (`spec/27 §7`).
+    tasks_runs: Vec<usize>,
+    /// `--task-depth`: the calls a branch of `first of`, or a started task, may make below its
+    /// block or its `start` (`spec/27 §3`).
     task_depth: usize,
     /// The deadline of the iteration of the `for ever within` in progress (ADR 0116 rule 11).
     deadline: Option<Deadline>,
     /// The `within`s in progress, outermost first: each one's id and when its deadline passes
     /// on the run's clock, `None` beyond it (`spec/27 §5`).
     withins: Vec<(u64, Option<u64>)>,
-    /// The id of the next `within`.
-    next_within: u64,
     /// The `within`s an operation in progress shields, the first ones of `withins`: an
     /// operation completes whatever deadline passes meanwhile (`spec/19 §6` rule 4, `spec/26
     /// §7` rule 3), and only the `within`s its handler's own code starts can cut that code.
     within_shield: usize,
+    /// The `tasks` statements whose cancellation cancels this task: the one that started it
+    /// and those that started its ancestors (`spec/27 §7`); and how many of them an operation
+    /// in progress shields, as `within_shield` does.
+    cancels: Vec<Rc<TasksScope>>,
+    cancel_shield: usize,
+    /// The `tasks` statements this task runs, innermost last, whose tasks its `start`s start.
+    scopes: Vec<Rc<TasksScope>>,
+    /// The events of this task not yet written (ADR 0117 rule 10): an operation's until it
+    /// ends, and every one while a branch's buffer is open.
+    events: Vec<Event>,
+    /// The branches in progress whose events wait for their block's join, innermost last.
+    buffers: Vec<Buffer>,
+    /// The operations of this task in progress.
+    ops_open: usize,
     /// What the function in progress evaluates after the expression in progress, innermost
     /// last, with the names that each rebinds before reading them: a binding none of them
     /// reads is dead once the expression no longer reads it (#201).
     later: Vec<(&'p Expr, Vec<&'p str>)>,
     /// `later` of the functions that called the one in progress.
     callers: Vec<Vec<(&'p Expr, Vec<&'p str>)>>,
-    /// The names each expression reads, computed once (`una_core::vars`).
-    reads: HashMap<*const Expr, Rc<BTreeSet<String>>>,
-    /// The names each loop body binds, computed once (`una_core::binders`).
-    binders: HashMap<*const Expr, Rc<BTreeSet<&'p str>>>,
-    /// The process key of keyed hashing, read before the run when its code can make a hash
-    /// table (`spec/28 §1` rule 3), else `None`. Each new table takes a key from it.
-    pub(crate) hashing: Option<una_hash::ProcessKey>,
 }
 
 impl<'p, 'w> Machine<'p, 'w> {
     /// A machine over `index`, with `world`, `grants` and the keys of `keys:` grants for host
-    /// capabilities, and the limits of the run.
+    /// capabilities, the limits of the run, and its clock: the root task of a new run.
     pub(crate) fn new(
         index: &'w Index<'p>,
         world: &'w mut dyn World,
         grants: &'w [Grant],
         keys: &'w BTreeMap<String, Vec<u8>>,
         limits: Limits<'w>,
+        clock: Clock,
     ) -> Machine<'p, 'w> {
         let max_depth = limits.max_depth;
         let stop = limits.stop.map_or_else(
@@ -827,43 +866,110 @@ impl<'p, 'w> Machine<'p, 'w> {
         } else {
             seen
         };
+        let run = Run::new(world, clock, index.tasks);
+        run.stop_after.set(limits.stop_after);
         Machine {
             index,
-            world,
             grants,
             keys,
-            trace: Vec::new(),
+            http: limits.http,
+            run: Rc::new(run),
             depth: 0,
             max_depth,
-            clock: Clock::real(),
             stop,
-            stop_after: limits.stop_after,
-            iterations: 0,
             in_ever: false,
             word,
             seen: Cell::new(seen),
             max_memory: limits.max_memory,
-            http: limits.http,
             held: limits.held,
             baseline: (limits.held)(),
             stack_base: stack_position(&max_depth),
             stack_budget: crate::stack_bytes(max_depth)
                 .map_or(usize::MAX, |bytes| bytes.saturating_sub(STACK_RESERVE)),
-            installs: BTreeMap::new(),
-            deadline: None,
-            withins: Vec::new(),
-            next_within: 0,
-            within_shield: 0,
             frames: Vec::new(),
             task: Vec::new(),
             races: vec![0],
+            tasks_runs: vec![0],
             task_depth: limits.task_depth,
+            deadline: None,
+            withins: Vec::new(),
+            within_shield: 0,
+            cancels: Vec::new(),
+            cancel_shield: 0,
+            scopes: Vec::new(),
+            events: Vec::new(),
+            buffers: Vec::new(),
+            ops_open: 0,
             later: Vec::new(),
             callers: Vec::new(),
-            reads: HashMap::new(),
-            binders: HashMap::new(),
-            hashing: None,
         }
+    }
+
+    /// The machine of the `k`-th task of the statement `scope`, started here by this task: it
+    /// shares the run, inherits the deadlines and cancellations in force, and may make
+    /// `--task-depth` calls below the `start`, within the maximum in force (`spec/27 §7`, ADR
+    /// 0117 amendment of 2026-10-19 on S3, point 3).
+    fn child(&self, scope: &Rc<TasksScope>, k: usize) -> Machine<'p, 'w> {
+        let mut task = scope.path.clone();
+        task.push(k.to_string());
+        let mut cancels: Vec<Rc<TasksScope>> = self
+            .cancels
+            .iter()
+            .skip(self.cancel_shield)
+            .cloned()
+            .collect();
+        cancels.push(Rc::clone(scope));
+        let stack_budget = crate::stack_bytes(self.task_depth)
+            .map_or(usize::MAX, |bytes| bytes.saturating_sub(STACK_RESERVE));
+        Machine {
+            index: self.index,
+            grants: self.grants,
+            keys: self.keys,
+            http: self.http,
+            run: Rc::clone(&self.run),
+            depth: self.depth,
+            max_depth: self
+                .max_depth
+                .min(self.depth.saturating_add(self.task_depth)),
+            stop: Arc::clone(&self.stop),
+            in_ever: false,
+            word: self.word,
+            seen: Cell::new(self.seen.get()),
+            max_memory: self.max_memory,
+            held: self.held,
+            baseline: self.baseline,
+            // Set when the task's coroutine starts, on its own stack.
+            stack_base: 0,
+            stack_budget,
+            frames: self.frames.last().copied().into_iter().collect(),
+            task,
+            races: vec![0],
+            tasks_runs: vec![0],
+            task_depth: self.task_depth,
+            deadline: self.deadline.clone(),
+            withins: self
+                .withins
+                .iter()
+                .skip(self.within_shield)
+                .copied()
+                .collect(),
+            within_shield: 0,
+            cancels,
+            cancel_shield: 0,
+            scopes: Vec::new(),
+            events: Vec::new(),
+            buffers: Vec::new(),
+            ops_open: 0,
+            later: Vec::new(),
+            callers: Vec::new(),
+        }
+    }
+
+    /// Gives the run its process key of keyed hashing, read before any effect when its code
+    /// can make a hash table (`spec/28 §1` rule 3), else `None`: every task of the run takes
+    /// the keys of its tables from it.
+    pub(crate) fn keyed(&self, hashing: Option<una_hash::ProcessKey>) {
+        *self.run.hashing.borrow_mut() = hashing;
     }
 
     /// Calls `main` with no arguments and a host instance for each of its `uses`.
@@ -924,14 +1030,13 @@ impl<'p, 'w> Machine<'p, 'w> {
         let mut state = self.call_hosted(init, Vec::new())?;
         // Tick `k` is due `k * ticks` after `init` returns, on the run's clock: the monotonic
         // one, or the virtual one, which the wait moves at once (ADR 0116 rule 19).
-        let origin = self.clock.now();
+        let origin = self.run.clock.now();
         let period = drive.ticks.max(1);
         let mut next: u64 = 0;
         let ended = loop {
             if self.ever_start() {
-                let slot = self.trace.len();
-                self.trace.push(Event {
-                    seq: slot + 1,
+                self.emit(Event {
+                    seq: 0,
                     task: String::new(),
                     instance: String::new(),
                     capability: String::new(),
@@ -946,10 +1051,10 @@ impl<'p, 'w> Machine<'p, 'w> {
             // moves the clock to the tick at once (rule 19); on the real one a host stop
             // interrupts it, and the next iteration start stops (rule 3).
             let due = origin.saturating_add(next.saturating_mul(period));
-            if self.clock.is_virtual() {
-                self.clock.wait_until(due);
+            if self.run.clock.is_virtual() {
+                self.run.clock.wait_until(due);
             } else {
-                let now = self.clock.now();
+                let now = self.run.clock.now();
                 if now < due
                     && !crate::stopping::wait_tick(
                         &self.stop,
@@ -959,7 +1064,7 @@ impl<'p, 'w> Machine<'p, 'w> {
                     continue;
                 }
             }
-            let elapsed = self.clock.now().saturating_sub(origin);
+            let elapsed = self.run.clock.now().saturating_sub(origin);
             let latest = (elapsed / period).max(next);
             let missed = latest - next;
             let at = latest.saturating_mul(drive.ticks);
@@ -1036,6 +1141,9 @@ impl<'p, 'w> Machine<'p, 'w> {
     /// short before it, the run aborts with U6003 rather than overflow the stack, and so it
     /// does when the heap the run holds is over its budget (ADR 0061).
     fn enter(&mut self, span: Span) -> Result<(), Stop<'p>> {
+        // A call is a check point of the task's turn: after 1024 of them, the next ready task
+        // runs (ADR 0117 rules 11 and 12), as native code counts its calls.
+        self.run.tick();
         let used = self.stack_base.abs_diff(stack_position(&span));
         if self.depth >= self.max_depth || used > self.stack_budget {
             return Err(Stop::Abort(Abort::Depth {
@@ -1069,6 +1177,16 @@ impl<'p, 'w> Machine<'p, 'w> {
                 limit: self.max_memory,
             }));
         }
+        // Another task's abort that ends the whole run (`spec/27 §7`).
+        if self.run.coroutines
+            && let Some(abort) = self.run.aborted()
+        {
+            return Err(Stop::Abort(abort));
+        }
+        // A task whose statement was cancelled stops here (`spec/27 §7`).
+        if self.cancelled() {
+            return Err(Stop::Cut(CANCEL));
+        }
         // `spec/27 §5`: past the deadline of a `within` in progress, its expression is
         // cancelled here; the outermost one that passed reports it (rule 5, Nesting).
         if let Some(id) = self.passed_within(self.within_shield) {
@@ -1077,13 +1195,191 @@ impl<'p, 'w> Machine<'p, 'w> {
         Ok(())
     }
 
+    /// Whether a `tasks` statement whose cancellation reaches this task, past what an
+    /// operation in progress shields, was cancelled. O(statements).
+    fn cancelled(&self) -> bool {
+        self.cancels
+            .iter()
+            .skip(self.cancel_shield)
+            .any(|scope| scope.cancelled.get())
+    }
+
+    /// Holds `event` until it can be written: at once in a streaming task with no operation in
+    /// progress and no branch's buffer open (ADR 0117 rule 10).
+    fn emit(&mut self, event: Event) {
+        self.events.push(event);
+        self.flush();
+    }
+
+    /// Writes the events the task holds, once no operation of it is in progress and no
+    /// branch's buffer is open, numbering their `seq` in the order they are written.
+    fn flush(&mut self) {
+        if self.ops_open > 0 || !self.buffers.is_empty() || self.events.is_empty() {
+            return;
+        }
+        for event in std::mem::take(&mut self.events) {
+            self.run.write(event);
+        }
+    }
+
+    /// Writes every event the task holds: at its end, or the run's.
+    pub(crate) fn finish_trace(&mut self) {
+        self.ops_open = 0;
+        self.buffers.clear();
+        self.flush();
+    }
+
+    /// How many instances of the handler `name` the level this task writes to installed: the
+    /// innermost open branch's, or the run's.
+    fn installed(&self, name: &str) -> usize {
+        match self.buffers.last() {
+            Some(buffer) => buffer.installs.get(name).copied().unwrap_or(0),
+            None => self.run.installs.borrow().get(name).copied().unwrap_or(0),
+        }
+    }
+
+    /// Counts `count` more instances of `name` at the level this task writes to.
+    fn add_installs(&mut self, name: &str, count: usize) {
+        match self.buffers.last_mut() {
+            Some(buffer) => *buffer.installs.entry(name.to_owned()).or_insert(0) += count,
+            None => {
+                *self
+                    .run
+                    .installs
+                    .borrow_mut()
+                    .entry(name.to_owned())
+                    .or_insert(0) += count
+            }
+        }
+    }
+
+    /// The id of the `count`-th instance of `name` at the level this task writes to: in a
+    /// branch whose events wait for its join, `with:<name>#@<path>#<count>`, which the join
+    /// renumbers; elsewhere `with:<name>#<count>`, counted run-wide (`spec/19 §7` rule 2,
+    /// `spec/27 §7`).
+    fn renamed(&self, name: &str, count: usize) -> String {
+        match self.buffers.last() {
+            Some(buffer) => format!("with:{name}#@{}#{count}", buffer.path),
+            None => format!("with:{name}#{count}"),
+        }
+    }
+
+    /// The id of a new instance of the handler `name` installed by `with`.
+    fn install_id(&mut self, name: &str) -> String {
+        let count = self.installed(name) + 1;
+        self.add_installs(name, 1);
+        self.renamed(name, count)
+    }
+
+    /// The join of a block whose branches ended as `parts`, given in the order the join takes
+    /// them: their events, held from `start` on, follow in that order, and the ids of the
+    /// handlers each one installed are renumbered after those installed before, as native
+    /// code's join adopts its tasks' events (`spec/19 §7` rule 2, `spec/27 §6`). Then the task
+    /// writes what it can. O(events + installations of the block).
+    fn adopt(&mut self, start: usize, parts: &[&Part]) {
+        let mut slots: Vec<Option<Event>> = self
+            .events
+            .split_off(start.min(self.events.len()))
+            .into_iter()
+            .map(Some)
+            .collect();
+        for part in parts {
+            let local = format!("#@{}#", part.buffer.path);
+            let bases: BTreeMap<&str, usize> = part
+                .buffer
+                .installs
+                .keys()
+                .map(|name| (name.as_str(), self.installed(name)))
+                .collect();
+            let range = part.buffer.start.saturating_sub(start)..part.end.saturating_sub(start);
+            for slot in slots.get_mut(range).into_iter().flatten() {
+                let Some(mut event) = slot.take() else {
+                    continue;
+                };
+                if let Some(rest) = event.instance.strip_prefix("with:")
+                    && let Some((name, count)) = rest.split_once(&local)
+                    && let Ok(count) = count.parse::<usize>()
+                    && let Some(&base) = bases.get(name)
+                {
+                    event.instance = self.renamed(name, base + count);
+                }
+                self.events.push(event);
+            }
+            for (name, &count) in &part.buffer.installs {
+                self.add_installs(name, count);
+            }
+        }
+        // Branches hold contiguous events, so none is left; any would keep its place.
+        self.events.extend(slots.into_iter().flatten());
+        self.flush();
+    }
+
+    /// Runs `f` on this machine, the root task of its run: as a coroutine that takes turns
+    /// with the tasks it starts, when the program has a `tasks` statement, under the driver of
+    /// the run's queue (ADR 0117 rule 11); on the thread's own stack otherwise, at no cost.
+    /// Writes the events the root holds when `f` returns.
+    ///
+    /// The abort when the root cannot run as a coroutine: its stack cannot be mapped (U6003),
+    /// or the interpreter already runs on a coroutine, which none of its callers does (a
+    /// fault). A panic of the interpreter in a task is caught on that task's stack and raised
+    /// again here, on the thread's, once every task has ended, so the command reports it.
+    pub(crate) fn rooted<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> Result<R, Abort> {
+        if !self.run.coroutines {
+            let result = f(self);
+            self.finish_trace();
+            return Ok(result);
+        }
+        if una_sys::coroutine::inside() {
+            return Err(Abort::Fault {
+                message: "the interpreter runs its tasks on a coroutine of another owner"
+                    .to_owned(),
+                span: None,
+            });
+        }
+        let stack = crate::stack_bytes(self.max_depth)
+            .and_then(|bytes| una_sys::coroutine::Stack::new(bytes).ok());
+        let Some(stack) = stack else {
+            return Err(Abort::Unstarted {
+                span: None,
+                cap: None,
+            });
+        };
+        let run = Rc::clone(&self.run);
+        let mut out = None;
+        {
+            let slot = &mut out;
+            let machine = &mut *self;
+            let guard = Rc::clone(&run);
+            una_sys::coroutine::scope(|scope| {
+                let root = scope.spawn(stack, move || {
+                    guard.guarded(|| {
+                        let base = 0usize;
+                        let saved =
+                            std::mem::replace(&mut machine.stack_base, stack_position(&base));
+                        *slot = Some(f(machine));
+                        machine.stack_base = saved;
+                        machine.finish_trace();
+                    });
+                });
+                crate::tasks::drive(scope, &run, root);
+            });
+        }
+        if let Some(payload) = run.take_panic() {
+            std::panic::resume_unwind(payload);
+        }
+        out.ok_or_else(|| Abort::Fault {
+            message: "the root task did not run to its end".to_owned(),
+            span: None,
+        })
+    }
+
     /// The outermost `within` in progress from position `from` on whose deadline has passed on
     /// the run's clock. O(withins), and no clock reading without one.
     fn passed_within(&self, from: usize) -> Option<u64> {
         if self.withins.len() <= from {
             return None;
         }
-        let now = self.clock.now();
+        let now = self.run.clock.now();
         self.withins
             .iter()
             .skip(from)
@@ -1096,7 +1392,7 @@ impl<'p, 'w> Machine<'p, 'w> {
     fn within_left(&self) -> Option<std::time::Duration> {
         let at = self.withins.iter().filter_map(|(_, at)| *at).min()?;
         Some(std::time::Duration::from_millis(
-            at.saturating_sub(self.clock.now()),
+            at.saturating_sub(self.run.clock.now()),
         ))
     }
 
@@ -1114,9 +1410,9 @@ impl<'p, 'w> Machine<'p, 'w> {
         timeout: &'p Ctor,
         wrap: Option<&'p Ctor>,
     ) -> Flow<'p> {
-        let id = self.next_within;
-        self.next_within += 1;
-        let at = self.clock.now().checked_add(ms);
+        let id = self.run.next_within.get();
+        self.run.next_within.set(id + 1);
+        let at = self.run.clock.now().checked_add(ms);
         let depth = self.withins.len();
         self.withins.push((id, at));
         let result = self.eval(env, caps, body);
@@ -1132,7 +1428,7 @@ impl<'p, 'w> Machine<'p, 'w> {
                 if let Some(outer) = self.passed_within(self.within_shield) {
                     return Err(Stop::Cut(outer));
                 }
-                if at.is_some_and(|at| at <= self.clock.now()) {
+                if at.is_some_and(|at| at <= self.run.clock.now()) {
                     return timed_out(self);
                 }
                 match (result, wrap) {
@@ -1152,8 +1448,8 @@ impl<'p, 'w> Machine<'p, 'w> {
         for index in from..to {
             let mut path: Vec<String> = self.task.iter().map(ToString::to_string).collect();
             path.push((index + 1).to_string());
-            self.trace.push(Event {
-                seq: self.trace.len() + 1,
+            self.emit(Event {
+                seq: 0,
                 task: path.join("."),
                 instance: String::new(),
                 capability: String::new(),
@@ -1169,11 +1465,11 @@ impl<'p, 'w> Machine<'p, 'w> {
     /// order, as for the tasks of a block ([`Self::cut_events`]).
     fn race_cut_events(&mut self, race: usize, from: usize, to: usize) {
         for index in from..to {
-            let mut path: Vec<String> = self.task.clone();
+            let mut path: Vec<String> = self.task.iter().map(ToString::to_string).collect();
             path.push(format!("f{race}"));
             path.push((index + 1).to_string());
-            self.trace.push(Event {
-                seq: self.trace.len() + 1,
+            self.emit(Event {
+                seq: 0,
                 task: path.join("."),
                 instance: String::new(),
                 capability: String::new(),
@@ -1186,10 +1482,10 @@ impl<'p, 'w> Machine<'p, 'w> {
 
     /// Appends the `timeout` event of a `within` of the task in progress (`spec/27 §5`).
     fn within_timeout_event(&mut self) {
-        let task: Vec<String> = self.task.iter().map(ToString::to_string).collect();
-        self.trace.push(Event {
-            seq: self.trace.len() + 1,
-            task: task.join("."),
+        let task = self.task.join(".");
+        self.emit(Event {
+            seq: 0,
+            task,
             instance: String::new(),
             capability: String::new(),
             op: String::new(),
@@ -1219,7 +1515,9 @@ impl<'p, 'w> Machine<'p, 'w> {
     /// The names `expr` reads.
     fn reads(&mut self, expr: &'p Expr) -> Rc<BTreeSet<String>> {
         Rc::clone(
-            self.reads
+            self.run
+                .reads
+                .borrow_mut()
                 .entry(std::ptr::from_ref(expr))
                 .or_insert_with(|| {
                     let mut names = BTreeSet::new();
@@ -1232,7 +1530,9 @@ impl<'p, 'w> Machine<'p, 'w> {
     /// The names `expr` binds.
     fn binders(&mut self, expr: &'p Expr) -> Rc<BTreeSet<&'p str>> {
         Rc::clone(
-            self.binders
+            self.run
+                .binders
+                .borrow_mut()
                 .entry(std::ptr::from_ref(expr))
                 .or_insert_with(|| {
                     let mut names = BTreeSet::new();
@@ -1594,7 +1894,10 @@ impl<'p, 'w> Machine<'p, 'w> {
                         Err(Stop::Cut(id)) => {
                             let shield =
                                 std::mem::replace(&mut self.within_shield, self.withins.len());
+                            let cancel_shield =
+                                std::mem::replace(&mut self.cancel_shield, self.cancels.len());
                             let ran = self.on_stop(env, &caps, on_stop, before.unwrap_or_default());
+                            self.cancel_shield = cancel_shield;
                             self.within_shield = shield;
                             ran?;
                             Err(Stop::Cut(id))
@@ -1612,15 +1915,23 @@ impl<'p, 'w> Machine<'p, 'w> {
                     let rebound = self.binders(expr).iter().copied().collect();
                     self.later.push((expr, rebound));
                     let mut results = Vec::with_capacity(tasks.len());
+                    // The tasks' events wait for the join, which adopts them in task order.
+                    let start = self.events.len();
+                    let mut parts = Vec::with_capacity(tasks.len());
                     for (index, task) in tasks.iter().enumerate() {
                         let result = match self.passed_within(self.within_shield) {
                             Some(id) => Err(Stop::Cut(id)),
-                            None => self.task(env, &caps, index, task),
+                            None => {
+                                let (result, part) = self.task(env, &caps, index, task);
+                                parts.push(part);
+                                result
+                            }
                         };
                         match result {
                             Ok(result) => results.push(result),
                             Err(stop) => {
                                 self.later.pop();
+                                self.adopt(start, &parts.iter().collect::<Vec<_>>());
                                 if matches!(stop, Stop::Fail(_)) {
                                     self.joined();
                                 }
@@ -1632,6 +1943,7 @@ impl<'p, 'w> Machine<'p, 'w> {
                         }
                     }
                     self.later.pop();
+                    self.adopt(start, &parts.iter().collect::<Vec<_>>());
                     self.joined();
                     return Ok(Value::Tuple(Rc::new(results)));
                 }
@@ -1659,19 +1971,26 @@ impl<'p, 'w> Machine<'p, 'w> {
                     // As for `together`, and the element too, which each task binds anew (#263).
                     let rebound = self.binders(expr).iter().copied().collect();
                     self.later.push((expr, rebound));
+                    let start = self.events.len();
+                    let mut parts = Vec::with_capacity(items.len());
                     let count = items.len();
                     for (index, item) in items.into_iter().enumerate() {
                         let mark = env.len();
                         env.push((var.0.as_str(), item));
                         let result = match self.passed_within(self.within_shield) {
                             Some(id) => Err(Stop::Cut(id)),
-                            None => self.task(env, &caps, index, task),
+                            None => {
+                                let (result, part) = self.task(env, &caps, index, task);
+                                parts.push(part);
+                                result
+                            }
                         };
                         env.truncate(mark);
                         match result {
                             Ok(result) => results.push(result),
                             Err(stop) => {
                                 self.later.pop();
+                                self.adopt(start, &parts.iter().collect::<Vec<_>>());
                                 if matches!(stop, Stop::Fail(_)) {
                                     self.joined();
                                 }
@@ -1683,8 +2002,32 @@ impl<'p, 'w> Machine<'p, 'w> {
                         }
                     }
                     self.later.pop();
+                    self.adopt(start, &parts.iter().collect::<Vec<_>>());
                     self.joined();
                     return Ok(Value::List(Rc::new(results)));
+                }
+                // `tasks(b) e` (`spec/27 §7`): the block in this task, then the wait for its
+                // tasks.
+                Expr::Tasks { bound, body, .. } => {
+                    let bound = match bound {
+                        Some((atom, _)) => match self.atom(env, atom)? {
+                            // A bound below 1 is refuted by verification; one beyond `usize`
+                            // bounds nothing.
+                            Value::Int(n) => Some(if n.sign() == Sign::Minus {
+                                1
+                            } else {
+                                usize::try_from(&n).unwrap_or(usize::MAX).max(1)
+                            }),
+                            _ => return Err(fault("a bound of `tasks` that is not an `Int`")),
+                        },
+                        None => None,
+                    };
+                    return self.tasks(env, &caps, bound, body);
+                }
+                // `start e` (`spec/27 §7`): a task for `e`, and the block goes on.
+                Expr::Start { task, span } => {
+                    self.start(env, &caps, task, *span)?;
+                    return Ok(Value::Unit);
                 }
                 // `let (x, ...) = a in e` (`spec/17 §4`).
                 Expr::LetTuple {
@@ -1842,9 +2185,7 @@ impl<'p, 'w> Machine<'p, 'w> {
                 let id = if *given {
                     format!("given:{cap}")
                 } else {
-                    let count = self.installs.entry(handler.name.clone()).or_insert(0);
-                    *count += 1;
-                    format!("with:{}#{count}", handler.name)
+                    self.install_id(&handler.name)
                 };
                 Ok(Rc::new(Instance::Handled {
                     handler: info,
@@ -1914,12 +2255,13 @@ impl<'p, 'w> Machine<'p, 'w> {
                         self.stop_event();
                         break Ok(());
                     }
+                    self.run.tick();
                     if let Err(stop) = self.within_budget(span) {
                         break Err(stop);
                     }
                     self.in_ever = true;
                     self.deadline =
-                        period.map(|ms| Deadline::after(ms, self.task.clone(), &self.clock));
+                        period.map(|ms| Deadline::after(ms, self.task.clone(), &self.run.clock));
                     let taken = std::mem::take(&mut current);
                     match self.iteration(env, caps, var, state, taken, &Value::Unit, body) {
                         Ok((next, stopped)) => {
@@ -1937,6 +2279,7 @@ impl<'p, 'w> Machine<'p, 'w> {
             }
             // `until(c)`: `c` with the state bound, before each iteration (`spec/26 §4`).
             LoopSource::Until { cond, .. } => loop {
+                self.run.tick();
                 self.within_budget(span)?;
                 let mark = env.len();
                 for ((name, _), value) in state.iter().zip(&current) {
@@ -1961,6 +2304,7 @@ impl<'p, 'w> Machine<'p, 'w> {
                     return Err(fault("a loop over a value that is not a list"));
                 };
                 for item in items.iter() {
+                    self.run.tick();
                     self.within_budget(span)?;
                     let stopped;
                     (current, stopped) =
@@ -1991,6 +2335,7 @@ impl<'p, 'w> Machine<'p, 'w> {
                         break;
                     }
                     let item = Value::Int(index.clone());
+                    self.run.tick();
                     self.within_budget(span)?;
                     let stopped;
                     (current, stopped) =
@@ -2018,25 +2363,27 @@ impl<'p, 'w> Machine<'p, 'w> {
         if self.stop.stopped() {
             return true;
         }
+        let iterations = self.run.iterations.get();
         if self
+            .run
             .stop_after
-            .is_some_and(|limit| self.iterations >= limit)
+            .get()
+            .is_some_and(|limit| iterations >= limit)
         {
             self.stop.request_local();
             return true;
         }
-        self.iterations = self.iterations.saturating_add(1);
+        self.run.iterations.set(iterations.saturating_add(1));
         false
     }
 
     /// Appends the `stop` event of a loop that stops at the start of an iteration (ADR 0116
     /// rule 14), in the current task.
     pub(crate) fn stop_event(&mut self) {
-        let seq = self.trace.len() + 1;
-        let task: Vec<String> = self.task.iter().map(ToString::to_string).collect();
-        self.trace.push(Event {
-            seq,
-            task: task.join("."),
+        let task = self.task.join(".");
+        self.emit(Event {
+            seq: 0,
+            task,
             instance: String::new(),
             capability: String::new(),
             op: String::new(),
@@ -2100,25 +2447,38 @@ impl<'p, 'w> Machine<'p, 'w> {
     }
 
     /// Task `index` of a `together` block, `task`, with its path (`spec/19 §6` rule 1).
+    /// Its events wait for the block's join, in the part it returns.
     fn task(
         &mut self,
         env: &mut Env<'p>,
         caps: &Caps<'p>,
         index: usize,
         task: &'p Expr,
-    ) -> Flow<'p> {
+    ) -> (Flow<'p>, Part) {
         self.task.push((index + 1).to_string());
         self.races.push(0);
-        // A started task is a task of its own: a host stop reaches it only through its own
-        // `for ever` loops (ADR 0116 rule 14).
+        self.tasks_runs.push(0);
+        self.buffers.push(Buffer {
+            start: self.events.len(),
+            path: self.task.join("."),
+            installs: BTreeMap::new(),
+        });
+        // A task is a task of its own: a host stop reaches it only through its own `for ever`
+        // loops (ADR 0116 rule 14).
         let in_ever = std::mem::replace(&mut self.in_ever, false);
         let mark = env.len();
         let result = self.eval(env, caps, task);
         env.truncate(mark);
         self.in_ever = in_ever;
+        let buffer = self.buffers.pop().unwrap_or_default();
+        let part = Part {
+            buffer,
+            end: self.events.len(),
+        };
+        self.tasks_runs.pop();
         self.races.pop();
         self.task.pop();
-        result
+        (result, part)
     }
 
     /// Branch `index` of the `race`-th `first of` of the task in progress, `task`, with its path
@@ -2130,14 +2490,167 @@ impl<'p, 'w> Machine<'p, 'w> {
         caps: &Caps<'p>,
         (race, index): (usize, usize),
         task: &'p Expr,
-    ) -> Flow<'p> {
+    ) -> (Flow<'p>, Part) {
         self.task.push(format!("f{race}"));
         let max_depth = self.max_depth;
         self.max_depth = max_depth.min(self.depth.saturating_add(self.task_depth));
-        let result = self.task(env, caps, index, task);
+        let ended = self.task(env, caps, index, task);
         self.max_depth = max_depth;
         self.task.pop();
+        ended
+    }
+
+    /// `tasks(b) e` (`spec/27 §7`, ADR 0117 rule 7): the block `body` runs in this task, and
+    /// its `start`s start the tasks of the statement, at most `bound` at once, by default
+    /// `max(64, M)` for the budget `M` in MiB, within the system's cap. The statement ends once
+    /// the block has ended and every task it started has ended: a block that fails, or stops,
+    /// first cancels them; one that ends, or leaves by `stop` or `skip` of an enclosing loop,
+    /// lets them run to their end.
+    fn tasks(
+        &mut self,
+        env: &mut Env<'p>,
+        caps: &Caps<'p>,
+        bound: Option<usize>,
+        body: &'p Expr,
+    ) -> Flow<'p> {
+        let count = match self.tasks_runs.last_mut() {
+            Some(count) => {
+                *count += 1;
+                *count
+            }
+            None => return Err(fault("a `tasks` statement outside any task")),
+        };
+        let bound = bound
+            .unwrap_or_else(|| crate::concurrency::default_bound(self.max_memory, self.run.cap));
+        let mut path = self.task.clone();
+        path.push(format!("s{count}"));
+        let scope = Rc::new(TasksScope::new(path, bound));
+        self.scopes.push(Rc::clone(&scope));
+        let result = self.eval(env, caps, body);
+        self.scopes.pop();
+        if !matches!(result, Ok(_) | Err(Stop::Exit(..))) {
+            scope.cancelled.set(true);
+        }
+        self.flush();
+        self.wait_for(&scope, |scope| scope.running.get() == 0)?;
+        // A task's abort that ends the run ends the statement with it.
+        if let Some(abort) = self.run.aborted() {
+            return Err(Stop::Abort(abort));
+        }
         result
+    }
+
+    /// Parks this task until `done` holds of `scope`: a task of the statement that ends wakes
+    /// it, and it checks again (ADR 0117 rule 3). A wait outside the scheduler, which only a
+    /// defect reaches, is a fault rather than a hang.
+    fn wait_for(
+        &mut self,
+        scope: &TasksScope,
+        done: impl Fn(&TasksScope) -> bool,
+    ) -> Result<(), Stop<'p>> {
+        while !done(scope) {
+            scope.waiter.set(Some(self.run.current()));
+            if !self.run.park() {
+                scope.waiter.set(None);
+                return Err(fault(
+                    "a task waits for the tasks it started outside the scheduler",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// `start e` at `span` (`spec/27 §7`, ADR 0117 rule 7): once fewer tasks of the innermost
+    /// statement run than its bound allows, starts the next one, `p.s<c>.<k>`, for `task` with
+    /// the bindings it reads and the capabilities in scope, at the back of the run's queue,
+    /// and goes on. On Linux, a run already holding as many started tasks as the system allows
+    /// at once aborts with U6003 at the `start`, before any mapping fails (ADR 0117 rule 2).
+    fn start(
+        &mut self,
+        env: &Env<'p>,
+        caps: &Caps<'p>,
+        task: &'p Expr,
+        span: Span,
+    ) -> Result<(), Stop<'p>> {
+        let Some(scope) = self.scopes.last().cloned() else {
+            return Err(fault("a `start` outside its `tasks` statement"));
+        };
+        self.flush();
+        self.wait_for(&scope, |scope| scope.running.get() < scope.bound)?;
+        if let Some(abort) = self.run.aborted() {
+            return Err(Stop::Abort(abort));
+        }
+        if let Some(cap) = self.run.cap
+            && self.run.live.get() >= cap
+        {
+            return Err(Stop::Abort(Abort::Unstarted {
+                span: Some(span),
+                cap: Some(cap),
+            }));
+        }
+        let k = scope.started.get() + 1;
+        scope.started.set(k);
+        let mut child = self.child(&scope, k);
+        let reads = self.reads(task);
+        let mut captured: Env<'p> = reads.iter().filter_map(|name| env.binding(name)).collect();
+        let caps = caps.clone();
+        let bytes = crate::stack_bytes(self.task_depth).unwrap_or(STACK_RESERVE * 2);
+        scope.running.set(scope.running.get() + 1);
+        self.run.live.set(self.run.live.get() + 1);
+        let ending = Ending {
+            scope,
+            run: Rc::clone(&self.run),
+        };
+        let body = move || {
+            // Its statement counts it ended once its events are written, or, if it never
+            // starts, when the driver drops it, or after a panic, which the run keeps.
+            let _ending = ending;
+            let run = Rc::clone(&child.run);
+            run.guarded(|| {
+                let base = 0usize;
+                child.stack_base = stack_position(&base);
+                let result = child.eval(&mut captured, &caps, task);
+                child.started_end(result);
+            });
+        };
+        self.run
+            .sched
+            .borrow_mut()
+            .start(Box::new(body), bytes, span);
+        Ok(())
+    }
+
+    /// The end of a started task with `result` (`spec/27 §7`): one that ran too deep ends
+    /// alone, with its `aborted` event and its line on stderr, and the other tasks run on; one
+    /// that was cancelled, by its statement or a deadline in force when it started, ends with
+    /// its `cancelled` event; any other abort ends the whole run. Then its events are written.
+    fn started_end(&mut self, result: Flow<'p>) {
+        let task = self.task.join(".");
+        let ended = |task: String, outcome: EventOutcome| Event {
+            seq: 0,
+            task,
+            instance: String::new(),
+            capability: String::new(),
+            op: String::new(),
+            args: Vec::new(),
+            outcome,
+        };
+        self.ops_open = 0;
+        match result {
+            Ok(_) => {}
+            Err(Stop::Abort(abort @ Abort::Depth { .. })) => {
+                self.run.world.borrow_mut().task_aborted(&task, &abort);
+                self.emit(ended(task, EventOutcome::TaskAborted));
+            }
+            Err(Stop::Abort(abort)) => self.run.abort_run(abort),
+            Err(Stop::Cut(_)) => self.emit(ended(task, EventOutcome::Cancelled)),
+            // A started task cannot fail (U3029), and no exit leaves its expression.
+            Err(Stop::Fail(_) | Stop::Exit(..)) => self.run.abort_run(Abort::Fault {
+                message: "a started task failed, which its checks exclude".to_owned(),
+                span: self.frames.last().copied(),
+            }),
+        }
+        self.finish_trace();
     }
 
     /// `first of` (`spec/27 §6`, ADR 0117 rule 6): its branches run one after another, in index
@@ -2154,100 +2667,44 @@ impl<'p, 'w> Machine<'p, 'w> {
             }
             None => return Err(fault("a `first of` outside any task")),
         };
-        let start = self.trace.len();
-        // Each branch's events, from where they start, and the installations before it.
-        let mut parts: Vec<(usize, BTreeMap<String, usize>)> = Vec::with_capacity(tasks.len());
+        let start = self.events.len();
+        let mut parts: Vec<Part> = Vec::with_capacity(tasks.len());
         let mut failure = None;
         for (index, task) in tasks.iter().enumerate() {
-            parts.push((self.trace.len(), self.installs.clone()));
             // The start of each branch is a check point for a cut (`spec/27 §5`).
             let result = match self.passed_within(self.within_shield) {
                 Some(id) => Err(Stop::Cut(id)),
-                None => self.branch(env, caps, (race, index), task),
+                None => {
+                    let (result, part) = self.branch(env, caps, (race, index), task);
+                    parts.push(part);
+                    result
+                }
             };
-            if matches!(result, Err(Stop::Cut(_))) {
-                self.race_cut_events(race, index, tasks.len());
-            }
             match result {
                 Ok(value) => {
-                    self.winner_first(start, &parts);
+                    // The winner's events first, then those of the branches before it.
+                    let mut order: Vec<&Part> = Vec::with_capacity(parts.len());
+                    order.extend(parts.last());
+                    order.extend(parts.iter().take(parts.len().saturating_sub(1)));
+                    self.adopt(start, &order);
                     return Ok(value);
                 }
                 Err(Stop::Fail(error)) => {
                     failure.get_or_insert(error);
                 }
-                Err(stop) => return Err(stop),
+                Err(stop) => {
+                    self.adopt(start, &parts.iter().collect::<Vec<_>>());
+                    if matches!(stop, Stop::Cut(_)) {
+                        self.race_cut_events(race, index, tasks.len());
+                    }
+                    return Err(stop);
+                }
             }
         }
+        self.adopt(start, &parts.iter().collect::<Vec<_>>());
         match failure {
             Some(error) => Err(Stop::Fail(error)),
             None => Err(fault("a `first of` without branches")),
-        }
-    }
-
-    /// Moves the events of the last branch of `parts`, the winner, before those of the
-    /// branches before it, from `start` on, and renumbers their `seq` and the ids of the handlers
-    /// each branch installed, as the join of native code adopts them, the winner first (`spec/27
-    /// §6`). O(events + installations of the block).
-    fn winner_first(&mut self, start: usize, parts: &[(usize, BTreeMap<String, usize>)]) {
-        if parts.len() < 2 {
-            return;
-        }
-        let end = self.trace.len();
-        // Each branch's range of events and, per handler name, the ids it installed: the
-        // installations before it and how many it made.
-        let mut ranges: Vec<Part> = Vec::new();
-        for (position, (from, before)) in parts.iter().enumerate() {
-            let (to, after) = match parts.get(position + 1) {
-                Some((to, after)) => (*to, after),
-                None => (end, &self.installs),
-            };
-            let made = after
-                .iter()
-                .filter_map(|(name, &count)| {
-                    let base = before.get(name).copied().unwrap_or(0);
-                    (count > base).then(|| (name.clone(), (base, count - base)))
-                })
-                .collect();
-            ranges.push((*from, to, made));
-        }
-        if let Some(winner) = ranges.pop() {
-            ranges.insert(0, winner);
-        }
-        let mut events: Vec<Option<Event>> =
-            self.trace.split_off(start).into_iter().map(Some).collect();
-        // The ids each name gets, in the new order, from the installations before the block.
-        let mut next: BTreeMap<String, usize> = parts
-            .first()
-            .map(|(_, before)| before.clone())
-            .unwrap_or_default();
-        for (from, to, made) in &ranges {
-            let mut renamed: BTreeMap<&str, (usize, usize, usize)> = BTreeMap::new();
-            for (name, &(base, count)) in made {
-                let new_base = next.get(name).copied().unwrap_or(0);
-                renamed.insert(name.as_str(), (base, count, new_base));
-                next.insert(name.clone(), new_base + count);
-            }
-            let slots = events
-                .get_mut(from.saturating_sub(start)..to.saturating_sub(start))
-                .into_iter()
-                .flatten();
-            for slot in slots {
-                let Some(mut event) = slot.take() else {
-                    continue;
-                };
-                if let Some(rest) = event.instance.strip_prefix("with:")
-                    && let Some((name, count)) = rest.rsplit_once('#')
-                    && let Ok(count) = count.parse::<usize>()
-                    && let Some(&(base, made, new_base)) = renamed.get(name)
-                    && count > base
-                    && count <= base + made
-                {
-                    event.instance = format!("with:{name}#{}", count - base + new_base);
-                }
-                event.seq = self.trace.len() + 1;
-                self.trace.push(event);
-            }
         }
     }
 
@@ -2466,7 +2923,7 @@ impl<'p, 'w> Machine<'p, 'w> {
                     }
                     _ => return Err(fault("`elapse` without a duration of at least 0")),
                 };
-                return match self.clock.elapse(by) {
+                return match self.run.clock.elapse(by) {
                     Ok(_) => Ok(Value::Unit),
                     Err(crate::clock::NotVirtual) => {
                         Err(fault("`elapse` outside a test, on the real clock"))
@@ -2509,7 +2966,7 @@ impl<'p, 'w> Machine<'p, 'w> {
             "empty_set" => Value::Set(Rc::default()),
             // O(1): a new table with a key of its own (`spec/28 §1` rule 4).
             "empty_hash_map" | "empty_hash_set" => {
-                let key = match hashes::table_key(self.hashing.as_ref(), span) {
+                let key = match hashes::table_key(self.run.hashing.borrow().as_ref(), span) {
                     Ok(key) => key,
                     Err(stop) => return Some(Err(stop)),
                 };
@@ -2562,8 +3019,13 @@ impl<'p, 'w> Machine<'p, 'w> {
             span,
             ..
         } = *request;
-        // A `within` whose deadline has passed cancels its expression before an operation
-        // starts, as native code polls before each one (`spec/27 §5`, `spec/19 §6` rule 4).
+        // An operation is a check point of the task's turn (ADR 0117 rule 12).
+        self.run.tick();
+        // A cancelled task, or a `within` whose deadline has passed, stops before an operation
+        // starts, as native code polls before each one (`spec/27 §5`, §7, `spec/19 §6` rule 4).
+        if self.cancelled() {
+            return Err(Stop::Cut(CANCEL));
+        }
         if let Some(id) = self.passed_within(self.within_shield) {
             return Err(Stop::Cut(id));
         }
@@ -2594,45 +3056,22 @@ impl<'p, 'w> Machine<'p, 'w> {
                 .map_err(|IntTooLong| int_text_abort(Some(span)))?;
             shown.push((name, text));
         }
-        let slot = self.trace.len();
-        let task: Vec<String> = self.task.iter().map(ToString::to_string).collect();
-        self.trace.push(Event {
-            seq: slot + 1,
-            task: task.join("."),
+        // The operation's event is written when it ends, after the events of the handler code
+        // that served it (ADR 0117 rule 10).
+        let slot = self.events.len();
+        let task = self.task.join(".");
+        self.events.push(Event {
+            seq: 0,
+            task,
             instance: instance.id().to_owned(),
             capability: capability.to_owned(),
             op: op.to_owned(),
             args: shown,
             outcome: EventOutcome::Aborted,
         });
-        let result = match instance.as_ref() {
-            Instance::Host { .. } => self.host(capability, op, &args, span),
-            Instance::Handled {
-                handler,
-                values,
-                caps: own,
-                ..
-            } => {
-                let Some(implementation) = handler.ops.iter().find(|o| o.name == op) else {
-                    return Err(fault(format!(
-                        "handler `{}` has no operation `{op}`",
-                        handler.name
-                    )));
-                };
-                self.enter(span)?;
-                let mut env: Env<'p> = handler
-                    .params
-                    .iter()
-                    .map(|(n, _)| n.as_str())
-                    .zip(values.iter().cloned())
-                    .collect();
-                env.extend(implementation.params.iter().map(String::as_str).zip(args));
-                let shield = std::mem::replace(&mut self.within_shield, self.withins.len());
-                let result = self.eval(&mut env, own, &implementation.body);
-                self.within_shield = shield;
-                self.leave(result)
-            }
-        };
+        self.ops_open += 1;
+        let result = self.serve(&instance, capability, op, args, span);
+        self.ops_open = self.ops_open.saturating_sub(1);
         // An outcome that holds an integer too long for text aborts the run at the operation
         // (`spec/11 §7`, #923), its event left `aborted`.
         let (result, outcome) = match result {
@@ -2660,10 +3099,54 @@ impl<'p, 'w> Machine<'p, 'w> {
                 (other, EventOutcome::Aborted)
             }
         };
-        if let Some(event) = self.trace.get_mut(slot) {
+        if let Some(event) = self.events.get_mut(slot) {
             event.outcome = outcome;
         }
+        self.flush();
         result
+    }
+
+    /// The operation `op` of `instance`, with `args`: a host operation, or the code of a
+    /// handler's operation, which completes whatever deadline or cancellation in force when it
+    /// began passes meanwhile (`spec/19 §6` rule 4).
+    fn serve(
+        &mut self,
+        instance: &Instance<'p>,
+        capability: &str,
+        op: &str,
+        args: Vec<Value<'p>>,
+        span: Span,
+    ) -> Flow<'p> {
+        match instance {
+            Instance::Host { .. } => self.host(capability, op, &args, span),
+            Instance::Handled {
+                handler,
+                values,
+                caps: own,
+                ..
+            } => {
+                let Some(implementation) = handler.ops.iter().find(|o| o.name == op) else {
+                    return Err(fault(format!(
+                        "handler `{}` has no operation `{op}`",
+                        handler.name
+                    )));
+                };
+                self.enter(span)?;
+                let mut env: Env<'p> = handler
+                    .params
+                    .iter()
+                    .map(|(n, _)| n.as_str())
+                    .zip(values.iter().cloned())
+                    .collect();
+                env.extend(implementation.params.iter().map(String::as_str).zip(args));
+                let shield = std::mem::replace(&mut self.within_shield, self.withins.len());
+                let cancel_shield = std::mem::replace(&mut self.cancel_shield, self.cancels.len());
+                let result = self.eval(&mut env, own, &implementation.body);
+                self.cancel_shield = cancel_shield;
+                self.within_shield = shield;
+                self.leave(result)
+            }
+        }
     }
 
     /// An operation failed because the deadline of the iteration in progress passed (ADR 0116
@@ -2703,10 +3186,10 @@ impl<'p, 'w> Machine<'p, 'w> {
             return;
         }
         deadline.reported = true;
-        let task: Vec<String> = deadline.owner.iter().map(ToString::to_string).collect();
-        self.trace.push(Event {
-            seq: self.trace.len() + 1,
-            task: task.join("."),
+        let task = deadline.owner.join(".");
+        self.emit(Event {
+            seq: 0,
+            task,
             instance: String::new(),
             capability: String::new(),
             op: String::new(),
@@ -2809,7 +3292,7 @@ impl<'p, 'w> Machine<'p, 'w> {
         let ever = self
             .deadline
             .as_ref()
-            .and_then(|deadline| deadline.left(&self.clock));
+            .and_then(|deadline| deadline.left(&self.run.clock));
         let within = self.within_left();
         let (left, by_ever) = match (ever, within) {
             (Some(ever), Some(within)) if within < ever => (Some(within), false),
@@ -2818,7 +3301,7 @@ impl<'p, 'w> Machine<'p, 'w> {
         };
         if let Some(left) = left
             && left < settings.timeout
-            && (left.is_zero() || !self.clock.is_virtual())
+            && (left.is_zero() || !self.run.clock.is_virtual())
         {
             settings.timeout = left;
             cut = true;
@@ -2868,19 +3351,19 @@ impl<'p, 'w> Machine<'p, 'w> {
         };
         match (capability, op) {
             ("Console", "print") => {
-                self.world.print(&text(0));
+                self.run.world.borrow_mut().print(&text(0));
                 Ok(Value::Unit)
             }
             // Under virtual time, the run's virtual clock, from 0 at its start, instead of the
             // wall clock (ADR 0116 rule 19, `spec/26 §8`).
-            ("Clock", "now") => Ok(Value::int(if self.clock.is_virtual() {
-                i64::try_from(self.clock.now()).unwrap_or(i64::MAX)
+            ("Clock", "now") => Ok(Value::int(if self.run.clock.is_virtual() {
+                i64::try_from(self.run.clock.now()).unwrap_or(i64::MAX)
             } else {
-                self.world.now()
+                self.run.world.borrow_mut().now()
             })),
             // A value that is not valid UTF-8 aborts the run: its content, not the name,
             // would decide the `Option`'s `public` tag (S-16, ADR 0086).
-            ("Env", "get") => match self.world.env_var(&text(0)) {
+            ("Env", "get") => match self.run.world.borrow_mut().env_var(&text(0)) {
                 Ok(Some(value)) => Ok(some(Value::text(&value))),
                 Ok(None) => Ok(none()),
                 Err(host::NotText) => Err(Stop::Abort(Abort::NotText {
@@ -2900,7 +3383,7 @@ impl<'p, 'w> Machine<'p, 'w> {
                     } = grant
                         && (if writing { *write } else { *read })
                     {
-                        target = host::confine(self.world, prefix, &path);
+                        target = host::confine(&mut **self.run.world.borrow_mut(), prefix, &path);
                         if target.is_some() {
                             break;
                         }
@@ -2910,11 +3393,14 @@ impl<'p, 'w> Machine<'p, 'w> {
                     return Err(file_error("Denied", 1));
                 };
                 let done = if writing {
-                    self.world
+                    self.run
+                        .world
+                        .borrow_mut()
                         .write_file(&target, &text(1))
                         .map(|()| Value::Unit)
                 } else {
-                    self.world.read_file(&target).map(|t| Value::text(&t))
+                    let read = self.run.world.borrow_mut().read_file(&target);
+                    read.map(|t| Value::text(&t))
                 };
                 done.map_err(|problem| match problem {
                     FileFault::NotFound => file_error("NotFound", 0),
@@ -3953,7 +4439,14 @@ mod tests {
         let keys = BTreeMap::new();
         let mut sources = una_syntax::SourceDb::new();
         let span = Span::at(sources.add("src/t.una", b"slice"), 0);
-        let mut machine = Machine::new(&index, &mut world, &[], &keys, Limits::depth(8));
+        let mut machine = Machine::new(
+            &index,
+            &mut world,
+            &[],
+            &keys,
+            Limits::depth(8),
+            Clock::real(),
+        );
         let slice =
             |start: i64, end: i64| vec![Value::text("abc"), Value::int(start), Value::int(end)];
         for (name, args, expected) in [
@@ -4036,7 +4529,14 @@ mod tests {
         let keys = BTreeMap::new();
         let mut sources = una_syntax::SourceDb::new();
         let span = Span::at(sources.add("a.una", b"module a\n"), 0);
-        let mut machine = Machine::new(&index, &mut world, &[], &keys, Limits::depth(3));
+        let mut machine = Machine::new(
+            &index,
+            &mut world,
+            &[],
+            &keys,
+            Limits::depth(3),
+            Clock::real(),
+        );
         for _ in 0..3 {
             assert!(machine.enter(span).is_ok());
         }
@@ -4046,7 +4546,14 @@ mod tests {
         ));
         // A stack used beyond the budget aborts in the same way, below the maximum depth.
         let mut world = crate::host::NoWorld;
-        let mut machine = Machine::new(&index, &mut world, &[], &keys, Limits::depth(3));
+        let mut machine = Machine::new(
+            &index,
+            &mut world,
+            &[],
+            &keys,
+            Limits::depth(3),
+            Clock::real(),
+        );
         machine.stack_base = stack_position(&span).wrapping_add(4096);
         machine.stack_budget = 1024;
         assert!(matches!(
@@ -4077,7 +4584,7 @@ mod tests {
             task_depth: 10,
             stop: None,
         };
-        let mut machine = Machine::new(&index, &mut world, &[], &keys, limits);
+        let mut machine = Machine::new(&index, &mut world, &[], &keys, limits, Clock::real());
         held.store(
             (100 << 20) + (2 << 20),
             std::sync::atomic::Ordering::Relaxed,

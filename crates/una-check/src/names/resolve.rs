@@ -687,6 +687,19 @@ impl<'a> Resolver<'_, '_, 'a> {
                 }
             }
             Stmt::OnStop(on_stop) => self.block(&on_stop.block),
+            // The bound is evaluated once, before the block (`spec/27 §7`).
+            Stmt::Tasks(stmt) => {
+                if let Some(bound) = &stmt.bound {
+                    self.expr(bound);
+                }
+                self.block(&stmt.block);
+            }
+            // The started expression sees the names before it, in a scope of its own.
+            Stmt::Start(stmt) => {
+                self.enter();
+                self.handled(&stmt.handled);
+                self.leave();
+            }
         }
     }
 

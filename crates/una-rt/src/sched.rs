@@ -27,9 +27,9 @@
 //! The stack pool hands out guard-paged stacks by size and takes them back, at most
 //! [`POOL_STACKS`] kept, in O(log k).
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, VecDeque};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
@@ -62,9 +62,10 @@ struct TaskId {
     generation: u64,
 }
 
-/// How to wake a party that parked: a task on its worker, or a thread.
+/// How to wake a party that parked: a task on its worker, at the front of its queue when the
+/// wake goes on the turn in progress, or a thread.
 enum Waker {
-    Task(Arc<Worker>, TaskId),
+    Task(Arc<Worker>, TaskId, bool),
     Thread(std::thread::Thread),
 }
 
@@ -79,7 +80,15 @@ thread_local! {
 impl Waker {
     /// The waker of the calling code: its task when it runs on a worker's coroutine, else its
     /// thread.
+    /// Under virtual time, a task woken by a party of its own turn, the fork and join of a
+    /// block's tasks, goes on at the front of its worker's queue, so that the block's tasks run
+    /// as if inline, as the interpreter runs them (ADR 0117 rule 12).
     fn current() -> Waker {
+        Waker::current_at(crate::runtime::clock().is_virtual())
+    }
+
+    /// The waker of the calling code, which goes to the front of its queue when `front`.
+    fn current_at(front: bool) -> Waker {
         if una_sys::coroutine::inside()
             && let Some((worker, id)) = RUNNING.with(|running| {
                 running
@@ -88,14 +97,14 @@ impl Waker {
                     .map(|(worker, id, _)| (Arc::clone(worker), *id))
             })
         {
-            return Waker::Task(worker, id);
+            return Waker::Task(worker, id, front);
         }
         Waker::Thread(std::thread::current())
     }
 
     fn wake(self) {
         match self {
-            Waker::Task(worker, id) => worker.push(Job::Resume(id)),
+            Waker::Task(worker, id, front) => worker.push_at(Job::Resume(id), front),
             Waker::Thread(thread) => thread.unpark(),
         }
     }
@@ -209,7 +218,9 @@ enum Job {
 /// started: before `main` in an executable ([`Scheduler::start_all`]), else at its first job,
 /// under this queue's lock.
 struct Queue {
-    jobs: VecDeque<Job>,
+    /// The jobs, each with whether it begins a new turn (ADR 0117 rule 11): one pushed to the
+    /// back does, and one pushed to the front goes on the turn in progress.
+    jobs: VecDeque<(Job, bool)>,
     closed: bool,
     started: bool,
 }
@@ -221,23 +232,62 @@ struct Worker {
     index: usize,
     queue: Mutex<Queue>,
     ready: Condvar,
+    /// The attention word of the worker's thread, once it runs.
+    word: Mutex<Option<una_sys::attention::Word>>,
+    /// Under the real clock, when the turn in progress is due to end, in nanoseconds of the
+    /// monotonic clock ([`nanos`]): [`SLICE`] after the later of the turn's start and the
+    /// moment its worker gained a second ready task (ADR 0117 rule 2). Written only under the
+    /// queue's lock, when a turn begins and when a task is queued behind a lone one, so the two
+    /// never race; read by the turn's check points and by the slicer. 0 before any turn.
+    turn_ends: AtomicU64,
     /// Whether the worker has run a task, its warm-up included, in tests.
     #[cfg(test)]
     ran: std::sync::atomic::AtomicBool,
 }
 
 impl Worker {
-    fn push(&self, job: Job) {
-        lock(&self.queue).jobs.push_back(job);
+    /// Queues `job` at the front, on the turn in progress, or at the back, as a new turn.
+    fn push_at(&self, job: Job, front: bool) {
+        {
+            let mut queue = lock(&self.queue);
+            if front {
+                queue.jobs.push_front((job, false));
+            } else {
+                self.arrive(&mut queue, job);
+            }
+        }
         self.ready.notify_one();
     }
 
-    /// The next job, waiting for one; `None` once the queue is closed and empty and the
-    /// worker holds no task.
-    fn next(&self, holding: bool) -> Option<Job> {
+    /// Queues `job` at the back, as a new turn, under the queue's lock. When no other task was
+    /// ready, the task that runs, if any, was alone, and its turn so far was no one's wait: its
+    /// end moves to [`SLICE`] from now, so the code it ran alone, `main`'s before its first
+    /// fork included, never shortens the turn a waiting task sees (#1146). O(1).
+    fn arrive(&self, queue: &mut Queue, job: Job) {
+        if queue.jobs.is_empty() && !crate::runtime::clock().is_virtual() {
+            self.turn_ends
+                .store(nanos().saturating_add(SLICE_NANOS), Ordering::SeqCst);
+        }
+        queue.jobs.push_back((job, true));
+    }
+
+    /// Whether another job waits in the queue.
+    fn others(&self) -> bool {
+        !lock(&self.queue).jobs.is_empty()
+    }
+
+    /// The next job, and whether it begins a new turn, waiting for one; `None` once the queue
+    /// is closed and empty and the worker holds no task.
+    fn next(&self, holding: bool) -> Option<(Job, bool)> {
         let mut queue = lock(&self.queue);
         loop {
             if let Some(job) = queue.jobs.pop_front() {
+                if job.1 && !crate::runtime::clock().is_virtual() {
+                    // A turn's end is set from its own start, never from a phase of the run, so
+                    // how long earlier code ran does not move it (#1146).
+                    self.turn_ends
+                        .store(nanos().saturating_add(SLICE_NANOS), Ordering::SeqCst);
+                }
                 return Some(job);
             }
             if queue.closed && !holding {
@@ -269,7 +319,7 @@ fn serve(worker: Arc<Worker>, shared: Arc<Shared>, ready: Option<mpsc::Sender<()
 
 /// The loop of [`serve`], whose coroutines `scope` owns.
 fn serve_in(
-    scope: &Scope,
+    scope: &Scope<'_>,
     worker: &Arc<Worker>,
     shared: &Arc<Shared>,
     ready: Option<mpsc::Sender<()>>,
@@ -289,12 +339,19 @@ fn serve_in(
     // then decide (#1145).
     let mut entries: Vec<Option<Entry<'_>>> = Vec::with_capacity(WORKER_TASKS);
     let mut free: Vec<usize> = Vec::with_capacity(WORKER_TASKS);
+    let mut generation: u64 = 0;
+    let mut held = 0usize;
+    // Under virtual time every check point of the worker's tasks is counted (ADR 0117 rule 12).
+    COUNTING.with(|counting| counting.set(crate::runtime::clock().is_virtual()));
+    *lock(&worker.word) = Some(crate::runtime::attention_word());
+    // The thread is set up: `main` may start once every thread says so (#1145).
     if let Some(ready) = ready {
         let _ = ready.send(());
     }
-    let mut generation: u64 = 0;
-    let mut held = 0usize;
-    while let Some(job) = worker.next(held > 0) {
+    while let Some((job, fresh)) = worker.next(held > 0) {
+        if fresh {
+            TURN.with(|turn| turn.set(0));
+        }
         let id = match job {
             Job::Start(stack, body, finish) => {
                 #[cfg(test)]
@@ -468,7 +525,9 @@ pub(crate) struct NotStarted;
 impl Scheduler {
     /// A scheduler with the settings of the run. An executable starts all its threads at once,
     /// before `main`, with [`Scheduler::start_all`]; without that call, as in unit tests, a
-    /// worker's thread starts at its first job and a helper as operations queue up.
+    /// worker's thread starts at its first job and a helper as operations queue up. Under the
+    /// real clock its slicer starts here, with the scheduler, so before `main` in an
+    /// executable, whatever the program starts later (#1146).
     pub(crate) fn new(settings: una_interp::Concurrency) -> Arc<Scheduler> {
         let workers = (0..settings.workers.max(1))
             .map(|index| {
@@ -482,12 +541,14 @@ impl Scheduler {
                         started: false,
                     }),
                     ready: Condvar::new(),
+                    word: Mutex::new(None),
+                    turn_ends: AtomicU64::new(0),
                     #[cfg(test)]
                     ran: std::sync::atomic::AtomicBool::new(false),
                 })
             })
             .collect();
-        Arc::new(Scheduler {
+        let scheduler = Arc::new(Scheduler {
             workers,
             shared: Arc::new(Shared {
                 stacks: Mutex::new(BTreeMap::new()),
@@ -502,7 +563,17 @@ impl Scheduler {
                 #[cfg(test)]
                 used: Mutex::new(std::collections::BTreeSet::new()),
             }),
-        })
+        });
+        if !crate::runtime::clock().is_virtual() {
+            let weak = Arc::downgrade(&scheduler);
+            // The slicer only raises attention words; a slicer that cannot start leaves turns
+            // to end when their tasks park, a liveness limit of the run, not a safety one.
+            let _ = std::thread::Builder::new()
+                .name("una-slicer".to_owned())
+                .stack_size(HELPER_STACK)
+                .spawn(move || slice(&weak));
+        }
+        scheduler
     }
 
     /// Starts `body`, part `part` of its construct counted from 1 in index order, as a task on
@@ -523,6 +594,51 @@ impl Scheduler {
         finish: impl FnOnce() + Send + 'static,
     ) -> Result<(), NotStarted> {
         let index = placement(current_worker(), part, self.workers.len());
+        // Under virtual time a block's task runs on the turn of the task that forks it, as if
+        // inline (ADR 0117 rule 12).
+        let front = crate::runtime::clock().is_virtual();
+        self.spawn_at(index, stack, body, finish, front)
+    }
+
+    /// Starts `body` as the root task, `main`, on worker 0, at the back of its queue (ADR 0117
+    /// rules 1 and 11): as [`Scheduler::spawn`] otherwise. The root counts as worker 0 for
+    /// placement (`spec/27 §1` rule 2), and here it runs on worker 0, so [`current_worker`]
+    /// reads 0 in it, as on the `una-main` thread: its parts are placed the same either way.
+    pub(crate) fn spawn_root(
+        &self,
+        stack: usize,
+        body: impl FnOnce() + Send + 'static,
+        finish: impl FnOnce() + Send + 'static,
+    ) -> Result<(), NotStarted> {
+        self.spawn_at(0, stack, body, finish, false)
+    }
+
+    /// Starts `body` as a started task, part `part` of its `tasks` statement counted from 1 in
+    /// the order of its `start`s, at the back of its worker's queue, a turn of its own (ADR
+    /// 0117 rules 7 and 11). It is placed as [`Scheduler::spawn`] places a part. Its turns end
+    /// as every task's do: the slicer runs from the scheduler's start, so a started task
+    /// changes no other task's turns (#1146).
+    pub(crate) fn spawn_started(
+        &self,
+        part: usize,
+        stack: usize,
+        body: impl FnOnce() + Send + 'static,
+        finish: impl FnOnce() + Send + 'static,
+    ) -> Result<(), NotStarted> {
+        let index = placement(current_worker(), part, self.workers.len());
+        self.spawn_at(index, stack, body, finish, false)
+    }
+
+    /// Starts `body` on worker `index`, at the front of its queue when `front`, else as a new
+    /// turn at its back ([`Worker::arrive`]). O(1) besides the stack pool's O(log k).
+    fn spawn_at(
+        &self,
+        index: usize,
+        stack: usize,
+        body: impl FnOnce() + Send + 'static,
+        finish: impl FnOnce() + Send + 'static,
+        front: bool,
+    ) -> Result<(), NotStarted> {
         let worker = self.workers.get(index).ok_or(NotStarted)?;
         let stack = self.shared.take(stack).ok_or(NotStarted)?;
         // The thread starts and the job is queued under one hold of the queue's lock, so no job
@@ -531,12 +647,206 @@ impl Scheduler {
         // the thread is always there already.
         let mut queue = lock(&worker.queue);
         self.serve_worker(worker, &mut queue, None)?;
-        queue
-            .jobs
-            .push_back(Job::Start(stack, Box::new(body), Box::new(finish)));
+        let job = Job::Start(stack, Box::new(body), Box::new(finish));
+        if front {
+            queue.jobs.push_front((job, false));
+        } else {
+            worker.arrive(&mut queue, job);
+        }
         drop(queue);
         worker.ready.notify_one();
         Ok(())
+    }
+}
+
+/// The longest turn of a task while another waits on its worker, under the real clock, in
+/// milliseconds (ADR 0117 rule 2, Fairness).
+const SLICE: u64 = 10;
+
+/// [`SLICE`] in nanoseconds, the unit of turn ends: the finest the monotonic clock gives, so
+/// no rounding of a turn's end can depend on when in a coarser unit the turn began.
+const SLICE_NANOS: u64 = SLICE * 1_000_000;
+
+/// Nanoseconds of the monotonic clock since the process first read it, at least 1: one clock
+/// read, O(1). A `u64` holds 584 years of them.
+fn nanos() -> u64 {
+    static ORIGIN: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    let origin = *ORIGIN.get_or_init(std::time::Instant::now);
+    u64::try_from(origin.elapsed().as_nanos())
+        .unwrap_or(u64::MAX)
+        .max(1)
+}
+
+/// The slicer of a scheduler, under the real clock: wakes at the earliest pending turn end of
+/// its workers, and raises the word of each worker whose turn has reached its end while
+/// another task waits, so the task yields at its next check point. A turn's end is
+/// [`SLICE`] after the later of its start and the moment a second task became ready on its
+/// worker, so the slicer has no phase of its own (#1146). Ends with its scheduler.
+///
+/// It sleeps at most [`SLICE`]: an end set after a scan is at least [`SLICE`] after it, so the
+/// slicer is awake by then. With no end pending it still wakes every [`SLICE`], one O(w)
+/// scan: waiting on a condition variable instead would need every turn's start to check a
+/// sleeping flag and the scheduler's drop to wake it, for a thread that costs little idle.
+/// Each end is handled once; an end that moved after it was read is
+/// handled again at its new value, and a raise before a turn's end costs one slow path, where
+/// [`turn_due`] finds the turn not over. Each wake is O(w) in the w workers; a check point does
+/// no more than before, one clock read on its slow path.
+fn slice(scheduler: &std::sync::Weak<Scheduler>) {
+    let mut handled: Vec<u64> = Vec::new();
+    loop {
+        let Some(scheduler) = scheduler.upgrade() else {
+            return;
+        };
+        handled.resize(scheduler.workers.len(), 0);
+        let now = nanos();
+        let mut next = now.saturating_add(SLICE_NANOS);
+        for (worker, done) in scheduler.workers.iter().zip(handled.iter_mut()) {
+            let ends = worker.turn_ends.load(Ordering::SeqCst);
+            if ends == 0 || ends == *done {
+                continue;
+            }
+            if ends > now {
+                next = next.min(ends);
+                continue;
+            }
+            // With no task waiting, the end is left: a task queued later moves it to a full
+            // slice from then ([`Worker::arrive`]), which this loop handles in turn.
+            *done = ends;
+            if worker.others()
+                && let Some(word) = *lock(&worker.word)
+            {
+                word.raise();
+            }
+        }
+        drop(scheduler);
+        std::thread::sleep(std::time::Duration::from_nanos(
+            next.saturating_sub(nanos()).max(1),
+        ));
+    }
+}
+
+thread_local! {
+    /// On a worker under virtual time: every check point counts toward the turn (ADR 0117 rule
+    /// 12).
+    static COUNTING: Cell<bool> = const { Cell::new(false) };
+    /// The check points of the turn in progress on this worker.
+    static TURN: Cell<u32> = const { Cell::new(0) };
+    /// Whether the task that runs is due to give its worker to the next task, at the slow path
+    /// of its check point.
+    static DUE: Cell<bool> = const { Cell::new(false) };
+}
+
+/// The check points of a turn under virtual time (ADR 0117 rules 11 and 12), as in the
+/// interpreter.
+const TURN_CHECKS: u32 = 1024;
+
+/// Whether every check point of the thread counts toward its turn: on a worker, under virtual
+/// time.
+pub(crate) fn counting() -> bool {
+    COUNTING.with(Cell::get)
+}
+
+/// A check point that reached the attention path (ADR 0117 rule 2): counts it under virtual
+/// time, and says whether the task's turn is over, while another task waits on its worker:
+/// after [`TURN_CHECKS`] check points under virtual time, or once the turn has reached its own
+/// end under the real clock (`Worker::turn_ends`), whatever raised the word: one atomic load
+/// and one clock read, O(1). The task then yields at the slow path ([`yield_due`]).
+pub(crate) fn turn_due() -> bool {
+    let over = if counting() {
+        let checks = TURN.with(|turn| {
+            let checks = turn.get().saturating_add(1);
+            turn.set(checks);
+            checks
+        });
+        checks >= TURN_CHECKS
+    } else {
+        una_sys::coroutine::inside()
+            && RUNNING.with(|running| {
+                running.borrow().as_ref().is_some_and(|(worker, _, _)| {
+                    nanos() >= worker.turn_ends.load(Ordering::SeqCst)
+                })
+            })
+    };
+    let due = over
+        && una_sys::coroutine::inside()
+        && RUNNING.with(|running| {
+            running
+                .borrow()
+                .as_ref()
+                .is_some_and(|(worker, _, _)| worker.others())
+        });
+    DUE.with(|cell| cell.set(due));
+    due
+}
+
+/// At the slow path of a check point: gives the worker to the next task when the turn is
+/// over, going to the back of the queue, and returns once resumed; whether it yielded. Nothing
+/// of the run's state is borrowed here, and the worker swaps the task's slots out.
+pub(crate) fn yield_due() -> bool {
+    if !DUE.with(|cell| cell.replace(false)) {
+        return false;
+    }
+    let running = RUNNING.with(|running| {
+        running
+            .borrow()
+            .as_ref()
+            .map(|(worker, id, _)| (Arc::clone(worker), *id))
+    });
+    let Some((worker, id)) = running else {
+        return false;
+    };
+    worker.push_at(Job::Resume(id), false);
+    una_sys::coroutine::suspend()
+}
+
+/// A count of the tasks of one `tasks` statement that still run, and the one task that may wait
+/// on it, the statement's own (`spec/27 §7`): it parks at the bound and at the end of the
+/// statement, and a task that ends wakes it at the back of its queue, a turn of its own.
+#[derive(Default)]
+pub(crate) struct Counter {
+    state: Mutex<(usize, Option<Waker>)>,
+}
+
+impl Counter {
+    /// Counts one task more once fewer than `bound` run, parking until then.
+    pub(crate) fn acquire(&self, bound: usize) {
+        loop {
+            {
+                let mut state = lock(&self.state);
+                if state.0 < bound {
+                    state.0 += 1;
+                    return;
+                }
+                state.1 = Some(Waker::current_at(false));
+            }
+            park();
+        }
+    }
+
+    /// Counts one task less, and wakes the waiting task.
+    pub(crate) fn release(&self) {
+        let waiter = {
+            let mut state = lock(&self.state);
+            state.0 = state.0.saturating_sub(1);
+            state.1.take()
+        };
+        if let Some(waiter) = waiter {
+            waiter.wake();
+        }
+    }
+
+    /// Parks until no task is counted.
+    pub(crate) fn wait_zero(&self) {
+        loop {
+            {
+                let mut state = lock(&self.state);
+                if state.0 == 0 {
+                    return;
+                }
+                state.1 = Some(Waker::current_at(false));
+            }
+            park();
+        }
     }
 }
 
@@ -629,7 +939,7 @@ impl Scheduler {
                 let finish: Box<dyn FnOnce() + Send> = Box::new(move || {
                     let _ = done.send(());
                 });
-                worker.push(Job::Start(stack, body, finish));
+                worker.push_at(Job::Start(stack, body, finish), false);
             }
             drop(done);
             for _ in 0..wave {
@@ -882,7 +1192,9 @@ pub(crate) fn blocking<T: Send + 'static>(
     pool: Pool,
     job: impl FnOnce() -> T + Send + 'static,
 ) -> T {
-    let shared = if una_sys::coroutine::inside() {
+    // Under virtual time an operation never parks: it runs on the worker, as the interpreter
+    // runs it, so a helper's timing never reorders the tasks (ADR 0117 rule 12).
+    let shared = if una_sys::coroutine::inside() && !crate::runtime::clock().is_virtual() {
         RUNNING.with(|running| {
             running
                 .borrow()
@@ -936,7 +1248,7 @@ pub(crate) fn yield_now() {
     };
     // The worker is this thread, so it takes the job only once the task has suspended; a wake
     // that comes meanwhile adds a resume of its own, which the task's next wait ignores.
-    worker.push(Job::Resume(id));
+    worker.push_at(Job::Resume(id), false);
     drop(worker);
     una_sys::coroutine::suspend();
 }
@@ -957,7 +1269,7 @@ pub(crate) fn blocking_interruptible<T: Send + 'static>(
     entries: &[crate::runtime::Cancel],
     job: impl FnOnce() -> T + Send + 'static,
 ) -> Option<T> {
-    let shared = if una_sys::coroutine::inside() {
+    let shared = if una_sys::coroutine::inside() && !crate::runtime::clock().is_virtual() {
         RUNNING.with(|running| {
             running
                 .borrow()
@@ -1277,6 +1589,132 @@ mod tests {
         release.send(()).unwrap();
         release.send(()).unwrap();
         helpers.close();
+    }
+
+    /// The length of the first turn of a task that shares one worker with another, after
+    /// `earlier` ran on the scheduler for `offset`: what a check point loop measures from the
+    /// task's start to the end of its turn, or `None` when the turn never ended.
+    fn first_turn(earlier: bool, offset: std::time::Duration) -> Option<std::time::Duration> {
+        use std::time::{Duration, Instant};
+        let sched = Scheduler::new(settings(1, 1, 1));
+        if earlier {
+            let (done, ended) = channel();
+            sched
+                .spawn_started(1, 256 * 1024, || {}, move || done.send(()))
+                .unwrap();
+            assert_eq!(ended.recv(), Some(()));
+        }
+        std::thread::sleep(offset);
+        let (measured, length) = std::sync::mpsc::channel();
+        let looping = start(&sched, 1, move || {
+            // A check point as compiled code makes one: the slow path when the word changed.
+            let word = crate::runtime::attention_word();
+            let mut seen = word.load();
+            let began = Instant::now();
+            let mut turn = None;
+            while began.elapsed() < Duration::from_millis(200) {
+                std::hint::black_box(seen);
+                if let Some(now) = word.changed_since(seen) {
+                    seen = now;
+                    if turn_due() {
+                        turn = Some(began.elapsed());
+                        yield_due();
+                        break;
+                    }
+                }
+            }
+            measured.send(turn).unwrap();
+        });
+        let waiting = start(&sched, 2, || {});
+        assert_eq!(looping.recv(), Some(()));
+        assert_eq!(waiting.recv(), Some(()));
+        length.recv().unwrap()
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "times turns on the real clock, which Miri simulates")]
+    fn a_turn_lasts_its_slice_from_its_own_start_whatever_ran_before() {
+        // #1146: a turn's end was set by a slicer that started at the run's first started task
+        // and ticked on its own 10 ms phase, so a task that shared a worker never yielded
+        // before any `start`, and after one its turn lasted 10 to 20 ms, by how long earlier
+        // code ran. Now the slicer starts with the scheduler and each turn ends `SLICE` after
+        // its own start. The shortest of a few tries is taken, since load only lengthens a
+        // turn; the old phase gave 20 ms less the offset, at least 14 ms here.
+        let slice = std::time::Duration::from_millis(SLICE);
+        let most = slice + std::time::Duration::from_nanos(3_500_000);
+        for earlier in [false, true] {
+            for offset in [2, 4, 6] {
+                let shortest = (0..5)
+                    .map(|_| first_turn(earlier, std::time::Duration::from_millis(offset)))
+                    .map(|turn| turn.expect("a turn that shares its worker ends"))
+                    .min()
+                    .unwrap();
+                assert!(
+                    shortest + std::time::Duration::from_millis(1) >= slice && shortest <= most,
+                    "earlier start {earlier}, offset {offset} ms: turn of {shortest:?}"
+                );
+            }
+        }
+    }
+
+    /// How long the turn of a task that ran alone for `alone` lasts once a second task is
+    /// queued behind it, measured from that queuing to the end of the turn, or `None` when the
+    /// turn never ended.
+    fn turn_after_arrival(alone: std::time::Duration) -> Option<std::time::Duration> {
+        use std::time::{Duration, Instant};
+        let sched = Scheduler::new(settings(1, 1, 1));
+        let queued: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
+        let (measured, length) = std::sync::mpsc::channel();
+        let seen = Arc::clone(&queued);
+        let looping = start(&sched, 1, move || {
+            let word = crate::runtime::attention_word();
+            let mut last = word.load();
+            let began = Instant::now();
+            let mut turn = None;
+            while began.elapsed() < Duration::from_millis(300) {
+                std::hint::black_box(last);
+                if let Some(now) = word.changed_since(last) {
+                    last = now;
+                    if turn_due() {
+                        let at: Option<Instant> = *lock(&seen);
+                        turn = at.map(|at| at.elapsed());
+                        yield_due();
+                        break;
+                    }
+                }
+            }
+            measured.send(turn).unwrap();
+        });
+        std::thread::sleep(alone);
+        *lock(&queued) = Some(Instant::now());
+        let waiting = start(&sched, 2, || {});
+        assert_eq!(looping.recv(), Some(()));
+        assert_eq!(waiting.recv(), Some(()));
+        length.recv().unwrap()
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "times turns on the real clock, which Miri simulates")]
+    fn a_lone_task_that_gains_a_waiting_task_keeps_a_full_turn() {
+        // #1146, second review: a turn was timed from its start on the worker, so a task that
+        // ran alone for 9 ms, as `main` does before its first `start`, yielded 1 ms after a
+        // second task was queued, and how long it had run alone, `secret` code included,
+        // decided whether a later deadline passed. Its turn now ends `SLICE` after the second
+        // task became ready. The shortest of a few tries is taken, since load only lengthens a
+        // turn.
+        let slice = std::time::Duration::from_millis(SLICE);
+        let most = slice + std::time::Duration::from_nanos(3_500_000);
+        for alone in [0, 9, 25] {
+            let shortest = (0..5)
+                .map(|_| turn_after_arrival(std::time::Duration::from_millis(alone)))
+                .map(|turn| turn.expect("a turn that shares its worker ends"))
+                .min()
+                .unwrap();
+            assert!(
+                shortest >= slice && shortest <= most,
+                "alone for {alone} ms: turn of {shortest:?} after the arrival"
+            );
+        }
     }
 
     #[test]

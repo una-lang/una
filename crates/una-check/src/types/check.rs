@@ -230,6 +230,12 @@ pub(crate) struct Checker<'c, 'a, 's> {
     pub(crate) loops: Vec<LoopFrame>,
     /// Inside an `on stop` block, whose statements must not fail (U3029, `spec/26 §5`).
     pub(crate) in_on_stop: bool,
+    /// Inside the expression of a `start`, which must not fail after its handling clauses
+    /// (U3029, `spec/27 §7`).
+    pub(crate) in_start: bool,
+    /// The `tasks` statements whose blocks enclose the statement checked, innermost last: the
+    /// task depth and lambda depth at each, where a `start` of it may stand (U2035).
+    pub(crate) tasks_frames: Vec<(usize, usize)>,
     /// Inside the body of a `for ever`, which runs no `for ever` and calls no `diverges`
     /// function (U3027, `spec/26 §5`).
     pub(crate) in_ever: bool,
@@ -514,6 +520,8 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             loops: Vec::new(),
             misplaced_exits: Vec::new(),
             in_on_stop: false,
+            in_start: false,
+            tasks_frames: Vec::new(),
             in_ever: false,
             do_stops: false,
             timing: Vec::new(),

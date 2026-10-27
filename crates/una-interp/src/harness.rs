@@ -79,14 +79,16 @@ pub fn run_main(
         Ok(hashing) => hashing,
         Err(abort) => return Some(not_started(abort)),
     };
-    let mut machine = Machine::new(&index, world, &host.grants, &host.keys, limits);
-    machine.hashing = hashing;
-    machine.clock = Clock::for_run(host.virtual_time);
-    let result = machine.run_main(main);
+    let clock = Clock::for_run(host.virtual_time);
+    let mut machine = Machine::new(&index, world, &host.grants, &host.keys, limits, clock);
+    machine.keyed(hashing);
+    let result = machine
+        .rooted(|machine| machine.run_main(main))
+        .unwrap_or_else(unrooted);
     let completion = completion(&index, result, Form::Redacted);
     Some(Run {
         completion,
-        trace: machine.trace,
+        trace: machine.run.take_trace(),
     })
 }
 
@@ -121,15 +123,23 @@ pub fn run_drive(
         Ok(hashing) => hashing,
         Err(abort) => return Ok(not_started(abort)),
     };
-    let mut machine = Machine::new(&index, world, &host.grants, &host.keys, limits);
-    machine.hashing = hashing;
-    machine.clock = Clock::for_run(host.virtual_time);
-    let result = machine.drive(init, step, on_stop, &drive);
+    let clock = Clock::for_run(host.virtual_time);
+    let mut machine = Machine::new(&index, world, &host.grants, &host.keys, limits, clock);
+    machine.keyed(hashing);
+    let result = machine
+        .rooted(|machine| machine.drive(init, step, on_stop, &drive))
+        .unwrap_or_else(unrooted);
     let completion = completion(&index, result, Form::Redacted);
     Ok(Run {
         completion,
-        trace: machine.trace,
+        trace: machine.run.take_trace(),
     })
+}
+
+/// The outcome of a root task that could not run as a coroutine (ADR 0117 rule 11): the abort
+/// rather than a value.
+fn unrooted<'p>(abort: Abort) -> Flow<'p> {
+    Err(Stop::Abort(abort))
 }
 
 /// A run that aborted before it started, with no trace: the host gave no random bytes for the
@@ -245,13 +255,21 @@ fn run_example<'p>(
             };
         }
     };
-    let mut machine = Machine::new(index, &mut world, &grants, &keys, limits);
-    machine.hashing = hashing;
     // Time in a test is virtual, and its `stop after N` line is its stop schedule (ADR 0116
     // rule 19, `spec/26 §8`).
-    machine.clock = Clock::virtual_time();
-    machine.stop_after = example.stop_after;
-    let result = machine.eval_closed(&mut Env::new(), &example.body);
+    let mut machine = Machine::new(
+        index,
+        &mut world,
+        &grants,
+        &keys,
+        limits,
+        Clock::virtual_time(),
+    );
+    machine.keyed(hashing);
+    machine.run.stop_after.set(example.stop_after);
+    let result = machine
+        .rooted(|machine| machine.eval_closed(&mut Env::new(), &example.body))
+        .unwrap_or_else(unrooted);
     let failure = match &result {
         Err(Stop::Abort(_) | Stop::Exit(..)) => Some(ExampleFailure {
             expectation: None,
@@ -259,7 +277,7 @@ fn run_example<'p>(
         }),
         _ => judge(&mut machine, index, example, &result, form),
     };
-    let trace = std::mem::take(&mut machine.trace);
+    let trace = machine.run.take_trace();
     ExampleRun {
         module: module.to_owned(),
         name: example.name.clone(),
@@ -334,7 +352,10 @@ where
                 }
                 _ => {}
             }
-            let reason = match machine.eval_closed(&mut env, check) {
+            let checked = machine
+                .rooted(|machine| machine.eval_closed(&mut env, check))
+                .unwrap_or_else(unrooted);
+            let reason = match checked {
                 Ok(Value::Bool(true)) => return None,
                 Ok(_) => match result {
                     Ok(value) if mentions_result => {
@@ -383,8 +404,8 @@ where
             line,
         } => {
             let instance = format!("given:{cap}");
-            let mut events = machine
-                .trace
+            let trace = machine.run.trace();
+            let mut events = trace
                 .iter()
                 .filter(|e| e.instance == instance && e.op == *op);
             if *negated {
@@ -461,6 +482,10 @@ fn mentions(expr: &Expr, name: &str) -> bool {
         Expr::Handle { body, handler, .. } => mentions(body, name) || mentions(handler, name),
         Expr::Attempt { body, .. } => mentions(body, name),
         Expr::Within { deadline, body, .. } => atom(deadline) || mentions(body, name),
+        Expr::Tasks { bound, body, .. } => {
+            bound.as_ref().is_some_and(|(b, _)| atom(b)) || mentions(body, name)
+        }
+        Expr::Start { task, .. } => mentions(task, name),
         Expr::With { source, body, .. } => {
             (match source {
                 Source::Rebind(_) => false,

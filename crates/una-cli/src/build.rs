@@ -196,6 +196,8 @@ pub(crate) fn build_command(
         &entry,
         manifest.drive.is_some(),
     );
+    // A program with a `tasks` statement runs `main` as a coroutine (ADR 0117 rule 11).
+    let tasks = una_core::has_tasks(&analysis.program);
     let meta = |described: &una_codegen::Described<'_>| {
         let sites: Vec<una_diag::Location> = described
             .sites
@@ -208,6 +210,9 @@ pub(crate) fn build_command(
                 section => format!("`{section}`"),
             },
             "stops": stops,
+            "tasks": tasks,
+            // This backend never elides a check (ADR 0112): `--virtual-time` is accepted.
+            "elision": false,
             "grants": grants,
             "uses": uses,
             "sites": sites,

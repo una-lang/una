@@ -41,6 +41,14 @@ pub trait World {
     fn canonical(&mut self, path: &Path) -> Option<PathBuf>;
     /// Whether `path` itself is a symbolic link, dangling or not, without following it.
     fn is_link(&mut self, path: &Path) -> bool;
+    /// Takes `event` as it is written, as the trace file of `una run --trace` does (ADR 0117
+    /// rule 10): `true` when the run need not keep it. The default keeps every event.
+    fn trace_event(&mut self, _event: &crate::machine::Event) -> bool {
+        false
+    }
+    /// A started task at `path` ended alone after `abort`, U6003 at the call that ran too
+    /// deep (`spec/27 §7`): its line on stderr. The default writes nothing.
+    fn task_aborted(&mut self, _path: &str, _abort: &crate::machine::Abort) {}
 }
 
 /// The world of examples: they cannot reach host capabilities (`spec/11 §6`), so nothing here

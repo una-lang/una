@@ -172,8 +172,9 @@ pub enum Code {
     U2033,
     /// `stop` or `skip` outside a loop body, or across a task boundary.
     U2034,
-    /// `first of` with fewer than two branches, or a line that is not an expression (ADR
-    /// 0117 rule 6).
+    /// `first of` with fewer than two branches, or a line that is not an expression; `start`
+    /// outside the block of a `tasks`, inside a task within it, or with a `with` clause (ADR
+    /// 0117 rules 6 and 7).
     U2035,
     /// A decimal scale out of place (ADR 0120).
     U2037,
@@ -705,7 +706,7 @@ impl Code {
             Code::U2035 => &Entry {
                 code: "U2035",
                 domain: Domain::Types,
-                meaning: "`first of` with fewer than two branches, or a line that is not an expression",
+                meaning: "`first of` with fewer than two branches, or a line that is not an expression; `start` outside the block of a `tasks`, inside a task within it, or with a `with` clause",
             },
             Code::U2037 => &Entry {
                 code: "U2037",

@@ -11,3 +11,4 @@ tests/conformance/runtime/hash_keys_equal
 tests/conformance/runtime/hash_on_stop_run
 tests/conformance/runtime/hash_until_run
 tests/conformance/runtime/loop_state_dense
+tests/conformance/runtime/hash_tasks

@@ -989,3 +989,129 @@ pub main() -> Unit
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A package of edition 0.4 whose `main` starts `count` tasks at most 20,000 at once, each of
+/// which makes one request for `path` to `port`, then prints `done`.
+fn started_requests(name: &str, port: u16, path: &str, count: usize) -> PathBuf {
+    let program = format!(
+        r#"module many
+
+probe() -> Unit
+  uses @http: Http[get]
+=
+  let outcome = attempt @http.get("http://127.0.0.1:{port}{path}", headers: [], key_name: None)
+  unit
+
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @http: Http[get]
+=
+  tasks at most 20000 at once
+    for i in 1..{count}
+      start probe()
+  @console.print("done")
+"#
+    );
+    let dir = std::env::temp_dir().join(format!("una-http-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(
+        dir.join("ita.una"),
+        format!(
+            "ita {name}\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry many\n  grants\n    console\n    http \"http://127.0.0.1:{port}\" get\n"
+        ),
+    )
+    .unwrap();
+    std::fs::copy(
+        root().join("tests/conformance/runtime/for_ever_on_stop/ita.lock"),
+        dir.join("ita.lock"),
+    )
+    .unwrap();
+    std::fs::write(dir.join("src/many.una"), program).unwrap();
+    let built = una(&dir, &["build", "."]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    dir
+}
+
+/// Runs the executable of [`started_requests`] for `count` tasks under a memory budget that
+/// grows linearly with them, 32 MiB and 64 KiB a task, and returns how long it took: a run
+/// whose memory grew faster than its tasks would stop with U6003.
+fn run_started(port: u16, count: usize) -> Duration {
+    let name = format!("started{count}");
+    let dir = started_requests(&name, port, "/ok", count);
+    let budget = (32 + count * 64 / 1024).to_string();
+    let started = std::time::Instant::now();
+    let native = Command::new(dir.join(format!("target/una/{name}")))
+        .args(["--max-memory", &budget, "--http-timeout", "30"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    let took = started.elapsed();
+    assert_eq!(native.status.code(), Some(0), "{count} tasks: {native:?}");
+    assert_eq!(String::from_utf8_lossy(&native.stdout), "done\n");
+    let _ = std::fs::remove_dir_all(&dir);
+    took
+}
+
+#[test]
+fn a_thousand_and_ten_thousand_started_tasks_parked_on_requests_grow_linearly() {
+    // ADR 0117 rules 2, 3 and 7, Conformance (scale): each started task parks on a request,
+    // on the helper pool or in its queue, so thousands of tasks wait at once on a few
+    // workers; their memory stays within a budget linear in their number, and the time to
+    // serve ten times as many stays within a linear bound with generous slack.
+    let server = Server::start();
+    let one = run_started(server.port, 1_000);
+    let ten = run_started(server.port, 10_000);
+    assert!(
+        ten < one * 30 + Duration::from_secs(5),
+        "1,000 tasks took {one:?}, and 10,000 took {ten:?}"
+    );
+}
+
+#[test]
+#[ignore = "about 15,000 coroutines and requests: run by the release gates (ADR 0117 Conformance, scale)"]
+fn fifteen_thousand_started_tasks_parked_on_requests_run_within_a_linear_budget() {
+    let server = Server::start();
+    let one = run_started(server.port, 1_000);
+    let fifteen = run_started(server.port, 15_000);
+    assert!(
+        fifteen < one * 45 + Duration::from_secs(10),
+        "1,000 tasks took {one:?}, and 15,000 took {fifteen:?}"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "about 20,000 coroutines: run by the release gates on Linux (ADR 0117 rule 2)"]
+fn twenty_thousand_started_tasks_report_the_cap_of_the_map_count_on_linux() {
+    // ADR 0117 rule 2 and its amendment of 2026-10-19 on S4: a run holds at most a quarter of
+    // `vm.max_map_count` started tasks at once, so 20,000 tasks under the usual default of
+    // 65,530 stop with U6003 naming the cap, never with a failed mapping; a system with a
+    // larger map count runs them all.
+    let count: usize = std::fs::read_to_string("/proc/sys/vm/max_map_count")
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let cap = count / 4;
+    let server = Server::start();
+    // Each request waits seconds for its answer, so the tasks pile up to the cap.
+    let dir = started_requests("started20000", server.port, "/slow", 20_000);
+    let native = Command::new(dir.join("target/una/started20000"))
+        .args(["--http-timeout", "30"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    if cap < 20_000 {
+        assert_eq!(native.status.code(), Some(1), "{native:?}");
+        assert!(
+            String::from_utf8_lossy(&native.stderr).contains(&format!(
+                "exceeds the {cap} started tasks this system allows at once"
+            )),
+            "{native:?}"
+        );
+    } else {
+        assert_eq!(native.status.code(), Some(0), "{native:?}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

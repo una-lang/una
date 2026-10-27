@@ -1,9 +1,10 @@
 # The unit tests of una-rt that Miri does not run (#766), by the name the test harness prints,
 # sorted. scripts/sanitize.sh fails when the tests Miri ignores differ from this list, so a
 # skip is never added silently. Each is ignored in the code with its reason: a scenario run in
-# a process of its own, a test that starts such a process, or a test that starts the
-# scheduler's threads, maps a task's stack or switches coroutines, which Miri cannot do (#1145),
-# or that starts the timer thread, which serves until the process ends, while Miri rejects a
+# a process of its own, a test that starts such a process, a test that starts the scheduler's
+# threads, maps a task's stack or switches coroutines, which Miri cannot do (#1145), a test
+# that times the scheduler's turns on the real clock, which Miri simulates (#1146), or a test
+# that starts the timer thread, which serves until the process ends, while Miri rejects a
 # thread alive at exit (#1193).
 ffi::tests::a_refused_task_aborts_the_run
 ffi::tests::a_refused_task_aborts_the_run_scenario
@@ -70,6 +71,8 @@ runtime::tests::the_memory_budget_at_an_iteration_scenario
 runtime::tests::the_memory_budget_fires_at_its_exact_byte
 sched::tests::a_cancelled_task_parked_on_an_interruptible_wait_is_woken_at_once
 sched::tests::a_construct_starts_no_thread_and_maps_no_stack_whatever_ran_before
+sched::tests::a_lone_task_that_gains_a_waiting_task_keeps_a_full_turn
+sched::tests::a_turn_lasts_its_slice_from_its_own_start_whatever_ran_before
 sched::tests::a_yield_lets_the_jobs_queued_before_it_run_first
 sched::tests::one_worker_runs_a_parent_and_the_children_it_waits_for_three_levels_deep
 sched::tests::placement_depends_only_on_the_parent_s_worker_the_part_and_the_workers

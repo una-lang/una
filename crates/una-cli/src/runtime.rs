@@ -76,6 +76,8 @@ pub(crate) struct RunOptions<'a> {
     pub(crate) deadline: Option<u64>,
     /// `--stop-grace`: the seconds from the first host stop request to the hard stop (rule 16).
     pub(crate) stop_grace: u64,
+    /// `--trace <file>`: the trace, written to the file as it happens (ADR 0117 rule 10).
+    pub(crate) trace: Option<&'a Path>,
 }
 
 /// The flags of tasks as given on the command line, each `None` when absent (ADR 0117).
@@ -102,17 +104,82 @@ impl TaskFlags {
     }
 }
 
+/// A line for the thread that writes the output: to stdout, or to stderr.
+enum Line {
+    Out(String),
+    Err(String),
+}
+
+/// The trace file of `--trace`, written as the run goes (ADR 0117 rule 10): `[`, the events
+/// separated by `,`, then `]` once the run has ended, so a finished file is one JSON array.
+struct TraceFile {
+    file: io::BufWriter<std::fs::File>,
+    written: usize,
+    failed: Option<io::Error>,
+}
+
+impl TraceFile {
+    fn start(path: &Path) -> io::Result<TraceFile> {
+        Ok(TraceFile {
+            file: io::BufWriter::new(std::fs::File::create(path)?),
+            written: 0,
+            failed: None,
+        })
+    }
+
+    fn event(&mut self, event: &una_interp::Event) {
+        if self.failed.is_some() {
+            return;
+        }
+        let separator = if self.written == 0 { "[" } else { "," };
+        self.written += 1;
+        if let Err(error) = write!(self.file, "{separator}{}", una_interp::event_json(event)) {
+            self.failed = Some(error);
+        }
+    }
+
+    /// Closes the array and flushes the file: the error of the first write that failed.
+    fn finish(mut self) -> io::Result<()> {
+        if let Some(error) = self.failed.take() {
+            return Err(error);
+        }
+        let opening = if self.written == 0 { "[" } else { "" };
+        write!(self.file, "{opening}]")?;
+        self.file.flush()
+    }
+}
+
 /// The world of `una run`: printed lines go to the thread that writes stdout, environment
 /// variables come from the binary, and the other host operations reach the machine directly.
 struct HostWorld<'a> {
-    lines: Sender<String>,
+    lines: Sender<Line>,
     environment: Environment<'a>,
+    /// The trace file, and whether the run keeps its events too, for `--json`.
+    trace: Option<TraceFile>,
+    keep: bool,
+    /// The sources, for the position of a started task that ends alone.
+    sources: &'a SourceDb,
 }
 
 impl World for HostWorld<'_> {
     fn print(&mut self, line: &str) {
         // The receiver only goes away once stdout has failed, and that is reported then.
-        let _ = self.lines.send(line.to_owned());
+        let _ = self.lines.send(Line::Out(line.to_owned()));
+    }
+
+    /// The run keeps an event only for the document of `--json`: without it, the trace goes to
+    /// the file of `--trace`, or nowhere, so a long run's trace never grows in memory.
+    fn trace_event(&mut self, event: &una_interp::Event) -> bool {
+        if let Some(file) = &mut self.trace {
+            file.event(event);
+        }
+        !self.keep
+    }
+
+    fn task_aborted(&mut self, path: &str, abort: &Abort) {
+        let _ = self
+            .lines
+            .send(Line::Err(task_aborted_line(path, abort, self.sources)));
     }
 
     fn now(&mut self) -> i64 {
@@ -371,7 +438,25 @@ pub(crate) fn run_command(
     } else {
         None
     };
-    let (sender, receiver) = channel::<String>();
+    // The trace file of `--trace` is made before the run starts: one that cannot be made is
+    // a usage error, as for the executable (`spec/16 §3` rule 4).
+    let trace_file = match options.trace {
+        Some(path) => match TraceFile::start(path) {
+            Ok(file) => Some(file),
+            Err(error) => {
+                writeln!(
+                    stderr,
+                    "error: cannot write the trace to `{}`: {error}",
+                    path.display()
+                )?;
+                return Ok(ExitStatus::Usage);
+            }
+        },
+        None => None,
+    };
+    let keep = options.json;
+    let sources = &package.sources;
+    let (sender, receiver) = channel::<Line>();
     let program = &analysis.program;
     let entry_path = entry.as_str();
     let host = &host;
@@ -389,22 +474,34 @@ pub(crate) fn run_command(
                 let mut world = HostWorld {
                     lines: sender,
                     environment,
+                    trace: trace_file,
+                    keep,
+                    sources,
                 };
-                match drive {
+                let run = match drive {
                     Some(drive) => {
                         una_interp::run_drive(program, entry_path, &mut world, host, limits, drive)
                             .ok()
                     }
                     None => una_interp::run_main(program, entry_path, &mut world, host, limits),
-                }
+                };
+                let traced = world.trace.take().map(TraceFile::finish);
+                (run, traced)
             })?;
         for line in receiver {
-            if options.json {
-                output.push(line);
-            } else if write_error.is_none()
-                && let Err(error) = writeln!(stdout, "{line}").and_then(|()| stdout.flush())
-            {
-                write_error = Some(error);
+            match line {
+                Line::Out(line) if options.json => output.push(line),
+                Line::Out(line) => {
+                    if write_error.is_none()
+                        && let Err(error) = writeln!(stdout, "{line}").and_then(|()| stdout.flush())
+                    {
+                        write_error = Some(error);
+                    }
+                }
+                // A started task that ended alone (`spec/27 §7`): its line as it happens.
+                Line::Err(line) => {
+                    let _ = writeln!(stderr, "{line}").and_then(|()| stderr.flush());
+                }
             }
         }
         Ok::<_, io::Error>(
@@ -415,6 +512,22 @@ pub(crate) fn run_command(
     });
     drop(ceiling);
     drop(watching);
+    let (evaluated, traced) = match evaluated {
+        Ok((run, traced)) => (Ok(run), traced),
+        Err(error) => (Err(error), None),
+    };
+    // A trace file that could not be written is reported after the run, with exit code 2, as
+    // for the executable.
+    if let Some(Err(error)) = traced
+        && let Some(path) = options.trace
+    {
+        writeln!(
+            stderr,
+            "error: cannot write the trace to `{}`: {error}",
+            path.display()
+        )?;
+        return Ok(ExitStatus::Usage);
+    }
     let run = match evaluated {
         Ok(Some(run)) => run,
         Ok(None) => {
@@ -463,7 +576,8 @@ pub(crate) fn run_command(
             | Abort::NoRandomBytes
             | Abort::Tables { .. }
             | Abort::IntText { .. }
-            | Abort::HostStop { .. },
+            | Abort::HostStop { .. }
+            | Abort::Unstarted { .. },
         ) => ExitStatus::Errors,
         Completion::Aborted(Abort::Fault { .. }) => ExitStatus::Internal,
     };
@@ -773,6 +887,26 @@ fn completion_diagnostic(
     }
 }
 
+/// The one line on stderr of a started task at `path` that ended alone after `abort` (`spec/27
+/// §7`).
+fn task_aborted_line(path: &str, abort: &Abort, sources: &SourceDb) -> String {
+    let (message, span) = match abort {
+        Abort::Depth { span, limit } => (
+            format!("this call exceeds the maximum call depth of {limit}"),
+            Some(*span),
+        ),
+        _ => ("it stopped".to_owned(), None),
+    };
+    let location = span.map(|span| sources.location(span));
+    una_interp::concurrency::ended_alone(
+        path,
+        &message,
+        location
+            .as_ref()
+            .map(|at| (at.file.as_str(), at.start.line, at.start.col)),
+    )
+}
+
 fn abort_diagnostic(abort: &Abort, sources: &SourceDb, root: &Location) -> Diagnostic {
     match abort {
         Abort::Depth { span, limit } => Diagnostic::error(
@@ -814,6 +948,20 @@ fn abort_diagnostic(abort: &Abort, sources: &SourceDb, root: &Location) -> Diagn
             Code::U6007,
             host_stop_message(*hard),
             sources.location(*span),
+        ),
+        Abort::Unstarted { span, cap } => Diagnostic::error(
+            Code::U6003,
+            match cap {
+                Some(cap) => format!(
+                    "this `start` exceeds the {cap} started tasks this system allows at once, a quarter of `vm.max_map_count`"
+                ),
+                None if span.is_some() => {
+                    "this `start` could not run its task: no stack could be mapped for it"
+                        .to_owned()
+                }
+                None => "the root task could not run: no stack could be mapped for it".to_owned(),
+            },
+            span.map_or_else(|| root.clone(), |span| sources.location(span)),
         ),
         Abort::Fault { message, span } => Diagnostic::error(
             Code::U8001,

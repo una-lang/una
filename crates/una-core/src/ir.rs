@@ -1831,6 +1831,29 @@ pub enum Expr {
         /// The expression in the source.
         span: Span,
     },
+    /// `tasks(b) e`: the block of a `tasks` statement (`spec/27 §7`, ADR 0117 rule 7), run in
+    /// the current task. The `start`s inside `e`, outside any task of it, start tasks that run
+    /// beside it; the statement ends once `e` has ended and every task it started has ended,
+    /// also when `e` fails, after cancelling them, or leaves by an `exit` of an enclosing loop.
+    /// Its value is `e`'s: the tuple of the outer bindings `e` updates, or `unit`.
+    Tasks {
+        /// The bound of `at most b at once`, an `Int` bound before the statement, and where it
+        /// is written, for its obligation `b >= 1`; none for the default bound.
+        bound: Option<(Atom, Span)>,
+        /// The block.
+        body: Box<Expr>,
+        /// The statement in the source.
+        span: Span,
+    },
+    /// `start e`: starts a task for `e`, a `Unit` that cannot fail, closed over the bindings
+    /// before it, and goes on; once as many tasks as its `tasks` statement's bound run, it
+    /// first waits until one ends (`spec/27 §7`, ADR 0117 rule 7). Its value is `unit`.
+    Start {
+        /// The started expression, with its deadline and handling clauses.
+        task: Box<Expr>,
+        /// The statement in the source.
+        span: Span,
+    },
     /// `if a then e else e`.
     If {
         /// The condition.

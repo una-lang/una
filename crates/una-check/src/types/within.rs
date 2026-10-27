@@ -196,6 +196,18 @@ impl Checker<'_, '_, '_> {
             return;
         }
         let shown = self.show(failure);
+        // A started task must not fail (ADR 0117 rule 7).
+        if self.in_start {
+            self.report.error(
+                Code::U3029,
+                span,
+                super::authority::START_FAILS.replace(
+                    "{what}",
+                    &format!("`within` can fail with `{shown}` when its deadline passes"),
+                ),
+            );
+            return;
+        }
         self.report.error(
             Code::U3007,
             span,
@@ -219,6 +231,13 @@ impl Checker<'_, '_, '_> {
                 Code::U3029,
                 span,
                 "`if error pass` passes the failure on, and `on stop` must not fail; handle it with `if error use`".to_owned(),
+            );
+        } else if self.in_start && self.authority() {
+            self.report.error(
+                Code::U3029,
+                span,
+                super::authority::START_FAILS
+                    .replace("{what}", "`if error pass` passes the failure on"),
             );
         }
         if let Some(inner) = inner {

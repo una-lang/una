@@ -216,6 +216,10 @@ pub(crate) enum Command {
         /// (ADR 0116)
         #[arg(long, value_name = "SECONDS", default_value_t = una_interp::stopping::DEFAULT_GRACE_SECS, value_parser = stop_grace)]
         stop_grace: u64,
+
+        /// Write the trace to this file as a JSON array, each event as it happens (ADR 0117)
+        #[arg(long, value_name = "FILE")]
+        trace: Option<PathBuf>,
     },
     /// Compile `main` of the `[run] entry` module into a native executable
     Build {

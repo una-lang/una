@@ -14,8 +14,9 @@ use una_syntax::ast::{
     Arg, BinaryOp, Block, BlockExpr, Body, CapBindingValue, Clause, ClauseKind, Convention,
     DeclKind, ElseBranch, EverStmt, ExampleDecl, ExpectationKind, Expr, ExprKind, FirstOf,
     ForSource, ForStmt, FunctionDecl, Handled, HandlingKind, IfBlock, IfThenStmt, IsTarget,
-    LetValue, Literal, OpClauseKind, PatternKind, Range, SignedInt, Stmt, TextLit, TextPart,
-    TogetherFor, TogetherStmt, UnaryOp, UntilStmt, UsesClause, VariantExpr, WhenExpr,
+    LetValue, Literal, OpClauseKind, PatternKind, Range, SignedInt, StartStmt, Stmt, TasksStmt,
+    TextLit, TextPart, TogetherFor, TogetherStmt, UnaryOp, UntilStmt, UsesClause, VariantExpr,
+    WhenExpr,
 };
 use una_syntax::{SourceDb, Span};
 
@@ -2003,6 +2004,27 @@ impl<'e, 'a> Fx<'e, 'a> {
                 }
                 // Never the last line of a block, which the parser reports.
                 Stmt::Together(stmt) => self.together(&mut lets, stmt),
+                // As the last line, the value is `unit` (`spec/27 §7`).
+                Stmt::Tasks(stmt) => {
+                    self.tasks(&mut lets, stmt);
+                    if index == last {
+                        tail = CoreExpr::Atom {
+                            atom: Atom::Unit,
+                            span: stmt.span,
+                        };
+                        tail_span = stmt.span;
+                    }
+                }
+                Stmt::Start(stmt) => {
+                    self.start(&mut lets, stmt);
+                    if index == last {
+                        tail = CoreExpr::Atom {
+                            atom: Atom::Unit,
+                            span: stmt.span,
+                        };
+                        tail_span = stmt.span;
+                    }
+                }
                 Stmt::For(stmt) => {
                     self.for_loop(&mut lets, stmt);
                     if index == last {
@@ -3013,6 +3035,70 @@ impl<'e, 'a> Fx<'e, 'a> {
         lets.push(Let::destructure(after, Atom::Var(t), stmt.span));
     }
 
+    /// `tasks [at most b at once]` with its block: `let (x₁, ..., xₙ) = tasks(b) e`, where `e`
+    /// is the block, which returns the new values of the outer bindings it updates, as the
+    /// block of an `if` without `else` does (`spec/27 §7`, `spec/17 §4`). `stop` and `skip` in
+    /// it stay those of the enclosing loop, whose `exit`s cross the statement.
+    fn tasks(&mut self, lets: &mut Vec<Let>, stmt: &TasksStmt) {
+        let bound = stmt
+            .bound
+            .as_ref()
+            .map(|bound| (self.atom(lets, bound), bound.span));
+        let names = self.block_updates(&stmt.block);
+        if names.is_empty() {
+            let body = self.block(&stmt.block);
+            let expr = CoreExpr::Tasks {
+                bound,
+                body: Box::new(body),
+                span: stmt.span,
+            };
+            bind_expr(lets, "_".to_owned(), unit(), expr, stmt.span, false);
+            return;
+        }
+        self.tail_wrap = Some(Wrap::Join {
+            names: names.clone(),
+            ty: unit(),
+        });
+        let body = self.block(&stmt.block);
+        let expr = CoreExpr::Tasks {
+            bound,
+            body: Box::new(body),
+            span: stmt.span,
+        };
+        self.bind_join(lets, &names, unit(), expr, stmt.span);
+    }
+
+    /// `start e`: `start(e)`, whose task is `e` with its deadline and handling clauses, closed
+    /// over the bindings before it, its tail never a return (`spec/27 §7`).
+    fn start(&mut self, lets: &mut Vec<Let>, stmt: &StartStmt) {
+        // A started task is not a loop body for `skip` and `stop` (U2034).
+        let outer = self.loop_names.take();
+        let wrap = self.tail_wrap.take();
+        let join = self.current_join.take();
+        let mark = self.scope.len();
+        let handled = &stmt.handled;
+        let mut inner = Vec::new();
+        let value = if self.marked(&handled.expr) {
+            let atom = self.marked_call(&mut inner, handled);
+            CoreExpr::Atom {
+                atom,
+                span: handled.expr.span,
+            }
+        } else {
+            self.handled(handled)
+        };
+        // The task's own names end with it.
+        self.scope.truncate(mark);
+        self.tail_wrap = wrap;
+        self.current_join = join;
+        self.loop_names = outer;
+        let expr = CoreExpr::Start {
+            task: Box::new(close(inner, value)),
+            span: stmt.span,
+        };
+        bind_expr(lets, "_".to_owned(), unit(), expr, stmt.span, false);
+    }
+
     /// `together` with branches: `let (x₁, ..., xₙ) = together(e₁ ∥ ... ∥ eₙ)`, where each task
     /// `eᵢ` binds its branch's value as its `let` would, the refinement of a written type an
     /// obligation there, and returns it (`spec/19 §5`).
@@ -3604,6 +3690,9 @@ impl<'e, 'a> Fx<'e, 'a> {
                     }
                 }
                 Stmt::OnStop(on_stop) => self.scan_block(&on_stop.block, &local, found),
+                Stmt::Tasks(stmt) => self.scan_block(&stmt.block, &local, found),
+                // A started task updates no binding declared outside it (U2023).
+                Stmt::Start(_) => {}
             }
         }
     }

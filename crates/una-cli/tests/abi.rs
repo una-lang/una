@@ -164,6 +164,7 @@ fn the_out_of_model_list_is_the_one_of_the_spec() {
             "the time of a host stop",
             "interference of the host's load with the timing of an expression",
             "uncatchable termination",
+            "waits at limits and at `start`",
             "which branch of `first of` wins, beyond its label",
         ]
     );

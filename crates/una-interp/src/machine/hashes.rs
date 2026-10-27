@@ -177,6 +177,11 @@ fn reaches_tables<'p>(index: &Index<'p>, roots: &[&'p Expr]) -> bool {
                 timeout: _,
                 wrap: _,
                 span: _,
+            }
+            | Expr::Tasks {
+                bound: _,
+                body,
+                span: _,
             } => {
                 pending.push(body);
             }
@@ -208,6 +213,8 @@ fn reaches_tables<'p>(index: &Index<'p>, roots: &[&'p Expr]) -> bool {
                 pending.push(task);
                 pending.extend(source_condition(source));
             }
+            // A started task runs code of the run as a `together` task does (`spec/27 §7`).
+            Expr::Start { task, span: _ } => pending.push(task),
             Expr::If {
                 cond: _,
                 then,
