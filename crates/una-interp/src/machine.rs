@@ -1005,6 +1005,8 @@ impl<'p, 'w> Machine<'p, 'w> {
             grants: self.grants,
             keys: self.keys,
             http: self.http,
+            // A task runs the kernels of the run that started it (ADR 0120 rule 56).
+            kernels: self.kernels,
             run: Rc::clone(&self.run),
             depth: self.depth,
             max_depth: self
