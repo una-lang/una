@@ -1418,7 +1418,10 @@ mod tests {
             .ok()
             .and_then(|text| text.trim().parse().ok())
             .unwrap_or(0);
-        let args = ["--max-memory".to_owned(), "8".to_owned()];
+        // The budget counts every byte the process holds, this scenario's own list of cases
+        // included, about 14 MiB with the dense entry points (#989): 24 MiB leaves the calls
+        // about the 8 MiB they had before that list grew.
+        let args = ["--max-memory".to_owned(), "24".to_owned()];
         runtime::start(&args, SET_META, move || {
             let pool = word_pool();
             // Fewer drawn tuples than outside a run: each call that ends the run costs a process.
@@ -1443,7 +1446,7 @@ mod tests {
     #[cfg_attr(miri, ignore = "runs a process of its own, which Miri cannot")]
     fn every_entry_point_takes_any_word_in_a_run() {
         // #766, step 1, inside a started run, with its heap, its sites and a memory budget of
-        // 8 MiB: the same calls, `range` with every word. A call either returns, or ends the
+        // 24 MiB, about 8 MiB beyond the scenario's own list of cases: the same calls, `range` with every word. A call either returns, or ends the
         // run as the model says (exit code 1 or 3 with its diagnostic: U6003 over the budget,
         // U8001 for a `set` outside its list), and the next run resumes after it. A panic, a
         // signal, another exit, or a run that does not end within `DEADLINE` (a call that hangs,
