@@ -1172,6 +1172,18 @@ pub enum SeqOp {
 }
 
 impl SeqOp {
+    /// Every operation, in a fixed order: the native backend passes an operation to the
+    /// runtime as its position here (ADR 0119 rule 19).
+    pub const ALL: [SeqOp; 7] = [
+        SeqOp::PushFront,
+        SeqOp::PushBack,
+        SeqOp::PopFront,
+        SeqOp::PopBack,
+        SeqOp::PeekFront,
+        SeqOp::PeekBack,
+        SeqOp::Items,
+    ];
+
     /// The operation's name in Core.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -1234,6 +1246,22 @@ pub enum SetOp {
 }
 
 impl SetOp {
+    /// Every operation, in a fixed order: the native backend passes an operation to the
+    /// runtime as its position here (ADR 0119 rule 19).
+    pub const ALL: [SetOp; 11] = [
+        SetOp::Has,
+        SetOp::With,
+        SetOp::Without,
+        SetOp::First,
+        SetOp::Last,
+        SetOp::Between,
+        SetOp::Items,
+        SetOp::Union,
+        SetOp::Intersection,
+        SetOp::Difference,
+        SetOp::IsSubset,
+    ];
+
     /// The method's name in the source.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -1284,6 +1312,19 @@ pub enum HashMapOp {
 }
 
 impl HashMapOp {
+    /// Every operation, in a fixed order: the native backend passes an operation to the
+    /// runtime as its position here (ADR 0119 rule 19).
+    pub const ALL: [HashMapOp; 8] = [
+        HashMapOp::Has,
+        HashMapOp::Get,
+        HashMapOp::With,
+        HashMapOp::Without,
+        HashMapOp::Keys,
+        HashMapOp::Values,
+        HashMapOp::Entries,
+        HashMapOp::SameEntries,
+    ];
+
     /// The method's name in the source.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -1330,6 +1371,20 @@ pub enum HashSetOp {
 }
 
 impl HashSetOp {
+    /// Every operation, in a fixed order: the native backend passes an operation to the
+    /// runtime as its position here (ADR 0119 rule 19).
+    pub const ALL: [HashSetOp; 9] = [
+        HashSetOp::Has,
+        HashSetOp::With,
+        HashSetOp::Without,
+        HashSetOp::Items,
+        HashSetOp::Union,
+        HashSetOp::Intersection,
+        HashSetOp::Difference,
+        HashSetOp::IsSubset,
+        HashSetOp::SameItems,
+    ];
+
     /// The method's name in the source.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -1383,6 +1438,17 @@ pub enum PriorityOp {
 }
 
 impl PriorityOp {
+    /// Every operation, in a fixed order: the native backend passes an operation to the
+    /// runtime as its position here (ADR 0119 rule 19).
+    pub const ALL: [PriorityOp; 6] = [
+        PriorityOp::Push,
+        PriorityOp::Pop,
+        PriorityOp::Peek,
+        PriorityOp::PeekPriority,
+        PriorityOp::PeekRanked,
+        PriorityOp::Items,
+    ];
+
     /// The operation's name in Core.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -1431,6 +1497,22 @@ pub enum BitSetOp {
 }
 
 impl BitSetOp {
+    /// Every operation, in a fixed order: the native backend passes an operation to the
+    /// runtime as its position here (ADR 0119 rule 19).
+    pub const ALL: [BitSetOp; 11] = [
+        BitSetOp::Size,
+        BitSetOp::Has,
+        BitSetOp::With,
+        BitSetOp::Without,
+        BitSetOp::Union,
+        BitSetOp::Intersection,
+        BitSetOp::Difference,
+        BitSetOp::IsSubset,
+        BitSetOp::First,
+        BitSetOp::Last,
+        BitSetOp::Items,
+    ];
+
     /// The method's or the property's name in the source.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -1949,6 +2031,40 @@ pub enum Expr {
         /// The expression in the source.
         span: Span,
     },
+    /// `first_of(e₁ | ... | eₙ)`: the branches of a `first of` race (`spec/27 §6`, ADR 0117
+    /// rule 6), each a task closed over the bindings before it. Its value is the result of the
+    /// first branch to return, and the other branches are cancelled; when every branch fails,
+    /// it fails with the failure of the lowest-indexed one. The interpreter runs the branches
+    /// in index order and stops at the first that returns, one legal schedule.
+    FirstOf {
+        /// The branches, in index order.
+        tasks: Vec<Expr>,
+        /// The expression in the source.
+        span: Span,
+    },
+    /// `tasks(b) e`: the block of a `tasks` statement (`spec/27 §7`, ADR 0117 rule 7), run in
+    /// the current task. The `start`s inside `e`, outside any task of it, start tasks that run
+    /// beside it; the statement ends once `e` has ended and every task it started has ended,
+    /// also when `e` fails, after cancelling them, or leaves by an `exit` of an enclosing loop.
+    /// Its value is `e`'s: the tuple of the outer bindings `e` updates, or `unit`.
+    Tasks {
+        /// The bound of `at most b at once`, an `Int` bound before the statement, and where it
+        /// is written, for its obligation `b >= 1`; none for the default bound.
+        bound: Option<(Atom, Span)>,
+        /// The block.
+        body: Box<Expr>,
+        /// The statement in the source.
+        span: Span,
+    },
+    /// `start e`: starts a task for `e`, a `Unit` that cannot fail, closed over the bindings
+    /// before it, and goes on; once as many tasks as its `tasks` statement's bound run, it
+    /// first waits until one ends (`spec/27 §7`, ADR 0117 rule 7). Its value is `unit`.
+    Start {
+        /// The started expression, with its deadline and handling clauses.
+        task: Box<Expr>,
+        /// The statement in the source.
+        span: Span,
+    },
     /// `if a then e else e`.
     If {
         /// The condition.
@@ -2403,6 +2519,16 @@ pub fn prelude_variants(kind: &str) -> Option<&'static [PreludeVariant]> {
 /// The module path of the collections of edition `0.4` (ADR 0119 rule 0): their types are
 /// `Named` in it, and its kind `Ranked` is a [`Decl::Data`] of it.
 pub const COLLECTIONS_MODULE: &str = "std.collections";
+
+/// The module path of rate limits computed in code, edition `0.4` (ADR 0117 rule 9): its kind
+/// `Limited` is a [`Decl::Data`] of it, its capability `Limit` a [`Decl::Cap`], and the handler
+/// [`LIMITER`] is provided by each engine, so no [`Decl::Handler`] of it exists.
+pub const LIMIT_MODULE: &str = "std.limit";
+
+/// The handler of [`LIMIT_MODULE`] that each engine provides (ADR 0117 rule 9): a `with` or a
+/// `given` of it is `Source::Handler` with this name in that module, and its arguments are
+/// `at_most`, `per` and `waiting`, in that order.
+pub const LIMITER: &str = "limiter";
 
 /// A collection type of `std.collections`, edition `0.4` (ADR 0119). Each engine knows its
 /// values itself, as it knows a list's and a map's.
