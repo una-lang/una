@@ -313,7 +313,7 @@ exported! {
     una_rt_int_mod => values::rem, (a, b);
     una_rt_int_neg => values::neg, (a);
     una_rt_int_compare => values::compare, (a, b);
-    una_rt_int_text => values::int_text, (a);
+    una_rt_int_text => runtime::int_text, (site, a);
     una_rt_bool_text => values::bool_text, (a);
     una_rt_text_concat => values::concat, (a, b);
     una_rt_text_append_owned => values::text_append_owned, (t, part);
@@ -384,8 +384,8 @@ exported! {
     una_rt_generic_contains_at => generic::contains, (site, desc, xs, item);
     una_rt_generic_sum => generic::sum, (desc, xs);
     una_rt_generic_sort => generic::sort, (desc, xs);
-    una_rt_generic_write => generic::write, (desc, x);
-    una_rt_write => runtime::write, (ty, word);
+    una_rt_generic_write => generic::write, (site, desc, x);
+    una_rt_write => runtime::write, (site, ty, word);
     una_rt_descriptor_composite => generic::composite, (ty, params);
     una_rt_or_else => values::or_else, (o, default);
     una_rt_op_code => values::op_code, (instance, index);
