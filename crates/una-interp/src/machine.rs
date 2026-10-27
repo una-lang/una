@@ -3169,7 +3169,7 @@ impl<'p, 'w> Machine<'p, 'w> {
     /// new table under a key of its own, made as `empty_hash_set` and `empty_hash_map` make
     /// theirs, filled from the list. O(n · |k|) expected.
     fn to_hash_table(&self, name: &str, args: &[Value<'p>], span: Span) -> Flow<'p> {
-        let key = hashes::table_key(self.hashing.as_ref(), span)?;
+        let key = hashes::table_key(self.run.hashing.borrow().as_ref(), span)?;
         hashes::from_list(name, key, args, &self.hash_budget(span))
     }
 
