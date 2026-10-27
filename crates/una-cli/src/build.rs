@@ -256,6 +256,10 @@ pub(crate) fn build_command(
         if let (Some(drive), Some(object)) = (&drive, meta.as_object_mut()) {
             object.insert("drive".to_owned(), drive.clone());
         }
+        // The declared budget, which `--max-memory` may lower, never raise (ADR 0109 rule 4).
+        if let (Some(max_memory), Some(object)) = (manifest.max_memory, meta.as_object_mut()) {
+            object.insert("max_memory".to_owned(), json!(max_memory));
+        }
         // ADR 0117 IF4: `L_lim`, which a grant with limits needs at most `internal`, for an
         // executable of edition 0.4 only; one without it takes no limits (`spec/27 §9`).
         if manifest.edition >= una_project::Edition::V0_4

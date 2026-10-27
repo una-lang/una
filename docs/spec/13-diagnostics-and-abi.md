@@ -181,6 +181,7 @@ Other diagnostics MAY include repairs (for example, a missing label with its mec
 | U2035 | types | `first of` with fewer than two branches, or a line that is not an expression; `start` outside the block of a `tasks`, inside a task within it, or with a `with` clause |
 | U2037 | types | A decimal scale out of place |
 | U2038 | types | A tensor shape, index, permutation or axis out of place |
+| U2039 | types | A `map`, `zip_map` or `update` in a function with `simd required` whose lambda cannot be vectorized for a listed target |
 | U2040 | types | A statement after `stop` or `skip` in the same block, which never runs |
 | U3001 | authority | Capability not in scope |
 | U3002 | authority | Operation not permitted by capability type |
@@ -210,6 +211,7 @@ Other diagnostics MAY include repairs (for example, a missing label with its mec
 | U3027 | authority | Code that may run forever where it is not allowed to |
 | U3028 | authority | A function that says `diverges`, used as a value |
 | U3029 | authority | A failure that must be handled where it is not |
+| U3032 | authority | A `simd required` clause outside a `systems` package of edition `0.4` |
 | U4001 | security | Flow to a lower label |
 | U4002 | security | Implicit flow through control, failure or call under raised pc |
 | U4003 | security | Sink label exceeded |
@@ -323,7 +325,7 @@ Every command prints one JSON document with `--json`, its `schema` key first (AD
 ```json
 {
   "schema": "una.report/2",
-  "package": { "name": "events-example", "version": "0.1.0" },
+  "package": { "name": "events-example", "version": "0.1.0", "profile": "app" },
   "lock": { "solver_version": "...", "hash": "..." },
   "proven": { "semantic": 14, "security": "by typing", "authority": "by typing" },
   "obligations": { "proven": 14, "refuted": 0, "unknown": 0, "cached": 14 },
@@ -345,7 +347,7 @@ Every command prints one JSON document with `--json`, its `schema` key first (AD
 
 `una report [path]` checks the package at tier 1. When the checks report diagnostics, it prints them as `una check` does; otherwise it prints the report, and exits with code 1 when an obligation is not proven. Its sections, in the order of the example (ADR 0034):
 
-- `package`: the name and version of `una.toml`; a single file is named after its module, with version `0.0.0`.
+- `package`: the name and version of `una.toml`; a single file is named after its module, with version `0.0.0`. (v0.3, ADR 0109 rules 4 and 7.) Then `profile`, `"app"` or `"systems"`, and `max_memory`, the declared memory budget in MiB, only when the manifest declares one; the human form prints them as `profile: systems` and `max memory: 256 MiB`. Both keys are additive, and the schema stays `una.report/2`.
 - `lock`: the solver version, and the hex SHA-256 of the lock's contents (for a single file, of the default lock's text).
 - `proven`: the number of proven obligations as `semantic`; `security` and `authority` are `"by typing"`. `obligations`: the counts by status, then `cached`, how many of these results came from the proof cache of `spec/12 §9` rather than from the solver (ADR 0041).
 - `authority`: every function of the package with `uses`, by qualified name, with `public`, its `uses` as written in a header, and whether they are inferred. (v0.2, ADR 0062.) A `uses of p` clause is listed as written, as `"of each"`. The effects of a lambda count for the function that writes it, within its `uses`.
@@ -408,6 +410,8 @@ Commands take a file or a directory, `.` by default (ADR 0021):
 - (v0.3, ADR 0092 rule 8 and its third amendment.) `[contracts]`, in edition `0.3` only: each key the qualified name of a public function of the package, each value an array of `uses` clauses written as a header writes them, operations listed in brackets, with `spec/05 §3` rule 4's conditions: `"pricing.update.update_prices" = ["@catalog: Catalog[price, set_price where not dry_run]"]`. A key that names no public function, an entry that does not parse or lists no operations, a binding locked twice, a capability that its name does not resolve to in the function's module, an operation the capability does not declare, and a condition that is not a `Bool` of the refinement language over the function's parameters are U7002 at the entry. `spec/05 §3` rule 5 checks the header against it. In editions `0.1` and `0.2`, `[contracts]` is an unknown table.
 - (v0.3, ADR 0093.) `[boundaries]`, in edition `"0.3"` only; in editions `"0.1"` and `"0.2"` it is an unknown table (U7002). Each key is the path of a module of the package, and covers that module and every module below it by whole path segments: `a.b` covers `a.b.c`, not `a.bc`. Each value is the module's ceiling: an array of names-only strings `C[op, ...]`, with at least one operation, each once, and no condition or label, where `C` is a capability that the key's module sees and each `op` one it declares. Each of these is U7002: a key that is not a module of the package, a key inside another key's extent, a malformed ceiling string, a capability named twice in one ceiling, an unknown capability or operation, a module of `[trusted] modules` inside a boundary, and a `[run] entry` inside a boundary. Calls into a boundary are checked as `spec/05 §4` rule 5 states (U3020, U3021, U3024).
 
+- (v0.3, ADR 0109 rules 1 and 4.) In edition `"0.3"`, `[package] profile` is `"app"` or `"systems"`; any other value is U7002. Without the key, the profile is `app`, and a single file is `app`. In editions `"0.1"` and `"0.2"`, the key is unknown and U7002, and their packages are `app`. `[run] max_memory`, in edition `"0.3"` only, is the package's memory budget in MiB, from 1 to 4096 while edition `0.3` is a preview (U7002 outside); in editions `"0.1"` and `"0.2"` it is an unknown key (U7002). A `systems` package with a `[run] entry` and without `[run] max_memory` is U7002 at the entry; an `app` package may declare it too, with the same meaning. With the key, the value is the budget of `una run`, of `una test`, and of the native executable, which bakes it in at build time: `--max-memory` may lower it, never raise it, and a larger value is a usage error (exit code 2). Without the key, in either profile, `--max-memory` keeps its meaning of `spec/11 §7`.
+
 A TOML syntax error, a missing required key, and a value of the wrong type or outside its range are U7002. The default settings are empty `[labels]`, `[trusted]` and `[run]` tables and a budget of 0.
 
 `verification.lock` is a TOML document with exactly the keys of `spec/12 §9`: `encoding_version = "una-smt-1"`, `solver = "z3"`, `solver_version` a non-empty string, `logic = "QF_UFLIA"`, `step_budget` an integer of at least 1, and `random_seed` an integer of at least 0. A missing file, a TOML syntax error, a missing or unknown key and a wrong value are U7004; a solver of another version is U5003. A single file uses the default lock, which holds the values of the repository's `verification.lock`.
@@ -424,6 +428,7 @@ Project errors do not stop checking: the modules are still checked, with the def
 {
   "schema": "una.core/1",
   "edition": "0.2",
+  "profile": "app",
   "complete": true,
   "modules": [ { "path": "app", "decls": [ ... ], "examples": [ ... ] } ],
   "library": [ ... ],
@@ -431,6 +436,7 @@ Project errors do not stop checking: the modules are still checked, with the def
 }
 ```
 
+- (ADR 0109 rule 6.) `profile` is the package's profile, `"app"` or `"systems"`, so the re-check of the formal track sees it; its theorems do not depend on it. The key is additive under ADR 0076.
 - `complete` is `true` when the package checked clean at tier 0, so Core holds every declaration; otherwise Core holds only the declarations without diagnostics, which go to stderr, and the exit code follows them.
 - `modules` are in the order of Core IR; `library` holds the prelude's signatures and `host` the host capabilities' declarations.
 - (ADR 0091.) With `--with-rejected`, the document has one more key, `rejected`, after `file_state`: a list of `{"module": "app", "decl": { ... }, "diagnostics": [{"code": "U4003", "span": { ... }}]}`, in path order, then declaration order. It holds each declaration with at least one diagnostic, every one of which is in the `security` domain, and whose elaboration is complete; `decl` is its Core, encoded as `modules[].decls` are, and `diagnostics` are its diagnostics, each with its code and its primary location, which the declaration holds. These declarations are never in `modules`, and `complete` keeps its meaning. Without the flag, the key is absent and the document is unchanged; a consumer that ignores unknown keys reads the same document either way. No other command reads these declarations.

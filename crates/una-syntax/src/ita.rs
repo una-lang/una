@@ -715,6 +715,9 @@ pub struct Grant {
 pub struct Run {
     /// `entry`.
     pub entry: Option<At<String>>,
+    /// `max_memory <MiB>`: the declared memory budget (ADR 0109 rule 4), checked by the
+    /// project crate.
+    pub max_memory: Option<At<u64>>,
     /// The grants.
     pub grants: Vec<Grant>,
 }
@@ -1385,6 +1388,12 @@ fn run(line: &Line, errors: &mut Vec<Error>) -> Run {
                 Ok(_) if run.entry.is_some() => {
                     errors.push(Error::new(child.range.clone(), "`entry` appears twice"));
                 }
+                Ok(_) if run.max_memory.is_some() => {
+                    errors.push(Error::new(
+                        child.range.clone(),
+                        "`entry` comes before `max_memory`",
+                    ));
+                }
                 Ok(_) if grants_seen => {
                     errors.push(Error::new(
                         child.range.clone(),
@@ -1392,6 +1401,28 @@ fn run(line: &Line, errors: &mut Vec<Error>) -> Run {
                     ));
                 }
                 Ok(entry) => run.entry = Some(entry),
+                Err(error) => errors.push(error),
+            }
+        } else if cursor.eat_word("max_memory") {
+            // `max_memory <int>` (ADR 0109 rule 4): its range is the project crate's check.
+            no_children(child, errors);
+            match cursor
+                .int("the value of `max_memory`")
+                .and_then(|value| cursor.end().map(|()| value))
+            {
+                Ok(_) if run.max_memory.is_some() => {
+                    errors.push(Error::new(
+                        child.range.clone(),
+                        "`max_memory` appears twice",
+                    ));
+                }
+                Ok(_) if grants_seen => {
+                    errors.push(Error::new(
+                        child.range.clone(),
+                        "`max_memory` comes before `grants`",
+                    ));
+                }
+                Ok(value) => run.max_memory = Some(value),
                 Err(error) => errors.push(error),
             }
         } else if cursor.eat_word("grants") {
@@ -1413,7 +1444,7 @@ fn run(line: &Line, errors: &mut Vec<Error>) -> Run {
         } else {
             errors.push(Error::new(
                 child.range.clone(),
-                "the lines of `run` are `entry <module>` and `grants`",
+                "the lines of `run` are `entry <module>`, `max_memory <MiB>` and `grants`",
             ));
         }
     }

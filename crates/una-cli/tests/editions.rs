@@ -190,6 +190,12 @@ const EXPECTED_DIFFERENCES: &[Difference] = &[
         case: "verification/refined_elements_0_2_facts",
         edition_0_2: &[("U5001", "src/edition_0_2_facts.una:14:25")],
     },
+    // ADR 0109 rule 1: `[package] profile`, an unknown key before edition 0.3, where the
+    // package checks clean.
+    Difference::Looser {
+        case: "project/profile_edition_0_2",
+        edition_0_2: &[("U7002", "una.toml:5:1")],
+    },
 ];
 
 /// An edition `0.3` package whose output in edition `0.4` differs by design: the diagnostics a

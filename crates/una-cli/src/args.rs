@@ -168,9 +168,10 @@ pub(crate) enum Command {
         #[arg(long, value_name = "N", default_value_t = una_interp::DEFAULT_MAX_DEPTH)]
         max_depth: usize,
 
-        /// The memory a run may hold, in MiB
-        #[arg(long, value_name = "MIB", default_value_t = una_interp::DEFAULT_MAX_MEMORY, value_parser = memory_budget)]
-        max_memory: usize,
+        /// The memory a run may hold, in MiB: 4096 by default, or the package's declared
+        /// max_memory, which it may lower and never raise
+        #[arg(long, value_name = "MIB", value_parser = memory_budget)]
+        max_memory: Option<usize>,
 
         /// The largest HTTP response body, in MiB (`spec/24 §4`)
         #[arg(long, value_name = "MIB", default_value_t = 16, value_parser = at_least_one)]
@@ -245,9 +246,10 @@ pub(crate) enum Command {
         #[arg(long, value_name = "N", default_value_t = una_interp::DEFAULT_MAX_DEPTH)]
         max_depth: usize,
 
-        /// The memory a run may hold, in MiB
-        #[arg(long, value_name = "MIB", default_value_t = una_interp::DEFAULT_MAX_MEMORY, value_parser = memory_budget)]
-        max_memory: usize,
+        /// The memory a run may hold, in MiB: 4096 by default, or the package's declared
+        /// max_memory, which it may lower and never raise
+        #[arg(long, value_name = "MIB", value_parser = memory_budget)]
+        max_memory: Option<usize>,
 
         /// The threads that run tasks, from 1 to 1024; by default one per core (ADR 0117)
         #[arg(long, value_name = "N", value_parser = task_number)]
