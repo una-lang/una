@@ -318,6 +318,8 @@ fn the_builtins_are_exactly_the_methods_the_checker_resolves() {
         (_, "Stack[T]") => "Stack",
         (_, "Queue[T]") => "Queue",
         (_, "Set[T]") => "Set",
+        (_, "HashMap[K, V]") => "HashMap",
+        (_, "HashSet[T]") => "HashSet",
         (name, _) if name.starts_with("to_") => "conversion",
         _ => "fixed",
     };
@@ -373,6 +375,8 @@ fn literal(ty: &str, wrong: bool) -> &'static str {
         ("fn(Int) -> Int", false) => "fn(n) -> n",
         // A set of the receiver's type: the receiver itself.
         ("Set[Int]", false) => "r",
+        // A hash set or a hash map of the receiver's type: the receiver itself.
+        ("HashSet[Int]" | "HashMap[Text, Int]", false) => "r",
         (_, false) => "1",
         (_, true) => "\"k\"",
     }
@@ -1216,12 +1220,14 @@ const STATED_COSTS: [Stated; 4] = [
 
 /// The receiver that a cost table's row or sentence is about where it names only the method,
 /// for a method with several receivers: ADR 0070 is about texts, so its `.len` row is the cost
-/// on a `Text`, and `spec/21 §5` is about maps, so its costs of `has`, `remove`, `with` and
-/// `without` are those on a `Map`.
-const COST_ON: [(&str, &str, &str); 5] = [
+/// on a `Text`, and `spec/21 §5` is about maps, so its costs of `get`, `has`, `remove`, `set`,
+/// `with` and `without` are those on a `Map`.
+const COST_ON: [(&str, &str, &str); 7] = [
     ("ADR 0070", "len", "Text"),
+    ("spec/21 §5", "get", "Map[K, V]"),
     ("spec/21 §5", "has", "Map[K, V]"),
     ("spec/21 §5", "remove", "Map[K, V]"),
+    ("spec/21 §5", "set", "Map[K, V]"),
     ("spec/21 §5", "with", "Map[K, V]"),
     ("spec/21 §5", "without", "Map[K, V]"),
 ];
