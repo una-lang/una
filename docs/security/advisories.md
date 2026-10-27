@@ -28,7 +28,7 @@ A fix made before any release that it would affect is not an advisory. Neither i
 
 - **Severity:** High
 - **Affected:** every published release up to and including v0.3.16 and v0.1.12: `una fmt` in both lines, and `una fix` in the v0.3 line, in every edition.
-- **Fixed in:** v0.1.13. The v0.3 line is fixed in its next release.
+- **Fixed in:** v0.3.17; v0.1.13.
 - **Summary:** `una fmt` replaced a source file by writing a temporary file at a fixed name next to it (`.<name>.fmt-tmp`) and renaming it over the file. The write followed a symbolic link at that name. A repository can commit such a link, so running `una fmt` in a clone of it could overwrite any file the user can write, outside the repository, with text the repository chose, and leave the source file as a link to it. `una fix` in the v0.3 line used the same write, and the proof cache that `una check` keeps in `.una/cache/proofs/` wrote its entries the same way. The temporary file is now created exclusively, under a name unique to the write, so nothing already at that name is written through, and the proof cache stores nothing when `.una`, `.una/cache` or `.una/cache/proofs` is a link that leads outside the package. A source file that is itself a symbolic link is still formatted in place only when the file it resolves to is inside the package; a link leading outside it is refused. Users of an affected release should not run `una fmt` or `una fix` in a repository they do not trust until they update.
 - **References:** #1160, #1161, #1162, #1163.
 
@@ -36,7 +36,7 @@ A fix made before any release that it would affect is not an advisory. Neither i
 
 - **Severity:** Availability
 - **Affected:** every published release up to and including v0.3.16 and v0.1.12, in the interpreter (`una run`), in every edition. Native executables are not affected.
-- **Fixed in:** v0.1.13. The v0.3 line is fixed in its next release.
+- **Fixed in:** v0.3.17; v0.1.13.
 - **Summary:** the interpreter released a value that a function value closes over by recursion on the native stack, one level per level of nesting. A loop that nests values through function values, such as a kind `L(next: fn() -> F)` built two million levels deep, finished its work and then aborted `una run` with a stack overflow when the value was released, instead of ending normally. A program whose nesting depth followed untrusted input could be made to abort this way. Function values now release the values they close over and the handlers of their capabilities by the same worklist that releases records. The v0.1 line had no worklist at all, so its fix gives one to records and function values together. There, reaching the overflow at the default `--max-depth` took a value of about 650,000 levels, which costs quadratic time to build, and a lower `--max-depth` reached it sooner.
 - **References:** #1071, #1076, ADR 0060 rule R5.
 

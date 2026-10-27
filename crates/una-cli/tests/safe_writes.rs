@@ -118,6 +118,14 @@ const ALLOWED: [(&str, &str, usize, &str); 12] = [
     ),
     (
         "crates/una-cli/src/runtime.rs",
+        "File::create(",
+        1,
+        "the trace file of `una run --trace`, streamed as the run goes (ADR 0117 rule 10): the \
+         path the user names on the command line, not one the package chooses, as for `una build \
+         --out`",
+    ),
+    (
+        "crates/una-cli/src/runtime.rs",
         "OpenOptions::new(",
         1,
         "`write_file`, a program's own write under its granted file-system capability \

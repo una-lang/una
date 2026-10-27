@@ -1,0 +1,28 @@
+-- test: in edition 0.4 `Complex[F64]` and `Complex[F32]` are types with the fields `re` and `im`, built by `complex(re:, im:)` with labeled, punned or receiver arguments, whose float literals take the component type the context expects; their operators, `conj`, `scale` and `norm_sqr` keep the type, `==` compares them, and `re`, `im`, `complex(re:, im:)` and `==` are in the refinement language
+-- spec: spec/29 §19
+-- expect: ok
+module m
+
+pub make(re: F64, im: F64) -> Complex[F64] = complex(re, im)
+
+pub narrow() -> Complex[F32] = complex(re: 0.1, im: -2.5)
+
+pub from_receiver(x: F32) -> Complex[F32] = x.complex(im: 1.0)
+
+pub hinted() -> Complex[F32] = -(complex(re: 1.0, im: 2.0) * complex(re: 0.5, im: -0.5))
+
+pub arithmetic(x: Complex[F64], y: Complex[F64]) -> Complex[F64] = (x + y) * (x - y) / -y
+
+pub methods(x: Complex[F32], k: F32) -> F32 = x.conj().scale(by: k).norm_sqr() + x.re * x.im
+
+pub same(x: Complex[F64], y: Complex[F64]) -> Bool = x == y or x != complex(re: 1.0, im: 2.0)
+
+pub kind Phasor
+  value: Complex[F64]
+  weights: List[Complex[F32]]
+
+pub real_of(z: Complex[F64]) -> F64
+  requires z.re >= 1.0 and z == complex(re: z.re, im: z.im)
+  ensures result == z.re
+=
+  z.re

@@ -168,9 +168,10 @@ pub(crate) enum Command {
         #[arg(long, value_name = "N", default_value_t = una_interp::DEFAULT_MAX_DEPTH)]
         max_depth: usize,
 
-        /// The memory a run may hold, in MiB
-        #[arg(long, value_name = "MIB", default_value_t = una_interp::DEFAULT_MAX_MEMORY, value_parser = memory_budget)]
-        max_memory: usize,
+        /// The memory a run may hold, in MiB: 4096 by default, or the package's declared
+        /// max_memory, which it may lower and never raise
+        #[arg(long, value_name = "MIB", value_parser = memory_budget)]
+        max_memory: Option<usize>,
 
         /// The largest HTTP response body, in MiB (`spec/24 §4`)
         #[arg(long, value_name = "MIB", default_value_t = 16, value_parser = at_least_one)]
@@ -188,7 +189,7 @@ pub(crate) enum Command {
         #[arg(long, value_name = "N", value_parser = task_number)]
         task_depth: Option<usize>,
 
-        /// The helper threads of `Http`, from 1 to 4096; by default 64 (ADR 0117)
+        /// The helper threads of `Http`, from 1 to 4096; by default 64 (ADR 0117). A run granted `Http` starts 2 x N + max(2, N / 4) threads for its requests before `main`, besides --workers and --file-threads, so a large N can pass the system's limit on a process's threads, and the run then stops with U6003
         #[arg(long, value_name = "N", value_parser = task_number)]
         io_threads: Option<usize>,
 
@@ -216,6 +217,10 @@ pub(crate) enum Command {
         /// (ADR 0116)
         #[arg(long, value_name = "SECONDS", default_value_t = una_interp::stopping::DEFAULT_GRACE_SECS, value_parser = stop_grace)]
         stop_grace: u64,
+
+        /// Write the trace to this file as a JSON array, each event as it happens (ADR 0117)
+        #[arg(long, value_name = "FILE")]
+        trace: Option<PathBuf>,
     },
     /// Compile `main` of the `[run] entry` module into a native executable
     Build {
@@ -241,9 +246,10 @@ pub(crate) enum Command {
         #[arg(long, value_name = "N", default_value_t = una_interp::DEFAULT_MAX_DEPTH)]
         max_depth: usize,
 
-        /// The memory a run may hold, in MiB
-        #[arg(long, value_name = "MIB", default_value_t = una_interp::DEFAULT_MAX_MEMORY, value_parser = memory_budget)]
-        max_memory: usize,
+        /// The memory a run may hold, in MiB: 4096 by default, or the package's declared
+        /// max_memory, which it may lower and never raise
+        #[arg(long, value_name = "MIB", value_parser = memory_budget)]
+        max_memory: Option<usize>,
 
         /// The threads that run tasks, from 1 to 1024; by default one per core (ADR 0117)
         #[arg(long, value_name = "N", value_parser = task_number)]
@@ -253,7 +259,7 @@ pub(crate) enum Command {
         #[arg(long, value_name = "N", value_parser = task_number)]
         task_depth: Option<usize>,
 
-        /// The helper threads of `Http`, from 1 to 4096; by default 64 (ADR 0117)
+        /// The helper threads of `Http`, from 1 to 4096; by default 64 (ADR 0117). A run granted `Http` starts 2 x N + max(2, N / 4) threads for its requests before `main`, besides --workers and --file-threads, so a large N can pass the system's limit on a process's threads, and the run then stops with U6003
         #[arg(long, value_name = "N", value_parser = task_number)]
         io_threads: Option<usize>,
 

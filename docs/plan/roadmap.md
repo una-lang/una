@@ -13,6 +13,23 @@ Status: Informative.
 
 Each version starts only after the previous gate passes, with one exception: v0.2 runs in parallel with Gate 1 (decided 2026-10-01). The Gate 1 benchmark stays pinned to a v0.1.x release, so v0.2 work never changes what Gate 1 measures. Items and their target versions are in `backlog.md`.
 
+### Edition `0.4`
+
+Edition `0.4` is the next preview edition, under the terms of ADR 0121. Its language and toolchain work, besides the platform theme of v0.4:
+
+| Area | Content | Record | Decision |
+| --- | --- | --- | --- |
+| Long-running programs | A host-driven `step`, then `for ever` under `diverges`, with `stop`, `stop when`, `skip` and `on stop` | ADR 0116 | Accepted |
+| Concurrency for servers | Tasks without async coloring, `within D` with `Timed[E]`, `first of`, and rate limits on grants | ADR 0117 | Accepted |
+| The terms of a preview edition | Edition `0.4` may add constructs that let a program do more, with no stability promise until it is declared stable | ADR 0121 | Accepted |
+| Collections | `Stack`, `Queue`, `Set`, `HashMap`, `HashSet`, `PriorityQueue` and `BitSet`, with stated costs, and `Map.update` | ADR 0119 | Accepted |
+| The numeric foundation | `F32`, `Decimal`, `Complex`, dense arrays and SIMD | ADR 0120 | Accepted |
+| Packages | Itá: the package manager, `ita.una` and `ita.lock`, and its registry | ADR 0122 | Accepted |
+| HTTP servers | `HttpServer` and `Listener`, granted by address | ADR 0123 | Accepted |
+| One binary | `una` checks, proves and builds with nothing else installed | ADR 0124 | Accepted (2026-10-27) |
+
+Una admits no foreign code: no foreign function interface, in any form, in any edition.
+
 ## 2. Parallel tracks
 
 | Track | Content | Constraint |

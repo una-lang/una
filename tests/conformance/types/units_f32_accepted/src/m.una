@@ -1,0 +1,42 @@
+-- test: F32 takes units in edition 0.4 as F64 does (ADR 0120 rules 61 and 62): literals typed by an expected measured F32, arithmetic, products and square roots, `convert()` by a ratio k or 1/k of at most 2^24, conversions between the float types and from integers keeping the unit, comparisons and methods, all accepted
+-- spec: spec/25 §9
+-- expect: ok
+module m
+
+pub measure Meter
+
+pub measure Second
+
+pub measure Kilometer = 1000 * Meter
+
+pub measure Reach = 16777216 * Meter
+
+pub literal() -> F32 of Meter = 0.25
+
+pub total(a: F32 of Meter, b: F32 of Meter) -> F32 of Meter = a + b - 0.5
+
+pub speed(d: F32 of Meter, t: F32 of Second) -> F32 of Meter / Second = d / t
+
+pub side(s: F32 of Meter * Meter) -> F32 of Meter = (s * 4.0).sqrt()
+
+pub up(k: F32 of Kilometer) -> F32 of Meter = k.convert()
+
+pub down(m: F32 of Meter) -> F32 of Kilometer = m.convert()
+
+pub reached(s: F32 of Reach) -> F32 of Meter = s.convert()
+
+pub wider(a: F32 of Meter) -> F64 of Meter = a.to_f64()
+
+pub narrower(a: F64 of Meter) -> F32 of Meter = a.to_f32()
+
+pub counted(n: Int of Meter) -> F32 of Meter = n.to_f32()
+
+pub ordered(a: F32 of Meter, b: F32 of Meter) -> Bool = a < b or 0.5 <= a or a.ieee_ge(other: b)
+
+pub methods(a: F32 of Meter,
+  b: F32 of Meter
+) -> F32 of Meter = a.abs() + a.rem(by: b) + a.clamp(lo: b, hi: 2.5)
+
+pub raw(a: F32 of Meter) -> F32 = a.magnitude()
+
+pub tagged(x: F32) -> F32 of Meter = x.measured()

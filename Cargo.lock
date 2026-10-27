@@ -1430,6 +1430,7 @@ dependencies = [
  "rcgen",
  "rustls",
  "una-core",
+ "una-http",
  "una-sys",
  "webpki-roots",
 ]
@@ -1489,6 +1490,7 @@ dependencies = [
  "serde_json",
  "una-core",
  "una-diag",
+ "una-hash",
  "una-http",
  "una-interp",
  "una-sys",
