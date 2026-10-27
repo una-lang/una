@@ -230,6 +230,10 @@ pub fn variant_names() -> &'static [&'static str] {
     NAMES
 }
 
+/// The signature of [`super::blocked::add_product`]: `c += a × b` of an m × k and a k × n
+/// matrix, row-major, with m, k and n.
+pub type AddProduct = fn(&mut [f64], &[f64], &[f64], usize, usize, usize);
+
 /// The kernels of one variant, as safe function pointers: the table a run calls every dense
 /// kernel with an `fma` through. [`Kernels::BASELINE`] is built here; the tables of the
 /// x86-64 variants are built by `una-rt`'s `ffi.rs`, after the detection of their features
@@ -247,7 +251,7 @@ pub struct Kernels {
     /// [`super::blocked::norm2`], over two passes of the same elements.
     pub norm2: fn(&mut dyn Iterator<Item = f64>, &mut dyn Iterator<Item = f64>) -> f64,
     /// [`super::blocked::add_product`].
-    pub add_product: fn(&mut [f64], &[f64], &[f64], usize, usize, usize),
+    pub add_product: AddProduct,
     /// [`super::blocked::multiply_array`].
     pub multiply_array: fn(&[f64], usize, usize, &[f64], &mut [f64]),
     /// [`super::blocked::lu`].
