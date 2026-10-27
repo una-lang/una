@@ -1611,6 +1611,11 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
         state.sched = Some(sched);
     }
     let budget = options.max_memory.saturating_mul(1024 * 1024);
+    // #1254: a run with threads also runs one real task on every worker before `main`
+    // (`tasks::warm_up`), under no budget and before the baseline is read, so its transient
+    // charge never stops a run and what it leaves on the workers counts for no program.
+    let warm = threads;
+    let workers = state.concurrency.workers;
     let worker = std::thread::Builder::new()
         .name("una-main".to_owned())
         .stack_size(stack)
@@ -1621,10 +1626,24 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
             let _stack = StackCount::new(stack);
             let mut state = state;
             state.stack_base = stack_position(&state);
+            let max_memory = state.max_memory;
+            if warm {
+                state.max_memory = usize::MAX;
+            }
             state.baseline = crate::held();
-            // ADR 0061 rule 3: past twice the budget, allocation fails and the process aborts.
-            crate::ceiling(state.baseline.saturating_add(budget.saturating_mul(2)));
             install(state, 0);
+            if warm {
+                crate::tasks::warm_up(workers);
+                let baseline = crate::held();
+                with_state(|state| {
+                    state.max_memory = max_memory;
+                    state.baseline = baseline;
+                });
+                HOT.with(|hot| hot.mem_ceiling.set(mem_ceiling(baseline, max_memory)));
+            }
+            let baseline = with_state(|state| state.baseline).unwrap_or(0);
+            // ADR 0061 rule 3: past twice the budget, allocation fails and the process aborts.
+            crate::ceiling(baseline.saturating_add(budget.saturating_mul(2)));
             DRIVER.with(|cell| *cell.borrow_mut() = drive);
             let status = entry();
             crate::ceiling(usize::MAX);
