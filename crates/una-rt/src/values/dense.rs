@@ -31,7 +31,8 @@ use una_core::float;
 
 use super::{
     HEAP, NONE, Object, alloc, copied, count, count_limit, data, f64_word, fault, field,
-    int_value, int_word, is_handle, push, release, retain, slot, some, unique, with,
+    int_value, int_word, is_handle, precondition_outside, push, release, retain, slot, some,
+    unique, with,
 };
 
 /// The most axes a tensor has (ADR 0120 rule 27).
@@ -478,14 +479,10 @@ fn over<T>(site: i64) -> Option<T> {
 }
 
 /// A precondition that does not hold at `site`, which only a false proof reaches: U8001 with
-/// the interpreter's message (D4, ADR 0112 EL-2, rule 30).
+/// the interpreter's message, reported as `set`'s is ([`precondition_outside`], D4, ADR 0112
+/// EL-2, rule 30), which counts the fault.
 fn outside<T>(site: i64, message: &str) -> Option<T> {
-    fault();
-    crate::runtime::abort_at(
-        site_of(site),
-        una_diag::Code::U8001,
-        format!("evaluation stopped: {message}"),
-    );
+    precondition_outside(site, message);
     None
 }
 
@@ -572,13 +569,24 @@ fn retain_many(word: i64, n: usize) -> bool {
     })
 }
 
-/// The heap a copy of `word` would allocate of its own: what the interpreter reserves for each
-/// clone of an element (`reserve_with`), so a fill is refused in both engines alike (D2).
-fn element_heap(word: i64) -> usize {
+/// The heap a clone of `word` allocates of its own in the interpreter (`clone_heap`): the limbs
+/// of an integer outside the tagged range, at least the allocator's 16-byte block, and nothing
+/// for any other value. Each engine reserves it for every element it holds as a word, so both
+/// refuse alike near the limit (D2).
+fn clone_heap(word: i64) -> usize {
     if !is_handle(word) {
         return 0;
     }
-    with(word, Object::node_bytes).unwrap_or(0)
+    with(word, |object| match object {
+        Object::Int(value) => value.iter_u64_digits().len().saturating_mul(8).max(16),
+        _ => 0,
+    })
+    .unwrap_or(0)
+}
+
+/// The sum of [`clone_heap`] over `words`, saturating.
+fn clones_heap(words: impl Iterator<Item = i64>) -> usize {
+    words.fold(0_usize, |sum, word| sum.saturating_add(clone_heap(word)))
 }
 
 /// A dimension argument, an `Int` that the callee's precondition keeps at least 0. A
@@ -642,7 +650,7 @@ fn from_list(site: i64, xs: i64) -> Option<(Store, usize)> {
         out.extend((0..n).map(|i| float::canonical(boxed(item(i)).unwrap_or(0.0))));
         Some((f64_store(out), n))
     } else {
-        let mut out = buffer::<i64>(site, n, 0)?;
+        let mut out = buffer::<i64>(site, n, clones_heap((0..n).map(item)))?;
         for i in 0..n {
             let word = item(i);
             retain(word);
@@ -660,7 +668,7 @@ fn filled(site: i64, n: usize, value: i64) -> Option<Store> {
         out.resize(n, float::canonical(x));
         return Some(f64_store(out));
     }
-    let Some(extra) = n.checked_mul(element_heap(value)) else {
+    let Some(extra) = n.checked_mul(clone_heap(value)) else {
         return over(site);
     };
     let mut out = buffer::<i64>(site, n, extra)?;
@@ -687,7 +695,12 @@ fn copy(site: i64, header: &Dense) -> Option<Store> {
             Some(f64_store(out))
         }
         Store::Words(words) => {
-            let mut out = buffer::<i64>(site, n, 0)?;
+            let heap = clones_heap(
+                (0..n)
+                    .filter_map(|k| layout.position_at(k))
+                    .filter_map(|p| word_at(*words, p)),
+            );
+            let mut out = buffer::<i64>(site, n, heap)?;
             for p in (0..n).filter_map(|k| layout.position_at(k)) {
                 if let Some(word) = word_at(*words, p) {
                     retain(word);
@@ -835,7 +848,7 @@ fn ensure(site: i64, word: i64, shape: &[usize], method: &str) -> Option<i64> {
             release(word);
             outside(
                 site,
-                &format!("internal error: `{method}` gave a result of another shape than it ensures"),
+                &format!("evaluation stopped: internal error: `{method}` gave a result of another shape than it ensures"),
             )
         }
     }
@@ -843,33 +856,33 @@ fn ensure(site: i64, word: i64, shape: &[usize], method: &str) -> Option<i64> {
 
 /// The messages of the preconditions, the interpreter's (D4).
 const GET_OUTSIDE: &str =
-    "`get` at an index outside the dense value, which its precondition excludes";
+    "evaluation stopped: `get` at an index outside the dense value, which its precondition excludes";
 const SET_OUTSIDE: &str =
-    "`set` at an index outside the dense value, which its precondition excludes";
+    "evaluation stopped: `set` at an index outside the dense value, which its precondition excludes";
 const OTHER_RANK: &str =
-    "a list literal of another length than the tensor's rank, which the precondition excludes";
-const SLICE_OUTSIDE: &str = "`slice` outside the array, which its precondition excludes";
-const LINE_OUTSIDE: &str = "a row or column outside the matrix, which its precondition excludes";
-const BLOCK_OUTSIDE: &str = "`block` outside the matrix, which its precondition excludes";
-const DIFFERENT_SHAPES: &str = "an element-wise operation of dense values of different shapes, which its precondition excludes";
+    "evaluation stopped: a list literal of another length than the tensor's rank, which the precondition excludes";
+const SLICE_OUTSIDE: &str = "evaluation stopped: `slice` outside the array, which its precondition excludes";
+const LINE_OUTSIDE: &str = "evaluation stopped: a row or column outside the matrix, which its precondition excludes";
+const BLOCK_OUTSIDE: &str = "evaluation stopped: `block` outside the matrix, which its precondition excludes";
+const DIFFERENT_SHAPES: &str = "evaluation stopped: an element-wise operation of dense values of different shapes, which its precondition excludes";
 const MULTIPLY_SHAPES: &str =
-    "`multiply` of matrices whose shapes do not match, which its precondition excludes";
-const MULTIPLY_ARRAY_SHAPES: &str = "`multiply_array` of a matrix and an array whose shapes do not match, which its precondition excludes";
+    "evaluation stopped: `multiply` of matrices whose shapes do not match, which its precondition excludes";
+const MULTIPLY_ARRAY_SHAPES: &str = "evaluation stopped: `multiply_array` of a matrix and an array whose shapes do not match, which its precondition excludes";
 const ADD_PRODUCT_SHAPES: &str =
-    "`add_product` of matrices whose shapes do not match, which its precondition excludes";
+    "evaluation stopped: `add_product` of matrices whose shapes do not match, which its precondition excludes";
 const CONVERSION_RANK: &str =
-    "a tensor of another rank than the conversion takes, which its precondition excludes";
-const DIM_OUTSIDE: &str = "`dim` of an axis the tensor does not have, which its precondition excludes";
+    "evaluation stopped: a tensor of another rank than the conversion takes, which its precondition excludes";
+const DIM_OUTSIDE: &str = "evaluation stopped: `dim` of an axis the tensor does not have, which its precondition excludes";
 const RESHAPE_COUNT: &str =
-    "`reshape` to another number of elements, which its precondition excludes";
+    "evaluation stopped: `reshape` to another number of elements, which its precondition excludes";
 const SUM_AXIS_OUTSIDE: &str =
-    "`sum` along an axis the tensor does not have, which its precondition excludes";
+    "evaluation stopped: `sum` along an axis the tensor does not have, which its precondition excludes";
 const CONTRACT_AXES: &str =
-    "`contract` over axes whose lengths do not match, which its precondition excludes";
-const SOLVE_ROWS: &str = "`solve` with a right-hand side of another number of rows, which its precondition excludes";
-const TRIANGULAR_ROWS: &str = "a triangular solve with a right-hand side of another number of rows, which its precondition excludes";
-const MATRIX_COUNT: &str = "`matrix` with a number of elements other than `rows * columns`, which its precondition excludes";
-const TENSOR_COUNT: &str = "`tensor` with a number of elements other than the product of its lengths, which its precondition excludes";
+    "evaluation stopped: `contract` over axes whose lengths do not match, which its precondition excludes";
+const SOLVE_ROWS: &str = "evaluation stopped: `solve` with a right-hand side of another number of rows, which its precondition excludes";
+const TRIANGULAR_ROWS: &str = "evaluation stopped: a triangular solve with a right-hand side of another number of rows, which its precondition excludes";
+const MATRIX_COUNT: &str = "evaluation stopped: `matrix` with a number of elements other than `rows * columns`, which its precondition excludes";
+const TENSOR_COUNT: &str = "evaluation stopped: `tensor` with a number of elements other than the product of its lengths, which its precondition excludes";
 
 /// The precondition "same shape" of rule 34 at `site`.
 fn same_shape(site: i64, a: &Dense, b: &Dense) -> Option<()> {
@@ -888,7 +901,7 @@ fn square(site: i64, header: &Dense, name: &str) -> Option<usize> {
     } else {
         outside(
             site,
-            &format!("`{name}` of a matrix that is not square, which its precondition excludes"),
+            &format!("evaluation stopped: `{name}` of a matrix that is not square, which its precondition excludes"),
         )
     }
 }
@@ -1467,15 +1480,16 @@ pub(crate) fn array_to_list(site: i64, a: i64) -> i64 {
         let header = dense(a)?;
         let layout = header.layout;
         let n = layout.count();
-        // A boxed `F64` per element besides its word.
-        let boxes = match &header.store {
-            Store::F64(_) => n.checked_mul(size_of::<f64>()),
-            Store::Words(_) => Some(0),
+        // The heap of the integers it holds, as the interpreter reserves it.
+        let heap = match &header.store {
+            Store::F64(_) => 0,
+            Store::Words(words) => clones_heap(
+                (0..n)
+                    .filter_map(|k| layout.position_at(k))
+                    .filter_map(|p| word_at(*words, p)),
+            ),
         };
-        let Some(boxes) = boxes else {
-            return over(site);
-        };
-        let mut out = buffer::<i64>(site, n, boxes)?;
+        let mut out = buffer::<i64>(site, n, heap)?;
         for p in (0..n).filter_map(|k| layout.position_at(k)) {
             match header.element(p) {
                 Some(element) => out.push(owned_word(element)),
@@ -2617,6 +2631,21 @@ mod tests {
         assert!(words.is_some());
         release(copy);
         release(a);
+    }
+
+    #[test]
+    fn a_map_over_no_elements_gives_no_elements_of_the_same_kind_and_shape() {
+        // The builder of `map` over an empty value is that value's kind and shape, with no
+        // element, as the interpreter's `Builder::Empty` (design note D6).
+        let m = matrix_filled(0, int_word(&0.into()), int_word(&3.into()), f(1.0));
+        let built = dense_builder(0, m);
+        assert_eq!(dense_count(built), 0);
+        let (made, _) = layout(built).unwrap();
+        assert_eq!(made.kind, DenseKind::Matrix);
+        assert_eq!(made.shape.as_slice(), &[0, 3]);
+        assert_eq!(super::super::equal(0, m, built), 1);
+        release(built);
+        release(m);
     }
 
     #[test]
