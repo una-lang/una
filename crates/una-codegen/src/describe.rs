@@ -85,7 +85,7 @@ impl<'p> Types<'p> {
                         json!({ "shape": "map", "key": key, "value": value })
                     }
                     // No dense value reaches native code yet (`spec/29 §17`).
-                    "Array" | "Matrix" => json!({ "shape": "other" }),
+                    "Array" | "Matrix" | "Tensor" | "Lu" => json!({ "shape": "other" }),
                     // JSON (`spec/23 §1`): `Json` holds itself through its arrays and objects,
                     // which refer to its own index.
                     "Json" => {

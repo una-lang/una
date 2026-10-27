@@ -1803,7 +1803,7 @@ mod tests {
         for kind in una_core::PRELUDE_ENGINE_KINDS {
             assert!(
                 kinds.iter().any(|k| k == kind)
-                    || ["List", "Map", "Array", "Matrix"].contains(&kind),
+                    || ["List", "Map", "Array", "Matrix", "Tensor", "Lu"].contains(&kind),
                 "`{kind}` is not a kind of the prelude"
             );
         }
@@ -1880,7 +1880,7 @@ mod tests {
         }
         let mut expected: Vec<String> = una_core::PRELUDE_ENGINE_KINDS
             .iter()
-            .filter(|kind| !["List", "Map", "Array", "Matrix"].contains(kind))
+            .filter(|kind| !["List", "Map", "Array", "Matrix", "Tensor", "Lu"].contains(kind))
             .map(|kind| (*kind).to_owned())
             .collect();
         expected.sort();

@@ -178,6 +178,8 @@ pub enum Code {
     U2035,
     /// A decimal scale out of place (ADR 0120).
     U2037,
+    /// A tensor shape, index, permutation or axis out of place (ADR 0120).
+    U2038,
     /// A statement after `stop` or `skip` in the same block, which never runs.
     U2040,
     /// Capability not in scope.
@@ -299,7 +301,7 @@ pub enum Code {
 
 impl Code {
     /// Every registered code, in the order of `spec/13 §4`.
-    pub const ALL: [Code; 114] = [
+    pub const ALL: [Code; 115] = [
         Code::U0001,
         Code::U0002,
         Code::U0003,
@@ -356,6 +358,7 @@ impl Code {
         Code::U2034,
         Code::U2035,
         Code::U2037,
+        Code::U2038,
         Code::U2040,
         Code::U3001,
         Code::U3002,
@@ -712,6 +715,11 @@ impl Code {
                 code: "U2037",
                 domain: Domain::Types,
                 meaning: "A decimal scale out of place",
+            },
+            Code::U2038 => &Entry {
+                code: "U2038",
+                domain: Domain::Types,
+                meaning: "A tensor shape, index, permutation or axis out of place",
             },
             Code::U2040 => &Entry {
                 code: "U2040",

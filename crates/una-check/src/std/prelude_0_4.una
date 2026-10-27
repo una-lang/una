@@ -52,6 +52,22 @@ pub matrix_diagonal[T](values: Array[T]) -> Matrix[T]
 =
   matrix_diagonal(values)
 
+--- A tensor of the lengths in `shape`, a list literal of 1 to 8 of them, with the elements of
+--- `elements` in row-major order (`spec/29 §17`). Each call takes the contract of its rank:
+--- `requires` every length `>= 0` and `elements.len` their product; `ensures result.rank` the
+--- literal's length and `result.dim(axis: k)` the k-th length. A shape that is not a list
+--- literal is U2038. O(n).
+pub tensor[T](shape: List[Int], elements: List[T]) -> Tensor[T]
+=
+  tensor(shape: shape, elements: elements)
+
+--- A tensor of the lengths in `shape`, a list literal of 1 to 8 of them, each element `value`
+--- (`spec/29 §17`): `requires` every length `>= 0`, `ensures` the rank and the lengths, as for
+--- `tensor`. O(n).
+pub tensor_filled[T](shape: List[Int], value: T) -> Tensor[T]
+=
+  tensor_filled(shape: shape, value: value)
+
 -- The methods of `Array[T]` (`spec/29 §17`), which the checker resolves by the receiver.
 
 pub dense_array_get[T](a: Array[T], index: Int) -> T
@@ -65,7 +81,7 @@ pub dense_array_set[T](edit a: Array[T], index: Int, item: T) -> Unit
   ensures a.len == old(a).len
   ensures a.get(index: index) == item
 =
-  unit
+  dense_array_set(edit a, index: index, item: item)
 
 pub dense_array_at[T](a: Array[T], index: Int) -> Option[T]
   ensures (result is None) == (index < 0 or index >= a.len)
@@ -150,12 +166,12 @@ pub dense_array_add_scaled[T](edit a: Array[T], x: Array[T], by: T) -> Unit
   requires a.len == x.len
   ensures a.len == old(a).len
 =
-  unit
+  dense_array_add_scaled(edit a, x: x, by: by)
 
 pub dense_array_scale[T](edit a: Array[T], by: T) -> Unit
   ensures a.len == old(a).len
 =
-  unit
+  dense_array_scale(edit a, by: by)
 
 -- The methods of `Matrix[T]` (`spec/29 §17`), which the checker resolves by the receiver.
 
@@ -171,7 +187,7 @@ pub dense_matrix_set[T](edit m: Matrix[T], row: Int, column: Int, item: T) -> Un
   ensures m.columns == old(m).columns
   ensures m.get(row: row, column: column) == item
 =
-  unit
+  dense_matrix_set(edit m, row: row, column: column, item: item)
 
 pub dense_matrix_at[T](m: Matrix[T], row: Int, column: Int) -> Option[T]
   ensures (result is None) == (row < 0 or row >= m.rows or column < 0 or column >= m.columns)
@@ -283,13 +299,671 @@ pub dense_matrix_add_product[T](edit m: Matrix[T], of: Matrix[T], and_: Matrix[T
   ensures m.rows == old(m).rows
   ensures m.columns == old(m).columns
 =
-  unit
+  dense_matrix_add_product(edit m, of: of, and: and_)
 
 pub dense_matrix_scale[T](edit m: Matrix[T], by: T) -> Unit
   ensures m.rows == old(m).rows
   ensures m.columns == old(m).columns
 =
-  unit
+  dense_matrix_scale(edit m, by: by)
+
+pub dense_matrix_to_tensor[T](m: Matrix[T]) -> Tensor[T]
+  ensures result.rank == 2 and result.dim(axis: 0) == m.rows and result.dim(axis: 1) == m.columns
+  ensures result.count == m.rows * m.columns
+=
+  dense_matrix_to_tensor(m)
+
+-- The factorizations and solves of `Matrix[T]` on float elements (`spec/29 §17`). A result
+-- that is an `Option` holds, when it is `Some`, a value of the shape its comment states, which
+-- the verifier assumes (ADR 0120 rule 38): `lu` an `Lu[T]` of size `m.rows`, `solve` a matrix
+-- of the shape of `rhs`, `solve_array` an array of `rhs.len`, `cholesky` a matrix of `m`'s
+-- shape.
+
+pub dense_matrix_lu[T](m: Matrix[T]) -> Option[Lu[T]]
+  requires m.rows == m.columns
+=
+  dense_matrix_lu(m)
+
+pub dense_matrix_solve[T](m: Matrix[T], rhs: Matrix[T]) -> Option[Matrix[T]]
+  requires m.rows == m.columns and rhs.rows == m.rows
+=
+  dense_matrix_solve(m, rhs: rhs)
+
+pub dense_matrix_solve_array[T](m: Matrix[T], rhs: Array[T]) -> Option[Array[T]]
+  requires m.rows == m.columns and rhs.len == m.rows
+=
+  dense_matrix_solve_array(m, rhs: rhs)
+
+pub dense_matrix_cholesky[T](m: Matrix[T]) -> Option[Matrix[T]]
+  requires m.rows == m.columns
+=
+  dense_matrix_cholesky(m)
+
+pub dense_matrix_solve_lower[T](m: Matrix[T], rhs: Matrix[T], unit_diagonal: Bool) -> Matrix[T]
+  requires m.rows == m.columns and rhs.rows == m.rows
+  ensures result.rows == rhs.rows and result.columns == rhs.columns
+=
+  dense_matrix_solve_lower(m, rhs: rhs, unit_diagonal: unit_diagonal)
+
+pub dense_matrix_solve_upper[T](m: Matrix[T], rhs: Matrix[T], unit_diagonal: Bool) -> Matrix[T]
+  requires m.rows == m.columns and rhs.rows == m.rows
+  ensures result.rows == rhs.rows and result.columns == rhs.columns
+=
+  dense_matrix_solve_upper(m, rhs: rhs, unit_diagonal: unit_diagonal)
+
+-- The methods of `Lu[T]` (`spec/29 §17`), which the checker resolves by the receiver.
+
+pub dense_lu_solve[T](f: Lu[T], rhs: Matrix[T]) -> Matrix[T]
+  requires rhs.rows == f.size
+  ensures result.rows == f.size and result.columns == rhs.columns
+=
+  dense_lu_solve(f, rhs: rhs)
+
+pub dense_lu_factors[T](f: Lu[T]) -> Matrix[T]
+  ensures result.rows == f.size and result.columns == f.size
+=
+  dense_lu_factors(f)
+
+pub dense_lu_pivots[T](f: Lu[T]) -> List[Int]
+  ensures result.len == f.size
+=
+  dense_lu_pivots(f)
+
+-- The conversion of `Array[T]` to a tensor of rank 1 (`spec/29 §17`).
+
+pub dense_array_to_tensor[T](a: Array[T]) -> Tensor[T]
+  ensures result.rank == 1 and result.dim(axis: 0) == a.len and result.count == a.len
+=
+  dense_array_to_tensor(a)
+
+-- The methods of `Tensor[T]` (`spec/29 §17`), which the checker resolves by the receiver. A
+-- shape, an index or a permutation is a list literal, whose length selects the function of
+-- that rank: the checker passes the literal's elements as its arguments (U2038 otherwise).
+
+pub dense_tensor_make_1[T](shape_0: Int, elements: List[T]) -> Tensor[T]
+  requires shape_0 >= 0
+  requires elements.len == shape_0
+  ensures result.rank == 1 and result.dim(axis: 0) == shape_0
+  ensures result.count == shape_0
+=
+  dense_tensor_make_1(shape_0, elements: elements)
+
+pub dense_tensor_make_2[T](shape_0: Int, shape_1: Int, elements: List[T]) -> Tensor[T]
+  requires shape_0 >= 0 and shape_1 >= 0
+  requires elements.len == shape_0 * shape_1
+  ensures result.rank == 2 and result.dim(axis: 0) == shape_0 and result.dim(axis: 1) == shape_1
+  ensures result.count == shape_0 * shape_1
+=
+  dense_tensor_make_2(shape_0, shape_1, elements: elements)
+
+pub dense_tensor_make_3[T](shape_0: Int, shape_1: Int, shape_2: Int, elements: List[T]) -> Tensor[T]
+  requires shape_0 >= 0 and shape_1 >= 0 and shape_2 >= 0
+  requires elements.len == shape_0 * shape_1 * shape_2
+  ensures result.rank == 3 and result.dim(axis: 0) == shape_0 and result.dim(axis: 1) == shape_1 and result.dim(axis: 2) == shape_2
+  ensures result.count == shape_0 * shape_1 * shape_2
+=
+  dense_tensor_make_3(shape_0, shape_1, shape_2, elements: elements)
+
+pub dense_tensor_make_4[T](shape_0: Int, shape_1: Int, shape_2: Int, shape_3: Int, elements: List[T]) -> Tensor[T]
+  requires shape_0 >= 0 and shape_1 >= 0 and shape_2 >= 0 and shape_3 >= 0
+  requires elements.len == shape_0 * shape_1 * shape_2 * shape_3
+  ensures result.rank == 4 and result.dim(axis: 0) == shape_0 and result.dim(axis: 1) == shape_1 and result.dim(axis: 2) == shape_2 and result.dim(axis: 3) == shape_3
+  ensures result.count == shape_0 * shape_1 * shape_2 * shape_3
+=
+  dense_tensor_make_4(shape_0, shape_1, shape_2, shape_3, elements: elements)
+
+pub dense_tensor_make_5[T](shape_0: Int, shape_1: Int, shape_2: Int, shape_3: Int, shape_4: Int, elements: List[T]) -> Tensor[T]
+  requires shape_0 >= 0 and shape_1 >= 0 and shape_2 >= 0 and shape_3 >= 0 and shape_4 >= 0
+  requires elements.len == shape_0 * shape_1 * shape_2 * shape_3 * shape_4
+  ensures result.rank == 5 and result.dim(axis: 0) == shape_0 and result.dim(axis: 1) == shape_1 and result.dim(axis: 2) == shape_2 and result.dim(axis: 3) == shape_3 and result.dim(axis: 4) == shape_4
+  ensures result.count == shape_0 * shape_1 * shape_2 * shape_3 * shape_4
+=
+  dense_tensor_make_5(shape_0, shape_1, shape_2, shape_3, shape_4, elements: elements)
+
+pub dense_tensor_make_6[T](shape_0: Int, shape_1: Int, shape_2: Int, shape_3: Int, shape_4: Int, shape_5: Int, elements: List[T]) -> Tensor[T]
+  requires shape_0 >= 0 and shape_1 >= 0 and shape_2 >= 0 and shape_3 >= 0 and shape_4 >= 0 and shape_5 >= 0
+  requires elements.len == shape_0 * shape_1 * shape_2 * shape_3 * shape_4 * shape_5
+  ensures result.rank == 6 and result.dim(axis: 0) == shape_0 and result.dim(axis: 1) == shape_1 and result.dim(axis: 2) == shape_2 and result.dim(axis: 3) == shape_3 and result.dim(axis: 4) == shape_4 and result.dim(axis: 5) == shape_5
+  ensures result.count == shape_0 * shape_1 * shape_2 * shape_3 * shape_4 * shape_5
+=
+  dense_tensor_make_6(shape_0, shape_1, shape_2, shape_3, shape_4, shape_5, elements: elements)
+
+pub dense_tensor_make_7[T](shape_0: Int, shape_1: Int, shape_2: Int, shape_3: Int, shape_4: Int, shape_5: Int, shape_6: Int, elements: List[T]) -> Tensor[T]
+  requires shape_0 >= 0 and shape_1 >= 0 and shape_2 >= 0 and shape_3 >= 0 and shape_4 >= 0 and shape_5 >= 0 and shape_6 >= 0
+  requires elements.len == shape_0 * shape_1 * shape_2 * shape_3 * shape_4 * shape_5 * shape_6
+  ensures result.rank == 7 and result.dim(axis: 0) == shape_0 and result.dim(axis: 1) == shape_1 and result.dim(axis: 2) == shape_2 and result.dim(axis: 3) == shape_3 and result.dim(axis: 4) == shape_4 and result.dim(axis: 5) == shape_5 and result.dim(axis: 6) == shape_6
+  ensures result.count == shape_0 * shape_1 * shape_2 * shape_3 * shape_4 * shape_5 * shape_6
+=
+  dense_tensor_make_7(shape_0, shape_1, shape_2, shape_3, shape_4, shape_5, shape_6, elements: elements)
+
+pub dense_tensor_make_8[T](shape_0: Int, shape_1: Int, shape_2: Int, shape_3: Int, shape_4: Int, shape_5: Int, shape_6: Int, shape_7: Int, elements: List[T]) -> Tensor[T]
+  requires shape_0 >= 0 and shape_1 >= 0 and shape_2 >= 0 and shape_3 >= 0 and shape_4 >= 0 and shape_5 >= 0 and shape_6 >= 0 and shape_7 >= 0
+  requires elements.len == shape_0 * shape_1 * shape_2 * shape_3 * shape_4 * shape_5 * shape_6 * shape_7
+  ensures result.rank == 8 and result.dim(axis: 0) == shape_0 and result.dim(axis: 1) == shape_1 and result.dim(axis: 2) == shape_2 and result.dim(axis: 3) == shape_3 and result.dim(axis: 4) == shape_4 and result.dim(axis: 5) == shape_5 and result.dim(axis: 6) == shape_6 and result.dim(axis: 7) == shape_7
+  ensures result.count == shape_0 * shape_1 * shape_2 * shape_3 * shape_4 * shape_5 * shape_6 * shape_7
+=
+  dense_tensor_make_8(shape_0, shape_1, shape_2, shape_3, shape_4, shape_5, shape_6, shape_7, elements: elements)
+
+pub dense_tensor_filled_1[T](shape_0: Int, value: T) -> Tensor[T]
+  requires shape_0 >= 0
+  ensures result.rank == 1 and result.dim(axis: 0) == shape_0
+  ensures result.count == shape_0
+=
+  dense_tensor_filled_1(shape_0, value: value)
+
+pub dense_tensor_filled_2[T](shape_0: Int, shape_1: Int, value: T) -> Tensor[T]
+  requires shape_0 >= 0 and shape_1 >= 0
+  ensures result.rank == 2 and result.dim(axis: 0) == shape_0 and result.dim(axis: 1) == shape_1
+  ensures result.count == shape_0 * shape_1
+=
+  dense_tensor_filled_2(shape_0, shape_1, value: value)
+
+pub dense_tensor_filled_3[T](shape_0: Int, shape_1: Int, shape_2: Int, value: T) -> Tensor[T]
+  requires shape_0 >= 0 and shape_1 >= 0 and shape_2 >= 0
+  ensures result.rank == 3 and result.dim(axis: 0) == shape_0 and result.dim(axis: 1) == shape_1 and result.dim(axis: 2) == shape_2
+  ensures result.count == shape_0 * shape_1 * shape_2
+=
+  dense_tensor_filled_3(shape_0, shape_1, shape_2, value: value)
+
+pub dense_tensor_filled_4[T](shape_0: Int, shape_1: Int, shape_2: Int, shape_3: Int, value: T) -> Tensor[T]
+  requires shape_0 >= 0 and shape_1 >= 0 and shape_2 >= 0 and shape_3 >= 0
+  ensures result.rank == 4 and result.dim(axis: 0) == shape_0 and result.dim(axis: 1) == shape_1 and result.dim(axis: 2) == shape_2 and result.dim(axis: 3) == shape_3
+  ensures result.count == shape_0 * shape_1 * shape_2 * shape_3
+=
+  dense_tensor_filled_4(shape_0, shape_1, shape_2, shape_3, value: value)
+
+pub dense_tensor_filled_5[T](shape_0: Int, shape_1: Int, shape_2: Int, shape_3: Int, shape_4: Int, value: T) -> Tensor[T]
+  requires shape_0 >= 0 and shape_1 >= 0 and shape_2 >= 0 and shape_3 >= 0 and shape_4 >= 0
+  ensures result.rank == 5 and result.dim(axis: 0) == shape_0 and result.dim(axis: 1) == shape_1 and result.dim(axis: 2) == shape_2 and result.dim(axis: 3) == shape_3 and result.dim(axis: 4) == shape_4
+  ensures result.count == shape_0 * shape_1 * shape_2 * shape_3 * shape_4
+=
+  dense_tensor_filled_5(shape_0, shape_1, shape_2, shape_3, shape_4, value: value)
+
+pub dense_tensor_filled_6[T](shape_0: Int, shape_1: Int, shape_2: Int, shape_3: Int, shape_4: Int, shape_5: Int, value: T) -> Tensor[T]
+  requires shape_0 >= 0 and shape_1 >= 0 and shape_2 >= 0 and shape_3 >= 0 and shape_4 >= 0 and shape_5 >= 0
+  ensures result.rank == 6 and result.dim(axis: 0) == shape_0 and result.dim(axis: 1) == shape_1 and result.dim(axis: 2) == shape_2 and result.dim(axis: 3) == shape_3 and result.dim(axis: 4) == shape_4 and result.dim(axis: 5) == shape_5
+  ensures result.count == shape_0 * shape_1 * shape_2 * shape_3 * shape_4 * shape_5
+=
+  dense_tensor_filled_6(shape_0, shape_1, shape_2, shape_3, shape_4, shape_5, value: value)
+
+pub dense_tensor_filled_7[T](shape_0: Int, shape_1: Int, shape_2: Int, shape_3: Int, shape_4: Int, shape_5: Int, shape_6: Int, value: T) -> Tensor[T]
+  requires shape_0 >= 0 and shape_1 >= 0 and shape_2 >= 0 and shape_3 >= 0 and shape_4 >= 0 and shape_5 >= 0 and shape_6 >= 0
+  ensures result.rank == 7 and result.dim(axis: 0) == shape_0 and result.dim(axis: 1) == shape_1 and result.dim(axis: 2) == shape_2 and result.dim(axis: 3) == shape_3 and result.dim(axis: 4) == shape_4 and result.dim(axis: 5) == shape_5 and result.dim(axis: 6) == shape_6
+  ensures result.count == shape_0 * shape_1 * shape_2 * shape_3 * shape_4 * shape_5 * shape_6
+=
+  dense_tensor_filled_7(shape_0, shape_1, shape_2, shape_3, shape_4, shape_5, shape_6, value: value)
+
+pub dense_tensor_filled_8[T](shape_0: Int, shape_1: Int, shape_2: Int, shape_3: Int, shape_4: Int, shape_5: Int, shape_6: Int, shape_7: Int, value: T) -> Tensor[T]
+  requires shape_0 >= 0 and shape_1 >= 0 and shape_2 >= 0 and shape_3 >= 0 and shape_4 >= 0 and shape_5 >= 0 and shape_6 >= 0 and shape_7 >= 0
+  ensures result.rank == 8 and result.dim(axis: 0) == shape_0 and result.dim(axis: 1) == shape_1 and result.dim(axis: 2) == shape_2 and result.dim(axis: 3) == shape_3 and result.dim(axis: 4) == shape_4 and result.dim(axis: 5) == shape_5 and result.dim(axis: 6) == shape_6 and result.dim(axis: 7) == shape_7
+  ensures result.count == shape_0 * shape_1 * shape_2 * shape_3 * shape_4 * shape_5 * shape_6 * shape_7
+=
+  dense_tensor_filled_8(shape_0, shape_1, shape_2, shape_3, shape_4, shape_5, shape_6, shape_7, value: value)
+
+pub dense_tensor_get_1[T](t: Tensor[T], at_0: Int) -> T
+  requires t.rank == 1
+  requires 0 <= at_0 and at_0 < t.dim(axis: 0)
+  ensures result == t.get(at: [at_0])
+=
+  dense_tensor_get_1(t, at_0)
+
+pub dense_tensor_get_2[T](t: Tensor[T], at_0: Int, at_1: Int) -> T
+  requires t.rank == 2
+  requires 0 <= at_0 and at_0 < t.dim(axis: 0) and 0 <= at_1 and at_1 < t.dim(axis: 1)
+  ensures result == t.get(at: [at_0, at_1])
+=
+  dense_tensor_get_2(t, at_0, at_1)
+
+pub dense_tensor_get_3[T](t: Tensor[T], at_0: Int, at_1: Int, at_2: Int) -> T
+  requires t.rank == 3
+  requires 0 <= at_0 and at_0 < t.dim(axis: 0) and 0 <= at_1 and at_1 < t.dim(axis: 1) and 0 <= at_2 and at_2 < t.dim(axis: 2)
+  ensures result == t.get(at: [at_0, at_1, at_2])
+=
+  dense_tensor_get_3(t, at_0, at_1, at_2)
+
+pub dense_tensor_get_4[T](t: Tensor[T], at_0: Int, at_1: Int, at_2: Int, at_3: Int) -> T
+  requires t.rank == 4
+  requires 0 <= at_0 and at_0 < t.dim(axis: 0) and 0 <= at_1 and at_1 < t.dim(axis: 1) and 0 <= at_2 and at_2 < t.dim(axis: 2) and 0 <= at_3 and at_3 < t.dim(axis: 3)
+  ensures result == t.get(at: [at_0, at_1, at_2, at_3])
+=
+  dense_tensor_get_4(t, at_0, at_1, at_2, at_3)
+
+pub dense_tensor_get_5[T](t: Tensor[T], at_0: Int, at_1: Int, at_2: Int, at_3: Int, at_4: Int) -> T
+  requires t.rank == 5
+  requires 0 <= at_0 and at_0 < t.dim(axis: 0) and 0 <= at_1 and at_1 < t.dim(axis: 1) and 0 <= at_2 and at_2 < t.dim(axis: 2) and 0 <= at_3 and at_3 < t.dim(axis: 3) and 0 <= at_4 and at_4 < t.dim(axis: 4)
+  ensures result == t.get(at: [at_0, at_1, at_2, at_3, at_4])
+=
+  dense_tensor_get_5(t, at_0, at_1, at_2, at_3, at_4)
+
+pub dense_tensor_get_6[T](t: Tensor[T], at_0: Int, at_1: Int, at_2: Int, at_3: Int, at_4: Int, at_5: Int) -> T
+  requires t.rank == 6
+  requires 0 <= at_0 and at_0 < t.dim(axis: 0) and 0 <= at_1 and at_1 < t.dim(axis: 1) and 0 <= at_2 and at_2 < t.dim(axis: 2) and 0 <= at_3 and at_3 < t.dim(axis: 3) and 0 <= at_4 and at_4 < t.dim(axis: 4) and 0 <= at_5 and at_5 < t.dim(axis: 5)
+  ensures result == t.get(at: [at_0, at_1, at_2, at_3, at_4, at_5])
+=
+  dense_tensor_get_6(t, at_0, at_1, at_2, at_3, at_4, at_5)
+
+pub dense_tensor_get_7[T](t: Tensor[T], at_0: Int, at_1: Int, at_2: Int, at_3: Int, at_4: Int, at_5: Int, at_6: Int) -> T
+  requires t.rank == 7
+  requires 0 <= at_0 and at_0 < t.dim(axis: 0) and 0 <= at_1 and at_1 < t.dim(axis: 1) and 0 <= at_2 and at_2 < t.dim(axis: 2) and 0 <= at_3 and at_3 < t.dim(axis: 3) and 0 <= at_4 and at_4 < t.dim(axis: 4) and 0 <= at_5 and at_5 < t.dim(axis: 5) and 0 <= at_6 and at_6 < t.dim(axis: 6)
+  ensures result == t.get(at: [at_0, at_1, at_2, at_3, at_4, at_5, at_6])
+=
+  dense_tensor_get_7(t, at_0, at_1, at_2, at_3, at_4, at_5, at_6)
+
+pub dense_tensor_get_8[T](t: Tensor[T], at_0: Int, at_1: Int, at_2: Int, at_3: Int, at_4: Int, at_5: Int, at_6: Int, at_7: Int) -> T
+  requires t.rank == 8
+  requires 0 <= at_0 and at_0 < t.dim(axis: 0) and 0 <= at_1 and at_1 < t.dim(axis: 1) and 0 <= at_2 and at_2 < t.dim(axis: 2) and 0 <= at_3 and at_3 < t.dim(axis: 3) and 0 <= at_4 and at_4 < t.dim(axis: 4) and 0 <= at_5 and at_5 < t.dim(axis: 5) and 0 <= at_6 and at_6 < t.dim(axis: 6) and 0 <= at_7 and at_7 < t.dim(axis: 7)
+  ensures result == t.get(at: [at_0, at_1, at_2, at_3, at_4, at_5, at_6, at_7])
+=
+  dense_tensor_get_8(t, at_0, at_1, at_2, at_3, at_4, at_5, at_6, at_7)
+
+pub dense_tensor_at_1[T](t: Tensor[T], at_0: Int) -> Option[T]
+  ensures (result is None) == (t.rank != 1 or at_0 < 0 or at_0 >= t.dim(axis: 0))
+=
+  dense_tensor_at_1(t, at_0)
+
+pub dense_tensor_at_2[T](t: Tensor[T], at_0: Int, at_1: Int) -> Option[T]
+  ensures (result is None) == (t.rank != 2 or at_0 < 0 or at_0 >= t.dim(axis: 0) or at_1 < 0 or at_1 >= t.dim(axis: 1))
+=
+  dense_tensor_at_2(t, at_0, at_1)
+
+pub dense_tensor_at_3[T](t: Tensor[T], at_0: Int, at_1: Int, at_2: Int) -> Option[T]
+  ensures (result is None) == (t.rank != 3 or at_0 < 0 or at_0 >= t.dim(axis: 0) or at_1 < 0 or at_1 >= t.dim(axis: 1) or at_2 < 0 or at_2 >= t.dim(axis: 2))
+=
+  dense_tensor_at_3(t, at_0, at_1, at_2)
+
+pub dense_tensor_at_4[T](t: Tensor[T], at_0: Int, at_1: Int, at_2: Int, at_3: Int) -> Option[T]
+  ensures (result is None) == (t.rank != 4 or at_0 < 0 or at_0 >= t.dim(axis: 0) or at_1 < 0 or at_1 >= t.dim(axis: 1) or at_2 < 0 or at_2 >= t.dim(axis: 2) or at_3 < 0 or at_3 >= t.dim(axis: 3))
+=
+  dense_tensor_at_4(t, at_0, at_1, at_2, at_3)
+
+pub dense_tensor_at_5[T](t: Tensor[T], at_0: Int, at_1: Int, at_2: Int, at_3: Int, at_4: Int) -> Option[T]
+  ensures (result is None) == (t.rank != 5 or at_0 < 0 or at_0 >= t.dim(axis: 0) or at_1 < 0 or at_1 >= t.dim(axis: 1) or at_2 < 0 or at_2 >= t.dim(axis: 2) or at_3 < 0 or at_3 >= t.dim(axis: 3) or at_4 < 0 or at_4 >= t.dim(axis: 4))
+=
+  dense_tensor_at_5(t, at_0, at_1, at_2, at_3, at_4)
+
+pub dense_tensor_at_6[T](t: Tensor[T], at_0: Int, at_1: Int, at_2: Int, at_3: Int, at_4: Int, at_5: Int) -> Option[T]
+  ensures (result is None) == (t.rank != 6 or at_0 < 0 or at_0 >= t.dim(axis: 0) or at_1 < 0 or at_1 >= t.dim(axis: 1) or at_2 < 0 or at_2 >= t.dim(axis: 2) or at_3 < 0 or at_3 >= t.dim(axis: 3) or at_4 < 0 or at_4 >= t.dim(axis: 4) or at_5 < 0 or at_5 >= t.dim(axis: 5))
+=
+  dense_tensor_at_6(t, at_0, at_1, at_2, at_3, at_4, at_5)
+
+pub dense_tensor_at_7[T](t: Tensor[T], at_0: Int, at_1: Int, at_2: Int, at_3: Int, at_4: Int, at_5: Int, at_6: Int) -> Option[T]
+  ensures (result is None) == (t.rank != 7 or at_0 < 0 or at_0 >= t.dim(axis: 0) or at_1 < 0 or at_1 >= t.dim(axis: 1) or at_2 < 0 or at_2 >= t.dim(axis: 2) or at_3 < 0 or at_3 >= t.dim(axis: 3) or at_4 < 0 or at_4 >= t.dim(axis: 4) or at_5 < 0 or at_5 >= t.dim(axis: 5) or at_6 < 0 or at_6 >= t.dim(axis: 6))
+=
+  dense_tensor_at_7(t, at_0, at_1, at_2, at_3, at_4, at_5, at_6)
+
+pub dense_tensor_at_8[T](t: Tensor[T], at_0: Int, at_1: Int, at_2: Int, at_3: Int, at_4: Int, at_5: Int, at_6: Int, at_7: Int) -> Option[T]
+  ensures (result is None) == (t.rank != 8 or at_0 < 0 or at_0 >= t.dim(axis: 0) or at_1 < 0 or at_1 >= t.dim(axis: 1) or at_2 < 0 or at_2 >= t.dim(axis: 2) or at_3 < 0 or at_3 >= t.dim(axis: 3) or at_4 < 0 or at_4 >= t.dim(axis: 4) or at_5 < 0 or at_5 >= t.dim(axis: 5) or at_6 < 0 or at_6 >= t.dim(axis: 6) or at_7 < 0 or at_7 >= t.dim(axis: 7))
+=
+  dense_tensor_at_8(t, at_0, at_1, at_2, at_3, at_4, at_5, at_6, at_7)
+
+pub dense_tensor_set_1[T](edit t: Tensor[T], at_0: Int, item: T) -> Unit
+  requires t.rank == 1
+  requires 0 <= at_0 and at_0 < t.dim(axis: 0)
+  ensures t.rank == old(t).rank
+  ensures t.count == old(t).count
+  ensures t.dim(axis: 0) == old(t).dim(axis: 0)
+  ensures t.dim(axis: 1) == old(t).dim(axis: 1)
+  ensures t.dim(axis: 2) == old(t).dim(axis: 2)
+  ensures t.dim(axis: 3) == old(t).dim(axis: 3)
+  ensures t.dim(axis: 4) == old(t).dim(axis: 4)
+  ensures t.dim(axis: 5) == old(t).dim(axis: 5)
+  ensures t.dim(axis: 6) == old(t).dim(axis: 6)
+  ensures t.dim(axis: 7) == old(t).dim(axis: 7)
+  ensures t.get(at: [at_0]) == item
+=
+  dense_tensor_set_1(edit t, at_0, item: item)
+
+pub dense_tensor_set_2[T](edit t: Tensor[T], at_0: Int, at_1: Int, item: T) -> Unit
+  requires t.rank == 2
+  requires 0 <= at_0 and at_0 < t.dim(axis: 0) and 0 <= at_1 and at_1 < t.dim(axis: 1)
+  ensures t.rank == old(t).rank
+  ensures t.count == old(t).count
+  ensures t.dim(axis: 0) == old(t).dim(axis: 0)
+  ensures t.dim(axis: 1) == old(t).dim(axis: 1)
+  ensures t.dim(axis: 2) == old(t).dim(axis: 2)
+  ensures t.dim(axis: 3) == old(t).dim(axis: 3)
+  ensures t.dim(axis: 4) == old(t).dim(axis: 4)
+  ensures t.dim(axis: 5) == old(t).dim(axis: 5)
+  ensures t.dim(axis: 6) == old(t).dim(axis: 6)
+  ensures t.dim(axis: 7) == old(t).dim(axis: 7)
+  ensures t.get(at: [at_0, at_1]) == item
+=
+  dense_tensor_set_2(edit t, at_0, at_1, item: item)
+
+pub dense_tensor_set_3[T](edit t: Tensor[T], at_0: Int, at_1: Int, at_2: Int, item: T) -> Unit
+  requires t.rank == 3
+  requires 0 <= at_0 and at_0 < t.dim(axis: 0) and 0 <= at_1 and at_1 < t.dim(axis: 1) and 0 <= at_2 and at_2 < t.dim(axis: 2)
+  ensures t.rank == old(t).rank
+  ensures t.count == old(t).count
+  ensures t.dim(axis: 0) == old(t).dim(axis: 0)
+  ensures t.dim(axis: 1) == old(t).dim(axis: 1)
+  ensures t.dim(axis: 2) == old(t).dim(axis: 2)
+  ensures t.dim(axis: 3) == old(t).dim(axis: 3)
+  ensures t.dim(axis: 4) == old(t).dim(axis: 4)
+  ensures t.dim(axis: 5) == old(t).dim(axis: 5)
+  ensures t.dim(axis: 6) == old(t).dim(axis: 6)
+  ensures t.dim(axis: 7) == old(t).dim(axis: 7)
+  ensures t.get(at: [at_0, at_1, at_2]) == item
+=
+  dense_tensor_set_3(edit t, at_0, at_1, at_2, item: item)
+
+pub dense_tensor_set_4[T](edit t: Tensor[T], at_0: Int, at_1: Int, at_2: Int, at_3: Int, item: T) -> Unit
+  requires t.rank == 4
+  requires 0 <= at_0 and at_0 < t.dim(axis: 0) and 0 <= at_1 and at_1 < t.dim(axis: 1) and 0 <= at_2 and at_2 < t.dim(axis: 2) and 0 <= at_3 and at_3 < t.dim(axis: 3)
+  ensures t.rank == old(t).rank
+  ensures t.count == old(t).count
+  ensures t.dim(axis: 0) == old(t).dim(axis: 0)
+  ensures t.dim(axis: 1) == old(t).dim(axis: 1)
+  ensures t.dim(axis: 2) == old(t).dim(axis: 2)
+  ensures t.dim(axis: 3) == old(t).dim(axis: 3)
+  ensures t.dim(axis: 4) == old(t).dim(axis: 4)
+  ensures t.dim(axis: 5) == old(t).dim(axis: 5)
+  ensures t.dim(axis: 6) == old(t).dim(axis: 6)
+  ensures t.dim(axis: 7) == old(t).dim(axis: 7)
+  ensures t.get(at: [at_0, at_1, at_2, at_3]) == item
+=
+  dense_tensor_set_4(edit t, at_0, at_1, at_2, at_3, item: item)
+
+pub dense_tensor_set_5[T](edit t: Tensor[T], at_0: Int, at_1: Int, at_2: Int, at_3: Int, at_4: Int, item: T) -> Unit
+  requires t.rank == 5
+  requires 0 <= at_0 and at_0 < t.dim(axis: 0) and 0 <= at_1 and at_1 < t.dim(axis: 1) and 0 <= at_2 and at_2 < t.dim(axis: 2) and 0 <= at_3 and at_3 < t.dim(axis: 3) and 0 <= at_4 and at_4 < t.dim(axis: 4)
+  ensures t.rank == old(t).rank
+  ensures t.count == old(t).count
+  ensures t.dim(axis: 0) == old(t).dim(axis: 0)
+  ensures t.dim(axis: 1) == old(t).dim(axis: 1)
+  ensures t.dim(axis: 2) == old(t).dim(axis: 2)
+  ensures t.dim(axis: 3) == old(t).dim(axis: 3)
+  ensures t.dim(axis: 4) == old(t).dim(axis: 4)
+  ensures t.dim(axis: 5) == old(t).dim(axis: 5)
+  ensures t.dim(axis: 6) == old(t).dim(axis: 6)
+  ensures t.dim(axis: 7) == old(t).dim(axis: 7)
+  ensures t.get(at: [at_0, at_1, at_2, at_3, at_4]) == item
+=
+  dense_tensor_set_5(edit t, at_0, at_1, at_2, at_3, at_4, item: item)
+
+pub dense_tensor_set_6[T](edit t: Tensor[T], at_0: Int, at_1: Int, at_2: Int, at_3: Int, at_4: Int, at_5: Int, item: T) -> Unit
+  requires t.rank == 6
+  requires 0 <= at_0 and at_0 < t.dim(axis: 0) and 0 <= at_1 and at_1 < t.dim(axis: 1) and 0 <= at_2 and at_2 < t.dim(axis: 2) and 0 <= at_3 and at_3 < t.dim(axis: 3) and 0 <= at_4 and at_4 < t.dim(axis: 4) and 0 <= at_5 and at_5 < t.dim(axis: 5)
+  ensures t.rank == old(t).rank
+  ensures t.count == old(t).count
+  ensures t.dim(axis: 0) == old(t).dim(axis: 0)
+  ensures t.dim(axis: 1) == old(t).dim(axis: 1)
+  ensures t.dim(axis: 2) == old(t).dim(axis: 2)
+  ensures t.dim(axis: 3) == old(t).dim(axis: 3)
+  ensures t.dim(axis: 4) == old(t).dim(axis: 4)
+  ensures t.dim(axis: 5) == old(t).dim(axis: 5)
+  ensures t.dim(axis: 6) == old(t).dim(axis: 6)
+  ensures t.dim(axis: 7) == old(t).dim(axis: 7)
+  ensures t.get(at: [at_0, at_1, at_2, at_3, at_4, at_5]) == item
+=
+  dense_tensor_set_6(edit t, at_0, at_1, at_2, at_3, at_4, at_5, item: item)
+
+pub dense_tensor_set_7[T](edit t: Tensor[T], at_0: Int, at_1: Int, at_2: Int, at_3: Int, at_4: Int, at_5: Int, at_6: Int, item: T) -> Unit
+  requires t.rank == 7
+  requires 0 <= at_0 and at_0 < t.dim(axis: 0) and 0 <= at_1 and at_1 < t.dim(axis: 1) and 0 <= at_2 and at_2 < t.dim(axis: 2) and 0 <= at_3 and at_3 < t.dim(axis: 3) and 0 <= at_4 and at_4 < t.dim(axis: 4) and 0 <= at_5 and at_5 < t.dim(axis: 5) and 0 <= at_6 and at_6 < t.dim(axis: 6)
+  ensures t.rank == old(t).rank
+  ensures t.count == old(t).count
+  ensures t.dim(axis: 0) == old(t).dim(axis: 0)
+  ensures t.dim(axis: 1) == old(t).dim(axis: 1)
+  ensures t.dim(axis: 2) == old(t).dim(axis: 2)
+  ensures t.dim(axis: 3) == old(t).dim(axis: 3)
+  ensures t.dim(axis: 4) == old(t).dim(axis: 4)
+  ensures t.dim(axis: 5) == old(t).dim(axis: 5)
+  ensures t.dim(axis: 6) == old(t).dim(axis: 6)
+  ensures t.dim(axis: 7) == old(t).dim(axis: 7)
+  ensures t.get(at: [at_0, at_1, at_2, at_3, at_4, at_5, at_6]) == item
+=
+  dense_tensor_set_7(edit t, at_0, at_1, at_2, at_3, at_4, at_5, at_6, item: item)
+
+pub dense_tensor_set_8[T](edit t: Tensor[T], at_0: Int, at_1: Int, at_2: Int, at_3: Int, at_4: Int, at_5: Int, at_6: Int, at_7: Int, item: T) -> Unit
+  requires t.rank == 8
+  requires 0 <= at_0 and at_0 < t.dim(axis: 0) and 0 <= at_1 and at_1 < t.dim(axis: 1) and 0 <= at_2 and at_2 < t.dim(axis: 2) and 0 <= at_3 and at_3 < t.dim(axis: 3) and 0 <= at_4 and at_4 < t.dim(axis: 4) and 0 <= at_5 and at_5 < t.dim(axis: 5) and 0 <= at_6 and at_6 < t.dim(axis: 6) and 0 <= at_7 and at_7 < t.dim(axis: 7)
+  ensures t.rank == old(t).rank
+  ensures t.count == old(t).count
+  ensures t.dim(axis: 0) == old(t).dim(axis: 0)
+  ensures t.dim(axis: 1) == old(t).dim(axis: 1)
+  ensures t.dim(axis: 2) == old(t).dim(axis: 2)
+  ensures t.dim(axis: 3) == old(t).dim(axis: 3)
+  ensures t.dim(axis: 4) == old(t).dim(axis: 4)
+  ensures t.dim(axis: 5) == old(t).dim(axis: 5)
+  ensures t.dim(axis: 6) == old(t).dim(axis: 6)
+  ensures t.dim(axis: 7) == old(t).dim(axis: 7)
+  ensures t.get(at: [at_0, at_1, at_2, at_3, at_4, at_5, at_6, at_7]) == item
+=
+  dense_tensor_set_8(edit t, at_0, at_1, at_2, at_3, at_4, at_5, at_6, at_7, item: item)
+
+pub dense_tensor_permute_1[T](t: Tensor[T], axes_0: Int) -> Tensor[T]
+  requires t.rank == 1
+  ensures result.rank == 1 and result.count == t.count
+  ensures result.dim(axis: 0) == t.dim(axis: axes_0)
+=
+  dense_tensor_permute_1(t, axes_0)
+
+pub dense_tensor_permute_2[T](t: Tensor[T], axes_0: Int, axes_1: Int) -> Tensor[T]
+  requires t.rank == 2
+  ensures result.rank == 2 and result.count == t.count
+  ensures result.dim(axis: 0) == t.dim(axis: axes_0) and result.dim(axis: 1) == t.dim(axis: axes_1)
+=
+  dense_tensor_permute_2(t, axes_0, axes_1)
+
+pub dense_tensor_permute_3[T](t: Tensor[T], axes_0: Int, axes_1: Int, axes_2: Int) -> Tensor[T]
+  requires t.rank == 3
+  ensures result.rank == 3 and result.count == t.count
+  ensures result.dim(axis: 0) == t.dim(axis: axes_0) and result.dim(axis: 1) == t.dim(axis: axes_1) and result.dim(axis: 2) == t.dim(axis: axes_2)
+=
+  dense_tensor_permute_3(t, axes_0, axes_1, axes_2)
+
+pub dense_tensor_permute_4[T](t: Tensor[T], axes_0: Int, axes_1: Int, axes_2: Int, axes_3: Int) -> Tensor[T]
+  requires t.rank == 4
+  ensures result.rank == 4 and result.count == t.count
+  ensures result.dim(axis: 0) == t.dim(axis: axes_0) and result.dim(axis: 1) == t.dim(axis: axes_1) and result.dim(axis: 2) == t.dim(axis: axes_2) and result.dim(axis: 3) == t.dim(axis: axes_3)
+=
+  dense_tensor_permute_4(t, axes_0, axes_1, axes_2, axes_3)
+
+pub dense_tensor_permute_5[T](t: Tensor[T], axes_0: Int, axes_1: Int, axes_2: Int, axes_3: Int, axes_4: Int) -> Tensor[T]
+  requires t.rank == 5
+  ensures result.rank == 5 and result.count == t.count
+  ensures result.dim(axis: 0) == t.dim(axis: axes_0) and result.dim(axis: 1) == t.dim(axis: axes_1) and result.dim(axis: 2) == t.dim(axis: axes_2) and result.dim(axis: 3) == t.dim(axis: axes_3) and result.dim(axis: 4) == t.dim(axis: axes_4)
+=
+  dense_tensor_permute_5(t, axes_0, axes_1, axes_2, axes_3, axes_4)
+
+pub dense_tensor_permute_6[T](t: Tensor[T], axes_0: Int, axes_1: Int, axes_2: Int, axes_3: Int, axes_4: Int, axes_5: Int) -> Tensor[T]
+  requires t.rank == 6
+  ensures result.rank == 6 and result.count == t.count
+  ensures result.dim(axis: 0) == t.dim(axis: axes_0) and result.dim(axis: 1) == t.dim(axis: axes_1) and result.dim(axis: 2) == t.dim(axis: axes_2) and result.dim(axis: 3) == t.dim(axis: axes_3) and result.dim(axis: 4) == t.dim(axis: axes_4) and result.dim(axis: 5) == t.dim(axis: axes_5)
+=
+  dense_tensor_permute_6(t, axes_0, axes_1, axes_2, axes_3, axes_4, axes_5)
+
+pub dense_tensor_permute_7[T](t: Tensor[T], axes_0: Int, axes_1: Int, axes_2: Int, axes_3: Int, axes_4: Int, axes_5: Int, axes_6: Int) -> Tensor[T]
+  requires t.rank == 7
+  ensures result.rank == 7 and result.count == t.count
+  ensures result.dim(axis: 0) == t.dim(axis: axes_0) and result.dim(axis: 1) == t.dim(axis: axes_1) and result.dim(axis: 2) == t.dim(axis: axes_2) and result.dim(axis: 3) == t.dim(axis: axes_3) and result.dim(axis: 4) == t.dim(axis: axes_4) and result.dim(axis: 5) == t.dim(axis: axes_5) and result.dim(axis: 6) == t.dim(axis: axes_6)
+=
+  dense_tensor_permute_7(t, axes_0, axes_1, axes_2, axes_3, axes_4, axes_5, axes_6)
+
+pub dense_tensor_permute_8[T](t: Tensor[T], axes_0: Int, axes_1: Int, axes_2: Int, axes_3: Int, axes_4: Int, axes_5: Int, axes_6: Int, axes_7: Int) -> Tensor[T]
+  requires t.rank == 8
+  ensures result.rank == 8 and result.count == t.count
+  ensures result.dim(axis: 0) == t.dim(axis: axes_0) and result.dim(axis: 1) == t.dim(axis: axes_1) and result.dim(axis: 2) == t.dim(axis: axes_2) and result.dim(axis: 3) == t.dim(axis: axes_3) and result.dim(axis: 4) == t.dim(axis: axes_4) and result.dim(axis: 5) == t.dim(axis: axes_5) and result.dim(axis: 6) == t.dim(axis: axes_6) and result.dim(axis: 7) == t.dim(axis: axes_7)
+=
+  dense_tensor_permute_8(t, axes_0, axes_1, axes_2, axes_3, axes_4, axes_5, axes_6, axes_7)
+
+pub dense_tensor_reshape_1[T](t: Tensor[T], shape_0: Int) -> Tensor[T]
+  requires shape_0 >= 0
+  requires shape_0 == t.count
+  ensures result.rank == 1 and result.dim(axis: 0) == shape_0
+  ensures result.count == t.count
+=
+  dense_tensor_reshape_1(t, shape_0)
+
+pub dense_tensor_reshape_2[T](t: Tensor[T], shape_0: Int, shape_1: Int) -> Tensor[T]
+  requires shape_0 >= 0 and shape_1 >= 0
+  requires shape_0 * shape_1 == t.count
+  ensures result.rank == 2 and result.dim(axis: 0) == shape_0 and result.dim(axis: 1) == shape_1
+  ensures result.count == t.count
+=
+  dense_tensor_reshape_2(t, shape_0, shape_1)
+
+pub dense_tensor_reshape_3[T](t: Tensor[T], shape_0: Int, shape_1: Int, shape_2: Int) -> Tensor[T]
+  requires shape_0 >= 0 and shape_1 >= 0 and shape_2 >= 0
+  requires shape_0 * shape_1 * shape_2 == t.count
+  ensures result.rank == 3 and result.dim(axis: 0) == shape_0 and result.dim(axis: 1) == shape_1 and result.dim(axis: 2) == shape_2
+  ensures result.count == t.count
+=
+  dense_tensor_reshape_3(t, shape_0, shape_1, shape_2)
+
+pub dense_tensor_reshape_4[T](t: Tensor[T], shape_0: Int, shape_1: Int, shape_2: Int, shape_3: Int) -> Tensor[T]
+  requires shape_0 >= 0 and shape_1 >= 0 and shape_2 >= 0 and shape_3 >= 0
+  requires shape_0 * shape_1 * shape_2 * shape_3 == t.count
+  ensures result.rank == 4 and result.dim(axis: 0) == shape_0 and result.dim(axis: 1) == shape_1 and result.dim(axis: 2) == shape_2 and result.dim(axis: 3) == shape_3
+  ensures result.count == t.count
+=
+  dense_tensor_reshape_4(t, shape_0, shape_1, shape_2, shape_3)
+
+pub dense_tensor_reshape_5[T](t: Tensor[T], shape_0: Int, shape_1: Int, shape_2: Int, shape_3: Int, shape_4: Int) -> Tensor[T]
+  requires shape_0 >= 0 and shape_1 >= 0 and shape_2 >= 0 and shape_3 >= 0 and shape_4 >= 0
+  requires shape_0 * shape_1 * shape_2 * shape_3 * shape_4 == t.count
+  ensures result.rank == 5 and result.dim(axis: 0) == shape_0 and result.dim(axis: 1) == shape_1 and result.dim(axis: 2) == shape_2 and result.dim(axis: 3) == shape_3 and result.dim(axis: 4) == shape_4
+  ensures result.count == t.count
+=
+  dense_tensor_reshape_5(t, shape_0, shape_1, shape_2, shape_3, shape_4)
+
+pub dense_tensor_reshape_6[T](t: Tensor[T], shape_0: Int, shape_1: Int, shape_2: Int, shape_3: Int, shape_4: Int, shape_5: Int) -> Tensor[T]
+  requires shape_0 >= 0 and shape_1 >= 0 and shape_2 >= 0 and shape_3 >= 0 and shape_4 >= 0 and shape_5 >= 0
+  requires shape_0 * shape_1 * shape_2 * shape_3 * shape_4 * shape_5 == t.count
+  ensures result.rank == 6 and result.dim(axis: 0) == shape_0 and result.dim(axis: 1) == shape_1 and result.dim(axis: 2) == shape_2 and result.dim(axis: 3) == shape_3 and result.dim(axis: 4) == shape_4 and result.dim(axis: 5) == shape_5
+  ensures result.count == t.count
+=
+  dense_tensor_reshape_6(t, shape_0, shape_1, shape_2, shape_3, shape_4, shape_5)
+
+pub dense_tensor_reshape_7[T](t: Tensor[T], shape_0: Int, shape_1: Int, shape_2: Int, shape_3: Int, shape_4: Int, shape_5: Int, shape_6: Int) -> Tensor[T]
+  requires shape_0 >= 0 and shape_1 >= 0 and shape_2 >= 0 and shape_3 >= 0 and shape_4 >= 0 and shape_5 >= 0 and shape_6 >= 0
+  requires shape_0 * shape_1 * shape_2 * shape_3 * shape_4 * shape_5 * shape_6 == t.count
+  ensures result.rank == 7 and result.dim(axis: 0) == shape_0 and result.dim(axis: 1) == shape_1 and result.dim(axis: 2) == shape_2 and result.dim(axis: 3) == shape_3 and result.dim(axis: 4) == shape_4 and result.dim(axis: 5) == shape_5 and result.dim(axis: 6) == shape_6
+  ensures result.count == t.count
+=
+  dense_tensor_reshape_7(t, shape_0, shape_1, shape_2, shape_3, shape_4, shape_5, shape_6)
+
+pub dense_tensor_reshape_8[T](t: Tensor[T], shape_0: Int, shape_1: Int, shape_2: Int, shape_3: Int, shape_4: Int, shape_5: Int, shape_6: Int, shape_7: Int) -> Tensor[T]
+  requires shape_0 >= 0 and shape_1 >= 0 and shape_2 >= 0 and shape_3 >= 0 and shape_4 >= 0 and shape_5 >= 0 and shape_6 >= 0 and shape_7 >= 0
+  requires shape_0 * shape_1 * shape_2 * shape_3 * shape_4 * shape_5 * shape_6 * shape_7 == t.count
+  ensures result.rank == 8 and result.dim(axis: 0) == shape_0 and result.dim(axis: 1) == shape_1 and result.dim(axis: 2) == shape_2 and result.dim(axis: 3) == shape_3 and result.dim(axis: 4) == shape_4 and result.dim(axis: 5) == shape_5 and result.dim(axis: 6) == shape_6 and result.dim(axis: 7) == shape_7
+  ensures result.count == t.count
+=
+  dense_tensor_reshape_8(t, shape_0, shape_1, shape_2, shape_3, shape_4, shape_5, shape_6, shape_7)
+
+pub dense_tensor_dim[T](t: Tensor[T], axis: Int) -> Int
+  requires 0 <= axis and axis < t.rank
+  ensures result == t.dim(axis: axis)
+=
+  dense_tensor_dim(t, axis: axis)
+
+pub dense_tensor_compact[T](t: Tensor[T]) -> Tensor[T]
+  ensures result.rank == t.rank and result.count == t.count and result.dim(axis: 0) == t.dim(axis: 0) and result.dim(axis: 1) == t.dim(axis: 1) and result.dim(axis: 2) == t.dim(axis: 2) and result.dim(axis: 3) == t.dim(axis: 3) and result.dim(axis: 4) == t.dim(axis: 4) and result.dim(axis: 5) == t.dim(axis: 5) and result.dim(axis: 6) == t.dim(axis: 6) and result.dim(axis: 7) == t.dim(axis: 7)
+=
+  dense_tensor_compact(t)
+
+pub dense_tensor_to_array[T](t: Tensor[T]) -> Array[T]
+  requires t.rank == 1
+  ensures result.len == t.dim(axis: 0)
+=
+  dense_tensor_to_array(t)
+
+pub dense_tensor_to_matrix[T](t: Tensor[T]) -> Matrix[T]
+  requires t.rank == 2
+  ensures result.rows == t.dim(axis: 0) and result.columns == t.dim(axis: 1)
+=
+  dense_tensor_to_matrix(t)
+
+pub dense_tensor_map[T, U](t: Tensor[T], each: fn(T) -> U) -> Tensor[U]
+  ensures result.rank == t.rank and result.count == t.count and result.dim(axis: 0) == t.dim(axis: 0) and result.dim(axis: 1) == t.dim(axis: 1) and result.dim(axis: 2) == t.dim(axis: 2) and result.dim(axis: 3) == t.dim(axis: 3) and result.dim(axis: 4) == t.dim(axis: 4) and result.dim(axis: 5) == t.dim(axis: 5) and result.dim(axis: 6) == t.dim(axis: 6) and result.dim(axis: 7) == t.dim(axis: 7)
+=
+  dense_tensor_map(t, each: each)
+
+pub dense_tensor_zip_map[T, U, V](t: Tensor[T], with_: Tensor[U], each: fn(T, U) -> V) -> Tensor[V]
+  requires t.rank == with_.rank and t.dim(axis: 0) == with_.dim(axis: 0) and (1 < t.rank implies t.dim(axis: 1) == with_.dim(axis: 1)) and (2 < t.rank implies t.dim(axis: 2) == with_.dim(axis: 2)) and (3 < t.rank implies t.dim(axis: 3) == with_.dim(axis: 3)) and (4 < t.rank implies t.dim(axis: 4) == with_.dim(axis: 4)) and (5 < t.rank implies t.dim(axis: 5) == with_.dim(axis: 5)) and (6 < t.rank implies t.dim(axis: 6) == with_.dim(axis: 6)) and (7 < t.rank implies t.dim(axis: 7) == with_.dim(axis: 7))
+  ensures result.rank == t.rank and result.count == t.count and result.dim(axis: 0) == t.dim(axis: 0) and result.dim(axis: 1) == t.dim(axis: 1) and result.dim(axis: 2) == t.dim(axis: 2) and result.dim(axis: 3) == t.dim(axis: 3) and result.dim(axis: 4) == t.dim(axis: 4) and result.dim(axis: 5) == t.dim(axis: 5) and result.dim(axis: 6) == t.dim(axis: 6) and result.dim(axis: 7) == t.dim(axis: 7)
+=
+  dense_tensor_zip_map(t, with: with_, each: each)
+
+pub dense_tensor_update[T](edit t: Tensor[T], each: fn(T) -> T) -> Unit
+  ensures t.rank == old(t).rank
+  ensures t.count == old(t).count
+  ensures t.dim(axis: 0) == old(t).dim(axis: 0)
+  ensures t.dim(axis: 1) == old(t).dim(axis: 1)
+  ensures t.dim(axis: 2) == old(t).dim(axis: 2)
+  ensures t.dim(axis: 3) == old(t).dim(axis: 3)
+  ensures t.dim(axis: 4) == old(t).dim(axis: 4)
+  ensures t.dim(axis: 5) == old(t).dim(axis: 5)
+  ensures t.dim(axis: 6) == old(t).dim(axis: 6)
+  ensures t.dim(axis: 7) == old(t).dim(axis: 7)
+=
+  dense_tensor_update(edit t, each: each)
+
+pub dense_tensor_fold[T, U](t: Tensor[T], initial: U, step: fn(U, T) -> U) -> U
+=
+  dense_tensor_fold(t, initial: initial, step: step)
+
+pub dense_tensor_multiply_elements[T](t: Tensor[T], by: Tensor[T]) -> Tensor[T]
+  requires t.rank == by.rank and t.dim(axis: 0) == by.dim(axis: 0) and (1 < t.rank implies t.dim(axis: 1) == by.dim(axis: 1)) and (2 < t.rank implies t.dim(axis: 2) == by.dim(axis: 2)) and (3 < t.rank implies t.dim(axis: 3) == by.dim(axis: 3)) and (4 < t.rank implies t.dim(axis: 4) == by.dim(axis: 4)) and (5 < t.rank implies t.dim(axis: 5) == by.dim(axis: 5)) and (6 < t.rank implies t.dim(axis: 6) == by.dim(axis: 6)) and (7 < t.rank implies t.dim(axis: 7) == by.dim(axis: 7))
+  ensures result.rank == t.rank and result.count == t.count and result.dim(axis: 0) == t.dim(axis: 0) and result.dim(axis: 1) == t.dim(axis: 1) and result.dim(axis: 2) == t.dim(axis: 2) and result.dim(axis: 3) == t.dim(axis: 3) and result.dim(axis: 4) == t.dim(axis: 4) and result.dim(axis: 5) == t.dim(axis: 5) and result.dim(axis: 6) == t.dim(axis: 6) and result.dim(axis: 7) == t.dim(axis: 7)
+=
+  dense_tensor_multiply_elements(t, by: by)
+
+pub dense_tensor_divide_elements[T](t: Tensor[T], by: Tensor[T]) -> Tensor[T]
+  requires t.rank == by.rank and t.dim(axis: 0) == by.dim(axis: 0) and (1 < t.rank implies t.dim(axis: 1) == by.dim(axis: 1)) and (2 < t.rank implies t.dim(axis: 2) == by.dim(axis: 2)) and (3 < t.rank implies t.dim(axis: 3) == by.dim(axis: 3)) and (4 < t.rank implies t.dim(axis: 4) == by.dim(axis: 4)) and (5 < t.rank implies t.dim(axis: 5) == by.dim(axis: 5)) and (6 < t.rank implies t.dim(axis: 6) == by.dim(axis: 6)) and (7 < t.rank implies t.dim(axis: 7) == by.dim(axis: 7))
+  ensures result.rank == t.rank and result.count == t.count and result.dim(axis: 0) == t.dim(axis: 0) and result.dim(axis: 1) == t.dim(axis: 1) and result.dim(axis: 2) == t.dim(axis: 2) and result.dim(axis: 3) == t.dim(axis: 3) and result.dim(axis: 4) == t.dim(axis: 4) and result.dim(axis: 5) == t.dim(axis: 5) and result.dim(axis: 6) == t.dim(axis: 6) and result.dim(axis: 7) == t.dim(axis: 7)
+=
+  dense_tensor_divide_elements(t, by: by)
+
+pub dense_tensor_sum[T](t: Tensor[T]) -> T
+=
+  dense_tensor_sum(t)
+
+pub dense_tensor_sum_axis[T](t: Tensor[T], axis: Int) -> Tensor[T]
+  requires 2 <= t.rank and 0 <= axis and axis < t.rank
+  ensures result.rank == t.rank - 1
+  ensures (axis > 0 implies result.dim(axis: 0) == t.dim(axis: 0)) and (axis <= 0 implies result.dim(axis: 0) == t.dim(axis: 1))
+  ensures (axis > 1 implies result.dim(axis: 1) == t.dim(axis: 1)) and (axis <= 1 implies result.dim(axis: 1) == t.dim(axis: 2))
+  ensures (axis > 2 implies result.dim(axis: 2) == t.dim(axis: 2)) and (axis <= 2 implies result.dim(axis: 2) == t.dim(axis: 3))
+  ensures (axis > 3 implies result.dim(axis: 3) == t.dim(axis: 3)) and (axis <= 3 implies result.dim(axis: 3) == t.dim(axis: 4))
+  ensures (axis > 4 implies result.dim(axis: 4) == t.dim(axis: 4)) and (axis <= 4 implies result.dim(axis: 4) == t.dim(axis: 5))
+  ensures (axis > 5 implies result.dim(axis: 5) == t.dim(axis: 5)) and (axis <= 5 implies result.dim(axis: 5) == t.dim(axis: 6))
+  ensures (axis > 6 implies result.dim(axis: 6) == t.dim(axis: 6)) and (axis <= 6 implies result.dim(axis: 6) == t.dim(axis: 7))
+=
+  dense_tensor_sum_axis(t, axis: axis)
+
+pub dense_tensor_all_finite[T](t: Tensor[T]) -> Bool
+=
+  dense_tensor_all_finite(t)
+
+pub dense_tensor_sum_exact[T](t: Tensor[T]) -> Int
+=
+  dense_tensor_sum_exact(t)
+
+pub dense_tensor_contract[T](t: Tensor[T], with_: Tensor[T], axis: Int, other: Int) -> Tensor[T]
+  requires 0 <= axis and axis < t.rank and 0 <= other and other < with_.rank
+  requires t.dim(axis: axis) == with_.dim(axis: other)
+  requires 3 <= t.rank + with_.rank and t.rank + with_.rank <= 10
+  ensures result.rank == t.rank + with_.rank - 2
+  ensures (axis > 0 implies result.dim(axis: 0) == t.dim(axis: 0)) and (axis <= 0 and 0 < t.rank - 1 implies result.dim(axis: 0) == t.dim(axis: 1))
+  ensures (t.rank - 1 <= 0 and 0 < t.rank - 1 + other implies result.dim(axis: 0) == with_.dim(axis: 0 - t.rank + 1)) and (t.rank - 1 + other <= 0 implies result.dim(axis: 0) == with_.dim(axis: 0 - t.rank + 2))
+  ensures (axis > 1 implies result.dim(axis: 1) == t.dim(axis: 1)) and (axis <= 1 and 1 < t.rank - 1 implies result.dim(axis: 1) == t.dim(axis: 2))
+  ensures (t.rank - 1 <= 1 and 1 < t.rank - 1 + other implies result.dim(axis: 1) == with_.dim(axis: 1 - t.rank + 1)) and (t.rank - 1 + other <= 1 implies result.dim(axis: 1) == with_.dim(axis: 1 - t.rank + 2))
+  ensures (axis > 2 implies result.dim(axis: 2) == t.dim(axis: 2)) and (axis <= 2 and 2 < t.rank - 1 implies result.dim(axis: 2) == t.dim(axis: 3))
+  ensures (t.rank - 1 <= 2 and 2 < t.rank - 1 + other implies result.dim(axis: 2) == with_.dim(axis: 2 - t.rank + 1)) and (t.rank - 1 + other <= 2 implies result.dim(axis: 2) == with_.dim(axis: 2 - t.rank + 2))
+  ensures (axis > 3 implies result.dim(axis: 3) == t.dim(axis: 3)) and (axis <= 3 and 3 < t.rank - 1 implies result.dim(axis: 3) == t.dim(axis: 4))
+  ensures (t.rank - 1 <= 3 and 3 < t.rank - 1 + other implies result.dim(axis: 3) == with_.dim(axis: 3 - t.rank + 1)) and (t.rank - 1 + other <= 3 implies result.dim(axis: 3) == with_.dim(axis: 3 - t.rank + 2))
+  ensures (axis > 4 implies result.dim(axis: 4) == t.dim(axis: 4)) and (axis <= 4 and 4 < t.rank - 1 implies result.dim(axis: 4) == t.dim(axis: 5))
+  ensures (t.rank - 1 <= 4 and 4 < t.rank - 1 + other implies result.dim(axis: 4) == with_.dim(axis: 4 - t.rank + 1)) and (t.rank - 1 + other <= 4 implies result.dim(axis: 4) == with_.dim(axis: 4 - t.rank + 2))
+  ensures (axis > 5 implies result.dim(axis: 5) == t.dim(axis: 5)) and (axis <= 5 and 5 < t.rank - 1 implies result.dim(axis: 5) == t.dim(axis: 6))
+  ensures (t.rank - 1 <= 5 and 5 < t.rank - 1 + other implies result.dim(axis: 5) == with_.dim(axis: 5 - t.rank + 1)) and (t.rank - 1 + other <= 5 implies result.dim(axis: 5) == with_.dim(axis: 5 - t.rank + 2))
+  ensures (axis > 6 implies result.dim(axis: 6) == t.dim(axis: 6)) and (axis <= 6 and 6 < t.rank - 1 implies result.dim(axis: 6) == t.dim(axis: 7))
+  ensures (t.rank - 1 <= 6 and 6 < t.rank - 1 + other implies result.dim(axis: 6) == with_.dim(axis: 6 - t.rank + 1)) and (t.rank - 1 + other <= 6 implies result.dim(axis: 6) == with_.dim(axis: 6 - t.rank + 2))
+  ensures (axis > 7 implies result.dim(axis: 7) == t.dim(axis: 7)) and (axis <= 7 and 7 < t.rank - 1 implies result.dim(axis: 7) == t.dim(axis: 8))
+  ensures (t.rank - 1 <= 7 and 7 < t.rank - 1 + other implies result.dim(axis: 7) == with_.dim(axis: 7 - t.rank + 1)) and (t.rank - 1 + other <= 7 implies result.dim(axis: 7) == with_.dim(axis: 7 - t.rank + 2))
+=
+  dense_tensor_contract(t, with: with_, axis: axis, other: other)
 
 --- The `F32` with the bits `bits`; any NaN gives the canonical NaN `0x7FC00000`
 --- (`spec/29 §18`, ADR 0120 rule 5).

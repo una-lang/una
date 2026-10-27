@@ -126,6 +126,8 @@ pub(crate) fn build(env: &Env<'_>, findings: &Findings) -> Index {
             | Res::Constant(_)
             | Res::Shape(_)
             | Res::DenseElement(_)
+            | Res::TensorElement(_)
+            | Res::Dim(_)
             | Res::Complex(_)
             | Res::DenseOp { .. } => None,
         };

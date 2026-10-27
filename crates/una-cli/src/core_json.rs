@@ -290,10 +290,18 @@ impl Writer<'_> {
             Term::Shape { fun, value } => {
                 node!(Shape, "fun" => s(fun.as_str()), "value" => self.term(value))
             }
-            Term::Element { value, indices } => node!(Element,
+            Term::Element {
+                value,
+                indices,
+                tensor,
+            } => node!(Element,
                 "value" => self.term(value),
                 "indices" => J::Arr(indices.iter().map(|index| self.term(index)).collect()),
+                "tensor" => J::Bool(*tensor),
             ),
+            Term::Dim { value, axis } => {
+                node!(Dim, "value" => self.term(value), "axis" => self.term(axis))
+            }
             Term::Proj { value, index } => {
                 node!(Proj, "value" => self.term(value), "index" => n(*index))
             }

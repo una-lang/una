@@ -166,7 +166,8 @@ fn kind(ty: &Type) -> Result<Kind, CodegenError> {
             }
             // Dense values wait for their native step (`spec/29 §17`, ADR 0120 rule 28).
             Base::Named { module, name, .. }
-                if module == PRELUDE_MODULE && matches!(name.as_str(), "Array" | "Matrix") =>
+                if module == PRELUDE_MODULE
+                    && matches!(name.as_str(), "Array" | "Matrix" | "Tensor" | "Lu") =>
             {
                 Err(unsupported("dense values (spec/29)"))
             }

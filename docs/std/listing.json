@@ -1726,6 +1726,50 @@
       ]
     },
     {
+      "name": "tensor",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/29 §17"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "pub tensor[T](shape: List[Int], elements: List[T]) -> Tensor[T]",
+          "docs": [
+            "A tensor of the lengths in `shape`, a list literal of 1 to 8 of them, with the elements of",
+            "`elements` in row-major order (`spec/29 §17`). Each call takes the contract of its rank:",
+            "`requires` every length `>= 0` and `elements.len` their product; `ensures result.rank` the",
+            "literal's length and `result.dim(axis: k)` the k-th length. A shape that is not a list",
+            "literal is U2038. O(n)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "tensor_filled",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/29 §17"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "pub tensor_filled[T](shape: List[Int], value: T) -> Tensor[T]",
+          "docs": [
+            "A tensor of the lengths in `shape`, a list literal of 1 to 8 of them, each element `value`",
+            "(`spec/29 §17`): `requires` every length `>= 0`, `ensures` the rank and the lengths, as for",
+            "`tensor`. O(n)."
+          ]
+        }
+      ]
+    },
+    {
       "name": "f32_from_bits",
       "module": "prelude",
       "kind": "function",

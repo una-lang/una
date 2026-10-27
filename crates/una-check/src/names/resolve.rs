@@ -216,7 +216,7 @@ impl<'a> Resolver<'_, '_, 'a> {
                             || prelude::HTTP_0_4.contains(&name)))
                     // Edition 0.4: the dense types (`spec/29 §17`, ADR 0120 rule 3).
                     || (self.checker.package.settings.edition >= Edition::V0_4
-                        && matches!(name, "Array" | "Matrix"))
+                        && matches!(name, "Array" | "Matrix" | "Tensor" | "Lu"))
                     // Edition 0.4: `F32`, the finite kinds and `Complex` (ADR 0120 rules 5, 11
                     // and 22).
                     || (self.checker.package.settings.edition >= Edition::V0_4
@@ -328,7 +328,7 @@ impl<'a> Resolver<'_, '_, 'a> {
                 if self.checker.package.settings.edition >= Edition::V0_4 {
                     names.extend(prelude::ROUNDING_0_4);
                     names.extend(prelude::HTTP_0_4);
-                    names.push("Matrix");
+                    names.extend(["Matrix", "Tensor", "Lu"]);
                     names.extend(prelude::UPPER_0_4);
                 }
             }

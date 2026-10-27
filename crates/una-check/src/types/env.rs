@@ -17,7 +17,7 @@ use una_syntax::{Interner, Span, Symbol};
 
 use super::Report;
 use super::closest;
-use super::dense::dense_numeric;
+use super::dense::{dense_float, dense_numeric};
 use super::label::{Accepts, Label};
 use super::ty::{
     AliasId, CapId, Declared, Dense, FnRefinements, FnTy, FnUse, KindId, KindLabels, Names,
@@ -1008,8 +1008,9 @@ impl<'a> Env<'a> {
         }
     }
 
-    /// The dense type that `name` names in a type, in edition 0.4 (ADR 0120 rule 3): `Array`
-    /// and `Matrix` are built in, ahead of any declaration and of the variant `Json.Array`.
+    /// The dense type that `name` names in a type, in edition 0.4 (ADR 0120 rule 3): `Array`,
+    /// `Matrix`, `Tensor` and `Lu` are built in, ahead of any declaration and of the variant
+    /// `Json.Array`.
     pub(crate) fn dense_name(&self, name: &str) -> Option<Dense> {
         if self.edition < Edition::V0_4 {
             return None;
@@ -1017,6 +1018,8 @@ impl<'a> Env<'a> {
         match name {
             "Array" => Some(Dense::Array),
             "Matrix" => Some(Dense::Matrix),
+            "Tensor" => Some(Dense::Tensor),
+            "Lu" => Some(Dense::Lu),
             _ => None,
         }
     }
@@ -2466,26 +2469,33 @@ impl<'a> Env<'a> {
             return Declared::error();
         }
         let bases: Vec<Ty> = args.into_iter().map(|arg| arg.base).collect();
-        // Edition 0.4 (ADR 0120 rule 3): `Array` and `Matrix` are built-in types, which no
-        // declaration can hide; the prelude's variant `Json.Array` is a constructor, written
+        // Edition 0.4 (ADR 0120 rule 3): `Array`, `Matrix`, `Tensor` and `Lu` are built-in
+        // types, which no declaration can hide; the prelude's variant `Json.Array` is a constructor, written
         // with parentheses, so it never meets the type, written with brackets.
         if let Some(dense) = self.dense_name(name) {
             if bases.len() != 1 {
                 return arity(1, bases.len());
             }
             let element = bases.into_iter().next().unwrap_or(Ty::error());
-            // The prelude declares the methods of `Matrix[T]` over a type parameter, whose element types
-            // its callers' receivers decide.
-            if dense == Dense::Matrix
-                && reports
-                && module != self.prelude
-                && !dense_numeric(&element)
-            {
+            // The prelude declares the methods of `Matrix[T]`, `Tensor[T]` and `Lu[T]` over a
+            // type parameter, whose element types its callers' receivers decide.
+            let taken = match dense {
+                Dense::Array => true,
+                Dense::Matrix | Dense::Tensor => dense_numeric(&element),
+                Dense::Lu => dense_float(&element),
+            };
+            if !taken && reports && module != self.prelude {
+                let wanted = if dense == Dense::Lu {
+                    "a float element type, `F64`"
+                } else {
+                    "a numeric element type, `F64` or one of `I8` to `U64`"
+                };
                 report.error(
                     Code::U2002,
                     span,
                     format!(
-                        "`Matrix` takes a numeric element type, `F64` or one of `I8` to `U64`, and `{}` is not one",
+                        "`{}` takes {wanted}, and `{}` is not one",
+                        dense.as_str(),
                         Show(
                             &element,
                             &LowerNames {

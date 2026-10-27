@@ -59,8 +59,9 @@ pub(crate) enum Value<'p> {
     /// A `BitSet` of `std.collections` (`spec/28 §9`, ADR 0119 rule 19): its words of 64 bits,
     /// its size and its count of members. It holds no values.
     BitSet(Rc<Bits>),
-    /// A dense value of edition 0.4, `Array[T]` or `Matrix[T]` (`spec/29 §17`): a view of a
-    /// buffer, with its own offset, shape and strides, so a view shares its parent's storage.
+    /// A dense value of edition 0.4, `Array[T]`, `Matrix[T]`, `Tensor[T]` or `Lu[T]` (`spec/29
+    /// §17`): a view of a buffer, with its own offset, shape and strides, so a view shares its
+    /// parent's storage.
     Dense(Rc<Dense<'p>>),
 }
 
@@ -71,6 +72,13 @@ pub(crate) enum DenseKind {
     Array,
     /// `Matrix[T]`: rows, then columns.
     Matrix,
+    /// `Tensor[T]`: 1 to 8 axes.
+    Tensor,
+    /// `Lu[T]` of size n: `n + 1` rows of `n` raw `F64` values, the factors of `lu_f64` in the
+    /// first n rows and the pivots, exact small integers, in the last. So `==` compares the
+    /// factors and the pivots, as ADR 0120 rule 38 states, `factors()` is a view, and a
+    /// program never sees the layout.
+    Lu,
 }
 
 /// The storage of a dense value (ADR 0120 rule 28): `F64` elements as raw numbers, every other
@@ -248,22 +256,39 @@ impl Drop for Data<'_> {
 }
 
 // The same for a dense value whose elements are values (ADR 0120): an array of arrays built
-// by a loop is as deep as the loop ran.
+// by a loop is as deep as the loop ran. A buffer of raw numbers, or one another value still
+// holds, is left to its own drop, and nothing is allocated (review of #1048, N5).
 impl Drop for Dense<'_> {
     fn drop(&mut self) {
-        if let Some(items) = take_values(self) {
+        if let Some(items) = take_values(self)
+            && items.iter().any(holds_values)
+        {
             unwind(items, Vec::new());
         }
     }
 }
 
+/// Whether dropping `value` may drop other values it alone holds.
+fn holds_values(value: &Value<'_>) -> bool {
+    matches!(
+        value,
+        Value::Data(_)
+            | Value::List(_)
+            | Value::Tuple(_)
+            | Value::Map(_)
+            | Value::Seq(_)
+            | Value::Set(_)
+            | Value::Dense(_)
+            | Value::Closure(_)
+    )
+}
+
 /// The elements of `dense`'s buffer when it holds the only reference to a buffer of values,
-/// left empty: what dropping it frees.
+/// taken out and the buffer left empty, without an allocation: what dropping it frees.
 fn take_values<'p>(dense: &mut Dense<'p>) -> Option<Vec<Value<'p>>> {
-    let buffer = std::mem::replace(&mut dense.buffer, Rc::new(Elements::F64(Vec::new())));
-    match Rc::try_unwrap(buffer) {
-        Ok(Elements::Values(items)) => Some(items),
-        _ => None,
+    match Rc::get_mut(&mut dense.buffer)? {
+        Elements::Values(items) => Some(std::mem::take(items)),
+        Elements::F64(_) => None,
     }
 }
 
@@ -422,7 +447,7 @@ fn composite(value: &Value<'_>) -> Option<(u8, usize)> {
         Value::List(x) if !x.is_empty() => Some((1, Rc::as_ptr(x) as usize)),
         Value::Tuple(x) if !x.is_empty() => Some((2, Rc::as_ptr(x) as usize)),
         Value::Map(x) if !x.is_empty() => Some((3, Rc::as_ptr(x) as usize)),
-        Value::Dense(x) => Some((4, Rc::as_ptr(x) as usize)),
+        Value::Dense(x) => Some((6, Rc::as_ptr(x) as usize)),
         Value::Seq(x) if !x.is_empty() => Some((5, Rc::as_ptr(x) as usize)),
         Value::Set(x) if !x.is_empty() => Some((4, Rc::as_ptr(x) as usize)),
         _ => None,

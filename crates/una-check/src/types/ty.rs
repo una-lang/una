@@ -221,9 +221,9 @@ pub(crate) enum Ty {
     Unit,
     Hashed,
     List(Shared<Ty>),
-    /// A dense value of edition 0.4, `Array[T]` or `Matrix[T]` (`spec/29 §17`, ADR 0120
-    /// rules 26 to 30): its shape is the top position, its elements the element position, so
-    /// its labels are a list's.
+    /// A dense value of edition 0.4, `Array[T]`, `Matrix[T]`, `Tensor[T]` or `Lu[T]`
+    /// (`spec/29 §17`, ADR 0120 rules 26 to 38): its shape is the top position, its elements
+    /// the element position, so its labels are a list's.
     Dense(Dense, Shared<Ty>),
     /// `Map[K, V]`, keyed by an `Ord` type, from edition 0.2 (`spec/21 §1`). Its keys are part
     /// of its shape, so a read takes the labels of the key position with the top label (§3).
@@ -263,13 +263,18 @@ pub(crate) enum Ty {
     Refined(Shared<[Refinement]>, Shared<Ty>),
 }
 
-/// The dense types of edition 0.4 (`spec/29 §17`, ADR 0120 rules 26 and 30).
+/// The dense types of edition 0.4 (`spec/29 §17`, ADR 0120 rules 26, 30 and 38).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Dense {
     /// `Array[T]`, the one fixed-length array, of any element type.
     Array,
     /// `Matrix[T]`, of a numeric element type.
     Matrix,
+    /// `Tensor[T]`, of a numeric element type, with a rank from 1 to 8.
+    Tensor,
+    /// `Lu[T]`, the opaque LU factorization of a square matrix of float elements: its size is
+    /// its top position, as a matrix's shape is, and its factors its element position.
+    Lu,
 }
 
 impl Dense {
@@ -278,6 +283,8 @@ impl Dense {
         match self {
             Dense::Array => "Array",
             Dense::Matrix => "Matrix",
+            Dense::Tensor => "Tensor",
+            Dense::Lu => "Lu",
         }
     }
 }

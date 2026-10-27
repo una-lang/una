@@ -1,6 +1,7 @@
-//! Dense values in the interpreter (`spec/29 §17`, ADR 0120 rules 26 to 47): construction,
-//! views, element-wise functions, reductions and products, by the reference chains of
-//! `una_core::dense`, so the interpreter gives the bits of every other implementation.
+//! Dense values in the interpreter (`spec/29 §17`, ADR 0120 rules 26 to 54): construction,
+//! views, element-wise functions, reductions, products, factorizations and solves, by the
+//! reference chains of `una_core::dense`, so the interpreter gives the bits of every other
+//! implementation.
 //!
 //! Every buffer is checked against the memory budget before it is allocated, in checked
 //! arithmetic, and allocated fallibly: a refused one is U6003, never an abort of the process
@@ -22,14 +23,47 @@ use crate::value::{Dense, DenseKind, Elements, Value};
 pub(super) fn is_dense(name: &str) -> bool {
     matches!(
         name,
-        "array" | "array_filled" | "matrix" | "matrix_filled" | "matrix_diagonal"
+        "array"
+            | "array_filled"
+            | "matrix"
+            | "matrix_filled"
+            | "matrix_diagonal"
+            | "tensor"
+            | "tensor_filled"
     ) || name.starts_with("dense_")
 }
 
-/// The methods of dense values this engine runs, the name after `dense_array_` or
-/// `dense_matrix_`: a prelude function of another name is a fault, never another method's
-/// computation, and a test checks that every prelude function is one of these.
-pub(super) const METHODS: [&str; 34] = [
+/// The prefixes of the prelude functions of the methods of each dense type.
+const PREFIXES: [&str; 4] = [
+    "dense_array_",
+    "dense_matrix_",
+    "dense_tensor_",
+    "dense_lu_",
+];
+
+/// The method of the prelude function `name` after its type's prefix, and the rank of a
+/// tensor's function of one rank: `dense_tensor_get_3` is `get` of rank 3.
+fn method_of(name: &str) -> Option<(&str, Option<usize>)> {
+    let method = PREFIXES
+        .iter()
+        .find_map(|prefix| name.strip_prefix(prefix))?;
+    if !name.starts_with("dense_tensor_") {
+        return Some((method, None));
+    }
+    match method.rsplit_once('_') {
+        Some((base, rank)) => match rank.parse::<usize>() {
+            Ok(rank) if (1..=8).contains(&rank) => Some((base, Some(rank))),
+            _ => Some((method, None)),
+        },
+        None => Some((method, None)),
+    }
+}
+
+/// The methods of dense values this engine runs, the name after `dense_array_`,
+/// `dense_matrix_`, `dense_tensor_` or `dense_lu_`, without a tensor's rank: a prelude function
+/// of another name is a fault, never another method's computation, and a test checks that
+/// every prelude function is one of these.
+pub(super) const METHODS: &[&str] = &[
     "get",
     "at",
     "set",
@@ -59,12 +93,32 @@ pub(super) const METHODS: [&str; 34] = [
     "add_product",
     "add_scaled",
     "scale",
+    "to_tensor",
+    "to_array",
+    "to_matrix",
+    "make",
+    "filled",
+    "permute",
+    "reshape",
+    "dim",
+    "sum_axis",
+    "contract",
+    "lu",
+    "solve",
+    "solve_array",
+    "cholesky",
+    "solve_lower",
+    "solve_upper",
+    "factors",
+    "pivots",
     // Constructors, by their own names.
     "array",
     "array_filled",
     "matrix",
     "matrix_filled",
     "matrix_diagonal",
+    "tensor",
+    "tensor_filled",
 ];
 
 /// The bytes a buffer holds per element: a raw `F64`, or a value.
@@ -193,6 +247,9 @@ enum Builder<'p> {
     /// Any other values.
     Values(Vec<Value<'p>>),
 }
+
+/// An LU factorization: the order n, the factors in the first `n * n` places, and the pivots.
+type Factored = (usize, Vec<f64>, Vec<usize>);
 
 impl<'p> Machine<'p, '_> {
     /// Whether a buffer of `elements` elements of `bytes` each fits the memory budget, with
@@ -390,14 +447,138 @@ impl<'p> Machine<'p, '_> {
             "matrix" => self.matrix(&args, span),
             "matrix_filled" => self.matrix_filled(&args, span),
             "matrix_diagonal" => self.matrix_diagonal(&args, span),
-            _ => match name
-                .strip_prefix("dense_array_")
-                .or_else(|| name.strip_prefix("dense_matrix_"))
-            {
-                Some(method) => self.method(method, args, span),
+            // The checker calls the function of each rank; these take the shape as a list.
+            "tensor" | "tensor_filled" => {
+                let lengths = match args.first() {
+                    Some(Value::List(items)) if (1..=8).contains(&items.len()) => {
+                        items.iter().cloned().collect::<Vec<_>>()
+                    }
+                    _ => return Err(bad(name)),
+                };
+                let rank = lengths.len();
+                let mut flat = lengths;
+                flat.extend(args.into_iter().skip(1));
+                self.tensor_new(rank, &flat, name == "tensor_filled", span)
+            }
+            _ => match method_of(name) {
+                Some(("make", Some(rank))) => self.tensor_new(rank, &args, false, span),
+                Some(("filled", Some(rank))) => self.tensor_new(rank, &args, true, span),
+                Some((method, rank)) => self.method(method, rank, args, span),
                 None => Err(fault(format!("no dense function `{name}`"))),
             },
         }
+    }
+
+    /// A tensor of the `rank` lengths that start `args`, then the list of its elements, or the
+    /// value of every element when `filled` (ADR 0120 rule 32).
+    fn tensor_new(&self, rank: usize, args: &[Value<'p>], filled: bool, span: Span) -> Flow<'p> {
+        let name = if filled { "tensor_filled" } else { "tensor" };
+        let mut shape = Vec::with_capacity(rank);
+        for k in 0..rank {
+            shape.push(dimension(args.get(k), name, self.over(span))?);
+        }
+        let n = shape
+            .iter()
+            .try_fold(1_usize, |n, length| n.checked_mul(*length))
+            .ok_or_else(|| self.over(span))?;
+        let elements = if filled {
+            let value = args.get(rank).ok_or_else(|| bad(name))?;
+            self.filled(n, value, span)?
+        } else {
+            let Some(Value::List(items)) = args.get(rank) else {
+                return Err(bad(name));
+            };
+            if items.len() != n {
+                return Err(precondition(
+                    "`tensor` with a number of elements other than the product of its lengths, which its precondition excludes",
+                    span,
+                ));
+            }
+            self.buffer_from(items, span)?
+        };
+        Ok(compact(DenseKind::Tensor, shape, elements))
+    }
+
+    /// The `F64` elements of `value` in row-major order, in a vector reserved within the budget
+    /// with room for `extra` more: the workspace of a factorization or a solve (ADR 0120,
+    /// Security).
+    fn f64_copy(
+        &self,
+        value: &Dense<'p>,
+        extra: usize,
+        name: &str,
+        span: Span,
+    ) -> Result<Vec<f64>, Stop<'p>> {
+        let items = value.f64_iter().ok_or_else(|| bad(name))?;
+        let n = value
+            .count()
+            .checked_add(extra)
+            .ok_or_else(|| self.over(span))?;
+        let mut out = self.buffer(n, true, span)?;
+        out.extend(items);
+        Ok(out)
+    }
+
+    /// The size of `value`, a square matrix, or a precondition failure.
+    fn square(value: &Dense<'p>, name: &str, span: Span) -> Result<usize, Stop<'p>> {
+        let (rows, columns) = matrix_shape(value);
+        if rows == columns {
+            Ok(rows)
+        } else {
+            Err(precondition(
+                &format!(
+                    "`{name}` of a matrix that is not square, which its precondition excludes"
+                ),
+                span,
+            ))
+        }
+    }
+
+    /// The LU factorization of the square matrix `value` (ADR 0120 rule 48): the factors and
+    /// the pivots, or `None` when it is singular, after it ran to its end. The factors are in
+    /// the first `n * n` places of a vector with room for `extra` more.
+    fn factorize(
+        &self,
+        value: &Dense<'p>,
+        extra: usize,
+        span: Span,
+    ) -> Result<Option<Factored>, Stop<'p>> {
+        let n = Self::square(value, "lu", span)?;
+        let mut factors = self.f64_copy(value, extra, "lu", span)?;
+        let mut pivots: Vec<usize> = self.buffer(n, true, span)?;
+        pivots.resize(n, 0);
+        let nonsingular = chains::lu_f64(&mut factors, n, &mut pivots);
+        Ok(nonsingular.then_some((n, factors, pivots)))
+    }
+
+    /// `rhs`, a matrix of `n` rows, solved with the factors and pivots of an LU factorization
+    /// (ADR 0120 rule 48): a matrix of `rhs`'s shape, checked before it is returned.
+    fn lu_solved(
+        &self,
+        factors: &[f64],
+        pivots: &[usize],
+        n: usize,
+        rhs: &Dense<'p>,
+        kind: DenseKind,
+        span: Span,
+    ) -> Flow<'p> {
+        let shape = rhs.shape.clone();
+        let r = if kind == DenseKind::Array {
+            1
+        } else {
+            shape.get(1).copied().unwrap_or(0)
+        };
+        if shape.first().copied() != Some(n) {
+            return Err(precondition(
+                "`solve` with a right-hand side of another number of rows, which its precondition excludes",
+                span,
+            ));
+        }
+        let mut x = self.f64_copy(rhs, 0, "solve", span)?;
+        chains::lu_solve_f64(factors, pivots, n, &mut x, r);
+        let value = compact(kind, shape.clone(), Elements::F64(x));
+        ensure_shape(&value, &shape, "solve")?;
+        Ok(value)
     }
 
     fn array(&self, args: &[Value<'p>], span: Span) -> Flow<'p> {
@@ -469,12 +650,34 @@ impl<'p> Machine<'p, '_> {
         Ok(compact(DenseKind::Matrix, vec![n, n], elements))
     }
 
-    /// A method of a dense value, its receiver first in `args`.
-    fn method(&mut self, method: &str, args: Vec<Value<'p>>, span: Span) -> Flow<'p> {
+    /// A method of a dense value, its receiver first in `args`; `rank` is the rank of a
+    /// tensor's function of one rank, the length of the list literal it was called with.
+    fn method(
+        &mut self,
+        method: &str,
+        rank: Option<usize>,
+        args: Vec<Value<'p>>,
+        span: Span,
+    ) -> Flow<'p> {
         if !METHODS.contains(&method) {
             return Err(fault(format!("no dense method `{method}`")));
         }
         let receiver = dense(args.first(), method)?.clone();
+        // An index or a permutation of another length than the tensor's rank: `at` gives
+        // `None`, and the others' preconditions exclude it.
+        if let Some(rank) = rank
+            && matches!(method, "get" | "at" | "set" | "permute")
+            && rank != receiver.shape.len()
+        {
+            return if method == "at" {
+                Ok(none())
+            } else {
+                Err(precondition(
+                    "a list literal of another length than the tensor's rank, which the precondition excludes",
+                    span,
+                ))
+            };
+        }
         let indices = |from: usize| -> Option<Vec<usize>> {
             (from..from + receiver.shape.len())
                 .map(|i| index(args.get(i)))
@@ -883,6 +1086,336 @@ impl<'p> Machine<'p, '_> {
                 }
                 Ok(updated(owned))
             }
+            // The O(1) conversions between an array or a matrix and a tensor (rule 39): views
+            // of another type over the same storage.
+            "to_tensor" | "to_array" | "to_matrix" => {
+                let (kind, rank) = match method {
+                    "to_tensor" => (DenseKind::Tensor, receiver.shape.len()),
+                    "to_array" => (DenseKind::Array, 1),
+                    _ => (DenseKind::Matrix, 2),
+                };
+                if receiver.shape.len() != rank {
+                    return Err(precondition(
+                        "a tensor of another rank than the conversion takes, which its precondition excludes",
+                        span,
+                    ));
+                }
+                let mut view = (*receiver).clone();
+                view.kind = kind;
+                Ok(Value::Dense(Rc::new(view)))
+            }
+            "dim" => {
+                let axis = index(args.get(1))
+                    .filter(|axis| *axis < receiver.shape.len())
+                    .ok_or_else(|| {
+                        precondition(
+                            "`dim` of an axis the tensor does not have, which its precondition excludes",
+                            span,
+                        )
+                    })?;
+                let length = receiver.shape.get(axis).copied().unwrap_or(0);
+                Ok(Value::Int(BigInt::from(length)))
+            }
+            // A view with its axes and their strides in the order of the permutation (rule
+            // 29): O(rank).
+            "permute" => {
+                let rank = receiver.shape.len();
+                let axes: Option<Vec<usize>> = (1..=rank).map(|i| index(args.get(i))).collect();
+                let axes = axes.ok_or_else(|| bad(method))?;
+                let mut seen = [false; 8];
+                for axis in &axes {
+                    match seen.get_mut(*axis) {
+                        Some(slot) if !*slot && *axis < rank => *slot = true,
+                        _ => return Err(bad(method)),
+                    }
+                }
+                let mut view = (*receiver).clone();
+                view.shape = axes
+                    .iter()
+                    .map(|axis| receiver.shape.get(*axis).copied().unwrap_or(0))
+                    .collect();
+                view.strides = axes
+                    .iter()
+                    .map(|axis| receiver.strides.get(*axis).copied().unwrap_or(0))
+                    .collect();
+                Ok(Value::Dense(Rc::new(view)))
+            }
+            // O(1) on a contiguous tensor; otherwise a compacting copy, after the budget check
+            // (rule 39).
+            "reshape" => {
+                let rank = rank.ok_or_else(|| bad(method))?;
+                let mut shape = Vec::with_capacity(rank);
+                for k in 1..=rank {
+                    shape.push(dimension(args.get(k), method, self.over(span))?);
+                }
+                let n = shape
+                    .iter()
+                    .try_fold(1_usize, |n, length| n.checked_mul(*length))
+                    .ok_or_else(|| self.over(span))?;
+                if n != receiver.count() {
+                    return Err(precondition(
+                        "`reshape` to another number of elements, which its precondition excludes",
+                        span,
+                    ));
+                }
+                if receiver.strides == row_major(&receiver.shape) {
+                    let mut view = (*receiver).clone();
+                    view.kind = DenseKind::Tensor;
+                    view.strides = row_major(&shape);
+                    view.shape = shape;
+                    Ok(Value::Dense(Rc::new(view)))
+                } else {
+                    let elements = self.copy(&receiver, span)?;
+                    Ok(compact(DenseKind::Tensor, shape, elements))
+                }
+            }
+            // Each element of the result is a sum along the axis, by rule 45.
+            "sum_axis" => {
+                let rank = receiver.shape.len();
+                let axis = index(args.get(1))
+                    .filter(|axis| rank >= 2 && *axis < rank)
+                    .ok_or_else(|| {
+                        precondition(
+                            "`sum` along an axis the tensor does not have, which its precondition excludes",
+                            span,
+                        )
+                    })?;
+                if receiver.f64_iter().is_none() {
+                    return Err(bad(method));
+                }
+                let length = receiver.shape.get(axis).copied().unwrap_or(0);
+                let shape: Vec<usize> = receiver
+                    .shape
+                    .iter()
+                    .enumerate()
+                    .filter(|(k, _)| *k != axis)
+                    .map(|(_, length)| *length)
+                    .collect();
+                let n: usize = shape.iter().product();
+                let element = |p: usize| -> Result<f64, Stop<'p>> {
+                    let mut at = [0_usize; 8];
+                    let mut rest = p;
+                    for (k, length) in shape.iter().enumerate().rev() {
+                        let slot = if k < axis { k } else { k + 1 };
+                        if let Some(index) = at.get_mut(slot) {
+                            *index = rest % length.max(&1);
+                        }
+                        rest /= length.max(&1);
+                    }
+                    let items = (0..length).map(|i| {
+                        if let Some(index) = at.get_mut(axis) {
+                            *index = i;
+                        }
+                        f64_at(&receiver, at.get(..rank).unwrap_or(&[])).unwrap_or(f64::NAN)
+                    });
+                    Ok(chains::sum_f64(items))
+                };
+                let value = self.made_f64(
+                    DenseKind::Tensor,
+                    shape.clone(),
+                    n,
+                    (0..n).map(element),
+                    span,
+                )?;
+                ensure_shape(&value, &shape, "sum")?;
+                Ok(value)
+            }
+            // Each element of the result is an inner product over the pair of axes, by rule 46,
+            // so it has the bits of the matching element of `multiply` (rule 39).
+            "contract" => {
+                let other = dense(args.get(1), method)?.clone();
+                let (axis, other_axis) = (index(args.get(2)), index(args.get(3)));
+                let (rt, ru) = (receiver.shape.len(), other.shape.len());
+                let (axis, other_axis) = match (axis, other_axis) {
+                    (Some(k), Some(l))
+                        if k < rt
+                            && l < ru
+                            && receiver.shape.get(k) == other.shape.get(l)
+                            && (3..=10).contains(&(rt + ru)) =>
+                    {
+                        (k, l)
+                    }
+                    _ => {
+                        return Err(precondition(
+                            "`contract` over axes whose lengths do not match, which its precondition excludes",
+                            span,
+                        ));
+                    }
+                };
+                if receiver.f64_iter().is_none() || other.f64_iter().is_none() {
+                    return Err(bad(method));
+                }
+                let terms = receiver.shape.get(axis).copied().unwrap_or(0);
+                let mut shape: Vec<usize> = Vec::with_capacity(rt + ru - 2);
+                shape.extend(
+                    receiver
+                        .shape
+                        .iter()
+                        .enumerate()
+                        .filter(|(k, _)| *k != axis)
+                        .map(|(_, length)| *length),
+                );
+                shape.extend(
+                    other
+                        .shape
+                        .iter()
+                        .enumerate()
+                        .filter(|(k, _)| *k != other_axis)
+                        .map(|(_, length)| *length),
+                );
+                let n = shape
+                    .iter()
+                    .try_fold(1_usize, |n, length| n.checked_mul(*length))
+                    .ok_or_else(|| self.over(span))?;
+                let element = |p: usize| -> Result<f64, Stop<'p>> {
+                    // The result's indices: the remaining axes of t, then those of u.
+                    let mut out = [0_usize; 16];
+                    let mut rest = p;
+                    for (k, length) in shape.iter().enumerate().rev() {
+                        if let Some(index) = out.get_mut(k) {
+                            *index = rest % length.max(&1);
+                        }
+                        rest /= length.max(&1);
+                    }
+                    let (mut ti, mut ui) = ([0_usize; 8], [0_usize; 8]);
+                    let mut next = 0;
+                    for (k, slot) in ti.iter_mut().enumerate().take(rt) {
+                        if k != axis {
+                            *slot = out.get(next).copied().unwrap_or(0);
+                            next += 1;
+                        }
+                    }
+                    for (k, slot) in ui.iter_mut().enumerate().take(ru) {
+                        if k != other_axis {
+                            *slot = out.get(next).copied().unwrap_or(0);
+                            next += 1;
+                        }
+                    }
+                    let pairs = (0..terms).map(|i| {
+                        if let Some(index) = ti.get_mut(axis) {
+                            *index = i;
+                        }
+                        if let Some(index) = ui.get_mut(other_axis) {
+                            *index = i;
+                        }
+                        (
+                            f64_at(&receiver, ti.get(..rt).unwrap_or(&[])).unwrap_or(f64::NAN),
+                            f64_at(&other, ui.get(..ru).unwrap_or(&[])).unwrap_or(f64::NAN),
+                        )
+                    });
+                    Ok(chains::dot_f64(pairs))
+                };
+                let value = self.made_f64(
+                    DenseKind::Tensor,
+                    shape.clone(),
+                    n,
+                    (0..n).map(element),
+                    span,
+                )?;
+                ensure_shape(&value, &shape, "contract")?;
+                Ok(value)
+            }
+            // The factorizations and solves (rules 48 to 50). Each runs to its end, whatever
+            // the values (rule 54), in workspaces reserved within the budget first.
+            "lu" => {
+                drop(args);
+                // Room for the pivots is reserved with the factors: they are the last row.
+                let rows = matrix_shape(&receiver).0;
+                let Some((n, mut factors, pivots)) = self.factorize(&receiver, rows, span)? else {
+                    return Ok(none());
+                };
+                factors.extend(pivots.iter().map(|p| *p as f64));
+                let value = compact(DenseKind::Lu, vec![n + 1, n], Elements::F64(factors));
+                ensure_shape(&value, &[n + 1, n], method)?;
+                Ok(some(value))
+            }
+            "solve" | "solve_array" if receiver.kind == DenseKind::Matrix => {
+                let rhs = dense(args.get(1), method)?.clone();
+                drop(args);
+                let Some((n, factors, pivots)) = self.factorize(&receiver, 0, span)? else {
+                    return Ok(none());
+                };
+                let kind = if method == "solve" {
+                    DenseKind::Matrix
+                } else {
+                    DenseKind::Array
+                };
+                Ok(some(
+                    self.lu_solved(&factors, &pivots, n, &rhs, kind, span)?,
+                ))
+            }
+            "solve" => {
+                let rhs = dense(args.get(1), method)?.clone();
+                drop(args);
+                let n = receiver.shape.get(1).copied().unwrap_or(0);
+                let Elements::F64(items) = receiver.buffer.as_ref() else {
+                    return Err(bad(method));
+                };
+                let start = receiver.offset;
+                let factors = items.get(start..start + n * n).ok_or_else(|| bad(method))?;
+                let stored = items
+                    .get(start + n * n..start + n * n + n)
+                    .ok_or_else(|| bad(method))?;
+                let mut pivots: Vec<usize> = self.buffer(n, true, span)?;
+                pivots.extend(stored.iter().map(|p| *p as usize));
+                self.lu_solved(factors, &pivots, n, &rhs, DenseKind::Matrix, span)
+            }
+            "factors" => {
+                let n = receiver.shape.get(1).copied().unwrap_or(0);
+                let mut view = (*receiver).clone();
+                view.kind = DenseKind::Matrix;
+                view.shape = vec![n, n];
+                Ok(Value::Dense(Rc::new(view)))
+            }
+            "pivots" => {
+                let n = receiver.shape.get(1).copied().unwrap_or(0);
+                // Each pivot but row 0 is an integer with a heap of its own ([`clone_heap`]).
+                self.reserve_with(n, element_bytes(false), n.saturating_mul(16), span)?;
+                let mut out = self.buffer(n, false, span)?;
+                for k in 0..n {
+                    let p = f64_at(&receiver, &[n, k]).ok_or_else(|| bad(method))?;
+                    out.push(Value::Int(BigInt::from(p as usize)));
+                }
+                Ok(Value::List(Rc::new(out)))
+            }
+            "cholesky" => {
+                drop(args);
+                let n = Self::square(&receiver, method, span)?;
+                let mut factor = self.f64_copy(&receiver, 0, method, span)?;
+                if !chains::cholesky_f64(&mut factor, n) {
+                    return Ok(none());
+                }
+                let value = compact(DenseKind::Matrix, vec![n, n], Elements::F64(factor));
+                ensure_shape(&value, &[n, n], method)?;
+                Ok(some(value))
+            }
+            "solve_lower" | "solve_upper" => {
+                let rhs = dense(args.get(1), method)?.clone();
+                let unit = match args.get(2) {
+                    Some(Value::Bool(unit)) => *unit,
+                    _ => return Err(bad(method)),
+                };
+                drop(args);
+                let n = Self::square(&receiver, method, span)?;
+                let (rows, r) = matrix_shape(&rhs);
+                if rows != n {
+                    return Err(precondition(
+                        "a triangular solve with a right-hand side of another number of rows, which its precondition excludes",
+                        span,
+                    ));
+                }
+                let t = self.f64_copy(&receiver, 0, method, span)?;
+                let mut x = self.f64_copy(&rhs, 0, method, span)?;
+                let triangle = if method == "solve_lower" {
+                    chains::Triangle::Lower
+                } else {
+                    chains::Triangle::Upper
+                };
+                chains::solve_triangular_f64(&t, n, &mut x, r, triangle, unit);
+                let value = compact(DenseKind::Matrix, vec![n, r], Elements::F64(x));
+                ensure_shape(&value, &[n, r], method)?;
+                Ok(value)
+            }
             _ => Err(fault(format!("no dense method `{method}`"))),
         }
     }
@@ -982,15 +1515,12 @@ mod tests {
             if !is_dense(name) {
                 continue;
             }
-            let method = name
-                .strip_prefix("dense_array_")
-                .or_else(|| name.strip_prefix("dense_matrix_"))
-                .unwrap_or(name);
+            let method = method_of(name).map_or(name, |(method, _)| method);
             assert!(METHODS.contains(&method), "`{name}` is handled");
             seen.push(method);
         }
         for method in METHODS {
-            assert!(seen.contains(&method), "`{method}` is a prelude function");
+            assert!(seen.contains(method), "`{method}` is a prelude function");
         }
     }
 }

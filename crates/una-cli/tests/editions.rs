@@ -333,13 +333,15 @@ const EXPECTED_DIFFERENCES_0_4: &[Difference04] = &[
         removed: &[("U0101", "src/late.una:10:19")],
     },
     // ADR 0120 (`spec/29 §17`): `Matrix`, `Tensor` and `Lu` are built in from edition 0.4, so a
-    // package that declares them is refused there.
+    // package that declares them is refused there, and `Lu(size: 3)` is U2001, since the type
+    // has no constructor (ADR 0120 rule 3, `spec/29 §17` rules 1 and 28).
     Difference04 {
         case: "types/dense_edition_0_3",
         added: &[
             ("U1002", "src/dense.una:6:10"),
             ("U1002", "src/dense.una:8:10"),
             ("U2003", "src/dense.una:13:33"),
+            ("U2001", "src/dense.una:15:36"),
         ],
         removed: &[],
     },

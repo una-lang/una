@@ -422,6 +422,10 @@ impl<'a> Checker<'_, 'a, '_> {
                 }
                 match self.env.lower(self.module, name) {
                     Some(Entity::Function(id)) => {
+                        // A tensor's shape selects the function of its rank (`spec/29 §17`).
+                        if let Some(ty) = self.tensor_construct(id, args, span, site) {
+                            return ty;
+                        }
                         // `complex(re: x, im: y)` (ADR 0120 rule 22).
                         if let Some(ty) = self.complex_call(id, None, args, span, expected) {
                             return ty;
@@ -1021,6 +1025,9 @@ impl<'a> Checker<'_, 'a, '_> {
         // ADR 0120: a trusted function that computes new elements keeps no refinement of its
         // type arguments in its result (`super::dense::SYNTHESIZING`).
         let synthesizes = super::dense::synthesizes(self.env.prelude, def.module, def.name);
+        if synthesizes {
+            self.synthesized(span);
+        }
         let result = if subst.is_empty()
             || (covariant_in(&def.result.base, &self.env.kind_labels) && !synthesizes)
         {
@@ -1165,6 +1172,8 @@ impl<'a> Checker<'_, 'a, '_> {
         // rule 2).
         // Likewise for the kernels whose result is a dense value: each of its elements depends
         // on many input elements and on the inputs' shapes (ADR 0120 IF6).
+        // A factorization and a solve choose their pivots from the values, so the top of the
+        // `Option` they return, and every position of an `Lu`, are raised the same way (IF6).
         if matches!(
             name,
             "sort"
@@ -1172,6 +1181,16 @@ impl<'a> Checker<'_, 'a, '_> {
                 | "dense_matrix_multiply_array"
                 | "dense_matrix_row_sums"
                 | "dense_matrix_column_sums"
+                | "dense_matrix_lu"
+                | "dense_matrix_solve"
+                | "dense_matrix_solve_array"
+                | "dense_matrix_cholesky"
+                | "dense_matrix_solve_lower"
+                | "dense_matrix_solve_upper"
+                | "dense_lu_solve"
+                | "dense_lu_pivots"
+                | "dense_tensor_sum_axis"
+                | "dense_tensor_contract"
         ) {
             return result.raise_deep(&label);
         }
@@ -1753,6 +1772,14 @@ impl<'a> Checker<'_, 'a, '_> {
     ) -> Vec<Checked<'a>> {
         let mut checked: Vec<Checked<'a>> = Vec::new();
         let of_callee = self.of_callee.take();
+        // The elements of a list literal passed as arguments bind consecutive parameters
+        // (`spec/29 §17`): the position of an argument among them, and its parameter.
+        let spread = self.spread.take();
+        let spread_target = |index: usize| {
+            let (first, count, param) = spread?;
+            let k = index.checked_sub(first).filter(|k| *k < count)?;
+            Some(param + k)
+        };
         // A parameter of the prelude written `with_`, `and_` or `from_` takes the label without
         // the underscore: the keywords `with`, `and` and `from` label the arguments of the dense
         // methods (`spec/29 §17`, ADR 0120), and cannot name a parameter.
@@ -1849,6 +1876,7 @@ impl<'a> Checker<'_, 'a, '_> {
         let mut given_params = taken.clone();
         for (index, arg) in args.iter().enumerate() {
             let target = match &arg.label {
+                _ if spread_target(index).is_some() => spread_target(index),
                 Some(label) => names.iter().position(|name| *name == self.name(label)),
                 // ADR 0049: an unlabeled first argument binds the first parameter, and
                 // punning applies only from the second argument on.
@@ -1869,7 +1897,9 @@ impl<'a> Checker<'_, 'a, '_> {
         let mut problem = false;
         for (index, arg) in args.iter().enumerate() {
             let position = index + offset;
-            let target = if let Some(label) = &arg.label {
+            let target = if let Some(target) = spread_target(index) {
+                Some(target)
+            } else if let Some(label) = &arg.label {
                 let label_name = self.name(label);
                 match names.iter().position(|name| *name == label_name) {
                     Some(target) => Some(target),
@@ -2124,6 +2154,28 @@ impl<'a> Checker<'_, 'a, '_> {
     ) -> Ty {
         let name = self.name(ident);
         self.outside_rl(span, || format!("constructor `{name}`"));
+        // ADR 0120 rules 3 and 38: `Matrix`, `Tensor` and `Lu` are types without a
+        // constructor; an `Lu[T]` in particular comes only from `lu()`, so none is forged.
+        if name != "Array"
+            && let Some(dense) = self.env.dense_name(name)
+        {
+            let made_by = match dense {
+                super::ty::Dense::Lu => "a factorization comes from `m.lu()`",
+                super::ty::Dense::Tensor => {
+                    "a tensor is made by `tensor(...)` or `tensor_filled(...)`"
+                }
+                _ => {
+                    "a matrix is made by `matrix(...)`, `matrix_filled(...)` or `matrix_diagonal(...)`"
+                }
+            };
+            self.report.error(
+                Code::U2001,
+                ident.span,
+                format!("`{name}` is a built-in type with no constructor: {made_by}"),
+            );
+            self.unchecked(args);
+            return Ty::error();
+        }
         // ADR 0120 rule 3: `Array(...)` where an array is expected is the variant of `Json`.
         if let Some(repair) = self.json_array_repair(expected, name) {
             let mut diagnostic = self.report.make(
@@ -2584,7 +2636,7 @@ impl<'a> Checker<'_, 'a, '_> {
 /// The prelude functions whose results carry the labels of their arguments, as `spec/14 §1`
 /// "Result labels" lists them (ADR 0038 D3.4): their native implementations declare these
 /// labels, which the prelude's Una signatures cannot write.
-const PRELUDE_LABELED: [&str; 87] = [
+const PRELUDE_LABELED: &[&str] = &[
     "abs",
     "append",
     "at",
@@ -2679,10 +2731,45 @@ const PRELUDE_LABELED: [&str; 87] = [
     "dense_matrix_sum_exact",
     "dense_matrix_multiply",
     "dense_matrix_multiply_array",
+    "dense_matrix_to_tensor",
+    "dense_matrix_lu",
+    "dense_matrix_solve",
+    "dense_matrix_solve_array",
+    "dense_matrix_cholesky",
+    "dense_matrix_solve_lower",
+    "dense_matrix_solve_upper",
+    "dense_lu_solve",
+    "dense_lu_factors",
+    "dense_lu_pivots",
+    "dense_array_to_tensor",
+    "tensor",
+    "tensor_filled",
+    "dense_tensor_dim",
+    "dense_tensor_compact",
+    "dense_tensor_to_array",
+    "dense_tensor_to_matrix",
+    "dense_tensor_map",
+    "dense_tensor_zip_map",
+    "dense_tensor_fold",
+    "dense_tensor_multiply_elements",
+    "dense_tensor_divide_elements",
+    "dense_tensor_sum",
+    "dense_tensor_sum_axis",
+    "dense_tensor_all_finite",
+    "dense_tensor_sum_exact",
+    "dense_tensor_contract",
     // `F32` (ADR 0120 rule 5): the same for `parse_f32` and `f32_from_bits`.
     "parse_f32",
     "f32_from_bits",
 ];
+
+/// Whether `name` is `prefix` followed by a rank from 1 to 8: a function of the prelude of one
+/// rank of a tensor (`spec/29 §17`).
+fn ranked(name: &str, prefix: &str) -> bool {
+    name.strip_prefix(prefix)
+        .and_then(|rank| rank.parse::<usize>().ok())
+        .is_some_and(|rank| (1..=8).contains(&rank))
+}
 
 /// For a structural prelude function (ADR 0051, `spec/14 §1`), the parameters that decide the
 /// shape of its result, whose labels raise its top label: by their top label, or by every label
@@ -2735,6 +2822,65 @@ fn structural_inputs(name: &str) -> Option<&'static [(&'static str, bool)]> {
         "dense_matrix_multiply_elements" | "dense_matrix_divide_elements" => {
             &[("m", false), ("by", false)]
         }
+        "dense_array_to_tensor" => &[("a", false)],
+        "dense_matrix_to_tensor" => &[("m", false)],
+        "dense_lu_factors" => &[("f", false)],
+        "dense_tensor_dim" => &[("t", false), ("axis", true)],
+        "dense_tensor_compact" | "dense_tensor_to_array" | "dense_tensor_to_matrix" => {
+            &[("t", false)]
+        }
+        "dense_tensor_map" => &[("t", false), ("each", false)],
+        "dense_tensor_zip_map" => &[("t", false), ("with_", false), ("each", false)],
+        "dense_tensor_fold" => &[("t", false), ("step", false)],
+        "dense_tensor_multiply_elements" | "dense_tensor_divide_elements" => {
+            &[("t", false), ("by", false)]
+        }
+        // The functions of each rank (`spec/29 §17`): a shape's lengths and an index decide the
+        // top label; the elements carry their type variable's labels.
+        name if ranked(name, "dense_tensor_make_") => &[
+            ("shape_0", true),
+            ("shape_1", true),
+            ("shape_2", true),
+            ("shape_3", true),
+            ("shape_4", true),
+            ("shape_5", true),
+            ("shape_6", true),
+            ("shape_7", true),
+            ("elements", false),
+        ],
+        name if ranked(name, "dense_tensor_filled_") => &[
+            ("shape_0", true),
+            ("shape_1", true),
+            ("shape_2", true),
+            ("shape_3", true),
+            ("shape_4", true),
+            ("shape_5", true),
+            ("shape_6", true),
+            ("shape_7", true),
+        ],
+        name if ranked(name, "dense_tensor_get_") || ranked(name, "dense_tensor_at_") => &[
+            ("t", false),
+            ("at_0", true),
+            ("at_1", true),
+            ("at_2", true),
+            ("at_3", true),
+            ("at_4", true),
+            ("at_5", true),
+            ("at_6", true),
+            ("at_7", true),
+        ],
+        name if ranked(name, "dense_tensor_permute_") => &[("t", false)],
+        name if ranked(name, "dense_tensor_reshape_") => &[
+            ("t", false),
+            ("shape_0", true),
+            ("shape_1", true),
+            ("shape_2", true),
+            ("shape_3", true),
+            ("shape_4", true),
+            ("shape_5", true),
+            ("shape_6", true),
+            ("shape_7", true),
+        ],
         _ => return None,
     })
 }
@@ -2758,8 +2904,23 @@ fn decides_failure(capability: &str, op: &str, param: &str) -> bool {
 /// since the result carries all of them, at the positions that hold them for the structural
 /// functions (ADR 0051); the other prelude functions keep the labels of their parameter types.
 fn prelude_labeled(prelude: usize, def: &FnDef<'_>) -> bool {
-    def.module == prelude && def.kind == FnKind::Function && PRELUDE_LABELED.contains(&def.name)
+    def.module == prelude
+        && def.kind == FnKind::Function
+        && (PRELUDE_LABELED.contains(&def.name)
+            || RANKED_LABELED.iter().any(|prefix| ranked(def.name, prefix)))
 }
+
+/// The prelude functions of each rank of a tensor whose results carry their arguments' labels
+/// as [`PRELUDE_LABELED`] lists them (`spec/29 §17`): all of them but `set`, whose arguments
+/// keep their parameters' labels, as for the other dense methods that update their receiver.
+const RANKED_LABELED: [&str; 6] = [
+    "dense_tensor_make_",
+    "dense_tensor_filled_",
+    "dense_tensor_get_",
+    "dense_tensor_at_",
+    "dense_tensor_permute_",
+    "dense_tensor_reshape_",
+];
 
 /// The functions of `std.collections` whose results carry the labels of their arguments, as
 /// the prelude's of `PRELUDE_LABELED` do: `empty_bit_set`, whose size is part of the bit set's

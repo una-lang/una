@@ -1510,8 +1510,34 @@ impl<'e, 'a> Fx<'e, 'a> {
                             None => return self.outside(),
                         }
                     }
-                    Term::Element { value, indices }
+                    Term::Element {
+                        value,
+                        indices,
+                        tensor: false,
+                    }
                 }
+                // The element of a tensor at the indices of a list literal (`spec/29 §17`).
+                Some(Res::TensorElement(position)) => {
+                    let value = Box::new(self.term(target));
+                    let Some(ExprKind::List(items)) = args.get(position).map(|arg| &arg.value.kind)
+                    else {
+                        return self.outside();
+                    };
+                    let indices = items.iter().map(|item| self.term(item)).collect();
+                    Term::Element {
+                        value,
+                        indices,
+                        tensor: true,
+                    }
+                }
+                // `t.dim(axis: k)` (`spec/29 §17`).
+                Some(Res::Dim(position)) => match args.get(position) {
+                    Some(axis) => Term::Dim {
+                        value: Box::new(self.term(target)),
+                        axis: Box::new(self.term(&axis.value)),
+                    },
+                    None => self.outside(),
+                },
                 // A method of `F32` of the refinement language, `to_f64()` included.
                 Some(Res::IntMethod(Prim::Float32(op))) if op.in_refinement_language() => {
                     let mut terms = vec![self.term(target)];
@@ -3564,6 +3590,16 @@ impl<'e, 'a> Fx<'e, 'a> {
             self.broken.set(true);
             return Atom::Unit;
         };
+        // ADR 0120: a function that computes new elements keeps no refinement of its type
+        // arguments in the new values of its `edit` places either (`super::dense::SYNTHESIZING`),
+        // so a place whose declared type claims one gets an obligation, as its call's result
+        // does (review of #1048, R2).
+        let type_args: Vec<Ty> =
+            if super::dense::synthesizes(self.env.prelude, def.module, def.name) {
+                type_args.iter().map(Ty::without_refinements).collect()
+            } else {
+                type_args
+            };
         let mut components: Vec<Type> = Vec::new();
         for param in &def.params {
             if param.convention == Some(Convention::Edit) {
@@ -4313,7 +4349,7 @@ impl<'e, 'a> Fx<'e, 'a> {
             Type::Base {
                 base: Base::Named { module, name, args },
                 ..
-            } if module == "prelude" && (name == "Array" || name == "Matrix") => {
+            } if module == "prelude" && matches!(name.as_str(), "Array" | "Matrix" | "Tensor") => {
                 args.first().cloned()
             }
             _ => None,
@@ -5526,6 +5562,16 @@ impl<'e, 'a> Fx<'e, 'a> {
         let Some(def) = self.env.functions.get(id) else {
             self.broken.set(true);
             return Atom::Unit;
+        };
+        // A tensor's shape, index or permutation: the elements of its list literal are the
+        // arguments, as the checker bound them (`spec/29 §17`).
+        let spread_args: Vec<Arg>;
+        let args = match self.records.spread.get(&span) {
+            Some(position) => {
+                spread_args = super::dense::spread(args, *position);
+                spread_args.as_slice()
+            }
+            None => args,
         };
         let (values, arg_spans) = self.ordered_values(lets, span, receiver, args);
         // `json_decimal(x)` writes `x` at its scale, which only its type knows: an operation
