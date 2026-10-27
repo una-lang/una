@@ -344,6 +344,24 @@ pub(crate) fn run_command(
         let found = tier_one(&package, &analysis.program, &options.solving);
         analysis.diagnostics = found.diagnostics;
     }
+    // A `--grant` with limits needs edition 0.4 and `L_lim` at most `internal` (ADR 0117 IF4,
+    // `spec/27 §9` rule 5): a usage error before `main` starts. The manifest's grants are
+    // `una check`'s to report (U4001).
+    if analysis.diagnostics.is_empty() {
+        let label = analysis.limit_label.to_string();
+        let limit = (manifest.edition >= una_project::Edition::V0_4).then(|| {
+            (
+                label.as_str(),
+                analysis
+                    .limit_label
+                    .flows_to(&crate::build::internal_label()),
+            )
+        });
+        if let Err(message) = una_interp::check_limited_flags(options.grants, limit) {
+            writeln!(stderr, "error: {message}")?;
+            return Ok(ExitStatus::Usage);
+        }
+    }
     if !analysis.diagnostics.is_empty() {
         let document = RunDocument::rejected(&analysis.diagnostics);
         let status = rejected_status(&analysis.diagnostics);

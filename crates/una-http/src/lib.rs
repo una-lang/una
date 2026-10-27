@@ -3,6 +3,7 @@
 //! responses, and the strict framing of the server of `HttpServer` (`spec/31`, ADR 0123).
 
 pub mod client;
+pub mod limit;
 pub mod parse;
 pub mod reply;
 pub mod request;

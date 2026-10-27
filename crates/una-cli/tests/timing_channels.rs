@@ -32,10 +32,14 @@
 //! The oracles of #1146 judge outcomes rather than times: each builds one program twice, with
 //! only its `secret` key changed, runs each executable 20 times on one worker, and requires
 //! the same outcomes for both keys, the winner of a race or whether a deadline's `timeout` is
-//! in the trace.
+//! in the trace. The oracle of #1147 is the positive control of its differential, whose
+//! `secret` half is a deterministic test in `http_limits.rs`: under a limit, a `public` key's
+//! time must still change how many requests a server receives on this machine.
 //! `crates/una-cli/tests/release_gates.rs` checks that every test here carries the attribute.
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
 
+#[path = "common/history.rs"]
+mod history;
 #[path = "common/native_build.rs"]
 mod native_build;
 #[path = "common/rank.rs"]
@@ -421,4 +425,29 @@ fn time_the_root_spent_alone_never_changes_a_later_deadline_under_real_time() {
         [0, 0],
         "runs with a `timeout`, for key 0 and key 1, of {RUNS} each"
     );
+}
+
+#[test]
+#[ignore = "security timing oracle: run by the timing-channels step of local-ci and the release gates"]
+fn the_history_of_a_limit_amplifies_time_on_this_machine() {
+    // The positive control of the differential of #1147 (ADR 0116 P8, slice T1), whose secret
+    // half is in `http_limits.rs`: the twin whose `key` is `public` is accepted under the same
+    // grant, one request per second, so the limits work, and its two runs differ, the server
+    // receiving one request when `key` is 0 and two when it is large, in each engine. So the
+    // amplifier, the limit and the 300 ms cut in `fetch`, turns the time of `crunch` into the
+    // number of requests sent on this machine, and the `secret` program, before the fix, leaked
+    // `key` the same way.
+    let server = history::CountingServer::start();
+    for native in [false, true] {
+        let large = history::large_key(native);
+        let control = [
+            history::observe_history(&server, 0, false, native),
+            history::observe_history(&server, large, false, native),
+        ];
+        assert_eq!(
+            control,
+            [(Some(0), String::new(), 1), (Some(0), String::new(), 2)],
+            "the control, native {native}"
+        );
+    }
 }

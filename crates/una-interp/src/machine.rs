@@ -866,8 +866,19 @@ impl<'p, 'w> Machine<'p, 'w> {
         } else {
             seen
         };
-        let run = Run::new(world, clock, index.tasks);
+        let mut run = Run::new(world, clock, index.tasks);
         run.stop_after.set(limits.stop_after);
+        // The run's limits refill on the run's clock (ADR 0116 rule 19).
+        run.http_limits = una_http::limit::Governor::with_clock(
+            grants
+                .iter()
+                .filter_map(|grant| match grant {
+                    Grant::Http(http) => Some(http.clone()),
+                    _ => None,
+                })
+                .collect(),
+            Arc::new(run.clock.clone()),
+        );
         Machine {
             index,
             grants,
@@ -3200,8 +3211,9 @@ impl<'p, 'w> Machine<'p, 'w> {
 
     /// An operation of `Http` (`spec/24`), by the client that native code shares.
     fn http(&mut self, op: &str, args: &[Value<'p>], span: Span) -> Flow<'p> {
-        use una_http::client::{Error, Request, send, send_interruptible};
+        use una_http::client::{Error, Request, send_governed};
         use una_http::grant::Method;
+        use una_http::limit::Abandon;
         let fail = |error: Error| {
             let (name, index) = match error {
                 Error::Denied => ("Denied", 0),
@@ -3212,8 +3224,10 @@ impl<'p, 'w> Machine<'p, 'w> {
                 Error::TooLarge => ("TooLarge", 5),
                 Error::Tls => ("Tls", 6),
                 Error::Protocol => ("Protocol", 7),
-                // Edition 0.4 only: no operation of an earlier edition runs in a `for ever`.
+                // Edition 0.4 only: no operation of an earlier edition runs in a `for ever`, and
+                // limits need edition 0.4 (ADR 0117 rule 8, `spec/27 §9`).
                 Error::Interrupted => ("Interrupted", 8),
+                Error::RateLimited => ("RateLimited", 9),
                 // Not a failure: the run aborts.
                 Error::HeaderValue => return Stop::Abort(Abort::HeaderValue { span }),
             };
@@ -3263,14 +3277,6 @@ impl<'p, 'w> Machine<'p, 'w> {
             ),
             None => None,
         };
-        let grants: Vec<una_core::http::Grant> = self
-            .grants
-            .iter()
-            .filter_map(|grant| match grant {
-                Grant::Http(http) => Some(http.clone()),
-                _ => None,
-            })
-            .collect();
         let request = Request {
             method,
             url: &url,
@@ -3306,13 +3312,47 @@ impl<'p, 'w> Machine<'p, 'w> {
             settings.timeout = left;
             cut = true;
         }
+        // The covering deadline on the run's clock, which a wait at a limit reaches at most: under
+        // virtual time, a wait for a refill moves the clock to it (ADR 0116 rule 19).
+        let cover = left.map(|left| {
+            self.run
+                .clock
+                .now()
+                .saturating_add(u64::try_from(left.as_millis()).unwrap_or(u64::MAX))
+        });
         let sent = if cut && settings.timeout.is_zero() {
             Err(Error::TimedOut)
         } else if self.in_ever {
-            send_interruptible(&request, &grants, &settings, &self.stop.interrupt())
+            // The run's limits are shared by its tasks (ADR 0117 rule 8). The interpreter runs
+            // one task at a time, so no other request of the run is in flight while this one
+            // waits at a limit, and nothing abandons the wait but its deadline or a host stop.
+            send_governed(
+                &request,
+                &self.run.http_limits,
+                &settings,
+                &self.stop.interrupt(),
+                &Abandon::new(),
+                cover,
+            )
         } else {
-            send(&request, &grants, &settings)
+            send_governed(
+                &request,
+                &self.run.http_limits,
+                &settings,
+                &una_http::client::Uninterrupted,
+                &Abandon::new(),
+                cover,
+            )
         };
+        // Under virtual time, a wait at a limit that moved the clock to the covering deadline
+        // was cut by it, as a request is under the real clock.
+        if !cut
+            && sent == Err(Error::TimedOut)
+            && self.run.clock.is_virtual()
+            && cover.is_some_and(|at| self.run.clock.now() >= at)
+        {
+            cut = true;
+        }
         if cut && by_ever && sent == Err(Error::TimedOut) {
             self.timeout_event();
         }

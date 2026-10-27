@@ -506,8 +506,10 @@ fn http_error_index(error: una_http::client::Error) -> i64 {
         Error::TooLarge => 5,
         Error::Tls => 6,
         Error::Protocol => 7,
-        // Edition 0.4 only, after the eight variants of `spec/24 §1` (ADR 0116 rule 12).
+        // Edition 0.4 only, after the eight variants of `spec/24 §1` (ADR 0116 rule 12, ADR
+        // 0117 rule 8).
         Error::Interrupted => 8,
+        Error::RateLimited => 9,
         // Not a failure: `http` aborts before.
         Error::HeaderValue => 2,
     }
@@ -523,7 +525,7 @@ fn http(
     body: Option<i64>,
     key_name: i64,
 ) -> i64 {
-    use una_http::client::{Error, Request, send};
+    use una_http::client::{Error, Request, send_governed};
     // The variants of `HttpError`, in declaration order, as words.
     let variant = |error: Error| (http_error_index(error) << 1) | 1;
     let url = values::text_value(url);
@@ -547,18 +549,13 @@ fn http(
         },
         None => None,
     };
-    let (grants, settings) = with_state(|state| {
-        let grants: Vec<una_http::grant::Grant> = state
-            .grants
-            .iter()
-            .filter_map(|grant| match grant {
-                Grant::Http(http) => Some(http.clone()),
-                _ => None,
-            })
-            .collect();
-        (grants, state.http)
-    })
-    .unwrap_or_default();
+    // The run's `Http` grants with the state of their limits, which every task shares (ADR 0117
+    // rule 8): a state-less caller gets a governor of no grants, which allows nothing.
+    let Some((governor, settings)) =
+        with_state(|state| (Arc::clone(&state.http_limits), state.http))
+    else {
+        return failed(variant(Error::Denied));
+    };
     // The deadline of a `for ever within` iteration (`spec/26 §7`): past it, the request fails
     // at once with `TimedOut`; before it, it waits no longer than the time left. In the body of a `for ever`, a host stop interrupts the request
     // too (ADR 0116 rule 12): whichever comes first cuts the wait, in the same poll.
@@ -567,7 +564,17 @@ fn http(
     // deadline the virtual clock has already reached cuts the request, at once.
     let mut settings = settings;
     let mut cut = None;
-    if let Some((left, bound)) = crate::deadline::left()
+    let covering = crate::deadline::left();
+    // The covering deadline on the run's clock, which a wait at a limit reaches at most: under
+    // virtual time, a wait for a refill moves the clock to it (ADR 0116 rule 19).
+    let cover = covering.map(|(left, bound)| {
+        let at = crate::runtime::clock()
+            .now()
+            .saturating_add(u64::try_from(left.as_millis()).unwrap_or(u64::MAX));
+        (at, bound)
+    });
+    let cover_at = cover.map(|(at, _)| at);
+    if let Some((left, bound)) = covering
         && left < settings.timeout
         && (left.is_zero() || !crate::runtime::clock().is_virtual())
     {
@@ -579,7 +586,10 @@ fn http(
         Err(Error::TimedOut)
     } else {
         // In a task, the request runs on a helper of the I/O pool while the task parks (ADR 0117
-        // rule 3); only owned data, and the run's static stop state, cross.
+        // rule 3); only owned data, the run's governor of limits and its static stop state
+        // cross.
+        let abandon = una_http::limit::Abandon::new();
+        let waiting = abandon.clone();
         let job = move || {
             let request = Request {
                 method,
@@ -589,20 +599,31 @@ fn http(
                 bearer: bearer.as_deref(),
             };
             match stop {
-                Some(stop) => una_http::client::send_interruptible(
+                Some(stop) => send_governed(
                     &request,
-                    &grants,
+                    &governor,
                     &settings,
                     &stop.interrupt(),
+                    &waiting,
+                    cover_at,
                 ),
-                None => send(&request, &grants, &settings),
+                None => send_governed(
+                    &request,
+                    &governor,
+                    &settings,
+                    &una_http::client::Uninterrupted,
+                    &waiting,
+                    cover_at,
+                ),
             }
         };
         // A request is interruptible (ADR 0117 rule 4): a cancellation that comes while it
         // waits ends it `interrupted`, and the task stops. The helper may still complete it, an
-        // effect in doubt.
+        // effect in doubt; a request still waiting at a limit leaves its queues, never sent
+        // (rule 8).
         let entries = crate::runtime::interruptible_entries();
-        match sched::blocking_interruptible(Pool::Io, &entries, job) {
+        let abandoned: crate::interrupt::Wake = Arc::new(move || abandon.abandon());
+        match sched::blocking_interruptible(Pool::Io, &entries, Some(abandoned), job) {
             Some(sent) => sent,
             None => {
                 with_state(|state| state.interrupted = true);
@@ -610,6 +631,16 @@ fn http(
             }
         }
     };
+    // Under virtual time, a wait at a limit that moved the clock to the covering deadline was cut
+    // by it, as a request is under the real clock.
+    if cut.is_none()
+        && sent == Err(Error::TimedOut)
+        && crate::runtime::clock().is_virtual()
+        && let Some((at, bound)) = cover
+        && crate::runtime::clock().now() >= at
+    {
+        cut = Some(bound);
+    }
     // A `for ever within` iteration observes its deadline at the operation; a `within` at its
     // next check point, or when its expression returns (`spec/27 §5`).
     if cut == Some(crate::deadline::Bound::Ever) && sent == Err(Error::TimedOut) {
@@ -725,8 +756,10 @@ mod tests {
             (Error::Tls, "Tls"),
             (Error::Protocol, "Protocol"),
         ];
-        // Edition 0.4 adds `Interrupted` last (ADR 0116 rule 12).
+        // Edition 0.4 adds `Interrupted`, then `RateLimited` (ADR 0116 rule 12, ADR 0117 rule
+        // 8).
         assert_eq!(http_error_index(Error::Interrupted), 8);
+        assert_eq!(http_error_index(Error::RateLimited), 9);
         assert_eq!(declared.len(), cases.len(), "{declared:?}");
         for (error, name) in cases {
             let index = usize::try_from(http_error_index(error)).expect("an index");

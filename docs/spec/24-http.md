@@ -48,6 +48,7 @@ The host capability `Http` sends HTTP/1.1 requests to the origins that grants al
    - `Tls`: the TLS handshake or the certificate failed;
    - `Protocol`: the response is not valid HTTP/1.1 as §3 reads it, or its body is not UTF-8.
    - (Edition 0.4 preview, ADR 0116 rule 12.) `Interrupted`, a ninth variant after `Protocol`, in edition `0.4` only: a host stop request came while the operation waited, or before it started, in the body of a `for ever` (`spec/26 §6`). The request may or may not have reached its server.
+   - (Edition 0.4, ADR 0117 rule 8.) `RateLimited`, a tenth variant after `Interrupted`, in edition `0.4` only: the request had to wait at a limit of a grant whose queue was full (`spec/27 §9`). It was not sent.
 
    A header value with a control character other than a tab is no failure: the run aborts with U6004 at the operation, before anything is sent. A header's value is `internal` (§5), so a failure the program could handle would reveal whether it holds one; an abort is outside the noninterference model (`spec/07 §1`).
 
@@ -60,6 +61,7 @@ The host capability `Http` sends HTTP/1.1 requests to the origins that grants al
 2. **Deny by default.** A request is allowed when a grant matches its scheme, its host and its port (the scheme's default when absent), and allows its method. Otherwise it fails with `Denied`, before any connection.
 3. **Redirects.** For `301`, `302`, `303`, `307` and `308`, the client follows the `Location` when the method is `get`, or the status is `303` (which it follows as `get`), and a grant allows the target with that method. It follows at most 5 redirects in a row. Otherwise the redirect response is returned.
 4. **Checks.** `una check` and `una run` report a `uses` of an `Http` operation that no grant allows as U3012, as for every host capability.
+5. **Limits** (edition `0.4`, ADR 0117 rule 8). A grant MAY carry limits on the rate of its requests, on how many are in flight at once, and on how many wait, as limit lines under it in `ita.una` or suffixes of its spec, as in `http:https://api.example.com:get;100/minute;8/once;waiting=1000` (`spec/27 §9`). A request is charged to every grant that allows it, and each redirect to the grants that allow its target; one over a limit waits, and fails with `RateLimited` when the queue it must join is full.
 
 ## 3. Requests and responses
 
@@ -76,9 +78,9 @@ The host capability `Http` sends HTTP/1.1 requests to the origins that grants al
 ## 4. Limits and time
 
 1. **Size.** A response's headers are at most 100, and at most 64 KiB together, else `Protocol`. Its body is at most `--max-response <MiB>` (default 16), else `TooLarge`, and the client reads no further.
-2. **Time.** Each request has one deadline, `--http-timeout <seconds>` (default 30, at most 86400, a day): the total wall-clock time of the request, covering name resolution, connecting, the TLS handshake, writing and reading, across its redirects. Past it the request fails with `TimedOut`.
+2. **Time.** Each request has one deadline, `--http-timeout <seconds>` (default 30, at most 86400, a day): the total wall-clock time of the request, covering name resolution, connecting, the TLS handshake, writing and reading, across its redirects, and in edition `0.4` its waits at the limits of grants (`spec/27 §9`). Past it the request fails with `TimedOut`.
 3. **Complexity.** A request takes time and space linear in the URL, headers and body it sends. A response takes time and space linear in what it reads, which rule 1 bounds.
-4. **Tasks.** A request blocks only its task's thread (`spec/19 §8`).
+4. **Tasks.** A request blocks only its task's thread (`spec/19 §8`). In native code, from edition `0.4`, it parks its task while it runs on a helper thread (`spec/27 §2`), where it also waits at the limits of its grants (`spec/27 §9`).
 
 ## 5. Information flow
 
@@ -94,5 +96,5 @@ An operation of `Http` is a trace event of `spec/11 §5`, with `instance` `host:
 ## 7. Examples and determinism
 
 1. Examples cannot use `Http` (U3014). A program's tests install handlers for it (`spec/05 §5`).
-2. The network is outside the model: two runs MAY get different responses. Grants, redirects, limits and the requests the client writes are deterministic.
+2. The network is outside the model: two runs MAY get different responses. Grants, redirects, the limits of §4 rule 1 and the requests the client writes are deterministic. Whether a request waits at, or is refused by, a limit of a grant (`spec/27 §9`) depends on the timing of the run's requests, which is outside the model; `RateLimited` carries the label of that timing.
 3. Both engines use one client, and give the same requests, responses and failures for the same server (`spec/16 §5`).

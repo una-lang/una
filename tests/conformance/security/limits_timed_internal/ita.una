@@ -1,0 +1,11 @@
+ita limits_timed_internal
+  version 0.1.0
+  edition 0.4
+
+run
+  entry main
+  grants
+    console
+    http "https://api.example.com" get
+      at most 10 per second
+      at most 2 at once

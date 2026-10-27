@@ -1,0 +1,33 @@
+-- test: in edition 0.4, `HttpError` has a tenth variant, `RateLimited`, after `Interrupted`, which a request fails with when the queue of a limit it must wait at is full; a `when` that names every variant is exhaustive, and one that leaves it out is U2007 (spec/27 §9, ADR 0117 rule 8)
+-- spec: spec/27 §9
+-- expect: error U2007 at src/poll.una:24:3
+module poll
+
+--- What a failure of a request says.
+pub describe(failure: internal HttpError) -> internal Text
+=
+  when failure
+    is Denied -> "denied"
+    is BadUrl -> "bad url"
+    is BadRequest -> "bad request"
+    is Unreachable -> "unreachable"
+    is TimedOut -> "timed out"
+    is TooLarge -> "too large"
+    is Tls -> "tls"
+    is Protocol -> "protocol"
+    is Interrupted -> "interrupted"
+    is RateLimited -> "rate limited"
+
+--- Whether a failure is worth a retry: a forgotten `RateLimited` makes the `when` incomplete.
+pub retry(failure: internal HttpError) -> internal Bool
+=
+  when failure
+    is Denied -> false
+    is BadUrl -> false
+    is BadRequest -> false
+    is Unreachable -> true
+    is TimedOut -> true
+    is TooLarge -> false
+    is Tls -> false
+    is Protocol -> false
+    is Interrupted -> false

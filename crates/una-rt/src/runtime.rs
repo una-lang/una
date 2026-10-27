@@ -388,6 +388,11 @@ pub struct Meta {
     /// Whether the executable was built with check elision (ADR 0112), which `--virtual-time`
     /// refuses (ADR 0117 rule 12). No backend of this repository elides checks yet.
     pub elision: bool,
+    /// `L_lim` of the program, as a message writes it (ADR 0117 IF4), embedded for edition `0.4`
+    /// only: without it, the run takes no grant with limits.
+    pub limit_label: Option<String>,
+    /// Whether `L_lim` flows to `internal`, so that grants with limits are allowed.
+    pub limits_allowed: bool,
     /// Whether the program holds a task construct or a `for ever`: the run then starts every
     /// worker and both helper pools at full size before `main`, so that no thread starts at a
     /// moment that earlier code decided (ADR 0116 amendment, P8; `spec/27 §1` rule 4; #1145).
@@ -502,6 +507,15 @@ impl Meta {
             .get("elision")
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        // A description without `L_lim` takes no limits (`spec/27 §9` rule 1).
+        let limit_label = match value.get("limit_label") {
+            Some(label) => Some(label.as_str()?.to_owned()),
+            None => None,
+        };
+        let limits_allowed = value
+            .get("limits_allowed")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         let threads = value
             .get("threads")
             .and_then(Value::as_bool)
@@ -510,6 +524,8 @@ impl Meta {
             stops,
             tasks,
             elision,
+            limit_label,
+            limits_allowed,
             threads,
             grants,
             uses,
@@ -727,6 +743,9 @@ pub(crate) struct State {
     pub(crate) keys: Arc<BTreeMap<String, Vec<u8>>>,
     /// The limits and deadline of each HTTP request (`spec/24 §4`).
     pub(crate) http: una_http::client::Settings,
+    /// The run's `Http` grants and the state of their limits, which every task shares (ADR
+    /// 0117 rule 8, `spec/27 §9`).
+    pub(crate) http_limits: Arc<una_http::limit::Governor>,
     pub(crate) types: Arc<Types>,
     pub(crate) ops: Arc<Vec<OpSite>>,
     /// Whether the last host operation failed.
@@ -797,6 +816,7 @@ pub(crate) struct TaskTemplate {
     grants: Arc<Vec<Grant>>,
     keys: Arc<BTreeMap<String, Vec<u8>>>,
     http: una_http::client::Settings,
+    http_limits: Arc<una_http::limit::Governor>,
     types: Arc<Types>,
     ops: Arc<Vec<OpSite>>,
     max_memory: usize,
@@ -889,6 +909,7 @@ impl State {
             grants: Arc::clone(&self.grants),
             keys: Arc::clone(&self.keys),
             http: self.http,
+            http_limits: Arc::clone(&self.http_limits),
             types: Arc::clone(&self.types),
             ops: Arc::clone(&self.ops),
             max_memory: self.max_memory,
@@ -1778,6 +1799,17 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
             return USAGE;
         }
     };
+    // A grant with limits needs `L_lim` at most `internal` (ADR 0117 IF4): the embedded grants
+    // passed `una check`, and are checked again with the flags' (`spec/27 §9` rule 5).
+    let limit = meta
+        .limit_label
+        .as_deref()
+        .map(|label| (label, meta.limits_allowed));
+    let specs: Vec<String> = meta.grants.iter().chain(&options.grants).cloned().collect();
+    if let Err(message) = una_interp::check_limited_flags(&specs, limit) {
+        let _ = writeln!(stderr, "error: {message}");
+        return USAGE;
+    }
     let Some(stack) = una_interp::stack_bytes(options.max_depth) else {
         let _ = writeln!(
             stderr,
@@ -1834,6 +1866,11 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
         max_depth: options.max_depth,
         sites: Arc::new(meta.sites),
         failure: meta.failure.map(Arc::new),
+        // The run's limits refill on the run's clock, set just before (ADR 0116 rule 19).
+        http_limits: Arc::new(una_http::limit::Governor::with_clock(
+            http_grants(&grants),
+            Arc::new(clock().clone()),
+        )),
         grants: Arc::new(grants),
         keys: Arc::new(keys),
         http: options.http,
@@ -2106,6 +2143,18 @@ fn grants(meta: &Meta, options: &Options) -> Result<Vec<Grant>, String> {
                     "`{spec}` is not a grant; grants are console, clock, env, keys:<file>, files:<path>:<access> and http:<origin>[:<methods>]"
                 )
             })
+        })
+        .collect()
+}
+
+/// The `Http` grants among `grants`, in order: what the run's governor of limits holds (ADR 0117
+/// rule 8).
+fn http_grants(grants: &[Grant]) -> Vec<una_http::grant::Grant> {
+    grants
+        .iter()
+        .filter_map(|grant| match grant {
+            Grant::Http(http) => Some(http.clone()),
+            _ => None,
         })
         .collect()
 }
@@ -2494,6 +2543,7 @@ pub(crate) fn enter_task(template: &TaskTemplate, path: String, entry: Cancel) {
         grants: Arc::clone(&template.grants),
         keys: Arc::clone(&template.keys),
         http: template.http,
+        http_limits: Arc::clone(&template.http_limits),
         types: Arc::clone(&template.types),
         ops: Arc::clone(&template.ops),
         host_failed: false,
@@ -2571,6 +2621,7 @@ pub(crate) fn install_test_state_as(path: String, tracing: bool, file: String) {
         grants: Arc::new(Vec::new()),
         keys: Arc::new(BTreeMap::new()),
         http: options.http,
+        http_limits: Arc::new(una_http::limit::Governor::new(Vec::new())),
         types: Arc::new(Types::default()),
         // One operation, which the tasks of a traced test record events of.
         ops: Arc::new(vec![OpSite {
