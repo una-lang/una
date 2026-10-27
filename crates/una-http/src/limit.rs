@@ -696,9 +696,9 @@ mod tests {
         let order = Arc::new(Mutex::new(Vec::new()));
         let mut threads = Vec::new();
         for k in 0u32..5 {
-            let (g, order, target) = (Arc::clone(&g), Arc::clone(&order), target.clone());
+            let (shared, order, target) = (Arc::clone(&g), Arc::clone(&order), target.clone());
             threads.push(std::thread::spawn(move || {
-                let permit = g
+                let permit = shared
                     .acquire(&target, Method::Get, soon(5_000), &Never, &Abandon::new())
                     .unwrap();
                 order.lock().unwrap().push(k);
