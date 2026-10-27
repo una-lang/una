@@ -165,6 +165,28 @@ impl<K, V> OrderedTable<K, V> {
         None
     }
 
+    /// The place of the key with `hash` for which `same` holds in the listing, if present: a
+    /// number that grows with the order in which keys were first added, for sorting keys of one
+    /// table into that order. Expected O(1) probes.
+    pub fn position(&self, hash: u64, mut same: impl FnMut(&K) -> bool) -> Option<usize> {
+        self.find(hash, &mut same)
+    }
+
+    /// The keys and values in insertion order, the table given up: what dropping it frees,
+    /// for a caller that drops values without recursion. O(n).
+    pub fn into_entries(self) -> impl Iterator<Item = (K, V)> {
+        self.entries.into_iter().flatten().map(|e| (e.key, e.value))
+    }
+
+    /// The hash each key was placed by, beside the key and value, in insertion order: what an
+    /// operation between two tables of one key reuses instead of hashing again. O(n).
+    pub fn iter_hashed(&self) -> impl Iterator<Item = (u64, &K, &V)> {
+        self.entries
+            .iter()
+            .flatten()
+            .map(|e| (e.hash, &e.key, &e.value))
+    }
+
     /// The value of the key with `hash` for which `same` holds.
     pub fn get(&self, hash: u64, mut same: impl FnMut(&K) -> bool) -> Option<&V> {
         let position = self.find(hash, &mut same)?;

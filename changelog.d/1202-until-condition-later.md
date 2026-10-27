@@ -1,0 +1,1 @@
+- **A `for until` condition keeps the bindings it reads again** (#1202). The interpreter now counts the condition as evaluated later while the loop runs, so a binding that the condition passes to a call is not given up before the next check. A program such as `for until done(xs, n: count)` stopped with U8001 in the interpreter while native code ran it.

@@ -89,13 +89,22 @@ pub const RESERVED_IN_0_2: [(&str, &str); 13] = [
 ];
 
 /// The words that edition 0.4 reserves for the constructs of ADR 0116 (`spec/26 §1`), with
-/// the message of their U0103 diagnostic, until each becomes a keyword.
-pub const RESERVED_IN_0_4: [(&str, &str); 2] = [
+/// the message of their U0103 diagnostic, until each becomes a keyword, and the rows whose
+/// message edition 0.4 changes: `async` and `await` (`spec/27 §7`, ADR 0117 Diagnostics).
+pub const RESERVED_IN_0_4: [(&str, &str); 4] = [
     (
         "diverges",
         "reserved for edition 0.4 (long-running programs)",
     ),
     ("within", "reserved for edition 0.4 (long-running programs)"),
+    (
+        "async",
+        "not supported; use `tasks` and `start`, or `together`",
+    ),
+    (
+        "await",
+        "not supported; use `tasks` and `start`, or `together`",
+    ),
 ];
 
 /// The U0103 message text of `word` under the keyword set `set`, if it is reserved. In edition
@@ -155,5 +164,25 @@ mod tests {
         }
         assert_eq!(reserved_in("simd", KeywordSet::V0_4), None);
         assert!(reserved_in("profile", KeywordSet::V0_4).is_some());
+    }
+
+    #[test]
+    fn async_and_await_name_tasks_and_start_in_edition_0_4() {
+        // ADR 0117 Diagnostics, `spec/19 §9`: the message of each edition.
+        let message = "not supported; use `tasks` and `start`, or `together`";
+        for word in ["async", "await"] {
+            assert_eq!(reserved_in(word, KeywordSet::V0_4), Some(message));
+            assert_eq!(
+                reserved_in(word, KeywordSet::V0_3),
+                Some("not supported; use `together`")
+            );
+            assert_eq!(
+                reserved_in(word, KeywordSet::V0_1),
+                Some("not supported; see structured concurrency in v0.2")
+            );
+        }
+        // `tasks` and `start` are no reserved words: they are names outside their statements.
+        assert_eq!(reserved_in("tasks", KeywordSet::V0_4), None);
+        assert_eq!(reserved_in("start", KeywordSet::V0_4), None);
     }
 }

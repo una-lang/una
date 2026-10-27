@@ -142,8 +142,8 @@ pub(crate) enum FunRole {
     },
     /// `.len`: at least 0.
     Len,
-    /// A shape function of a dense value beside `len`, `rows` or `columns`: at least 0
-    /// (ADR 0120 V4).
+    /// A shape function of a dense value beside `len`, `rows` or `columns` (ADR 0120 V4), or
+    /// the `size` of a bit set (ADR 0119 V1): at least 0.
     Shape,
     /// The element of a dense value at its indices, `i!get!<Sort>`, uninterpreted (ADR 0120
     /// V4).
@@ -158,10 +158,62 @@ pub(crate) enum FunRole {
     Has,
     /// `m.get(key: k)` of a map, uninterpreted.
     Get,
+    /// A read of a collection of ADR 0119 that gives an `Option` of an item, `i!<read>!<Sort>`,
+    /// uninterpreted (V1): `peek` and `peekback` of a `Stack`, a `Queue` or a
+    /// `PriorityQueue`, `first` and `last` of a `Set` or a `BitSet`. It is `None` exactly when
+    /// the collection is empty (V2).
+    Peek,
+    /// Another function of a collection of ADR 0119 (V1), uninterpreted and without facts of
+    /// its own: `below` of a `Stack`, the stack under its top, and `same` of `same_entries`
+    /// and `same_items`. It shows as a call.
+    Collection,
+    /// The record that the collection `s'` is the collection `s` updated at the key `x` only,
+    /// `i!frame!<Sort>(s, s', x)` (ADR 0119 V3), asserted where the update happens. For each
+    /// term `y` of the key's sort in a query, it gives `y != x => has(s', y) = has(s, y)`, and
+    /// for a map, whose `get` has the option sort `get`, the same of `get`. Every run makes it
+    /// true, so each fact is an instance of a valid law, and no quantifier enters the query.
+    Frame {
+        /// The sort of `get`'s result, for a map; `None` for a set.
+        get: Option<Sort>,
+    },
+    /// The record that a set is the union, intersection or difference of two others, or that
+    /// one set is a subset of another (ADR 0119 V4), over the items of the sort `item`. Each
+    /// term `y` of that sort in a query gives its membership law at `y`.
+    Combine {
+        /// Which relation.
+        op: Combine,
+        /// The sort of the items.
+        item: Sort,
+    },
     /// A predicate; a reflect one has a definition.
     Predicate,
     /// Any other function, without facts: nonlinear arithmetic, text ordering.
     Other,
+}
+
+/// A relation between sets of ADR 0119 V4, the role of `i!<op>!<Sort>`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Combine {
+    /// `union(s, t, r)`: `has(r, y) = has(s, y) or has(t, y)`.
+    Union,
+    /// `intersection(s, t, r)`: `has(r, y) = has(s, y) and has(t, y)`.
+    Intersection,
+    /// `difference(s, t, r)`: `has(r, y) = has(s, y) and not has(t, y)`.
+    Difference,
+    /// `subset(s, t)`: `has(s, y) => has(t, y)`.
+    Subset,
+}
+
+impl Combine {
+    /// The relation's name in its symbol.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Combine::Union => "union",
+            Combine::Intersection => "intersection",
+            Combine::Difference => "difference",
+            Combine::Subset => "subset",
+        }
+    }
 }
 
 impl F {
