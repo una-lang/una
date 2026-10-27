@@ -52,28 +52,80 @@ At a call of a named function `f` whose header lists `uses @x: C[op gives l′, 
 - **Repairs of U3022** [7], in order, neither lowering a label: (1) when the caller holds another binding of the same capability whose `op` label is within `l′`, pass it (`with @x = @other`), an exact edit at the call, ranked first; (2) raise the callee's `gives` to `l ⊔ l′` (the join, so that an incomparable label is never dropped), a description, offered only to a callee with a header (a named function or a handler), since it changes the callee's callers. One U3022 per need, listing its operations, and only when the capability and the operations themselves pass (U3001 and U3002 come first).
 - **Inference (S2).** A private function with inferred `uses` infers labels too: for each binding and operation, the join of the labels its callers pass, in the fixpoint of `infer` (`spec/05 §9` rule 2). The join is monotone in a finite lattice (five levels, the declared categories), so the fixpoint terminates; each binding's label changes at most `4 + |categories|` times, and the pass stays linear in call edges times operations. Until S2, such a call is U3022 (section 1).
 
-## 6. Locks and contracts (S2)
+## 6. Slice S2, exactly: inferred labels, locks, `una contract`
 
-- A `[contracts]` string parses `gives` as a header does [ADR 0092 rule 8]. For a locked function, the header's `gives` on an operation must be at least the lock's: a header that drops or lowers a locked label is U3023 at the operation, "the header of `create_share_links` reads `@service_files.owner` at `public`, which `una.toml` locks at `internal[Service]`", with the exact edit that restores the locked label (as the restore of a locked condition), which `una fix` applies.
-- `una contract` prints `gives l` on the operations of a header, declared or inferred, in its `uses` strings; `una.contract/1` keeps its keys (the text of a string changes only where a label is written).
+### 6.1 Inferred labels of private functions (rule 3, third bullet)
 
-## 7. H5 and the report (S3) [5, 8]
+- **Where.** `crates/una-check/src/types/authority.rs`, `infer`: the fixpoint that gives a private function without a `uses` clause its bindings and operations (`spec/05 §9` rule 2). Today it joins, per inferred binding, the operations its body performs and the operations its callees need. S2 adds, per inferred binding and operation, a label: the join over the labels that the function's callers pass for it.
+- **The data.** `Collected.calls` already records each call edge with the callee's needs resolved in the caller's frames. S2 records beside each need the label the caller's binding gives each operation (`given(&gives, op)` of the resolved `Bound::Cap`, through rebindings and narrowings, `public` for a handler): `CallNeed { callee, name, ops, gives: Vec<(String, Label)> }`. One extra vector per call edge, filled where `needs_site` resolves the binding in pass 1.
+- **The rule.** For an inferred function `f` and its inferred binding `@x`, `gives_f(@x, op) = ⊔ { l | some caller passes a binding to f's @x whose op gives l }`, over all callers, direct and through `with @x = @y` (which keeps `@y`'s labels) and `with @x = @y[ops]` (which keeps the kept ones). A caller that installs a handler, `with @x = h(args)`, contributes `public`. A function value or a lambda never contributes, since it reads at `public` (rule 1) and its own call is checked at its site.
+- **Monotone, terminating.** The join is monotone in a finite lattice: five levels and the declared categories, so each `(f, @x, op)` changes at most `4 + |categories|` times. The existing loop over `collected.calls` runs until nothing changes; S2 adds the label join to the same loop, so the pass stays linear in call edges times operations, times at most the lattice height.
+- **The result.** The inferred `FnUse.gives` of `f` holds the joined labels (`public` left out). From then on everything of S1 applies to `f` as to a declared function: its body reads `@x.op` at the inferred label (the answer, the decision and the payload carry it, §4), its callers are compared against it (§5: every caller passes by construction, since the join is at least each caller's label), and the functions it calls see its inferred labels as their callers' (the fixpoint propagates downward through chains of inferred functions). `una contract` shows them as inferred (6.3).
+- **Recursion and cycles.** Inferred functions that call each other converge as the operations do; a cycle's labels are the join over the cycle's outside callers.
+- **The edge that stays refused.** A declared-header callee reads at its written label, never an inferred one: a private function with a declared `uses` that lists the operation without `gives` still gets U3022 when a labeled binding reaches it (D4), since a header is a promise to the reader. The repair advice names the header.
+- **Diagnostics.** None new: a labeled answer that an inferred function returns `public` is U4001 at its body, as for any function; the message names the binding and operation whose label the value carries (rule 7, second bullet, below).
+- **Rule 7, second bullet (repair texts).** The U4001, U4002 and U4003 that a labeled answer causes gain, in the message's advice and in the first repair's description, "the answer of `@service_files.owner`, labeled `internal[Service]`"; the checker knows the source of a label through the `Ty` the answer carries, so S2 keeps, in `Checker`, a map from the span of each operation call to its `(binding, op, label)` and names the first whose label is not within the sink when it reports the flow. Where a value joins several labeled answers, the message names the first in source order. One lookup per flow report; no cost on the clean path.
 
-- The build report's Assumed zone: `assumptions` gains a `premises` key (additive, `una.report/2` stays): the host premises the package rests on, `H5` listed with every labeled operation of the package as `binding.op gives l` under the function that labels it. H1 to H4 are listed there too, by the host capabilities the package uses, so an agent reads the whole set in one place.
-- `docs/plan/formal-track-status.md`, "What accepted rests on", gains H5 as the ADR states it.
-- The re-check (ADR 0088's `una verify --recheck`, where it exists) reads a declaration that labels an operation, or calls through a labeled binding, as not re-checked, with a note naming H5, until #563 extends F1 and T6.
+### 6.2 Locked labels under `[contracts]` (ADR 0092 rule 8)
 
-## 8. Diagnostics
+- **The lock parses `gives`.** `una_syntax::parse_uses_clause` already lexes with `KeywordSet::V0_3` and calls `cap_type(true)`, so a locked clause `"@service_files: Files[owner gives internal[Service] where not dry_run]"` parses in S1; S1 refuses it with U7002 in `lock.rs`. S2 removes that refusal and reads the lock's labels: `Entry` gains `gives: Vec<(&str, Label)>`, lowered with `lower_label` against the package's categories (an undeclared category in a lock is U7002 at the clause: a lock cannot name what the package does not declare).
+- **The rule, for each locked operation of a locked header.** Let `l_lock` be the lock's label on `op` (`public` when the lock writes none) and `l_src` the header's (`public` when none, inferred labels never apply: a locked function is public and declares its `uses`). The header MUST read the operation at least as high as the lock: `l_lock ⊑ l_src`, else U3023 at the header's operation, "the header of `create_share_links` reads `@service_files.owner` at `public`, which `una.toml` locks at `internal[Service]`". A header that gives more than the lock passes: it reads the answer higher, which grants less to its callers' flows (a stronger promise), as a dropped operation or a strengthened condition passes today.
+- **Why `⊑` and not equality.** The lock is the consumer's floor on what the function's callers may expect: a caller that passes a binding labeled `l` needs `l ⊑ l_src`; raising `l_src` only accepts more callers' bindings and labels the function's own reads higher. Lowering it is the drift the lock exists to catch.
+- **The repair.** The first repair of the U3023 carries the exact edit that restores the locked label on the header's operation: it writes `op gives l_lock` where the header writes `op`, or `op gives (l_lock ⊔ l_src)` where it writes a lower label, keeping the operation's condition in place after the label. `una fix` applies it, as it applies the restore of a locked condition (ADR 0092, amendment of 2026-10-15). The edit changes the module only, never `una.toml`.
+- **With conditions.** A lock may write both: `owner gives internal[Service] where not dry_run`. The label rule above and the condition rule of ADR 0092 (a `contract_lock` obligation) are checked independently, in that order, so a header that fails both gets two diagnostics at the operation.
+- **A binding the lock labels and the header leaves out** grants less, and passes, as today. A binding the header writes with `gives` and the lock does not name is U3023 at the binding already (an unlocked binding).
+- **Complexity.** One label comparison per locked operation: linear in the locks.
+
+### 6.3 `una contract` and `una.contract/1`
+
+- `una contract <module.function>` prints the header's `uses` as text, declared or inferred. S2 prints `gives l` after each operation that gives a label, before its `where` condition, in the capability's declaration order: `uses @service_files: Files[create_link, owner gives internal[Service]]`; an inferred header prints its inferred labels the same way, marked inferred as its operations are today (`uses_inferred`). The keys of `una.contract/1` do not change: the text of the `uses` strings changes only where a label is written, which is additive for consumers that read the keys (ADR 0076).
+- `una report`'s `generic_results`, `result_labels` and the report's other label fields do not change in S2.
+
+### 6.4 B09 in `una-bench` (Consequences)
+
+- The scaffold's `src/sharing/links.una` writes `uses @service_files: Files[create_link, role gives internal[Service], owner gives internal[Service]]` on `create_share_links`; `una.toml` gains `[labels] categories = ["Service"]` and `[contracts] "sharing.links.create_share_links" = ["@service_files: Files[create_link, role gives internal[Service], owner gives internal[Service]]", "@requester_files: Files[role, owner]", "@mailer: Mailer[send]"]`. Edition `0.3`.
+- The reference builds: it reads `owner` and `role` through `@requester_files` (`owner_seen`), and creates links through `@service_files`, whose `create_link` is unlabeled.
+- The violating variant fails: its `owner` through `@service_files` answers at `internal[Service]`; the refusal naming the owner flows into `ShareSummary`, U4001 at the flow; a branch on the lookup's outcome raises the program counter, so the mail under it is U4002. The oracle's predicates (`oracle/predicates.json`) name those two codes.
+- This is a `una-bench` change, filed as its own issue when S2 is READY, with the `una` version it needs.
+
+### 6.5 Tests of S2
+
+- Conformance: `authority/gives_inferred` (ok: a private helper without `uses` called with a labeled binding reads at the inferred label and returns it `internal[Service]`), `authority/gives_inferred_lower` (U4001 at the helper's body when it returns the answer as `public`), `authority/gives_inferred_chain` (two inferred helpers in a row), `authority/gives_inferred_join` (two callers with different categories: the helper reads at the join, and the caller with the lower label still passes), `authority/gives_declared_private_lower` (a private function with a declared header without `gives` stays U3022), `project/gives_locked_ok`, `project/gives_locked_lower` (U3023 with the edit), `project/gives_locked_undeclared_category` (U7002), `project/gives_locked_with_condition` (both checks).
+- `crates/una-cli/tests/lock_edits.rs`: `una fix` restores a locked label, and keeps a condition after it.
+- `crates/una-cli/tests/`: a `una contract` snapshot of a declared and an inferred header with labels.
+- The scaling test of S1 gains a chain of inferred helpers (no `uses` clauses) of 200 and 1,600 functions: linear.
+
+## 7. Slice S3, exactly: H5 and the report
+
+### 7.1 The report's Assumed zone (`spec/13 §6`, rule 5)
+
+- **Where.** `crates/una-cli/src/report.rs` builds `assumptions`, today the capabilities with their operations' `ensures` clauses. S3 adds one additive key at the document's top level, after `assumptions`: `premises`, the host premises the package's acceptance rests on, each `{"id": "H1", "statement": "...", "used_for": [...]}`:
+  - `H1` to `H4` and the `Env` note, with `used_for` the host capabilities and operations the package uses that each premise covers (`Files.read` for H1, `Files.write` for H2, `Http` for H3 and H4, `Env` for the `Env` note), listed from the existing `host_capabilities` and the operations the authority pass records;
+  - `H5` with `used_for` every labeled operation of the package, as `"<module>.<function>: @<binding>.<op> gives <label>"`, in declaration order, declared and inferred alike, and `[]` when the package labels no operation, in which case `H5` is still listed (the premise set is the model's, not the package's). The statement is the ADR's: "an answer through a binding labeled l′, and whether it fails, is a function only of the arguments and of the host state at or below l′".
+- **Why a new key and not `tcb` or `assumptions`.** `assumptions` lists what the package declares of its capabilities; `tcb` lists code. A host premise is neither: it is what the deployment must make true. An added key keeps `una.report/2` (ADR 0076).
+- **Human output** of `una report` prints a section "Assumed of the host" after the assumptions, one line per premise with its uses.
+- **`docs/spec/13 §6`** gains the key, and the sentence that a premise is listed with what it is used for.
+
+### 7.2 The status page and the re-check note
+
+- `docs/plan/formal-track-status.md`, "What accepted rests on", gains H5 after H4 as the ADR states it, with the note that F1 does not model operation labels until #563, so a declaration that labels an operation, or that calls through a binding whose label is above `public`, is accepted on the checker's rules alone, not re-checked by the formal model.
+- The re-check note of the formal track (the verdict's note that names the premises used) lists H5 for such declarations once #563 lands; until then S3 adds the sentence above to the status page only, since the note is produced by the formal track's tooling, not by `una`.
+
+### 7.3 Tests of S3
+
+- A report snapshot (`crates/una-cli/tests/`, beside the existing `una.report/2` snapshot) for a package with one labeled operation: `premises` holds H1 to H5 and the `Env` note with the right `used_for`; and for a package without labels or host use: every premise with `[]`.
+- `crates/una-cli/tests/guide.rs`'s schema list is unchanged (no new schema).
+
+## 8. Diagnostics (all slices)
 
 - **U3022** (new, `authority`): "Labeled operation passed to code that reads it lower". Registry row in `spec/13 §4`, explain text with a failing and a fixed example (B09's shape), repairs as in §5.
-- **U0103** gains the `gives` message in editions `0.1` and `0.2` [6]; **U0101** for `gives` in a function type; **U7002** for `gives` in a ceiling; **U4007** for an undeclared category; **U3006** for a labeled function used as a value; **U3023** for a lock (S2).
+- **U0103** gains the `gives` message in editions `0.1` and `0.2` [6]; **U0101** for `gives` in a function type; **U7002** for `gives` in a ceiling, and for a lock that writes `gives` in S1, or an undeclared category in a lock in S2; **U4007** for an undeclared category; **U3006** for a labeled function used as a value; **U3023** for a lock whose header reads lower (S2), with the exact edit.
 - The U4001, U4002 and U4003 that a labeled answer causes keep their codes; their repair texts name the binding and operation [7].
 
 ## 9. Tests
 
 - Conformance (S1): `syntax/gives_in_0_3` (parses and formats), `syntax/gives_before_0_3` (U0103 at `gives` in `0.2`), `syntax/gives_in_function_type` (U0101), `project/gives_in_ceiling` (U7002), `security/gives_answer_flows` (U4001 at the flow to the result), `security/gives_decision_pc` (U4002 under the decision), `security/gives_failure_passed_on` (U4002 at `if error pass`), `authority/gives_passed_lower` (U3022), `authority/gives_passed_within` (ok, `l ⊑ l′`), `authority/gives_rebinding` and `gives_narrowed` (labels kept), `authority/gives_function_value` (U3006), `security/gives_category_undeclared` (U4007), `fmt/gives_canonical`.
-- S2: `authority/gives_inferred` (ok through a private helper), `authority/gives_inferred_lower` (U3022 at the helper's own labeled use), `project/gives_locked` (U3023 and its fix), `una contract` snapshot.
-- S3: a report snapshot with `premises`, and the status page.
+- S2 and S3: as §6.5 and §7.3 list them.
 - Scaling (S1, `crates/una-cli/tests/`): a chain of `n` functions each passing a labeled binding to the next and reading one labeled operation, for `n` in 200, 400, 800: check time grows linearly (the comparison per call edge), asserted with the suite's growth helper.
 - Editions: no edition `0.2` conformance package writes `gives` in a header, so `editions.rs` lists nothing new; the `0.3` cases that write it are refused by `0.2` as `Syntax` differences only if they are also `0.2` packages, which none is.
 - `una-bench` B09 (S2): the scaffold's `links.una` writes `role gives internal[Service], owner gives internal[Service]` on `@service_files`, `una.toml` declares the category `Service` and locks `create_share_links`; the reference builds, the violating variant fails with U4001 at the refusal and U4002 at the mail under the decision.
@@ -85,4 +137,6 @@ At a call of a named function `f` whose header lists `uses @x: C[op gives l′, 
 - D3 The answer's label is joined deep, at every position of the result type.
 - D4 A labeled operation passed to a callee that lists it without `gives` is U3022 unless the label is `⊥`; an inferred header reads every operation at `⊥` until S2 infers its labels.
 - D5 The repairs of U3022 never lower a label; passing another binding of the caller ranks first and is the only exact edit.
-- D6 The report lists H5 beside H1 to H4 under `assumptions.premises`, additive.
+- D6 The report lists H5 beside H1 to H4 under a top-level `premises` key, additive, each with what it is used for.
+- D7 A locked label is a floor: the header must read the operation at `l_lock` or above (`l_lock ⊑ l_src`); the restore edit writes the join.
+- D8 Inferred labels are the join over the callers' bindings, in the `uses` fixpoint; a private function with a declared header without `gives` stays refused (D4), since a header is a promise to the reader.
