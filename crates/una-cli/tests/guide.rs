@@ -257,6 +257,7 @@ fn scratch(line: usize) -> PathBuf {
 fn check(target: &Path) -> (Output, Vec<String>) {
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
         .args(["--json", "check", target.to_str().unwrap()])
         .output()
         .unwrap();
@@ -317,6 +318,28 @@ fn module_file(body: &str) -> PathBuf {
 /// Writes `una.toml` of `edition` and the lock of the repository into `dir`, each unless the
 /// package has its own: a page may show a lock, such as one naming another solver version.
 fn complete(dir: &Path, edition: &str) {
+    // From edition 0.4 a package is described by `ita.una` and pinned by `ita.lock` (ADR 0122):
+    // a package that gives `ita.una`, or a block of edition 0.4, gets the default lock and,
+    // when it gives none, a default `ita.una`.
+    let ita = dir.join("ita.una").exists()
+        || (edition.starts_with("0.") && edition >= "0.4" && !dir.join("una.toml").exists());
+    if ita {
+        if !dir.join("ita.una").exists() {
+            std::fs::write(
+                dir.join("ita.una"),
+                format!("ita demo\n  version 0.1.0\n  edition {edition}\n"),
+            )
+            .unwrap();
+        }
+        if !dir.join("ita.lock").exists() {
+            std::fs::write(
+                dir.join("ita.lock"),
+                "lock 1\n\nsolver\n  encoding \"una-smt-1\"\n  name \"z3\"\n  version \"5.1.0\"\n  logic \"QF_UFLIA\"\n  steps 5000000\n  seed 0\n",
+            )
+            .unwrap();
+        }
+        return;
+    }
     if !dir.join("una.toml").exists() {
         std::fs::write(dir.join("una.toml"), manifest(edition)).unwrap();
     }
@@ -333,6 +356,7 @@ fn complete(dir: &Path, edition: &str) {
 fn canonical(dir: &Path) -> Output {
     Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
         .args(["fmt", "--check", dir.to_str().unwrap()])
         .output()
         .unwrap()
@@ -399,6 +423,7 @@ fn run_commands(block: &Block, scratch_base: usize) {
         };
         let output = Command::new(&program)
             .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+            .env_remove("UNA_PROOF_KEY")
             .args(parts)
             .current_dir(&dir)
             .output()
@@ -927,6 +952,7 @@ fn every_example_has_a_readme_whose_commands_run() {
         let una = |args: &[&str]| {
             Command::new(env!("CARGO_BIN_EXE_una"))
                 .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+                .env_remove("UNA_PROOF_KEY")
                 .args(args)
                 .current_dir(&copy)
                 .output()
@@ -947,6 +973,7 @@ fn every_example_has_a_readme_whose_commands_run() {
         );
         let output = Command::new(copy.join("target/una").join(key("name")))
             .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+            .env_remove("UNA_PROOF_KEY")
             .current_dir(&copy)
             .output()
             .unwrap();
@@ -1080,6 +1107,7 @@ fn every_example_has_a_readme_whose_commands_run() {
             }
             let output = Command::new(env!("CARGO_BIN_EXE_una"))
                 .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+                .env_remove("UNA_PROOF_KEY")
                 .args(["--color", "never", "check", "."])
                 .current_dir(&dir)
                 .output()

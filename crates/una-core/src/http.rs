@@ -158,7 +158,166 @@ fn host_and_port(authority: &str, tls: bool) -> Option<(String, u16)> {
     Some((host, port))
 }
 
-/// A grant `http:<origin>` or `http:<origin>:<methods>` (`spec/24 §2` rule 1).
+/// The period of a rate limit (ADR 0117 rule 8, `spec/27 §9`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Period {
+    /// `per second`, `/second`.
+    Second,
+    /// `per minute`, `/minute`.
+    Minute,
+    /// `per hour`, `/hour`.
+    Hour,
+}
+
+impl Period {
+    /// The period's word, as both forms write it.
+    pub fn word(self) -> &'static str {
+        match self {
+            Period::Second => "second",
+            Period::Minute => "minute",
+            Period::Hour => "hour",
+        }
+    }
+
+    /// The period of a word, or `None`.
+    pub fn of(word: &str) -> Option<Period> {
+        Some(match word {
+            "second" => Period::Second,
+            "minute" => Period::Minute,
+            "hour" => Period::Hour,
+            _ => return None,
+        })
+    }
+
+    /// The period in nanoseconds.
+    pub fn nanos(self) -> u64 {
+        match self {
+            Period::Second => 1_000_000_000,
+            Period::Minute => 60_000_000_000,
+            Period::Hour => 3_600_000_000_000,
+        }
+    }
+}
+
+/// The largest count of a limit, 2^31 − 1 (ADR 0117 rule 8).
+pub const MAX_LIMIT: u32 = 0x7fff_ffff;
+
+/// The queue of a grant without `waiting` (ADR 0117 rule 8, Defaults).
+pub const DEFAULT_WAITING: u32 = 1024;
+
+/// The limits of an `Http` grant (ADR 0117 rule 8, `spec/27 §9`): each kind at most once.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Limits {
+    /// At most `n` requests per period.
+    pub rate: Option<(u32, Period)>,
+    /// At most `n` requests in flight.
+    pub at_once: Option<u32>,
+    /// At most `n` requests waiting; [`DEFAULT_WAITING`] without it.
+    pub waiting: Option<u32>,
+}
+
+impl Limits {
+    /// Whether the grant carries any limit.
+    pub fn any(&self) -> bool {
+        self.rate.is_some() || self.at_once.is_some() || self.waiting.is_some()
+    }
+
+    /// Whether a request can ever have to wait at the grant: a rate or a count in flight.
+    pub fn binding(&self) -> bool {
+        self.rate.is_some() || self.at_once.is_some()
+    }
+
+    /// How many requests may wait at the grant.
+    pub fn queue(&self) -> u32 {
+        self.waiting.unwrap_or(DEFAULT_WAITING)
+    }
+
+    /// The suffixes of the text form, in the order rate, at once, waiting: `;100/minute`,
+    /// `;8/once`, `;waiting=1000`.
+    pub fn suffix(&self) -> String {
+        let mut out = String::new();
+        if let Some((count, period)) = self.rate {
+            out.push_str(&format!(";{count}/{}", period.word()));
+        }
+        if let Some(count) = self.at_once {
+            out.push_str(&format!(";{count}/once"));
+        }
+        if let Some(count) = self.waiting {
+            out.push_str(&format!(";waiting={count}"));
+        }
+        out
+    }
+}
+
+/// Why the limits of a grant are invalid (ADR 0117 rule 8, `spec/27 §9` rule 1).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LimitError {
+    /// A limit that is none of the forms.
+    Form,
+    /// A count below 1 or above [`MAX_LIMIT`].
+    Count,
+    /// A kind of limit given twice; two rates are one kind.
+    Twice,
+}
+
+impl LimitError {
+    /// The error as a message says it.
+    pub fn message(&self) -> &'static str {
+        match self {
+            LimitError::Form => {
+                "a limit is `<n>/second`, `<n>/minute`, `<n>/hour`, `<n>/once` or `waiting=<n>`"
+            }
+            LimitError::Count => "the count of a limit is from 1 to 2147483647",
+            LimitError::Twice => "a kind of limit is given at most once on a grant",
+        }
+    }
+}
+
+/// A count of a limit: decimal digits, from 1 to [`MAX_LIMIT`].
+pub fn limit_count(digits: &str) -> Result<u32, LimitError> {
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(LimitError::Form);
+    }
+    match digits.parse::<u64>() {
+        Ok(n) if (1..=u64::from(MAX_LIMIT)).contains(&n) => {
+            u32::try_from(n).map_err(|_| LimitError::Count)
+        }
+        _ => Err(LimitError::Count),
+    }
+}
+
+impl Limits {
+    /// The limits of the text form's suffixes, each without its `;`.
+    pub fn parse<'s>(parts: impl IntoIterator<Item = &'s str>) -> Result<Limits, LimitError> {
+        let mut limits = Limits::default();
+        for part in parts {
+            if let Some(count) = part.strip_prefix("waiting=") {
+                let count = limit_count(count)?;
+                if limits.waiting.replace(count).is_some() {
+                    return Err(LimitError::Twice);
+                }
+                continue;
+            }
+            let (count, unit) = part.split_once('/').ok_or(LimitError::Form)?;
+            if unit == "once" {
+                let count = limit_count(count)?;
+                if limits.at_once.replace(count).is_some() {
+                    return Err(LimitError::Twice);
+                }
+                continue;
+            }
+            let period = Period::of(unit).ok_or(LimitError::Form)?;
+            let count = limit_count(count)?;
+            if limits.rate.replace((count, period)).is_some() {
+                return Err(LimitError::Twice);
+            }
+        }
+        Ok(limits)
+    }
+}
+
+/// A grant `http:<origin>` or `http:<origin>:<methods>` (`spec/24 §2` rule 1), with its
+/// limits in edition `0.4` (`spec/27 §9`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Grant {
     tls: bool,
@@ -166,11 +325,44 @@ pub struct Grant {
     host: String,
     port: u16,
     methods: Vec<Method>,
+    limits: Limits,
 }
 
 impl Grant {
-    /// The grant of a spec, or `None` when it is not one.
+    /// The grant of a spec without limits, or `None` when it is not one: a spec with limit
+    /// suffixes is not one, as `una.toml` reads grants (`spec/24 §2`).
     pub fn parse(spec: &str) -> Option<Grant> {
+        if spec.contains(';') {
+            return None;
+        }
+        Grant::parse_origin(spec)
+    }
+
+    /// The grant of a spec with optional limit suffixes, as `ita.una` and `--grant` give them
+    /// in edition `0.4` (`spec/27 §9`): `None` when the spec without its suffixes is not a
+    /// grant, and the error of its limits when they are invalid.
+    pub fn parse_limited(spec: &str) -> Option<Result<Grant, LimitError>> {
+        let (grant, suffixes) = match spec.split_once(';') {
+            Some((grant, suffixes)) => (grant, Some(suffixes)),
+            None => (spec, None),
+        };
+        let mut parsed = Grant::parse_origin(grant)?;
+        if let Some(suffixes) = suffixes {
+            match Limits::parse(suffixes.split(';')) {
+                Ok(limits) => parsed.limits = limits,
+                Err(error) => return Some(Err(error)),
+            }
+        }
+        Some(Ok(parsed))
+    }
+
+    /// The limits of the grant.
+    pub fn limits(&self) -> &Limits {
+        &self.limits
+    }
+
+    /// The grant of a spec without suffixes.
+    fn parse_origin(spec: &str) -> Option<Grant> {
         let rest = spec.strip_prefix("http:")?;
         let (tls, rest) = match rest.strip_prefix("https://") {
             Some(rest) => (true, rest),
@@ -231,6 +423,7 @@ impl Grant {
             host: pattern,
             port,
             methods,
+            limits: Limits::default(),
         })
     }
 
@@ -348,5 +541,46 @@ mod tests {
         ] {
             assert_eq!(Grant::parse(bad), None, "{bad}");
         }
+    }
+
+    #[test]
+    fn limits_parse_in_the_text_form_only_where_asked() {
+        let spec = "http:https://api.example.com:get,post;100/minute;8/once;waiting=1000";
+        let grant = Grant::parse_limited(spec).unwrap().unwrap();
+        assert_eq!(
+            *grant.limits(),
+            Limits {
+                rate: Some((100, Period::Minute)),
+                at_once: Some(8),
+                waiting: Some(1000),
+            }
+        );
+        assert_eq!(grant.limits().suffix(), ";100/minute;8/once;waiting=1000");
+        assert!(grant.allows(&url("https://api.example.com/x"), Method::Post));
+        // In any order; without suffixes, no limits.
+        let reordered = Grant::parse_limited("http:http://[::1]:8080;waiting=3;2/second").unwrap();
+        assert_eq!(reordered.unwrap().limits().rate, Some((2, Period::Second)));
+        let plain = Grant::parse_limited("http:https://h").unwrap().unwrap();
+        assert!(!plain.limits().any());
+        // `una.toml` reads no limits (U7002 there).
+        assert_eq!(Grant::parse(spec), None);
+        assert_eq!(Grant::parse("http:https://h;1/once"), None);
+        // Errors of the limits, and of the grant before them.
+        let error = |spec: &str| Grant::parse_limited(spec).unwrap().unwrap_err();
+        assert_eq!(error("http:https://h;0/second"), LimitError::Count);
+        assert_eq!(error("http:https://h;2147483648/once"), LimitError::Count);
+        assert_eq!(error("http:https://h;waiting=0"), LimitError::Count);
+        assert_eq!(error("http:https://h;1/second;2/hour"), LimitError::Twice);
+        assert_eq!(error("http:https://h;1/once;1/once"), LimitError::Twice);
+        assert_eq!(error("http:https://h;1/week"), LimitError::Form);
+        assert_eq!(error("http:https://h;"), LimitError::Form);
+        assert_eq!(error("http:https://h;+1/once"), LimitError::Form);
+        assert_eq!(error("http:https://h;1 /once"), LimitError::Form);
+        assert!(
+            Grant::parse_limited("http:https://h;2147483647/once")
+                .unwrap()
+                .is_ok()
+        );
+        assert_eq!(Grant::parse_limited("http:ftp://h;1/once"), None);
     }
 }

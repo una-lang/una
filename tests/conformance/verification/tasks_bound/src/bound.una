@@ -1,0 +1,17 @@
+-- test: the bound of `tasks` is at least 1, a `refinement` obligation at the bound: `at most 0 at once` is refuted (U5001), and a bound proven positive is accepted (spec/27 §7, ADR 0117 rule 7)
+-- spec: spec/27 §7
+-- expect: error U5001 at src/bound.una:10:17
+module bound
+
+note(n: Int) -> Unit = unit
+
+pub zero(n: Int) -> Unit
+=
+  tasks at most 0 at once
+    start note(n)
+
+pub some(n: Int) -> Unit
+  requires n >= 0
+=
+  tasks at most n + 1 at once
+    start note(n)

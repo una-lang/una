@@ -21,6 +21,18 @@
 #                twice, compared
 #   native       the interpreter against the native executable, on every runnable program of
 #                the repository (spec/16 §5): the equivalence test of crates/una-cli/tests/native.rs
+#   timing-channels
+#                the security timing oracles (#1145): `cargo test --release --locked -p una-cli --test
+#                timing_channels -- --ignored --test-threads=1 --nocapture`, the real-clock tests that a timing
+#                channel stays closed, which the ordinary test run ignores; it runs right after
+#                `native`, with no Docker gate running, so the machine is as quiet as the run gets
+#   owner-replay the exhaustive models of the replay of an owner's chain (spec/30 §14 rule 5)
+#                and of yanks against it (spec/30 §15 rule 6), both to depth 5: `cargo test
+#                --release --locked -p una-project --lib -- --ignored --exact
+#                tlog::owner::model::owner_replay_holds_its_contract_to_depth_five --nocapture`,
+#                then the same with registry::yank_model::yanks_hold_their_invariants_to_depth_five;
+#                the ordinary test run checks both to depth 3, and the gate passes only when both
+#                pass
 #   sanitize     scripts/sanitize.sh (#766): Miri on the unit tests of una-rt, and the native
 #                equivalence test against una-rt built with AddressSanitizer, with the checking
 #                toolchain of scripts/check-toolchain.toml; macOS only for now
@@ -56,12 +68,15 @@
 #
 # UNA_GATES_SOURCE overrides where the clone comes from (default: the remote `origin`), and
 # UNA_GATES_Z3 where the pinned solver is (default: target/z3 of this checkout or of the clone).
-# Exit code: 0 when no gate failed, 1 when one did, 2 for a usage error.
+# The Docker gates run on Docker Desktop's context only: run them with
+# DOCKER_CONTEXT=desktop-linux (#1082, below).
+# Exit code: 0 when no gate failed, 1 when one did, 2 for a usage error or a refused Docker
+# context.
 #
 # Usage: scripts/release-gates.sh SHA OUT [GATE...]
 set -u
 
-ALL=(clone build deps mac linux linux-arm64 release reproducible determinism native sanitize site formal hunt hunt-linux-arm64)
+ALL=(clone build deps mac linux linux-arm64 release reproducible determinism native timing-channels owner-replay sanitize site formal hunt hunt-linux-arm64)
 
 usage() {
     echo "usage: scripts/release-gates.sh SHA OUT [GATE...]; SHA is a full 40-digit commit, GATE is one of: ${ALL[*]}" >&2
@@ -80,6 +95,39 @@ for gate in "${GATES[@]}"; do
 done
 
 REPO=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+
+# The Docker backend (#1082): the Docker gates run on Docker Desktop's context desktop-linux,
+# never on whichever context happens to be active, since another runtime on the same machine can
+# hold it. When a requested gate needs Docker, the run refuses before any gate unless
+# DOCKER_CONTEXT, or else the active context, is desktop-linux, and DOCKER_HOST, which would
+# override the context, is unset. The context is then exported, so that every gate and its
+# children use it even if the active context changes during the run. The record names the
+# context and the server's version.
+DOCKER_GATES=" linux linux-arm64 release reproducible hunt-linux-arm64 "
+DOCKER_REQUIRED=desktop-linux
+NEEDS_DOCKER=0
+for gate in "${GATES[@]}"; do
+    case "$DOCKER_GATES" in *" $gate "*) NEEDS_DOCKER=1 ;; esac
+done
+docker_context() {
+    if [ -n "${DOCKER_CONTEXT:-}" ]; then
+        printf '%s' "$DOCKER_CONTEXT"
+    else
+        docker context show 2> /dev/null
+    fi
+}
+if [ $NEEDS_DOCKER = 1 ]; then
+    if [ -n "${DOCKER_HOST:-}" ]; then
+        echo "release gates: DOCKER_HOST is set, and it would override the Docker context; unset it and run with DOCKER_CONTEXT=$DOCKER_REQUIRED (#1082)" >&2
+        exit 2
+    fi
+    context=$(docker_context)
+    if [ "$context" != "$DOCKER_REQUIRED" ]; then
+        echo "release gates: the Docker gates run on the context $DOCKER_REQUIRED, and the context is ${context:-unknown}; run with DOCKER_CONTEXT=$DOCKER_REQUIRED (#1082)" >&2
+        exit 2
+    fi
+    export DOCKER_CONTEXT=$DOCKER_REQUIRED
+fi
 
 # The privacy pattern of the public summary (#717, docs/release-gates.md §3): UNA_PRIVACY_PATTERN
 # when the caller set it, else the macOS Keychain item una-privacy-pattern. It is held in a shell
@@ -316,6 +364,26 @@ gate_site() {
 }
 gate_formal() { run formal scripts/formal.sh; }
 
+gate_timing-channels() {
+    # The security timing oracles (#1145, crates/una-cli/tests/timing_channels.rs): each test is
+    # ignored in the ordinary run and runs only here and in the step of the same name of
+    # scripts/local-ci.sh, one at a time, on the real clock of a native host.
+    run timing-channels cargo test --release --locked -p una-cli --test timing_channels -- --ignored --test-threads=1 --nocapture
+}
+
+gate_owner-replay() {
+    # The exhaustive model of the replay of an owner's chain (spec/30 §14 rule 5), then the
+    # model of yanks against it (spec/30 §15 rule 6): both ignored in the ordinary run, which
+    # checks each to depth 3, and both run here to depth 5; the gate passes only when both
+    # pass. They are unit tests of una-project, since the model of signatures that stands in
+    # for Ed25519 exists only in that crate's test build; `--release`, for their millions of
+    # replays; `--nocapture`, so the log holds their counts.
+    run owner-replay sh -c '
+        cargo test --release --locked -p una-project --lib -- --ignored --exact tlog::owner::model::owner_replay_holds_its_contract_to_depth_five --nocapture &&
+        cargo test --release --locked -p una-project --lib -- --ignored --exact registry::yank_model::yanks_hold_their_invariants_to_depth_five --nocapture
+    '
+}
+
 # #766: Miri on the runtime's unit tests, and the native equivalence test against the runtime
 # built with AddressSanitizer, by the checking toolchain of scripts/check-toolchain.toml, which
 # builds no release artifact.
@@ -326,8 +394,9 @@ for gate in "${GATES[@]}"; do
 done
 
 # The Docker volume that local-ci made for this clone's target directory (named from its
-# path), so that runs do not pile volumes up.
-if command -v docker > /dev/null 2>&1; then
+# path), so that runs do not pile volumes up. Only a run that used Docker removes them, on the
+# context it checked.
+if [ $NEEDS_DOCKER = 1 ] && command -v docker > /dev/null 2>&1; then
     checkout=$(printf '%s' "$CLONE" | shasum -a 256 | cut -c1-12)
     docker volume rm "una-local-ci-target-$checkout" "una-local-ci-target-$checkout-arm64" \
         > /dev/null 2>&1 || true
@@ -341,6 +410,14 @@ fi
     subject=$(git -C "$CLONE" log -1 --format=%s "$SHA" 2>/dev/null || echo unknown)
     echo "- Subject: $subject"
     echo "- Run: $(date -u +%Y-%m-%dT%H:%M:%SZ), $(uname -sm), $(rustc --version 2>/dev/null || echo 'rustc unknown'), $(docker --version 2>/dev/null || echo 'Docker unavailable')"
+    if command -v docker > /dev/null 2>&1; then
+        server=$(docker version --format '{{.Server.Version}}' 2> /dev/null) || server=""
+        line="context ${context:-$(docker_context)}, server ${server:-unavailable}"
+    else
+        line="unavailable"
+    fi
+    [ $NEEDS_DOCKER = 1 ] || line="$line (no Docker gate ran)"
+    echo "- Docker: $line"
     echo "- Script: \`scripts/release-gates.sh\` at \`$(git -C "$REPO" rev-parse HEAD 2>/dev/null || echo unknown)\`"
     echo
     echo "| Gate | Result | Seconds | Log sha256 |"

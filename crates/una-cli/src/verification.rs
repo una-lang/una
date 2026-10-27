@@ -12,27 +12,30 @@ use serde::Serialize;
 use una_diag::{Code, Diagnostic, Location, ObligationKind, ObligationStatus, Position};
 use una_project::parse_lock;
 use una_syntax::{SourceDb, Span};
-use una_verify::{Obligation, Outcome, Problem, Settings};
+use una_verify::{Obligation, Outcome, Problem, Settings, SourceLayout};
 
-use crate::{ExitStatus, Package, analyze, load, on_large_stack, report};
+use crate::{ExitStatus, Package, analyze, on_large_stack, report};
 
 /// The wall-clock guard of the solver, `--solver-wallclock` (`spec/12 §5`).
 pub const DEFAULT_WALLCLOCK: Duration = Duration::from_secs(60);
 
 /// How tier 1 runs the solver: its wall-clock guard, and the user's key of the proof cache,
-/// without which the cache is off (ADR 0064).
+/// without which the cache is off (ADR 0064). It also carries Itaoca, where loading the package
+/// looks for its registry packages after the vendor directory (ADR 0122 rule 30).
 #[derive(Clone, Debug)]
 pub struct Solving {
     pub(crate) wallclock: Duration,
     pub(crate) proof_key: Option<crate::proof_key::ProofKey>,
+    pub(crate) itaoca: Option<una_project::itaoca::Itaoca>,
 }
 
 impl Solving {
-    /// The guard `wallclock`, with no proof cache.
+    /// The guard `wallclock`, with no proof cache and no Itaoca.
     pub fn new(wallclock: Duration) -> Solving {
         Solving {
             wallclock,
             proof_key: None,
+            itaoca: None,
         }
     }
 }
@@ -69,15 +72,17 @@ pub(crate) fn tier_one_cancellable(
     solving: &Solving,
     cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 ) -> TierOne {
-    let obligations = match on_large_stack(|| una_verify::obligations(program, &package.sources)) {
-        Ok(obligations) => obligations,
-        Err(problem) => {
-            return TierOne {
-                diagnostics: vec![problem_diagnostic(package, problem)],
-                verification: None,
-            };
-        }
-    };
+    let layout = source_layout(package);
+    let obligations =
+        match on_large_stack(|| una_verify::obligations(program, &package.sources, layout)) {
+            Ok(obligations) => obligations,
+            Err(problem) => {
+                return TierOne {
+                    diagnostics: vec![problem_diagnostic(package, problem)],
+                    verification: None,
+                };
+            }
+        };
     if obligations.is_empty() {
         return TierOne {
             diagnostics: Vec::new(),
@@ -155,11 +160,23 @@ pub(crate) fn settings(package: &Package, solving: &Solving) -> Settings {
         wallclock: solving.wallclock,
         cache: package_root(package)
             .zip(solving.proof_key.as_ref())
-            .map(|(root, key)| una_verify::ProofCache {
-                dir: root.join(".una").join("cache").join("proofs"),
-                key: key.secret.clone(),
+            .and_then(|(root, key)| {
+                let dir = root.join(".una").join("cache").join("proofs");
+                una_verify::ProofCache::new(root, dir, key.secret.clone())
             }),
         cancel: None,
+    }
+}
+
+/// How the verifier and `una contract` normalize the source text they show, by the package's
+/// edition: edition 0.4, whose canonical form wraps long lines, erases that layout; earlier
+/// editions keep the text as before (`spec/12 §8`, ADR 0125, amendment of 2026-10-25).
+pub(crate) fn source_layout(package: &Package) -> SourceLayout {
+    let (manifest, _) = crate::package::project(package);
+    if manifest.edition >= una_project::Edition::V0_4 {
+        SourceLayout::Wrapped
+    } else {
+        SourceLayout::Joined
     }
 }
 
@@ -286,7 +303,11 @@ pub(crate) fn obligations_command(
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> io::Result<ExitStatus> {
-    let package = match load(path) {
+    let package = match crate::package::load_in(
+        path,
+        &std::collections::BTreeMap::new(),
+        options.solving.itaoca.as_ref(),
+    ) {
         Ok(package) => package,
         Err(error) => {
             writeln!(stderr, "error: {error}")?;

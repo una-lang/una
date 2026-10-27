@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use una_core::IntType;
 use una_diag::Code;
-use una_project::Edition;
+use una_project::{Edition, Profile};
 use una_syntax::ast::{
     CapabilityDecl, ClauseKind, Convention, DeclKind, Expr, Field, File, FnTypeClause,
     FunctionDecl, HandlerDecl, Ident, KindBody, KindDecl, Label as LabelAst, OpClauseKind, Param,
@@ -17,7 +17,7 @@ use una_syntax::{Interner, Span, Symbol};
 
 use super::Report;
 use super::closest;
-use super::dense::dense_numeric;
+use super::dense::{dense_float, dense_numeric};
 use super::label::{Accepts, Label};
 use super::ty::{
     AliasId, CapId, Declared, Dense, FnRefinements, FnTy, FnUse, KindId, KindLabels, Names,
@@ -82,8 +82,14 @@ pub(crate) enum Builtin {
     Map,
     /// `F64`, built in from edition 0.3 (`spec/29`, ADR 0114 rule 1).
     F64,
+    /// `F32`, built in from edition 0.4 (`spec/29`, ADR 0120 rule 5).
+    F32,
     /// A collection type that `std.collections` exports, edition 0.4 (ADR 0119 rule 0).
     Coll(una_core::Coll),
+    /// `Complex[F64]` and `Complex[F32]`, built in from edition 0.4 (`spec/29 §19`, ADR 0120
+    /// rule 22): two types, each a record kind of the prelude, written with their component
+    /// type in brackets.
+    Complex,
 }
 
 const BUILTINS: [(&str, Builtin); 6] = [
@@ -231,6 +237,8 @@ pub(crate) struct FnDef<'a> {
     pub(crate) infer_uses: bool,
     /// Whether its `fails` is inferred: a private function without `fails` (ADR 0007).
     pub(crate) infer_fails: bool,
+    /// Whether the header says `diverges`, edition 0.4 (`spec/26 §5`): never inferred.
+    pub(crate) diverges: bool,
     /// The parameters of function type whose effects it performs, by `uses of p`, written or
     /// inferred (ADR 0062).
     pub(crate) uses_of: Vec<usize>,
@@ -392,6 +400,13 @@ pub(crate) struct Env<'a> {
     /// the package writes, and whether it runs, whatever run it happens in, which labels the failure of every
     /// `Files` operation (S-14, ADR 0085). Public until the probe of pass 2 sets it.
     pub(crate) file_state: Label,
+    /// The timing label `τ(e)` of each `e within d`, by the span of `d` (ADR 0117 IF2): what the
+    /// probe of pass 2 found, read by the checks of pass 2; a site absent here is `public` (the
+    /// first probe).
+    pub(crate) within_timing: BTreeMap<Span, Label>,
+    /// The residue label `L_res` (ADR 0116 P9) that the probe of pass 2 found, already joined
+    /// into [`Self::within_timing`], with its sources, which the messages of pass 2 name.
+    pub(crate) residue: super::timing::Residue,
     /// What a check of pass 2 records for the file-state label: each `Files.write`, with the
     /// labels of its path and the program counter, and the code it is in; each direct call
     /// of a function, with the program counter; the functions used as values, which a caller
@@ -406,6 +421,10 @@ pub(crate) struct Env<'a> {
     alias_state: Vec<AliasState>,
     /// The package's edition (`spec/13 §7`).
     pub(crate) edition: Edition,
+    /// The package's profile (ADR 0109 rule 1): `app` for a single file and before edition
+    /// 0.3. In `systems`, each `Int` operation outside clauses records an `overflow` site
+    /// (rule 3), and elaboration records it in the program (rule 6).
+    pub(crate) profile: Profile,
     /// The result summary of each generic function declared outside the prelude, by function
     /// (ADR 0067, `spec/07 §7` rule 8); edition 0.2 only.
     pub(crate) summaries: BTreeMap<usize, Summary>,
@@ -428,6 +447,9 @@ pub(crate) struct Env<'a> {
     /// module is trusted only when its header says so and it is listed here. Empty for a file
     /// checked on its own.
     pub(crate) trusted_listed: BTreeSet<String>,
+    /// The modules of dependencies the root trusts by a trust line (ADR 0122 rule 53.1), by
+    /// index: a release whose policy one declares is not a release into a boundary.
+    pub(crate) trusted_dependencies: BTreeSet<usize>,
     /// The code of an invalid project setting: U7002 in `una.toml`, U7008 in `ita.una`
     /// (ADR 0122 rule 13).
     pub(crate) project_code: Code,
@@ -449,6 +471,12 @@ pub(crate) struct Env<'a> {
     /// The module `std.collections`, when a package of edition 0.4 imports it (ADR 0119
     /// rule 0).
     pub(crate) collections: Option<usize>,
+    /// The hidden function `update` of that module, which only method syntax on a hash map
+    /// reaches (ADR 0119 rule 12).
+    pub(crate) hash_map_update: Option<usize>,
+    /// The handler `limiter` of `std.limit`, when a package of edition 0.4 imports the module
+    /// (ADR 0117 rule 9): the runtime provides it, and its installation is checked for IF5.
+    pub(crate) limiter: Option<usize>,
 }
 
 /// The key type of a written `Map[K, V]`, or an argument of a written collection type that
@@ -520,8 +548,10 @@ impl<'a> Env<'a> {
         after_prelude: Vec<Source<'a>>,
         map_0_4: Option<Source<'a>>,
         collections: Option<Source<'a>>,
+        limit: Option<Source<'a>>,
         categories: Vec<String>,
         edition: Edition,
+        profile: Profile,
         report: &mut Report<'_>,
     ) -> Env<'a> {
         let count = package.len();
@@ -547,6 +577,8 @@ impl<'a> Env<'a> {
             edit_label_spans: BTreeMap::new(),
             files_written: false,
             file_state: Label::public(),
+            within_timing: BTreeMap::new(),
+            residue: super::timing::Residue::none(),
             file_writes: Vec::new(),
             file_calls: Vec::new(),
             file_escaped: BTreeSet::new(),
@@ -554,6 +586,7 @@ impl<'a> Env<'a> {
             edit_shapes: BTreeMap::new(),
             alias_state: Vec::new(),
             edition,
+            profile,
             summaries: BTreeMap::new(),
             summaries_grew: false,
             of_raises: BTreeMap::new(),
@@ -561,6 +594,7 @@ impl<'a> Env<'a> {
             map_keys: Vec::new(),
             opaque_plain: BTreeSet::new(),
             trusted_listed: BTreeSet::new(),
+            trusted_dependencies: BTreeSet::new(),
             project_code: Code::U7002,
             boundaries: super::boundary::Boundaries::default(),
             plain_vias: BTreeSet::new(),
@@ -568,6 +602,8 @@ impl<'a> Env<'a> {
             map_module: None,
             map_update: None,
             collections: None,
+            hash_map_update: None,
+            limiter: None,
         };
         for source in package
             .into_iter()
@@ -584,8 +620,27 @@ impl<'a> Env<'a> {
             env.collections = Some(env.modules.len());
             env.register(source);
         }
+        // ADR 0117 rule 9: `std.limit` is in scope only for a package of edition 0.4 that
+        // imports it, so no other package's checks or Core IR change.
+        if let Some(source) = limit {
+            let index = env.modules.len();
+            env.register(source);
+            env.limiter =
+                env.modules
+                    .get(index)
+                    .and_then(|module| match module.lower.get("limiter") {
+                        Some(Entity::Handler(id)) => Some(*id),
+                        _ => None,
+                    });
+        }
         env.map_update =
             env.map_module
+                .and_then(|index| match env.modules.get(index)?.lower.get("update") {
+                    Some(Entity::Function(id)) => Some(*id),
+                    _ => None,
+                });
+        env.hash_map_update =
+            env.collections
                 .and_then(|index| match env.modules.get(index)?.lower.get("update") {
                     Some(Entity::Function(id)) => Some(*id),
                     _ => None,
@@ -620,6 +675,16 @@ impl<'a> Env<'a> {
                     .upper
                     .entry("F64")
                     .or_insert(Entity::Builtin(Builtin::F64));
+            }
+            if edition >= Edition::V0_4 {
+                module
+                    .upper
+                    .entry("F32")
+                    .or_insert(Entity::Builtin(Builtin::F32));
+                module
+                    .upper
+                    .entry("Complex")
+                    .or_insert(Entity::Builtin(Builtin::Complex));
             }
         }
         env.imports(count);
@@ -846,6 +911,7 @@ impl<'a> Env<'a> {
             constraints: Vec::new(),
             constraints_written: Vec::new(),
             infer_fails: false,
+            diverges: false,
             uses_of: Vec::new(),
             fails_of: None,
             requires: false,
@@ -856,8 +922,8 @@ impl<'a> Env<'a> {
     }
 
     /// Resolves the imports of the package modules, the first `count` modules, and of the
-    /// standard modules after `std.testing`, which may import one another (`std.drive` imports
-    /// `std.time`). Imports that resolve to nothing were reported by M3 and are skipped.
+    /// standard modules from `std.testing` on, which may import one another (`std.drive` and,
+    /// in edition 0.4, `std.testing` import `std.time`). Imports that resolve to nothing were reported by M3 and are skipped.
     fn imports(&mut self, count: usize) {
         let mut paths: BTreeMap<String, usize> = BTreeMap::new();
         for (index, module) in self.modules.iter().enumerate().take(count) {
@@ -870,8 +936,9 @@ impl<'a> Env<'a> {
         }
         // `std.host` is the prelude's host declarations (`spec/10 §11` rule 10).
         paths.insert(prelude::STD_HOST.to_owned(), count);
+        // `std.testing` imports `Millisecond` from `std.time` in edition 0.4 (ADR 0116 rule 19).
         let later = (count + 2)..self.modules.len();
-        for index in (0..count).chain(later) {
+        for index in (0..count).chain(std::iter::once(count + 1)).chain(later) {
             let Some(module) = self.modules.get(index) else {
                 continue;
             };
@@ -891,7 +958,8 @@ impl<'a> Env<'a> {
                     || time
                     || joined == "std.testing"
                     || joined == prelude::STD_DRIVE
-                    || joined == prelude::STD_COLLECTIONS;
+                    || joined == prelude::STD_COLLECTIONS
+                    || joined == prelude::STD_LIMIT;
                 // A dependency's module imports its own modules and the standard ones, never
                 // the root's (ADR 0122 rule 47).
                 let key = match module.mount {
@@ -946,8 +1014,9 @@ impl<'a> Env<'a> {
         }
     }
 
-    /// The dense type that `name` names in a type, in edition 0.4 (ADR 0120 rule 3): `Array`
-    /// and `Matrix` are built in, ahead of any declaration and of the variant `Json.Array`.
+    /// The dense type that `name` names in a type, in edition 0.4 (ADR 0120 rule 3): `Array`,
+    /// `Matrix`, `Tensor` and `Lu` are built in, ahead of any declaration and of the variant
+    /// `Json.Array`.
     pub(crate) fn dense_name(&self, name: &str) -> Option<Dense> {
         if self.edition < Edition::V0_4 {
             return None;
@@ -955,6 +1024,8 @@ impl<'a> Env<'a> {
         match name {
             "Array" => Some(Dense::Array),
             "Matrix" => Some(Dense::Matrix),
+            "Tensor" => Some(Dense::Tensor),
+            "Lu" => Some(Dense::Lu),
             _ => None,
         }
     }
@@ -1010,6 +1081,60 @@ impl<'a> Env<'a> {
         }
     }
 
+    /// How a program writes the type of kind `id` when it is a complex kind of the prelude:
+    /// `Complex[F64]` or `Complex[F32]` (ADR 0120 rule 22).
+    pub(crate) fn complex_written(&self, id: KindId) -> Option<&'static str> {
+        let kind = self.kinds.get(id)?;
+        if kind.module != self.prelude {
+            return None;
+        }
+        una_core::complex::written(kind.name)
+    }
+
+    /// `Complex[T]` with the type arguments `bases`: the prelude's record kind of `T`, `F64` or
+    /// `F32` without a label; any other argument is U2002 (ADR 0120 rule 2). A label inside the
+    /// brackets would hide the components' labels, so the type is labeled as a whole.
+    fn complex_type(
+        &self,
+        bases: &[Ty],
+        span: Span,
+        reports: bool,
+        report: &mut Report<'_>,
+    ) -> Declared {
+        let name = match bases.first() {
+            Some(Ty::F64) => una_core::complex::COMPLEX_F64,
+            Some(Ty::F32) => una_core::complex::COMPLEX_F32,
+            // Reported where it was lowered.
+            Some(Ty::Error(_)) => return Declared::error(),
+            _ => {
+                if reports {
+                    report.error(
+                        Code::U2002,
+                        span,
+                        "`Complex` takes `F64` or `F32`, unlabeled, as in `Complex[F64]` or `secret Complex[F32]`".to_owned(),
+                    );
+                }
+                return Declared::error();
+            }
+        };
+        match self.prelude_kind(name) {
+            Some(id) => Declared::plain(Ty::Kind(id, Vec::new().into())),
+            None => Declared::error(),
+        }
+    }
+
+    /// The kind `name` of `std.time`, `Timed` or `Deadline` (ADR 0117 rule 5), in edition 0.4.
+    pub(crate) fn std_time_kind(&self, name: &str) -> Option<KindId> {
+        let module = self
+            .modules
+            .iter()
+            .find(|module| module.path == crate::names::prelude::STD_TIME)?;
+        match module.upper.get(name)? {
+            Entity::Kind(id) => Some(*id),
+            _ => None,
+        }
+    }
+
     /// The kind `name` of the prelude, such as `Option` or `Result`.
     pub(crate) fn prelude_kind(&self, name: &str) -> Option<KindId> {
         match self.modules.get(self.prelude)?.upper.get(name)? {
@@ -1036,6 +1161,11 @@ impl<'a> Env<'a> {
     }
 
     pub(crate) fn kind_display(&self, id: KindId) -> String {
+        // A complex kind of the prelude is written as its type, `Complex[F64]` (ADR 0120
+        // rule 22).
+        if let Some(written) = self.complex_written(id) {
+            return written.to_owned();
+        }
         match self.kinds.get(id) {
             Some(kind) if self.shared_kind_names.get(id).copied().unwrap_or(false) => {
                 self.qualified(kind.module, kind.name)
@@ -1397,33 +1527,62 @@ impl<'a> Env<'a> {
         }
     }
 
-    /// ADR 0120 rule 4: in edition 0.4, `to_decimal` on an integer and on an `F64` is built
-    /// in, ahead of a function of that name, so a package function `to_decimal` whose first
-    /// parameter has an integer type, a refinement or a measured one, `F64`, or a type
-    /// parameter, is U1002 at its name: no program changes meaning silently.
+    /// ADR 0120 rules 4, 8 and 15: in edition 0.4, `to_decimal` on an integer or a float, and
+    /// `to_f32` on an integer or an `F64`, are built in, ahead of a function of that name, so a
+    /// package function `to_decimal` whose first parameter has an integer type, a refinement
+    /// or a measured one, `F64`, `F32`, or a type parameter, and a package function `to_f32`
+    /// whose first parameter has an integer type, `F64`, or a type parameter, is U1002 at its
+    /// name, and so is an import of one: no program changes meaning silently.
     fn no_function_to_decimal(&self, report: &mut Report<'_>) {
         if self.edition < Edition::V0_4 {
             return;
         }
         let built_in = |def: &FnDef<'_>| {
-            def.name == "to_decimal"
-                && def.params.first().is_some_and(|param| {
-                    matches!(
-                        param.ty.base.unlabeled(),
-                        Ty::Int | Ty::Fixed(_) | Ty::F64 | Ty::Param(_) | Ty::Measured(..)
-                    )
-                })
+            let first = def.params.first().map(|param| param.ty.base.unlabeled());
+            let integer = first.is_some_and(|ty| {
+                matches!(ty, Ty::Int | Ty::Fixed(_) | Ty::Param(_) | Ty::Measured(..))
+            });
+            let float = first.is_some_and(|ty| matches!(ty, Ty::F64 | Ty::F32));
+            match def.name {
+                "to_decimal" => integer || float,
+                "to_f32" => integer || first.is_some_and(|ty| matches!(ty, Ty::F64)),
+                _ => false,
+            }
+        };
+        // The conversion, and the first parameters it is built in for.
+        let what = |name: &str| {
+            if name == "to_f32" {
+                (
+                    "`to_f32` on an integer or an `F64`",
+                    "an integer, an `F64` or a type parameter",
+                )
+            } else {
+                (
+                    "`to_decimal` on an integer or a float",
+                    "an integer, an `F64`, an `F32` or a type parameter",
+                )
+            }
         };
         for def in &self.functions {
             let FnAst::Function(function) = def.ast else {
                 continue;
             };
             if self.reports(def.module) && built_in(def) {
-                report.error(
+                let (conversion, firsts) = what(def.name);
+                let mut diagnostic = report.make(
                     Code::U1002,
                     function.name.span,
-                    "`to_decimal` on an integer or an `F64` is a built-in conversion from edition 0.4, so a function cannot take its name for an integer, an `F64` or a type parameter".to_owned(),
+                    format!(
+                        "{conversion} is a built-in conversion from edition 0.4, so a function cannot take its name for {firsts}"
+                    ),
                 );
+                // ADR 0120 "Migration": the rename is the program's choice, so `una fix` does
+                // not apply it.
+                diagnostic.repairs.push(super::Report::advice(format!(
+                    "rename the function, for example to `as_{}`",
+                    def.name.trim_start_matches("to_")
+                )));
+                report.push(diagnostic);
             }
         }
         // An import of such a function, from a dependency or another module, is U1002 at the
@@ -1431,10 +1590,11 @@ impl<'a> Env<'a> {
         for module in self.modules.iter().filter(|module| module.reports) {
             for import in &module.tree.imports {
                 for ident in &import.names {
-                    if module.interner.resolve(ident.name) != "to_decimal" {
+                    let name = module.interner.resolve(ident.name);
+                    if name != "to_decimal" && name != "to_f32" {
                         continue;
                     }
-                    let Some(Entity::Function(id)) = module.imports.get("to_decimal") else {
+                    let Some(Entity::Function(id)) = module.imports.get(name) else {
                         continue;
                     };
                     let foreign = self
@@ -1442,10 +1602,13 @@ impl<'a> Env<'a> {
                         .get(*id)
                         .is_some_and(|def| built_in(def) && !self.reports(def.module));
                     if foreign {
+                        let (conversion, firsts) = what(name);
                         report.error(
                             Code::U1002,
                             ident.span,
-                            "`to_decimal` on an integer or an `F64` is a built-in conversion from edition 0.4, so an imported function of that name for an integer, an `F64` or a type parameter would never be called".to_owned(),
+                            format!(
+                                "{conversion} is a built-in conversion from edition 0.4, so an imported function of that name for {firsts} would never be called"
+                            ),
                         );
                     }
                 }
@@ -1549,6 +1712,10 @@ impl<'a> Env<'a> {
                     def.uses = uses;
                     def.uses_of = uses_of;
                     def.fails_of = fails_of;
+                    def.diverges = function
+                        .clauses
+                        .iter()
+                        .any(|clause| matches!(clause.kind, ClauseKind::Diverges));
                 }
             }
             FnAst::Predicate(predicate) => {
@@ -1898,6 +2065,27 @@ impl<'a> Env<'a> {
 
     /// Lowers a written type of module `module`, with `type_params` in scope. Labels wait for
     /// M6.
+    /// Whether a unit may follow `ty`, a written base type without its label: an integer
+    /// type, `F64` from edition 0.3 (ADR 0114 rule 12.1), and `F32`, `Decimal[s]`,
+    /// `Complex[F64]` and `Complex[F32]` in edition 0.4 (ADR 0120 rule 61). Those types exist
+    /// only in the editions that have them, so the type alone decides.
+    fn measurable(&self, ty: &Ty) -> bool {
+        match ty {
+            Ty::Int | Ty::Fixed(_) | Ty::F64 | Ty::F32 | Ty::Decimal(_) => true,
+            Ty::Kind(id, args) => {
+                args.is_empty()
+                    && self.kinds.get(*id).is_some_and(|kind| {
+                        kind.module == self.prelude
+                            && matches!(
+                                kind.name,
+                                una_core::complex::COMPLEX_F64 | una_core::complex::COMPLEX_F32
+                            )
+                    })
+            }
+            _ => false,
+        }
+    }
+
     pub(crate) fn lower_type(
         &mut self,
         module: usize,
@@ -2000,10 +2188,13 @@ impl<'a> Env<'a> {
                 })))
             }
         };
-        // ADR 0104 rule 2: a unit after `of`, on an integer type only.
+        // ADR 0104 rule 2: a unit after `of`, on a number type only: an integer type, `F64`
+        // from edition 0.3 (ADR 0114 rule 12.1), and `F32`, `Decimal[s]` and the complex types
+        // in edition 0.4 (ADR 0120 rule 61).
         if let Some(unit) = &ty.unit {
+            let measurable = self.measurable(declared.base.unlabeled());
             match declared.base.unlabeled() {
-                Ty::Int | Ty::Fixed(_) => match self.unit_expr(module, unit, None, report) {
+                _ if measurable => match self.unit_expr(module, unit, None, report) {
                     Some(unit) if unit.is_one() => {}
                     Some(unit) => {
                         // The label of an alias's base stays outside the unit, where the label
@@ -2019,12 +2210,14 @@ impl<'a> Env<'a> {
                 Ty::Error(_) => {}
                 _ => {
                     if self.reports(module) {
-                        report.error(
-                            Code::U2029,
-                            unit.span(),
+                        let message = if self.edition >= Edition::V0_4 {
+                            "a unit follows only a number type: `Int`, a fixed-width integer type, `F64`, `F32`, `Decimal[s]`, `Complex[F64]` or `Complex[F32]`"
+                        } else if self.edition >= Edition::V0_3 {
+                            "a unit follows only a number type: `Int`, a fixed-width integer type or `F64`"
+                        } else {
                             "a unit follows only an integer type, `Int` or a fixed-width one"
-                                .to_owned(),
-                        );
+                        };
+                        report.error(Code::U2029, unit.span(), message.to_owned());
                     }
                 }
             }
@@ -2282,26 +2475,33 @@ impl<'a> Env<'a> {
             return Declared::error();
         }
         let bases: Vec<Ty> = args.into_iter().map(|arg| arg.base).collect();
-        // Edition 0.4 (ADR 0120 rule 3): `Array` and `Matrix` are built-in types, which no
-        // declaration can hide; the prelude's variant `Json.Array` is a constructor, written
+        // Edition 0.4 (ADR 0120 rule 3): `Array`, `Matrix`, `Tensor` and `Lu` are built-in
+        // types, which no declaration can hide; the prelude's variant `Json.Array` is a constructor, written
         // with parentheses, so it never meets the type, written with brackets.
         if let Some(dense) = self.dense_name(name) {
             if bases.len() != 1 {
                 return arity(1, bases.len());
             }
             let element = bases.into_iter().next().unwrap_or(Ty::error());
-            // The prelude declares the methods of `Matrix[T]` over a type parameter, whose element types
-            // its callers' receivers decide.
-            if dense == Dense::Matrix
-                && reports
-                && module != self.prelude
-                && !dense_numeric(&element)
-            {
+            // The prelude declares the methods of `Matrix[T]`, `Tensor[T]` and `Lu[T]` over a
+            // type parameter, whose element types its callers' receivers decide.
+            let taken = match dense {
+                Dense::Array => true,
+                Dense::Matrix | Dense::Tensor => dense_numeric(&element),
+                Dense::Lu => dense_float(&element),
+            };
+            if !taken && reports && module != self.prelude {
+                let wanted = if dense == Dense::Lu {
+                    "a float element type, `F64`"
+                } else {
+                    "a numeric element type, `F64` or one of `I8` to `U64`"
+                };
                 report.error(
                     Code::U2002,
                     span,
                     format!(
-                        "`Matrix` takes a numeric element type, `F64` or one of `I8` to `U64`, and `{}` is not one",
+                        "`{}` takes {wanted}, and `{}` is not one",
+                        dense.as_str(),
                         Show(
                             &element,
                             &LowerNames {
@@ -2318,13 +2518,16 @@ impl<'a> Env<'a> {
         let problem = match self.upper(module, name).first().copied() {
             Some(Entity::Builtin(builtin)) => {
                 let expected = match builtin {
-                    Builtin::List => 1,
+                    Builtin::List | Builtin::Complex => 1,
                     Builtin::Map => 2,
                     Builtin::Coll(coll) => coll.arity(),
                     _ => 0,
                 };
                 if bases.len() != expected {
                     return arity(expected, bases.len());
+                }
+                if builtin == Builtin::Complex {
+                    return self.complex_type(&bases, span, reports, report);
                 }
                 let base = match builtin {
                     Builtin::Int => Ty::Int,
@@ -2334,6 +2537,9 @@ impl<'a> Env<'a> {
                     Builtin::Unit => Ty::Unit,
                     Builtin::Hashed => Ty::Hashed,
                     Builtin::F64 => Ty::F64,
+                    Builtin::F32 => Ty::F32,
+                    // Lowered above.
+                    Builtin::Complex => Ty::error(),
                     Builtin::List => {
                         Ty::List(Shared::new(bases.into_iter().next().unwrap_or(Ty::error())))
                     }

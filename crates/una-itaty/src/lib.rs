@@ -1,4 +1,4 @@
-//! Itaty, the registry service of Itá (ADR 0122 rules 34 to 46, `spec/30 §13`).
+//! Itaty, the registry service of Itá (ADR 0122 rules 34 to 46, `spec/30 §16`).
 //!
 //! The service keeps one append-only transparency log of every release statement, yank,
 //! advisory and owner key event, with the name map of rule 36.1 committed in every checkpoint,

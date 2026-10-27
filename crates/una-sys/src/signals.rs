@@ -10,16 +10,21 @@
 //! The stop is sticky, so the pipe is never drained: once a request has come, its read end
 //! stays readable, and every thread that waits on it afterwards wakes at once.
 //!
-//! The only `unsafe` code of the crate is here: the calls of the operating system through the
+//! The `unsafe` code here is the calls of the operating system through the
 //! `libc` crate, which is Rust declarations of the system interface only, with no C source
 //! built (ADR 0116 Appendix A, amendment of 2026-10-19).
 #![allow(unsafe_code)]
 
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicI32, Ordering};
+use std::time::{Duration, Instant};
 
 /// The signals that request a host stop.
 const SIGNALS: [libc::c_int; 2] = [libc::SIGINT, libc::SIGTERM];
+
+/// SIGTERM, the signal that the end of a second grace period after the hard stop raises
+/// (rule 17), for callers that do not depend on `libc`.
+pub const SIGTERM: libc::c_int = libc::SIGTERM;
 
 /// The lowest descriptor the wake pipe's ends move to, above those that other code opens and
 /// closes, so that no reused descriptor ever receives the handler's byte.
@@ -47,7 +52,7 @@ pub fn install() -> Result<(), InstallError> {
 }
 
 fn install_once() -> Result<(), InstallError> {
-    let [read, write] = wake_pipe()?;
+    let [read, write] = open_pipe()?;
     WAKE_READ.store(read, Ordering::Release);
     WAKE_WRITE.store(write, Ordering::Release);
     // SAFETY: zero is a valid `sigaction` (no handler, no flags, an empty mask), and every
@@ -88,7 +93,7 @@ fn handler_action(handler: libc::sighandler_t) -> libc::sigaction {
 
 /// The two ends of a new pipe, non-blocking and close-on-exec, at descriptors of [`HIGH_FD`] or
 /// above; on failure, nothing stays open.
-fn wake_pipe() -> Result<[libc::c_int; 2], InstallError> {
+fn open_pipe() -> Result<[libc::c_int; 2], InstallError> {
     let mut fds: [libc::c_int; 2] = [-1, -1];
     // SAFETY: `fds` is a valid array of two `c_int`s that the call writes the two ends into.
     #[cfg(target_os = "linux")]
@@ -147,11 +152,96 @@ pub fn wake_fd() -> Option<libc::c_int> {
     (fd >= 0).then_some(fd)
 }
 
+/// [`wake_fd`] borrowed for the life of the process, for the reactor's poller, once [`install`]
+/// has succeeded: only a failed install closes the pipe, and a successful one is never undone.
+pub fn wake_pipe() -> Option<std::os::fd::BorrowedFd<'static>> {
+    let fd = wake_fd().filter(|_| matches!(INSTALLED.get(), Some(Ok(()))))?;
+    // SAFETY: the install succeeded, so `fd` is open, and nothing closes it afterwards.
+    Some(unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) })
+}
+
+/// What [`wait`] saw.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Readiness {
+    /// The descriptor is ready: readable, or writable when asked for.
+    Ready,
+    /// The wake pipe is readable: a host stop request has come in the process.
+    Woken,
+    /// Neither, within the time given.
+    TimedOut,
+    /// `poll` failed with an error other than `EINTR`, such as `ENOMEM`: the caller treats it as
+    /// its operation's error, or sleeps the time out, and never waits again at once.
+    Failed,
+}
+
+/// Waits with `poll` until `fd` is ready (readable, or writable when `write`), until the wake
+/// pipe is readable when `wake` is set and the handlers are installed ([`wake_fd`]), or until
+/// `timeout` passes, whichever comes first (ADR 0116 rules 3 and 12: an interruptible wait).
+/// With no descriptor and no pipe it sleeps for `timeout`. A wait that a signal interrupts
+/// (`EINTR`) goes on with the time left; any other error of `poll` is `Failed`. Each call of
+/// `poll` waits at most `i32::MAX` milliseconds, rounded up, and the wait goes on until the
+/// whole `timeout` has passed. A readable pipe wins over a ready descriptor, so a stop is never
+/// missed.
+pub fn wait(fd: Option<libc::c_int>, write: bool, wake: bool, timeout: Duration) -> Readiness {
+    let pipe = if wake { wake_fd() } else { None };
+    let mut fds = [
+        libc::pollfd {
+            fd: fd.unwrap_or(-1),
+            events: if write { libc::POLLOUT } else { libc::POLLIN },
+            revents: 0,
+        },
+        libc::pollfd {
+            fd: pipe.unwrap_or(-1),
+            events: libc::POLLIN,
+            revents: 0,
+        },
+    ];
+    let end = Instant::now().checked_add(timeout);
+    loop {
+        let left = end.map_or(timeout, |end| end.saturating_duration_since(Instant::now()));
+        let wanted = left.as_nanos().div_ceil(1_000_000);
+        let capped = wanted > i32::MAX as u128;
+        let millis = libc::c_int::try_from(wanted).unwrap_or(libc::c_int::MAX);
+        // SAFETY: `fds` is a valid array of two initialized `pollfd`s that `poll` reads and
+        // whose `revents` it writes; a negative `fd` makes `poll` skip that entry.
+        let ready = unsafe { libc::poll(fds.as_mut_ptr(), 2, millis) };
+        if ready > 0 {
+            let [own, pipe] = &fds;
+            if pipe.revents != 0 {
+                return Readiness::Woken;
+            }
+            if own.revents != 0 {
+                return Readiness::Ready;
+            }
+        } else if ready == 0 {
+            if !capped {
+                return Readiness::TimedOut;
+            }
+        } else if errno() != libc::EINTR {
+            return Readiness::Failed;
+        }
+        if left.is_zero() {
+            return Readiness::TimedOut;
+        }
+        for entry in &mut fds {
+            entry.revents = 0;
+        }
+    }
+}
+
 /// A host stop request from normal code, not from a signal (rule 14: `--deadline`, a driver
 /// shutdown, `stop after`): records it and wakes every thread waiting on the pipe, as a
 /// signal does. Returns how many requests have come, this one included.
 pub fn request_host_stop() -> u32 {
     let requests = crate::attention::request_stop();
+    wake();
+    requests
+}
+
+/// Makes the wake pipe readable, for good, without counting a request of the process: a
+/// request local to one run, such as its `--deadline`, wakes the waits on the pipe at once, and
+/// each wait then reads its own run's requests. Nothing before [`install`]. Async-signal-safe.
+pub fn wake() {
     let fd = WAKE_WRITE.load(Ordering::Acquire);
     if fd >= 0 {
         let byte = [1u8];
@@ -159,7 +249,6 @@ pub fn request_host_stop() -> u32 {
         // makes `write` fail at once, which is harmless: a byte already waits there.
         unsafe { libc::write(fd, byte.as_ptr().cast(), 1) };
     }
-    requests
 }
 
 /// Ends the process with `signal`'s default action (rule 17): what the third request does,

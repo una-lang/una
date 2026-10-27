@@ -63,9 +63,11 @@ impl Checker<'_, '_, '_> {
             .find(|(name, ..)| *name == method)
             .map(|(_, op, update, params)| (*op, *update, *params))?;
         let item = set_args.first().cloned().unwrap_or_else(Ty::error);
-        // The refinement language gains a set's methods with ADR 0119 V5; until then, every
-        // method of a set is outside it.
-        self.outside_rl(span, || format!("the method `{method}`"));
+        // `s.has(item: x)` is in the refinement language, as `s.len` is (ADR 0119 V5); every
+        // other method of a set is outside it.
+        if op != SetOp::Has {
+            self.outside_rl(span, || format!("the method `{method}`"));
+        }
         let receiver = self.report.text(target.span).to_owned();
         // `add` and `remove` update the set in place, as an `edit` receiver (ADR 0119 rule 1,
         // `spec/17 §3`); the other methods read it.

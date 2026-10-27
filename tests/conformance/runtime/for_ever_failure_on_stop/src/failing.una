@@ -1,0 +1,25 @@
+-- test: a failure of the body of `for ever` runs `on stop` first, with the values from before the loop, then propagates (spec/26 §5, ADR 0116 rule 10)
+-- spec: spec/26 §5
+-- grant: console
+-- expect: run-output "tick 0"
+-- expect: run-output "tick 1"
+-- expect: run-output "cleanup at 0"
+-- expect: error U6001 at src/failing.una:12:5
+module failing
+
+pub kind Broken = | Snapped
+
+pub main() -> Unit
+  uses @console: Console[print]
+  fails Broken
+  diverges
+=
+  let edit n = 0
+  for ever
+    if n == 2
+      fail Snapped
+    @console.print("tick {n}")
+    n = n + 1
+  on stop
+    @console.print("cleanup at {n}")
+  unit
