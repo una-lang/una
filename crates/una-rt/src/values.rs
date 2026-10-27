@@ -24,11 +24,14 @@
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
+use std::sync::Arc;
 
 use num_bigint::{BigInt, Sign};
 use una_core::Text;
 
 use crate::ffi::Code;
+
+pub(crate) mod dense;
 
 /// The smallest integer that a tagged word holds.
 const SMALL_MIN: i64 = -(1 << 62);
@@ -70,6 +73,13 @@ enum Object {
     },
     /// A map, by the order of its keys (`spec/21 §5`): the word of each key, and of its value.
     Map(BTreeMap<MapKey, (i64, i64)>),
+    /// A dense value's header, an `Array`, `Matrix`, `Tensor` or `Lu` (`spec/29 §17`, ADR 0120
+    /// rule 28): its layout over its store, which it references as its one cell when the store
+    /// holds words ([`dense`]).
+    Dense(Box<dense::Dense>),
+    /// The store of a dense value's elements other than `F64`: words, counted non-atomically as
+    /// a list's items are, which views of one value share ([`dense`], design note D1).
+    Words(Vec<i64>),
 }
 
 /// A map's key, copied out of the heap at insert: an integer, or a text. A variant
@@ -120,9 +130,10 @@ impl Object {
             | Object::F64(_)
             | Object::Map(_) => &[],
             Object::Data { fields, .. } => fields,
-            Object::List(items) => items,
+            Object::List(items) | Object::Words(items) => items,
             Object::Closure { env, .. } => env,
             Object::Instance { cells, .. } => cells,
+            Object::Dense(header) => header.cells(),
         }
     }
 
@@ -132,9 +143,10 @@ impl Object {
             | Object::Text(_)
             | Object::Hashed(_)
             | Object::F64(_)
-            | Object::Map(_) => None,
+            | Object::Map(_)
+            | Object::Dense(_) => None,
             Object::Data { fields, .. } => Some(fields),
-            Object::List(items) => Some(items),
+            Object::List(items) | Object::Words(items) => Some(items),
             Object::Closure { env, .. } => Some(env),
             Object::Instance { cells, .. } => Some(cells),
         }
@@ -1071,6 +1083,22 @@ enum Node {
         cells: Vec<Cell>,
     },
     Map(Vec<(Cell, Cell)>),
+    /// A dense value's header and its store (design note D1).
+    Dense {
+        layout: Box<dense::Layout>,
+        store: NodeStore,
+    },
+    /// The words store of a dense value.
+    Words(Vec<Cell>),
+}
+
+/// The store of a dense value in a portable value: the same `Arc` of raw `F64` elements, so the
+/// copy shares the buffer and charges its header only (ADR 0113 amendment of 2026-10-19), or
+/// the node of the words store, copied as a list is.
+#[derive(Debug)]
+enum NodeStore {
+    F64(Arc<Vec<f64>>),
+    Words(Cell),
 }
 
 /// The entries in each segment of a copy's pending stack (ADR 0113 rule 5).
@@ -1240,6 +1268,9 @@ impl Object {
                 cells: held,
             } => id.len() + code.len() * size_of::<i64>() + cells(held.len()),
             Object::Map(entries) => entries.len() * size_of::<(Cell, Cell)>(),
+            // The header only: an `F64` store is shared, and a words store is a node of its own.
+            Object::Dense(_) => dense::HEADER_BYTES,
+            Object::Words(items) => cells(items.len()),
         }
     }
 
@@ -1276,6 +1307,14 @@ impl Object {
                     .map(|(key, value)| (cell(*key), cell(*value)))
                     .collect(),
             ),
+            Object::Dense(header) => Node::Dense {
+                layout: Box::new(header.layout),
+                store: match &header.store {
+                    dense::Store::F64(items) => NodeStore::F64(Arc::clone(items)),
+                    dense::Store::Words(words) => NodeStore::Words(cell(*words)),
+                },
+            },
+            Object::Words(items) => Node::Words(cells(items)),
         }
     }
 }
@@ -1512,6 +1551,17 @@ fn node_matches(object: &Object, node: &Node, index: impl Fn(i64) -> Option<usiz
                     .zip(pairs)
                     .all(|((key, value), &(k, v))| cell_of(*key) == k && cell_of(*value) == v)
         }
+        (Object::Dense(header), Node::Dense { layout, store }) => {
+            header.layout == **layout
+                && match (&header.store, store) {
+                    (dense::Store::F64(a), NodeStore::F64(b)) => Arc::ptr_eq(a, b),
+                    (dense::Store::Words(words), NodeStore::Words(cell)) => {
+                        cell_of(*words) == *cell
+                    }
+                    _ => false,
+                }
+        }
+        (Object::Words(items), Node::Words(cells)) => same(items, cells),
         _ => false,
     }
 }
@@ -1722,6 +1772,17 @@ fn node_matches_made(object: &Object, node: &Node, words: &[i64]) -> bool {
                     made_word(k, words) == Some(*key) && made_word(v, words) == Some(*value)
                 })
         }
+        (Object::Dense(header), Node::Dense { layout, store }) => {
+            header.layout == **layout
+                && match (&header.store, store) {
+                    (dense::Store::F64(a), NodeStore::F64(b)) => Arc::ptr_eq(a, b),
+                    (dense::Store::Words(held), NodeStore::Words(cell)) => {
+                        made_word(cell, words) == Some(*held)
+                    }
+                    _ => false,
+                }
+        }
+        (Object::Words(items), Node::Words(cells)) => same(items, cells),
         _ => false,
     }
 }
@@ -1820,6 +1881,27 @@ fn import_node(node: &Node, words: &[i64]) -> Result<i64, Refused> {
                 drop(entry);
             }
             map
+        }
+        // The header, with the same `F64` buffer, its count one more: no element is copied
+        // (ADR 0113 amendment of 2026-10-19).
+        Node::Dense { layout, store } => {
+            let _step = step(dense::HEADER_BYTES)?;
+            let store = match store {
+                NodeStore::F64(items) => dense::Store::F64(Arc::clone(items)),
+                NodeStore::Words(cell) => {
+                    let word = cell_word(cell, words);
+                    retain(word);
+                    dense::Store::Words(word)
+                }
+            };
+            alloc(Object::Dense(Box::new(dense::Dense {
+                layout: **layout,
+                store,
+            })))
+        }
+        Node::Words(items) => {
+            let _step = step(cells(items.len()))?;
+            alloc(Object::Words(held(items)))
         }
     };
     Ok(made)
