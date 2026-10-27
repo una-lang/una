@@ -338,6 +338,17 @@ fn task_differences(stdout: &str, interpreted: &Value, native: &Value) -> Vec<St
             ));
         }
     }
+    // Started tasks write their events in the order of real time (`spec/27 §8`): each task's
+    // events are compared in their own order, and the tasks are the same.
+    if has_started(interpreted) || has_started(native) {
+        let (interpreted, native) = (by_task(interpreted), by_task(native));
+        if interpreted != native {
+            differences.push(format!(
+                "the events of each task differ: interpreter {interpreted:?}, native {native:?}"
+            ));
+        }
+        return differences;
+    }
     let unnumbered = |trace: &Value| -> Vec<Value> {
         let mut trace = timeless(trace.clone());
         let mut events = trace.as_array_mut().map(std::mem::take).unwrap_or_default();
@@ -364,6 +375,37 @@ fn task_differences(stdout: &str, interpreted: &Value, native: &Value) -> Vec<St
         }
     }
     differences
+}
+
+/// Whether a trace has events of started tasks, whose paths have a part `s<c>` (`spec/27 §7`).
+fn has_started(trace: &Value) -> bool {
+    trace.as_array().is_some_and(|events| {
+        events.iter().any(|event| {
+            event["task"].as_str().is_some_and(|path| {
+                path.split('.').any(|part| {
+                    part.strip_prefix('s')
+                        .is_some_and(|count| count.parse::<usize>().is_ok())
+                })
+            })
+        })
+    })
+}
+
+/// The events of a trace by task, each task's in its own order, without `seq`, and with the
+/// readings of `Clock.now` set aside.
+fn by_task(trace: &Value) -> std::collections::BTreeMap<String, Vec<Value>> {
+    let mut tasks: std::collections::BTreeMap<String, Vec<Value>> =
+        std::collections::BTreeMap::new();
+    let trace = timeless(trace.clone());
+    for event in trace.as_array().into_iter().flatten() {
+        let task = event["task"].as_str().unwrap_or("").to_owned();
+        let mut event = event.clone();
+        if let Some(fields) = event.as_object_mut() {
+            fields.remove("seq");
+        }
+        tasks.entry(task).or_default().push(event);
+    }
+    tasks
 }
 
 /// Whether `part` is a subsequence of `whole`.
@@ -978,11 +1020,25 @@ fn completes_or_u6003(name: &str, output: &Output) {
     assert!(!stderr.contains("memory allocation"), "{name}: {stderr}");
 }
 
+/// Whether the tests run under Rosetta, Apple's x86-64 emulator, on Linux: its mappings show
+/// in `/proc/self/maps`. Rosetta's own VM tracker kills a program that starts a million tasks
+/// ("VmTracker slab allocator has run out of memory", VMAllocationTracker.cpp:659), which
+/// completes natively on arm64 Linux and on macOS, so that one test skips itself there (#1246).
+fn under_rosetta() -> bool {
+    std::fs::read_to_string("/proc/self/maps").is_ok_and(|maps| maps.contains("rosetta"))
+}
+
 #[test]
 fn i1_i8_a_block_of_a_million_tasks_completes_or_stops_with_u6003() {
     // ADR 0113 rules 1, 2 and 5: a `together for` over 10^6 small integers under `--max-memory
     // 64` reserves its result list exactly, each batch's state and each task's start, so it
     // either completes or stops with U6003 at the block, and never aborts the process.
+    if under_rosetta() {
+        println!(
+            "skipped under Rosetta: the emulator's VM tracker kills a million-task program (not the program)"
+        );
+        return;
+    }
     let main = "pub main() -> Unit\n  uses @console: Console[print]\n=\n";
     let name = "million_tasks";
     let dir = copies_program(
@@ -1846,9 +1902,10 @@ fn embeds_threads(exe: &Path) -> bool {
 #[test]
 fn the_description_starts_threads_exactly_for_tasks_and_for_ever() {
     // #1145, ADR 0116 amendment P8, `spec/27 §1` rule 4: codegen marks a program that holds a
-    // `together`, a `together for`, a `for ever` or a `within`, and `una build` embeds `"threads": true`,
-    // which makes the runtime start its threads and fill its stack pool before `main`; a
-    // program with none of them has no such key and starts no thread.
+    // `together`, a `together for`, a `first of`, a `tasks` statement, a `for ever` or a
+    // `within`, and `una build` embeds `"threads": true`, which makes the runtime start its
+    // threads and fill its stack pool before `main`; a program with none of them has no such
+    // key and starts no thread.
     let cases = [
         (
             "flagtogether",
@@ -1892,6 +1949,22 @@ fn the_description_starts_threads_exactly_for_tasks_and_for_ever() {
     let built = una(&within, &["build", "."]);
     assert_eq!(built.status.code(), Some(0), "{built:?}");
     assert!(embeds_threads(&within.join("target/una/within_runs")));
+    // `first of`, from its conformance case: its branches are tasks.
+    let race = copy(
+        &root().join("tests/conformance/runtime/first_of_runs"),
+        &scratch,
+    );
+    let built = una(&race, &["build", "."]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    assert!(embeds_threads(&race.join("target/una/first_of_runs")));
+    // A `tasks` statement and its `start`s, from their conformance case.
+    let started = copy(
+        &root().join("tests/conformance/runtime/tasks_runs"),
+        &scratch,
+    );
+    let built = una(&started, &["build", "."]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    assert!(embeds_threads(&started.join("target/una/tasks_runs")));
     let _ = std::fs::remove_dir_all(&scratch);
 }
 
@@ -3906,4 +3979,453 @@ fn the_memory_that_cuts_hold_stays_flat_as_they_grow() {
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+/// A program whose races print in their branches, at the top level, plus a race that ties and
+/// three levels of `first of` and `together`.
+const RACES: &str = "module race\n\npub kind Refusal = | No\n\nsay(line: Text, value: Int) -> Int\n  uses @console: Console[print]\n=\n  @console.print(line)\n  value\n\nrefuse(line: Text) -> Int\n  uses @console: Console[print]\n  fails Refusal\n=\n  @console.print(line)\n  if line == \"\" then 0 else fail No\n\nrace() -> Int\n  uses @console: Console[print]\n  fails Refusal\n=\n  first of\n    refuse(\"a\")\n      if error pass\n    say(\"b\", value: 2)\n    say(\"c\", value: 3)\n\ntie() -> Int\n  uses @console: Console[print]\n=\n  first of\n    say(\"t1\", value: 1)\n    say(\"t2\", value: 2)\n\ndouble(n: Int) -> Int = n * 2\n\nleaf(n: Int) -> restricted Int\n=\n  first of\n    double(n)\n    double(n + 1)\n\nmiddle(n: Int) -> restricted Int\n=\n  together\n    let a = leaf(n)\n    let b = leaf(n + 10)\n  a + b\n\ntop(n: Int) -> restricted Int\n=\n  first of\n    middle(n)\n    middle(n + 100)\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let got = race()\n    if error use -1\n  @console.print(\"won {got}\")\n  let tied = tie()\n  @console.print(\"tie {tied}\")\n  let deep = top(1)\n  @console.print(\"deep done\")\n";
+
+#[test]
+fn a_race_has_the_same_winner_output_and_trace_in_both_engines_under_virtual_time() {
+    // `spec/27 §6`, ADR 0117 rules 6, 10 and 12: under `--virtual-time` both engines run the
+    // branches in index order, up to the first that returns, whatever `--workers` is, so they
+    // agree on the winner, the output and the trace, also for branches that end at the same
+    // virtual time (the lowest index wins), and for three levels of `first of` and `together`.
+    // The trace lists the winner's events first, then the other branches', under `f<c>.<i>`.
+    let dir = within_package("races", "race", RACES);
+    let interpreted = una(&dir, &["--json", "run", ".", "--virtual-time"]);
+    assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
+    let document: Value = serde_json::from_slice(&interpreted.stdout).unwrap();
+    assert_eq!(
+        document["output"],
+        serde_json::json!(["a", "b", "won 2", "t1", "tie 1", "deep done"]),
+        "{document}"
+    );
+    let tasks: Vec<&str> = document["trace"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|event| event["task"].as_str().unwrap_or(""))
+        .collect();
+    assert_eq!(tasks, ["f1.2", "f1.1", "", "f2.1", "", ""], "{document}");
+    let seqs: Vec<u64> = document["trace"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|event| event["seq"].as_u64().unwrap())
+        .collect();
+    assert_eq!(seqs, [1, 2, 3, 4, 5, 6]);
+    let exe = dir.join("target/una/races");
+    for workers in ["1", "4"] {
+        let trace = dir.join(format!("trace-{workers}.json"));
+        let native = Command::new(&exe)
+            .args(["--virtual-time", "--workers", workers, "--trace"])
+            .arg(&trace)
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        assert_eq!(
+            native.status.code(),
+            Some(0),
+            "--workers {workers}: {native:?}"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&native.stdout),
+            "a\nb\nwon 2\nt1\ntie 1\ndeep done\n"
+        );
+        let written: Value =
+            serde_json::from_str(&std::fs::read_to_string(&trace).unwrap()).unwrap();
+        assert_eq!(written, document["trace"], "--workers {workers}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn races_never_deadlock_with_one_worker_or_several_under_real_time() {
+    // ADR 0117 rule 3 and Security: every join, a race's included, parks its task, so one
+    // worker runs a race, the `together` inside its branches and the races inside those.
+    let dir = within_package("racesreal", "race", RACES);
+    let exe = dir.join("target/una/racesreal");
+    for workers in ["1", "2", "8"] {
+        let native = Command::new(&exe)
+            .args(["--workers", workers])
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        assert_eq!(
+            native.status.code(),
+            Some(0),
+            "--workers {workers}: {native:?}"
+        );
+        let output = String::from_utf8_lossy(&native.stdout).into_owned();
+        assert!(
+            output.ends_with("deep done\n"),
+            "--workers {workers}: {output}"
+        );
+        // The race prints `a` and `b` and maybe `c`, and one of the branches that return wins.
+        assert!(
+            output.contains("won 2\n") || output.contains("won 3\n"),
+            "--workers {workers}: {output}"
+        );
+        assert!(output.contains("tie 1\n") || output.contains("tie 2\n"));
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A program that runs `rounds` races, each between a branch that computes a little and
+/// returns, and one that builds a list of a thousand items and then computes for minutes, so
+/// the winner cancels it with the list alive, and prints how many the first branch won.
+fn races_program(rounds: u64) -> String {
+    format!(
+        "module losers\n\nkeep(items: List[Int], total: Int) -> Int = total\n\ngrow(n: Int) -> Int\n=\n  let edit items = [0]\n  for i in 1..1000\n    items = items.append(item: i)\n  let edit total = 0\n  for i in 1..n\n    total = total + 1\n  keep(items, total: total)\n\nsettle(n: Int) -> Int\n=\n  let edit total = 0\n  for i in 1..n\n    total = total + 1\n  1\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let edit won = 0\n  for round in 1..{rounds}\n    let got = first of\n      settle(1000)\n      grow(4000000000)\n    if got == 1\n      won = won + 1\n  @console.print(\"won {{won}}\")\n"
+    )
+}
+
+#[test]
+fn ten_thousand_races_release_what_their_losers_hold_in_both_engines() {
+    // ADR 0117 rule 6 and the amendment of 2026-10-19 on S3: a cancelled branch leaves its
+    // frames by the failure path, as a cut does, and its heap ends with its task. Ten thousand
+    // races whose losers each hold a list of a thousand items when they are cancelled run
+    // under a 16 MiB budget, which a leak would exceed many times over (U6003). The
+    // interpreter runs the first branch, which wins, and never starts the second.
+    let dir = within_package("losers", "losers", &races_program(10_000));
+    let interpreted = una(&dir, &["run", ".", "--max-memory", "16"]);
+    assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
+    assert_eq!(String::from_utf8_lossy(&interpreted.stdout), "won 10000\n");
+    // A loser that is never cancelled computes for minutes: each run has a time limit, so a
+    // hang fails here instead of holding the test run (#1188).
+    for workers in ["1", "2", "4"] {
+        let native = output_within(
+            Command::new(dir.join("target/una/losers"))
+                .args(["--max-memory", "16", "--workers", workers])
+                .current_dir(&dir),
+            std::time::Duration::from_secs(120),
+        );
+        assert_eq!(
+            native.status.code(),
+            Some(0),
+            "--workers {workers}: {native:?}"
+        );
+        assert_eq!(String::from_utf8_lossy(&native.stdout), "won 10000\n");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The output of `command`, which must end within `limit`: otherwise it is killed and the test
+/// fails, naming the limit.
+fn output_within(command: &mut Command, limit: std::time::Duration) -> std::process::Output {
+    let mut child = command
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let started = std::time::Instant::now();
+    let mut late = false;
+    while child.try_wait().unwrap().is_none() {
+        if started.elapsed() > limit {
+            let _ = child.kill();
+            late = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let output = child.wait_with_output().unwrap();
+    assert!(!late, "still running after {limit:?}, killed: {output:?}");
+    output
+}
+
+#[test]
+fn a_branch_too_deep_for_task_depth_aborts_the_run_in_both_engines() {
+    // `spec/27 §3` and `§6`, ADR 0117 rule 2: a branch may make at most `--task-depth` calls
+    // below its block, in both engines, and one that goes deeper aborts the run with U6003.
+    let program = "module deep\n\ndown(n: Int) -> Int = if n == 0 then 0 else down(n - 1) + 1\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let shallow = first of\n    down(5)\n    down(5)\n  @console.print(\"shallow {shallow}\")\n  let deep = first of\n    down(50)\n    down(50)\n  @console.print(\"deep {deep}\")\n";
+    let dir = within_package("taskdepth", "deep", program);
+    let interpreted = una(&dir, &["run", ".", "--virtual-time", "--task-depth", "20"]);
+    assert_eq!(interpreted.status.code(), Some(1), "{interpreted:?}");
+    assert_eq!(String::from_utf8_lossy(&interpreted.stdout), "shallow 5\n");
+    assert!(
+        String::from_utf8_lossy(&interpreted.stderr).contains("U6003"),
+        "{interpreted:?}"
+    );
+    let native = Command::new(dir.join("target/una/taskdepth"))
+        .args(["--virtual-time", "--task-depth", "20"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert_eq!(
+        native.status.code(),
+        interpreted.status.code(),
+        "{native:?}"
+    );
+    assert_eq!(String::from_utf8_lossy(&native.stdout), "shallow 5\n");
+    assert!(
+        String::from_utf8_lossy(&native.stderr).contains("U6003"),
+        "{native:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A program whose started tasks run longer than one turn of 1024 check points, park the root
+/// at the bound of their statement, run `together` inside a task, and install a handler, with
+/// the line each prints.
+const TASKS: &str = "module work\n\npub capability Log\n  op write(line: Text) -> Unit\n\npub handler quiet() for Log\n  op write(line) = unit\n\nnote(n: Int) -> Unit\n  uses @log: Log[write]\n=\n  @log.write(\"note {n}\")\n\nnoted(n: Int) -> Unit\n=\n  note(n) with @log = quiet()\n\nspin(label: Text) -> Unit\n  uses @console: Console[print]\n=\n  let edit total = 0\n  for round in 1..4\n    for i in 1..400\n      total = total + 1\n    @console.print(\"{label} {round} {total}\")\n\nshout(line: Text, n: Int) -> Int\n  uses @console: Console[print]\n=\n  @console.print(line)\n  n\n\npair(n: Int) -> Unit\n  uses @console: Console[print]\n=\n  together\n    let a = shout(\"pair a\", n: n)\n    let b = shout(\"pair b\", n: n + 1)\n  @console.print(\"pair {a} {b}\")\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  tasks at most 3 at once\n    start spin(\"a\")\n    start spin(\"b\")\n    start pair(7)\n    start noted(3)\n  @console.print(\"done\")\n";
+
+#[test]
+fn started_tasks_have_the_same_output_and_trace_in_both_engines_under_virtual_time() {
+    // `spec/27 §8`, ADR 0117 rules 11 and 12: under `--virtual-time`, native code follows the
+    // interpreter's schedule on one worker, whatever `--workers` says: the root and its started
+    // tasks take turns of 1024 check points in one first-in, first-out queue, the bound parks
+    // the root, `together` runs on its task's turn, and installations are numbered run-wide.
+    let dir = within_package("tasksvirtual", "work", TASKS);
+    let interpreted = una(&dir, &["--json", "run", ".", "--virtual-time"]);
+    assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
+    let document: Value = serde_json::from_slice(&interpreted.stdout).unwrap();
+    let output: Vec<String> = document["output"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|line| line.as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        output.last().map(String::as_str),
+        Some("done"),
+        "{document}"
+    );
+    // The spinners outlast one turn, so their lines interleave.
+    let spun: Vec<&str> = output
+        .iter()
+        .filter(|line| line.starts_with("a ") || line.starts_with("b "))
+        .map(String::as_str)
+        .collect();
+    assert_eq!(spun.len(), 8, "{output:?}");
+    assert_ne!(
+        spun,
+        [
+            "a 1 400", "a 2 800", "a 3 1200", "a 4 1600", "b 1 400", "b 2 800", "b 3 1200",
+            "b 4 1600"
+        ],
+        "the spinners never switched: {output:?}"
+    );
+    let tasks: BTreeSet<&str> = document["trace"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|event| event["task"].as_str())
+        .collect();
+    assert!(
+        tasks.contains("s1.1") && tasks.contains("s1.4"),
+        "{document}"
+    );
+    let expected = format!("{}\n", output.join("\n"));
+    let exe = dir.join("target/una/tasksvirtual");
+    for workers in ["1", "4"] {
+        let trace = dir.join(format!("trace-{workers}.json"));
+        let native = Command::new(&exe)
+            .args(["--virtual-time", "--workers", workers, "--trace"])
+            .arg(&trace)
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        assert_eq!(
+            native.status.code(),
+            Some(0),
+            "--workers {workers}: {native:?}"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&native.stdout),
+            expected,
+            "--workers {workers}"
+        );
+        let written: Value =
+            serde_json::from_str(&std::fs::read_to_string(&trace).unwrap()).unwrap();
+        assert_eq!(written, document["trace"], "--workers {workers}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn started_tasks_run_on_every_worker_count_under_real_time() {
+    // ADR 0117 rules 2, 3 and 7: under the real clock, started tasks run on the workers beside
+    // the root, which parks at the bound and at the end of the statement; each task's lines
+    // keep their order, and the statement ends after them all.
+    let dir = within_package("tasksreal", "work", TASKS);
+    let exe = dir.join("target/una/tasksreal");
+    for workers in ["1", "2", "8"] {
+        let native = Command::new(&exe)
+            .args(["--workers", workers])
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        assert_eq!(
+            native.status.code(),
+            Some(0),
+            "--workers {workers}: {native:?}"
+        );
+        let output = String::from_utf8_lossy(&native.stdout).into_owned();
+        let lines: Vec<&str> = output.lines().collect();
+        assert_eq!(lines.last(), Some(&"done"), "--workers {workers}: {output}");
+        assert_eq!(lines.len(), 12, "--workers {workers}: {output}");
+        for label in ["a", "b"] {
+            let own: Vec<&str> = lines
+                .iter()
+                .copied()
+                .filter(|line| line.starts_with(&format!("{label} ")))
+                .collect();
+            assert_eq!(
+                own,
+                [1, 2, 3, 4].map(|round| format!("{label} {round} {}", round * 400)),
+                "--workers {workers}: {output}"
+            );
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_started_task_past_task_depth_ends_alone_in_both_engines() {
+    // `spec/27 §7`, ADR 0117 rule 7: a started task that runs past `--task-depth` ends alone,
+    // with its `aborted` event and one U6003 line on stderr, and the other tasks run on.
+    let program = "module dives\n\ndeep(n: Int) -> Int = if n == 0 then 0 else deep(n - 1) + 1\n\ndive(n: Int) -> Unit\n  uses @console: Console[print]\n=\n  let d = deep(n)\n  @console.print(\"dove {d}\")\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  tasks\n    start dive(100000)\n    start dive(3)\n  @console.print(\"dives done\")\n";
+    let dir = within_package("dives", "dives", program);
+    let interpreted = una(&dir, &["--json", "run", ".", "--virtual-time"]);
+    assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
+    let document: Value = serde_json::from_slice(&interpreted.stdout).unwrap();
+    assert_eq!(
+        document["output"],
+        serde_json::json!(["dove 3", "dives done"]),
+        "{document}"
+    );
+    let line = "[U6003] Error: the started task s1.1 ended alone: this call exceeds the maximum call depth of";
+    assert!(
+        String::from_utf8_lossy(&interpreted.stderr).contains(line),
+        "{interpreted:?}"
+    );
+    let aborted: Vec<&Value> = document["trace"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|event| event["task"] == "s1.1")
+        .collect();
+    assert_eq!(aborted.len(), 1, "{document}");
+    assert_eq!(aborted[0]["outcome"]["kind"], "aborted", "{document}");
+    for clock in [&["--virtual-time"][..], &[][..]] {
+        let trace = dir.join("trace.json");
+        let native = Command::new(dir.join("target/una/dives"))
+            .args(clock)
+            .arg("--trace")
+            .arg(&trace)
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        assert_eq!(native.status.code(), Some(0), "{clock:?}: {native:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&native.stdout),
+            "dove 3\ndives done\n"
+        );
+        assert!(
+            String::from_utf8_lossy(&native.stderr).contains(line),
+            "{clock:?}: {native:?}"
+        );
+        let written: Value =
+            serde_json::from_str(&std::fs::read_to_string(&trace).unwrap()).unwrap();
+        if clock.is_empty() {
+            let mut kinds: Vec<(String, String)> = written
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|event| {
+                    (
+                        event["task"].as_str().unwrap_or("").to_owned(),
+                        event["outcome"]["kind"].as_str().unwrap_or("").to_owned(),
+                    )
+                })
+                .collect();
+            kinds.sort();
+            let mut expected: Vec<(String, String)> = document["trace"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|event| {
+                    (
+                        event["task"].as_str().unwrap_or("").to_owned(),
+                        event["outcome"]["kind"].as_str().unwrap_or("").to_owned(),
+                    )
+                })
+                .collect();
+            expected.sort();
+            assert_eq!(kinds, expected);
+        } else {
+            assert_eq!(written, document["trace"]);
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_host_stop_ends_the_for_ever_of_a_tasks_block_and_its_tasks_drain_in_both_engines() {
+    // `spec/27 §7`, ADR 0117 rule 7 and ADR 0116 rule 14: the host stop reaches the `for ever`
+    // of the block, whose `on stop` runs; the statement then waits for the tasks it started,
+    // which drain. Under `--virtual-time` both engines print the same lines in the same order.
+    let program = "module serve\n\nsay(n: Int) -> Unit\n  uses @console: Console[print]\n=\n  @console.print(\"job {n}\")\n\nserve() -> Int\n  uses @console: Console[print]\n  diverges\n=\n  let edit served = 0\n  tasks at most 4 at once\n    for ever\n      start say(served)\n      served = served + 1\n    on stop\n      @console.print(\"stopping after {served}\")\n  served\n\npub main() -> Unit\n  uses @console: Console[print]\n  diverges\n=\n  let served = serve()\n  @console.print(\"served {served}\")\n";
+    let dir = within_package("drain", "serve", program);
+    let expected = "stopping after 3\njob 0\njob 1\njob 2\nserved 3\n";
+    let interpreted = una(
+        &dir,
+        &["run", ".", "--virtual-time", "--stop-after-iterations", "3"],
+    );
+    assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
+    assert_eq!(String::from_utf8_lossy(&interpreted.stdout), expected);
+    let native = Command::new(dir.join("target/una/drain"))
+        .args(["--virtual-time", "--stop-after-iterations", "3"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert_eq!(native.status.code(), Some(0), "{native:?}");
+    assert_eq!(String::from_utf8_lossy(&native.stdout), expected);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A program that runs `rounds` `tasks` statements, each of which starts a task that builds a
+/// list of a thousand items and then computes for minutes, and then fails once the task has
+/// had a turn, which cancels the task with its list alive; it prints how many failed.
+fn cancelled_program(rounds: u64) -> String {
+    format!(
+        "module cancelled\n\npub kind Round = | Over\n\nkeep(items: List[Int], total: Int) -> Int = total\n\ngrow(n: Int) -> Int\n=\n  let edit items = [0]\n  for i in 1..1000\n    items = items.append(item: i)\n  let edit total = 0\n  for i in 1..n\n    total = total + 1\n  keep(items, total: total)\n\nhold() -> Unit\n=\n  let total = grow(4000000000)\n  unit\n\nspin(n: Int) -> Int\n=\n  let edit total = 0\n  for i in 1..n\n    total = total + 1\n  total\n\nover(n: Int) -> Unit\n  fails Round\n=\n  if n > 0 then fail Over else unit\n\nround() -> Unit\n  fails Round\n=\n  tasks\n    start hold()\n    let spun = spin(1100)\n    over(spun)\n      if error pass\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let edit failed = 0\n  for r in 1..{rounds}\n    let outcome = attempt round()\n    if outcome.is_ok() == false\n      failed = failed + 1\n  @console.print(\"failed {{failed}}\")\n"
+    )
+}
+
+#[test]
+fn ten_thousand_cancelled_started_tasks_release_what_they_hold_in_both_engines() {
+    // `spec/27 §7`, ADR 0117 rule 7 and the amendment of 2026-10-19 on S2: a block that fails
+    // cancels the tasks it started, each of which leaves its frames by the failure path and
+    // ends with its heap. Ten thousand rounds natively, each cancelling a task that holds a list
+    // of a thousand items, run under a 16 MiB budget, which a leak would exceed many times over.
+    // The interpreter runs two thousand, about 16 s in a debug build (ten thousand take 80 s),
+    // which a leak of the same size would still exceed.
+    let interpreted_dir = within_package("cancelledi", "cancelled", &cancelled_program(2_000));
+    let interpreted = una(&interpreted_dir, &["run", ".", "--max-memory", "16"]);
+    assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&interpreted.stdout),
+        "failed 2000\n"
+    );
+    let _ = std::fs::remove_dir_all(&interpreted_dir);
+    let dir = within_package("cancelled", "cancelled", &cancelled_program(10_000));
+    // One worker is the tight leak guard: it needs 12 MiB. Under load, several workers see an
+    // occasional spike of a few MiB in the charged memory, so they run under 24 MiB, which a
+    // per-round leak, about 160 MiB over ten thousand rounds, still exceeds many times over.
+    for (workers, budget) in [("1", "16"), ("2", "24"), ("4", "24")] {
+        let native = Command::new(dir.join("target/una/cancelled"))
+            .args(["--max-memory", budget, "--workers", workers])
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        assert_eq!(
+            native.status.code(),
+            Some(0),
+            "--workers {workers}: {native:?}"
+        );
+        assert_eq!(String::from_utf8_lossy(&native.stdout), "failed 10000\n");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }

@@ -579,6 +579,13 @@ impl Collector<'_> {
                 }
             }
             Stmt::OnStop(on_stop) => self.block(&on_stop.block),
+            Stmt::Tasks(stmt) => {
+                if let Some(bound) = &stmt.bound {
+                    self.expr(bound);
+                }
+                self.block(&stmt.block);
+            }
+            Stmt::Start(stmt) => self.handled(&stmt.handled),
         }
     }
 
@@ -638,6 +645,11 @@ impl Collector<'_> {
             BlockExpr::TogetherFor(together) => {
                 self.for_source(&together.source);
                 self.block(&together.block);
+            }
+            BlockExpr::FirstOf(first) => {
+                for branch in &first.body {
+                    self.stmt(branch);
+                }
             }
         }
     }

@@ -212,6 +212,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 if let Some(current) = self.current {
                     self.findings.value_callers.insert(current);
                 }
+                self.graph_value_call();
                 self.timing_value_call();
             }
             return ty;
@@ -494,6 +495,7 @@ impl<'a> Checker<'_, 'a, '_> {
         if let Some(current) = self.current {
             self.findings.value_callers.insert(current);
         }
+        self.graph_value_call();
         self.timing_value_call();
         self.ordered(span, (0..args.len()).map(Some).collect());
         let mut flows = Vec::new();
@@ -1469,6 +1471,9 @@ impl<'a> Checker<'_, 'a, '_> {
         let resolved = self.op_site(cap, op);
         if let Some(id) = resolved {
             self.timing_op(id, op_name);
+            // The edge of ADR 0116 P1 from the node whose code holds the operation, a lambda's
+            // included, to the operation: every operation call, whatever `uses` names (#1148).
+            self.graph_op(id, op_name);
         }
         let capability = resolved
             .and_then(|id| self.env.capabilities.get(id))
@@ -1487,6 +1492,10 @@ impl<'a> Checker<'_, 'a, '_> {
             self.unchecked_unknown(args);
             return Ty::unknown();
         };
+        // An operation of the host's `Http`, whose timing `L_lim` covers (ADR 0117 IF4).
+        if capability.module == self.env.prelude && capability.name == "Http" {
+            self.http_site(span);
+        }
         let Some(def) = capability.ops.iter().find(|o| o.name == op_name).cloned() else {
             let names: Vec<&str> = capability.ops.iter().map(|o| o.name).collect();
             let mut diagnostic = self.report.make(

@@ -209,6 +209,11 @@ fn the_example_manifest_reads() {
         ]
     );
     assert_eq!(run.grants[2].limits.len(), 1);
+    assert_eq!(
+        run.grants[2].limits[0].kind,
+        ita::LimitKind::Rate("minute".to_owned())
+    );
+    assert_eq!(run.grants[2].limits[0].count.value, 100);
     let drive = manifest.drive.unwrap();
     assert_eq!(drive.ticks.unwrap().value, 10);
 }
@@ -262,6 +267,22 @@ fn the_grammar_is_closed() {
             "checked per module",
         ),
         ("needs\n", "starts with `ita <name>`"),
+        (
+            "ita x\n  version 0.1.0\n  edition 0.4\n\nrun\n  grants\n    http \"https://h\"\n      at most 3 per week\n",
+            "`second`, `minute` or `hour`",
+        ),
+        (
+            "ita x\n  version 0.1.0\n  edition 0.4\n\nrun\n  grants\n    http \"https://h\"\n      at least 3 at once\n",
+            "`most` after `at`",
+        ),
+        (
+            "ita x\n  version 0.1.0\n  edition 0.4\n\nrun\n  grants\n    http \"https://h\"\n      waiting 3\n",
+            "a limit",
+        ),
+        (
+            "ita x\n  version 0.1.0\n  edition 0.4\n\nrun\n  grants\n    http \"https://h\"\n      at most 3 at twice\n",
+            "`once` after `at`",
+        ),
     ];
     for (text, expected) in cases {
         let (_, errors) = parse_manifest(text);
@@ -422,4 +443,23 @@ fn files_past_their_bound_are_refused_whole() {
     let (_, errors) = parse_manifest(&big);
     assert_eq!(errors.len(), 1);
     assert_eq!(errors[0].range, 0..0);
+}
+
+#[test]
+fn limit_lines_read_and_a_grant_with_a_broken_one_is_dropped() {
+    let text = "ita x\n  version 0.1.0\n  edition 0.4\n\nrun\n  grants\n    http \"https://a\" get\n      at most 8 at once\n      waiting at most 1000\n      at most 2 per second\n    http \"https://b\"\n      at most 0 per hour\n      at most 1 per fortnight\n";
+    let (manifest, errors) = parse_manifest(text);
+    // The count's range is the manifest reader's to check; the period is the grammar's.
+    assert_eq!(errors.len(), 1, "{:?}", messages(&errors));
+    let run = manifest.run.unwrap();
+    assert_eq!(run.grants.len(), 1);
+    let kinds: Vec<&ita::LimitKind> = run.grants[0].limits.iter().map(|l| &l.kind).collect();
+    assert_eq!(
+        kinds,
+        [
+            &ita::LimitKind::AtOnce,
+            &ita::LimitKind::Waiting,
+            &ita::LimitKind::Rate("second".to_owned())
+        ]
+    );
 }

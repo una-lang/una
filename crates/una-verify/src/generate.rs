@@ -1128,7 +1128,8 @@ fn stops(expr: &Expr) -> bool {
         Expr::LetTuple { body, .. }
         | Expr::With { body, .. }
         | Expr::Attempt { body, .. }
-        | Expr::Within { body, .. } => stops(body),
+        | Expr::Within { body, .. }
+        | Expr::Tasks { body, .. } => stops(body),
         Expr::If {
             then, otherwise, ..
         } => stops(then) || stops(otherwise),
@@ -1141,7 +1142,9 @@ fn stops(expr: &Expr) -> bool {
         | Expr::Unreachable { .. }
         | Expr::Loop { .. }
         | Expr::Together { .. }
-        | Expr::TogetherFor { .. } => false,
+        | Expr::TogetherFor { .. }
+        | Expr::FirstOf { .. }
+        | Expr::Start { .. } => false,
     }
 }
 
@@ -1292,6 +1295,9 @@ struct Walker<'p, 'i> {
     /// The element type of the list that the `together for` being walked makes, from the
     /// binder of its `let`: each task's value flows into it (ADR 0103 rule 3).
     together_element: Option<Type>,
+    /// The type of the value of the `first of` being walked, when it is bound by a `let`:
+    /// each branch's value flows into it (`spec/27 §6`, as ADR 0103 rule 3 for `together for`).
+    first_of_type: Option<Type>,
     /// The name of the named function whose eta-expansion is walked (issue #76).
     eta_name: Option<String>,
     /// The binder that an assignment's refinement obligation is about, which a counterexample
@@ -1361,6 +1367,7 @@ impl<'p, 'i> Walker<'p, 'i> {
             fresh: 0,
             eta: None,
             together_element: None,
+            first_of_type: None,
             eta_name: None,
             assigned: None,
             frames: BTreeMap::new(),
@@ -1956,6 +1963,70 @@ impl<'p, 'i> Walker<'p, 'i> {
                     });
                     return;
                 }
+                // `first_of(e₁ | ... | eₙ)` (`spec/27 §6`, ADR 0117 Verification): each branch
+                // is verified alone, in the context before the block, and each of its values
+                // flows into the type of the result, which carries the facts of that type only:
+                // which branch wins is timing.
+                Expr::FirstOf { tasks, span } => {
+                    let result = self.first_of_type.take().filter(has_refinements);
+                    for task in tasks {
+                        let mut task_leaves = Vec::new();
+                        self.walk(task, &ctx, &mut task_leaves);
+                        let Some(result) = &result else {
+                            continue;
+                        };
+                        for leaf in &task_leaves {
+                            let Some(value) = &leaf.value else {
+                                continue;
+                            };
+                            let mut leaf_ctx = ctx.clone();
+                            leaf_ctx.hyps = leaf.hyps.clone();
+                            self.refined_flow(result, value, leaf.span, &leaf_ctx);
+                        }
+                    }
+                    leaves.push(Leaf {
+                        hyps: ctx.hyps.clone(),
+                        divisions: ctx.divisions.clone(),
+                        value: None,
+                        span: *span,
+                        returns: Vec::new(),
+                    });
+                    return;
+                }
+                // `tasks(b) e` (`spec/27 §7`, ADR 0117 Verification): `b >= 1`, a `refinement`
+                // obligation at `b`; the block runs in the current task, so it is walked as a
+                // block, and its `start`s change no outer binding.
+                Expr::Tasks { bound, body, .. } => {
+                    if let Some((bound, bound_span)) = bound {
+                        let value = self.atom(bound, &ctx);
+                        let goal = (value.f.sort() == "Int")
+                            .then(|| F::op(">=", vec![value.f, F::Int("1".to_owned())]));
+                        let text = format!("{} >= 1", self.text(*bound_span));
+                        self.site(
+                            ObligationKind::Refinement,
+                            &ctx,
+                            goal,
+                            text,
+                            *bound_span,
+                            None,
+                        );
+                    }
+                    expr = body;
+                }
+                // `start e`: `e` is verified alone, in the context of the `start`, as a
+                // `together` task is; its value is `unit`, and it gives no fact.
+                Expr::Start { task, span } => {
+                    let mut task_leaves = Vec::new();
+                    self.walk(task, &ctx, &mut task_leaves);
+                    leaves.push(Leaf {
+                        hyps: ctx.hyps.clone(),
+                        divisions: ctx.divisions.clone(),
+                        value: None,
+                        span: *span,
+                        returns: Vec::new(),
+                    });
+                    return;
+                }
                 // The tasks of a `together` block outside the `let` that binds their tuple,
                 // which the desugar never makes: each is checked in the context before it.
                 Expr::Together { tasks, span } => {
@@ -2077,6 +2148,9 @@ impl<'p, 'i> Walker<'p, 'i> {
                                 } = ty
                             {
                                 self.together_element = args.first().cloned();
+                            }
+                            if let Expr::FirstOf { .. } = inner {
+                                self.first_of_type = Some(ty.clone());
                             }
                             let mut inner_leaves = Vec::new();
                             self.walk(inner, &ctx, &mut inner_leaves);
@@ -2369,6 +2443,30 @@ impl<'p, 'i> Walker<'p, 'i> {
                                     *span,
                                     &EffectAt::With(handler.name.clone()),
                                 );
+                            } else if key == (una_core::LIMIT_MODULE, una_core::LIMITER) {
+                                // `limiter(at_most, per, waiting)` of `std.limit` (ADR 0117
+                                // rule 9, `spec/27 §10`): the engines provide it, so Core
+                                // declares no handler; its installation carries
+                                // `at_most >= 1`, `per >= 1` and `waiting >= 0`, a
+                                // `refinement` obligation at each argument.
+                                let bounds = ["1", "1", "0"];
+                                for ((arg, arg_span), bound) in
+                                    args.iter().zip(arg_spans).zip(bounds)
+                                {
+                                    let value = self.atom(arg, &ctx);
+                                    let goal = (value.f.sort() == "Int").then(|| {
+                                        F::op(">=", vec![value.f, F::Int(bound.to_owned())])
+                                    });
+                                    let text = format!("{} >= {bound}", self.text(*arg_span));
+                                    self.site(
+                                        ObligationKind::Refinement,
+                                        &ctx,
+                                        goal,
+                                        text,
+                                        *arg_span,
+                                        None,
+                                    );
+                                }
                             }
                             None
                         }

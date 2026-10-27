@@ -1867,6 +1867,40 @@ pub enum Expr {
         /// The expression in the source.
         span: Span,
     },
+    /// `first_of(e₁ | ... | eₙ)`: the branches of a `first of` race (`spec/27 §6`, ADR 0117
+    /// rule 6), each a task closed over the bindings before it. Its value is the result of the
+    /// first branch to return, and the other branches are cancelled; when every branch fails,
+    /// it fails with the failure of the lowest-indexed one. The interpreter runs the branches
+    /// in index order and stops at the first that returns, one legal schedule.
+    FirstOf {
+        /// The branches, in index order.
+        tasks: Vec<Expr>,
+        /// The expression in the source.
+        span: Span,
+    },
+    /// `tasks(b) e`: the block of a `tasks` statement (`spec/27 §7`, ADR 0117 rule 7), run in
+    /// the current task. The `start`s inside `e`, outside any task of it, start tasks that run
+    /// beside it; the statement ends once `e` has ended and every task it started has ended,
+    /// also when `e` fails, after cancelling them, or leaves by an `exit` of an enclosing loop.
+    /// Its value is `e`'s: the tuple of the outer bindings `e` updates, or `unit`.
+    Tasks {
+        /// The bound of `at most b at once`, an `Int` bound before the statement, and where it
+        /// is written, for its obligation `b >= 1`; none for the default bound.
+        bound: Option<(Atom, Span)>,
+        /// The block.
+        body: Box<Expr>,
+        /// The statement in the source.
+        span: Span,
+    },
+    /// `start e`: starts a task for `e`, a `Unit` that cannot fail, closed over the bindings
+    /// before it, and goes on; once as many tasks as its `tasks` statement's bound run, it
+    /// first waits until one ends (`spec/27 §7`, ADR 0117 rule 7). Its value is `unit`.
+    Start {
+        /// The started expression, with its deadline and handling clauses.
+        task: Box<Expr>,
+        /// The statement in the source.
+        span: Span,
+    },
     /// `if a then e else e`.
     If {
         /// The condition.
@@ -2317,6 +2351,16 @@ pub fn prelude_variants(kind: &str) -> Option<&'static [PreludeVariant]> {
 /// The module path of the collections of edition `0.4` (ADR 0119 rule 0): their types are
 /// `Named` in it, and its kind `Ranked` is a [`Decl::Data`] of it.
 pub const COLLECTIONS_MODULE: &str = "std.collections";
+
+/// The module path of rate limits computed in code, edition `0.4` (ADR 0117 rule 9): its kind
+/// `Limited` is a [`Decl::Data`] of it, its capability `Limit` a [`Decl::Cap`], and the handler
+/// [`LIMITER`] is provided by each engine, so no [`Decl::Handler`] of it exists.
+pub const LIMIT_MODULE: &str = "std.limit";
+
+/// The handler of [`LIMIT_MODULE`] that each engine provides (ADR 0117 rule 9): a `with` or a
+/// `given` of it is `Source::Handler` with this name in that module, and its arguments are
+/// `at_most`, `per` and `waiting`, in that order.
+pub const LIMITER: &str = "limiter";
 
 /// A collection type of `std.collections`, edition `0.4` (ADR 0119). Each engine knows its
 /// values itself, as it knows a list's and a map's.
