@@ -63,8 +63,8 @@ pub(crate) fn held() -> usize {
     cap().allocated()
 }
 
-/// The most bytes the process held at any point so far, in a debug build's tests (ADR 0113, I3).
-#[cfg(all(debug_assertions, test))]
+/// The most bytes the process held at any point so far, in a debug build (ADR 0113, I3).
+#[cfg(debug_assertions)]
 pub(crate) fn peak() -> usize {
     ALLOCATOR.peak()
 }

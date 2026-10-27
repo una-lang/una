@@ -43,8 +43,7 @@ impl Peak {
         &self.inner
     }
 
-    /// The most bytes the process held at any point so far, in tests.
-    #[cfg(test)]
+    /// The most bytes the process held at any point so far, in a debug build.
     pub(crate) fn peak(&self) -> usize {
         // A monotone maximum: `Relaxed` suffices, since no other memory is published through it.
         self.peak.load(std::sync::atomic::Ordering::Relaxed)
