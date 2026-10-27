@@ -98,6 +98,12 @@ pub(crate) fn register_job(
     Registration { keys }
 }
 
+/// [`register_job`] for a wait that is not a job, in tests.
+#[cfg(test)]
+fn register(entries: &[Cancel], wake: &Wake) -> Registration {
+    register_job(entries, wake, None)
+}
+
 impl Drop for Registration {
     fn drop(&mut self) {
         let mut waits = lock();
