@@ -187,14 +187,21 @@ pub(crate) fn is_dense(name: &str) -> bool {
 /// The method of the dense prelude function `name` after its type's prefix, without a
 /// tensor's rank: `dense_tensor_get_3` is `get`, as the interpreter's `method_of`.
 pub(crate) fn dense_method(name: &str) -> &str {
-    let method = ["dense_array_", "dense_matrix_", "dense_tensor_", "dense_lu_"]
-        .iter()
-        .find_map(|prefix| name.strip_prefix(prefix))
-        .unwrap_or(name);
+    let method = [
+        "dense_array_",
+        "dense_matrix_",
+        "dense_tensor_",
+        "dense_lu_",
+    ]
+    .iter()
+    .find_map(|prefix| name.strip_prefix(prefix))
+    .unwrap_or(name);
     match method.rsplit_once('_') {
         Some((base, rank))
             if name.starts_with("dense_tensor_")
-                && rank.parse::<usize>().is_ok_and(|rank| (1..=8).contains(&rank)) =>
+                && rank
+                    .parse::<usize>()
+                    .is_ok_and(|rank| (1..=8).contains(&rank)) =>
         {
             base
         }
@@ -3362,9 +3369,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
             // folded over, which the loop still reads, move in at their last use.
             let moving = match method {
                 "update" => args.first(),
-                "fold" if values.get(1).is_some() && values.first() != values.get(1) => {
-                    args.get(1)
-                }
+                "fold" if values.get(1).is_some() && values.first() != values.get(1) => args.get(1),
                 _ => None,
             };
             let moved = match moving {

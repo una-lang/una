@@ -246,7 +246,10 @@ fn render(types: &[Shape], ty: usize, word: i64, redact: bool, params: &[i64]) -
                     )),
                     (values::dense::DenseKind::Tensor, shape) => {
                         let lengths: Vec<String> = shape.iter().map(ToString::to_string).collect();
-                        out.push_str(&format!("tensor(shape: [{}], elements: [", lengths.join(", ")));
+                        out.push_str(&format!(
+                            "tensor(shape: [{}], elements: [",
+                            lengths.join(", ")
+                        ));
                     }
                     _ => out.push_str("array(["),
                 }

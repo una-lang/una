@@ -30,9 +30,8 @@ use una_core::dense::{self as chains, blocked, fma};
 use una_core::float;
 
 use super::{
-    HEAP, NONE, Object, alloc, copied, count, count_limit, data, f64_word, fault, field,
-    int_value, int_word, is_handle, precondition_outside, push, release, retain, slot, some,
-    unique, with,
+    HEAP, NONE, Object, alloc, copied, count, count_limit, data, f64_word, fault, field, int_value,
+    int_word, is_handle, precondition_outside, push, release, retain, slot, some, unique, with,
 };
 
 /// The most axes a tensor has (ADR 0120 rule 27).
@@ -848,37 +847,34 @@ fn ensure(site: i64, word: i64, shape: &[usize], method: &str) -> Option<i64> {
             release(word);
             outside(
                 site,
-                &format!("evaluation stopped: internal error: `{method}` gave a result of another shape than it ensures"),
+                &format!(
+                    "evaluation stopped: internal error: `{method}` gave a result of another shape than it ensures"
+                ),
             )
         }
     }
 }
 
 /// The messages of the preconditions, the interpreter's (D4).
-const GET_OUTSIDE: &str =
-    "evaluation stopped: `get` at an index outside the dense value, which its precondition excludes";
-const SET_OUTSIDE: &str =
-    "evaluation stopped: `set` at an index outside the dense value, which its precondition excludes";
-const OTHER_RANK: &str =
-    "evaluation stopped: a list literal of another length than the tensor's rank, which the precondition excludes";
-const SLICE_OUTSIDE: &str = "evaluation stopped: `slice` outside the array, which its precondition excludes";
-const LINE_OUTSIDE: &str = "evaluation stopped: a row or column outside the matrix, which its precondition excludes";
-const BLOCK_OUTSIDE: &str = "evaluation stopped: `block` outside the matrix, which its precondition excludes";
+const GET_OUTSIDE: &str = "evaluation stopped: `get` at an index outside the dense value, which its precondition excludes";
+const SET_OUTSIDE: &str = "evaluation stopped: `set` at an index outside the dense value, which its precondition excludes";
+const OTHER_RANK: &str = "evaluation stopped: a list literal of another length than the tensor's rank, which the precondition excludes";
+const SLICE_OUTSIDE: &str =
+    "evaluation stopped: `slice` outside the array, which its precondition excludes";
+const LINE_OUTSIDE: &str =
+    "evaluation stopped: a row or column outside the matrix, which its precondition excludes";
+const BLOCK_OUTSIDE: &str =
+    "evaluation stopped: `block` outside the matrix, which its precondition excludes";
 const DIFFERENT_SHAPES: &str = "evaluation stopped: an element-wise operation of dense values of different shapes, which its precondition excludes";
-const MULTIPLY_SHAPES: &str =
-    "evaluation stopped: `multiply` of matrices whose shapes do not match, which its precondition excludes";
+const MULTIPLY_SHAPES: &str = "evaluation stopped: `multiply` of matrices whose shapes do not match, which its precondition excludes";
 const MULTIPLY_ARRAY_SHAPES: &str = "evaluation stopped: `multiply_array` of a matrix and an array whose shapes do not match, which its precondition excludes";
-const ADD_PRODUCT_SHAPES: &str =
-    "evaluation stopped: `add_product` of matrices whose shapes do not match, which its precondition excludes";
-const CONVERSION_RANK: &str =
-    "evaluation stopped: a tensor of another rank than the conversion takes, which its precondition excludes";
+const ADD_PRODUCT_SHAPES: &str = "evaluation stopped: `add_product` of matrices whose shapes do not match, which its precondition excludes";
+const CONVERSION_RANK: &str = "evaluation stopped: a tensor of another rank than the conversion takes, which its precondition excludes";
 const DIM_OUTSIDE: &str = "evaluation stopped: `dim` of an axis the tensor does not have, which its precondition excludes";
 const RESHAPE_COUNT: &str =
     "evaluation stopped: `reshape` to another number of elements, which its precondition excludes";
-const SUM_AXIS_OUTSIDE: &str =
-    "evaluation stopped: `sum` along an axis the tensor does not have, which its precondition excludes";
-const CONTRACT_AXES: &str =
-    "evaluation stopped: `contract` over axes whose lengths do not match, which its precondition excludes";
+const SUM_AXIS_OUTSIDE: &str = "evaluation stopped: `sum` along an axis the tensor does not have, which its precondition excludes";
+const CONTRACT_AXES: &str = "evaluation stopped: `contract` over axes whose lengths do not match, which its precondition excludes";
 const SOLVE_ROWS: &str = "evaluation stopped: `solve` with a right-hand side of another number of rows, which its precondition excludes";
 const TRIANGULAR_ROWS: &str = "evaluation stopped: a triangular solve with a right-hand side of another number of rows, which its precondition excludes";
 const MATRIX_COUNT: &str = "evaluation stopped: `matrix` with a number of elements other than `rows * columns`, which its precondition excludes";
@@ -901,7 +897,9 @@ fn square(site: i64, header: &Dense, name: &str) -> Option<usize> {
     } else {
         outside(
             site,
-            &format!("evaluation stopped: `{name}` of a matrix that is not square, which its precondition excludes"),
+            &format!(
+                "evaluation stopped: `{name}` of a matrix that is not square, which its precondition excludes"
+            ),
         )
     }
 }
@@ -960,10 +958,7 @@ pub(crate) fn matrix_diagonal(site: i64, values: i64) -> i64 {
         let Some(size) = n.checked_mul(n) else {
             return over(site);
         };
-        let first = header
-            .layout
-            .position_at(0)
-            .and_then(|p| header.element(p));
+        let first = header.layout.position_at(0).and_then(|p| header.element(p));
         let store = match first {
             Some(Element::Raw(_)) | None => {
                 let mut out = buffer::<f64>(site, size, 0)?;
@@ -1720,8 +1715,22 @@ fn line_sums(site: i64, m: i64, along_rows: bool) -> i64 {
                 header.f64_at(&at).unwrap_or(f64::NAN)
             }))
         };
-        let made = made_f64(site, DenseKind::Array, Axes::one(outer), (0..outer).map(line))?;
-        ensure(site, made, &[outer], if along_rows { "row_sums" } else { "column_sums" })
+        let made = made_f64(
+            site,
+            DenseKind::Array,
+            Axes::one(outer),
+            (0..outer).map(line),
+        )?;
+        ensure(
+            site,
+            made,
+            &[outer],
+            if along_rows {
+                "row_sums"
+            } else {
+                "column_sums"
+            },
+        )
     })
 }
 
@@ -2313,11 +2322,7 @@ pub(crate) fn dense_item(d: i64, k: i64) -> i64 {
         fault();
         return 0;
     };
-    match header
-        .layout
-        .position_at(k)
-        .and_then(|p| header.element(p))
-    {
+    match header.layout.position_at(k).and_then(|p| header.element(p)) {
         Some(element) => owned_word(element),
         None => {
             fault();
@@ -2331,11 +2336,7 @@ pub(crate) fn dense_item(d: i64, k: i64) -> i64 {
 /// at the first (the interpreter's `Builder`). O(1).
 pub(crate) fn dense_builder(_site: i64, like: i64) -> i64 {
     match layout(like) {
-        Some((layout, _)) => compact(
-            layout.kind,
-            layout.shape,
-            words_store(Vec::new()),
-        ),
+        Some((layout, _)) => compact(layout.kind, layout.shape, words_store(Vec::new())),
         None => {
             fault();
             0
