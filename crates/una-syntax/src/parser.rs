@@ -62,6 +62,7 @@ pub(crate) fn parse_plain(lexed: &Lexed, file: FileId, interner: &Interner) -> P
         errors: Vec::new(),
         v0_2: lexed.keywords >= KeywordSet::V0_2,
         v0_3: lexed.keywords >= KeywordSet::V0_3,
+        keywords: lexed.keywords,
         v0_4: lexed.keywords >= KeywordSet::V0_4,
         in_body: false,
         from_label: lexed.from_label,
@@ -124,6 +125,7 @@ pub fn parse_uses_clause(
         errors: Vec::new(),
         v0_2: true,
         v0_3: true,
+        keywords: KeywordSet::V0_3,
         v0_4: true,
         in_body: false,
         from_label: None,
@@ -222,6 +224,8 @@ struct Parser<'a> {
     v0_2: bool,
     /// Whether the constructs of edition 0.3 parse (`spec/13 §7`).
     v0_3: bool,
+    /// The keyword set of the package's edition, for the declaration starts.
+    keywords: KeywordSet,
     /// Whether the constructs of edition 0.4 parse (`spec/26 §1`).
     v0_4: bool,
     /// Whether a function body or a handler operation body is being parsed, where a
@@ -672,20 +676,21 @@ impl<'a> Parser<'a> {
                 // 0.3, says the same where a function, a field, a handler or a predicate is
                 // named (ADR 0105 rule 4): renaming those reaches every caller, constructor or
                 // import.
-                let module_path = matches!(expected, "a module path" | "a module path segment");
+                let module_path = matches!(expected, "a module path" | "a module path segment")
+                    && *keyword == Keyword::Test;
                 let role = match expected {
                     "a module path" | "a module path segment" => {
                         Some(("a module path segment", "module"))
                     }
                     "an operation name" => Some(("an operation name", "op")),
-                    "a function name" if keyword == Keyword::Test => {
+                    "a function name" if *keyword == Keyword::Test => {
                         Some(("a function name", "fn"))
                     }
-                    "a field name" if keyword == Keyword::Test => Some(("a field name", "field")),
-                    "a handler name" if keyword == Keyword::Test => {
+                    "a field name" if *keyword == Keyword::Test => Some(("a field name", "field")),
+                    "a handler name" if *keyword == Keyword::Test => {
                         Some(("a handler name", "handler"))
                     }
-                    "a predicate name" if keyword == Keyword::Test => {
+                    "a predicate name" if *keyword == Keyword::Test => {
                         Some(("a predicate name", "predicate"))
                     }
                     _ => None,
@@ -1091,14 +1096,14 @@ impl<'a> Parser<'a> {
 
     fn at_declaration_start(&self) -> bool {
         match self.peek() {
-            TokenKind::Keyword(keyword) => starts_declaration(keyword.as_str(), None),
+            TokenKind::Keyword(keyword) => starts_declaration(keyword.as_str(), None, self.keywords),
             TokenKind::LowerIdent(name) | TokenKind::Reserved(name) => {
                 let next = match self.peek_at(1) {
                     TokenKind::LParen => Some('('),
                     TokenKind::LBracket => Some('['),
                     _ => None,
                 };
-                starts_declaration(self.interner.resolve(*name), next)
+                starts_declaration(self.interner.resolve(*name), next, self.keywords)
             }
             _ => false,
         }
@@ -1244,15 +1249,20 @@ impl<'a> Parser<'a> {
             TokenKind::Keyword(Keyword::Handler) => self.handler_decl(public)?,
             TokenKind::Keyword(Keyword::Policy) => self.policy_decl(public)?,
             TokenKind::Keyword(Keyword::Requirement) if !public => self.requirement_decl()?,
+            TokenKind::Keyword(Keyword::Example) if !public => self.example_decl()?,
             // Edition 0.3 writes the test declaration `test` (ADR 0105 rule 1); `example` there
             // has its U0103 from the lexer and is read the same way (rule 3). A `test` followed
             // by `(` or `[` is a function named with the keyword (rule 4).
-            TokenKind::Keyword(Keyword::Example | Keyword::Test)
+            TokenKind::Keyword(Keyword::Test)
                 if !public && !matches!(self.peek_at(1), TokenKind::LParen | TokenKind::LBracket) =>
             {
                 self.example_decl()?
             }
-            TokenKind::Keyword(Keyword::Test) => self.function_decl(public)?,
+            TokenKind::Keyword(Keyword::Test)
+                if matches!(self.peek_at(1), TokenKind::LParen | TokenKind::LBracket) =>
+            {
+                self.function_decl(public)?
+            }
             // ADR 0104 rule 1: `measure` is the keyword only at a declaration's start, before
             // an upper identifier, in edition 0.3; `measure(x)` stays a function.
             TokenKind::LowerIdent(_)

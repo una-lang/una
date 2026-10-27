@@ -79,16 +79,21 @@ fn una_test_names_the_declaration_by_the_edition() {
         stdout(&output),
         "test m \"doubling works\" ... ok\ntest m \"too large fails\" ... ok\n\n2 tests: 2 passed, 0 failed\n"
     );
-    let document = json(&una_in(&root, &["--json", "test", "."]));
+    let output = una_in(&root, &["--json", "test", "."]);
+    let document = json(&output);
     assert_eq!(document["schema"], "una.test/2");
     assert_eq!(document["tests"].as_array().unwrap().len(), 2);
     assert!(document.get("examples").is_none());
     assert_eq!(document["passed"], 2);
-    let keys: Vec<&String> = document.as_object().unwrap().keys().collect();
-    assert_eq!(
-        keys,
-        ["schema", "tier", "redacted", "diagnostics", "tests", "passed", "failed"]
-    );
+    // The keys keep the order of `una.test/1`, `tests` where it has `examples`.
+    let text = stdout(&output);
+    assert!(text.starts_with("{\"schema\":\"una.test/2\",\"tier\":"), "{text}");
+    let at = |key: &str| text.find(&format!("\"{key}\":")).unwrap();
+    assert!(at("tier") < at("redacted"));
+    assert!(at("redacted") < at("diagnostics"));
+    assert!(at("diagnostics") < at("tests"));
+    assert!(at("tests") < at("passed"));
+    assert!(at("passed") < at("failed"));
 
     let root = package("output-0-2", "0.2", &doubling("example"));
     let output = una_in(&root, &["test", "."]);
@@ -110,7 +115,13 @@ fn una_test_names_the_declaration_by_the_edition() {
         "ita output_0_4\n  version 0.1.0\n  edition 0.4\n",
     )
     .unwrap();
-    std::fs::rename(root.join("verification.lock"), root.join("ita.lock")).unwrap();
+    std::fs::remove_file(root.join("verification.lock")).unwrap();
+    // The lock of an edition 0.4 package is `ita.lock` (ADR 0122), the conformance cases' one.
+    std::fs::copy(
+        repository().join("tests/conformance/runtime/for_ever_on_stop/ita.lock"),
+        root.join("ita.lock"),
+    )
+    .unwrap();
     let output = una_in(&root, &["test", "."]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     assert!(stdout(&output).ends_with("2 tests: 2 passed, 0 failed\n"));
@@ -231,25 +242,32 @@ fn messages_name_the_declaration_by_the_edition() {
             .as_array()
             .unwrap()
             .iter()
-            .map(|d| format!("{} {}", d["code"].as_str().unwrap(), d["message"].as_str().unwrap()))
+            .map(|d| {
+                format!(
+                    "{} {}",
+                    d["code"].as_str().unwrap(),
+                    d["message"].as_str().unwrap()
+                )
+            })
             .collect()
     };
+    let says = |found: &[String], code: &str, part: &str| {
+        found
+            .iter()
+            .any(|m| m.starts_with(code) && m.contains(part))
+    };
     let in_0_3 = messages("messages-0-3", "0.3", "test");
+    let twice = "U1002 test \"a greeting\" is defined twice in this module";
+    assert!(in_0_3.contains(&twice.to_owned()), "{in_0_3:#?}");
     assert!(
-        in_0_3.contains(&"U1002 test \"a greeting\" is defined twice in this module".to_owned()),
-        "{in_0_3:#?}"
-    );
-    assert!(
-        in_0_3.iter().any(|m| m.starts_with("U3014") && m.contains("tests cannot use host capabilities")),
+        says(&in_0_3, "U3014", "tests cannot use host capabilities"),
         "{in_0_3:#?}"
     );
     let in_0_2 = messages("messages-0-2", "0.2", "example");
+    let twice = "U1002 example \"a greeting\" is defined twice in this module";
+    assert!(in_0_2.contains(&twice.to_owned()), "{in_0_2:#?}");
     assert!(
-        in_0_2.contains(&"U1002 example \"a greeting\" is defined twice in this module".to_owned()),
-        "{in_0_2:#?}"
-    );
-    assert!(
-        in_0_2.iter().any(|m| m.starts_with("U3014") && m.contains("examples cannot use host capabilities")),
+        says(&in_0_2, "U3014", "examples cannot use host capabilities"),
         "{in_0_2:#?}"
     );
 }

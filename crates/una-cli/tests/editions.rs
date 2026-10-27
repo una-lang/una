@@ -120,6 +120,12 @@ const EXPECTED_DIFFERENCES: &[Difference] = &[
         case: "types/memory_example_do",
         edition_0_3: &[("U0103", "src/memdo.una:18:1"), ("U0103", "src/memdo.una:22:1")],
     },
+    // ADR 0105 rule 4: `test` is a keyword in edition 0.3, so a function and a local named
+    // `test` are U0101 there; the local's rename is the one edit.
+    Difference::Stricter {
+        case: "names/test_name_0_2",
+        edition_0_3: &[("U0101", "src/m.una:6:1"), ("U0101", "src/m.una:10:7")],
+    },
     // ADR 0104 rule 1: a unit declaration, a parse error before edition 0.3.
     Difference::Syntax {
         case: "types/units_edition_0_2",

@@ -88,7 +88,8 @@ pub fn lex_in(
     apply(&mut lexer.out, &chosen);
     let out = &mut lexer.out;
     // The renames of names that start with `_` (ADR 0096 A).
-    crate::rewrite::underscore_renames(&out.text, file, &mut out.errors);
+    let keywords = out.keywords;
+    crate::rewrite::underscore_renames(&out.text, file, keywords, &mut out.errors);
     lexer.out
 }
 
@@ -201,9 +202,8 @@ fn apply(lexed: &mut Lexed, chosen: &BTreeMap<String, String>) {
     }
 }
 
-/// Keywords that start a declaration at column 1 (`compiler/architecture.md §5`); `test` is
-/// the test declaration of edition 0.3 (ADR 0105).
-const DECLARATION_KEYWORDS: [&str; 12] = [
+/// Keywords that start a declaration at column 1 (`compiler/architecture.md §5`).
+const DECLARATION_KEYWORDS: [&str; 11] = [
     "capability",
     "example",
     "handler",
@@ -214,14 +214,16 @@ const DECLARATION_KEYWORDS: [&str; 12] = [
     "predicate",
     "pub",
     "requirement",
-    "test",
     "trusted",
 ];
 
 /// Whether a lower-case word at column 1 starts a declaration: a declaration keyword, or a
-/// function name followed by `(`, or by `[` for a generic function.
-pub(crate) fn starts_declaration(word: &str, next: Option<char>) -> bool {
-    DECLARATION_KEYWORDS.contains(&word) || matches!(next, Some('(' | '['))
+/// function name followed by `(`, or by `[` for a generic function; `test` is the test
+/// declaration of edition 0.3, under a keyword set that has it (ADR 0105), and a name before.
+pub(crate) fn starts_declaration(word: &str, next: Option<char>, keywords: KeywordSet) -> bool {
+    DECLARATION_KEYWORDS.contains(&word)
+        || (word == "test" && keywords >= KeywordSet::V0_3)
+        || matches!(next, Some('(' | '['))
 }
 
 /// Why a character is not allowed anywhere, including text literals and comments (ADR 0017).
@@ -478,6 +480,7 @@ impl Lexer<'_> {
             description: "write `test`".to_owned(),
             edit: Some((span, "test".to_owned())),
         });
+        error.recovered = true;
         self.out.errors.push(error);
     }
 
@@ -614,7 +617,11 @@ impl Lexer<'_> {
             .count();
         let word = rest.get(..length).unwrap_or("");
         word.starts_with(|c: char| c.is_ascii_lowercase())
-            && starts_declaration(word, rest.get(length..).and_then(|r| r.chars().next()))
+            && starts_declaration(
+                word,
+                rest.get(length..).and_then(|r| r.chars().next()),
+                self.out.keywords,
+            )
     }
 
     /// Applies the indentation algorithm of `spec/01 §2` to a logical line. A tab reports only
@@ -1170,6 +1177,10 @@ impl Lexer<'_> {
         if word == "example"
             && self.out.keywords >= KeywordSet::V0_3
             && (start == 0 || self.text.get(..start).is_some_and(|before| before.ends_with('\n')))
+            && self
+                .text
+                .get(self.pos..)
+                .is_some_and(|rest| rest.trim_start_matches(' ').starts_with('"'))
         {
             self.example_in_0_3(start);
         }

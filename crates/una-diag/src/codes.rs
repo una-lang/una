@@ -82,7 +82,7 @@ pub enum Code {
     U0101,
     /// Clause out of order or repeated.
     U0102,
-    /// Reserved keyword not available in v0.1.
+    /// Reserved keyword not available in the package's edition.
     U0103,
     /// Unresolved name.
     U1001,
@@ -476,7 +476,7 @@ impl Code {
             Code::U0103 => &Entry {
                 code: "U0103",
                 domain: Domain::Syntax,
-                meaning: "Reserved keyword not available in v0.1",
+                meaning: "Reserved keyword not available in the package's edition",
             },
             Code::U1001 => &Entry {
                 code: "U1001",

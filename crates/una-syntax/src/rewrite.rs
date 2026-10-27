@@ -103,7 +103,7 @@ fn lines_of(text: &str) -> Option<Vec<Line<'_>>> {
 
 /// Whether a line starts a declaration, as the parser's recovery reads it, or would with a
 /// foreign word in front (`fn name(`, `priv name(`).
-fn starts_decl(line: &Line<'_>) -> bool {
+fn starts_decl(line: &Line<'_>, keywords: KeywordSet) -> bool {
     if line.indent != 0 || line.blank() {
         return false;
     }
@@ -122,7 +122,7 @@ fn starts_decl(line: &Line<'_>) -> bool {
         .text
         .get(word.len()..)
         .and_then(|rest| rest.chars().next());
-    starts_declaration(&word, next)
+    starts_declaration(&word, next, keywords)
 }
 
 /// A position of `s` at bracket depth 0, outside text literals.
@@ -759,7 +759,7 @@ pub(crate) fn attach(text: &str, file: FileId, keywords: KeywordSet, errors: &mu
         };
         let Some(decl) = (0..=at)
             .rev()
-            .find(|&i| lines.get(i).is_some_and(starts_decl))
+            .find(|&i| lines.get(i).is_some_and(|line| starts_decl(line, keywords)))
         else {
             continue;
         };
@@ -772,7 +772,7 @@ pub(crate) fn attach(text: &str, file: FileId, keywords: KeywordSet, errors: &mu
             continue;
         }
         let decl_end = (at + 1..lines.len())
-            .find(|&i| lines.get(i).is_some_and(starts_decl))
+            .find(|&i| lines.get(i).is_some_and(|line| starts_decl(line, keywords)))
             .unwrap_or(lines.len());
         let candidates = [
             header_equals(&lines, at, decl, decl_end),
@@ -867,13 +867,20 @@ pub enum DeclarationKind {
     Unnamed,
 }
 
-/// The declarations of `text`; empty when an indentation holds a tab.
+/// The declarations of `text` under the keywords of edition 0.1; empty when an indentation
+/// holds a tab.
 pub fn declarations(text: &str) -> Vec<Declaration> {
+    declarations_in(text, KeywordSet::V0_1)
+}
+
+/// The declarations of `text` under the keyword set `keywords`, which decides whether a line
+/// `test "..."` starts one (edition 0.3, ADR 0105); empty when an indentation holds a tab.
+pub fn declarations_in(text: &str, keywords: KeywordSet) -> Vec<Declaration> {
     let Some(lines) = lines_of(text) else {
         return Vec::new();
     };
     let starts: Vec<usize> = (0..lines.len())
-        .filter(|&i| lines.get(i).is_some_and(starts_decl))
+        .filter(|&i| lines.get(i).is_some_and(|line| starts_decl(line, keywords)))
         .collect();
     let mut out = Vec::new();
     for (index, &first) in starts.iter().enumerate() {
@@ -1073,7 +1080,12 @@ fn in_plain_text(region: &str) -> Vec<bool> {
 /// parameter or a pattern's binding, becomes `x`, or the first fresh name of rule 3a, at every
 /// occurrence in its declaration; `Variant(_)` loses its binding, and an arm `_ ->` becomes
 /// `else ->`. Every occurrence of one name gets the same edit, which `una fix` applies once.
-pub(crate) fn underscore_renames(text: &str, file: FileId, errors: &mut [SyntaxError]) {
+pub(crate) fn underscore_renames(
+    text: &str,
+    file: FileId,
+    keywords: KeywordSet,
+    errors: &mut [SyntaxError],
+) {
     let Some(lines) = lines_of(text) else {
         return;
     };
@@ -1103,12 +1115,12 @@ pub(crate) fn underscore_renames(text: &str, file: FileId, errors: &mut [SyntaxE
         }
         let Some(decl) = (0..=at)
             .rev()
-            .find(|&i| lines.get(i).is_some_and(starts_decl))
+            .find(|&i| lines.get(i).is_some_and(|line| starts_decl(line, keywords)))
         else {
             continue;
         };
         let decl_end = (at + 1..lines.len())
-            .find(|&i| lines.get(i).is_some_and(starts_decl))
+            .find(|&i| lines.get(i).is_some_and(|line| starts_decl(line, keywords)))
             .unwrap_or(lines.len());
         let header_end = lines.get(decl).map_or(0, |l| l.start + l.text.len());
         let (start, end) = (offset(decl), offset(decl_end).min(text.len()));
