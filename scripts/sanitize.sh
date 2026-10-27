@@ -78,7 +78,7 @@ ignored_count=$(echo "$summary" | sed -n 's/.* \([0-9]*\) ignored.*/\1/p')
 [ "$ignored_count" = "$expected_ignored" ] && [ $((passed + ignored_count)) = "$total" ] \
     || fail "Miri passed $passed and ignored $ignored_count of $total tests, where $expected_ignored are to be ignored"
 # Code that behaves differently under Miri does so only where counted here: every mention of
-# `miri` in una-rt, any module and any form, but the ignore attributes checked above. Today fourteen
+# `miri` in una-rt, any module and any form, but the ignore attributes checked above. Today fifteen
 # tests that run smaller under Miri, where each allocation is slow (#778): two deep values at
 # depth 1,000 rather than 1,000,000, a copy between heaps at depth 1,000 rather than 200,000,
 # 200 rounds of `find` rather than 10,000, the entry points with a pool of one word of each
@@ -88,15 +88,15 @@ ignored_count=$(echo "$summary" | sed -n 's/.* \([0-9]*\) ignored.*/\1/p')
 # and 100 texts counted rather than up to 100,000, blocks nested 3 deep rather than 200, and 4
 # and 8 traced blocks rather than up to 256, and flat lists of 1,000 integers compared rather
 # than 100,000 (#815), and texts of 4,301 and 17,200 digits rather than 100,000 and 1,000,000
-# refused by the integer digit cap, whose timing runs only outside Miri, two mentions (#914).
-# Their full sizes run in the ordinary tests. And one constant: the
+# refused by the integer digit cap, whose timing runs only outside Miri, two mentions (#914), and two fresh
+# chains of 64 and 256 levels compared rather than up to 100,000 (#926). Their full sizes run in the ordinary tests. And one constant: the
 # debug quarantine of freed slots is 64 rather than 65,536, so that the test of slot reuse runs
 # under Miri and Miri checks the reuse.
 # Since #1065 the three reductions in the tests of tasks.rs (the staged block, the start depths
 # and the traced blocks) take no effect: those tests fork tasks onto coroutines, whose stacks and
 # switch Miri cannot run, so they are ignored under Miri with the scheduler's own tests (#1145).
 reduced=$(grep -rn 'miri' crates/una-rt | grep -vc 'cfg_attr(miri, ignore')
-[ "$reduced" = 16 ] || fail "una-rt mentions miri $reduced times outside its ignore attributes, and this script states 16"
+[ "$reduced" = 17 ] || fail "una-rt mentions miri $reduced times outside its ignore attributes, and this script states 17"
 
 asan=$(rustc +"$channel" --print sysroot)/lib/rustlib/$host/lib/librustc-nightly_rt.asan.dylib
 [ -f "$asan" ] || fail "the checking toolchain has no AddressSanitizer runtime at $asan"

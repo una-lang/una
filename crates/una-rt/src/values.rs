@@ -3759,4 +3759,83 @@ mod tests {
         release(a);
         release(b);
     }
+
+    /// A list nested `depth` deep, each level one fresh list holding the next: no sharing, so a
+    /// comparison with another such chain meets `depth` pairs of values with parts.
+    fn chain(depth: usize) -> i64 {
+        let mut value = list();
+        for _ in 0..depth {
+            let outer = list();
+            push(outer, value);
+            release(value);
+            value = outer;
+        }
+        value
+    }
+
+    #[test]
+    fn two_fresh_chains_compare_in_one_step_per_level_at_every_depth() {
+        // #926: structural equality on a chain is linear in its depth, one step per pair of
+        // values with parts, whatever the depth, under Miri at depths 64 and 256.
+        let depths: &[usize] = if cfg!(miri) {
+            &[64, 256]
+        } else {
+            &[1_000, 10_000, 100_000]
+        };
+        for &depth in depths {
+            let (a, b) = (chain(depth), chain(depth));
+            let (steps, verdict) = steps(a, b);
+            assert_eq!(verdict, Some(true), "depth {depth}");
+            assert_eq!(steps, depth, "depth {depth}: {steps} steps");
+            // A chain against a copy of itself through a portable: the same count.
+            let copy = import(&export(a).unwrap()).unwrap();
+            let (steps, verdict) = steps(a, copy);
+            assert_eq!(verdict, Some(true), "depth {depth}, copy");
+            assert_eq!(steps, depth, "depth {depth}, copy: {steps} steps");
+            release(copy);
+            release(a);
+            release(b);
+        }
+    }
+
+    #[test]
+    #[ignore = "timing: run in a quiet window (#926), with `--release` for the native figure"]
+    fn two_fresh_chains_compare_in_time_linear_in_their_depth() {
+        // #926: the time of `equal` on fresh chains of 10^3, 10^4 and 10^5 levels, against
+        // another fresh chain and against a copy through a portable, grows linearly: ten times
+        // the depth takes at most about ten times the time, measured as the median of three.
+        let mut per_level = Vec::new();
+        for depth in [1_000usize, 10_000, 100_000] {
+            let (a, b) = (chain(depth), chain(depth));
+            let copy = import(&export(a).unwrap()).unwrap();
+            let mut fresh = Vec::new();
+            let mut copied = Vec::new();
+            for _ in 0..3 {
+                let started = std::time::Instant::now();
+                assert_eq!(equal_words(a, b, usize::MAX), Some(true));
+                fresh.push(started.elapsed().as_secs_f64());
+                let started = std::time::Instant::now();
+                assert_eq!(equal_words(a, copy, usize::MAX), Some(true));
+                copied.push(started.elapsed().as_secs_f64());
+            }
+            fresh.sort_by(f64::total_cmp);
+            copied.sort_by(f64::total_cmp);
+            let (f, c) = (fresh[1], copied[1]);
+            eprintln!("depth {depth}: fresh {f:.6}s, copy {c:.6}s");
+            per_level.push((f / depth as f64, c / depth as f64));
+            release(copy);
+            release(a);
+            release(b);
+        }
+        // The cost per level at 10^5 is at most four times that at 10^3: no superlinear term.
+        let (first, last) = (per_level[0], per_level[2]);
+        assert!(
+            last.0 <= first.0 * 4.0 + 1e-7,
+            "fresh: {first:?} then {last:?}"
+        );
+        assert!(
+            last.1 <= first.1 * 4.0 + 1e-7,
+            "copy: {first:?} then {last:?}"
+        );
+    }
 }
