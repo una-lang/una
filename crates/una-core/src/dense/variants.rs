@@ -17,7 +17,7 @@
 //! Declaring a variant is safe Rust: a safe `#[target_feature]` function. Calling one from code
 //! without its features is not, so this crate never does: `una-rt`'s `ffi.rs` holds the one
 //! `unsafe` site, a macro that calls a variant only after the detection of exactly its
-//! [`x86_64_v3::FEATURES`] or [`x86_64_v4::FEATURES`] succeeded (rule 56), and fills a
+//! [`X86_64_V3_FEATURES`] or [`X86_64_V4_FEATURES`] succeeded (rule 56), and fills a
 //! [`Kernels`] table with safe wrappers. The interpreter, which has no `unsafe`, runs the
 //! table it is given, [`Kernels::BASELINE`] by default.
 //!
@@ -27,9 +27,9 @@
 //! whole closure of its features under the toolchain's implications: x86-64-v3's `avx`, `avx2`
 //! and `fma` with what they imply, and x86-64-v4's `avx512f`, `avx512vl`, `avx512dq` and
 //! `avx512bw` with what they imply. `tests/variants_features.rs` asks the toolchain for that
-//! closure and asserts that it adds nothing to [`x86_64_v3::FEATURES`] or
-//! [`x86_64_v4::FEATURES`], so a processor or a virtual machine that hides an extension never
-//! runs an instruction it lacks.
+//! closure and asserts that it equals [`X86_64_V3_FEATURES`] and [`X86_64_V4_FEATURES`], so
+//! a processor or a virtual machine that hides an extension never runs an instruction it
+//! lacks.
 
 use super::Triangle;
 
@@ -41,9 +41,15 @@ macro_rules! variant {
     (
         $(#[$attribute:meta])*
         $name:ident,
-        [$($feature:tt),*],
+        $list:ident = [$($feature:tt),*],
         |$x:ident, $y:ident, $z:ident| $fma:expr
     ) => {
+        #[doc = concat!(
+            "The target features of the variant `", stringify!($name), "`, on every host, ",
+            "so that the test of rule 56 reads them where the variant is not compiled."
+        )]
+        pub const $list: &[&str] = &[$($feature),*];
+
         $(#[$attribute])*
         #[allow(clippy::redundant_closure)]
         pub mod $name {
@@ -57,7 +63,7 @@ macro_rules! variant {
 
             /// The target features this variant enables, exactly those [`detected`] checks
             /// (ADR 0120 rule 56).
-            pub const FEATURES: &[&str] = &[$($feature),*];
+            pub const FEATURES: &[&str] = super::$list;
 
             /// Whether the processor has every feature of [`FEATURES`], by the standard
             /// library's safe detection; true for a variant with none. O(1) after the
@@ -155,7 +161,7 @@ variant!(
     /// [`fma::baseline`], the `fmadd` instruction on AArch64 and the exact emulation on x86-64.
     /// Every processor of the target runs it, and the interpreter runs it by default.
     baseline,
-    [],
+    BASELINE_FEATURES = [],
     |x, y, z| fma::baseline(x, y, z)
 );
 
@@ -164,7 +170,7 @@ variant!(
     /// SSE levels `avx` implies, and the `vfmadd` instruction as the `fma`.
     #[cfg(target_arch = "x86_64")]
     x86_64_v3,
-    ["avx", "avx2", "fma", "sse3", "ssse3", "sse4.1", "sse4.2"],
+    X86_64_V3_FEATURES = ["avx", "avx2", "fma", "sse3", "ssse3", "sse4.1", "sse4.2"],
     |x, y, z| {
         use core::arch::x86_64::{_mm_cvtsd_f64, _mm_fmadd_sd, _mm_set_sd};
         // The instruction on the low lane: x * y + z rounded once, as IEEE `fusedMultiplyAdd`.
@@ -182,7 +188,7 @@ variant!(
     /// `fma`.
     #[cfg(target_arch = "x86_64")]
     x86_64_v4,
-    [
+    X86_64_V4_FEATURES = [
         "avx", "avx2", "fma", "sse3", "ssse3", "sse4.1", "sse4.2", "f16c", "avx512f", "avx512vl",
         "avx512dq", "avx512bw"
     ],
