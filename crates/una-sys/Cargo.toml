@@ -10,6 +10,12 @@ description = "The unsafe code that the Una runtime and interpreter share: signa
 [dependencies]
 libc.workspace = true
 
+[features]
+# ADR 0124 rules 7 and 35: the solver child's confinement record, and in later slices its
+# confinement, limits, spawn attributes and footprint reading, for `una-cli` and `una-z3` only.
+# `una-rt` and `una-interp` never enable it; a test of `una-cli` checks the feature graph.
+solver = []
+
 # The workspace lints, except `unsafe_code`: ADR 0058 (amended by ADRs 0116 and 0117) allows
 # `unsafe` in this crate, in the modules that call the operating system or switch stacks:
 # `signals.rs`, `coroutine.rs` (Rust `naked_asm!` only, no assembly files, no build script, no C),

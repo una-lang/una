@@ -27,6 +27,7 @@ una-report.workspace = true
 una-syntax.workspace = true
 una-sys.workspace = true
 una-verify.workspace = true
+una-z3.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

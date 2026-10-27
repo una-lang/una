@@ -27,6 +27,7 @@ una-rt = { path = "crates/una-rt" }
 una-syntax = { path = "crates/una-syntax" }
 una-sys = { path = "crates/una-sys" }
 una-verify = { path = "crates/una-verify" }
+una-z3 = { path = "crates/una-z3" }
 # External crates, only from the allowlist of compiler/architecture.md §7.
 ariadne = "0.6.0"
 # Allowed by ADR 0116 Appendix A (amendment of 2026-10-19), for `una-sys` only: Rust
