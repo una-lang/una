@@ -128,17 +128,21 @@ fn make_pools(io_threads: usize) -> Pools {
     }
 }
 
+/// A pool thread could not start ([`start`]), which the engine reports before `main`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NotStarted;
+
 /// Starts the process's pools for a run of `io_threads` I/O helpers, all their threads at once,
 /// unless they exist: what an engine calls before `main` in a run whose grants include `Http`.
 /// `Err` when a thread could not start, which the engine reports before `main`. The first call
 /// sets the sizes for the process.
-pub fn start(io_threads: usize) -> Result<(), ()> {
+pub fn start(io_threads: usize) -> Result<(), NotStarted> {
     let pools = POOLS.get_or_init(|| make_pools(io_threads));
     let full = |pool: &Pool| pool.threads.load(Ordering::SeqCst) == pool.wanted;
     if full(&pools.lookups) && full(&pools.connects) {
         Ok(())
     } else {
-        Err(())
+        Err(NotStarted)
     }
 }
 
@@ -172,7 +176,7 @@ fn serve(pool: &Pool) {
                 }
             }
         };
-        (job.run)(&*job.gave_up);
+        (job.run)(&job.gave_up);
     }
 }
 
