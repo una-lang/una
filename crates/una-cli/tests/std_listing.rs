@@ -318,6 +318,10 @@ fn the_builtins_are_exactly_the_methods_the_checker_resolves() {
         (_, "Stack[T]") => "Stack",
         (_, "Queue[T]") => "Queue",
         (_, "Set[T]") => "Set",
+        (_, "HashMap[K, V]") => "HashMap",
+        (_, "HashSet[T]") => "HashSet",
+        (_, "PriorityQueue[T, P]") => "PriorityQueue",
+        (_, "BitSet") => "BitSet",
         (name, _) if name.starts_with("to_") => "conversion",
         _ => "fixed",
     };
@@ -346,7 +350,7 @@ fn instantiate(ty: &str, fixed: &str) -> String {
     let flush = |word: &mut String, out: &mut String| {
         out.push_str(match word.as_str() {
             "K" => "Text",
-            "V" | "T" => "Int",
+            "V" | "T" | "P" => "Int",
             "F" => fixed,
             other => other,
         });
@@ -373,6 +377,9 @@ fn literal(ty: &str, wrong: bool) -> &'static str {
         ("fn(Int) -> Int", false) => "fn(n) -> n",
         // A set of the receiver's type: the receiver itself.
         ("Set[Int]", false) => "r",
+        // A hash set or a hash map of the receiver's type: the receiver itself.
+        ("HashSet[Int]" | "HashMap[Text, Int]", false) => "r",
+        ("BitSet", false) => "r",
         (_, false) => "1",
         (_, true) => "\"k\"",
     }
@@ -418,9 +425,15 @@ fn builtin_probe(b: &Builtin, fixed: &str, negative: bool) -> String {
     };
     // A receiver of a collection type of `std.collections` names it, so the probe imports it
     // (ADR 0119 rule 0); before edition 0.4 the import itself is U1001.
+    // A result that names the kind `Ranked`, as `pop_ranked`'s does, imports it too.
     let head = receiver.split('[').next().unwrap_or_default();
     let import = if una_core::Coll::from_name(head).is_some() {
-        format!("import std.collections ({head})\n\n")
+        let ranked = if result.contains("Ranked[") {
+            ", Ranked"
+        } else {
+            ""
+        };
+        format!("import std.collections ({head}{ranked})\n\n")
     } else {
         String::new()
     };
@@ -1216,12 +1229,14 @@ const STATED_COSTS: [Stated; 4] = [
 
 /// The receiver that a cost table's row or sentence is about where it names only the method,
 /// for a method with several receivers: ADR 0070 is about texts, so its `.len` row is the cost
-/// on a `Text`, and `spec/21 §5` is about maps, so its costs of `has`, `remove`, `with` and
-/// `without` are those on a `Map`.
-const COST_ON: [(&str, &str, &str); 5] = [
+/// on a `Text`, and `spec/21 §5` is about maps, so its costs of `get`, `has`, `remove`, `set`,
+/// `with` and `without` are those on a `Map`.
+const COST_ON: [(&str, &str, &str); 7] = [
     ("ADR 0070", "len", "Text"),
+    ("spec/21 §5", "get", "Map[K, V]"),
     ("spec/21 §5", "has", "Map[K, V]"),
     ("spec/21 §5", "remove", "Map[K, V]"),
+    ("spec/21 §5", "set", "Map[K, V]"),
     ("spec/21 §5", "with", "Map[K, V]"),
     ("spec/21 §5", "without", "Map[K, V]"),
 ];

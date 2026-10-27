@@ -69,9 +69,18 @@ enum Kind {
     Hashed,
     /// A handle to a boxed `F64` (ADR 0114 rule 9.6).
     F64,
+    /// An `F32`: the tagged word of the key of totalOrder of its canonical bits, which fits 63
+    /// bits, so it never allocates (ADR 0120 rule 10). Never a handle.
+    F32,
     /// A handle to a tuple: the state of a loop, or the results of a call with `edit`
     /// parameters (`spec/17 §4`).
     Tuple,
+    /// A handle to a dense value, an `Array`, `Matrix`, `Tensor` or `Lu` (`spec/29 §17`, ADR
+    /// 0120 rule 28): the runtime's header over its store.
+    Dense,
+    /// A handle to a collection of `std.collections`: a `Stack`, a `Queue`, a `Set`, a
+    /// `HashMap`, a `HashSet`, a `PriorityQueue` or a `BitSet` (ADR 0119 rule 19).
+    Coll,
     /// A value of a type parameter: any of the above.
     Any,
 }
@@ -79,14 +88,22 @@ enum Kind {
 impl Kind {
     /// Whether the word may be a handle, which reference counting tracks.
     fn counted(self) -> bool {
-        !matches!(self, Kind::Bool | Kind::Unit)
+        !matches!(self, Kind::Bool | Kind::Unit | Kind::F32)
     }
 
     /// Whether the word is always a handle.
     fn handle(self) -> bool {
         matches!(
             self,
-            Kind::Text | Kind::List | Kind::Map | Kind::Fn | Kind::Hashed | Kind::Tuple | Kind::F64
+            Kind::Text
+                | Kind::List
+                | Kind::Map
+                | Kind::Fn
+                | Kind::Hashed
+                | Kind::Tuple
+                | Kind::F64
+                | Kind::Dense
+                | Kind::Coll
         )
     }
 }
@@ -97,6 +114,34 @@ fn unsupported(what: impl Into<String>) -> CodegenError {
 
 fn internal(what: impl Into<String>) -> CodegenError {
     CodegenError::Internal(what.into())
+}
+
+/// The runtime's code of the collection operation `prim`, its position in its kind's `ALL`, and
+/// whether it gives a new collection built from its receiver (ADR 0119 rule 1).
+fn collection_code(prim: Prim) -> Result<(i64, bool), CodegenError> {
+    fn position<T: PartialEq>(all: &[T], op: &T) -> Option<i64> {
+        all.iter()
+            .position(|x| x == op)
+            .and_then(|i| i64::try_from(i).ok())
+    }
+    let found = match prim {
+        Prim::Seq(op) => position(&una_core::SeqOp::ALL, &op).map(|code| (code, op.rebuilds())),
+        Prim::Set(op) => position(&una_core::SetOp::ALL, &op).map(|code| (code, op.rebuilds())),
+        Prim::Priority(op) => {
+            position(&una_core::PriorityOp::ALL, &op).map(|code| (code, op.rebuilds()))
+        }
+        Prim::BitSet(op) => {
+            position(&una_core::BitSetOp::ALL, &op).map(|code| (code, op.rebuilds()))
+        }
+        Prim::HashMap(op) => {
+            position(&una_core::HashMapOp::ALL, &op).map(|code| (code, op.rebuilds()))
+        }
+        Prim::HashSet(op) => {
+            position(&una_core::HashSetOp::ALL, &op).map(|code| (code, op.rebuilds()))
+        }
+        _ => None,
+    };
+    found.ok_or_else(|| internal(format!("`{}` is no collection operation", prim.as_str())))
 }
 
 /// The kind of a value of type `ty`, or what the backend does not compile yet.
@@ -116,31 +161,27 @@ fn kind(ty: &Type) -> Result<Kind, CodegenError> {
             // A decimal is its coefficient, an integer word; its scale is static (ADR 0120
             // rule 20).
             Base::Decimal(_) => Ok(Kind::Int),
+            Base::F32 => Ok(Kind::F32),
             Base::Named { module, name, .. } if module == PRELUDE_MODULE && name == "List" => {
                 Ok(Kind::List)
             }
             Base::Named { module, name, .. } if module == PRELUDE_MODULE && name == "Map" => {
                 Ok(Kind::Map)
             }
-            // Dense values wait for their native step (`spec/29 §17`, ADR 0120 rule 28).
+            // A counted handle to the runtime's header (`spec/29 §17`, ADR 0120 rule 28).
             Base::Named { module, name, .. }
-                if module == PRELUDE_MODULE && matches!(name.as_str(), "Array" | "Matrix") =>
+                if module == PRELUDE_MODULE
+                    && matches!(name.as_str(), "Array" | "Matrix" | "Tensor" | "Lu") =>
             {
-                Err(unsupported("dense values (spec/29)"))
+                Ok(Kind::Dense)
             }
-            // `Stack` and `Queue` wait for their native layout (`spec/28 §5`, ADR 0119 rule 19).
+            // The collections of `std.collections`: one object each, with a layout of its own in
+            // the runtime (`spec/28`, ADR 0119 rule 19).
             Base::Named { module, name, .. }
                 if module == una_core::COLLECTIONS_MODULE
-                    && (name == "Stack" || name == "Queue") =>
+                    && una_core::Coll::from_name(name).is_some() =>
             {
-                Err(unsupported("`Stack` and `Queue` (spec/28)"))
-            }
-            // The sets of `std.collections` wait for their native layout (`spec/28 §6`, ADR
-            // 0119 rule 19).
-            Base::Named { module, name, .. }
-                if module == una_core::COLLECTIONS_MODULE && name == "Set" =>
-            {
-                Err(unsupported("`Set` (spec/28)"))
+                Ok(Kind::Coll)
             }
             Base::Tuple(_) => Ok(Kind::Tuple),
             Base::Named { .. } => Ok(Kind::Data),
@@ -148,6 +189,56 @@ fn kind(ty: &Type) -> Result<Kind, CodegenError> {
         },
         Type::Fn { .. } => Ok(Kind::Fn),
     }
+}
+
+/// Whether the prelude function `name` is a constructor or a method of dense values
+/// (`spec/29 §17`), as the interpreter's `is_dense`.
+pub(crate) fn is_dense(name: &str) -> bool {
+    matches!(
+        name,
+        "array"
+            | "array_filled"
+            | "matrix"
+            | "matrix_filled"
+            | "matrix_diagonal"
+            | "tensor"
+            | "tensor_filled"
+    ) || name.starts_with("dense_")
+}
+
+/// The method of the dense prelude function `name` after its type's prefix, without a
+/// tensor's rank: `dense_tensor_get_3` is `get`, as the interpreter's `method_of`.
+pub(crate) fn dense_method(name: &str) -> &str {
+    let method = [
+        "dense_array_",
+        "dense_matrix_",
+        "dense_tensor_",
+        "dense_lu_",
+    ]
+    .iter()
+    .find_map(|prefix| name.strip_prefix(prefix))
+    .unwrap_or(name);
+    match method.rsplit_once('_') {
+        Some((base, rank))
+            if name.starts_with("dense_tensor_")
+                && rank
+                    .parse::<usize>()
+                    .is_ok_and(|rank| (1..=8).contains(&rank)) =>
+        {
+            base
+        }
+        _ => method,
+    }
+}
+
+/// Whether the dense prelude function `name` takes its receiver by `edit` (ADR 0120 rule 31):
+/// at the receiver's last use it moves in, and is updated in place when held once.
+pub(crate) fn dense_edits(name: &str) -> bool {
+    name.starts_with("dense_")
+        && matches!(
+            dense_method(name),
+            "set" | "update" | "add_product" | "add_scaled" | "scale"
+        )
 }
 
 /// The binding of the type descriptor of the type parameter `param` (`spec/20 §7`): `$T`, which
@@ -183,6 +274,7 @@ pub(crate) fn constant_descriptor(
         Base::Text => Descriptor::Text,
         Base::F64 => Descriptor::F64,
         Base::Decimal(_) => Descriptor::Decimal(index(ty)),
+        Base::F32 => Descriptor::F32,
         // A kind satisfies `Ord` only as a sum whose variants have no payload (`spec/20 §1`).
         Base::Named { module, .. } if module != PRELUDE_MODULE && constraint >= Constraint::Ord => {
             Descriptor::Sum(index(ty))
@@ -378,9 +470,11 @@ struct Lowerer<'e, 'p, 'b> {
     /// The bindings that other words borrow from: the scrutinees of `case`, the tuples of
     /// `let (...)` and the lists that loops visit. Their values are never moved (#30).
     pinned: BTreeSet<String>,
-    /// The block that returns the status 2 of a stopped task (`spec/19 §6` rule 4): a task
-    /// that is cancelled, or that aborts, stops where it is. Nothing is released, since the
-    /// task's heap ends with its thread.
+    /// The block that returns the status 2 of a stopped task at once (`spec/19 §6` rule 4), for
+    /// an abort found where the words in scope are not at hand (U6003, U6004, U6005 and the
+    /// faults of the prelude): the run, or the task, ends, and the task's heap with it. A
+    /// cancellation, which a task survives inside a `within`, takes the failure path with
+    /// [`STOPPED`] instead.
     stop: Block,
     /// Whether the code being lowered computes integers exactly (`Body::exact`): a fixed-width
     /// type there is not a proof that a value fits it.
@@ -456,14 +550,18 @@ pub(crate) fn function<'p>(
         let ok = lowerer.builder.ins().iconst(types::I64, 0);
         lowerer.builder.ins().return_(&[result, ok]);
     }
+    // A failure returns status 1; a stop, which reaches here as [`STOPPED`] once every frame of
+    // the body has released its words, returns status 2.
     lowerer.builder.switch_to_block(failed);
     let failure = lowerer.param(failed)?;
+    let stopped = lowerer.stopped(failure);
     let one = lowerer.builder.ins().iconst(types::I64, 1);
-    lowerer.builder.ins().return_(&[failure, one]);
+    let status = lowerer.builder.ins().iadd(one, stopped);
+    lowerer.builder.ins().return_(&[failure, status]);
     lowerer.builder.switch_to_block(stop);
-    let zero = lowerer.builder.ins().iconst(types::I64, 0);
+    let word = lowerer.builder.ins().iconst(types::I64, STOPPED);
     let two = lowerer.builder.ins().iconst(types::I64, 2);
-    lowerer.builder.ins().return_(&[zero, two]);
+    lowerer.builder.ins().return_(&[word, two]);
     lowerer.builder.seal_all_blocks();
     lowerer.builder.finalize(config);
     Ok(())
@@ -498,8 +596,14 @@ impl<'p> Lowerer<'_, 'p, '_> {
                     expr = body;
                 }
                 Expr::Loop { .. } => return self.lower_loop(expr, env, scope, catch),
-                Expr::Together { .. } | Expr::TogetherFor { .. } => {
+                Expr::Together { .. } | Expr::TogetherFor { .. } | Expr::FirstOf { .. } => {
                     return self.together(expr, env, scope, catch);
+                }
+                Expr::Tasks { bound, body, span } => {
+                    return self.tasks(bound.as_ref(), body, *span, env, scope, catch);
+                }
+                Expr::Start { task, span } => {
+                    return self.start(task, *span, env, scope, catch);
                 }
                 Expr::Atom { atom, .. } => {
                     let (value, kind) = self.atom(atom, env)?;
@@ -669,6 +773,8 @@ impl<'p> Lowerer<'_, 'p, '_> {
                     let mut reached = self.branch(body, env, scope, join, &inner)?;
                     self.builder.switch_to_block(handling);
                     let failure = self.param(handling)?;
+                    // A stop is no failure to handle: it goes on, out of this frame too.
+                    self.pass_stop(failure, scope, catch);
                     let mut handler_env = env.clone();
                     handler_env.insert(error.clone(), (failure, unknown()));
                     let mut handler_scope = scope.clone();
@@ -677,7 +783,26 @@ impl<'p> Lowerer<'_, 'p, '_> {
                         self.branch_in(handler, &mut handler_env, &handler_scope, join, catch)?;
                     return self.joined(join, reached);
                 }
-                Expr::Attempt { body, .. } => return self.attempt(body, env, scope).map(Some),
+                Expr::Attempt { body, .. } => {
+                    return self.attempt(body, env, scope, catch).map(Some);
+                }
+                Expr::Within {
+                    deadline,
+                    body,
+                    timeout,
+                    wrap,
+                    ..
+                } => {
+                    return self.within(
+                        deadline,
+                        body,
+                        timeout,
+                        wrap.as_deref(),
+                        env,
+                        scope,
+                        catch,
+                    );
+                }
                 Expr::With { cap, source, body } => {
                     let instance = match source {
                         // E-Rebind shares the instance.
@@ -766,6 +891,8 @@ impl<'p> Lowerer<'_, 'p, '_> {
         scope: &mut Scope,
         catch: &Catch,
     ) -> Result<Option<Value>, CodegenError> {
+        // The runtime starts its threads before `main` (#1145).
+        self.emitter.threads = true;
         let Expr::Loop {
             source,
             var,
@@ -831,8 +958,6 @@ impl<'p> Lowerer<'_, 'p, '_> {
             .ins()
             .brif(host_stop, exit, &current_arguments, started, &[]);
         self.builder.switch_to_block(started);
-        let stopping = self.call("una_rt_budget", &[site])?;
-        self.stop_if(stopping);
         if within.is_some() {
             self.runtime("una_rt_deadline_iteration", &[]);
         }
@@ -858,6 +983,9 @@ impl<'p> Lowerer<'_, 'p, '_> {
             exit: Some(exits),
         };
         let mut owned: Scope = current.iter().copied().zip(kinds.iter().copied()).collect();
+        // The iteration's budget: a stop there leaves as a failure of the body would.
+        let budget = self.call("una_rt_budget", &[site])?;
+        self.stop_or_fail(budget, &owned, &nested);
         if let Some(tuple) = self.expr(body, &mut inner, &mut owned, &nested)? {
             let mut next: Vec<cranelift_codegen::ir::BlockArg> = Vec::new();
             for (index, &kind) in kinds.iter().enumerate() {
@@ -889,11 +1017,59 @@ impl<'p> Lowerer<'_, 'p, '_> {
         }
         match on_stop {
             Some(on_stop) => {
+                // A stop of the task: a cancellation, as a `within` around the loop whose
+                // deadline passed, ends the loop as after a failure, with `on stop` shielded
+                // from it (ADR 0116 rule 15, ADR 0117 rule 5); an abort goes on at once, the
+                // saved state released.
+                let stopped = self.stopped(failure);
+                let stopping = self.builder.create_block();
+                let failing_on = self.builder.create_block();
+                self.builder
+                    .ins()
+                    .brif(stopped, stopping, &[], failing_on, &[]);
+                self.builder.switch_to_block(failing_on);
                 let result = self.lower_on_stop(on_stop, env, &saved, &kinds, catch, scope)?;
                 if let Some(result) = result {
                     self.release(result, Kind::Tuple);
                     self.fail(failure, scope, catch);
                 }
+                self.builder.switch_to_block(stopping);
+                let polled = self.call("una_rt_poll", &[])?;
+                let aborted = self.call("una_rt_stopped", &[])?;
+                let cancelling = self.builder.ins().icmp_imm_s(IntCC::NotEqual, polled, 0);
+                let healthy = self.builder.ins().icmp_imm_s(IntCC::Equal, aborted, 0);
+                let run = self.builder.ins().band(cancelling, healthy);
+                let run = self.flag(run);
+                let running = self.builder.create_block();
+                let skipping = self.builder.create_block();
+                self.builder.ins().brif(run, running, &[], skipping, &[]);
+                self.builder.switch_to_block(skipping);
+                for (&value, &kind) in saved.iter().zip(&kinds) {
+                    self.release(value, kind);
+                }
+                self.fail(failure, scope, catch);
+                self.builder.switch_to_block(running);
+                self.runtime("una_rt_operation_begin", &[]);
+                // The shield ends on every way out of `on stop`: a failure out of it, an abort
+                // today, ends it before going on to `catch` with the loop's scope.
+                let unshield = self.join();
+                let shielded = Catch {
+                    block: unshield,
+                    outer: Scope::new(),
+                    base: 0,
+                    exit: None,
+                };
+                let result =
+                    self.lower_on_stop(on_stop, env, &saved, &kinds, &shielded, &Scope::new())?;
+                if let Some(result) = result {
+                    self.release(result, Kind::Tuple);
+                    self.runtime("una_rt_operation_end", &[]);
+                    self.fail(failure, scope, catch);
+                }
+                self.builder.switch_to_block(unshield);
+                let out = self.param(unshield)?;
+                self.runtime("una_rt_operation_end", &[]);
+                self.fail(out, scope, catch);
             }
             None => self.fail(failure, scope, catch),
         }
@@ -1025,10 +1201,9 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 .brif(holds, exit, &state_arguments, iteration, &[]);
         }
 
-        // An iteration: its budget, then the body, which owns the state, with its exits.
+        // An iteration: its budget, then the body, which owns the state, with its exits. A stop
+        // at the budget leaves as a failure of the body would, the state released.
         self.builder.switch_to_block(iteration);
-        let stopping = self.call("una_rt_budget", &[site])?;
-        self.stop_if(stopping);
         let unit_value = self.builder.ins().iconst(types::I64, 0);
         inner.insert(var.0.clone(), (unit_value, range::unrefined(&var.1)));
         let mut nested = catch.nested(scope);
@@ -1040,6 +1215,8 @@ impl<'p> Lowerer<'_, 'p, '_> {
             base: 0,
         });
         let mut owned = owned_state;
+        let stopping = self.call("una_rt_budget", &[site])?;
+        self.stop_or_fail(stopping, &owned, &nested);
         if let Some(tuple) = self.expr(body, &mut inner, &mut owned, &nested)? {
             let mut next: Vec<cranelift_codegen::ir::BlockArg> = Vec::new();
             for (index, &kind) in kinds.iter().enumerate() {
@@ -1100,6 +1277,13 @@ impl<'p> Lowerer<'_, 'p, '_> {
         else {
             return Err(internal("a loop that is not one"));
         };
+        // `for until` and `for ever` take their initial state themselves: taking it here too
+        // would retain each word once more, and leak it (#1198).
+        match source.as_ref() {
+            LoopSource::Until { .. } => return self.lower_until(expr, env, scope, catch),
+            LoopSource::Ever { .. } => return self.lower_ever(expr, env, scope, catch),
+            LoopSource::List(_) | LoopSource::Range { .. } => {}
+        }
         let types: Vec<Type> = state.iter().map(|(_, ty)| range::unrefined(ty)).collect();
         let kinds: Vec<Kind> = types.iter().map(kind).collect::<Result<_, _>>()?;
         // The loop owns its initial state: a binding at its last use moves in, any other word
@@ -1134,8 +1318,9 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 self.retain(high, Kind::Int);
                 (None, high, low)
             }
-            LoopSource::Until { .. } => return self.lower_until(expr, env, scope, catch),
-            LoopSource::Ever { .. } => return self.lower_ever(expr, env, scope, catch),
+            LoopSource::Until { .. } | LoopSource::Ever { .. } => {
+                return Err(internal("a `for until` or `for ever` lowered as a `for`"));
+            }
         };
         let inclusive = matches!(
             source.as_ref(),
@@ -1196,8 +1381,6 @@ impl<'p> Lowerer<'_, 'p, '_> {
         self.builder.ins().jump(exit, &state_arguments);
 
         self.builder.switch_to_block(iteration);
-        let stopping = self.call("una_rt_budget", &[site])?;
-        self.stop_if(stopping);
         let item = match list {
             Some(list) => self.call("una_rt_field", &[list, cursor])?,
             None => cursor,
@@ -1230,6 +1413,10 @@ impl<'p> Lowerer<'_, 'p, '_> {
             base: 0,
         });
         let mut owned: Scope = current.iter().copied().zip(kinds.iter().copied()).collect();
+        // The iteration's budget: a stop there leaves as a failure of the body would, the state
+        // and a range's cursor released.
+        let budget = self.call("una_rt_budget", &[site])?;
+        self.stop_or_fail(budget, &owned, &nested);
         if let Some(tuple) = self.expr(body, &mut inner, &mut owned, &nested)? {
             let mut next: Vec<cranelift_codegen::ir::BlockArg> = Vec::new();
             for (index, &kind) in kinds.iter().enumerate() {
@@ -1474,10 +1661,11 @@ impl<'p> Lowerer<'_, 'p, '_> {
         Ok(closure)
     }
 
-    /// `together` and `together for` (`spec/19`), as the value of the expression whose scope is
-    /// `scope`: each task is a closure of the bindings before the block, which the runtime runs
-    /// on its own thread (`tasks`). The block fails with the failure of the lowest-indexed task
-    /// that failed, and stops when its task must.
+    /// `together`, `together for` (`spec/19`) and `first of` (`spec/27 §6`), as the value of
+    /// the expression whose scope is `scope`: each task is a closure of the bindings before the
+    /// block, which the runtime runs on a coroutine of its own (`tasks`). The block fails with
+    /// the failure of the lowest-indexed task that failed, which for `first of` is only when
+    /// every branch failed, and stops when its task must.
     fn together(
         &mut self,
         expr: &'p Expr,
@@ -1485,6 +1673,8 @@ impl<'p> Lowerer<'_, 'p, '_> {
         scope: &Scope,
         catch: &Catch,
     ) -> Result<Option<Value>, CodegenError> {
+        // The runtime starts its threads before `main` (#1145).
+        self.emitter.threads = true;
         let value = match expr {
             Expr::Together { tasks, span } => {
                 let site = self.site(*span);
@@ -1495,6 +1685,21 @@ impl<'p> Lowerer<'_, 'p, '_> {
                     self.release(closure, Kind::Fn);
                 }
                 let value = self.call("una_rt_together", &[closures, site])?;
+                self.release(closures, Kind::List);
+                value
+            }
+            // `first of` (`spec/27 §6`): each branch a closure, as a `together` task; the
+            // runtime races them and gives the winner's value, or the lowest-indexed failure
+            // when every branch fails.
+            Expr::FirstOf { tasks, span } => {
+                let site = self.site(*span);
+                let closures = self.call("una_rt_list", &[])?;
+                for task in tasks {
+                    let closure = self.closure(&[], task, env)?;
+                    self.runtime("una_rt_push", &[closures, closure]);
+                    self.release(closure, Kind::Fn);
+                }
+                let value = self.call("una_rt_first_of", &[closures, site])?;
                 self.release(closures, Kind::List);
                 value
             }
@@ -1538,8 +1743,11 @@ impl<'p> Lowerer<'_, 'p, '_> {
             }
             _ => return Err(internal("a `together` that is not one")),
         };
+        // A block stopped, status 2, goes on as [`STOPPED`] by the failure path.
         let status = self.call("una_rt_together_status", &[])?;
-        self.stop_if_stopped(status);
+        let stopped = self.builder.ins().icmp_imm_s(IntCC::Equal, status, 2);
+        let word = self.builder.ins().iconst(types::I64, STOPPED);
+        let value = self.builder.ins().select(stopped, word, value);
         self.check(value, status, scope, catch);
         for &(owned, kind) in scope.iter().rev() {
             self.release(owned, kind);
@@ -1547,9 +1755,157 @@ impl<'p> Lowerer<'_, 'p, '_> {
         Ok(Some(value))
     }
 
+    /// `tasks(b) body` (`spec/27 §7`, ADR 0117 rule 7): the runtime opens the statement
+    /// (`una_rt_tasks_begin`), `body` runs in this task, and every way out of it ends the
+    /// statement (`una_rt_tasks_end`), which waits for the tasks it started: its value, after
+    /// they ran to their end; its failure or stop, after they were cancelled; and an exit of an
+    /// enclosing loop, which crosses the statement, after they ran to their end.
+    ///
+    /// `body` is lowered with a scope of its own, as `within` lowers its expression, so it
+    /// borrows the words of `scope`, which are released here on every path.
+    #[allow(clippy::too_many_arguments)]
+    fn tasks(
+        &mut self,
+        bound: Option<&(Atom, Span)>,
+        body: &'p Expr,
+        span: Span,
+        env: &mut Env,
+        scope: &mut Scope,
+        catch: &Catch,
+    ) -> Result<Option<Value>, CodegenError> {
+        // The runtime starts its threads before `main` (#1145).
+        self.emitter.threads = true;
+        let site = self.site(span);
+        let (word, bounded) = match bound {
+            Some((atom, _)) => {
+                let (word, _) = self.atom(atom, env)?;
+                (word, self.builder.ins().iconst(types::I64, 1))
+            }
+            None => {
+                let zero = self.builder.ins().iconst(types::I64, 0);
+                (zero, zero)
+            }
+        };
+        let begun = self.call("una_rt_tasks_begin", &[word, bounded, site])?;
+        // A task that stops before the block runs goes on as [`STOPPED`].
+        let stop = self.builder.ins().iconst(types::I64, STOPPED);
+        self.check(stop, begun, scope, catch);
+        let succeeded = self.join();
+        let failed = self.join();
+        let done = self.join();
+        // The exits of an enclosing loop leave the block through blocks of their own, which
+        // end the statement first.
+        let crossing = catch.exit.as_ref().map(|outer| {
+            let next = self.builder.create_block();
+            let stop = self.builder.create_block();
+            for _ in &outer.kinds {
+                self.builder.append_block_param(next, types::I64);
+                self.builder.append_block_param(stop, types::I64);
+            }
+            (outer.clone(), next, stop)
+        });
+        let inner = Catch {
+            block: failed,
+            outer: Scope::new(),
+            base: 0,
+            exit: crossing.as_ref().map(|(outer, next, stop)| Exit {
+                next: *next,
+                stop: *stop,
+                kinds: outer.kinds.clone(),
+                outer: Scope::new(),
+                base: 0,
+            }),
+        };
+        let reached = self.branch(body, env, &Scope::new(), succeeded, &inner)?;
+
+        // The block ended: its tasks run to their end.
+        self.builder.switch_to_block(succeeded);
+        if reached {
+            let value = self.param(succeeded)?;
+            let keep = self.builder.ins().iconst(types::I64, 0);
+            self.runtime("una_rt_tasks_end", &[keep]);
+            for &(owned, kind) in scope.iter().rev() {
+                self.release(owned, kind);
+            }
+            self.builder.ins().jump(done, &[value.into()]);
+        } else {
+            self.builder.ins().trap(TRAP);
+        }
+
+        // The block failed or stops: its tasks are cancelled, then the failure or the stop goes
+        // on.
+        self.builder.switch_to_block(failed);
+        let failure = self.param(failed)?;
+        let cancel = self.builder.ins().iconst(types::I64, 1);
+        self.runtime("una_rt_tasks_end", &[cancel]);
+        self.fail(failure, scope, catch);
+
+        // An exit of an enclosing loop: the statement ends, then the exit goes on with the
+        // loop's state, releasing what the loop's own exit releases.
+        if let Some((outer, next, stop)) = crossing {
+            for (block, target) in [(next, outer.next), (stop, outer.stop)] {
+                self.builder.switch_to_block(block);
+                let state: Vec<Value> = self.builder.block_params(block).to_vec();
+                let keep = self.builder.ins().iconst(types::I64, 0);
+                self.runtime("una_rt_tasks_end", &[keep]);
+                for &(owned, kind) in scope.iter().skip(outer.base).rev() {
+                    self.release(owned, kind);
+                }
+                for &(owned, kind) in outer.outer.iter().rev() {
+                    self.release(owned, kind);
+                }
+                let args: Vec<cranelift_codegen::ir::BlockArg> =
+                    state.iter().map(|&value| value.into()).collect();
+                self.builder.ins().jump(target, &args);
+            }
+        }
+
+        self.builder.switch_to_block(done);
+        if reached {
+            Ok(Some(self.param(done)?))
+        } else {
+            self.builder.ins().trap(TRAP);
+            Ok(None)
+        }
+    }
+
+    /// `start task` (`spec/27 §7`, ADR 0117 rule 7): `task` as a closure over the bindings it
+    /// reads, as a `together` task is, which the runtime starts as a task of the innermost
+    /// `tasks` statement, then the code goes on. A start that stops the task, by an abort or
+    /// a cancellation, goes on as [`STOPPED`]. Its value is `unit`.
+    fn start(
+        &mut self,
+        task: &'p Expr,
+        span: Span,
+        env: &Env,
+        scope: &Scope,
+        catch: &Catch,
+    ) -> Result<Option<Value>, CodegenError> {
+        // The runtime starts its threads before `main` (#1145); a `start` stands only inside
+        // a `tasks` statement, which sets it too.
+        self.emitter.threads = true;
+        let site = self.site(span);
+        let closure = self.closure(&[], task, env)?;
+        let status = self.call("una_rt_start_task", &[closure, site])?;
+        self.release(closure, Kind::Fn);
+        let stop = self.builder.ins().iconst(types::I64, STOPPED);
+        self.check(stop, status, scope, catch);
+        for &(owned, kind) in scope.iter().rev() {
+            self.release(owned, kind);
+        }
+        let (unit, _) = self.atom(&Atom::Unit, env)?;
+        Ok(Some(unit))
+    }
+
     /// `attempt body`: `Ok` of the body's value, or `Err` of its failure (`spec/11 §4`), as the
     /// value of the expression whose scope is `scope`.
-    fn attempt(&mut self, body: &'p Expr, env: &Env, scope: &Scope) -> Result<Value, CodegenError> {
+    fn attempt(
+        &mut self,
+        body: &'p Expr,
+        env: &Env,
+        scope: &Scope,
+        catch: &Catch,
+    ) -> Result<Value, CodegenError> {
         let succeeded = self.join();
         let failed = self.join();
         let done = self.join();
@@ -1573,6 +1929,8 @@ impl<'p> Lowerer<'_, 'p, '_> {
         }
         self.builder.switch_to_block(failed);
         let failure = self.param(failed)?;
+        // A stop is no failure to hold: it goes on, with the scope still owned.
+        self.pass_stop(failure, scope, catch);
         let err = self.wrap(1, failure)?;
         for &(owned, kind) in scope.iter().rev() {
             self.release(owned, kind);
@@ -1580,6 +1938,124 @@ impl<'p> Lowerer<'_, 'p, '_> {
         self.builder.ins().jump(done, &[err.into()]);
         self.builder.switch_to_block(done);
         self.param(done)
+    }
+
+    /// `e within d` (`spec/27 §5`, ADR 0117 rule 5): `body` bounded by the deadline
+    /// `deadline`. The runtime arms it (`una_rt_within_enter`), and every way out of `body`
+    /// ends it (`una_rt_within_end`), which says whether `body`'s outcome stands, the deadline
+    /// passed (the time-out `timeout`), or the task stops on.
+    ///
+    /// `body` is lowered with a scope of its own, so it borrows the words of `scope` and never
+    /// releases them: a value that returned too late becomes the time-out with `scope` still
+    /// owned, which is released here on every path.
+    ///
+    /// A passed deadline cancels `body` at a check point. The cancellation leaves each frame of
+    /// `body` by the path a failure takes, as [`STOPPED`], so every frame releases what it
+    /// owns, and reaches `failed` here, where the `within` turns it into its time-out, or passes
+    /// it on.
+    #[allow(clippy::too_many_arguments)]
+    fn within(
+        &mut self,
+        deadline: &Atom,
+        body: &'p Expr,
+        timeout: &Ctor,
+        wrap: Option<&Ctor>,
+        env: &mut Env,
+        scope: &mut Scope,
+        catch: &Catch,
+    ) -> Result<Option<Value>, CodegenError> {
+        // The runtime starts its threads before `main` (#1145): a `within` counts as a task
+        // construct for P8, so its cost never depends on whether earlier code started them.
+        self.emitter.threads = true;
+        let (ms, _) = self.atom(deadline, env)?;
+        let id = self.call("una_rt_within_enter", &[ms])?;
+        let succeeded = self.join();
+        let failed = self.join();
+        let done = self.join();
+        // A failure of `body` in time, or its stop, goes to `failed`, which releases what
+        // `body` made; Core puts no `skip` or `stop` in a handled expression.
+        let inner = Catch {
+            block: failed,
+            outer: Scope::new(),
+            base: 0,
+            exit: None,
+        };
+        let reached = self.branch(body, env, &Scope::new(), succeeded, &inner)?;
+        let timeout_index = i64::try_from(timeout.index).map_err(crate::internal)?;
+        // The time-out: a variant without fields, an immediate word.
+        let timed_out = |lowerer: &mut Self| {
+            lowerer
+                .builder
+                .ins()
+                .iconst(types::I64, (timeout_index << 1) | 1)
+        };
+
+        // `body` returned, in time or not.
+        self.builder.switch_to_block(succeeded);
+        if reached {
+            let value = self.param(succeeded)?;
+            let zero = self.builder.ins().iconst(types::I64, 0);
+            let outcome = self.call("una_rt_within_end", &[id, zero])?;
+            let late = self.builder.create_block();
+            let stands = self.builder.create_block();
+            self.builder.ins().brif(outcome, late, &[], stands, &[]);
+            self.builder.switch_to_block(stands);
+            for &(owned, kind) in scope.iter().rev() {
+                self.release(owned, kind);
+            }
+            self.builder.ins().jump(done, &[value.into()]);
+            self.builder.switch_to_block(late);
+            self.release(value, Kind::Any);
+            self.end_within(outcome, timed_out, scope, catch);
+        } else {
+            self.builder.ins().trap(TRAP);
+        }
+
+        // `body` failed with `x`, or stopped. In time, `wrap(x)` or `x`; late, the time-out; a
+        // stop, this deadline's time-out, or a stop that goes on.
+        self.builder.switch_to_block(failed);
+        let failure = self.param(failed)?;
+        let stopped = self.stopped(failure);
+        let outcome = self.call("una_rt_within_end", &[id, stopped])?;
+        let ended = self.builder.create_block();
+        let stands = self.builder.create_block();
+        self.builder.ins().brif(outcome, ended, &[], stands, &[]);
+        self.builder.switch_to_block(stands);
+        let passed = match wrap {
+            Some(wrap) => {
+                let index = i64::try_from(wrap.index).map_err(crate::internal)?;
+                self.wrap(index, failure)?
+            }
+            None => failure,
+        };
+        self.fail(passed, scope, catch);
+        self.builder.switch_to_block(ended);
+        self.release(failure, Kind::Any);
+        self.end_within(outcome, timed_out, scope, catch);
+
+        self.builder.switch_to_block(done);
+        if reached {
+            Ok(Some(self.param(done)?))
+        } else {
+            self.builder.ins().trap(TRAP);
+            Ok(None)
+        }
+    }
+
+    /// The end of a `within` whose `una_rt_within_end` gave `outcome`, 1 or 2, with `scope`
+    /// still owned: 1 fails with the time-out that `timed_out` makes, 2 goes on with the stop.
+    fn end_within(
+        &mut self,
+        outcome: Value,
+        timed_out: impl Fn(&mut Self) -> Value,
+        scope: &Scope,
+        catch: &Catch,
+    ) {
+        let stopping = self.builder.ins().icmp_imm_s(IntCC::Equal, outcome, 2);
+        let stopping = self.flag(stopping);
+        self.stop_or_fail(stopping, scope, catch);
+        let failure = timed_out(self);
+        self.fail(failure, scope, catch);
     }
 
     /// The variant at position `tag` of `Result` or `Option` holding `value`, which it takes
@@ -1617,6 +2093,8 @@ impl<'p> Lowerer<'_, 'p, '_> {
     /// The owned value `ctor(args)`.
     fn construct(&mut self, ctor: &Ctor, args: &[Atom], env: &Env) -> Result<Value, CodegenError> {
         let index = i64::try_from(ctor.index).map_err(crate::internal)?;
+        // The representation invariant that keeps a failure from equalling [`STOPPED`].
+        debug_assert!(index >= 0 && (index << 1) | 1 != STOPPED);
         if args.is_empty() {
             return Ok(self.builder.ins().iconst(types::I64, (index << 1) | 1));
         }
@@ -1724,7 +2202,6 @@ impl<'p> Lowerer<'_, 'p, '_> {
         borrowed: bool,
         type_args: &[Type],
         args: &[Value],
-        span: Span,
         env: &Env,
         scope: &Scope,
         catch: &Catch,
@@ -1752,10 +2229,6 @@ impl<'p> Lowerer<'_, 'p, '_> {
             args.push(*instance);
         }
         let id = callee.id;
-        // `spec/11 §7`: each call counts toward the maximum depth, which the runtime checks
-        // against the call's site.
-        let site = self.site(span);
-        self.enter(site)?;
         let callee = self
             .emitter
             .module
@@ -1766,7 +2239,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
         let (Some(&value), Some(&failed)) = (results.first(), results.get(1)) else {
             return Err(internal("a call lost its result"));
         };
-        self.stop_if_stopped(failed);
+        // A callee that stopped returns [`STOPPED`] with status 2, a failure to pass on.
         // Every callee returns whether it failed, 0 when it cannot: a function with `fails of
         // p` fails when the function value given for `p` does, which its declaration does not
         // say, so every call checks (#267).
@@ -1858,7 +2331,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
         let site = self.builder.ins().iconst(types::I64, site);
         // A cancelled task stops before its next operation (`spec/19 §6` rule 4).
         let stopping = self.call("una_rt_poll", &[])?;
-        self.stop_if(stopping);
+        self.stop_or_fail(stopping, scope, catch);
         // From here the operation is in progress: it completes, and keeps its own outcome,
         // whatever cancellation comes meanwhile (`spec/19 §6` rule 4, `§7` rule 3).
         self.runtime("una_rt_operation_begin", &[]);
@@ -1878,10 +2351,14 @@ impl<'p> Lowerer<'_, 'p, '_> {
         self.builder.append_block_param(done, types::I64);
         self.builder.ins().brif(code, handled, &[], host, &[]);
 
-        // A host instance has no code: the runtime performs the operation (`spec/14 §3`).
+        // A host instance has no code: the runtime performs the operation (`spec/14 §3`); so
+        // does the instance of `limiter` of `std.limit` (ADR 0117 rule 9, `spec/27 §10`).
         self.builder.switch_to_block(host);
-        if capability_path.module == HOST_MODULE {
+        let limit = capability_path.module == una_core::LIMIT_MODULE;
+        if capability_path.module == HOST_MODULE || limit {
             let (function, fails) = match (capability_path.name.as_str(), op.as_str()) {
+                ("Limit", "acquire") if limit => ("una_rt_limit_acquire", true),
+                _ if limit => return Err(unsupported(format!("`{capability}.{op}`"))),
                 ("Console", "print") => ("una_rt_console_print", false),
                 ("Clock", "now") => ("una_rt_clock_now", false),
                 ("Env", "get") => ("una_rt_env_get", false),
@@ -1894,16 +2371,25 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 ("Http", "delete") => ("una_rt_http_delete", true),
                 _ => return Err(unsupported(format!("`{capability}.{op}`"))),
             };
-            let sited = matches!(
-                (capability_path.name.as_str(), op.as_str()),
-                ("Http", _) | ("Env", "get") | ("Files", "read")
-            );
+            if capability_path.name == "Http" && !limit {
+                self.emitter.http = true;
+            }
+            let sited = limit
+                || matches!(
+                    (capability_path.name.as_str(), op.as_str()),
+                    ("Http", _) | ("Env", "get") | ("Files", "read")
+                );
             let value = if sited {
                 // The call's site, where a header value with a control character aborts with
                 // U6004, and host text that is not valid UTF-8 with U6005 (S-16, ADR
-                // 0086); a task stopped by it stops here.
+                // 0086); a task stopped by it stops here, as one whose wait at a `limiter`
+                // was interrupted does.
                 let site = self.site(*span);
                 let mut operands = vec![site];
+                // `acquire` takes its instance, whose bucket the runtime holds.
+                if limit {
+                    operands.push(instance);
+                }
                 operands.extend_from_slice(&values);
                 let value = self.call(function, &operands)?;
                 let stopped = self.call("una_rt_stopped", &[])?;
@@ -1938,7 +2424,21 @@ impl<'p> Lowerer<'_, 'p, '_> {
         let signature = self.builder.import_signature(signature);
         let mut operands = vec![instance];
         operands.extend_from_slice(&values);
-        self.enter(call_site)?;
+        // A task that stops at the operation's call, by U6003 alone since the operation shields
+        // cancellations, or inside it, ends the operation with [`STOPPED`] and status 2, which
+        // leaves its event as it was, `aborted`, and goes on as a failure.
+        let stopping = self.call("una_rt_enter", &[call_site])?;
+        let refused = self.builder.create_block();
+        let calling = self.builder.create_block();
+        self.builder
+            .ins()
+            .brif(stopping, refused, &[], calling, &[]);
+        self.builder.switch_to_block(refused);
+        self.runtime("una_rt_operation_end", &[]);
+        let word = self.builder.ins().iconst(types::I64, STOPPED);
+        let two = self.builder.ins().iconst(types::I64, 2);
+        self.builder.ins().jump(done, &[word.into(), two.into()]);
+        self.builder.switch_to_block(calling);
         let call = self.builder.ins().call_indirect(signature, code, &operands);
         let results = self.builder.inst_results(call).to_vec();
         self.runtime("una_rt_leave", &[]);
@@ -1946,9 +2446,6 @@ impl<'p> Lowerer<'_, 'p, '_> {
         let (Some(&value), Some(&failed)) = (results.first(), results.get(1)) else {
             return Err(internal("an operation lost its result"));
         };
-        // A task that stops inside the operation, by U6003 alone, leaves its event as it was,
-        // `aborted`.
-        self.stop_if_stopped(failed);
         self.builder
             .ins()
             .jump(done, &[value.into(), failed.into()]);
@@ -1969,6 +2466,15 @@ impl<'p> Lowerer<'_, 'p, '_> {
     /// capability, in the capability's order, then the values `args` and the instances of its
     /// own capabilities, from those in scope.
     fn install(&mut self, handler: &Path, args: &[Atom], env: &Env) -> Result<Value, CodegenError> {
+        // `limiter` of `std.limit` (ADR 0117 rule 9, `spec/27 §10`): the runtime makes the
+        // instance, one bucket over the run's clock, from `at_most`, `per` and `waiting`.
+        if handler.module == una_core::LIMIT_MODULE && handler.name == una_core::LIMITER {
+            let mut operands = Vec::new();
+            for arg in args {
+                operands.push(self.atom(arg, env)?.0);
+            }
+            return self.call("una_rt_limiter_instance", &operands);
+        }
         let info = self
             .emitter
             .handler(handler)
@@ -2072,6 +2578,122 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 };
                 self.call(runtime, &values)
             }
+            // The methods of the collections of `std.collections` (`spec/28`): an operation that
+            // gives a new collection takes its receiver over at its last use, and updates it in
+            // place when nothing else holds it (ADR 0119 rule 1), unless the receiver is also
+            // another argument, which the update would change.
+            Rhs::Prim {
+                prim:
+                    prim @ (Prim::Seq(_)
+                    | Prim::Set(_)
+                    | Prim::HashMap(_)
+                    | Prim::HashSet(_)
+                    | Prim::Priority(_)
+                    | Prim::BitSet(_)),
+                args,
+                span,
+                ..
+            } => {
+                let mut values = Vec::new();
+                for arg in args {
+                    values.push(self.atom(arg, env)?.0);
+                }
+                let (code, rebuilds) = collection_code(*prim)?;
+                let moved = match args.split_first() {
+                    Some((receiver, others)) if rebuilds && !others.contains(receiver) => {
+                        self.moving(receiver, env, scope, catch, rest)
+                    }
+                    _ => None,
+                };
+                if let Some(position) = moved {
+                    scope.remove(position);
+                }
+                let owned = moved.is_some();
+                // A hash table hashes its keys by the descriptor of its key type, the first type
+                // argument of the receiver's type (`spec/28 §1` rule 2): a word does not say its
+                // type.
+                let desc = match prim {
+                    Prim::HashMap(_) | Prim::HashSet(_) => {
+                        let ty = match args.first() {
+                            Some(receiver) => self.atom_type(receiver, env),
+                            None => unknown(),
+                        };
+                        let key = match &ty {
+                            Type::Base {
+                                base:
+                                    Base::Named {
+                                        args: type_args, ..
+                                    },
+                                ..
+                            } => type_args.first().cloned(),
+                            _ => None,
+                        }
+                        .ok_or_else(|| internal("a hash table without its key type"))?;
+                        Some(self.descriptor(&key, Constraint::Eq, env)?)
+                    }
+                    _ => None,
+                };
+                let code = self.builder.ins().iconst(types::I64, code);
+                let zero = self.builder.ins().iconst(types::I64, 0);
+                let word = |i: usize| values.get(i).copied().unwrap_or(zero);
+                let (receiver, a, b) = (word(0), word(1), word(2));
+                match prim {
+                    Prim::Seq(_) => {
+                        let function = if owned {
+                            "una_rt_seq_op_owned"
+                        } else {
+                            "una_rt_seq_op"
+                        };
+                        self.call(function, &[code, receiver, a])
+                    }
+                    Prim::Set(_) => {
+                        let function = if owned {
+                            "una_rt_set_op_owned"
+                        } else {
+                            "una_rt_set_op"
+                        };
+                        self.call(function, &[code, receiver, a, b])
+                    }
+                    Prim::Priority(_) => {
+                        let function = if owned {
+                            "una_rt_priority_op_owned"
+                        } else {
+                            "una_rt_priority_op"
+                        };
+                        self.call(function, &[code, receiver, a, b])
+                    }
+                    // A hash table compares keys within the memory budget, as `==` does, so it
+                    // takes the call's site and stops after it on U6003.
+                    Prim::HashMap(_) => {
+                        let function = if owned {
+                            "una_rt_hash_map_op_owned"
+                        } else {
+                            "una_rt_hash_map_op"
+                        };
+                        let desc = desc.unwrap_or(zero);
+                        self.set(function, &[code, desc, receiver, a, b], *span)
+                    }
+                    Prim::HashSet(_) => {
+                        let function = if owned {
+                            "una_rt_hash_set_op_owned"
+                        } else {
+                            "una_rt_hash_set_op"
+                        };
+                        let desc = desc.unwrap_or(zero);
+                        self.set(function, &[code, desc, receiver, a], *span)
+                    }
+                    // A bit set's precondition aborts at the call, with U8001 (ADR 0119 rule
+                    // 14), so it takes the call's site and stops after it.
+                    _ => {
+                        let function = if owned {
+                            "una_rt_bit_set_op_owned"
+                        } else {
+                            "una_rt_bit_set_op"
+                        };
+                        self.set(function, &[code, receiver, a], *span)
+                    }
+                }
+            }
             Rhs::Prim {
                 prim, args, span, ..
             } => {
@@ -2101,16 +2723,21 @@ impl<'p> Lowerer<'_, 'p, '_> {
                         }
                     ) {
                         let (value, _) = self.atom(first, env)?;
+                        // The site, where an integer too long for text aborts the run
+                        // (`spec/11 §7`, #923); a task stopped by it stops here.
+                        let site = self.site(*span);
                         // A type that holds type parameters is written through its composite
                         // descriptor (ADR 0068 D6).
                         if !type_params(&ty).is_empty() {
                             let desc = self.descriptor(&ty, Constraint::Eq, env)?;
-                            return self.call("una_rt_generic_write", &[desc, value]);
+                            let text = self.call("una_rt_generic_write", &[site, desc, value])?;
+                            return self.stopped_after(text);
                         }
                         let index =
                             i64::try_from(self.emitter.types.of(&ty)).map_err(crate::internal)?;
                         let index = self.builder.ins().iconst(types::I64, index);
-                        return self.call("una_rt_write", &[index, value]);
+                        let text = self.call("una_rt_write", &[site, index, value])?;
+                        return self.stopped_after(text);
                     }
                 }
                 // `"{t}..."` at the last use of the text of `t` takes it over, with every owned
@@ -2209,6 +2836,19 @@ impl<'p> Lowerer<'_, 'p, '_> {
                         return self.call(runtime, &operands);
                     }
                 }
+                // Dense values (`spec/29 §17`, ADR 0120): the runtime's entry points.
+                if function.module == PRELUDE_MODULE && is_dense(&function.name) {
+                    return self.dense_call(
+                        &function.name,
+                        args,
+                        &values,
+                        *span,
+                        env,
+                        scope,
+                        catch,
+                        rest,
+                    );
+                }
                 if function.module == PRELUDE_MODULE {
                     // `append` and `set` at the last use of their list take it over, and update
                     // it in place when nothing else holds it (#30).
@@ -2252,10 +2892,20 @@ impl<'p> Lowerer<'_, 'p, '_> {
                     }
                     return self.prelude(&function.name, &values, *span, scope, catch);
                 }
+                // The functions of `std.collections` whose bodies are native (`spec/28`).
+                if function.module == una_core::COLLECTIONS_MODULE
+                    && let Some(made) =
+                        self.collections(&function.name, &values, type_args, *span, env)?
+                {
+                    return Ok(made);
+                }
+                // `spec/11 §7`: each call counts toward the maximum depth, which the runtime
+                // checks against the call's site before the arguments are given, so a stop
+                // there leaves with every word still in scope.
+                let site = self.site(*span);
+                self.enter(site, scope, catch)?;
                 let borrowed = self.give(function, args, &values, env, scope, catch, rest)?;
-                self.call_function(
-                    function, borrowed, type_args, &values, *span, env, scope, catch,
-                )
+                self.call_function(function, borrowed, type_args, &values, env, scope, catch)
             }
             Rhs::Apply {
                 callee, args, span, ..
@@ -2345,6 +2995,8 @@ impl<'p> Lowerer<'_, 'p, '_> {
             }
             Rhs::Declassify { via, arg, span, .. } => {
                 let (value, _) = self.atom(arg, env)?;
+                let site = self.site(*span);
+                self.enter(site, scope, catch)?;
                 let borrowed = self.give(
                     via,
                     std::slice::from_ref(arg),
@@ -2354,7 +3006,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
                     catch,
                     rest,
                 )?;
-                self.call_function(via, borrowed, &[], &[value], *span, env, scope, catch)
+                self.call_function(via, borrowed, &[], &[value], env, scope, catch)
             }
         }
     }
@@ -2397,6 +3049,14 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 ),
                 _ => (self.literal("una_rt_int_literal", coefficient)?, Kind::Int),
             },
+            // The tagged word of its totalOrder key, an immediate (ADR 0120 rule 10).
+            Atom::F32(bits) => {
+                let key = i64::from(una_core::float32::order_key(f32::from_bits(*bits)));
+                (
+                    self.builder.ins().iconst(types::I64, (key << 1) | 1),
+                    Kind::F32,
+                )
+            }
         })
     }
 
@@ -2468,6 +3128,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
             Atom::Text(_) => base(Base::Text),
             Atom::F64(_) => base(Base::F64),
             Atom::Decimal { scale, .. } => base(Base::Decimal(*scale)),
+            Atom::F32(_) => base(Base::F32),
             Atom::Unit => base(Base::Unit),
         }
     }
@@ -2595,23 +3256,52 @@ impl<'p> Lowerer<'_, 'p, '_> {
         let signature = self.builder.import_signature(signature);
         let mut values = vec![callee];
         values.extend_from_slice(args);
-        self.enter(site)?;
+        // A lambda owns its parameters: when the task stops before the call, the arguments
+        // given to it are released here, and the stop comes back as a failure, [`STOPPED`]
+        // with status 2, which the caller passes on as a callee's.
+        let returned = self.builder.create_block();
+        self.builder.append_block_param(returned, types::I64);
+        self.builder.append_block_param(returned, types::I64);
+        let stopping = self.call("una_rt_enter", &[site])?;
+        let refused = self.builder.create_block();
+        let calling = self.builder.create_block();
+        self.builder
+            .ins()
+            .brif(stopping, refused, &[], calling, &[]);
+        self.builder.switch_to_block(refused);
+        for &arg in args {
+            self.release(arg, Kind::Any);
+        }
+        let word = self.builder.ins().iconst(types::I64, STOPPED);
+        let two = self.builder.ins().iconst(types::I64, 2);
+        self.builder
+            .ins()
+            .jump(returned, &[word.into(), two.into()]);
+        self.builder.switch_to_block(calling);
         let call = self.builder.ins().call_indirect(signature, code, &values);
         let results = self.builder.inst_results(call).to_vec();
         self.runtime("una_rt_leave", &[]);
         match (results.first(), results.get(1)) {
             (Some(&value), Some(&failed)) => {
-                self.stop_if_stopped(failed);
-                Ok((value, failed))
+                self.builder
+                    .ins()
+                    .jump(returned, &[value.into(), failed.into()]);
+                self.builder.switch_to_block(returned);
+                let results = self.builder.block_params(returned).to_vec();
+                match (results.first(), results.get(1)) {
+                    (Some(&value), Some(&failed)) => Ok((value, failed)),
+                    _ => Err(internal("a closure lost its result")),
+                }
             }
             _ => Err(internal("a closure lost its result")),
         }
     }
 
-    /// Enters the call at `site` (`spec/11 §7`), or stops the task when the runtime says so.
-    fn enter(&mut self, site: Value) -> Result<(), CodegenError> {
+    /// Enters the call at `site` (`spec/11 §7`), before its arguments are given, or leaves the
+    /// frame by the failure path when the runtime says the task stops.
+    fn enter(&mut self, site: Value, scope: &Scope, catch: &Catch) -> Result<(), CodegenError> {
         let stopping = self.call("una_rt_enter", &[site])?;
-        self.stop_if(stopping);
+        self.stop_or_fail(stopping, scope, catch);
         Ok(())
     }
 
@@ -2626,6 +3316,19 @@ impl<'p> Lowerer<'_, 'p, '_> {
         span: Span,
     ) -> Result<Value, CodegenError> {
         let site = self.site(span);
+        self.sited(function, site, args)
+    }
+
+    /// The runtime function `function` applied to the call's `site`, then `args`, as [`set`]
+    /// calls it: a task stopped by it stops here.
+    ///
+    /// [`set`]: Self::set
+    fn sited(
+        &mut self,
+        function: &'static str,
+        site: Value,
+        args: &[Value],
+    ) -> Result<Value, CodegenError> {
         let mut operands = vec![site];
         operands.extend_from_slice(args);
         let value = self.call(function, &operands)?;
@@ -2634,18 +3337,62 @@ impl<'p> Lowerer<'_, 'p, '_> {
         Ok(value)
     }
 
-    /// Stops the task when `stopping` is not 0.
+    /// 1 when the failure word `failure` is [`STOPPED`], else 0.
+    fn stopped(&mut self, failure: Value) -> Value {
+        let stopped = self
+            .builder
+            .ins()
+            .icmp_imm_s(IntCC::Equal, failure, STOPPED);
+        self.flag(stopped)
+    }
+
+    /// Goes on with [`STOPPED`] to `catch`, releasing the words of `scope` since it, when
+    /// `failure` is the stop of the task; continues otherwise.
+    fn pass_stop(&mut self, failure: Value, scope: &Scope, catch: &Catch) {
+        let stopped = self.stopped(failure);
+        self.stop_or_fail(stopped, scope, catch);
+    }
+
+    /// Leaves the frame by the failure path with [`STOPPED`] when `stopping` is not 0: the
+    /// words of `scope` since `catch` was installed are released, as a failure releases them
+    /// (`spec/19 §6` rule 4).
+    fn stop_or_fail(&mut self, stopping: Value, scope: &Scope, catch: &Catch) {
+        let failing = self.builder.create_block();
+        let next = self.builder.create_block();
+        self.builder.ins().brif(stopping, failing, &[], next, &[]);
+        self.builder.switch_to_block(failing);
+        let word = self.builder.ins().iconst(types::I64, STOPPED);
+        self.fail(word, scope, catch);
+        self.builder.switch_to_block(next);
+    }
+
+    /// A JSON call stopped at one of its check points (`stopping` not 0), by the memory budget
+    /// or a cancellation: its value is released, and the frame left by the failure path.
+    fn json_stop(&mut self, stopping: Value, value: Value, scope: &Scope, catch: &Catch) {
+        let failing = self.builder.create_block();
+        let next = self.builder.create_block();
+        self.builder.ins().brif(stopping, failing, &[], next, &[]);
+        self.builder.switch_to_block(failing);
+        self.release(value, Kind::Any);
+        let word = self.builder.ins().iconst(types::I64, STOPPED);
+        self.fail(word, scope, catch);
+        self.builder.switch_to_block(next);
+    }
+
+    /// Stops the task at once when `stopping` is not 0: for an abort only (see `stop`).
+    /// `value`, once the task has been checked for a stop that a runtime call raised at its
+    /// site, as an integer too long for text does (`spec/11 §7`, #923): a stopped task leaves
+    /// here, before it uses the value.
+    fn stopped_after(&mut self, value: Value) -> Result<Value, CodegenError> {
+        let stopped = self.call("una_rt_stopped", &[])?;
+        self.stop_if(stopped);
+        Ok(value)
+    }
+
     fn stop_if(&mut self, stopping: Value) {
         let next = self.builder.create_block();
         self.builder.ins().brif(stopping, self.stop, &[], next, &[]);
         self.builder.switch_to_block(next);
-    }
-
-    /// Stops the task when the code it called returned the status 2 of a stopped task.
-    fn stop_if_stopped(&mut self, status: Value) {
-        let stopped = self.builder.ins().icmp_imm_s(IntCC::Equal, status, 2);
-        let stopped = self.flag(stopped);
-        self.stop_if(stopped);
     }
 
     /// The one parameter of a join block.
@@ -2710,6 +3457,66 @@ impl<'p> Lowerer<'_, 'p, '_> {
         self.builder.ins().jump(done, &[tag.into()]);
         self.builder.switch_to_block(done);
         self.param(done)
+    }
+
+    /// A call of a function of `std.collections` whose body is native (`spec/28`, ADR 0119), on
+    /// borrowed arguments at `span`: its owned result, or `None` for a function the module
+    /// declares in Una.
+    fn collections(
+        &mut self,
+        name: &str,
+        args: &[Value],
+        type_args: &[Type],
+        span: Span,
+        env: &Env,
+    ) -> Result<Option<Value>, CodegenError> {
+        let arg = |i: usize| {
+            args.get(i)
+                .copied()
+                .ok_or_else(|| internal(format!("`{name}` lacks an argument")))
+        };
+        let made = match name {
+            // O(1): an empty collection allocates no buffer.
+            "empty_stack" | "empty_queue" => self.call("una_rt_seq_empty", &[])?,
+            "empty_set" => self.call("una_rt_set_empty", &[])?,
+            "lowest_first" | "highest_first" => {
+                let highest = i64::from(name == "highest_first");
+                let highest = self.builder.ins().iconst(types::I64, highest);
+                self.call("una_rt_priority_empty", &[highest])?
+            }
+            // O(size / 64), within the memory budget, and U8001 for a negative size, at the call.
+            "empty_bit_set" => self.set("una_rt_bit_set_empty", &[arg(0)?], span)?,
+            // The conversions of a list (`spec/28 §10`): O(n), and O(n log n) for a set.
+            "to_stack" | "to_queue" => {
+                let stack = i64::from(name == "to_stack");
+                let stack = self.builder.ins().iconst(types::I64, stack);
+                self.call("una_rt_seq_of", &[arg(0)?, stack])?
+            }
+            "to_set" => self.call("una_rt_set_of", &[arg(0)?])?,
+            // A new table under a key of its own (`spec/28 §1` rule 4), at the call: U6003 when
+            // the run's table counter is exhausted. The run reads the process key before `main`
+            // (ADR 0119 rule 9).
+            "empty_hash_map" | "empty_hash_set" => {
+                self.emitter.hashing = true;
+                let set = i64::from(name == "empty_hash_set");
+                let set = self.builder.ins().iconst(types::I64, set);
+                self.set("una_rt_hash_empty", &[set], span)?
+            }
+            // O(n · |k|) expected, the keys hashed by the descriptor of the key type, the first
+            // type argument, and compared within the memory budget.
+            "to_hash_set" | "to_hash_map" => {
+                self.emitter.hashing = true;
+                let key = type_args
+                    .first()
+                    .ok_or_else(|| internal(format!("`{name}` lacks its key type")))?;
+                let desc = self.descriptor(key, Constraint::Eq, env)?;
+                let set = i64::from(name == "to_hash_set");
+                let set = self.builder.ins().iconst(types::I64, set);
+                self.set("una_rt_hash_of_list", &[set, desc, arg(0)?], span)?
+            }
+            _ => return Ok(None),
+        };
+        Ok(Some(made))
     }
 
     /// A call of the prelude (`spec/14 §1`), on borrowed arguments.
@@ -2798,7 +3605,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 let site = self.site(span);
                 let value = self.call("una_rt_parse_json", &[arg(0)?, site])?;
                 let stopping = self.call("una_rt_json_stopped", &[])?;
-                self.stop_if(stopping);
+                self.json_stop(stopping, value, scope, catch);
                 let failed = self.call("una_rt_host_failed", &[])?;
                 self.check(value, failed, scope, catch);
                 return Ok(value);
@@ -2807,7 +3614,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 let site = self.site(span);
                 let value = self.call("una_rt_to_json", &[arg(0)?, site])?;
                 let stopping = self.call("una_rt_json_stopped", &[])?;
-                self.stop_if(stopping);
+                self.json_stop(stopping, value, scope, catch);
                 return Ok(value);
             }
             "quote_json" => "una_rt_quote_json",
@@ -2832,6 +3639,15 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 return Ok(word);
             }
             "f64_from_bits" => "una_rt_f64_from_bits",
+            // The functions of `F32` (ADR 0120 rule 5).
+            "f32_from_bits" => "una_rt_f32_from_bits",
+            "parse_f32" => {
+                let t = arg(0)?;
+                let failure = self.call("una_rt_parse_f64_failure", &[t])?;
+                let failed = self.builder.ins().icmp_imm_s(IntCC::NotEqual, failure, 0);
+                self.check(failure, failed, scope, catch);
+                return self.call("una_rt_parse_f32", &[t]);
+            }
             // A failure of `parse_f64` goes to `catch`, as `parse_int`'s does.
             "parse_f64" => {
                 let t = arg(0)?;
@@ -2960,6 +3776,183 @@ impl<'p> Lowerer<'_, 'p, '_> {
         }
     }
 
+    /// A dense function of the prelude (`spec/29 §17`, ADR 0120; design note
+    /// `docs/plan/0120-s6-design.md`): its entry point `una_rt_<name>`, the call's site first,
+    /// so a refusal of the memory budget (U6003) or a precondition that fails (U8001) stops
+    /// there. A method that takes its receiver by `edit`, at the receiver's last use, takes it
+    /// over through its `_owned` entry point, which updates it in place when it and its store
+    /// are held once (D3, rule 31). `map`, `zip_map`, `update` and `fold` are loops
+    /// ([`Self::dense_loop`], D6).
+    #[allow(clippy::too_many_arguments)]
+    fn dense_call(
+        &mut self,
+        name: &str,
+        args: &[Atom],
+        values: &[Value],
+        span: Span,
+        env: &Env,
+        scope: &mut Scope,
+        catch: &Catch,
+        rest: &Expr,
+    ) -> Result<Value, CodegenError> {
+        let method = dense_method(name);
+        if name.starts_with("dense_") && matches!(method, "map" | "zip_map" | "update" | "fold") {
+            // The receiver of `update`, and the initial state of `fold` unless it is the value
+            // folded over, which the loop still reads, move in at their last use.
+            let moving = match method {
+                "update" => args.first(),
+                "fold" if values.get(1).is_some() && values.first() != values.get(1) => args.get(1),
+                _ => None,
+            };
+            let moved = match moving {
+                Some(atom) => self.moving(atom, env, scope, catch, rest),
+                None => None,
+            };
+            if let Some(position) = moved {
+                scope.remove(position);
+            }
+            let site = self.site(span);
+            return self.dense_loop(method, values, site, moved.is_some(), scope, catch);
+        }
+        let mut runtime = format!("una_rt_{name}");
+        if dense_edits(name)
+            && let Some(position) = args
+                .first()
+                .and_then(|receiver| self.moving(receiver, env, scope, catch, rest))
+        {
+            scope.remove(position);
+            runtime.push_str("_owned");
+        }
+        let function = self
+            .emitter
+            .runtime
+            .get_key_value(runtime.as_str())
+            .map(|(function, _)| *function)
+            .ok_or_else(|| unsupported(format!("`{name}` of the prelude")))?;
+        self.set(function, values, span)
+    }
+
+    /// `map`, `zip_map`, `update` and `fold` of a dense value (design note D6): a loop over its
+    /// elements in row-major order that applies the function to each through the uniform word,
+    /// as a function value that is not an inline lambda is (ADR 0120 rule 35). `map` and
+    /// `zip_map` store each result in a builder of the receiver's kind and shape, whose store
+    /// the first result chooses and reserves; `update` writes each into the receiver held once
+    /// (rule 31), which `moved` says the caller gave up; `fold` carries its state, which
+    /// `moved` says moved in. A failure of the function stops the loop, releases what it made,
+    /// and goes to `catch`, as the prelude's loops over lists do (ADR 0062). O(size) calls.
+    fn dense_loop(
+        &mut self,
+        method: &str,
+        args: &[Value],
+        site: Value,
+        moved: bool,
+        scope: &Scope,
+        catch: &Catch,
+    ) -> Result<Value, CodegenError> {
+        let (Some(&dense), Some(&function)) = (args.first(), args.last()) else {
+            return Err(internal(format!("`{method}` lacks an argument")));
+        };
+        let second = || {
+            args.get(1)
+                .copied()
+                .ok_or_else(|| internal(format!("`{method}` lacks an argument")))
+        };
+        let (source, initial) = match method {
+            "map" => (dense, self.sited("una_rt_dense_builder", site, &[dense])?),
+            "zip_map" => {
+                let other = second()?;
+                let builder = self.sited("una_rt_dense_zip_builder", site, &[dense, other])?;
+                (dense, builder)
+            }
+            "update" => {
+                // The call takes a reference: the caller's when it moved in.
+                if !moved {
+                    self.retain(dense, Kind::Dense);
+                }
+                let owned = self.sited("una_rt_dense_unique", site, &[dense])?;
+                (owned, owned)
+            }
+            _ => {
+                let initial = second()?;
+                if !moved {
+                    self.retain(initial, Kind::Any);
+                }
+                (dense, initial)
+            }
+        };
+        let count = self.call("una_rt_dense_count", &[source])?;
+        let head = self.builder.create_block();
+        let body = self.builder.create_block();
+        let exit = self.join();
+        self.builder.append_block_param(head, types::I64);
+        self.builder.append_block_param(head, types::I64);
+        let zero = self.builder.ins().iconst(types::I64, 0);
+        self.builder
+            .ins()
+            .jump(head, &[zero.into(), initial.into()]);
+
+        self.builder.switch_to_block(head);
+        let params = self.builder.block_params(head).to_vec();
+        let (Some(&index), Some(&carried)) = (params.first(), params.get(1)) else {
+            return Err(internal("a loop lost its parameters"));
+        };
+        let more = self.builder.ins().icmp(IntCC::SignedLessThan, index, count);
+        self.builder
+            .ins()
+            .brif(more, body, &[], exit, &[carried.into()]);
+
+        self.builder.switch_to_block(body);
+        // The function owns the element it is given: a new boxed `F64`, or the word retained.
+        let item = self.call("una_rt_dense_item", &[source, index])?;
+        let next_index = self.builder.ins().iadd_imm_s(index, 1);
+        match method {
+            "map" | "zip_map" => {
+                let mut operands = vec![item];
+                if method == "zip_map" {
+                    let other = second()?;
+                    operands.push(self.call("una_rt_dense_item", &[other, index])?);
+                }
+                let (mapped, failed) = self.apply(function, &operands, site)?;
+                self.stop_on_failure(mapped, failed, &[(carried, Kind::Dense)], scope, catch);
+                self.sited("una_rt_dense_push", site, &[carried, mapped])?;
+                self.release(mapped, Kind::Any);
+                self.builder
+                    .ins()
+                    .jump(head, &[next_index.into(), carried.into()]);
+            }
+            "update" => {
+                let (new, failed) = self.apply(function, &[item], site)?;
+                self.stop_on_failure(new, failed, &[(carried, Kind::Dense)], scope, catch);
+                self.runtime("una_rt_dense_write", &[carried, index, new]);
+                self.release(new, Kind::Any);
+                self.builder
+                    .ins()
+                    .jump(head, &[next_index.into(), carried.into()]);
+            }
+            _ => {
+                // The state moves into the step, which releases it on a failure too.
+                let (step, failed) = self.apply(function, &[carried, item], site)?;
+                self.stop_on_failure(step, failed, &[], scope, catch);
+                self.builder
+                    .ins()
+                    .jump(head, &[next_index.into(), step.into()]);
+            }
+        }
+
+        self.builder.switch_to_block(exit);
+        let result = self.param(exit)?;
+        if method != "update" {
+            return Ok(result);
+        }
+        // The new value of the `edit` receiver, with the result, `unit` (`spec/17 §4`).
+        let zero = self.builder.ins().iconst(types::I64, 0);
+        let tuple = self.call("una_rt_data", &[zero])?;
+        self.runtime("una_rt_push", &[tuple, result]);
+        self.release(result, Kind::Dense);
+        self.runtime("una_rt_push", &[tuple, zero]);
+        Ok(tuple)
+    }
+
     /// The owned result of `prim` on `args`, whose operands and result `width` says are proven
     /// to fit a tagged word (`range`).
     /// Continues when `failed` is 0; otherwise releases `owned`, what a loop of the prelude
@@ -2993,8 +3986,14 @@ impl<'p> Lowerer<'_, 'p, '_> {
     ) -> Result<Value, CodegenError> {
         let cc = match prim {
             Prim::Convert(_) => return self.call("una_rt_generic_to_int", operands),
-            // Interpolation, by the type that instantiates the parameter (ADR 0068).
-            Prim::ToText => return self.call("una_rt_generic_write", operands),
+            // Interpolation, by the type that instantiates the parameter (ADR 0068), at its
+            // site, where an integer too long for text aborts the run (`spec/11 §7`, #923).
+            Prim::ToText => {
+                let mut sited = vec![self.site(span)];
+                sited.extend_from_slice(operands);
+                let text = self.call("una_rt_generic_write", &sited)?;
+                return self.stopped_after(text);
+            }
             Prim::Eq | Prim::Ne => {
                 // Within the memory budget, at the comparison's site (#815).
                 let equal = self.set("una_rt_generic_equal_at", operands, span)?;
@@ -3038,13 +4037,16 @@ impl<'p> Lowerer<'_, 'p, '_> {
         if !matches!(
             prim,
             Prim::Float(_)
+                | Prim::Float32(_)
                 | Prim::Eq
                 | Prim::Ne
                 | Prim::ToText
                 | Prim::Decimal(una_core::DecimalOp::FromF64(_))
-        ) && args.iter().any(|(_, kind)| *kind == Kind::F64)
+        ) && args
+            .iter()
+            .any(|(_, kind)| matches!(kind, Kind::F64 | Kind::F32))
         {
-            return Err(internal(format!("`{}` on an `F64`", prim.as_str())));
+            return Err(internal(format!("`{}` on a float", prim.as_str())));
         }
         match prim {
             // A conversion keeps the value: a narrowing one carries an `overflow` obligation that
@@ -3074,8 +4076,20 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 let (a, b, c) = (word(0), word(1), word(2));
                 self.call("una_rt_f64_op", &[code, a, b, c])
             }
-            // Dense values have no native representation yet (`spec/29 §17`).
-            Prim::Shape(_) => Err(unsupported("dense values (spec/29)")),
+            // The shape functions of a dense value (`spec/29 §17`, ADR 0120 rules 33 and 38), by
+            // the runtime: an axis's length, -1 for the rank, -2 for the number of elements. An
+            // `Lu[T]` of size n holds n + 1 rows of n, so its size is its columns.
+            Prim::Shape(fun) => {
+                let (a, _) = operand(first)?;
+                let axis = match fun {
+                    una_core::ShapeFun::Rows => 0,
+                    una_core::ShapeFun::Columns | una_core::ShapeFun::Size => 1,
+                    una_core::ShapeFun::Rank => -1,
+                    una_core::ShapeFun::Count => -2,
+                };
+                let axis = self.builder.ins().iconst(types::I64, axis);
+                self.call("una_rt_dense_shape", &[a, axis])
+            }
             // Every operation of `Decimal` is the runtime's, on coefficients, with the
             // operation's static scales, and its conversions with `F64` on boxed values
             // (`spec/29 §16`).
@@ -3093,8 +4107,30 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 }
                 self.call("una_rt_decimal", &words)
             }
-            Prim::Seq(_) => Err(unsupported("`Stack` and `Queue` (spec/28)")),
-            Prim::Set(_) => Err(unsupported("`Set` (spec/28)")),
+            // Lowered with their receiver's ownership, in `rhs`.
+            Prim::Seq(_)
+            | Prim::Set(_)
+            | Prim::HashMap(_)
+            | Prim::HashSet(_)
+            | Prim::Priority(_)
+            | Prim::BitSet(_) => Err(internal(format!(
+                "collection `{}` out of place",
+                prim.as_str()
+            ))),
+            // The operations of `F32`, over its tagged words (ADR 0120 rules 9 and 10): the
+            // routines of `una_core::float32`, as in the interpreter.
+            Prim::Float32(op) => {
+                let code = una_core::FloatOp::ALL
+                    .iter()
+                    .position(|x| *x == op)
+                    .and_then(|i| i64::try_from(i).ok())
+                    .ok_or_else(|| internal("an unknown operation of `F32`"))?;
+                let code = self.builder.ins().iconst(types::I64, code);
+                let zero = self.builder.ins().iconst(types::I64, 0);
+                let word = |i: usize| args.get(i).map_or(zero, |(value, _)| *value);
+                let (a, b, c) = (word(0), word(1), word(2));
+                self.call("una_rt_f32_op", &[code, a, b, c])
+            }
             Prim::Fixed(op, int) => {
                 let a = operand(first)?.0;
                 let b = match second {
@@ -3189,6 +4225,13 @@ impl<'p> Lowerer<'_, 'p, '_> {
                     Kind::Text => self.call("una_rt_text_len", &[a]),
                     Kind::List => self.call("una_rt_list_len", &[a]),
                     Kind::Map => self.call("una_rt_map_len", &[a]),
+                    // An array's length, its one axis (`spec/29 §17`).
+                    Kind::Dense => {
+                        let axis = self.builder.ins().iconst(types::I64, 0);
+                        self.call("una_rt_dense_shape", &[a, axis])
+                    }
+                    // O(1) for every collection with a native layout (`spec/28`).
+                    Kind::Coll => self.call("una_rt_collection_len", &[a]),
                     _ => Err(unsupported("this length")),
                 }
             }
@@ -3216,7 +4259,13 @@ impl<'p> Lowerer<'_, 'p, '_> {
             Prim::ToText => {
                 let (a, kind) = operand(first)?;
                 match kind {
-                    Kind::Int => self.call("una_rt_int_text", &[a]),
+                    // At its site, where an integer too long for text aborts the run
+                    // (`spec/11 §7`, #923).
+                    Kind::Int => {
+                        let site = self.site(span);
+                        let text = self.call("una_rt_int_text", &[site, a])?;
+                        self.stopped_after(text)
+                    }
                     Kind::Bool => self.call("una_rt_bool_text", &[a]),
                     Kind::F64 => {
                         let code = una_core::FloatOp::ALL
@@ -3227,6 +4276,16 @@ impl<'p> Lowerer<'_, 'p, '_> {
                         let code = self.builder.ins().iconst(types::I64, code);
                         let zero = self.builder.ins().iconst(types::I64, 0);
                         self.call("una_rt_f64_op", &[code, a, zero, zero])
+                    }
+                    Kind::F32 => {
+                        let code = una_core::FloatOp::ALL
+                            .iter()
+                            .position(|x| *x == una_core::FloatOp::ToText)
+                            .and_then(|i| i64::try_from(i).ok())
+                            .ok_or_else(|| internal("an unknown operation of `F32`"))?;
+                        let code = self.builder.ins().iconst(types::I64, code);
+                        let zero = self.builder.ins().iconst(types::I64, 0);
+                        self.call("una_rt_f32_op", &[code, a, zero, zero])
                     }
                     Kind::Text => {
                         self.retain(a, Kind::Text);
@@ -3412,8 +4471,16 @@ fn borrowed_from(expr: &Expr, out: &mut BTreeSet<String>) {
             borrowed_from(body, out);
             borrowed_from(handler, out);
         }
-        Expr::Attempt { body, .. } | Expr::With { body, .. } => borrowed_from(body, out),
-        Expr::Together { .. } | Expr::TogetherFor { .. } => {
+        Expr::Attempt { body, .. }
+        | Expr::With { body, .. }
+        | Expr::Within { body, .. }
+        | Expr::Tasks { body, .. } => {
+            borrowed_from(body, out);
+        }
+        Expr::Together { .. }
+        | Expr::TogetherFor { .. }
+        | Expr::FirstOf { .. }
+        | Expr::Start { .. } => {
             // A task's captures are never moved: every name the block reads stays pinned
             // (#162).
             vars(expr, out);
@@ -3421,6 +4488,24 @@ fn borrowed_from(expr: &Expr, out: &mut BTreeSet<String>) {
         Expr::Atom { .. } | Expr::Fail { .. } | Expr::Exit { .. } | Expr::Unreachable { .. } => {}
     }
 }
+
+/// The failure word of a stopped task (`spec/19 §6` rule 4): a task that is cancelled, by a
+/// failed sibling or a `within` whose deadline passed (`spec/27 §5`), or that aborts, leaves
+/// every frame by the path a failure takes, so each frame releases what it owns, and a frame
+/// that catches failures passes this word on.
+///
+/// **Why `-1` is never a real failure.** A failure is a value of the function's error kind,
+/// which is always a sum kind (`fails` names one, U2002), and a value of a sum kind is one of
+/// two words, by the representation of `una-rt` (`values`):
+/// - a variant without fields: the immediate `(index << 1) | 1`, with `index`, its position
+///   in its kind, at least 0, so the word is at least 1 ([`Lowerer::construct`]);
+/// - a variant with fields: a handle, an even word other than 0 (`values::is_handle`).
+///
+/// `-1` is odd, so no handle, and below 1, so no variant without fields. The integer `-1`,
+/// whose small-integer word is also `-1`, is never a failure: no error kind is `Int`. Debug
+/// builds assert it where a failure word is made: [`Lowerer::construct`] for variants, and
+/// `una_rt::host::failed` for the failures of host operations.
+const STOPPED: i64 = -1;
 
 /// The trap of a branch that verification proves unreachable.
 const TRAP: cranelift_codegen::ir::TrapCode = cranelift_codegen::ir::TrapCode::unwrap_user(1);

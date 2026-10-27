@@ -63,7 +63,7 @@ The operations are a prelude function and built-in methods resolved by the recei
 
 1. **Sorts.** Each instantiation `Map[K, V]` is one sort, `i!Map_<K>_<V>`, mangled as `List` is (`spec/12 §4`).
 2. **Functions.** `len : Map → Int`, `has : Map × K → Bool` and `get : Map × K → Option[V]` are uninterpreted. `len(m) ≥ 0` is a ground fact for every map term.
-3. **Contracts.** Each operation's contract in §2 is a hypothesis after the call, and `empty_map()` gives `len = 0`. `set` and `remove` give no fact about other keys.
+3. **Contracts.** Each operation's contract in §2 is a hypothesis after the call, and `empty_map()` gives `len = 0`. In editions `0.2` and `0.3`, `set` and `remove` give no fact about other keys. (v0.4, ADR 0069 amendment of 2026-10-19.) In edition `0.4`, `set`, `remove`, `with`, `without` and `update` at the key `x` keep `has` and `get` at every other key term `y` of the query, guarded by `y != x`, as `spec/28 §11` rule 3 states.
 4. **The refinement language** (`spec/03 §3`) gains `m.len` and `m.has(key: k)` on a map term, so they may appear in `requires`, `ensures`, `where` and predicates.
 
 ## 5. Dynamic semantics

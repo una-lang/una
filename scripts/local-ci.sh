@@ -1,8 +1,9 @@
 #!/bin/sh
 # Runs what .github/workflows/ci.yml runs, in the same order, on this machine: the solver check,
 # the released sections of CHANGELOG.md against their tags, fmt, clippy with warnings denied,
-# the tests, then packing the release archive of the host's target, the load commands of its
-# `una` and of a program it links (#1103), and checking the archive. With --linux,
+# the tests, the C math library check of release artifacts (#1092), then packing the release
+# archive of the host's target, the load commands of its `una` and of a program it links
+# (#1103), and checking the archive. With --linux,
 # it runs the same inside a linux/amd64 container of CI's Ubuntu image
 # (scripts/local-ci/Dockerfile), emulated on an arm64 Mac, so it is slow and runs the tests one
 # at a time (#286); with --linux-arm64, inside a linux/arm64 one, native on such a Mac (#241),
@@ -25,8 +26,8 @@ fail() {
 if [ "${1:-}" = --linux ] || [ "${1:-}" = --linux-arm64 ]; then
     # --linux: x86_64, emulated on an arm64 Mac; --linux-arm64: aarch64, native on one (#241).
     case $1 in
-        --linux) arch=amd64 target=x86_64-unknown-linux-gnu suffix="" serial=1 ;;
-        *) arch=arm64 target=aarch64-unknown-linux-gnu suffix=-arm64 serial="" ;;
+        --linux) arch=amd64 target=x86_64-unknown-linux-gnu suffix="" serial=1 retry=1 ;;
+        *) arch=arm64 target=aarch64-unknown-linux-gnu suffix=-arm64 serial="" retry="" ;;
     esac
     command -v docker >/dev/null 2>&1 || fail "docker not found; $1 needs Docker"
     # The released sections of CHANGELOG.md need the repository's tags, which a worktree
@@ -84,6 +85,7 @@ if [ "${1:-}" = --linux ] || [ "${1:-}" = --linux-arm64 ]; then
         --volume "una-local-ci-lean$suffix:/opt/lean" \
         --env UNA_FORMAL_LEAN=/opt/lean \
         --env "UNA_LOCAL_CI_SERIAL=$serial" \
+        --env "UNA_RELEASE_CHECK_RETRY=$retry" \
         --env "CARGO_BUILD_JOBS=$jobs" \
         --env RUST_TEST_THREADS \
         --env UNA_LOCAL_CI_RELEASED_SECTIONS_ON_HOST=1 \
@@ -145,6 +147,33 @@ if [ -n "${UNA_LOCAL_CI_SERIAL:-}" ]; then
 else
     step "Test" cargo test --workspace --locked
 fi
+# The security timing oracles (#1145): every test of crates/una-cli/tests/timing_channels.rs is
+# a real-clock oracle of a timing channel, ignored in the ordinary test run and run only here and
+# in the release gate of the same name, one at a time. Under emulation (UNA_LOCAL_CI_SERIAL, the
+# --linux container through Rosetta on an arm64 Mac, or a shell translated by Rosetta) the real
+# clock measures the emulator, not the runtime, so the step is skipped there, visibly.
+translated=$( (sysctl -n sysctl.proc_translated 2>/dev/null) || echo 0)
+if [ -n "${UNA_LOCAL_CI_SERIAL:-}" ] || [ "$translated" = 1 ]; then
+    echo "== Timing channels (security oracles)"
+    echo "skipped: under emulation the real clock is not the runtime's; run on a native host (macOS, --linux-arm64)"
+else
+    step "Timing channels (security oracles)" \
+        cargo test --release --locked -p una-cli --test timing_channels -- --ignored --test-threads=1 --nocapture
+fi
+# No C math library symbol (#1092), in what ships: a test build unifies the features of
+# dev-dependencies in, so the check builds its own release `una` and `libuna_rt.a`, links with
+# that `una` every runnable program of tests/conformance/runtime that the native backend
+# compiles (scripts/no-libm-build.sh, into a fresh target/no-libm), and reads the release
+# graph's features and the undefined symbols of all of them (scripts/no-libm.sh), strictly.
+step "Build (release) for the C math library check" \
+    env CARGO_TARGET_DIR="$root/target" cargo build --locked --release -p una-cli -p una-rt
+no_libm="$root/target/no-libm"
+rm -rf "${no_libm:?}"
+step "Native executables of the release una" \
+    scripts/no-libm-build.sh "$root/target/release/una" "$no_libm"
+step "No C math library symbol" \
+    scripts/no-libm.sh "$root/target/release/una" "$root/target/release/libuna_rt.a" \
+    "$no_libm/executables"
 # The documents' links (#708): every link of the documents names a tracked file or directory,
 # and every fragment a heading of its document; the check's own test refuses each kind of
 # broken link first. It needs only Python 3 and git, so it runs everywhere, the containers
@@ -176,7 +205,14 @@ step "Pack the release archive of $target" scripts/release.sh "$target"
 # The release `una` just packed, and examples/hello that it links, ask the dynamic loader only
 # for what scripts/load-commands.txt lists (#1103).
 step "Load commands" scripts/load-commands.sh "$root/target/release-remapped/release/una"
-step "Check the release archive of $target" scripts/check-release.sh "$target"
+# Under emulation the check runs the packed `una` with one verifier thread, as the serial tests do
+# (#286): a `una run` that starts several solver processes from many threads at once can deadlock
+# inside the translator (#1133). The check's own time limits and single retry are a second guard.
+if [ -n "${UNA_LOCAL_CI_SERIAL:-}" ]; then
+    step "Check the release archive of $target" env RAYON_NUM_THREADS=1 scripts/check-release.sh "$target"
+else
+    step "Check the release archive of $target" scripts/check-release.sh "$target"
+fi
 # In a container, the most memory the run used, which sizes the job count (#701).
 if [ -n "${UNA_LOCAL_CI_Z3:-}" ] && [ -r /sys/fs/cgroup/memory.peak ]; then
     echo "== peak memory of the container: $(($(cat /sys/fs/cgroup/memory.peak) / 1048576)) MiB, with CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-unset}"

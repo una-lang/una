@@ -220,20 +220,43 @@ fn decode(x: f64) -> (bool, u64, i64) {
     }
 }
 
-/// `negative`, `m * 2^e` rounded to the nearest `F64`, ties to even, with overflow to an
-/// infinity and underflow to a subnormal or a signed zero: the one rounding of every
-/// conversion and of `fma`. O(bits of `m`).
-fn round_to_f64(negative: bool, m: &BigUint, e: i64) -> f64 {
-    let sign = if negative { SIGN } else { 0 };
+/// The result of rounding a magnitude to a binary format (`round_magnitude`).
+pub(crate) enum Rounded {
+    /// Beyond the largest finite value: an infinity of the sign.
+    Infinity,
+    /// `mantissa * 2^quantum`, with `mantissa < 2^precision`; a subnormal when the mantissa
+    /// is below `2^(precision - 1)`, at the smallest quantum.
+    Finite {
+        /// The significand, the hidden bit included.
+        mantissa: u64,
+        /// The exponent of its last bit.
+        quantum: i64,
+    },
+}
+
+/// `m * 2^e`, `m > 0`, rounded to the nearest value of the binary format of `precision` bits
+/// whose quanta run from `min_quantum` to `max_quantum`, ties to even, with overflow to an
+/// infinity and underflow to a subnormal or zero: the one rounding of every conversion and of
+/// `fma`, for `F64` and `F32` alike. O(bits of `m`).
+pub(crate) fn round_magnitude(
+    m: &BigUint,
+    e: i64,
+    precision: i64,
+    min_quantum: i64,
+    max_quantum: i64,
+) -> Rounded {
     let bits = i64::try_from(m.bits()).unwrap_or(i64::MAX);
     if bits == 0 {
-        return f64::from_bits(sign);
+        return Rounded::Finite {
+            mantissa: 0,
+            quantum: min_quantum,
+        };
     }
     let top = bits - 1 + e;
-    if top > 1023 {
-        return f64::from_bits(sign | 0x7FF0_0000_0000_0000);
+    if top > max_quantum + precision - 1 {
+        return Rounded::Infinity;
     }
-    let mut quantum = (top - 52).max(MIN_QUANTUM);
+    let mut quantum = (top - (precision - 1)).max(min_quantum);
     let shift = quantum - e;
     let mut mantissa: u64 = if shift <= 0 {
         let shifted: BigUint = m << usize::try_from(-shift).unwrap_or(0);
@@ -251,19 +274,28 @@ fn round_to_f64(negative: bool, m: &BigUint, e: i64) -> f64 {
         let round_up = half_set && (below_half || kept & 1 == 1);
         if round_up { kept + 1 } else { kept }
     };
-    if mantissa == 1 << 53 {
+    if mantissa == 1 << precision {
         mantissa >>= 1;
         quantum += 1;
     }
-    if quantum > MAX_QUANTUM {
-        return f64::from_bits(sign | 0x7FF0_0000_0000_0000);
+    if quantum > max_quantum {
+        return Rounded::Infinity;
     }
-    if mantissa >= HIDDEN {
-        let biased = u64::try_from(quantum + 1075).unwrap_or(0);
-        f64::from_bits(sign | (biased << 52) | (mantissa & FRACTION))
-    } else {
-        // A subnormal, at the smallest quantum.
-        f64::from_bits(sign | mantissa)
+    Rounded::Finite { mantissa, quantum }
+}
+
+/// `negative`, `m * 2^e` rounded to the nearest `F64`, ties to even, with overflow to an
+/// infinity and underflow to a subnormal or a signed zero. O(bits of `m`).
+fn round_to_f64(negative: bool, m: &BigUint, e: i64) -> f64 {
+    let sign = if negative { SIGN } else { 0 };
+    match round_magnitude(m, e, 53, MIN_QUANTUM, MAX_QUANTUM) {
+        Rounded::Infinity => f64::from_bits(sign | 0x7FF0_0000_0000_0000),
+        Rounded::Finite { mantissa, quantum } if mantissa >= HIDDEN => {
+            let biased = u64::try_from(quantum + 1075).unwrap_or(0);
+            f64::from_bits(sign | (biased << 52) | (mantissa & FRACTION))
+        }
+        // A subnormal, at the smallest quantum, or a signed zero.
+        Rounded::Finite { mantissa, .. } => f64::from_bits(sign | mantissa),
     }
 }
 
@@ -332,6 +364,13 @@ pub fn rem(x: f64, y: f64) -> f64 {
 /// `x.fma(times: y, plus: z)`: IEEE `fusedMultiplyAdd`, `x * y + z` rounded once, computed
 /// exactly on integers of at most about 4,300 bits.
 pub fn fma(x: f64, y: f64, z: f64) -> f64 {
+    fma_exact(x, y, z, round_to_f64)
+}
+
+/// `x * y + z` computed exactly and rounded once by `round`, which rounds a sign and a
+/// magnitude `m * 2^e` to the format of the result: `fma` of `F64` and of `F32`, whose
+/// operands are exactly their `f64` widenings. Special values follow IEEE `fusedMultiplyAdd`.
+pub(crate) fn fma_exact(x: f64, y: f64, z: f64, round: impl Fn(bool, &BigUint, i64) -> f64) -> f64 {
     if x.is_nan() || y.is_nan() || z.is_nan() {
         return f64::from_bits(CANONICAL_NAN);
     }
@@ -399,8 +438,8 @@ pub fn fma(x: f64, y: f64, z: f64) -> f64 {
     match sum.sign() {
         // An exact cancellation of nonzero values is +0 in roundTiesToEven.
         Sign::NoSign => 0.0,
-        Sign::Minus => round_to_f64(true, sum.magnitude(), base),
-        Sign::Plus => round_to_f64(false, sum.magnitude(), base),
+        Sign::Minus => round(true, sum.magnitude(), base),
+        Sign::Plus => round(false, sum.magnitude(), base),
     }
 }
 
@@ -537,10 +576,14 @@ pub fn render(x: f64) -> String {
         return format!("{sign}0.0");
     }
     // Rust's `{:e}` writes the shortest digits that round-trip, the nearest of them: `d.ddde-k`.
-    let scientific = format!("{:e}", x.abs());
-    let (mantissa, exponent) = scientific
-        .split_once('e')
-        .unwrap_or((scientific.as_str(), "0"));
+    layout(sign, &format!("{:e}", x.abs()))
+}
+
+/// The layout of rule 7.1 for the sign `sign` and the shortest digits of a finite nonzero
+/// magnitude as Rust's `{:e}` writes them, `d.ddde-k`: positional when `k` is in `-6..=20`,
+/// scientific otherwise. Shared by `F64` and `F32`.
+pub(crate) fn layout(sign: &str, scientific: &str) -> String {
+    let (mantissa, exponent) = scientific.split_once('e').unwrap_or((scientific, "0"));
     let digits: String = mantissa.chars().filter(char::is_ascii_digit).collect();
     let k: i64 = exponent.parse().unwrap_or(0);
     let body = if (-6..=20).contains(&k) {
@@ -602,6 +645,22 @@ enum State {
 /// `parse_f64(t)` (rule 7.3): an RFC 8259 number, `nan`, `inf` or `-inf`, rounded to the
 /// nearest value, ties to even. O(b) in the bytes of `t`, with a bounded slow path.
 pub fn parse(t: &str) -> Result<f64, ParseFailure> {
+    grammar(t)?;
+    match t {
+        "nan" => return Ok(f64::from_bits(CANONICAL_NAN)),
+        "inf" => return Ok(f64::INFINITY),
+        "-inf" => return Ok(f64::NEG_INFINITY),
+        _ => {}
+    }
+    // The grammar is a subset of what Rust's correctly rounded parser reads.
+    t.parse::<f64>()
+        .map(canonical)
+        .map_err(|_| ParseFailure::NotADigit(0))
+}
+
+/// The grammar of rule 7.3 and its failures (rule 7.4): an RFC 8259 number, `nan`, `inf` or
+/// `-inf`. Shared by `parse_f64` and `parse_f32`. O(b).
+pub(crate) fn grammar(t: &str) -> Result<(), ParseFailure> {
     let mut state = State::Start;
     for (at, c) in t.chars().enumerate() {
         state = match (state, c) {
@@ -634,16 +693,7 @@ pub fn parse(t: &str) -> Result<f64, ParseFailure> {
             _ => ParseFailure::NotADigit(t.chars().count()),
         });
     }
-    match t {
-        "nan" => return Ok(f64::from_bits(CANONICAL_NAN)),
-        "inf" => return Ok(f64::INFINITY),
-        "-inf" => return Ok(f64::NEG_INFINITY),
-        _ => {}
-    }
-    // The grammar above is a subset of what Rust's correctly rounded parser reads.
-    t.parse::<f64>()
-        .map(canonical)
-        .map_err(|_| ParseFailure::NotADigit(0))
+    Ok(())
 }
 
 /// The value of a float literal of the source (rule 2.4), its `_` already removed.
@@ -748,6 +798,23 @@ pub fn probe_environment() -> Result<(), &'static str> {
     Ok(())
 }
 
+/// `2^k` exactly, assembled from its IEEE bits, for the tests: `powi` may call the platform
+/// C library, which no part of Una uses. Normal powers (`-1022 <= k <= 1023`) carry the
+/// biased exponent `k + 1023` and a zero fraction; subnormal powers (`-1074 <= k <= -1023`)
+/// are the single fraction bit `k + 1074`. Panics outside `-1074..=1023`. O(1).
+#[cfg(test)]
+pub(crate) fn two_pow(k: i32) -> f64 {
+    assert!(
+        (-1074..=1023).contains(&k),
+        "2^{k} is not a finite nonzero binary64"
+    );
+    if k >= -1022 {
+        f64::from_bits(u64::from((k + 1023).unsigned_abs()) << 52)
+    } else {
+        f64::from_bits(1 << (k + 1074).unsigned_abs())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
@@ -756,6 +823,106 @@ mod tests {
 
     fn b(x: f64) -> u64 {
         x.to_bits()
+    }
+
+    #[test]
+    fn two_pow_is_exact_on_the_boundary_exponents() {
+        assert_eq!(b(two_pow(0)), b(1.0));
+        assert_eq!(b(two_pow(1)), b(2.0));
+        assert_eq!(b(two_pow(-1)), b(0.5));
+        assert_eq!(b(two_pow(52)), b(4_503_599_627_370_496.0));
+        assert_eq!(b(two_pow(-52)), b(f64::EPSILON));
+        assert_eq!(b(two_pow(1023)), 0x7FE0_0000_0000_0000);
+        assert_eq!(b(two_pow(1023)), b(f64::MAX) & !((1 << 52) - 1));
+        assert_eq!(b(two_pow(-1022)), b(f64::MIN_POSITIVE));
+        assert_eq!(b(two_pow(-1023)), 0x0008_0000_0000_0000);
+        assert_eq!(b(two_pow(-1073)), 2);
+        assert_eq!(b(two_pow(-1074)), 1);
+        // Each power is twice the one below, across the subnormal to normal boundary.
+        for k in -1074..1023 {
+            assert_eq!(b(two_pow(k) * 2.0), b(two_pow(k + 1)), "{k}");
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "not a finite nonzero binary64")]
+    fn two_pow_rejects_an_overflow() {
+        let _ = two_pow(1024);
+    }
+
+    #[test]
+    #[should_panic(expected = "not a finite nonzero binary64")]
+    fn two_pow_rejects_an_underflow() {
+        let _ = two_pow(-1075);
+    }
+
+    /// `[trunc, floor, ceil, half away, half even]` of a finite `x`, computed on the integer
+    /// significand with shifts only, as the oracle of the roundings. The result keeps the sign
+    /// of `x`, as IEEE's roundToIntegral does. O(1).
+    fn integer_roundings(x: f64) -> [f64; 5] {
+        let bits = x.to_bits();
+        let negative = bits >> 63 == 1;
+        let exponent = (bits >> 52) & 0x7FF;
+        // Biased exponent 1075 and above: |x| >= 2^52, already an integer.
+        if exponent >= 1075 {
+            return [x; 5];
+        }
+        let fraction = bits & ((1 << 52) - 1);
+        let significand = if exponent == 0 {
+            fraction
+        } else {
+            fraction | (1 << 52)
+        };
+        // |x| = significand * 2^-shift, with shift from 1 to 1074.
+        let shift = 1075 - exponent.max(1);
+        let (q, above_half, half, nonzero) = if shift > 60 {
+            // significand < 2^53 <= 2^(shift - 8): |x| < 1/2.
+            (0u64, false, false, significand != 0)
+        } else {
+            let rem = significand & ((1 << shift) - 1);
+            let mid = 1 << (shift - 1);
+            (significand >> shift, rem > mid, rem == mid, rem != 0)
+        };
+        let up = q + u64::from(nonzero);
+        let away = q + u64::from(above_half || half);
+        let even = q + u64::from(above_half || (half && q % 2 == 1));
+        let (floor_mag, ceil_mag) = if negative { (up, q) } else { (q, up) };
+        // Every magnitude is at most 2^52, so the conversion is exact.
+        #[allow(clippy::cast_precision_loss)]
+        let signed = |m: u64| if negative { -(m as f64) } else { m as f64 };
+        [
+            signed(q),
+            signed(floor_mag),
+            signed(ceil_mag),
+            signed(away),
+            signed(even),
+        ]
+    }
+
+    #[test]
+    fn the_integer_oracle_of_the_roundings_is_right_on_known_values() {
+        let cases: [(f64, [f64; 5]); 8] = [
+            (2.5, [2.0, 2.0, 3.0, 3.0, 2.0]),
+            (-2.5, [-2.0, -3.0, -2.0, -3.0, -2.0]),
+            (3.5, [3.0, 3.0, 4.0, 4.0, 4.0]),
+            (-0.25, [-0.0, -1.0, -0.0, -0.0, -0.0]),
+            (0.75, [0.0, 0.0, 1.0, 1.0, 1.0]),
+            (5.0e-324, [0.0, 0.0, 1.0, 0.0, 0.0]),
+            (-7.0, [-7.0, -7.0, -7.0, -7.0, -7.0]),
+            (
+                4_503_599_627_370_495.5,
+                [
+                    4_503_599_627_370_495.0,
+                    4_503_599_627_370_495.0,
+                    4_503_599_627_370_496.0,
+                    4_503_599_627_370_496.0,
+                    4_503_599_627_370_496.0,
+                ],
+            ),
+        ];
+        for (x, want) in cases {
+            assert_eq!(integer_roundings(x).map(b), want.map(b), "{x}");
+        }
     }
 
     #[test]
@@ -800,13 +967,26 @@ mod tests {
             // n <= x < n + 1.
             if let Some(n) = to_int_exact(floor(x)) {
                 let low = from_int(&n);
-                assert!(low <= x && x < low + 1.0 || x.abs() >= 2f64.powi(52), "{x}");
+                assert!(low <= x && x < low + 1.0 || x.abs() >= two_pow(52), "{x}");
             }
-            assert_eq!(b(trunc(x)), b(x.trunc()), "{x}");
-            assert_eq!(b(floor(x)), b(x.floor()), "{x}");
-            assert_eq!(b(ceil(x)), b(x.ceil()), "{x}");
-            assert_eq!(b(round_half_away(x)), b(x.round()), "{x}");
-            assert_eq!(b(round_half_even(x)), b(x.round_ties_even()), "{x}");
+            let [t, f, c, away, even] = integer_roundings(x);
+            assert_eq!(b(trunc(x)), b(t), "{x}");
+            assert_eq!(b(floor(x)), b(f), "{x}");
+            assert_eq!(b(ceil(x)), b(c), "{x}");
+            assert_eq!(b(round_half_away(x)), b(away), "{x}");
+            assert_eq!(b(round_half_even(x)), b(even), "{x}");
+            // Rust's roundings agree too, where they are single instructions (AArch64's
+            // `frintz`, `frintm`, `frintp`, `frinta` and `frintn`). Elsewhere they may call the
+            // platform's C library, which no part of Una uses (clippy's `disallowed_methods`).
+            #[cfg(target_arch = "aarch64")]
+            #[allow(clippy::disallowed_methods)]
+            {
+                assert_eq!(b(trunc(x)), b(x.trunc()), "{x}");
+                assert_eq!(b(floor(x)), b(x.floor()), "{x}");
+                assert_eq!(b(ceil(x)), b(x.ceil()), "{x}");
+                assert_eq!(b(round_half_away(x)), b(x.round()), "{x}");
+                assert_eq!(b(round_half_even(x)), b(x.round_ties_even()), "{x}");
+            }
         }
     }
 
@@ -835,26 +1015,34 @@ mod tests {
 
     #[test]
     fn fma_rounds_once() {
-        let a = 1.0 + 2f64.powi(-52);
-        let c = 1.0 - 2f64.powi(-52);
-        assert_eq!(fma(a, c, -1.0), -(2f64.powi(-104)));
+        let a = 1.0 + two_pow(-52);
+        let c = 1.0 - two_pow(-52);
+        assert_eq!(fma(a, c, -1.0), -(two_pow(-104)));
         assert_eq!(b(fma(f64::INFINITY, 0.0, 1.0)), CANONICAL_NAN);
         assert_eq!(b(fma(-0.0, 1.0, -0.0)), b(-0.0));
         assert_eq!(b(fma(0.0, -1.0, 0.0)), b(0.0));
         assert_eq!(b(fma(1.0, 1.0, -1.0)), b(0.0));
-        let mut state: u64 = 0x1234_5678_9ABC_DEF1;
-        for _ in 0..100_000 {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            let x = f64::from_bits(state);
-            let y = f64::from_bits(state.rotate_left(21));
-            let z = f64::from_bits(state.rotate_left(43));
-            assert_eq!(
-                b(fma(x, y, z)),
-                b(canonical(x.mul_add(y, z))),
-                "{x} {y} {z}"
-            );
+        // The hardware's fused multiply-add agrees, where it is the instruction itself
+        // (AArch64's `fmadd`). Elsewhere `mul_add` may call the platform's C library, which no
+        // part of Una uses (clippy's `disallowed_methods`): there the exact cases above, the
+        // emulation's tests in `dense::fma` and the corpus of `dense_corpus` check `fma`.
+        #[cfg(target_arch = "aarch64")]
+        #[allow(clippy::disallowed_methods)]
+        {
+            let mut state: u64 = 0x1234_5678_9ABC_DEF1;
+            for _ in 0..100_000 {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                let x = f64::from_bits(state);
+                let y = f64::from_bits(state.rotate_left(21));
+                let z = f64::from_bits(state.rotate_left(43));
+                assert_eq!(
+                    b(fma(x, y, z)),
+                    b(canonical(x.mul_add(y, z))),
+                    "{x} {y} {z}"
+                );
+            }
         }
     }
 
@@ -862,24 +1050,24 @@ mod tests {
     fn conversions_round_on_every_bit() {
         let two = BigInt::from(2);
         let p = |e: u32| -> BigInt { two.pow(e) };
-        assert_eq!(from_int(&(p(53) + BigInt::from(1))), 2f64.powi(53));
-        assert_eq!(from_int(&(p(100) + p(47))), 2f64.powi(100));
+        assert_eq!(from_int(&(p(53) + BigInt::from(1))), two_pow(53));
+        assert_eq!(from_int(&(p(100) + p(47))), two_pow(100));
         assert_eq!(
             from_int(&(p(100) + p(47) + BigInt::from(1))),
-            2f64.powi(100) + 2f64.powi(48)
+            two_pow(100) + two_pow(48)
         );
         assert_eq!(
             from_int(&-(p(100) + p(47) + BigInt::from(1))),
-            -(2f64.powi(100) + 2f64.powi(48))
+            -(two_pow(100) + two_pow(48))
         );
         let limit = p(1024) - p(970);
         assert_eq!(from_int(&limit), f64::INFINITY);
         assert_eq!(from_int(&(limit - BigInt::from(1))), f64::MAX);
         assert_eq!(to_int_exact(-0.0), Some(BigInt::default()));
         assert_eq!(to_int_exact(0.5), None);
-        assert_eq!(to_int_exact(2f64.powi(63)), Some(p(63)));
-        assert_eq!(to_int_exact(-(2f64.powi(63))), Some(-p(63)));
-        assert_eq!(to_int_exact(2f64.powi(1023)), Some(p(1023)));
+        assert_eq!(to_int_exact(two_pow(63)), Some(p(63)));
+        assert_eq!(to_int_exact(-(two_pow(63))), Some(-p(63)));
+        assert_eq!(to_int_exact(two_pow(1023)), Some(p(1023)));
         assert_eq!(to_int_exact(f64::NAN), None);
         assert_eq!(to_int_exact(f64::INFINITY), None);
     }

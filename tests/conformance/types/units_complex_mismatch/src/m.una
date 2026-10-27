@@ -1,0 +1,10 @@
+-- test: adding a Complex[F64] of volts to one of amperes is U2028 at the operation (ADR 0120 rule 64)
+-- spec: spec/25 §9
+-- expect: error U2028 at src/m.una:10:87
+module m
+
+pub measure Volt
+
+pub measure Ampere
+
+pub bad(a: Complex[F64] of Volt, b: Complex[F64] of Ampere) -> Complex[F64] of Volt = a + b

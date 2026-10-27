@@ -1,4 +1,4 @@
--- test: in edition 0.4, `HttpError` has a ninth variant, `Interrupted`, after `Protocol`, which an operation of `Http` in the body of a `for ever` fails with after a host stop request; a `when` that names every variant is exhaustive (spec/26 §6 rule 5, ADR 0116 rule 12)
+-- test: in edition 0.4, `HttpError` has a ninth variant, `Interrupted`, after `Protocol`, which an operation of `Http` in the body of a `for ever` fails with after a host stop request; a `when` that names every variant, `RateLimited` of ADR 0117 rule 8 included, is exhaustive (spec/26 §6 rule 5, ADR 0116 rule 12)
 -- spec: spec/26 §6
 -- expect: ok
 module poll
@@ -16,6 +16,7 @@ pub describe(failure: internal HttpError) -> internal Text
     is Tls -> "tls"
     is Protocol -> "protocol"
     is Interrupted -> "interrupted"
+    is RateLimited -> "rate limited"
 
 --- Polls a server until the host stops the run, keeping the count of answers and the last
 --- failure, which are `internal`, as every request's failure is (spec/24 §5).

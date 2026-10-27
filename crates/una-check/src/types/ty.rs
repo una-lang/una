@@ -214,14 +214,16 @@ pub(crate) enum Ty {
     /// `Decimal[s]`, an exact decimal of scale s from 0 to 38, edition 0.4 (`spec/29 §16`,
     /// ADR 0120 rule 12).
     Decimal(u8),
+    /// `F32`, IEEE binary32, edition 0.4 (`spec/29`, ADR 0120 rule 5).
+    F32,
     Bool,
     Text,
     Unit,
     Hashed,
     List(Shared<Ty>),
-    /// A dense value of edition 0.4, `Array[T]` or `Matrix[T]` (`spec/29 §17`, ADR 0120
-    /// rules 26 to 30): its shape is the top position, its elements the element position, so
-    /// its labels are a list's.
+    /// A dense value of edition 0.4, `Array[T]`, `Matrix[T]`, `Tensor[T]` or `Lu[T]`
+    /// (`spec/29 §17`, ADR 0120 rules 26 to 38): its shape is the top position, its elements
+    /// the element position, so its labels are a list's.
     Dense(Dense, Shared<Ty>),
     /// `Map[K, V]`, keyed by an `Ord` type, from edition 0.2 (`spec/21 §1`). Its keys are part
     /// of its shape, so a read takes the labels of the key position with the top label (§3).
@@ -246,10 +248,11 @@ pub(crate) enum Ty {
     /// A type whose top position carries a label above `public` (`spec/03 §5`, `spec/09 §2`).
     /// Type equality ignores labels.
     Labeled(Label, Shared<Ty>),
-    /// An integer type with a unit of measure, edition 0.3 (ADR 0104 rule 2): `Int` or a
-    /// fixed-width integer type, never labeled itself (a label wraps the measured type). A
-    /// type of its own: it equals another measured type with the same unit and magnitude
-    /// type, and nothing else.
+    /// A number type with a unit of measure (ADR 0104 rule 2): `Int` or a fixed-width integer
+    /// type from edition 0.3, `F64` from edition 0.3 (ADR 0114 rule 12), and `F32`,
+    /// `Decimal[s]`, `Complex[F64]` and `Complex[F32]` in edition 0.4 (ADR 0120 rule 61). The
+    /// magnitude is never labeled itself (a label wraps the measured type). A type of its own:
+    /// it equals another measured type with the same unit and magnitude type, and nothing else.
     Measured(Shared<super::units::Unit>, Shared<Ty>),
     /// A nested position whose values satisfy `refinements` (ADR 0103): an argument of a type
     /// written or instantiated with a refined kind or a range, in edition 0.3. It sits inside
@@ -260,13 +263,18 @@ pub(crate) enum Ty {
     Refined(Shared<[Refinement]>, Shared<Ty>),
 }
 
-/// The dense types of edition 0.4 (`spec/29 §17`, ADR 0120 rules 26 and 30).
+/// The dense types of edition 0.4 (`spec/29 §17`, ADR 0120 rules 26, 30 and 38).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Dense {
     /// `Array[T]`, the one fixed-length array, of any element type.
     Array,
     /// `Matrix[T]`, of a numeric element type.
     Matrix,
+    /// `Tensor[T]`, of a numeric element type, with a rank from 1 to 8.
+    Tensor,
+    /// `Lu[T]`, the opaque LU factorization of a square matrix of float elements: its size is
+    /// its top position, as a matrix's shape is, and its factors its element position.
+    Lu,
 }
 
 impl Dense {
@@ -275,6 +283,8 @@ impl Dense {
         match self {
             Dense::Array => "Array",
             Dense::Matrix => "Matrix",
+            Dense::Tensor => "Tensor",
+            Dense::Lu => "Lu",
         }
     }
 }
@@ -546,6 +556,7 @@ impl Flagged for Ty {
             | Ty::Hashed
             | Ty::F64
             | Ty::Decimal(_)
+            | Ty::F32
             | Ty::Param(_)
             | Ty::Never
             | Ty::Error(_) => Flags::LEAF,
@@ -607,6 +618,7 @@ impl Ty {
             | (Ty::Unit, Ty::Unit)
             | (Ty::Hashed, Ty::Hashed)
             | (Ty::F64, Ty::F64)
+            | (Ty::F32, Ty::F32)
             | (Ty::Never, Ty::Never)
             | (Ty::Error(_), Ty::Error(_)) => true,
             (Ty::Fixed(a), Ty::Fixed(b)) => a == b,
@@ -688,14 +700,42 @@ impl Ty {
         }
     }
 
-    /// The measured type of `unit` over `magnitude`, `Int` or a fixed-width type without a
-    /// label: a label wraps the measured type, never its magnitude (ADR 0104, ADR 0077).
+    /// The measured type of `unit` over `magnitude`, a number type without a label: `Int`, a
+    /// fixed-width type, `F64`, `F32`, `Decimal[s]` or a complex kind. A label wraps the
+    /// measured type, never its magnitude (ADR 0104, ADR 0077, ADR 0120 rule 61).
     pub(crate) fn measured(unit: super::units::Unit, magnitude: Ty) -> Ty {
         debug_assert!(
-            matches!(magnitude, Ty::Int | Ty::Fixed(_)),
-            "a magnitude is an unlabeled integer type: {magnitude:?}"
+            matches!(
+                magnitude,
+                Ty::Int | Ty::Fixed(_) | Ty::F64 | Ty::F32 | Ty::Decimal(_) | Ty::Kind(..)
+            ),
+            "a magnitude is an unlabeled number type: {magnitude:?}"
         );
         Ty::Measured(Shared::new(unit), Shared::new(magnitude))
+    }
+
+    /// `self`, a number type, measured in `unit` in place of any unit it has, its top label
+    /// kept outside the unit (ADR 0104, ADR 0120 rule 61). No unit, or the unit one, leaves
+    /// the magnitude unitless; a type that is not a number type is returned as it is, so an
+    /// error type stays one.
+    pub(crate) fn in_unit(self, unit: Option<&super::units::Unit>) -> Ty {
+        let magnitude = self.magnitude().clone();
+        let number = match &magnitude {
+            Ty::Int | Ty::Fixed(_) | Ty::F64 | Ty::F32 | Ty::Decimal(_) => true,
+            // A complex kind has no type argument (ADR 0120 rule 22).
+            Ty::Kind(_, args) => args.is_empty(),
+            _ => false,
+        };
+        if !number {
+            return self;
+        }
+        let label = self.top_label();
+        match unit {
+            Some(unit) if !unit.is_one() => {
+                Ty::measured(unit.clone(), magnitude).with_label(&label)
+            }
+            _ => magnitude.with_label(&label),
+        }
     }
 
     /// The type with every unit removed, at every position (ADR 0104): what a unit-only
@@ -1258,6 +1298,7 @@ pub(crate) enum View<'t, T> {
     Hashed,
     F64,
     Decimal(u8),
+    F32,
     List(&'t T),
     Dense(Dense, &'t T),
     Map(&'t T, &'t T),
@@ -1293,6 +1334,7 @@ impl TypeView for Ty {
             Ty::Hashed => View::Hashed,
             Ty::F64 => View::F64,
             Ty::Decimal(scale) => View::Decimal(*scale),
+            Ty::F32 => View::F32,
             Ty::List(element) => View::List(element),
             Ty::Dense(dense, element) => View::Dense(*dense, element),
             Ty::Map(key, value) => View::Map(key, value),
@@ -1332,6 +1374,7 @@ impl<T: TypeView, N: Names> fmt::Display for Show<'_, '_, T, N> {
             View::Hashed => write!(f, "Hashed"),
             View::F64 => write!(f, "F64"),
             View::Decimal(scale) => write!(f, "Decimal[{scale}]"),
+            View::F32 => write!(f, "F32"),
             View::List(element) => write!(f, "List[{}]", Show(element, names)),
             View::Dense(dense, element) => {
                 write!(f, "{}[{}]", dense.as_str(), Show(element, names))

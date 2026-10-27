@@ -59,14 +59,13 @@ impl<'a> Checker<'_, 'a, '_> {
             return Ty::Int.with_label(&top);
         }
         // A collection's size depends on its shape, so `.len` takes the labels of the type
-        // arguments that are part of it too (ADR 0119 IF2 to IF4). The refinement language gains
-        // `.len` of a collection with ADR 0119 V5; until then, it is outside it.
+        // arguments that are part of it too (ADR 0119 IF2 to IF4). It is in the refinement
+        // language (ADR 0119 V5).
         if field == "len"
             && let Ty::Coll(coll, args) = labeled.unlabeled()
             && super::collections::has_len(*coll)
         {
             self.resolved(span, Res::Len);
-            self.outside_rl(span, || format!("`.len` of a `{}`", coll.as_str()));
             let kinds = self.env.kind_labels.clone();
             let label = args
                 .iter()
@@ -74,6 +73,19 @@ impl<'a> Checker<'_, 'a, '_> {
                 .filter(|(index, _)| coll.is_shape(*index))
                 .fold(top, |label, (_, arg)| label.join(&arg.every_label(&kinds)));
             return Ty::Int.with_label(&label);
+        }
+        // `z.re` and `z.im` of a measured complex value have its unit (ADR 0120 rule 64).
+        if let Ty::Measured(unit, magnitude) = labeled.unlabeled()
+            && let Some(ty) = self.record_field(magnitude, field)
+        {
+            if let Some((kind, index)) = self.field_index(magnitude, field) {
+                self.resolved(span, Res::Field { kind, index });
+            }
+            return ty.in_unit(Some(&**unit)).with_label(&top);
+        }
+        // `b.size` of a bit set, labeled with its shape (`spec/28 §9`, ADR 0119 IF2).
+        if let Some(ty) = self.bit_set_size(&target_ty, field, span) {
+            return ty;
         }
         if let Some(ty) = self.record_field(labeled.unlabeled(), field) {
             if let Some((kind, index)) = self.field_index(&resolved, field) {
@@ -212,11 +224,15 @@ impl<'a> Checker<'_, 'a, '_> {
                 if let Some(current) = self.current {
                     self.findings.value_callers.insert(current);
                 }
+                self.graph_value_call();
                 self.timing_value_call();
             }
             return ty;
         }
         if let Some(ty) = self.decimal_method(&target_ty, method, args, span) {
+            return ty;
+        }
+        if let Some(ty) = self.complex_method(&target_ty, method, args, span) {
             return ty;
         }
         if let Some(ty) = self.float_method(&target_ty, method, args, span) {
@@ -261,6 +277,50 @@ impl<'a> Checker<'_, 'a, '_> {
         ) {
             return ty;
         }
+        if let Some(ty) = self.hash_map_method(
+            target,
+            &target_ty,
+            place.as_ref(),
+            marker,
+            method,
+            args,
+            span,
+        ) {
+            return ty;
+        }
+        if let Some(ty) = self.hash_set_method(
+            target,
+            &target_ty,
+            place.as_ref(),
+            marker,
+            method,
+            args,
+            span,
+        ) {
+            return ty;
+        }
+        if let Some(ty) = self.priority_method(
+            target,
+            &target_ty,
+            place.as_ref(),
+            marker,
+            method,
+            args,
+            span,
+        ) {
+            return ty;
+        }
+        if let Some(ty) = self.bit_set_method(
+            target,
+            &target_ty,
+            place.as_ref(),
+            marker,
+            method,
+            args,
+            span,
+        ) {
+            return ty;
+        }
         // Edition 0.4: `edit m.update(key:, initial:, change:)` on a map is a built-in method
         // (ADR 0119 rule 18), declared where no name reaches it, so it resolves ahead of any
         // function `update` in scope, as every built-in method does.
@@ -274,8 +334,26 @@ impl<'a> Checker<'_, 'a, '_> {
             self.receiver_marker = None;
             return ty;
         }
+        // Edition 0.4: `update` on a hash map, the hidden function of `std.collections` (ADR
+        // 0119 rule 12), reached the same way.
+        if method == "update"
+            && let Some(id) = self.env.hash_map_update
+            && matches!(resolved, Ty::Coll(una_core::Coll::HashMap, _))
+        {
+            self.outside_rl(span, || format!("the method `{method}`"));
+            self.receiver_marker = Some((marker, target.clone()));
+            let ty = self.call_function(id, Some((target.span, target_ty)), args, span, site);
+            self.receiver_marker = None;
+            return ty;
+        }
         match self.env.lower(self.module, method) {
             Some(Entity::Function(id)) => {
+                // `x.complex(im: y)` (ADR 0120 rule 22).
+                if let Some(ty) =
+                    self.complex_call(id, Some((target, &target_ty)), args, span, expected)
+                {
+                    return ty;
+                }
                 self.receiver_marker = Some((marker, target.clone()));
                 let ty = self.call_function(id, Some((target.span, target_ty)), args, span, site);
                 self.receiver_marker = None;
@@ -344,6 +422,14 @@ impl<'a> Checker<'_, 'a, '_> {
                 }
                 match self.env.lower(self.module, name) {
                     Some(Entity::Function(id)) => {
+                        // A tensor's shape selects the function of its rank (`spec/29 §17`).
+                        if let Some(ty) = self.tensor_construct(id, args, span, site) {
+                            return ty;
+                        }
+                        // `complex(re: x, im: y)` (ADR 0120 rule 22).
+                        if let Some(ty) = self.complex_call(id, None, args, span, expected) {
+                            return ty;
+                        }
                         let ty = self.call_function(id, None, args, span, site);
                         self.decimal_call(id, None, args, span, ty)
                     }
@@ -449,6 +535,7 @@ impl<'a> Checker<'_, 'a, '_> {
         if let Some(current) = self.current {
             self.findings.value_callers.insert(current);
         }
+        self.graph_value_call();
         self.timing_value_call();
         self.ordered(span, (0..args.len()).map(Some).collect());
         let mut flows = Vec::new();
@@ -821,12 +908,17 @@ impl<'a> Checker<'_, 'a, '_> {
                     type_args: Vec::new(),
                 },
             );
-            // A policy call is a release (`spec/07 §5`); into a boundary it is U3024 itself.
-            self.release_site(span);
+            // A policy call is a release (`spec/07 §5`); into a boundary it is U3024 itself,
+            // unless its policy is declared in a dependency's module that the root trusts by
+            // a trust line (ADR 0122 rule 53.1).
+            let trusted_policy = self.env.trusted_dependencies.contains(&def.module);
+            if !trusted_policy {
+                self.release_site(span);
+            }
             let result = self.call_policy(&def, &callee, receiver, args, span);
             if let Some(boundary) = crossing {
                 let granting = Granting {
-                    release: Some(span),
+                    release: (!trusted_policy).then_some(span),
                     ..Granting::default()
                 };
                 self.cross(
@@ -857,9 +949,11 @@ impl<'a> Checker<'_, 'a, '_> {
                 uses_of: def.uses_of.clone(),
                 fails_of: def.fails_of,
                 own_fails: def.fails.clone(),
-                // The map's `update` runs its argument as `spec/07 §7` rule 9 describes for
-                // the prelude's functions (ADR 0119 IF7).
-                prelude: (def.module == self.env.prelude || Some(id) == self.env.map_update)
+                // The `update` of a map and of a hash map runs its argument as `spec/07 §7`
+                // rule 9 describes for the prelude's functions (ADR 0119 IF7).
+                prelude: (def.module == self.env.prelude
+                    || Some(id) == self.env.map_update
+                    || Some(id) == self.env.hash_map_update)
                     .then(|| def.name.to_owned()),
                 raises: self
                     .env
@@ -931,6 +1025,9 @@ impl<'a> Checker<'_, 'a, '_> {
         // ADR 0120: a trusted function that computes new elements keeps no refinement of its
         // type arguments in its result (`super::dense::SYNTHESIZING`).
         let synthesizes = super::dense::synthesizes(self.env.prelude, def.module, def.name);
+        if synthesizes {
+            self.synthesized(span);
+        }
         let result = if subst.is_empty()
             || (covariant_in(&def.result.base, &self.env.kind_labels) && !synthesizes)
         {
@@ -939,7 +1036,9 @@ impl<'a> Checker<'_, 'a, '_> {
             self.refined_vars_at_base(&result)
         };
         let decided = self.decided_callbacks(&callee, span, &needs, call_fails.is_some(), &checked);
-        let result = if prelude_labeled(self.env.prelude, &def) {
+        let result = if prelude_labeled(self.env.prelude, &def)
+            || collections_labeled(self.env.collections, &def)
+        {
             self.prelude_result(&callee, def.name, checked, result)
         } else {
             self.argument_flows(&callee, checked);
@@ -958,6 +1057,8 @@ impl<'a> Checker<'_, 'a, '_> {
         }
         if def.module == self.env.prelude {
             self.dense_result(&result, span);
+            // ADR 0109 rule 3: `sum` and `abs` compute an `Int` by arithmetic.
+            self.prelude_overflow_site(def.name, span);
         }
         if let Some(fails) = &call_fails {
             self.call_fails.insert(span, fails.clone());
@@ -1073,6 +1174,8 @@ impl<'a> Checker<'_, 'a, '_> {
         // rule 2).
         // Likewise for the kernels whose result is a dense value: each of its elements depends
         // on many input elements and on the inputs' shapes (ADR 0120 IF6).
+        // A factorization and a solve choose their pivots from the values, so the top of the
+        // `Option` they return, and every position of an `Lu`, are raised the same way (IF6).
         if matches!(
             name,
             "sort"
@@ -1080,6 +1183,16 @@ impl<'a> Checker<'_, 'a, '_> {
                 | "dense_matrix_multiply_array"
                 | "dense_matrix_row_sums"
                 | "dense_matrix_column_sums"
+                | "dense_matrix_lu"
+                | "dense_matrix_solve"
+                | "dense_matrix_solve_array"
+                | "dense_matrix_cholesky"
+                | "dense_matrix_solve_lower"
+                | "dense_matrix_solve_upper"
+                | "dense_lu_solve"
+                | "dense_lu_pivots"
+                | "dense_tensor_sum_axis"
+                | "dense_tensor_contract"
         ) {
             return result.raise_deep(&label);
         }
@@ -1417,6 +1530,9 @@ impl<'a> Checker<'_, 'a, '_> {
         let resolved = self.op_site(cap, op);
         if let Some(id) = resolved {
             self.timing_op(id, op_name);
+            // The edge of ADR 0116 P1 from the node whose code holds the operation, a lambda's
+            // included, to the operation: every operation call, whatever `uses` names (#1148).
+            self.graph_op(id, op_name);
         }
         let capability = resolved
             .and_then(|id| self.env.capabilities.get(id))
@@ -1435,6 +1551,10 @@ impl<'a> Checker<'_, 'a, '_> {
             self.unchecked_unknown(args);
             return Ty::unknown();
         };
+        // An operation of the host's `Http`, whose timing `L_lim` covers (ADR 0117 IF4).
+        if capability.module == self.env.prelude && capability.name == "Http" {
+            self.http_site(span);
+        }
         let Some(def) = capability.ops.iter().find(|o| o.name == op_name).cloned() else {
             let names: Vec<&str> = capability.ops.iter().map(|o| o.name).collect();
             let mut diagnostic = self.report.make(
@@ -1606,7 +1726,7 @@ impl<'a> Checker<'_, 'a, '_> {
     /// The parameter an unlabeled argument names by punning (`spec/04 §3` rule 3): a bare name
     /// equal to a parameter's name counts as labeled with it. In a call, it applies from the
     /// second argument on (ADR 0049).
-    fn punned(&self, arg: &Arg, names: &[&str]) -> Option<usize> {
+    pub(crate) fn punned(&self, arg: &Arg, names: &[&str]) -> Option<usize> {
         if arg.label.is_some() {
             return None;
         }
@@ -1654,6 +1774,14 @@ impl<'a> Checker<'_, 'a, '_> {
     ) -> Vec<Checked<'a>> {
         let mut checked: Vec<Checked<'a>> = Vec::new();
         let of_callee = self.of_callee.take();
+        // The elements of a list literal passed as arguments bind consecutive parameters
+        // (`spec/29 §17`): the position of an argument among them, and its parameter.
+        let spread = self.spread.take();
+        let spread_target = |index: usize| {
+            let (first, count, param) = spread?;
+            let k = index.checked_sub(first).filter(|k| *k < count)?;
+            Some(param + k)
+        };
         // A parameter of the prelude written `with_`, `and_` or `from_` takes the label without
         // the underscore: the keywords `with`, `and` and `from` label the arguments of the dense
         // methods (`spec/29 §17`, ADR 0120), and cannot name a parameter.
@@ -1750,6 +1878,7 @@ impl<'a> Checker<'_, 'a, '_> {
         let mut given_params = taken.clone();
         for (index, arg) in args.iter().enumerate() {
             let target = match &arg.label {
+                _ if spread_target(index).is_some() => spread_target(index),
                 Some(label) => names.iter().position(|name| *name == self.name(label)),
                 // ADR 0049: an unlabeled first argument binds the first parameter, and
                 // punning applies only from the second argument on.
@@ -1770,7 +1899,9 @@ impl<'a> Checker<'_, 'a, '_> {
         let mut problem = false;
         for (index, arg) in args.iter().enumerate() {
             let position = index + offset;
-            let target = if let Some(label) = &arg.label {
+            let target = if let Some(target) = spread_target(index) {
+                Some(target)
+            } else if let Some(label) = &arg.label {
                 let label_name = self.name(label);
                 match names.iter().position(|name| *name == label_name) {
                     Some(target) => Some(target),
@@ -1960,7 +2091,7 @@ impl<'a> Checker<'_, 'a, '_> {
 
     /// U2005: a label that names no parameter; `names` are the parameters that no other
     /// argument gives, which the repair may suggest.
-    fn unknown_label(&mut self, callee: &str, names: &[&str], label: &Ident) {
+    pub(crate) fn unknown_label(&mut self, callee: &str, names: &[&str], label: &Ident) {
         let label_name = self.name(label);
         let mut diagnostic = self.report.make(
             Code::U2005,
@@ -1989,7 +2120,13 @@ impl<'a> Checker<'_, 'a, '_> {
 
     /// U2004: an argument after the first without a label, with an edit that labels it with
     /// the parameter at its position.
-    fn missing_label(&mut self, callee: &str, names: &[&str], arg: &Arg, position: usize) {
+    pub(crate) fn missing_label(
+        &mut self,
+        callee: &str,
+        names: &[&str],
+        arg: &Arg,
+        position: usize,
+    ) {
         let mut diagnostic = self.report.make(
             Code::U2004,
             arg.span,
@@ -2019,6 +2156,28 @@ impl<'a> Checker<'_, 'a, '_> {
     ) -> Ty {
         let name = self.name(ident);
         self.outside_rl(span, || format!("constructor `{name}`"));
+        // ADR 0120 rules 3 and 38: `Matrix`, `Tensor` and `Lu` are types without a
+        // constructor; an `Lu[T]` in particular comes only from `lu()`, so none is forged.
+        if name != "Array"
+            && let Some(dense) = self.env.dense_name(name)
+        {
+            let made_by = match dense {
+                super::ty::Dense::Lu => "a factorization comes from `m.lu()`",
+                super::ty::Dense::Tensor => {
+                    "a tensor is made by `tensor(...)` or `tensor_filled(...)`"
+                }
+                _ => {
+                    "a matrix is made by `matrix(...)`, `matrix_filled(...)` or `matrix_diagonal(...)`"
+                }
+            };
+            self.report.error(
+                Code::U2001,
+                ident.span,
+                format!("`{name}` is a built-in type with no constructor: {made_by}"),
+            );
+            self.unchecked(args);
+            return Ty::error();
+        }
         // ADR 0120 rule 3: `Array(...)` where an array is expected is the variant of `Json`.
         if let Some(repair) = self.json_array_repair(expected, name) {
             let mut diagnostic = self.report.make(
@@ -2479,7 +2638,7 @@ impl<'a> Checker<'_, 'a, '_> {
 /// The prelude functions whose results carry the labels of their arguments, as `spec/14 §1`
 /// "Result labels" lists them (ADR 0038 D3.4): their native implementations declare these
 /// labels, which the prelude's Una signatures cannot write.
-const PRELUDE_LABELED: [&str; 85] = [
+const PRELUDE_LABELED: &[&str] = &[
     "abs",
     "append",
     "at",
@@ -2574,7 +2733,45 @@ const PRELUDE_LABELED: [&str; 85] = [
     "dense_matrix_sum_exact",
     "dense_matrix_multiply",
     "dense_matrix_multiply_array",
+    "dense_matrix_to_tensor",
+    "dense_matrix_lu",
+    "dense_matrix_solve",
+    "dense_matrix_solve_array",
+    "dense_matrix_cholesky",
+    "dense_matrix_solve_lower",
+    "dense_matrix_solve_upper",
+    "dense_lu_solve",
+    "dense_lu_factors",
+    "dense_lu_pivots",
+    "dense_array_to_tensor",
+    "tensor",
+    "tensor_filled",
+    "dense_tensor_dim",
+    "dense_tensor_compact",
+    "dense_tensor_to_array",
+    "dense_tensor_to_matrix",
+    "dense_tensor_map",
+    "dense_tensor_zip_map",
+    "dense_tensor_fold",
+    "dense_tensor_multiply_elements",
+    "dense_tensor_divide_elements",
+    "dense_tensor_sum",
+    "dense_tensor_sum_axis",
+    "dense_tensor_all_finite",
+    "dense_tensor_sum_exact",
+    "dense_tensor_contract",
+    // `F32` (ADR 0120 rule 5): the same for `parse_f32` and `f32_from_bits`.
+    "parse_f32",
+    "f32_from_bits",
 ];
+
+/// Whether `name` is `prefix` followed by a rank from 1 to 8: a function of the prelude of one
+/// rank of a tensor (`spec/29 §17`).
+fn ranked(name: &str, prefix: &str) -> bool {
+    name.strip_prefix(prefix)
+        .and_then(|rank| rank.parse::<usize>().ok())
+        .is_some_and(|rank| (1..=8).contains(&rank))
+}
 
 /// For a structural prelude function (ADR 0051, `spec/14 §1`), the parameters that decide the
 /// shape of its result, whose labels raise its top label: by their top label, or by every label
@@ -2593,6 +2790,12 @@ fn structural_inputs(name: &str) -> Option<&'static [(&'static str, bool)]> {
         // the labels of its type variable.
         "array" => &[("xs", false)],
         "array_filled" => &[("length", true)],
+        // `std.collections` (ADR 0119 IF1, IF2): a bit set's size is its shape, so the bit set
+        // takes every label of `size`; a conversion takes the list's top label, and its
+        // positions keep the labels of their type variables.
+        "empty_bit_set" => &[("size", true)],
+        "to_stack" | "to_queue" | "to_set" | "to_hash_set" => &[("xs", false)],
+        "to_hash_map" => &[("es", false)],
         "matrix" => &[("rows", true), ("columns", true), ("elements", false)],
         "matrix_filled" => &[("rows", true), ("columns", true)],
         "matrix_diagonal" => &[("values", false)],
@@ -2621,6 +2824,65 @@ fn structural_inputs(name: &str) -> Option<&'static [(&'static str, bool)]> {
         "dense_matrix_multiply_elements" | "dense_matrix_divide_elements" => {
             &[("m", false), ("by", false)]
         }
+        "dense_array_to_tensor" => &[("a", false)],
+        "dense_matrix_to_tensor" => &[("m", false)],
+        "dense_lu_factors" => &[("f", false)],
+        "dense_tensor_dim" => &[("t", false), ("axis", true)],
+        "dense_tensor_compact" | "dense_tensor_to_array" | "dense_tensor_to_matrix" => {
+            &[("t", false)]
+        }
+        "dense_tensor_map" => &[("t", false), ("each", false)],
+        "dense_tensor_zip_map" => &[("t", false), ("with_", false), ("each", false)],
+        "dense_tensor_fold" => &[("t", false), ("step", false)],
+        "dense_tensor_multiply_elements" | "dense_tensor_divide_elements" => {
+            &[("t", false), ("by", false)]
+        }
+        // The functions of each rank (`spec/29 §17`): a shape's lengths and an index decide the
+        // top label; the elements carry their type variable's labels.
+        name if ranked(name, "dense_tensor_make_") => &[
+            ("shape_0", true),
+            ("shape_1", true),
+            ("shape_2", true),
+            ("shape_3", true),
+            ("shape_4", true),
+            ("shape_5", true),
+            ("shape_6", true),
+            ("shape_7", true),
+            ("elements", false),
+        ],
+        name if ranked(name, "dense_tensor_filled_") => &[
+            ("shape_0", true),
+            ("shape_1", true),
+            ("shape_2", true),
+            ("shape_3", true),
+            ("shape_4", true),
+            ("shape_5", true),
+            ("shape_6", true),
+            ("shape_7", true),
+        ],
+        name if ranked(name, "dense_tensor_get_") || ranked(name, "dense_tensor_at_") => &[
+            ("t", false),
+            ("at_0", true),
+            ("at_1", true),
+            ("at_2", true),
+            ("at_3", true),
+            ("at_4", true),
+            ("at_5", true),
+            ("at_6", true),
+            ("at_7", true),
+        ],
+        name if ranked(name, "dense_tensor_permute_") => &[("t", false)],
+        name if ranked(name, "dense_tensor_reshape_") => &[
+            ("t", false),
+            ("shape_0", true),
+            ("shape_1", true),
+            ("shape_2", true),
+            ("shape_3", true),
+            ("shape_4", true),
+            ("shape_5", true),
+            ("shape_6", true),
+            ("shape_7", true),
+        ],
         _ => return None,
     })
 }
@@ -2644,7 +2906,44 @@ fn decides_failure(capability: &str, op: &str, param: &str) -> bool {
 /// since the result carries all of them, at the positions that hold them for the structural
 /// functions (ADR 0051); the other prelude functions keep the labels of their parameter types.
 fn prelude_labeled(prelude: usize, def: &FnDef<'_>) -> bool {
-    def.module == prelude && def.kind == FnKind::Function && PRELUDE_LABELED.contains(&def.name)
+    def.module == prelude
+        && def.kind == FnKind::Function
+        && (PRELUDE_LABELED.contains(&def.name)
+            || RANKED_LABELED.iter().any(|prefix| ranked(def.name, prefix)))
+}
+
+/// The prelude functions of each rank of a tensor whose results carry their arguments' labels
+/// as [`PRELUDE_LABELED`] lists them (`spec/29 §17`): all of them but `set`, whose arguments
+/// keep their parameters' labels, as for the other dense methods that update their receiver.
+const RANKED_LABELED: [&str; 6] = [
+    "dense_tensor_make_",
+    "dense_tensor_filled_",
+    "dense_tensor_get_",
+    "dense_tensor_at_",
+    "dense_tensor_permute_",
+    "dense_tensor_reshape_",
+];
+
+/// The functions of `std.collections` whose results carry the labels of their arguments, as
+/// the prelude's of `PRELUDE_LABELED` do: `empty_bit_set`, whose size is part of the bit set's
+/// shape (ADR 0119 IF2), and the conversions of rule 16, whose results hold the list's items in
+/// its order. Their bodies are placeholders that both engines replace, so no summary of a body
+/// could label them.
+const COLLECTIONS_LABELED: [&str; 6] = [
+    "empty_bit_set",
+    "to_stack",
+    "to_queue",
+    "to_set",
+    "to_hash_set",
+    "to_hash_map",
+];
+
+/// Whether `def` is a function of `std.collections` whose result is labeled by its arguments
+/// (`COLLECTIONS_LABELED`), with `structural_inputs`.
+fn collections_labeled(collections: Option<usize>, def: &FnDef<'_>) -> bool {
+    Some(def.module) == collections
+        && def.kind == FnKind::Function
+        && COLLECTIONS_LABELED.contains(&def.name)
 }
 
 /// Whether every type parameter of `ty` is at a covariant position (ADR 0103 rule 5): never
