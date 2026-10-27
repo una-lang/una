@@ -176,6 +176,15 @@ pub enum Abort {
         /// The message, which names what the bytes were.
         message: &'static str,
     },
+    /// The host gave no random bytes for the process key of keyed hashing, before the run
+    /// started (U6009, `spec/28 §1` rule 3, ADR 0119 rule 9).
+    NoRandomBytes,
+    /// The call at this span makes a hash table after the run's table counter reached its
+    /// limit (U6003, `spec/28 §1` rule 4).
+    Tables {
+        /// The call.
+        span: Span,
+    },
     /// The hard stop of the host came at the check point at this span: a call or a loop
     /// iteration (U6007, ADR 0116 rule 16).
     HostStop {
@@ -215,6 +224,8 @@ pub(crate) type Flow<'p> = Result<Value<'p>, Stop<'p>>;
 mod seqs;
 
 mod sets;
+
+pub(crate) mod hashes;
 
 /// The fault of a `slice` outside the text (#693).
 const SLICE_OUTSIDE: &str = "`slice` outside the text, which its precondition excludes";
@@ -463,6 +474,30 @@ impl<'p> Index<'p> {
                 Value::Set(items) => {
                     parts.push(Task::Text("{".to_owned()));
                     for (i, item) in items.values().enumerate() {
+                        if i > 0 {
+                            parts.push(Task::Text(", ".to_owned()));
+                        }
+                        parts.push(Task::Value(item));
+                    }
+                    parts.push(Task::Text("}".to_owned()));
+                }
+                // `{k: v, ...}` and `{a, b}` in insertion order, `{}` when empty (`spec/28 §4`,
+                // ADR 0119 rules 3 and 10): never in the order of the hashes.
+                Value::HashMap(table) => {
+                    parts.push(Task::Text("{".to_owned()));
+                    for (i, (key, value)) in table.entries.iter().enumerate() {
+                        if i > 0 {
+                            parts.push(Task::Text(", ".to_owned()));
+                        }
+                        parts.push(Task::Value(key));
+                        parts.push(Task::Text(": ".to_owned()));
+                        parts.push(Task::Value(value));
+                    }
+                    parts.push(Task::Text("}".to_owned()));
+                }
+                Value::HashSet(table) => {
+                    parts.push(Task::Text("{".to_owned()));
+                    for (i, (item, _)) in table.entries.iter().enumerate() {
                         if i > 0 {
                             parts.push(Task::Text(", ".to_owned()));
                         }
@@ -720,6 +755,9 @@ pub(crate) struct Machine<'p, 'w> {
     reads: HashMap<*const Expr, Rc<BTreeSet<String>>>,
     /// The names each loop body binds, computed once (`una_core::binders`).
     binders: HashMap<*const Expr, Rc<BTreeSet<&'p str>>>,
+    /// The process key of keyed hashing, read before the run when its code can make a hash
+    /// table (`spec/28 §1` rule 3), else `None`. Each new table takes a key from it.
+    pub(crate) hashing: Option<una_hash::ProcessKey>,
 }
 
 impl<'p, 'w> Machine<'p, 'w> {
@@ -780,6 +818,7 @@ impl<'p, 'w> Machine<'p, 'w> {
             callers: Vec::new(),
             reads: HashMap::new(),
             binders: HashMap::new(),
+            hashing: None,
         }
     }
 
@@ -1145,10 +1184,69 @@ impl<'p, 'w> Machine<'p, 'w> {
         if self.reads(rest).contains(name) {
             return false;
         }
-        let later = self.later.clone();
-        later
-            .into_iter()
-            .all(|(expr, rebound)| rebound.contains(&name) || !self.reads(expr).contains(name))
+        // Taken out and put back rather than cloned: each update asks this.
+        let later = std::mem::take(&mut self.later);
+        let dead = later
+            .iter()
+            .all(|(expr, rebound)| rebound.contains(&name) || !self.reads(expr).contains(name));
+        self.later = later;
+        dead
+    }
+
+    /// The bindings of `init`, the values a loop's state starts from, that nothing reads once
+    /// the loop has started, neither its source, its condition, its body, its `on stop` block
+    /// nor what follows it: they give their values up to the state, so that the body, holding
+    /// the only reference, updates a value in place, as a call's argument at its last use does
+    /// (#30, #201). Without this, a nested loop over an `edit` binding copies the value at each
+    /// entry of the inner loop, O(n) per entry. A value something else holds is still copied
+    /// when written.
+    fn give_up_init(
+        &mut self,
+        env: &mut Env<'p>,
+        source: &'p LoopSource,
+        init: &'p [Atom],
+        body: &'p Expr,
+        on_stop: Option<&'p una_core::OnStop>,
+    ) {
+        let mut read: Vec<&'p str> = Vec::new();
+        let mut var = |atom: &'p Atom| {
+            if let Atom::Var(name) = atom {
+                read.push(name.as_str());
+            }
+        };
+        let cond = match source {
+            LoopSource::List(list) => {
+                var(list);
+                None
+            }
+            LoopSource::Range { low, high, .. } => {
+                var(low);
+                var(high);
+                None
+            }
+            LoopSource::Until { cond, .. } => Some(self.reads(cond)),
+            LoopSource::Ever { within } => {
+                if let Some((deadline, _)) = within {
+                    var(deadline);
+                }
+                None
+            }
+        };
+        let block = on_stop.map(|on_stop| self.reads(&on_stop.body));
+        for atom in init {
+            let Atom::Var(name) = atom else {
+                continue;
+            };
+            let kept = read.contains(&name.as_str())
+                || cond.as_ref().is_some_and(|names| names.contains(name))
+                || block.as_ref().is_some_and(|names| names.contains(name));
+            if !kept
+                && self.dead_after(name, body)
+                && let Some(value) = env.lookup_mut(name)
+            {
+                *value = Value::Unit;
+            }
+        }
     }
 
     /// `let t2 = concat(t1, part, ...) in rest`, the interpolation `"{t}..."`, where the text of
@@ -1243,6 +1341,17 @@ impl<'p, 'w> Machine<'p, 'w> {
                 args,
                 ..
             } if op.rebuilds() => args.get(..1)?,
+            // A hash map or a hash set given up the same way (`spec/28 §7`).
+            Rhs::Prim {
+                prim: Prim::HashMap(op),
+                args,
+                ..
+            } if op.rebuilds() => args.get(..1)?,
+            Rhs::Prim {
+                prim: Prim::HashSet(op),
+                args,
+                ..
+            } if op.rebuilds() => args.get(..1)?,
             _ => return None,
         };
         let all = match rhs {
@@ -1329,6 +1438,11 @@ impl<'p, 'w> Machine<'p, 'w> {
                                         prim: Prim::Set(op),
                                         ..
                                     } => sets::set_apply(*op, args)?,
+                                    Rhs::Prim {
+                                        prim: prim @ (Prim::HashMap(_) | Prim::HashSet(_)),
+                                        span,
+                                        ..
+                                    } => self.hash_apply(*prim, args, *span)?,
                                     _ => return Err(fault("an update that is not one")),
                                 }
                             }
@@ -1359,6 +1473,7 @@ impl<'p, 'w> Machine<'p, 'w> {
                     span,
                 } => {
                     let mut current = self.atoms(env, init)?;
+                    self.give_up_init(env, source, init, body, on_stop.as_deref());
                     // `on stop` runs after a failure of the body with the state from before
                     // the loop (ADR 0116 rule 10).
                     let before = on_stop.as_ref().map(|_| current.clone());
@@ -1499,8 +1614,18 @@ impl<'p, 'w> Machine<'p, 'w> {
                     if items.len() != names.len() {
                         return Err(fault("`let (...)` of a tuple of another length"));
                     }
-                    for ((name, _), item) in names.iter().zip(items.iter()) {
-                        env.push((name.as_str(), item.clone()));
+                    // A tuple binding at its last use, as the result of an update or of a
+                    // loop is, gives its items up: the names bound to them then hold them
+                    // once, and the next update of one happens in place (#30, #201).
+                    if let Atom::Var(tuple) = value
+                        && self.dead_after(tuple, body)
+                        && let Some(bound) = env.lookup_mut(tuple)
+                    {
+                        *bound = Value::Unit;
+                    }
+                    let items = Rc::try_unwrap(items).unwrap_or_else(|shared| (*shared).clone());
+                    for ((name, _), item) in names.iter().zip(items) {
+                        env.push((name.as_str(), item));
                     }
                     expr = body;
                 }
@@ -1880,9 +2005,10 @@ impl<'p, 'w> Machine<'p, 'w> {
         let result = self.eval(env, caps, body);
         env.truncate(mark);
         match result {
-            Ok(Value::Tuple(items)) if items.len() == state.len() => {
-                Ok((items.as_ref().clone(), false))
-            }
+            Ok(Value::Tuple(items)) if items.len() == state.len() => Ok((
+                Rc::try_unwrap(items).unwrap_or_else(|shared| (*shared).clone()),
+                false,
+            )),
             Err(Stop::Exit(tag, values)) if values.len() == state.len() => {
                 Ok((values, tag == ExitTag::Stop))
             }
@@ -1972,6 +2098,11 @@ impl<'p, 'w> Machine<'p, 'w> {
                 prim, args, span, ..
             } => {
                 let args = self.atoms(env, args)?;
+                // A hash table's operations compare keys within the memory budget, as `==`
+                // does (`spec/28 §7`).
+                if matches!(prim, Prim::HashMap(_) | Prim::HashSet(_)) {
+                    return self.hash_apply(*prim, args, *span);
+                }
                 if let (Prim::Eq | Prim::Ne, [a, b]) = (*prim, args.as_slice()) {
                     let same = self.equal_at(a, b, *span)?;
                     return Ok(Value::Bool(same == (*prim == Prim::Eq)));
@@ -2086,7 +2217,7 @@ impl<'p, 'w> Machine<'p, 'w> {
         match function.module.as_str() {
             "prelude" => return self.prelude(&function.name, args, span),
             una_core::COLLECTIONS_MODULE => {
-                if let Some(made) = self.collections(&function.name) {
+                if let Some(made) = self.collections(&function.name, span) {
                     return made;
                 }
             }
@@ -2141,16 +2272,44 @@ impl<'p, 'w> Machine<'p, 'w> {
         self.leave(result)
     }
 
-    /// A function of `std.collections` whose body is native (`spec/28`, ADR 0119), or `None`
-    /// for one the module declares in Una.
-    fn collections(&mut self, name: &str) -> Option<Flow<'p>> {
+    /// A function of `std.collections` whose body is native (`spec/28`, ADR 0119), called at
+    /// `span`, or `None` for one the module declares in Una.
+    fn collections(&mut self, name: &str, span: Span) -> Option<Flow<'p>> {
         Some(Ok(match name {
             // O(1): an empty ring buffer allocates nothing.
             "empty_stack" | "empty_queue" => Value::Seq(Rc::default()),
             // O(1).
             "empty_set" => Value::Set(Rc::default()),
+            // O(1): a new table with a key of its own (`spec/28 §1` rule 4).
+            "empty_hash_map" | "empty_hash_set" => {
+                let key = match hashes::table_key(self.hashing.as_ref(), span) {
+                    Ok(key) => key,
+                    Err(stop) => return Some(Err(stop)),
+                };
+                let table = Rc::new(crate::value::HashTable::new(key));
+                if name == "empty_hash_map" {
+                    Value::HashMap(table)
+                } else {
+                    Value::HashSet(table)
+                }
+            }
             _ => return None,
         }))
+    }
+
+    /// A method of a hash map or a hash set at `span`, its keys compared by `==` within the
+    /// memory budget, as `equal_at` compares (`spec/28 §7`).
+    fn hash_apply(&self, prim: Prim, args: Vec<Value<'p>>, span: Span) -> Flow<'p> {
+        let budget = hashes::Budget {
+            pairs: self.max_memory.saturating_mul(1024 * 1024) / EQUALITY_PAIR_BYTES,
+            span,
+            limit: self.max_memory,
+        };
+        match prim {
+            Prim::HashMap(op) => hashes::map_apply(op, args, &budget),
+            Prim::HashSet(op) => hashes::set_apply(op, args, &budget),
+            _ => Err(fault("a hash table operation of another primitive")),
+        }
     }
 
     /// A call of a function value.
@@ -3060,13 +3219,16 @@ fn prim_apply<'p>(prim: Prim, args: &[Value<'p>]) -> Flow<'p> {
             Value::Map(entries) => Value::Int(BigInt::from(entries.len())),
             Value::Seq(items) => Value::Int(BigInt::from(items.len())),
             Value::Set(items) => Value::Int(BigInt::from(items.len())),
+            Value::HashMap(table) | Value::HashSet(table) => {
+                Value::Int(BigInt::from(table.entries.len()))
+            }
             // An array's length (`spec/29 §17`).
             Value::Dense(dense) => {
                 Value::Int(BigInt::from(dense.shape.first().copied().unwrap_or(0)))
             }
             _ => {
                 return Err(fault(
-                    "`len` of a value that is not a text, list, map, sequence, set or array",
+                    "`len` of a value that is not a text, list, map, sequence, set, hash table or array",
                 ));
             }
         },
@@ -3099,6 +3261,10 @@ fn prim_apply<'p>(prim: Prim, args: &[Value<'p>]) -> Flow<'p> {
         Prim::Map(op) => return map_apply(op, args.to_vec()),
         Prim::Seq(op) => return seqs::seq_apply(op, args.to_vec()),
         Prim::Set(op) => return sets::set_apply(op, args.to_vec()),
+        // `Machine::rhs` applies them, with the memory budget of their key comparisons.
+        Prim::HashMap(_) | Prim::HashSet(_) => {
+            return Err(fault("a hash table operation outside the machine"));
+        }
         Prim::Float(op) => return float_apply(op, args),
         Prim::Decimal(op) => return decimal_apply(op, args),
         // The shape of a matrix (`spec/29 §17`).
