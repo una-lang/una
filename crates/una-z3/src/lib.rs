@@ -9,6 +9,7 @@
 //! engine unconfined. Z3's static initializers run in every `una` process; they read no input.
 #![allow(unsafe_code)]
 
+#[cfg(una_z3_linked)]
 use std::ffi::{CString, c_char, c_int};
 use std::fmt;
 

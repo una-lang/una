@@ -49,6 +49,26 @@ fn a_body_suspends_and_resumes_and_its_values_cross() {
 }
 
 #[test]
+fn a_body_borrows_what_outlives_its_scope_across_switches() {
+    // ADR 0117 slice S4: the interpreter's tasks borrow the program and the run. A body may
+    // borrow what outlives the call of `scope`, mutably too, and the scope ends only once every
+    // coroutine finished, so the borrow is alive at every switch.
+    let mut total = 0u64;
+    let items = vec![1u64, 2, 3];
+    let (sum, list) = (&mut total, &items);
+    scope(move |s| {
+        let mut coroutine = s.spawn(stack(), move || {
+            for item in list {
+                *sum += item;
+                suspend();
+            }
+        });
+        while coroutine.resume() == Resumed::Suspended {}
+    });
+    assert_eq!(total, 6);
+}
+
+#[test]
 fn suspend_leaves_the_innermost_coroutine_only() {
     let log = Rc::new(std::cell::RefCell::new(Vec::new()));
     let outer_log = Rc::clone(&log);

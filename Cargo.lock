@@ -1431,6 +1431,7 @@ dependencies = [
  "rcgen",
  "rustls",
  "una-core",
+ "una-http",
  "una-sys",
  "webpki-roots",
 ]
@@ -1450,6 +1451,17 @@ dependencies = [
  "una-http",
  "una-syntax",
  "una-sys",
+]
+
+[[package]]
+name = "una-itaty"
+version = "0.3.16"
+dependencies = [
+ "ed25519-dalek",
+ "pretty_assertions",
+ "sha2",
+ "una-project",
+ "una-syntax",
 ]
 
 [[package]]
@@ -1490,6 +1502,7 @@ dependencies = [
  "serde_json",
  "una-core",
  "una-diag",
+ "una-hash",
  "una-http",
  "una-interp",
  "una-sys",

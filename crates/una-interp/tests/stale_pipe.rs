@@ -7,7 +7,7 @@
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(clippy::unwrap_used)]
 
-use std::os::fd::AsRawFd;
+use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 
@@ -48,7 +48,7 @@ fn a_stale_pipe_never_hides_a_later_stop_and_a_deadline_stops_its_own_run_only()
     assert_eq!(
         polling
             .interrupt()
-            .wait(socket.as_raw_fd(), false, Duration::from_secs(5)),
+            .wait(socket.as_fd(), false, Duration::from_secs(5)),
         Waited::Stopped
     );
     assert!(

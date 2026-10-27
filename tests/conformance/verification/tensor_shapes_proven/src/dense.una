@@ -1,0 +1,40 @@
+-- test: tensor shapes verify: the same shape over tensors of rank 1 and of rank 8, a reshape with literal lengths, the shape frame of a loop that sets a tensor's elements, and `f.solve` from the size that `lu()` gives its factorization
+-- spec: spec/29 §17
+-- expect: ok
+module dense
+
+pub rank_one(a: Tensor[F64], b: Tensor[F64]) -> Tensor[F64]
+  requires a.rank == 1 and b.rank == 1 and a.dim(axis: 0) == b.dim(axis: 0)
+=
+  a + b
+
+pub rank_eight(a: Tensor[I8 in 0..10], b: Tensor[I8 in 0..10]) -> Tensor[I8]
+  requires a.rank == 8 and b.rank == 8
+  requires a.dim(axis: 0) == b.dim(axis: 0) and a.dim(axis: 1) == b.dim(axis: 1) and a.dim(axis: 2) == b.dim(axis: 2) and a.dim(axis: 3) == b.dim(axis: 3)
+  requires a.dim(axis: 4) == b.dim(axis: 4) and a.dim(axis: 5) == b.dim(axis: 5) and a.dim(axis: 6) == b.dim(axis: 6) and a.dim(axis: 7) == b.dim(axis: 7)
+=
+  a + b
+
+pub reshaped() -> Tensor[F64]
+  ensures result.rank == 2 and result.dim(axis: 0) == 3 and result.dim(axis: 1) == 8
+=
+  let t = tensor_filled(shape: [2, 3, 4], value: 0.0)
+  t.reshape(shape: [3, 8])
+
+pub cleared(t: Tensor[F64]) -> Tensor[F64]
+  requires t.rank == 2
+  ensures result.rank == 2 and result.dim(axis: 0) == t.dim(axis: 0)
+=
+  let edit u = t
+  for i in 0..<u.dim(axis: 0)
+    for j in 0..<u.dim(axis: 1)
+      edit u.set(at: [i, j], item: 0.0)
+  u
+
+pub solve(a: Matrix[F64], b: Matrix[F64]) -> Matrix[F64]
+  requires a.rows == a.columns and b.rows == a.rows
+  ensures result.columns == b.columns
+=
+  when a.lu()
+    is Some(f) -> f.solve(rhs: b)
+    is None -> b
