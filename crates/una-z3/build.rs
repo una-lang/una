@@ -13,6 +13,10 @@
 //! as environment constants. This script runs no program, downloads nothing and compiles
 //! nothing: the library is built once per pin by `scripts/build-z3.sh`.
 
+// A build script reads Cargo's and the build's variables; the library crates' rule against
+// reading the environment (compiler/conventions.md §1) does not apply to it.
+#![allow(clippy::disallowed_methods)]
+
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
