@@ -2305,6 +2305,16 @@ pub fn prelude_variants(kind: &str) -> Option<&'static [PreludeVariant]> {
 /// `Named` in it, and its kind `Ranked` is a [`Decl::Data`] of it.
 pub const COLLECTIONS_MODULE: &str = "std.collections";
 
+/// The module path of rate limits computed in code, edition `0.4` (ADR 0117 rule 9): its kind
+/// `Limited` is a [`Decl::Data`] of it, its capability `Limit` a [`Decl::Cap`], and the handler
+/// [`LIMITER`] is provided by each engine, so no [`Decl::Handler`] of it exists.
+pub const LIMIT_MODULE: &str = "std.limit";
+
+/// The handler of [`LIMIT_MODULE`] that each engine provides (ADR 0117 rule 9): a `with` or a
+/// `given` of it is `Source::Handler` with this name in that module, and its arguments are
+/// `at_most`, `per` and `waiting`, in that order.
+pub const LIMITER: &str = "limiter";
+
 /// A collection type of `std.collections`, edition `0.4` (ADR 0119). Each engine knows its
 /// values itself, as it knows a list's and a map's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]

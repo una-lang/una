@@ -1,0 +1,27 @@
+-- `std.limit` (spec/27 §10), edition 0.4: rate limits computed in code (ADR 0117 rule 9). The
+-- checker loads it only for a package that imports it.
+module std.limit
+
+import std.time (Millisecond)
+
+--- The failure of `acquire`: no token was left, and `waiting` calls already wait for one.
+pub kind Limited = | RateLimited
+
+--- A rate limit. `acquire` takes a token, waiting for one when none is left; it accepts
+--- `internal`, so the started tasks of a server, which run under an `internal` program counter
+--- once they have branched on a network result, can call it.
+pub capability Limit
+  op acquire() -> Unit
+    fails Limited
+    accepts internal
+
+-- The runtime provides this handler, as it does the host capabilities (ADR 0117 rule 9): the
+-- body of `acquire` is a placeholder that neither engine runs. Each installation is one bucket
+-- of `at_most` tokens that refills evenly over `per` milliseconds, shared by every task that
+-- uses the binding during the statement the `with` scopes over; `acquire` fails with
+-- `RateLimited` when `waiting` calls already wait. Installing it carries the obligations
+-- `at_most >= 1`, `per >= 1` and `waiting >= 0`.
+--- A rate limit of `at_most` calls per `per` milliseconds, with at most `waiting` calls
+--- waiting for a token.
+pub handler limiter(at_most: Int, per: Int of Millisecond, waiting: Int) for Limit
+  op acquire() = unit

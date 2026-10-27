@@ -4,9 +4,10 @@
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, PoisonError};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use num_bigint::{BigInt, Sign};
 use serde_json::Value;
 use una_interp::{Event, EventOutcome, FileFault, Grant, NotText, World};
 
@@ -342,7 +343,13 @@ pub fn host_instance(capability: i64) -> i64 {
 /// A new instance of the handler named `name`, installed by `with`: its id is
 /// `with:<name>#<n>`, the `n`th such instance of the run (`runtime::State::install_id`).
 pub fn handler_instance(name: i64) -> i64 {
-    let name = values::text_value(name);
+    instance_named(&values::text_value(name))
+}
+
+/// A new instance of the handler `name`, with the next id `with:<name>#<n>` of the task, or of
+/// the run in a streaming task.
+fn instance_named(name: &str) -> i64 {
+    let name = name.to_owned();
     let id = with_state(|state| {
         // A streaming task, the root or a started one, counts run-wide (`spec/27 §7`).
         let count = if state.streaming {
@@ -363,6 +370,122 @@ pub fn handler_instance(name: i64) -> i64 {
     })
     .unwrap_or_else(|| format!("with:{name}#1"));
     values::instance(id)
+}
+
+/// A count of `limiter`'s arguments: the installation's obligations give `at_most >= 1`,
+/// `per >= 1` and `waiting >= 0`; a count beyond 2^64 − 1 saturates, so a larger one never
+/// wraps into a smaller limit.
+fn limit_count(word: i64) -> u64 {
+    let value: BigInt = values::int_value(word);
+    u64::try_from(&value).unwrap_or(if value.sign() == Sign::Minus {
+        0
+    } else {
+        u64::MAX
+    })
+}
+
+/// A new instance of `limiter` of `std.limit` (ADR 0117 rule 9, `spec/27 §10`) from its
+/// arguments `at_most`, `per` and `waiting`: one bucket over the run's clock, kept run-wide so
+/// that every task that uses the binding shares it, a copy of the instance on another worker
+/// included; the instance holds the bucket's index. Its id counts as a handler's,
+/// `with:limiter#<n>`.
+pub fn limiter_instance(at_most: i64, per: i64, waiting: i64) -> i64 {
+    let limiter = Arc::new(una_http::limit::Limiter::new(
+        limit_count(at_most),
+        limit_count(per),
+        limit_count(waiting),
+        Arc::new(crate::runtime::clock().clone()),
+    ));
+    let index = with_state(|state| {
+        let mut limiters = state
+            .shared
+            .limiters
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        limiters.push(limiter);
+        limiters.len() - 1
+    })
+    .unwrap_or(0);
+    let instance = instance_named(una_core::LIMITER);
+    let index = values::int_word(&BigInt::from(index));
+    values::push(instance, index);
+    values::release(index);
+    instance
+}
+
+/// `acquire` of a `limiter` (ADR 0117 rule 9, `spec/27 §10`): takes a token of the bucket of
+/// `instance`, waiting for one as a request waits at a limit (`spec/27 §9` rule 4): within the
+/// deadlines of the `within`s in progress and of the `for ever within` iteration, on a helper
+/// of the I/O pool while the task parks, interrupted by a host stop in the body of a `for ever`,
+/// and abandoned when the task is cancelled, which stops the task. Past a covering deadline, or
+/// on a host stop, no token is taken and the call fails with `RateLimited`, the one failure
+/// `Limited` has; so does a call that finds `waiting` calls already waiting. `unit` on success.
+pub fn limit_acquire(_site: i64, instance: i64) -> i64 {
+    use una_http::client::Error;
+    // `RateLimited`, the first variant of `Limited`, as a word.
+    const RATE_LIMITED: i64 = 1;
+    let index =
+        usize::try_from(values::int_value(values::field(instance, 0))).unwrap_or(usize::MAX);
+    let limiter = with_state(|state| {
+        state
+            .shared
+            .limiters
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(index)
+            .cloned()
+    })
+    .flatten();
+    // An instance no run made allows nothing.
+    let Some(limiter) = limiter else {
+        return failed(RATE_LIMITED);
+    };
+    let covering = crate::deadline::left();
+    let clock = crate::runtime::clock();
+    // The covering deadline on the run's clock, which the wait reaches at most; on the wall
+    // clock the same time, unless time is virtual, where only the run's clock bounds it.
+    let until = covering.map_or(u64::MAX, |(left, _)| {
+        clock
+            .now()
+            .saturating_add(u64::try_from(left.as_millis()).unwrap_or(u64::MAX))
+    });
+    let wall = Instant::now();
+    let deadline = match covering {
+        Some((left, _)) if !clock.is_virtual() => wall.checked_add(left),
+        _ => wall.checked_add(Duration::from_secs(365 * 24 * 3600)),
+    }
+    .unwrap_or(wall);
+    let stop = crate::runtime::op_interrupt();
+    let abandon = una_http::limit::Abandon::new();
+    let waiting = abandon.clone();
+    let job = move || match stop {
+        Some(stop) => limiter.acquire((deadline, until), &stop.interrupt(), &waiting),
+        None => limiter.acquire(
+            (deadline, until),
+            &una_http::client::Uninterrupted,
+            &waiting,
+        ),
+    };
+    let entries = crate::runtime::interruptible_entries();
+    let abandoned: crate::interrupt::Wake = Arc::new(move || abandon.abandon());
+    let acquired = match sched::blocking_interruptible(Pool::Io, &entries, Some(abandoned), job) {
+        Some(acquired) => acquired,
+        None => {
+            with_state(|state| state.interrupted = true);
+            return INTERRUPTED;
+        }
+    };
+    match acquired {
+        Ok(()) => 0,
+        Err(Error::TimedOut) => {
+            // A `for ever within` iteration observes its deadline at the operation.
+            if covering.map(|(_, bound)| bound) == Some(crate::deadline::Bound::Ever) {
+                crate::deadline::timed_out();
+            }
+            failed(RATE_LIMITED)
+        }
+        Err(_) => failed(RATE_LIMITED),
+    }
 }
 
 /// Starts the event of operation `site` on `instance`, when the run records a trace: its
