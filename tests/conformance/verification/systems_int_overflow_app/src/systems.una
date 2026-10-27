@@ -1,0 +1,55 @@
+-- test: the module of `systems_int_overflow` in an `app` package: `Int` arithmetic promotes, so no operation carries an `overflow` obligation and the package is accepted (ADR 0109 rules 2 and 3)
+-- spec: spec/18 §3
+-- expect: ok
+module systems
+
+pub measure Meter
+
+pub measure Kilometer = 1000 * Meter
+
+-- U5001: `a + b` on unbounded parameters can leave the tagged range.
+pub add(a: Int, b: Int) -> Int = a + b
+
+-- Proven: the guard bounds both operands.
+pub guarded(a: Int, b: Int) -> Int = if a in 0..1000 and b in 0..1000 then a + b else 0
+
+-- U5001: a literal outside the tagged range, refuted at once.
+pub big() -> Int = 4611686018427387904
+
+-- U5001: `-a` of the least value leaves the range.
+pub negate(a: Int) -> Int = -a
+
+-- No obligation: negated literals in range are literals.
+pub minus_five() -> Int = -5
+
+pub least() -> Int = -4611686018427387904
+
+-- U5002: `sum` states no bound on its result.
+pub total(xs: List[Int]) -> Int = sum(xs)
+
+-- U5001: a `U64` value can lie outside the tagged range.
+pub widen(x: U64) -> Int = x.to_int()
+
+-- U5001: `abs` of the least value is 2^62.
+pub magnitude(x: Int) -> Int = abs(x)
+
+-- Proven: `abs`'s `ensures` bounds the result by the `requires`.
+pub bounded(x: Int) -> Int
+  requires x > -1000 and x < 1000
+=
+  abs(x)
+
+-- U5001: `convert()` multiplies the magnitude by 1000.
+pub to_meters(d: Int of Kilometer) -> Int of Meter = d.convert()
+
+-- U5001: `+` on `Int of Meter` is `Int` arithmetic.
+pub walk(a: Int of Meter, b: Int of Meter) -> Int of Meter = a + b
+
+-- No obligation: a clause computes exactly.
+pub needs(a: Int, b: Int) -> Int
+  requires a + b > 4611686018427387904
+=
+  0
+
+-- No obligation: a `reflect` body computes exactly.
+pub predicate reflect beyond(a: Int, b: Int) -> Bool = a + b > 4611686018427387904
