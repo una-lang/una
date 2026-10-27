@@ -38,6 +38,9 @@ const RUN_SCHEMA: &str = "una.run/1";
 
 /// The JSON schema of `una test --json` (ADR 0032).
 const TEST_SCHEMA: &str = "una.test/1";
+/// The schema of `una test --json` for a package of edition 0.3 or later: `una.test/1` with the
+/// key `examples` renamed `tests` (ADR 0105 rule 6).
+const TEST_SCHEMA_0_3: &str = "una.test/2";
 
 /// The tier that `una run` and `una test` check before evaluating: tier 1, since M8 ended the
 /// interim tier 0 of ADR 0027 (rule 4).
@@ -811,8 +814,9 @@ fn abort_diagnostic(abort: &Abort, sources: &SourceDb, root: &Location) -> Diagn
     }
 }
 
-/// `una test [path]`: checks the package at tier 1, then runs every example (`spec/08 §2`,
-/// `spec/11 §6`).
+/// `una test [path]`: checks the package at tier 1, then runs every test, an `example` in
+/// editions 0.1 and 0.2 (`spec/08 §2`, `spec/11 §6`). The output names the declaration by the
+/// package's edition and prints `una.test/2` from edition 0.3 (ADR 0105 rule 6).
 pub(crate) fn test_command(
     path: &Path,
     options: RunOptions<'_>,
@@ -832,7 +836,13 @@ pub(crate) fn test_command(
     };
     // Edition `0.1` redacts labeled fields in an example's results and reasons; edition `0.2`
     // shows every field, since an example's data come from the source (ADR 0078).
-    let redact = crate::package::project(&package).0.edition == una_project::Edition::V0_1;
+    let edition = crate::package::project(&package).0.edition;
+    let redact = edition == una_project::Edition::V0_1;
+    let schema = if edition >= una_project::Edition::V0_3 {
+        TEST_SCHEMA_0_3
+    } else {
+        TEST_SCHEMA
+    };
     let mut analysis = on_large_stack(|| analyze(&package, None));
     if analysis.diagnostics.is_empty() {
         let found = tier_one(&package, &analysis.program, &options.solving);
@@ -840,7 +850,7 @@ pub(crate) fn test_command(
     }
     if !analysis.diagnostics.is_empty() {
         let document = TestDocument {
-            schema: TEST_SCHEMA,
+            schema,
             tier: TIER,
             redacted: redact,
             diagnostics: in_output_order(&analysis.diagnostics),
@@ -932,7 +942,7 @@ pub(crate) fn test_command(
     };
     if options.json {
         let document = TestDocument {
-            schema: TEST_SCHEMA,
+            schema,
             tier: TIER,
             redacted: redact,
             diagnostics: in_output_order(&diagnostics),
@@ -960,7 +970,8 @@ pub(crate) fn test_command(
         };
         writeln!(
             stdout,
-            "example {} {} ... {verdict}",
+            "{} {} {} ... {verdict}",
+            edition.test_word(),
             run.module,
             una_core::quote(&run.name)
         )?;
@@ -973,9 +984,9 @@ pub(crate) fn test_command(
         }
     }
     let noun = if runs.len() == 1 {
-        "example"
+        edition.test_word()
     } else {
-        "examples"
+        edition.tests_word()
     };
     writeln!(
         stdout,
@@ -1056,8 +1067,8 @@ struct FailureDoc<'a> {
     fields: Pairs<'a>,
 }
 
-/// `una.test/1`, with keys in the order of ADR 0032 rule 5.
-#[derive(Serialize)]
+/// `una.test/1`, with keys in the order of ADR 0032 rule 5, or `una.test/2` from edition 0.3:
+/// the same document with the key `examples` renamed `tests` (ADR 0105 rule 6).
 struct TestDocument<'a> {
     schema: &'static str,
     tier: u8,
@@ -1070,7 +1081,27 @@ struct TestDocument<'a> {
     failed: usize,
 }
 
-/// One example of `una.test/1`.
+impl Serialize for TestDocument<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let runs = if self.schema == TEST_SCHEMA_0_3 {
+            "tests"
+        } else {
+            "examples"
+        };
+        let mut document = serializer.serialize_struct("TestDocument", 7)?;
+        document.serialize_field("schema", self.schema)?;
+        document.serialize_field("tier", &self.tier)?;
+        document.serialize_field("redacted", &self.redacted)?;
+        document.serialize_field("diagnostics", &self.diagnostics)?;
+        document.serialize_field(runs, &self.examples)?;
+        document.serialize_field("passed", &self.passed)?;
+        document.serialize_field("failed", &self.failed)?;
+        document.end()
+    }
+}
+
+/// One example of `una.test/1`, or one test of `una.test/2`.
 #[derive(Serialize)]
 struct ExampleDoc<'a> {
     module: &'a str,

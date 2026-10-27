@@ -221,14 +221,14 @@ A program that runs until it is told to stop, such as a game loop, a server or a
 
 ## 8. Tests and virtual time
 
-1. **`stop after N`** (ADR 0116 rule 19). In edition `0.4`, an example (`spec/08 §2`) MAY end with the line `stop after N`:
+1. **`stop after N`** (ADR 0116 rule 19). In edition `0.4`, a test (`spec/08 §2`, written `test` from edition `0.3`, ADR 0105) MAY end with the line `stop after N`:
 
    ```ebnf
-   stop_after = "stop" "after" integer_literal NEWLINE ;      (* the last line of an example *)
+   stop_after = "stop" "after" integer_literal NEWLINE ;      (* the last line of a test *)
    ```
 
    - `N` is an integer literal from 1 to 2^63 − 1. Another value is U0101, and so is a line after it. `stop` and `after` are words, not keywords. Before edition `0.4` the line does not parse (U0101).
-   - **The stop schedule.** A host stop request (§6) arrives once `N` iterations of `for ever` loops have started in the example's run, counted across all of its loops in the order the interpreter starts them, as `--stop-after-iterations <n>` does for a run. The request is sticky, and §6 rule 4 applies: from then on, every `for ever` that reaches the start of an iteration ends there, a loop entered later included. Each such loop appends the event `{"seq": n, "outcome": {"kind": "stop"}}`, with the `task` field of its task, and then its `on stop` runs (§5 rule 4). With `stop after 2`, the stop comes at the start of the third iteration.
+   - **The stop schedule.** A host stop request (§6) arrives once `N` iterations of `for ever` loops have started in the test's run, counted across all of its loops in the order the interpreter starts them, as `--stop-after-iterations <n>` does for a run. The request is sticky, and §6 rule 4 applies: from then on, every `for ever` that reaches the start of an iteration ends there, a loop entered later included. Each such loop appends the event `{"seq": n, "outcome": {"kind": "stop"}}`, with the `task` field of its task, and then its `on stop` runs (§5 rule 4). With `stop after 2`, the stop comes at the start of the third iteration.
    - **Divergence.** Only under this line may the `do` line call a function that says `diverges` (U3027 otherwise, §5 rule 2). The `expect` lines never may (U3027).
 
    ```una
@@ -240,7 +240,7 @@ A program that runs until it is told to stop, such as a game loop, a server or a
        elapse(delay)
        "v"
 
-   example "the loop reads the store twice, then stops"
+   test "the loop reads the store twice, then stops"
      given @store = slow_store(delay: 150 * millisecond)
      given @log = memory_log()
      do poll("k")                -- a `diverges` function whose `for ever` reads and logs

@@ -625,7 +625,7 @@ impl<'a> Parser<'a> {
     /// The keywords that cannot stand in a function's body, clauses or types, so that within a
     /// binding's scope every token of one of them is a use of the binding: a binding named with
     /// one is renamed by an exact edit (ADR 0096, amendment of 2026-10-15).
-    const DECLARATION_KEYWORDS: [&'static str; 19] = [
+    const DECLARATION_KEYWORDS: [&'static str; 20] = [
         "accepts",
         "capability",
         "do",
@@ -644,8 +644,15 @@ impl<'a> Parser<'a> {
         "pub",
         "reflect",
         "requirement",
+        "test",
         "trusted",
     ];
+
+    /// The word of the test declaration in the package's edition: `test` from edition 0.3,
+    /// `example` before (ADR 0105), for the messages that name it.
+    fn test_word(&self) -> &'static str {
+        if self.v0_3 { "test" } else { "example" }
+    }
 
     /// A lower-case name. A word reserved for a later version is read as a name; the lexer has
     /// reported its U0103 (approved M1 plan, recovery rules).
@@ -661,12 +668,26 @@ impl<'a> Parser<'a> {
                 // #743: a reserved keyword where a module path segment or an operation is named
                 // says what the rule is, with a name to use instead. Renaming one changes other
                 // files or declarations (a module's file and imports, an operation's every use),
-                // so the repair is advice (ADR 0096 rule 2(a)).
+                // so the repair is advice (ADR 0096 rule 2(a)). `test`, the keyword of edition
+                // 0.3, says the same where a function, a field, a handler or a predicate is
+                // named (ADR 0105 rule 4): renaming those reaches every caller, constructor or
+                // import.
+                let module_path = matches!(expected, "a module path" | "a module path segment");
                 let role = match expected {
                     "a module path" | "a module path segment" => {
                         Some(("a module path segment", "module"))
                     }
                     "an operation name" => Some(("an operation name", "op")),
+                    "a function name" if keyword == Keyword::Test => {
+                        Some(("a function name", "fn"))
+                    }
+                    "a field name" if keyword == Keyword::Test => Some(("a field name", "field")),
+                    "a handler name" if keyword == Keyword::Test => {
+                        Some(("a handler name", "handler"))
+                    }
+                    "a predicate name" if keyword == Keyword::Test => {
+                        Some(("a predicate name", "predicate"))
+                    }
                     _ => None,
                 };
                 match role {
@@ -677,8 +698,15 @@ impl<'a> Parser<'a> {
                             self.span(),
                             format!("`{word}` is a reserved keyword, so it cannot be {role}"),
                         );
+                        let description = if module_path {
+                            format!(
+                                "choose another name, such as `{fresh}`, and rename the file or directory to match"
+                            )
+                        } else {
+                            format!("choose another name, such as `{fresh}`")
+                        };
                         error.repairs.push(SyntaxRepair {
-                            description: format!("choose another name, such as `{fresh}`"),
+                            description,
                             edit: None,
                         });
                         Err(self.report_error(error))
@@ -1216,7 +1244,15 @@ impl<'a> Parser<'a> {
             TokenKind::Keyword(Keyword::Handler) => self.handler_decl(public)?,
             TokenKind::Keyword(Keyword::Policy) => self.policy_decl(public)?,
             TokenKind::Keyword(Keyword::Requirement) if !public => self.requirement_decl()?,
-            TokenKind::Keyword(Keyword::Example) if !public => self.example_decl()?,
+            // Edition 0.3 writes the test declaration `test` (ADR 0105 rule 1); `example` there
+            // has its U0103 from the lexer and is read the same way (rule 3). A `test` followed
+            // by `(` or `[` is a function named with the keyword (rule 4).
+            TokenKind::Keyword(Keyword::Example | Keyword::Test)
+                if !public && !matches!(self.peek_at(1), TokenKind::LParen | TokenKind::LBracket) =>
+            {
+                self.example_decl()?
+            }
+            TokenKind::Keyword(Keyword::Test) => self.function_decl(public)?,
             // ADR 0104 rule 1: `measure` is the keyword only at a declaration's start, before
             // an upper identifier, in edition 0.3; `measure(x)` stays a function.
             TokenKind::LowerIdent(_)
@@ -2100,11 +2136,18 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// `example_decl`, or `test_decl` in edition 0.3 (`spec/02 §5`, ADR 0105): the same
+    /// body under either keyword.
     fn example_decl(&mut self) -> Parse<DeclKind> {
         self.advance();
         let name = self.text_literal_only()?;
         self.expect_line_end()?;
-        self.expect(&TokenKind::Indent, "the indented example lines")?;
+        let lines = if self.v0_3 {
+            "the indented test lines"
+        } else {
+            "the indented example lines"
+        };
+        self.expect(&TokenKind::Indent, lines)?;
         let mut givens = Vec::new();
         while self.at_keyword(Keyword::Given) {
             let start = self.advance();
@@ -2129,7 +2172,9 @@ impl<'a> Parser<'a> {
                 stop_after = Some(self.stop_after()?);
                 if !self.eat(&TokenKind::Dedent) && !self.at(&TokenKind::Eof) {
                     let span = self.span();
-                    return self.fail(span, "`stop after` must be the last line of its example");
+                    let message =
+                        format!("`stop after` must be the last line of its {}", self.test_word());
+                    return self.fail(span, message);
                 }
                 break;
             }

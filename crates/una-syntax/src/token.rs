@@ -130,6 +130,8 @@ pub enum Keyword {
     Old,
     /// `together`, from edition 0.2 (`spec/19`).
     Together,
+    /// `test`, from edition 0.3: the keyword of the test declaration (`spec/08 §2`, ADR 0105).
+    Test,
 }
 
 impl Keyword {
@@ -260,6 +262,7 @@ impl Keyword {
             Keyword::Take => "take",
             Keyword::Old => "old",
             Keyword::Together => "together",
+            Keyword::Test => "test",
         }
     }
 
@@ -279,17 +282,31 @@ impl Keyword {
         Keyword::Together,
     ];
 
+    /// The keywords that edition 0.3 adds to those of edition 0.2 (`spec/01 §5`, ADR 0105
+    /// rule 2): `test`, the keyword of the test declaration.
+    pub const EDITION_0_3: [Keyword; 1] = [Keyword::Test];
+
     /// The keyword `word` is under the keyword set `set`.
     pub fn from_word_in(word: &str, set: KeywordSet) -> Option<Keyword> {
-        Keyword::from_word(word).or_else(|| {
-            (set >= KeywordSet::V0_2)
-                .then(|| {
-                    Keyword::EDITION_0_2
-                        .into_iter()
-                        .find(|keyword| keyword.as_str() == word)
-                })
-                .flatten()
-        })
+        Keyword::from_word(word)
+            .or_else(|| {
+                (set >= KeywordSet::V0_2)
+                    .then(|| {
+                        Keyword::EDITION_0_2
+                            .into_iter()
+                            .find(|keyword| keyword.as_str() == word)
+                    })
+                    .flatten()
+            })
+            .or_else(|| {
+                (set >= KeywordSet::V0_3)
+                    .then(|| {
+                        Keyword::EDITION_0_3
+                            .into_iter()
+                            .find(|keyword| keyword.as_str() == word)
+                    })
+                    .flatten()
+            })
     }
 }
 
@@ -304,7 +321,7 @@ pub enum KeywordSet {
     /// Edition 0.2: `edit`, `take`, `old` and `together` are keywords, and the rows of
     /// `spec/17 §9` and `spec/19 §9` apply.
     V0_2,
-    /// Edition 0.3: the keywords of edition 0.2 (`spec/13 §7`).
+    /// Edition 0.3: the keywords of edition 0.2 (`spec/13 §7`), and `test` (ADR 0105).
     V0_3,
     /// Edition 0.4: the keywords of edition 0.3, with `diverges` and `within` reserved
     /// (`spec/26 §1`, ADR 0116 rule 0).

@@ -736,7 +736,7 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
         }
         findings.standard_records = standard_findings.records;
     }
-    authority::testing_installs(&findings, &mut report);
+    authority::testing_installs(&findings, &mut report, env.edition);
     // Edition 0.3: no release is reachable from a call into a boundary (ADR 0093 rule 8).
     crossing::releases(&env, &findings, &mut report);
     facts::predicate_recursion(&env, &findings, &mut report);

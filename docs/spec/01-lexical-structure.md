@@ -104,6 +104,12 @@ traced trait type unsafe var while
 
 The new rows are in `spec/17 §9`. (v0.2, ADR 0065.) In edition `0.2`, `together` also becomes a keyword (`spec/19`), and the messages of `parallel`, `actor`, `async` and `await` change (`spec/19 §9`).
 
+(v0.3, ADR 0105.) In edition `0.3`, `test` is a reserved keyword: the keyword of the test declaration (`spec/08 §2`), which editions `0.1` and `0.2` write `example`. A name `test` there is U0101, as any keyword used as a name: a local bound inside a function body or a handler operation body gets the exact rename to `test_value` (`spec/13 §3`, ADR 0096), and a function, a field, a handler, a predicate or a module path segment gets the rename as advice. `example` stays reserved in edition `0.3`, so it never comes back with another meaning: at column 1, where a declaration starts, it is U0103 with the message of the table below and the exact rewrite of the keyword to `test`, which `una fix` applies; the declaration is then read as a test's, so its body gets its own checks and no U0101. Anywhere else `example` is the keyword it is in every edition. Editions `0.1` and `0.2` do not change: `test` stays an identifier there.
+
+| Keywords | Message (edition `0.3`) |
+| --- | --- |
+| `example` | written `test` in edition 0.3 |
+
 (v0.4, ADR 0116.) In edition `0.4`, `diverges` and `within` are reserved (U0103), until the constructs of `spec/26` that use them land (`spec/26 §1`). (Edition 0.4, ADR 0117 rule 5.) `within` is the word of a deadline right after `for ever` and right after a token that ends an expression (a name, a capability reference, a literal, `)` or `]`): there it is no name, and anywhere else it stays reserved (`spec/27 §5`). (v0.2, ADR 0066.) The message of `trait` and `impl` changes too (`spec/20 §9`). (v0.2, ADR 0069.) In edition `0.2`, `with` right after `.` is an identifier, the name of a map's method (`spec/21 §2`), and a keyword everywhere else. The benchmark baseline stays on edition `0.1`. (v0.3, ADR 0056 amendment.) Edition `0.3` has the keyword tables of edition `0.2` (`spec/13 §7`): editions are cumulative.
 
 ## 6. Literals

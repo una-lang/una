@@ -90,6 +90,36 @@ impl Difference {
 /// The edition `0.2` packages whose output in edition `0.3` differs by design, with the exact
 /// result of each edition.
 const EXPECTED_DIFFERENCES: &[Difference] = &[
+    // ADR 0105 rule 3: an `example` declaration is U0103 in edition 0.3, where the test
+    // declaration is written `test`, with the exact rewrite that `una fix` applies.
+    Difference::Stricter {
+        case: "runtime/print_hashed",
+        edition_0_3: &[("U0103", "src/hashed/main.una:36:1")],
+    },
+    Difference::Stricter {
+        case: "security/edit_label_variables",
+        edition_0_3: &[("U0103", "src/main.una:35:1"), ("U0103", "src/main.una:39:1")],
+    },
+    Difference::Stricter {
+        case: "security/s14_ok_write_from_example",
+        edition_0_3: &[("U0103", "src/main.una:26:1")],
+    },
+    Difference::Stricter {
+        case: "security/s14_ok_write_in_do_line",
+        edition_0_3: &[("U0103", "src/main.una:19:1")],
+    },
+    Difference::Stricter {
+        case: "security/via_hmac_events_shape",
+        edition_0_3: &[("U0103", "src/main.una:20:1")],
+    },
+    Difference::Stricter {
+        case: "security/via_hmac_handler_in_comment",
+        edition_0_3: &[("U0103", "src/main.una:23:1")],
+    },
+    Difference::Stricter {
+        case: "types/memory_example_do",
+        edition_0_3: &[("U0103", "src/memdo.una:18:1"), ("U0103", "src/memdo.una:22:1")],
+    },
     // ADR 0104 rule 1: a unit declaration, a parse error before edition 0.3.
     Difference::Syntax {
         case: "types/units_edition_0_2",

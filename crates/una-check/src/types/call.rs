@@ -1421,7 +1421,8 @@ impl<'a> Checker<'_, 'a, '_> {
                     (
                         *at,
                         format!(
-                            "the `via` `{via}` would have a public failure (ADR 0098), but the `Keys` handler `{handler}` is named here, outside its declaration and examples"
+                            "the `via` `{via}` would have a public failure (ADR 0098), but the `Keys` handler `{handler}` is named here, outside its declaration and {}",
+                            self.env.edition.tests_word()
                         ),
                     ),
                 );

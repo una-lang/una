@@ -126,7 +126,7 @@ Further rules:
 
 - **Proposed requirements** do not block a build: functions derived from them compile normally, and the build report flags them.
 - **`una trace R`** checks the package at tier 1 (with the solver's proofs, as `una check` does by default), then prints the requirement and each function derived from it, with its `requires`, `ensures` and the status of each obligation (a fact that `una check` must prove). With `--json` it prints `una.trace/1`.
-- **Evidence is separate.** A requirement states intent, a contract guarantees it, and examples show it running. See [`example`](../examples/example.md).
+- **Evidence is separate.** A requirement states intent, a contract guarantees it, and examples show it running. See [`example`](../examples/example.md), written [`test`](../examples/test.md) in edition `0.3`.
 
 ## Diagnostics
 

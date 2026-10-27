@@ -745,3 +745,61 @@ fn with_after_a_dot_names_the_map_method_in_edition_0_2() {
         ["id:m", ".", "with", "with"]
     );
 }
+
+#[test]
+fn test_is_the_keyword_of_the_test_declaration_from_edition_0_3() {
+    // ADR 0105 rules 2 and 3: `test` is a keyword from edition 0.3, where `example` at column 1
+    // is U0103 with the exact rewrite of the keyword; both stay as they were in edition 0.2.
+    let lexed = |keywords: una_syntax::KeywordSet| {
+        let mut db = SourceDb::new();
+        let mut interner = Interner::new();
+        let id = db.add("t.una", b"test\nexample\n  example\n");
+        let lexed = una_syntax::lex_in(db.file(id), id, &mut interner, keywords);
+        let tokens: Vec<String> = lexed
+            .tokens
+            .iter()
+            .map(|token| render(&token.kind, &interner))
+            .filter(|token| token != "eof")
+            .collect();
+        let errors: Vec<(String, Option<String>)> = lexed
+            .errors
+            .iter()
+            .map(|error| {
+                let diagnostic = error.to_diagnostic(&db);
+                (
+                    format!(
+                        "{} {}:{} {}",
+                        diagnostic.code,
+                        diagnostic.primary.start.line,
+                        diagnostic.primary.start.col,
+                        diagnostic.message
+                    ),
+                    diagnostic.repairs[0]
+                        .edit
+                        .as_ref()
+                        .map(|edit| edit.replacement.clone()),
+                )
+            })
+            .collect();
+        (tokens, errors)
+    };
+    let (tokens, errors) = lexed(una_syntax::KeywordSet::V0_2);
+    assert_eq!(
+        tokens[..3],
+        ["id:test".to_owned(), "NL".to_owned(), "example".to_owned()]
+    );
+    assert_eq!(errors, []);
+    let (tokens, errors) = lexed(una_syntax::KeywordSet::V0_3);
+    assert_eq!(
+        tokens[..3],
+        ["test".to_owned(), "NL".to_owned(), "example".to_owned()]
+    );
+    // Only the `example` at column 1 is the declaration keyword of the wrong edition.
+    assert_eq!(
+        errors,
+        [(
+            "U0103 2:1 `example` is written `test` in edition 0.3".to_owned(),
+            Some("test".to_owned())
+        )]
+    );
+}

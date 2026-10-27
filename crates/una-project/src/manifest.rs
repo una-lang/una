@@ -246,6 +246,26 @@ impl Edition {
     /// Every edition, oldest first.
     pub const ALL: [Edition; 4] = [Edition::V0_1, Edition::V0_2, Edition::V0_3, Edition::V0_4];
 
+    /// The keyword of the test declaration in this edition: `test` from edition `0.3`, and
+    /// `example` in editions `0.1` and `0.2` (`spec/08 §2`, ADR 0105). Messages and the output
+    /// of `una test` name the declaration by it.
+    pub fn test_word(self) -> &'static str {
+        if self >= Edition::V0_3 {
+            "test"
+        } else {
+            "example"
+        }
+    }
+
+    /// The plural of [`Edition::test_word`]: `tests` or `examples`.
+    pub fn tests_word(self) -> &'static str {
+        if self >= Edition::V0_3 {
+            "tests"
+        } else {
+            "examples"
+        }
+    }
+
     /// The edition's name, as `una.toml` writes it.
     pub fn name(self) -> &'static str {
         match self {

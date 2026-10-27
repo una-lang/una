@@ -975,8 +975,16 @@ fn declared(body: &str) -> (DeclarationKind, Vec<String>) {
             Some(name) => (DeclarationKind::Named, vec![name.to_owned()]),
             None => (DeclarationKind::Unnamed, Vec::new()),
         },
-        // An example declares nothing another declaration names.
+        // An example, or a test in edition 0.3 (ADR 0105), declares nothing another
+        // declaration names; `test(` is a function named `test` in editions 0.1 and 0.2.
         "example" => (DeclarationKind::Named, Vec::new()),
+        "test"
+            if !first
+                .get(4..)
+                .is_some_and(|rest| rest.starts_with('(') || rest.starts_with('[')) =>
+        {
+            (DeclarationKind::Named, Vec::new())
+        }
         name if first
             .get(name.len()..)
             .is_some_and(|rest| rest.starts_with('(') || rest.starts_with('[')) =>

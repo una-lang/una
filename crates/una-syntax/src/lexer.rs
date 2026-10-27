@@ -201,8 +201,9 @@ fn apply(lexed: &mut Lexed, chosen: &BTreeMap<String, String>) {
     }
 }
 
-/// Keywords that start a declaration at column 1 (`compiler/architecture.md §5`).
-const DECLARATION_KEYWORDS: [&str; 11] = [
+/// Keywords that start a declaration at column 1 (`compiler/architecture.md §5`); `test` is
+/// the test declaration of edition 0.3 (ADR 0105).
+const DECLARATION_KEYWORDS: [&str; 12] = [
     "capability",
     "example",
     "handler",
@@ -213,6 +214,7 @@ const DECLARATION_KEYWORDS: [&str; 11] = [
     "predicate",
     "pub",
     "requirement",
+    "test",
     "trusted",
 ];
 
@@ -458,6 +460,24 @@ impl Lexer<'_> {
                 });
             }
         }
+        self.out.errors.push(error);
+    }
+
+    /// U0103 for `example` at column 1 of a package of edition 0.3, where the test declaration
+    /// is written `test` (ADR 0105 rule 3). The first repair is the exact rewrite of the
+    /// keyword, which `una fix` applies; the token stays the keyword `example`, so the parser
+    /// reads the declaration as a test's and the body gets its own checks.
+    fn example_in_0_3(&mut self, start: usize) {
+        let span = self.span(start, self.pos);
+        let mut error = SyntaxError::new(
+            Code::U0103,
+            span,
+            "`example` is written `test` in edition 0.3",
+        );
+        error.repairs.push(SyntaxRepair {
+            description: "write `test`".to_owned(),
+            edit: Some((span, "test".to_owned())),
+        });
         self.out.errors.push(error);
     }
 
@@ -1144,6 +1164,15 @@ impl Lexer<'_> {
         let deadline = word == "within"
             && self.out.keywords >= KeywordSet::V0_4
             && (self.after_for_ever() || self.after_expression());
+        // Edition 0.3: the test declaration is written `test`, so `example` at column 1, where
+        // a declaration starts, is U0103 with the exact rewrite (ADR 0105 rule 3); as a name it
+        // stays the reserved keyword it is in every edition (rule 2).
+        if word == "example"
+            && self.out.keywords >= KeywordSet::V0_3
+            && (start == 0 || self.text.get(..start).is_some_and(|before| before.ends_with('\n')))
+        {
+            self.example_in_0_3(start);
+        }
         let kind = if (word == "with" && after_dot && self.out.keywords >= KeywordSet::V0_2)
             || clause
             || deadline

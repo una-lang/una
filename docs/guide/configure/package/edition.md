@@ -48,6 +48,7 @@ ita <name>
 - **Edition `0.1`** is the v0.1 language.
 - **Edition `0.2`** adds the memory model (`let edit`, `edit` and `take` parameters, `for`), fixed-width integers, `together` and constraints on generics, and the keywords that go with them.
 - **Edition `0.3`** has every construct, keyword and rule of edition `0.2`, and adds these:
+  - the test declaration is written `test`, and `example` is rewritten to it by `una fix` ([`test`](../../language/examples/test.md), ADR 0105);
   - **Conditions on operations.** A `uses` clause may allow an operation only under a condition, as `uses @log: Log[write where not dry_run]`, which the verifier proves at each use.
   - **`[contracts]`.** A table of `una.toml` that bounds what the `uses` clauses of a package's listed public functions may allow, so a header changed to allow more fails the check.
   - **`[boundaries]`.** A table of `una.toml` that gives a module the most authority it may ever use. See [`[boundaries]`](../boundaries.md).

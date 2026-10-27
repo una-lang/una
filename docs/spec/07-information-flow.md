@@ -41,7 +41,7 @@ Every capability operation argument is a sink with the operation's `accepts` lab
 
 Text interpolation propagates labels: `"id {phone}"` has the label of `phone`. Printing it through `Console` is then U4003.
 
-`expect` lines in examples observe values for the test harness and are exempt from sink checks.
+`expect` lines in examples (tests, written `test` in edition `0.3`, `spec/08 §2`, ADR 0105) observe values for the test harness and are exempt from sink checks.
 
 ## 5. Declassification policies
 
