@@ -77,7 +77,7 @@ ignored_count=$(echo "$summary" | sed -n 's/.* \([0-9]*\) ignored.*/\1/p')
 [ "$ignored_count" = "$expected_ignored" ] && [ $((passed + ignored_count)) = "$total" ] \
     || fail "Miri passed $passed and ignored $ignored_count of $total tests, where $expected_ignored are to be ignored"
 # Code that behaves differently under Miri does so only where counted here: every mention of
-# `miri` in una-rt, any module and any form, but the ignore attributes checked above. Today thirteen
+# `miri` in una-rt, any module and any form, but the ignore attributes checked above. Today fourteen
 # tests that run smaller under Miri, where each allocation is slow (#778): two deep values at
 # depth 1,000 rather than 1,000,000, a copy between heaps at depth 1,000 rather than 200,000,
 # 200 rounds of `find` rather than 10,000, the entry points with a pool of one word of each
@@ -86,12 +86,12 @@ ignored_count=$(echo "$summary" | sed -n 's/.* \([0-9]*\) ignored.*/\1/p')
 # rather than 100,000, a staged block of 3 tasks rather than 70, in batches of 2, lists of 10
 # and 100 texts counted rather than up to 100,000, blocks nested 3 deep rather than 200, and 4
 # and 8 traced blocks rather than up to 256, and flat lists of 1,000 integers compared rather
-# than 100,000 (#815). Their
+# than 100,000 (#815), and maps of 16 and 64 keys built rather than up to 65,536 (#886). Their
 # full sizes run in the ordinary tests. And one constant: the
 # debug quarantine of freed slots is 64 rather than 65,536, so that the test of slot reuse runs
 # under Miri and Miri checks the reuse.
 reduced=$(grep -rn 'miri' crates/una-rt | grep -vc 'cfg_attr(miri, ignore')
-[ "$reduced" = 14 ] || fail "una-rt mentions miri $reduced times outside its ignore attributes, and this script states 14"
+[ "$reduced" = 15 ] || fail "una-rt mentions miri $reduced times outside its ignore attributes, and this script states 15"
 
 asan=$(rustc +"$channel" --print sysroot)/lib/rustlib/$host/lib/librustc-nightly_rt.asan.dylib
 [ -f "$asan" ] || fail "the checking toolchain has no AddressSanitizer runtime at $asan"

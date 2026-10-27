@@ -42,11 +42,44 @@ pub(crate) type Entries<'p> = BTreeMap<Key, (Value<'p>, Value<'p>)>;
 /// A map's key, in the order of `spec/03 §1` and `spec/20 §5`: an integer, a text by its
 /// scalar values, or a variant without fields by its declaration. A map holds keys of one
 /// type, so the order across these never applies.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(not(test), derive(PartialOrd, Ord))]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Key {
     Int(BigInt),
     Text(Rc<Text>),
     Variant(usize),
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The comparisons of map keys this thread made, in tests: the derived order, counted, so a
+    /// test can bound a map's building by its size (#886).
+    pub(crate) static KEY_COMPARISONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+impl Ord for Key {
+    fn cmp(&self, other: &Key) -> Ordering {
+        KEY_COMPARISONS.with(|n| n.set(n.get() + 1));
+        let rank = |key: &Key| match key {
+            Key::Int(_) => 0,
+            Key::Text(_) => 1,
+            Key::Variant(_) => 2,
+        };
+        match (self, other) {
+            (Key::Int(a), Key::Int(b)) => a.cmp(b),
+            (Key::Text(a), Key::Text(b)) => a.cmp(b),
+            (Key::Variant(a), Key::Variant(b)) => a.cmp(b),
+            _ => rank(self).cmp(&rank(other)),
+        }
+    }
+}
+
+#[cfg(test)]
+impl PartialOrd for Key {
+    fn partial_cmp(&self, other: &Key) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 impl Key {
