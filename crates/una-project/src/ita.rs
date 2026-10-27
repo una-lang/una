@@ -11,8 +11,9 @@ use una_syntax::ita::{self, At, CapType, LockOrigin, Origin, PkgName};
 
 use crate::lock::Lock;
 use crate::manifest::{
-    Boundary, Ceiling, Contract, Drive, Edition, Format, MAX_DRIVE_MILLISECONDS, Manifest,
-    boundary_conflicts, is_grant, is_module_path, is_upper_camel, upper_camel,
+    Boundary, Ceiling, Contract, Drive, Edition, Format, MAX_DRIVE_MILLISECONDS, MAX_MEMORY_CAP,
+    Manifest, Profile, boundary_conflicts, budget_missing, budget_out_of_range, is_grant,
+    is_module_path, is_upper_camel, upper_camel,
 };
 use crate::names::{is_name_word, reserved_like};
 use crate::version::{Line, Version};
@@ -31,6 +32,75 @@ const RESERVED_SOURCES: [&str; 4] = ["itaty", "path", "git", "workspace"];
 
 fn error(code: Code, range: std::ops::Range<usize>, message: impl Into<String>) -> ProjectError {
     ProjectError::new(code, range, message)
+}
+
+/// The limits of a grant of `run grants` as the suffixes of its text form (ADR 0117 rule 8,
+/// `spec/27 §9`), or `None` after U7008 at each invalid one: a limit under a grant other than
+/// `http`, a count below 1 or above 2^31 − 1, or a kind given twice, two rates being one kind.
+fn limits(grant: &ita::Grant, code: Code, errors: &mut Vec<ProjectError>) -> Option<String> {
+    use una_core::http::{Limits, MAX_LIMIT, Period};
+    if grant.limits.is_empty() {
+        return Some(String::new());
+    }
+    if !grant.spec.starts_with("http:") {
+        for limit in &grant.limits {
+            errors.push(error(
+                code,
+                limit.range.clone(),
+                "limits apply to `http` grants only",
+            ));
+        }
+        return None;
+    }
+    let mut out = Limits::default();
+    let mut valid = true;
+    for limit in &grant.limits {
+        let count = match u32::try_from(limit.count.value) {
+            Ok(count) if (1..=MAX_LIMIT).contains(&count) => count,
+            _ => {
+                errors.push(error(
+                    code,
+                    limit.count.range.clone(),
+                    format!(
+                        "the count of a limit is from 1 to {MAX_LIMIT}, not {}",
+                        limit.count.value
+                    ),
+                ));
+                valid = false;
+                continue;
+            }
+        };
+        let twice = match &limit.kind {
+            ita::LimitKind::Rate(word) => match Period::of(word) {
+                Some(period) => out.rate.replace((count, period)).is_some(),
+                None => {
+                    errors.push(error(
+                        code,
+                        limit.range.clone(),
+                        "a rate's period is `second`, `minute` or `hour`",
+                    ));
+                    valid = false;
+                    continue;
+                }
+            },
+            ita::LimitKind::AtOnce => out.at_once.replace(count).is_some(),
+            ita::LimitKind::Waiting => out.waiting.replace(count).is_some(),
+        };
+        if twice {
+            let kind = match limit.kind {
+                ita::LimitKind::Rate(_) => "a rate",
+                ita::LimitKind::AtOnce => "`at most n at once`",
+                ita::LimitKind::Waiting => "`waiting at most n`",
+            };
+            errors.push(error(
+                code,
+                limit.range.clone(),
+                format!("this grant already has {kind}; a kind of limit is given at most once"),
+            ));
+            valid = false;
+        }
+    }
+    valid.then(|| out.suffix())
 }
 
 fn located(at: &At<String>) -> Located {
@@ -121,21 +191,17 @@ pub fn parse_ita_manifest(text: &str) -> (Manifest, Vec<ProjectError>) {
             )),
         }
     }
+    // `app`, the default, or `systems` (ADR 0109 rule 1, `spec/30 §2` rule 4).
     if let Some(profile) = &read.profile {
-        match profile.value.as_str() {
-            "app" => {}
-            // Profiles are not implemented by this release. Checking a `systems` package as
-            // `app` would leave out the obligations that profile adds (ADR 0109 rule 2), so it
-            // is refused rather than ignored.
-            "systems" => errors.push(error(
+        match Profile::parse(&profile.value) {
+            Some(found) => manifest.profile = found,
+            None => errors.push(error(
                 code,
                 profile.range.clone(),
-                "the profile `systems` is not supported by this release; remove the line to check the package as `app`",
-            )),
-            other => errors.push(error(
-                code,
-                profile.range.clone(),
-                format!("unknown profile `{other}`; the profiles are `app` and `systems`"),
+                format!(
+                    "unknown profile `{}`; the profiles are `app` and `systems`",
+                    profile.value
+                ),
             )),
         }
     }
@@ -160,15 +226,19 @@ pub fn parse_ita_manifest(text: &str) -> (Manifest, Vec<ProjectError>) {
         ));
     }
     let sources = check_sources(&read.sources, code, &mut errors);
+    // `publish to` names `itaty` or a source name that `sources` could declare: a published
+    // package has no `sources`, so the source is the one its workspace's `itaty.una` declares,
+    // checked when it is published or yanked (`spec/30 §2` rule 4, §15 rule 1), never here.
     if let Some(target) = &read.publish_to
         && target.value != ITATY
-        && !sources.contains_key(target.value.as_str())
+        && (RESERVED_SOURCES.contains(&target.value.as_str())
+            || !is_name_word(&target.value, 1, NAME_BYTES))
     {
         errors.push(error(
             code,
             target.range.clone(),
             format!(
-                "`publish to {}` names no source; the sources are `itaty` and those of `sources`",
+                "`publish to {}` names no source: a source is `itaty` or a name that `sources` could declare",
                 target.value
             ),
         ));
@@ -226,6 +296,18 @@ pub fn parse_ita_manifest(text: &str) -> (Manifest, Vec<ProjectError>) {
         if let Some(entry) = &run.entry {
             manifest.entry = Some(located(entry));
         }
+        // The declared budget, from 1 to the cap (ADR 0109 rule 4).
+        if let Some(budget) = &run.max_memory {
+            if (1..=MAX_MEMORY_CAP).contains(&budget.value) {
+                manifest.max_memory = Some(budget.value);
+            } else {
+                errors.push(error(
+                    code,
+                    budget.range.clone(),
+                    budget_out_of_range(Format::Ita, &budget.value.to_string()),
+                ));
+            }
+        }
         for grant in &run.grants {
             if !is_grant(&grant.spec) {
                 errors.push(error(
@@ -235,18 +317,13 @@ pub fn parse_ita_manifest(text: &str) -> (Manifest, Vec<ProjectError>) {
                 ));
                 continue;
             }
-            // ADR 0117's limits are not implemented by this release. A grant read without the
-            // limit written below it would allow more than the manifest says, so it is refused.
-            if let Some(limit) = grant.limits.first() {
-                errors.push(error(
-                    code,
-                    limit.clone(),
-                    "limits on grants are not supported by this release; a grant without its limit would allow more than written",
-                ));
+            // ADR 0117 rule 8: the limit lines, as the suffixes of the text form. A grant with
+            // an invalid limit is not read: without it, it would allow more than written.
+            let Some(suffix) = limits(grant, code, &mut errors) else {
                 continue;
-            }
+            };
             manifest.grants.push(Located {
-                value: grant.spec.clone(),
+                value: format!("{}{suffix}", grant.spec),
                 range: grant.range.clone(),
             });
         }
@@ -302,6 +379,19 @@ pub fn parse_ita_manifest(text: &str) -> (Manifest, Vec<ProjectError>) {
     }
     if !manifest.boundaries.is_empty() {
         boundary_conflicts(&manifest, &mut errors);
+    }
+    // A `systems` package that runs declares its budget (ADR 0109 rule 4), at the entry. A
+    // budget out of range was reported at its line, so it is not reported twice.
+    if manifest.profile == Profile::Systems
+        && manifest.max_memory.is_none()
+        && let Some(entry) = &manifest.entry
+        && read.run.as_ref().is_none_or(|run| run.max_memory.is_none())
+    {
+        errors.push(error(
+            code,
+            entry.range.clone(),
+            budget_missing(Format::Ita),
+        ));
     }
     manifest.ita = Some(Box::new(read));
     (manifest, errors)
@@ -696,21 +786,18 @@ fn check_trust(
             ));
         }
         // The major and the source may be left out only for a package the root needs
-        // directly from a registry (rule 10).
+        // directly (rule 10): they are then those of that need.
         if line.major.is_none() || line.from.is_none() {
-            let direct = read.needs.iter().any(|need| {
-                need.name.value == line.name.value
-                    && !matches!(
-                        need.origin.as_ref().map(|o| &o.value),
-                        Some(Origin::Path(_) | Origin::Workspace)
-                    )
-            });
+            let direct = read
+                .needs
+                .iter()
+                .any(|need| need.name.value == line.name.value);
             if !direct {
                 errors.push(error(
                     code,
                     line.name.range.clone(),
                     format!(
-                        "`{}` is not needed directly from a registry, so its trust line names its major line and source: `{} <major> from <source> modules ...`",
+                        "`{}` is not needed directly, so its trust line names its major line and source: `{} <major> from <source> modules ...`",
                         line.name.value, line.name.value
                     ),
                 ));
@@ -1099,12 +1186,13 @@ pub fn check_lock_consistency(
 /// The consent check of `ita.lock` (ADR 0122 rule 17): every `may` line of the root is within
 /// the ceiling the lock records as granted by the root (`granted by <root> may ...`). A wider
 /// one is U7009 at the `may` line, an authority change that only `una ita lock
-/// --accept-authority` records, never `una fix`. The lock is a control of visibility: a
+/// --accept-authority <package>` records, never `una fix`. The lock is a control of visibility: a
 /// widening shows in its diff. O(c log c) for the c capabilities written.
 pub fn check_consent(manifest: &ita::Manifest, lock: &ItaLock, root: &str) -> Vec<ProjectError> {
     let mut errors = Vec::new();
     for need in &manifest.needs {
-        let recorded = recorded_ceiling(lock, &need.name.value, root);
+        let origin = need.origin.as_ref().map(|origin| &origin.value);
+        let recorded = recorded_ceiling(lock, &need.name.value, origin, root);
         for cap in &need.may {
             let wider: Vec<&str> = cap
                 .ops
@@ -1121,10 +1209,11 @@ pub fn check_consent(manifest: &ita::Manifest, lock: &ItaLock, root: &str) -> Ve
                     Code::U7009,
                     cap.range.clone(),
                     format!(
-                        "the ceiling of `{}` allows `{}[{}]`, which ita.lock does not record as consented; review it and run `una ita lock --accept-authority`",
+                        "the ceiling of `{}` allows `{}[{}]`, which ita.lock does not record as consented; review it and run `una ita lock --accept-authority {}`",
                         need.name.value,
                         cap.capability,
-                        wider.join(", ")
+                        wider.join(", "),
+                        need.name.value
                     ),
                 ));
             }
@@ -1133,15 +1222,34 @@ pub fn check_consent(manifest: &ita::Manifest, lock: &ItaLock, root: &str) -> Ve
     errors
 }
 
-/// The ceiling the lock records as granted by `root` to the package `name`: each capability
-/// with its operations.
+/// Whether a locked package's origin is the one a need writes: the same path, ignoring a
+/// trailing `/`; the same registry source, `itaty` when the need names none; or a workspace
+/// member, which a need names by its name alone.
+pub fn same_origin(need: Option<&Origin>, locked: Option<&LockOrigin>) -> bool {
+    match (need, locked) {
+        (Some(Origin::Path(dir)), Some(LockOrigin::Path(locked))) => {
+            dir.trim_end_matches('/') == locked.trim_end_matches('/')
+        }
+        (Some(Origin::Source(source)), Some(LockOrigin::Source(locked))) => source == locked,
+        (None, Some(LockOrigin::Source(locked))) => locked == ITATY,
+        (Some(Origin::Workspace), Some(LockOrigin::Workspace(_))) => true,
+        _ => false,
+    }
+}
+
+/// The ceiling the lock records as granted by `root` to the package `name` from `origin`, the
+/// need's: each capability with its operations. A package of the same name from another
+/// origin records nothing for this need.
 pub fn recorded_ceiling<'l>(
     lock: &'l ItaLock,
     name: &PkgName,
+    origin: Option<&Origin>,
     root: &str,
 ) -> BTreeMap<&'l str, BTreeSet<&'l str>> {
     let mut recorded: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
-    for package in lock.read.packages.iter().filter(|p| p.name.value == *name) {
+    for package in lock.read.packages.iter().filter(|p| {
+        p.name.value == *name && same_origin(origin, p.from.as_ref().map(|from| &from.value))
+    }) {
         for grant in package
             .granted
             .iter()

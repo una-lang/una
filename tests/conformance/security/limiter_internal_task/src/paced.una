@@ -1,0 +1,28 @@
+-- test: `acquire` accepts `internal`, so a started task that branched on `internal` data can call it, and a `limiter` installed around the function that holds the `tasks` statement, over a statement timed by `internal` data at most, is accepted (spec/27 §10, ADR 0117 rule 9, IF5)
+-- spec: spec/27 §10
+-- expect: ok
+module paced
+
+import std.limit (Limit, limiter)
+import std.time (second)
+
+--- A started task: under the `internal` program counter of its branch, it takes a token.
+serve(n: internal Int) -> Unit
+  uses @gate: Limit[acquire]
+=
+  if n > 0
+    let got = attempt @gate.acquire()
+    unit
+  else
+    unit
+
+serve_all(items: internal List[Int]) -> Unit
+  uses @gate: Limit[acquire]
+=
+  tasks at most 2 at once
+    for n in items
+      start serve(n)
+
+pub main(items: internal List[Int]) -> Unit
+=
+  serve_all(items) with @gate = limiter(at_most: 50, per: second, waiting: 200)

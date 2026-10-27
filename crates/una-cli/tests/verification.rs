@@ -65,8 +65,14 @@ fn package_of_edition(name: &str, edition: &str, files: &[(&str, &str)]) -> Path
 
 /// How tier 1 normalizes the source text of the package at `path`: edition 0.4, which only
 /// `ita.una` describes, erases the layout of wrapped lines (ADR 0125, amendment of 2026-10-25).
+/// The edition is the manifest's, not the presence of the file (#1175).
 fn layout_of(path: &Path) -> una_verify::SourceLayout {
-    if path.join("ita.una").is_file() {
+    let ita = path.join("ita.una");
+    let edition = match std::fs::read_to_string(&ita) {
+        Ok(text) => una_project::ita::parse_ita_manifest(&text).0.edition,
+        Err(_) => una_project::Edition::V0_1,
+    };
+    if edition >= una_project::Edition::V0_4 {
         una_verify::SourceLayout::Wrapped
     } else {
         una_verify::SourceLayout::Joined
@@ -425,9 +431,12 @@ fn collect_op_paths(expr: &una_core::Expr, out: &mut Vec<String>) {
         }
         Expr::Attempt { body, .. }
         | Expr::With { body, .. }
+        | Expr::Within { body, .. }
         | Expr::LetTuple { body, .. }
+        | Expr::Tasks { body, .. }
         | Expr::Loop { body, .. } => collect_op_paths(body, out),
-        Expr::Together { tasks, .. } => {
+        Expr::Start { task, .. } => collect_op_paths(task, out),
+        Expr::Together { tasks, .. } | Expr::FirstOf { tasks, .. } => {
             for task in tasks {
                 collect_op_paths(task, out);
             }
@@ -1935,6 +1944,113 @@ fn a_loop_state_of_n_components_gives_queries_linear_in_n() {
         growth < 12.0,
         "8x the loop state gave {growth:.1}x the query bytes"
     );
+}
+
+/// A package of edition 0.4 under the test's temporary directory, with `source` as its module
+/// `facts`: described by `ita.una` and locked by the lock of a conformance case of edition 0.4
+/// (ADR 0122).
+fn facts_package_0_4(name: &str, source: &str) -> PathBuf {
+    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join("verification")
+        .join(name);
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("ita.una"),
+        format!("ita {name}\n  version 0.1.0\n  edition 0.4\n"),
+    )
+    .unwrap();
+    std::fs::copy(
+        repository().join("tests/conformance/verification/collection_facts/ita.lock"),
+        root.join("ita.lock"),
+    )
+    .unwrap();
+    std::fs::write(root.join("src/facts.una"), source).unwrap();
+    root
+}
+
+/// The queries of every obligation of the edition 0.4 package `name` whose module is
+/// `source`, as text, generated but not solved.
+fn queries_0_4(name: &str, source: &str) -> Vec<String> {
+    let root = facts_package_0_4(name, source);
+    let (checked, obligations) = generated(&root);
+    assert!(!obligations.is_empty(), "{name}: {:?}", checked.diagnostics);
+    let text = std::fs::read_to_string(repository().join("verification.lock")).unwrap();
+    let (lock, _) = una_project::parse_lock(&text);
+    let lock = una_verify::Lock {
+        text,
+        solver_version: lock.solver_version,
+        step_budget: lock.step_budget,
+        random_seed: lock.random_seed,
+    };
+    let queries = una_verify::queries(&obligations, &lock);
+    let _ = std::fs::remove_dir_all(&root);
+    queries
+}
+
+/// `n` updates of a hash set at one key, then a lookup of another: n frames, one key term
+/// besides the updated key.
+fn frames_source(n: usize) -> String {
+    let mut out = String::from(
+        "module facts\n\nimport std.collections (HashSet)\n\npub f(s: HashSet[Int], x: Int, y: Int) -> Bool\n  ensures result\n=\n  let edit t = s\n",
+    );
+    for _ in 0..n {
+        out.push_str("  edit t.add(item: x)\n");
+    }
+    out.push_str("  t.has(item: y)\n");
+    out
+}
+
+/// One update of a hash set, under `requires` clauses that look `n` keys up, one each: one
+/// frame, n key terms besides the updated key.
+fn keys_source(n: usize) -> String {
+    let params: Vec<String> = (0..n).map(|i| format!("y{i}: Int")).collect();
+    let lookups: String = (0..n)
+        .map(|i| format!("  requires s.has(item: y{i})\n"))
+        .collect();
+    format!(
+        "module facts\n\nimport std.collections (HashSet)\n\npub f(s: HashSet[Int], x: Int, {}) -> Bool\n{lookups}  ensures result\n=\n  let edit t = s\n  edit t.remove(item: x)\n  t.len >= 0\n",
+        params.join(", "),
+    )
+}
+
+/// The bytes of `queries`, and the number of frame instances they hold (ADR 0119 V3).
+fn frame_instances(queries: &[String]) -> (usize, usize) {
+    let bytes = queries.iter().map(String::len).sum();
+    let instances = queries
+        .iter()
+        .map(|query| query.matches("(=> (and (i!frame!").count())
+        .sum();
+    (bytes, instances)
+}
+
+#[test]
+fn collection_frames_grow_linearly_in_updates_and_in_key_terms() {
+    // ADR 0119 V8: a frame is instantiated once per key term that the query looks up, so a
+    // query with k frames and t key terms gains O(k · t) facts. With t fixed, 8x the updates
+    // give about 8x the bytes; with k fixed, 8x the key terms give about 8x the bytes. A frame
+    // instantiated at every `Int` term, the lengths included, would grow as n² with the
+    // updates. The counts are exact, so the bound needs no timing margin.
+    for (what, source) in [
+        ("updates", frames_source as fn(usize) -> String),
+        ("key terms", keys_source),
+    ] {
+        let name = if what == "updates" { "frames" } else { "keys" };
+        let (small, small_instances) =
+            frame_instances(&queries_0_4(&format!("{name}_50"), &source(50)));
+        let (large, large_instances) =
+            frame_instances(&queries_0_4(&format!("{name}_400"), &source(400)));
+        assert!(
+            small_instances >= 50 && large_instances >= 400,
+            "{what}: {small_instances} and {large_instances} frame instances"
+        );
+        let growth = large as f64 / small as f64;
+        eprintln!("8x the {what}: {growth:.1}x the query bytes ({small}, {large})");
+        assert!(
+            growth < 12.0,
+            "8x the {what} gave {growth:.1}x the query bytes"
+        );
+    }
 }
 
 /// Every conformance case and example of the repository: package directories and single files.

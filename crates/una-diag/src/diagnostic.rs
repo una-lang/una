@@ -81,7 +81,9 @@ pub enum ObligationKind {
     /// The arms of a `when` cover every value.
     Exhaustive,
     /// The exact result of an operation on a fixed-width integer type, or of a narrowing
-    /// conversion, lies in the type's range (`spec/18 §3`).
+    /// conversion, lies in the type's range; and, in a `systems` package, the exact result of
+    /// an operation on `Int` lies in -2^62 to 2^62 - 1 (`spec/18 §3`, ADR 0109 rule 3). The
+    /// kind covers fixed-width, and `Int` in a `systems` package.
     Overflow,
     /// A conditioned operation of a binding runs only where its condition holds: at the
     /// operation, at a call that passes the binding, and at a `with` that installs a handler

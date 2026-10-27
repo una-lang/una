@@ -175,8 +175,11 @@ impl<'a> Resolver<'_, '_, 'a> {
                     // Edition 0.3: the functions of `F64` (`spec/29`, ADR 0114 rule 3.9).
                     || (prelude::FLOAT_0_3.contains(&name)
                         && self.checker.package.settings.edition >= Edition::V0_3)
-                    // Edition 0.4: the functions of `Decimal` (`spec/29 §16`, ADR 0120).
-                    || (prelude::DECIMAL_0_4.contains(&name)
+                    // Edition 0.4: the functions of `Decimal` (`spec/29 §16`, ADR 0120), of
+                    // `F32` (ADR 0120 rule 5) and of `Complex` (ADR 0120 rule 22).
+                    || ((prelude::DECIMAL_0_4.contains(&name)
+                        || prelude::FLOAT_0_4.contains(&name)
+                        || prelude::COMPLEX_0_4.contains(&name))
                         && self.checker.package.settings.edition >= Edition::V0_4)
                     // Edition 0.4: the constructors of dense values (`spec/29 §17`, ADR 0120
                     // rule 32).
@@ -213,7 +216,11 @@ impl<'a> Resolver<'_, '_, 'a> {
                             || prelude::HTTP_0_4.contains(&name)))
                     // Edition 0.4: the dense types (`spec/29 §17`, ADR 0120 rule 3).
                     || (self.checker.package.settings.edition >= Edition::V0_4
-                        && matches!(name, "Array" | "Matrix"))
+                        && matches!(name, "Array" | "Matrix" | "Tensor" | "Lu"))
+                    // Edition 0.4: `F32`, the finite kinds and `Complex` (ADR 0120 rules 5, 11
+                    // and 22).
+                    || (self.checker.package.settings.edition >= Edition::V0_4
+                        && prelude::UPPER_0_4.contains(&name))
             }
         }
     }
@@ -291,6 +298,8 @@ impl<'a> Resolver<'_, '_, 'a> {
                 if self.checker.package.settings.edition >= Edition::V0_4 {
                     names.extend(prelude::DECIMAL_0_4);
                     names.extend(prelude::DENSE_0_4);
+                    names.extend(prelude::FLOAT_0_4);
+                    names.extend(prelude::COMPLEX_0_4);
                 }
             }
             Space::Upper => {
@@ -319,7 +328,8 @@ impl<'a> Resolver<'_, '_, 'a> {
                 if self.checker.package.settings.edition >= Edition::V0_4 {
                     names.extend(prelude::ROUNDING_0_4);
                     names.extend(prelude::HTTP_0_4);
-                    names.push("Matrix");
+                    names.extend(["Matrix", "Tensor", "Lu"]);
+                    names.extend(prelude::UPPER_0_4);
                 }
             }
         }
@@ -687,6 +697,19 @@ impl<'a> Resolver<'_, '_, 'a> {
                 }
             }
             Stmt::OnStop(on_stop) => self.block(&on_stop.block),
+            // The bound is evaluated once, before the block (`spec/27 §7`).
+            Stmt::Tasks(stmt) => {
+                if let Some(bound) = &stmt.bound {
+                    self.expr(bound);
+                }
+                self.block(&stmt.block);
+            }
+            // The started expression sees the names before it, in a scope of its own.
+            Stmt::Start(stmt) => {
+                self.enter();
+                self.handled(&stmt.handled);
+                self.leave();
+            }
         }
     }
 
@@ -717,6 +740,9 @@ impl<'a> Resolver<'_, '_, 'a> {
             if let CapBindingValue::Handler(call) = &binding.value {
                 self.handler_call(call);
             }
+        }
+        if let Some(within) = &handled.within {
+            self.expr(within);
         }
         for handling in &handled.handlings {
             match &handling.kind {
@@ -749,6 +775,15 @@ impl<'a> Resolver<'_, '_, 'a> {
                 self.bind(&together.var, "local", true);
                 self.block(&together.block);
                 self.leave();
+            }
+            // Each branch sees the names before the block, in a scope of its own (ADR 0117
+            // rule 6).
+            BlockExpr::FirstOf(first) => {
+                for branch in &first.body {
+                    self.enter();
+                    self.stmt(branch);
+                    self.leave();
+                }
             }
         }
     }
@@ -840,10 +875,15 @@ impl<'a> Resolver<'_, '_, 'a> {
                 self.expr(predicate);
                 self.variant(failure);
             }
-            ExprKind::Attempt(operand)
-            | ExprKind::Unary { operand, .. }
-            | ExprKind::Old(operand)
-            | ExprKind::Paren(operand) => self.expr(operand),
+            ExprKind::Attempt { operand, within } => {
+                self.expr(operand);
+                if let Some(within) = within {
+                    self.expr(within);
+                }
+            }
+            ExprKind::Unary { operand, .. } | ExprKind::Old(operand) | ExprKind::Paren(operand) => {
+                self.expr(operand)
+            }
             ExprKind::Fail(variant) => self.variant(variant),
             ExprKind::Binary { left, right, .. } => {
                 self.expr(left);

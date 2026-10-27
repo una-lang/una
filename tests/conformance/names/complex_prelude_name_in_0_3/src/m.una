@@ -1,0 +1,8 @@
+-- test: a package of edition 0.3 that declares `complex`, a name that edition 0.4 adds to the prelude, and keeps its meaning in edition 0.4
+-- spec: spec/29 §19
+-- expect: ok
+module m
+
+pub complex(re: Int, im: Int) -> Int = re * 10 + im
+
+pub used() -> Int = complex(re: 1, im: 2) + 3.complex(im: 4)

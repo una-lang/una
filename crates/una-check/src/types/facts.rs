@@ -518,7 +518,10 @@ fn written(env: &Env<'_>, kind: &super::env::KindDef<'_>, ty: &Ty) -> String {
             written(env, kind, key),
             written(env, kind, value)
         ),
-        Ty::Kind(other, args) if args.is_empty() => env.kind_name(*other).to_owned(),
+        // A complex kind is written as its type, `Complex[F64]` (ADR 0120 rule 22).
+        Ty::Kind(other, args) if args.is_empty() => env
+            .complex_written(*other)
+            .map_or_else(|| env.kind_name(*other).to_owned(), ToOwned::to_owned),
         Ty::Kind(other, args) => format!("{}[{}]", env.kind_name(*other), list(args)),
         Ty::Coll(coll, args) if args.is_empty() => coll.as_str().to_owned(),
         Ty::Coll(coll, args) => format!("{}[{}]", coll.as_str(), list(args)),
@@ -529,6 +532,7 @@ fn written(env: &Env<'_>, kind: &super::env::KindDef<'_>, ty: &Ty) -> String {
         Ty::Hashed => "Hashed".to_owned(),
         Ty::F64 => "F64".to_owned(),
         Ty::Decimal(scale) => format!("Decimal[{scale}]"),
+        Ty::F32 => "F32".to_owned(),
         Ty::Fixed(int) => format!("{int:?}"),
         Ty::Measured(unit, inner) => format!("{} of {}", written(env, kind, inner), **unit),
         _ => "_".to_owned(),
@@ -860,10 +864,14 @@ fn satisfies(
             Ty::Int | Ty::Fixed(_) | Ty::Error(_) | Ty::Never | Ty::Var(_) => true,
             Ty::Param(index) => param_has(*index, need),
             // ADR 0104 rule 3: a measured type is ordered, but not `Integer`, whose `to_int()`
-            // would remove its unit without one of the three methods.
-            Ty::Text | Ty::Measured(..) => need == Constraint::Ord,
+            // would remove its unit without one of the three methods. A measured complex value
+            // is not ordered, as its magnitude is not (ADR 0120 rule 64).
+            Ty::Text => need == Constraint::Ord,
+            Ty::Measured(_, magnitude) => {
+                need == Constraint::Ord && !matches!(**magnitude, Ty::Kind(..))
+            }
             // `F64` is ordered by totalOrder, and never `Integer` (`spec/29`, ADR 0114 rule 1.5).
-            Ty::F64 => need == Constraint::Ord,
+            Ty::F64 | Ty::F32 => need == Constraint::Ord,
             // `Decimal[s]` is ordered by value, and never `Integer` (ADR 0120 rule 18).
             Ty::Decimal(_) => need == Constraint::Ord,
             Ty::Kind(id, _) => {

@@ -7,17 +7,18 @@ use std::collections::{BTreeMap, BTreeSet};
 use sha2::{Digest, Sha256};
 use una_core::flow::Variance;
 use una_core::{
-    Atom, Base, BinOp, Bound, CapOp, Clause, Ctor, DataVariant, DecimalOp, Decl, Expr, FixedOp,
-    FloatOp, Fun, IntType, LoopSource, MapOp, Name, Path, Prim, Program, Refinement, Rhs, SeqOp,
-    SetOp, ShapeFun, Source, Term, Type, Use, print_term_with,
+    Atom, Base, BinOp, BitSetOp, Bound, CapOp, Clause, Ctor, DataVariant, DecimalOp, Decl, Expr,
+    FixedOp, FloatOp, Fun, HashMapOp, HashSetOp, IntType, LoopSource, MapOp, Name, Path, Prim,
+    PriorityOp, Profile, Program, Refinement, Rhs, SeqOp, SetOp, ShapeFun, Source, Term, Type, Use,
+    print_term_with,
 };
 use una_diag::ObligationKind;
 use una_syntax::{Interner, KeywordSet, SourceDb, Span, TokenKind, lex_in};
 
 use crate::run::Problem;
 use crate::smt::{
-    ARRAY, Const, ConstRole, Definition, F, FLOAT64, Fun as SmtFun, FunRole, HASHED, LIST, MAP,
-    MATRIX, Query, Sort, TEXT, UNIT, kind_sort, path_selector,
+    ARRAY, Combine, Const, ConstRole, Definition, F, FLOAT32, FLOAT64, Fun as SmtFun, FunRole,
+    HASHED, LIST, LU, MAP, MATRIX, Query, Sort, TENSOR, TEXT, UNIT, kind_sort, path_selector,
 };
 
 /// How the source text of an obligation's goal and hypotheses is normalized: by the edition of
@@ -137,10 +138,22 @@ pub struct Site {
     /// For a precondition of a named function passed as a function value, the function's
     /// name: the function type it flows into has no precondition (issue #76).
     pub function_value: Option<String>,
-    /// For an `overflow` obligation, a guard that is valid code and states its goal without
-    /// overflowing itself: the operand's range for a conversion, or the operation on `Int`
-    /// (`spec/18 §3`).
+    /// For an `overflow` obligation, a guard that is valid code and states its goal: the
+    /// operand's range for a conversion, the operation on `Int` for a fixed-width type, and
+    /// the operation with its operands as written for `Int` (`spec/18 §3`).
     pub guard: Option<String>,
+    /// Whether the obligation is an `overflow` one on `Int` in a `systems` package, whose
+    /// repairs are those of ADR 0109 rule 3: a guard, a refinement of the operands, a
+    /// fixed-width type, or the wrapping or saturating methods of one.
+    pub int: bool,
+    /// For an `overflow` obligation over the result of a prelude call that states no bound on
+    /// it, as `sum`'s, the callee: a refutation sets that result freely, so it is no run, and
+    /// the obligation is unknown (ADR 0109 rule 3).
+    pub unbounded: Option<String>,
+    /// For an obligation unknown by construction, its reason: no query is sent. The `overflow`
+    /// obligation of `abs` or `sum` used as a function value in a `systems` package is one,
+    /// since their operands have no bounds at that use (ADR 0109 rule 3).
+    pub unknown: Option<String>,
     /// For an `effect_condition` obligation, the conditioned operation and where it is
     /// charged, which decide its message and repairs (ADR 0092 rules 3 and 5).
     pub effect: Option<Effect>,
@@ -405,6 +418,12 @@ pub(crate) struct Index<'p> {
     /// The edits of callees' conditions, by site, caller's binding and operation (ADR 0092,
     /// amendment of 2026-10-14).
     condition_edits: BTreeMap<(Span, &'p str, &'p str), &'p una_core::ConditionEdit>,
+    /// The package's profile, as the program records it: in `systems`, `Int` arithmetic has
+    /// `overflow` obligations (ADR 0109 rules 3 and 6).
+    profile: Profile,
+    /// Whether a map's update keeps its other keys, in edition `0.4` (ADR 0069, amendment of
+    /// 2026-10-19; ADR 0119 V3).
+    map_frames: bool,
 }
 
 /// Whether `module` is the prelude's (`spec/14 §1`). The prelude is identified by its module
@@ -423,6 +442,63 @@ const STACK: &str = "i!Stack_";
 /// The prefix of the sorts of `Queue[T]`, `i!Queue_<T>` (ADR 0119 V1).
 const QUEUE: &str = "i!Queue_";
 
+/// The sort of `BitSet`, `i!BitSet` (ADR 0119 V1): it has no type argument.
+const BITSET: &str = "i!BitSet";
+
+/// The prefix of the sorts of `Set[T]`, `i!Set_<T>` (ADR 0119 V1).
+const SET: &str = "i!Set_";
+
+/// The prefix of the sorts of `HashMap[K, V]`, `i!HashMap_<K>_<V>` (ADR 0119 V1).
+const HASH_MAP: &str = "i!HashMap_";
+
+/// The prefix of the sorts of `HashSet[T]`, `i!HashSet_<T>` (ADR 0119 V1).
+const HASH_SET: &str = "i!HashSet_";
+
+/// Whether `sort` is the sort of a collection with a membership `i!has!<Sort>`: a map, and a
+/// `Set`, a `HashSet`, a `HashMap` or a `BitSet` (ADR 0119 V1).
+fn has_membership(sort: &str) -> bool {
+    sort.starts_with(MAP)
+        || sort.starts_with(SET)
+        || sort.starts_with(HASH_SET)
+        || sort.starts_with(HASH_MAP)
+        || sort == BITSET
+}
+
+/// Whether the members of a collection of `sort` are items, written `has(item:)`, rather than
+/// keys, written `has(key:)`: a `Set`, a `HashSet` and a `BitSet` (`spec/28`).
+fn has_items(sort: &str) -> bool {
+    sort.starts_with(SET) || sort.starts_with(HASH_SET) || sort == BITSET
+}
+
+/// `Option[T]` of the prelude.
+fn option_type(item: Type) -> Type {
+    Type::Base {
+        base: Base::Named {
+            module: una_core::PRELUDE_MODULE.to_owned(),
+            name: "Option".to_owned(),
+            args: vec![item],
+        },
+        refinements: Vec::new(),
+        label: una_core::Label::public(),
+    }
+}
+
+/// The item type of a `Set[T]`, a `HashSet[T]` or a `BitSet` (`Int`) of `std.collections`,
+/// or the key type of a `HashMap[K, V]`, refinements included; `None` for any other type.
+fn member_type(ty: &Type) -> Option<Type> {
+    match ty {
+        Type::Base {
+            base: Base::Named { module, name, args },
+            ..
+        } if module == una_core::COLLECTIONS_MODULE => match (name.as_str(), args.as_slice()) {
+            ("Set" | "HashSet", [item]) | ("HashMap", [item, _]) => Some(item.clone()),
+            ("BitSet", []) => Some(base_type(Base::Int)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// The element type of a `Stack[T]` or a `Queue[T]` of `std.collections`, refinements
 /// included; `None` for any other type.
 fn seq_element(ty: &Type) -> Option<&Type> {
@@ -435,6 +511,26 @@ fn seq_element(ty: &Type) -> Option<&Type> {
             && args.len() == 1 =>
         {
             args.first()
+        }
+        _ => None,
+    }
+}
+
+/// The prefix of the sorts of `PriorityQueue[T, P]`, `i!PriorityQueue_<T>_<P>` (ADR 0119 V1).
+const PRIORITY_QUEUE: &str = "i!PriorityQueue_";
+
+/// The item and priority types of a `PriorityQueue[T, P]` of `std.collections`, refinements
+/// included; `None` for any other type.
+fn priority_positions(ty: &Type) -> Option<(&Type, &Type)> {
+    match ty {
+        Type::Base {
+            base: Base::Named { module, name, args },
+            ..
+        } if module == una_core::COLLECTIONS_MODULE && name == "PriorityQueue" => {
+            match args.as_slice() {
+                [item, priority] => Some((item, priority)),
+                _ => None,
+            }
         }
         _ => None,
     }
@@ -473,11 +569,13 @@ impl<'p> Index<'p> {
             policies: BTreeMap::new(),
             vias: BTreeMap::new(),
             unresolved: RefCell::new(BTreeSet::new()),
+            map_frames: program.map_frames,
             condition_edits: program
                 .condition_edits
                 .iter()
                 .map(|edit| ((edit.site, edit.binding.as_str(), edit.op.as_str()), edit))
                 .collect(),
+            profile: program.profile,
         };
         for signature in &program.library {
             index
@@ -819,6 +917,8 @@ pub(crate) fn sort(ty: &Type) -> Sort {
             Base::F64 => FLOAT64.to_owned(),
             // A decimal is its coefficient, an `Int` (ADR 0120 V2): its queries stay linear.
             Base::Decimal(_) => "Int".to_owned(),
+            // `(_ FloatingPoint 8 24)` (ADR 0120 V1).
+            Base::F32 => FLOAT32.to_owned(),
             Base::Named { module, name, args } => {
                 let args: Vec<Sort> = args.iter().map(sort).collect();
                 if is_prelude(module) || is_collection(module, name) {
@@ -846,53 +946,107 @@ fn rne() -> F {
     F::op("RNE", Vec::new())
 }
 
-/// The defined functions `i!lt!F64` and `i!le!F64`: IEEE totalOrder on the canonical values of
-/// `F64`, which the FloatingPoint theory's one NaN and two zeros are (ADR 0114 rule 8.1).
+/// A binary floating-point format of the encoding: `F64` or `F32` (ADR 0120 V1).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Fmt {
+    F64,
+    F32,
+}
+
+impl Fmt {
+    /// The SMT sort.
+    fn sort(self) -> &'static str {
+        match self {
+            Fmt::F64 => FLOAT64,
+            Fmt::F32 => FLOAT32,
+        }
+    }
+
+    /// The defined function of `<` on the format.
+    fn lt(self) -> &'static str {
+        match self {
+            Fmt::F64 => "i!lt!F64",
+            Fmt::F32 => "i!lt!F32",
+        }
+    }
+
+    /// The defined function of `<=` on the format.
+    fn le(self) -> &'static str {
+        match self {
+            Fmt::F64 => "i!le!F64",
+            Fmt::F32 => "i!le!F32",
+        }
+    }
+
+    /// The conversion to the format, signed or unsigned.
+    fn to_fp(self, signed: bool) -> &'static str {
+        match (self, signed) {
+            (Fmt::F64, true) => "(_ to_fp 11 53)",
+            (Fmt::F64, false) => "(_ to_fp_unsigned 11 53)",
+            (Fmt::F32, true) => "(_ to_fp 8 24)",
+            (Fmt::F32, false) => "(_ to_fp_unsigned 8 24)",
+        }
+    }
+
+    /// The uninterpreted conversion of an `Int` beyond 64 bits.
+    fn beyond(self) -> &'static str {
+        match self {
+            Fmt::F64 => "i!to_f64!Int",
+            Fmt::F32 => "i!to_f32!Int",
+        }
+    }
+}
+
+/// The defined functions `i!lt!F64`, `i!le!F64`, `i!lt!F32` and `i!le!F32`: IEEE totalOrder on
+/// the canonical values of each format, which the FloatingPoint theory's one NaN and two zeros
+/// are (ADR 0114 rule 8.1, ADR 0120 V1). A query holds only those it uses.
 fn float_order_definitions() -> BTreeMap<String, Definition> {
-    let local = |name: &str| F::Local {
-        name: name.to_owned(),
-        sort: FLOAT64.to_owned(),
-    };
-    let (a, b) = (local("a"), local("b"));
-    let lt = F::and(vec![
-        F::not(F::op("fp.isNaN", vec![a.clone()])),
-        F::or(vec![
-            F::op("fp.isNaN", vec![b.clone()]),
-            F::op("fp.lt", vec![a.clone(), b.clone()]),
-            F::and(vec![
-                F::op("fp.isZero", vec![a.clone()]),
-                F::op("fp.isZero", vec![b.clone()]),
-                F::op("fp.isNegative", vec![a.clone()]),
-                F::op("fp.isPositive", vec![b.clone()]),
-            ]),
-        ]),
-    ]);
-    let params = vec![
-        ("a".to_owned(), FLOAT64.to_owned()),
-        ("b".to_owned(), FLOAT64.to_owned()),
-    ];
-    let le = F::or(vec![
-        float_order("i!lt!F64", a.clone(), b.clone()),
-        F::eq(a, b),
-    ]);
     let mut definitions = BTreeMap::new();
-    definitions.insert(
-        "i!lt!F64".to_owned(),
-        Definition {
-            params: params.clone(),
-            body: lt,
-        },
-    );
-    definitions.insert("i!le!F64".to_owned(), Definition { params, body: le });
+    for fmt in [Fmt::F64, Fmt::F32] {
+        let local = |name: &str| F::Local {
+            name: name.to_owned(),
+            sort: fmt.sort().to_owned(),
+        };
+        let (a, b) = (local("a"), local("b"));
+        let lt = F::and(vec![
+            F::not(F::op("fp.isNaN", vec![a.clone()])),
+            F::or(vec![
+                F::op("fp.isNaN", vec![b.clone()]),
+                F::op("fp.lt", vec![a.clone(), b.clone()]),
+                F::and(vec![
+                    F::op("fp.isZero", vec![a.clone()]),
+                    F::op("fp.isZero", vec![b.clone()]),
+                    F::op("fp.isNegative", vec![a.clone()]),
+                    F::op("fp.isPositive", vec![b.clone()]),
+                ]),
+            ]),
+        ]);
+        let params = vec![
+            ("a".to_owned(), fmt.sort().to_owned()),
+            ("b".to_owned(), fmt.sort().to_owned()),
+        ];
+        let le = F::or(vec![
+            float_order(fmt, fmt.lt(), a.clone(), b.clone()),
+            F::eq(a, b),
+        ]);
+        definitions.insert(
+            fmt.lt().to_owned(),
+            Definition {
+                params: params.clone(),
+                body: lt,
+            },
+        );
+        definitions.insert(fmt.le().to_owned(), Definition { params, body: le });
+    }
     definitions
 }
 
-/// An application of `i!lt!F64` or `i!le!F64`.
-fn float_order(name: &str, a: F, b: F) -> F {
+/// An application of the order function `name` of the format `fmt`.
+fn float_order(fmt: Fmt, name: &str, a: F, b: F) -> F {
     F::App {
         fun: SmtFun {
             name: name.to_owned(),
-            args: vec![FLOAT64.to_owned(), FLOAT64.to_owned()],
+            args: vec![fmt.sort().to_owned(), fmt.sort().to_owned()],
             result: "Bool".to_owned(),
             role: FunRole::Predicate,
         },
@@ -902,7 +1056,7 @@ fn float_order(name: &str, a: F, b: F) -> F {
 
 /// The term of an operation of `F64` of the refinement language on `args`, the receiver first
 /// (ADR 0114 rule 8.1); `None` for a code-only method, whose result is a fresh binder.
-fn float_term(op: FloatOp, args: &[F]) -> Option<F> {
+fn float_term(fmt: Fmt, op: FloatOp, args: &[F]) -> Option<F> {
     let arg = |i: usize| args.get(i).cloned();
     let rounded =
         |name: &'static str| -> Option<F> { Some(F::op(name, vec![rne(), arg(0)?, arg(1)?])) };
@@ -919,10 +1073,14 @@ fn float_term(op: FloatOp, args: &[F]) -> Option<F> {
         // SMT `=` on `Float64` is identity, exactly `==` (ADR 0114 rule 5.1).
         FloatOp::Eq => F::eq(arg(0)?, arg(1)?),
         FloatOp::Ne => F::not(F::eq(arg(0)?, arg(1)?)),
-        FloatOp::Lt => float_order("i!lt!F64", arg(0)?, arg(1)?),
-        FloatOp::Le => float_order("i!le!F64", arg(0)?, arg(1)?),
-        FloatOp::Gt => float_order("i!lt!F64", arg(1)?, arg(0)?),
-        FloatOp::Ge => float_order("i!le!F64", arg(1)?, arg(0)?),
+        FloatOp::Lt => float_order(fmt, fmt.lt(), arg(0)?, arg(1)?),
+        FloatOp::Le => float_order(fmt, fmt.le(), arg(0)?, arg(1)?),
+        FloatOp::Gt => float_order(fmt, fmt.lt(), arg(1)?, arg(0)?),
+        FloatOp::Ge => float_order(fmt, fmt.le(), arg(1)?, arg(0)?),
+        // The conversions between the formats, `convertFormat` in RNE (ADR 0120 V1).
+        FloatOp::ToF32 if fmt == Fmt::F64 => F::op(Fmt::F32.to_fp(true), vec![rne(), arg(0)?]),
+        FloatOp::ToF64 if fmt == Fmt::F32 => F::op(Fmt::F64.to_fp(true), vec![rne(), arg(0)?]),
+        FloatOp::ToF32 | FloatOp::ToF64 => return None,
         FloatOp::IeeeEq => binary("fp.eq")?,
         FloatOp::IeeeNe => F::not(binary("fp.eq")?),
         FloatOp::IeeeLt => binary("fp.lt")?,
@@ -967,9 +1125,10 @@ fn integer_type(ty: &Type) -> Option<IntType> {
     }
 }
 
-/// `n.to_f64()` (ADR 0114 rule 8.1): through a bit-vector of the integer type's own width,
-/// signed or unsigned, exact for every value of the type; for an `Int`, interpreted for
-/// `-2^63 <= n < 2^63` and the uninterpreted `i!to_f64!Int` beyond.
+/// `n.to_f64()` (ADR 0114 rule 8.1) or `n.to_f32()` (ADR 0120 V1): through a bit-vector of
+/// the integer type's own width, signed or unsigned, exact for every value of the type, and
+/// rounded once to the format; for an `Int`, interpreted for `-2^63 <= n < 2^63` and the
+/// uninterpreted `i!to_f64!Int` or `i!to_f32!Int` beyond.
 ///
 /// The narrow form applies only where `n` lies in its type's range: `int2bv w` takes
 /// `n mod 2^w`, and a term the language computes exactly (the body of a `reflect` predicate, a
@@ -978,11 +1137,11 @@ fn integer_type(ty: &Type) -> Option<IntType> {
 /// `(ite (in range) <narrow> <the Int form>)`: exact for every integer, and the narrow form, the
 /// one the solver decides fast, wherever the range holds.
 ///
-/// `guarded` is false only for a conversion in code (`Prim::Float(FloatOp::FromInt)`), whose
+/// `guarded` is false only for a conversion in code (`FloatOp::FromInt` as a primitive), whose
 /// operand is a value of its type: a parameter, a field, or the result of an operation with an
 /// `overflow` obligation (`spec/18 §3`), so it lies in the range by construction, and the
 /// narrow form is exact unguarded (a program whose obligation fails is rejected).
-fn to_f64(n: F, from: Option<IntType>, guarded: bool) -> Option<F> {
+fn to_float(fmt: Fmt, n: F, from: Option<IntType>, guarded: bool) -> Option<F> {
     let through = |width: u32, signed: bool, n: F| -> F {
         let int2bv: &'static str = match width {
             8 => "(_ int2bv 8)",
@@ -990,12 +1149,7 @@ fn to_f64(n: F, from: Option<IntType>, guarded: bool) -> Option<F> {
             32 => "(_ int2bv 32)",
             _ => "(_ int2bv 64)",
         };
-        let convert = if signed {
-            "(_ to_fp 11 53)"
-        } else {
-            "(_ to_fp_unsigned 11 53)"
-        };
-        F::op(convert, vec![rne(), F::op(int2bv, vec![n])])
+        F::op(fmt.to_fp(signed), vec![rne(), F::op(int2bv, vec![n])])
     };
     let range = |low: i128, high: i128, n: &F| {
         F::and(vec![
@@ -1006,9 +1160,9 @@ fn to_f64(n: F, from: Option<IntType>, guarded: bool) -> Option<F> {
     let int_form = |n: F| -> F {
         let beyond = F::App {
             fun: SmtFun {
-                name: "i!to_f64!Int".to_owned(),
+                name: fmt.beyond().to_owned(),
                 args: vec!["Int".to_owned()],
-                result: FLOAT64.to_owned(),
+                result: fmt.sort().to_owned(),
                 role: FunRole::Other,
             },
             args: vec![n.clone()],
@@ -1071,6 +1225,7 @@ fn type_name(ty: &Type) -> String {
             Base::Unit => "Unit".to_owned(),
             Base::Hashed => "Hashed".to_owned(),
             Base::F64 => "F64".to_owned(),
+            Base::F32 => "F32".to_owned(),
             Base::Decimal(scale) => format!("Decimal[{scale}]"),
             Base::Named { name, .. } | Base::Param(name) => name.clone(),
             Base::Tuple(_) => "Tuple".to_owned(),
@@ -1105,9 +1260,11 @@ fn stops(expr: &Expr) -> bool {
         Expr::Let { value, body, .. } => {
             matches!(value.as_ref(), Bound::Expr(inner) if stops(inner)) || stops(body)
         }
-        Expr::LetTuple { body, .. } | Expr::With { body, .. } | Expr::Attempt { body, .. } => {
-            stops(body)
-        }
+        Expr::LetTuple { body, .. }
+        | Expr::With { body, .. }
+        | Expr::Attempt { body, .. }
+        | Expr::Within { body, .. }
+        | Expr::Tasks { body, .. } => stops(body),
         Expr::If {
             then, otherwise, ..
         } => stops(then) || stops(otherwise),
@@ -1120,7 +1277,9 @@ fn stops(expr: &Expr) -> bool {
         | Expr::Unreachable { .. }
         | Expr::Loop { .. }
         | Expr::Together { .. }
-        | Expr::TogetherFor { .. } => false,
+        | Expr::TogetherFor { .. }
+        | Expr::FirstOf { .. }
+        | Expr::Start { .. } => false,
     }
 }
 
@@ -1271,6 +1430,9 @@ struct Walker<'p, 'i> {
     /// The element type of the list that the `together for` being walked makes, from the
     /// binder of its `let`: each task's value flows into it (ADR 0103 rule 3).
     together_element: Option<Type>,
+    /// The type of the value of the `first of` being walked, when it is bound by a `let`:
+    /// each branch's value flows into it (`spec/27 §6`, as ADR 0103 rule 3 for `together for`).
+    first_of_type: Option<Type>,
     /// The name of the named function whose eta-expansion is walked (issue #76).
     eta_name: Option<String>,
     /// The binder that an assignment's refinement obligation is about, which a counterexample
@@ -1340,6 +1502,7 @@ impl<'p, 'i> Walker<'p, 'i> {
             fresh: 0,
             eta: None,
             together_element: None,
+            first_of_type: None,
             eta_name: None,
             assigned: None,
             frames: BTreeMap::new(),
@@ -1935,6 +2098,70 @@ impl<'p, 'i> Walker<'p, 'i> {
                     });
                     return;
                 }
+                // `first_of(e₁ | ... | eₙ)` (`spec/27 §6`, ADR 0117 Verification): each branch
+                // is verified alone, in the context before the block, and each of its values
+                // flows into the type of the result, which carries the facts of that type only:
+                // which branch wins is timing.
+                Expr::FirstOf { tasks, span } => {
+                    let result = self.first_of_type.take().filter(has_refinements);
+                    for task in tasks {
+                        let mut task_leaves = Vec::new();
+                        self.walk(task, &ctx, &mut task_leaves);
+                        let Some(result) = &result else {
+                            continue;
+                        };
+                        for leaf in &task_leaves {
+                            let Some(value) = &leaf.value else {
+                                continue;
+                            };
+                            let mut leaf_ctx = ctx.clone();
+                            leaf_ctx.hyps = leaf.hyps.clone();
+                            self.refined_flow(result, value, leaf.span, &leaf_ctx);
+                        }
+                    }
+                    leaves.push(Leaf {
+                        hyps: ctx.hyps.clone(),
+                        divisions: ctx.divisions.clone(),
+                        value: None,
+                        span: *span,
+                        returns: Vec::new(),
+                    });
+                    return;
+                }
+                // `tasks(b) e` (`spec/27 §7`, ADR 0117 Verification): `b >= 1`, a `refinement`
+                // obligation at `b`; the block runs in the current task, so it is walked as a
+                // block, and its `start`s change no outer binding.
+                Expr::Tasks { bound, body, .. } => {
+                    if let Some((bound, bound_span)) = bound {
+                        let value = self.atom(bound, &ctx);
+                        let goal = (value.f.sort() == "Int")
+                            .then(|| F::op(">=", vec![value.f, F::Int("1".to_owned())]));
+                        let text = format!("{} >= 1", self.text(*bound_span));
+                        self.site(
+                            ObligationKind::Refinement,
+                            &ctx,
+                            goal,
+                            text,
+                            *bound_span,
+                            None,
+                        );
+                    }
+                    expr = body;
+                }
+                // `start e`: `e` is verified alone, in the context of the `start`, as a
+                // `together` task is; its value is `unit`, and it gives no fact.
+                Expr::Start { task, span } => {
+                    let mut task_leaves = Vec::new();
+                    self.walk(task, &ctx, &mut task_leaves);
+                    leaves.push(Leaf {
+                        hyps: ctx.hyps.clone(),
+                        divisions: ctx.divisions.clone(),
+                        value: None,
+                        span: *span,
+                        returns: Vec::new(),
+                    });
+                    return;
+                }
                 // The tasks of a `together` block outside the `let` that binds their tuple,
                 // which the desugar never makes: each is checked in the context before it.
                 Expr::Together { tasks, span } => {
@@ -2056,6 +2283,9 @@ impl<'p, 'i> Walker<'p, 'i> {
                                 } = ty
                             {
                                 self.together_element = args.first().cloned();
+                            }
+                            if let Expr::FirstOf { .. } = inner {
+                                self.first_of_type = Some(ty.clone());
                             }
                             let mut inner_leaves = Vec::new();
                             self.walk(inner, &ctx, &mut inner_leaves);
@@ -2288,6 +2518,29 @@ impl<'p, 'i> Walker<'p, 'i> {
                     self.walk(body, &ctx, leaves);
                     expr = handler;
                 }
+                // `e within d` (`spec/27 §5`, ADR 0117 rule 5): `d >= 1`, a `refinement`
+                // obligation at `d`; on success the facts of `e` hold as without the deadline,
+                // and a time-out carries none, as any failure.
+                Expr::Within {
+                    deadline,
+                    deadline_span,
+                    body,
+                    ..
+                } => {
+                    let value = self.atom(deadline, &ctx);
+                    let goal = (value.f.sort() == "Int")
+                        .then(|| F::op(">=", vec![value.f, F::Int("1".to_owned())]));
+                    let text = format!("{} >= 1", self.text(*deadline_span));
+                    self.site(
+                        ObligationKind::Refinement,
+                        &ctx,
+                        goal,
+                        text,
+                        *deadline_span,
+                        None,
+                    );
+                    expr = body;
+                }
                 Expr::Attempt { body, span } => {
                     let mut returns = Vec::new();
                     self.walk(body, &ctx, &mut returns);
@@ -2325,6 +2578,30 @@ impl<'p, 'i> Walker<'p, 'i> {
                                     *span,
                                     &EffectAt::With(handler.name.clone()),
                                 );
+                            } else if key == (una_core::LIMIT_MODULE, una_core::LIMITER) {
+                                // `limiter(at_most, per, waiting)` of `std.limit` (ADR 0117
+                                // rule 9, `spec/27 §10`): the engines provide it, so Core
+                                // declares no handler; its installation carries
+                                // `at_most >= 1`, `per >= 1` and `waiting >= 0`, a
+                                // `refinement` obligation at each argument.
+                                let bounds = ["1", "1", "0"];
+                                for ((arg, arg_span), bound) in
+                                    args.iter().zip(arg_spans).zip(bounds)
+                                {
+                                    let value = self.atom(arg, &ctx);
+                                    let goal = (value.f.sort() == "Int").then(|| {
+                                        F::op(">=", vec![value.f, F::Int(bound.to_owned())])
+                                    });
+                                    let text = format!("{} >= {bound}", self.text(*arg_span));
+                                    self.site(
+                                        ObligationKind::Refinement,
+                                        &ctx,
+                                        goal,
+                                        text,
+                                        *arg_span,
+                                        None,
+                                    );
+                                }
                             }
                             None
                         }
@@ -2471,6 +2748,9 @@ impl<'p, 'i> Walker<'p, 'i> {
         let x = own(ctx, name);
         match rhs {
             Rhs::Atom(atom) => {
+                // ADR 0109 rule 3: an `Int` literal outside the tagged range, which
+                // elaboration binds at its span in a `systems` package.
+                self.literal_site(ty, atom, span, ctx);
                 let value = self.atom(atom, ctx);
                 if value.f.sort() == x.f.sort() {
                     let definition = F::eq(x.f.clone(), value.f.clone());
@@ -2557,6 +2837,31 @@ impl<'p, 'i> Walker<'p, 'i> {
                     }
                     self.seq_facts(*op, &values, &x, ctx);
                 }
+                if let Prim::Priority(op) = prim {
+                    // ADR 0119 rule 1 and ADR 0103 rule 3: a push stores its item at `T` and its
+                    // priority at `P`, each a flow site with its `refinement` obligations; the
+                    // other operations store nothing.
+                    if *op == PriorityOp::Push
+                        && let Some(Type::Base {
+                            base:
+                                Base::Named {
+                                    args: positions, ..
+                                },
+                            ..
+                        }) = values.first().map(|queue| &queue.ty)
+                    {
+                        let positions = positions.clone();
+                        for (index, target) in positions.iter().enumerate() {
+                            if let Some(value) = values.get(index + 1)
+                                && has_refinements(target)
+                            {
+                                let at = arg_spans.get(index + 1).copied().unwrap_or(*span);
+                                self.refined_flow(target, value, at, ctx);
+                            }
+                        }
+                    }
+                    self.priority_facts(*op, &values, &x, ctx);
+                }
                 // ADR 0119 rule 1 and ADR 0103 rule 3: `add` and `with` store their item at
                 // the set's item type, a flow site with its `refinement` obligations; a lookup,
                 // `has`, `remove` and `without`, stores nothing.
@@ -2591,6 +2896,58 @@ impl<'p, 'i> Walker<'p, 'i> {
                     };
                     let at = arg_spans.get(1).copied().unwrap_or(*span);
                     self.refined_flow(&target, other, at, ctx);
+                }
+                // ADR 0119 rule 1 and ADR 0103 rule 3: a hash map's `set`, `with` and the
+                // `with` of `update` store the key and the value at the map's types, and a hash
+                // set's `add` and `with` store the item, each a flow site with its `refinement`
+                // obligations; a lookup stores nothing.
+                if matches!(
+                    prim,
+                    Prim::HashMap(HashMapOp::With) | Prim::HashSet(HashSetOp::With)
+                ) && let Some(Type::Base {
+                    base: Base::Named { args: stored, .. },
+                    ..
+                }) = values.first().map(|table| &table.ty)
+                {
+                    let stored = stored.clone();
+                    for (index, target) in stored.iter().enumerate() {
+                        if let Some(value) = values.get(index + 1)
+                            && has_refinements(target)
+                        {
+                            let at = arg_spans.get(index + 1).copied().unwrap_or(*span);
+                            self.refined_flow(target, value, at, ctx);
+                        }
+                    }
+                }
+                // A hash set's `union` stores the other set's items at the receiver's item
+                // type, as a set's does.
+                if *prim == Prim::HashSet(HashSetOp::Union)
+                    && let (Some(set), Some(other)) = (values.first(), values.get(1))
+                    && let Type::Base {
+                        base: base @ Base::Named { .. },
+                        label,
+                        ..
+                    } = &set.ty
+                    && has_refinements(&set.ty)
+                {
+                    let target = Type::Base {
+                        base: base.clone(),
+                        refinements: Vec::new(),
+                        label: label.clone(),
+                    };
+                    let at = arg_spans.get(1).copied().unwrap_or(*span);
+                    self.refined_flow(&target, other, at, ctx);
+                }
+                // ADR 0119 V2 to V4: the facts of an operation of a set, a hash set or a hash
+                // map.
+                if matches!(prim, Prim::Set(_) | Prim::HashSet(_) | Prim::HashMap(_)) {
+                    self.table_facts(*prim, &values, &x, ctx);
+                }
+                // ADR 0119 rule 14 and V2: the range and size preconditions of a bit set, then
+                // the facts of its operation.
+                if let Prim::BitSet(op) = prim {
+                    self.bit_set_sites(*op, &values, arg_spans, *span, ctx);
+                    self.bit_set_facts(*op, &values, &x, ctx);
                 }
                 if let Some(value) = self.prim(*prim, &values)
                     && value.sort() == x.f.sort()
@@ -2676,6 +3033,38 @@ impl<'p, 'i> Walker<'p, 'i> {
                     }
                     if is_prelude(&function.module) {
                         self.text_facts(&function.name, &values, &x, ctx);
+                        self.dense_facts(&function.name, &values, &x, ctx);
+                        // ADR 0109 rule 3: after the callee's `ensures`, which bound `abs`.
+                        self.prelude_site(&function.name, &x, arg_spans, *span, ctx);
+                    }
+                    // ADR 0119 rule 14: `empty_bit_set(size: n)` ensures `result.size == n`
+                    // and `result.len == 0`, which its declaration cannot write until V5: facts
+                    // after the call's precondition, as its `ensures` would be.
+                    if key == (una_core::COLLECTIONS_MODULE, "empty_bit_set")
+                        && x.f.sort() == BITSET
+                        && let Some(size) = values.first()
+                    {
+                        ctx.assume(F::eq(size_of(&x.f), size.f.clone()));
+                        ctx.assume(F::eq(len_of(&x.f), F::Int("0".to_owned())));
+                    }
+                    // ADR 0119 rules 5 to 13 and 16: each empty collection `ensures result.len
+                    // == 0`, and a conversion to a set or a table `ensures result.len <=
+                    // xs.len`, which the declarations do not write.
+                    if function.module == una_core::COLLECTIONS_MODULE
+                        && let Some(len) = self.len(&x)
+                    {
+                        match function.name.as_str() {
+                            "empty_stack" | "empty_queue" | "empty_set" | "empty_hash_map"
+                            | "empty_hash_set" | "lowest_first" | "highest_first" => {
+                                ctx.assume(F::eq(len, F::Int("0".to_owned())));
+                            }
+                            "to_set" | "to_hash_set" | "to_hash_map" => {
+                                if let Some(list) = values.first().and_then(|xs| self.len(xs)) {
+                                    ctx.assume(F::op("<=", vec![len, list]));
+                                }
+                            }
+                            _ => {}
+                        }
                     }
                 } else if let Some((params, formula)) = self.index.predicates.get(&key) {
                     self.arguments(params, args, arg_spans, ctx);
@@ -2838,6 +3227,10 @@ impl<'p, 'i> Walker<'p, 'i> {
                 body,
                 function,
             } => {
+                // ADR 0109 rule 3: `abs` or `sum` of the prelude used as a value.
+                if let Some(path) = function {
+                    self.prelude_value_site(path, span, ctx);
+                }
                 self.lambda_binders.insert(name.to_owned());
                 let mut inner = ctx.clone();
                 for (param, ty) in params {
@@ -3220,6 +3613,51 @@ impl<'p, 'i> Walker<'p, 'i> {
                         _ => unknown(),
                     }
                 }
+                // ADR 0119 V6: what a priority queue gives back carries its item or priority
+                // position's refinements, as an element of a list does (ADR 0103 rule 6), and an
+                // update gives a queue of the receiver's type.
+                Prim::Priority(op) => {
+                    let receiver = args.first().map(|queue| self.atom(queue, ctx).ty);
+                    let positions = receiver
+                        .as_ref()
+                        .and_then(priority_positions)
+                        .map(|(item, priority)| (item.clone(), priority.clone()));
+                    match (receiver, positions) {
+                        (Some(queue), Some((item, priority))) => {
+                            let wrapped = |module: &str, name: &str, args: Vec<Type>| Type::Base {
+                                base: Base::Named {
+                                    module: module.to_owned(),
+                                    name: name.to_owned(),
+                                    args,
+                                },
+                                refinements: Vec::new(),
+                                label: type_label(binder).clone(),
+                            };
+                            let prelude = una_core::PRELUDE_MODULE;
+                            match op {
+                                PriorityOp::Peek => wrapped(prelude, "Option", vec![item]),
+                                PriorityOp::PeekPriority => {
+                                    wrapped(prelude, "Option", vec![priority])
+                                }
+                                PriorityOp::PeekRanked => {
+                                    let ranked = Type::Base {
+                                        base: Base::Named {
+                                            module: una_core::COLLECTIONS_MODULE.to_owned(),
+                                            name: "Ranked".to_owned(),
+                                            args: vec![item, priority],
+                                        },
+                                        refinements: Vec::new(),
+                                        label: type_label(binder).clone(),
+                                    };
+                                    wrapped(prelude, "Option", vec![ranked])
+                                }
+                                PriorityOp::Items => wrapped(prelude, "List", vec![item]),
+                                PriorityOp::Push | PriorityOp::Pop => queue,
+                            }
+                        }
+                        _ => unknown(),
+                    }
+                }
                 // Scalars: their binder has no nested position.
                 Prim::Add
                 | Prim::Sub
@@ -3241,8 +3679,12 @@ impl<'p, 'i> Walker<'p, 'i> {
                 | Prim::Fixed(..)
                 | Prim::Float(_)
                 | Prim::Shape(_)
+                | Prim::Float32(_)
                 // A decimal's `Option` results have no fact behind their nested positions.
-                | Prim::Decimal(_) => unknown(),
+                | Prim::Decimal(_)
+                // A bit set's items are `Int`, with no refinement: nothing it gives back has a
+                // refined nested position.
+                | Prim::BitSet(_) => unknown(),
                 // ADR 0119 V6: what a `Stack` or a `Queue` gives back carries its element
                 // position's refinements, as an element of a list does (ADR 0103 rule 6), and an
                 // update gives a sequence of the receiver's type.
@@ -3315,6 +3757,103 @@ impl<'p, 'i> Walker<'p, 'i> {
                             &base,
                             Base::Named { module, name, args }
                                 if is_collection(module, name) && name == "Set" && args.len() == 1
+                        ) =>
+                        {
+                            Type::Base {
+                                base,
+                                refinements: Vec::new(),
+                                label: type_label(binder).clone(),
+                            }
+                        }
+                        _ => unknown(),
+                    }
+                }
+                // ADR 0119 V6: what a hash map or a hash set gives back carries its position's
+                // refinements, as for a map (ADR 0103 rule 6), and an update or a set operation
+                // gives a table of the receiver's type, each stored key, value and item a flow
+                // site of its own.
+                Prim::HashMap(op) => {
+                    let receiver = args.first().map(|map| self.atom(map, ctx).ty);
+                    match receiver {
+                        Some(Type::Base {
+                            base: base @ Base::Named { .. },
+                            ..
+                        }) if matches!(
+                            &base,
+                            Base::Named { module, name, args }
+                                if is_collection(module, name) && name == "HashMap" && args.len() == 2
+                        ) =>
+                        {
+                            let Base::Named { args: kv, .. } = &base else {
+                                return Some(unknown());
+                            };
+                            let Ok([key, value]) = <[Type; 2]>::try_from(kv.clone()) else {
+                                return Some(unknown());
+                            };
+                            let named = |name: &str, args: Vec<Type>| Type::Base {
+                                base: Base::Named {
+                                    module: una_core::PRELUDE_MODULE.to_owned(),
+                                    name: name.to_owned(),
+                                    args,
+                                },
+                                refinements: Vec::new(),
+                                label: type_label(binder).clone(),
+                            };
+                            match op {
+                                HashMapOp::Has | HashMapOp::SameEntries => unknown(),
+                                HashMapOp::Get => named("Option", vec![value]),
+                                HashMapOp::With | HashMapOp::Without => Type::Base {
+                                    base,
+                                    refinements: Vec::new(),
+                                    label: type_label(binder).clone(),
+                                },
+                                HashMapOp::Keys => named("List", vec![key]),
+                                HashMapOp::Values => named("List", vec![value]),
+                                HashMapOp::Entries => {
+                                    named("List", vec![named("Entry", vec![key, value])])
+                                }
+                            }
+                        }
+                        _ => unknown(),
+                    }
+                }
+                Prim::HashSet(op) => {
+                    let receiver = args.first().map(|set| self.atom(set, ctx).ty);
+                    match (op, receiver) {
+                        (
+                            HashSetOp::Items,
+                            Some(Type::Base {
+                                base: Base::Named { module, name, args },
+                                ..
+                            }),
+                        ) if is_collection(&module, &name)
+                            && name == "HashSet"
+                            && args.len() == 1 =>
+                        {
+                            Type::Base {
+                                base: Base::Named {
+                                    module: una_core::PRELUDE_MODULE.to_owned(),
+                                    name: "List".to_owned(),
+                                    args,
+                                },
+                                refinements: Vec::new(),
+                                label: type_label(binder).clone(),
+                            }
+                        }
+                        (
+                            HashSetOp::With
+                            | HashSetOp::Without
+                            | HashSetOp::Union
+                            | HashSetOp::Intersection
+                            | HashSetOp::Difference,
+                            Some(Type::Base {
+                                base: base @ Base::Named { .. },
+                                ..
+                            }),
+                        ) if matches!(
+                            &base,
+                            Base::Named { module, name, args }
+                                if is_collection(module, name) && name == "HashSet" && args.len() == 1
                         ) =>
                         {
                             Type::Base {
@@ -3832,6 +4371,10 @@ impl<'p, 'i> Walker<'p, 'i> {
                 f: F::Float(*bits),
                 ty: base_type(Base::F64),
             },
+            Atom::F32(bits) => Tv {
+                f: F::Float32(*bits),
+                ty: base_type(Base::F32),
+            },
             Atom::Unit => Tv {
                 f: F::Const(Const {
                     name: "unit".to_owned(),
@@ -3887,7 +4430,10 @@ impl<'p, 'i> Walker<'p, 'i> {
             let kind = self.index.kinds.get(&(module.as_str(), name.as_str()))?;
             let declared = kind.variants.get(variant)?;
             let (field, _) = declared.fields.get(index)?;
-            if kind.record {
+            if una_core::complex::is_kind(module, name) {
+                // `i!f!re!` and `i!f!im!` into the float sort (ADR 0120 V3).
+                format!("i!f!{field}!{sort}")
+            } else if kind.record {
                 format!("u!f!{field}!{sort}")
             } else {
                 format!("u!f!{field}!{}!{sort}", declared.name)
@@ -3966,37 +4512,111 @@ impl<'p, 'i> Walker<'p, 'i> {
     /// `.len` of a text, list or map, `i!len!<Sort>`.
     fn len(&self, value: &Tv) -> Option<F> {
         let sort = value.f.sort();
-        // A `Stack` and a `Queue` have a length too (ADR 0119 V1), with its ground fact
-        // `len >= 0`.
+        // Every collection of ADR 0119 has a length too (V1), with its ground fact `len >= 0`,
+        // and a bit set's `len <= size` besides (V2).
         let has_len = sort == TEXT
             || sort.starts_with(LIST)
             || sort.starts_with(MAP)
             || sort.starts_with(ARRAY)
             || sort.starts_with(STACK)
-            || sort.starts_with(QUEUE);
+            || sort.starts_with(QUEUE)
+            || sort.starts_with(PRIORITY_QUEUE)
+            || sort.starts_with(SET)
+            || sort.starts_with(HASH_SET)
+            || sort.starts_with(HASH_MAP)
+            || sort == BITSET;
         has_len.then(|| len_of(&value.f))
     }
 
-    /// `m.rows` or `m.columns` of a matrix, `i!rows!<Sort>` or `i!columns!<Sort>` (ADR 0120
-    /// V4).
+    /// `m.rows` or `m.columns` of a matrix, `t.rank` or the element count of a tensor, and
+    /// `f.size` of an `Lu[T]`: `i!<fun>!<Sort>` (ADR 0120 V4).
     fn shape(&self, value: &Tv, fun: ShapeFun) -> Option<F> {
-        value
-            .f
-            .sort()
-            .starts_with(MATRIX)
-            .then(|| shape_of(&value.f, fun))
+        let sort = value.f.sort();
+        let has = match fun {
+            ShapeFun::Rows | ShapeFun::Columns => sort.starts_with(MATRIX),
+            ShapeFun::Rank | ShapeFun::Count => sort.starts_with(TENSOR),
+            ShapeFun::Size => sort.starts_with(LU),
+        };
+        has.then(|| shape_of(&value.f, fun))
     }
 
     /// The shape of a value as the terms that the frame of a loop keeps (ADR 0071, ADR 0120
-    /// V4): its length, or its rows and its columns.
+    /// V4): its length; or its rows and its columns; or a tensor's rank, its element count
+    /// and its length along each of the 8 axes a rank allows.
     fn shape_terms(&self, value: &Tv) -> Vec<F> {
-        if value.f.sort().starts_with(MATRIX) {
+        let sort = value.f.sort();
+        if sort.starts_with(MATRIX) {
             vec![
                 shape_of(&value.f, ShapeFun::Rows),
                 shape_of(&value.f, ShapeFun::Columns),
             ]
+        } else if sort.starts_with(TENSOR) {
+            let mut terms = vec![
+                shape_of(&value.f, ShapeFun::Rank),
+                shape_of(&value.f, ShapeFun::Count),
+            ];
+            terms.extend((0..MAX_RANK).map(|axis| dim_of(&value.f, &F::Int(axis.to_string()))));
+            terms
         } else {
             self.len(value).into_iter().collect()
+        }
+    }
+
+    /// The facts of the prelude's dense methods whose result is an `Option` (ADR 0120 rule
+    /// 38), which a clause cannot state: on `Some`, `lu` holds an `Lu[T]` of the matrix's size,
+    /// `solve` a matrix of the right-hand side's shape, `solve_array` an array of its length,
+    /// and `cholesky` a matrix of the receiver's shape. Each kernel checks the shape it gives
+    /// before it returns.
+    fn dense_facts(&mut self, name: &str, values: &[Tv], x: &Tv, ctx: &mut Ctx) {
+        if !matches!(
+            name,
+            "dense_matrix_lu"
+                | "dense_matrix_solve"
+                | "dense_matrix_solve_array"
+                | "dense_matrix_cholesky"
+        ) {
+            return;
+        }
+        let (Some(tag), Some(payload), Some(m)) =
+            (self.tag(x), self.field(x, 0, 0), values.first())
+        else {
+            return;
+        };
+        let some = F::eq(tag, F::Int("0".to_owned()));
+        let (Some(rows), Some(columns)) = (
+            self.shape(m, ShapeFun::Rows),
+            self.shape(m, ShapeFun::Columns),
+        ) else {
+            return;
+        };
+        let facts = match name {
+            "dense_matrix_lu" => self
+                .shape(&payload, ShapeFun::Size)
+                .map(|size| vec![F::eq(size, rows)]),
+            "dense_matrix_solve" => {
+                let rhs = values.get(1);
+                match (
+                    self.shape(&payload, ShapeFun::Rows),
+                    self.shape(&payload, ShapeFun::Columns),
+                    rhs.and_then(|rhs| self.shape(rhs, ShapeFun::Columns)),
+                ) {
+                    (Some(r), Some(c), Some(rhs_columns)) => {
+                        Some(vec![F::eq(r, rows), F::eq(c, rhs_columns)])
+                    }
+                    _ => None,
+                }
+            }
+            "dense_matrix_solve_array" => self.len(&payload).map(|len| vec![F::eq(len, rows)]),
+            _ => match (
+                self.shape(&payload, ShapeFun::Rows),
+                self.shape(&payload, ShapeFun::Columns),
+            ) {
+                (Some(r), Some(c)) => Some(vec![F::eq(r, rows), F::eq(c, columns)]),
+                _ => None,
+            },
+        };
+        if let Some(facts) = facts {
+            ctx.assume(F::op("=>", vec![some, F::and(facts)]));
         }
     }
 
@@ -4045,6 +4665,15 @@ impl<'p, 'i> Walker<'p, 'i> {
                     F::op("ite", vec![had, with_key, without_key]),
                 ));
                 let has_now = has_of(&x.f, &key.f);
+                // ADR 0069, amendment of 2026-10-19: in edition `0.4`, the update keeps `has`
+                // and `get` at every other key (ADR 0119 V3); editions `0.2` and `0.3` keep M3
+                // and M8 as written.
+                if self.index.map_frames
+                    && x.f.sort() == map.f.sort()
+                    && let Some(option) = option_of(&map.ty)
+                {
+                    ctx.define(frame_of(&map.f, &x.f, &key.f, Some(self::sort(&option))));
+                }
                 if op == MapOp::Without {
                     ctx.assume(F::not(has_now));
                     return;
@@ -4075,31 +4704,85 @@ impl<'p, 'i> Walker<'p, 'i> {
         }
     }
 
-    /// Facts of a `Stack`'s or a `Queue`'s operation on its result `x` (ADR 0119 rules 5 and 6),
-    /// each true of every sequence: a push adds one to the length, a removal takes one off a
-    /// nonempty sequence and keeps an empty one, `items()` has the sequence's length, and a
-    /// read is `None` exactly when the sequence is empty. The facts of ADR 0119 V2 about which
-    /// element a read gives back need the uninterpreted `peek` of V1, which this encoding does
-    /// not have yet, so a read's payload is unknown here. O(1) facts per call.
+    /// Facts of a `Stack`'s or a `Queue`'s operation on its result `x` (ADR 0119 rules 5 and 6,
+    /// V2), each true of every sequence: a push adds one to the length, a removal takes one off
+    /// a nonempty sequence and keeps an empty one, `items()` has the sequence's length, and a
+    /// read is `None` exactly when the sequence is empty. Which item a read gives is the
+    /// uninterpreted `peek` or `peekback` of V1: a push puts its item at its end, and keeps the
+    /// other end of a nonempty sequence; a stack's push has the stack before as its `below`,
+    /// and a stack's pop of a nonempty stack gives that `below`. O(1) facts per call.
     fn seq_facts(&mut self, op: SeqOp, values: &[Tv], x: &Tv, ctx: &mut Ctx) {
-        let Some(old_len) = values.first().and_then(|seq| self.len(seq)) else {
+        let Some(seq) = values.first() else {
+            return;
+        };
+        let Some(old_len) = self.len(seq) else {
             return;
         };
         let zero = || F::Int("0".to_owned());
         let one = || F::Int("1".to_owned());
+        let stack = seq.f.sort().starts_with(STACK);
         match op {
             SeqOp::PushFront | SeqOp::PushBack => {
                 if let Some(new_len) = self.len(x) {
-                    ctx.assume(F::eq(new_len, F::op("+", vec![old_len, one()])));
+                    ctx.assume(F::eq(new_len, F::op("+", vec![old_len.clone(), one()])));
                 }
+                let Some(item) = values.get(1) else {
+                    return;
+                };
+                if x.f.sort() != seq.f.sort() {
+                    return;
+                }
+                // The end the item goes to, and the other end.
+                let (near, far) = if op == SeqOp::PushFront {
+                    ("peek", "peekback")
+                } else {
+                    ("peekback", "peek")
+                };
+                let Some(pushed) = self.seq_read(x, near) else {
+                    return;
+                };
+                if let Some(fact) = self.some_is(&pushed, &item.f) {
+                    ctx.assume(fact);
+                }
+                if stack {
+                    // A stack has no back: its push is at the front, with the stack before
+                    // under it.
+                    ctx.assume(F::eq(below_of(&x.f), seq.f.clone()));
+                    return;
+                }
+                let (Some(other), Some(before)) = (self.seq_read(x, far), self.seq_read(seq, far))
+                else {
+                    return;
+                };
+                if let Some(fact) = self.some_is(&other, &item.f) {
+                    ctx.assume(F::op("=>", vec![F::eq(old_len.clone(), zero()), fact]));
+                }
+                ctx.assume(F::op(
+                    "=>",
+                    vec![F::op(">", vec![old_len, zero()]), F::eq(other.f, before.f)],
+                ));
             }
             SeqOp::PopFront | SeqOp::PopBack => {
                 if let Some(new_len) = self.len(x) {
                     let nonempty = F::op(">", vec![old_len.clone(), zero()]);
-                    let shorter = F::op("-", vec![old_len, one()]);
+                    let shorter = F::op("-", vec![old_len.clone(), one()]);
                     ctx.assume(F::eq(
                         new_len,
                         F::op("ite", vec![nonempty, shorter, zero()]),
+                    ));
+                }
+                // A stack's pop gives the stack under its top, and keeps an empty stack.
+                if stack && op == SeqOp::PopFront && x.f.sort() == seq.f.sort() {
+                    ctx.assume(F::op(
+                        "=>",
+                        vec![
+                            F::op(">", vec![old_len.clone(), zero()]),
+                            F::eq(x.f.clone(), below_of(&seq.f)),
+                        ],
+                    ));
+                    ctx.assume(F::op(
+                        "=>",
+                        vec![F::eq(old_len, zero()), F::eq(x.f.clone(), seq.f.clone())],
                     ));
                 }
             }
@@ -4113,7 +4796,433 @@ impl<'p, 'i> Walker<'p, 'i> {
                 if let Some(tag) = self.tag(x) {
                     ctx.assume(F::eq(F::eq(tag, one()), F::eq(old_len, zero())));
                 }
+                let read = if op == SeqOp::PeekFront {
+                    "peek"
+                } else {
+                    "peekback"
+                };
+                if let Some(read) = self.seq_read(seq, read)
+                    && read.f.sort() == x.f.sort()
+                {
+                    ctx.define(F::eq(x.f.clone(), read.f));
+                }
             }
+        }
+    }
+
+    /// The read `read` (`peek` or `peekback`) of a `Stack`, a `Queue` or a `PriorityQueue`, of
+    /// the type `Option` of its item (ADR 0119 V1); `None` for any other value.
+    fn seq_read(&self, seq: &Tv, read: &str) -> Option<Tv> {
+        let item = seq_element(&seq.ty)
+            .or_else(|| priority_positions(&seq.ty).map(|(item, _)| item))?
+            .clone();
+        let ty = option_type(item);
+        Some(Tv {
+            f: read_of(&seq.f, read, sort(&ty)),
+            ty,
+        })
+    }
+
+    /// `option == Some(item)`, as its tag and its payload; `None` when the payload's sort is
+    /// not the item's.
+    fn some_is(&self, option: &Tv, item: &F) -> Option<F> {
+        let tag = self.tag(option)?;
+        let payload = self.field(option, 0, 0)?;
+        if payload.f.sort() != item.sort() {
+            return None;
+        }
+        Some(F::and(vec![
+            F::eq(tag, F::Int("0".to_owned())),
+            F::eq(payload.f, item.clone()),
+        ]))
+    }
+
+    /// Facts of a `PriorityQueue`'s operation on its result `x` (ADR 0119 rule 13, V2): the
+    /// length facts of a sequence's, since a push adds one item, a pop removes one from a
+    /// nonempty queue and keeps an empty one, `items()` has the queue's length, and a read is
+    /// `None` exactly when the queue is empty. `peek` is the uninterpreted read of V1: a push
+    /// onto an empty queue puts its item first, and any push either puts its item first or
+    /// keeps the first item, since the heap is stable. Which item a pop leaves first is not
+    /// known. O(1) facts per call.
+    fn priority_facts(&mut self, op: PriorityOp, values: &[Tv], x: &Tv, ctx: &mut Ctx) {
+        let same = match op {
+            PriorityOp::Push => SeqOp::PushBack,
+            PriorityOp::Pop => SeqOp::PopFront,
+            PriorityOp::Items => SeqOp::Items,
+            PriorityOp::Peek | PriorityOp::PeekPriority | PriorityOp::PeekRanked => {
+                SeqOp::PeekFront
+            }
+        };
+        let Some(queue) = values.first() else {
+            return;
+        };
+        match op {
+            // The length facts only: a priority queue has no `peekback`, and its `peek` is
+            // set below.
+            PriorityOp::Push => {
+                if let (Some(old_len), Some(new_len)) = (self.len(queue), self.len(x)) {
+                    ctx.assume(F::eq(
+                        new_len,
+                        F::op("+", vec![old_len.clone(), F::Int("1".to_owned())]),
+                    ));
+                    let (Some(item), Some(after), Some(before)) = (
+                        values.get(1),
+                        self.seq_read(x, "peek"),
+                        self.seq_read(queue, "peek"),
+                    ) else {
+                        return;
+                    };
+                    if x.f.sort() != queue.f.sort() {
+                        return;
+                    }
+                    if let Some(first) = self.some_is(&after, &item.f) {
+                        ctx.assume(F::op(
+                            "=>",
+                            vec![F::eq(old_len, F::Int("0".to_owned())), first.clone()],
+                        ));
+                        ctx.assume(F::or(vec![first, F::eq(after.f, before.f)]));
+                    }
+                }
+            }
+            // The item read is the queue's `peek`; its priority and its ranked form are known
+            // only by their `None`.
+            PriorityOp::Peek => self.seq_facts(same, values, x, ctx),
+            PriorityOp::PeekPriority | PriorityOp::PeekRanked => {
+                if let (Some(old_len), Some(tag)) = (self.len(queue), self.tag(x)) {
+                    ctx.assume(F::eq(
+                        F::eq(tag, F::Int("1".to_owned())),
+                        F::eq(old_len, F::Int("0".to_owned())),
+                    ));
+                }
+            }
+            PriorityOp::Pop | PriorityOp::Items => self.seq_facts(same, values, x, ctx),
+        }
+    }
+
+    /// Facts of an operation of a `Set`, a `HashSet` or a `HashMap` on its result `x` (ADR 0119
+    /// V2 to V4). An update at a key makes it a member or not one, changes the length by the
+    /// `ite` of its membership before, and records its frame (V3); a map's `set` gives `get`
+    /// at the key. `get` is the uninterpreted `get` of V1, `Some` exactly when the key is a
+    /// member; `first` and `last` are reads that are `None` exactly when the set is empty and
+    /// otherwise members; listings have the length; the set operations give their length
+    /// facts and record their relation (V4); `same_items` and `same_entries` are the
+    /// uninterpreted `same`, which implies equal lengths and nothing about order. Membership is
+    /// a term (`Walker::prim`). O(1) facts per call.
+    fn table_facts(&mut self, prim: Prim, values: &[Tv], x: &Tv, ctx: &mut Ctx) {
+        let Some(table) = values.first() else {
+            return;
+        };
+        let sort = table.f.sort();
+        if !(sort.starts_with(SET) || sort.starts_with(HASH_SET) || sort.starts_with(HASH_MAP)) {
+            return;
+        }
+        // The key or item argument, when its sort is the members' sort: `has` and `get` are
+        // declared once per collection sort.
+        let member_sort = member_type(&table.ty).map(|ty| self::sort(&ty));
+        let key = values
+            .get(1)
+            .filter(|key| Some(key.f.sort()) == member_sort);
+        let get = option_of(&table.ty)
+            .filter(|_| sort.starts_with(HASH_MAP))
+            .map(|option| self::sort(&option));
+        match prim {
+            Prim::Set(SetOp::With) | Prim::HashSet(HashSetOp::With) => {
+                if let Some(key) = key {
+                    self.member_update(table, key, x, true, None, ctx);
+                }
+            }
+            Prim::Set(SetOp::Without) | Prim::HashSet(HashSetOp::Without) => {
+                if let Some(key) = key {
+                    self.member_update(table, key, x, false, None, ctx);
+                }
+            }
+            Prim::HashMap(HashMapOp::Without) => {
+                if let Some(key) = key {
+                    self.member_update(table, key, x, false, get, ctx);
+                }
+            }
+            Prim::HashMap(HashMapOp::With) => {
+                let Some(key) = key else {
+                    return;
+                };
+                self.member_update(table, key, x, true, get, ctx);
+                // `m.get(key: k) == Some(v)` after `set`, `with` and `update`.
+                if let (Some(value), Some(option)) = (values.get(2), option_of(&table.ty)) {
+                    let got = Tv {
+                        f: get_of(&x.f, &key.f, &self::sort(&option)),
+                        ty: option,
+                    };
+                    if let Some(fact) = self.some_is(&got, &value.f) {
+                        ctx.assume(fact);
+                    }
+                }
+            }
+            Prim::HashMap(HashMapOp::Get) => {
+                let Some(key) = key else {
+                    return;
+                };
+                if get.as_ref() != Some(&x.f.sort()) {
+                    return;
+                }
+                ctx.define(F::eq(x.f.clone(), get_of(&table.f, &key.f, &x.f.sort())));
+                // `result` is `Some` exactly when `m.has(key: k)`; `Some` is variant 0.
+                if let Some(tag) = self.tag(x) {
+                    ctx.define(F::eq(
+                        F::eq(tag, F::Int("0".to_owned())),
+                        has_of(&table.f, &key.f),
+                    ));
+                }
+            }
+            Prim::Set(SetOp::First) => self.first_or_last(table, "first", x, ctx),
+            Prim::Set(SetOp::Last) => self.first_or_last(table, "last", x, ctx),
+            Prim::Set(SetOp::Between) => {
+                if let Some(len) = self.len(x) {
+                    ctx.assume(F::op("<=", vec![len, len_of(&table.f)]));
+                }
+            }
+            Prim::Set(SetOp::Items)
+            | Prim::HashSet(HashSetOp::Items)
+            | Prim::HashMap(HashMapOp::Keys | HashMapOp::Values | HashMapOp::Entries) => {
+                if let Some(len) = self.len(x) {
+                    ctx.assume(F::eq(len, len_of(&table.f)));
+                }
+            }
+            Prim::Set(SetOp::Union) | Prim::HashSet(HashSetOp::Union) => {
+                self.set_relation(Combine::Union, values, x, ctx);
+            }
+            Prim::Set(SetOp::Intersection) | Prim::HashSet(HashSetOp::Intersection) => {
+                self.set_relation(Combine::Intersection, values, x, ctx);
+            }
+            Prim::Set(SetOp::Difference) | Prim::HashSet(HashSetOp::Difference) => {
+                self.set_relation(Combine::Difference, values, x, ctx);
+            }
+            Prim::Set(SetOp::IsSubset) | Prim::HashSet(HashSetOp::IsSubset) => {
+                self.set_relation(Combine::Subset, values, x, ctx);
+            }
+            Prim::HashSet(HashSetOp::SameItems) | Prim::HashMap(HashMapOp::SameEntries) => {
+                let Some(other) = values.get(1) else {
+                    return;
+                };
+                if other.f.sort() != sort || x.f.sort() != "Bool" {
+                    return;
+                }
+                ctx.define(F::eq(x.f.clone(), same_of(&table.f, &other.f)));
+                ctx.assume(F::op(
+                    "=>",
+                    vec![x.f.clone(), F::eq(len_of(&table.f), len_of(&other.f))],
+                ));
+            }
+            _ => {}
+        }
+    }
+
+    /// The facts of an update of a set, a hash set, a hash map or a bit set at `key`, giving
+    /// `x` (ADR 0119 V2, V3): `key` is a member of `x` after `add`, `with`, `set` and `update`
+    /// and not one after `remove` and `without`; the length changes by one exactly when the
+    /// membership changes; and `x` is `table` updated at `key` only, with `get` the option
+    /// sort of a map's `get`.
+    fn member_update(
+        &mut self,
+        table: &Tv,
+        key: &Tv,
+        x: &Tv,
+        add: bool,
+        get: Option<Sort>,
+        ctx: &mut Ctx,
+    ) {
+        if x.f.sort() != table.f.sort() {
+            return;
+        }
+        let had = has_of(&table.f, &key.f);
+        let old = len_of(&table.f);
+        let one = || F::Int("1".to_owned());
+        if add {
+            ctx.assume(has_of(&x.f, &key.f));
+            ctx.assume(F::eq(
+                len_of(&x.f),
+                F::op("ite", vec![had, old.clone(), F::op("+", vec![old, one()])]),
+            ));
+        } else {
+            ctx.assume(F::not(has_of(&x.f, &key.f)));
+            ctx.assume(F::eq(
+                len_of(&x.f),
+                F::op("ite", vec![had, F::op("-", vec![old.clone(), one()]), old]),
+            ));
+        }
+        ctx.define(frame_of(&table.f, &x.f, &key.f, get));
+    }
+
+    /// `x = s.first()` or `s.last()` of a `Set` or a `BitSet` (ADR 0119 V2): the read `read`
+    /// of V1, `None` exactly when the set is empty, and a member otherwise.
+    fn first_or_last(&mut self, set: &Tv, read: &str, x: &Tv, ctx: &mut Ctx) {
+        ctx.define(F::eq(x.f.clone(), read_of(&set.f, read, x.f.sort())));
+        let member_sort = member_type(&set.ty).map(|ty| self::sort(&ty));
+        if let (Some(tag), Some(value)) = (self.tag(x), self.field(x, 0, 0))
+            && Some(value.f.sort()) == member_sort
+        {
+            ctx.assume(F::op(
+                "=>",
+                vec![F::eq(tag, F::Int("0".to_owned())), has_of(&set.f, &value.f)],
+            ));
+        }
+    }
+
+    /// The facts of `s.union(other: t)` and the other set operations of a `Set`, a `HashSet`
+    /// or a `BitSet`, on its result `x` (ADR 0119 rules 7, 12 and 14, V4): the length facts of
+    /// their contracts, and the record of their relation, which every item term of a query
+    /// instantiates (`instances`).
+    fn set_relation(&mut self, op: Combine, values: &[Tv], x: &Tv, ctx: &mut Ctx) {
+        let (Some(s), Some(t)) = (values.first(), values.get(1)) else {
+            return;
+        };
+        let sort = s.f.sort();
+        let Some(item) = member_type(&s.ty).map(|ty| self::sort(&ty)) else {
+            return;
+        };
+        if t.f.sort() != sort {
+            return;
+        }
+        let (ls, lt) = (len_of(&s.f), len_of(&t.f));
+        if op == Combine::Subset {
+            if x.f.sort() != "Bool" {
+                return;
+            }
+            ctx.define(F::eq(
+                x.f.clone(),
+                combine_of(op, &[s.f.clone(), t.f.clone()], item),
+            ));
+            ctx.assume(F::op("=>", vec![x.f.clone(), F::op("<=", vec![ls, lt])]));
+            return;
+        }
+        if x.f.sort() != sort {
+            return;
+        }
+        let lx = len_of(&x.f);
+        match op {
+            Combine::Union => {
+                ctx.assume(F::op(">=", vec![lx.clone(), ls]));
+                ctx.assume(F::op(">=", vec![lx, lt]));
+            }
+            Combine::Intersection => {
+                ctx.assume(F::op("<=", vec![lx.clone(), ls]));
+                ctx.assume(F::op("<=", vec![lx, lt]));
+            }
+            Combine::Difference | Combine::Subset => {
+                ctx.assume(F::op("<=", vec![lx, ls]));
+            }
+        }
+        ctx.define(combine_of(
+            op,
+            &[s.f.clone(), t.f.clone(), x.f.clone()],
+            item,
+        ));
+    }
+
+    /// The preconditions of a bit set's operation (ADR 0119 rule 14), each a `precondition`
+    /// obligation at its argument: `0 <= i and i < b.size` for `add` and `with`, and
+    /// `c.size == b.size` for a set operation. O(1) per call.
+    fn bit_set_sites(
+        &mut self,
+        op: BitSetOp,
+        values: &[Tv],
+        arg_spans: &[Span],
+        span: Span,
+        ctx: &Ctx,
+    ) {
+        let (Some(bits), Some(argument)) = (values.first(), values.get(1)) else {
+            return;
+        };
+        if bits.f.sort() != BITSET {
+            return;
+        }
+        let at = arg_spans.get(1).copied().unwrap_or(span);
+        let receiver = arg_spans
+            .first()
+            .map_or_else(String::new, |receiver| self.text(*receiver));
+        let shown = self.text(at);
+        let (goal, text) = if op == BitSetOp::With {
+            (
+                F::and(vec![
+                    F::op("<=", vec![F::Int("0".to_owned()), argument.f.clone()]),
+                    F::op("<", vec![argument.f.clone(), size_of(&bits.f)]),
+                ]),
+                format!("0 <= {shown} and {shown} < {receiver}.size"),
+            )
+        } else if op.pairs() && argument.f.sort() == BITSET {
+            (
+                F::eq(size_of(&argument.f), size_of(&bits.f)),
+                format!("{shown}.size == {receiver}.size"),
+            )
+        } else {
+            return;
+        };
+        self.site(
+            ObligationKind::Precondition,
+            ctx,
+            Some(goal),
+            text,
+            at,
+            None,
+        );
+    }
+
+    /// The facts of a bit set's operation as facts of its result `x` (ADR 0119 V2 to V4): an
+    /// update keeps the size, makes its item a member or not one, changes the length by the
+    /// `ite` of its membership before, and records its frame (V3); a set operation keeps the
+    /// size, gives its length facts and records its relation (V4); `first` and `last` are
+    /// reads, `None` exactly when the bit set is empty and members otherwise; `items` has its
+    /// length. `size` and `has` are terms (`Walker::prim`). O(1) per call.
+    fn bit_set_facts(&mut self, op: BitSetOp, values: &[Tv], x: &Tv, ctx: &mut Ctx) {
+        let Some(bits) = values.first() else {
+            return;
+        };
+        if bits.f.sort() != BITSET {
+            return;
+        }
+        let b = &bits.f;
+        let zero = || F::Int("0".to_owned());
+        let one = || F::Int("1".to_owned());
+        match op {
+            BitSetOp::With | BitSetOp::Without => {
+                let Some(item) = values.get(1) else {
+                    return;
+                };
+                if x.f.sort() != BITSET || item.f.sort() != "Int" {
+                    return;
+                }
+                ctx.assume(F::eq(size_of(&x.f), size_of(b)));
+                self.member_update(bits, item, x, op == BitSetOp::With, None, ctx);
+            }
+            BitSetOp::Union | BitSetOp::Intersection | BitSetOp::Difference => {
+                if x.f.sort() == BITSET {
+                    ctx.assume(F::eq(size_of(&x.f), size_of(b)));
+                }
+                let relation = match op {
+                    BitSetOp::Union => Combine::Union,
+                    BitSetOp::Intersection => Combine::Intersection,
+                    _ => Combine::Difference,
+                };
+                self.set_relation(relation, values, x, ctx);
+            }
+            BitSetOp::IsSubset => self.set_relation(Combine::Subset, values, x, ctx),
+            // `None` is variant 1 of `Option`.
+            BitSetOp::First | BitSetOp::Last => {
+                if let Some(tag) = self.tag(x) {
+                    ctx.assume(F::eq(F::eq(tag, one()), F::eq(len_of(b), zero())));
+                }
+                let read = if op == BitSetOp::First {
+                    "first"
+                } else {
+                    "last"
+                };
+                self.first_or_last(bits, read, x, ctx);
+            }
+            BitSetOp::Items => {
+                if let Some(len) = self.len(x) {
+                    ctx.assume(F::eq(len, len_of(b)));
+                }
+            }
+            BitSetOp::Size | BitSetOp::Has => {}
         }
     }
 
@@ -4229,7 +5338,8 @@ impl<'p, 'i> Walker<'p, 'i> {
     /// The obligations of a primitive of fixed-width integers (`spec/18 §3`, `§5`): an
     /// `overflow` obligation for arithmetic whose result has a fixed-width type and for a
     /// narrowing conversion, and the precondition `0 <= n and n < width` of a shift. A negated
-    /// literal is a literal, which the checker bounds (U2022).
+    /// literal is a literal, which the checker bounds (U2022). In a `systems` package, `Int`
+    /// arithmetic has its `overflow` obligations too ([`Walker::int_sites`], ADR 0109 rule 3).
     #[allow(clippy::too_many_arguments)]
     fn fixed_sites(
         &mut self,
@@ -4263,12 +5373,18 @@ impl<'p, 'i> Walker<'p, 'i> {
             }
             return;
         }
-        let Type::Base {
-            base: Base::Fixed(int),
-            ..
-        } = ty
-        else {
-            return;
+        let int = match ty {
+            Type::Base {
+                base: Base::Fixed(int),
+                ..
+            } => *int,
+            Type::Base {
+                base: Base::Int, ..
+            } if self.index.profile == Profile::Systems => {
+                self.int_sites(prim, args, values, arg_spans, span, ctx);
+                return;
+            }
+            _ => return,
         };
         let exact = match prim {
             Prim::Add | Prim::Sub | Prim::Mul | Prim::Div | Prim::Mod => self.prim(prim, values),
@@ -4277,7 +5393,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                 let source = values.first().map(|v| &v.ty);
                 let widening = matches!(
                     source,
-                    Some(Type::Base { base: Base::Fixed(from), .. }) if from.widens_to(*int)
+                    Some(Type::Base { base: Base::Fixed(from), .. }) if from.widens_to(int)
                 );
                 if widening { None } else { arg(0) }
             }
@@ -4286,9 +5402,7 @@ impl<'p, 'i> Walker<'p, 'i> {
         let Some(exact) = exact else {
             return;
         };
-        let goal = in_range(exact, *int);
         let range = format!("{}..{}", int.least(), int.greatest());
-        let text = format!("{} in {range}", self.text(span));
         // The operands as `Int`: a literal as written, any other value converted.
         let operand = |i: usize| -> String {
             let written = arg_spans.get(i).map_or_else(String::new, |s| self.text(*s));
@@ -4315,22 +5429,228 @@ impl<'p, 'i> Walker<'p, 'i> {
                     .map_or_else(String::new, |s| self.text(*s));
                 Some(format!("{written} in {range}"))
             }
-            Prim::Neg => Some(format!("-{} in {range}", operand(0))),
-            Prim::Add | Prim::Sub | Prim::Mul | Prim::Div | Prim::Mod => {
-                let symbol = match prim {
-                    Prim::Add => "+",
-                    Prim::Sub => "-",
-                    Prim::Mul => "*",
-                    Prim::Div => "/",
-                    _ => "mod",
-                };
-                Some(format!("{} {symbol} {} in {range}", operand(0), operand(1)))
+            _ => operation_guard(prim, &operand, &range),
+        };
+        self.overflow_site(
+            exact,
+            (int.least(), int.greatest()),
+            guard,
+            OverflowOf::Fixed,
+            span,
+            ctx,
+        );
+    }
+
+    /// The `overflow` obligations of a primitive whose result is an `Int` in a `systems`
+    /// package (ADR 0109 rule 3, `spec/18 §3`): its exact result lies in the tagged range,
+    /// [`INT_LEAST`] to [`INT_GREATEST`]. They are those of `+`, `-`, `*`, `/`, `mod`, of
+    /// unary `-` on a value that is not a literal, of the product by its ratio that
+    /// `convert()` elaborates to, and of `to_int()` on `I64` and `U64`. A negated literal is
+    /// one literal: outside the range, its ground goal is refuted at once. An element-wise
+    /// operator of dense values carries none on `Int` elements, as the checker records none
+    /// (ADR 0120 rule 34 states the element obligation for fixed-width elements).
+    fn int_sites(
+        &mut self,
+        prim: Prim,
+        args: &[Atom],
+        values: &[Tv],
+        arg_spans: &[Span],
+        span: Span,
+        ctx: &Ctx,
+    ) {
+        // The operands of an element-wise operator carry the operator's span; the ratio of
+        // `convert()` does too, as a literal.
+        let element_wise = args
+            .iter()
+            .zip(arg_spans)
+            .any(|(atom, at)| *at == span && !matches!(atom, Atom::Int(_)));
+        if element_wise {
+            return;
+        }
+        let range = format!("{INT_LEAST}..{INT_GREATEST}");
+        // The operands as they are written: `Int` needs no conversion, and the ratio of
+        // `convert()` is its digits.
+        let operand = |i: usize| -> String {
+            match args.get(i) {
+                Some(Atom::Int(digits)) => digits.clone(),
+                _ => arg_spans.get(i).map_or_else(String::new, |s| self.text(*s)),
             }
+        };
+        // The literal operand of a product, as the ratio of `convert()` is.
+        let literal = |i: usize| match args.get(i) {
+            Some(Atom::Int(digits)) => digits.parse::<i128>().ok(),
             _ => None,
         };
+        // `convert()` multiplies its receiver by the ratio, at the method's own span.
+        let ratio = (prim == Prim::Mul && arg_spans.get(1) == Some(&span))
+            .then(|| literal(1))
+            .flatten()
+            .filter(|k| *k > 0);
+        let (exact, guard) = match prim {
+            Prim::Mul if ratio.is_some() => {
+                let k = ratio.unwrap_or(1);
+                (
+                    self.prim(prim, values),
+                    Some(format!(
+                        "{} in -{}..{}",
+                        operand(0),
+                        -INT_LEAST / k,
+                        INT_GREATEST / k
+                    )),
+                )
+            }
+            Prim::Add | Prim::Sub | Prim::Mul | Prim::Div | Prim::Mod => {
+                (self.prim(prim, values), int_guard(prim, &operand, &literal))
+            }
+            Prim::Neg => match args.first() {
+                // A negated literal is one literal: a site only outside the range.
+                Some(Atom::Int(digits)) => {
+                    let value = format!("-{digits}");
+                    if fits_word(&value) {
+                        return;
+                    }
+                    (Some(F::Int(value)), None)
+                }
+                _ => (self.prim(prim, values), int_guard(prim, &operand, &literal)),
+            },
+            // `to_int()` on a 64-bit value, which can lie outside the tagged range.
+            Prim::Convert(None)
+                if matches!(
+                    values.first().map(|v| &v.ty),
+                    Some(Type::Base {
+                        base: Base::Fixed(IntType::I64 | IntType::U64),
+                        ..
+                    })
+                ) =>
+            {
+                (
+                    values.first().map(|v| v.f.clone()),
+                    Some(format!("{} in {range}", operand(0))),
+                )
+            }
+            _ => return,
+        };
+        let Some(exact) = exact else {
+            return;
+        };
+        self.overflow_site(
+            exact,
+            (INT_LEAST, INT_GREATEST),
+            guard,
+            OverflowOf::Int,
+            span,
+            ctx,
+        );
+    }
+
+    /// The `overflow` obligation of an `Int` literal outside the tagged range, bound to its
+    /// own temporary in a `systems` package (ADR 0109 rule 3): its goal is ground, and
+    /// refuted at once.
+    fn literal_site(&mut self, ty: &Type, atom: &Atom, span: Span, ctx: &Ctx) {
+        if self.index.profile != Profile::Systems {
+            return;
+        }
+        let (
+            Type::Base {
+                base: Base::Int, ..
+            },
+            Atom::Int(digits),
+        ) = (ty, atom)
+        else {
+            return;
+        };
+        if fits_word(digits) {
+            return;
+        }
+        self.overflow_site(
+            F::Int(digits.clone()),
+            (INT_LEAST, INT_GREATEST),
+            None,
+            OverflowOf::Int,
+            span,
+            ctx,
+        );
+    }
+
+    /// The `overflow` obligation of a call of the prelude's `abs` or `sum` in a `systems`
+    /// package, over the call's result `x` (ADR 0109 rule 3): `abs`'s `ensures`, assumed
+    /// already, proves it when the operand is bounded; `sum` states no bound on its result, so
+    /// a refutation sets it freely and the obligation is unknown.
+    fn prelude_site(&mut self, name: &str, x: &Tv, arg_spans: &[Span], span: Span, ctx: &Ctx) {
+        if self.index.profile != Profile::Systems || self.eta.is_some() {
+            return;
+        }
+        // The guard bounds the operand, never the result: in the range and off the least
+        // value, `abs` stays in it. `sum` has none, as no test on its operands bounds its result.
+        let (of, guard) = match name {
+            "abs" => (
+                OverflowOf::Int,
+                arg_spans.first().map(|at| off_least(&self.text(*at))),
+            ),
+            "sum" => (OverflowOf::Unbounded(name), None),
+            _ => return,
+        };
+        self.overflow_site(x.f.clone(), (INT_LEAST, INT_GREATEST), guard, of, span, ctx);
+    }
+
+    /// The `overflow` obligation of the prelude's `abs` or `sum` used as a function value at
+    /// `span`, as in `xs.map(abs)`, in a `systems` package (ADR 0109 rule 3): unknown by
+    /// construction, since the operands have no bounds at that use, so no query is sent. Its
+    /// one repair is the call inside a lambda, where the operand's bounds apply.
+    fn prelude_value_site(&mut self, path: &Path, span: Span, ctx: &Ctx) {
+        if self.index.profile != Profile::Systems || !is_prelude(&path.module) {
+            return;
+        }
+        let name = path.name.as_str();
+        let operand = match name {
+            "abs" => "x",
+            "sum" => "xs",
+            _ => return,
+        };
+        let text = format!("{} in {INT_LEAST}..{INT_GREATEST}", self.text(span));
+        let mut place = self.place(ObligationKind::Overflow, None);
+        place.int = true;
+        place.unknown = Some(format!(
+            "the operands of `{name}` have no bounds at this use"
+        ));
+        place.flow = Some(format!(
+            "write the call inside a lambda, `fn({operand}) -> {name}({operand})`, so its operand's bounds apply"
+        ));
+        self.push(
+            ObligationKind::Overflow,
+            text,
+            span,
+            None,
+            Vec::new(),
+            Vec::new(),
+            vec![F::Bool(false)],
+            ctx,
+            place,
+            vec![ctx.divisions.to_vec()],
+        );
+    }
+
+    /// An `overflow` obligation at `span`: `exact` lies in `least..greatest` (`spec/18 §3`).
+    /// Its goal text is the operation's source text in that range, and `guard`, when given, is
+    /// the repair's guard.
+    fn overflow_site(
+        &mut self,
+        exact: F,
+        (least, greatest): (i128, i128),
+        guard: Option<String>,
+        of: OverflowOf<'_>,
+        span: Span,
+        ctx: &Ctx,
+    ) {
+        let goal = within(exact, least, greatest);
+        let text = format!("{} in {least}..{greatest}", self.text(span));
         let mut assertions: Vec<F> = ctx.hyps.iter().map(|h| h.f.clone()).collect();
         let mut place = self.place(ObligationKind::Overflow, Some(&goal));
         place.guard = guard;
+        place.int = !matches!(of, OverflowOf::Fixed);
+        if let OverflowOf::Unbounded(callee) = of {
+            place.unbounded = Some(callee.to_owned());
+        }
         assertions.push(F::not(goal));
         let hypotheses = self.shown_hypotheses(&ctx.hyps);
         self.push(
@@ -4482,25 +5802,67 @@ impl<'p, 'i> Walker<'p, 'i> {
             // `n.to_f64()` of an integer, by the integer's type (ADR 0114 rule 8.1).
             Prim::Float(FloatOp::FromInt) => {
                 let value = arg(0)?;
-                to_f64(value.f, integer_type(&value.ty), false)?
+                to_float(Fmt::F64, value.f, integer_type(&value.ty), false)?
+            }
+            Prim::Float32(FloatOp::FromInt) => {
+                let value = arg(0)?;
+                to_float(Fmt::F32, value.f, integer_type(&value.ty), false)?
             }
             // The other operations of the refinement language; a code-only method's result is
             // a fresh binder (ADR 0114 rule 8.1).
             Prim::Float(op) => {
                 let args: Vec<F> = values.iter().map(|v| v.f.clone()).collect();
-                float_term(op, &args)?
+                float_term(Fmt::F64, op, &args)?
             }
-            // A sequence's operations are known by their facts (`seq_facts`), not as terms. A
-            // set's methods are known by their facts, which ADR 0119 V2 to V4 give, not as
-            // terms: until then, each result is a fresh binder, which proves nothing about it.
+            Prim::Float32(op) => {
+                let args: Vec<F> = values.iter().map(|v| v.f.clone()).collect();
+                float_term(Fmt::F32, op, &args)?
+            }
+            // Membership of a set, a hash set and a hash map is a term, `i!has!<Sort>` (ADR
+            // 0119 V1), as a bit set's is below.
+            Prim::Set(SetOp::Has)
+            | Prim::HashSet(HashSetOp::Has)
+            | Prim::HashMap(HashMapOp::Has) => {
+                let (table, key) = (arg(0)?, arg(1)?.f);
+                if !has_membership(&table.f.sort())
+                    || member_type(&table.ty).map(|ty| self::sort(&ty)) != Some(key.sort())
+                {
+                    return None;
+                }
+                has_of(&table.f, &key)
+            }
+            // A sequence's operations are known by their facts (`seq_facts`), not as terms, and
+            // so are the other methods of a set, a hash map and a hash set (`table_facts`,
+            // ADR 0119 V2 to V4).
             Prim::Concat
             | Prim::ToText
             | Prim::Fixed(..)
             | Prim::Map(_)
             | Prim::Seq(_)
-            | Prim::Set(_) => {
+            | Prim::Set(_)
+            | Prim::HashMap(_)
+            | Prim::HashSet(_)
+            | Prim::Priority(_) => {
                 return None;
             }
+            // A bit set's size and its membership are terms, `i!size!i!BitSet` and
+            // `i!has!i!BitSet` (ADR 0119 V1); its other operations are known by their facts
+            // (`bit_set_facts`).
+            Prim::BitSet(BitSetOp::Size) => {
+                let bits = arg(0)?.f;
+                if bits.sort() != BITSET {
+                    return None;
+                }
+                size_of(&bits)
+            }
+            Prim::BitSet(BitSetOp::Has) => {
+                let bits = arg(0)?.f;
+                if bits.sort() != BITSET {
+                    return None;
+                }
+                has_of(&bits, &arg(1)?.f)
+            }
+            Prim::BitSet(_) => return None,
             Prim::Decimal(op) => return self.decimal(op, values),
         })
     }
@@ -4614,6 +5976,21 @@ impl<'p, 'i> Walker<'p, 'i> {
         if a.f.sort() != b.f.sort() {
             return None;
         }
+        // `Complex[F64]` and `Complex[F32]` are equal when both components are, by identity
+        // (ADR 0120 rule 23, V3), whichever elements of the sort they are.
+        if let Type::Base {
+            base: Base::Named { module, name, .. },
+            ..
+        } = &a.ty
+            && una_core::complex::is_kind(module, name)
+        {
+            let mut parts = Vec::new();
+            for index in 0..2 {
+                let (x, y) = (self.field(a, 0, index)?, self.field(b, 0, index)?);
+                parts.push(F::eq(x.f, y.f));
+            }
+            return Some(F::and(parts));
+        }
         if let Type::Base {
             base: Base::Named { module, name, .. },
             ..
@@ -4623,6 +6000,34 @@ impl<'p, 'i> Walker<'p, 'i> {
             return Some(F::eq(self.tag(a)?, self.tag(b)?));
         }
         Some(F::eq(a.f.clone(), b.f.clone()))
+    }
+
+    /// `left == right` where one side is `complex(re: a, im: b)` (ADR 0120 V3): each component
+    /// of one side equals the same component of the other by identity, a component of a
+    /// construction being its argument and any other a field of its value.
+    fn complex_equal(&mut self, left: &Term, right: &Term, env: &Env<'_>) -> Option<F> {
+        let ((Term::Complex { ctor, .. }, _) | (_, Term::Complex { ctor, .. })) = (left, right)
+        else {
+            return None;
+        };
+        let mut parts = Vec::new();
+        for (index, field) in ["re", "im"].into_iter().enumerate() {
+            let component = |side: &Term| Term::Field {
+                value: Box::new(side.clone()),
+                kind: ctor.kind.clone(),
+                field: field.to_owned(),
+                index,
+            };
+            let (l, r) = (
+                self.term(&component(left), env)?,
+                self.term(&component(right), env)?,
+            );
+            if l.f.sort() != r.f.sort() {
+                return None;
+            }
+            parts.push(F::eq(l.f, r.f));
+        }
+        Some(F::and(parts))
     }
 
     /// Order of two values: `Int` natively, a sum without payloads by its tags, `Text` and a
@@ -4640,14 +6045,15 @@ impl<'p, 'i> Walker<'p, 'i> {
         }
         // `F64` by IEEE totalOrder, also for a type parameter instantiated with it (ADR 0114
         // rules 8.1 and 8.7).
-        if sort == FLOAT64 {
+        if sort == FLOAT64 || sort == FLOAT32 {
+            let fmt = if sort == FLOAT32 { Fmt::F32 } else { Fmt::F64 };
             let float_op = match op {
                 BinOp::Lt => FloatOp::Lt,
                 BinOp::Le => FloatOp::Le,
                 BinOp::Gt => FloatOp::Gt,
                 _ => FloatOp::Ge,
             };
-            return float_term(float_op, &[a.f.clone(), b.f.clone()]);
+            return float_term(fmt, float_op, &[a.f.clone(), b.f.clone()]);
         }
         if sort == TEXT || is_param_sort(&sort) {
             let relation = match op {
@@ -4761,14 +6167,26 @@ impl<'p, 'i> Walker<'p, 'i> {
                 f: F::Float(*bits),
                 ty: base_type(Base::F64),
             },
-            Term::Float { op, args } => {
+            Term::F32(bits) => Tv {
+                f: F::Float32(*bits),
+                ty: base_type(Base::F32),
+            },
+            Term::Float { op, args } | Term::Float32 { op, args } => {
+                let fmt = if matches!(term, Term::Float32 { .. }) {
+                    Fmt::F32
+                } else {
+                    Fmt::F64
+                };
                 let values: Vec<F> = args
                     .iter()
                     .map(|a| self.term(a, env).map(|v| v.f))
                     .collect::<Option<_>>()?;
-                let f = float_term(*op, &values)?;
-                let ty = if f.sort() == FLOAT64 {
+                let f = float_term(fmt, *op, &values)?;
+                let sort = f.sort();
+                let ty = if sort == FLOAT64 {
                     base_type(Base::F64)
+                } else if sort == FLOAT32 {
+                    base_type(Base::F32)
                 } else {
                     boolean()
                 };
@@ -4777,16 +6195,37 @@ impl<'p, 'i> Walker<'p, 'i> {
             Term::ToF64 { value, from } => {
                 let value = self.term(value, env)?;
                 Tv {
-                    f: to_f64(value.f, *from, true)?,
+                    f: to_float(Fmt::F64, value.f, *from, true)?,
                     ty: base_type(Base::F64),
+                }
+            }
+            Term::ToF32 { value, from } => {
+                let value = self.term(value, env)?;
+                Tv {
+                    f: to_float(Fmt::F32, value.f, *from, true)?,
+                    ty: base_type(Base::F32),
                 }
             }
             Term::Unit => return None,
             Term::Ctor(_) => return None,
+            // A component of `complex(re: a, im: b)` is that component (ADR 0120 V3).
+            Term::Field { value, index, .. } if matches!(value.as_ref(), Term::Complex { .. }) => {
+                let Term::Complex { re, im, .. } = value.as_ref() else {
+                    return None;
+                };
+                match *index {
+                    0 => self.term(re, env)?,
+                    1 => self.term(im, env)?,
+                    _ => return None,
+                }
+            }
             Term::Field { value, index, .. } => {
                 let value = self.term(value, env)?;
                 self.field(&value, 0, *index)?
             }
+            // A construction has no term of its own: `==` and `!=` and the fields read its
+            // components (`binary`, above), and any other use is outside the encoding.
+            Term::Complex { .. } => return None,
             Term::Len(value) => {
                 let value = self.term(value, env)?;
                 Tv {
@@ -4801,12 +6240,28 @@ impl<'p, 'i> Walker<'p, 'i> {
                     ty: int(),
                 }
             }
+            // `t.dim(axis: k)`, `i!dim!<Sort>` (ADR 0120 V4).
+            Term::Dim { value, axis } => {
+                let value = self.term(value, env)?;
+                let axis = self.term(axis, env)?;
+                if !value.f.sort().starts_with(TENSOR) || axis.f.sort() != "Int" {
+                    return None;
+                }
+                Tv {
+                    f: dim_of(&value.f, &axis.f),
+                    ty: int(),
+                }
+            }
             // The element of a dense value, uninterpreted, of its element type's sort (ADR
-            // 0120 V4): no fact relates it to other elements, which would need a quantifier.
-            Term::Element { value, indices } => {
+            // 0120 V4): no fact relates it to other elements, which would need a quantifier. A
+            // tensor has one function per rank, so each application has a fixed arity.
+            Term::Element { value, indices, .. } => {
                 let value = self.term(value, env)?;
                 let sort = value.f.sort();
-                if !(sort.starts_with(ARRAY) || sort.starts_with(MATRIX)) {
+                if !(sort.starts_with(ARRAY)
+                    || sort.starts_with(MATRIX)
+                    || sort.starts_with(TENSOR))
+                {
                     return None;
                 }
                 let element = match &value.ty {
@@ -4825,15 +6280,38 @@ impl<'p, 'i> Walker<'p, 'i> {
                     ty: element,
                 }
             }
-            Term::Has { map, key } => {
-                let map = self.term(map, env)?;
-                let key = self.term(key, env)?;
-                if !map.f.sort().starts_with(MAP) {
+            // A key of a map or a hash map, an item of a set, a hash set or a bit set (ADR 0119
+            // V5), each at the sort of its members, so that `has` is declared once per sort.
+            Term::Has {
+                map: set,
+                key: item,
+            }
+            | Term::Member { set, item } => {
+                let set = self.term(set, env)?;
+                let item = self.term(item, env)?;
+                let sort = set.f.sort();
+                let members = if sort.starts_with(MAP) {
+                    Some(item.f.sort())
+                } else {
+                    member_type(&set.ty).map(|ty| self::sort(&ty))
+                };
+                if !has_membership(&sort) || members != Some(item.f.sort()) {
                     return None;
                 }
                 Tv {
-                    f: has_of(&map.f, &key.f),
+                    f: has_of(&set.f, &item.f),
                     ty: boolean(),
+                }
+            }
+            // `b.size` of a bit set (ADR 0119 V5).
+            Term::Size(value) => {
+                let value = self.term(value, env)?;
+                if value.f.sort() != BITSET {
+                    return None;
+                }
+                Tv {
+                    f: size_of(&value.f),
+                    ty: int(),
                 }
             }
             Term::Neg(value) => Tv {
@@ -4885,6 +6363,15 @@ impl<'p, 'i> Walker<'p, 'i> {
 
     fn binary(&mut self, op: BinOp, left: &Term, right: &Term, env: &Env<'_>) -> Option<Tv> {
         let boolean = base_type(Base::Bool);
+        // `==` and `!=` with `complex(re: a, im: b)` compare the components by identity (ADR
+        // 0120 V3): the construction is never a term of its own.
+        if matches!(op, BinOp::Eq | BinOp::Ne)
+            && (matches!(left, Term::Complex { .. }) || matches!(right, Term::Complex { .. }))
+        {
+            let eq = self.complex_equal(left, right, env)?;
+            let f = if op == BinOp::Eq { eq } else { F::not(eq) };
+            return Some(Tv { f, ty: boolean });
+        }
         // A variant without fields compares by its tag.
         if let (Term::Ctor(ctor), other) | (other, Term::Ctor(ctor)) = (left, right)
             && matches!(op, BinOp::Eq | BinOp::Ne)
@@ -5593,6 +7080,9 @@ impl<'p, 'i> Walker<'p, 'i> {
                 flow: None,
                 function_value: None,
                 guard: None,
+                int: false,
+                unbounded: None,
+                unknown: None,
                 effect: None,
             };
         };
@@ -5627,6 +7117,9 @@ impl<'p, 'i> Walker<'p, 'i> {
             function_value: None,
             effect: None,
             guard: None,
+            int: false,
+            unbounded: None,
+            unknown: None,
         }
     }
 
@@ -5637,6 +7130,16 @@ impl<'p, 'i> Walker<'p, 'i> {
         let mut listed: Vec<F> = Vec::new();
         let mut seen: BTreeSet<F> = BTreeSet::new();
         let mut pending: Vec<F> = query.applications().into_iter().collect();
+        // The frames and set relations of ADR 0119 V3 and V4, at the key terms of the query:
+        // their `has` and `get` terms get their own ground facts below.
+        for fact in instances(query) {
+            let probe = Query {
+                assertions: vec![fact.clone()],
+                definitions: BTreeMap::new(),
+            };
+            pending.extend(probe.applications());
+            facts.push(fact);
+        }
         let mut rounds = 0;
         while !pending.is_empty() && rounds < 6 {
             rounds += 1;
@@ -5648,8 +7151,30 @@ impl<'p, 'i> Walker<'p, 'i> {
                 let mut new = Vec::new();
                 match &term {
                     F::App { fun, args } => match &fun.role {
+                        // A rank is from 1 to 8, and a tensor's element count is the product
+                        // of its lengths, by its rank: products of terms, which
+                        // the model check of `spec/12 §6` and ADR 0054 handle as any other.
+                        FunRole::Shape if fun.name.starts_with("i!rank!") => {
+                            new.push(F::and(vec![
+                                F::op("<=", vec![F::Int("1".to_owned()), term.clone()]),
+                                F::op("<=", vec![term.clone(), F::Int(MAX_RANK.to_string())]),
+                            ]));
+                        }
+                        FunRole::Shape if fun.name.starts_with("i!count!") => {
+                            new.push(F::op(">=", vec![term.clone(), F::Int("0".to_owned())]));
+                            if let Some(tensor) = args.first() {
+                                new.extend(count_facts(&term, tensor));
+                            }
+                        }
                         FunRole::Len | FunRole::Shape => {
                             new.push(F::op(">=", vec![term.clone(), F::Int("0".to_owned())]));
+                            // A bit set has at most `size` members (ADR 0119 V2).
+                            if fun.role == FunRole::Len
+                                && let Some(bits) = args.first()
+                                && bits.sort() == BITSET
+                            {
+                                new.push(F::op("<=", vec![term.clone(), size_of(bits)]));
+                            }
                         }
                         // A map that has a key is not empty, so an empty one has none.
                         FunRole::Has => {
@@ -5659,6 +7184,21 @@ impl<'p, 'i> Walker<'p, 'i> {
                                     vec![
                                         term.clone(),
                                         F::op(">=", vec![len_of(map), F::Int("1".to_owned())]),
+                                    ],
+                                ));
+                            }
+                            // A member of a bit set is in its range (ADR 0119 V2).
+                            if let (Some(bits), Some(item)) = (args.first(), args.get(1))
+                                && bits.sort() == BITSET
+                            {
+                                new.push(F::op(
+                                    "=>",
+                                    vec![
+                                        term.clone(),
+                                        F::and(vec![
+                                            F::op("<=", vec![F::Int("0".to_owned()), item.clone()]),
+                                            F::op("<", vec![item.clone(), size_of(bits)]),
+                                        ]),
                                     ],
                                 ));
                             }
@@ -5717,7 +7257,24 @@ impl<'p, 'i> Walker<'p, 'i> {
                                 }
                             }
                         }
-                        FunRole::Predicate | FunRole::Get | FunRole::Element | FunRole::Other => {}
+                        // A read of a collection is `None` exactly when the collection is
+                        // empty (ADR 0119 V2); `None` is variant 1 of `Option`.
+                        FunRole::Peek => {
+                            if let Some(collection) = args.first() {
+                                let tag = tag_of(&term, una_core::PRELUDE_MODULE, "Option", 2);
+                                new.push(F::eq(
+                                    F::eq(tag, F::Int("1".to_owned())),
+                                    F::eq(len_of(collection), F::Int("0".to_owned())),
+                                ));
+                            }
+                        }
+                        FunRole::Predicate
+                        | FunRole::Get
+                        | FunRole::Element
+                        | FunRole::Collection
+                        | FunRole::Frame { .. }
+                        | FunRole::Combine { .. }
+                        | FunRole::Other => {}
                     },
                     F::Const(Const {
                         role: ConstRole::Text(text),
@@ -6009,6 +7566,11 @@ impl<'p, 'i> Walker<'p, 'i> {
                 let level = if text.starts_with('-') { 2 } else { 1 };
                 (text, level)
             }
+            F::Float32(bits) => {
+                let text = una_core::float32::render(f32::from_bits(*bits));
+                let level = if text.starts_with('-') { 2 } else { 1 };
+                (text, level)
+            }
             F::Const(Const { name, role, .. }) => match role {
                 ConstRole::Text(text) => (una_core::quote(text), 1),
                 _ => self.show_binder(name),
@@ -6020,7 +7582,20 @@ impl<'p, 'i> Walker<'p, 'i> {
                 match &fun.role {
                     FunRole::Field { .. } => (format!("{}.{base}", first()), 1),
                     FunRole::Len => (format!("{}.len", first()), 1),
+                    FunRole::Shape if args.len() == 2 => {
+                        let axis = args.get(1).map_or_else(String::new, |a| operand(a, 10));
+                        (format!("{}.{base}(axis: {axis})", first()), 1)
+                    }
                     FunRole::Shape => (format!("{}.{base}", first()), 1),
+                    FunRole::Element
+                        if args
+                            .first()
+                            .is_some_and(|value| value.sort().starts_with(TENSOR)) =>
+                    {
+                        let shown: Vec<String> =
+                            args.iter().skip(1).map(|a| operand(a, 10)).collect();
+                        (format!("{}.get(at: [{}])", first(), shown.join(", ")), 1)
+                    }
                     FunRole::Element => {
                         let labels: &[&str] = if args.len() == 2 {
                             &["index"]
@@ -6038,7 +7613,26 @@ impl<'p, 'i> Walker<'p, 'i> {
                     FunRole::Tag { .. } => (format!("tag({})", first()), 1),
                     FunRole::Has | FunRole::Get => {
                         let key = args.get(1).map_or_else(String::new, |a| operand(a, 10));
-                        (format!("{}.{base}(key: {key})", first()), 1)
+                        // A set's argument is an item (`spec/28 §6, §7, §9`), a map's a key.
+                        let label = match args.first() {
+                            Some(set) if has_items(&set.sort()) => "item",
+                            _ => "key",
+                        };
+                        (format!("{}.{base}({label}: {key})", first()), 1)
+                    }
+                    // `q.peek()`, `q.peek_back()`, `s.first()` and `s.last()` (ADR 0119 V1).
+                    FunRole::Peek => {
+                        let read = if base == "peekback" {
+                            "peek_back"
+                        } else {
+                            base
+                        };
+                        (format!("{}.{read}()", first()), 1)
+                    }
+                    // `below(s)` and `same(a, b)`, and the records of V3 and V4, as calls.
+                    FunRole::Collection | FunRole::Frame { .. } | FunRole::Combine { .. } => {
+                        let shown: Vec<String> = args.iter().map(|a| operand(a, 10)).collect();
+                        (format!("{base}({})", shown.join(", ")), 1)
                     }
                     FunRole::Predicate => {
                         let shown: Vec<String> = args.iter().map(|a| operand(a, 10)).collect();
@@ -6360,6 +7954,20 @@ fn has_of(map: &F, key: &F) -> F {
     }
 }
 
+/// `b.size` of a bit set, `i!size!i!BitSet`, uninterpreted, at least 0 (ADR 0119 V1).
+fn size_of(bits: &F) -> F {
+    let sort = bits.sort();
+    F::App {
+        fun: SmtFun {
+            name: format!("i!size!{sort}"),
+            args: vec![sort],
+            result: "Int".to_owned(),
+            role: FunRole::Shape,
+        },
+        args: vec![bits.clone()],
+    }
+}
+
 /// `m.get(key: k)`, `i!get!<Sort>`, uninterpreted, of the option sort `option`.
 fn get_of(map: &F, key: &F, option: &Sort) -> F {
     let sort = map.sort();
@@ -6388,13 +7996,63 @@ fn shape_of(value: &F, fun: ShapeFun) -> F {
     }
 }
 
-/// The element of a dense value at its indices, `i!get!<Sort>` with the value first, then one
-/// `Int` per axis, of the element's sort (ADR 0120 V4).
-fn element_of(args: &[F], element: &Sort) -> F {
-    let sort = args.first().map_or_else(String::new, F::sort);
+/// The element count of `tensor` by its rank (ADR 0120 V4): for each r from 1 to 8, `rank = r`
+/// implies `count = dim 0 × ... × dim (r - 1)`. The products of terms stay uninterpreted
+/// (`spec/12 §2`), so a refutation that rests on them is model-checked as any other (ADR 0053,
+/// ADR 0054). O(1) per tensor: 8 facts.
+fn count_facts(count: &F, tensor: &F) -> Vec<F> {
+    let rank = shape_of(tensor, ShapeFun::Rank);
+    let mut product = dim_of(tensor, &F::Int("0".to_owned()));
+    let mut facts = Vec::new();
+    for r in 1..=MAX_RANK {
+        if r > 1 {
+            product = arithmetic(
+                BinOp::Mul,
+                product,
+                dim_of(tensor, &F::Int((r - 1).to_string())),
+            );
+        }
+        facts.push(F::op(
+            "=>",
+            vec![
+                F::eq(rank.clone(), F::Int(r.to_string())),
+                F::eq(count.clone(), product.clone()),
+            ],
+        ));
+    }
+    facts
+}
+
+/// `t.dim(axis: k)`, `i!dim!<Sort>` from the tensor and the axis (ADR 0120 V4).
+fn dim_of(value: &F, axis: &F) -> F {
+    let sort = value.sort();
     F::App {
         fun: SmtFun {
-            name: format!("i!get!{sort}"),
+            name: format!("i!dim!{sort}"),
+            args: vec![sort, "Int".to_owned()],
+            result: "Int".to_owned(),
+            role: FunRole::Shape,
+        },
+        args: vec![value.clone(), axis.clone()],
+    }
+}
+
+/// The most axes a tensor has (ADR 0120 rule 27).
+const MAX_RANK: usize = 8;
+
+/// The element of a dense value at its indices, `i!get!<Sort>` with the value first, then one
+/// `Int` per axis, of the element's sort (ADR 0120 V4). A tensor's is `i!get!<Sort>!<r>` for r
+/// indices, one function per rank.
+fn element_of(args: &[F], element: &Sort) -> F {
+    let sort = args.first().map_or_else(String::new, F::sort);
+    let name = if sort.starts_with(TENSOR) {
+        format!("i!get!{sort}!{}", args.len().saturating_sub(1))
+    } else {
+        format!("i!get!{sort}")
+    };
+    F::App {
+        fun: SmtFun {
+            name,
             args: args.iter().map(F::sort).collect(),
             result: element.clone(),
             role: FunRole::Element,
@@ -6415,6 +8073,166 @@ fn len_of(value: &F) -> F {
         },
         args: vec![value.clone()],
     }
+}
+
+/// A read of a collection that gives an `Option` of an item, `i!<read>!<Sort>`, of the option
+/// sort `option` (ADR 0119 V1): `peek`, `peekback`, `first` or `last`.
+fn read_of(value: &F, read: &str, option: Sort) -> F {
+    let sort = value.sort();
+    F::App {
+        fun: SmtFun {
+            name: format!("i!{read}!{sort}"),
+            args: vec![sort],
+            result: option,
+            role: FunRole::Peek,
+        },
+        args: vec![value.clone()],
+    }
+}
+
+/// `below(s)`, the stack under the top of the stack `s`, `i!below!<Sort>` (ADR 0119 V1).
+fn below_of(stack: &F) -> F {
+    let sort = stack.sort();
+    F::App {
+        fun: SmtFun {
+            name: format!("i!below!{sort}"),
+            args: vec![sort.clone()],
+            result: sort,
+            role: FunRole::Collection,
+        },
+        args: vec![stack.clone()],
+    }
+}
+
+/// `same(a, b)`, the result of `a.same_entries(as: b)` or `a.same_items(as: b)`,
+/// `i!same!<Sort>`, uninterpreted (ADR 0119 rule 11, V1): never the solver's equality.
+fn same_of(a: &F, b: &F) -> F {
+    let sort = a.sort();
+    F::App {
+        fun: SmtFun {
+            name: format!("i!same!{sort}"),
+            args: vec![sort.clone(), b.sort()],
+            result: "Bool".to_owned(),
+            role: FunRole::Collection,
+        },
+        args: vec![a.clone(), b.clone()],
+    }
+}
+
+/// `frame(s, s', x)`: `s'` is `s` updated at the key `x` only (ADR 0119 V3), with `get` the
+/// option sort of a map's `get`.
+fn frame_of(old: &F, new: &F, key: &F, get: Option<Sort>) -> F {
+    let sort = old.sort();
+    F::App {
+        fun: SmtFun {
+            name: format!("i!frame!{sort}"),
+            args: vec![sort.clone(), new.sort(), key.sort()],
+            result: "Bool".to_owned(),
+            role: FunRole::Frame { get },
+        },
+        args: vec![old.clone(), new.clone(), key.clone()],
+    }
+}
+
+/// The relation `op` between the sets `args`, over items of the sort `item` (ADR 0119 V4):
+/// `union(s, t, r)` and the others, `subset(s, t)`.
+fn combine_of(op: Combine, args: &[F], item: Sort) -> F {
+    let sort = args.first().map_or_else(String::new, F::sort);
+    F::App {
+        fun: SmtFun {
+            name: format!("i!{}!{sort}", op.as_str()),
+            args: args.iter().map(F::sort).collect(),
+            result: "Bool".to_owned(),
+            role: FunRole::Combine { op, item },
+        },
+        args: args.to_vec(),
+    }
+}
+
+/// The facts of the records of ADR 0119 V3 and V4 in `query`, each instantiated at every key
+/// term of its key or item sort, other than the updated key itself: for a frame `frame(s, s',
+/// x)` and a key term `y`, `frame(s, s', x) and y != x => has(s', y) = has(s, y)`, and the
+/// same of `get` for a map; for a set relation, its membership law at `y`. Each fact holds of
+/// every run, since a run makes its record true and the law holds of the operation; `y` and
+/// `x` may denote the same key, so a frame says nothing at `y` unless the query proves them
+/// distinct (V3). No quantifier enters the query.
+///
+/// The key terms are the keys and items that the query looks up, the second argument of a
+/// `has` or a `get`, and the keys of the frames. A term looked up nowhere gains nothing from an
+/// instance: every `has` and `get` at it would occur only in the instances, which a model
+/// satisfies by making each `has` false and each `get` equal along the frames, so leaving it
+/// out loses no proof. They are read from the query before these facts, so a query with k
+/// records and t key terms gains O(k · t) facts (V8).
+fn instances(query: &Query) -> Vec<F> {
+    let applications = query.applications();
+    let mut records: Vec<&F> = Vec::new();
+    let mut keys: BTreeMap<Sort, BTreeSet<&F>> = BTreeMap::new();
+    for term in &applications {
+        let F::App { fun, args } = term else {
+            continue;
+        };
+        let key = match fun.role {
+            FunRole::Has | FunRole::Get => args.get(1),
+            FunRole::Frame { .. } => {
+                records.push(term);
+                args.get(2)
+            }
+            FunRole::Combine { .. } => {
+                records.push(term);
+                None
+            }
+            _ => None,
+        };
+        if let Some(key) = key {
+            keys.entry(key.sort()).or_default().insert(key);
+        }
+    }
+    let none = BTreeSet::new();
+    let mut facts = Vec::new();
+    for record in records {
+        let F::App { fun, args } = record else {
+            continue;
+        };
+        match (&fun.role, args.as_slice()) {
+            (FunRole::Frame { get }, [old, new, key]) => {
+                for &y in keys.get(&key.sort()).unwrap_or(&none) {
+                    if y == key {
+                        continue;
+                    }
+                    let guard = F::and(vec![record.clone(), F::not(F::eq(y.clone(), key.clone()))]);
+                    facts.push(F::op(
+                        "=>",
+                        vec![guard.clone(), F::eq(has_of(new, y), has_of(old, y))],
+                    ));
+                    if let Some(option) = get {
+                        facts.push(F::op(
+                            "=>",
+                            vec![guard, F::eq(get_of(new, y, option), get_of(old, y, option))],
+                        ));
+                    }
+                }
+            }
+            (FunRole::Combine { op, item }, [s, t, rest @ ..]) => {
+                for &y in keys.get(item).unwrap_or(&none) {
+                    let (in_s, in_t) = (has_of(s, y), has_of(t, y));
+                    let law = match (op, rest) {
+                        (Combine::Union, [r]) => F::eq(has_of(r, y), F::or(vec![in_s, in_t])),
+                        (Combine::Intersection, [r]) => {
+                            F::eq(has_of(r, y), F::and(vec![in_s, in_t]))
+                        }
+                        (Combine::Difference, [r]) => {
+                            F::eq(has_of(r, y), F::and(vec![in_s, F::not(in_t)]))
+                        }
+                        (Combine::Subset, []) => F::op("=>", vec![in_s, in_t]),
+                        _ => continue,
+                    };
+                    facts.push(F::op("=>", vec![record.clone(), law]));
+                }
+            }
+            _ => {}
+        }
+    }
+    facts
 }
 
 /// The source name in a function's symbol: the field of `u!f!<field>!...` and
@@ -6475,10 +8293,111 @@ fn projection(tuple: &Tv, index: usize) -> Option<Tv> {
 
 /// `least <= value <= greatest` of a fixed-width type (`spec/18 §6`).
 fn in_range(value: F, int: IntType) -> F {
+    within(value, int.least(), int.greatest())
+}
+
+/// `least <= value <= greatest`.
+fn within(value: F, least: i128, greatest: i128) -> F {
     F::and(vec![
-        F::op("<=", vec![F::Int(int.least().to_string()), value.clone()]),
-        F::op("<=", vec![value, F::Int(int.greatest().to_string())]),
+        F::op("<=", vec![F::Int(least.to_string()), value.clone()]),
+        F::op("<=", vec![value, F::Int(greatest.to_string())]),
     ])
+}
+
+/// The least value of `Int` that stays in a machine word, `-2^62`: in a `systems` package, no
+/// result of `Int` arithmetic leaves the tagged range (ADR 0109 rule 3, `spec/18 §3`).
+const INT_LEAST: i128 = -(1 << 62);
+
+/// The greatest value of `Int` that stays in a machine word, `2^62 - 1` (ADR 0109 rule 3).
+const INT_GREATEST: i128 = (1 << 62) - 1;
+
+/// Whether the integer literal `digits`, in decimal with an optional `-`, lies in the tagged
+/// range of `Int`. A literal too long for 128 bits lies outside it.
+fn fits_word(digits: &str) -> bool {
+    digits
+        .parse::<i128>()
+        .is_ok_and(|value| (INT_LEAST..=INT_GREATEST).contains(&value))
+}
+
+/// What an `overflow` obligation is on, which decides its repairs (`spec/18 §3`).
+#[derive(Clone, Copy, Debug)]
+enum OverflowOf<'a> {
+    /// A fixed-width type.
+    Fixed,
+    /// `Int` in a `systems` package (ADR 0109 rule 3).
+    Int,
+    /// The result of the named prelude function in a `systems` package, which states no bound
+    /// on it.
+    Unbounded(&'a str),
+}
+
+/// The guard that states the `overflow` goal of the arithmetic primitive `prim` with its
+/// operands as `operand` writes them, as in `a + b in -128..127` (`spec/18 §3`).
+fn operation_guard(prim: Prim, operand: &dyn Fn(usize) -> String, range: &str) -> Option<String> {
+    let symbol = match prim {
+        Prim::Neg => return Some(format!("-{} in {range}", operand(0))),
+        Prim::Add => "+",
+        Prim::Sub => "-",
+        Prim::Mul => "*",
+        Prim::Div => "/",
+        Prim::Mod => "mod",
+        _ => return None,
+    };
+    Some(format!("{} {symbol} {} in {range}", operand(0), operand(1)))
+}
+
+/// The guard of an `Int` operation of a `systems` package, with its operands as `operand`
+/// writes them (ADR 0109 rule 3): it bounds the operands, never the result, since a test on
+/// the exact result is itself an `Int` operation whose obligation could not be proven. For `+`
+/// and `-`, each operand in -2^61..2^61 - 1; for `*`, each in -(2^31 - 1)..2^31 - 1; for `/`,
+/// the dividend in -(2^62 - 1)..2^62 - 1, the divisor unbounded; for `mod`, both operands in
+/// that range, since the result is bounded by the divisor; for unary `-`, the operand in
+/// -(2^62 - 1)..2^62 - 1. An operand that is a
+/// literal within its bound needs no test; `None` when no operand does.
+fn int_guard(
+    prim: Prim,
+    operand: &dyn Fn(usize) -> String,
+    literal: &dyn Fn(usize) -> Option<i128>,
+) -> Option<String> {
+    let bounded = |bound: i128| -> Option<String> {
+        let tests: Vec<String> = (0..2)
+            .filter(|i| literal(*i).is_none_or(|value| value.abs() > bound))
+            .map(|i| format!("{} in {}..{}", operand(i), -bound - 1, bound))
+            .collect();
+        (!tests.is_empty()).then(|| tests.join(" and "))
+    };
+    match prim {
+        Prim::Add | Prim::Sub => {
+            // -2^61..2^61 - 1.
+            let half = (1i128 << 61) - 1;
+            bounded(half)
+        }
+        Prim::Mul => {
+            let bound = (1i128 << 31) - 1;
+            let tests: Vec<String> = (0..2)
+                .filter(|i| literal(*i).is_none_or(|value| value.abs() > bound))
+                .map(|i| format!("{} in -{bound}..{bound}", operand(i)))
+                .collect();
+            (!tests.is_empty()).then(|| tests.join(" and "))
+        }
+        // The dividend, or the operand of `-`, off the least value; the divisor of `/` needs
+        // no bound, since the quotient's magnitude never exceeds the dividend's.
+        Prim::Div | Prim::Neg => Some(off_least(&operand(0))),
+        // `a mod b` is bounded by `|b|`, not by `a` (`-1 mod (2^62 + 5)` is `2^62 + 4`), so both
+        // operands are bounded.
+        Prim::Mod => Some(format!(
+            "{} and {}",
+            off_least(&operand(0)),
+            off_least(&operand(1))
+        )),
+        _ => None,
+    }
+}
+
+/// The guard that keeps `operand` in the tagged range but off its least value, -2^62, where
+/// `-`, `abs` and a division by -1 leave it (ADR 0109 rule 3).
+fn off_least(operand: &str) -> String {
+    format!("{operand} in {}..{INT_GREATEST}", INT_LEAST + 1)
 }
 
 /// `value` reduced into the range of `int` modulo `2^width`: `((value - least) mod 2^w) +
@@ -6566,7 +8485,9 @@ fn slice_floats(assertions: Vec<F>, let_defs: &BTreeSet<F>) -> (Vec<F>, Option<(
         let mut terms = Vec::new();
         f.visit(&mut terms);
         for term in terms {
-            if matches!(term, F::Const(_) | F::App { .. }) && term.sort() == FLOAT64 {
+            if matches!(term, F::Const(_) | F::App { .. })
+                && crate::smt::is_float_sort(&term.sort())
+            {
                 out.push(term.text());
             }
         }
@@ -6855,7 +8776,9 @@ fn normalized_goal(goal: &str, layout: SourceLayout) -> String {
 /// amendment of 2026-10-25): white space that holds a line break right before a closing `)` or
 /// `]` token is erased, which is where the canonical form puts the closer of a wrapped group,
 /// and then every run of white space collapses to one space. Text literals hold no line break,
-/// and a closer inside one is no token, so their text is kept but for the collapse. One lexing
+/// and a closer inside one is no token, so their text is kept but for the collapse, which also joins runs of spaces inside a text literal
+/// shown in a hypothesis or contract: the text is for display and comparison, never evaluated
+/// (#1175, kept as it is). One lexing
 /// pass and one pass over the closers: O(n) time and space.
 pub fn unwrap_layout(text: &str) -> String {
     let mut sources = SourceDb::new();
@@ -7425,6 +9348,315 @@ mod tests {
         assert!(all.contains("u!f!tag!Stamp!u!Kind_m_K"), "{all}");
     }
 
+    /// `f(a: Int, b: Int) -> Int` whose body computes `a + b`, binds the literal
+    /// `4611686018427387904`, negates `a` where the source writes `-x` and the literal `5`
+    /// where it writes `-5`, and returns `a + b`, in a package of `profile`.
+    fn int_program(text: &str, file: una_syntax::FileId, profile: Profile) -> Program {
+        let at = |part: &str| {
+            let start = text.find(part).unwrap();
+            Span::new(file, start, start + part.len())
+        };
+        let int = || base(Base::Int);
+        let sum = at("a + b");
+        let (a, b) = (
+            Span::new(file, sum.start, sum.start + 1),
+            Span::new(file, sum.end - 1, sum.end),
+        );
+        let neg = at("-x");
+        let x = Span::new(file, neg.start + 1, neg.end);
+        let small = at("-5");
+        let five = Span::new(file, small.start + 1, small.end);
+        let var = |name: &str| Atom::Var(name.to_owned());
+        let bind = |name: &str, value: Rhs, span: Span, body: Expr| Expr::Let {
+            name: name.to_owned(),
+            ty: int(),
+            value: Box::new(Bound::Rhs(value)),
+            body: Box::new(body),
+            span,
+            written: false,
+        };
+        let body = bind(
+            "%1",
+            Rhs::Prim {
+                prim: Prim::Add,
+                args: vec![var("a"), var("b")],
+                arg_spans: vec![a, b],
+                span: sum,
+            },
+            sum,
+            bind(
+                "%2",
+                Rhs::Atom(Atom::Int("4611686018427387904".to_owned())),
+                at("4611686018427387904"),
+                bind(
+                    "%3",
+                    Rhs::Prim {
+                        prim: Prim::Neg,
+                        args: vec![var("a")],
+                        arg_spans: vec![x],
+                        span: neg,
+                    },
+                    neg,
+                    bind(
+                        "%4",
+                        Rhs::Prim {
+                            prim: Prim::Neg,
+                            args: vec![Atom::Int("5".to_owned())],
+                            arg_spans: vec![five],
+                            span: small,
+                        },
+                        small,
+                        Expr::Atom {
+                            atom: var("%1"),
+                            span: sum,
+                        },
+                    ),
+                ),
+            ),
+        );
+        Program {
+            profile,
+            modules: vec![una_core::Module {
+                path: "m".to_owned(),
+                decls: vec![Decl::Fun(Box::new(Fun {
+                    name: "f".to_owned(),
+                    type_params: Vec::new(),
+                    constraints: Vec::new(),
+                    params: vec![("a".to_owned(), int()), ("b".to_owned(), int())],
+                    result: int(),
+                    uses: Vec::new(),
+                    uses_of: Vec::new(),
+                    locks: Vec::new(),
+                    fails: None,
+                    error: None,
+                    requires: Vec::new(),
+                    ensures: Vec::new(),
+                    body,
+                    span: Span::new(file, 0, 1),
+                    public: false,
+                }))],
+                examples: Vec::new(),
+            }],
+            ..Program::default()
+        }
+    }
+
+    #[test]
+    fn int_arithmetic_of_a_systems_package_has_overflow_obligations() {
+        // ADR 0109 rule 3, `spec/18 §3`: in `systems`, `a + b`, `-x` and a literal outside the
+        // tagged range each carry an `overflow` obligation, with the goal `<exact> in
+        // -4611686018427387904..4611686018427387903` and a guard that bounds the operands;
+        // the literal's goal is ground, and `-5` is a literal in range, with none. In `app`,
+        // none of them carries one (rule 2.1).
+        let text = "a + b\n4611686018427387904\n-x\n-5\n";
+        let mut sources = SourceDb::new();
+        let file = sources.add("m.una", text.as_bytes());
+        let range = "-4611686018427387904..4611686018427387903";
+        let systems = int_program(text, file, Profile::Systems);
+        let obligations = super::obligations(&systems, &sources, SourceLayout::Joined).unwrap();
+        let overflow: Vec<(&str, Option<&str>, bool, bool)> = obligations
+            .iter()
+            .filter(|o| o.kind == ObligationKind::Overflow)
+            .map(|o| {
+                (
+                    o.goal.as_str(),
+                    o.site.guard.as_deref(),
+                    o.site.int,
+                    o.site.ground,
+                )
+            })
+            .collect();
+        let sum_goal = format!("a + b in {range}");
+        let literal_goal = format!("4611686018427387904 in {range}");
+        let neg_goal = format!("-x in {range}");
+        // The guards bound the operands, never the result (ADR 0109 rule 3).
+        let half = "-2305843009213693952..2305843009213693951";
+        let sum_guard = format!("a in {half} and b in {half}");
+        let neg_guard = "x in -4611686018427387903..4611686018427387903";
+        assert_eq!(
+            overflow,
+            [
+                (sum_goal.as_str(), Some(sum_guard.as_str()), true, false),
+                (literal_goal.as_str(), None, true, true),
+                (neg_goal.as_str(), Some(neg_guard), true, false),
+            ]
+        );
+        // The literal's query is `not (least <= 2^62 <= greatest)`, refuted by any model.
+        let literal = obligations.iter().find(|o| o.goal == literal_goal).unwrap();
+        assert!(
+            literal.query.text().contains("4611686018427387904"),
+            "{}",
+            literal.query.text()
+        );
+        // The repairs of an `Int` site are rule 3's, the guard first.
+        let refuted = crate::run::Outcome {
+            status: una_diag::ObligationStatus::Refuted,
+            reason: None,
+            cached: false,
+            path: None,
+            bindings: Vec::new(),
+            division: None,
+            values_error: None,
+        };
+        let sum = obligations.iter().find(|o| o.goal == sum_goal).unwrap();
+        let diagnostics = crate::report::diagnostics(
+            std::slice::from_ref(sum),
+            std::slice::from_ref(&refuted),
+            &sources,
+        );
+        let repairs: Vec<&str> = diagnostics[0]
+            .repairs
+            .iter()
+            .map(|r| r.description.as_str())
+            .collect();
+        let guard = format!("guard the operation with `if {sum_guard}`");
+        assert_eq!(
+            repairs,
+            [
+                guard.as_str(),
+                "bound the operands with a refined kind, as `kind Small = Int where it >= 0 and it <= 1000` for a parameter or a field, so that the exact result stays in the range",
+                "give the values a fixed-width type, as `I64`, converting them explicitly",
+                "if wrapping or saturating is meant, give the values a fixed-width type and use its `wrapping_add`, `saturating_add` or their siblings",
+            ]
+        );
+        // A ground goal has no repair (R-021) and no counterexample.
+        let diagnostics = crate::report::diagnostics(
+            std::slice::from_ref(literal),
+            std::slice::from_ref(&refuted),
+            &sources,
+        );
+        assert_eq!(diagnostics[0].code, una_diag::Code::U5001);
+        assert!(diagnostics[0].repairs.is_empty());
+        assert!(diagnostics[0].counterexample.is_none());
+        let app = int_program(text, file, Profile::App);
+        let obligations = super::obligations(&app, &sources, SourceLayout::Joined).unwrap();
+        assert!(
+            obligations
+                .iter()
+                .all(|o| o.kind != ObligationKind::Overflow),
+            "{:?}",
+            obligations.iter().map(|o| &o.goal).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn abs_as_a_function_value_is_unknown_with_no_query() {
+        // ADR 0109 rule 3: `abs` used as a value in a `systems` package, the lambda that stands
+        // for it at the reference, has an `overflow` obligation unknown by construction: its
+        // reason and its one repair are fixed, and `verify` sends no query, so a solver that
+        // does not exist is never started. In `app` there is none.
+        let text = "xs.map(each: abs)\n";
+        let mut sources = SourceDb::new();
+        let file = sources.add("m.una", text.as_bytes());
+        let start = text.find("abs").unwrap();
+        let at = Span::new(file, start, start + 3);
+        let int = || base(Base::Int);
+        let program = |profile: Profile| Program {
+            profile,
+            modules: vec![una_core::Module {
+                path: "m".to_owned(),
+                decls: vec![Decl::Fun(Box::new(Fun {
+                    name: "f".to_owned(),
+                    type_params: Vec::new(),
+                    constraints: Vec::new(),
+                    params: Vec::new(),
+                    result: base(Base::Unit),
+                    uses: Vec::new(),
+                    uses_of: Vec::new(),
+                    locks: Vec::new(),
+                    fails: None,
+                    error: None,
+                    requires: Vec::new(),
+                    ensures: Vec::new(),
+                    body: Expr::Let {
+                        name: "%1".to_owned(),
+                        ty: base(Base::Unit),
+                        value: Box::new(Bound::Rhs(Rhs::Lambda {
+                            params: vec![("x".to_owned(), int())],
+                            body: Box::new(Expr::Atom {
+                                atom: Atom::Var("x".to_owned()),
+                                span: at,
+                            }),
+                            function: Some(una_core::Path {
+                                module: una_core::PRELUDE_MODULE.to_owned(),
+                                name: "abs".to_owned(),
+                            }),
+                        })),
+                        body: Box::new(Expr::Atom {
+                            atom: Atom::Unit,
+                            span: at,
+                        }),
+                        span: at,
+                        written: false,
+                    },
+                    span: Span::new(file, 0, 1),
+                    public: false,
+                }))],
+                examples: Vec::new(),
+            }],
+            ..Program::default()
+        };
+        let systems = program(Profile::Systems);
+        let obligations = super::obligations(&systems, &sources, SourceLayout::Joined).unwrap();
+        let reason = "the operands of `abs` have no bounds at this use";
+        let repair =
+            "write the call inside a lambda, `fn(x) -> abs(x)`, so its operand's bounds apply";
+        let overflow: Vec<&Obligation> = obligations
+            .iter()
+            .filter(|o| o.kind == ObligationKind::Overflow)
+            .collect();
+        assert_eq!(overflow.len(), 1, "{obligations:?}");
+        assert_eq!(overflow[0].source, at);
+        assert_eq!(overflow[0].site.unknown.as_deref(), Some(reason));
+        assert_eq!(overflow[0].site.flow.as_deref(), Some(repair));
+        let settings = crate::run::Settings {
+            solver: std::path::PathBuf::from("/nonexistent/una-no-solver"),
+            lock: crate::run::Lock {
+                text: String::new(),
+                solver_version: "0.0.0".to_owned(),
+                step_budget: 1,
+                random_seed: 0,
+            },
+            wallclock: std::time::Duration::from_secs(1),
+            cache: None,
+            cancel: None,
+        };
+        let outcomes = crate::run::verify(&obligations, &settings).unwrap();
+        assert_eq!(outcomes.len(), obligations.len());
+        assert!(outcomes.iter().all(|o| !o.cached));
+        let index = obligations
+            .iter()
+            .position(|o| o.kind == ObligationKind::Overflow)
+            .unwrap();
+        assert_eq!(outcomes[index].status, una_diag::ObligationStatus::Unknown);
+        assert_eq!(outcomes[index].reason.as_deref(), Some(reason));
+        let diagnostics = crate::report::diagnostics(
+            std::slice::from_ref(overflow[0]),
+            std::slice::from_ref(&outcomes[index]),
+            &sources,
+        );
+        assert_eq!(diagnostics[0].code, una_diag::Code::U5002);
+        assert_eq!(
+            diagnostics[0].message,
+            format!(
+                "overflow obligation `abs in -4611686018427387904..4611686018427387903` could not be proven ({reason})"
+            )
+        );
+        let repairs: Vec<&str> = diagnostics[0]
+            .repairs
+            .iter()
+            .map(|r| r.description.as_str())
+            .collect();
+        assert_eq!(repairs, [repair]);
+        let app = program(Profile::App);
+        let obligations = super::obligations(&app, &sources, SourceLayout::Joined).unwrap();
+        assert!(
+            obligations
+                .iter()
+                .all(|o| o.kind != ObligationKind::Overflow)
+        );
+    }
+
     #[test]
     fn a_kind_the_package_declares_is_never_a_prelude_kind() {
         // R-010: tier 0 rejects a module named `prelude` (U1009); the verifier still takes the
@@ -7575,6 +9807,7 @@ mod tests {
             library: Vec::new(),
             host: vec![files(Vec::new())],
             condition_edits: Vec::new(),
+            ..Program::default()
         };
         let index = Index::new(&program);
         let ensures = |module: &str| {
