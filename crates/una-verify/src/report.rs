@@ -357,7 +357,7 @@ fn repairs(obligation: &Obligation) -> Vec<Repair> {
         // operands, give the values a fixed-width type, or use its wrapping or saturating
         // methods.
         ObligationKind::Overflow if site.int => {
-            candidates.extend(int_overflow_repairs(site.guard.as_deref().unwrap_or(goal)));
+            candidates.extend(int_overflow_repairs(site.guard.as_deref()));
         }
         // `spec/18 §3`: guard the operation, give the value a wider type, or name the
         // wrapping or saturating arithmetic that is meant.
@@ -388,13 +388,17 @@ fn repairs(obligation: &Obligation) -> Vec<Repair> {
 }
 
 /// The repairs of an `overflow` obligation on `Int` in a `systems` package, ranked (ADR 0109
-/// rule 3, `spec/18 §3`): a guard on the operation, with its operands as written; a refinement
-/// of the operands; a fixed-width type, whose own obligations name its range; and, when that
-/// arithmetic is meant, the wrapping or saturating methods of a fixed-width type, since `Int`
-/// has none.
-fn int_overflow_repairs(guard: &str) -> Vec<(Option<Escape>, String)> {
-    vec![
-        (None, format!("guard the operation with `if {guard}`")),
+/// rule 3, `spec/18 §3`): a guard that bounds the operands, written as they are, never the
+/// result, whose test would be an `Int` operation of its own, when the site has one; a
+/// refinement of the operands; a fixed-width type, whose own obligations name its range; and,
+/// when that arithmetic is meant, the wrapping or saturating methods of a fixed-width type,
+/// since `Int` has none.
+fn int_overflow_repairs(guard: Option<&str>) -> Vec<(Option<Escape>, String)> {
+    let mut out: Vec<(Option<Escape>, String)> = guard
+        .map(|guard| (None, format!("guard the operation with `if {guard}`")))
+        .into_iter()
+        .collect();
+    out.extend([
         (
             None,
             "bound the operands with a refined kind, as `kind Small = Int where it >= 0 and it <= 1000` for a parameter or a field, so that the exact result stays in the range".to_owned(),
@@ -407,7 +411,8 @@ fn int_overflow_repairs(guard: &str) -> Vec<(Option<Escape>, String)> {
             None,
             "if wrapping or saturating is meant, give the values a fixed-width type and use its `wrapping_add`, `saturating_add` or their siblings".to_owned(),
         ),
-    ]
+    ]);
+    out
 }
 
 /// ADR 0092, amendment of 2026-10-14: the first repair at a call or a `with` whose callee's

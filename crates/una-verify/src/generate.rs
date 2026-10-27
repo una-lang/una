@@ -2757,7 +2757,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                     if is_prelude(&function.module) {
                         self.text_facts(&function.name, &values, &x, ctx);
                         // ADR 0109 rule 3: after the callee's `ensures`, which bound `abs`.
-                        self.prelude_site(&function.name, &x, *span, ctx);
+                        self.prelude_site(&function.name, &x, arg_spans, *span, ctx);
                     }
                 } else if let Some((params, formula)) = self.index.predicates.get(&key) {
                     self.arguments(params, args, arg_spans, ctx);
@@ -4546,10 +4546,32 @@ impl<'p, 'i> Walker<'p, 'i> {
                 _ => arg_spans.get(i).map_or_else(String::new, |s| self.text(*s)),
             }
         };
+        // The literal operand of a product, as the ratio of `convert()` is.
+        let literal = |i: usize| match args.get(i) {
+            Some(Atom::Int(digits)) => digits.parse::<i128>().ok(),
+            _ => None,
+        };
+        // `convert()` multiplies its receiver by the ratio, at the method's own span.
+        let ratio = (prim == Prim::Mul && arg_spans.get(1) == Some(&span))
+            .then(|| literal(1))
+            .flatten()
+            .filter(|k| *k > 0);
         let (exact, guard) = match prim {
+            Prim::Mul if ratio.is_some() => {
+                let k = ratio.unwrap_or(1);
+                (
+                    self.prim(prim, values),
+                    Some(format!(
+                        "{} in -{}..{}",
+                        operand(0),
+                        -INT_LEAST / k,
+                        INT_GREATEST / k
+                    )),
+                )
+            }
             Prim::Add | Prim::Sub | Prim::Mul | Prim::Div | Prim::Mod => (
                 self.prim(prim, values),
-                operation_guard(prim, &operand, &range),
+                int_guard(prim, &operand, &literal),
             ),
             Prim::Neg => match args.first() {
                 // A negated literal is one literal: a site only outside the range.
@@ -4562,7 +4584,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                 }
                 _ => (
                     self.prim(prim, values),
-                    operation_guard(prim, &operand, &range),
+                    int_guard(prim, &operand, &literal),
                 ),
             },
             // `to_int()` on a 64-bit value, which can lie outside the tagged range.
@@ -4628,16 +4650,23 @@ impl<'p, 'i> Walker<'p, 'i> {
     /// package, over the call's result `x` (ADR 0109 rule 3): `abs`'s `ensures`, assumed
     /// already, proves it when the operand is bounded; `sum` states no bound on its result, so
     /// a refutation sets it freely and the obligation is unknown.
-    fn prelude_site(&mut self, name: &str, x: &Tv, span: Span, ctx: &Ctx) {
+    fn prelude_site(&mut self, name: &str, x: &Tv, arg_spans: &[Span], span: Span, ctx: &Ctx) {
         if self.index.profile != Profile::Systems || self.eta.is_some() {
             return;
         }
-        let of = match name {
-            "abs" => OverflowOf::Int,
-            "sum" => OverflowOf::Unbounded(name),
+        // The guard bounds the operand, never the result: `abs` leaves the range only at the
+        // least value. `sum` has none, as no test on its operands bounds its result.
+        let (of, guard) = match name {
+            "abs" => (
+                OverflowOf::Int,
+                arg_spans
+                    .first()
+                    .map(|at| format!("{} != {INT_LEAST}", self.text(*at))),
+            ),
+            "sum" => (OverflowOf::Unbounded(name), None),
             _ => return,
         };
-        self.overflow_site(x.f.clone(), (INT_LEAST, INT_GREATEST), None, of, span, ctx);
+        self.overflow_site(x.f.clone(), (INT_LEAST, INT_GREATEST), guard, of, span, ctx);
     }
 
     /// An `overflow` obligation at `span`: `exact` lies in `least..greatest` (`spec/18 §3`).
@@ -6865,6 +6894,48 @@ fn operation_guard(prim: Prim, operand: &dyn Fn(usize) -> String, range: &str) -
     Some(format!("{} {symbol} {} in {range}", operand(0), operand(1)))
 }
 
+/// The guard of an `Int` operation of a `systems` package, with its operands as `operand`
+/// writes them (ADR 0109 rule 3): it bounds the operands, never the result, since a test on
+/// the exact result is itself an `Int` operation whose obligation could not be proven. For `+`
+/// and `-`, each operand in -2^61..2^61 - 1; for `*`, each in -(2^31 - 1)..2^31 - 1; for `/`
+/// and `mod`, `b != -1 or a != -2^62`; for unary `-`, `a != -2^62`. An operand that is a
+/// literal within its bound needs no test; `None` when no operand does.
+fn int_guard(
+    prim: Prim,
+    operand: &dyn Fn(usize) -> String,
+    literal: &dyn Fn(usize) -> Option<i128>,
+) -> Option<String> {
+    let bounded = |bound: i128| -> Option<String> {
+        let tests: Vec<String> = (0..2)
+            .filter(|i| literal(*i).is_none_or(|value| value.abs() > bound))
+            .map(|i| format!("{} in {}..{}", operand(i), -bound - 1, bound))
+            .collect();
+        (!tests.is_empty()).then(|| tests.join(" and "))
+    };
+    match prim {
+        Prim::Add | Prim::Sub => {
+            // -2^61..2^61 - 1.
+            let half = (1i128 << 61) - 1;
+            bounded(half)
+        }
+        Prim::Mul => {
+            let bound = (1i128 << 31) - 1;
+            let tests: Vec<String> = (0..2)
+                .filter(|i| literal(*i).is_none_or(|value| value.abs() > bound))
+                .map(|i| format!("{} in -{bound}..{bound}", operand(i)))
+                .collect();
+            (!tests.is_empty()).then(|| tests.join(" and "))
+        }
+        Prim::Div | Prim::Mod => Some(format!(
+            "{} != -1 or {} != {INT_LEAST}",
+            operand(1),
+            operand(0)
+        )),
+        Prim::Neg => Some(format!("{} != {INT_LEAST}", operand(0))),
+        _ => None,
+    }
+}
+
 /// `value` reduced into the range of `int` modulo `2^width`: `((value - least) mod 2^w) +
 /// least`, linear since `2^w` is a numeral (`spec/18 §5`, `§6`).
 fn wrapped(value: F, int: IntType) -> F {
@@ -7908,7 +7979,7 @@ mod tests {
     fn int_arithmetic_of_a_systems_package_has_overflow_obligations() {
         // ADR 0109 rule 3, `spec/18 §3`: in `systems`, `a + b`, `-x` and a literal outside the
         // tagged range each carry an `overflow` obligation, with the goal `<exact> in
-        // -4611686018427387904..4611686018427387903` and a guard on the operands as written;
+        // -4611686018427387904..4611686018427387903` and a guard that bounds the operands;
         // the literal's goal is ground, and `-5` is a literal in range, with none. In `app`,
         // none of them carries one (rule 2.1).
         let text = "a + b\n4611686018427387904\n-x\n-5\n";
@@ -7932,12 +8003,16 @@ mod tests {
         let sum_goal = format!("a + b in {range}");
         let literal_goal = format!("4611686018427387904 in {range}");
         let neg_goal = format!("-x in {range}");
+        // The guards bound the operands, never the result (ADR 0109 rule 3).
+        let half = "-2305843009213693952..2305843009213693951";
+        let sum_guard = format!("a in {half} and b in {half}");
+        let neg_guard = "x != -4611686018427387904";
         assert_eq!(
             overflow,
             [
-                (sum_goal.as_str(), Some(sum_goal.as_str()), true, false),
+                (sum_goal.as_str(), Some(sum_guard.as_str()), true, false),
                 (literal_goal.as_str(), None, true, true),
-                (neg_goal.as_str(), Some(neg_goal.as_str()), true, false),
+                (neg_goal.as_str(), Some(neg_guard), true, false),
             ]
         );
         // The literal's query is `not (least <= 2^62 <= greatest)`, refuted by any model.
@@ -7971,7 +8046,7 @@ mod tests {
             .iter()
             .map(|r| r.description.as_str())
             .collect();
-        let guard = format!("guard the operation with `if a + b in {range}`");
+        let guard = format!("guard the operation with `if {sum_guard}`");
         assert_eq!(
             repairs,
             [
