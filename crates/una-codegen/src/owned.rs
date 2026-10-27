@@ -4,7 +4,8 @@
 //! update in place, so the caller gives up its reference when the argument is at its last
 //! use, and retains it otherwise. Every other parameter is **borrowed**, with no reference
 //! counting at the call, as before. A function consumes a name that reaches:
-//! - the list of `append` or `set` of the prelude, or the text a concatenation begins with;
+//! - the list of `append` or `set` of the prelude, the receiver of a dense value's `edit`
+//!   method (ADR 0120 rule 31), or the text a concatenation begins with;
 //! - an owned parameter of a function of the package, or any parameter of a function value,
 //!   which a lambda owns, or the initial state of `fold`;
 //! - the initial state of a loop whose body consumes that state;
@@ -147,11 +148,17 @@ impl<'e> Facts<'e> {
             } if op.rebuilds() => self.consume(args.first()),
             Rhs::Call { function, args, .. } => {
                 if function.module == PRELUDE_MODULE {
-                    if matches!(function.name.as_str(), "append" | "set") {
+                    if matches!(function.name.as_str(), "append" | "set")
+                        || crate::lower::dense_edits(&function.name)
+                    {
                         self.consume(args.first());
                     }
-                    // `fold` hands its initial state to the step as owned.
-                    if function.name == "fold" {
+                    // `fold` hands its initial state to the step as owned, a dense value's
+                    // `fold` too (design note D6).
+                    if function.name == "fold"
+                        || (crate::lower::is_dense(&function.name)
+                            && crate::lower::dense_method(&function.name) == "fold")
+                    {
                         self.consume(args.get(1));
                     }
                 } else if let Some(params) =

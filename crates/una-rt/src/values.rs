@@ -24,6 +24,7 @@
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
+use std::sync::Arc;
 
 use num_bigint::{BigInt, Sign};
 use una_core::Text;
@@ -31,6 +32,7 @@ use una_core::Text;
 use crate::ffi::Code;
 
 mod collections;
+pub(crate) mod dense;
 mod hashes;
 
 pub use collections::{
@@ -84,6 +86,13 @@ enum Object {
     },
     /// A map, by the order of its keys (`spec/21 §5`): the word of each key, and of its value.
     Map(BTreeMap<MapKey, (i64, i64)>),
+    /// A dense value's header, an `Array`, `Matrix`, `Tensor` or `Lu` (`spec/29 §17`, ADR 0120
+    /// rule 28): its layout over its store, which it references as its one cell when the store
+    /// holds words ([`dense`]).
+    Dense(Box<dense::Dense>),
+    /// The store of a dense value's elements other than `F64`: words, counted non-atomically as
+    /// a list's items are, which views of one value share ([`dense`], design note D1).
+    Words(Vec<i64>),
     /// A `Stack` or a `Queue` of `std.collections`, its own layout (ADR 0119 rule 19, ADR 0107
     /// rule 2): a ring buffer of words, front first, a stack's top at its front.
     Seq(VecDeque<i64>),
@@ -179,9 +188,10 @@ impl Object {
             | Object::HashMap(_)
             | Object::HashSet(_) => &[],
             Object::Data { fields, .. } => fields,
-            Object::List(items) => items,
+            Object::List(items) | Object::Words(items) => items,
             Object::Closure { env, .. } => env,
             Object::Instance { cells, .. } => cells,
+            Object::Dense(header) => header.cells(),
         }
     }
 
@@ -192,6 +202,7 @@ impl Object {
             | Object::Hashed(_)
             | Object::F64(_)
             | Object::Map(_)
+            | Object::Dense(_)
             | Object::Seq(_)
             | Object::Set(_)
             | Object::Priority(_)
@@ -199,7 +210,7 @@ impl Object {
             | Object::HashMap(_)
             | Object::HashSet(_) => None,
             Object::Data { fields, .. } => Some(fields),
-            Object::List(items) => Some(items),
+            Object::List(items) | Object::Words(items) => Some(items),
             Object::Closure { env, .. } => Some(env),
             Object::Instance { cells, .. } => Some(cells),
         }
@@ -891,13 +902,16 @@ pub(crate) fn equal_at(site: i64, a: i64, b: i64) -> Option<bool> {
 }
 
 /// A value with parts, compared through a worklist: a variant with fields, a record, a
-/// non-empty list, map, stack, queue or set. Every other word is a leaf, compared as it is met,
-/// a bit set included, as the interpreter compares them (`spec/28 §3` rule 3).
+/// non-empty list, map, stack, queue or set, or a dense value. Every other word is a leaf,
+/// compared as it is met, a bit set included, as the interpreter compares them (`spec/28 §3`
+/// rule 3).
 fn has_parts(word: i64) -> bool {
     is_handle(word)
         && with(word, |object| match object {
             Object::Data { fields, .. } | Object::List(fields) => !fields.is_empty(),
             Object::Map(entries) => !entries.is_empty(),
+            // Its shape is a part, even with no elements (ADR 0120 rule 27).
+            Object::Dense(_) => true,
             Object::Seq(items) => !items.is_empty(),
             Object::Set(items) => !items.is_empty(),
             _ => false,
@@ -984,14 +998,18 @@ fn admit(a: i64, b: i64, pending: &mut Vec<(i64, i64)>) -> bool {
 /// where NaN differs from itself, must revisit both (#819).
 fn equal_words(a: i64, b: i64, pairs: usize) -> Option<bool> {
     /// The parts of a value with parts: a variant's tag or a list's, a stack's or a queue's
-    /// `None`, then its words; a map's keys and values; or a set's items, compared whole.
+    /// `None`, then its words; a map's keys and values; a set's items, compared whole; or a
+    /// dense value's kind, shape and elements.
     enum Parts {
         Cells(Option<i64>, Vec<i64>),
         Map(Vec<MapKey>, Vec<i64>),
         Keys(Vec<MapKey>),
+        Dense(dense::Parts),
+        /// A dense value, whose parts are read after the heap's borrow ends.
+        DenseHeader,
     }
     let parts = |word: i64| {
-        with(word, |object| match object {
+        let found = with(word, |object| match object {
             Object::Data { tag, fields } => Some(Parts::Cells(Some(*tag), fields.clone())),
             Object::List(items) => Some(Parts::Cells(None, items.clone())),
             // The same elements in the same order, front first (`spec/28 §3` rule 3).
@@ -1000,10 +1018,15 @@ fn equal_words(a: i64, b: i64, pairs: usize) -> Option<bool> {
                 entries.keys().cloned().collect(),
                 entries.values().map(|(_, value)| *value).collect(),
             )),
+            Object::Dense(_) => Some(Parts::DenseHeader),
             Object::Set(items) => Some(Parts::Keys(items.keys().cloned().collect())),
             _ => None,
         })
-        .flatten()
+        .flatten();
+        match found {
+            Some(Parts::DenseHeader) => dense::parts(word).map(Parts::Dense),
+            other => other,
+        }
     };
     let mut pending = Vec::new();
     if !admit(a, b, &mut pending) {
@@ -1034,6 +1057,35 @@ fn equal_words(a: i64, b: i64, pairs: usize) -> Option<bool> {
             // The same keys, each with an equal value (`spec/21 §1` rule 5).
             (Some(Parts::Map(kx, x)), Some(Parts::Map(ky, y))) => {
                 kx == ky && x.into_iter().zip(y).all(|(a, b)| admit(a, b, &mut pending))
+            }
+            // The same kind and shape, then each element by its own `==` in row-major order,
+            // whatever the views' offsets and strides (ADR 0120 rule 27): a raw `F64` by the
+            // identity of its canonical bits, as `==` on `F64` is (ADR 0114 rule 5.1), and an
+            // element that is a word joins this worklist and its budget, as a list's item does.
+            // Every element is compared and the answer decided after, so the time does not
+            // reveal where two values differ (rule 54).
+            (Some(Parts::Dense(x)), Some(Parts::Dense(y))) => {
+                x.layout.kind == y.layout.kind
+                    && x.layout.shape == y.layout.shape
+                    && x.elements.len() == y.elements.len()
+                    && {
+                        let mut same = true;
+                        for (a, b) in x.elements.into_iter().zip(y.elements) {
+                            same &= match (a, b) {
+                                (dense::Element::Raw(a), dense::Element::Raw(b)) => {
+                                    una_core::float::equal(a, b)
+                                }
+                                (dense::Element::Word(a), dense::Element::Word(b)) => {
+                                    admit(a, b, &mut pending)
+                                }
+                                (dense::Element::Raw(a), dense::Element::Word(b))
+                                | (dense::Element::Word(b), dense::Element::Raw(a)) => {
+                                    dense::boxed(b).is_some_and(|b| una_core::float::equal(a, b))
+                                }
+                            };
+                        }
+                        same
+                    }
             }
             // The same items in the same order (`spec/28 §3` rule 3): a set's items are keys,
             // compared whole, so no pair is left pending, as in the interpreter.
@@ -1179,6 +1231,22 @@ enum Node {
         key: (u64, u64),
         entries: Vec<(u64, Cell, Cell)>,
     },
+    /// A dense value's header and its store (design note D1).
+    Dense {
+        layout: Box<dense::Layout>,
+        store: NodeStore,
+    },
+    /// The words store of a dense value.
+    Words(Vec<Cell>),
+}
+
+/// The store of a dense value in a portable value: the same `Arc` of raw `F64` elements, so the
+/// copy shares the buffer and charges its header only (ADR 0113 amendment of 2026-10-19), or
+/// the node of the words store, copied as a list is.
+#[derive(Debug)]
+enum NodeStore {
+    F64(Arc<Vec<f64>>),
+    Words(Cell),
 }
 
 /// The entries in each segment of a copy's pending stack (ADR 0113 rule 5).
@@ -1369,6 +1437,9 @@ impl Object {
                 cells: held,
             } => id.len() + code.len() * size_of::<i64>() + cells(held.len()),
             Object::Map(entries) => entries.len() * size_of::<(Cell, Cell)>(),
+            // The header only: an `F64` store is shared, and a words store is a node of its own.
+            Object::Dense(_) => dense::HEADER_BYTES,
+            Object::Words(items) => cells(items.len()),
             Object::Seq(items) => cells(items.len()),
             Object::Set(items) => cells(items.len()),
             Object::Priority(heap) => heap.entries.len() * size_of::<(u64, Cell, Cell)>(),
@@ -1412,6 +1483,14 @@ impl Object {
                     .map(|(key, value)| (cell(*key), cell(*value)))
                     .collect(),
             ),
+            Object::Dense(header) => Node::Dense {
+                layout: Box::new(header.layout),
+                store: match &header.store {
+                    dense::Store::F64(items) => NodeStore::F64(Arc::clone(items)),
+                    dense::Store::Words(words) => NodeStore::Words(cell(*words)),
+                },
+            },
+            Object::Words(items) => Node::Words(cells(items)),
             Object::Seq(items) => Node::Seq(items.iter().map(|&item| cell(item)).collect()),
             Object::Set(items) => Node::Set(items.values().map(|&item| cell(item)).collect()),
             Object::Priority(heap) => Node::Priority {
@@ -1674,6 +1753,17 @@ fn node_matches(object: &Object, node: &Node, index: impl Fn(i64) -> Option<usiz
                     .zip(pairs)
                     .all(|((key, value), &(k, v))| cell_of(*key) == k && cell_of(*value) == v)
         }
+        (Object::Dense(header), Node::Dense { layout, store }) => {
+            header.layout == **layout
+                && match (&header.store, store) {
+                    (dense::Store::F64(a), NodeStore::F64(b)) => Arc::ptr_eq(a, b),
+                    (dense::Store::Words(words), NodeStore::Words(cell)) => {
+                        cell_of(*words) == *cell
+                    }
+                    _ => false,
+                }
+        }
+        (Object::Words(items), Node::Words(cells)) => same(items, cells),
         (Object::Seq(items), Node::Seq(cells)) => {
             items.len() == cells.len()
                 && items
@@ -1931,6 +2021,17 @@ fn node_matches_made(object: &Object, node: &Node, words: &[i64]) -> bool {
                     made_word(k, words) == Some(*key) && made_word(v, words) == Some(*value)
                 })
         }
+        (Object::Dense(header), Node::Dense { layout, store }) => {
+            header.layout == **layout
+                && match (&header.store, store) {
+                    (dense::Store::F64(a), NodeStore::F64(b)) => Arc::ptr_eq(a, b),
+                    (dense::Store::Words(held), NodeStore::Words(cell)) => {
+                        made_word(cell, words) == Some(*held)
+                    }
+                    _ => false,
+                }
+        }
+        (Object::Words(items), Node::Words(cells)) => same(items, cells),
         (Object::Seq(items), Node::Seq(cells)) => {
             items.len() == cells.len()
                 && items
@@ -2086,6 +2187,27 @@ fn import_node(node: &Node, words: &[i64]) -> Result<i64, Refused> {
                 drop(entry);
             }
             map
+        }
+        // The header, with the same `F64` buffer, its count one more: no element is copied
+        // (ADR 0113 amendment of 2026-10-19).
+        Node::Dense { layout, store } => {
+            let _step = step(dense::HEADER_BYTES)?;
+            let store = match store {
+                NodeStore::F64(items) => dense::Store::F64(Arc::clone(items)),
+                NodeStore::Words(cell) => {
+                    let word = cell_word(cell, words);
+                    retain(word);
+                    dense::Store::Words(word)
+                }
+            };
+            alloc(Object::Dense(Box::new(dense::Dense {
+                layout: **layout,
+                store,
+            })))
+        }
+        Node::Words(items) => {
+            let _step = step(cells(items.len()))?;
+            alloc(Object::Words(held(items)))
         }
         Node::Seq(items) => {
             let _step = step(cells(items.len()))?;

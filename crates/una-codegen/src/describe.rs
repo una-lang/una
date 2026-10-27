@@ -84,8 +84,12 @@ impl<'p> Types<'p> {
                         let (key, value) = (self.of(&arg(0)), self.of(&arg(1)));
                         json!({ "shape": "map", "key": key, "value": value })
                     }
-                    // No dense value reaches native code yet (`spec/29 §17`).
-                    "Array" | "Matrix" | "Tensor" | "Lu" => json!({ "shape": "other" }),
+                    // A dense value says its kind and shape; its elements render by their type
+                    // (`spec/29 §17`, ADR 0120 rule 41).
+                    "Array" | "Matrix" | "Tensor" | "Lu" => {
+                        let element = self.of(&arg(0));
+                        json!({ "shape": "dense", "element": element })
+                    }
                     // JSON (`spec/23 §1`): `Json` holds itself through its arrays and objects,
                     // which refer to its own index.
                     "Json" => {

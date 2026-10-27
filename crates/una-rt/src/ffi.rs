@@ -271,6 +271,8 @@ macro_rules! exported {
     ($($name:ident => $function:path, ($($arg:ident),*);)*) => {
         $(
             #[doc = concat!("[`", stringify!($function), "`], for the generated code.")]
+            // A tensor's functions of rank 8 take its site, the tensor and 8 indices and an item.
+            #[allow(clippy::too_many_arguments)]
             #[unsafe(no_mangle)]
             pub extern "C" fn $name($($arg: i64),*) -> i64 {
                 $function($($arg),*)
@@ -440,6 +442,150 @@ exported! {
     una_rt_limiter_instance => host::limiter_instance, (at_most, per, waiting);
     una_rt_limit_acquire => host::limit_acquire, (site, instance);
     una_rt_event => host::event, (site, instance);
+    // Dense values (`spec/29 §17`, ADR 0120, design note D5): the site first, and a tensor's
+    // functions per rank.
+    una_rt_array => values::dense::array, (site, xs);
+    una_rt_array_filled => values::dense::array_filled, (site, length, value);
+    una_rt_matrix => values::dense::matrix, (site, rows, columns, elements);
+    una_rt_matrix_filled => values::dense::matrix_filled, (site, rows, columns, value);
+    una_rt_matrix_diagonal => values::dense::matrix_diagonal, (site, values);
+    una_rt_tensor => values::dense::tensor, (site, shape, elements);
+    una_rt_tensor_filled => values::dense::tensor_filled, (site, shape, value);
+    una_rt_dense_array_get => values::dense::array_get, (site, a, index);
+    una_rt_dense_array_at => values::dense::array_at, (site, a, index);
+    una_rt_dense_array_set => values::dense::array_set, (site, a, index, item);
+    una_rt_dense_array_set_owned => values::dense::array_set_owned, (site, a, index, item);
+    una_rt_dense_array_slice => values::dense::array_slice, (site, a, from, until);
+    una_rt_dense_array_compact => values::dense::array_compact, (site, a);
+    una_rt_dense_array_to_list => values::dense::array_to_list, (site, a);
+    una_rt_dense_array_multiply_elements => values::dense::array_multiply_elements, (site, a, by);
+    una_rt_dense_array_divide_elements => values::dense::array_divide_elements, (site, a, by);
+    una_rt_dense_array_sum => values::dense::array_sum, (site, a);
+    una_rt_dense_array_dot => values::dense::array_dot, (site, a, with);
+    una_rt_dense_array_norm2 => values::dense::array_norm2, (site, a);
+    una_rt_dense_array_all_finite => values::dense::array_all_finite, (site, a);
+    una_rt_dense_array_sum_exact => values::dense::array_sum_exact, (site, a);
+    una_rt_dense_array_dot_exact => values::dense::array_dot_exact, (site, a, with);
+    una_rt_dense_array_add_scaled => values::dense::array_add_scaled, (site, a, x, by);
+    una_rt_dense_array_add_scaled_owned => values::dense::array_add_scaled_owned, (site, a, x, by);
+    una_rt_dense_array_scale => values::dense::array_scale, (site, a, by);
+    una_rt_dense_array_scale_owned => values::dense::array_scale_owned, (site, a, by);
+    una_rt_dense_array_to_tensor => values::dense::array_to_tensor, (site, a);
+    una_rt_dense_matrix_get => values::dense::matrix_get, (site, m, row, column);
+    una_rt_dense_matrix_at => values::dense::matrix_at, (site, m, row, column);
+    una_rt_dense_matrix_set => values::dense::matrix_set, (site, m, row, column, item);
+    una_rt_dense_matrix_set_owned => values::dense::matrix_set_owned, (site, m, row, column, item);
+    una_rt_dense_matrix_row => values::dense::matrix_row, (site, m, index);
+    una_rt_dense_matrix_column => values::dense::matrix_column, (site, m, index);
+    una_rt_dense_matrix_block => values::dense::matrix_block, (site, m, row_from, row_until, column_from, column_until);
+    una_rt_dense_matrix_transpose => values::dense::matrix_transpose, (site, m);
+    una_rt_dense_matrix_compact => values::dense::matrix_compact, (site, m);
+    una_rt_dense_matrix_multiply_elements => values::dense::matrix_multiply_elements, (site, m, by);
+    una_rt_dense_matrix_divide_elements => values::dense::matrix_divide_elements, (site, m, by);
+    una_rt_dense_matrix_sum => values::dense::matrix_sum, (site, m);
+    una_rt_dense_matrix_row_sums => values::dense::matrix_row_sums, (site, m);
+    una_rt_dense_matrix_column_sums => values::dense::matrix_column_sums, (site, m);
+    una_rt_dense_matrix_all_finite => values::dense::matrix_all_finite, (site, m);
+    una_rt_dense_matrix_sum_exact => values::dense::matrix_sum_exact, (site, m);
+    una_rt_dense_matrix_multiply => values::dense::matrix_multiply, (site, m, by);
+    una_rt_dense_matrix_multiply_array => values::dense::matrix_multiply_array, (site, m, by);
+    una_rt_dense_matrix_add_product => values::dense::matrix_add_product, (site, m, of, and);
+    una_rt_dense_matrix_add_product_owned => values::dense::matrix_add_product_owned, (site, m, of, and);
+    una_rt_dense_matrix_scale => values::dense::matrix_scale, (site, m, by);
+    una_rt_dense_matrix_scale_owned => values::dense::matrix_scale_owned, (site, m, by);
+    una_rt_dense_matrix_to_tensor => values::dense::matrix_to_tensor, (site, m);
+    una_rt_dense_matrix_lu => values::dense::matrix_lu, (site, m);
+    una_rt_dense_matrix_solve => values::dense::matrix_solve, (site, m, rhs);
+    una_rt_dense_matrix_solve_array => values::dense::matrix_solve_array, (site, m, rhs);
+    una_rt_dense_matrix_cholesky => values::dense::matrix_cholesky, (site, m);
+    una_rt_dense_matrix_solve_lower => values::dense::matrix_solve_lower, (site, m, rhs, unit);
+    una_rt_dense_matrix_solve_upper => values::dense::matrix_solve_upper, (site, m, rhs, unit);
+    una_rt_dense_lu_solve => values::dense::lu_solve, (site, f, rhs);
+    una_rt_dense_lu_factors => values::dense::lu_factors, (site, f);
+    una_rt_dense_lu_pivots => values::dense::lu_pivots, (site, f);
+    una_rt_dense_tensor_make_1 => values::dense::tensor_make_1, (site, a0, elements);
+    una_rt_dense_tensor_filled_1 => values::dense::tensor_filled_1, (site, a0, value);
+    una_rt_dense_tensor_get_1 => values::dense::tensor_get_1, (site, t, a0);
+    una_rt_dense_tensor_at_1 => values::dense::tensor_at_1, (site, t, a0);
+    una_rt_dense_tensor_set_1 => values::dense::tensor_set_1, (site, t, a0, item);
+    una_rt_dense_tensor_set_1_owned => values::dense::tensor_set_1_owned, (site, t, a0, item);
+    una_rt_dense_tensor_permute_1 => values::dense::tensor_permute_1, (site, t, a0);
+    una_rt_dense_tensor_reshape_1 => values::dense::tensor_reshape_1, (site, t, a0);
+    una_rt_dense_tensor_make_2 => values::dense::tensor_make_2, (site, a0, a1, elements);
+    una_rt_dense_tensor_filled_2 => values::dense::tensor_filled_2, (site, a0, a1, value);
+    una_rt_dense_tensor_get_2 => values::dense::tensor_get_2, (site, t, a0, a1);
+    una_rt_dense_tensor_at_2 => values::dense::tensor_at_2, (site, t, a0, a1);
+    una_rt_dense_tensor_set_2 => values::dense::tensor_set_2, (site, t, a0, a1, item);
+    una_rt_dense_tensor_set_2_owned => values::dense::tensor_set_2_owned, (site, t, a0, a1, item);
+    una_rt_dense_tensor_permute_2 => values::dense::tensor_permute_2, (site, t, a0, a1);
+    una_rt_dense_tensor_reshape_2 => values::dense::tensor_reshape_2, (site, t, a0, a1);
+    una_rt_dense_tensor_make_3 => values::dense::tensor_make_3, (site, a0, a1, a2, elements);
+    una_rt_dense_tensor_filled_3 => values::dense::tensor_filled_3, (site, a0, a1, a2, value);
+    una_rt_dense_tensor_get_3 => values::dense::tensor_get_3, (site, t, a0, a1, a2);
+    una_rt_dense_tensor_at_3 => values::dense::tensor_at_3, (site, t, a0, a1, a2);
+    una_rt_dense_tensor_set_3 => values::dense::tensor_set_3, (site, t, a0, a1, a2, item);
+    una_rt_dense_tensor_set_3_owned => values::dense::tensor_set_3_owned, (site, t, a0, a1, a2, item);
+    una_rt_dense_tensor_permute_3 => values::dense::tensor_permute_3, (site, t, a0, a1, a2);
+    una_rt_dense_tensor_reshape_3 => values::dense::tensor_reshape_3, (site, t, a0, a1, a2);
+    una_rt_dense_tensor_make_4 => values::dense::tensor_make_4, (site, a0, a1, a2, a3, elements);
+    una_rt_dense_tensor_filled_4 => values::dense::tensor_filled_4, (site, a0, a1, a2, a3, value);
+    una_rt_dense_tensor_get_4 => values::dense::tensor_get_4, (site, t, a0, a1, a2, a3);
+    una_rt_dense_tensor_at_4 => values::dense::tensor_at_4, (site, t, a0, a1, a2, a3);
+    una_rt_dense_tensor_set_4 => values::dense::tensor_set_4, (site, t, a0, a1, a2, a3, item);
+    una_rt_dense_tensor_set_4_owned => values::dense::tensor_set_4_owned, (site, t, a0, a1, a2, a3, item);
+    una_rt_dense_tensor_permute_4 => values::dense::tensor_permute_4, (site, t, a0, a1, a2, a3);
+    una_rt_dense_tensor_reshape_4 => values::dense::tensor_reshape_4, (site, t, a0, a1, a2, a3);
+    una_rt_dense_tensor_make_5 => values::dense::tensor_make_5, (site, a0, a1, a2, a3, a4, elements);
+    una_rt_dense_tensor_filled_5 => values::dense::tensor_filled_5, (site, a0, a1, a2, a3, a4, value);
+    una_rt_dense_tensor_get_5 => values::dense::tensor_get_5, (site, t, a0, a1, a2, a3, a4);
+    una_rt_dense_tensor_at_5 => values::dense::tensor_at_5, (site, t, a0, a1, a2, a3, a4);
+    una_rt_dense_tensor_set_5 => values::dense::tensor_set_5, (site, t, a0, a1, a2, a3, a4, item);
+    una_rt_dense_tensor_set_5_owned => values::dense::tensor_set_5_owned, (site, t, a0, a1, a2, a3, a4, item);
+    una_rt_dense_tensor_permute_5 => values::dense::tensor_permute_5, (site, t, a0, a1, a2, a3, a4);
+    una_rt_dense_tensor_reshape_5 => values::dense::tensor_reshape_5, (site, t, a0, a1, a2, a3, a4);
+    una_rt_dense_tensor_make_6 => values::dense::tensor_make_6, (site, a0, a1, a2, a3, a4, a5, elements);
+    una_rt_dense_tensor_filled_6 => values::dense::tensor_filled_6, (site, a0, a1, a2, a3, a4, a5, value);
+    una_rt_dense_tensor_get_6 => values::dense::tensor_get_6, (site, t, a0, a1, a2, a3, a4, a5);
+    una_rt_dense_tensor_at_6 => values::dense::tensor_at_6, (site, t, a0, a1, a2, a3, a4, a5);
+    una_rt_dense_tensor_set_6 => values::dense::tensor_set_6, (site, t, a0, a1, a2, a3, a4, a5, item);
+    una_rt_dense_tensor_set_6_owned => values::dense::tensor_set_6_owned, (site, t, a0, a1, a2, a3, a4, a5, item);
+    una_rt_dense_tensor_permute_6 => values::dense::tensor_permute_6, (site, t, a0, a1, a2, a3, a4, a5);
+    una_rt_dense_tensor_reshape_6 => values::dense::tensor_reshape_6, (site, t, a0, a1, a2, a3, a4, a5);
+    una_rt_dense_tensor_make_7 => values::dense::tensor_make_7, (site, a0, a1, a2, a3, a4, a5, a6, elements);
+    una_rt_dense_tensor_filled_7 => values::dense::tensor_filled_7, (site, a0, a1, a2, a3, a4, a5, a6, value);
+    una_rt_dense_tensor_get_7 => values::dense::tensor_get_7, (site, t, a0, a1, a2, a3, a4, a5, a6);
+    una_rt_dense_tensor_at_7 => values::dense::tensor_at_7, (site, t, a0, a1, a2, a3, a4, a5, a6);
+    una_rt_dense_tensor_set_7 => values::dense::tensor_set_7, (site, t, a0, a1, a2, a3, a4, a5, a6, item);
+    una_rt_dense_tensor_set_7_owned => values::dense::tensor_set_7_owned, (site, t, a0, a1, a2, a3, a4, a5, a6, item);
+    una_rt_dense_tensor_permute_7 => values::dense::tensor_permute_7, (site, t, a0, a1, a2, a3, a4, a5, a6);
+    una_rt_dense_tensor_reshape_7 => values::dense::tensor_reshape_7, (site, t, a0, a1, a2, a3, a4, a5, a6);
+    una_rt_dense_tensor_make_8 => values::dense::tensor_make_8, (site, a0, a1, a2, a3, a4, a5, a6, a7, elements);
+    una_rt_dense_tensor_filled_8 => values::dense::tensor_filled_8, (site, a0, a1, a2, a3, a4, a5, a6, a7, value);
+    una_rt_dense_tensor_get_8 => values::dense::tensor_get_8, (site, t, a0, a1, a2, a3, a4, a5, a6, a7);
+    una_rt_dense_tensor_at_8 => values::dense::tensor_at_8, (site, t, a0, a1, a2, a3, a4, a5, a6, a7);
+    una_rt_dense_tensor_set_8 => values::dense::tensor_set_8, (site, t, a0, a1, a2, a3, a4, a5, a6, a7, item);
+    una_rt_dense_tensor_set_8_owned => values::dense::tensor_set_8_owned, (site, t, a0, a1, a2, a3, a4, a5, a6, a7, item);
+    una_rt_dense_tensor_permute_8 => values::dense::tensor_permute_8, (site, t, a0, a1, a2, a3, a4, a5, a6, a7);
+    una_rt_dense_tensor_reshape_8 => values::dense::tensor_reshape_8, (site, t, a0, a1, a2, a3, a4, a5, a6, a7);
+    una_rt_dense_tensor_dim => values::dense::tensor_dim, (site, t, axis);
+    una_rt_dense_tensor_compact => values::dense::tensor_compact, (site, t);
+    una_rt_dense_tensor_to_array => values::dense::tensor_to_array, (site, t);
+    una_rt_dense_tensor_to_matrix => values::dense::tensor_to_matrix, (site, t);
+    una_rt_dense_tensor_multiply_elements => values::dense::tensor_multiply_elements, (site, t, by);
+    una_rt_dense_tensor_divide_elements => values::dense::tensor_divide_elements, (site, t, by);
+    una_rt_dense_tensor_sum => values::dense::tensor_sum, (site, t);
+    una_rt_dense_tensor_sum_axis => values::dense::tensor_sum_axis, (site, t, axis);
+    una_rt_dense_tensor_all_finite => values::dense::tensor_all_finite, (site, t);
+    una_rt_dense_tensor_sum_exact => values::dense::tensor_sum_exact, (site, t);
+    una_rt_dense_tensor_contract => values::dense::tensor_contract, (site, t, with, axis, other);
+    una_rt_dense_count => values::dense::dense_count, (d);
+    una_rt_dense_item => values::dense::dense_item, (d, k);
+    una_rt_dense_builder => values::dense::dense_builder, (site, like);
+    una_rt_dense_zip_builder => values::dense::dense_zip_builder, (site, like, other);
+    una_rt_dense_push => values::dense::dense_push, (site, builder, item);
+    una_rt_dense_unique => values::dense::dense_unique, (site, d);
+    una_rt_dense_write => values::dense::dense_write, (d, k, item);
+    una_rt_dense_shape => values::dense::dense_shape, (d, axis);
 }
 
 /// A new closure of the compiled lambda at `code`, which takes the closure and `arity`
@@ -1084,8 +1230,8 @@ mod tests {
         *state
     }
 
-    /// The number of words of [`word_pool`]: 26 chosen, then 16 drawn.
-    const WORD_POOL_LEN: usize = 42;
+    /// The number of words of [`word_pool`]: 28 chosen, then 16 drawn.
+    const WORD_POOL_LEN: usize = 44;
 
     /// One call of the word tests: the entry point's name, its function on words, the words.
     type WordCase = (&'static str, fn(&[i64]) -> i64, Vec<i64>);
@@ -1093,16 +1239,25 @@ mod tests {
     /// The calls of the word tests (#766), in a fixed order: every entry point of the table but
     /// the host operations, whose effects (output, files, network) need a run's grants and are
     /// tested with them. All tuples of `pool` for an arity of two or less, and `drawn` tuples
-    /// drawn with a fixed seed above. `range` takes its words from `bounds` when given.
-    fn word_cases(pool: &[i64], bounds: Option<&[i64]>, drawn: usize) -> Vec<WordCase> {
+    /// drawn with a fixed seed above. `range` and the dense values filled from one element take
+    /// their words from `bounds` when given. The entry points of dense values draw `dense_drawn`
+    /// tuples rather than `drawn`.
+    fn word_cases(
+        pool: &[i64],
+        bounds: Option<&[i64]>,
+        drawn: usize,
+        dense_drawn: usize,
+    ) -> Vec<WordCase> {
         let mut state: u64 = 0x766;
         let mut cases = Vec::new();
         for (name, function, arity, call) in super::exported_table() {
             if function.starts_with("host") {
                 continue;
             }
+            // Outside a run no memory budget bounds a range's list, or a dense value filled
+            // from one element (#989): they take small bounds there.
             let words = match bounds {
-                Some(bounds) if name == "una_rt_range" => bounds,
+                Some(bounds) if name == "una_rt_range" || name.contains("_filled") => bounds,
                 _ => pool,
             };
             let mut tuples: Vec<Vec<i64>> = Vec::new();
@@ -1115,7 +1270,15 @@ mod tests {
                     }
                 }
                 _ => {
-                    for _ in 0..drawn {
+                    let dense = [
+                        "una_rt_dense_",
+                        "una_rt_array",
+                        "una_rt_matrix",
+                        "una_rt_tensor",
+                    ]
+                    .iter()
+                    .any(|prefix| name.starts_with(prefix));
+                    for _ in 0..if dense { dense_drawn } else { drawn } {
                         tuples.push(
                             (0..arity)
                                 .map(|_| {
@@ -1173,6 +1336,9 @@ mod tests {
             some_list,
             values::data(3),
             values::map_empty(),
+            // Dense values (#989): an array of raw `F64` elements, and a matrix of words.
+            values::dense::array_filled(0, int(3), values::f64_word(0.5)),
+            values::dense::matrix_filled(0, int(2), int(2), int(7)),
         ];
         let mut state: u64 = 0x0766_0766;
         for _ in 0..16 {
@@ -1209,7 +1375,7 @@ mod tests {
                 (word_pool(), 600, 10_000)
             };
             let small: Vec<i64> = (-3..=3).map(int).collect();
-            let cases = word_cases(&pool, Some(&small), drawn);
+            let cases = word_cases(&pool, Some(&small), drawn, drawn);
             assert!(cases.len() > least, "{}", cases.len());
             let mut failures = Vec::new();
             for (name, call, tuple) in &cases {
@@ -1252,11 +1418,18 @@ mod tests {
             .ok()
             .and_then(|text| text.trim().parse().ok())
             .unwrap_or(0);
-        let args = ["--max-memory".to_owned(), "8".to_owned()];
+        // The budget counts every byte the process holds, this scenario's own list of cases
+        // included, about 14 MiB with the dense entry points (#989): 24 MiB leaves the calls
+        // about the 8 MiB they had before that list grew.
+        let args = ["--max-memory".to_owned(), "24".to_owned()];
         runtime::start(&args, SET_META, move || {
             let pool = word_pool();
             // Fewer drawn tuples than outside a run: each call that ends the run costs a process.
-            let cases = word_cases(&pool, None, 100);
+            // Almost every drawn tuple of a dense value's entry point ends the run, on a
+            // precondition (U8001) or a refusal of the memory budget (U6003), as design note
+            // D4 and D2 of #989 ask, and each ended run costs a process: they draw 20 tuples
+            // here, and all their tuples outside a run.
+            let cases = word_cases(&pool, None, 100, 20);
             for (index, (name, call, tuple)) in cases.iter().enumerate().skip(from) {
                 eprintln!("{WORDS_CALL} {index} {name}{tuple:?}");
                 call(tuple);
@@ -1273,7 +1446,7 @@ mod tests {
     #[cfg_attr(miri, ignore = "runs a process of its own, which Miri cannot")]
     fn every_entry_point_takes_any_word_in_a_run() {
         // #766, step 1, inside a started run, with its heap, its sites and a memory budget of
-        // 8 MiB: the same calls, `range` with every word. A call either returns, or ends the
+        // 24 MiB, about 8 MiB beyond the scenario's own list of cases: the same calls, `range` with every word. A call either returns, or ends the
         // run as the model says (exit code 1 or 3 with its diagnostic: U6003 over the budget,
         // U8001 for a `set` outside its list), and the next run resumes after it. A panic, a
         // signal, another exit, or a run that does not end within `DEADLINE` (a call that hangs,

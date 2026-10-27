@@ -287,10 +287,12 @@ fn new_table_key(site: i64) -> Option<SipKey> {
 // ----- the hash encoding (`spec/28 §1` rule 2, ADR 0119 rule 9) -----
 
 /// A part of a key still to encode: a word of the type a descriptor names, or of the type at an
-/// index of the program's descriptions, with the descriptors of the type parameters it holds.
+/// index of the program's descriptions, with the descriptors of the type parameters it holds,
+/// or a raw `F64` element of a dense value.
 enum Part {
     Described(i64, i64),
     Typed(usize, Rc<Vec<i64>>, i64),
+    Raw(f64),
 }
 
 /// An integer by its mathematical value: a tagged and a promoted `Int` alike.
@@ -317,6 +319,10 @@ fn encode<S: Sink>(types: &Types, encoder: &mut Encoder<'_, S>, desc: i64, word:
     while let Some(part) = pending.pop() {
         let (ty, params, word) = match part {
             Part::Typed(ty, params, word) => (ty, params, word),
+            Part::Raw(x) => {
+                encoder.f64_bits(una_core::float::to_bits(x));
+                continue;
+            }
             Part::Described(desc, word) => match Descriptor::from_word(desc) {
                 Some(Descriptor::Int | Descriptor::Fixed(_)) => {
                     integer(encoder, &int_value(word));
@@ -385,6 +391,24 @@ fn encode<S: Sink>(types: &Types, encoder: &mut Encoder<'_, S>, desc: i64, word:
                 for (k, v) in entries.into_iter().rev() {
                     pending.push(Part::Typed(*value, Rc::clone(&params), v));
                     pending.push(Part::Typed(*key, Rc::clone(&params), k));
+                }
+            }
+            // The shape, then each element in row-major order, whatever the view's offset and
+            // strides (ADR 0120, the amendment of ADR 0119 rule 9), as in the interpreter.
+            Some(Shape::Dense(of)) => {
+                let Some(parts) = super::dense::parts(word) else {
+                    return false;
+                };
+                for length in parts.layout.shape.as_slice() {
+                    encoder.len(*length);
+                }
+                for element in parts.elements.into_iter().rev() {
+                    pending.push(match element {
+                        super::dense::Element::Raw(x) => Part::Raw(x),
+                        super::dense::Element::Word(item) => {
+                            Part::Typed(*of, Rc::clone(&params), item)
+                        }
+                    });
                 }
             }
             // Its size, then its words, little-endian: the bits past the size stay zero.
