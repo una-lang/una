@@ -1178,8 +1178,14 @@ mod tests {
     /// the host operations, whose effects (output, files, network) need a run's grants and are
     /// tested with them. All tuples of `pool` for an arity of two or less, and `drawn` tuples
     /// drawn with a fixed seed above. `range` and the dense values filled from one element take
-    /// their words from `bounds` when given.
-    fn word_cases(pool: &[i64], bounds: Option<&[i64]>, drawn: usize) -> Vec<WordCase> {
+    /// their words from `bounds` when given. The entry points of dense values draw `dense_drawn`
+    /// tuples rather than `drawn`.
+    fn word_cases(
+        pool: &[i64],
+        bounds: Option<&[i64]>,
+        drawn: usize,
+        dense_drawn: usize,
+    ) -> Vec<WordCase> {
         let mut state: u64 = 0x766;
         let mut cases = Vec::new();
         for (name, function, arity, call) in super::exported_table() {
@@ -1202,7 +1208,15 @@ mod tests {
                     }
                 }
                 _ => {
-                    for _ in 0..drawn {
+                    let dense = [
+                        "una_rt_dense_",
+                        "una_rt_array",
+                        "una_rt_matrix",
+                        "una_rt_tensor",
+                    ]
+                    .iter()
+                    .any(|prefix| name.starts_with(prefix));
+                    for _ in 0..if dense { dense_drawn } else { drawn } {
                         tuples.push(
                             (0..arity)
                                 .map(|_| {
@@ -1299,7 +1313,7 @@ mod tests {
                 (word_pool(), 600, 10_000)
             };
             let small: Vec<i64> = (-3..=3).map(int).collect();
-            let cases = word_cases(&pool, Some(&small), drawn);
+            let cases = word_cases(&pool, Some(&small), drawn, drawn);
             assert!(cases.len() > least, "{}", cases.len());
             let mut failures = Vec::new();
             for (name, call, tuple) in &cases {
@@ -1346,7 +1360,11 @@ mod tests {
         runtime::start(&args, SET_META, move || {
             let pool = word_pool();
             // Fewer drawn tuples than outside a run: each call that ends the run costs a process.
-            let cases = word_cases(&pool, None, 100);
+            // Almost every drawn tuple of a dense value's entry point ends the run, on a
+            // precondition (U8001) or a refusal of the memory budget (U6003), as design note
+            // D4 and D2 of #989 ask, and each ended run costs a process: they draw 20 tuples
+            // here, and all their tuples outside a run.
+            let cases = word_cases(&pool, None, 100, 20);
             for (index, (name, call, tuple)) in cases.iter().enumerate().skip(from) {
                 eprintln!("{WORDS_CALL} {index} {name}{tuple:?}");
                 call(tuple);
