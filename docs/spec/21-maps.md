@@ -41,6 +41,7 @@ The operations are a prelude function and built-in methods resolved by the recei
 4. **Interpolation** (ADR 0068). A map renders as `{k: v, …}` in key order, with keys and values in the Una form of `spec/11 §5`, and `{}` when it is empty: `{"a": 1, "b": 2}`.
 5. **`update`** (v0.4, ADR 0119 rule 18, the amendment of ADR 0069). In edition `0.4`, `edit m.update(key: k, initial: i, change: f)` changes a value in one statement:
    - It takes the receiver as `edit`, as `set` does (rule 1), and its contract is that of `set` at `k`, with `f(v)` for the value.
+   - `initial` has the map's value type `V`, as the parameter and result of `change` do: the type comes from the map, so `initial: []` for a `Map[Text, List[Text]]` is an empty `List[Text]`.
    - `change` has the type `fn(V) -> V`. `update` declares `uses of change` and `fails of change`, as `map` does (`spec/14 §1`, ADR 0062), and calls `change` exactly once. When `change` fails, the call fails with it and `m` keeps its value from before the call (`spec/17 §7` rule 1).
    - It is a built-in method, reached only by method syntax on a map: it resolves ahead of any function named `update` in scope, and no name `update` enters scope. A package function named `update` whose first parameter is a `Map`, refined or not, or a type parameter, is U1002 at its declaration in edition `0.4`, and so is an import of one (`spec/28 §2`).
    - Its cost is O(log n): a lookup and an insertion (`§5`).

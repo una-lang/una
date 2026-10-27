@@ -145,7 +145,8 @@ From edition `0.4`, a package describes itself in `ita.una`, a declarative file 
    - **the lock** exists and parses (U7009 at the start of `ita.una` when it is missing, with the repair `una ita lock`);
    - **consistency:** every need of `ita.una`, and every `needs` line of every locked package, is met by a locked package of its name on its major line at a version at least the one required; each package is locked once on its major line; and every locked package is reachable from the root by those needs. Each problem is U7009, at the need or at the package line, with the repair `una ita lock`. The walk costs O((n + p + r) log p) for n needs, p packages and r `needs` lines.
    - **presence, integrity and provenance** of each registry package, as §9 rule 9 states (U7011, U7010).
-4. **`una ita lock [path]`** resolves the package at `path`, `.` by default, as §10 states, and writes its lock. The solver section is the existing lock's, or the release's default when the package has none yet. An invalid `ita.una` or `ita.lock`, or a need with no resolution (U7013), is reported and nothing is written, so a pin is never replaced silently. `una ita lock --check` writes nothing, and reports where the lock is missing or not the one `una ita lock` writes (U7009). `--dry-run` prints the review of §10 rule 8 and writes nothing.
+4. **`una ita lock [path]`** resolves the package at `path`, `.` by default, as §10 states, and writes its lock. The solver section is the existing lock's, or the release's default when the package has none yet. An invalid `ita.una` or `ita.lock`, or a need with no resolution (U7013), is reported and nothing is written, so a pin is never replaced silently.
+`una ita lock --check` writes nothing, and reports where the lock is missing or not the one `una ita lock` writes (U7009). `--dry-run` prints the review of §10 rule 8 and writes nothing.
 
 ## 5. Workspaces: `itaty.una`
 
@@ -284,6 +285,8 @@ The registry client verifies what it reads with these rules, each a pure functio
    - the need says `accept name`, since a local package carries a name a registry may hold, and no client can tell offline which owners a registry serves (U7012 otherwise);
    - its edition is the package's or earlier (U7012 otherwise);
    - and, in this release, it has no needs of its own, no labels, no trusted modules, no boundaries and no contracts, and the need's `may` lines name host capabilities only (U7008 at the need otherwise).
+
+   Each of these problems is reported at the need's line in `ita.una`, from its first column, whichever part of the need it concerns.
 
    A dependency that is not used is not checked, and its modules are not importable.
 3. **Modules.** A dependency's module `m` is the module `<local>.m` of the program, where `<local>` is the need's local name: the root writes `import util.text (shout)`. A dependency's modules import their own modules by their own paths, and the standard modules, never a module of the root (U1001). A module of the root whose first path segment is a local name is U1010. Each module's file path is checked against its own package's `src/` (U1008).
