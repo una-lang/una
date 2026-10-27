@@ -50,3 +50,27 @@ pub fn una(dir: &Path, args: &[&str]) -> Output {
         .output()
         .unwrap()
 }
+
+/// A package of edition `0.4` named `name` in a fresh temporary directory, whose entry module
+/// `module` is `program`, granted `console`, built with `una build`.
+pub fn within_package(name: &str, module: &str, program: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("una-timing-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(
+        dir.join("ita.una"),
+        format!(
+            "ita {name}\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry {module}\n  grants\n    console\n"
+        ),
+    )
+    .unwrap();
+    std::fs::copy(
+        root().join("tests/conformance/runtime/within_runs/ita.lock"),
+        dir.join("ita.lock"),
+    )
+    .unwrap();
+    std::fs::write(dir.join(format!("src/{module}.una")), program).unwrap();
+    let built = una(&dir, &["build", "."]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    dir
+}

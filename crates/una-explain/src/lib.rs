@@ -63,7 +63,10 @@ pub fn text(code: Code) -> &'static str {
         Code::U2032 => include_str!("../explain/U2032.md"),
         Code::U2033 => include_str!("../explain/U2033.md"),
         Code::U2034 => include_str!("../explain/U2034.md"),
+        Code::U2035 => include_str!("../explain/U2035.md"),
         Code::U2037 => include_str!("../explain/U2037.md"),
+        Code::U2038 => include_str!("../explain/U2038.md"),
+        Code::U2039 => include_str!("../explain/U2039.md"),
         Code::U2040 => include_str!("../explain/U2040.md"),
         Code::U3001 => include_str!("../explain/U3001.md"),
         Code::U3002 => include_str!("../explain/U3002.md"),
@@ -93,6 +96,7 @@ pub fn text(code: Code) -> &'static str {
         Code::U3027 => include_str!("../explain/U3027.md"),
         Code::U3028 => include_str!("../explain/U3028.md"),
         Code::U3029 => include_str!("../explain/U3029.md"),
+        Code::U3032 => include_str!("../explain/U3032.md"),
         Code::U4001 => include_str!("../explain/U4001.md"),
         Code::U4002 => include_str!("../explain/U4002.md"),
         Code::U4003 => include_str!("../explain/U4003.md"),
@@ -121,6 +125,7 @@ pub fn text(code: Code) -> &'static str {
         Code::U7011 => include_str!("../explain/U7011.md"),
         Code::U7012 => include_str!("../explain/U7012.md"),
         Code::U7013 => include_str!("../explain/U7013.md"),
+        Code::U7014 => include_str!("../explain/U7014.md"),
         Code::U8001 => include_str!("../explain/U8001.md"),
     }
 }

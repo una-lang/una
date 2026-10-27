@@ -13,10 +13,14 @@ fn the_pin_is_recorded_and_the_library_digest_follows_the_link() {
     assert_eq!(BUILD.tree.len(), 40);
     assert_eq!(BUILD.source_sha256.len(), 64);
     assert_eq!(BUILD.library_sha256.is_empty(), !BUILD.linked);
-    assert!(
-        !BUILD.release || BUILD.linked,
-        "a release build has the library"
-    );
+    if BUILD.release {
+        // With the line above, a library digest means a linked library.
+        assert_eq!(
+            BUILD.library_sha256.len(),
+            64,
+            "a release build has the library"
+        );
+    }
 }
 
 /// The solver version that `verification.lock` pins, read from the file.
@@ -49,6 +53,9 @@ fn an_unconfined_call_aborts_the_process() {
     if !BUILD.linked {
         return;
     }
+    // The test re-runs itself as the child: it reads the probe's variable and, should the call
+    // return, ends that child at once (the test crates' rules do not cover a child process).
+    #[allow(clippy::disallowed_methods, clippy::exit)]
     if std::env::var_os("UNA_Z3_ABORT_PROBE").is_some() {
         // The child: nothing recorded a confinement, so this must not return.
         let _ = run(&["-version"]);

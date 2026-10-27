@@ -13,6 +13,7 @@
 //! log itaty.log <base64 key>
 //! witnesses 3
 //! key witness.a <base64 key>           (one line per witness)
+//! witnesses-revoked <hex fingerprint> … (optional: witness keys whose cosignatures never count)
 //! security 2
 //! key security.a <base64 key>          (one line per security key)
 //! itauna 2
@@ -55,6 +56,9 @@ pub struct Root {
     pub log: Key,
     /// The witnesses, and how many co-signatures a checkpoint needs.
     pub witnesses: Keys,
+    /// The witnesses revoked, by the fingerprint of their keys, the hex SHA-256 of the public
+    /// key: their cosignatures count for nothing at any version, under any name.
+    pub witnesses_revoked: Vec<String>,
     /// The security keys that sign advisories, and how many lift a cooldown (rule 41).
     pub security: Keys,
     /// The keys of Itaúna, the official set (rule 38.1).
@@ -123,6 +127,39 @@ fn parse(document: &str) -> Result<(Root, Note), String> {
     let root = set("root", &mut next)?;
     let log = key_line(&next("log")?)?;
     let witnesses = set("witnesses", &mut next)?;
+    // Optional: `witnesses-revoked <fingerprint> …`, each the hex SHA-256 of a witness's
+    // public key, 64 lowercase hex digits, at least one, none twice, none a witness of this
+    // version: a key, so no renaming escapes it and no reused name is caught by it.
+    let witnesses_revoked: Vec<String> = match next("witnesses-revoked") {
+        Ok(value) => {
+            let revoked: Vec<String> = value.split(' ').map(str::to_owned).collect();
+            for (at, fingerprint) in revoked.iter().enumerate() {
+                let valid = fingerprint.len() == 64
+                    && fingerprint
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+                if !valid {
+                    return Err(format!(
+                        "`{fingerprint}` is not a witness key's fingerprint, 64 lowercase hex digits"
+                    ));
+                }
+                if revoked.iter().take(at).any(|other| other == fingerprint) {
+                    return Err(format!("the witness key {fingerprint} is revoked twice"));
+                }
+                if witnesses
+                    .keys
+                    .iter()
+                    .any(|key| super::owner::fingerprint(&key.public) == *fingerprint)
+                {
+                    return Err(format!(
+                        "the witness key {fingerprint} is both a witness and revoked"
+                    ));
+                }
+            }
+            revoked
+        }
+        Err(_) => Vec::new(),
+    };
     let security = set("security", &mut next)?;
     let itauna = set("itauna", &mut next)?;
     if at != lines.len() {
@@ -152,6 +189,7 @@ fn parse(document: &str) -> Result<(Root, Note), String> {
             root,
             log,
             witnesses,
+            witnesses_revoked,
             security,
             itauna,
             digest: digest(document),
@@ -200,12 +238,16 @@ pub fn trust_first(document: &str, pin: &str) -> Result<Root, String> {
 
 /// Walks the chain from `known` through `next`, versions `n + 1`, `n + 2`, … in order (rule 35):
 /// each is accepted only if signed by the threshold of the previous version's root keys and by
-/// the threshold of its own. Versions passed may have expired; the last one MUST NOT have, at
-/// `now`, the witness time of rule 36.4.
+/// the threshold of its own, and none lists as a witness a key an earlier version revoked.
+/// Versions passed may have expired; the last one MUST NOT have, at `now`, the witness time of
+/// rule 36.4.
 pub fn walk(known: &Root, next: &[&str], now: u64) -> Result<Root, String> {
     let mut current = known.clone();
+    let mut revoked: Vec<String> = known.witnesses_revoked.clone();
     for document in next {
         let (root, note) = parse(document)?;
+        not_readded(&root, &revoked)?;
+        revoked.extend(root.witnesses_revoked.iter().cloned());
         if root.source != current.source {
             return Err(format!(
                 "root metadata of `{}` follows one of `{}`",
@@ -239,4 +281,81 @@ pub fn walk(known: &Root, next: &[&str], now: u64) -> Result<Root, String> {
         ));
     }
     Ok(current)
+}
+
+/// Every version of the root chain from `known`, the ones of `next` walked as [`walk`] walks
+/// them, in order, `known` first. The last must not have expired at `now`.
+pub fn walk_all(known: &Root, next: &[&str], now: u64) -> Result<Vec<Root>, String> {
+    let mut walked = vec![known.clone()];
+    for at in 0..next.len() {
+        let last = walked.last().cloned().unwrap_or_else(|| known.clone());
+        let step = next.get(at..=at).unwrap_or_default();
+        let after = walk(&last, step, if at + 1 == next.len() { now } else { 0 })?;
+        walked.push(after);
+    }
+    if next.is_empty() && known.expires <= now {
+        walk(known, &[], now)?;
+    }
+    let mut revoked: Vec<String> = Vec::new();
+    for root in &walked {
+        not_readded(root, &revoked)?;
+        revoked.extend(root.witnesses_revoked.iter().cloned());
+    }
+    Ok(walked)
+}
+
+/// Refuses `root` when a witness of it is one an earlier root of the chain revoked, `revoked`
+/// their fingerprints: a key revoked is never a witness again (`spec/30 §11` rule 8). O(W R)
+/// for its W witnesses and R fingerprints revoked.
+fn not_readded(root: &Root, revoked: &[String]) -> Result<(), String> {
+    for key in &root.witnesses.keys {
+        let fingerprint = super::owner::fingerprint(&key.public);
+        if revoked.contains(&fingerprint) {
+            return Err(format!(
+                "root version {} lists the witness `{}`, whose key {fingerprint} an earlier version revoked",
+                root.version, key.name
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The prefix of the checkpoint extension line that names the root metadata a checkpoint was
+/// signed under (`spec/30 §11`).
+pub const CHECKPOINT_ROOT: &str = "ita-root ";
+
+/// The root metadata a checkpoint names, from its extension lines: exactly one line
+/// `ita-root <version> sha256:<hex>`, inside the signed text, so the log's signature and every
+/// cosignature cover it. Its version and its digest.
+pub fn named(extensions: &[String]) -> Result<(u64, String), String> {
+    let mut lines = extensions
+        .iter()
+        .filter(|line| line.starts_with(CHECKPOINT_ROOT.trim_end()));
+    let line = lines
+        .next()
+        .ok_or("the checkpoint names no root metadata: it has no `ita-root` line")?;
+    if lines.next().is_some() {
+        return Err("the checkpoint has two `ita-root` lines".to_owned());
+    }
+    let value = line
+        .strip_prefix(CHECKPOINT_ROOT)
+        .ok_or("the `ita-root` line is not `ita-root <version> sha256:<hex>`")?;
+    let (version, digest) = value
+        .split_once(' ')
+        .ok_or("the `ita-root` line is not `ita-root <version> sha256:<hex>`")?;
+    let valid = !version.is_empty()
+        && version.len() <= 20
+        && version.bytes().all(|b| b.is_ascii_digit())
+        && !version.starts_with('0');
+    let version: u64 = version
+        .parse()
+        .ok()
+        .filter(|_| valid)
+        .ok_or("the `ita-root` version is not a decimal from 1 without a leading zero")?;
+    if !crate::ita::is_digest(digest) {
+        return Err(
+            "the `ita-root` digest is not `sha256:` and 64 lowercase hex digits".to_owned(),
+        );
+    }
+    Ok((version, digest.to_owned()))
 }

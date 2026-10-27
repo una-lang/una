@@ -46,7 +46,7 @@ Obligations are generated from Core IR by a traversal that maintains a **path co
 | `division` | `div`, `mod` with non-literal divisor | divisor ≠ 0 |
 | `exhaustive` | `when` with range or literal arms and no `else` | disjunction of arm conditions |
 
-(v0.2, ADR 0057.) The kind `overflow` joins this table. It is generated at each arithmetic operator on a fixed-width integer type and at each narrowing conversion, and its goal is that the exact result lies in the type's range (`spec/18 §3`).
+(v0.2, ADR 0057.) The kind `overflow` joins this table. It is generated at each arithmetic operator on a fixed-width integer type and at each narrowing conversion, and its goal is that the exact result lies in the type's range (`spec/18 §3`). (v0.3, ADR 0109 rule 3.) In a `systems` package it is also generated at each arithmetic operator and unary `-` on `Int` outside clauses, at `convert()` on an `Int` magnitude, at an `Int` literal outside -2^62 to 2^62 - 1, and at calls of `sum`, `abs` and `to_int()` on `I64` and `U64`: its goal is that the exact result lies in -2^62 to 2^62 - 1 (`spec/18 §3` rule 5).
 
 (v0.3, ADR 0092.) The kind `effect_condition` joins this table. It is generated where an operation conditioned by `where` (`spec/05 §3` rule 4) may run: at the operation, at a call of a named function or of a function value that receives the binding, and at a `with` that installs a handler using it. Its goal is ground: the condition, or the callee's condition implying it.
 
