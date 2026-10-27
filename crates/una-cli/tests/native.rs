@@ -935,7 +935,8 @@ fn without_a_declared_budget_the_flag_keeps_its_meaning() {
     assert_eq!(String::from_utf8_lossy(&run.stdout), "Hello, Una\n");
     let built = una(&dir, &["build"]);
     assert_eq!(built.status.code(), Some(0), "{built:?}");
-    let native = Command::new(dir.join("target/una/hello"))
+    // The executable takes the package's name.
+    let native = Command::new(dir.join("target/una/budget_none"))
         .args(["--max-memory", "8192"])
         .current_dir(&dir)
         .output()
