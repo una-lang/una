@@ -181,6 +181,7 @@ fn limits<'a>(
         http: options.http,
         stop_after: options.stop_after,
         stop,
+        kernels: &una_core::dense::variants::Kernels::BASELINE,
     }
 }
 

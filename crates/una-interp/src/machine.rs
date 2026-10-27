@@ -674,6 +674,9 @@ pub struct Limits<'a> {
     /// The run's host stop state, which its watcher shares (ADR 0116 rules 14 and 16); a run
     /// without one makes its own, which only its own stop reaches.
     pub stop: Option<&'a Arc<RunStop>>,
+    /// The table of dense kernels the run calls (ADR 0120 rules 53 and 56): the baseline by
+    /// default; the caller may give the variant its processor runs, which gives the same bits.
+    pub kernels: &'static una_core::dense::variants::Kernels,
 }
 
 impl Limits<'_> {
@@ -687,6 +690,7 @@ impl Limits<'_> {
             http: una_http::client::Settings::default(),
             stop_after: None,
             stop: None,
+            kernels: &una_core::dense::variants::Kernels::BASELINE,
         }
     }
 }
@@ -769,6 +773,8 @@ pub(crate) struct Machine<'p, 'w> {
     /// The process key of keyed hashing, read before the run when its code can make a hash
     /// table (`spec/28 §1` rule 3), else `None`. Each new table takes a key from it.
     pub(crate) hashing: Option<una_hash::ProcessKey>,
+    /// The table of dense kernels (ADR 0120 rule 56), from the limits.
+    kernels: &'static una_core::dense::variants::Kernels,
 }
 
 impl<'p, 'w> Machine<'p, 'w> {
@@ -814,6 +820,7 @@ impl<'p, 'w> Machine<'p, 'w> {
             max_memory: limits.max_memory,
             http: limits.http,
             held: limits.held,
+            kernels: limits.kernels,
             baseline: (limits.held)(),
             stack_base: stack_position(&max_depth),
             stack_budget: crate::stack_bytes(max_depth)
@@ -3838,6 +3845,7 @@ mod tests {
             held: &probe,
             stop_after: None,
             stop: None,
+            kernels: &una_core::dense::variants::Kernels::BASELINE,
         };
         let mut machine = Machine::new(&index, &mut world, &[], &keys, limits);
         held.store(
