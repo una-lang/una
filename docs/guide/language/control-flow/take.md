@@ -11,7 +11,7 @@ codes: [U0103, U2017, U2018, U2020, U2021]
 
 From edition `0.2`, a parameter declared `take` consumes its argument, which means the caller gives the value away: after `f(take a)`, the caller cannot use `a` until an assignment gives it a new value. This lets the backend (the part of the compiler that produces the running program) reuse the memory of the value passed instead of copying it. That reuse is never observable, so the meaning stays that of values.
 
-Learn more: [Giving a value up: take](/learn/memory-and-concurrency/giving-a-value-up-take/).
+Learn more: [Giving a value up: take](/learn/memory/giving-a-value-up-take/).
 
 ```una
 module shop

@@ -15,7 +15,8 @@
           "editions": [
             "0.1",
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub kind Nat = Int where it >= 0",
           "docs": [
@@ -37,7 +38,8 @@
           "editions": [
             "0.1",
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub kind Option[T] = Some(value: T) | None",
           "docs": [
@@ -59,7 +61,8 @@
           "editions": [
             "0.1",
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub kind Result[T, E] = Ok(value: T) | Err(failure: E)",
           "docs": [
@@ -81,7 +84,8 @@
           "editions": [
             "0.1",
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub kind FileError = NotFound | Denied | Io",
           "docs": [
@@ -103,7 +107,8 @@
           "editions": [
             "0.1",
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub kind KeyError = | UnknownKey",
           "docs": [
@@ -125,7 +130,8 @@
           "editions": [
             "0.1",
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub capability Console\n  op print(line: Text) -> Unit\n    accepts public",
           "docs": [
@@ -147,7 +153,8 @@
           "editions": [
             "0.1",
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub capability Clock\n  op now() -> Int\n    accepts public",
           "docs": [
@@ -169,7 +176,8 @@
           "editions": [
             "0.1",
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub capability Env\n  op get(name: Text) -> Option[internal Text]\n    accepts public",
           "docs": [
@@ -191,7 +199,8 @@
           "editions": [
             "0.1",
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub capability Files\n  op read(path: Text) -> internal Text\n    fails FileError\n    accepts public\n  op write(path: Text, content: Text) -> Unit\n    fails FileError\n    accepts internal",
           "docs": [
@@ -213,7 +222,8 @@
           "editions": [
             "0.1",
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub capability Keys\n  op hmac(key_name: Text, data: Text) -> internal Hashed\n    fails KeyError",
           "docs": [
@@ -236,7 +246,8 @@
           "editions": [
             "0.1",
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub abs(x: Int) -> Int\n  ensures result >= 0 and (result == x or result == -x)",
           "docs": [
@@ -267,7 +278,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub min[T: Ord](a: T, b: T) -> T\n  ensures result <= a and result <= b and (result == a or result == b)",
           "docs": [
@@ -299,7 +311,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub max[T: Ord](a: T, b: T) -> T\n  ensures result >= a and result >= b and (result == a or result == b)",
           "docs": [
@@ -321,7 +334,8 @@
           "editions": [
             "0.1",
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub is_digits(t: Text) -> Bool",
           "docs": [
@@ -343,7 +357,8 @@
           "editions": [
             "0.1",
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub starts_with(t: Text, prefix: Text) -> Bool",
           "docs": [
@@ -364,7 +379,8 @@
           "editions": [
             "0.1",
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub trim(t: Text) -> Text\n  ensures result.len <= t.len",
           "docs": [
@@ -385,7 +401,8 @@
           "editions": [
             "0.1",
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub to_int(t: Text) -> Option[Int]",
           "docs": [
@@ -409,7 +426,8 @@
           "editions": [
             "0.1",
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub is_empty[T](xs: List[T]) -> Bool\n  ensures result == (xs.len == 0)",
           "docs": [
@@ -430,7 +448,8 @@
           "editions": [
             "0.1",
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub first[T](xs: List[T]) -> Option[T]\n  ensures (result is None) == (xs.len == 0)",
           "docs": [
@@ -451,7 +470,8 @@
           "editions": [
             "0.1",
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub at[T](xs: List[T], index: Int) -> Option[T]\n  ensures (result is None) == (index < 0 or index >= xs.len)",
           "docs": [
@@ -473,7 +493,8 @@
           "editions": [
             "0.1",
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub append[T](xs: List[T], item: T) -> List[T]\n  ensures result.len == xs.len + 1",
           "docs": [
@@ -504,7 +525,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub contains[T: Eq](xs: List[T], item: T) -> Bool",
           "docs": [
@@ -536,7 +558,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub map[T, U](xs: List[T], each: fn(T) -> U) -> List[U]\n  ensures result.len == xs.len\n  uses of each\n  fails of each",
           "docs": [
@@ -570,7 +593,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub filter[T](xs: List[T], keep: fn(T) -> Bool) -> List[T]\n  ensures result.len <= xs.len\n  uses of keep\n  fails of keep",
           "docs": [
@@ -606,7 +630,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub first_where[T](xs: List[T], keep: fn(T) -> Bool) -> Option[T]\n  uses of keep\n  fails of keep",
           "docs": [
@@ -642,7 +667,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub fold[T, U](xs: List[T], initial: U, step: fn(U, T) -> U) -> U\n  uses of step\n  fails of step",
           "docs": [
@@ -677,7 +703,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub sum[T: Integer](xs: List[T]) -> Int",
           "docs": [
@@ -700,7 +727,8 @@
           "editions": [
             "0.1",
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub is_some[T](o: Option[T]) -> Bool\n  ensures result == (o is Some)",
           "docs": [
@@ -721,7 +749,8 @@
           "editions": [
             "0.1",
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub or_else[T](o: Option[T], default: T) -> T",
           "docs": [
@@ -743,7 +772,8 @@
           "editions": [
             "0.1",
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub is_ok[T, E](r: Result[T, E]) -> Bool\n  ensures result == (r is Ok)",
           "docs": [
@@ -763,7 +793,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub set[T](edit xs: List[T], index: Int, item: T) -> Unit\n  requires 0 <= index and index < xs.len\n  ensures xs.len == old(xs).len",
           "docs": [
@@ -783,7 +814,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub sort[T: Ord](xs: List[T]) -> List[T]\n  ensures result.len == xs.len",
           "docs": [
@@ -803,7 +835,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub kind Entry[K, V]\n  key: K\n  value: V",
           "docs": [
@@ -823,7 +856,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub empty_map[K: Ord, V]() -> Map[K, V]\n  ensures result.len == 0",
           "docs": [
@@ -843,7 +877,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub predicate opaque is_json_number(t: Text) -> Bool",
           "docs": [
@@ -864,7 +899,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub kind JsonNumber = Text where is_json_number(it)",
           "docs": [
@@ -884,7 +920,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub kind Json = Null | Boolean(value: Bool) | Number(value: Int) | Decimal(text: JsonNumber) | Str(value: Text) | Array(items: List[Json]) | Object(fields: Map[Text, Json])",
           "docs": [
@@ -905,7 +942,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub kind JsonError = Syntax(at: Int) | TooDeep(at: Int) | DuplicateKey(at: Int) | NumberTooLong(at: Int)",
           "docs": [
@@ -925,7 +963,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub parse_json(t: Text) -> Json\n  fails JsonError",
           "docs": [
@@ -945,7 +984,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub to_json(j: Json) -> Text",
           "docs": [
@@ -965,7 +1005,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub quote_json(t: Text) -> Text",
           "docs": [
@@ -985,9 +1026,10 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
-          "declaration": "pub kind ParseError = Empty | NotADigit(at: Int) | NoDigits",
+          "declaration": "pub kind ParseError = Empty | NotADigit(at: Int) | NoDigits | TooLong",
           "docs": [
             "Why `parse_int` fails (`spec/22 §4`)."
           ]
@@ -1005,7 +1047,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub split(t: Text, on: Text) -> List[Text]\n  requires on.len > 0\n  ensures result.len >= 1",
           "docs": [
@@ -1026,7 +1069,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub join(parts: List[Text], separator: Text) -> Text",
           "docs": [
@@ -1046,7 +1090,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub ends_with(t: Text, suffix: Text) -> Bool",
           "docs": [
@@ -1066,7 +1111,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub contains_text(t: Text, part: Text) -> Bool",
           "docs": [
@@ -1086,7 +1132,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub find(t: Text, text: Text) -> Option[Int]",
           "docs": [
@@ -1107,7 +1154,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub replace(t: Text, pattern: Text, by: Text) -> Text\n  requires pattern.len > 0",
           "docs": [
@@ -1128,7 +1176,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub slice(t: Text, start: Int, end: Int) -> Text\n  requires 0 <= start and start <= end and end <= t.len\n  ensures result.len == end - start",
           "docs": [
@@ -1149,7 +1198,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub to_upper(t: Text) -> Text\n  ensures result.len == t.len",
           "docs": [
@@ -1169,7 +1219,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub to_lower(t: Text) -> Text\n  ensures result.len == t.len",
           "docs": [
@@ -1189,7 +1240,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub chars(t: Text) -> List[Text]\n  ensures result.len == t.len",
           "docs": [
@@ -1209,7 +1261,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub parse_int(t: Text) -> Int\n  fails ParseError",
           "docs": [
@@ -1229,7 +1282,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub trim_start(t: Text) -> Text\n  ensures result.len <= t.len",
           "docs": [
@@ -1249,7 +1303,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub trim_end(t: Text) -> Text\n  ensures result.len <= t.len",
           "docs": [
@@ -1269,7 +1324,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub bytes(t: Text) -> List[U8]\n  ensures result.len >= t.len",
           "docs": [
@@ -1289,7 +1345,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub kind Header\n  name: Text\n  value: internal Text",
           "docs": [
@@ -1310,7 +1367,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub kind Response\n  status: Int\n  headers: List[Header]\n  body: Text",
           "docs": [
@@ -1336,6 +1394,15 @@
           "docs": [
             "Why an HTTP request got no response it may return (`spec/24 §1` rule 3)."
           ]
+        },
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "pub kind HttpError = Denied | BadUrl | BadRequest | Unreachable | TimedOut | TooLarge | Tls | Protocol | Interrupted",
+          "docs": [
+            "Why an HTTP request got no response it may return (`spec/24 §1` rule 3)."
+          ]
         }
       ]
     },
@@ -1350,12 +1417,310 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub capability Http\n  op get(url: Text, headers: List[Header], key_name: Option[Text]) -> internal Response\n    fails HttpError\n    accepts internal\n  op post(url: Text, headers: List[Header], body: Text, key_name: Option[Text]) -> internal Response\n    fails HttpError\n    accepts internal\n  op put(url: Text, headers: List[Header], body: Text, key_name: Option[Text]) -> internal Response\n    fails HttpError\n    accepts internal\n  op delete(url: Text, headers: List[Header], key_name: Option[Text]) -> internal Response\n    fails HttpError\n    accepts internal",
           "docs": [
             "HTTP/1.1 to the origins that `http:` grants allow (`spec/24 §1`). `key_name` sends the key of",
             "that name from the `keys:` grants as a bearer token, which the program never sees."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "nan",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/29 §3"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.3",
+            "0.4"
+          ],
+          "declaration": "pub nan() -> F64\n  ensures result.is_nan()",
+          "docs": [
+            "The canonical NaN, `0x7FF8000000000000`: the one NaN of `F64` (`spec/29 §3`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "infinity",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/29 §3"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.3",
+            "0.4"
+          ],
+          "declaration": "pub infinity() -> F64\n  ensures result.is_infinite() and not result.is_sign_negative()",
+          "docs": [
+            "The positive infinity of `F64`; `-infinity()` is the negative one (`spec/29 §3`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "f64_from_bits",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/29 §3"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.3",
+            "0.4"
+          ],
+          "declaration": "pub f64_from_bits(bits: U64) -> F64",
+          "docs": [
+            "The `F64` with the bits `bits`; any NaN gives the canonical NaN (`spec/29 §3`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "parse_f64",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/29 §7"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.3",
+            "0.4"
+          ],
+          "declaration": "pub parse_f64(t: Text) -> F64\n  fails ParseError",
+          "docs": [
+            "The `F64` that `t` writes, a JSON number, `nan`, `inf` or `-inf`, correctly rounded, or",
+            "why it writes none (`spec/29 §7`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "as_f64",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/29 §10"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.3",
+            "0.4"
+          ],
+          "declaration": "pub as_f64(j: Json) -> Option[F64]",
+          "docs": [
+            "The `F64` nearest a JSON number, `None` for any other `Json` (`spec/29 §10`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "json_number",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/29 §10"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.3",
+            "0.4"
+          ],
+          "declaration": "pub json_number(x: F64) -> Option[Json]",
+          "docs": [
+            "`x` as a JSON number, `None` for NaN and the infinities (`spec/29 §10`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Rounding",
+      "module": "prelude",
+      "kind": "kind",
+      "spec": [
+        "spec/29 §16"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "pub kind Rounding = HalfEven | HalfAwayFromZero | HalfTowardZero | TowardZero | AwayFromZero | TowardPositive | TowardNegative",
+          "docs": [
+            "How a decimal operation rounds an exact value to the units of its result's scale",
+            "(`spec/29 §16`): on the magnitude, then the sign. No operation has a default mode."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "parse_decimal",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/29 §16"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "pub parse_decimal(t: Text, scale: Int) -> Decimal[0]\n  fails ParseError",
+          "docs": [
+            "The `Decimal[s]` that `t` writes at the scale `s` of the literal `scale`, or why it writes",
+            "none (`spec/29 §16`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "as_decimal",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/29 §16"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "pub as_decimal(j: Json, scale: Int) -> Option[Decimal[0]]",
+          "docs": [
+            "The `Decimal[s]` of a JSON number at the scale `s` of the literal `scale`, `None` when it",
+            "has no exact value there, and for any other `Json` (`spec/29 §16`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "json_decimal",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/29 §16"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "pub json_decimal[T](x: T) -> Json",
+          "docs": [
+            "A `Decimal[s]` as a JSON number: `Number` at scale 0, `Decimal` otherwise (`spec/29 §16`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "array",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/29 §17"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "pub array[T](xs: List[T]) -> Array[T]\n  ensures result.len == xs.len",
+          "docs": [
+            "An array of the elements of `xs`, in order (`spec/29 §17`, ADR 0120 rule 32). O(n)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "array_filled",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/29 §17"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "pub array_filled[T](length: Int, value: T) -> Array[T]\n  requires length >= 0\n  ensures result.len == length",
+          "docs": [
+            "An array of `length` elements, each `value` (`spec/29 §17`). O(n)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "matrix",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/29 §17"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "pub matrix[T](rows: Int, columns: Int, elements: List[T]) -> Matrix[T]\n  requires rows >= 0 and columns >= 0 and elements.len == rows * columns\n  ensures result.rows == rows and result.columns == columns",
+          "docs": [
+            "A matrix of `rows` rows and `columns` columns, the elements of `elements` in row-major",
+            "order (`spec/29 §17`). O(n)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "matrix_filled",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/29 §17"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "pub matrix_filled[T](rows: Int, columns: Int, value: T) -> Matrix[T]\n  requires rows >= 0 and columns >= 0\n  ensures result.rows == rows and result.columns == columns",
+          "docs": [
+            "A matrix of `rows` rows and `columns` columns, each element `value` (`spec/29 §17`). O(n)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "matrix_diagonal",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/29 §17"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "pub matrix_diagonal[T](values: Array[T]) -> Matrix[T]\n  ensures result.rows == values.len and result.columns == values.len",
+          "docs": [
+            "The square matrix with `values` on its diagonal and `+0` of the element type elsewhere",
+            "(`spec/29 §17`). O(n²)."
           ]
         }
       ]
@@ -1372,12 +1737,35 @@
           "editions": [
             "0.1",
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub fake_hash(seed: Int) -> internal Hashed",
           "docs": [
             "A deterministic `Hashed` value for tests: equal seeds give equal values. Usable only in",
             "examples and in handlers that only examples install (`spec/14 §4`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "elapse",
+      "module": "std.testing",
+      "kind": "function",
+      "spec": [
+        "spec/26 §8",
+        "spec/14 §4"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "pub elapse(d: Int of Millisecond) -> Unit\n  requires d >= 0",
+          "docs": [
+            "Moves the test's virtual clock forward by `d` at once, without waiting (ADR 0116 rule 19,",
+            "`spec/26 §8`). Usable only in examples and in handlers that only examples install",
+            "(`spec/14 §4`)."
           ]
         }
       ]

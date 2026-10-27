@@ -16,9 +16,12 @@ mod authority;
 mod boundary;
 mod call;
 mod check;
+mod collections;
 mod conditions;
 mod crossing;
 mod dead;
+mod decimal;
+mod dense;
 mod edit_labels;
 mod effects;
 mod elab;
@@ -26,8 +29,10 @@ mod env;
 mod expr;
 mod facts;
 mod fixed;
+mod float;
 mod flow;
 mod generic;
+mod hash;
 mod hover;
 mod index;
 mod label;
@@ -36,19 +41,25 @@ mod lock;
 mod map;
 mod memory;
 mod records;
+mod seq;
+mod set;
 mod shared;
 #[cfg(test)]
 mod sharing_tests;
 mod stmt;
 mod summary;
+mod timing;
 mod ty;
 mod unify;
 mod units;
 mod via;
+mod within;
 
 pub use hover::{Hover, HoverStats, HoverType};
 pub use index::Index;
-use una_diag::{Code, Diagnostic, Edit, Escape, Location, ObligationKind, Related, Repair};
+use una_diag::{
+    Code, Diagnostic, Edit, Escape, Location, ObligationKind, Related, Repair, Severity,
+};
 use una_project::Edition;
 use una_syntax::ast::File;
 use una_syntax::{FileId, Interner, KeywordSet, SourceDb, Span, lex_in, parse};
@@ -60,6 +71,18 @@ use env::{Env, Source};
 const PRELUDE: &str = include_str!("../std/prelude.una");
 /// The declarations that edition 0.2 adds to the prelude (`spec/17 §8`), appended to it.
 const PRELUDE_0_2: &str = include_str!("../std/prelude_0_2.una");
+/// The declarations that edition 0.3 adds to the prelude: the functions of `F64` (`spec/29`,
+/// ADR 0114 rule 3.9), appended after those of edition 0.2.
+const PRELUDE_0_3: &str = include_str!("../std/prelude_0_3.una");
+/// The declarations that edition 0.4 adds to the prelude: `Rounding` and the functions of
+/// `Decimal` (`spec/29 §16`), then the constructors of dense values and the functions their
+/// methods resolve to (`spec/29 §17`, ADR 0120), appended after those of edition 0.3.
+const PRELUDE_0_4: &str = include_str!("../std/prelude_0_4.una");
+
+/// The declaration of `HttpError` in `PRELUDE_0_2`, and the one edition 0.4 replaces it with,
+/// which adds `Interrupted` last, so the earlier variants keep their indices (ADR 0116 rule 12).
+/// The text occurs exactly once in `PRELUDE_0_2` (a test checks it).
+const HTTP_ERROR_0_4: (&str, &str) = ("| Tls | Protocol\n", "| Tls | Protocol | Interrupted\n");
 
 /// The rewrites of the prelude in edition 0.2, each a text of `PRELUDE` and its replacement:
 /// `map`, `filter`, `first_where` and `fold` take effectful and failing functions (ADR 0062,
@@ -111,6 +134,41 @@ fn of_prelude() -> String {
 /// `std.testing` (`spec/14 §4`) as Una source.
 const TESTING: &str = include_str!("../std/testing.una");
 
+/// What edition 0.4 adds to `std.testing`: `elapse` (ADR 0116 rule 19), whose duration is in
+/// `Millisecond` of `std.time`.
+const TESTING_0_4: &str = include_str!("../std/testing_0_4.una");
+
+/// The line of `std.testing` after which edition 0.4 imports `Millisecond` from `std.time`.
+const TESTING_MODULE_LINE: &str = "module std.testing\n";
+
+/// `std.testing` in `edition`: in edition 0.4, it imports `Millisecond` and adds `elapse`.
+fn testing_source(edition: Edition) -> String {
+    if edition >= Edition::V0_4 {
+        let imported = TESTING.replacen(
+            TESTING_MODULE_LINE,
+            "module std.testing\n\nimport std.time (Millisecond)\n",
+            1,
+        );
+        format!("{imported}{TESTING_0_4}")
+    } else {
+        TESTING.to_owned()
+    }
+}
+
+/// `std.time` (`spec/26 §2`), edition 0.4, as Una source.
+const TIME: &str = include_str!("../std/time.una");
+
+/// `std.drive` (`spec/26 §2`), edition 0.4, as Una source.
+const DRIVE: &str = include_str!("../std/drive.una");
+
+/// `std.collections` (ADR 0119) as Una source: its kind `Ranked` and its functions. The checker
+/// loads it only for a package of edition 0.4 that imports it.
+const COLLECTIONS: &str = include_str!("../std/collections.una");
+
+/// The built-in method `update` of maps in edition 0.4 (ADR 0119 rule 18) as Una source, in a
+/// module that no scope holds: method syntax on a map reaches it, its name never does.
+const MAP_0_4: &str = include_str!("../std/map_0_4.una");
+
 /// The standard modules as the checker reads them in one edition: the prelude's source, with
 /// the declarations edition 0.2 rewrites and adds, `std.testing`'s source, and the keyword
 /// set the prelude is lexed with (`spec/14`). Read-only: the checker loads exactly this text
@@ -119,17 +177,22 @@ const TESTING: &str = include_str!("../std/testing.una");
 pub struct StandardSource {
     /// The prelude's source in this edition.
     pub prelude: String,
-    /// `std.testing`'s source, the same in every edition.
-    pub testing: &'static str,
-    /// The keywords the prelude is lexed with; `std.testing` is lexed with those of 0.1.
+    /// `std.testing`'s source in this edition: edition 0.4 adds `elapse` (ADR 0116 rule 19).
+    pub testing: String,
+    /// The keywords the prelude and `std.testing` are lexed with.
     pub keywords: KeywordSet,
+    /// The standard modules of edition 0.4 after `std.testing`, as `(path, source)`:
+    /// `std.time`, then `std.drive`, which imports it (ADR 0116). Empty before 0.4.
+    pub later: Vec<(&'static str, &'static str)>,
 }
 
 /// The built-in methods and properties that the checker resolves by the type of their
-/// receiver, as `(receiver, name)`: `.len` on `Text`, `List` and `Map` (`spec/14 §2`), the
-/// methods of maps (`spec/21 §2`), the conversions (`spec/18 §4`), and the wrapping,
-/// saturating and bit operations of the fixed-width integers (`spec/18 §5`). The receivers are
-/// `"len"`, `"Map"`, `"conversion"` and `"fixed"`. Read-only: it is built from the tables the
+/// receiver, as `(receiver, name)`: `.len` on `Text`, `List`, `Map` (`spec/14 §2`) and the
+/// collections, the methods of maps (`spec/21 §2`), of `Stack` and of `Queue` (`spec/28 §5`), of
+/// sets (`spec/28 §6`) and of hash maps and hash sets (`spec/28 §7`), the conversions (`spec/18
+/// §4`), and the wrapping, saturating and bit operations of the fixed-width integers (`spec/18
+/// §5`). The receivers are `"len"`, `"Map"`, `"Stack"`, `"Queue"`, `"Set"`, `"HashMap"`,
+/// `"HashSet"`, `"conversion"` and `"fixed"`. Read-only: it is built from the tables the
 /// checker resolves them with, for the standard library reference (#690).
 pub fn builtin_methods() -> Vec<(&'static str, String)> {
     let mut methods = vec![("len", "len".to_owned())];
@@ -137,6 +200,38 @@ pub fn builtin_methods() -> Vec<(&'static str, String)> {
         map::MAP_METHODS
             .iter()
             .map(|(name, ..)| ("Map", (*name).to_owned())),
+    );
+    // Edition 0.4: `update`, which method syntax on a map reaches (ADR 0119 rule 18).
+    methods.push(("Map", "update".to_owned()));
+    // Edition 0.4: the methods of `Stack` and `Queue` (`spec/28 §5`).
+    methods.extend(
+        seq::STACK_METHODS
+            .iter()
+            .map(|(name, ..)| ("Stack", (*name).to_owned())),
+    );
+    methods.extend(
+        seq::QUEUE_METHODS
+            .iter()
+            .map(|(name, ..)| ("Queue", (*name).to_owned())),
+    );
+    // Edition 0.4: the methods of `Set` (ADR 0119 rule 7).
+    methods.extend(
+        set::SET_METHODS
+            .iter()
+            .map(|(name, ..)| ("Set", (*name).to_owned())),
+    );
+    // Edition 0.4: the methods of `HashMap`, with `update`, and of `HashSet` (ADR 0119 rule
+    // 12).
+    methods.extend(
+        hash::HASH_MAP_METHODS
+            .iter()
+            .map(|(name, ..)| ("HashMap", (*name).to_owned())),
+    );
+    methods.push(("HashMap", "update".to_owned()));
+    methods.extend(
+        hash::HASH_SET_METHODS
+            .iter()
+            .map(|(name, ..)| ("HashSet", (*name).to_owned())),
     );
     methods.extend(una_core::IntType::ALL.iter().map(|t| {
         (
@@ -155,15 +250,35 @@ pub fn builtin_methods() -> Vec<(&'static str, String)> {
 
 /// The standard modules' source in `edition`, as [`Standard::load`] parses it.
 pub fn standard_source(edition: Edition) -> StandardSource {
-    let (prelude, keywords) = if edition >= Edition::V0_2 {
+    let (prelude, keywords) = if edition >= Edition::V0_4 {
+        (
+            format!(
+                "{}\n{}{PRELUDE_0_3}{PRELUDE_0_4}",
+                of_prelude(),
+                PRELUDE_0_2.replace(HTTP_ERROR_0_4.0, HTTP_ERROR_0_4.1)
+            ),
+            KeywordSet::V0_4,
+        )
+    } else if edition >= Edition::V0_3 {
+        (
+            format!("{}\n{PRELUDE_0_2}{PRELUDE_0_3}", of_prelude()),
+            KeywordSet::V0_3,
+        )
+    } else if edition >= Edition::V0_2 {
         (format!("{}\n{PRELUDE_0_2}", of_prelude()), KeywordSet::V0_2)
     } else {
         (PRELUDE.to_owned(), KeywordSet::V0_1)
     };
+    let later = if edition >= Edition::V0_4 {
+        vec![("std.time", TIME), ("std.drive", DRIVE)]
+    } else {
+        Vec::new()
+    };
     StandardSource {
         prelude,
-        testing: TESTING,
+        testing: testing_source(edition),
         keywords,
+        later,
     }
 }
 
@@ -250,6 +365,22 @@ pub struct TypeCheck {
     pub program: una_core::Program,
     /// What the checker resolved, by span, for the language server (ADR 0063).
     pub index: Index,
+    /// The sites whose deadlines turn timing into values, in source order, with their timing
+    /// labels: each `for ever within` (ADR 0116 rule 21), for the report's `timing` list.
+    pub timing: Vec<TimingSite>,
+}
+
+/// A site with a deadline and its timing label (ADR 0116 IF5, rule 21).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TimingSite {
+    /// The construct, as `for ever within`.
+    pub construct: &'static str,
+    /// The qualified name of the function that holds it, or empty outside a function.
+    pub function: String,
+    /// Where it is.
+    pub location: Location,
+    /// Its timing label.
+    pub label: una_core::Label,
 }
 
 impl Default for TypeCheck {
@@ -264,6 +395,7 @@ impl Default for TypeCheck {
             headers: Vec::new(),
             program: una_core::Program::default(),
             index: Index::default(),
+            timing: Vec::new(),
         }
     }
 }
@@ -304,6 +436,10 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
             tree: module.tree,
             interner: package.interner,
             reports: !module.broken,
+            mount: package
+                .settings
+                .mount_of(package.sources.file(module.id).path())
+                .map(|mount| mount.local.as_str()),
         })
         .collect();
     let categories = package
@@ -312,10 +448,26 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
         .iter()
         .map(|category| category.value.clone())
         .collect();
+    // ADR 0119 rule 0: `std.collections` is in scope only for a package of edition 0.4 that
+    // imports it, so no other package's checks or Core IR change.
+    let imports_collections = package.settings.edition >= Edition::V0_4
+        && package.modules.iter().any(|module| {
+            module.tree.imports.iter().any(|import| {
+                let path: Vec<&str> = import
+                    .module
+                    .segments
+                    .iter()
+                    .map(|segment| package.interner.resolve(segment.name))
+                    .collect();
+                path.join(".") == una_core::COLLECTIONS_MODULE
+            })
+        });
     let mut env = Env::build(
         sources,
         standard.source(&standard.prelude),
-        standard.source(&standard.testing),
+        standard.after_prelude(),
+        (package.settings.edition >= Edition::V0_4).then(|| standard.source(&standard.map_0_4)),
+        imports_collections.then(|| standard.source(&standard.collections)),
         categories,
         package.settings.edition,
         &mut report,
@@ -325,6 +477,15 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
         .trusted
         .iter()
         .map(|entry| entry.value.clone())
+        .collect();
+    env.project_code = package.settings.format.code();
+    env.trusted_dependencies = env
+        .modules
+        .iter()
+        .enumerate()
+        .take(package.modules.len())
+        .filter(|(_, module)| package.settings.dependency_trusted.contains(&module.path))
+        .map(|(index, _)| index)
         .collect();
     // Edition 0.3: the boundaries of `una.toml`, checked against the package (ADR 0093).
     env.boundaries = boundary::resolve(
@@ -346,6 +507,11 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
     env.blocked_vias = vias.blocked;
     let facts = facts::KindFacts::new(&env);
     facts::kind_recursion(&env, &mut report);
+    // Edition 0.4: functions named like a built-in method of a collection (ADR 0119 rules 0
+    // and 18).
+    if package.settings.edition >= Edition::V0_4 {
+        collections::method_names(&env, &mut report);
+    }
     authority::stored_effects(&env, &mut report);
     // Pass 1 collects what inference needs, and its diagnostics are dropped;
     // pass 2 checks with the inferred headers.
@@ -353,6 +519,7 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
     // 0.2 they then reach their least fixpoint, below.
     let mut collected = authority::Collected::default();
     let mut edges = Vec::new();
+    let withins;
     {
         let mut scratch = Report::new(package.sources);
         let mut findings = Findings::default();
@@ -375,6 +542,7 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
                 .iter()
                 .map(|(caller, callee, _)| (*caller, *callee)),
         );
+        withins = !findings.withins.is_empty();
         env.opaque_plain = opaque_plain(&env, &findings.edges);
     }
     if package.settings.edition >= Edition::V0_2 {
@@ -448,31 +616,77 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
     // and operations of the locked headers that they do not grant.
     lock::resolve(&mut env, package.locks, &mut report);
     lock::drift(&env, &mut report);
-    // S-14 (ADR 0085): a package that writes files labels the failure of every `Files`
-    // operation with what decides its writes. Pass 2 is probed first, its diagnostics dropped,
-    // so that a read checked before a write has the label too. The probe's label is the least
-    // fixpoint: what the label itself raises in pass 2 is below it.
-    if env.files_written {
-        let mut scratch = Report::new(package.sources);
-        let mut findings = Findings::default();
-        let mut unused = authority::Collected::default();
-        for module in 0..package.modules.len() {
-            if env.reports(module) {
-                check::module(
-                    &mut env,
-                    &facts,
-                    &mut scratch,
-                    &mut findings,
-                    &mut unused,
-                    authority::Pass::Check,
-                    module,
-                );
+    // Two labels need a pass of their own before pass 2 checks with them, and each can raise
+    // the other, so they are probed together, pass 2 run with its diagnostics dropped, until
+    // neither rises:
+    // - ADR 0117 IF2: the timing label of each `within` needs the whole package's call graph;
+    // - S-14 (ADR 0085): a package that writes files labels the failure of every `Files`
+    //   operation with what decides its writes, so that a read checked before a write has the
+    //   label too, and a failure so labeled can raise a program counter that a `within`'s
+    //   timing label reads.
+    // Labels only rise, and each round that goes on raises one by at least one atom, so a round
+    // past that bound is an internal error, never a silent stop with a label too low. Both are
+    // confirmed after pass 2 (`authority::within_timing`, `file_state`).
+    if withins || env.files_written {
+        let atoms = 4 + env.categories.len() + 1;
+        let mut rounds = 0usize;
+        loop {
+            rounds += 1;
+            let mut scratch = Report::new(package.sources);
+            let mut probe = Findings::default();
+            let mut unused = authority::Collected::default();
+            for module in 0..package.modules.len() {
+                if env.reports(module) {
+                    check::module(
+                        &mut env,
+                        &facts,
+                        &mut scratch,
+                        &mut probe,
+                        &mut unused,
+                        authority::Pass::Check,
+                        module,
+                    );
+                }
+            }
+            let labels = if withins {
+                authority::within_labels(&env, &probe)
+            } else {
+                std::collections::BTreeMap::new()
+            };
+            let state = if env.files_written {
+                env.file_state.join(&file_state(&env).0)
+            } else {
+                env.file_state.clone()
+            };
+            env.file_writes.clear();
+            env.file_calls.clear();
+            env.file_escaped.clear();
+            let joined: std::collections::BTreeMap<Span, label::Label> = labels
+                .into_iter()
+                .map(|(key, label)| match env.within_timing.get(&key) {
+                    Some(before) => (key, before.join(&label)),
+                    None => (key, label),
+                })
+                .collect();
+            let stable = joined == env.within_timing && state == env.file_state;
+            env.within_timing = joined;
+            env.file_state = state;
+            // Without a `within`, one probe gives the file-state label's least fixpoint, as
+            // before (ADR 0085): what the label raises in pass 2 is below it.
+            if stable || !withins {
+                break;
+            }
+            if rounds > (env.within_timing.len() + 1) * atoms + 2 {
+                if let Some(site) = probe.withins.first() {
+                    report.error(
+                        Code::U8001,
+                        site.span,
+                        "internal error: the timing labels of `within` and the file-state label did not reach a fixpoint (ADR 0117 IF2, ADR 0085)".to_owned(),
+                    );
+                }
+                break;
             }
         }
-        env.file_state = file_state(&env).0;
-        env.file_writes.clear();
-        env.file_calls.clear();
-        env.file_escaped.clear();
     }
     let mut findings = Findings::default();
     let mut unused = authority::Collected::default();
@@ -532,6 +746,11 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
         facts::generic_equality(&env, &facts, &findings, &mut report);
     }
     authority::grants(&env, package.settings, package.run, &mut report);
+    authority::drive_failures(&env, package.settings, &mut report);
+    authority::drive_timing(&env, &findings, package.settings, &mut report);
+    let mut timing_sites = authority::deadline_timing(&env, &findings, &mut report);
+    timing_sites.extend(authority::within_timing(&env, &findings, &mut report));
+    timing_sites.sort_by_key(|(_, _, span, _)| (span.file, span.start, span.end));
     authority::budget(&env, &findings, package.settings, &mut report);
     // Edition 0.3 (ADR 0100): last, once every other error of the package is known.
     dead::judge(
@@ -550,7 +769,7 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
         .obligations
         .dedup_by(|a, b| a.0 == ObligationKind::EffectCondition && a == b);
     let headers = headers(&env);
-    let (program, lost) = elab::program(&env, &findings, package.sources, &standard.sources);
+    let (program, gaps) = elab::program(&env, &findings, package.sources, &standard.sources);
     // ADR 0103: the pending `refinement` obligations of the flows into refined positions,
     // decided by the rule tier 1 uses (#615).
     let kinds = una_core::flow::Kinds::new(&program);
@@ -571,7 +790,7 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
     // ADR 0038 D1: a component of a checker type that Core IR lost is an internal error, never
     // a silent pass (`spec/10 §2`). D-144: switched to B, ADR 0045: the
     // check runs in every build, not only in debug builds, and reports at the declaration.
-    for (span, what) in lost {
+    for (span, what) in gaps.lost {
         report.error(
             Code::U8001,
             span,
@@ -579,6 +798,36 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
                 "internal error: the Core IR of this declaration lost {what} of its checked types"
             ),
         );
+    }
+    // #1050: a declaration that type-checked but has no Core IR would get no obligations, so
+    // its contracts and its arithmetic checks would never be verified. Unless an error already
+    // rejects the package, as one of its own diagnostics does, that is an internal error, never
+    // an accepted package. The same holds for a contract of the standard library, without which
+    // a call into it would be verified without its `requires`.
+    let rejected_already = package.earlier_errors
+        || report
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Error);
+    if !rejected_already {
+        for (span, what) in gaps.missing {
+            report.error(
+                Code::U8001,
+                span,
+                format!(
+                    "internal error: this {what} type-checked but did not elaborate to Core IR, so none of its obligations could be verified; the package is rejected"
+                ),
+            );
+        }
+        for (span, what) in gaps.standard {
+            report.push(Diagnostic::error(
+                Code::U8001,
+                format!(
+                    "internal error: this {what} of the standard library did not elaborate to Core IR, so calls into it could not be verified; the package is rejected"
+                ),
+                standard.sources.location(span),
+            ));
+        }
     }
     let index = index::build(&env, &findings);
     // ADR 0091 decision 5: elaborated only on request, after the program, and read by nothing
@@ -589,6 +838,15 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
         Vec::new()
     };
     let check = TypeCheck {
+        timing: timing_sites
+            .into_iter()
+            .map(|(construct, function, span, label)| TimingSite {
+                construct,
+                function,
+                location: report.location(span),
+                label,
+            })
+            .collect(),
         index,
         headers,
         program,
@@ -717,8 +975,35 @@ pub(crate) struct Findings {
     pub(crate) condition_edits: Vec<(conditions::EditTarget, una_core::ConditionEdit)>,
     /// The functions named as values anywhere in the package (ADR 0092 rule 1).
     pub(crate) function_values: std::collections::BTreeSet<usize>,
+    /// The functions whose bodies, their lambdas' included, call a function value: a parameter,
+    /// a local or a field of function type. Their running time depends on code the timing label
+    /// cannot see (ADR 0116 IF5 item 4).
+    pub(crate) value_callers: std::collections::BTreeSet<usize>,
+    /// The handlers each function installs with `with` or `given` (ADR 0116 IF5 item 3).
+    pub(crate) installs: std::collections::BTreeSet<(usize, usize)>,
+    /// The functions whose bodies hold a task construct, `together` or `together for` (ADR 0116
+    /// IF6).
+    pub(crate) task_functions: std::collections::BTreeSet<usize>,
+    /// The functions called or named inside a part of a task construct, lambdas written there
+    /// included (ADR 0116 IF6).
+    pub(crate) task_edges: std::collections::BTreeSet<usize>,
+    /// The functions called or named inside a lambda, which may run wherever the lambda is
+    /// called (ADR 0116 IF6).
+    pub(crate) lambda_edges: std::collections::BTreeSet<usize>,
+    /// The functions called or named inside a handler's operations, which run wherever the
+    /// handler serves an operation (ADR 0116 IF6).
+    pub(crate) handler_edges: std::collections::BTreeSet<usize>,
+    /// The `for ever within` loops checked (ADR 0116 rule 11, IF8): each loop's span, its
+    /// function, and the seed of its body's timing label.
+    pub(crate) deadline_loops: Vec<DeadlineLoop>,
+    /// The `within`s checked (ADR 0117 rule 5, IF2): each one's deadline, span, function and
+    /// the seed of its timing label.
+    pub(crate) withins: Vec<within::WithinSite>,
     /// Names bound by selfified `let`s.
     pub(crate) selfified: Vec<Span>,
+    /// The conditions of `for until` loops that are in the refinement language, which the
+    /// verifier assumes false in the body and true after the loop (ADR 0116 V1, V3).
+    pub(crate) refinable_conditions: Vec<Span>,
     /// Calls of, and references to, functions and predicates, from the body of a function or
     /// predicate: caller, callee, and where.
     pub(crate) edges: Vec<(usize, usize, Span)>,
@@ -786,6 +1071,12 @@ struct Standard {
     interner: Interner,
     prelude: File,
     testing: File,
+    /// The standard modules of edition 0.4 after `std.testing`, in their order.
+    later: Vec<File>,
+    /// `std.collections` (ADR 0119), loaded when a package of edition 0.4 imports it.
+    collections: File,
+    /// The hidden module of the built-in `update` of maps in edition 0.4 (ADR 0119 rule 18).
+    map_0_4: File,
 }
 
 impl Standard {
@@ -799,17 +1090,43 @@ impl Standard {
             prelude: text,
             testing,
             keywords,
+            later,
         } = standard_source(edition);
         let prelude = sources.add("std/prelude.una", text.as_bytes());
         let testing = sources.add("std/testing.una", testing.as_bytes());
+        let collections = sources.add("std/collections.una", COLLECTIONS.as_bytes());
+        let map_0_4 = sources.add("std/map_0_4.una", MAP_0_4.as_bytes());
         let prelude = parse_standard(&sources, prelude, &mut interner, keywords);
-        let testing = parse_standard(&sources, testing, &mut interner, KeywordSet::V0_1);
+        let testing = parse_standard(&sources, testing, &mut interner, keywords);
+        // The modules of edition 0.4 declare measures, a construct of edition 0.3.
+        let later = later
+            .into_iter()
+            .map(|(path, text)| {
+                let file = format!("std/{}.una", path.trim_start_matches("std."));
+                let id = sources.add(&file, text.as_bytes());
+                parse_standard(&sources, id, &mut interner, KeywordSet::V0_4)
+            })
+            .collect();
+        // `empty_set[T: Ord]` writes a constraint, which edition 0.2's syntax has.
+        let collections = parse_standard(&sources, collections, &mut interner, KeywordSet::V0_2);
+        let map_0_4 = parse_standard(&sources, map_0_4, &mut interner, KeywordSet::V0_2);
         Standard {
             sources,
             interner,
             prelude,
             testing,
+            later,
+            collections,
+            map_0_4,
         }
+    }
+
+    /// `std.testing`, then the later standard modules, in the order `Env::build` takes them.
+    fn after_prelude(&self) -> Vec<Source<'_>> {
+        std::iter::once(&self.testing)
+            .chain(&self.later)
+            .map(|tree| self.source(tree))
+            .collect()
     }
 
     fn source<'a>(&'a self, tree: &'a File) -> Source<'a> {
@@ -817,6 +1134,7 @@ impl Standard {
             tree,
             interner: &self.interner,
             reports: false,
+            mount: None,
         }
     }
 }
@@ -1205,6 +1523,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn interrupted_is_a_variant_of_http_error_in_edition_0_4_only() {
+        // ADR 0116 rule 12: added last, so the eight variants keep their indices.
+        assert_eq!(PRELUDE_0_2.matches(HTTP_ERROR_0_4.0).count(), 1);
+        let line = |edition| {
+            standard_source(edition)
+                .prelude
+                .lines()
+                .find(|line| line.starts_with("pub kind HttpError ="))
+                .map(str::to_owned)
+        };
+        assert_eq!(
+            line(Edition::V0_4).as_deref(),
+            Some(
+                "pub kind HttpError = Denied | BadUrl | BadRequest | Unreachable | TimedOut | TooLarge | Tls | Protocol | Interrupted"
+            )
+        );
+        for edition in [Edition::V0_2, Edition::V0_3] {
+            assert!(line(edition).is_some_and(|line| !line.contains("Interrupted")));
+        }
+    }
+
+    #[test]
     fn every_rewrite_of_the_prelude_applies_exactly_once() {
         // `str::replace` does nothing when its text is missing, so an edit of the prelude could
         // turn a rewrite of edition 0.2 off without a word (#648).
@@ -1230,19 +1570,37 @@ mod tests {
         // `Standard::load` parses, for every edition.
         for edition in &Edition::ALL {
             let source = standard_source(*edition);
-            let (prelude, keywords) = if *edition >= Edition::V0_2 {
+            let (prelude, keywords) = if *edition >= Edition::V0_4 {
+                // `HttpError` gains `Interrupted` (ADR 0116 rule 12).
+                let http = PRELUDE_0_2.replace(HTTP_ERROR_0_4.0, HTTP_ERROR_0_4.1);
+                (
+                    format!("{}\n{http}{PRELUDE_0_3}{PRELUDE_0_4}", of_prelude()),
+                    KeywordSet::V0_4,
+                )
+            } else if *edition >= Edition::V0_3 {
+                (
+                    format!("{}\n{PRELUDE_0_2}{PRELUDE_0_3}", of_prelude()),
+                    KeywordSet::V0_3,
+                )
+            } else if *edition >= Edition::V0_2 {
                 (format!("{}\n{PRELUDE_0_2}", of_prelude()), KeywordSet::V0_2)
             } else {
                 (PRELUDE.to_owned(), KeywordSet::V0_1)
             };
             assert_eq!(source.prelude, prelude, "{edition:?}");
-            assert_eq!(source.testing, TESTING, "{edition:?}");
+            let testing = testing_source(*edition);
+            assert_eq!(source.testing, testing, "{edition:?}");
+            assert_eq!(
+                source.testing.contains("pub elapse("),
+                *edition >= Edition::V0_4,
+                "{edition:?}"
+            );
             assert_eq!(source.keywords, keywords, "{edition:?}");
             let texts = Standard::load(*edition).sources.texts();
             assert_eq!(texts.get("std/prelude.una"), Some(&prelude), "{edition:?}");
             assert_eq!(
                 texts.get("std/testing.una").map(String::as_str),
-                Some(TESTING),
+                Some(testing.as_str()),
                 "{edition:?}"
             );
         }
@@ -1253,10 +1611,17 @@ mod tests {
         // A syntax error in a standard module would drop its declarations without a word, as
         // a keyword used as a name does.
         let v0_2 = format!("{}\n{PRELUDE_0_2}", of_prelude());
+        let v0_3 = format!("{v0_2}{PRELUDE_0_3}");
+        let v0_4 = format!("{v0_3}{PRELUDE_0_4}");
+        let testing_0_4 = testing_source(Edition::V0_4);
+        assert!(testing_0_4.contains("import std.time (Millisecond)"));
         for (name, text, keywords) in [
             ("prelude", PRELUDE, KeywordSet::V0_1),
             ("prelude 0.2", v0_2.as_str(), KeywordSet::V0_2),
+            ("prelude 0.3", v0_3.as_str(), KeywordSet::V0_3),
+            ("prelude 0.4", v0_4.as_str(), KeywordSet::V0_4),
             ("testing", TESTING, KeywordSet::V0_1),
+            ("testing 0.4", testing_0_4.as_str(), KeywordSet::V0_4),
         ] {
             let mut sources = SourceDb::new();
             let mut interner = Interner::new();
@@ -1357,7 +1722,8 @@ mod tests {
         }
         for kind in una_core::PRELUDE_ENGINE_KINDS {
             assert!(
-                kinds.iter().any(|k| k == kind) || ["List", "Map"].contains(&kind),
+                kinds.iter().any(|k| k == kind)
+                    || ["List", "Map", "Array", "Matrix"].contains(&kind),
                 "`{kind}` is not a kind of the prelude"
             );
         }
@@ -1434,7 +1800,7 @@ mod tests {
         }
         let mut expected: Vec<String> = una_core::PRELUDE_ENGINE_KINDS
             .iter()
-            .filter(|kind| !["List", "Map"].contains(kind))
+            .filter(|kind| !["List", "Map", "Array", "Matrix"].contains(kind))
             .map(|kind| (*kind).to_owned())
             .collect();
         expected.sort();
@@ -1455,11 +1821,17 @@ mod tests {
             tree,
             interner: &standard.interner,
             reports: true,
+            mount: None,
         };
         let mut env = Env::build(
             Vec::new(),
             source(&standard.prelude),
-            source(&standard.testing),
+            std::iter::once(&standard.testing)
+                .chain(&standard.later)
+                .map(source)
+                .collect(),
+            (edition >= Edition::V0_4).then(|| source(&standard.map_0_4)),
+            (edition >= Edition::V0_4).then(|| source(&standard.collections)),
             Vec::new(),
             edition,
             &mut report,
@@ -1545,4 +1917,291 @@ mod tests {
         assert_eq!(edit_distance("kitten", "sitting"), 3);
         assert_eq!(edit_distance("ab", "ba"), 1);
     }
+}
+
+/// #1050: a declaration that type-checked but did not elaborate to Core IR rejects the package
+/// with U8001, through the final cross-check, whatever path of the elaboration dropped it.
+#[cfg(test)]
+mod elaboration_gaps {
+    use una_project::Manifest;
+
+    use super::elab::hook::Break;
+    use super::*;
+    use crate::names::ModuleInput;
+
+    const SOURCE: &str = "module gaps
+
+pub kind Positive = Int where it > 0
+
+pub capability Log
+  op write(line: Text) -> Unit
+
+pub handler quiet() for Log
+  op write(line) = unit
+
+pub predicate reflect small(n: Int) -> Bool = n < 100
+
+pub step(n: Int) -> Int
+  requires n > 0
+  ensures result > n
+=
+  n + 1
+
+pub halve(n: Int) -> Int = n / 2
+
+example \"step adds one\"
+  do step(1)
+  expect result == 2
+";
+
+    /// The type check of `text` in `edition`, its codes and the lines they are at.
+    fn run(text: &str, edition: Edition) -> (TypeCheck, Vec<(Code, u32)>) {
+        let mut sources = SourceDb::new();
+        let mut interner = Interner::new();
+        let id = sources.add("gaps.una", text.as_bytes());
+        let keywords = match edition {
+            Edition::V0_1 => KeywordSet::V0_1,
+            Edition::V0_2 => KeywordSet::V0_2,
+            Edition::V0_3 => KeywordSet::V0_3,
+            Edition::V0_4 => KeywordSet::V0_4,
+        };
+        let lexed = lex_in(sources.file(id), id, &mut interner, keywords);
+        let parsed = parse(&lexed, id, &interner);
+        assert!(lexed.errors.is_empty(), "{:?}", lexed.errors);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let settings = Manifest {
+            edition,
+            ..Manifest::default()
+        };
+        let input = PackageInput {
+            sources: &sources,
+            interner: &interner,
+            single: true,
+            modules: vec![ModuleInput {
+                id,
+                tree: &parsed.file,
+                broken: false,
+            }],
+            manifest: None,
+            settings: &settings,
+            run: None,
+            earlier_errors: false,
+            locks: &[],
+        };
+        let check = check_types(&input);
+        let codes = check
+            .diagnostics
+            .iter()
+            .map(|d| (d.code, d.primary.start.line))
+            .collect();
+        (check, codes)
+    }
+
+    fn names(check: &TypeCheck) -> Vec<String> {
+        check
+            .program
+            .modules
+            .iter()
+            .filter(|m| m.path == "gaps")
+            .flat_map(|m| {
+                m.decls
+                    .iter()
+                    .map(|d| elab::decl_key(d).1.to_owned())
+                    .chain(m.examples.iter().map(|e| e.name.clone()))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_package_checks_and_elaborates_without_a_failure() {
+        for edition in Edition::ALL {
+            let (check, codes) = run(SOURCE, edition);
+            assert_eq!(codes, Vec::new(), "{edition:?}");
+            let module = check
+                .program
+                .modules
+                .iter()
+                .find(|m| m.path == "gaps")
+                .expect("the module");
+            assert_eq!(module.decls.len(), 6, "{edition:?}: {:?}", names(&check));
+            assert_eq!(module.examples.len(), 1, "{edition:?}");
+        }
+    }
+
+    #[test]
+    fn a_declaration_that_does_not_elaborate_is_an_internal_error() {
+        // Each declaration, its line, broken in turn: none is accepted without its Core IR.
+        for (name, line) in [
+            ("Positive", 3),
+            ("Log", 5),
+            ("quiet", 8),
+            ("small", 11),
+            ("step", 13),
+            ("halve", 19),
+            ("step adds one", 21),
+        ] {
+            for edition in Edition::ALL {
+                let _broken = Break::of(name);
+                let (check, codes) = run(SOURCE, edition);
+                assert!(
+                    codes.contains(&(Code::U8001, line)),
+                    "{name} in {edition:?}: {codes:?}"
+                );
+                assert!(
+                    codes.iter().all(|(code, _)| *code == Code::U8001),
+                    "{name} in {edition:?}: {codes:?}"
+                );
+                let message = &check
+                    .diagnostics
+                    .iter()
+                    .find(|d| d.primary.start.line == line)
+                    .expect("the diagnostic")
+                    .message;
+                assert!(message.contains("did not elaborate"), "{message}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_reflected_predicate_whose_local_has_no_resolution_is_an_internal_error() {
+        // The regression found while adding the host-driven step: a parameter named in a
+        // reflected predicate's formula looked up as a resolution, which the records never
+        // hold for a local, so `Fx::res` marked the predicate broken with no diagnostic and it
+        // vanished from Core IR; a refinement naming it was then refuted, or worse proven
+        // without it. The lookup is forced here; the package must be rejected with U8001.
+        let text = "module gaps
+
+pub predicate reflect small(n: Int) -> Bool = n < 100
+
+pub kind Small = Int where small(it)
+
+pub keep(n: Small) -> Small = n
+";
+        for edition in Edition::ALL {
+            let (check, codes) = run(text, edition);
+            assert_eq!(codes, Vec::new(), "{edition:?}");
+            assert!(names(&check).iter().any(|d| d == "small"));
+            let _eager = Break::eager_resolution();
+            let (check, codes) = run(text, edition);
+            assert!(codes.contains(&(Code::U8001, 3)), "{edition:?}: {codes:?}");
+            assert!(!names(&check).iter().any(|d| d == "small"));
+        }
+    }
+
+    #[test]
+    fn a_standard_contract_that_does_not_elaborate_is_an_internal_error() {
+        // `abs` is a function of the prelude: without its signature a call into it would be
+        // verified without its contract.
+        let _broken = Break::of("abs");
+        let (check, codes) = run(SOURCE, Edition::V0_1);
+        assert_eq!(codes.len(), 1, "{codes:?}");
+        let diagnostic = check.diagnostics.first().expect("one diagnostic");
+        assert_eq!(diagnostic.code, Code::U8001);
+        assert_eq!(diagnostic.primary.file, "std/prelude.una");
+        assert!(diagnostic.message.contains("standard function"));
+    }
+
+    #[test]
+    fn an_error_that_rejects_the_package_already_needs_no_internal_error() {
+        // A type error rejects the package; the declaration it leaves out of Core IR, and any
+        // other, adds nothing.
+        let text = format!("{SOURCE}\npub wrong() -> Int = true\n");
+        let _broken = Break::of("step");
+        let (_, codes) = run(&text, Edition::V0_1);
+        assert!(!codes.is_empty());
+        assert!(
+            codes.iter().all(|(code, _)| *code != Code::U8001),
+            "{codes:?}"
+        );
+    }
+
+    const DECIMAL: &str = "module gaps
+
+pub kind Amount = Decimal[2] where it >= 0.00
+
+pub total(a: Amount, b: Amount) -> Amount = a + b
+
+pub scaled(a: Decimal[2], rate: Decimal[4]) -> Bool
+  requires rate >= 0.0000
+=
+  a + rate >= 0.0
+";
+
+    #[test]
+    fn a_decimal_declaration_that_does_not_elaborate_is_an_internal_error() {
+        // Edition 0.4's `Decimal` (`spec/29 §16`): its literals, aligned operands and
+        // refinements elaborate on their own paths, which the cross-check covers as any other.
+        let (check, codes) = run(DECIMAL, Edition::V0_4);
+        assert_eq!(codes, Vec::new());
+        assert_eq!(names(&check), ["Amount", "total", "scaled"]);
+        for (name, line) in [("Amount", 3), ("total", 5), ("scaled", 7)] {
+            let _broken = Break::of(name);
+            let (_, codes) = run(DECIMAL, Edition::V0_4);
+            assert_eq!(codes, [(Code::U8001, line)], "{name}");
+        }
+    }
+
+    #[test]
+    fn a_decimal_declaration_of_the_prelude_that_does_not_elaborate_is_an_internal_error() {
+        // The functions of `Decimal` and the kind `Rounding`, which edition 0.4's prelude
+        // declares: each is in Core IR, and one that does not elaborate rejects the package.
+        let (check, codes) = run(DECIMAL, Edition::V0_4);
+        assert_eq!(codes, Vec::new());
+        let functions = ["parse_decimal", "as_decimal", "json_decimal"];
+        for name in functions {
+            assert!(
+                check
+                    .program
+                    .library
+                    .iter()
+                    .any(|s| s.path.module == "prelude" && s.path.name == name),
+                "{name}"
+            );
+        }
+        assert!(check.program.modules.iter().any(|m| {
+            m.path == una_core::PRELUDE_MODULE
+                && m.decls
+                    .iter()
+                    .any(|d| elab::decl_key(d) == ("type", "Rounding"))
+        }));
+        for (name, what) in functions
+            .iter()
+            .map(|name| (*name, "standard function"))
+            .chain([("Rounding", "prelude kind")])
+        {
+            let _broken = Break::of(name);
+            let (check, codes) = run(DECIMAL, Edition::V0_4);
+            assert_eq!(codes.len(), 1, "{name}: {codes:?}");
+            let diagnostic = check.diagnostics.first().expect("one diagnostic");
+            assert_eq!(diagnostic.code, Code::U8001, "{name}");
+            assert_eq!(diagnostic.primary.file, "std/prelude.una", "{name}");
+            assert!(
+                diagnostic.message.contains(what),
+                "{name}: {}",
+                diagnostic.message
+            );
+        }
+    }
+
+    #[test]
+    fn every_standard_declaration_elaborates_in_every_edition() {
+        // The audit of #1050: no contract of the standard library, host capability or prelude
+        // kind of Core IR is dropped today, in any edition.
+        for edition in Edition::ALL {
+            let (_, codes) = run("module gaps\n\npub one() -> Int = 1\n", edition);
+            assert_eq!(codes, Vec::new(), "{edition:?}");
+        }
+    }
+}
+
+/// A `for ever within d` loop, for IF8 and the report's `timing` list (ADR 0116 rules 11 and
+/// 21).
+#[derive(Clone, Debug)]
+pub(crate) struct DeadlineLoop {
+    /// The loop.
+    pub(crate) span: Span,
+    /// The function whose body holds it.
+    pub(crate) function: Option<usize>,
+    /// The seed of the timing label of its body, the deadline's label included.
+    pub(crate) seed: timing::TimingSeed,
 }

@@ -8,7 +8,7 @@
 
 use std::ffi::{CStr, c_char, c_int};
 
-use crate::{generic, host, json, runtime, tasks, values};
+use crate::{decimal, generic, host, json, runtime, tasks, values};
 
 /// The allocator of a debug build (ADR 0113, I3): the release build's [`cap::Cap`], wrapped to
 /// keep the most bytes the process ever held, its high-water mark, and the bytes each thread
@@ -66,6 +66,26 @@ impl Peak {
 #[cfg(debug_assertions)]
 pub(crate) fn thread_allocated() -> usize {
     THREAD_ALLOCATED.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+std::thread_local! {
+    /// What a test lambda holds on its task until the task ends: a stand-in for memory the task
+    /// keeps, which `sched` swaps and drops with the task's other thread-locals.
+    pub(crate) static FILLER: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Exchanges the thread's [`FILLER`] with a parked task's, in tests.
+#[cfg(test)]
+pub(crate) fn swap_filler(filler: &mut Vec<u8>) {
+    FILLER.with(|cell| std::mem::swap(&mut *cell.borrow_mut(), filler));
+}
+
+/// Exchanges the thread's count of allocated bytes with a parked task's (`sched`), so that each
+/// task's count is its own, as on a thread of its own.
+#[cfg(debug_assertions)]
+pub(crate) fn swap_thread_allocated(allocated: &mut usize) {
+    *allocated = THREAD_ALLOCATED.with(|cell| cell.replace(*allocated));
 }
 
 // SAFETY: every method forwards to `Cap<System>`, a `GlobalAlloc`, with the caller's arguments
@@ -218,6 +238,34 @@ pub unsafe extern "C" fn una_rt_text_literal(bytes: *const u8, len: usize) -> i6
     values::text_literal(&text)
 }
 
+/// Writes the default floating-point environment of the calling thread (ADR 0114 rule 6.4):
+/// round to nearest, ties to even, every exception masked, no flush-to-zero and no
+/// denormals-are-zero, and on AArch64 no default-NaN mode. One instruction.
+pub(crate) fn write_float_environment() {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let mxcsr: u32 = 0x1F80;
+        // SAFETY: `ldmxcsr` reads 4 bytes from the address of `mxcsr`, a live local of that
+        // size; it writes no memory and touches no stack, and 0x1F80 is the default MXCSR, so
+        // no reserved bit is set and no exception can be raised by the load.
+        unsafe {
+            core::arch::asm!(
+                "ldmxcsr [{}]",
+                in(reg) &mxcsr,
+                options(nostack, readonly, preserves_flags)
+            );
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        // SAFETY: `msr fpcr` writes the floating-point control register with 0: RMode round to
+        // nearest, FZ, DN and AHP off, every trap enable off. It touches no memory.
+        unsafe {
+            core::arch::asm!("msr fpcr, {}", in(reg) 0_u64, options(nomem, nostack, preserves_flags));
+        }
+    }
+}
+
 /// The operations of [`crate::values`] that return a word, by word.
 macro_rules! exported {
     ($($name:ident => $function:path, ($($arg:ident),*);)*) => {
@@ -302,6 +350,13 @@ exported! {
     una_rt_bytes => values::bytes_of, (t);
     una_rt_parse_failure => values::parse_failure, (t);
     una_rt_parse_int => values::parse_int, (t);
+    una_rt_f64_literal => values::f64_literal, (bits);
+    una_rt_f64_op => values::f64_op, (op, a, b, c);
+    una_rt_f64_from_bits => values::f64_from_bits, (bits);
+    una_rt_parse_f64_failure => values::parse_f64_failure, (t);
+    una_rt_parse_f64 => values::parse_f64, (t);
+    una_rt_as_f64 => values::as_f64, (j);
+    una_rt_json_number => values::json_number, (x);
     una_rt_to_int => values::to_int, (t);
     una_rt_is_empty => values::is_empty, (xs);
     una_rt_first => values::first, (xs);
@@ -335,6 +390,10 @@ exported! {
     una_rt_or_else => values::or_else, (o, default);
     una_rt_op_code => values::op_code, (instance, index);
     una_rt_fixed => values::fixed, (op, int, a, b);
+    una_rt_decimal => decimal::decimal, (op, scales, a, b, r);
+    una_rt_parse_decimal_failure => decimal::parse_decimal_failure, (t, scale);
+    una_rt_parse_decimal => decimal::parse_decimal, (t, scale);
+    una_rt_as_decimal => decimal::as_decimal, (j, scale);
     una_rt_range => values::range, (site, low, high, inclusive);
     una_rt_console_print => host::console_print, (line);
     una_rt_clock_now => host::clock_now, ();
@@ -426,6 +485,58 @@ pub extern "C" fn una_rt_main_failed(failure: i64) {
 #[unsafe(no_mangle)]
 pub extern "C" fn una_rt_budget(site: i64) -> i64 {
     runtime::budget(usize::try_from(site).unwrap_or(usize::MAX))
+}
+
+/// Enters a `for ever within` loop whose deadline is the borrowed integer `ms`
+/// ([`crate::deadline::enter`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_deadline_enter(ms: i64) {
+    crate::deadline::enter(ms);
+}
+
+/// Starts an iteration of a `for ever within` loop ([`crate::deadline::iteration`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_deadline_iteration() {
+    crate::deadline::iteration();
+}
+
+/// Leaves a `for ever within` loop ([`crate::deadline::leave`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_deadline_leave() {
+    crate::deadline::leave();
+}
+
+/// Enters `e within d`, whose deadline is the borrowed integer `ms`, and returns the frame's id
+/// ([`crate::deadline::within_enter`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_within_enter(ms: i64) -> i64 {
+    crate::deadline::within_enter(ms)
+}
+
+/// Ends the `within` of the frame `id`, after `e` returned or failed (`stopped` 0) or after its
+/// task stopped inside it (`stopped` 1): 0 when `e`'s outcome stands, 1 when it timed out, 2 when
+/// the task stops on ([`crate::deadline::within_end`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_within_end(id: i64, stopped: i64) -> i64 {
+    crate::deadline::within_end(id, stopped)
+}
+
+/// The next tick of a driven program's loop, or 0 when it stops ([`runtime::drive_tick`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_drive_tick() -> i64 {
+    runtime::drive_tick()
+}
+
+/// 1 when a `for ever` stops at the iteration that starts now ([`runtime::ever_start`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_ever_start() -> i64 {
+    runtime::ever_start()
+}
+
+/// Leaves the body of a `for ever` ([`runtime::ever_end`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_ever_end() {
+    runtime::ever_end();
 }
 
 /// 1 when the task must stop before an operation ([`runtime::poll`]).
@@ -1983,10 +2094,7 @@ mod tests {
         assert_eq!(tasks, ["1", "2 cancelled"]);
     }
 
-    std::thread_local! {
-        /// What [`fills_after_cancel`] holds on its thread until the thread ends.
-        static FILLER: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
-    }
+    use super::FILLER;
 
     /// A lambda with one parameter that records one event, says it started, waits until its
     /// task is cancelled, then holds all but 4 bytes of what the budget leaves until its thread

@@ -1,0 +1,6 @@
+-- test: a secret argument of `as_f64` gives a result labeled at every position, which a type labeled there accepts
+-- spec: spec/29 §10, §11
+-- expect: ok
+module m
+
+pub decode(j: secret Json) -> secret Option[secret F64] = as_f64(j)

@@ -83,7 +83,10 @@ impl<'a> Checker<'_, 'a, '_> {
                 if *op == UnaryOp::Neg
                     && let ExprKind::Literal(Literal::Int(digits)) = &operand.kind
                     && (self.expected_fixed(expected).is_some()
-                        || matches!(expected.map(|e| self.vars.peel(e)), Some(Ty::Measured(..))))
+                        || matches!(
+                            expected.map(|e| self.vars.peel(e)),
+                            Some(Ty::Measured(..) | Ty::F64 | Ty::Decimal(_))
+                        ))
                 {
                     let ty = self.int_literal_type(true, digits, span, expected);
                     self.typed(operand.span, &ty);
@@ -94,9 +97,15 @@ impl<'a> Checker<'_, 'a, '_> {
                         // `-e` has the integer type of `e` (`spec/18 §2`).
                         let hint = match expected.map(|e| self.vars.peel(e)) {
                             Some(measured @ Ty::Measured(..)) => Some(measured),
+                            Some(Ty::F64) => Some(Ty::F64),
+                            Some(Ty::Decimal(scale)) => Some(Ty::Decimal(scale)),
                             _ => self.expected_fixed(expected).map(Ty::Fixed),
                         };
                         let found = self.infer(operand, hint.as_ref());
+                        // `-x` of a dense value (`spec/29 §17`).
+                        if let Some(ty) = self.dense_negation(&found, span) {
+                            return ty;
+                        }
                         let resolved = self.resolve(&found);
                         let ty = match resolved {
                             // `-` keeps a unit (ADR 0104 rule 3).
@@ -104,6 +113,10 @@ impl<'a> Checker<'_, 'a, '_> {
                             // In a clause, every integer type reads as `Int` (`spec/18 §2`).
                             Ty::Fixed(_) if self.in_clause() => Ty::Int,
                             Ty::Fixed(int) => Ty::Fixed(int),
+                            // `-x` is IEEE `negate` (ADR 0114 rule 3.1).
+                            Ty::F64 => Ty::F64,
+                            // `-x` of a decimal negates its coefficient (ADR 0120 rule 13).
+                            Ty::Decimal(scale) => Ty::Decimal(scale),
                             _ => {
                                 self.unify_at(
                                     operand.span,
@@ -165,7 +178,9 @@ impl<'a> Checker<'_, 'a, '_> {
                 predicate,
                 failure,
             } => self.checked(value, predicate, failure, span),
-            ExprKind::Attempt(operand) => self.attempt(operand, span, site),
+            ExprKind::Attempt { operand, within } => {
+                self.attempt(operand, within.as_deref(), span, site)
+            }
             ExprKind::Fail(variant) => {
                 self.outside_rl(span, || "`fail`".to_owned());
                 self.impure(span, || "`fail`".to_owned());
@@ -247,6 +262,12 @@ impl<'a> Checker<'_, 'a, '_> {
     fn literal(&mut self, literal: &Literal, span: Span, expected: Option<&Ty>) -> Ty {
         match literal {
             Literal::Int(digits) => self.int_literal_type(false, digits, span, expected),
+            // A float literal where a decimal is expected is that decimal, exactly (ADR 0120
+            // rule 12).
+            Literal::Float(text) => match expected.and_then(|e| self.decimal_scale(e)) {
+                Some(scale) => self.decimal_literal(text, scale, span),
+                None => self.float_literal(text, span),
+            },
             Literal::Bool(_) => Ty::Bool,
             Literal::Unit => {
                 self.outside_rl(span, || "`unit`".to_owned());
@@ -335,10 +356,12 @@ impl<'a> Checker<'_, 'a, '_> {
         match ty.unlabeled() {
             Ty::Fn(_) => Some("this value is a function".to_owned()),
             Ty::Hashed => Some("this value is a `Hashed`".to_owned()),
-            Ty::List(element) => self.unwritable(element, seen),
+            Ty::List(element) | Ty::Dense(_, element) => self.unwritable(element, seen),
             Ty::Map(key, value) => self
                 .unwritable(key, seen)
                 .or_else(|| self.unwritable(value, seen)),
+            // A collection writes its Una form, and needs no `==` for it (ADR 0119 rule 3).
+            Ty::Coll(_, args) => args.iter().find_map(|arg| self.unwritable(arg, seen)),
             Ty::Kind(id, args) => {
                 if !seen.insert(*id) {
                     return None;
@@ -380,10 +403,11 @@ impl<'a> Checker<'_, 'a, '_> {
         seen: &mut BTreeSet<KindId>,
     ) -> Option<(String, String, Label)> {
         match ty.unlabeled() {
-            Ty::List(element) => self.labeled_field(element, seen),
+            Ty::List(element) | Ty::Dense(_, element) => self.labeled_field(element, seen),
             Ty::Map(key, value) => self
                 .labeled_field(key, seen)
                 .or_else(|| self.labeled_field(value, seen)),
+            Ty::Coll(_, args) => args.iter().find_map(|arg| self.labeled_field(arg, seen)),
             Ty::Kind(id, args) => {
                 if !seen.insert(*id) {
                     return None;
@@ -459,6 +483,7 @@ impl<'a> Checker<'_, 'a, '_> {
         match self.env.lower(self.module, name) {
             Some(Entity::Function(id)) => {
                 self.outside_rl(ident.span, || format!("function `{name}` used as a value"));
+                self.decimal_function_value(id, ident.span);
                 let (module, effects) = self.env.functions.get(id).map_or((0, false), |f| {
                     (f.module, !f.uses.is_empty() || f.fails.is_some())
                 });
@@ -568,6 +593,16 @@ impl<'a> Checker<'_, 'a, '_> {
                 );
                 Ty::error()
             }
+            // A built-in constant of `std.time`: a public `Int` in its unit, elaborated to its
+            // value (ADR 0116 rule 0, amended 2026-10-19).
+            Some(Entity::Constant { value, unit }) => {
+                self.resolved(ident.span, Res::Constant(value));
+                let norm = self.env.units.get(unit).and_then(|def| def.norm.clone());
+                match norm {
+                    Some(norm) => Ty::measured((*norm).clone(), Ty::Int),
+                    None => Ty::Int,
+                }
+            }
             // An unknown name is U1001, reported by M3.
             _ => {
                 self.vars.mark_unknown();
@@ -581,6 +616,18 @@ impl<'a> Checker<'_, 'a, '_> {
         let Some(def) = self.env.functions.get(id).cloned() else {
             return Ty::error();
         };
+        // ADR 0116 rule 8: a function that says `diverges` is not a value.
+        if def.diverges {
+            self.report.error(
+                Code::U3028,
+                span,
+                format!(
+                    "`{}` says `diverges`, so it is not a value: a value can be called where nothing says it may run forever; call it by name",
+                    def.name
+                ),
+            );
+            return Ty::error();
+        }
         if def.kind == FnKind::Policy {
             self.report.error(
                 Code::U2001,
@@ -590,6 +637,27 @@ impl<'a> Checker<'_, 'a, '_> {
                     def.name, def.name
                 ),
             );
+            return Ty::error();
+        }
+        // ADR 0120: a trusted function that computes new elements gives a result without the
+        // refinement of its element type at each call (`super::dense::SYNTHESIZING`). A function
+        // value's result type is fixed where the value flows, after its type arguments take
+        // their refinements, so it would claim the refinement for elements the function made;
+        // such a function is not a value, and a lambda that calls it is.
+        if super::dense::synthesizes(self.env.prelude, def.module, def.name) {
+            let mut diagnostic = self.report.make(
+                Code::U2001,
+                span,
+                format!(
+                    "`{}` computes new elements, so it is not a function value; call it in a lambda",
+                    def.name
+                ),
+            );
+            diagnostic.repairs.push(super::Report::advice(format!(
+                "write a lambda that calls `{}` with its arguments",
+                def.name
+            )));
+            self.report.push(diagnostic);
             return Ty::error();
         }
         // ADR 0042 rule 2: an opaque predicate used as a value would be called outside
@@ -688,6 +756,17 @@ impl<'a> Checker<'_, 'a, '_> {
         if let Some(current) = self.current {
             self.findings.edges.push((current, callee, span));
         }
+        // What can run beside a part of a task construct (ADR 0116 IF6).
+        if self.task_depth > 0 {
+            self.findings.task_edges.insert(callee);
+        }
+        if self.lambda_depth > 0 {
+            self.findings.lambda_edges.insert(callee);
+        }
+        if self.handler.is_some() {
+            self.findings.handler_edges.insert(callee);
+        }
+        self.timing_callee(callee);
     }
 
     /// An upper-case name used as a value: a variant without fields.
@@ -751,7 +830,9 @@ impl<'a> Checker<'_, 'a, '_> {
                 Code::U2001,
                 format!("`{name}` is a unit, not a value; a value takes it with `measured()`"),
             ),
-            Entity::Function(_) | Entity::Handler(_) => return Ty::error(),
+            Entity::Function(_) | Entity::Handler(_) | Entity::Constant { .. } => {
+                return Ty::error();
+            }
         };
         self.report.error(problem.0, span, problem.1);
         Ty::error()
@@ -898,10 +979,15 @@ impl<'a> Checker<'_, 'a, '_> {
                 self.compare_with_is(op, left, right, span, mark, needs);
                 self.operands.push(left_ty.clone());
                 self.operands.push(right_ty.clone());
+                if self.is_f64(&left_ty) || self.is_f64(&right_ty) {
+                    self.zero_comparison(symbol, left, right, span, true);
+                }
                 if self.integers_in_clause(&left_ty, &right_ty, span) {
                     return Ty::Bool;
                 }
-                if self.same(span, &left_ty, &right_ty, symbol) {
+                // Decimals compare by value across scales (ADR 0120 rule 13).
+                let decimals = self.is_decimal(&left_ty) && self.is_decimal(&right_ty);
+                if !decimals && self.same(span, &left_ty, &right_ty, symbol) {
                     let resolved = self.resolve(&left_ty);
                     if self.facts.has_function(&resolved) {
                         let shown = self.show(&resolved);
@@ -910,6 +996,19 @@ impl<'a> Checker<'_, 'a, '_> {
                             span,
                             format!("`{symbol}` cannot compare values of `{shown}`, which hold functions"),
                         );
+                    } else if let Some(coll) = self.facts.unequal(&resolved) {
+                        // ADR 0119 rules 2 and 11: a hash map, a hash set and a priority queue
+                        // have no `==`, nor does a value that holds one.
+                        let message = match resolved.unlabeled() {
+                            Ty::Coll(own, _) if *own == coll => unequal_message(coll),
+                            _ => format!(
+                                "`{symbol}` cannot compare values of `{}`, which hold a {}; {}",
+                                self.show(&resolved),
+                                unequal_noun(coll),
+                                unequal_message(coll)
+                            ),
+                        };
+                        self.report.error(Code::U2001, span, message);
                     }
                 }
                 self.needs.push((left_ty, Constraint::Eq, span));
@@ -919,11 +1018,18 @@ impl<'a> Checker<'_, 'a, '_> {
                 let (left_ty, right_ty) = self.operand_pair(left, right);
                 self.operands.push(left_ty.clone());
                 self.operands.push(right_ty.clone());
+                if self.is_f64(&left_ty) || self.is_f64(&right_ty) {
+                    self.zero_comparison(symbol, left, right, span, false);
+                }
                 if self.integers_in_clause(&left_ty, &right_ty, span) {
                     return Ty::Bool;
                 }
-                if self.same(span, &left_ty, &right_ty, symbol) {
+                // Decimals are ordered by value across scales (ADR 0120 rule 13).
+                let decimals = self.is_decimal(&left_ty) && self.is_decimal(&right_ty);
+                if !decimals && self.same(span, &left_ty, &right_ty, symbol) {
                     match self.resolve(&left_ty) {
+                        // `F64` is ordered by IEEE totalOrder (ADR 0114 rule 5.2).
+                        Ty::F64 => {}
                         Ty::Int
                         | Ty::Fixed(_)
                         | Ty::Measured(..)
@@ -954,29 +1060,50 @@ impl<'a> Checker<'_, 'a, '_> {
                 Ty::Bool
             }
             BinaryOp::Add | BinaryOp::Sub => {
-                self.ints(left, right, &operand, span, expected, Combine::Same)
+                self.ints(left, right, &operand, span, expected, Combine::Same, op)
             }
             BinaryOp::Mul => {
-                if int_literal(left).is_none() && int_literal(right).is_none() {
+                let ty = self.ints(left, right, &operand, span, expected, Combine::Mul, op);
+                // A float literal is a literal factor of a decimal (ADR 0120 V2), and the
+                // linearity restriction concerns integer arithmetic: `*` of two `F64` values is
+                // in the refinement language (ADR 0114 rule 8.4).
+                let literal = |e: &Expr| {
+                    int_literal(e).is_some()
+                        || (self.env.edition >= Edition::V0_4
+                            && super::decimal::is_float_literal(e))
+                };
+                if !literal(left)
+                    && !literal(right)
+                    && !self.is_f64(&ty)
+                    && self.module != self.env.prelude
+                {
                     self.outside_rl(span, || {
                         "`*` of two operands that are not literals".to_owned()
                     });
                 }
-                self.ints(left, right, &operand, span, expected, Combine::Mul)
+                ty
             }
             BinaryOp::Div | BinaryOp::Mod => {
-                if int_literal(right) != Some(true) {
-                    self.outside_rl(span, || {
-                        format!("`{symbol}` by a divisor that is not a nonzero literal")
-                    });
-                    self.obligation(ObligationKind::Division, span, None);
-                }
                 let combine = if op == BinaryOp::Div {
                     Combine::Div
                 } else {
                     Combine::Same
                 };
-                self.ints(left, right, &operand, span, expected, combine)
+                let ty = self.ints(left, right, &operand, span, expected, combine, op);
+                // An `F64` division by zero gives an infinity or NaN, and has no obligation
+                // (ADR 0114 rule 3.2); a decimal has no `/` (ADR 0120 rule 13); a dense value divided by a scalar records
+                // its own, on integer elements (`spec/29 §17`).
+                if int_literal(right) != Some(true)
+                    && !self.is_f64(&ty)
+                    && !self.is_decimal(&ty)
+                    && self.dense_of(&ty).is_none()
+                {
+                    self.outside_rl(span, || {
+                        format!("`{symbol}` by a divisor that is not a nonzero literal")
+                    });
+                    self.obligation(ObligationKind::Division, span, None);
+                }
+                ty
             }
         }
     }
@@ -989,6 +1116,7 @@ impl<'a> Checker<'_, 'a, '_> {
     /// Units (ADR 0104 rule 3): `+`, `-` and `mod` keep one unit, `*` and `/` multiply and
     /// divide them. A constant operand of `+`, `-` or `mod` takes the other operand's unit; one
     /// of `*` or `/` is unitless; a constant expression as a whole takes the expected unit.
+    #[allow(clippy::too_many_arguments)]
     fn ints(
         &mut self,
         left: &Expr,
@@ -997,9 +1125,17 @@ impl<'a> Checker<'_, 'a, '_> {
         span: Span,
         expected: Option<&Ty>,
         combine: Combine,
+        op: BinaryOp,
     ) -> Ty {
         let clause = self.in_clause();
-        let constant = (fixed::is_constant(left), fixed::is_constant(right));
+        // Edition 0.4: a float literal is typed after the other operand, whose decimal scale it
+        // takes (ADR 0120 rule 12).
+        let decimals = self.env.edition >= Edition::V0_4;
+        let float = |e: &Expr| decimals && super::decimal::is_float_literal(e);
+        let constant = (
+            fixed::is_constant(left) || float(left),
+            fixed::is_constant(right) || float(right),
+        );
         let (first, second) = if constant.0 && !constant.1 {
             (right, left)
         } else {
@@ -1007,10 +1143,21 @@ impl<'a> Checker<'_, 'a, '_> {
         };
         let expected_resolved = expected.map(|e| self.vars.peel(e));
         let expected_magnitude = expected_resolved.as_ref().map(|e| e.magnitude().clone());
-        let hint = if clause {
+        let expected_scale = expected.and_then(|e| self.decimal_scale(e));
+        let hint = if let (Some(scale), true) = (expected_scale, float(first)) {
+            // Two literals: `+` and `-` give both the expected scale; `*` gives each the scale
+            // of its own digits.
+            match combine {
+                Combine::Same => Some(Ty::Decimal(scale)),
+                _ => super::decimal::float_text(first)
+                    .and_then(una_core::decimal::literal_scale)
+                    .map(Ty::Decimal),
+            }
+        } else if clause {
             None
         } else {
             match (&combine, &expected_magnitude) {
+                (_, Some(Ty::F64)) => Some(Ty::F64),
                 (Combine::Same, Some(ty @ Ty::Fixed(_))) => Some(ty.clone()),
                 _ => self
                     .expected_fixed(expected_magnitude.as_ref())
@@ -1020,6 +1167,26 @@ impl<'a> Checker<'_, 'a, '_> {
         let first_ty = self.infer(first, hint.as_ref());
         // Each operand's top node, read once (ADR 0077: no rebuilding per operation).
         let first_top = self.vars.peel(&first_ty);
+        // An operator of dense values (`spec/29 §17`).
+        let swapped = constant.0 && !constant.1;
+        if matches!(first_top, Ty::Dense(..)) {
+            return self.dense_arithmetic(op, first, first_ty, second, None, span, swapped);
+        }
+        if matches!(first_top.magnitude(), Ty::F64) {
+            return self.float_arithmetic(
+                (op, swapped),
+                first,
+                first_ty,
+                second,
+                operand,
+                span,
+                combine,
+            );
+        }
+        if let Ty::Decimal(a) = first_top.magnitude() {
+            let a = *a;
+            return self.decimal_arithmetic(first_ty, a, float(first), second, op, span);
+        }
         let magnitude = match first_top.magnitude() {
             Ty::Fixed(int) if !clause => Ty::Fixed(*int),
             Ty::Fixed(_) => Ty::Int,
@@ -1039,14 +1206,38 @@ impl<'a> Checker<'_, 'a, '_> {
         };
         let second_ty = self.infer(second, Some(&second_hint));
         let second_top = self.vars.peel(&second_ty);
+        // `k * x` with the scalar first (`spec/29 §17`).
+        if matches!(second_top, Ty::Dense(..)) {
+            return self.dense_arithmetic(
+                op,
+                first,
+                first_ty,
+                second,
+                Some(second_ty),
+                span,
+                swapped,
+            );
+        }
         let second_magnitude = second_top.magnitude().clone();
         if !(clause && fixed::is_integer(&second_magnitude)) {
+            let mark = self.report.count();
             self.unify_at(
                 second.span,
                 &magnitude,
                 &second_magnitude,
                 Role::Condition(operand),
             );
+            // ADR 0114 rule 1.2: an integer operand of an `F64` operator converts by `to_f64()`.
+            if matches!(second_magnitude, Ty::F64) && fixed::is_integer(&magnitude) {
+                let text = self.report.text(first.span).to_owned();
+                let repair = self.report.edit(
+                    "convert the integer with `to_f64()`",
+                    first.span,
+                    format!("({text}).to_f64()"),
+                );
+                self.report
+                    .repair_since(mark, Code::U2001, second.span, repair);
+            }
         }
         self.operands.push(first_ty.clone());
         self.operands.push(second_ty.clone());
@@ -1123,16 +1314,79 @@ impl<'a> Checker<'_, 'a, '_> {
         }
     }
 
+    /// The second operand and the type of an arithmetic operator whose first operand is an
+    /// `F64` (ADR 0114 rule 3.1): both are `F64`, an integer operand is U2001 with a repair
+    /// that converts it by `to_f64()`, and `mod` is U2001 with a repair to `rem`.
+    #[allow(clippy::too_many_arguments)]
+    fn float_arithmetic(
+        &mut self,
+        (op, swapped): (BinaryOp, bool),
+        first: &Expr,
+        first_ty: Ty,
+        second: &Expr,
+        operand: &str,
+        span: Span,
+        combine: Combine,
+    ) -> Ty {
+        let mark = self.report.count();
+        let second_ty = self.infer(second, Some(&Ty::F64));
+        let second_top = self.vars.peel(&second_ty);
+        // `k * x` with the scalar first (`spec/29 §17`): the order as written is kept.
+        if matches!(second_top, Ty::Dense(..)) {
+            return self.dense_arithmetic(
+                op,
+                first,
+                first_ty,
+                second,
+                Some(second_ty),
+                span,
+                swapped,
+            );
+        }
+        if !matches!(second_top.magnitude(), Ty::F64) {
+            self.unify_at(second.span, &Ty::F64, &second_ty, Role::Condition(operand));
+            if fixed::is_integer(second_top.magnitude()) {
+                let text = self.report.text(second.span).to_owned();
+                let repair = self.report.edit(
+                    "convert the integer with `to_f64()`",
+                    second.span,
+                    format!("({text}).to_f64()"),
+                );
+                self.report
+                    .repair_since(mark, Code::U2001, second.span, repair);
+            }
+        }
+        self.operands.push(first_ty);
+        self.operands.push(second_ty);
+        if matches!(combine, Combine::Same) && operand.contains("`mod`") {
+            let mut diagnostic = self.report.make(
+                Code::U2001,
+                span,
+                "`mod` is not defined on `F64`; `x.rem(by: y)` is the remainder of a truncated quotient",
+            );
+            diagnostic.repairs.push(super::Report::advice(
+                "write `x.rem(by: y)`, whose result has the sign of `x`",
+            ));
+            self.report.push(diagnostic);
+        }
+        Ty::F64
+    }
+
     /// The types of the operands of a comparison: the side that is not a literal first, so a
     /// literal takes the other side's type.
     fn operand_pair(&mut self, left: &Expr, right: &Expr) -> (Ty, Ty) {
-        if fixed::is_constant(left) && !fixed::is_constant(right) {
+        // Edition 0.4: a float literal beside a decimal takes the scale of its own digits
+        // (ADR 0120 rule 12).
+        let decimals = self.env.edition >= Edition::V0_4;
+        let constant =
+            |e: &Expr| fixed::is_constant(e) || (decimals && super::decimal::is_float_literal(e));
+        if constant(left) && !constant(right) {
             let right_ty = self.expr(right, None);
-            let left_ty = self.infer(left, Some(&right_ty));
+            let left_ty = self.comparison_literal(left, &right_ty);
             (left_ty, right_ty)
         } else {
             let left_ty = self.expr(left, None);
-            let right_ty = self.infer(right, Some(&left_ty));
+            let right_ty = self.comparison_literal(right, &left_ty);
             (left_ty, right_ty)
         }
     }
@@ -1305,6 +1559,10 @@ impl<'a> Checker<'_, 'a, '_> {
                 self.outside_rl_with(span, || "`is` with a literal".to_owned(), repair);
                 self.constant_pattern(literal);
                 let ty = self.expr(value, None);
+                // A float literal is never a pattern (ADR 0114 rules 5.5 and 5.6).
+                if let Literal::Float(text) = literal {
+                    self.float_pattern(text, span);
+                }
                 let literal_ty = self.literal(literal, span, Some(&ty));
                 if !self.vars.unify(&ty, &literal_ty) {
                     let (ty, literal_ty) = (self.show(&ty), self.show(&literal_ty));
@@ -1844,8 +2102,10 @@ impl<'a> Checker<'_, 'a, '_> {
         ty
     }
 
-    /// `attempt` applies to one call and gives `Result[T, E]` (`spec/06 §5`).
-    fn attempt(&mut self, operand: &Expr, span: Span, site: Site) -> Ty {
+    /// `attempt` applies to one call and gives `Result[T, E]` (`spec/06 §5`); `attempt e within
+    /// d` gives `Result[T, Timed[E]]`, or `Result[T, Deadline]` when `e` cannot fail (`spec/27
+    /// §5`, ADR 0117 rule 5).
+    fn attempt(&mut self, operand: &Expr, within: Option<&Expr>, span: Span, site: Site) -> Ty {
         self.outside_rl(span, || "`attempt`".to_owned());
         if self.ctx.in_do {
             self.absorbed.push(operand.span);
@@ -1868,6 +2128,7 @@ impl<'a> Checker<'_, 'a, '_> {
             self.expr(operand, None);
             return Ty::error();
         }
+        let open = within.map(|deadline| self.within_open(deadline, span));
         self.pass_site(Site {
             top: site.top,
             handled: true,
@@ -1877,18 +2138,32 @@ impl<'a> Checker<'_, 'a, '_> {
         if self.pass == super::authority::Pass::Check {
             // The failure of this call stops here (ADR 0100 rule 3).
             self.findings.contained.insert(inner.span);
-            // Edition 0.3: `attempt` of a call that cannot fail (ADR 0100, U3026).
-            if self.env.edition >= Edition::V0_3 && !self.call_fails.contains_key(&inner.span) {
+            // Edition 0.3: `attempt` of a call that cannot fail (ADR 0100, U3026); with a
+            // deadline it can always fail.
+            if self.env.edition >= Edition::V0_3
+                && open.is_none()
+                && !self.call_fails.contains_key(&inner.span)
+            {
                 let site = self.dead_site(operand, super::dead::Dead::Attempt { span }, Vec::new());
                 self.findings.dead.push(site);
             }
         }
-        let error = self
-            .call_fails
-            .get(&inner.span)
-            .cloned()
-            .unwrap_or(Ty::error());
-        let decided = self.decided_failures.get(&inner.span).cloned();
+        let inner_fails = self.call_fails.get(&inner.span).cloned();
+        let mut decided = self.decided_failures.get(&inner.span).cloned();
+        let error = match &open {
+            Some(open) => {
+                self.within_places(operand, open);
+                let failure = self.within_close(open, inner_fails.as_ref());
+                // Whether `e` met its deadline is labeled with `τ(e)` (IF2).
+                if !open.tau().is_public() {
+                    decided = Some(
+                        decided.map_or_else(|| open.tau().clone(), |label| label.join(open.tau())),
+                    );
+                }
+                failure
+            }
+            None => inner_fails.unwrap_or(Ty::error()),
+        };
         match self.env.prelude_kind("Result") {
             // Whether the call failed, and how, is labeled like what decided it.
             Some(result) => match decided {
@@ -1993,7 +2268,7 @@ impl<'a> Checker<'_, 'a, '_> {
 
 /// Whether `expr` is an integer literal, possibly negated or in parentheses, and then whether
 /// it is nonzero.
-fn int_literal(expr: &Expr) -> Option<bool> {
+pub(crate) fn int_literal(expr: &Expr) -> Option<bool> {
     match &expr.kind {
         ExprKind::Literal(Literal::Int(digits)) => Some(digits != "0"),
         ExprKind::Unary {
@@ -2067,4 +2342,26 @@ enum Combine {
 pub(crate) fn interpolates(literal: &Literal) -> bool {
     matches!(literal, Literal::Text(text)
         if text.parts.iter().any(|part| matches!(part, TextPart::Interpolation(_))))
+}
+
+/// What a collection without `==` is called in a message: `hash map`, `hash set` or
+/// `priority queue`.
+fn unequal_noun(coll: una_core::Coll) -> &'static str {
+    match coll {
+        una_core::Coll::HashSet => "hash set",
+        una_core::Coll::PriorityQueue => "priority queue",
+        _ => "hash map",
+    }
+}
+
+/// The message of `==` on a collection without it (ADR 0119 rule 11), naming the method that
+/// compares as sets.
+fn unequal_message(coll: una_core::Coll) -> String {
+    match coll {
+        una_core::Coll::HashSet => "hash sets have no `==`; use `same_items(as:)`".to_owned(),
+        una_core::Coll::PriorityQueue => {
+            "priority queues have no `==`; compare their `items()`".to_owned()
+        }
+        _ => "hash maps have no `==`; use `same_entries(as:)`".to_owned(),
+    }
 }

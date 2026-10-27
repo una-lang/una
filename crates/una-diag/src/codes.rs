@@ -102,6 +102,8 @@ pub enum Code {
     U1008,
     /// Reserved module name.
     U1009,
+    /// A module whose first path segment is a dependency's local name.
+    U1010,
     /// Type mismatch.
     U2001,
     /// Unknown or ill-formed type.
@@ -162,6 +164,18 @@ pub enum Code {
     U2029,
     /// A unit conversion without an expected unit, or not exact (ADR 0104).
     U2030,
+    /// A float literal rounds to an infinity, or is not zero and rounds to zero (ADR 0114).
+    U2031,
+    /// A float literal other than zero, or a float range, as a pattern (ADR 0114).
+    U2032,
+    /// A comparison of an `F64` with a float literal zero (ADR 0114).
+    U2033,
+    /// `stop` or `skip` outside a loop body, or across a task boundary.
+    U2034,
+    /// A decimal scale out of place (ADR 0120).
+    U2037,
+    /// A statement after `stop` or `skip` in the same block, which never runs.
+    U2040,
     /// Capability not in scope.
     U3001,
     /// Operation not permitted by capability type.
@@ -213,6 +227,12 @@ pub enum Code {
     U3025,
     /// `attempt` of a call that cannot fail (edition 0.3, ADR 0100).
     U3026,
+    /// Code that may run forever where it is not allowed to.
+    U3027,
+    /// A function that says `diverges`, used as a value.
+    U3028,
+    /// A failure that must be handled where it is not.
+    U3029,
     /// Flow to a lower label.
     U4001,
     /// Implicit flow through control, failure or call under raised pc.
@@ -241,6 +261,12 @@ pub enum Code {
     U6004,
     /// A host value is not valid UTF-8.
     U6005,
+    /// The floating-point environment of the platform is not the default one (ADR 0114).
+    U6006,
+    /// The host stopped the run before it finished (ADR 0116 rule 16).
+    U6007,
+    /// The host gave no random bytes for keyed hashing.
+    U6009,
     /// Non-canonical formatting.
     U7001,
     /// Invalid `una.toml`.
@@ -251,13 +277,25 @@ pub enum Code {
     U7004,
     /// Trusted module not declared in both header and `una.toml`.
     U7005,
+    /// Invalid `ita.una` or `itaty.una`.
+    U7008,
+    /// Missing, invalid or inconsistent `ita.lock`.
+    U7009,
+    /// A package, archive, statement, root, checkpoint or log proof that fails verification.
+    U7010,
+    /// A locked package that is neither in the vendor directory nor in Itaoca.
+    U7011,
+    /// A dependency the root may not use as written.
+    U7012,
+    /// No resolution: no release meets a need, or a bound of resolution is exceeded.
+    U7013,
     /// Internal compiler error (always a bug).
     U8001,
 }
 
 impl Code {
     /// Every registered code, in the order of `spec/13 §4`.
-    pub const ALL: [Code; 94] = [
+    pub const ALL: [Code; 113] = [
         Code::U0001,
         Code::U0002,
         Code::U0003,
@@ -277,6 +315,7 @@ impl Code {
         Code::U1007,
         Code::U1008,
         Code::U1009,
+        Code::U1010,
         Code::U2001,
         Code::U2002,
         Code::U2003,
@@ -307,6 +346,12 @@ impl Code {
         Code::U2028,
         Code::U2029,
         Code::U2030,
+        Code::U2031,
+        Code::U2032,
+        Code::U2033,
+        Code::U2034,
+        Code::U2037,
+        Code::U2040,
         Code::U3001,
         Code::U3002,
         Code::U3003,
@@ -332,6 +377,9 @@ impl Code {
         Code::U3024,
         Code::U3025,
         Code::U3026,
+        Code::U3027,
+        Code::U3028,
+        Code::U3029,
         Code::U4001,
         Code::U4002,
         Code::U4003,
@@ -346,11 +394,20 @@ impl Code {
         Code::U6003,
         Code::U6004,
         Code::U6005,
+        Code::U6006,
+        Code::U6007,
+        Code::U6009,
         Code::U7001,
         Code::U7002,
         Code::U7003,
         Code::U7004,
         Code::U7005,
+        Code::U7008,
+        Code::U7009,
+        Code::U7010,
+        Code::U7011,
+        Code::U7012,
+        Code::U7013,
         Code::U8001,
     ];
 
@@ -465,6 +522,11 @@ impl Code {
                 code: "U1009",
                 domain: Domain::Names,
                 meaning: "Reserved module name",
+            },
+            Code::U1010 => &Entry {
+                code: "U1010",
+                domain: Domain::Names,
+                meaning: "A module whose first path segment is a dependency's local name",
             },
             Code::U2001 => &Entry {
                 code: "U2001",
@@ -616,6 +678,36 @@ impl Code {
                 domain: Domain::Types,
                 meaning: "A unit conversion without an expected unit, or not exact",
             },
+            Code::U2031 => &Entry {
+                code: "U2031",
+                domain: Domain::Types,
+                meaning: "A float literal rounds to an infinity, or is not zero and rounds to zero",
+            },
+            Code::U2032 => &Entry {
+                code: "U2032",
+                domain: Domain::Types,
+                meaning: "A float literal other than zero, or a float range, as a pattern",
+            },
+            Code::U2033 => &Entry {
+                code: "U2033",
+                domain: Domain::Types,
+                meaning: "A comparison of an `F64` with a float literal zero",
+            },
+            Code::U2034 => &Entry {
+                code: "U2034",
+                domain: Domain::Types,
+                meaning: "`stop` or `skip` outside a loop body, or across a task boundary",
+            },
+            Code::U2037 => &Entry {
+                code: "U2037",
+                domain: Domain::Types,
+                meaning: "A decimal scale out of place",
+            },
+            Code::U2040 => &Entry {
+                code: "U2040",
+                domain: Domain::Types,
+                meaning: "A statement after `stop` or `skip` in the same block, which never runs",
+            },
             Code::U3001 => &Entry {
                 code: "U3001",
                 domain: Domain::Authority,
@@ -741,6 +833,21 @@ impl Code {
                 domain: Domain::Authority,
                 meaning: "`attempt` of a call that cannot fail",
             },
+            Code::U3027 => &Entry {
+                code: "U3027",
+                domain: Domain::Authority,
+                meaning: "Code that may run forever where it is not allowed to",
+            },
+            Code::U3028 => &Entry {
+                code: "U3028",
+                domain: Domain::Authority,
+                meaning: "A function that says `diverges`, used as a value",
+            },
+            Code::U3029 => &Entry {
+                code: "U3029",
+                domain: Domain::Authority,
+                meaning: "A failure that must be handled where it is not",
+            },
             Code::U4001 => &Entry {
                 code: "U4001",
                 domain: Domain::Security,
@@ -811,6 +918,21 @@ impl Code {
                 domain: Domain::Runtime,
                 meaning: "A host value is not valid UTF-8",
             },
+            Code::U6006 => &Entry {
+                code: "U6006",
+                domain: Domain::Runtime,
+                meaning: "The floating-point environment of the platform is not the default one",
+            },
+            Code::U6007 => &Entry {
+                code: "U6007",
+                domain: Domain::Runtime,
+                meaning: "The host stopped the run before it finished",
+            },
+            Code::U6009 => &Entry {
+                code: "U6009",
+                domain: Domain::Runtime,
+                meaning: "The host gave no random bytes for keyed hashing",
+            },
             Code::U7001 => &Entry {
                 code: "U7001",
                 domain: Domain::Project,
@@ -835,6 +957,36 @@ impl Code {
                 code: "U7005",
                 domain: Domain::Project,
                 meaning: "Trusted module not declared in both header and `una.toml`",
+            },
+            Code::U7008 => &Entry {
+                code: "U7008",
+                domain: Domain::Project,
+                meaning: "Invalid `ita.una` or `itaty.una`",
+            },
+            Code::U7009 => &Entry {
+                code: "U7009",
+                domain: Domain::Project,
+                meaning: "Missing, invalid or inconsistent `ita.lock`",
+            },
+            Code::U7010 => &Entry {
+                code: "U7010",
+                domain: Domain::Project,
+                meaning: "A package, archive, statement, root, checkpoint or log proof that fails verification",
+            },
+            Code::U7011 => &Entry {
+                code: "U7011",
+                domain: Domain::Project,
+                meaning: "A locked package that is neither in the vendor directory nor in Itaoca",
+            },
+            Code::U7012 => &Entry {
+                code: "U7012",
+                domain: Domain::Project,
+                meaning: "A dependency the root may not use as written",
+            },
+            Code::U7013 => &Entry {
+                code: "U7013",
+                domain: Domain::Project,
+                meaning: "No resolution: no release meets a need, or a bound of resolution is exceeded",
             },
             Code::U8001 => &Entry {
                 code: "U8001",

@@ -33,12 +33,58 @@ pub(crate) enum Res {
     MapMethod(una_core::MapOp),
     /// `edit m.set(...)` or `edit m.remove(...)`: the map rebound to `With` or `Without`.
     MapUpdate(una_core::MapOp),
+    /// A built-in method of a `Stack` or a `Queue` that reads it (`spec/28 §5`).
+    SeqMethod(una_core::SeqOp),
+    /// `edit q.push(...)`, `edit q.pop()` and the other updates of a `Stack` or a `Queue`: the
+    /// sequence rebound to the operation's result, and for a removal, the end it removes read
+    /// first as the call's value.
+    SeqUpdate(una_core::SeqOp),
+    /// A built-in method of a `Set` that reads it or gives a new set (`spec/28 §6`).
+    SetMethod(una_core::SetOp),
+    /// `edit s.add(...)` or `edit s.remove(...)`: the set rebound to `With` or `Without`.
+    SetUpdate(una_core::SetOp),
+    /// A built-in method of a `HashMap` that reads it or gives a new map (`spec/28 §7`).
+    HashMapMethod(una_core::HashMapOp),
+    /// `edit m.set(...)` or `edit m.remove(...)` on a `HashMap`: the map rebound to `With` or
+    /// `Without`.
+    HashMapUpdate(una_core::HashMapOp),
+    /// A built-in method of a `HashSet` that reads it or gives a new set (`spec/28 §7`).
+    HashSetMethod(una_core::HashSetOp),
+    /// `edit s.add(...)` or `edit s.remove(...)` on a `HashSet`: the set rebound to `With` or
+    /// `Without`.
+    HashSetUpdate(una_core::HashSetOp),
     /// A record field.
     Field { kind: KindId, index: usize },
     /// An operation of a capability.
     Op { capability: CapId },
     /// A handler installed with `with` or `given`.
     Handler { id: usize },
+    /// A built-in constant of `std.time`, elaborated to its value (ADR 0116 rule 0, amended
+    /// 2026-10-19).
+    Constant(i64),
+    /// `m.rows` or `m.columns` of a matrix (`spec/29 §17`, ADR 0120 rule 33).
+    Shape(una_core::ShapeFun),
+    /// `a.get(index: i)` or `m.get(row: i, column: j)` in a clause (ADR 0120 rule 33): the
+    /// element term, with the position of each axis's argument in the written arguments.
+    DenseElement(Vec<usize>),
+    /// An operator of dense values, elaborated as `map` or `zip_map` (the prelude function
+    /// `id`) with a lambda that applies the element type's operator (ADR 0120 rule 34).
+    DenseOp { id: usize, op: DenseOp },
+}
+
+/// The operator of a [`Res::DenseOp`], as its lambda applies it to each element.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DenseOp {
+    /// `x + y` of two dense values.
+    Add,
+    /// `x - y` of two dense values.
+    Sub,
+    /// `-x`.
+    Neg,
+    /// `k * x` or `x * k`, with the scalar first or last as written.
+    Scale { scalar_first: bool },
+    /// `x / k`.
+    Divide,
 }
 
 /// The records of pass 2.
@@ -65,6 +111,12 @@ pub(crate) struct Records {
     /// obligations that ADR 0103 adds: where tier 1 generates one, as
     /// `una_core::flow::Kinds::pending` decides over Core IR (#615).
     pub(crate) refined_flows: Vec<RefinedFlow>,
+    /// The failure of each `e within d`, `Timed[E]` or `Deadline` of `std.time`, by the span of
+    /// `d` (ADR 0117 rule 5).
+    pub(crate) withins: BTreeMap<Span, Ty>,
+    /// The function's own error kind of each `e within d` whose `if error pass` passes the
+    /// time-out as its `TimedOut`, by the span of `d` (ADR 0117 rule 5).
+    pub(crate) within_passes: BTreeMap<Span, Ty>,
 }
 
 /// A flow of a value at `span` into `target`, in the module `module` and the function
@@ -95,6 +147,12 @@ impl Records {
             self.res.insert(span, res);
         }
         self.args.extend(other.args);
+        for (span, ty) in other.withins {
+            self.withins.insert(span, resolve(&ty));
+        }
+        for (span, ty) in other.within_passes {
+            self.within_passes.insert(span, resolve(&ty));
+        }
         self.annotations.extend(other.annotations);
         self.lambda_params.extend(other.lambda_params);
         // A lambda's own type takes the refinements of the type arguments its call settles

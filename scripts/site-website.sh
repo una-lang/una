@@ -9,8 +9,10 @@
 # When the pinned website has a learn.lock (website#30), its Learn section comes from
 # una-lang/una-by-example at the commit that lock names (una#733): that repository is cloned at
 # the commit, its download archives are built with its scripts/archive.py, and its
-# scripts/check.py checks every example, each Try it change and the archives with this
-# checkout's `una`, before the website builds /learn/ from the clone. When the lock names a
+# scripts/check.py checks every example, each Try it change and the archives with the `una` that
+# the clone's una.lock pins, before the website builds /learn/ from the clone: this checkout's
+# `una` when its version is the lock's, else that published release (scripts/site-learn-una.sh,
+# #1039). When the lock names a
 # release, the one whose archives the Learn pages link to, that release must hold exactly the
 # files the build makes, the archives and SHA256SUMS, byte for byte (una#831,
 # scripts/site-learn-release.sh, which reads it with `gh release download`), and the website's
@@ -88,8 +90,11 @@ if [ -f "$website/learn.lock" ]; then
     archives=${out:?}/una-by-example-archives
     rm -rf "${archives:?}"
     python3 -B "$learn/scripts/archive.py" "$archives" || fail "una-by-example's archives do not build"
-    python3 -B "$learn/scripts/check.py" --una "$una" --una-version-from-binary --archives "$archives" \
-        || fail "an example of una-by-example does not check with this una"
+    # The book is checked with the una its una.lock pins: this checkout's when the versions are
+    # equal, as at release time, else that published release, verified (#1039).
+    learn_una=$(scripts/site-learn-una.sh "$learn" "$una" "$out") || fail "the una that una-by-example pins"
+    python3 -B "$learn/scripts/check.py" --una "$learn_una" --una-version-from-binary --archives "$archives" \
+        || fail "an example of una-by-example does not check with the una its una.lock pins"
     # The release the Learn pages link their downloads to (una#831): when learn.lock names one,
     # it must hold exactly the files this build makes, byte for byte (scripts/site-learn-release.sh).
     learn_release=$(scripts/site-learn-release.sh --release-of "$website/learn.lock") || fail "the website's learn.lock"
@@ -129,7 +134,9 @@ if [ -n "$learn" ]; then
     grep -q '^learn: [1-9][0-9]* pages from una-by-example' "$out/website-build.log" \
         || fail "the website built no Learn pages from una-by-example"
 fi
-UNA_BUNDLE=$bundle UNA_BY_EXAMPLE=$learn UNA_BIN=$una npm run --silent check:samples || fail "a code sample of the website does not check"
+# The book was checked above with the una its una.lock pins, so the samples check, which would
+# check it again with this checkout's una, leaves it out: an empty UNA_BY_EXAMPLE skips it (#1039).
+UNA_BUNDLE=$bundle UNA_BY_EXAMPLE= UNA_BIN=$una npm run --silent check:samples || fail "a code sample of the website does not check"
 [ -z "$(git status --porcelain --untracked-files=no)" ] || fail "the website build changed tracked files"
 
 echo "site-website: PASS (website $commit, bundle $(sed -n 's/.*"version":"\([^"]*\)".*"commit":"\([0-9a-f]\{12\}\).*/una \1 at \2/p' "$bundle/manifest.json" | head -n 1))"

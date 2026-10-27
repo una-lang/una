@@ -36,8 +36,8 @@ use cranelift_codegen::isa::TargetFrontendConfig;
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::Module;
 use una_core::{
-    Atom, Base, Bound, Constraint, Ctor, Decl, Descriptor, Expr, HOST_MODULE, Label, LoopSource,
-    MapOp, Name, PRELUDE_MODULE, Path, Prim, Rhs, Source, Type, vars,
+    Atom, Base, Bound, Constraint, Ctor, Decl, Descriptor, ExitTag, Expr, HOST_MODULE, Label,
+    LoopSource, MapOp, Name, PRELUDE_MODULE, Path, Prim, Rhs, Source, Type, vars,
 };
 use una_syntax::Span;
 
@@ -67,6 +67,8 @@ enum Kind {
     Fn,
     /// A handle to a keyed hash.
     Hashed,
+    /// A handle to a boxed `F64` (ADR 0114 rule 9.6).
+    F64,
     /// A handle to a tuple: the state of a loop, or the results of a call with `edit`
     /// parameters (`spec/17 §4`).
     Tuple,
@@ -84,7 +86,7 @@ impl Kind {
     fn handle(self) -> bool {
         matches!(
             self,
-            Kind::Text | Kind::List | Kind::Map | Kind::Fn | Kind::Hashed | Kind::Tuple
+            Kind::Text | Kind::List | Kind::Map | Kind::Fn | Kind::Hashed | Kind::Tuple | Kind::F64
         )
     }
 }
@@ -109,11 +111,44 @@ fn kind(ty: &Type) -> Result<Kind, CodegenError> {
             // A fixed-width integer is an integer word: its range is proven, so arithmetic on
             // it never leaves the type (`spec/18 §3`).
             Base::Fixed(_) => Ok(Kind::Int),
+            // Boxed until the raw cells of ADR 0107 land (ADR 0114 rule 9.6).
+            Base::F64 => Ok(Kind::F64),
+            // A decimal is its coefficient, an integer word; its scale is static (ADR 0120
+            // rule 20).
+            Base::Decimal(_) => Ok(Kind::Int),
             Base::Named { module, name, .. } if module == PRELUDE_MODULE && name == "List" => {
                 Ok(Kind::List)
             }
             Base::Named { module, name, .. } if module == PRELUDE_MODULE && name == "Map" => {
                 Ok(Kind::Map)
+            }
+            // Dense values wait for their native step (`spec/29 §17`, ADR 0120 rule 28).
+            Base::Named { module, name, .. }
+                if module == PRELUDE_MODULE && matches!(name.as_str(), "Array" | "Matrix") =>
+            {
+                Err(unsupported("dense values (spec/29)"))
+            }
+            // `Stack` and `Queue` wait for their native layout (`spec/28 §5`, ADR 0119 rule 19).
+            Base::Named { module, name, .. }
+                if module == una_core::COLLECTIONS_MODULE
+                    && (name == "Stack" || name == "Queue") =>
+            {
+                Err(unsupported("`Stack` and `Queue` (spec/28)"))
+            }
+            // The sets of `std.collections` wait for their native layout (`spec/28 §6`, ADR
+            // 0119 rule 19).
+            Base::Named { module, name, .. }
+                if module == una_core::COLLECTIONS_MODULE && name == "Set" =>
+            {
+                Err(unsupported("`Set` (spec/28)"))
+            }
+            // The hash tables of `std.collections` wait for their native layout (`spec/28 §7`,
+            // ADR 0119 rule 19).
+            Base::Named { module, name, .. }
+                if module == una_core::COLLECTIONS_MODULE
+                    && (name == "HashMap" || name == "HashSet") =>
+            {
+                Err(unsupported("`HashMap` and `HashSet` (spec/28)"))
             }
             Base::Tuple(_) => Ok(Kind::Tuple),
             Base::Named { .. } => Ok(Kind::Data),
@@ -154,6 +189,8 @@ pub(crate) fn constant_descriptor(
         Base::Int => Descriptor::Int,
         Base::Fixed(int) => Descriptor::Fixed(*int),
         Base::Text => Descriptor::Text,
+        Base::F64 => Descriptor::F64,
+        Base::Decimal(_) => Descriptor::Decimal(index(ty)),
         // A kind satisfies `Ord` only as a sum whose variants have no payload (`spec/20 §1`).
         Base::Named { module, .. } if module != PRELUDE_MODULE && constraint >= Constraint::Ord => {
             Descriptor::Sum(index(ty))
@@ -270,6 +307,25 @@ struct Catch {
     outer: Scope,
     /// Where the words of the current scope since the catch was installed start.
     base: usize,
+    /// Where `skip` and `stop` go, inside a loop's body (`spec/26 §3`).
+    exit: Option<Exit>,
+}
+
+/// The blocks that `skip` and `stop` of the innermost loop jump to, whose parameters are the
+/// loop's state, with the words to release on the way: those of the body's scopes, never the
+/// loop's own, which it keeps for its next iteration.
+#[derive(Clone)]
+struct Exit {
+    /// The block of the next iteration.
+    next: Block,
+    /// The block that ends the loop.
+    stop: Block,
+    /// The kinds of the state.
+    kinds: Vec<Kind>,
+    /// The words that enclosing expressions of the body own.
+    outer: Scope,
+    /// Where the words of the current scope that the body owns start.
+    base: usize,
 }
 
 impl Catch {
@@ -282,6 +338,15 @@ impl Catch {
             block: self.block,
             outer,
             base: 0,
+            exit: self.exit.as_ref().map(|exit| {
+                let mut outer = exit.outer.clone();
+                outer.extend(scope.iter().skip(exit.base).copied());
+                Exit {
+                    outer,
+                    base: 0,
+                    ..exit.clone()
+                }
+            }),
         }
     }
 }
@@ -321,9 +386,11 @@ struct Lowerer<'e, 'p, 'b> {
     /// The bindings that other words borrow from: the scrutinees of `case`, the tuples of
     /// `let (...)` and the lists that loops visit. Their values are never moved (#30).
     pinned: BTreeSet<String>,
-    /// The block that returns the status 2 of a stopped task (`spec/19 §6` rule 4): a task
-    /// that is cancelled, or that aborts, stops where it is. Nothing is released, since the
-    /// task's heap ends with its thread.
+    /// The block that returns the status 2 of a stopped task at once (`spec/19 §6` rule 4), for
+    /// an abort found where the words in scope are not at hand (U6003, U6004, U6005 and the
+    /// faults of the prelude): the run, or the task, ends, and the task's heap with it. A
+    /// cancellation, which a task survives inside a `within`, takes the failure path with
+    /// [`STOPPED`] instead.
     stop: Block,
     /// Whether the code being lowered computes integers exactly (`Body::exact`): a fixed-width
     /// type there is not a proof that a value fits it.
@@ -393,19 +460,24 @@ pub(crate) fn function<'p>(
         block: failed,
         outer: Scope::new(),
         base: 0,
+        exit: None,
     };
     if let Some(result) = lowerer.expr(body.body, &mut env, &mut scope, &catch)? {
         let ok = lowerer.builder.ins().iconst(types::I64, 0);
         lowerer.builder.ins().return_(&[result, ok]);
     }
+    // A failure returns status 1; a stop, which reaches here as [`STOPPED`] once every frame of
+    // the body has released its words, returns status 2.
     lowerer.builder.switch_to_block(failed);
     let failure = lowerer.param(failed)?;
+    let stopped = lowerer.stopped(failure);
     let one = lowerer.builder.ins().iconst(types::I64, 1);
-    lowerer.builder.ins().return_(&[failure, one]);
+    let status = lowerer.builder.ins().iadd(one, stopped);
+    lowerer.builder.ins().return_(&[failure, status]);
     lowerer.builder.switch_to_block(stop);
-    let zero = lowerer.builder.ins().iconst(types::I64, 0);
+    let word = lowerer.builder.ins().iconst(types::I64, STOPPED);
     let two = lowerer.builder.ins().iconst(types::I64, 2);
-    lowerer.builder.ins().return_(&[zero, two]);
+    lowerer.builder.ins().return_(&[word, two]);
     lowerer.builder.seal_all_blocks();
     lowerer.builder.finalize(config);
     Ok(())
@@ -567,6 +639,32 @@ impl<'p> Lowerer<'_, 'p, '_> {
                     self.fail(failure, scope, catch);
                     return Ok(None);
                 }
+                // `skip` or `stop`: the state, owned, goes to the loop's block for it, and the
+                // body's words are released (`spec/26 §3`).
+                Expr::Exit { tag, state, .. } => {
+                    let exit = catch
+                        .exit
+                        .clone()
+                        .ok_or_else(|| internal("an exit outside a loop"))?;
+                    let mut values: Vec<cranelift_codegen::ir::BlockArg> = Vec::new();
+                    for (atom, &kind) in state.iter().zip(&exit.kinds) {
+                        let (value, _) = self.atom(atom, env)?;
+                        self.retain(value, kind);
+                        values.push(value.into());
+                    }
+                    for &(owned, kind) in scope.iter().skip(exit.base).rev() {
+                        self.release(owned, kind);
+                    }
+                    for &(owned, kind) in exit.outer.iter().rev() {
+                        self.release(owned, kind);
+                    }
+                    let block = match tag {
+                        ExitTag::Next => exit.next,
+                        ExitTag::Stop => exit.stop,
+                    };
+                    self.builder.ins().jump(block, &values);
+                    return Ok(None);
+                }
                 Expr::Handle {
                     body,
                     error,
@@ -580,10 +678,13 @@ impl<'p> Lowerer<'_, 'p, '_> {
                         block: handling,
                         outer: Scope::new(),
                         base: scope.len(),
+                        exit: catch.exit.clone(),
                     };
                     let mut reached = self.branch(body, env, scope, join, &inner)?;
                     self.builder.switch_to_block(handling);
                     let failure = self.param(handling)?;
+                    // A stop is no failure to handle: it goes on, out of this frame too.
+                    self.pass_stop(failure, scope, catch);
                     let mut handler_env = env.clone();
                     handler_env.insert(error.clone(), (failure, unknown()));
                     let mut handler_scope = scope.clone();
@@ -592,7 +693,26 @@ impl<'p> Lowerer<'_, 'p, '_> {
                         self.branch_in(handler, &mut handler_env, &handler_scope, join, catch)?;
                     return self.joined(join, reached);
                 }
-                Expr::Attempt { body, .. } => return self.attempt(body, env, scope).map(Some),
+                Expr::Attempt { body, .. } => {
+                    return self.attempt(body, env, scope, catch).map(Some);
+                }
+                Expr::Within {
+                    deadline,
+                    body,
+                    timeout,
+                    wrap,
+                    ..
+                } => {
+                    return self.within(
+                        deadline,
+                        body,
+                        timeout,
+                        wrap.as_deref(),
+                        env,
+                        scope,
+                        catch,
+                    );
+                }
                 Expr::With { cap, source, body } => {
                     let instance = match source {
                         // E-Rebind shares the instance.
@@ -670,6 +790,379 @@ impl<'p> Lowerer<'_, 'p, '_> {
         self.param(join).map(Some)
     }
 
+    /// A `for ever` loop with its `on stop` (`spec/26 §5`): as [`Self::lower_until`], without
+    /// a condition. `on stop` runs on the final state, its value the loop's; after a failure of
+    /// the body it runs on a copy of the state from before the loop, which the loop keeps for
+    /// it, and the failure then goes on to `catch` (ADR 0116 rule 10).
+    fn lower_ever(
+        &mut self,
+        expr: &'p Expr,
+        env: &Env,
+        scope: &mut Scope,
+        catch: &Catch,
+    ) -> Result<Option<Value>, CodegenError> {
+        // The runtime starts its threads before `main` (#1145).
+        self.emitter.threads = true;
+        let Expr::Loop {
+            source,
+            var,
+            state,
+            init,
+            body,
+            on_stop,
+            span,
+        } = expr
+        else {
+            return Err(internal("a loop that is not one"));
+        };
+        // `within d` (`spec/26 §7`): evaluated once, before the first iteration; the runtime
+        // arms the deadline at each iteration and drops it when the loop ends.
+        let within = match source.as_ref() {
+            LoopSource::Ever { within } => within.as_ref(),
+            _ => None,
+        };
+        if let Some((deadline, _)) = within {
+            let (word, _) = self.atom(deadline, env)?;
+            self.runtime("una_rt_deadline_enter", &[word]);
+        }
+        let types: Vec<Type> = state.iter().map(|(_, ty)| range::unrefined(ty)).collect();
+        let kinds: Vec<Kind> = types.iter().map(kind).collect::<Result<_, _>>()?;
+        let mut initial: Vec<cranelift_codegen::ir::BlockArg> = Vec::new();
+        let mut saved: Vec<Value> = Vec::new();
+        for (atom, &kind) in init.iter().zip(&kinds) {
+            let (value, _) = self.atom(atom, env)?;
+            match self.moving(atom, env, scope, catch, body) {
+                Some(position) => {
+                    scope.remove(position);
+                }
+                None => self.retain(value, kind),
+            }
+            // The copy that `on stop` runs on after a failure.
+            if on_stop.is_some() {
+                self.retain(value, kind);
+                saved.push(value);
+            }
+            initial.push(value.into());
+        }
+        let site = self.site(*span);
+        let head = self.builder.create_block();
+        let following = self.builder.create_block();
+        let exit = self.builder.create_block();
+        let failing = self.join();
+        for _ in &kinds {
+            self.builder.append_block_param(head, types::I64);
+            self.builder.append_block_param(following, types::I64);
+            self.builder.append_block_param(exit, types::I64);
+        }
+        self.builder.ins().jump(head, &initial);
+
+        // An iteration starts: a host stop ends the loop there (ADR 0116 rule 14), then its
+        // budget, then the body, which owns the state, with its exits.
+        self.builder.switch_to_block(head);
+        let current = self.builder.block_params(head).to_vec();
+        let host_stop = self.call("una_rt_ever_start", &[])?;
+        let started = self.builder.create_block();
+        let current_arguments: Vec<cranelift_codegen::ir::BlockArg> =
+            current.iter().map(|&v| v.into()).collect();
+        self.builder
+            .ins()
+            .brif(host_stop, exit, &current_arguments, started, &[]);
+        self.builder.switch_to_block(started);
+        if within.is_some() {
+            self.runtime("una_rt_deadline_iteration", &[]);
+        }
+        let mut inner = env.clone();
+        for ((name, _), (&value, ty)) in state.iter().zip(current.iter().zip(&types)) {
+            inner.insert(name.clone(), (value, ty.clone()));
+        }
+        let unit_value = self.builder.ins().iconst(types::I64, 0);
+        inner.insert(var.0.clone(), (unit_value, range::unrefined(&var.1)));
+        let exits = Exit {
+            next: following,
+            stop: exit,
+            kinds: kinds.clone(),
+            outer: Scope::new(),
+            base: 0,
+        };
+        // A failure of the body leaves the body (ADR 0116 rule 14), then goes to `on stop`
+        // first, when there is one.
+        let nested = Catch {
+            block: failing,
+            outer: Scope::new(),
+            base: 0,
+            exit: Some(exits),
+        };
+        let mut owned: Scope = current.iter().copied().zip(kinds.iter().copied()).collect();
+        // The iteration's budget: a stop there leaves as a failure of the body would.
+        let budget = self.call("una_rt_budget", &[site])?;
+        self.stop_or_fail(budget, &owned, &nested);
+        if let Some(tuple) = self.expr(body, &mut inner, &mut owned, &nested)? {
+            let mut next: Vec<cranelift_codegen::ir::BlockArg> = Vec::new();
+            for (index, &kind) in kinds.iter().enumerate() {
+                let value = self.field(tuple, index)?;
+                self.retain(value, kind);
+                next.push(value.into());
+            }
+            self.release(tuple, Kind::Tuple);
+            self.builder.ins().jump(following, &next);
+        }
+
+        // The next iteration, from the end of the body or a `skip`.
+        self.builder.switch_to_block(following);
+        let next: Vec<cranelift_codegen::ir::BlockArg> = self
+            .builder
+            .block_params(following)
+            .iter()
+            .map(|&v| v.into())
+            .collect();
+        self.builder.ins().jump(head, &next);
+
+        // After a failure: out of the body, `on stop` on the saved state, then the failure goes
+        // on.
+        self.builder.switch_to_block(failing);
+        let failure = self.param(failing)?;
+        self.runtime("una_rt_ever_end", &[]);
+        if within.is_some() {
+            self.runtime("una_rt_deadline_leave", &[]);
+        }
+        match on_stop {
+            Some(on_stop) => {
+                // A stop of the task: a cancellation, as a `within` around the loop whose
+                // deadline passed, ends the loop as after a failure, with `on stop` shielded
+                // from it (ADR 0116 rule 15, ADR 0117 rule 5); an abort goes on at once, the
+                // saved state released.
+                let stopped = self.stopped(failure);
+                let stopping = self.builder.create_block();
+                let failing_on = self.builder.create_block();
+                self.builder
+                    .ins()
+                    .brif(stopped, stopping, &[], failing_on, &[]);
+                self.builder.switch_to_block(failing_on);
+                let result = self.lower_on_stop(on_stop, env, &saved, &kinds, catch, scope)?;
+                if let Some(result) = result {
+                    self.release(result, Kind::Tuple);
+                    self.fail(failure, scope, catch);
+                }
+                self.builder.switch_to_block(stopping);
+                let polled = self.call("una_rt_poll", &[])?;
+                let aborted = self.call("una_rt_stopped", &[])?;
+                let cancelling = self.builder.ins().icmp_imm_s(IntCC::NotEqual, polled, 0);
+                let healthy = self.builder.ins().icmp_imm_s(IntCC::Equal, aborted, 0);
+                let run = self.builder.ins().band(cancelling, healthy);
+                let run = self.flag(run);
+                let running = self.builder.create_block();
+                let skipping = self.builder.create_block();
+                self.builder.ins().brif(run, running, &[], skipping, &[]);
+                self.builder.switch_to_block(skipping);
+                for (&value, &kind) in saved.iter().zip(&kinds) {
+                    self.release(value, kind);
+                }
+                self.fail(failure, scope, catch);
+                self.builder.switch_to_block(running);
+                self.runtime("una_rt_operation_begin", &[]);
+                // The shield ends on every way out of `on stop`: a failure out of it, an abort
+                // today, ends it before going on to `catch` with the loop's scope.
+                let unshield = self.join();
+                let shielded = Catch {
+                    block: unshield,
+                    outer: Scope::new(),
+                    base: 0,
+                    exit: None,
+                };
+                let result =
+                    self.lower_on_stop(on_stop, env, &saved, &kinds, &shielded, &Scope::new())?;
+                if let Some(result) = result {
+                    self.release(result, Kind::Tuple);
+                    self.runtime("una_rt_operation_end", &[]);
+                    self.fail(failure, scope, catch);
+                }
+                self.builder.switch_to_block(unshield);
+                let out = self.param(unshield)?;
+                self.runtime("una_rt_operation_end", &[]);
+                self.fail(out, scope, catch);
+            }
+            None => self.fail(failure, scope, catch),
+        }
+
+        // The loop's value: the final state, through `on stop` when there is one, out of the
+        // body.
+        self.builder.switch_to_block(exit);
+        let finals = self.builder.block_params(exit).to_vec();
+        if within.is_some() {
+            self.runtime("una_rt_deadline_leave", &[]);
+        }
+        self.runtime("una_rt_ever_end", &[]);
+        let tuple = match on_stop {
+            Some(on_stop) => {
+                for (&value, &kind) in saved.iter().zip(&kinds) {
+                    self.release(value, kind);
+                }
+                match self.lower_on_stop(on_stop, env, &finals, &kinds, catch, scope)? {
+                    Some(tuple) => tuple,
+                    None => return Ok(None),
+                }
+            }
+            None => {
+                let zero = self.builder.ins().iconst(types::I64, 0);
+                let tuple = self.call("una_rt_data", &[zero])?;
+                for (&value, &kind) in finals.iter().zip(&kinds) {
+                    self.runtime("una_rt_push", &[tuple, value]);
+                    self.release(value, kind);
+                }
+                tuple
+            }
+        };
+        for &(owned, kind) in scope.iter().rev() {
+            self.release(owned, kind);
+        }
+        Ok(Some(tuple))
+    }
+
+    /// The `on stop` block on the owned state `values`: its tuple, owned, or `None` when it
+    /// never ends normally. A failure in it goes to `catch` with the words of `scope`.
+    fn lower_on_stop(
+        &mut self,
+        on_stop: &'p una_core::OnStop,
+        env: &Env,
+        values: &[Value],
+        kinds: &[Kind],
+        catch: &Catch,
+        scope: &Scope,
+    ) -> Result<Option<Value>, CodegenError> {
+        let mut inner = env.clone();
+        for ((name, ty), &value) in on_stop.state.iter().zip(values) {
+            inner.insert(name.clone(), (value, range::unrefined(ty)));
+        }
+        let mut owned: Scope = values.iter().copied().zip(kinds.iter().copied()).collect();
+        let mut nested = catch.nested(scope);
+        nested.exit = None;
+        self.expr(&on_stop.body, &mut inner, &mut owned, &nested)
+    }
+
+    /// A `for until` loop (`spec/26 §4`): as [`Self::lower_loop`], without an item, and with
+    /// its condition evaluated before each iteration, with the state it owns borrowed.
+    fn lower_until(
+        &mut self,
+        expr: &'p Expr,
+        env: &Env,
+        scope: &mut Scope,
+        catch: &Catch,
+    ) -> Result<Option<Value>, CodegenError> {
+        let Expr::Loop {
+            source,
+            var,
+            state,
+            init,
+            body,
+            span,
+            ..
+        } = expr
+        else {
+            return Err(internal("a loop that is not one"));
+        };
+        let LoopSource::Until { cond, .. } = source.as_ref() else {
+            return Err(internal("an `until` loop without its condition"));
+        };
+        let types: Vec<Type> = state.iter().map(|(_, ty)| range::unrefined(ty)).collect();
+        let kinds: Vec<Kind> = types.iter().map(kind).collect::<Result<_, _>>()?;
+        // The loop owns its initial state: a binding at its last use moves in, any other word
+        // is retained (#30).
+        let mut initial: Vec<cranelift_codegen::ir::BlockArg> = Vec::new();
+        for (atom, &kind) in init.iter().zip(&kinds) {
+            let (value, _) = self.atom(atom, env)?;
+            match self.moving(atom, env, scope, catch, body) {
+                Some(position) => {
+                    scope.remove(position);
+                }
+                None => self.retain(value, kind),
+            }
+            initial.push(value.into());
+        }
+        let site = self.site(*span);
+        let head = self.builder.create_block();
+        let iteration = self.builder.create_block();
+        let following = self.builder.create_block();
+        let exit = self.builder.create_block();
+        for _ in &kinds {
+            self.builder.append_block_param(head, types::I64);
+            self.builder.append_block_param(following, types::I64);
+            self.builder.append_block_param(exit, types::I64);
+        }
+        self.builder.ins().jump(head, &initial);
+
+        // The head: the condition, with the state borrowed; a failure releases the state.
+        self.builder.switch_to_block(head);
+        let current = self.builder.block_params(head).to_vec();
+        let mut inner = env.clone();
+        for ((name, _), (&value, ty)) in state.iter().zip(current.iter().zip(&types)) {
+            inner.insert(name.clone(), (value, ty.clone()));
+        }
+        let owned_state: Scope = current.iter().copied().zip(kinds.iter().copied()).collect();
+        let mut guarded = catch.nested(scope);
+        guarded.outer.extend(owned_state.iter().copied());
+        guarded.exit = None;
+        let mut cond_env = inner.clone();
+        let holds = self.expr(cond, &mut cond_env, &mut Scope::new(), &guarded)?;
+        let state_arguments: Vec<cranelift_codegen::ir::BlockArg> =
+            current.iter().map(|&v| v.into()).collect();
+        if let Some(holds) = holds {
+            self.builder
+                .ins()
+                .brif(holds, exit, &state_arguments, iteration, &[]);
+        }
+
+        // An iteration: its budget, then the body, which owns the state, with its exits. A stop
+        // at the budget leaves as a failure of the body would, the state released.
+        self.builder.switch_to_block(iteration);
+        let unit_value = self.builder.ins().iconst(types::I64, 0);
+        inner.insert(var.0.clone(), (unit_value, range::unrefined(&var.1)));
+        let mut nested = catch.nested(scope);
+        nested.exit = Some(Exit {
+            next: following,
+            stop: exit,
+            kinds: kinds.clone(),
+            outer: Scope::new(),
+            base: 0,
+        });
+        let mut owned = owned_state;
+        let stopping = self.call("una_rt_budget", &[site])?;
+        self.stop_or_fail(stopping, &owned, &nested);
+        if let Some(tuple) = self.expr(body, &mut inner, &mut owned, &nested)? {
+            let mut next: Vec<cranelift_codegen::ir::BlockArg> = Vec::new();
+            for (index, &kind) in kinds.iter().enumerate() {
+                let value = self.field(tuple, index)?;
+                self.retain(value, kind);
+                next.push(value.into());
+            }
+            self.release(tuple, Kind::Tuple);
+            self.builder.ins().jump(following, &next);
+        }
+
+        // The next iteration, from the end of the body or a `skip`.
+        self.builder.switch_to_block(following);
+        let next: Vec<cranelift_codegen::ir::BlockArg> = self
+            .builder
+            .block_params(following)
+            .iter()
+            .map(|&v| v.into())
+            .collect();
+        self.builder.ins().jump(head, &next);
+
+        // The loop's value, which owns the final state, and the end of the scope.
+        self.builder.switch_to_block(exit);
+        let finals = self.builder.block_params(exit).to_vec();
+        let zero = self.builder.ins().iconst(types::I64, 0);
+        let tuple = self.call("una_rt_data", &[zero])?;
+        for (&value, &kind) in finals.iter().zip(&kinds) {
+            self.runtime("una_rt_push", &[tuple, value]);
+            self.release(value, kind);
+        }
+        for &(owned, kind) in scope.iter().rev() {
+            self.release(owned, kind);
+        }
+        Ok(Some(tuple))
+    }
+
     /// A `for` loop (`spec/17 §4`): the loop owns the current values of its state, passes them
     /// to each iteration with the item, and takes the new values from the tuple the body
     /// returns. Iterations are not calls, so each checks the memory budget at the loop instead
@@ -689,6 +1182,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
             init,
             body,
             span,
+            ..
         } = expr
         else {
             return Err(internal("a loop that is not one"));
@@ -727,6 +1221,8 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 self.retain(high, Kind::Int);
                 (None, high, low)
             }
+            LoopSource::Until { .. } => return self.lower_until(expr, env, scope, catch),
+            LoopSource::Ever { .. } => return self.lower_ever(expr, env, scope, catch),
         };
         let inclusive = matches!(
             source.as_ref(),
@@ -787,8 +1283,6 @@ impl<'p> Lowerer<'_, 'p, '_> {
         self.builder.ins().jump(exit, &state_arguments);
 
         self.builder.switch_to_block(iteration);
-        let stopping = self.call("una_rt_budget", &[site])?;
-        self.stop_if(stopping);
         let item = match list {
             Some(list) => self.call("una_rt_field", &[list, cursor])?,
             None => cursor,
@@ -800,21 +1294,59 @@ impl<'p> Lowerer<'_, 'p, '_> {
         }
         // The iteration owns the current state, which its body releases at its end or moves to
         // its last use, so `acc = acc.append(item: x)` updates the list in place (#30). A
-        // failure in the body releases the state with the body's scope, and the cursor.
+        // failure in the body releases the state with the body's scope, and the cursor; a
+        // `skip` or a `stop` releases the body's scope only (`spec/26 §3`).
+        let following = self.builder.create_block();
+        let stopping = self.builder.create_block();
+        for _ in &kinds {
+            self.builder.append_block_param(following, types::I64);
+            self.builder.append_block_param(stopping, types::I64);
+        }
         let mut nested = catch.nested(scope);
         if list.is_none() {
             nested.outer.push((bound, Kind::Int));
             nested.outer.push((cursor, Kind::Int));
         }
+        nested.exit = Some(Exit {
+            next: following,
+            stop: stopping,
+            kinds: kinds.clone(),
+            outer: Scope::new(),
+            base: 0,
+        });
         let mut owned: Scope = current.iter().copied().zip(kinds.iter().copied()).collect();
+        // The iteration's budget: a stop there leaves as a failure of the body would, the state
+        // and a range's cursor released.
+        let budget = self.call("una_rt_budget", &[site])?;
+        self.stop_or_fail(budget, &owned, &nested);
         if let Some(tuple) = self.expr(body, &mut inner, &mut owned, &nested)? {
-            let mut next = Vec::new();
+            let mut next: Vec<cranelift_codegen::ir::BlockArg> = Vec::new();
             for (index, &kind) in kinds.iter().enumerate() {
                 let value = self.field(tuple, index)?;
                 self.retain(value, kind);
-                next.push(value);
+                next.push(value.into());
             }
             self.release(tuple, Kind::Tuple);
+            self.builder.ins().jump(following, &next);
+        }
+
+        // `stop`: a range's cursor is released, and the state goes to the exit.
+        self.builder.switch_to_block(stopping);
+        let stopped: Vec<cranelift_codegen::ir::BlockArg> = self
+            .builder
+            .block_params(stopping)
+            .iter()
+            .map(|&v| v.into())
+            .collect();
+        if list.is_none() {
+            self.release(cursor, Kind::Int);
+        }
+        self.builder.ins().jump(exit, &stopped);
+
+        // The next iteration, from the end of the body or a `skip`.
+        self.builder.switch_to_block(following);
+        {
+            let next = self.builder.block_params(following).to_vec();
             let mut next_arguments: Vec<cranelift_codegen::ir::BlockArg> =
                 next.iter().map(|&v| v.into()).collect();
             match list {
@@ -1042,6 +1574,8 @@ impl<'p> Lowerer<'_, 'p, '_> {
         scope: &Scope,
         catch: &Catch,
     ) -> Result<Option<Value>, CodegenError> {
+        // The runtime starts its threads before `main` (#1145).
+        self.emitter.threads = true;
         let value = match expr {
             Expr::Together { tasks, span } => {
                 let site = self.site(*span);
@@ -1079,6 +1613,11 @@ impl<'p> Lowerer<'_, 'p, '_> {
                             true,
                         )
                     }
+                    LoopSource::Until { .. } | LoopSource::Ever { .. } => {
+                        return Err(internal(
+                            "a `together for` with an `until` or `ever` source",
+                        ));
+                    }
                 };
                 let closure = self.closure(std::slice::from_ref(var.as_ref()), task, env)?;
                 let value = self.call("una_rt_together_for", &[closure, items, site])?;
@@ -1090,8 +1629,11 @@ impl<'p> Lowerer<'_, 'p, '_> {
             }
             _ => return Err(internal("a `together` that is not one")),
         };
+        // A block stopped, status 2, goes on as [`STOPPED`] by the failure path.
         let status = self.call("una_rt_together_status", &[])?;
-        self.stop_if_stopped(status);
+        let stopped = self.builder.ins().icmp_imm_s(IntCC::Equal, status, 2);
+        let word = self.builder.ins().iconst(types::I64, STOPPED);
+        let value = self.builder.ins().select(stopped, word, value);
         self.check(value, status, scope, catch);
         for &(owned, kind) in scope.iter().rev() {
             self.release(owned, kind);
@@ -1101,14 +1643,22 @@ impl<'p> Lowerer<'_, 'p, '_> {
 
     /// `attempt body`: `Ok` of the body's value, or `Err` of its failure (`spec/11 §4`), as the
     /// value of the expression whose scope is `scope`.
-    fn attempt(&mut self, body: &'p Expr, env: &Env, scope: &Scope) -> Result<Value, CodegenError> {
+    fn attempt(
+        &mut self,
+        body: &'p Expr,
+        env: &Env,
+        scope: &Scope,
+        catch: &Catch,
+    ) -> Result<Value, CodegenError> {
         let succeeded = self.join();
         let failed = self.join();
         let done = self.join();
+        // Core puts no `skip` or `stop` in the body of `attempt`, a handled expression.
         let inner = Catch {
             block: failed,
             outer: Scope::new(),
             base: scope.len(),
+            exit: None,
         };
         // The body's path releases the whole scope when it ends; a failure releases what the
         // body made, and the scope is released here.
@@ -1123,6 +1673,8 @@ impl<'p> Lowerer<'_, 'p, '_> {
         }
         self.builder.switch_to_block(failed);
         let failure = self.param(failed)?;
+        // A stop is no failure to hold: it goes on, with the scope still owned.
+        self.pass_stop(failure, scope, catch);
         let err = self.wrap(1, failure)?;
         for &(owned, kind) in scope.iter().rev() {
             self.release(owned, kind);
@@ -1130,6 +1682,124 @@ impl<'p> Lowerer<'_, 'p, '_> {
         self.builder.ins().jump(done, &[err.into()]);
         self.builder.switch_to_block(done);
         self.param(done)
+    }
+
+    /// `e within d` (`spec/27 §5`, ADR 0117 rule 5): `body` bounded by the deadline
+    /// `deadline`. The runtime arms it (`una_rt_within_enter`), and every way out of `body`
+    /// ends it (`una_rt_within_end`), which says whether `body`'s outcome stands, the deadline
+    /// passed (the time-out `timeout`), or the task stops on.
+    ///
+    /// `body` is lowered with a scope of its own, so it borrows the words of `scope` and never
+    /// releases them: a value that returned too late becomes the time-out with `scope` still
+    /// owned, which is released here on every path.
+    ///
+    /// A passed deadline cancels `body` at a check point. The cancellation leaves each frame of
+    /// `body` by the path a failure takes, as [`STOPPED`], so every frame releases what it
+    /// owns, and reaches `failed` here, where the `within` turns it into its time-out, or passes
+    /// it on.
+    #[allow(clippy::too_many_arguments)]
+    fn within(
+        &mut self,
+        deadline: &Atom,
+        body: &'p Expr,
+        timeout: &Ctor,
+        wrap: Option<&Ctor>,
+        env: &mut Env,
+        scope: &mut Scope,
+        catch: &Catch,
+    ) -> Result<Option<Value>, CodegenError> {
+        // The runtime starts its threads before `main` (#1145): a `within` counts as a task
+        // construct for P8, so its cost never depends on whether earlier code started them.
+        self.emitter.threads = true;
+        let (ms, _) = self.atom(deadline, env)?;
+        let id = self.call("una_rt_within_enter", &[ms])?;
+        let succeeded = self.join();
+        let failed = self.join();
+        let done = self.join();
+        // A failure of `body` in time, or its stop, goes to `failed`, which releases what
+        // `body` made; Core puts no `skip` or `stop` in a handled expression.
+        let inner = Catch {
+            block: failed,
+            outer: Scope::new(),
+            base: 0,
+            exit: None,
+        };
+        let reached = self.branch(body, env, &Scope::new(), succeeded, &inner)?;
+        let timeout_index = i64::try_from(timeout.index).map_err(crate::internal)?;
+        // The time-out: a variant without fields, an immediate word.
+        let timed_out = |lowerer: &mut Self| {
+            lowerer
+                .builder
+                .ins()
+                .iconst(types::I64, (timeout_index << 1) | 1)
+        };
+
+        // `body` returned, in time or not.
+        self.builder.switch_to_block(succeeded);
+        if reached {
+            let value = self.param(succeeded)?;
+            let zero = self.builder.ins().iconst(types::I64, 0);
+            let outcome = self.call("una_rt_within_end", &[id, zero])?;
+            let late = self.builder.create_block();
+            let stands = self.builder.create_block();
+            self.builder.ins().brif(outcome, late, &[], stands, &[]);
+            self.builder.switch_to_block(stands);
+            for &(owned, kind) in scope.iter().rev() {
+                self.release(owned, kind);
+            }
+            self.builder.ins().jump(done, &[value.into()]);
+            self.builder.switch_to_block(late);
+            self.release(value, Kind::Any);
+            self.end_within(outcome, timed_out, scope, catch);
+        } else {
+            self.builder.ins().trap(TRAP);
+        }
+
+        // `body` failed with `x`, or stopped. In time, `wrap(x)` or `x`; late, the time-out; a
+        // stop, this deadline's time-out, or a stop that goes on.
+        self.builder.switch_to_block(failed);
+        let failure = self.param(failed)?;
+        let stopped = self.stopped(failure);
+        let outcome = self.call("una_rt_within_end", &[id, stopped])?;
+        let ended = self.builder.create_block();
+        let stands = self.builder.create_block();
+        self.builder.ins().brif(outcome, ended, &[], stands, &[]);
+        self.builder.switch_to_block(stands);
+        let passed = match wrap {
+            Some(wrap) => {
+                let index = i64::try_from(wrap.index).map_err(crate::internal)?;
+                self.wrap(index, failure)?
+            }
+            None => failure,
+        };
+        self.fail(passed, scope, catch);
+        self.builder.switch_to_block(ended);
+        self.release(failure, Kind::Any);
+        self.end_within(outcome, timed_out, scope, catch);
+
+        self.builder.switch_to_block(done);
+        if reached {
+            Ok(Some(self.param(done)?))
+        } else {
+            self.builder.ins().trap(TRAP);
+            Ok(None)
+        }
+    }
+
+    /// The end of a `within` whose `una_rt_within_end` gave `outcome`, 1 or 2, with `scope`
+    /// still owned: 1 fails with the time-out that `timed_out` makes, 2 goes on with the stop.
+    fn end_within(
+        &mut self,
+        outcome: Value,
+        timed_out: impl Fn(&mut Self) -> Value,
+        scope: &Scope,
+        catch: &Catch,
+    ) {
+        let stopping = self.builder.ins().icmp_imm_s(IntCC::Equal, outcome, 2);
+        let stopping = self.flag(stopping);
+        self.stop_or_fail(stopping, scope, catch);
+        let failure = timed_out(self);
+        self.fail(failure, scope, catch);
     }
 
     /// The variant at position `tag` of `Result` or `Option` holding `value`, which it takes
@@ -1167,6 +1837,8 @@ impl<'p> Lowerer<'_, 'p, '_> {
     /// The owned value `ctor(args)`.
     fn construct(&mut self, ctor: &Ctor, args: &[Atom], env: &Env) -> Result<Value, CodegenError> {
         let index = i64::try_from(ctor.index).map_err(crate::internal)?;
+        // The representation invariant that keeps a failure from equalling [`STOPPED`].
+        debug_assert!(index >= 0 && (index << 1) | 1 != STOPPED);
         if args.is_empty() {
             return Ok(self.builder.ins().iconst(types::I64, (index << 1) | 1));
         }
@@ -1274,7 +1946,6 @@ impl<'p> Lowerer<'_, 'p, '_> {
         borrowed: bool,
         type_args: &[Type],
         args: &[Value],
-        span: Span,
         env: &Env,
         scope: &Scope,
         catch: &Catch,
@@ -1302,10 +1973,6 @@ impl<'p> Lowerer<'_, 'p, '_> {
             args.push(*instance);
         }
         let id = callee.id;
-        // `spec/11 §7`: each call counts toward the maximum depth, which the runtime checks
-        // against the call's site.
-        let site = self.site(span);
-        self.enter(site)?;
         let callee = self
             .emitter
             .module
@@ -1316,7 +1983,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
         let (Some(&value), Some(&failed)) = (results.first(), results.get(1)) else {
             return Err(internal("a call lost its result"));
         };
-        self.stop_if_stopped(failed);
+        // A callee that stopped returns [`STOPPED`] with status 2, a failure to pass on.
         // Every callee returns whether it failed, 0 when it cannot: a function with `fails of
         // p` fails when the function value given for `p` does, which its declaration does not
         // say, so every call checks (#267).
@@ -1408,7 +2075,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
         let site = self.builder.ins().iconst(types::I64, site);
         // A cancelled task stops before its next operation (`spec/19 §6` rule 4).
         let stopping = self.call("una_rt_poll", &[])?;
-        self.stop_if(stopping);
+        self.stop_or_fail(stopping, scope, catch);
         // From here the operation is in progress: it completes, and keeps its own outcome,
         // whatever cancellation comes meanwhile (`spec/19 §6` rule 4, `§7` rule 3).
         self.runtime("una_rt_operation_begin", &[]);
@@ -1488,7 +2155,21 @@ impl<'p> Lowerer<'_, 'p, '_> {
         let signature = self.builder.import_signature(signature);
         let mut operands = vec![instance];
         operands.extend_from_slice(&values);
-        self.enter(call_site)?;
+        // A task that stops at the operation's call, by U6003 alone since the operation shields
+        // cancellations, or inside it, ends the operation with [`STOPPED`] and status 2, which
+        // leaves its event as it was, `aborted`, and goes on as a failure.
+        let stopping = self.call("una_rt_enter", &[call_site])?;
+        let refused = self.builder.create_block();
+        let calling = self.builder.create_block();
+        self.builder
+            .ins()
+            .brif(stopping, refused, &[], calling, &[]);
+        self.builder.switch_to_block(refused);
+        self.runtime("una_rt_operation_end", &[]);
+        let word = self.builder.ins().iconst(types::I64, STOPPED);
+        let two = self.builder.ins().iconst(types::I64, 2);
+        self.builder.ins().jump(done, &[word.into(), two.into()]);
+        self.builder.switch_to_block(calling);
         let call = self.builder.ins().call_indirect(signature, code, &operands);
         let results = self.builder.inst_results(call).to_vec();
         self.runtime("una_rt_leave", &[]);
@@ -1496,9 +2177,6 @@ impl<'p> Lowerer<'_, 'p, '_> {
         let (Some(&value), Some(&failed)) = (results.first(), results.get(1)) else {
             return Err(internal("an operation lost its result"));
         };
-        // A task that stops inside the operation, by U6003 alone, leaves its event as it was,
-        // `aborted`.
-        self.stop_if_stopped(failed);
         self.builder
             .ins()
             .jump(done, &[value.into(), failed.into()]);
@@ -1802,10 +2480,13 @@ impl<'p> Lowerer<'_, 'p, '_> {
                     }
                     return self.prelude(&function.name, &values, *span, scope, catch);
                 }
+                // `spec/11 §7`: each call counts toward the maximum depth, which the runtime
+                // checks against the call's site before the arguments are given, so a stop
+                // there leaves with every word still in scope.
+                let site = self.site(*span);
+                self.enter(site, scope, catch)?;
                 let borrowed = self.give(function, args, &values, env, scope, catch, rest)?;
-                self.call_function(
-                    function, borrowed, type_args, &values, *span, env, scope, catch,
-                )
+                self.call_function(function, borrowed, type_args, &values, env, scope, catch)
             }
             Rhs::Apply {
                 callee, args, span, ..
@@ -1895,6 +2576,8 @@ impl<'p> Lowerer<'_, 'p, '_> {
             }
             Rhs::Declassify { via, arg, span, .. } => {
                 let (value, _) = self.atom(arg, env)?;
+                let site = self.site(*span);
+                self.enter(site, scope, catch)?;
                 let borrowed = self.give(
                     via,
                     std::slice::from_ref(arg),
@@ -1904,7 +2587,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
                     catch,
                     rest,
                 )?;
-                self.call_function(via, borrowed, &[], &[value], *span, env, scope, catch)
+                self.call_function(via, borrowed, &[], &[value], env, scope, catch)
             }
         }
     }
@@ -1931,6 +2614,22 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 _ => (self.literal("una_rt_int_literal", digits)?, Kind::Int),
             },
             Atom::Text(text) => (self.literal("una_rt_text_literal", text)?, Kind::Text),
+            // A literal is made once by the runtime and borrowed, as an integer literal is.
+            Atom::F64(bits) => {
+                let bits = self
+                    .builder
+                    .ins()
+                    .iconst(types::I64, i64::from_ne_bytes(bits.to_ne_bytes()));
+                (self.call("una_rt_f64_literal", &[bits])?, Kind::F64)
+            }
+            // A decimal literal is its coefficient's word (ADR 0120 rule 20).
+            Atom::Decimal { coefficient, .. } => match coefficient.parse::<i64>() {
+                Ok(small) if SMALL.contains(&small) => (
+                    self.builder.ins().iconst(types::I64, (small << 1) | 1),
+                    Kind::Int,
+                ),
+                _ => (self.literal("una_rt_int_literal", coefficient)?, Kind::Int),
+            },
         })
     }
 
@@ -2000,6 +2699,8 @@ impl<'p> Lowerer<'_, 'p, '_> {
             Atom::Int(_) => base(Base::Int),
             Atom::Bool(_) => base(Base::Bool),
             Atom::Text(_) => base(Base::Text),
+            Atom::F64(_) => base(Base::F64),
+            Atom::Decimal { scale, .. } => base(Base::Decimal(*scale)),
             Atom::Unit => base(Base::Unit),
         }
     }
@@ -2127,23 +2828,52 @@ impl<'p> Lowerer<'_, 'p, '_> {
         let signature = self.builder.import_signature(signature);
         let mut values = vec![callee];
         values.extend_from_slice(args);
-        self.enter(site)?;
+        // A lambda owns its parameters: when the task stops before the call, the arguments
+        // given to it are released here, and the stop comes back as a failure, [`STOPPED`]
+        // with status 2, which the caller passes on as a callee's.
+        let returned = self.builder.create_block();
+        self.builder.append_block_param(returned, types::I64);
+        self.builder.append_block_param(returned, types::I64);
+        let stopping = self.call("una_rt_enter", &[site])?;
+        let refused = self.builder.create_block();
+        let calling = self.builder.create_block();
+        self.builder
+            .ins()
+            .brif(stopping, refused, &[], calling, &[]);
+        self.builder.switch_to_block(refused);
+        for &arg in args {
+            self.release(arg, Kind::Any);
+        }
+        let word = self.builder.ins().iconst(types::I64, STOPPED);
+        let two = self.builder.ins().iconst(types::I64, 2);
+        self.builder
+            .ins()
+            .jump(returned, &[word.into(), two.into()]);
+        self.builder.switch_to_block(calling);
         let call = self.builder.ins().call_indirect(signature, code, &values);
         let results = self.builder.inst_results(call).to_vec();
         self.runtime("una_rt_leave", &[]);
         match (results.first(), results.get(1)) {
             (Some(&value), Some(&failed)) => {
-                self.stop_if_stopped(failed);
-                Ok((value, failed))
+                self.builder
+                    .ins()
+                    .jump(returned, &[value.into(), failed.into()]);
+                self.builder.switch_to_block(returned);
+                let results = self.builder.block_params(returned).to_vec();
+                match (results.first(), results.get(1)) {
+                    (Some(&value), Some(&failed)) => Ok((value, failed)),
+                    _ => Err(internal("a closure lost its result")),
+                }
             }
             _ => Err(internal("a closure lost its result")),
         }
     }
 
-    /// Enters the call at `site` (`spec/11 §7`), or stops the task when the runtime says so.
-    fn enter(&mut self, site: Value) -> Result<(), CodegenError> {
+    /// Enters the call at `site` (`spec/11 §7`), before its arguments are given, or leaves the
+    /// frame by the failure path when the runtime says the task stops.
+    fn enter(&mut self, site: Value, scope: &Scope, catch: &Catch) -> Result<(), CodegenError> {
         let stopping = self.call("una_rt_enter", &[site])?;
-        self.stop_if(stopping);
+        self.stop_or_fail(stopping, scope, catch);
         Ok(())
     }
 
@@ -2166,18 +2896,53 @@ impl<'p> Lowerer<'_, 'p, '_> {
         Ok(value)
     }
 
-    /// Stops the task when `stopping` is not 0.
+    /// 1 when the failure word `failure` is [`STOPPED`], else 0.
+    fn stopped(&mut self, failure: Value) -> Value {
+        let stopped = self
+            .builder
+            .ins()
+            .icmp_imm_s(IntCC::Equal, failure, STOPPED);
+        self.flag(stopped)
+    }
+
+    /// Goes on with [`STOPPED`] to `catch`, releasing the words of `scope` since it, when
+    /// `failure` is the stop of the task; continues otherwise.
+    fn pass_stop(&mut self, failure: Value, scope: &Scope, catch: &Catch) {
+        let stopped = self.stopped(failure);
+        self.stop_or_fail(stopped, scope, catch);
+    }
+
+    /// Leaves the frame by the failure path with [`STOPPED`] when `stopping` is not 0: the
+    /// words of `scope` since `catch` was installed are released, as a failure releases them
+    /// (`spec/19 §6` rule 4).
+    fn stop_or_fail(&mut self, stopping: Value, scope: &Scope, catch: &Catch) {
+        let failing = self.builder.create_block();
+        let next = self.builder.create_block();
+        self.builder.ins().brif(stopping, failing, &[], next, &[]);
+        self.builder.switch_to_block(failing);
+        let word = self.builder.ins().iconst(types::I64, STOPPED);
+        self.fail(word, scope, catch);
+        self.builder.switch_to_block(next);
+    }
+
+    /// A JSON call stopped at one of its check points (`stopping` not 0), by the memory budget
+    /// or a cancellation: its value is released, and the frame left by the failure path.
+    fn json_stop(&mut self, stopping: Value, value: Value, scope: &Scope, catch: &Catch) {
+        let failing = self.builder.create_block();
+        let next = self.builder.create_block();
+        self.builder.ins().brif(stopping, failing, &[], next, &[]);
+        self.builder.switch_to_block(failing);
+        self.release(value, Kind::Any);
+        let word = self.builder.ins().iconst(types::I64, STOPPED);
+        self.fail(word, scope, catch);
+        self.builder.switch_to_block(next);
+    }
+
+    /// Stops the task at once when `stopping` is not 0: for an abort only (see `stop`).
     fn stop_if(&mut self, stopping: Value) {
         let next = self.builder.create_block();
         self.builder.ins().brif(stopping, self.stop, &[], next, &[]);
         self.builder.switch_to_block(next);
-    }
-
-    /// Stops the task when the code it called returned the status 2 of a stopped task.
-    fn stop_if_stopped(&mut self, status: Value) {
-        let stopped = self.builder.ins().icmp_imm_s(IntCC::Equal, status, 2);
-        let stopped = self.flag(stopped);
-        self.stop_if(stopped);
     }
 
     /// The one parameter of a join block.
@@ -2277,6 +3042,21 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 self.check(failure, failed, scope, catch);
                 return self.call("una_rt_parse_int", &[t]);
             }
+            // A failure of `parse_decimal` goes to `catch`, as `parse_int`'s (`spec/29 §16`).
+            "parse_decimal" => {
+                let (t, scale) = (arg(0)?, arg(1)?);
+                let failure = self.call("una_rt_parse_decimal_failure", &[t, scale])?;
+                let failed = self.builder.ins().icmp_imm_s(IntCC::NotEqual, failure, 0);
+                self.check(failure, failed, scope, catch);
+                return self.call("una_rt_parse_decimal", &[t, scale]);
+            }
+            "as_decimal" => "una_rt_as_decimal",
+            // Elaboration writes `json_decimal(x)` as an operation with the scale of `x`.
+            "json_decimal" => {
+                return Err(internal(
+                    "`json_decimal` called without the scale of its argument",
+                ));
+            }
             "split" => "una_rt_split",
             "join" => "una_rt_join",
             "ends_with" => "una_rt_ends_with",
@@ -2315,7 +3095,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 let site = self.site(span);
                 let value = self.call("una_rt_parse_json", &[arg(0)?, site])?;
                 let stopping = self.call("una_rt_json_stopped", &[])?;
-                self.stop_if(stopping);
+                self.json_stop(stopping, value, scope, catch);
                 let failed = self.call("una_rt_host_failed", &[])?;
                 self.check(value, failed, scope, catch);
                 return Ok(value);
@@ -2324,11 +3104,41 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 let site = self.site(span);
                 let value = self.call("una_rt_to_json", &[arg(0)?, site])?;
                 let stopping = self.call("una_rt_json_stopped", &[])?;
-                self.stop_if(stopping);
+                self.json_stop(stopping, value, scope, catch);
                 return Ok(value);
             }
             "quote_json" => "una_rt_quote_json",
             "is_json_number" => "una_rt_is_json_number",
+            // The functions of `F64` (`spec/29`, ADR 0114 rule 3.9).
+            "nan" => {
+                let bits = self.builder.ins().iconst(
+                    types::I64,
+                    i64::from_ne_bytes(una_core::float::CANONICAL_NAN.to_ne_bytes()),
+                );
+                let word = self.call("una_rt_f64_literal", &[bits])?;
+                self.retain(word, Kind::F64);
+                return Ok(word);
+            }
+            "infinity" => {
+                let bits = self.builder.ins().iconst(
+                    types::I64,
+                    i64::from_ne_bytes(f64::INFINITY.to_bits().to_ne_bytes()),
+                );
+                let word = self.call("una_rt_f64_literal", &[bits])?;
+                self.retain(word, Kind::F64);
+                return Ok(word);
+            }
+            "f64_from_bits" => "una_rt_f64_from_bits",
+            // A failure of `parse_f64` goes to `catch`, as `parse_int`'s does.
+            "parse_f64" => {
+                let t = arg(0)?;
+                let failure = self.call("una_rt_parse_f64_failure", &[t])?;
+                let failed = self.builder.ins().icmp_imm_s(IntCC::NotEqual, failure, 0);
+                self.check(failure, failed, scope, catch);
+                return self.call("una_rt_parse_f64", &[t]);
+            }
+            "as_f64" => "una_rt_as_f64",
+            "json_number" => "una_rt_json_number",
             other => return Err(unsupported(format!("`{other}` of the prelude"))),
         };
         self.call(function, args)
@@ -2519,6 +3329,20 @@ impl<'p> Lowerer<'_, 'p, '_> {
         let operand = |i: Option<(Value, Kind)>| {
             i.ok_or_else(|| internal(format!("`{}` lacks an operand", prim.as_str())))
         };
+        // An `F64` reaches only its own operations, equality, interpolation and `to_decimal`:
+        // integer
+        // arithmetic or a word comparison on its handle would compute on an address.
+        if !matches!(
+            prim,
+            Prim::Float(_)
+                | Prim::Eq
+                | Prim::Ne
+                | Prim::ToText
+                | Prim::Decimal(una_core::DecimalOp::FromF64(_))
+        ) && args.iter().any(|(_, kind)| *kind == Kind::F64)
+        {
+            return Err(internal(format!("`{}` on an `F64`", prim.as_str())));
+        }
         match prim {
             // A conversion keeps the value: a narrowing one carries an `overflow` obligation that
             // proves it fits (`spec/18 §4`).
@@ -2533,6 +3357,44 @@ impl<'p> Lowerer<'_, 'p, '_> {
             }
             // Lowered with their arguments' ownership, in `rhs`.
             Prim::Map(op) => Err(internal(format!("map `{}` out of place", op.as_str()))),
+            // Every operation of `F64` is the runtime's, over boxed values (ADR 0114 rule 9.6):
+            // the same routines of `una-core` as the interpreter's, so the bits agree.
+            Prim::Float(op) => {
+                let code = una_core::FloatOp::ALL
+                    .iter()
+                    .position(|x| *x == op)
+                    .and_then(|i| i64::try_from(i).ok())
+                    .ok_or_else(|| internal("an unknown operation of `F64`"))?;
+                let code = self.builder.ins().iconst(types::I64, code);
+                let zero = self.builder.ins().iconst(types::I64, 0);
+                let word = |i: usize| args.get(i).map_or(zero, |(value, _)| *value);
+                let (a, b, c) = (word(0), word(1), word(2));
+                self.call("una_rt_f64_op", &[code, a, b, c])
+            }
+            // Dense values have no native representation yet (`spec/29 §17`).
+            Prim::Shape(_) => Err(unsupported("dense values (spec/29)")),
+            // Every operation of `Decimal` is the runtime's, on coefficients, with the
+            // operation's static scales, and its conversions with `F64` on boxed values
+            // (`spec/29 §16`).
+            Prim::Decimal(op) => {
+                let (index, packed) = op.code();
+                let mut words = vec![
+                    self.builder.ins().iconst(types::I64, index),
+                    self.builder.ins().iconst(types::I64, packed),
+                ];
+                for i in 0..3 {
+                    words.push(match args.get(i) {
+                        Some((word, _)) => *word,
+                        None => self.builder.ins().iconst(types::I64, 1),
+                    });
+                }
+                self.call("una_rt_decimal", &words)
+            }
+            Prim::Seq(_) => Err(unsupported("`Stack` and `Queue` (spec/28)")),
+            Prim::Set(_) => Err(unsupported("`Set` (spec/28)")),
+            Prim::HashMap(_) | Prim::HashSet(_) => {
+                Err(unsupported("`HashMap` and `HashSet` (spec/28)"))
+            }
             Prim::Fixed(op, int) => {
                 let a = operand(first)?.0;
                 let b = match second {
@@ -2656,6 +3518,16 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 match kind {
                     Kind::Int => self.call("una_rt_int_text", &[a]),
                     Kind::Bool => self.call("una_rt_bool_text", &[a]),
+                    Kind::F64 => {
+                        let code = una_core::FloatOp::ALL
+                            .iter()
+                            .position(|x| *x == una_core::FloatOp::ToText)
+                            .and_then(|i| i64::try_from(i).ok())
+                            .ok_or_else(|| internal("an unknown operation of `F64`"))?;
+                        let code = self.builder.ins().iconst(types::I64, code);
+                        let zero = self.builder.ins().iconst(types::I64, 0);
+                        self.call("una_rt_f64_op", &[code, a, zero, zero])
+                    }
                     Kind::Text => {
                         self.retain(a, Kind::Text);
                         Ok(a)
@@ -2808,11 +3680,21 @@ fn borrowed_from(expr: &Expr, out: &mut BTreeSet<String>) {
             add(value, out);
             borrowed_from(body, out);
         }
-        Expr::Loop { source, body, .. } => {
-            if let LoopSource::List(list) = source.as_ref() {
-                add(list, out);
+        Expr::Loop {
+            source,
+            body,
+            on_stop,
+            ..
+        } => {
+            match source.as_ref() {
+                LoopSource::List(list) => add(list, out),
+                LoopSource::Until { cond, .. } => borrowed_from(cond, out),
+                LoopSource::Range { .. } | LoopSource::Ever { .. } => {}
             }
             borrowed_from(body, out);
+            if let Some(on_stop) = on_stop {
+                borrowed_from(&on_stop.body, out);
+            }
         }
         Expr::Let { value, body, .. } => {
             if let Bound::Expr(inner) = value.as_ref() {
@@ -2830,15 +3712,35 @@ fn borrowed_from(expr: &Expr, out: &mut BTreeSet<String>) {
             borrowed_from(body, out);
             borrowed_from(handler, out);
         }
-        Expr::Attempt { body, .. } | Expr::With { body, .. } => borrowed_from(body, out),
+        Expr::Attempt { body, .. } | Expr::With { body, .. } | Expr::Within { body, .. } => {
+            borrowed_from(body, out);
+        }
         Expr::Together { .. } | Expr::TogetherFor { .. } => {
             // A task's captures are never moved: every name the block reads stays pinned
             // (#162).
             vars(expr, out);
         }
-        Expr::Atom { .. } | Expr::Fail { .. } | Expr::Unreachable { .. } => {}
+        Expr::Atom { .. } | Expr::Fail { .. } | Expr::Exit { .. } | Expr::Unreachable { .. } => {}
     }
 }
+
+/// The failure word of a stopped task (`spec/19 §6` rule 4): a task that is cancelled, by a
+/// failed sibling or a `within` whose deadline passed (`spec/27 §5`), or that aborts, leaves
+/// every frame by the path a failure takes, so each frame releases what it owns, and a frame
+/// that catches failures passes this word on.
+///
+/// **Why `-1` is never a real failure.** A failure is a value of the function's error kind,
+/// which is always a sum kind (`fails` names one, U2002), and a value of a sum kind is one of
+/// two words, by the representation of `una-rt` (`values`):
+/// - a variant without fields: the immediate `(index << 1) | 1`, with `index`, its position
+///   in its kind, at least 0, so the word is at least 1 ([`Lowerer::construct`]);
+/// - a variant with fields: a handle, an even word other than 0 (`values::is_handle`).
+///
+/// `-1` is odd, so no handle, and below 1, so no variant without fields. The integer `-1`,
+/// whose small-integer word is also `-1`, is never a failure: no error kind is `Int`. Debug
+/// builds assert it where a failure word is made: [`Lowerer::construct`] for variants, and
+/// `una_rt::host::failed` for the failures of host operations.
+const STOPPED: i64 = -1;
 
 /// The trap of a branch that verification proves unreachable.
 const TRAP: cranelift_codegen::ir::TrapCode = cranelift_codegen::ir::TrapCode::unwrap_user(1);

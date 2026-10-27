@@ -1,0 +1,1 @@
+- **Docs: installing, checking the version and updating** (#905). Getting started now says how to keep `~/.una/bin` on `PATH` in a shell profile, what `una --version` prints, what a release older than 0.3 answers instead, how `which -a una` finds an older copy, and that running the installer again updates it.

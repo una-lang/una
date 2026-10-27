@@ -1,0 +1,46 @@
+-- `std.collections` (ADR 0119), edition 0.4. Its types are built in: the checker exports them
+-- to an import beside the declarations of this file.
+module std.collections
+
+--- An item of a priority queue with its priority, as `pop_ranked` gives it (ADR 0119 rule 13).
+pub kind Ranked[T, P]
+  item: T
+  priority: P
+
+--- The stack with no items, of the type its context expects (`spec/28 §5`). Its body is a
+--- placeholder: both engines make the value.
+pub empty_stack[T]() -> Stack[T]
+=
+  empty_stack()
+
+--- The queue with no items, of the type its context expects (`spec/28 §5`). Its body is a
+--- placeholder: both engines make the value.
+pub empty_queue[T]() -> Queue[T]
+=
+  empty_queue()
+
+-- The body of `empty_set` is a placeholder: both engines make the set themselves.
+--- An empty set, of the item type that the expected type gives (`spec/28 §6`). O(1).
+pub empty_set[T: Ord]() -> Set[T] = empty_set()
+
+-- The bodies of `empty_hash_map` and `empty_hash_set` are placeholders: both engines make the
+-- table themselves, each with a key of its own (`spec/28 §1` rule 4).
+--- An empty hash map, of the key and value types that the expected type gives (`spec/28 §7`).
+--- O(1).
+pub empty_hash_map[K: Eq, V]() -> HashMap[K, V] = empty_hash_map()
+
+--- An empty hash set, of the item type that the expected type gives (`spec/28 §7`). O(1).
+pub empty_hash_set[T: Eq]() -> HashSet[T] = empty_hash_set()
+
+-- The built-in method `update` of hash maps (ADR 0119 rule 12). It is not among the names an
+-- import reaches: only method syntax on a hash map reaches it, `edit m.update(...)`, as the map's
+-- `update` of `prelude.map`. The body is a placeholder that the type checker never reads: the
+-- elaboration gives each call its meaning, a lookup, one call of `change`, and a `set`.
+--- Sets `key` to `change(v)`, where `v` is the value of `key`, or `initial` when `m` has no
+--- `key`. `change` is called exactly once; when it fails, `m` keeps its value from before the
+--- call.
+pub update[K: Eq, V](edit m: HashMap[K, V], key: K, initial: V, change: fn(V) -> V) -> Unit
+  uses of change
+  fails of change
+=
+  unit

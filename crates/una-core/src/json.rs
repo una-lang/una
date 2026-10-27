@@ -21,10 +21,9 @@ pub const CHECK_EVERY: usize = 4096;
 /// The deepest nesting of arrays and objects that [`parse`] accepts (`spec/23 §3` rule 4).
 pub const MAX_DEPTH: usize = 512;
 
-/// The most digits of an integer that [`parse`] accepts (`spec/23 §3`): converting
-/// d decimal digits to an exact integer takes O(d²), so a longer literal is a failure, as in
-/// CPython.
-pub const MAX_INT_DIGITS: usize = 4300;
+/// The most digits of an integer that [`parse`] accepts (`spec/23 §3`), shared with
+/// `parse_int` and `to_int`.
+pub use crate::MAX_INT_DIGITS;
 
 /// A JSON value, as `Json` holds it (`spec/23 §1`).
 #[derive(Clone, Debug, PartialEq, Eq)]

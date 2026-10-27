@@ -107,7 +107,7 @@ pub can_reserve(units: Int) -> Bool = (attempt reserve(units)).is_ok()
 Further rules:
 
 - **One call, not a block.** `attempt` covers a single call; a sequence of fallible calls takes one `attempt` or one clause each.
-- **Labeled failures.** When a failure is decided by labeled data (data marked with a label above `public`, such as `internal` or `secret`), the `Result` carries that label. This holds for the requests of `Http` and a policy call's failure, labeled by its `to` label joined with the program counter (see [`policy`](../information-flow/policy.md)). Branching on it raises the [program counter](/learn/information-flow/branches-and-failures-implicit-flows/), the label of the conditions that decided whether a line runs, and under a raised one a `fail` is U4002.
+- **Labeled failures.** When a failure is decided by labeled data (data marked with a label above `public`, such as `internal` or `secret`), the `Result` carries that label. This holds for the requests of `Http` and a policy call's failure, labeled by its `to` label joined with the program counter (see [`policy`](../information-flow/policy.md)). Branching on it raises the [Branches and failures: implicit flows](/learn/information-flow/branches-and-failures-implicit-flows/), the label of the conditions that decided whether a line runs, and under a raised one a `fail` is U4002.
 - **An operand that cannot fail.** In edition `0.3`, `attempt` of a call that cannot fail is U3026: use the value of the call directly, and unwrap the uses of the `Result`. Editions `0.1` and `0.2` accept it, and the error type of its `Result` is then not constrained.
 - **Alternative.** To convert, propagate or recover at the line itself, use a handling clause. See [`if error` and `if none`](if-error.md).
 

@@ -124,6 +124,8 @@ Each operation invocation appends one event:
 - Handler events appear before the events produced inside the handler body (E-OpHandler).
 - Host operation results are recorded in full (subject to redaction), so a future `una replay` can substitute them (`plan/backlog.md`).
 - (v0.2, ADR 0065.) An event inside a task of a `together` block carries the task's path, `task`, and the events are listed in branch order; a cancelled task ends with an event of outcome `cancelled` (`spec/19 §7`).
+- (Edition 0.4, ADR 0116 rule 11.) The first operation that the deadline of a `for ever within` iteration makes fail gives one event of outcome `{"kind":"timeout"}` per iteration, which names no operation and carries the `task` of the task that runs the loop, where the iteration first observes the failure (`spec/26 §7`).
+- (Edition 0.4, ADR 0117 rule 5.) An `e within d` that times out appends one event of outcome `{"kind":"timeout"}`, which names no operation and carries the `task` of its task, after the outcomes of the operations it interrupted (`spec/27 §5`).
 
 Values in traces and outputs are JSON strings holding their Una form: `"42"`, `"\"Ana\""`, `"true"`, `"unit"`, `"Open"`, `"Some(3)"`, `"Registration(name: \"Ana\", event: ...)"`, `"[1, 2]"`; a `Hashed` value is `"hashed:<hex>"`, and a function `"<function>"`. Inside any rendered value, a field whose declared type is labeled above `public` is `<redacted:level>`, with the label's level only; an operation's outcome is redacted by the label of the binder of its result; `unit` carries no information and is never redacted. An event's outcome is `{"kind":"ok","value":...}`, `{"kind":"fail","variant":...,"value":...}` or `{"kind":"aborted"}` (ADR 0032).
 

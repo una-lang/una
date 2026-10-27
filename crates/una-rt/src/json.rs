@@ -264,6 +264,11 @@ thread_local! {
     static STOPPED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+/// Exchanges the thread's [`STOPPED`] with a parked task's (`sched`).
+pub(crate) fn swap_stopped(stopped: &mut bool) {
+    *stopped = STOPPED.with(|cell| cell.replace(*stopped));
+}
+
 /// The value of a JSON call that stopped over the budget: `Null`, which the task's stop
 /// discards, with [`json_stopped`] set.
 fn stopped() -> i64 {

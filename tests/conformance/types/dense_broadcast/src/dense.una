@@ -1,0 +1,18 @@
+-- test: no implicit broadcasting: a dense value and a scalar under `+` or `-`, a scalar divided by a dense value, `mod`, and dense values of two kinds are U2001, as are operators on elements that are not numeric
+-- spec: spec/29 §17
+-- expect: error U2001 at src/dense.una:10:41
+-- expect: error U2001 at src/dense.una:12:41
+-- expect: error U2001 at src/dense.una:14:41
+-- expect: error U2001 at src/dense.una:16:58
+-- expect: error U2001 at src/dense.una:18:44
+module dense
+
+pub plus(a: Array[F64]) -> Array[F64] = a + 1.0
+
+pub over(a: Array[F64]) -> Array[F64] = 1.0 / a
+
+pub rest(a: Array[I32]) -> Array[I32] = a mod a
+
+pub kinds(a: Array[F64], m: Matrix[F64]) -> Array[F64] = a + m
+
+pub texts(a: Array[Text]) -> Array[Text] = a + a

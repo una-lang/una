@@ -1,0 +1,12 @@
+-- test: the repairs of U2033 are accepted: `is_zero()`, one zero by its sign, and the IEEE comparisons with `0.0`, which treat the zeros as equal; division by zero is not an obligation
+-- spec: spec/29 §3, §5
+-- expect: ok
+module m
+
+pub guard(n: F64, d: F64) -> F64 = if d.is_zero() then 0.0 else n / d
+
+pub signs(x: F64) -> Bool = x.is_positive_zero() or x.is_negative_zero() or x.is_sign_negative()
+
+pub orders(x: F64) -> Bool = x.ieee_lt(other: 0.0) or x.ieee_le(other: 0.0) or x.ieee_gt(other: 0.0) or x.ieee_ge(other: -0.0)
+
+pub inverse(x: F64) -> F64 = 1.0 / x

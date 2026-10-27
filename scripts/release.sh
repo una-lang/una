@@ -41,6 +41,24 @@ case "$root$cargo_home$sysroot" in
     exit 2
     ;;
 esac
+# The process key of keyed hashing comes from the operating system's random source through
+# `getrandom` (ADR 0119 rule 9). That crate's source can be switched at compile time with
+# `--cfg getrandom_backend=...`, to a custom or an unsupported one, so a release refuses any
+# inherited flag that sets it, in the environment or in a cargo configuration file.
+for flags in "${RUSTFLAGS:-}" "${CARGO_ENCODED_RUSTFLAGS:-}" "${CARGO_BUILD_RUSTFLAGS:-}"; do
+    case $flags in
+    *getrandom_backend*)
+        echo "error: the build flags set getrandom_backend, which would change the random source that getrandom gives the shipped binaries (ADR 0119)" >&2
+        exit 2
+        ;;
+    esac
+done
+for config in "$root/.cargo/config.toml" "$root/.cargo/config" "$cargo_home/config.toml" "$cargo_home/config"; do
+    if [ -f "$config" ] && grep -q getrandom_backend "$config"; then
+        echo "error: $config sets getrandom_backend, which would change the random source that getrandom gives the shipped binaries (ADR 0119)" >&2
+        exit 2
+    fi
+done
 RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$root=/una --remap-path-prefix=$cargo_home=/cargo --remap-path-prefix=$sysroot=/rust"
 export RUSTFLAGS
 # The C and assembly sources of dependencies (ring's), which the `cc` crate compiles, the same.

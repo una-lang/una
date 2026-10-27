@@ -114,6 +114,9 @@ pub struct Described<'a> {
     pub ops: &'a [serde_json::Value],
     /// The type of `main`'s failures, when it can fail.
     pub failure: Option<usize>,
+    /// Whether the compiled code holds a task construct or a `for ever`, so the runtime starts
+    /// its workers and helper pools before `main` (ADR 0116 amendment, P8; #1145).
+    pub threads: bool,
 }
 
 /// The object file of the program: `main` of module `entry` and the functions it reaches,
@@ -124,7 +127,30 @@ pub fn compile(
     entry: &str,
     meta: &dyn Fn(&Described<'_>) -> String,
 ) -> Result<Vec<u8>, CodegenError> {
-    let main = function(program, entry, "main").ok_or(CodegenError::NoMain)?;
+    compile_start(program, entry, false, meta)
+}
+
+/// The object file of a driven program (ADR 0116 rule 3): `init`, `step` and `on_stop` of
+/// module `module`, the functions they reach, and the host's loop, which asks the runtime for
+/// each tick. `una build` checked the functions' shapes. A failure of `init` is U6001, as one
+/// of `main` is, and `meta`'s `failure` describes it.
+pub fn compile_drive(
+    program: &Program,
+    module: &str,
+    meta: &dyn Fn(&Described<'_>) -> String,
+) -> Result<Vec<u8>, CodegenError> {
+    compile_start(program, module, true, meta)
+}
+
+/// The object file that starts at `main` of `entry`, or with `driven` at its `init`.
+fn compile_start(
+    program: &Program,
+    entry: &str,
+    driven: bool,
+    meta: &dyn Fn(&Described<'_>) -> String,
+) -> Result<Vec<u8>, CodegenError> {
+    let first = if driven { "init" } else { "main" };
+    let main = function(program, entry, first).ok_or(CodegenError::NoMain)?;
     let mut emitter = Emitter::new(program, isa()?)?;
     // U6001 shows `main`'s failure by the kind the checker resolved: without it, or with a kind
     // it cannot describe, a guess could show a labeled field.
@@ -153,10 +179,22 @@ pub fn compile(
             ));
         }
     };
-    let main_id = emitter.function(&Path {
+    let at = |name: &str| Path {
         module: entry.to_owned(),
-        name: "main".to_owned(),
-    })?;
+        name: name.to_owned(),
+    };
+    let main_id = emitter.function(&at(first))?;
+    let loop_functions = if driven {
+        let step = function(program, entry, "step").ok_or(CodegenError::NoMain)?;
+        let step_id = emitter.function(&at("step"))?.id;
+        let on_stop = match function(program, entry, "on_stop") {
+            Some(on_stop) => Some((on_stop, emitter.function(&at("on_stop"))?.id)),
+            None => None,
+        };
+        Some(((step, step_id), on_stop))
+    } else {
+        None
+    };
     emitter.drain()?;
     // #407: a type described for printing or comparison names a kind that nothing declares,
     // a bug of elaboration; it would print as `?` rather than as its declaration says.
@@ -170,8 +208,18 @@ pub fn compile(
         types: emitter.types.shapes(),
         ops: &emitter.ops,
         failure,
+        threads: emitter.threads,
     });
-    emitter.entry(main_id.id, main, &meta)?;
+    match loop_functions {
+        None => emitter.entry(main_id.id, main, &meta)?,
+        Some((step, on_stop)) => {
+            let owned = Owned {
+                step: emitter.owned(&at("step")),
+                on_stop: emitter.owned(&at("on_stop")),
+            };
+            emitter.drive_entry((main_id.id, main), step, on_stop, &owned, &meta)?;
+        }
+    }
     emitter
         .module
         .finish()
@@ -344,13 +392,32 @@ const RUNTIME: &[(&str, usize, bool)] = &[
     ("una_rt_bytes", 1, true),
     ("una_rt_parse_failure", 1, true),
     ("una_rt_parse_int", 1, true),
+    ("una_rt_f64_literal", 1, true),
+    ("una_rt_f64_op", 4, true),
+    ("una_rt_f64_from_bits", 1, true),
+    ("una_rt_parse_f64_failure", 1, true),
+    ("una_rt_parse_f64", 1, true),
+    ("una_rt_as_f64", 1, true),
+    ("una_rt_json_number", 1, true),
     ("una_rt_reuse", 2, true),
     ("una_rt_sum", 1, true),
     ("una_rt_or_else", 2, true),
     ("una_rt_main_failed", 1, false),
+    ("una_rt_drive_tick", 0, true),
+    ("una_rt_ever_start", 0, true),
+    ("una_rt_ever_end", 0, false),
     ("una_rt_op_code", 2, true),
     ("una_rt_fixed", 4, true),
+    ("una_rt_decimal", 5, true),
+    ("una_rt_parse_decimal_failure", 2, true),
+    ("una_rt_parse_decimal", 2, true),
+    ("una_rt_as_decimal", 2, true),
     ("una_rt_budget", 1, true),
+    ("una_rt_deadline_enter", 1, false),
+    ("una_rt_deadline_iteration", 0, false),
+    ("una_rt_deadline_leave", 0, false),
+    ("una_rt_within_enter", 1, true),
+    ("una_rt_within_end", 2, true),
     ("una_rt_poll", 0, true),
     ("una_rt_stopped", 0, true),
     ("una_rt_generic_compare", 3, true),
@@ -404,6 +471,12 @@ struct Callee {
     constraints: Vec<Constraint>,
 }
 
+/// Which parameters of `step` and `on_stop` of a driven module are owned (ADR 0072 D2).
+struct Owned {
+    step: Vec<bool>,
+    on_stop: Vec<bool>,
+}
+
 /// A handler of the package.
 #[derive(Clone, Copy)]
 struct Handler<'p> {
@@ -435,6 +508,8 @@ struct Emitter<'p> {
     types: describe::Types<'p>,
     /// The operations, by the index passed to `una_rt_event`.
     ops: Vec<serde_json::Value>,
+    /// Whether a task construct or a `for ever` was compiled ([`Described::threads`]).
+    threads: bool,
 }
 
 impl<'p> Emitter<'p> {
@@ -467,6 +542,7 @@ impl<'p> Emitter<'p> {
             sites: Vec::new(),
             types: describe::Types::new(program),
             ops: Vec::new(),
+            threads: false,
         })
     }
 
@@ -715,12 +791,171 @@ impl<'p> Emitter<'p> {
     /// The C `main`, which hands the process to the runtime with `una_main`, the compiled `main`
     /// of Una wrapped to return 0.
     fn entry(&mut self, main_id: FuncId, main: &Fun, meta: &str) -> Result<(), CodegenError> {
-        let pointer = self.module.target_config().pointer_type();
-        let call_conv = self.module.target_config().default_call_conv;
         let config = self.module.target_config();
+        let (una_main_id, mut context) = self.una_main()?;
+        {
+            let mut builder_context = FunctionBuilderContext::new();
+            let mut builder = FunctionBuilder::new(&mut context.func, &mut builder_context);
+            let block = builder.create_block();
+            builder.switch_to_block(block);
+            builder.seal_block(block);
+            debug_assert!(main.params.is_empty());
+            // `una_main`: calls `main` of Una, whose result is `unit`, and returns 0, or reports
+            // its failure (U6001) and returns 1.
+            let instances = self.instances(&mut builder, main)?;
+            let main_ref = self.module.declare_func_in_func(main_id, builder.func);
+            let call = builder.ins().call(main_ref, &instances);
+            let results = builder.inst_results(call).to_vec();
+            self.release_all(&mut builder, &instances)?;
+            let (Some(&value), Some(&failed)) = (results.first(), results.get(1)) else {
+                return Err(internal("`main` lost its result"));
+            };
+            let returned = builder.create_block();
+            let failing = Self::failing(&mut builder);
+            builder
+                .ins()
+                .brif(failed, failing, &[value.into()], returned, &[]);
+            builder.switch_to_block(returned);
+            builder.seal_block(returned);
+            let zero = builder.ins().iconst(types::I64, 0);
+            builder.ins().return_(&[zero]);
+            self.report_failure(&mut builder, failing)?;
+            builder.finalize(config);
+        }
+        self.define(una_main_id, &mut context)?;
+        self.c_main(una_main_id, meta)
+    }
 
-        // `una_main`: calls `main` of Una, whose result is `unit`, and returns 0, or reports its
-        // failure (U6001) and returns 1.
+    /// The C `main` of a driven program (ADR 0116 rule 3), whose `una_main` runs the host's
+    /// loop: `init`, whose failure is U6001; then, for each tick the runtime gives,
+    /// `step(edit state, input: tick)`, whose Core result is `(state, unit)`; then, when the
+    /// runtime gives no more ticks, `on_stop(state)` when the module declares it. The state
+    /// stays one owned word from one step to the next, and each call gives its owned
+    /// parameters away (ADR 0072 D2), the caller releasing the borrowed ones.
+    fn drive_entry(
+        &mut self,
+        (init_id, init): (FuncId, &Fun),
+        (step, step_id): (&Fun, FuncId),
+        on_stop: Option<(&Fun, FuncId)>,
+        owned: &Owned,
+        meta: &str,
+    ) -> Result<(), CodegenError> {
+        let config = self.module.target_config();
+        let (una_main_id, mut context) = self.una_main()?;
+        {
+            let mut builder_context = FunctionBuilderContext::new();
+            let mut builder = FunctionBuilder::new(&mut context.func, &mut builder_context);
+            let block = builder.create_block();
+            builder.switch_to_block(block);
+            builder.seal_block(block);
+            let failing = Self::failing(&mut builder);
+
+            // `init()`, with its instances.
+            let instances = self.instances(&mut builder, init)?;
+            let init_ref = self.module.declare_func_in_func(init_id, builder.func);
+            let call = builder.ins().call(init_ref, &instances);
+            let results = builder.inst_results(call).to_vec();
+            self.release_all(&mut builder, &instances)?;
+            let (Some(&state), Some(&failed)) = (results.first(), results.get(1)) else {
+                return Err(internal("`init` lost its result"));
+            };
+            let started = builder.create_block();
+            builder
+                .ins()
+                .brif(failed, failing, &[state.into()], started, &[]);
+            builder.switch_to_block(started);
+            builder.seal_block(started);
+            let step_instances = self.instances(&mut builder, step)?;
+            let head = builder.create_block();
+            builder.append_block_param(head, types::I64);
+            builder.ins().jump(head, &[state.into()]);
+
+            // The head of the loop: the next tick, or 0 when the loop stops.
+            builder.switch_to_block(head);
+            let state = *builder
+                .block_params(head)
+                .first()
+                .ok_or_else(|| internal("the loop lost its state"))?;
+            let tick = self.runtime_call(&mut builder, "una_rt_drive_tick", &[])?;
+            let stepping = builder.create_block();
+            let done = builder.create_block();
+            builder.ins().brif(tick, stepping, &[], done, &[]);
+
+            // `step(edit state, input: tick)`.
+            builder.switch_to_block(stepping);
+            builder.seal_block(stepping);
+            let step_ref = self.module.declare_func_in_func(step_id, builder.func);
+            let mut args = vec![state, tick];
+            args.extend(&step_instances);
+            let call = builder.ins().call(step_ref, &args);
+            let results = builder.inst_results(call).to_vec();
+            for (position, &arg) in [state, tick].iter().enumerate() {
+                if !owned.step.get(position).copied().unwrap_or(false) {
+                    self.runtime_call(&mut builder, "una_rt_release", &[arg])?;
+                }
+            }
+            let (Some(&stepped), Some(&failed)) = (results.first(), results.get(1)) else {
+                return Err(internal("`step` lost its result"));
+            };
+            // `step` declares no `fails` (U3029), so it never fails; if it did, the run would
+            // end as a failure of `init` does.
+            let next = builder.create_block();
+            builder
+                .ins()
+                .brif(failed, failing, &[stepped.into()], next, &[]);
+            builder.switch_to_block(next);
+            builder.seal_block(next);
+            // The new state, the first component of the result, borrowed from it: retained,
+            // then the result released.
+            let zero = builder.ins().iconst(types::I64, 0);
+            let updated = self.runtime_call(&mut builder, "una_rt_field", &[stepped, zero])?;
+            self.runtime_call(&mut builder, "una_rt_retain", &[updated])?;
+            self.runtime_call(&mut builder, "una_rt_release", &[stepped])?;
+            builder.ins().jump(head, &[updated.into()]);
+            builder.seal_block(head);
+
+            // The end of the loop: `on_stop(state)`, then 0.
+            builder.switch_to_block(done);
+            builder.seal_block(done);
+            self.release_all(&mut builder, &step_instances)?;
+            match on_stop {
+                Some((on_stop, on_stop_id)) => {
+                    let instances = self.instances(&mut builder, on_stop)?;
+                    let on_stop_ref = self.module.declare_func_in_func(on_stop_id, builder.func);
+                    let mut args = vec![state];
+                    args.extend(&instances);
+                    let call = builder.ins().call(on_stop_ref, &args);
+                    let results = builder.inst_results(call).to_vec();
+                    if !owned.on_stop.first().copied().unwrap_or(false) {
+                        self.runtime_call(&mut builder, "una_rt_release", &[state])?;
+                    }
+                    self.release_all(&mut builder, &instances)?;
+                    let (Some(&value), Some(&failed)) = (results.first(), results.get(1)) else {
+                        return Err(internal("`on_stop` lost its result"));
+                    };
+                    // `on_stop` declares no `fails` either (U3029).
+                    let ended = builder.create_block();
+                    builder
+                        .ins()
+                        .brif(failed, failing, &[value.into()], ended, &[]);
+                    builder.switch_to_block(ended);
+                    builder.seal_block(ended);
+                }
+                None => {
+                    self.runtime_call(&mut builder, "una_rt_release", &[state])?;
+                }
+            }
+            let zero = builder.ins().iconst(types::I64, 0);
+            builder.ins().return_(&[zero]);
+            self.report_failure(&mut builder, failing)?;
+            builder.finalize(config);
+        }
+        self.define(una_main_id, &mut context)?;
+        self.c_main(una_main_id, meta)
+    }
+
+    /// `una_main`, declared, with a context whose signature returns the exit status.
+    fn una_main(&mut self) -> Result<(FuncId, Context), CodegenError> {
         let mut una_main = self.module.make_signature();
         una_main.returns.push(AbiParam::new(types::I64));
         let una_main_id = self
@@ -730,57 +965,79 @@ impl<'p> Emitter<'p> {
         let mut context = self.module.make_context();
         context.func.signature = una_main;
         context.func.name = UserFuncName::user(0, una_main_id.as_u32());
-        {
-            let mut builder_context = FunctionBuilderContext::new();
-            let mut builder = FunctionBuilder::new(&mut context.func, &mut builder_context);
-            let block = builder.create_block();
-            builder.switch_to_block(block);
-            builder.seal_block(block);
-            debug_assert!(main.params.is_empty());
-            // A host instance for each capability `main` uses (`spec/11 §2`), which `main` takes
-            // after its parameters.
-            let mut instances = Vec::new();
-            for need in &main.uses {
-                let name = self.bytes(&need.capability)?;
-                let name = self.module.declare_data_in_func(name, builder.func);
-                let address = builder.ins().symbol_value(types::I64, name);
-                let len = i64::try_from(need.capability.len()).map_err(internal)?;
-                let len = builder.ins().iconst(types::I64, len);
-                let text =
-                    self.runtime_call(&mut builder, "una_rt_text_literal", &[address, len])?;
-                let instance = self.runtime_call(&mut builder, "una_rt_host_instance", &[text])?;
-                instances.push(instance);
-            }
-            let main_ref = self.module.declare_func_in_func(main_id, builder.func);
-            let call = builder.ins().call(main_ref, &instances);
-            let results = builder.inst_results(call).to_vec();
-            for &instance in &instances {
-                self.runtime_call(&mut builder, "una_rt_release", &[instance])?;
-            }
-            let (Some(&value), Some(&failed)) = (results.first(), results.get(1)) else {
-                return Err(internal("`main` lost its result"));
-            };
-            let returned = builder.create_block();
-            let failing = builder.create_block();
-            builder.ins().brif(failed, failing, &[], returned, &[]);
-            builder.switch_to_block(returned);
-            builder.seal_block(returned);
-            let zero = builder.ins().iconst(types::I64, 0);
-            builder.ins().return_(&[zero]);
-            builder.switch_to_block(failing);
-            builder.seal_block(failing);
-            let report = *self
-                .runtime
-                .get("una_rt_main_failed")
-                .ok_or_else(|| internal("the runtime lacks `una_rt_main_failed`"))?;
-            let report = self.module.declare_func_in_func(report, builder.func);
-            builder.ins().call(report, &[value]);
-            let one = builder.ins().iconst(types::I64, 1);
-            builder.ins().return_(&[one]);
-            builder.finalize(config);
-        }
-        self.define(una_main_id, &mut context)?;
+        Ok((una_main_id, context))
+    }
 
+    /// A host instance for each capability `function` uses (`spec/11 §2`), which it takes after
+    /// its parameters.
+    fn instances(
+        &mut self,
+        builder: &mut FunctionBuilder<'_>,
+        function: &Fun,
+    ) -> Result<Vec<ir::Value>, CodegenError> {
+        let mut instances = Vec::new();
+        for need in &function.uses {
+            let name = self.bytes(&need.capability)?;
+            let name = self.module.declare_data_in_func(name, builder.func);
+            let address = builder.ins().symbol_value(types::I64, name);
+            let len = i64::try_from(need.capability.len()).map_err(internal)?;
+            let len = builder.ins().iconst(types::I64, len);
+            let text = self.runtime_call(builder, "una_rt_text_literal", &[address, len])?;
+            let instance = self.runtime_call(builder, "una_rt_host_instance", &[text])?;
+            instances.push(instance);
+        }
+        Ok(instances)
+    }
+
+    /// Releases each of `values`.
+    fn release_all(
+        &mut self,
+        builder: &mut FunctionBuilder<'_>,
+        values: &[ir::Value],
+    ) -> Result<(), CodegenError> {
+        for &value in values {
+            self.runtime_call(builder, "una_rt_release", &[value])?;
+        }
+        Ok(())
+    }
+
+    /// A block of `una_main` that takes a failure, which [`Emitter::report_failure`] fills
+    /// once every branch to it is emitted.
+    fn failing(builder: &mut FunctionBuilder<'_>) -> ir::Block {
+        let failing = builder.create_block();
+        builder.append_block_param(failing, types::I64);
+        failing
+    }
+
+    /// Fills and seals `failing`: it reports the failure it is given (U6001) and returns 1.
+    fn report_failure(
+        &mut self,
+        builder: &mut FunctionBuilder<'_>,
+        failing: ir::Block,
+    ) -> Result<(), CodegenError> {
+        builder.switch_to_block(failing);
+        builder.seal_block(failing);
+        let value = *builder
+            .block_params(failing)
+            .first()
+            .ok_or_else(|| internal("the failure lost its value"))?;
+        let report = *self
+            .runtime
+            .get("una_rt_main_failed")
+            .ok_or_else(|| internal("the runtime lacks `una_rt_main_failed`"))?;
+        let report = self.module.declare_func_in_func(report, builder.func);
+        builder.ins().call(report, &[value]);
+        let one = builder.ins().iconst(types::I64, 1);
+        builder.ins().return_(&[one]);
+        Ok(())
+    }
+
+    /// The C `main`, which calls `una_rt_start` of the runtime with the process arguments, the
+    /// program's description and `una_main`.
+    fn c_main(&mut self, una_main_id: FuncId, meta: &str) -> Result<(), CodegenError> {
+        let pointer = self.module.target_config().pointer_type();
+        let call_conv = self.module.target_config().default_call_conv;
+        let config = self.module.target_config();
         let meta_id = self.bytes(meta)?;
         let mut start = self.module.make_signature();
         start.params.push(AbiParam::new(types::I32));

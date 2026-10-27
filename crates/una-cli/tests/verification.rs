@@ -20,6 +20,7 @@ fn repository() -> PathBuf {
 fn una(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
         .args(args)
         .current_dir(repository())
         .output()
@@ -62,16 +63,33 @@ fn package_of_edition(name: &str, edition: &str, files: &[(&str, &str)]) -> Path
     root
 }
 
+/// How tier 1 normalizes the source text of the package at `path`: edition 0.4, which only
+/// `ita.una` describes, erases the layout of wrapped lines (ADR 0125, amendment of 2026-10-25).
+/// The edition is the manifest's, not the presence of the file (#1175).
+fn layout_of(path: &Path) -> una_verify::SourceLayout {
+    let ita = path.join("ita.una");
+    let edition = match std::fs::read_to_string(&ita) {
+        Ok(text) => una_project::ita::parse_ita_manifest(&text).0.edition,
+        Err(_) => una_project::Edition::V0_1,
+    };
+    if edition >= una_project::Edition::V0_4 {
+        una_verify::SourceLayout::Wrapped
+    } else {
+        una_verify::SourceLayout::Joined
+    }
+}
+
 /// The package at `path` checked at tier 0, and the obligations that tier 1 would generate for
 /// it, on a stack as large as tier 1 gives them, but not solved: tests that compare obligations
 /// or queries start no solver (#286).
 fn generated(path: &Path) -> (una_cli::Checked, Vec<una_verify::Obligation>) {
     let checked = una_cli::check(path, Tier::Zero).unwrap();
+    let layout = layout_of(path);
     let obligations = std::thread::scope(|scope| {
         std::thread::Builder::new()
             .stack_size(64 * 1024 * 1024)
             .spawn_scoped(scope, || {
-                una_verify::obligations(&checked.program, &checked.sources)
+                una_verify::obligations(&checked.program, &checked.sources, layout)
             })
             .unwrap()
             .join()
@@ -296,6 +314,7 @@ pub first() -> Int = book(4321)
     std::fs::create_dir_all(&empty).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
         .args(["--json", "check", root.to_str().unwrap()])
         .env("PATH", &empty)
         .output()
@@ -320,6 +339,7 @@ pub first() -> Int = book(4321)
     // Tier 0 needs no solver.
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
         .args(["check", "--tier", "0", root.to_str().unwrap()])
         .env("PATH", &empty)
         .output()
@@ -411,6 +431,7 @@ fn collect_op_paths(expr: &una_core::Expr, out: &mut Vec<String>) {
         }
         Expr::Attempt { body, .. }
         | Expr::With { body, .. }
+        | Expr::Within { body, .. }
         | Expr::LetTuple { body, .. }
         | Expr::Loop { body, .. } => collect_op_paths(body, out),
         Expr::Together { tasks, .. } => {
@@ -419,7 +440,7 @@ fn collect_op_paths(expr: &una_core::Expr, out: &mut Vec<String>) {
             }
         }
         Expr::TogetherFor { task, .. } => collect_op_paths(task, out),
-        Expr::Atom { .. } | Expr::Fail { .. } | Expr::Unreachable { .. } => {}
+        Expr::Atom { .. } | Expr::Fail { .. } | Expr::Exit { .. } | Expr::Unreachable { .. } => {}
     }
 }
 
@@ -452,6 +473,7 @@ fn a_query_the_solver_rejects_is_u8001_and_exits_with_3() {
     let _ = std::fs::remove_dir_all(root.join(".una"));
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
         .args(["--json", "check", root.to_str().unwrap()])
         .env("PATH", &bin)
         .output()
@@ -849,6 +871,61 @@ pub f(x: Int, y: Int, s: S, flag: Bool) -> Unit
     assert!(line.contains("flag = true"), "{line}");
     assert!(
         !line.contains("= ,") && !line.contains("#,") && !line.ends_with('#'),
+        "{line}"
+    );
+}
+
+#[test]
+fn a_sum_value_through_a_record_field_shows_in_the_counterexample() {
+    // #902: a sum kind's value reached through a record field and passed to a function with no
+    // `ensures` is shown by its tag, which no assertion of the query used. The model query
+    // named it undeclared, and the counterexample was "not available" with a solver error.
+    let source = "module shipping
+
+kind Zone = Home | Neighbor | World
+
+kind Parcel
+  grams: Int
+  zone: Zone
+
+pub base_rate(grams: Int) -> Int
+  requires grams > 0
+  ensures result >= 790
+=
+  790
+
+pub surcharge(zone: Zone) -> Int
+=
+  when zone
+    is Home -> 0
+    is Neighbor -> 600
+    is World -> 1_800
+
+pub rate(parcel: Parcel) -> Int
+  requires parcel.grams > 0
+  ensures result >= 790
+=
+  base_rate(parcel.grams) + parcel.zone.surcharge
+";
+    let root = package_of_edition(
+        "counterexample-sum-field",
+        "0.2",
+        &[("src/shipping.una", source)],
+    );
+    let output = una(&["check", root.to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    let text = stderr(&output);
+    assert!(text.contains("U5001"), "{text}");
+    let line = text
+        .lines()
+        .find(|line| line.contains("counterexample:"))
+        .unwrap_or_else(|| panic!("{text}"));
+    assert!(!line.contains("not available"), "{line}");
+    assert!(!line.contains("unknown constant"), "{line}");
+    assert!(
+        ["Home", "Neighbor", "World"]
+            .iter()
+            .any(|variant| line.contains(variant)),
         "{line}"
     );
 }
@@ -1498,8 +1575,15 @@ fn a_forged_or_foreign_cache_entry_is_solved_again() {
     };
     let refuted =
         |output: &Output| output.status.code() == Some(1) && stderr(output).contains("U5001");
-    // The first run solves and caches the refutation under the key it makes.
-    assert!(refuted(&run("alice", None, &["check"])));
+    // The first run solves and caches the refutation under the key it makes: a missing key is
+    // made, with no note (#1164).
+    let first = run("alice", None, &["check"]);
+    assert!(refuted(&first));
+    assert!(
+        !stderr(&first).contains("proof cache key"),
+        "{}",
+        stderr(&first)
+    );
     assert_eq!(
         report("alice", None),
         (json!(1), json!("~/.una/proof-cache.key"))
@@ -1520,9 +1604,58 @@ fn a_forged_or_foreign_cache_entry_is_solved_again() {
     let unreadable = scratch.join("a-directory");
     std::fs::create_dir_all(&unreadable).unwrap();
     assert_eq!(report("alice", Some(&unreadable)), (json!(0), json!(null)));
+    // It exists and is not a regular file: a note says the cache is off (#1164).
+    let noted = run("alice", Some(&unreadable), &["check"]);
+    assert!(
+        stderr(&noted).contains(&format!(
+            "note: the proof cache key `{}` is not used, since it is not a regular file; the proof cache is off\n",
+            unreadable.display()
+        )),
+        "{}",
+        stderr(&noted)
+    );
     // The override names the key file, as the report shows it.
     let named = scratch.join("team.key");
     std::fs::write(&named, [7u8; 32]).unwrap();
+    // A key file is used only when it is a private regular file of the user (#1164): one the
+    // group or others can read is refused with a note, and the 0600 one is used, with none.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&named, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(report("carol", Some(&named)).1, json!(null));
+        let noted = run("carol", Some(&named), &["check"]);
+        assert!(
+            stderr(&noted).contains(
+                "is not used, since the group or others have permissions on it; the proof cache is off (chmod 600 it)"
+            ),
+            "{}",
+            stderr(&noted)
+        );
+        // Under `--json`, stderr stays empty (`spec/13 §5`): the report's null is the signal.
+        let quiet = run("carol", Some(&named), &["--json", "check"]);
+        assert_eq!(stderr(&quiet), "");
+        let _: serde_json::Value = serde_json::from_slice(&quiet.stdout).unwrap();
+        // A key of the wrong size is noted too, with no permission hint.
+        let short = scratch.join("short.key");
+        std::fs::write(&short, b"short").unwrap();
+        std::fs::set_permissions(&short, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let noted = run("carol", Some(&short), &["check"]);
+        assert!(
+            stderr(&noted).contains(
+                "is not used, since its size is outside 16 to 4096 bytes; the proof cache is off\n"
+            ),
+            "{}",
+            stderr(&noted)
+        );
+        std::fs::set_permissions(&named, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let used = run("carol", Some(&named), &["check"]);
+        assert!(
+            !stderr(&used).contains("proof cache key"),
+            "{}",
+            stderr(&used)
+        );
+    }
     let shown = json!(named.to_str().unwrap());
     assert_eq!(report("carol", Some(&named)).1, shown);
     let _ = std::fs::remove_dir_all(&scratch);
@@ -1644,6 +1777,7 @@ fn a_query_the_solver_rejects_is_an_internal_error_11() {
     let path = format!("{}:/usr/bin:/bin", bin.display());
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", scratch.join("home"))
+        .env_remove("UNA_PROOF_KEY")
         .env("PATH", path)
         .env_remove("UNA_PROOF_KEY")
         .args(["--json", "check"])
@@ -1921,7 +2055,11 @@ fn a_kind_core_does_not_declare_stops_tier_1() {
         std::thread::Builder::new()
             .stack_size(64 * 1024 * 1024)
             .spawn_scoped(scope, || {
-                una_verify::obligations(&checked.program, &checked.sources)
+                una_verify::obligations(
+                    &checked.program,
+                    &checked.sources,
+                    una_verify::SourceLayout::Joined,
+                )
             })
             .unwrap()
             .join()
@@ -2409,4 +2547,222 @@ fn units_are_erased_before_the_verifier() {
         let _ = std::fs::remove_dir_all(&root);
     }
     assert_eq!(documents[0], documents[1]);
+}
+
+/// The queries of `source`, a package of edition 0.3, by goal.
+fn float_queries(name: &str, source: &str) -> Vec<(String, String)> {
+    let root = package_of_edition(name, "0.3", &[("src/m.una", source)]);
+    let (checked, obligations) = generated(&root);
+    assert_eq!(checked.diagnostics, [], "{name}");
+    let text = std::fs::read_to_string(root.join("verification.lock")).unwrap();
+    let (lock, _) = una_project::parse_lock(&text);
+    let lock = una_verify::Lock {
+        text,
+        solver_version: lock.solver_version,
+        step_budget: lock.step_budget,
+        random_seed: lock.random_seed,
+    };
+    let queries = una_verify::queries(&obligations, &lock);
+    let _ = std::fs::remove_dir_all(&root);
+    obligations
+        .iter()
+        .map(|o| o.goal.clone())
+        .zip(queries)
+        .collect()
+}
+
+/// A function of `lets` float lets and one list index, as ADR 0114 rule 16.7 states it.
+fn float_lets(lets: usize) -> String {
+    let mut body = String::from("  let f0 = k * 2.0\n");
+    for i in 1..lets {
+        let op = ["*", "+", "/", "-"][i % 4];
+        body.push_str(&format!("  let f{i} = f{} {op} 1.5\n", i - 1));
+    }
+    format!(
+        "module m\n\nget(xs: List[Int], i: Int) -> Int\n  requires 0 <= i and i < xs.len\n=\n  when at(xs, index: i)\n    is Some(v) -> v\n    is None -> 0\n\npub scaled(xs: List[Int], i: Int, k: F64) -> F64\n  requires 0 <= i and i + 1 < xs.len\n=\n{body}  let n = get(xs, i: i + 1)\n  f{} + n.to_f64()\n",
+        lets - 1
+    )
+}
+
+#[test]
+fn integer_obligations_beside_float_lets_have_no_float_term() {
+    // ADR 0114 rules 8.2, 8.3 and 16.7: the index obligation of a function with float lets
+    // keeps no float hypothesis, so its query is in `QF_UFLIA` with no `F64` term, and its
+    // text does not grow with the number of float lets: the cone is linear in Π, and the
+    // integer query is the same at 5 and at 60 lets.
+    let index = |lets: usize| {
+        let queries = float_queries(&format!("float_lets_{lets}"), &float_lets(lets));
+        let (_, query) = queries
+            .iter()
+            .find(|(goal, _)| goal.contains("(i + 1) < xs.len"))
+            .cloned()
+            .unwrap_or_else(|| panic!("no index obligation: {queries:?}"));
+        // The temporary of the index is numbered after the lets.
+        query.replace(&format!("%t{lets}|"), "%t|")
+    };
+    let small = index(5);
+    let large = index(60);
+    for query in [&small, &large] {
+        assert!(query.contains("(set-logic QF_UFLIA)"), "{query}");
+        assert!(
+            !query.contains("Float64") && !query.contains("fp."),
+            "{query}"
+        );
+    }
+    assert_eq!(small, large);
+}
+
+#[test]
+fn float_queries_are_in_logic_all_with_the_fixed_budget() {
+    // ADR 0114 rules 8.2 and 8.3: a query with an `F64` term declares `ALL` and the fixed
+    // step budget 5,000,000, whatever the lock sets; literals are their exact bits and the
+    // orders are the defined functions `i!lt!F64` and `i!le!F64`.
+    let root = package_of_edition(
+        "float_budget",
+        "0.3",
+        &[(
+            "src/m.una",
+            "module m\n\npub half(x: F64) -> F64\n  requires x <= 1.0\n  ensures result <= 0.5\n=\n  x / 2.0\n",
+        )],
+    );
+    let lock_path = root.join("verification.lock");
+    let text = std::fs::read_to_string(&lock_path)
+        .unwrap()
+        .replace("step_budget      = 5000000", "step_budget      = 9000000");
+    std::fs::write(&lock_path, &text).unwrap();
+    let (checked, obligations) = generated(&root);
+    assert_eq!(checked.diagnostics, []);
+    let (lock, _) = una_project::parse_lock(&text);
+    assert_eq!(lock.step_budget, 9_000_000);
+    let lock = una_verify::Lock {
+        text,
+        solver_version: lock.solver_version,
+        step_budget: lock.step_budget,
+        random_seed: lock.random_seed,
+    };
+    let queries = una_verify::queries(&obligations, &lock);
+    let _ = std::fs::remove_dir_all(&root);
+    assert_eq!(queries.len(), 1, "{queries:?}");
+    let query = &queries[0];
+    assert!(query.contains("(set-option :rlimit 5000000)"), "{query}");
+    assert!(query.contains("(set-logic ALL)"), "{query}");
+    // 1.0 and 0.5 by their bits, and `/` rounded to nearest, ties to even.
+    assert!(
+        query.contains(
+            "(fp #b0 #b01111111111 #b0000000000000000000000000000000000000000000000000000)"
+        ),
+        "{query}"
+    );
+    assert!(
+        query.contains(
+            "(fp #b0 #b01111111110 #b0000000000000000000000000000000000000000000000000000)"
+        ),
+        "{query}"
+    );
+    assert!(query.contains("(fp.div RNE |u!v!x|"), "{query}");
+    assert!(query.contains("(define-fun i!lt!F64 "), "{query}");
+    assert!(query.contains("(define-fun i!le!F64 "), "{query}");
+}
+
+#[test]
+fn the_cone_query_of_a_float_function_is_stable_across_runs() {
+    // ADR 0114 rule 16.7, "Order": the cone query's text is stable, so its cache key is.
+    let source = float_lets(12);
+    let first = float_queries("float_stable_a", &source);
+    let second = float_queries("float_stable_b", &source);
+    assert_eq!(first, second);
+}
+
+/// A package of edition 0.4 under the test's temporary directory, described by `ita.una`, with
+/// the lock of the conformance cases of that edition (ADR 0122).
+fn package_0_4(name: &str, files: &[(&str, &str)]) -> PathBuf {
+    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join("verification")
+        .join(name);
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("ita.una"),
+        format!("ita {name}\n  version 0.1.0\n  edition 0.4\n"),
+    )
+    .unwrap();
+    std::fs::copy(
+        repository().join("tests/conformance/types/decimal_accepted/ita.lock"),
+        root.join("ita.lock"),
+    )
+    .unwrap();
+    for (path, text) in files {
+        std::fs::write(root.join(path), text).unwrap();
+    }
+    root
+}
+
+#[test]
+fn a_wrapped_line_keeps_the_ids_and_the_shown_text_of_its_obligations() {
+    // `spec/12 §8`, ADR 0125 amendment of 2026-10-25: the canonical form of edition 0.4 wraps
+    // the long call, and its obligations keep the ids, goals and hypotheses that the same call
+    // on one line has in edition 0.3, whose canonical form keeps it on one line. Nothing
+    // shown carries the wrapped layout.
+    let declarations = "module app\n\npub kind Seats = Int in 0..5000\n\npub kind Booking\n  seats: Seats\n  label: Text\n\npub half(n: Int) -> Int\n  requires n >= 0\n=\n  n / 2\n\n";
+    let call = "pub run() -> Int = half(Booking(seats: 20, label: \"a booking label long enough to carry this line past the width\").seats)\n";
+    let wrapped = "pub run() -> Int = half(Booking(seats: 20,\n    label: \"a booking label long enough to carry this line past the width\"\n  ).seats)\n";
+    let joined_root = package_of_edition(
+        "wrapped_ids_0_3",
+        "0.3",
+        &[("src/app.una", &format!("{declarations}{call}"))],
+    );
+    let wrapped_root = package_0_4(
+        "wrapped_ids_0_4",
+        &[("src/app.una", &format!("{declarations}{wrapped}"))],
+    );
+    assert_eq!(layout_of(&joined_root), una_verify::SourceLayout::Joined);
+    assert_eq!(layout_of(&wrapped_root), una_verify::SourceLayout::Wrapped);
+    let (joined_checked, joined) = generated(&joined_root);
+    let (wrapped_checked, wrapped_obligations) = generated(&wrapped_root);
+    // Each source is canonical in its edition (no U7001).
+    assert!(
+        joined_checked.diagnostics.is_empty(),
+        "{:?}",
+        joined_checked.diagnostics
+    );
+    assert!(
+        wrapped_checked.diagnostics.is_empty(),
+        "{:?}",
+        wrapped_checked.diagnostics
+    );
+    assert!(!wrapped_obligations.is_empty());
+    let shown = |obligations: &[una_verify::Obligation]| -> Vec<(String, String, Vec<String>)> {
+        obligations
+            .iter()
+            .map(|o| (o.id.clone(), o.goal.clone(), o.hypotheses.clone()))
+            .collect()
+    };
+    assert_eq!(shown(&wrapped_obligations), shown(&joined));
+    for (_, goal, hypotheses) in shown(&wrapped_obligations) {
+        assert!(!goal.contains('\n'), "{goal:?}");
+        assert!(
+            hypotheses.iter().all(|text| !text.contains('\n')),
+            "{hypotheses:?}"
+        );
+    }
+    // The layout is what erases the wrapping: read as an earlier edition reads it, the goal
+    // of the call's precondition would keep the space before the closer.
+    let as_joined = std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .stack_size(64 * 1024 * 1024)
+            .spawn_scoped(scope, || {
+                una_verify::obligations(
+                    &wrapped_checked.program,
+                    &wrapped_checked.sources,
+                    una_verify::SourceLayout::Joined,
+                )
+            })
+            .unwrap()
+            .join()
+            .unwrap()
+    })
+    .unwrap();
+    assert_ne!(shown(&as_joined), shown(&joined));
+    std::fs::remove_dir_all(&joined_root).unwrap();
+    std::fs::remove_dir_all(&wrapped_root).unwrap();
 }

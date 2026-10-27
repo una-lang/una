@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use una_diag::Code;
 
 use crate::error::{SyntaxError, SyntaxRepair};
-use crate::intern::Interner;
+use crate::intern::{Interner, Symbol};
 use crate::keywords::reserved_in;
 use crate::source::{FileId, SourceFile, Span};
 use crate::token::{Comment, Keyword, KeywordSet, Token, TokenKind};
@@ -28,6 +28,19 @@ pub struct Lexed {
     /// The U0103 errors that get a rename edit, so that a package can choose each new name
     /// across its files ([`rename_across`]).
     pub renames: Vec<Rename>,
+    /// Edition 0.3: the symbol of `from`, interned when the keyword `from` is followed by `:`,
+    /// which the parser reads as the argument label of `copy_sign(from: y)` (`spec/29 §3`).
+    pub from_label: Option<Symbol>,
+    /// Edition 0.4: the symbols of `with` and `and`, interned when the keyword is followed by
+    /// `:`, which the parser reads as the argument labels of the dense methods, as in
+    /// `a.dot(with: b)` and `edit c.add_product(of: a, and: b)` (`spec/29 §17`, ADR 0120).
+    pub with_label: Option<Symbol>,
+    /// See [`Lexed::with_label`].
+    pub and_label: Option<Symbol>,
+    /// Edition 0.4: the symbol of `error`, interned when the keyword `error` is followed by
+    /// `:` or follows `.`, which the parser reads as the field `error` of `Timed.Failed`
+    /// (`spec/27 §5`, ADR 0117 rule 5).
+    pub error_label: Option<Symbol>,
 }
 
 /// A U0103 error of [`Lexed::errors`] that gets a rename edit (issue #75, #105, #125).
@@ -67,6 +80,7 @@ pub fn lex_in(
         indents: vec![0],
         brackets: Vec::new(),
         line_has_tokens: false,
+        project: false,
     };
     lexer.run();
     let used = names(&lexer.out, lexer.interner);
@@ -75,6 +89,32 @@ pub fn lex_in(
     let out = &mut lexer.out;
     // The renames of names that start with `_` (ADR 0096 A).
     crate::rewrite::underscore_renames(&out.text, file, &mut out.errors);
+    lexer.out
+}
+
+/// Lexes a project file of edition 0.4, `ita.una`, `ita.lock` or `itaty.una`, by the
+/// lexical rules of `spec/01` with the two differences of ADR 0122 rule 4: a version token,
+/// matched before integers, and text without interpolation, where an unescaped `{` or `}` is
+/// an error. No word is a keyword or a reserved word here: every lower-case word is a
+/// [`TokenKind::LowerIdent`], and the grammar of the file gives it its meaning.
+pub fn lex_project(source: &SourceFile, file: FileId, interner: &mut Interner) -> Lexed {
+    let mut lexer = Lexer {
+        source,
+        text: source.text(),
+        file,
+        interner,
+        pos: 0,
+        out: Lexed {
+            keywords: KeywordSet::V0_1,
+            text: source.text().to_owned(),
+            ..Lexed::default()
+        },
+        indents: vec![0],
+        brackets: Vec::new(),
+        line_has_tokens: false,
+        project: true,
+    };
+    lexer.run();
     lexer.out
 }
 
@@ -248,6 +288,61 @@ fn canonical_integer(raw: &str) -> String {
     }
 }
 
+/// Whether the word at `offset` of `text`, a lowercase name, is followed by `(`: a method call
+/// such as `5.e2()`, which a float literal never is.
+fn method_call(text: &str, offset: usize) -> bool {
+    let rest = text.get(offset..).unwrap_or("");
+    let name = rest
+        .chars()
+        .take_while(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '_')
+        .count();
+    rest.get(name..).is_some_and(|after| after.starts_with('('))
+}
+
+/// Whether a float literal as written is malformed (ADR 0114 rule 2): an integer part or a
+/// fraction that is a malformed digit run, an `E`, a `+`, or an exponent with a leading zero.
+fn is_malformed_float(raw: &str) -> bool {
+    raw != canonical_float(raw)
+}
+
+/// The accepted spelling of a float literal: `digits "." digits [ "e" [ "-" ] exponent ]`,
+/// with the integer part and the fraction's runs of `_` repaired as for integers, `.0` added
+/// when the point or the fraction is missing, a lowercase `e`, no `+`, and no leading zero in
+/// the exponent.
+fn canonical_float(raw: &str) -> String {
+    let (mantissa, exponent) = match raw.find(['e', 'E']) {
+        Some(at) => (raw.get(..at).unwrap_or(""), raw.get(at + 1..)),
+        None => (raw, None),
+    };
+    let (int_part, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+    let int_part = canonical_integer(int_part);
+    let mut fraction_out = String::new();
+    for c in fraction.trim_matches('_').chars() {
+        if !(c == '_' && fraction_out.ends_with('_')) {
+            fraction_out.push(c);
+        }
+    }
+    if fraction_out.is_empty() {
+        fraction_out.push('0');
+    }
+    let mut out = format!("{int_part}.{fraction_out}");
+    if let Some(exponent) = exponent {
+        let (negative, digits) = match exponent.strip_prefix('-') {
+            Some(rest) => (true, rest),
+            None => (false, exponent.strip_prefix('+').unwrap_or(exponent)),
+        };
+        let digits: String = digits.chars().filter(|c| *c != '_').collect();
+        let digits = digits.trim_start_matches('0');
+        let digits = if digits.is_empty() { "0" } else { digits };
+        out.push('e');
+        if negative {
+            out.push('-');
+        }
+        out.push_str(digits);
+    }
+    out
+}
+
 /// The leading whitespace of a line.
 struct Indentation {
     /// Its width, counting a tab as two spaces for recovery.
@@ -279,6 +374,8 @@ struct Lexer<'a> {
     indents: Vec<usize>,
     brackets: Vec<OpenBracket>,
     line_has_tokens: bool,
+    /// Whether this is a project file of edition 0.4 ([`lex_project`]).
+    project: bool,
 }
 
 impl Lexer<'_> {
@@ -601,7 +698,9 @@ impl Lexer<'_> {
             '-' if next == Some('-') => self.comment(),
             '-' if next == Some('>') => self.punctuation(TokenKind::Arrow, 2),
             '-' => self.punctuation(TokenKind::Minus, 1),
+            '"' if self.project => self.text_literal_with(false),
             '"' => self.text_literal(),
+            '0'..='9' if self.project && self.version_follows() => self.version(),
             '0'..='9' => self.integer(),
             '_' if next.is_some_and(|n| n.is_ascii_digit()) => self.integer(),
             'a'..='z' => self.lower_word(),
@@ -638,6 +737,16 @@ impl Lexer<'_> {
                 } else {
                     self.punctuation(TokenKind::DotDot, 2);
                 }
+            }
+            '.' if next.is_some_and(|n| n.is_ascii_digit())
+                && self.out.keywords >= KeywordSet::V0_3
+                && !self
+                    .text
+                    .get(..start)
+                    .and_then(|before| before.chars().last())
+                    .is_some_and(|p| p.is_alphanumeric() || matches!(p, '_' | ')' | ']')) =>
+            {
+                self.leading_point();
             }
             '.' => self.punctuation(TokenKind::Dot, 1),
             _ => self.invalid_character(c),
@@ -796,6 +905,9 @@ impl Lexer<'_> {
     fn integer(&mut self) {
         let start = self.pos;
         self.consume_while(|c| c.is_ascii_digit() || c == '_');
+        if self.out.keywords >= KeywordSet::V0_3 && self.float(start) {
+            return;
+        }
         let raw = self.slice(start, self.pos).to_owned();
         let canonical = canonical_integer(&raw);
         if is_malformed_integer(&raw) {
@@ -812,17 +924,230 @@ impl Lexer<'_> {
         self.push(TokenKind::Int(digits), start, self.pos);
     }
 
+    /// Edition 0.3: `.5`, a float literal without its integer part, U0007 with an edit to
+    /// `0.5` (ADR 0114 rule 2.2).
+    fn leading_point(&mut self) {
+        let start = self.pos;
+        self.pos += 1;
+        self.consume_while(|c| c.is_ascii_digit() || c == '_');
+        let raw = self.slice(start, self.pos).to_owned();
+        let canonical = canonical_float(&format!("0{raw}"));
+        let span = self.span(start, self.pos);
+        let error = SyntaxError::new(
+            Code::U0007,
+            span,
+            format!("malformed float literal `{raw}`"),
+        )
+        .with_edit(format!("write `{canonical}`"), span, canonical.clone());
+        self.out.errors.push(error);
+        self.push(TokenKind::Float(canonical), start, self.pos);
+    }
+
+    /// Edition 0.3: a float literal whose integer part, from `start`, was just read
+    /// (`spec/29`, ADR 0114 rule 2), with U0007 and an edit to the accepted form when it is
+    /// malformed: `1.`, `1e5`, `1.e5`, `1.0E5`, `1.0e+5`, a leading zero or a misplaced `_`.
+    /// Returns whether a float literal was read; otherwise the position is unchanged.
+    fn float(&mut self, start: usize) -> bool {
+        let after = self.pos;
+        let text = self.text;
+        let at = move |offset: usize| text.get(offset..).and_then(|rest| rest.chars().next());
+        let point = at(after) == Some('.');
+        let digit_after_point = point && at(after + 1).is_some_and(|c| c.is_ascii_digit());
+        // An exponent right after `offset`: `e` or `E`, an optional sign, and a digit.
+        let exponent_at = |offset: usize| match at(offset) {
+            Some('e' | 'E') => match at(offset + 1) {
+                Some('+' | '-') => at(offset + 2).is_some_and(|c| c.is_ascii_digit()),
+                Some(c) => c.is_ascii_digit(),
+                None => false,
+            },
+            _ => false,
+        };
+        let mut malformed = false;
+        if digit_after_point {
+            self.pos += 1;
+            self.consume_while(|c| c.is_ascii_digit() || c == '_');
+        } else if point && exponent_at(after + 1) && !method_call(text, after + 1) {
+            // `1.e5`; `5.e2()` stays a call of a method named `e2`.
+            self.pos += 1;
+            malformed = true;
+        } else if point
+            && !at(after + 1).is_some_and(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
+        {
+            // `1.` followed by no digit and no method name.
+            self.pos += 1;
+            malformed = true;
+        } else if !exponent_at(after) {
+            return false;
+        } else {
+            // `1e5`: an exponent without a point.
+            malformed = true;
+        }
+        if exponent_at(self.pos) {
+            self.pos += 1;
+            if matches!(self.peek(), Some('+' | '-')) {
+                self.pos += 1;
+            }
+            self.consume_while(|c| c.is_ascii_digit() || c == '_');
+        }
+        let raw = self.slice(start, self.pos).to_owned();
+        let canonical = canonical_float(&raw);
+        if malformed || raw != canonical && is_malformed_float(&raw) {
+            let span = self.span(start, self.pos);
+            let error = SyntaxError::new(
+                Code::U0007,
+                span,
+                format!("malformed float literal `{raw}`"),
+            )
+            .with_edit(format!("write `{canonical}`"), span, canonical.clone());
+            self.out.errors.push(error);
+            self.push(TokenKind::Float(canonical), start, self.pos);
+        } else {
+            self.push(TokenKind::Float(raw), start, self.pos);
+        }
+        true
+    }
+
+    /// Whether a version starts here: digits, then `.` and a digit (ADR 0122 rule 4).
+    fn version_follows(&self) -> bool {
+        let rest = self.text.get(self.pos..).unwrap_or("").as_bytes();
+        let digits = rest.iter().take_while(|b| b.is_ascii_digit()).count();
+        rest.get(digits) == Some(&b'.') && rest.get(digits + 1).is_some_and(u8::is_ascii_digit)
+    }
+
+    /// A version token of a project file (ADR 0122 rule 4): `num "." num [ "." num ]
+    /// [ "-" pre { "." pre } ]`, where `num` has no leading zero and a numeric `pre` neither.
+    /// A malformed version is U0007 for the whole token, which the project file reports as its
+    /// own code.
+    fn version(&mut self) {
+        let start = self.pos;
+        let mut parts = 0;
+        let mut problem: Option<&str> = None;
+        loop {
+            let from = self.pos;
+            self.consume_while(|c| c.is_ascii_digit());
+            let digits = self.slice(from, self.pos);
+            if digits.len() > 1 && digits.starts_with('0') {
+                problem.get_or_insert("a part of a version has no leading zero");
+            }
+            parts += 1;
+            let more = self.peek() == Some('.')
+                && self
+                    .peek_at(self.pos + 1)
+                    .is_some_and(|c| c.is_ascii_digit());
+            if !more {
+                break;
+            }
+            self.pos += 1;
+        }
+        if parts > 3 {
+            problem.get_or_insert("a version has at most three numeric parts");
+        }
+        let pre_follows = self.peek() == Some('-')
+            && self
+                .peek_at(self.pos + 1)
+                .is_some_and(|c| c.is_ascii_alphanumeric());
+        if pre_follows {
+            self.pos += 1;
+            loop {
+                let from = self.pos;
+                self.consume_while(|c| c.is_ascii_alphanumeric());
+                let part = self.slice(from, self.pos);
+                if part.is_empty() {
+                    problem.get_or_insert("a pre-release part is not empty");
+                } else if part.len() > 1
+                    && part.starts_with('0')
+                    && part.bytes().all(|b| b.is_ascii_digit())
+                {
+                    problem.get_or_insert("a numeric pre-release part has no leading zero");
+                }
+                if self.peek() != Some('.') {
+                    break;
+                }
+                self.pos += 1;
+            }
+        }
+        // A letter, `_`, `+` or `.` right after the version is part of no valid token here: a
+        // build suffix (`+...`) is not a version of ADR 0122 rule 20.
+        let tail_start = self.pos;
+        self.consume_while(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '+' | '.' | '-'));
+        if self.pos > tail_start {
+            problem.get_or_insert(
+                "a version is `MAJOR.MINOR.PATCH`, `MAJOR.MINOR`, with an optional `-pre.release`, and no build suffix",
+            );
+        }
+        let written = self.slice(start, self.pos).to_owned();
+        if let Some(problem) = problem {
+            self.error(
+                Code::U0007,
+                start,
+                self.pos,
+                format!("malformed version `{written}`: {problem}"),
+            );
+        }
+        self.push(TokenKind::Version(written), start, self.pos);
+    }
+
     fn lower_word(&mut self) {
         let start = self.pos;
         self.consume_while(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
         let word = self.slice(start, self.pos).to_owned();
+        if self.project {
+            let symbol = self.interner.intern(&word);
+            self.push(TokenKind::LowerIdent(symbol), start, self.pos);
+            return;
+        }
         // Edition 0.2: after `.`, `with` names the map method (`spec/21 §2`, ADR 0069 M2).
         let after_dot = self
             .out
             .tokens
             .last()
             .is_some_and(|token| token.kind == TokenKind::Dot);
-        let kind = if word == "with" && after_dot && self.out.keywords >= KeywordSet::V0_2 {
+        // Edition 0.3: `from` right before `:` may be the argument label of
+        // `copy_sign(from: y)` (`spec/29 §3`). It stays the keyword; the parser accepts it as a
+        // label in a call's arguments only, so no declaration can take the name.
+        if word == "from" && self.out.keywords >= KeywordSet::V0_3 && self.peek() == Some(':') {
+            self.out.from_label = Some(self.interner.intern("from"));
+        }
+        // Edition 0.4: `with` and `and` right before `:` may be argument labels of the dense
+        // methods (ADR 0120); they stay keywords, which the parser accepts as labels in a
+        // call's arguments only.
+        if self.out.keywords >= KeywordSet::V0_4 && self.peek() == Some(':') {
+            match word.as_str() {
+                "with" => self.out.with_label = Some(self.interner.intern("with")),
+                "and" => self.out.and_label = Some(self.interner.intern("and")),
+                _ => {}
+            }
+        }
+        // Edition 0.4: `error` right before `:` or after `.` may be the field of `Failed(error:
+        // x)` (`spec/27 §5`). It stays the keyword; the parser accepts it as a field name, a
+        // pattern's field and an argument label only, so no binding can take the name.
+        if word == "error"
+            && self.out.keywords >= KeywordSet::V0_4
+            && (self.peek() == Some(':') || after_dot)
+        {
+            self.out.error_label = Some(self.interner.intern("error"));
+        }
+        // Edition 0.4: `diverges` alone on its line is the clause of a header (`spec/26 §5`);
+        // anywhere else it stays reserved (U0103).
+        let line_start = self
+            .out
+            .tokens
+            .last()
+            .is_none_or(|token| matches!(token.kind, TokenKind::Newline | TokenKind::Indent));
+        let clause = word == "diverges"
+            && line_start
+            && self.out.keywords >= KeywordSet::V0_4
+            && self.rest_of_line_blank();
+        // Edition 0.4: `within` right after `for ever` is the deadline of the loop (`spec/26
+        // §7`), and right after an expression it is the deadline of that expression (`spec/27
+        // §5`, ADR 0117 rule 5); anywhere else, as a name, it stays reserved (U0103).
+        let deadline = word == "within"
+            && self.out.keywords >= KeywordSet::V0_4
+            && (self.after_for_ever() || self.after_expression());
+        let kind = if (word == "with" && after_dot && self.out.keywords >= KeywordSet::V0_2)
+            || clause
+            || deadline
+        {
             TokenKind::LowerIdent(self.interner.intern(&word))
         } else if let Some(keyword) = Keyword::from_word_in(&word, self.out.keywords) {
             TokenKind::Keyword(keyword)
@@ -833,6 +1158,51 @@ impl Lexer<'_> {
             TokenKind::LowerIdent(self.interner.intern(&word))
         };
         self.push(kind, start, self.pos);
+    }
+
+    /// Whether the last two tokens are `for` and `ever`, on the current line.
+    fn after_for_ever(&self) -> bool {
+        let tokens = &self.out.tokens;
+        let n = tokens.len();
+        if n < 2 {
+            return false;
+        }
+        let (Some(first), Some(second)) = (tokens.get(n - 2), tokens.get(n - 1)) else {
+            return false;
+        };
+        first.kind == TokenKind::Keyword(Keyword::For)
+            && matches!(second.kind, TokenKind::LowerIdent(word) if self.interner.resolve(word) == "ever")
+    }
+
+    /// Whether the last token on the current line can end an expression: a name, a capability
+    /// reference, a literal, or a closing bracket. A name never stands there, so `within` after
+    /// one is the deadline of `spec/27 §5`.
+    fn after_expression(&self) -> bool {
+        self.out.tokens.last().is_some_and(|token| {
+            matches!(
+                token.kind,
+                TokenKind::LowerIdent(_)
+                    | TokenKind::UpperIdent(_)
+                    | TokenKind::CapRef(_)
+                    | TokenKind::Int(_)
+                    | TokenKind::Float(_)
+                    | TokenKind::TextEnd
+                    | TokenKind::RParen
+                    | TokenKind::RBracket
+                    | TokenKind::Keyword(Keyword::True | Keyword::False | Keyword::Unit)
+            )
+        })
+    }
+
+    /// Whether the rest of the current line, from the cursor, holds only spaces or a comment.
+    fn rest_of_line_blank(&self) -> bool {
+        let rest = self.text.get(self.pos..).unwrap_or("");
+        let line = rest
+            .split('\n')
+            .next()
+            .unwrap_or("")
+            .trim_start_matches([' ', '\t', '\r']);
+        line.is_empty() || line.starts_with("--")
     }
 
     fn upper_word(&mut self) {
@@ -933,6 +1303,18 @@ impl Lexer<'_> {
                     chunk.push('}');
                     self.pos += 1;
                 }
+                Some(c @ ('{' | '}')) if self.project => {
+                    self.error(
+                        Code::U0007,
+                        here,
+                        here + 1,
+                        format!(
+                            "a text of a project file is not interpolated; write `\\{c}` for `{c}`"
+                        ),
+                    );
+                    chunk.push(c);
+                    self.pos += 1;
+                }
                 Some(c) => {
                     if let Some(message) = forbidden(self.source, here, c) {
                         self.error(Code::U0001, here, here + c.len_utf8(), message);
@@ -956,6 +1338,13 @@ impl Lexer<'_> {
     }
 
     fn flush_chunk(&mut self, chunk: &mut String, start: usize, end: usize) {
+        // INVARIANT (#1175): a text chunk is never empty and so never has an empty span: each
+        // character pushed to `chunk` advanced `pos` past `start`. With `InterpStart` (`{`) and
+        // the `InterpEnd` of a closed interpolation (`}`), each one scalar wide, this is what
+        // the formatter's linear cost bound in `una-fmt` `break_line` assumes. Only the
+        // `InterpEnd` of an unterminated literal (U0004) is empty, and a file with errors is
+        // never formatted.
+        debug_assert!(chunk.is_empty() || end > start);
         if !chunk.is_empty() {
             self.push(TokenKind::TextChunk(std::mem::take(chunk)), start, end);
         }

@@ -57,6 +57,9 @@ enum Object {
     },
     /// A keyed hash.
     Hashed(Vec<u8>),
+    /// An `F64`, boxed, always canonical (ADR 0114 rule 9.6): every `F64` outside a register
+    /// is boxed until the raw cells of ADR 0107 land.
+    F64(f64),
     /// An instance of a capability (`spec/11 §2`): its id in traces, the code of each of its
     /// operations in the capability's order (none for a host instance), and the values and
     /// instances its handler holds.
@@ -77,6 +80,8 @@ enum Object {
 enum MapKey {
     Int(BigInt),
     Text(String),
+    /// An `F64` by the key of totalOrder (ADR 0114 rule 9.5).
+    F64(i64),
 }
 
 #[cfg(test)]
@@ -115,6 +120,7 @@ impl MapKey {
         with(word, |object| match object {
             Object::Text(text) => MapKey::Text(text.as_str().to_owned()),
             Object::Int(value) => MapKey::Int(value.clone()),
+            Object::F64(x) => MapKey::F64(una_core::float::order_key(*x)),
             _ => MapKey::Int(BigInt::default()),
         })
         .unwrap_or(MapKey::Int(BigInt::default()))
@@ -136,7 +142,11 @@ impl Object {
     /// The words the object references.
     fn cells(&self) -> &[i64] {
         match self {
-            Object::Int(_) | Object::Text(_) | Object::Hashed(_) | Object::Map(_) => &[],
+            Object::Int(_)
+            | Object::Text(_)
+            | Object::Hashed(_)
+            | Object::F64(_)
+            | Object::Map(_) => &[],
             Object::Data { fields, .. } => fields,
             Object::List(items) => items,
             Object::Closure { env, .. } => env,
@@ -146,7 +156,11 @@ impl Object {
 
     fn cells_mut(&mut self) -> Option<&mut Vec<i64>> {
         match self {
-            Object::Int(_) | Object::Text(_) | Object::Hashed(_) | Object::Map(_) => None,
+            Object::Int(_)
+            | Object::Text(_)
+            | Object::Hashed(_)
+            | Object::F64(_)
+            | Object::Map(_) => None,
             Object::Data { fields, .. } => Some(fields),
             Object::List(items) => Some(items),
             Object::Closure { env, .. } => Some(env),
@@ -230,6 +244,31 @@ struct Heap {
 
 thread_local! {
     static HEAP: RefCell<Heap> = RefCell::new(Heap::default());
+}
+
+/// A task's heap, and its test counters, while it is parked (`sched`, ADR 0117 rule 2).
+#[derive(Default)]
+pub(crate) struct Slots {
+    heap: Heap,
+    #[cfg(test)]
+    counters: [usize; 3],
+}
+
+/// Exchanges the thread's heap and test counters with `slots`. A heap is never borrowed when a
+/// task parks or ends: a borrow here is a defect, which ends the process rather than mix two
+/// tasks' heaps.
+pub(crate) fn swap_slots(slots: &mut Slots) {
+    HEAP.with(|heap| match heap.try_borrow_mut() {
+        Ok(mut heap) => std::mem::swap(&mut *heap, &mut slots.heap),
+        Err(_) => std::process::abort(),
+    });
+    #[cfg(test)]
+    {
+        let [equality, objects, growth] = &mut slots.counters;
+        *equality = EQUALITY_STEPS.with(|cell| cell.replace(*equality));
+        *objects = OBJECT_STEPS.with(|cell| cell.replace(*objects));
+        *growth = MOST_GROWTH.with(|cell| cell.replace(*growth));
+    }
 }
 
 /// Whether `word` is a handle.
@@ -834,6 +873,7 @@ fn leaf_equal(a: i64, b: i64) -> bool {
         Int(BigInt),
         Text(String),
         Bytes(Vec<u8>),
+        Float(u64),
         Variant(i64),
         List,
         Map,
@@ -850,6 +890,8 @@ fn leaf_equal(a: i64, b: i64) -> bool {
             Object::Int(value) => Leaf::Int(value.clone()),
             Object::Text(text) => Leaf::Text(text.as_str().to_owned()),
             Object::Hashed(bytes) => Leaf::Bytes(bytes.clone()),
+            // `==` on `F64` is identity of the canonical bits (ADR 0114 rule 5.1).
+            Object::F64(x) => Leaf::Float(una_core::float::to_bits(*x)),
             Object::Data { tag, fields } if fields.is_empty() => Leaf::Variant(*tag),
             Object::List(items) if items.is_empty() => Leaf::List,
             Object::Map(entries) if entries.is_empty() => Leaf::Map,
@@ -1040,6 +1082,7 @@ enum Node {
     Int(BigInt),
     Text(String),
     Hashed(Vec<u8>),
+    F64(u64),
     Data {
         tag: i64,
         fields: Vec<Cell>,
@@ -1215,6 +1258,7 @@ impl Object {
             Object::Int(value) => value.iter_u64_digits().len() * 8,
             Object::Text(text) => text.as_str().len(),
             Object::Hashed(bytes) => bytes.len(),
+            Object::F64(_) => 8,
             Object::Data { fields, .. } => cells(fields.len()),
             Object::List(items) => cells(items.len()),
             Object::Closure { env, .. } => cells(env.len()),
@@ -1234,6 +1278,7 @@ impl Object {
             Object::Int(value) => Node::Int(value.clone()),
             Object::Text(text) => Node::Text(text.as_str().to_owned()),
             Object::Hashed(bytes) => Node::Hashed(bytes.clone()),
+            Object::F64(x) => Node::F64(una_core::float::to_bits(*x)),
             Object::Data { tag, fields } => Node::Data {
                 tag: *tag,
                 fields: cells(fields),
@@ -1467,6 +1512,7 @@ fn node_matches(object: &Object, node: &Node, index: impl Fn(i64) -> Option<usiz
         (Object::Int(a), Node::Int(b)) => a == b,
         (Object::Text(a), Node::Text(b)) => a.as_str() == b,
         (Object::Hashed(a), Node::Hashed(b)) => a == b,
+        (Object::F64(a), Node::F64(b)) => una_core::float::to_bits(*a) == *b,
         (Object::Data { tag, fields }, Node::Data { tag: t, fields: f }) => {
             tag == t && same(fields, f)
         }
@@ -1675,6 +1721,7 @@ fn node_matches_made(object: &Object, node: &Node, words: &[i64]) -> bool {
         (Object::Int(a), Node::Int(b)) => a == b,
         (Object::Text(a), Node::Text(b)) => a.as_str() == b,
         (Object::Hashed(a), Node::Hashed(b)) => a == b,
+        (Object::F64(a), Node::F64(b)) => una_core::float::to_bits(*a) == *b,
         (Object::Data { tag, fields }, Node::Data { tag: t, fields: f }) => {
             tag == t && same(fields, f)
         }
@@ -1750,6 +1797,10 @@ fn import_node(node: &Node, words: &[i64]) -> Result<i64, Refused> {
         Node::Hashed(bytes) => {
             let _step = step(bytes.len())?;
             alloc(Object::Hashed(bytes.clone()))
+        }
+        Node::F64(bits) => {
+            let _step = step(8)?;
+            alloc(Object::F64(f64::from_bits(*bits)))
         }
         Node::Data { tag, fields } => {
             let _step = step(cells(fields.len()))?;
@@ -1861,6 +1912,201 @@ fn items(list: i64) -> Vec<i64> {
 /// The items of a list, borrowed.
 pub(crate) fn list_items(list: i64) -> Vec<i64> {
     items(list)
+}
+
+/// Whether `word` is a handle to an `F64`.
+pub(crate) fn is_f64(word: i64) -> bool {
+    is_handle(word) && with(word, |object| matches!(object, Object::F64(_))).unwrap_or(false)
+}
+
+// ----- `F64` (`spec/29`, ADR 0114), boxed until ADR 0107 (rule 9.6) -----
+
+/// A new `F64`, canonical, which the caller owns.
+pub fn f64_word(x: f64) -> i64 {
+    alloc(Object::F64(una_core::float::canonical(x)))
+}
+
+/// The `F64` of `word`; the canonical NaN, with a fault, for a word that holds none.
+pub fn f64_value(word: i64) -> f64 {
+    let found = with(word, |object| match object {
+        Object::F64(x) => Some(*x),
+        _ => None,
+    })
+    .flatten();
+    match found {
+        Some(x) => x,
+        None => {
+            HEAP.with(|heap| heap.borrow_mut().faults += 1);
+            f64::from_bits(una_core::float::CANONICAL_NAN)
+        }
+    }
+}
+
+/// The word of the float literal of `bits`, made once for each literal and kept for the whole
+/// run, as an integer literal is. The word is borrowed.
+pub fn f64_literal(bits: i64) -> i64 {
+    let bits = u64::from_ne_bytes(bits.to_ne_bytes());
+    let key = format!("f64:{bits:016x}");
+    if let Some(word) = HEAP.with(|heap| heap.borrow().int_literals.get(&key).copied()) {
+        return word;
+    }
+    let word = f64_word(f64::from_bits(bits));
+    HEAP.with(|heap| heap.borrow_mut().int_literals.insert(key, word));
+    word
+}
+
+/// The operation of `F64` at position `op` of `FloatOp::ALL` on `a`, `b` and `c`, each
+/// borrowed: the same routine of `una-core` as the interpreter's, so both engines give the
+/// same bits (ADR 0114 rule 6). A new reference, or `0`/`1` for a `Bool`. O(1), or O(m) for
+/// `to_f64()` of an `Int` of m limbs.
+pub fn f64_op(op: i64, a: i64, b: i64, c: i64) -> i64 {
+    use una_core::FloatOp;
+    use una_core::float as f;
+    let Some(op) = usize::try_from(op)
+        .ok()
+        .and_then(|i| FloatOp::ALL.get(i).copied())
+    else {
+        HEAP.with(|heap| heap.borrow_mut().faults += 1);
+        return 0;
+    };
+    if op == FloatOp::FromInt {
+        return f64_word(f::from_int(&int_value(a)));
+    }
+    let (x, y, z) = (
+        f64_value(a),
+        if op.params().is_empty() && !binary_operator(op) {
+            0.0
+        } else {
+            f64_value(b)
+        },
+        if op.params().len() == 2 {
+            f64_value(c)
+        } else {
+            0.0
+        },
+    );
+    let flag = |value: bool| i64::from(value);
+    match op {
+        FloatOp::Add => f64_word(f::add(x, y)),
+        FloatOp::Sub => f64_word(f::sub(x, y)),
+        FloatOp::Mul => f64_word(f::mul(x, y)),
+        FloatOp::Div => f64_word(f::div(x, y)),
+        FloatOp::Neg => f64_word(f::neg(x)),
+        FloatOp::Eq => flag(f::equal(x, y)),
+        FloatOp::Ne => flag(!f::equal(x, y)),
+        FloatOp::Lt => flag(f::total_cmp(x, y).is_lt()),
+        FloatOp::Le => flag(f::total_cmp(x, y).is_le()),
+        FloatOp::Gt => flag(f::total_cmp(x, y).is_gt()),
+        FloatOp::Ge => flag(f::total_cmp(x, y).is_ge()),
+        FloatOp::Abs => f64_word(f::abs(x)),
+        FloatOp::Sqrt => f64_word(f::sqrt(x)),
+        FloatOp::Fma => f64_word(f::fma(x, y, z)),
+        FloatOp::Rem => f64_word(f::rem(x, y)),
+        FloatOp::Floor => f64_word(f::floor(x)),
+        FloatOp::Ceil => f64_word(f::ceil(x)),
+        FloatOp::Trunc => f64_word(f::trunc(x)),
+        FloatOp::RoundHalfEven => f64_word(f::round_half_even(x)),
+        FloatOp::RoundHalfAway => f64_word(f::round_half_away(x)),
+        FloatOp::CopySign => f64_word(f::copy_sign(x, y)),
+        FloatOp::IeeeMin => f64_word(f::ieee_min(x, y)),
+        FloatOp::IeeeMax => f64_word(f::ieee_max(x, y)),
+        FloatOp::Clamp => f64_word(f::clamp(x, y, z)),
+        FloatOp::IeeeEq => flag(f::ieee_compare(f::IeeeCompare::Eq, x, y)),
+        FloatOp::IeeeNe => flag(f::ieee_compare(f::IeeeCompare::Ne, x, y)),
+        FloatOp::IeeeLt => flag(f::ieee_compare(f::IeeeCompare::Lt, x, y)),
+        FloatOp::IeeeLe => flag(f::ieee_compare(f::IeeeCompare::Le, x, y)),
+        FloatOp::IeeeGt => flag(f::ieee_compare(f::IeeeCompare::Gt, x, y)),
+        FloatOp::IeeeGe => flag(f::ieee_compare(f::IeeeCompare::Ge, x, y)),
+        FloatOp::IsNan => flag(x.is_nan()),
+        FloatOp::IsFinite => flag(x.is_finite()),
+        FloatOp::IsInfinite => flag(x.is_infinite()),
+        FloatOp::IsSignNegative => flag(f::to_bits(x) >> 63 == 1),
+        FloatOp::IsZero => flag(x == 0.0),
+        FloatOp::IsPositiveZero => flag(f::to_bits(x) == 0),
+        FloatOp::IsNegativeZero => flag(f::to_bits(x) == 1 << 63),
+        FloatOp::ToBits => int_word(&BigInt::from(f::to_bits(x))),
+        FloatOp::ToIntExact => match f::to_int_exact(x) {
+            Some(n) => some_owned(int_word(&n)),
+            None => NONE,
+        },
+        FloatOp::FromInt => f64_word(f::from_int(&int_value(a))),
+        FloatOp::ToText => text_word(f::render(x)),
+    }
+}
+
+/// Whether `op` is a binary operator, whose second operand is an `F64`.
+fn binary_operator(op: una_core::FloatOp) -> bool {
+    use una_core::FloatOp;
+    matches!(
+        op,
+        FloatOp::Add
+            | FloatOp::Sub
+            | FloatOp::Mul
+            | FloatOp::Div
+            | FloatOp::Eq
+            | FloatOp::Ne
+            | FloatOp::Lt
+            | FloatOp::Le
+            | FloatOp::Gt
+            | FloatOp::Ge
+    )
+}
+
+/// `f64_from_bits(bits:)`: the value with those bits, any NaN canonical. A new reference.
+pub fn f64_from_bits(bits: i64) -> i64 {
+    let bits = u64::try_from(&int_value(bits)).unwrap_or(0);
+    f64_word(una_core::float::from_bits(bits))
+}
+
+/// Why `parse_f64(t)` fails, as the `ParseError` it fails with, or 0 when it does not
+/// (`spec/29 §7`), as `parse_failure` says for `parse_int`.
+pub fn parse_f64_failure(t: i64) -> i64 {
+    use una_core::float::ParseFailure;
+    match una_core::float::parse(&text_value(t)) {
+        Ok(_) => 0,
+        Err(ParseFailure::Empty) => 1,
+        Err(ParseFailure::NoDigits) => (2 << 1) | 1,
+        Err(ParseFailure::NotADigit(at)) => {
+            let failure = data(1);
+            let at = int_word(&BigInt::from(at));
+            push(failure, at);
+            release(at);
+            failure
+        }
+    }
+}
+
+/// `parse_f64(t)` of a text that `parse_f64_failure` accepts. A new reference.
+pub fn parse_f64(t: i64) -> i64 {
+    f64_word(una_core::float::parse(&text_value(t)).unwrap_or(0.0))
+}
+
+/// `as_f64(j)` (`spec/29 §10`): `Some` of the nearest `F64` of a number, `None` otherwise.
+pub fn as_f64(j: i64) -> i64 {
+    match tag(j) {
+        // `Number(value: Int)`.
+        2 => some_owned(f64_word(una_core::float::from_int(&int_value(field(j, 0))))),
+        // `Decimal(text: JsonNumber)`.
+        3 => match una_core::float::parse(&text_value(field(j, 0))) {
+            Ok(x) => some_owned(f64_word(x)),
+            Err(_) => NONE,
+        },
+        _ => NONE,
+    }
+}
+
+/// `json_number(x)` (`spec/29 §10`): `Some(Decimal(t))` with `t` the rendering of a finite `x`,
+/// `None` for NaN and the infinities.
+pub fn json_number(x: i64) -> i64 {
+    let x = f64_value(x);
+    if !x.is_finite() {
+        return NONE;
+    }
+    let decimal = data(3);
+    let text = text_word(una_core::float::render(x));
+    push(decimal, text);
+    release(text);
+    some_owned(decimal)
 }
 
 /// Whether `word` is a handle to a big integer.
@@ -2053,7 +2299,8 @@ pub fn bytes_of(t: i64) -> i64 {
 
 /// Why `parse_int(t)` fails, as the `ParseError` it fails with, or 0 when it does not
 /// (`spec/22 §4`): `Empty`, `NotADigit(at: i)` at the first position that is neither the
-/// leading `-` nor a digit, or `NoDigits` for `-` alone.
+/// leading `-` nor a digit, `NoDigits` for `-` alone, or `TooLong` for more than
+/// `MAX_INT_DIGITS` digits, found in O(b) before the O(d²) conversion (#914).
 pub fn parse_failure(t: i64) -> i64 {
     let t = text_value(t);
     if t.is_empty() {
@@ -2075,6 +2322,9 @@ pub fn parse_failure(t: i64) -> i64 {
     if digits.is_empty() {
         return (2 << 1) | 1;
     }
+    if digits.len() > una_core::MAX_INT_DIGITS {
+        return (3 << 1) | 1;
+    }
     0
 }
 
@@ -2087,8 +2337,16 @@ pub fn parse_int(t: i64) -> i64 {
 pub fn to_int(t: i64) -> i64 {
     let text = text_value(t);
     let digits = text.strip_prefix('-').unwrap_or(&text);
+    // Checked in O(b) before the O(d²) conversion, which only a text of at most
+    // MAX_INT_DIGITS digits reaches (`spec/14 §1`, #914).
+    let valid = !digits.is_empty()
+        && digits.len() <= una_core::MAX_INT_DIGITS
+        && digits.bytes().all(|b| b.is_ascii_digit());
+    if !valid {
+        return NONE;
+    }
     match text.parse::<BigInt>() {
-        Ok(value) if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) => {
+        Ok(value) => {
             let word = int_word(&value);
             let option = some(word);
             release(word);
@@ -3069,6 +3327,47 @@ mod tests {
         int_word(&BigInt::from(value))
     }
 
+    /// The position of `op` in `FloatOp::ALL`, the code the generated code passes.
+    fn code(op: una_core::FloatOp) -> i64 {
+        una_core::FloatOp::ALL
+            .iter()
+            .position(|x| *x == op)
+            .and_then(|i| i64::try_from(i).ok())
+            .unwrap_or(-1)
+    }
+
+    #[test]
+    fn floats_compute_as_the_interpreter_does_and_keep_one_nan() {
+        use una_core::FloatOp;
+        let zero = f64_literal(0);
+        let one = f64_literal(1f64.to_bits() as i64);
+        let nan = f64_op(code(FloatOp::Div), zero, zero, 0);
+        assert_eq!(
+            int_value(f64_op(code(FloatOp::ToBits), nan, 0, 0)),
+            BigInt::from(una_core::float::CANONICAL_NAN)
+        );
+        assert_eq!(f64_op(code(FloatOp::Eq), nan, nan, 0), 1);
+        assert_eq!(f64_op(code(FloatOp::Lt), one, nan, 0), 1);
+        let negative = f64_op(code(FloatOp::Neg), zero, 0, 0);
+        assert_eq!(f64_op(code(FloatOp::Eq), negative, zero, 0), 0);
+        assert_eq!(f64_op(code(FloatOp::IeeeEq), negative, zero, 0), 1);
+        let text = f64_op(code(FloatOp::ToText), negative, 0, 0);
+        assert_eq!(text_value(text), "-0.0");
+        let fused = f64_op(code(FloatOp::Fma), one, one, negative);
+        assert_eq!(
+            text_value(f64_op(code(FloatOp::ToText), fused, 0, 0)),
+            "1.0"
+        );
+        assert_eq!(parse_f64_failure(text_word("1.".to_owned())) & 1, 0);
+        assert_eq!(parse_f64_failure(text_word(String::new())), 1);
+        assert_eq!(
+            f64_value(parse_f64(text_word("-0".to_owned()))).to_bits(),
+            1 << 63
+        );
+        assert_eq!(f64_literal(0), zero, "a literal is made once");
+        assert!(leaf_equal(nan, f64_op(code(FloatOp::Div), zero, zero, 0)));
+    }
+
     #[test]
     fn integers_are_tagged_when_they_fit_and_promoted_when_they_do_not() {
         assert_eq!(n(5), 11);
@@ -3348,6 +3647,65 @@ mod tests {
             push(same, n(value));
         }
         assert_eq!(equal(0, xs, same), 1);
+    }
+
+    #[test]
+    fn a_text_of_more_than_max_int_digits_is_refused_before_any_conversion() {
+        // #914: converting d digits takes O(d²), so `parse_int` fails with `TooLong` and
+        // `to_int` is `None` past `MAX_INT_DIGITS` digits, both found in one O(b) scan. The
+        // sign does not count; leading zeros do.
+        let cap = una_core::MAX_INT_DIGITS;
+        let at_cap = format!("-{}", "9".repeat(cap));
+        assert_eq!(parse_failure(text_word(at_cap.clone())), 0);
+        assert_eq!(int(parse_int(text_word(at_cap.clone()))), at_cap);
+        assert_eq!(
+            int(or_else(to_int(text_word(at_cap.clone())), n(0))),
+            at_cap
+        );
+        let too_long = (3 << 1) | 1;
+        let zeros = "0".repeat(cap + 1);
+        assert_eq!(parse_failure(text_word(zeros.clone())), too_long);
+        assert_eq!(to_int(text_word(zeros)), NONE);
+        // A wrong character is found first, wherever it is.
+        let wrong = format!("{}x", "1".repeat(cap + 1));
+        assert_eq!(tag(parse_failure(text_word(wrong))), 1);
+        // Linear: a text ten times longer takes about ten times as long, far from the hundred
+        // times of a quadratic conversion.
+        // Both sizes are over the cap, Miri's too.
+        let sizes = if cfg!(miri) {
+            [cap + 1, 4 * cap]
+        } else {
+            [100_000, 1_000_000]
+        };
+        // The shortest of several runs per size, so a preemption of the test thread (the
+        // library's tests run in parallel) inflates no measurement; the claim stays linear.
+        // Five runs on the full sizes; one on Miri's small ones (it is slow, and times nothing).
+        let runs = if sizes[0] >= 100_000 { 5 } else { 1 };
+        let times: Vec<std::time::Duration> = sizes
+            .iter()
+            .map(|&size| {
+                let digits = "7".repeat(size);
+                (0..runs)
+                    .map(|_| {
+                        let started = std::time::Instant::now();
+                        assert_eq!(parse_failure(text_word(digits.clone())), too_long);
+                        assert_eq!(to_int(text_word(digits.clone())), NONE);
+                        started.elapsed()
+                    })
+                    .min()
+                    .unwrap_or_default()
+            })
+            .collect();
+        if !cfg!(miri) {
+            assert!(
+                times[1].as_secs_f64() <= 30.0 * times[0].as_secs_f64() + 0.05,
+                "{} digits took {:?}, {} took {:?}",
+                sizes[1],
+                times[1],
+                sizes[0],
+                times[0]
+            );
+        }
     }
 
     /// `x0 = [leaf]`, `x(k+1) = [xk, xk]`: a value of `depth` levels whose every level shares

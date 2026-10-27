@@ -129,7 +129,7 @@ pub add_units(units: Int) -> Int
   if units > 100 then fail Declined else units
 ```
 
-**No failure that depends on labeled data.** `fail` is allowed only when the [program counter](/learn/information-flow/branches-and-failures-implicit-flows/) (the label of the conditions that decided whether this line runs) is `public`, since whether a function fails is observable. Code that must decide on labeled data returns a labeled value instead:
+**No failure that depends on labeled data.** `fail` is allowed only when the [Branches and failures: implicit flows](/learn/information-flow/branches-and-failures-implicit-flows/) (the label of the conditions that decided whether this line runs) is `public`, since whether a function fails is observable. Code that must decide on labeled data returns a labeled value instead:
 
 ```una
 -- fails with U4002

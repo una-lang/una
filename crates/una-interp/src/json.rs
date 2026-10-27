@@ -27,6 +27,16 @@ fn json<'p>(index: usize, fields: Vec<Value<'p>>) -> Value<'p> {
     Value::data(prelude_ctor("Json", name, index), fields)
 }
 
+/// `Decimal(text)`, a JSON number with a fraction or an exponent (`spec/23 §1`).
+pub(crate) fn decimal<'p>(text: &str) -> Value<'p> {
+    json(DECIMAL, vec![Value::text(text)])
+}
+
+/// `Number(n)`, a JSON number with neither a fraction nor an exponent (`spec/23 §1`).
+pub(crate) fn number<'p>(n: BigInt) -> Value<'p> {
+    json(NUMBER, vec![Value::Int(n)])
+}
+
 /// The failure of `parse_json` for `error` (`spec/23 §3` rule 5).
 pub(crate) fn error<'p>(error: json::Error) -> Value<'p> {
     let (name, index, at) = match error {

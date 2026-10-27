@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::ir::{Base, Decl, PRELUDE_MODULE, Program, Refinement, Type};
+use crate::ir::{Base, COLLECTIONS_MODULE, Coll, Decl, PRELUDE_MODULE, Program, Refinement, Type};
 
 /// How a nested position compares in a flow (ADR 0103 rule 4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -91,11 +91,13 @@ impl<'p> Kinds<'p> {
     }
 
     /// The variance of argument `index` of the type `module.name` (ADR 0103 rule 4): the
-    /// arguments of the prelude's kinds are covariant, and so is a parameter of a user kind
+    /// arguments of the prelude's kinds and of the collection types of `std.collections` are
+    /// covariant, since each is a value that holds its arguments as data (ADR 0119 rule 1), and
+    /// so is a parameter of a user kind
     /// that no field holds inside a function type or under another user kind's argument; any
     /// other is invariant, which only adds obligations (ADR 0046).
     pub fn arg_variance(&self, module: &str, name: &str, index: usize) -> Variance {
-        if module == PRELUDE_MODULE {
+        if module == PRELUDE_MODULE || is_collection(module, name) {
             return Variance::Covariant;
         }
         let Some(kind) = self.kinds.get(&(module, name)) else {
@@ -303,15 +305,21 @@ fn data_only(ty: &Type, param: &str, in_kind: bool) -> bool {
             ..
         } => name != param || !in_kind,
         Type::Base {
-            base: Base::Named { module, args, .. },
+            base: Base::Named { module, name, args },
             ..
         } => {
-            let nested = in_kind || module != PRELUDE_MODULE;
+            let nested = in_kind || !(module == PRELUDE_MODULE || is_collection(module, name));
             args.iter().all(|arg| data_only(arg, param, nested))
         }
         Type::Base { .. } => true,
         Type::Fn { .. } => !mentions_param(ty, param),
     }
+}
+
+/// Whether `module.name` is a collection type of `std.collections` (ADR 0119), which no
+/// declaration of Core describes.
+fn is_collection(module: &str, name: &str) -> bool {
+    module == COLLECTIONS_MODULE && Coll::from_name(name).is_some()
 }
 
 /// Whether the type parameter `param` occurs anywhere in `ty`.

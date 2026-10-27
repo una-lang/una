@@ -1,0 +1,1 @@
+- **Docs: the guide links to the 19-chapter Learn book** (#933). The language and configuration pages link to the Learn section that teaches each construct, such as `/learn/information-flow/branches-and-failures-implicit-flows/`, under the new chapters and section titles.

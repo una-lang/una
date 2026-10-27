@@ -1,0 +1,23 @@
+-- test: the shape frame keeps a matrix's rows and columns through a loop that only updates it by `set`, so every `get` and `set` over `0..<m.rows` and `0..<m.columns` is proven, and an array's length likewise
+-- spec: spec/29 §17
+-- expect: ok
+module dense
+
+pub doubled(m: Matrix[F64]) -> Matrix[F64]
+  ensures result.rows == m.rows and result.columns == m.columns
+=
+  let edit n = m
+  for i in 0..<n.rows
+    for j in 0..<n.columns
+      let x = n.get(row: i, column: j)
+      edit n.set(row: i, column: j, item: x * 2.0)
+  n
+
+pub counted(a: Array[I64 in 0..100]) -> Array[I64]
+  ensures result.len == a.len
+=
+  let zero: I64 = 0
+  let edit out = array_filled(length: a.len, value: zero)
+  for i in 0..<a.len
+    edit out.set(index: i, item: a.get(index: i) + 1)
+  out

@@ -4,9 +4,11 @@ use std::collections::BTreeMap;
 
 use una_core::{Atom, Bound, Example, Expectation, Expr, LoopSource, Program, Rhs, Source};
 
+use crate::clock::Clock;
 use crate::host::{Grant, NoWorld, World};
 use crate::machine::{
-    Abort, Env, Event, EventOutcome, Flow, Form, Index, Limits, Machine, Stop, variant,
+    Abort, Drive, Env, Event, EventOutcome, Flow, Form, Index, Limits, Machine, Stop, hashes,
+    variant,
 };
 use crate::value::Value;
 
@@ -18,6 +20,9 @@ pub struct Host {
     pub grants: Vec<Grant>,
     /// The keys of `keys:` grants, by name.
     pub keys: BTreeMap<String, Vec<u8>>,
+    /// `--virtual-time`: the run's clock is virtual, from 0 at its start, and only the run's
+    /// own waits move it (ADR 0116 rule 19, `spec/26 §8`).
+    pub virtual_time: bool,
 }
 
 /// How `main`, or the `do` line of an example, ended.
@@ -58,13 +63,71 @@ pub fn run_main(
 ) -> Option<Run> {
     let index = Index::new(program);
     let main = index.function(module, "main")?;
+    // The process key of keyed hashing, before any effect (`spec/28 §1` rule 3).
+    let hashing = match hashes::process_key(&index, &[&main.body]) {
+        Ok(hashing) => hashing,
+        Err(abort) => return Some(not_started(abort)),
+    };
     let mut machine = Machine::new(&index, world, &host.grants, &host.keys, limits);
+    machine.hashing = hashing;
+    machine.clock = Clock::for_run(host.virtual_time);
     let result = machine.run_main(main);
     let completion = completion(&index, result, Form::Redacted);
     Some(Run {
         completion,
         trace: machine.trace,
     })
+}
+
+/// Why a module cannot be driven (ADR 0116 rule 2): a usage error of `una run`, as an entry
+/// without `main` is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DriveShape {
+    /// The module has no function `init`.
+    NoInit,
+    /// The module has no function `step`.
+    NoStep,
+}
+
+/// Runs the host-driven step of module `module` (ADR 0116 rule 3): `init`, then `step` once
+/// per tick, then `on_stop` when the module declares it, with the host capabilities of each
+/// one's `uses`, in `world`. The shapes of the functions were checked with the package.
+pub fn run_drive(
+    program: &Program,
+    module: &str,
+    world: &mut dyn World,
+    host: &Host,
+    limits: Limits<'_>,
+    drive: Drive,
+) -> Result<Run, DriveShape> {
+    let index = Index::new(program);
+    let init = index.function(module, "init").ok_or(DriveShape::NoInit)?;
+    let step = index.function(module, "step").ok_or(DriveShape::NoStep)?;
+    let on_stop = index.function(module, "on_stop");
+    let mut roots = vec![&init.body, &step.body];
+    roots.extend(on_stop.map(|fun| &fun.body));
+    let hashing = match hashes::process_key(&index, &roots) {
+        Ok(hashing) => hashing,
+        Err(abort) => return Ok(not_started(abort)),
+    };
+    let mut machine = Machine::new(&index, world, &host.grants, &host.keys, limits);
+    machine.hashing = hashing;
+    machine.clock = Clock::for_run(host.virtual_time);
+    let result = machine.drive(init, step, on_stop, &drive);
+    let completion = completion(&index, result, Form::Redacted);
+    Ok(Run {
+        completion,
+        trace: machine.trace,
+    })
+}
+
+/// A run that aborted before it started, with no trace: the host gave no random bytes for the
+/// process key (U6009, `spec/28 §1` rule 3).
+fn not_started(abort: Abort) -> Run {
+    Run {
+        completion: Completion::Aborted(abort),
+        trace: Vec::new(),
+    }
 }
 
 fn completion(index: &Index<'_>, result: Flow<'_>, form: Form) -> Completion {
@@ -76,6 +139,16 @@ fn completion(index: &Index<'_>, result: Flow<'_>, form: Form) -> Completion {
             public: index.public_fields(&failure),
         },
         Err(Stop::Abort(abort)) => Completion::Aborted(abort),
+        // Core puts an exit only in a loop's body, which catches it.
+        Err(Stop::Exit(..)) => Completion::Aborted(Abort::Fault {
+            message: "an exit outside a loop".to_owned(),
+            span: None,
+        }),
+        // Every cut is caught by the `within` it is for.
+        Err(Stop::Cut(_)) => Completion::Aborted(Abort::Fault {
+            message: "a deadline outside its `within`".to_owned(),
+            span: None,
+        }),
     }
 }
 
@@ -135,10 +208,30 @@ fn run_example<'p>(
     let mut world = NoWorld;
     let grants: Vec<Grant> = Vec::new();
     let keys = BTreeMap::new();
+    let hashing = match hashes::process_key(index, &hashes::example_roots(example)) {
+        Ok(hashing) => hashing,
+        Err(abort) => {
+            return ExampleRun {
+                module: module.to_owned(),
+                name: example.name.clone(),
+                failure: Some(ExampleFailure {
+                    expectation: None,
+                    reason: "the `do` line aborted".to_owned(),
+                }),
+                completion: Completion::Aborted(abort),
+                trace: Vec::new(),
+            };
+        }
+    };
     let mut machine = Machine::new(index, &mut world, &grants, &keys, limits);
+    machine.hashing = hashing;
+    // Time in a test is virtual, and its `stop after N` line is its stop schedule (ADR 0116
+    // rule 19, `spec/26 §8`).
+    machine.clock = Clock::virtual_time();
+    machine.stop_after = example.stop_after;
     let result = machine.eval_closed(&mut Env::new(), &example.body);
     let failure = match &result {
-        Err(Stop::Abort(_)) => Some(ExampleFailure {
+        Err(Stop::Abort(_) | Stop::Exit(..)) => Some(ExampleFailure {
             expectation: None,
             reason: "the `do` line aborted".to_owned(),
         }),
@@ -233,7 +326,7 @@ where
                 Err(Stop::Fail(failure)) => {
                     format!("it failed with `{}`", index.shown(&failure, form))
                 }
-                Err(Stop::Abort(_)) => "it aborted".to_owned(),
+                Err(Stop::Abort(_) | Stop::Exit(..) | Stop::Cut(_)) => "it aborted".to_owned(),
             };
             Some((*line, text, reason))
         }
@@ -251,7 +344,9 @@ where
                     "the `do` line completed with `{}`",
                     index.shown(value, form)
                 ),
-                Err(Stop::Abort(_)) => "the `do` line aborted".to_owned(),
+                Err(Stop::Abort(_) | Stop::Exit(..) | Stop::Cut(_)) => {
+                    "the `do` line aborted".to_owned()
+                }
             };
             Some((*line, text, reason))
         }
@@ -292,16 +387,27 @@ fn mentions(expr: &Expr, name: &str) -> bool {
             (match source.as_ref() {
                 LoopSource::List(list) => atom(list),
                 LoopSource::Range { low, high, .. } => atom(low) || atom(high),
+                LoopSource::Until { cond, .. } => mentions(cond, name),
+                LoopSource::Ever { within } => within.as_ref().is_some_and(|(d, _)| atom(d)),
             }) || mentions(task, name)
         }
         Expr::Loop {
-            source, init, body, ..
+            source,
+            init,
+            body,
+            on_stop,
+            ..
         } => {
             (match source.as_ref() {
                 LoopSource::List(list) => atom(list),
                 LoopSource::Range { low, high, .. } => atom(low) || atom(high),
+                LoopSource::Until { cond, .. } => mentions(cond, name),
+                LoopSource::Ever { within } => within.as_ref().is_some_and(|(d, _)| atom(d)),
             }) || init.iter().any(atom)
                 || mentions(body, name)
+                || on_stop
+                    .as_ref()
+                    .is_some_and(|on_stop| mentions(&on_stop.body, name))
         }
         Expr::Let { value, body, .. } => {
             (match value.as_ref() {
@@ -324,8 +430,10 @@ fn mentions(expr: &Expr, name: &str) -> bool {
                 || otherwise.as_deref().is_some_and(|e| mentions(e, name))
         }
         Expr::Fail { args, .. } => args.iter().any(atom),
+        Expr::Exit { state, .. } => state.iter().any(atom),
         Expr::Handle { body, handler, .. } => mentions(body, name) || mentions(handler, name),
         Expr::Attempt { body, .. } => mentions(body, name),
+        Expr::Within { deadline, body, .. } => atom(deadline) || mentions(body, name),
         Expr::With { source, body, .. } => {
             (match source {
                 Source::Rebind(_) => false,

@@ -88,8 +88,25 @@ pub const RESERVED_IN_0_2: [(&str, &str); 13] = [
     ("impl", "reserved for a later version (user traits)"),
 ];
 
+/// The words that edition 0.4 reserves for the constructs of ADR 0116 (`spec/26 §1`), with
+/// the message of their U0103 diagnostic, until each becomes a keyword.
+pub const RESERVED_IN_0_4: [(&str, &str); 2] = [
+    (
+        "diverges",
+        "reserved for edition 0.4 (long-running programs)",
+    ),
+    ("within", "reserved for edition 0.4 (long-running programs)"),
+];
+
 /// The U0103 message text of `word` under the keyword set `set`, if it is reserved.
 pub fn reserved_in(word: &str, set: KeywordSet) -> Option<&'static str> {
+    if set >= KeywordSet::V0_4
+        && let Some((_, message)) = RESERVED_IN_0_4
+            .iter()
+            .find(|(reserved, _)| *reserved == word)
+    {
+        return Some(message);
+    }
     if set >= KeywordSet::V0_2 {
         if matches!(word, "edit" | "take" | "together") {
             return None;

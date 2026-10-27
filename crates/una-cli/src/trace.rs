@@ -93,6 +93,7 @@ pub(crate) fn trace_command(
         sources: &package.sources,
         interner: &analysis.interner,
         trees: &analysis.trees,
+        mounts: &analysis.mounts,
     };
     let Some(requirement) = find(&modules, id) else {
         writeln!(stderr, "error: the package has no requirement `{id}`")?;

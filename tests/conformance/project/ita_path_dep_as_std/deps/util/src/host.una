@@ -1,0 +1,4 @@
+module host
+
+pub capability Console
+  op print(line: Text) -> Unit

@@ -1,0 +1,14 @@
+-- The built-in method `update` of maps, edition 0.4 (ADR 0119 rule 18, the amendment of ADR 0069).
+-- It is reached only by method syntax on a map, `edit m.update(...)`, never by its name: this
+-- module is in no scope. The body is a placeholder that the type checker never reads: the
+-- elaboration gives each call its meaning, a lookup, one call of `change`, and a `set`.
+module prelude.map
+
+--- Sets `key` to `change(v)`, where `v` is the value of `key`, or `initial` when `m` has no
+--- `key`. `change` is called exactly once; when it fails, `m` keeps its value from before the
+--- call.
+pub update[K: Ord, V](edit m: Map[K, V], key: K, initial: V, change: fn(V) -> V) -> Unit
+  uses of change
+  fails of change
+=
+  unit

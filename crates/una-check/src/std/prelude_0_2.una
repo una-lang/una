@@ -53,7 +53,7 @@ pub quote_json(t: Text) -> Text
   t
 
 --- Why `parse_int` fails (`spec/22 §4`).
-pub kind ParseError = Empty | NotADigit(at: Int) | NoDigits
+pub kind ParseError = Empty | NotADigit(at: Int) | NoDigits | TooLong
 
 --- The parts of `t` between the non-overlapping occurrences of `on`, left to right
 --- (`spec/22 §2`).

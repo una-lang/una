@@ -5,6 +5,15 @@
 //! removes under the amended preview rule (ADR 0103 rule 9). Each such package is
 //! listed in `EXPECTED_DIFFERENCES` with the exact result of both editions, and a listed package
 //! that does not differ fails the test, so the list stays exact.
+//!
+//! Every edition `0.3` package, checked as edition `0.4`, does the same, but for the rules that
+//! target edition `0.4` and list what they may break: the words that ADR 0116 rule 0 reserves,
+//! and the functions named like a built-in method of a collection, or `update` on a `Map`, of
+//! ADR 0119 rules 0 and 18. Each is in `EXPECTED_DIFFERENCES_0_4`, the edition test of ADR 0119
+//! rule 0. No edition `0.4` package of the suite that predates ADR 0119 declares such a function.
+//! Each `0.3` package is moved to edition `0.4` by `una migrate` before the comparison, as the
+//! note of ADR 0122 Question 8.1 on ADR 0121 rule 11 says, since edition `0.4` is written in
+//! `ita.una`; what the migration alone changes, the manifest's own diagnostics, is not compared.
 
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(
@@ -150,6 +159,27 @@ const EXPECTED_DIFFERENCES: &[Difference] = &[
             ("U3026", "src/relay.una:83:12"),
         ],
     },
+    // ADR 0114 rule 15: a float literal, a parse error before edition 0.3. Unlike the
+    // constructs above it does not narrow (the carve-out of rule 15), so its twin is the
+    // package without the function that holds it.
+    Difference::Syntax {
+        case: "types/float_literal_edition_0_2",
+        edition_0_2: ("U0101", "src/m.una:8:23"),
+        edition_0_3: &[],
+        twin: "types/float_literal_edition_0_2_erased",
+        erased: ("src/m.una", "\n\npub half() -> F64 = 1.0"),
+    },
+    // ADR 0114 rule 15: a declaration named `F64`, built in from edition 0.3.
+    Difference::Stricter {
+        case: "types/float_names_edition_0_2",
+        edition_0_3: &[("U1002", "src/m.una:6:10")],
+    },
+    // ADR 0114 rule 15: a package function `to_f64` on integers, which the built-in
+    // conversion resolves ahead of in edition 0.3.
+    Difference::Stricter {
+        case: "types/float_to_f64_edition_0_2",
+        edition_0_3: &[("U1002", "src/m.una:6:5")],
+    },
     // ADR 0103 rule 1: a refined type argument, U2002 before edition 0.3.
     Difference::Looser {
         case: "verification/refined_elements_0_2",
@@ -159,6 +189,92 @@ const EXPECTED_DIFFERENCES: &[Difference] = &[
     Difference::Looser {
         case: "verification/refined_elements_0_2_facts",
         edition_0_2: &[("U5001", "src/edition_0_2_facts.una:14:25")],
+    },
+];
+
+/// An edition `0.3` package whose output in edition `0.4` differs by design: the diagnostics a
+/// rule that targets edition `0.4` adds, and those it removes, a code and `file:line:col` each.
+struct Difference04 {
+    /// The package, relative to `tests/conformance`.
+    case: &'static str,
+    /// The diagnostics edition `0.4` reports and edition `0.3` does not.
+    added: &'static [(&'static str, &'static str)],
+    /// The diagnostics edition `0.3` reports and edition `0.4` does not.
+    removed: &'static [(&'static str, &'static str)],
+}
+
+/// The edition `0.3` packages whose output in edition `0.4` differs by design.
+const EXPECTED_DIFFERENCES_0_4: &[Difference04] = &[
+    // ADR 0119 rule 0: `std.collections` is an importable module from edition 0.4.
+    Difference04 {
+        case: "names/collections_import_before_0_4",
+        added: &[],
+        removed: &[("U1001", "src/m.una:6:8")],
+    },
+    // ADR 0120 (`spec/29 §16`): `Decimal[s]` is a type from edition 0.4.
+    Difference04 {
+        case: "names/decimal_edition_0_3",
+        added: &[],
+        removed: &[("U0101", "src/m.una:6:22")],
+    },
+    // ADR 0116 rule 12: `HttpError.Interrupted` is a variant from edition 0.4.
+    Difference04 {
+        case: "names/http_interrupted_0_3",
+        added: &[],
+        removed: &[("U1001", "src/poll.una:18:8")],
+    },
+    // ADR 0119 rule 18: a package function `update` whose first parameter is a `Map`.
+    Difference04 {
+        case: "names/map_update_function_in_0_3",
+        added: &[("U1002", "src/a.una:6:5")],
+        removed: &[],
+    },
+    // ADR 0116 rule 0: `diverges` and `within` are reserved words.
+    Difference04 {
+        case: "syntax/long_running_words_in_0_3",
+        added: &[
+            ("U0103", "src/words03.una:8:7"),
+            ("U0103", "src/words03.una:9:7"),
+            ("U0103", "src/words03.una:10:3"),
+            ("U0103", "src/words03.una:10:14"),
+        ],
+        removed: &[],
+    },
+    // ADR 0116 rule 5: `stop when` and `skip` are statements from edition 0.4.
+    Difference04 {
+        case: "syntax/loop_exits_before_0_4",
+        added: &[],
+        removed: &[("U0101", "src/before.una:10:10")],
+    },
+    // ADR 0116 rule 19: an example's `stop after` line exists from edition 0.4.
+    Difference04 {
+        case: "syntax/stop_after_before_0_4",
+        added: &[],
+        removed: &[("U0101", "src/before.una:11:3")],
+    },
+    // ADR 0116 rule 7: `for until` is a loop form from edition 0.4.
+    Difference04 {
+        case: "syntax/until_before_0_4",
+        added: &[],
+        removed: &[("U0101", "src/before.una:9:13")],
+    },
+    // ADR 0117 rule 13: `e within d` is an expression from edition 0.4, and there its unitless
+    // deadline `5` is refused where a duration is required.
+    Difference04 {
+        case: "syntax/within_before_0_4",
+        added: &[("U2028", "src/late.una:10:26")],
+        removed: &[("U0101", "src/late.una:10:19")],
+    },
+    // ADR 0120 (`spec/29 §17`): `Matrix`, `Tensor` and `Lu` are built in from edition 0.4, so a
+    // package that declares them is refused there.
+    Difference04 {
+        case: "types/dense_edition_0_3",
+        added: &[
+            ("U1002", "src/dense.una:6:10"),
+            ("U1002", "src/dense.una:8:10"),
+            ("U2003", "src/dense.una:13:33"),
+        ],
+        removed: &[],
     },
 ];
 
@@ -228,11 +344,25 @@ fn run_as(
         std::fs::remove_dir_all(work).unwrap();
     }
     copy_dir(package, work);
+    // The manifest's edition line, whichever edition it names, becomes `edition`, on the same
+    // line, so a position in `una.toml` stays where it was.
     let manifest = work.join("una.toml");
     let text = std::fs::read_to_string(&manifest).unwrap();
-    std::fs::write(&manifest, text.replace(EDITION_0_2, edition)).unwrap();
+    let replaced: String = text
+        .lines()
+        .map(|line| {
+            if line.trim() == EDITION_0_2 || line.trim() == EDITION_0_3 {
+                edition
+            } else {
+                line
+            }
+        })
+        .map(|line| format!("{line}\n"))
+        .collect();
+    std::fs::write(&manifest, replaced).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
         .args(["--json", command, "."])
         .current_dir(work)
         .output()
@@ -348,6 +478,290 @@ fn every_edition_0_2_package_checks_the_same_in_edition_0_3() {
     }
     wrong.sort();
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// Every edition `0.3` package of the conformance suite, MIGRATED to edition `0.4` by
+/// `una migrate`, checks as it does in edition `0.3`, but for the packages of
+/// `EXPECTED_DIFFERENCES_0_4`, each of which gains exactly its listed diagnostics (ADR 0119 rule
+/// 0, ADR 0121 rule 11 with the note of ADR 0122 Question 8.1). The invariant is over migrated
+/// packages: `una migrate` also rewrites the modules in the canonical form of edition `0.4`,
+/// which wraps long lines (ADR 0125, amendment of 2026-10-25), so a package is compared after
+/// it, never as edition `0.3` wrote it. That rewrite changes only white space, which is checked,
+/// and the positions of edition `0.3` are moved to the same characters of the rewritten modules.
+/// A difference that the migration alone causes is not a clash: the diagnostics of the manifest
+/// and the lock, whose files the migration renames, are left out of both sides. A package whose
+/// `una.toml` `una migrate` refuses is one that edition `0.3` already reports at its manifest.
+/// Linear in the packages, each checked twice.
+#[test]
+fn every_edition_0_3_package_checks_the_same_in_edition_0_4() {
+    let root = conformance();
+    let mut all = Vec::new();
+    packages(&root, &mut all);
+    let cases: Vec<(String, PathBuf)> = all
+        .into_iter()
+        .filter(|package| {
+            std::fs::read_to_string(package.join("una.toml"))
+                .unwrap()
+                .lines()
+                .any(|line| line.trim() == EDITION_0_3)
+        })
+        .map(|package| {
+            let name = package
+                .strip_prefix(&root)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
+            (name, package)
+        })
+        .collect();
+    for Difference04 { case: name, .. } in EXPECTED_DIFFERENCES_0_4 {
+        assert!(
+            cases.iter().any(|(case, _)| case == name),
+            "{name} is not an edition 0.3 package"
+        );
+    }
+    let workers = 4;
+    let scratch = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("editions_0_4");
+    let results: Vec<(String, Result<(), String>)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers)
+            .map(|worker| {
+                let cases = &cases;
+                let work = scratch.join(format!("w{worker}"));
+                scope.spawn(move || {
+                    cases
+                        .iter()
+                        .skip(worker)
+                        .step_by(workers)
+                        .map(|(name, package)| {
+                            let listed = EXPECTED_DIFFERENCES_0_4
+                                .iter()
+                                .find(|difference| difference.case == name);
+                            let added = listed.map_or(&[][..], |difference| difference.added);
+                            let removed = listed.map_or(&[][..], |difference| difference.removed);
+                            (
+                                name.clone(),
+                                compare_migrated(package, &work, added, removed),
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|handle| handle.join().unwrap())
+            .collect()
+    });
+    let mut wrong: Vec<String> = results
+        .into_iter()
+        .filter_map(|(name, result)| result.err().map(|why| format!("{name}: {why}")))
+        .collect();
+    wrong.sort();
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// The manifest and lock files of a package: the diagnostics there are the migration's, not the
+/// edition's.
+const MANIFEST_FILES: [&str; 4] = ["una.toml", "verification.lock", "ita.una", "ita.lock"];
+
+/// The code and `file:line:col` of each diagnostic of `document` outside the manifest files.
+fn sites_outside_manifest(document: &Value) -> Vec<(String, String)> {
+    document["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|d| !MANIFEST_FILES.contains(&d["primary"]["file"].as_str().unwrap_or("")))
+        .map(|d| {
+            (
+                d["code"].as_str().unwrap().to_owned(),
+                location(&d["primary"]),
+            )
+        })
+        .collect()
+}
+
+/// Checks `package` in edition `0.3`, then a fresh copy moved to edition `0.4` by `una migrate`,
+/// and compares their diagnostics outside the manifest files: those of `0.4` must be those of
+/// `0.3`, in order, with exactly `added` among them and exactly `removed` gone.
+fn compare_migrated(
+    package: &Path,
+    work: &Path,
+    added: &[(&str, &str)],
+    removed: &[(&str, &str)],
+) -> Result<(), String> {
+    let (_, before, _) = check_as(package, work, EDITION_0_3);
+    let before: Value = serde_json::from_slice(&before).unwrap();
+    if work.exists() {
+        std::fs::remove_dir_all(work).unwrap();
+    }
+    copy_dir(package, work);
+    let una = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_una"))
+            .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+            .env_remove("UNA_PROOF_KEY")
+            .args(args)
+            .current_dir(work)
+            .output()
+            .unwrap()
+    };
+    let migrated = una(&["migrate", "."]);
+    let result = match migrated.status.code() {
+        Some(0) => {
+            let checked = una(&["--json", "check", "."]);
+            assert!(
+                matches!(checked.status.code(), Some(0 | 1))
+                    && checked.stdout.starts_with(DOCUMENT),
+                "{} migrated: status {:?}, stdout {:?}, stderr {:?}",
+                package.display(),
+                checked.status.code(),
+                String::from_utf8_lossy(&checked.stdout),
+                String::from_utf8_lossy(&checked.stderr)
+            );
+            let after: Value = serde_json::from_slice(&checked.stdout).unwrap();
+            let mut gained = sites_outside_manifest(&after);
+            let mut missing = Vec::new();
+            for (code, at) in added {
+                match gained.iter().position(|(c, a)| c == code && a == at) {
+                    Some(index) => {
+                        gained.remove(index);
+                    }
+                    None => missing.push(format!("{code} at {at}")),
+                }
+            }
+            let mut kept = sites_outside_manifest(&before);
+            for (code, at) in removed {
+                match kept.iter().position(|(c, a)| c == code && a == at) {
+                    Some(index) => {
+                        kept.remove(index);
+                    }
+                    None => missing.push(format!(
+                        "{code} at {at} (removed, but edition 0.3 lacks it)"
+                    )),
+                }
+            }
+            // The migration rewrites the modules in the canonical form of edition 0.4, which
+            // changes only white space: each site of edition 0.3 is at the same character.
+            let mut rewritten = Vec::new();
+            for module in modules(&package.join("src")) {
+                let relative = module.strip_prefix(package).unwrap().to_path_buf();
+                let old = std::fs::read_to_string(&module).unwrap();
+                let new = std::fs::read_to_string(work.join(&relative)).unwrap();
+                if !old
+                    .chars()
+                    .filter(|c| !c.is_whitespace())
+                    .eq(new.chars().filter(|c| !c.is_whitespace()))
+                {
+                    rewritten.push(relative.to_string_lossy().replace('\\', "/"));
+                }
+            }
+            if !rewritten.is_empty() {
+                missing.push(format!(
+                    "una migrate changed more than white space in {rewritten:?}"
+                ));
+            }
+            for (_, at) in &mut kept {
+                let file = at.rsplitn(3, ':').nth(2).unwrap_or("").to_owned();
+                if let (Ok(old), Ok(new)) = (
+                    std::fs::read_to_string(package.join(&file)),
+                    std::fs::read_to_string(work.join(&file)),
+                ) && old != new
+                {
+                    *at = moved(at, &old, &new);
+                }
+            }
+            if !missing.is_empty() {
+                Err(format!(
+                    "edition 0.4 lacks the listed {}",
+                    missing.join(", ")
+                ))
+            } else if gained != kept {
+                Err(format!(
+                    "edition 0.4 reports {gained:?} besides the listed diagnostics, and edition 0.3 {kept:?}"
+                ))
+            } else {
+                Ok(())
+            }
+        }
+        // A refusal: only a package whose manifest edition 0.3 already reports, in any of the
+        // manifest files, as a package that has both `una.toml` and `ita.una`.
+        Some(2)
+            if before["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|d| MANIFEST_FILES.contains(&d["primary"]["file"].as_str().unwrap_or(""))) =>
+        {
+            if added.is_empty() && removed.is_empty() {
+                Ok(())
+            } else {
+                Err("listed, but una migrate refuses its manifest".to_owned())
+            }
+        }
+        other => Err(format!(
+            "una migrate exits {other:?}: {}",
+            String::from_utf8_lossy(&migrated.stderr)
+        )),
+    };
+    std::fs::remove_dir_all(work).unwrap();
+    result
+}
+
+/// The `.una` files under `dir`, recursively, in a stable order.
+fn modules(dir: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return found;
+    };
+    let mut paths: Vec<PathBuf> = entries.map(|entry| entry.unwrap().path()).collect();
+    paths.sort();
+    for path in paths {
+        if path.is_dir() {
+            found.extend(modules(&path));
+        } else if path.extension().is_some_and(|extension| extension == "una") {
+            found.push(path);
+        }
+    }
+    found
+}
+
+/// The site `at`, `file:line:col` of the text `old`, at the same character of `new`, which
+/// differs from `old` in white space only: the character there is the one with as many
+/// characters that are not white space before it. Columns count Unicode scalar values.
+fn moved(at: &str, old: &str, new: &str) -> String {
+    let mut parts = at.rsplitn(3, ':');
+    let (Some(col), Some(line), Some(file)) = (parts.next(), parts.next(), parts.next()) else {
+        return at.to_owned();
+    };
+    let (Ok(line), Ok(col)) = (line.parse::<usize>(), col.parse::<usize>()) else {
+        return at.to_owned();
+    };
+    // The number of characters that are not white space before the site in `old`.
+    let mut before = 0;
+    for (index, text) in old.split('\n').enumerate() {
+        if index + 1 < line {
+            before += text.chars().filter(|c| !c.is_whitespace()).count();
+        } else {
+            before += text
+                .chars()
+                .take(col.saturating_sub(1))
+                .filter(|c| !c.is_whitespace())
+                .count();
+            break;
+        }
+    }
+    let mut seen = 0;
+    for (index, text) in new.split('\n').enumerate() {
+        for (column, c) in text.chars().enumerate() {
+            if c.is_whitespace() {
+                continue;
+            }
+            if seen == before {
+                return format!("{file}:{}:{}", index + 1, column + 1);
+            }
+            seen += 1;
+        }
+    }
+    at.to_owned()
 }
 
 /// The `file:line:col` of a location of the JSON documents.

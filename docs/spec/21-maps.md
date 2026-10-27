@@ -32,12 +32,24 @@ The operations are a prelude function and built-in methods resolved by the recei
 | `m.keys()` | `List[K]` | `ensures result.len == m.len` |
 | `m.values()` | `List[V]` | `ensures result.len == m.len` |
 | `m.entries()` | `List[Entry[K, V]]` | `ensures result.len == m.len` |
+| `edit m.update(key: k, initial: i, change: f)` | `Unit` | edition `0.4` (rule 5): sets `k` to `f(v)`, where `v` is the value of `k`, or `i` when `m` has no `k`; the contract of `set` at `k` |
 
 1. **Updates.** `set` and `remove` take the receiver as `edit`, and follow `spec/17 §3`: the receiver is a place, the call is the whole expression of its statement, and `old(m)` in the table is the receiver's value before the call.
    - (v0.3, ADR 0103.) With a refined key or value type, `with` and `set` store their `key` and `value` at those types, with an obligation each (`spec/12 §3`). `has`, `get`, `remove` and `without` take the key at the base of the key type: a lookup stores nothing, so a key outside the refinement finds no entry.
 2. **Absence is not a failure.** `get` returns `None` for a missing key. Handle it with `if none` (`spec/06 §3`) or `when`.
 3. **Iteration.** `keys`, `values` and `entries` list the entries in key order, so a `for` over them visits the keys in ascending order.
 4. **Interpolation** (ADR 0068). A map renders as `{k: v, …}` in key order, with keys and values in the Una form of `spec/11 §5`, and `{}` when it is empty: `{"a": 1, "b": 2}`.
+5. **`update`** (v0.4, ADR 0119 rule 18, the amendment of ADR 0069). In edition `0.4`, `edit m.update(key: k, initial: i, change: f)` changes a value in one statement:
+   - It takes the receiver as `edit`, as `set` does (rule 1), and its contract is that of `set` at `k`, with `f(v)` for the value.
+   - `change` has the type `fn(V) -> V`. `update` declares `uses of change` and `fails of change`, as `map` does (`spec/14 §1`, ADR 0062), and calls `change` exactly once. When `change` fails, the call fails with it and `m` keeps its value from before the call (`spec/17 §7` rule 1).
+   - It is a built-in method, reached only by method syntax on a map: it resolves ahead of any function named `update` in scope, and no name `update` enters scope. A package function named `update` whose first parameter is a `Map`, refined or not, or a type parameter, is U1002 at its declaration in edition `0.4`, and so is an import of one (`spec/28 §2`).
+   - Its cost is O(log n): a lookup and an insertion (`§5`).
+   - **Labels.** `change` runs under the program counter of the call joined with the map's top label, the labels of its key position and those of `k`, since whether it receives the stored value or `i` depends on whether `m` holds `k` (ADR 0119 IF7). Its result flows into the value position, and `k` into the key position, as for `set` (`§3`).
+
+   ```una
+   for word in words
+     edit counts.update(key: word, initial: 0, change: fn(n) -> n + 1)
+   ```
 
 ## 3. Information flow
 

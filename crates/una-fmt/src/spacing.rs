@@ -10,6 +10,7 @@ fn ends_operand(kind: &TokenKind) -> bool {
         | TokenKind::Reserved(_)
         | TokenKind::CapRef(_)
         | TokenKind::Int(_)
+        | TokenKind::Float(_)
         | TokenKind::TextEnd
         | TokenKind::RParen
         | TokenKind::RBracket => true,

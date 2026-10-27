@@ -1,0 +1,6 @@
+-- test: a boundary names a module of the package, U7008 in ita.una
+-- spec: spec/30 §2
+-- expect: error U7008 at ita.una:6:3
+module main
+
+pub one() -> Int = 1

@@ -6,17 +6,18 @@ use una_diag::Code;
 
 use crate::ast::{
     Arg, Arm, AssignStmt, BinaryOp, Bind, Block, BlockExpr, Body, CapBinding, CapBindingValue,
-    CapType, CapabilityDecl, Clause, ClauseKind, Convention, Decl, DeclKind, ElseBranch,
+    CapType, CapabilityDecl, Clause, ClauseKind, Convention, Decl, DeclKind, ElseBranch, EverStmt,
     ExampleDecl, Expectation, ExpectationKind, Expr, ExprKind, Field, File, FnTypeClause,
     ForSource, ForStmt, FunctionDecl, Given, Handled, HandlerCall, HandlerDecl, HandlerOp,
     Handling, HandlingKind, Ident, IfBlock, IfThenStmt, Import, IsTarget, KindBody, KindDecl,
     Label, LambdaParam, LetStmt, LetValue, Level, Literal, MeasureDecl, ModuleHeader, ModulePath,
-    OpClause, OpClauseKind, OpDecl, Param, Pattern, PatternKind, PolicyDecl, PredicateDecl, Range,
-    RequirementDecl, RequirementSource, SignedInt, Stmt, TextLit, TextPart, TogetherFor,
-    TogetherStmt, Type, TypeCore, UnaryOp, UnitExpr, UsesClause, Variant, VariantExpr, WhenExpr,
+    OnStop, OpClause, OpClauseKind, OpDecl, Param, Pattern, PatternKind, PolicyDecl, PredicateDecl,
+    Range, RequirementDecl, RequirementSource, SignedInt, Stmt, StopAfter, StopStmt, TextLit,
+    TextPart, TogetherFor, TogetherStmt, Type, TypeCore, UnaryOp, UnitExpr, UntilStmt, UsesClause,
+    Variant, VariantExpr, WhenExpr,
 };
 use crate::error::{SyntaxError, SyntaxRepair};
-use crate::intern::Interner;
+use crate::intern::{Interner, Symbol};
 use crate::lexer::{Lexed, starts_declaration};
 use crate::source::{FileId, Span};
 use crate::token::{Comment, Keyword, KeywordSet, Token, TokenKind};
@@ -61,7 +62,12 @@ pub(crate) fn parse_plain(lexed: &Lexed, file: FileId, interner: &Interner) -> P
         errors: Vec::new(),
         v0_2: lexed.keywords >= KeywordSet::V0_2,
         v0_3: lexed.keywords >= KeywordSet::V0_3,
+        v0_4: lexed.keywords >= KeywordSet::V0_4,
         in_body: false,
+        from_label: lexed.from_label,
+        with_label: lexed.with_label,
+        and_label: lexed.and_label,
+        error_label: lexed.error_label,
     };
     let tree = parser.file();
     Parsed {
@@ -118,7 +124,12 @@ pub fn parse_uses_clause(
         errors: Vec::new(),
         v0_2: true,
         v0_3: true,
+        v0_4: true,
         in_body: false,
+        from_label: None,
+        with_label: None,
+        and_label: None,
+        error_label: None,
     };
     match parser.lone_uses_clause() {
         Ok(clause) if parser.errors.is_empty() => Ok(clause),
@@ -159,9 +170,10 @@ const FUNCTION_CLAUSES: Order = Order {
         "uses",
         "fails",
         "fails of",
+        "diverges",
         "derived from",
     ],
-    unique: &[3, 4, 5],
+    unique: &[3, 4, 5, 6],
     description: "clauses go in the order requires, ensures, uses, fails, derived from",
 };
 
@@ -210,10 +222,22 @@ struct Parser<'a> {
     v0_2: bool,
     /// Whether the constructs of edition 0.3 parse (`spec/13 §7`).
     v0_3: bool,
+    /// Whether the constructs of edition 0.4 parse (`spec/26 §1`).
+    v0_4: bool,
     /// Whether a function body or a handler operation body is being parsed, where a
     /// declaration keyword bound as a name is renamed by an edit (ADR 0096, amendment of
     /// 2026-10-15).
     in_body: bool,
+    /// Edition 0.3: the symbol of the argument label `from` (`spec/29 §3`), when the file has
+    /// one.
+    from_label: Option<Symbol>,
+    /// Edition 0.4: the symbols of the argument labels `with` and `and` (`spec/29 §17`), when
+    /// the file has them.
+    with_label: Option<Symbol>,
+    /// See [`Parser::with_label`].
+    and_label: Option<Symbol>,
+    /// Edition 0.4: the symbol of `error` as the field of `Failed(error: x)` (`spec/27 §5`).
+    error_label: Option<Symbol>,
 }
 
 fn is_layout(kind: &TokenKind) -> bool {
@@ -232,6 +256,7 @@ fn can_start_expression(kind: &TokenKind) -> bool {
         | TokenKind::Reserved(_)
         | TokenKind::CapRef(_)
         | TokenKind::Int(_)
+        | TokenKind::Float(_)
         | TokenKind::TextStart
         | TokenKind::LParen
         | TokenKind::LBracket
@@ -1332,9 +1357,27 @@ impl<'a> Parser<'a> {
         })
     }
 
+    /// Edition 0.4: the keyword `error` as a field name, when `followed_by_colon` is false or
+    /// it is followed by `:`, which only `Failed(error: x)` of `std.time` and code that names
+    /// that field use (`spec/27 §5`, ADR 0117 rule 5). It never names a binding.
+    fn error_field(&mut self, followed_by_colon: bool) -> Option<Ident> {
+        let name = self.error_label?;
+        if !self.v0_4
+            || self.peek() != &TokenKind::Keyword(Keyword::Error)
+            || (followed_by_colon && self.peek_at(1) != &TokenKind::Colon)
+        {
+            return None;
+        }
+        let span = self.advance();
+        Some(Ident { name, span })
+    }
+
     fn field(&mut self) -> Parse<Field> {
         let start = self.span();
-        let name = self.lower_name("a field name")?;
+        let name = match self.error_field(true) {
+            Some(name) => name,
+            None => self.lower_name("a field name")?,
+        };
         self.expect(&TokenKind::Colon, "`:` and the field's type")?;
         let ty = self.ty()?;
         Ok(Field {
@@ -1437,6 +1480,24 @@ impl<'a> Parser<'a> {
         match self.peek() {
             TokenKind::UpperIdent(_) => {
                 let name = self.upper_name("a type")?;
+                // Edition 0.4: `Decimal[s]`, whose argument is a scale, an integer literal
+                // (ADR 0120 rule 2). Any other argument parses as a type, which the checker
+                // refuses (U2037).
+                if self.v0_4
+                    && self.interner.resolve(name.name) == "Decimal"
+                    && self.at(&TokenKind::LBracket)
+                    && let TokenKind::Int(digits) = self.peek_at(1)
+                {
+                    let scale = digits.clone();
+                    self.advance();
+                    let scale_span = self.advance();
+                    self.expect(&TokenKind::RBracket, "`]`")?;
+                    return Ok(TypeCore::Decimal {
+                        name,
+                        scale,
+                        scale_span,
+                    });
+                }
                 let mut args = Vec::new();
                 if self.eat(&TokenKind::LBracket) {
                     args.push(self.ty()?);
@@ -1674,7 +1735,8 @@ impl<'a> Parser<'a> {
                         ClauseKind::Fails(_) => 3,
                         // A header has at most one `fails` clause of each form (ADR 0062).
                         ClauseKind::FailsOf(_) => 4,
-                        ClauseKind::DerivedFrom(_) => 5,
+                        ClauseKind::Diverges => 5,
+                        ClauseKind::DerivedFrom(_) => 6,
                     };
                     (rank, clause.keyword)
                 })
@@ -1723,6 +1785,13 @@ impl<'a> Parser<'a> {
             TokenKind::Keyword(Keyword::Fails) => {
                 self.advance();
                 ClauseKind::Fails(self.upper_name("an error kind")?)
+            }
+            // Edition 0.4: `diverges` (`spec/26 §5`), a reserved word elsewhere.
+            TokenKind::LowerIdent(word)
+                if self.v0_4 && self.interner.resolve(*word) == "diverges" =>
+            {
+                self.advance();
+                ClauseKind::Diverges
             }
             TokenKind::Keyword(Keyword::Derived) => {
                 self.advance();
@@ -2050,8 +2119,18 @@ impl<'a> Parser<'a> {
         let action = self.line_expr()?;
         self.expect_line_end()?;
         let mut expectations = vec![self.expectation()?];
+        let mut stop_after = None;
         while !self.eat(&TokenKind::Dedent) {
             if self.at(&TokenKind::Eof) {
+                break;
+            }
+            // Edition 0.4: the last line MAY be `stop after N` (ADR 0116 rule 19).
+            if self.v0_4 && self.at_word("stop") && self.next_is_word("after") {
+                stop_after = Some(self.stop_after()?);
+                if !self.eat(&TokenKind::Dedent) && !self.at(&TokenKind::Eof) {
+                    let span = self.span();
+                    return self.fail(span, "`stop after` must be the last line of its example");
+                }
                 break;
             }
             expectations.push(self.expectation()?);
@@ -2061,7 +2140,34 @@ impl<'a> Parser<'a> {
             givens,
             action,
             expectations,
+            stop_after,
         }))
+    }
+
+    /// `"stop" "after" integer_literal NEWLINE`, `N` from 1 to 2^63 - 1 (ADR 0116 rule 19).
+    fn stop_after(&mut self) -> Parse<StopAfter> {
+        let start = self.advance();
+        self.advance();
+        let TokenKind::Int(digits) = self.peek() else {
+            let span = self.span();
+            return self.fail(span, "`stop after` needs an integer literal of at least 1");
+        };
+        let iterations = digits
+            .replace('_', "")
+            .parse::<u64>()
+            .ok()
+            .filter(|n| (1..=i64::MAX.unsigned_abs()).contains(n));
+        let literal = self.span();
+        let Some(iterations) = iterations else {
+            return self.fail(
+                literal,
+                "`stop after` needs an integer literal from 1 to 9223372036854775807",
+            );
+        };
+        self.advance();
+        let span = self.since(start);
+        self.expect_line_end()?;
+        Ok(StopAfter { iterations, span })
     }
 
     /// After `expect`, `fails`, `performed` and `not performed` are tried before a line
@@ -2163,6 +2269,19 @@ impl<'a> Parser<'a> {
             TokenKind::Keyword(Keyword::When) => {
                 Ok(Stmt::BlockExpr(BlockExpr::When(self.when_expr()?)))
             }
+            // Edition 0.4: `for until c decreases m` (`spec/26 §4`); `for until in xs` is a loop
+            // over `xs` with the variable `until`.
+            TokenKind::Keyword(Keyword::For) if self.v0_4 && self.for_word("until") => {
+                self.until_stmt()
+            }
+            // Edition 0.4: `for ever` (`spec/26 §5`); `for ever in xs` is a loop over `xs`.
+            TokenKind::Keyword(Keyword::For) if self.v0_4 && self.for_word("ever") => {
+                self.ever_stmt()
+            }
+            // `on stop` after a loop that is not `for ever`, for U2034.
+            TokenKind::LowerIdent(_) if self.v0_4 && self.at_on_stop() => {
+                Ok(Stmt::OnStop(Box::new(self.on_stop()?)))
+            }
             // Edition 0.2: `for x in source` (`spec/17 §1`).
             TokenKind::Keyword(Keyword::For) if self.v0_2 => {
                 Ok(Stmt::For(Box::new(self.for_stmt()?)))
@@ -2182,6 +2301,11 @@ impl<'a> Parser<'a> {
                 IfForm::Block(block) => Ok(Stmt::BlockExpr(BlockExpr::If(block))),
                 IfForm::Then(stmt) => Ok(Stmt::IfThen(Box::new(stmt))),
             },
+            // Edition 0.4: `stop [when c]` and `skip` (`spec/26 §3`). Elsewhere the words are
+            // identifiers.
+            TokenKind::LowerIdent(word) if self.v0_4 && self.exit_word(*word).is_some() => {
+                self.exit_stmt()
+            }
             _ => {
                 let expr = self.line_expr()?;
                 // Edition 0.2: `place = value` (`spec/17 §1`).
@@ -2198,6 +2322,144 @@ impl<'a> Parser<'a> {
                 Ok(Stmt::Handled(self.handled_rest(expr)?))
             }
         }
+    }
+
+    /// Whether the `for` at the cursor is followed by `word` used as a keyword: not followed
+    /// by `in`, which makes it the loop variable (ADR 0116 rule 5).
+    fn for_word(&self, word: &str) -> bool {
+        matches!(self.peek_at(1), TokenKind::LowerIdent(next) if self.interner.resolve(*next) == word)
+            && !matches!(self.peek_at(2), TokenKind::Keyword(Keyword::In))
+    }
+
+    /// Whether the cursor is at the word `within` of a deadline (`spec/26 §7`, `spec/27 §5`),
+    /// which the lexer gives as a name only where a deadline may stand, in edition 0.4.
+    fn at_within(&self) -> bool {
+        self.v0_4
+            && matches!(self.peek(), TokenKind::LowerIdent(word) if self.interner.resolve(*word) == "within")
+    }
+
+    /// Whether the cursor is at `on stop` alone on its line.
+    fn at_on_stop(&self) -> bool {
+        matches!(self.peek(), TokenKind::LowerIdent(on) if self.interner.resolve(*on) == "on")
+            && matches!(self.peek_at(1), TokenKind::LowerIdent(stop) if self.interner.resolve(*stop) == "stop")
+            && matches!(self.peek_at(2), TokenKind::Newline)
+    }
+
+    /// `"on" "stop" NEWLINE INDENT block DEDENT` (`spec/26 §5`).
+    fn on_stop(&mut self) -> Parse<OnStop> {
+        let start = self.advance();
+        let stop = self.advance();
+        let keyword = start.to(stop);
+        self.expect(&TokenKind::Newline, "end of line")?;
+        let block = self.indented_block()?;
+        Ok(OnStop {
+            block,
+            keyword,
+            span: self.since(start),
+        })
+    }
+
+    /// `"for" "ever" [ "within" add_expr ] NEWLINE INDENT block DEDENT [ "on" "stop" NEWLINE
+    /// INDENT block DEDENT ]` (`spec/26 §5`, §7, ADR 0116 rules 5, 10 and 11).
+    fn ever_stmt(&mut self) -> Parse<Stmt> {
+        let start = self.advance();
+        self.advance();
+        // Edition 0.4: `within d`, the deadline of each iteration (`spec/26 §7`).
+        let within = match self.peek() {
+            TokenKind::LowerIdent(word) if self.interner.resolve(*word) == "within" => {
+                self.advance();
+                Some(self.add_expr()?)
+            }
+            _ => None,
+        };
+        self.expect(&TokenKind::Newline, "end of line")?;
+        let block = self.indented_block()?;
+        let on_stop = if self.at_on_stop() {
+            Some(self.on_stop()?)
+        } else {
+            None
+        };
+        Ok(Stmt::Ever(Box::new(EverStmt {
+            within,
+            block,
+            on_stop,
+            span: self.since(start),
+        })))
+    }
+
+    /// `"for" "until" line_expr "decreases" add_expr NEWLINE INDENT block DEDENT` (`spec/26
+    /// §4`, ADR 0116 rule 7). Without `decreases` it is U0101.
+    fn until_stmt(&mut self) -> Parse<Stmt> {
+        let start = self.advance();
+        self.advance();
+        let condition = self.line_expr()?;
+        let decreases = match self.peek() {
+            TokenKind::LowerIdent(word) if self.interner.resolve(*word) == "decreases" => {
+                self.advance()
+            }
+            _ => {
+                let span = self.span();
+                return self.fail(span, "`for until` needs a `decreases` measure");
+            }
+        };
+        let measure = self.add_expr()?;
+        self.expect(&TokenKind::Newline, "end of line")?;
+        let block = self.indented_block()?;
+        Ok(Stmt::Until(Box::new(UntilStmt {
+            condition,
+            decreases,
+            measure,
+            block,
+            span: self.since(start),
+        })))
+    }
+
+    /// Whether `word`, the first word of a statement, starts `stop` (`Some(true)`) or `skip`
+    /// (`Some(false)`): the word alone on its line, or followed by `when`.
+    fn exit_word(&self, word: Symbol) -> Option<bool> {
+        let stop = match self.interner.resolve(word) {
+            "stop" => true,
+            "skip" => false,
+            _ => return None,
+        };
+        matches!(
+            self.peek_at(1),
+            TokenKind::Newline
+                | TokenKind::Dedent
+                | TokenKind::Eof
+                | TokenKind::Keyword(Keyword::When)
+        )
+        .then_some(stop)
+    }
+
+    /// `"stop" [ "when" line_expr ] NEWLINE` or `"skip" NEWLINE`, in edition 0.4 (`spec/26 §3`,
+    /// ADR 0116 rules 5 and 6). `skip` takes no `when` (U0101).
+    fn exit_stmt(&mut self) -> Parse<Stmt> {
+        let stop = match self.peek() {
+            TokenKind::LowerIdent(word) => self.exit_word(*word) == Some(true),
+            _ => false,
+        };
+        let keyword = self.advance();
+        if !stop {
+            if self.at_keyword(Keyword::When) {
+                let span = self.span();
+                return self.fail(span, "`skip` takes no `when`; write `if c` around `skip`");
+            }
+            self.expect_line_end()?;
+            return Ok(Stmt::Skip(keyword));
+        }
+        let condition = if self.eat_keyword(Keyword::When) {
+            Some(self.line_expr()?)
+        } else {
+            None
+        };
+        let span = self.since(keyword);
+        self.expect_line_end()?;
+        Ok(Stmt::Stop(Box::new(StopStmt {
+            condition,
+            keyword,
+            span,
+        })))
     }
 
     /// The value of a `let` or an assignment: a `when`, an `if`, a `together for`, or a
@@ -2279,6 +2541,24 @@ impl<'a> Parser<'a> {
                 with.push(self.cap_binding()?);
             }
         }
+        // Edition 0.4: `within d`, the deadline of the expression (`spec/27 §5`). An `attempt`
+        // with its own deadline takes no second one (U0101).
+        let within = if self.at_within() {
+            if let ExprKind::Attempt {
+                within: Some(_), ..
+            } = &expr.kind
+            {
+                let span = self.span();
+                return self.fail(
+                    span,
+                    "this `attempt` has its deadline already; write one `within`, right after the attempted call",
+                );
+            }
+            self.advance();
+            Some(self.add_expr()?)
+        } else {
+            None
+        };
         let span = self.since(start);
         if self.at_keyword(Keyword::If)
             && matches!(
@@ -2325,6 +2605,7 @@ impl<'a> Parser<'a> {
         Ok(Handled {
             expr,
             with,
+            within,
             handlings,
             span,
         })
@@ -2544,7 +2825,10 @@ impl<'a> Parser<'a> {
     /// One `bind` of the variant pattern on `variant`.
     fn bind(&mut self, variant: Ident) -> Parse<Bind> {
         self.no_nested_pattern(variant)?;
-        let field = self.lower_name("a field name")?;
+        let field = match self.error_field(true) {
+            Some(field) => field,
+            None => self.lower_name("a field name")?,
+        };
         let local = if self.eat(&TokenKind::Colon) {
             self.no_nested_pattern(variant)?;
             Some(self.binding_name("a local name", Binding::Pattern)?)
@@ -2787,8 +3071,19 @@ impl<'a> Parser<'a> {
             TokenKind::Keyword(Keyword::Attempt) => {
                 let start = self.advance();
                 let operand = self.postfix()?;
+                // Edition 0.4: `attempt e within d` takes the deadline, so the `Result` holds the
+                // time-out (`spec/27 §5`).
+                let within = if self.at_within() {
+                    self.advance();
+                    Some(Box::new(self.add_expr()?))
+                } else {
+                    None
+                };
                 Ok(Expr {
-                    kind: ExprKind::Attempt(Box::new(operand)),
+                    kind: ExprKind::Attempt {
+                        operand: Box::new(operand),
+                        within,
+                    },
                     span: self.since(start),
                 })
             }
@@ -3047,7 +3342,10 @@ impl<'a> Parser<'a> {
         loop {
             if self.eat(&TokenKind::Dot) {
                 self.deeper()?;
-                let name = self.lower_name("a field or method name")?;
+                let name = match self.error_field(false) {
+                    Some(name) => name,
+                    None => self.lower_name("a field or method name")?,
+                };
                 expr = if self.at(&TokenKind::LParen) {
                     let args = self.call_args()?;
                     let span = self.since(expr.span);
@@ -3103,11 +3401,37 @@ impl<'a> Parser<'a> {
 
     fn arg(&mut self) -> Parse<Arg> {
         let start = self.span();
+        // Edition 0.3: `from:` labels an argument, as in `x.copy_sign(from: y)` (`spec/29 §3`);
+        // only here does the keyword `from` serve as a name.
+        let from = match self.from_label {
+            Some(symbol)
+                if self.v0_3
+                    && self.peek() == &TokenKind::Keyword(Keyword::From)
+                    && self.peek_at(1) == &TokenKind::Colon =>
+            {
+                Some(symbol)
+            }
+            _ => None,
+        };
+        // Edition 0.4: `with:` and `and:` label the arguments of the dense methods
+        // (`spec/29 §17`, ADR 0120); the lexer interns them only in that edition.
+        let from = from.or_else(|| match (self.peek(), self.peek_at(1)) {
+            (TokenKind::Keyword(Keyword::With), TokenKind::Colon) => self.with_label,
+            (TokenKind::Keyword(Keyword::And), TokenKind::Colon) => self.and_label,
+            _ => None,
+        });
         let labeled = matches!(
             self.peek(),
             TokenKind::LowerIdent(_) | TokenKind::Reserved(_)
         ) && self.peek_at(1) == &TokenKind::Colon;
-        let label = if labeled {
+        let label = if let Some(name) = from {
+            let span = self.advance();
+            self.advance();
+            Some(Ident { name, span })
+        } else if let Some(label) = self.error_field(true) {
+            self.advance();
+            Some(label)
+        } else if labeled {
             let label = self.lower_name("an argument label")?;
             self.advance();
             Some(label)
@@ -3133,6 +3457,7 @@ impl<'a> Parser<'a> {
         let start = self.span();
         let kind = match self.peek() {
             TokenKind::Int(_)
+            | TokenKind::Float(_)
             | TokenKind::TextStart
             | TokenKind::Keyword(Keyword::True | Keyword::False | Keyword::Unit) => {
                 ExprKind::Literal(self.literal()?)
@@ -3216,6 +3541,7 @@ impl<'a> Parser<'a> {
     fn literal(&mut self) -> Parse<Literal> {
         let literal = match self.peek() {
             TokenKind::Int(digits) => Literal::Int(digits.clone()),
+            TokenKind::Float(text) => Literal::Float(text.clone()),
             TokenKind::TextStart => return Ok(Literal::Text(self.text_literal()?)),
             TokenKind::Keyword(Keyword::True) => Literal::Bool(true),
             TokenKind::Keyword(Keyword::False) => Literal::Bool(false),
