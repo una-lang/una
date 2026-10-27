@@ -71,13 +71,8 @@ pub(crate) struct Registration {
 
 /// Registers `wake` on each of `entries`, the cancellation entries that can interrupt the
 /// wait. The caller checks the entries again afterwards, so a cancellation that came before the
-/// registration is never missed.
-pub(crate) fn register(entries: &[Cancel], wake: &Wake) -> Registration {
-    register_job(entries, wake, None)
-}
-
-/// [`register`] for a wait on a job of a helper pool, which sets `begun` when it begins on its
-/// helper (#1148).
+/// registration is never missed. For a wait on a job of a helper pool, `begun` is set when the
+/// job begins on its helper (#1148).
 pub(crate) fn register_job(
     entries: &[Cancel],
     wake: &Wake,
