@@ -695,6 +695,12 @@ pub(crate) struct State {
     pub(crate) ops: Arc<Vec<OpSite>>,
     /// Whether the last host operation failed.
     pub(crate) host_failed: bool,
+    /// Whether the last host operation was interrupted while it waited, its task cancelled
+    /// (ADR 0117 rule 4): its event ends `interrupted`, and the task stops.
+    pub(crate) interrupted: bool,
+    /// How many `first of` blocks the task has run, for the paths of their branches (`spec/27
+    /// §6`).
+    pub(crate) races: usize,
     /// The number of instances of each handler that `with` installed so far: in the run, or
     /// in a task, since it started (`tasks`).
     pub(crate) installs: BTreeMap<String, usize>,
@@ -773,12 +779,26 @@ pub(crate) struct TaskTemplate {
     /// The settings of the run's tasks, and its scheduler.
     concurrency: una_interp::Concurrency,
     pub(crate) sched: Arc<crate::sched::Scheduler>,
+    /// For the branches of a `first of`, the count of the block among those its task ran: their
+    /// paths are `p.f<c>.<i>` (`spec/27 §6`).
+    pub(crate) race: Option<usize>,
 }
 
 impl TaskTemplate {
     /// Whether the task that runs the block, or one that runs it, was cancelled.
     pub(crate) fn cancelled(&self) -> bool {
         unshielded(&self.cancel, self.shielded)
+    }
+
+    /// The prefix of the paths of the block's tasks: `p.` in a task `p`, and `f<c>.` more for
+    /// the branches of the `c`-th `first of` of its task (`spec/19 §6` rule 1, `spec/27 §6`).
+    pub(crate) fn path_prefix_len(&self) -> usize {
+        let own = if self.path.is_empty() {
+            0
+        } else {
+            self.path.len() + 1
+        };
+        own + self.race.map_or(0, |race| 2 + digits(race))
     }
 
     /// The bytes the template owns: its path, its cancellation entries, its location's file and
@@ -839,7 +859,25 @@ impl State {
             stack: una_interp::stack_bytes(left).unwrap_or(STACK_RESERVE * 2),
             location: site_location(self, site),
             deadline: crate::deadline::current(),
+            race: None,
         }
+    }
+
+    /// What the branches of a `first of` at `site` start from (`spec/27 §6`): the template of
+    /// [`State::for_tasks`], counted as the next race of the task, with the depth limit of
+    /// `--task-depth` below the block, within the run's, and a stack sized from it (ADR 0117
+    /// rule 2).
+    pub(crate) fn for_race(&mut self, site: usize) -> TaskTemplate {
+        let mut template = self.for_tasks(site);
+        self.races = self.races.saturating_add(1);
+        template.race = Some(self.races);
+        let left = template
+            .max_depth
+            .saturating_sub(template.depth)
+            .min(template.concurrency.task_depth);
+        template.max_depth = template.depth.saturating_add(left);
+        template.stack = una_interp::stack_bytes(left).unwrap_or(STACK_RESERVE * 2);
+        template
     }
 
     /// Whether the task the thread runs was cancelled, past what an operation in progress
@@ -1387,6 +1425,25 @@ pub(crate) fn push_cancel(flag: Arc<AtomicUsize>) -> usize {
     .unwrap_or(0)
 }
 
+/// The cancellation entries that can interrupt a wait of the operation in progress (ADR 0117
+/// rule 4): the entries of races (`tasks::RACE_ENTRY`) that the operations around it do not
+/// shield, those from the shield it began with. The operation itself completes despite any
+/// other cancellation, as before.
+pub(crate) fn interruptible_entries() -> Vec<Cancel> {
+    with_state(|state| {
+        let from = state.operations.last().copied().unwrap_or(0);
+        state
+            .cancel
+            .get(from..)
+            .unwrap_or_default()
+            .iter()
+            .filter(|(_, entry)| entry & crate::tasks::RACE_ENTRY != 0)
+            .cloned()
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
 /// How many of the task's cancellation entries the operation in progress shields: those before
 /// it began (`spec/19 §6` rule 4).
 pub(crate) fn shielded() -> usize {
@@ -1559,6 +1616,8 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
         types: Arc::new(meta.types),
         ops: Arc::new(meta.ops),
         host_failed: false,
+        interrupted: false,
+        races: 0,
         installs: BTreeMap::new(),
         stack_base: 0,
         stack_budget: stack.saturating_sub(STACK_RESERVE),
@@ -2137,6 +2196,8 @@ pub(crate) fn enter_task(template: &TaskTemplate, path: String, entry: Cancel) {
         types: Arc::clone(&template.types),
         ops: Arc::clone(&template.ops),
         host_failed: false,
+        interrupted: false,
+        races: 0,
         installs: BTreeMap::new(),
         stack_base: 0,
         stack_budget: template.stack.saturating_sub(STACK_RESERVE),
@@ -2219,6 +2280,8 @@ pub(crate) fn install_test_state_as(path: String, tracing: bool, file: String) {
             error: None,
         }]),
         host_failed: false,
+        interrupted: false,
+        races: 0,
         installs: BTreeMap::new(),
         stack_base: 0,
         stack_budget: usize::MAX,

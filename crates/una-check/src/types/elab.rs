@@ -12,10 +12,10 @@ use una_core::{
 };
 use una_syntax::ast::{
     Arg, BinaryOp, Block, BlockExpr, Body, CapBindingValue, Clause, ClauseKind, Convention,
-    DeclKind, ElseBranch, EverStmt, ExampleDecl, ExpectationKind, Expr, ExprKind, ForSource,
-    ForStmt, FunctionDecl, Handled, HandlingKind, IfBlock, IfThenStmt, IsTarget, LetValue, Literal,
-    OpClauseKind, PatternKind, Range, SignedInt, Stmt, TextLit, TextPart, TogetherFor,
-    TogetherStmt, UnaryOp, UntilStmt, UsesClause, VariantExpr, WhenExpr,
+    DeclKind, ElseBranch, EverStmt, ExampleDecl, ExpectationKind, Expr, ExprKind, FirstOf,
+    ForSource, ForStmt, FunctionDecl, Handled, HandlingKind, IfBlock, IfThenStmt, IsTarget,
+    LetValue, Literal, OpClauseKind, PatternKind, Range, SignedInt, Stmt, TextLit, TextPart,
+    TogetherFor, TogetherStmt, UnaryOp, UntilStmt, UsesClause, VariantExpr, WhenExpr,
 };
 use una_syntax::{SourceDb, Span};
 
@@ -1966,9 +1966,12 @@ impl<'e, 'a> Fx<'e, 'a> {
                         tail_span = stmt.span;
                     }
                 }
-                // A `together for` is wrapped as a whole, after its tasks (`spec/19 §5`).
+                // A `together for` and a `first of` are wrapped as a whole, after their tasks
+                // (`spec/19 §5`, `spec/27 §6`).
                 Stmt::BlockExpr(expr)
-                    if index == last && returning && !matches!(expr, BlockExpr::TogetherFor(_)) =>
+                    if index == last
+                        && returning
+                        && !matches!(expr, BlockExpr::TogetherFor(_) | BlockExpr::FirstOf(_)) =>
                 {
                     let saved = self.current_join.replace(Wrap::Return);
                     tail = self.block_expr(expr);
@@ -3140,6 +3143,61 @@ impl<'e, 'a> Fx<'e, 'a> {
         )
     }
 
+    /// `first of` with its branches: `first_of(e₁ | ... | eₙ)`, whose tasks are the branches'
+    /// expressions with their `with` bindings and handling clauses, each closed over the
+    /// bindings before the block, bound to a temporary (`spec/27 §6`, ADR 0117 rule 6).
+    fn first_of(&mut self, first: &FirstOf) -> CoreExpr {
+        // A branch is not a loop body for `skip` and `stop` (U2034), and its tail is no return.
+        let outer = self.loop_names.take();
+        let wrap = self.tail_wrap.take();
+        let join = self.current_join.take();
+        let mut tasks = Vec::new();
+        for branch in &first.body {
+            let Stmt::Handled(handled) = branch else {
+                self.broken.set(true);
+                continue;
+            };
+            let mark = self.scope.len();
+            let mut inner = Vec::new();
+            let value = if self.marked(&handled.expr) {
+                let atom = self.marked_call(&mut inner, handled);
+                CoreExpr::Atom {
+                    atom,
+                    span: handled.expr.span,
+                }
+            } else {
+                self.handled(handled)
+            };
+            // The branch's own names end with it.
+            self.scope.truncate(mark);
+            tasks.push(close(inner, value));
+        }
+        self.tail_wrap = wrap;
+        self.current_join = join;
+        self.loop_names = outer;
+        let t = self.temp();
+        let ty = self.type_at(first.span);
+        let mut lets = Vec::new();
+        bind_expr(
+            &mut lets,
+            t.clone(),
+            ty,
+            CoreExpr::FirstOf {
+                tasks,
+                span: first.span,
+            },
+            first.span,
+            false,
+        );
+        close(
+            lets,
+            CoreExpr::Atom {
+                atom: Atom::Var(t),
+                span: first.span,
+            },
+        )
+    }
+
     /// Whether `expr` is a call with an `edit` argument or receiver.
     fn marked(&self, expr: &Expr) -> bool {
         match &expr.kind {
@@ -3480,6 +3538,8 @@ impl<'e, 'a> Fx<'e, 'a> {
                 inner.push(self.name(&together.var).to_owned());
                 self.scan_block(&together.block, &inner, found);
             }
+            // A branch updates no binding declared outside it (U2023).
+            BlockExpr::FirstOf(_) => {}
             BlockExpr::When(when) => {
                 for arm in &when.arms {
                     if let Body::Block(block) = &arm.body {
@@ -3650,6 +3710,7 @@ impl<'e, 'a> Fx<'e, 'a> {
             BlockExpr::If(block) => self.if_block(block),
             BlockExpr::When(when) => self.when(when),
             BlockExpr::TogetherFor(together) => self.together_for(together),
+            BlockExpr::FirstOf(first) => self.first_of(first),
         }
     }
 
@@ -5210,6 +5271,7 @@ fn block_expr_span(expr: &BlockExpr) -> Span {
         BlockExpr::When(when) => when.span,
         BlockExpr::If(block) => block.span,
         BlockExpr::TogetherFor(together) => together.span,
+        BlockExpr::FirstOf(first) => first.span,
     }
 }
 

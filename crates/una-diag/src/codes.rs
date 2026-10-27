@@ -172,6 +172,9 @@ pub enum Code {
     U2033,
     /// `stop` or `skip` outside a loop body, or across a task boundary.
     U2034,
+    /// `first of` with fewer than two branches, or a line that is not an expression (ADR
+    /// 0117 rule 6).
+    U2035,
     /// A decimal scale out of place (ADR 0120).
     U2037,
     /// A statement after `stop` or `skip` in the same block, which never runs.
@@ -295,7 +298,7 @@ pub enum Code {
 
 impl Code {
     /// Every registered code, in the order of `spec/13 §4`.
-    pub const ALL: [Code; 113] = [
+    pub const ALL: [Code; 114] = [
         Code::U0001,
         Code::U0002,
         Code::U0003,
@@ -350,6 +353,7 @@ impl Code {
         Code::U2032,
         Code::U2033,
         Code::U2034,
+        Code::U2035,
         Code::U2037,
         Code::U2040,
         Code::U3001,
@@ -697,6 +701,11 @@ impl Code {
                 code: "U2034",
                 domain: Domain::Types,
                 meaning: "`stop` or `skip` outside a loop body, or across a task boundary",
+            },
+            Code::U2035 => &Entry {
+                code: "U2035",
+                domain: Domain::Types,
+                meaning: "`first of` with fewer than two branches, or a line that is not an expression",
             },
             Code::U2037 => &Entry {
                 code: "U2037",

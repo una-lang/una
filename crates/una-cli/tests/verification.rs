@@ -434,7 +434,7 @@ fn collect_op_paths(expr: &una_core::Expr, out: &mut Vec<String>) {
         | Expr::Within { body, .. }
         | Expr::LetTuple { body, .. }
         | Expr::Loop { body, .. } => collect_op_paths(body, out),
-        Expr::Together { tasks, .. } => {
+        Expr::Together { tasks, .. } | Expr::FirstOf { tasks, .. } => {
             for task in tasks {
                 collect_op_paths(task, out);
             }

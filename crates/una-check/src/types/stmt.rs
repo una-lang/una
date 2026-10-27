@@ -6,8 +6,9 @@ use una_diag::{Code, ObligationKind};
 use una_syntax::Span;
 use una_syntax::ast::{
     AssignStmt, Bind, Block, BlockExpr, Body, CapBindingValue, ElseBranch, EverStmt, Expr,
-    ExprKind, ForSource, ForStmt, Handled, HandlingKind, IfBlock, IfThenStmt, LetStmt, LetValue,
-    Literal, PatternKind, Stmt, StopStmt, TextPart, TogetherFor, TogetherStmt, UntilStmt, WhenExpr,
+    ExprKind, FirstOf, ForSource, ForStmt, Handled, HandlingKind, IfBlock, IfThenStmt, LetStmt,
+    LetValue, Literal, PatternKind, Stmt, StopStmt, TextPart, TogetherFor, TogetherStmt, UntilStmt,
+    WhenExpr,
 };
 
 use super::Report;
@@ -793,6 +794,7 @@ impl<'a> Checker<'_, 'a, '_> {
         }
         let mark = self.locals.len();
         let saved = self.task_mark.replace(mark);
+        let word = std::mem::replace(&mut self.task_word, "`together` task");
         self.task_depth += 1;
         let mut bound = Vec::new();
         for branch in &stmt.body {
@@ -812,8 +814,106 @@ impl<'a> Checker<'_, 'a, '_> {
             bound.extend(self.locals.drain_from(mark));
         }
         self.task_mark = saved;
+        self.task_word = word;
         self.task_depth -= 1;
         self.locals.extend(bound);
+    }
+
+    /// `first of` with its branches (`spec/27 §6`, ADR 0117 rule 6 and IF3): each branch is a
+    /// task, checked as a `together` branch is, under the program counter of the block,
+    /// without the bindings of its siblings, and unable to change a binding declared before
+    /// it (U2023). Every branch has the one type of the block (U2001). Timing decides the
+    /// winner, so the value is labeled with `t`, the join of `τ` of every branch, and every
+    /// operation and call with effects in a branch is checked under the timing floor `pc ⊔ t`,
+    /// since a sibling that wins can cut it. A body with fewer than two branches, or with a
+    /// line that is not an expression, is U2035.
+    fn first_of(
+        &mut self,
+        first: &FirstOf,
+        expected: Option<&Ty>,
+        role: Role<'_>,
+        tail: bool,
+    ) -> Ty {
+        self.outside_rl(first.span, || "`first of`".to_owned());
+        if let Some(current) = self.current {
+            self.findings.task_functions.insert(current);
+        }
+        let branches = first
+            .body
+            .iter()
+            .filter(|s| matches!(s, Stmt::Handled(_)))
+            .count();
+        if let Some(other) = first.body.iter().find(|s| !matches!(s, Stmt::Handled(_))) {
+            let mut diagnostic = self.report.make(
+                Code::U2035,
+                first.keyword,
+                "each line of `first of` is a branch, an expression with its handling clauses; call a function from a branch for more steps".to_owned(),
+            );
+            diagnostic
+                .related
+                .push(self.report.related(stmt_span(other), "not an expression"));
+            self.report.push(diagnostic);
+        } else if branches < 2 {
+            self.report.error(
+                Code::U2035,
+                first.keyword,
+                "`first of` races at least two branches; with one, write the expression alone"
+                    .to_owned(),
+            );
+        }
+        // IF3: the timing label of the race, and its timing floor over every branch.
+        let open = self.race_open(first.keyword, first.span);
+        let mark = self.locals.len();
+        let saved_mark = self.task_mark.replace(mark);
+        let word = std::mem::replace(&mut self.task_word, "branch of `first of`");
+        self.task_depth += 1;
+        let mut joined = expected.cloned();
+        let mut types: Vec<(Span, Ty)> = Vec::new();
+        for branch in &first.body {
+            let Stmt::Handled(handled) = branch else {
+                continue;
+            };
+            if matches!(
+                handled.expr.kind,
+                ExprKind::Call { .. } | ExprKind::MethodCall { .. }
+            ) {
+                self.statement_calls.push(handled.expr.span);
+            }
+            let ty = self.handled(handled, joined.as_ref(), Role::Plain, false);
+            // A branch's own names end with it.
+            self.locals.truncate(mark);
+            if joined.is_none() && self.resolve(&ty) != Ty::Never {
+                joined = Some(ty.clone());
+            }
+            types.push((handled.expr.span, ty));
+        }
+        self.task_mark = saved_mark;
+        self.task_word = word;
+        self.task_depth -= 1;
+        let tau = self.race_close(&open);
+        let reached: Vec<(Span, Ty)> = types
+            .iter()
+            .filter(|(_, ty)| self.resolve(ty) != Ty::Never)
+            .cloned()
+            .collect();
+        let value = match reached.split_first() {
+            None => joined.unwrap_or(Ty::Never),
+            Some(((_, first_ty), [])) => first_ty.clone(),
+            Some(((_, first_ty), rest)) => {
+                let mut value = first_ty.clone();
+                for (_, ty) in rest {
+                    value = self.vars.join(&value, ty);
+                }
+                self.join_flows(&value, reached.clone());
+                value
+            }
+        };
+        // Timing decides which branch wins (IF3).
+        let value = value.with_label(&tau);
+        if tail {
+            self.returned_value(first.span, &value, expected, role);
+        }
+        value
     }
 
     /// `together for x in source` with its block (`spec/19 §1`, `§2`, `§3`): one task per
@@ -840,6 +940,7 @@ impl<'a> Checker<'_, 'a, '_> {
         let saved_pc = self.raise_pc(&label, from);
         let mark = self.locals.len();
         let saved_mark = self.task_mark.replace(mark);
+        let word = std::mem::replace(&mut self.task_word, "`together` task");
         self.task_depth += 1;
         self.bind(self.name(&together.var), var_ty);
         let element = self.block(
@@ -851,6 +952,7 @@ impl<'a> Checker<'_, 'a, '_> {
         self.locals.truncate(mark);
         self.task_depth -= 1;
         self.task_mark = saved_mark;
+        self.task_word = word;
         self.restore_pc(saved_pc);
         // How many elements there are depends on the label of what the tasks visit.
         let ty = Ty::List(Shared::new(element)).with_label(&label);
@@ -1342,6 +1444,7 @@ impl<'a> Checker<'_, 'a, '_> {
             BlockExpr::When(when) => self.when(when, expected, role, tail),
             BlockExpr::If(block) => self.if_block(block, expected, role, tail),
             BlockExpr::TogetherFor(together) => self.together_for(together, expected, role, tail),
+            BlockExpr::FirstOf(first) => self.first_of(first, expected, role, tail),
         };
         // The value of a join, in the desugar of the memory model (`spec/17 §4`).
         self.typed(block_expr_span(expr), &ty);
@@ -1794,6 +1897,7 @@ fn block_expr_span(expr: &BlockExpr) -> Span {
         BlockExpr::When(when) => when.span,
         BlockExpr::If(block) => block.span,
         BlockExpr::TogetherFor(together) => together.span,
+        BlockExpr::FirstOf(first) => first.span,
     }
 }
 

@@ -682,6 +682,13 @@ impl Printer {
                     self.expr(indent + 2, task);
                 }
             }
+            Expr::FirstOf { tasks, .. } => {
+                self.line(indent, "first_of");
+                for task in tasks {
+                    self.line(indent + 1, "branch");
+                    self.expr(indent + 2, task);
+                }
+            }
             Expr::TogetherFor {
                 source, var, task, ..
             } => {

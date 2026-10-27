@@ -681,7 +681,7 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
                     report.error(
                         Code::U8001,
                         site.span,
-                        "internal error: the timing labels of `within` and the file-state label did not reach a fixpoint (ADR 0117 IF2, ADR 0085)".to_owned(),
+                        "internal error: the timing labels of `within` and `first of` and the file-state label did not reach a fixpoint (ADR 0117 IF2, IF3, ADR 0085)".to_owned(),
                     );
                 }
                 break;

@@ -86,7 +86,7 @@ pub fn vars(expr: &Expr, out: &mut BTreeSet<String>) {
                 vars(&on_stop.body, out);
             }
         }
-        Expr::Together { tasks, .. } => {
+        Expr::Together { tasks, .. } | Expr::FirstOf { tasks, .. } => {
             for task in tasks {
                 vars(task, out);
             }
@@ -202,7 +202,9 @@ pub fn binders<'e>(expr: &'e Expr, out: &mut BTreeSet<&'e str>) {
                 binders(&on_stop.body, out);
             }
         }
-        Expr::Together { tasks, .. } => tasks.iter().for_each(|task| binders(task, out)),
+        Expr::Together { tasks, .. } | Expr::FirstOf { tasks, .. } => {
+            tasks.iter().for_each(|task| binders(task, out));
+        }
         Expr::TogetherFor { var, task, .. } => {
             out.insert(var.0.as_str());
             binders(task, out);

@@ -141,18 +141,24 @@ impl<T> Sender<T> {
     }
 
     fn close(&self, value: Option<T>) {
-        let waiter = {
-            let mut mailbox = lock(&self.0);
-            if mailbox.closed {
-                return;
-            }
-            mailbox.closed = true;
-            mailbox.value = value;
-            mailbox.waiter.take()
-        };
-        if let Some(waiter) = waiter {
-            waiter.wake();
+        close(&self.0, value);
+    }
+}
+
+/// Closes `mailbox` with `value` and wakes its receiver, unless it was closed already: the
+/// first close counts, and a later value is dropped.
+fn close<T>(mailbox: &Mutex<Mailbox<T>>, value: Option<T>) {
+    let waiter = {
+        let mut mailbox = lock(mailbox);
+        if mailbox.closed {
+            return;
         }
+        mailbox.closed = true;
+        mailbox.value = value;
+        mailbox.waiter.take()
+    };
+    if let Some(waiter) = waiter {
+        waiter.wake();
     }
 }
 
@@ -166,18 +172,26 @@ impl<T> Receiver<T> {
     /// The value, once sent; `None` when the sender was dropped without sending. Parks until
     /// one or the other.
     pub(crate) fn recv(&self) -> Option<T> {
+        self.recv_parked().0
+    }
+
+    /// As [`Receiver::recv`], and whether the receiver parked before the value or the close
+    /// came.
+    pub(crate) fn recv_parked(&self) -> (Option<T>, bool) {
+        let mut parked = false;
         loop {
             {
                 let mut mailbox = lock(&self.0);
                 if let Some(value) = mailbox.value.take() {
-                    return Some(value);
+                    return (Some(value), parked);
                 }
                 if mailbox.closed {
-                    return None;
+                    return (None, parked);
                 }
                 mailbox.waiter = Some(Waker::current());
             }
             park();
+            parked = true;
         }
     }
 }
@@ -904,6 +918,97 @@ pub(crate) fn blocking<T: Send + 'static>(
     }
 }
 
+/// Gives the worker to the jobs queued before the calling task, which runs again after them:
+/// its own resume goes to the back of its worker's queue, first in, first out. Outside a task's
+/// coroutine it does nothing. O(1).
+pub(crate) fn yield_now() {
+    if !una_sys::coroutine::inside() {
+        return;
+    }
+    let running = RUNNING.with(|running| {
+        running
+            .borrow()
+            .as_ref()
+            .map(|(worker, id, _)| (Arc::clone(worker), *id))
+    });
+    let Some((worker, id)) = running else {
+        return;
+    };
+    // The worker is this thread, so it takes the job only once the task has suspended; a wake
+    // that comes meanwhile adds a resume of its own, which the task's next wait ignores.
+    worker.push(Job::Resume(id));
+    drop(worker);
+    una_sys::coroutine::suspend();
+}
+
+/// What an interruptible wait gave: the job's result, or the interruption of its task.
+enum Waited<T> {
+    Done(std::thread::Result<T>),
+    Interrupted,
+}
+
+/// [`blocking`] for an interruptible operation (ADR 0117 rule 4): the calling task parks until
+/// the job returns, or until a cancellation of one of `entries` wakes it, whichever comes
+/// first ([`crate::interrupt`]). `None` when the cancellation came first: the job may still
+/// run, or complete, on its helper, an effect in doubt, and its result is then dropped there.
+/// Outside a task's coroutine it runs `job` inline, as [`blocking`] does.
+pub(crate) fn blocking_interruptible<T: Send + 'static>(
+    pool: Pool,
+    entries: &[crate::runtime::Cancel],
+    job: impl FnOnce() -> T + Send + 'static,
+) -> Option<T> {
+    let shared = if una_sys::coroutine::inside() {
+        RUNNING.with(|running| {
+            running
+                .borrow()
+                .as_ref()
+                .map(|(_, _, shared)| Arc::clone(shared))
+        })
+    } else {
+        None
+    };
+    let Some(shared) = shared else {
+        return Some(job());
+    };
+    let helpers = match pool {
+        Pool::Files => Arc::clone(&shared.files),
+        Pool::Io => Arc::clone(&shared.io),
+    };
+    drop(shared);
+    let (sender, receiver) = channel::<Waited<T>>();
+    let mailbox = Arc::clone(&sender.0);
+    let wake: crate::interrupt::Wake = Arc::new(move || close(&mailbox, Some(Waited::Interrupted)));
+    let registration = crate::interrupt::register(entries, &wake);
+    drop(wake);
+    // A cancellation that came before the registration woke nothing: seen here, the operation
+    // is never sent.
+    if entries
+        .iter()
+        .any(|(count, entry)| count.load(Ordering::SeqCst) < *entry)
+    {
+        return None;
+    }
+    let wrapped: Box<dyn FnOnce() + Send> = Box::new(move || {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
+        sender.send(Waited::Done(result));
+    });
+    // A pool that could start no thread runs nothing: the job runs here, as inline.
+    if let Err(wrapped) = helpers.submit(wrapped) {
+        wrapped();
+    }
+    drop(helpers);
+    let waited = receiver.recv();
+    drop(registration);
+    match waited {
+        Some(Waited::Done(Ok(value))) => Some(value),
+        Some(Waited::Done(Err(payload))) => std::panic::resume_unwind(payload),
+        Some(Waited::Interrupted) => None,
+        // The helper dropped the job without running it: only when its thread ended in a
+        // panic outside the job, which `catch_unwind` excludes.
+        None => std::panic::resume_unwind(Box::new("a helper thread ended without its result")),
+    }
+}
+
 /// A task's thread-locals while it is parked, or the worker's own while the task runs: what
 /// [`swap`] exchanges (`docs/plan/0117-s1-design.md` §5).
 #[derive(Default)]
@@ -1033,6 +1138,74 @@ mod tests {
         let root = start(&sched, 0, move || level(inner, 3, counted));
         assert_eq!(root.recv(), Some(()));
         assert_eq!(sum.load(Ordering::SeqCst), 1 + 3 + 9 + 27);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
+    fn a_yield_lets_the_jobs_queued_before_it_run_first() {
+        // A parked task is woken, wakes a second one, whose resume is queued, then yields:
+        // the second runs before the first goes on, on one worker, first in, first out.
+        let sched = Scheduler::new(settings(1, 1, 1));
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let (wake_a, gate_a) = channel::<()>();
+        let (wake_b, gate_b) = channel::<()>();
+        let seen = Arc::clone(&order);
+        let b = start(&sched, 1, move || {
+            assert_eq!(gate_b.recv(), Some(()));
+            lock(&seen).push("b");
+        });
+        let seen = Arc::clone(&order);
+        let a = start(&sched, 2, move || {
+            assert_eq!(gate_a.recv(), Some(()));
+            lock(&seen).push("a1");
+            wake_b.send(());
+            yield_now();
+            lock(&seen).push("a2");
+        });
+        // Both tasks park first.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        wake_a.send(());
+        assert_eq!(a.recv(), Some(()));
+        assert_eq!(b.recv(), Some(()));
+        assert_eq!(*lock(&order), ["a1", "b", "a2"]);
+        // Outside a task's coroutine, a yield does nothing.
+        yield_now();
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
+    fn a_cancelled_task_parked_on_an_interruptible_wait_is_woken_at_once() {
+        // ADR 0117 rule 4: a race that decides wakes a loser parked on a request at once,
+        // while the request's helper still waits; its result is dropped there later.
+        let sched = Scheduler::new(settings(1, 1, 1));
+        let (release, gate) = std::sync::mpsc::channel::<()>();
+        let gate = Arc::new(Mutex::new(gate));
+        let count = Arc::new(AtomicUsize::new(3));
+        let (outcome, seen) = std::sync::mpsc::channel();
+        let (entry, helper_gate) = (Arc::clone(&count), Arc::clone(&gate));
+        let task = start(&sched, 1, move || {
+            let entries = vec![(entry, 2)];
+            let waited = blocking_interruptible(Pool::Io, &entries, move || {
+                let _ = lock(&helper_gate).recv();
+                7
+            });
+            outcome.send(waited).unwrap();
+        });
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        count.fetch_min(0, Ordering::SeqCst);
+        crate::interrupt::lowered(&count);
+        let waited = seen
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        assert_eq!(waited, None);
+        assert_eq!(task.recv(), Some(()));
+        let _ = release.send(());
+        // Without a cancellation, the wait gives the job's result.
+        let task = start(&sched, 1, || {
+            let entries = vec![(Arc::new(AtomicUsize::new(3)), 2)];
+            assert_eq!(blocking_interruptible(Pool::Io, &entries, || 9), Some(9));
+        });
+        assert_eq!(task.recv(), Some(()));
     }
 
     #[test]

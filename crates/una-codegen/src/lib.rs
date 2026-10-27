@@ -435,6 +435,7 @@ const RUNTIME: &[(&str, usize, bool)] = &[
     ("una_rt_operation_end", 0, false),
     ("una_rt_together", 2, true),
     ("una_rt_together_for", 3, true),
+    ("una_rt_first_of", 2, true),
     ("una_rt_together_status", 0, true),
     ("una_rt_range", 4, true),
     ("una_rt_clock_now", 0, true),

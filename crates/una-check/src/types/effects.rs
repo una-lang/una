@@ -205,6 +205,12 @@ impl Scan<'_, '_> {
                 self.source(&together.source);
                 self.block(&together.block);
             }
+            // Each branch is a statement of its own (ADR 0117 rule 6).
+            BlockExpr::FirstOf(first) => {
+                for branch in &first.body {
+                    self.stmt(branch);
+                }
+            }
         }
     }
 

@@ -185,6 +185,13 @@ attempt_expr    = "attempt" postfix [ "within" add_expr ] ;
 
 A `handled` whose `line_expr` is an `attempt` with its own `within` takes no second `within` (U0101).
 
+(Edition 0.4, ADR 0117 rule 6.) In edition `0.4`, a `block_expr` MAY also be a race of two or more branches, `first` followed by `of` and the end of its line opening it (`spec/27 §6`):
+
+```ebnf
+block_expr      = when_expr | if_block | together_for | first_of ;
+first_of        = "first" "of" NEWLINE INDENT handled handled { handled } DEDENT ;
+```
+
 ## 7. Expressions
 
 ```ebnf

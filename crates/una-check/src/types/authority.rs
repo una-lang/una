@@ -2368,12 +2368,13 @@ pub(crate) fn within_timing(
             .get(&site.key)
             .cloned()
             .unwrap_or_else(Label::public);
+        let words = site.construct.words();
         if !timing.label.flows_to(&used) {
             report.error(
                 Code::U8001,
                 site.span,
                 format!(
-                    "internal error: the timing label of this `within` is `{}`, above the `{used}` that the checks used (ADR 0117 IF2)",
+                    "internal error: the timing label of this `{words}` is `{}`, above the `{used}` that the checks used (ADR 0117 IF2, IF3)",
                     timing.label
                 ),
             );
@@ -2386,7 +2387,12 @@ pub(crate) fn within_timing(
                 format!("{module}.{}", def.name)
             })
             .unwrap_or_default();
+        // IF8 is IF2's: a deadline makes a waiting request fail. A loser of `first of` is
+        // cancelled instead, and its request ends `interrupted`, with no failure to label.
         let interrupted = timing.ops.iter().find_map(|(cap, op)| {
+            if site.construct == super::within::Construct::FirstOf {
+                return None;
+            }
             let capability = env.capabilities.get(*cap)?;
             if capability.module != env.prelude || capability.name != "Http" {
                 return None;
@@ -2411,7 +2417,7 @@ pub(crate) fn within_timing(
             report.push(diagnostic);
         }
         if !timing.label.is_public() {
-            entries.push(("within", function, site.span, timing.label));
+            entries.push((words, function, site.span, timing.label));
         }
     }
     entries

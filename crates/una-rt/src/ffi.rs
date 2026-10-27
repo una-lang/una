@@ -576,6 +576,12 @@ pub extern "C" fn una_rt_together_for(closure: i64, items: i64, site: i64) -> i6
     tasks::together_for(closure, items, usize::try_from(site).unwrap_or(usize::MAX))
 }
 
+/// Runs the branches of `first of` at `site` ([`tasks::first_of`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_first_of(closures: i64, site: i64) -> i64 {
+    tasks::first_of(closures, usize::try_from(site).unwrap_or(usize::MAX))
+}
+
 /// How the last block of tasks ended ([`tasks::status`]).
 #[unsafe(no_mangle)]
 pub extern "C" fn una_rt_together_status() -> i64 {

@@ -1121,7 +1121,8 @@ fn stops(expr: &Expr) -> bool {
         | Expr::Unreachable { .. }
         | Expr::Loop { .. }
         | Expr::Together { .. }
-        | Expr::TogetherFor { .. } => false,
+        | Expr::TogetherFor { .. }
+        | Expr::FirstOf { .. } => false,
     }
 }
 
@@ -1272,6 +1273,9 @@ struct Walker<'p, 'i> {
     /// The element type of the list that the `together for` being walked makes, from the
     /// binder of its `let`: each task's value flows into it (ADR 0103 rule 3).
     together_element: Option<Type>,
+    /// The type of the value of the `first of` being walked, when it is bound by a `let`:
+    /// each branch's value flows into it (`spec/27 §6`, as ADR 0103 rule 3 for `together for`).
+    first_of_type: Option<Type>,
     /// The name of the named function whose eta-expansion is walked (issue #76).
     eta_name: Option<String>,
     /// The binder that an assignment's refinement obligation is about, which a counterexample
@@ -1341,6 +1345,7 @@ impl<'p, 'i> Walker<'p, 'i> {
             fresh: 0,
             eta: None,
             together_element: None,
+            first_of_type: None,
             eta_name: None,
             assigned: None,
             frames: BTreeMap::new(),
@@ -1936,6 +1941,36 @@ impl<'p, 'i> Walker<'p, 'i> {
                     });
                     return;
                 }
+                // `first_of(e₁ | ... | eₙ)` (`spec/27 §6`, ADR 0117 Verification): each branch
+                // is verified alone, in the context before the block, and each of its values
+                // flows into the type of the result, which carries the facts of that type only:
+                // which branch wins is timing.
+                Expr::FirstOf { tasks, span } => {
+                    let result = self.first_of_type.take().filter(has_refinements);
+                    for task in tasks {
+                        let mut task_leaves = Vec::new();
+                        self.walk(task, &ctx, &mut task_leaves);
+                        let Some(result) = &result else {
+                            continue;
+                        };
+                        for leaf in &task_leaves {
+                            let Some(value) = &leaf.value else {
+                                continue;
+                            };
+                            let mut leaf_ctx = ctx.clone();
+                            leaf_ctx.hyps = leaf.hyps.clone();
+                            self.refined_flow(result, value, leaf.span, &leaf_ctx);
+                        }
+                    }
+                    leaves.push(Leaf {
+                        hyps: ctx.hyps.clone(),
+                        divisions: ctx.divisions.clone(),
+                        value: None,
+                        span: *span,
+                        returns: Vec::new(),
+                    });
+                    return;
+                }
                 // The tasks of a `together` block outside the `let` that binds their tuple,
                 // which the desugar never makes: each is checked in the context before it.
                 Expr::Together { tasks, span } => {
@@ -2057,6 +2092,9 @@ impl<'p, 'i> Walker<'p, 'i> {
                                 } = ty
                             {
                                 self.together_element = args.first().cloned();
+                            }
+                            if let Expr::FirstOf { .. } = inner {
+                                self.first_of_type = Some(ty.clone());
                             }
                             let mut inner_leaves = Vec::new();
                             self.walk(inner, &ctx, &mut inner_leaves);

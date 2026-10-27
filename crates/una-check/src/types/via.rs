@@ -184,8 +184,15 @@ fn plain(env: &Env<'_>, report: &Report<'_>, id: usize) -> bool {
         .count();
     let text = report.text(span);
     // `with` installs a handler; `within` makes a failure that the timing of the code it
-    // bounds decides (ADR 0117 IF2), so neither may stand in the body, as a word anywhere.
-    exits(text) == allowed && !words(text).any(|word| word == "with" || word == "within")
+    // bounds decides (ADR 0117 IF2), so neither may stand in the body, as a word anywhere; nor
+    // may `first of`, whose winner timing decides (ADR 0117 IF3).
+    let found: Vec<&str> = words(text).filter(|word| !word.is_empty()).collect();
+    let race = found.windows(2).any(|pair| pair == ["first", "of"]);
+    exits(text) == allowed
+        && !race
+        && !found
+            .iter()
+            .any(|word| *word == "with" || *word == "within")
 }
 
 /// Whether `handled` is `@k.hmac(key_name: "literal", data: e)` with one clause, `if error pass`

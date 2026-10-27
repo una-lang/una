@@ -196,7 +196,9 @@ fn reaches_tables<'p>(index: &Index<'p>, roots: &[&'p Expr]) -> bool {
                 }
                 pending.extend(source_condition(source));
             }
-            Expr::Together { tasks, span: _ } => pending.extend(tasks.iter()),
+            Expr::Together { tasks, span: _ } | Expr::FirstOf { tasks, .. } => {
+                pending.extend(tasks.iter());
+            }
             Expr::TogetherFor {
                 source,
                 var: _,

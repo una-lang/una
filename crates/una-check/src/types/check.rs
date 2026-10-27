@@ -84,8 +84,10 @@ pub(crate) struct Ctx {
     pub(crate) floor: Option<Label>,
     /// Inside `e within d`, its timing label `τ(e)` and the `within`: the timing floor that
     /// raises the program counter of every operation and every call with effects in `e`, since
-    /// the deadline can cut `e` before any of them (ADR 0117 IF2).
-    pub(crate) timing: Option<(Label, Span)>,
+    /// the deadline can cut `e` before any of them (ADR 0117 IF2). Inside a branch of `first
+    /// of`, the join of `τ` of every branch and the race, since a sibling that wins can cut the
+    /// branch (IF3). The construct is the innermost one that raised the floor.
+    pub(crate) timing: Option<(Label, Span, super::within::Construct)>,
 }
 
 impl Ctx {
@@ -221,6 +223,9 @@ pub(crate) struct Checker<'c, 'a, 's> {
     pub(crate) task_mark: Option<usize>,
     /// How many `together` tasks enclose the expression checked (`spec/26 §3`).
     pub(crate) task_depth: usize,
+    /// What the innermost enclosing task is, for the messages of U2023: a `together` task or
+    /// a branch of `first of` (ADR 0117 rule 6).
+    pub(crate) task_word: &'static str,
     /// The loops whose bodies enclose the statement checked, innermost last (`spec/26 §3`).
     pub(crate) loops: Vec<LoopFrame>,
     /// Inside an `on stop` block, whose statements must not fail (U3029, `spec/26 §5`).
@@ -505,6 +510,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             prelude_lambda: false,
             task_mark: None,
             task_depth: 0,
+            task_word: "`together` task",
             loops: Vec::new(),
             misplaced_exits: Vec::new(),
             in_on_stop: false,
