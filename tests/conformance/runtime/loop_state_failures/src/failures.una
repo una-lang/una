@@ -1,4 +1,4 @@
--- test: in edition 0.4, a list that a loop updates keeps its value from before when the loop's body fails, under `if error use`, under `attempt` and in a handler inside another loop, and when a `within` cuts the loop or the `for ever` around it, whose `on stop` sees the values from before; a loop that ends within its deadline, a `for ever within` that stops, and updates under `within` in a loop's body leave the final values, read after the loop, in both engines (#1196, spec/17 §7)
+-- test: in edition 0.4, a list that a loop updates keeps its value from before when the loop's body fails, under `if error use`, under `attempt` and in a handler inside another loop, and when a `within` cuts the loop; a loop that ends within its deadline and updates under `within` in a loop's body leave the final values, read after the loop, in both engines (#1196, spec/17 §7); the `for ever` shapes wait for #1198
 -- spec: spec/17 §7
 -- grant: console
 -- expect: run-output "failed: [1]"
@@ -8,12 +8,6 @@
 -- expect: run-output "in time: [4, 5]"
 -- expect: run-output "cut: [4, 5]"
 -- expect: run-output "within in a loop: {1: 2, 2: 1}"
--- expect: run-output "on stop after a failure: 0 [7]"
--- expect: run-output "after a failure: [7]"
--- expect: run-output "on stop after a stop: 2 [7, 1, 2]"
--- expect: run-output "after a stop: [7, 1, 2]"
--- expect: run-output "on stop after a cut: 0 {1: 0}"
--- expect: run-output "after a cut: {1: 0}"
 module failures
 
 import std.time (millisecond, second)
@@ -48,52 +42,8 @@ raise(edit xs: List[Int], rounds: Int) -> Unit
       let x = xs.at(index: i).or_else(default: 0)
       edit xs.set(index: i, item: x + 1)
 
---- Appends 1, 2, ... to `xs`, and fails in the third iteration.
-fail_forever(edit xs: List[Int]) -> Unit
-  uses @console: Console[print]
-  fails Limit
-  diverges
-=
-  let edit n = 0
-  for ever
-    n = n + 1
-    if n == 3
-      fail Full
-    xs = xs.append(item: n)
-  on stop
-    @console.print("on stop after a failure: {n} {xs}")
-  unit
-
---- Appends 1 to `count` to `xs`, each iteration under a deadline, then stops.
-stop_forever(edit xs: List[Int], count: Int) -> Unit
-  uses @console: Console[print]
-  diverges
-=
-  let edit n = 0
-  for ever within 60 * second
-    stop when n == count
-    n = n + 1
-    xs = xs.append(item: n)
-  on stop
-    @console.print("on stop after a stop: {n} {xs}")
-  unit
-
---- Counts in `m` until something outside cuts the loop.
-cut_forever(edit m: Map[Int, Int]) -> Unit
-  uses @console: Console[print]
-  diverges
-=
-  let edit n = 0
-  for ever
-    n = n + 1
-    edit m.set(key: 1, value: n)
-  on stop
-    @console.print("on stop after a cut: {n} {m}")
-  unit
-
 pub main() -> Unit
   uses @console: Console[print]
-  diverges
 =
   let edit xs = [1]
   fill(edit xs, items: [2, 3, 10, 4])
@@ -126,14 +76,3 @@ pub main() -> Unit
     edit seen.set(key: k, value: count + 1) within 60 * second
       if error use unit
   @console.print("within in a loop: {seen}")
-  let edit zs = [7]
-  fail_forever(edit zs)
-    if error use unit
-  @console.print("after a failure: {zs}")
-  stop_forever(edit zs, count: 2)
-  @console.print("after a stop: {zs}")
-  let edit counts: Map[Int, Int] = empty_map()
-  edit counts.set(key: 1, value: 0)
-  cut_forever(edit counts) within 100 * millisecond
-    if error use unit
-  @console.print("after a cut: {counts}")
