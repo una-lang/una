@@ -75,7 +75,7 @@ The crate stays under its cap of 1,200 lines (ADR 0116 amendment of 2026-10-19),
 
 ## 3. The reactor (`una-rt`, safe code)
 
-- **One reactor thread per process** (decision S7-D1), `una-reactor`, started at the first wait that needs it, as the timer thread of S2 is. It owns one `Poller` and a socket pair that wakes it.
+- **One reactor thread per process** (decision S7-D1), `una-reactor`, started before `main` in a run whose grants include `Http` and whose program holds a task construct (ADR 0116 amendment, P8, as the timer thread of #1151 and the pools of #1148 are), never at a task's first wait; under virtual time no task parks on it, so none is started. A reactor that cannot start then stops the run before `main` with U6003, as a worker that cannot start does. It owns one `Poller` and a socket pair that wakes it.
 - **The table.** A slab of waits behind one mutex: each wait holds its wake (the mailbox its task parks on, `sched::channel`), its timer in a timing wheel (`wheel.rs`), and, when its run's host stop interrupts it, its run and its links in an intrusive list of such waits. A free list reuses slots. A wait's token is its slot and the slot's generation, so an event of a slot reused since is ignored.
 - **A wait, on the task's coroutine** (`Reactor::wait_on(fd, timeout, stop, entries, arm)`):
   1. Under the mutex: register the stop pipe when the wait has a run and the pipe is not watched yet; take a slot; arm the timer at `now + timeout` rounded up to the next millisecond, plus one; list the wait when it has a run. When the timer is due before the time the reactor sleeps to, or a listed wait needs the reactor's look sooner, wake the reactor (one byte on the socket pair; a full socket already holds one).

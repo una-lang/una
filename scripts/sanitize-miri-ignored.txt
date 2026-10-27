@@ -75,6 +75,7 @@ runtime::tests::the_mechanism_allocates_nothing_scenario
 runtime::tests::the_memory_budget_at_a_call_scenario
 runtime::tests::the_memory_budget_at_an_iteration_scenario
 runtime::tests::the_memory_budget_fires_at_its_exact_byte
+runtime::tests::the_reactor_runs_before_main_in_a_run_granted_http
 sched::tests::a_cancelled_task_parked_on_an_interruptible_wait_is_woken_at_once
 sched::tests::a_construct_starts_no_thread_and_maps_no_stack_whatever_ran_before
 sched::tests::a_lone_task_that_gains_a_waiting_task_keeps_a_full_turn

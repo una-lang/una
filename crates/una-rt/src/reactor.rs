@@ -333,6 +333,20 @@ pub(crate) fn get() -> Option<&'static Reactor> {
     REACTOR.get()
 }
 
+/// Starts the reactor before `main`, for a run whose grants include `Http` and whose program
+/// holds a task construct (ADR 0116 amendment, P8): a thread that exists is then never state
+/// that earlier code left, and no request pays the reactor's start. `false` when it cannot
+/// start, which the run reports before `main` as it reports a worker that cannot start.
+pub(crate) fn start_up_front() -> bool {
+    get().is_some()
+}
+
+/// Whether the reactor's thread runs, in tests.
+#[cfg(test)]
+pub(crate) fn started() -> bool {
+    REACTOR.get().is_some()
+}
+
 /// The poller and the socket pair of a new reactor, its nudge registered.
 fn parts() -> Option<Reactor> {
     let poller = Poller::new().ok()?;

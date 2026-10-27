@@ -1930,6 +1930,20 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
             return if written.is_ok() { 1 } else { USAGE };
         }
         state.sched = Some(sched);
+        // The reactor too, for a run whose grants include `Http` under the real clock (ADR
+        // 0116 amendment, P8; ADR 0117 slice S7): started here, never at a task's first wait.
+        // Under virtual time no task parks on it (`reactor::parks`).
+        if !http_grants(&state.grants).is_empty()
+            && !clock().is_virtual()
+            && !crate::reactor::start_up_front()
+        {
+            let written = writeln!(
+                stderr,
+                "[{}] Error: the reactor of this run's requests could not be made",
+                Code::U6003
+            );
+            return if written.is_ok() { 1 } else { USAGE };
+        }
     }
     let budget = options.max_memory.saturating_mul(1024 * 1024);
     // An executable whose program has a `tasks` statement runs `main` as a coroutine on
@@ -2803,6 +2817,27 @@ mod tests {
 
     fn strings(args: &[&str]) -> Vec<String> {
         args.iter().map(|a| (*a).to_owned()).collect()
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "starts the scheduler's threads, which Miri cannot")]
+    fn the_reactor_runs_before_main_in_a_run_granted_http() {
+        // ADR 0116 amendment P8, ADR 0117 slice S7: a program with a task construct whose
+        // grants include `Http` has the reactor's thread before `main` runs, so no request
+        // starts it at a moment that earlier code decided. The reactor is one per process,
+        // so the test asks once, from a run that has every reason to start it.
+        let seen = Arc::new(std::sync::Mutex::new(None));
+        let record = Arc::clone(&seen);
+        let status = start(
+            &strings(&["--grant", "http:https://example.com"]),
+            r#"{"grants":[],"uses":[],"threads":true}"#,
+            move || {
+                *record.lock().unwrap() = Some(crate::reactor::started());
+                0
+            },
+        );
+        assert_eq!(status, 0);
+        assert_eq!(*seen.lock().unwrap(), Some(true));
     }
 
     #[test]
