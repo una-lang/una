@@ -537,6 +537,13 @@ pub enum Prim {
     /// A built-in method of a `Set` of `std.collections` (`spec/28 §6`, ADR 0119 rule 7);
     /// `add` and `remove` are rebinds to `With` and `Without`.
     Set(SetOp),
+    /// A built-in method of a `HashMap` of `std.collections` (`spec/28 §7`, ADR 0119 rules 8 to
+    /// 12); `set` and `remove` are rebinds to `With` and `Without`, and `update` is a lookup,
+    /// a call and a `With`.
+    HashMap(HashMapOp),
+    /// A built-in method of a `HashSet` of `std.collections` (`spec/28 §7`, ADR 0119 rules 8 to
+    /// 12); `add` and `remove` are rebinds to `With` and `Without`.
+    HashSet(HashSetOp),
     /// An operator, method or conversion of `F64` (`spec/29`, ADR 0114): its own kind, so no
     /// existing primitive changes meaning.
     Float(FloatOp),
@@ -1261,6 +1268,104 @@ impl SetOp {
     }
 }
 
+/// The built-in methods of `HashMap[K, V]` (`spec/28 §7`, ADR 0119 rule 12), each over the
+/// map in its first argument. Lookups and updates are O(|k|) expected, the listings O(n).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum HashMapOp {
+    /// `has(key:)`.
+    Has,
+    /// `get(key:)`.
+    Get,
+    /// `with(key:, value:)`, and `edit set`.
+    With,
+    /// `without(key:)`, and `edit remove`.
+    Without,
+    /// `keys()`, in insertion order.
+    Keys,
+    /// `values()`, in insertion order.
+    Values,
+    /// `entries()`, in insertion order.
+    Entries,
+    /// `same_entries(as:)`, whatever the order.
+    SameEntries,
+}
+
+impl HashMapOp {
+    /// The method's name in the source.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            HashMapOp::Has => "has",
+            HashMapOp::Get => "get",
+            HashMapOp::With => "with",
+            HashMapOp::Without => "without",
+            HashMapOp::Keys => "keys",
+            HashMapOp::Values => "values",
+            HashMapOp::Entries => "entries",
+            HashMapOp::SameEntries => "same_entries",
+        }
+    }
+
+    /// Whether the operation gives a new map built from its receiver, which it may update in
+    /// place when the receiver is given up (ADR 0119 rule 1).
+    pub fn rebuilds(self) -> bool {
+        matches!(self, HashMapOp::With | HashMapOp::Without)
+    }
+}
+
+/// The built-in methods of `HashSet[T]` (`spec/28 §7`, ADR 0119 rule 12), each over the set in
+/// its first argument.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum HashSetOp {
+    /// `has(item:)`.
+    Has,
+    /// `with(item:)`, and `edit add`.
+    With,
+    /// `without(item:)`, and `edit remove`.
+    Without,
+    /// `items()`, in insertion order.
+    Items,
+    /// `union(other:)`.
+    Union,
+    /// `intersection(other:)`.
+    Intersection,
+    /// `difference(other:)`.
+    Difference,
+    /// `is_subset(of:)`.
+    IsSubset,
+    /// `same_items(as:)`, whatever the order.
+    SameItems,
+}
+
+impl HashSetOp {
+    /// The method's name in the source.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            HashSetOp::Has => "has",
+            HashSetOp::With => "with",
+            HashSetOp::Without => "without",
+            HashSetOp::Items => "items",
+            HashSetOp::Union => "union",
+            HashSetOp::Intersection => "intersection",
+            HashSetOp::Difference => "difference",
+            HashSetOp::IsSubset => "is_subset",
+            HashSetOp::SameItems => "same_items",
+        }
+    }
+
+    /// Whether the operation gives a new set built from its receiver, which it may update in
+    /// place when the receiver is given up (ADR 0119 rule 1).
+    pub fn rebuilds(self) -> bool {
+        matches!(
+            self,
+            HashSetOp::With
+                | HashSetOp::Without
+                | HashSetOp::Union
+                | HashSetOp::Intersection
+                | HashSetOp::Difference
+        )
+    }
+}
+
 /// The wrapping, saturating and bit methods of the fixed-width types (`spec/18 §5`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum FixedOp {
@@ -1385,6 +1490,8 @@ impl Prim {
             Prim::Map(op) => op.as_str(),
             Prim::Seq(op) => op.as_str(),
             Prim::Set(op) => op.as_str(),
+            Prim::HashMap(op) => op.as_str(),
+            Prim::HashSet(op) => op.as_str(),
             Prim::Float(op) => op.as_str(),
             Prim::Shape(fun) => fun.as_str(),
             Prim::Decimal(op) => op.as_str(),

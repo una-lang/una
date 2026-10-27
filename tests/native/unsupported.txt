@@ -9,3 +9,7 @@ tests/conformance/runtime/tensor_run
 tests/conformance/runtime/lu_run
 tests/conformance/runtime/kernels_run
 tests/conformance/runtime/tensor_memory_budget
+tests/conformance/runtime/hash_map_run
+tests/conformance/runtime/hash_set_run
+tests/conformance/runtime/hash_keys_equal
+tests/conformance/runtime/loop_state_dense

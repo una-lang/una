@@ -45,6 +45,12 @@ pub(crate) enum Value<'p> {
     /// A `Set` of `std.collections`, in the order of its items (`spec/28 §6`, ADR 0119 rule
     /// 19): each item keeps its value, for listing and rendering, as a map's key does.
     Set(Rc<Items<'p>>),
+    /// A `HashMap` of `std.collections`, in insertion order (`spec/28 §7`, ADR 0119 rule 19):
+    /// the ordered hash table of `una_hash`, with the key of its table.
+    HashMap(Rc<HashTable<'p>>),
+    /// A `HashSet` of `std.collections`: the same table, each item a key whose value is
+    /// `unit`.
+    HashSet(Rc<HashTable<'p>>),
     /// A dense value of edition 0.4, `Array[T]`, `Matrix[T]`, `Tensor[T]` or `Lu[T]` (`spec/29
     /// §17`): a view of a buffer, with its own offset, shape and strides, so a view shares its
     /// parent's storage.
@@ -105,6 +111,48 @@ pub(crate) struct Dense<'p> {
 
 /// The items of a set, by their order.
 pub(crate) type Items<'p> = BTreeMap<Key, Value<'p>>;
+
+/// A hash table of `std.collections` (`spec/28 §1`, ADR 0119 rules 9 and 19): its entries in
+/// insertion order with their index, and the 128-bit key that places its keys. A copy keeps the
+/// key; a new table takes a key of its own. No operation reads the key but the hash.
+#[derive(Clone)]
+pub(crate) struct HashTable<'p> {
+    /// The key of the table, derived from the process key when the table was made.
+    pub(crate) key: una_hash::SipKey,
+    /// The entries: each key with its value, `unit` for a set's item.
+    pub(crate) entries: una_hash::OrderedTable<Value<'p>, Value<'p>>,
+}
+
+// No key in a message: a table shows its size only (ADR 0119 rule 9).
+impl std::fmt::Debug for HashTable<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "HashTable({} entries)", self.entries.len())
+    }
+}
+
+impl<'p> HashTable<'p> {
+    /// An empty table under `key`.
+    pub(crate) fn new(key: una_hash::SipKey) -> HashTable<'p> {
+        HashTable {
+            key,
+            entries: una_hash::OrderedTable::new(),
+        }
+    }
+}
+
+// A table of tables built by a loop is as deep as the loop ran: its entries drop without
+// recursion, as a list's do.
+impl Drop for HashTable<'_> {
+    fn drop(&mut self) {
+        let entries = std::mem::take(&mut self.entries);
+        let mut pending = Vec::new();
+        for (key, value) in entries.into_entries() {
+            pending.push(key);
+            pending.push(value);
+        }
+        unwind(pending, Vec::new());
+    }
+}
 
 /// The entries of a map, by the order of their keys.
 pub(crate) type Entries<'p> = BTreeMap<Key, (Value<'p>, Value<'p>)>;
@@ -235,6 +283,15 @@ fn unwind<'p>(mut pending: Vec<Value<'p>>, mut caps: Vec<Caps<'p>>) {
                         pending.extend(items.into_values());
                     }
                 }
+                Value::HashMap(table) | Value::HashSet(table) => {
+                    if let Ok(mut table) = Rc::try_unwrap(table) {
+                        let entries = std::mem::take(&mut table.entries);
+                        for (key, value) in entries.into_entries() {
+                            pending.push(key);
+                            pending.push(value);
+                        }
+                    }
+                }
                 Value::Dense(dense) => {
                     if let Ok(mut dense) = Rc::try_unwrap(dense)
                         && let Some(items) = take_values(&mut dense)
@@ -328,7 +385,7 @@ fn composite(value: &Value<'_>) -> Option<(u8, usize)> {
         Value::List(x) if !x.is_empty() => Some((1, Rc::as_ptr(x) as usize)),
         Value::Tuple(x) if !x.is_empty() => Some((2, Rc::as_ptr(x) as usize)),
         Value::Map(x) if !x.is_empty() => Some((3, Rc::as_ptr(x) as usize)),
-        Value::Dense(x) => Some((4, Rc::as_ptr(x) as usize)),
+        Value::Dense(x) => Some((6, Rc::as_ptr(x) as usize)),
         Value::Seq(x) if !x.is_empty() => Some((5, Rc::as_ptr(x) as usize)),
         Value::Set(x) if !x.is_empty() => Some((4, Rc::as_ptr(x) as usize)),
         _ => None,

@@ -3219,6 +3219,9 @@ impl<'e, 'a> Fx<'e, 'a> {
         let update = match self.res(span) {
             Some(Res::MapUpdate(op)) => Some(Prim::Map(op)),
             Some(Res::SetUpdate(op)) => Some(Prim::Set(op)),
+            // The same for a hash map and a hash set (`spec/28 §7`).
+            Some(Res::HashMapUpdate(op)) => Some(Prim::HashMap(op)),
+            Some(Res::HashSetUpdate(op)) => Some(Prim::HashSet(op)),
             _ => None,
         };
         if handled.within.is_some()
@@ -4419,18 +4422,22 @@ impl<'e, 'a> Fx<'e, 'a> {
                     )
                 }
                 // A built-in method of an integer type (`spec/18 §4`, `§5`), or one of a map, a
-                // stack or a queue that reads it (`spec/21 §2`, `spec/28 §5`), or one of a set
-                // that reads it or gives a new set (`spec/28 §6`).
+                // stack or a queue that reads it (`spec/21 §2`, `spec/28 §5`), or one of a set,
+                // a hash map or a hash set that reads it or gives a new one (`spec/28 §6`, `§7`).
                 Some(
                     res @ (Res::IntMethod(_)
                     | Res::MapMethod(_)
                     | Res::SeqMethod(_)
-                    | Res::SetMethod(_)),
+                    | Res::SetMethod(_)
+                    | Res::HashMapMethod(_)
+                    | Res::HashSetMethod(_)),
                 ) => {
                     let prim = match res {
                         Res::MapMethod(op) => Prim::Map(op),
                         Res::SeqMethod(op) => Prim::Seq(op),
                         Res::SetMethod(op) => Prim::Set(op),
+                        Res::HashMapMethod(op) => Prim::HashMap(op),
+                        Res::HashSetMethod(op) => Prim::HashSet(op),
                         Res::IntMethod(prim) => prim,
                         _ => Prim::Len,
                     };
@@ -4798,7 +4805,10 @@ impl<'e, 'a> Fx<'e, 'a> {
             );
         }
         if Some(id) == self.env.map_update {
-            return self.map_update(lets, span, type_args, values, arg_spans);
+            return self.map_update(lets, span, type_args, values, arg_spans, false);
+        }
+        if Some(id) == self.env.hash_map_update {
+            return self.map_update(lets, span, type_args, values, arg_spans, true);
         }
         if def.kind == FnKind::Policy {
             let FnAst::Policy(policy) = def.ast else {
@@ -4884,7 +4894,8 @@ impl<'e, 'a> Fx<'e, 'a> {
     /// tuple `(m', unit)` of a call with an `edit` argument (`spec/17 §4`). `f` is called
     /// exactly once, and a failure of it leaves `m` as it was, since the place takes its new
     /// value only when the call returns (`spec/17 §7` rule 1). A lookup and an insertion,
-    /// O(log n) each (`spec/21 §5`). `values` and `arg_spans` are in parameter order.
+    /// O(log n) each (`spec/21 §5`). `values` and `arg_spans` are in parameter order. With
+    /// `hashed`, the same on a hash map (ADR 0119 rule 12), O(|k|) expected each.
     fn map_update(
         &mut self,
         lets: &mut Vec<Let>,
@@ -4892,7 +4903,16 @@ impl<'e, 'a> Fx<'e, 'a> {
         type_args: &[Ty],
         values: Vec<Atom>,
         arg_spans: Vec<Span>,
+        hashed: bool,
     ) -> Atom {
+        let (get, with) = if hashed {
+            (
+                Prim::HashMap(una_core::HashMapOp::Get),
+                Prim::HashMap(una_core::HashMapOp::With),
+            )
+        } else {
+            (Prim::Map(MapOp::Get), Prim::Map(MapOp::With))
+        };
         let ([map, key, initial, change], [map_span, key_span, initial_span, change_span]) =
             (values.as_slice(), arg_spans.as_slice())
         else {
@@ -4904,10 +4924,18 @@ impl<'e, 'a> Fx<'e, 'a> {
         let map_ty = match self.records.types.get(map_span) {
             Some(ty) => self.ty(ty),
             None => {
-                let arg = |index: usize| {
-                    super::ty::Shared::new(type_args.get(index).cloned().unwrap_or_else(Ty::error))
-                };
-                self.ty(&Ty::Map(arg(0), arg(1)))
+                let arg = |index: usize| type_args.get(index).cloned().unwrap_or_else(Ty::error);
+                if hashed {
+                    self.ty(&Ty::Coll(
+                        una_core::Coll::HashMap,
+                        vec![arg(0), arg(1)].into(),
+                    ))
+                } else {
+                    self.ty(&Ty::Map(
+                        super::ty::Shared::new(arg(0)),
+                        super::ty::Shared::new(arg(1)),
+                    ))
+                }
             }
         };
         let value_ty = match &map_ty {
@@ -4931,7 +4959,7 @@ impl<'e, 'a> Fx<'e, 'a> {
             found.clone(),
             option_ty.clone(),
             Bound::Rhs(Rhs::Prim {
-                prim: Prim::Map(MapOp::Get),
+                prim: get,
                 args: vec![map.clone(), key.clone()],
                 arg_spans: vec![*map_span, *key_span],
                 span,
@@ -4969,7 +4997,7 @@ impl<'e, 'a> Fx<'e, 'a> {
             updated.clone(),
             map_ty,
             Bound::Rhs(Rhs::Prim {
-                prim: Prim::Map(MapOp::With),
+                prim: with,
                 args: vec![map.clone(), key.clone(), Atom::Var(after)],
                 arg_spans: vec![*map_span, *key_span, *change_span],
                 span,
