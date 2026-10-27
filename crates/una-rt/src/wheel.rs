@@ -605,7 +605,7 @@ mod tests {
             let span = spans[(random.next() % spans.len() as u64) as usize];
             let at = wheel.now() + 1 + random.next() % span;
             live.push(wheel.arm(at, value).unwrap());
-            if random.next() % 3 == 0 {
+            if random.next().is_multiple_of(3) {
                 let at = (random.next() as usize) % live.len();
                 let id = live.swap_remove(at);
                 assert!(wheel.cancel(id).is_some());
