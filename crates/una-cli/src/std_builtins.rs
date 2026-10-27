@@ -1,8 +1,9 @@
 //! The built-in methods of the standard library reference (#690): `.len`, the methods of maps,
-//! of `Stack`, of `Queue`, of sets and of hash maps and hash sets, the conversions and the
-//! wrapping, saturating and bit operations of the fixed-width integers. They have no declaration
-//! in the standard modules, so their signature lines and doc comments are written here, from
-//! `spec/14 §2`, `spec/18 §4`, `§5`, `spec/21 §2`, `spec/28 §5`, `§6` and `§7`. The names come from
+//! of `Stack`, of `Queue`, of sets, of hash maps and hash sets and of priority queues, the
+//! conversions and the wrapping, saturating and bit operations of the fixed-width integers. They
+//! have no declaration in the standard modules, so their signature lines and doc comments are
+//! written here, from `spec/14 §2`, `spec/18 §4`, `§5`, `spec/21 §2`, `spec/28 §5`, `§6`, `§7`
+//! and `§8`. The names come from
 //! the checker (`una_check::builtin_methods`), and tests keep the two in step: every method the
 //! checker resolves has an entry and every entry is one it resolves, and each entry's signature
 //! is probed against `una check` in every edition, with a positive and a negative call.
@@ -74,8 +75,8 @@ fn fixed_types() -> Vec<&'static str> {
 }
 
 /// Every built-in method on every receiver, in the order of the reference: `.len`, the
-/// methods of maps, of `Stack` and of `Queue`, those of sets, of hash maps and of hash sets, the
-/// conversions, then the fixed-width operations.
+/// methods of maps, of `Stack` and of `Queue`, those of sets, of hash maps, of hash sets and of
+/// priority queues, the conversions, then the fixed-width operations.
 pub fn builtins() -> Vec<Builtin> {
     let entry = |name: &'static str,
                  receiver: &'static str,
@@ -249,6 +250,21 @@ pub fn builtins() -> Vec<Builtin> {
         hash_set("is_subset", &[("of", "HashSet[T]")], "Bool"),
         hash_set("same_items", &[("as", "HashSet[T]")], "Bool"),
     ]);
+    // Edition 0.4: the methods of `PriorityQueue` (`spec/28 §8`, ADR 0119 rule 13), in the
+    // order of its table.
+    let priority = |name, edit, params: &[(&'static str, &'static str)], result| Builtin {
+        edit,
+        since: Edition::V0_4,
+        ..entry(name, "PriorityQueue[T, P]", "q", params, result)
+    };
+    all.extend([
+        priority("push", true, &[("item", "T"), ("priority", "P")], "Unit"),
+        priority("pop", true, &[], "Option[T]"),
+        priority("pop_ranked", true, &[], "Option[Ranked[T, P]]"),
+        priority("peek", false, &[], "Option[T]"),
+        priority("peek_priority", false, &[], "Option[P]"),
+        priority("items", false, &[], "List[T]"),
+    ]);
     for target in IntType::ALL {
         let name: &'static str = conversion_name(target);
         all.push(entry(name, "Int", "x", &[], target.as_str()));
@@ -304,7 +320,8 @@ pub fn builtin_docs(name: &str) -> &'static [&'static str] {
             "Built in on `Text` and `List` and, from edition 0.2 on, on `Map` (`spec/14 §2`,",
             "`spec/21 §2`). On a `Text` it counts Unicode scalar values (`spec/14 §1`); a map's is",
             "never negative (`spec/21 §2`). From edition 0.4 on, a `Stack`, a `Queue`, a `Set`, a",
-            "`HashMap` and a `HashSet` count their items, in O(1) (`spec/28 §5`, `§6`, `§7`).",
+            "`HashMap`, a `HashSet` and a `PriorityQueue` count their items, in O(1) (`spec/28 §5`,",
+            "`§6`, `§7`, `§8`).",
         ],
         "has" => &[
             "Whether `m` has `key`. Like `m.len`, it may appear in `requires`, `ensures`, `where`",
@@ -369,22 +386,37 @@ pub fn builtin_docs(name: &str) -> &'static [&'static str] {
         "push" => &[
             "Updates the receiver in place, written `edit s.push(item: x)`: a `Stack` takes",
             "`item` on top and a `Queue` at its back, and its length grows by one, in O(1)",
-            "amortized time (`spec/28 §5`).",
+            "amortized time (`spec/28 §5`). A `PriorityQueue`, written",
+            "`edit q.push(item: x, priority: p)`, takes `item` at `priority`, in O(log n)",
+            "comparisons, amortized (`spec/28 §8`).",
         ],
         "pop" => &[
             "Updates the receiver in place, written `let x = edit s.pop()`: it removes the top of",
             "a `Stack` or the front of a `Queue` and gives it as `Some`, or gives `None` and",
-            "leaves an empty one as it is, in O(1) amortized time (`spec/28 §5`).",
+            "leaves an empty one as it is, in O(1) amortized time (`spec/28 §5`). A",
+            "`PriorityQueue` gives its item of the first priority, the one pushed first among",
+            "equal priorities, in O(log n) comparisons, amortized (`spec/28 §8`).",
         ],
         "peek" => &[
             "The top of a `Stack` or the front of a `Queue`, the item `pop` would remove, as",
-            "`Some`, and `None` exactly when it is empty, in O(1) time (`spec/28 §5`).",
+            "`Some`, and `None` exactly when it is empty, in O(1) time (`spec/28 §5`). On a",
+            "`PriorityQueue`, the item `pop` would give, in O(1) time (`spec/28 §8`).",
+        ],
+        "pop_ranked" => &[
+            "Updates a `PriorityQueue` in place, written `let r = edit q.pop_ranked()`: as `pop`,",
+            "with the priority, as `Some` of a `Ranked`, in O(log n) comparisons, amortized",
+            "(`spec/28 §8`).",
+        ],
+        "peek_priority" => &[
+            "The priority of the item that `pop` would give from a `PriorityQueue`, as `Some`,",
+            "and `None` exactly when it is empty, in O(1) time (`spec/28 §8`).",
         ],
         "items" => &[
             "The items as a list: a `Stack` top first and a `Queue` front first, as many as its",
             "`len`, in O(n) time (`spec/28 §5`); a `Set`'s in ascending order, as many as its",
             "`len`, in O(n) time (`spec/28 §6`); a `HashSet`'s in the order its items were first",
-            "added, in O(n) time (`spec/28 §7`).",
+            "added, in O(n) time (`spec/28 §7`); a `PriorityQueue`'s in the order of the pops, in",
+            "O(n log n) comparisons (`spec/28 §8`).",
         ],
         "push_front" => &[
             "Updates a `Queue` in place, written `edit q.push_front(item: x)`: `item` goes to the",

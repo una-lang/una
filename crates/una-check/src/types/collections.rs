@@ -95,8 +95,8 @@ pub(crate) fn methods(coll: Coll) -> &'static [&'static str] {
 /// resolve it before, with their top label (IF1).
 pub(crate) fn has_len(coll: Coll) -> bool {
     match coll {
-        Coll::Set | Coll::HashMap | Coll::HashSet => true,
-        Coll::Stack | Coll::Queue | Coll::PriorityQueue | Coll::BitSet => false,
+        Coll::Set | Coll::HashMap | Coll::HashSet | Coll::PriorityQueue => true,
+        Coll::Stack | Coll::Queue | Coll::BitSet => false,
     }
 }
 

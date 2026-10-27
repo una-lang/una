@@ -53,6 +53,14 @@ pub(crate) enum Res {
     /// `edit s.add(...)` or `edit s.remove(...)` on a `HashSet`: the set rebound to `With` or
     /// `Without`.
     HashSetUpdate(una_core::HashSetOp),
+    /// A built-in method of a `PriorityQueue` that reads it (`spec/28 §8`).
+    PriorityMethod(una_core::PriorityOp),
+    /// `edit q.push(...)`, `edit q.pop()` or `edit q.pop_ranked()`: the queue rebound to `op`'s
+    /// result, and for a removal, the first item read first by `read` as the call's value.
+    PriorityUpdate {
+        op: una_core::PriorityOp,
+        read: Option<una_core::PriorityOp>,
+    },
     /// A record field.
     Field { kind: KindId, index: usize },
     /// An operation of a capability.

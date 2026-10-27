@@ -150,6 +150,13 @@ fn kind(ty: &Type) -> Result<Kind, CodegenError> {
             {
                 Err(unsupported("`HashMap` and `HashSet` (spec/28)"))
             }
+            // The priority queues of `std.collections` wait for their native layout (`spec/28
+            // §8`, ADR 0119 rule 19).
+            Base::Named { module, name, .. }
+                if module == una_core::COLLECTIONS_MODULE && name == "PriorityQueue" =>
+            {
+                Err(unsupported("`PriorityQueue` (spec/28)"))
+            }
             Base::Tuple(_) => Ok(Kind::Tuple),
             Base::Named { .. } => Ok(Kind::Data),
             Base::Param(_) | Base::Unknown => Ok(Kind::Any),
@@ -3609,6 +3616,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
             Prim::HashMap(_) | Prim::HashSet(_) => {
                 Err(unsupported("`HashMap` and `HashSet` (spec/28)"))
             }
+            Prim::Priority(_) => Err(unsupported("`PriorityQueue` (spec/28)")),
             Prim::Fixed(op, int) => {
                 let a = operand(first)?.0;
                 let b = match second {

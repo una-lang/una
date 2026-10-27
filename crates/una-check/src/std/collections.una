@@ -44,3 +44,13 @@ pub update[K: Eq, V](edit m: HashMap[K, V], key: K, initial: V, change: fn(V) ->
   fails of change
 =
   unit
+
+-- The bodies of `lowest_first` and `highest_first` are placeholders: both engines make the
+-- queue themselves, with its direction.
+--- An empty priority queue whose `pop` gives the item of the least priority first, of the item
+--- and priority types that the expected type gives (`spec/28 §8`). O(1).
+pub lowest_first[T, P: Ord]() -> PriorityQueue[T, P] = lowest_first()
+
+--- An empty priority queue whose `pop` gives the item of the greatest priority first, of the
+--- item and priority types that the expected type gives (`spec/28 §8`). O(1).
+pub highest_first[T, P: Ord]() -> PriorityQueue[T, P] = highest_first()

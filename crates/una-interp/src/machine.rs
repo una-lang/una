@@ -256,6 +256,8 @@ pub(crate) enum Stop<'p> {
 /// The result of evaluating an expression.
 pub(crate) type Flow<'p> = Result<Value<'p>, Stop<'p>>;
 
+mod priority;
+
 mod seqs;
 
 mod sets;
@@ -545,6 +547,18 @@ impl<'p> Index<'p> {
                         parts.push(Task::Value(item));
                     }
                     parts.push(Task::Text("}".to_owned()));
+                }
+                // A `PriorityQueue` as a list, in the order of its pops (`spec/28 §4`, ADR 0119
+                // rule 3): O(n log n) to order its entries.
+                Value::Priority(heap) => {
+                    parts.push(Task::Text("[".to_owned()));
+                    for (i, entry) in priority::listed(heap).into_iter().enumerate() {
+                        if i > 0 {
+                            parts.push(Task::Text(", ".to_owned()));
+                        }
+                        parts.push(Task::Value(&entry.item));
+                    }
+                    parts.push(Task::Text("]".to_owned()));
                 }
                 Value::Data(data) => {
                     let names = self.fields(&data.ctor);
@@ -1751,6 +1765,12 @@ impl<'p, 'w> Machine<'p, 'w> {
                 args,
                 ..
             } if op.rebuilds() => args.get(..1)?,
+            // A priority queue given up to a push or a removal (`spec/28 §8`).
+            Rhs::Prim {
+                prim: Prim::Priority(op),
+                args,
+                ..
+            } if op.rebuilds() => args.get(..1)?,
             _ => return None,
         };
         let all = match rhs {
@@ -1842,6 +1862,10 @@ impl<'p, 'w> Machine<'p, 'w> {
                                         span,
                                         ..
                                     } => self.hash_apply(*prim, args, *span)?,
+                                    Rhs::Prim {
+                                        prim: Prim::Priority(op),
+                                        ..
+                                    } => priority::priority_apply(*op, args)?,
                                     _ => return Err(fault("an update that is not one")),
                                 }
                             }
@@ -3093,6 +3117,9 @@ impl<'p, 'w> Machine<'p, 'w> {
                     Value::HashSet(table)
                 }
             }
+            // O(1): an empty heap allocates nothing; the direction is part of the value.
+            "lowest_first" => priority::empty(false),
+            "highest_first" => priority::empty(true),
             _ => return None,
         }))
     }
@@ -4105,13 +4132,14 @@ fn prim_apply<'p>(prim: Prim, args: &[Value<'p>]) -> Flow<'p> {
             Value::HashMap(table) | Value::HashSet(table) => {
                 Value::Int(BigInt::from(table.entries.len()))
             }
+            Value::Priority(heap) => Value::Int(BigInt::from(heap.entries.len())),
             // An array's length (`spec/29 §17`).
             Value::Dense(dense) => {
                 Value::Int(BigInt::from(dense.shape.first().copied().unwrap_or(0)))
             }
             _ => {
                 return Err(fault(
-                    "`len` of a value that is not a text, list, map, sequence, set, hash table or array",
+                    "`len` of a value that is not a text, list, map, sequence, set, hash table, priority queue or array",
                 ));
             }
         },
@@ -4148,6 +4176,7 @@ fn prim_apply<'p>(prim: Prim, args: &[Value<'p>]) -> Flow<'p> {
         Prim::HashMap(_) | Prim::HashSet(_) => {
             return Err(fault("a hash table operation outside the machine"));
         }
+        Prim::Priority(op) => return priority::priority_apply(op, args.to_vec()),
         Prim::Float(op) => return float_apply(op, args),
         Prim::Decimal(op) => return decimal_apply(op, args),
         // The shape of a matrix (`spec/29 §17`).

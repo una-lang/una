@@ -43,6 +43,8 @@ const MOVEMENTS: &[&str] = &[
     "map_without",
     "operation_argument",
     "operation_result",
+    "priority_items",
+    "priority_update",
     "return",
     "seq_items",
     "seq_peek",
@@ -59,12 +61,12 @@ const SCALAR: &str = "";
 // rhs-cases:begin
 /// The movement case of each form of a Core right-hand side bound to a refined binder (ADR
 /// 0103 rule 4), the forms the verifier's `rhs_type` types. The match has no catch-all: a new
-/// form of `Rhs`, `Prim`, `MapOp`, `SeqOp`, `SetOp`, `HashMapOp` or `HashSetOp` does not compile
-/// until it names its case here, and
+/// form of `Rhs`, `Prim`, `MapOp`, `SeqOp`, `SetOp`, `HashMapOp`, `HashSetOp` or `PriorityOp`
+/// does not compile until it names its case here, and
 /// `every_right_hand_side_has_a_case` then requires the case.
 #[allow(dead_code)]
 fn rhs_case(rhs: &una_core::Rhs) -> &'static str {
-    use una_core::{HashMapOp, HashSetOp, MapOp, Prim, Rhs, SeqOp, SetOp};
+    use una_core::{HashMapOp, HashSetOp, MapOp, Prim, PriorityOp, Rhs, SeqOp, SetOp};
     match rhs {
         Rhs::Atom(_) => "annotated_let",
         // An `edit` call's results, rebound to the places.
@@ -109,6 +111,13 @@ fn rhs_case(rhs: &una_core::Rhs) -> &'static str {
                 | HashSetOp::Union
                 | HashSetOp::Intersection
                 | HashSetOp::Difference => "hash_with",
+            },
+            Prim::Priority(op) => match op {
+                PriorityOp::Push | PriorityOp::Pop => "priority_update",
+                PriorityOp::Peek
+                | PriorityOp::PeekPriority
+                | PriorityOp::PeekRanked
+                | PriorityOp::Items => "priority_items",
             },
             Prim::Add
             | Prim::Sub

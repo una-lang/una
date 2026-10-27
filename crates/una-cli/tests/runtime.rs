@@ -2059,6 +2059,78 @@ fn hash_table_updates_lookups_and_operations_scale_linearly() {
     );
 }
 
+/// A `PriorityQueue` of `COUNT` items pushed with priorities that repeat, so that ties are
+/// common, then popped empty, checking that the priorities come out in order (`spec/28 §8`).
+const PRIORITY_SCALE: &str = "module scale
+
+import std.collections (PriorityQueue, lowest_first)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let edit q: PriorityQueue[Int, Int] = lowest_first()
+  for i in 0..<COUNT
+    edit q.push(item: i, priority: (i * 7919) mod 1000)
+  let edit popped = 0
+  let edit ordered = 0
+  let edit last = 0
+  for i in 0..<COUNT
+    let p = q.peek_priority()
+      if none use -1
+    if p >= last
+      ordered = ordered + 1
+    last = p
+    let item = edit q.pop()
+    if item != None
+      popped = popped + 1
+  @console.print(\"{popped} {ordered} {q.len}\")
+";
+
+#[test]
+fn priority_queue_pushes_and_pops_scale_as_n_log_n() {
+    // `spec/28 §8`: `push` and `pop` make O(log n) comparisons, `peek_priority` is O(1), and an
+    // update of a queue nothing else holds is in place. Ten times the items take under 40 times
+    // as long: n log n gives about 12, a copy per update about 100, and the bound of 40x is
+    // between them, as for sets.
+    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join("runtime")
+        .join("priority_scale");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("ita.una"),
+        "ita priority_scale\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry scale\n  grants\n    console\n",
+    )
+    .unwrap();
+    std::fs::copy(
+        repository().join("tests/conformance/names/collections_exports_in_0_4/ita.lock"),
+        root.join("ita.lock"),
+    )
+    .unwrap();
+    let dir = root.to_str().unwrap();
+    // Writes the program of `n` items (untimed), then times its run.
+    let measure = |n: usize| {
+        std::fs::write(
+            root.join("src/scale.una"),
+            PRIORITY_SCALE.replace("COUNT", &n.to_string()),
+        )
+        .unwrap();
+        let (output, seconds) =
+            timing::timed(|| una(&["run", dir, "--grant", "console", "--max-memory", "1024"]));
+        assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+        assert_eq!(stdout(&output), format!("{n} {n} 0\n"));
+        seconds
+    };
+    timing::assert_growth(
+        "items",
+        &[100_000, 1_000_000],
+        0.0,
+        timing::FLOOR,
+        40.0,
+        measure,
+    );
+}
+
 /// A program that appends `steps` items to a list in a loop, through `shape`: an `edit`
 /// argument one, two or three calls deep, or a binding rebound from a call's result (#262).
 fn appends_through_calls(shape: &str, steps: usize) -> String {

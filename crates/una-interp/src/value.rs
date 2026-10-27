@@ -51,6 +51,9 @@ pub(crate) enum Value<'p> {
     /// A `HashSet` of `std.collections`: the same table, each item a key whose value is
     /// `unit`.
     HashSet(Rc<HashTable<'p>>),
+    /// A `PriorityQueue` of `std.collections`, a stable 4-ary heap (`spec/28 §8`, ADR 0119 rule
+    /// 19). It has no `==` (ADR 0119 rule 2), so no equality ever compares two of them.
+    Priority(Rc<Heap<'p>>),
     /// A dense value of edition 0.4, `Array[T]` or `Matrix[T]` (`spec/29 §17`): a view of a
     /// buffer, with its own offset, shape and strides, so a view shares its parent's storage.
     Dense(Rc<Dense<'p>>),
@@ -99,6 +102,34 @@ pub(crate) struct Dense<'p> {
     pub(crate) shape: Vec<usize>,
     /// The distance between consecutive indices of each axis, in the buffer.
     pub(crate) strides: Vec<usize>,
+}
+
+/// A priority queue: a 4-ary heap of its entries, each ordered by its priority in the queue's
+/// direction and then by its sequence number, ascending (ADR 0119 rule 19). The first entry is
+/// the one `pop` gives.
+#[derive(Clone, Debug)]
+pub(crate) struct Heap<'p> {
+    /// Whether `pop` gives the greatest priority first (`highest_first`), or the least
+    /// (`lowest_first`).
+    pub(crate) highest: bool,
+    /// The sequence number of the next push.
+    pub(crate) next: u64,
+    /// The entries, in heap order: each entry comes after its parent at `(i - 1) / 4`.
+    pub(crate) entries: Vec<Ranked<'p>>,
+}
+
+/// An entry of a priority queue: its item, its priority with the priority's order key, and
+/// the sequence number of its push, which breaks ties between equal priorities in push order.
+#[derive(Clone, Debug)]
+pub(crate) struct Ranked<'p> {
+    /// The order key of `priority`.
+    pub(crate) key: Key,
+    /// The sequence number of the push that added it.
+    pub(crate) sequence: u64,
+    /// The priority, as its value, for `peek_priority` and `pop_ranked`.
+    pub(crate) priority: Value<'p>,
+    /// The item.
+    pub(crate) item: Value<'p>,
 }
 
 /// The items of a set, by their order.
@@ -264,6 +295,14 @@ fn unwind<'p>(mut pending: Vec<Value<'p>>, mut caps: Vec<Caps<'p>>) {
                         for (key, value) in entries.into_entries() {
                             pending.push(key);
                             pending.push(value);
+                        }
+                    }
+                }
+                Value::Priority(heap) => {
+                    if let Ok(heap) = Rc::try_unwrap(heap) {
+                        for entry in heap.entries {
+                            pending.push(entry.priority);
+                            pending.push(entry.item);
                         }
                     }
                 }
