@@ -583,6 +583,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "una-hash"
+version = "0.3.16"
+dependencies = [
+ "getrandom 0.4.3",
+]
+
+[[package]]
 name = "una-http"
 version = "0.3.16"
 dependencies = [
@@ -602,8 +609,10 @@ dependencies = [
  "toml",
  "una-core",
  "una-diag",
+ "una-hash",
  "una-http",
  "una-syntax",
+ "una-sys",
 ]
 
 [[package]]
@@ -629,6 +638,7 @@ dependencies = [
  "una-diag",
  "una-http",
  "una-interp",
+ "una-sys",
 ]
 
 [[package]]
@@ -649,6 +659,13 @@ version = "0.3.16"
 dependencies = [
  "indexmap",
  "una-diag",
+]
+
+[[package]]
+name = "una-sys"
+version = "0.3.16"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

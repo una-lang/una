@@ -21,6 +21,11 @@
 #                twice, compared
 #   native       the interpreter against the native executable, on every runnable program of
 #                the repository (spec/16 §5): the equivalence test of crates/una-cli/tests/native.rs
+#   timing-channels
+#                the security timing oracles (#1145): `cargo test --release --locked -p una-cli --test
+#                timing_channels -- --ignored --test-threads=1 --nocapture`, the real-clock tests that a timing
+#                channel stays closed, which the ordinary test run ignores; it runs right after
+#                `native`, with no Docker gate running, so the machine is as quiet as the run gets
 #   owner-replay the exhaustive models of the replay of an owner's chain (spec/30 §14 rule 5)
 #                and of yanks against it (spec/30 §15 rule 6), both to depth 5: `cargo test
 #                --release --locked -p una-project --lib -- --ignored --exact
@@ -71,7 +76,7 @@
 # Usage: scripts/release-gates.sh SHA OUT [GATE...]
 set -u
 
-ALL=(clone build deps mac linux linux-arm64 release reproducible determinism native owner-replay sanitize site formal hunt hunt-linux-arm64)
+ALL=(clone build deps mac linux linux-arm64 release reproducible determinism native timing-channels owner-replay sanitize site formal hunt hunt-linux-arm64)
 
 usage() {
     echo "usage: scripts/release-gates.sh SHA OUT [GATE...]; SHA is a full 40-digit commit, GATE is one of: ${ALL[*]}" >&2
@@ -358,6 +363,13 @@ gate_site() {
             && UNA_SITE_LEARN_SAME_VERSION=1 UNA_BIN=target/release/una scripts/site-website.sh "'"$OUT"'/site-bundle/una-docs-$version" "'"$OUT"'/site-website"'
 }
 gate_formal() { run formal scripts/formal.sh; }
+
+gate_timing-channels() {
+    # The security timing oracles (#1145, crates/una-cli/tests/timing_channels.rs): each test is
+    # ignored in the ordinary run and runs only here and in the step of the same name of
+    # scripts/local-ci.sh, one at a time, on the real clock of a native host.
+    run timing-channels cargo test --release --locked -p una-cli --test timing_channels -- --ignored --test-threads=1 --nocapture
+}
 
 gate_owner-replay() {
     # The exhaustive model of the replay of an owner's chain (spec/30 §14 rule 5), then the

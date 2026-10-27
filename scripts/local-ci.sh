@@ -24,8 +24,8 @@ fail() {
 if [ "${1:-}" = --linux ] || [ "${1:-}" = --linux-arm64 ]; then
     # --linux: x86_64, emulated on an arm64 Mac; --linux-arm64: aarch64, native on one (#241).
     case $1 in
-        --linux) arch=amd64 target=x86_64-unknown-linux-gnu suffix="" serial=1 ;;
-        *) arch=arm64 target=aarch64-unknown-linux-gnu suffix=-arm64 serial="" ;;
+        --linux) arch=amd64 target=x86_64-unknown-linux-gnu suffix="" serial=1 retry=1 ;;
+        *) arch=arm64 target=aarch64-unknown-linux-gnu suffix=-arm64 serial="" retry="" ;;
     esac
     command -v docker >/dev/null 2>&1 || fail "docker not found; $1 needs Docker"
     # The released sections of CHANGELOG.md need the repository's tags, which a worktree
@@ -83,6 +83,7 @@ if [ "${1:-}" = --linux ] || [ "${1:-}" = --linux-arm64 ]; then
         --volume "una-local-ci-lean$suffix:/opt/lean" \
         --env UNA_FORMAL_LEAN=/opt/lean \
         --env "UNA_LOCAL_CI_SERIAL=$serial" \
+        --env "UNA_RELEASE_CHECK_RETRY=$retry" \
         --env "CARGO_BUILD_JOBS=$jobs" \
         --env RUST_TEST_THREADS \
         --env UNA_LOCAL_CI_RELEASED_SECTIONS_ON_HOST=1 \
@@ -144,6 +145,19 @@ if [ -n "${UNA_LOCAL_CI_SERIAL:-}" ]; then
 else
     step "Test" cargo test --workspace --locked
 fi
+# The security timing oracles (#1145): every test of crates/una-cli/tests/timing_channels.rs is
+# a real-clock oracle of a timing channel, ignored in the ordinary test run and run only here and
+# in the release gate of the same name, one at a time. Under emulation (UNA_LOCAL_CI_SERIAL, the
+# --linux container through Rosetta on an arm64 Mac, or a shell translated by Rosetta) the real
+# clock measures the emulator, not the runtime, so the step is skipped there, visibly.
+translated=$( (sysctl -n sysctl.proc_translated 2>/dev/null) || echo 0)
+if [ -n "${UNA_LOCAL_CI_SERIAL:-}" ] || [ "$translated" = 1 ]; then
+    echo "== Timing channels (security oracles)"
+    echo "skipped: under emulation the real clock is not the runtime's; run on a native host (macOS, --linux-arm64)"
+else
+    step "Timing channels (security oracles)" \
+        cargo test --release --locked -p una-cli --test timing_channels -- --ignored --test-threads=1 --nocapture
+fi
 # The documents' links (#708): every link of the documents names a tracked file or directory,
 # and every fragment a heading of its document; the check's own test refuses each kind of
 # broken link first. It needs only Python 3 and git, so it runs everywhere, the containers
@@ -172,7 +186,14 @@ step "Formal replay" docs/reviews/formal-m2-replay/check.sh
 # A release build never trusts the test certificate authority of una-http (ADR 0074, N-28).
 step "Test (release, TLS trust)" cargo test --release --locked -p una-http --test tls
 step "Pack the release archive of $target" scripts/release.sh "$target"
-step "Check the release archive of $target" scripts/check-release.sh "$target"
+# Under emulation the check runs the packed `una` with one verifier thread, as the serial tests do
+# (#286): a `una run` that starts several solver processes from many threads at once can deadlock
+# inside the translator (#1133). The check's own time limits and single retry are a second guard.
+if [ -n "${UNA_LOCAL_CI_SERIAL:-}" ]; then
+    step "Check the release archive of $target" env RAYON_NUM_THREADS=1 scripts/check-release.sh "$target"
+else
+    step "Check the release archive of $target" scripts/check-release.sh "$target"
+fi
 # In a container, the most memory the run used, which sizes the job count (#701).
 if [ -n "${UNA_LOCAL_CI_Z3:-}" ] && [ -r /sys/fs/cgroup/memory.peak ]; then
     echo "== peak memory of the container: $(($(cat /sys/fs/cgroup/memory.peak) / 1048576)) MiB, with CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-unset}"

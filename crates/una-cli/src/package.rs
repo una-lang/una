@@ -8,7 +8,9 @@ use una_diag::{Code, Diagnostic};
 use una_project::ita::{check_consent, check_lock_consistency, parse_ita_lock, parse_ita_manifest};
 use una_project::itaoca::Itaoca;
 use una_project::vendor::Problem;
-use una_project::{Format, Manifest, ProjectError, Role, discover, parse_lock, parse_manifest};
+use una_project::{
+    Edition, Format, Manifest, ProjectError, Role, discover, parse_lock, parse_manifest,
+};
 use una_syntax::ita;
 use una_syntax::{FileId, SourceDb, Span};
 
@@ -36,6 +38,11 @@ pub struct Package {
     pub modules: Vec<FileId>,
     /// Where each file is on disk, for `una fmt`.
     pub disk_paths: BTreeMap<FileId, PathBuf>,
+    /// For a single file, the edition of the nearest enclosing package manifest, when some
+    /// directory above the file has an `ita.una` or `una.toml` (#1175). Only the edition is
+    /// taken: the file stays its own package for imports and module paths (ADR 0021 rule 1),
+    /// so that `una fmt` and `una check` of a named file read it as the package reads it.
+    pub enclosing_edition: Option<Edition>,
     /// The path dependencies of `ita.una`, loaded or not (ADR 0122 rule 7). Their modules are
     /// checked with the root's only once [`project`] mounts them.
     pub dependencies: Vec<Dependency>,
@@ -124,6 +131,11 @@ pub fn load_in(
         lock_bytes: None,
         modules: Vec::new(),
         disk_paths: BTreeMap::new(),
+        enclosing_edition: if loaded.single {
+            enclosing_edition(path)
+        } else {
+            None
+        },
         dependencies: Vec::new(),
         registry: Vec::new(),
     };
@@ -283,6 +295,7 @@ pub fn load_files(files: &[(String, String)]) -> Result<Package, LoadError> {
         lock_bytes: None,
         modules: Vec::new(),
         disk_paths: BTreeMap::new(),
+        enclosing_edition: None,
         dependencies: Vec::new(),
         registry: Vec::new(),
     };
@@ -300,6 +313,33 @@ pub fn load_files(files: &[(String, String)]) -> Result<Package, LoadError> {
         return Err(LoadError::NotAPackage(PathBuf::from("ita.una")));
     }
     Ok(package)
+}
+
+/// The edition of the nearest manifest above the file `path`: the first directory among its
+/// ancestors holding `ita.una` (read as such) or else `una.toml`. `None` for a loose file, with
+/// no manifest in any ancestor, which keeps the ADR 0021 default, edition 0.1 (#1175). The
+/// manifest is read only for its edition. O(depth of the path).
+fn enclosing_edition(path: &Path) -> Option<Edition> {
+    let absolute = std::fs::canonicalize(path)
+        .or_else(|_| std::path::absolute(path))
+        .ok()?;
+    for dir in absolute.ancestors().skip(1) {
+        let ita = dir.join("ita.una");
+        if ita.is_file() {
+            let text = std::fs::read(&ita).ok()?;
+            return Some(
+                parse_ita_manifest(&String::from_utf8_lossy(&text))
+                    .0
+                    .edition,
+            );
+        }
+        let toml = dir.join("una.toml");
+        if toml.is_file() {
+            let text = std::fs::read(&toml).ok()?;
+            return Some(parse_manifest(&String::from_utf8_lossy(&text)).0.edition);
+        }
+    }
+    None
 }
 
 /// Loads the path dependencies that the root's `ita.una` names (ADR 0122 rule 7). A directory
@@ -687,7 +727,12 @@ pub fn project(package: &Package) -> (Manifest, Vec<Diagnostic>) {
             located(id, errors);
             manifest
         }
-        None => Manifest::default(),
+        // A single file has the default settings, except the edition of the package that
+        // encloses it, when there is one (#1175).
+        None => Manifest {
+            edition: package.enclosing_edition.unwrap_or_default(),
+            ..Manifest::default()
+        },
     };
     match (package.lock, package.manifest) {
         (Some(id), _) => located(id, parse_lock(package.sources.file(id).text()).1),

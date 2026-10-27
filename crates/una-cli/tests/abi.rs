@@ -49,16 +49,22 @@ fn the_report_of_the_events_example() {
     let output = una(&["--json", "report", "examples/events"]);
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     assert_eq!(stderr(&output), "");
-    // The `native` section names the host target (ADR 0055), which differs between runners.
+    // The `native` section names the host target (ADR 0055) and the kernel variants compiled
+    // for it (ADR 0120 rule 56), which differ between runners.
     let target = una_codegen::host_target();
-    let text =
-        stdout(&output).replace(&format!("\"target\":\"{target}\""), "\"target\":\"<host>\"");
+    let variants = serde_json::to_string(una_core::dense::variants::variant_names()).unwrap();
+    let text = stdout(&output)
+        .replace(&format!("\"target\":\"{target}\""), "\"target\":\"<host>\"")
+        .replace(
+            &format!("\"variants\":{variants}"),
+            "\"variants\":\"<host>\"",
+        );
     insta::assert_snapshot!("report_events_json", text);
     let report = json(&output);
     assert_eq!(report["schema"], "una.report/2");
     assert_eq!(
         report["package"],
-        json!({"name": "events-example", "version": "0.1.0"})
+        json!({"name": "events-example", "version": "0.1.0", "profile": "app"})
     );
     assert_eq!(
         report["obligations"],
@@ -116,6 +122,14 @@ fn the_report_of_the_events_example() {
         report["native"]["arbitrary_precision"],
         json!(["events.seating.clamp_seats.raw"])
     );
+    assert_eq!(
+        report["native"]["kernels"]["variants"],
+        json!(una_core::dense::variants::variant_names())
+    );
+    assert_eq!(
+        report["native"]["kernels"]["fma_allowlist"],
+        json!(una_core::dense::variants::ALLOWLIST)
+    );
     let output = una(&["report", "examples/events"]);
     assert_eq!(output.status.code(), Some(0));
     assert!(
@@ -132,6 +146,12 @@ fn the_report_of_the_events_example() {
     );
     assert!(
         stdout(&output).contains("\n  proof cache: .una/cache/\n"),
+        "{}",
+        stdout(&output)
+    );
+    // ADR 0109 rule 7: the profile follows the package's name, `app` by default.
+    assert!(
+        stdout(&output).starts_with("package events-example 0.1.0\nprofile: app\nlock: "),
         "{}",
         stdout(&output)
     );
@@ -161,6 +181,11 @@ fn the_out_of_model_list_is_the_one_of_the_spec() {
             "races between the check and the use of a file path",
             "hard links",
             "order of effects across concurrent tasks",
+            "the time of a host stop",
+            "interference of the host's load with the timing of an expression",
+            "uncatchable termination",
+            "waits at limits and at `start`",
+            "which branch of `first of` wins, beyond its label",
         ]
     );
     let (last, first) = channels.split_last().unwrap();
@@ -239,7 +264,7 @@ pub bounded(x: Int) -> Int
     let report = json(&output);
     assert_eq!(
         report["package"],
-        json!({"name": "trivial", "version": "1.2.3"})
+        json!({"name": "trivial", "version": "1.2.3", "profile": "app"})
     );
     assert_eq!(
         report["coverage"],
@@ -270,7 +295,7 @@ pub next(x: Int) -> Int
     let report = json(&output);
     assert_eq!(
         report["package"],
-        json!({"name": "tally", "version": "0.0.0"})
+        json!({"name": "tally", "version": "0.0.0", "profile": "app"})
     );
     assert_eq!(
         report["obligations"],

@@ -153,6 +153,10 @@ struct Analysis {
     file_state: una_core::Label,
     /// The mounted dependencies of the program (ADR 0122 rule 47).
     mounts: Vec<una_project::Mount>,
+    /// The sites with deadlines and their timing labels (ADR 0116 rule 21), for the report.
+    timing: Vec<una_check::TimingSite>,
+    /// `L_lim` (ADR 0117 IF4), which a grant with limits needs at most `internal`.
+    limit_label: una_core::Label,
 }
 
 /// Checks `package`; with `run_grants`, for `una run`, whose grants are final (U3012).
@@ -173,6 +177,12 @@ fn analyze_and(
     // converts, so the environment is tested before any source is read; U6006 stops here.
     if manifest.edition >= una_project::Edition::V0_3
         && let Err(probe) = una_core::float::probe_environment()
+    {
+        return (environment_failure(probe), Vec::new());
+    }
+    // ADR 0120 rule 5: edition 0.4 adds the binary32 probes, for its `F32` literals.
+    if manifest.edition >= una_project::Edition::V0_4
+        && let Err(probe) = una_core::float32::probe_environment()
     {
         return (environment_failure(probe), Vec::new());
     }
@@ -301,6 +311,8 @@ fn analyze_and(
         index: types.index,
         of_lambdas: types.of_lambdas,
         file_state: types.file_state,
+        timing: types.timing,
+        limit_label: types.limit_label,
     };
     (analysis, rejected)
 }
@@ -333,6 +345,8 @@ fn environment_failure(probe: &str) -> Analysis {
         of_lambdas: Vec::new(),
         file_state: una_core::Label::public(),
         mounts: Vec::new(),
+        timing: Vec::new(),
+        limit_label: una_core::Label::public(),
     }
 }
 
@@ -1248,13 +1262,28 @@ fn run_command(
                 max_memory,
                 max_response,
                 http_timeout,
+                workers,
+                task_depth,
+                io_threads,
+                file_threads,
                 solver_wallclock,
                 stop_after_iterations,
+                virtual_time,
+                deadline,
+                stop_grace,
+                trace,
             } => {
                 let options = runtime::RunOptions {
                     grants: &grants,
                     max_depth,
-                    max_memory,
+                    tasks: runtime::TaskFlags {
+                        workers,
+                        task_depth,
+                        io_threads,
+                        file_threads,
+                    },
+                    max_memory: max_memory.unwrap_or(una_interp::DEFAULT_MAX_MEMORY),
+                    max_memory_given: max_memory.is_some(),
                     http: runtime::http_settings(max_response, http_timeout),
                     heap,
                     json,
@@ -1262,6 +1291,10 @@ fn run_command(
                     environment,
                     solving: solving(solver_wallclock, json, stderr),
                     stop_after: stop_after_iterations,
+                    virtual_time,
+                    deadline,
+                    stop_grace,
+                    trace: trace.as_deref(),
                 };
                 runtime::run_command(&path, options, stdout, stderr)
             }
@@ -1283,12 +1316,23 @@ fn run_command(
                 path,
                 max_depth,
                 max_memory,
+                workers,
+                task_depth,
+                io_threads,
+                file_threads,
                 solver_wallclock,
             } => {
                 let options = runtime::RunOptions {
                     grants: &[],
                     max_depth,
-                    max_memory,
+                    tasks: runtime::TaskFlags {
+                        workers,
+                        task_depth,
+                        io_threads,
+                        file_threads,
+                    },
+                    max_memory: max_memory.unwrap_or(una_interp::DEFAULT_MAX_MEMORY),
+                    max_memory_given: max_memory.is_some(),
                     http: una_http::client::Settings::default(),
                     heap,
                     json,
@@ -1296,6 +1340,11 @@ fn run_command(
                     environment,
                     solving: solving(solver_wallclock, json, stderr),
                     stop_after: None,
+                    // Time in a test is always virtual (ADR 0116 rule 19).
+                    virtual_time: true,
+                    deadline: None,
+                    stop_grace: una_interp::stopping::DEFAULT_GRACE_SECS,
+                    trace: None,
                 };
                 runtime::test_command(&path, options, stdout, stderr)
             }
@@ -1724,7 +1773,8 @@ fn contract_command(
         .headers
         .iter()
         .find(|h| h.module == module && h.name == function_name);
-    let contract = contract::contract(&modules, &module, decl, function, header);
+    let layout = verification::source_layout(&package);
+    let contract = contract::contract(&modules, &module, decl, function, header, layout);
     if json {
         match serde_json::to_string(&contract) {
             Ok(document) => writeln!(stdout, "{document}")?,

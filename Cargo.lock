@@ -1354,12 +1354,14 @@ dependencies = [
  "una-diag",
  "una-explain",
  "una-fmt",
+ "una-hash",
  "una-http",
  "una-interp",
  "una-lsp",
  "una-project",
  "una-report",
  "una-syntax",
+ "una-sys",
  "una-verify",
 ]
 
@@ -1428,6 +1430,8 @@ dependencies = [
  "rcgen",
  "rustls",
  "una-core",
+ "una-http",
+ "una-sys",
  "webpki-roots",
 ]
 
@@ -1442,8 +1446,10 @@ dependencies = [
  "toml",
  "una-core",
  "una-diag",
+ "una-hash",
  "una-http",
  "una-syntax",
+ "una-sys",
 ]
 
 [[package]]
@@ -1484,8 +1490,10 @@ dependencies = [
  "serde_json",
  "una-core",
  "una-diag",
+ "una-hash",
  "una-http",
  "una-interp",
+ "una-sys",
 ]
 
 [[package]]

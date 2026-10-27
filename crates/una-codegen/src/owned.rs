@@ -4,7 +4,8 @@
 //! update in place, so the caller gives up its reference when the argument is at its last
 //! use, and retains it otherwise. Every other parameter is **borrowed**, with no reference
 //! counting at the call, as before. A function consumes a name that reaches:
-//! - the list of `append` or `set` of the prelude, or the text a concatenation begins with;
+//! - the list of `append` or `set` of the prelude, the receiver of a dense value's `edit`
+//!   method (ADR 0120 rule 31), or the text a concatenation begins with;
 //! - an owned parameter of a function of the package, or any parameter of a function value,
 //!   which a lambda owns, or the initial state of `fold`;
 //! - the initial state of a loop whose body consumes that state;
@@ -17,7 +18,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use una_core::{Atom, Bound, Decl, Expr, MapOp, PRELUDE_MODULE, Prim, Program, Rhs};
+use una_core::{Atom, Bound, Decl, Expr, LoopSource, MapOp, PRELUDE_MODULE, Prim, Program, Rhs};
 
 /// The owned parameters of each function of the package, by qualified name, in parameter
 /// order (the type descriptors that follow them are borrowed).
@@ -113,13 +114,51 @@ impl<'e> Facts<'e> {
                 args,
                 ..
             } => self.consume(args.first()),
+            // So do the updates of the collections of `std.collections` (`spec/28`, ADR 0119
+            // rule 1).
+            Rhs::Prim {
+                prim: Prim::Seq(op),
+                args,
+                ..
+            } if op.rebuilds() => self.consume(args.first()),
+            Rhs::Prim {
+                prim: Prim::Set(op),
+                args,
+                ..
+            } if op.rebuilds() => self.consume(args.first()),
+            Rhs::Prim {
+                prim: Prim::HashMap(op),
+                args,
+                ..
+            } if op.rebuilds() => self.consume(args.first()),
+            Rhs::Prim {
+                prim: Prim::HashSet(op),
+                args,
+                ..
+            } if op.rebuilds() => self.consume(args.first()),
+            Rhs::Prim {
+                prim: Prim::Priority(op),
+                args,
+                ..
+            } if op.rebuilds() => self.consume(args.first()),
+            Rhs::Prim {
+                prim: Prim::BitSet(op),
+                args,
+                ..
+            } if op.rebuilds() => self.consume(args.first()),
             Rhs::Call { function, args, .. } => {
                 if function.module == PRELUDE_MODULE {
-                    if matches!(function.name.as_str(), "append" | "set") {
+                    if matches!(function.name.as_str(), "append" | "set")
+                        || crate::lower::dense_edits(&function.name)
+                    {
                         self.consume(args.first());
                     }
-                    // `fold` hands its initial state to the step as owned.
-                    if function.name == "fold" {
+                    // `fold` hands its initial state to the step as owned, a dense value's
+                    // `fold` too (design note D6).
+                    if function.name == "fold"
+                        || (crate::lower::is_dense(&function.name)
+                            && crate::lower::dense_method(&function.name) == "fold")
+                    {
                         self.consume(args.get(1));
                     }
                 } else if let Some(params) =
@@ -158,15 +197,32 @@ impl<'e> Facts<'e> {
             }
             Expr::LetTuple { body, .. } => self.expr(body, owned),
             Expr::Loop {
-                state, init, body, ..
+                source,
+                state,
+                init,
+                body,
+                on_stop,
+                ..
             } => {
                 // A state's initial value is consumed when the state is: `state` aliases it.
                 for ((name, _), atom) in state.iter().zip(init) {
                     self.alias(name, Some(atom));
                 }
+                if let LoopSource::Until { cond, .. } = source.as_ref() {
+                    self.expr(cond, owned);
+                }
                 self.expr(body, owned);
+                // `on stop` binds the state afresh, from the same values.
+                if let Some(on_stop) = on_stop {
+                    for ((name, _), atom) in on_stop.state.iter().zip(init) {
+                        self.alias(name, Some(atom));
+                    }
+                    self.expr(&on_stop.body, owned);
+                }
             }
-            Expr::Together { tasks, .. } => tasks.iter().for_each(|task| self.expr(task, owned)),
+            Expr::Together { tasks, .. } | Expr::FirstOf { tasks, .. } => {
+                tasks.iter().for_each(|task| self.expr(task, owned));
+            }
             Expr::TogetherFor { task, .. } => self.expr(task, owned),
             Expr::If {
                 then, otherwise, ..
@@ -188,7 +244,13 @@ impl<'e> Facts<'e> {
                 self.expr(body, owned);
                 self.expr(handler, owned);
             }
-            Expr::Attempt { body, .. } | Expr::With { body, .. } => self.expr(body, owned),
+            Expr::Attempt { body, .. }
+            | Expr::With { body, .. }
+            | Expr::Within { body, .. }
+            | Expr::Tasks { body, .. } => {
+                self.expr(body, owned);
+            }
+            Expr::Start { task, .. } => self.expr(task, owned),
         }
     }
 }

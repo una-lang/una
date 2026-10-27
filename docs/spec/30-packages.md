@@ -4,7 +4,7 @@ Status: Normative, edition 0.4 preview (ADR 0122).
 
 From edition `0.4`, a package describes itself in `ita.una`, a declarative file in Una's lexical syntax, and is pinned by `ita.lock`, which only the tool writes. A repository may group packages in a workspace with `itaty.una`. Itá, the package manager, is the command `una ita` of the `una` binary. The rules of ADR 0122 join this chapter as they land, each with its conformance cases. A package loads its path dependencies (§12) and the releases of the sources its `sources` section declares, verified by the registry client (§14); every other need is refused (U7008), so no import ever reaches a package that is not checked with the program.
 
-**Editions.** The rules of this chapter apply only to packages of edition `0.4` and later. Editions `0.1` to `0.3` keep `una.toml` and `verification.lock` (`spec/13 §7`), and a single file keeps edition `0.1` and has no dependencies.
+**Editions.** The rules of this chapter apply only to packages of edition `0.4` and later. Editions `0.1` to `0.3` keep `una.toml` and `verification.lock` (`spec/13 §7`), and a single file has no dependencies. A single file keeps edition `0.1`, except that a file named to `una fmt`, `una check` or another command, with an `ita.una` or `una.toml` in a directory above it, is read, formatted and checked in the edition of the nearest such manifest and is otherwise still its own package (#1175).
 
 ## 1. Lexical rules
 
@@ -60,6 +60,7 @@ From edition `0.4`, a package describes itself in `ita.una`, a declarative file 
    contracts    = "contracts" NEWLINE INDENT { module_path NEWLINE
                   INDENT uses_item { uses_item } DEDENT } DEDENT ;
    run          = "run" NEWLINE INDENT [ "entry" module_path NEWLINE ]
+                  [ "max_memory" int_lit NEWLINE ]
                   [ "grants" NEWLINE INDENT grant { grant } DEDENT ] DEDENT ;
    grant        = ( "console" | "clock" | "env"
                   | "keys" text_lit
@@ -68,6 +69,8 @@ From edition `0.4`, a package describes itself in `ita.una`, a declarative file 
                   [ INDENT limit_line { limit_line } DEDENT ] ;
    file_mode    = "read" | "write" ;
    http_method  = "get" | "post" | "put" | "delete" ;
+   limit_line   = "at" "most" int_lit ( "per" ( "second" | "minute" | "hour" ) | "at" "once" ) NEWLINE
+                | "waiting" "at" "most" int_lit NEWLINE ;      (* spec/27 §9 *)
    drive        = "drive" NEWLINE INDENT "module" module_path NEWLINE
                   "ticks" int_lit NEWLINE [ "budget" int_lit NEWLINE ] DEDENT ;
    ```
@@ -77,7 +80,7 @@ From edition `0.4`, a package describes itself in `ita.una`, a declarative file 
    - `ita <name>`: `name` is a `lower_ident` with no `__` and no trailing `_`, of at most 64 bytes, or `owner/name` with an owner of 2 to 39 bytes by the same rule.
    - `version` is a full version, `MAJOR.MINOR.PATCH` with an optional pre-release, each numeric part at most 2^31 − 1, and no build metadata.
    - `edition` is `0.4` or a later edition the release serves. An earlier edition is U7008: that package keeps `una.toml`.
-   - `profile` is `app`, the default. `systems` is U7008 in this release, which does not implement profiles: checking a `systems` package as `app` would leave out the obligations that profile adds.
+   - `profile` is `app`, the default, or `systems` (ADR 0109): a `systems` package with `entry` declares `max_memory`.
    - `about` and `license` are non-empty texts, `home` an `https://` URL, and `publish to` names `itaty` or a source name that `sources` could declare, never `path`, `git` or `workspace`. A published package has no `sources` section (§15 rule 1), so the source is not checked when `ita.una` is read: `una ita publish` and `una ita yank` check it against the `sources` of the nearest workspace whose `itaty.una` lists the package as a member, after the package's own refusals and its check (§15 rule 3) and before its archive is built or anything is sent, and refuse a source no such workspace declares (U7013). The `ita.una` of a published archive, read at fetch or by `una check`, therefore accepts its `publish to` line.
 5. **The sections that `una.toml` has.** Each has the meaning and the checks of `spec/13 §7` and of the records it names. Every error that `spec/13 §7` makes U7002 for a key of `una.toml` is U7008 at the corresponding line of `ita.una`; the codes of other domains stay (U1005 and U1002 for categories, U7005 for trusted modules).
    - `labels`: the categories, one per line.
@@ -85,8 +88,8 @@ From edition `0.4`, a package describes itself in `ita.una`, a declarative file 
    - `escapes`: `checked per module <n>`, `[escape_budget] checked_per_module`.
    - `boundaries` (ADR 0093): a module path, then its ceiling as `may` lines; no `may` line is the empty ceiling.
    - `contracts` (ADR 0092 rule 8): a function's qualified name, then its locked `uses` clauses, one per line, each parsed by the production a header uses.
-   - `run`: `entry`, then `grants`, one grant per line, each the grant spec of `spec/13 §5` it corresponds to: `console`, `clock`, `env`, `keys "<file>"`, `files "<path>" read, write`, and `http "<origin>" get, post`. Paths resolve against the package root.
-   - The limit lines under a grant (ADR 0117) are U7008 in this release, which does not implement them: a grant read without its limit would allow more than written. The `drive` section names the module the host drives (`spec/26 §2`): `module`, `ticks` and an optional `budget`, each of `ticks` and `budget` from 1 to 86,400,000 milliseconds; a missing key, a value out of range, a `run entry` beside it and a module that is not in the package are U7008.
+   - `run`: `entry`, then `max_memory`, the declared memory budget in MiB from 1 to 4096 (`[run] max_memory`, ADR 0109 rule 4), then `grants`, one grant per line, each the grant spec of `spec/13 §5` it corresponds to: `console`, `clock`, `env`, `keys "<file>"`, `files "<path>" read, write`, and `http "<origin>" get, post`. Paths resolve against the package root. A `max_memory` outside that range, and a `systems` package with `entry` and no `max_memory` (at the `entry` line), are U7008.
+   - The limit lines under an `http` grant (ADR 0117 rule 8) have the forms and the meaning of `spec/27 §9`: `at most <n> per second`, `minute` or `hour`, `at most <n> at once`, and `waiting at most <n>`. A line of another form or with lines below it, a count below 1 or above 2^31 − 1, a limit under a grant other than `http`, and a kind of limit given twice are U7008 at the line, or at the count for a count out of range; a grant with such a line is not read, since without its limit it would allow more than written. The `drive` section names the module the host drives (`spec/26 §2`): `module`, `ticks` and an optional `budget`, each of `ticks` and `budget` from 1 to 86,400,000 milliseconds; a missing key, a value out of range, a `run entry` beside it and a module that is not in the package are U7008.
 6. **Canonical form.** `una fmt ita.una` and `una fmt itaty.una` rewrite the file in its canonical form: two spaces per level; one blank line between top-level blocks and none inside them; the head's lines in the order of the production `head_line`; one space between words, none before `,`, `.`, `:`, `/` or `]`, none after `[`, `.` or `/`, and none between a capability and its `[`; a comment kept before the line it precedes, or two spaces after the line it ends. A line whose tokens this spacing would join into others, such as `1.` before `2`, keeps one space between every two tokens. `una fmt --check ita.una` reports U7001 where the file differs. `una fmt` of a package directory does not touch `ita.una`, and `una fix` never edits `ita.una`, `ita.lock` or `itaty.una`.
 
 ## 3. Needs and sources
@@ -174,20 +177,21 @@ For a package of edition `0.4`, the key of a proof cache entry (`spec/12 §9`) i
    | `una.toml` / `verification.lock` | `ita.una` / `ita.lock` |
    | --- | --- |
    | `[package] name = "events-example"` | `ita events_example`: `-` becomes `_`; a name that is still not a package name needs `--name` |
-   | `version`, `edition` | head lines; `edition` becomes `0.4`; a version that is not `MAJOR.MINOR.PATCH` is refused |
+   | `version`, `edition`, `profile` | head lines; `edition` becomes `0.4`; a version that is not `MAJOR.MINOR.PATCH` is refused; `profile` is written when it is `systems` |
    | `[labels] categories` | `labels`, one per line |
    | `[trusted] modules` | `trusted` |
    | `[escape_budget] checked_per_module` | `escapes`, `checked per module <n>`, when not 0 |
    | `[boundaries]` | `boundaries`, with `may` lines |
    | `[contracts]` | `contracts`, the clause strings as lines |
    | `[run] entry`, `grants` | `run`, `entry`, `grants` with one line per spec, as `files "data/" read, write` |
+   | `[run] max_memory` | `max_memory`, in `run` after `entry` |
    | `verification.lock` | the `solver` section of `ita.lock`; the release's default when the package has none |
 
    A text is written with `"`, `\`, `{` and `}` escaped, and every control or bidirectional character as `\u{…}`.
 4. **Comments.** A run of comment lines of `una.toml` directly before a table header or a key is carried, as `--` comments, above the line it becomes. Every other comment is listed in the output, with its line.
 5. **Refusals.** An invalid `una.toml`, other than its edition `0.4`, or an invalid `verification.lock` is refused, with each problem printed, and nothing is written (exit code 2).
-6. **Writing.** It writes `ita.una` and `ita.lock`, each through a temporary file and a rename, then removes `una.toml` and `verification.lock`.
-7. **The clashes of the edition.** It then checks the package at tier 0 in edition `0.4`, and prints every diagnostic the change of edition causes, those the package has in edition `0.4` and not in its own, with their repairs, such as a function named `within` (U0103). It applies none: `una fix` does that. Its exit code is 0: the diagnostics are the next steps of the migration.
+6. **Writing.** It writes `ita.una` and `ita.lock`, each through a temporary file and a rename, rewrites each module in the canonical form of edition `0.4` (`spec/15 §2`), then removes `una.toml` and `verification.lock`. The canonical form of edition `0.4` wraps long lines, which earlier editions never do (ADR 0125, amendment of 2026-10-25): a module that differs from that form is written through a temporary file and a rename, and listed in `written` by its path. For a module that was canonical in its own edition, the rewrite changes only white space. A module with a syntax error in edition `0.4` has no canonical form and is left as it is. The rewrite is one check of the package, as `una fmt` does.
+7. **The clashes of the edition.** It then checks the package, with its modules rewritten, at tier 0 in edition `0.4`, and prints every diagnostic the change of edition causes, those the package has in edition `0.4` and not in its own, with their repairs, such as a function named `within` (U0103). It applies none: `una fix` does that. Its exit code is 0: the diagnostics are the next steps of the migration.
 8. **Output.** `--dry-run` prints the two files and the diagnostics, and writes nothing. `--json` prints one document, `una.migrate/1`: `schema` first, then `dry_run`, `written`, `removed`, `name` (`from`, `to`), `edition` (`from`, `to`), `default_lock`, `comments_not_carried` (`line`, `text`), `ita_una` and `ita_lock` (the files' texts with `--dry-run`, `null` otherwise), and `diagnostics`.
 ## 9. Package content, digest and archive
 

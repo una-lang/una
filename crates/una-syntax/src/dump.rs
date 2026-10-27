@@ -191,6 +191,7 @@ impl Dumper<'_> {
                         ClauseKind::Fails(kind) => list("fails", [atom(self.name(kind))]),
                         ClauseKind::UsesOf(param) => list("uses-of", [atom(self.name(param))]),
                         ClauseKind::FailsOf(param) => list("fails-of", [atom(self.name(param))]),
+                        ClauseKind::Diverges => atom("diverges"),
                         ClauseKind::DerivedFrom(requirements) => list(
                             "derived-from",
                             requirements.iter().map(|id| atom(self.name(id))),
@@ -313,6 +314,12 @@ impl Dumper<'_> {
                         ),
                         ExpectationKind::Holds(expr) => list("expect", [self.expr(expr)]),
                     });
+                }
+                if let Some(stop_after) = &example.stop_after {
+                    items.push(list(
+                        "stop-after",
+                        [atom(stop_after.iterations.to_string())],
+                    ));
                 }
                 items
             }
@@ -548,11 +555,40 @@ impl Dumper<'_> {
                 None => atom("stop"),
             },
             Stmt::Skip(_) => atom("skip"),
+            Stmt::Ever(stmt) => {
+                let mut items = vec![atom("for-ever")];
+                if let Some(within) = &stmt.within {
+                    items.push(list("within", [self.expr(within)]));
+                }
+                items.push(self.block(&stmt.block));
+                if let Some(on_stop) = &stmt.on_stop {
+                    items.push(list("on-stop", [self.block(&on_stop.block)]));
+                }
+                Node::List(items)
+            }
+            Stmt::OnStop(on_stop) => list("on-stop", [self.block(&on_stop.block)]),
+            Stmt::Until(stmt) => list(
+                "for-until",
+                [
+                    self.expr(&stmt.condition),
+                    self.expr(&stmt.measure),
+                    self.block(&stmt.block),
+                ],
+            ),
+            Stmt::Tasks(stmt) => {
+                let mut items = vec![atom("tasks")];
+                if let Some(bound) = &stmt.bound {
+                    items.push(list("at-most", [self.expr(bound)]));
+                }
+                items.push(self.block(&stmt.block));
+                Node::List(items)
+            }
+            Stmt::Start(stmt) => list("start", [self.handled(&stmt.handled)]),
         }
     }
 
     fn handled(&self, handled: &Handled) -> Node {
-        if handled.with.is_empty() && handled.handlings.is_empty() {
+        if handled.with.is_empty() && handled.within.is_none() && handled.handlings.is_empty() {
             return self.expr(&handled.expr);
         }
         let mut items = vec![atom("handled"), self.expr(&handled.expr)];
@@ -561,6 +597,9 @@ impl Dumper<'_> {
                 "with",
                 handled.with.iter().map(|binding| self.cap_binding(binding)),
             ));
+        }
+        if let Some(within) = &handled.within {
+            items.push(list("within", [self.expr(within)]));
         }
         for handling in &handled.handlings {
             items.push(match &handling.kind {
@@ -612,6 +651,7 @@ impl Dumper<'_> {
                     self.block(&together.block),
                 ],
             ),
+            BlockExpr::FirstOf(first) => list("first-of", first.body.iter().map(|s| self.stmt(s))),
         }
     }
 
@@ -733,7 +773,17 @@ impl Dumper<'_> {
                     list("fail", [self.variant(failure)]),
                 ],
             ),
-            ExprKind::Attempt(operand) => list("attempt", [self.expr(operand)]),
+            ExprKind::Attempt {
+                operand,
+                within: None,
+            } => list("attempt", [self.expr(operand)]),
+            ExprKind::Attempt {
+                operand,
+                within: Some(within),
+            } => list(
+                "attempt",
+                [self.expr(operand), list("within", [self.expr(within)])],
+            ),
             ExprKind::Fail(variant) => list("fail", [self.variant(variant)]),
             ExprKind::Binary { op, left, right } => {
                 list(binary_text(*op), [self.expr(left), self.expr(right)])

@@ -574,7 +574,8 @@ fn floors_are_stored_on_every_read_and_a_fork_of_the_lock_is_refused() {
 }
 
 /// Consent to a pending dispute is recorded in the lock, which `--check` and later locks honor;
-/// a new pending entry still needs consent. A dispute logged six days ago is pending.
+/// a second dispute logged while it waits freezes the chain. A dispute logged six days ago is
+/// pending.
 #[test]
 fn consent_to_a_pending_dispute_is_recorded_in_the_lock() {
     let mut registry = TestRegistry::new("acme");
@@ -618,13 +619,18 @@ fn consent_to_a_pending_dispute_is_recorded_in_the_lock() {
         (0, "ita.lock is up to date\n"),
         "{err}"
     );
-    // Another dispute: not recorded, so it needs consent again.
-    registry.recover("acme", "dispute", &keypair(65, "acme.second").1, &[]);
+    // Another dispute while the first waits competes with it: consent to the first covers
+    // nothing of it, and the chain is frozen from the later one's position (`spec/30 §14`, competing
+    // requests).
+    let second = registry.recover("acme", "dispute", &keypair(65, "acme.second").1, &[]);
     registry.checkpoint(now() - 30);
     registry.write(&mirror);
     let (code, _, err) = una_in(&["una", "ita", "lock", arg(&dir)], &itaoca);
     assert_eq!(code, 1);
-    assert!(err.contains("U7014"), "{err}");
+    assert!(
+        err.contains("U7010") && err.contains(&format!("frozen from the log position {second}")),
+        "{err}"
+    );
 }
 
 /// One name of `sources` given to two registries in turn: each keeps its own floors, so the

@@ -48,6 +48,12 @@ prim            ::= + | - | * | div | mod | neg | == | != | < | <= | > | >= | no
 
 (v0.2, ADR 0065.) Core IR gains `together` and `together_for` (`spec/19 §5`).
 
+(Edition 0.4, ADR 0117 rule 6.) Core IR gains `first_of(e₁ | ... | eₙ)`, n ≥ 2: the branches of a race, each closed over the bindings before it, whose value is that of the first branch to return; when every branch fails, it fails with the failure of the lowest-indexed one (`spec/27 §6`).
+
+(Edition 0.4, ADR 0117 rule 7.) Core IR gains `tasks(b) e` and `start(e)`. `tasks(b) e` runs `e`, the block of a `tasks` statement, in the current task, with the bound `b`, an atom bound before it or none for the default bound; its value is `e`'s, the tuple of the outer bindings the block updates, and it ends once `e` has ended and every task started in it has ended, after cancelling them when `e` failed or stopped; an `exit_k` in `e` crosses it. `start(e)`, of type `Unit`, occurs in the `e` of a `tasks`, outside the tasks in it: it starts a task for `e`, closed over the bindings before it, which cannot fail, and goes on (`spec/27 §7`).
+
+(Edition 0.4, ADR 0117 rule 5.) Core IR gains `within(a, C_t, [C_w]) e`: `e` bounded by the deadline `a`, in milliseconds. Its value is `e`'s when `e` returns before the deadline; otherwise it fails with `C_t()`, a variant without fields, and a failure `x` of `e` in time fails as `C_w(x)`, or as `x` without `C_w`. `e within d` with `if error pass` is `within(d, F.TimedOut) e`, with `F` the function's error kind; with another clause it is `within(d, Timed.TimedOut, Timed.Failed) e`, or `within(d, Deadline.Expired) e` when `e` cannot fail, under the clause's own `handle` (`spec/27 §5`).
+
 (Edition 0.4, ADR 0116 rule 20.) Core IR gains `exit_k(a, ...)`, with the tag `k`, `next` or `stop`, and the values of the innermost loop's state: it ends the current iteration of that loop, which goes on to the next one with that state (`next`, from `skip`) or ends with it as its value (`stop`). It occurs only in a loop's body, outside the tasks in it (`spec/26 §3`).
 
 (v0.2, ADR 0056.) Core IR gains tuple types `(τ, ...)`, tuple construction and the binder `let (x, ...) = r in e`. Only the desugaring of the memory model uses them, and they are not surface syntax (`spec/17 §4`).

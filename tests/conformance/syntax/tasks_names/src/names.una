@@ -1,0 +1,17 @@
+-- test: in edition 0.4, `tasks` and `start` stay names where no statement of theirs begins: a binding, a call of a function named `start`, and a block that ends with the name `tasks` (spec/27 §7, ADR 0117 rule 7)
+-- spec: spec/27 §7
+-- expect: ok
+module names
+
+start(n: Int) -> Int = n + 1
+
+pub counted(n: Int) -> Int
+=
+  let tasks = start(n)
+  let begun = start(tasks)
+  begun + tasks
+
+pub last(n: Int) -> Int
+=
+  let tasks = n * 2
+  tasks

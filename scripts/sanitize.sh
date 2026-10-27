@@ -79,7 +79,7 @@ ignored_count=$(echo "$summary" | sed -n 's/.* \([0-9]*\) ignored.*/\1/p')
 [ "$ignored_count" = "$expected_ignored" ] && [ $((passed + ignored_count)) = "$total" ] \
     || fail "Miri passed $passed and ignored $ignored_count of $total tests, where $expected_ignored are to be ignored"
 # Code that behaves differently under Miri does so only where counted here: every mention of
-# `miri` in una-rt, any module and any form, but the ignore attributes checked above. Today fourteen
+# `miri` in una-rt, any module and any form, but the ignore attributes checked above. Today sixteen
 # tests that run smaller under Miri, where each allocation is slow (#778): two deep values at
 # depth 1,000 rather than 1,000,000, a copy between heaps at depth 1,000 rather than 200,000,
 # 200 rounds of `find` rather than 10,000, the entry points with a pool of one word of each
@@ -89,17 +89,23 @@ ignored_count=$(echo "$summary" | sed -n 's/.* \([0-9]*\) ignored.*/\1/p')
 # and 100 texts counted rather than up to 100,000, blocks nested 3 deep rather than 200, and 4
 # and 8 traced blocks rather than up to 256, and flat lists of 1,000 integers compared rather
 # than 100,000 (#815), and texts of 4,301 and 17,200 digits rather than 100,000 and 1,000,000
-# refused by the integer digit cap, whose timing runs only outside Miri, two mentions (#914).
+# refused by the integer digit cap, whose timing runs only outside Miri, two mentions (#914),
+# and two tests of the timers (#1151): the wheel's exact firing at offsets 99,991 ns apart
+# rather than 7,919, and the timer thread's at offsets 199,999 ns apart rather than 19,997,
+# with a history of 500 cancelled timers rather than 10,000, one mention each.
 # Their full sizes run in the ordinary tests. And one constant: the
 # debug quarantine of freed slots is 64 rather than 65,536, so that the test of slot reuse runs
 # under Miri and Miri checks the reuse.
+# Since #1065 the three reductions in the tests of tasks.rs (the staged block, the start depths
+# and the traced blocks) take no effect: those tests fork tasks onto coroutines, whose stacks and
+# switch Miri cannot run, so they are ignored under Miri with the scheduler's own tests (#1145).
 reduced=$(grep -rn 'miri' crates/una-rt | grep -vc 'cfg_attr(miri, ignore')
-[ "$reduced" = 16 ] || fail "una-rt mentions miri $reduced times outside its ignore attributes, and this script states 16"
+[ "$reduced" = 18 ] || fail "una-rt mentions miri $reduced times outside its ignore attributes, and this script states 18"
 
 asan=$(rustc +"$channel" --print sysroot)/lib/rustlib/$host/lib/librustc-nightly_rt.asan.dylib
 [ -f "$asan" ] || fail "the checking toolchain has no AddressSanitizer runtime at $asan"
 step "una-rt with AddressSanitizer" \
-    env RUSTFLAGS="-Zsanitizer=address" cargo +"$channel" build -p una-rt \
+    env RUSTFLAGS="-Zsanitizer=address --cfg una_asan" cargo +"$channel" build -p una-rt \
     --target "$host" --target-dir target/sanitize
 
 # Cargo's own links (build scripts, procedural macros, the test binaries) name the system `cc`,
@@ -112,7 +118,7 @@ linker_var=CARGO_TARGET_$(echo "$host" | tr '[:lower:]-' '[:upper:]_')_LINKER
 # The test binary is the one artifact whose profile is a test's (`"profile":{…"test":true`),
 # never the last one cargo happens to print, and there must be exactly one. It must call
 # AddressSanitizer's checks, or this step proves nothing.
-asan_tests_binaries=$(env RUSTFLAGS="-Zsanitizer=address" "$linker_var=/usr/bin/cc" CC=/usr/bin/cc \
+asan_tests_binaries=$(env RUSTFLAGS="-Zsanitizer=address --cfg una_asan" "$linker_var=/usr/bin/cc" CC=/usr/bin/cc \
     cargo +"$channel" test -p una-rt --lib --target "$host" --target-dir target/sanitize \
     --no-run --message-format=json 2>/dev/null \
     | grep '"profile":{[^}]*"test":true' | sed -n 's/.*"executable":"\([^"]*\)".*/\1/p')
@@ -184,7 +190,7 @@ fuzz_flags="--cfg una_fuzz -Cpasses=sancov-module -Cllvm-args=-sanitizer-coverag
 fuzz_flags="$fuzz_flags -Cllvm-args=-sanitizer-coverage-inline-8bit-counters"
 fuzz_flags="$fuzz_flags -Cllvm-args=-sanitizer-coverage-pc-table"
 fuzz_flags="$fuzz_flags -Cllvm-args=-sanitizer-coverage-trace-compares"
-fuzz_flags="$fuzz_flags -Zsanitizer=address -Cdebug-assertions -Coverflow-checks"
+fuzz_flags="$fuzz_flags -Zsanitizer=address --cfg una_asan -Cdebug-assertions -Coverflow-checks"
 fuzz_out=$root/target/fuzz
 step "The fuzz targets, with libFuzzer and AddressSanitizer" \
     env RUSTFLAGS="$fuzz_flags" cargo +"$channel" build --locked --release \
@@ -196,10 +202,11 @@ fuzz_bin=$fuzz_out/build/$host/release
 # machine, about ten times below the ceiling.
 FUZZ_SEED=766
 FUZZ_TARGETS="literal:350000 words:350000 json:450000"
-# The counts of provenance, archive and ita_lock (#997) are placeholders, not yet measured on
-# the release machine; their floors below are placeholders too, of one counter, edge and
-# feature each, until a measured run replaces them (docs/release-gates.md).
-FUZZ_TARGETS="$FUZZ_TARGETS provenance:300000 archive:300000 ita_lock:300000"
+# The floors of provenance, archive and ita_lock (#997) come from a run of 300000 inputs each.
+# With a fixed seed a larger count runs those inputs first, so it reaches at least their
+# coverage: provenance and archive run about a minute, and ita_lock keeps 300000 (about two
+# minutes), since a lower count could end under its floor.
+FUZZ_TARGETS="$FUZZ_TARGETS provenance:1280000 archive:1280000 ita_lock:300000"
 # The parsers and verifiers of the documents a package registry serves (ADR 0122). Their counts
 # and floors are placeholders until a run on the release machine measures them.
 FUZZ_TARGETS="$FUZZ_TARGETS registry_note:350000 registry_root:350000 registry_statement:350000 registry_owner:350000 registry_map_tile:350000 registry_mirrors:350000 registry_tile:350000 registry_provenance:350000 registry_archive:350000 registry_proofs:350000 registry_map_walk:350000 registry_owner_replay:350000 registry_location:350000 registry_archive_check:350000 registry_root_chain:350000 registry_yank:350000 registry_advisory:350000 registry_entry:350000 registry_keyfile:350000 registry_bundle:350000 registry_watch:350000 registry_promise:350000"
@@ -210,7 +217,7 @@ FUZZ_CEILING=600
 # (`ft`) its run ends with. Each floor is nine tenths of a measured run's value
 # (docs/release-gates.md).
 FUZZ_FLOORS="literal:244243:499:759 words:244798:4473:16955 json:244454:2124:7364"
-FUZZ_FLOORS="$FUZZ_FLOORS provenance:1:1:1 archive:1:1:1 ita_lock:1:1:1"
+FUZZ_FLOORS="$FUZZ_FLOORS provenance:143114:340:758 archive:143109:617:1593 ita_lock:144242:2848:9344"
 FUZZ_FLOORS="$FUZZ_FLOORS registry_note:1:1:1 registry_root:1:1:1 registry_statement:1:1:1 registry_owner:1:1:1 registry_map_tile:1:1:1 registry_mirrors:1:1:1 registry_tile:1:1:1 registry_provenance:1:1:1 registry_archive:1:1:1 registry_proofs:1:1:1 registry_map_walk:1:1:1 registry_owner_replay:1:1:1 registry_location:1:1:1 registry_archive_check:1:1:1 registry_root_chain:1:1:1 registry_yank:1:1:1 registry_advisory:1:1:1 registry_entry:1:1:1 registry_keyfile:1:1:1 registry_bundle:1:1:1 registry_watch:1:1:1 registry_promise:1:1:1"
 
 # The fuzz targets are exactly the canary and FUZZ_TARGETS: a target added to fuzz/Cargo.toml
