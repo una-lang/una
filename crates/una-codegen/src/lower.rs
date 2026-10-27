@@ -1187,6 +1187,13 @@ impl<'p> Lowerer<'_, 'p, '_> {
         else {
             return Err(internal("a loop that is not one"));
         };
+        // `for until` and `for ever` take their initial state themselves: taking it here too
+        // would retain each word once more, and leak it (#1198).
+        match source.as_ref() {
+            LoopSource::Until { .. } => return self.lower_until(expr, env, scope, catch),
+            LoopSource::Ever { .. } => return self.lower_ever(expr, env, scope, catch),
+            LoopSource::List(_) | LoopSource::Range { .. } => {}
+        }
         let types: Vec<Type> = state.iter().map(|(_, ty)| range::unrefined(ty)).collect();
         let kinds: Vec<Kind> = types.iter().map(kind).collect::<Result<_, _>>()?;
         // The loop owns its initial state: a binding at its last use moves in, any other word
@@ -1221,8 +1228,9 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 self.retain(high, Kind::Int);
                 (None, high, low)
             }
-            LoopSource::Until { .. } => return self.lower_until(expr, env, scope, catch),
-            LoopSource::Ever { .. } => return self.lower_ever(expr, env, scope, catch),
+            LoopSource::Until { .. } | LoopSource::Ever { .. } => {
+                return Err(internal("a `for until` or `for ever` lowered as a `for`"));
+            }
         };
         let inclusive = matches!(
             source.as_ref(),
