@@ -1,0 +1,1 @@
+- **Guide: executable recipes and edition-consistent availability** (#1107). Correct guide availability and proof claims, add units and generic-fold cases, and check positive examples against their declared editions.

@@ -1,0 +1,11 @@
+ita case
+  version 0.1.0
+  edition 0.4
+
+sources
+  acme "https://ita.acme.example"
+    root "sha256:5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e"
+    owners acme
+
+needs
+  acme/ledger 0.3 from acme

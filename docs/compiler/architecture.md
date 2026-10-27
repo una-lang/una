@@ -30,12 +30,13 @@ crates/
   una-hash/               keyed hashing: SipHash-2-4, the hash encoding, the process and table keys, the ordered hash table, shared by both engines (ADR 0119)
   una-rt/                 the runtime library of native executables; its ffi.rs is the only unsafe code (ADR 0058)
   una-lsp/                the language server of `una lsp`: LSP over stdio, the server's state (v0.2, ADR 0063)
+  una-itaty/              the Itaty registry service: log, tiles, name map, checks of submissions, HTTP endpoints (ADR 0122 S8)
   una-cli/                the `una` binary (the only compiler crate that does I/O to the terminal; una-rt is the I/O of native executables)
 tests/conformance/         language conformance suite (`testing.md`)
 examples/                  reference programs
 ```
 
-Dependency direction, as the crates' `Cargo.toml` files declare it, where `a` ← `b` means that `b` depends on `a` (no cycles): `diag` ← every other crate but `hash`, which depends on no workspace crate (ADR 0119); `syntax` ← `fmt`, `core`, `check`, `verify`, `interp`, `cli`; `project` ← `check`, `cli`; `core` ← `check`, `verify`, `interp`, `cli`; `fmt`, `check`, `verify`, `interp`, `report`, `codegen` ← `cli`; `core` ← `codegen`; `diag`, `core`, `interp` ← `rt`. `una-rt` is a static library that `una build` links into executables, not a dependency of `cli`; it shares the interpreter's grants and trace form. `check`, `verify` and `interp` do not depend on one another: `cli` runs them in turn and passes each one the Core IR that `check` elaborates. `report` is a stub that depends only on `diag` (D-132). (v0.2, ADR 0063.) `diag` ← `lsp` ← `cli`: `cli` passes the server a workspace that checks and formats a package, so `lsp` needs no other crate and no crate depends on `cli`.
+Dependency direction, as the crates' `Cargo.toml` files declare it, where `a` ← `b` means that `b` depends on `a` (no cycles): `diag` ← every other crate but `hash`, which depends on no workspace crate (ADR 0119); `syntax` ← `fmt`, `core`, `check`, `verify`, `interp`, `cli`; `project` ← `check`, `cli`; `core` ← `check`, `verify`, `interp`, `cli`; `fmt`, `check`, `verify`, `interp`, `report`, `codegen` ← `cli`; `core` ← `codegen`; `diag`, `core`, `interp` ← `rt`. `una-rt` is a static library that `una build` links into executables, not a dependency of `cli`; it shares the interpreter's grants and trace form. `check`, `verify` and `interp` do not depend on one another: `cli` runs them in turn and passes each one the Core IR that `check` elaborates. `report` is a stub that depends only on `diag` (D-132). (v0.2, ADR 0063.) `diag` ← `lsp` ← `cli`: `cli` passes the server a workspace that checks and formats a package, so `lsp` needs no other crate and no crate depends on `cli`. (ADR 0122.) `syntax`, `project` ← `itaty`: the registry service reuses the client's formats and verification, and no crate depends on it.
 
 ## 3. Pipeline
 

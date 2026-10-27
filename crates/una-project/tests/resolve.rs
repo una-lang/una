@@ -171,7 +171,8 @@ fn a_raise_waits_the_cooldown_unless_now() {
             held: Some(v("2.1.1")),
         }
     );
-    // The message points to the audit and to the need, never to a flag that skips the wait.
+    // A raise past a yank or an advisory points to the audit and to the need, never to a flag
+    // that skips the wait.
     let message = held.to_string();
     assert!(
         !message.contains("--now") && message.contains("`una ita audit`"),
@@ -680,8 +681,9 @@ fn the_offline_index_resolves_local_packages_and_refuses_unheld_sources() {
     let registry = [need("json", "2.1")];
     assert_eq!(
         resolve(&registry, &offline, &policy(), Bounds::default()),
-        Err(Problem::Index(
-            "the per-name state of `itaty` is not held".to_owned()
-        ))
+        Err(Problem::Index {
+            source: Some("itaty".to_owned()),
+            why: "the per-name state of `itaty` is not held".to_owned(),
+        })
     );
 }
