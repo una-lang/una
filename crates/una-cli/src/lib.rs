@@ -12,11 +12,13 @@ mod contract;
 mod core_json;
 mod fix;
 mod ita;
+mod ita_registry;
 mod lsp;
 mod migrate;
 mod package;
 mod proof_key;
 mod recovery;
+mod registry;
 mod report;
 mod runtime;
 mod std_builtins;
@@ -153,6 +155,8 @@ struct Analysis {
     mounts: Vec<una_project::Mount>,
     /// The sites with deadlines and their timing labels (ADR 0116 rule 21), for the report.
     timing: Vec<una_check::TimingSite>,
+    /// `L_lim` (ADR 0117 IF4), which a grant with limits needs at most `internal`.
+    limit_label: una_core::Label,
 }
 
 /// Checks `package`; with `run_grants`, for `una run`, whose grants are final (U3012).
@@ -173,6 +177,12 @@ fn analyze_and(
     // converts, so the environment is tested before any source is read; U6006 stops here.
     if manifest.edition >= una_project::Edition::V0_3
         && let Err(probe) = una_core::float::probe_environment()
+    {
+        return (environment_failure(probe), Vec::new());
+    }
+    // ADR 0120 rule 5: edition 0.4 adds the binary32 probes, for its `F32` literals.
+    if manifest.edition >= una_project::Edition::V0_4
+        && let Err(probe) = una_core::float32::probe_environment()
     {
         return (environment_failure(probe), Vec::new());
     }
@@ -302,6 +312,7 @@ fn analyze_and(
         of_lambdas: types.of_lambdas,
         file_state: types.file_state,
         timing: types.timing,
+        limit_label: types.limit_label,
     };
     (analysis, rejected)
 }
@@ -335,6 +346,7 @@ fn environment_failure(probe: &str) -> Analysis {
         file_state: una_core::Label::public(),
         mounts: Vec::new(),
         timing: Vec::new(),
+        limit_label: una_core::Label::public(),
     }
 }
 
@@ -677,6 +689,27 @@ pub(crate) fn itaoca(environment: Environment<'_>) -> Option<una_project::itaoca
     una_project::itaoca::Itaoca::at(dir.as_deref(), home.as_deref().map(Path::new))
 }
 
+/// The codes `una ita audit` reports for the package at `path`, each registry package's facts
+/// from `facts_of`, as the verified client gives them (ADR 0122 rule 41, U7014): for the explain
+/// examples of U7014, which state a registry's state without a registry.
+pub fn audit_codes(
+    path: &Path,
+    facts_of: &mut dyn FnMut(
+        &una_project::registry::audit::Locked,
+    ) -> Result<una_project::registry::audit::Facts, String>,
+) -> Vec<Code> {
+    ita_registry::audit_codes(path, facts_of)
+}
+
+/// The local clock, in seconds since the Unix epoch, which only the freshness of a registry's
+/// checkpoint reads (ADR 0122 rules 36.4 and 39); 0 when the clock is before the epoch, which
+/// makes every checkpoint look ahead of it, so resolution stops with a clock skew.
+pub(crate) fn local_clock() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs())
+}
+
 /// The heap of the process, as the binary counts it (ADR 0061): the bytes it holds, and how to
 /// set the ceiling past which an allocation fails. The library never touches the allocator.
 #[derive(Clone, Copy)]
@@ -782,7 +815,13 @@ fn panic_location(command: Option<&Command>) -> una_diag::Location {
                 | ItaCommand::Tree { path }
                 | ItaCommand::Vendor { path }
                 | ItaCommand::Verify { path }
-                | ItaCommand::Remove { path, .. },
+                | ItaCommand::Remove { path, .. }
+                | ItaCommand::Fetch { path }
+                | ItaCommand::Publish { path, .. }
+                | ItaCommand::Yank { path, .. }
+                | ItaCommand::Audit { path }
+                | ItaCommand::Bundle { path, .. }
+                | ItaCommand::Unbundle { path, .. },
         }) => Some(path.clone()),
         // `una ita add` and `update` work on the package in the current directory.
         Some(Command::Ita {
@@ -1058,18 +1097,33 @@ fn run_command(
                     stdout,
                     stderr,
                 };
+                let store = itaoca(environment);
+                let clock = local_clock();
                 match command {
                     ItaCommand::Tree { path } => ita::tree_command(&path, output),
                     ItaCommand::Remove { name, path } => ita::remove_command(&name, &path, output),
                     ItaCommand::Lock {
                         path,
                         check,
+                        fresh,
                         accept_authority,
                         accept_trust,
+                        accept_key,
                         dry_run,
                     } => ita::lock_command(
                         &path,
-                        ita::LockOptions::lock(check, dry_run, &accept_authority, &accept_trust),
+                        ita::LockOptions {
+                            fresh,
+                            accept_key: &accept_key,
+                            itaoca: store.as_ref(),
+                            now: clock,
+                            ..ita::LockOptions::lock(
+                                check,
+                                dry_run,
+                                &accept_authority,
+                                &accept_trust,
+                            )
+                        },
                         output,
                     ),
                     ItaCommand::Update {
@@ -1078,6 +1132,7 @@ fn run_command(
                         now,
                         accept_authority,
                         accept_trust,
+                        accept_key,
                         dry_run,
                     } => {
                         let options = ita::LockOptions {
@@ -1089,6 +1144,9 @@ fn run_command(
                                     hours.saturating_mul(3600)
                                 })
                             },
+                            accept_key: &accept_key,
+                            itaoca: store.as_ref(),
+                            now: clock,
                             ..ita::LockOptions::lock(
                                 false,
                                 dry_run,
@@ -1113,6 +1171,8 @@ fn run_command(
                             } else {
                                 una_project::resolve::COOLDOWN
                             },
+                            itaoca: store.as_ref(),
+                            now: clock,
                             ..ita::LockOptions::lock(false, dry_run, &[], &[])
                         };
                         ita::add_command(
@@ -1125,12 +1185,62 @@ fn run_command(
                             output,
                         )
                     }
+                    ItaCommand::Fetch { path } => ita::fetch_command(&path, store.as_ref(), output),
                     ItaCommand::Vendor { path } => {
-                        ita::vendor_command(&path, itaoca(environment).as_ref(), output)
+                        ita::vendor_command(&path, store.as_ref(), output)
                     }
                     ItaCommand::Verify { path } => {
-                        ita::verify_command(&path, itaoca(environment).as_ref(), output)
+                        ita::verify_command(&path, store.as_ref(), output)
                     }
+                    ItaCommand::Publish { path } => {
+                        // A refused proof cache key is a note on this command's stderr (#1164).
+                        let solving =
+                            solving(DEFAULT_WALLCLOCK.as_secs(), json, &mut *output.stderr);
+                        let home = variable(environment, "HOME");
+                        let keys = ita_registry::keys_dir(home.as_deref());
+                        let git_variable = ["GIT_DIR", "GIT_WORK_TREE"]
+                            .into_iter()
+                            // Set at all, even to a value that is not UTF-8.
+                            .find(|name| !matches!(environment(name), Ok(None)));
+                        ita_registry::publish_command(
+                            &path,
+                            keys.as_deref(),
+                            git_variable,
+                            &solving,
+                            output,
+                        )
+                    }
+                    ItaCommand::Yank { version, path } => {
+                        let store = itaoca(environment);
+                        let home = variable(environment, "HOME");
+                        let keys = ita_registry::keys_dir(home.as_deref());
+                        ita_registry::yank_command(
+                            &version,
+                            &path,
+                            keys.as_deref(),
+                            store.as_ref(),
+                            output,
+                        )
+                    }
+                    ItaCommand::Audit { path } => {
+                        ita_registry::audit_command(&path, itaoca(environment).as_ref(), output)
+                    }
+                    ItaCommand::Watch { owner, names, from } => {
+                        let store = itaoca(environment);
+                        ita_registry::watch_command(&owner, &names, &from, store.as_ref(), output)
+                    }
+                    ItaCommand::Bundle { file, path } => ita_registry::bundle_command(
+                        &file,
+                        &path,
+                        itaoca(environment).as_ref(),
+                        output,
+                    ),
+                    ItaCommand::Unbundle { file, path } => ita_registry::unbundle_command(
+                        &file,
+                        &path,
+                        itaoca(environment).as_ref(),
+                        output,
+                    ),
                 }
             }
             Command::Fmt { path, check } => {
@@ -1161,6 +1271,7 @@ fn run_command(
                 virtual_time,
                 deadline,
                 stop_grace,
+                trace,
             } => {
                 let options = runtime::RunOptions {
                     grants: &grants,
@@ -1171,7 +1282,8 @@ fn run_command(
                         io_threads,
                         file_threads,
                     },
-                    max_memory,
+                    max_memory: max_memory.unwrap_or(una_interp::DEFAULT_MAX_MEMORY),
+                    max_memory_given: max_memory.is_some(),
                     http: runtime::http_settings(max_response, http_timeout),
                     heap,
                     json,
@@ -1182,6 +1294,7 @@ fn run_command(
                     virtual_time,
                     deadline,
                     stop_grace,
+                    trace: trace.as_deref(),
                 };
                 runtime::run_command(&path, options, stdout, stderr)
             }
@@ -1218,7 +1331,8 @@ fn run_command(
                         io_threads,
                         file_threads,
                     },
-                    max_memory,
+                    max_memory: max_memory.unwrap_or(una_interp::DEFAULT_MAX_MEMORY),
+                    max_memory_given: max_memory.is_some(),
                     http: una_http::client::Settings::default(),
                     heap,
                     json,
@@ -1230,6 +1344,7 @@ fn run_command(
                     virtual_time: true,
                     deadline: None,
                     stop_grace: una_interp::stopping::DEFAULT_GRACE_SECS,
+                    trace: None,
                 };
                 runtime::test_command(&path, options, stdout, stderr)
             }
