@@ -1515,6 +1515,18 @@ impl Registry {
                 "the chain of `{owner_name}` with this entry would not settle within {} replays of its claims of compromise, first at the log index {}, so every client would refuse it",
                 unsettled.passes, unsettled.index
             )),
+            // A chain past the claims cap is not replayed by any client, so nothing of the
+            // owner would count: the service does not log the entry that takes it there.
+            too @ ReplayError::TooManyClaims(_) => rule(
+                Cause::ReplayRefused,
+                format!("the chain of `{owner_name}` would not replay with this entry: {too}"),
+            ),
+            // The service's own effects never fail; a failure is no verdict, so nothing is
+            // logged.
+            ReplayError::Effect(why) => rule(
+                Cause::ReplayRefused,
+                format!("the chain of `{owner_name}` could not be replayed with this entry: {why}"),
+            ),
         })
     }
 
