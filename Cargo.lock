@@ -1490,6 +1490,7 @@ dependencies = [
  "serde_json",
  "una-core",
  "una-diag",
+ "una-hash",
  "una-http",
  "una-interp",
  "una-sys",

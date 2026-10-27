@@ -114,6 +114,10 @@ pub struct Described<'a> {
     pub ops: &'a [serde_json::Value],
     /// The type of `main`'s failures, when it can fail.
     pub failure: Option<usize>,
+    /// Whether the compiled code makes a hash table, so that the run reads the process key of
+    /// keyed hashing before `main` (ADR 0119 rule 9). The code compiled is the code `main`
+    /// reaches, the standard library's included.
+    pub hashing: bool,
     /// Whether the compiled code holds a task construct or a `for ever`, so the runtime starts
     /// its workers and helper pools before `main` (ADR 0116 amendment, P8; #1145).
     pub threads: bool,
@@ -208,6 +212,7 @@ fn compile_start(
         types: emitter.types.shapes(),
         ops: &emitter.ops,
         failure,
+        hashing: emitter.hashing,
         threads: emitter.threads,
     });
     match loop_functions {
@@ -377,6 +382,27 @@ const RUNTIME: &[(&str, usize, bool)] = &[
     ("una_rt_map_without", 2, true),
     ("una_rt_map_without_owned", 2, true),
     ("una_rt_map_list", 2, true),
+    ("una_rt_collection_len", 1, true),
+    ("una_rt_seq_empty", 0, true),
+    ("una_rt_seq_of", 2, true),
+    ("una_rt_seq_op", 3, true),
+    ("una_rt_seq_op_owned", 3, true),
+    ("una_rt_set_empty", 0, true),
+    ("una_rt_set_of", 1, true),
+    ("una_rt_set_op", 4, true),
+    ("una_rt_set_op_owned", 4, true),
+    ("una_rt_priority_empty", 1, true),
+    ("una_rt_priority_op", 4, true),
+    ("una_rt_priority_op_owned", 4, true),
+    ("una_rt_bit_set_empty", 2, true),
+    ("una_rt_bit_set_op", 4, true),
+    ("una_rt_bit_set_op_owned", 4, true),
+    ("una_rt_hash_empty", 2, true),
+    ("una_rt_hash_of_list", 4, true),
+    ("una_rt_hash_map_op", 6, true),
+    ("una_rt_hash_map_op_owned", 6, true),
+    ("una_rt_hash_set_op", 5, true),
+    ("una_rt_hash_set_op_owned", 5, true),
     ("una_rt_split", 2, true),
     ("una_rt_join", 2, true),
     ("una_rt_ends_with", 2, true),
@@ -515,6 +541,8 @@ struct Emitter<'p> {
     types: describe::Types<'p>,
     /// The operations, by the index passed to `una_rt_event`.
     ops: Vec<serde_json::Value>,
+    /// Whether a compiled function makes a hash table (ADR 0119 rule 9).
+    hashing: bool,
     /// Whether a task construct or a `for ever` was compiled ([`Described::threads`]).
     threads: bool,
     /// Whether an operation of `Http` was compiled: the C `main` then calls
@@ -552,6 +580,7 @@ impl<'p> Emitter<'p> {
             sites: Vec::new(),
             types: describe::Types::new(program),
             ops: Vec::new(),
+            hashing: false,
             threads: false,
             http: false,
         })

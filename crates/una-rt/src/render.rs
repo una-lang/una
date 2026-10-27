@@ -34,6 +34,19 @@ pub enum Shape {
     List(usize),
     /// `Map` of the key and value types at these indices (`spec/21 §2` rule 4).
     Map(usize, usize),
+    /// `Stack` or `Queue` of the type at this index, written as a list, front first, or
+    /// `PriorityQueue` of items of that type, written as a list in the order of its pops
+    /// (`spec/28 §4`).
+    Seq(usize),
+    /// `Set` of the type at this index, written in braces, ascending (`spec/28 §4`).
+    Set(usize),
+    /// `BitSet`, its members written in braces, ascending (`spec/28 §4`).
+    Bits,
+    /// `HashMap` of the key and value types at these indices, written as a map in the order its
+    /// keys were first added, never in the order of their hashes (`spec/28 §4`).
+    HashMap(usize, usize),
+    /// `HashSet` of the type at this index, written in braces in insertion order.
+    HashSet(usize),
     /// A kind, by its variants in declaration order.
     Data(Vec<Variant>),
     /// The type parameter at this position of a composite descriptor, which says how to write
@@ -212,6 +225,50 @@ fn render(types: &[Shape], ty: usize, word: i64, redact: bool, params: &[i64]) -
                 }
                 parts.push(Task::Text("]".to_owned()));
             }
+            // A stack or a queue front first, and a priority queue in the order of its pops,
+            // as lists; a set ascending, in braces (`spec/28 §4`).
+            Some(Shape::Seq(item) | Shape::Set(item)) => {
+                let set = matches!(types.get(ty), Some(Shape::Set(_)));
+                out.push(if set { '{' } else { '[' });
+                for (index, word) in values::collection_words(word).into_iter().enumerate() {
+                    if index > 0 {
+                        parts.push(Task::Text(", ".to_owned()));
+                    }
+                    parts.push(Task::Value(*item, word, std::rc::Rc::clone(&params)));
+                }
+                parts.push(Task::Text(if set { "}" } else { "]" }.to_owned()));
+            }
+            // A bit set's members, integers written at once.
+            Some(Shape::Bits) => {
+                let members: Vec<String> = values::bit_set_members(word)
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect();
+                out.push_str(&format!("{{{}}}", members.join(", ")));
+            }
+            // `{k: v, ...}` and `{a, b}` in insertion order, `{}` when empty (ADR 0119 rule 10).
+            Some(Shape::HashMap(key, value)) => {
+                out.push('{');
+                for (index, (k, v)) in values::hash_entries(word).into_iter().enumerate() {
+                    if index > 0 {
+                        parts.push(Task::Text(", ".to_owned()));
+                    }
+                    parts.push(Task::Value(*key, k, std::rc::Rc::clone(&params)));
+                    parts.push(Task::Text(": ".to_owned()));
+                    parts.push(Task::Value(*value, v, std::rc::Rc::clone(&params)));
+                }
+                parts.push(Task::Text("}".to_owned()));
+            }
+            Some(Shape::HashSet(item)) => {
+                out.push('{');
+                for (index, (k, _)) in values::hash_entries(word).into_iter().enumerate() {
+                    if index > 0 {
+                        parts.push(Task::Text(", ".to_owned()));
+                    }
+                    parts.push(Task::Value(*item, k, std::rc::Rc::clone(&params)));
+                }
+                parts.push(Task::Text("}".to_owned()));
+            }
             // `{k: v, ...}` in key order, `{}` when empty.
             Some(Shape::Map(key, value)) => {
                 out.push('{');
@@ -315,6 +372,11 @@ fn shape(value: &Value) -> Option<Shape> {
         "fn" => Shape::Fn,
         "list" => Shape::List(index(value, "item")?),
         "map" => Shape::Map(index(value, "key")?, index(value, "value")?),
+        "seq" => Shape::Seq(index(value, "item")?),
+        "set" => Shape::Set(index(value, "item")?),
+        "bits" => Shape::Bits,
+        "hashmap" => Shape::HashMap(index(value, "key")?, index(value, "value")?),
+        "hashset" => Shape::HashSet(index(value, "item")?),
         "param" => Shape::Param(index(value, "index")?),
         "data" => Shape::Data(
             value

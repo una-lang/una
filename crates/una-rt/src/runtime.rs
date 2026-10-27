@@ -385,6 +385,9 @@ pub struct Meta {
     /// Whether the program is of edition 0.3, which writes and tests the floating-point
     /// environment before `main` (ADR 0114 rule 6.4).
     pub float_environment: bool,
+    /// Whether the code the program can reach makes a hash table, so the run reads the process
+    /// key of keyed hashing before `main` (ADR 0119 rule 9).
+    pub hashing: bool,
     /// The host-driven step, when the program is driven (ADR 0116 rule 3): its tick period and
     /// step budget, in milliseconds.
     pub drive: Option<DriveMeta>,
@@ -499,6 +502,10 @@ impl Meta {
             .get("float_environment")
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        let hashing = value
+            .get("hashing")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         let drive = match value.get("drive") {
             Some(drive) => Some(DriveMeta {
                 ticks: drive.get("ticks")?.as_u64()?,
@@ -547,6 +554,7 @@ impl Meta {
             ops,
             failure,
             float_environment,
+            hashing,
             drive,
             grants_section,
         })
@@ -1997,6 +2005,18 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
         }
         FLOATS.store(true, Ordering::SeqCst);
     }
+    // ADR 0119 rule 9: a program whose code can make a hash table reads the process key from the
+    // host's random source before `main`, so before any effect, and a blocking read never stalls
+    // a running program. When the host gives no random bytes, the run ends with U6009, exit code
+    // 1, with no position, as the runtime's other stops before `main`.
+    if meta.hashing && !values::read_process_key() {
+        let written = writeln!(
+            stderr,
+            "[{}] Error: the host gave no random bytes for keyed hashing",
+            Code::U6009
+        );
+        return if written.is_ok() { 1 } else { USAGE };
+    }
     // ADR 0116 amendment, P8 (#1145, #1151): a program with a task construct, a `within` or a
     // `for ever` starts its scheduler, every worker, both helper pools at full size and the
     // timer thread of `within`, and fills the stack pool
@@ -3382,6 +3402,37 @@ mod tests {
         assert!(stderr.contains("U6003"), "{stderr}");
         assert!(
             stderr.contains("this call exceeds the maximum call depth of 5"),
+            "{stderr}"
+        );
+        assert!(stderr.contains("src/t.una"), "{stderr}");
+    }
+
+    #[test]
+    #[ignore = "run by `a_table_the_build_did_not_foresee_faults_at_its_site`, in a process of its own"]
+    fn a_table_the_build_did_not_foresee_scenario() {
+        // The description says nothing of `hashing`, so the run reads no process key.
+        start(&[], SITE_META, || {
+            eprintln!("{STEP}");
+            crate::values::hash_empty(0, 0);
+            eprintln!("{STEP}: past the table");
+            0
+        });
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "runs a process of its own, which Miri cannot")]
+    fn a_table_the_build_did_not_foresee_faults_at_its_site() {
+        // ADR 0119 rule 9: no key is read late. A table made in a run whose build found that it
+        // makes none is an internal fault, U8001 with exit code 3, at the table's site, with the
+        // interpreter's message.
+        let (code, stderr) = scenario("a_table_the_build_did_not_foresee_scenario");
+        assert_eq!(code, Some(3), "{stderr}");
+        assert_eq!(steps(&stderr), 1, "{stderr}");
+        assert!(stderr.contains("U8001"), "{stderr}");
+        assert!(
+            stderr.contains(
+                "evaluation stopped: a hash table made in a run whose code the analysis found makes none"
+            ),
             "{stderr}"
         );
         assert!(stderr.contains("src/t.una"), "{stderr}");

@@ -226,6 +226,13 @@ pub(crate) fn build_command(
         {
             object.insert("float_environment".to_owned(), json!(true));
         }
+        // ADR 0119 rule 9: an executable whose code can make a hash table reads the process key
+        // of keyed hashing before `main`; one that makes none never reads it.
+        if described.hashing
+            && let Some(object) = meta.as_object_mut()
+        {
+            object.insert("hashing".to_owned(), json!(true));
+        }
         // ADR 0116 amendment, P8 (#1145): a program with a task construct or a `for ever`
         // starts its workers and helper pools before `main`, so no thread starts inside a
         // construct, at a moment that earlier code could have decided.

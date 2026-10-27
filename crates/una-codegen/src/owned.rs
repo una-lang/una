@@ -113,6 +113,38 @@ impl<'e> Facts<'e> {
                 args,
                 ..
             } => self.consume(args.first()),
+            // So do the updates of the collections of `std.collections` (`spec/28`, ADR 0119
+            // rule 1).
+            Rhs::Prim {
+                prim: Prim::Seq(op),
+                args,
+                ..
+            } if op.rebuilds() => self.consume(args.first()),
+            Rhs::Prim {
+                prim: Prim::Set(op),
+                args,
+                ..
+            } if op.rebuilds() => self.consume(args.first()),
+            Rhs::Prim {
+                prim: Prim::HashMap(op),
+                args,
+                ..
+            } if op.rebuilds() => self.consume(args.first()),
+            Rhs::Prim {
+                prim: Prim::HashSet(op),
+                args,
+                ..
+            } if op.rebuilds() => self.consume(args.first()),
+            Rhs::Prim {
+                prim: Prim::Priority(op),
+                args,
+                ..
+            } if op.rebuilds() => self.consume(args.first()),
+            Rhs::Prim {
+                prim: Prim::BitSet(op),
+                args,
+                ..
+            } if op.rebuilds() => self.consume(args.first()),
             Rhs::Call { function, args, .. } => {
                 if function.module == PRELUDE_MODULE {
                     if matches!(function.name.as_str(), "append" | "set") {

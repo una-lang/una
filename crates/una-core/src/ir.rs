@@ -1163,6 +1163,18 @@ pub enum SeqOp {
 }
 
 impl SeqOp {
+    /// Every operation, in a fixed order: the native backend passes an operation to the
+    /// runtime as its position here (ADR 0119 rule 19).
+    pub const ALL: [SeqOp; 7] = [
+        SeqOp::PushFront,
+        SeqOp::PushBack,
+        SeqOp::PopFront,
+        SeqOp::PopBack,
+        SeqOp::PeekFront,
+        SeqOp::PeekBack,
+        SeqOp::Items,
+    ];
+
     /// The operation's name in Core.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -1225,6 +1237,22 @@ pub enum SetOp {
 }
 
 impl SetOp {
+    /// Every operation, in a fixed order: the native backend passes an operation to the
+    /// runtime as its position here (ADR 0119 rule 19).
+    pub const ALL: [SetOp; 11] = [
+        SetOp::Has,
+        SetOp::With,
+        SetOp::Without,
+        SetOp::First,
+        SetOp::Last,
+        SetOp::Between,
+        SetOp::Items,
+        SetOp::Union,
+        SetOp::Intersection,
+        SetOp::Difference,
+        SetOp::IsSubset,
+    ];
+
     /// The method's name in the source.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -1275,6 +1303,19 @@ pub enum HashMapOp {
 }
 
 impl HashMapOp {
+    /// Every operation, in a fixed order: the native backend passes an operation to the
+    /// runtime as its position here (ADR 0119 rule 19).
+    pub const ALL: [HashMapOp; 8] = [
+        HashMapOp::Has,
+        HashMapOp::Get,
+        HashMapOp::With,
+        HashMapOp::Without,
+        HashMapOp::Keys,
+        HashMapOp::Values,
+        HashMapOp::Entries,
+        HashMapOp::SameEntries,
+    ];
+
     /// The method's name in the source.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -1321,6 +1362,20 @@ pub enum HashSetOp {
 }
 
 impl HashSetOp {
+    /// Every operation, in a fixed order: the native backend passes an operation to the
+    /// runtime as its position here (ADR 0119 rule 19).
+    pub const ALL: [HashSetOp; 9] = [
+        HashSetOp::Has,
+        HashSetOp::With,
+        HashSetOp::Without,
+        HashSetOp::Items,
+        HashSetOp::Union,
+        HashSetOp::Intersection,
+        HashSetOp::Difference,
+        HashSetOp::IsSubset,
+        HashSetOp::SameItems,
+    ];
+
     /// The method's name in the source.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -1374,6 +1429,17 @@ pub enum PriorityOp {
 }
 
 impl PriorityOp {
+    /// Every operation, in a fixed order: the native backend passes an operation to the
+    /// runtime as its position here (ADR 0119 rule 19).
+    pub const ALL: [PriorityOp; 6] = [
+        PriorityOp::Push,
+        PriorityOp::Pop,
+        PriorityOp::Peek,
+        PriorityOp::PeekPriority,
+        PriorityOp::PeekRanked,
+        PriorityOp::Items,
+    ];
+
     /// The operation's name in Core.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -1422,6 +1488,22 @@ pub enum BitSetOp {
 }
 
 impl BitSetOp {
+    /// Every operation, in a fixed order: the native backend passes an operation to the
+    /// runtime as its position here (ADR 0119 rule 19).
+    pub const ALL: [BitSetOp; 11] = [
+        BitSetOp::Size,
+        BitSetOp::Has,
+        BitSetOp::With,
+        BitSetOp::Without,
+        BitSetOp::Union,
+        BitSetOp::Intersection,
+        BitSetOp::Difference,
+        BitSetOp::IsSubset,
+        BitSetOp::First,
+        BitSetOp::Last,
+        BitSetOp::Items,
+    ];
+
     /// The method's or the property's name in the source.
     pub fn as_str(self) -> &'static str {
         match self {
