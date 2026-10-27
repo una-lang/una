@@ -349,6 +349,7 @@ fn span(dir: &Path, spans: &Mutex<Vec<u128>>) -> f64 {
     assert_eq!(native.status.code(), Some(0), "{native:?}");
     let span = spans.lock().unwrap().first().copied();
     span.map_or(f64::INFINITY, |span| span as f64 / 1000.0)
+}
 
 /// The program of #1146: a `secret` key, `key`, decides whether a task is started before a
 /// public race between a long branch, listed first, and a short one; the race prints its winner.
