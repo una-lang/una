@@ -238,6 +238,10 @@ pub(crate) fn build_command(
         if let (Some(drive), Some(object)) = (&drive, meta.as_object_mut()) {
             object.insert("drive".to_owned(), drive.clone());
         }
+        // The declared budget, which `--max-memory` may lower, never raise (ADR 0109 rule 4).
+        if let (Some(max_memory), Some(object)) = (manifest.max_memory, meta.as_object_mut()) {
+            object.insert("max_memory".to_owned(), json!(max_memory));
+        }
         meta.to_string()
     };
     let compiled = if manifest.drive.is_some() {

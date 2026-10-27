@@ -52,8 +52,11 @@ pub(crate) struct RunOptions<'a> {
     pub(crate) max_depth: usize,
     /// `--workers`, `--task-depth`, `--io-threads` and `--file-threads`, as given.
     pub(crate) tasks: TaskFlags,
-    /// `--max-memory`, in MiB.
+    /// The memory budget, in MiB: `--max-memory` or its default, until the package's declared
+    /// budget applies ([`with_budget`]).
     pub(crate) max_memory: usize,
+    /// Whether `--max-memory` was given (ADR 0109 rule 4).
+    pub(crate) max_memory_given: bool,
     /// `--max-response` and `--http-timeout` (`spec/24 §4`).
     pub(crate) http: una_http::client::Settings,
     /// The heap of the process, as the binary counts it.
@@ -220,6 +223,47 @@ impl Drop for Ceiling<'_> {
     }
 }
 
+/// The budget of a run of a package that declares one (ADR 0109 rule 4): the declared value,
+/// which `--max-memory` (`given`) may lower and never raise; without a declared budget, the
+/// flag's value or `default`. `Err` is the usage error when the flag asks for more. O(1).
+pub(crate) fn declared_budget(
+    given: Option<usize>,
+    default: usize,
+    declared: Option<u64>,
+) -> Result<usize, String> {
+    let Some(declared) = declared else {
+        return Ok(given.unwrap_or(default));
+    };
+    let declared_mib = usize::try_from(declared).unwrap_or(usize::MAX);
+    match given {
+        Some(flag) if flag > declared_mib => Err(format!(
+            "--max-memory {flag} is above the package's declared max_memory of {declared} MiB; it may lower the budget, never raise it"
+        )),
+        Some(flag) => Ok(flag),
+        None => Ok(declared_mib),
+    }
+}
+
+/// `options` with the package's declared budget applied, or the usage error written to
+/// `stderr` and exit code 2 (ADR 0109 rule 4).
+fn with_budget<'a>(
+    mut options: RunOptions<'a>,
+    declared: Option<u64>,
+    stderr: &mut dyn Write,
+) -> io::Result<Result<RunOptions<'a>, ExitStatus>> {
+    let given = options.max_memory_given.then_some(options.max_memory);
+    match declared_budget(given, options.max_memory, declared) {
+        Ok(budget) => {
+            options.max_memory = budget;
+            Ok(Ok(options))
+        }
+        Err(message) => {
+            writeln!(stderr, "error: {message}")?;
+            Ok(Err(ExitStatus::Usage))
+        }
+    }
+}
+
 /// `una run [path]`: checks the package at tier 1 with the grants of `[run] grants` and
 /// `--grant` (U3012), then runs `main` of the entry module (`spec/04 §8`).
 pub(crate) fn run_command(
@@ -242,6 +286,11 @@ pub(crate) fn run_command(
     // `[run] grants` resolve against the package root, `--grant` flags against
     // the current directory, and they add up.
     let (manifest, _) = crate::package::project(&package);
+    // The declared budget applies before anything runs (ADR 0109 rule 4).
+    let options = match with_budget(options, manifest.max_memory, stderr)? {
+        Ok(options) => options,
+        Err(status) => return Ok(status),
+    };
     let root = package
         .manifest
         .and_then(|id| package.disk_paths.get(&id))
@@ -830,9 +879,15 @@ pub(crate) fn test_command(
             return Ok(ExitStatus::Usage);
         }
     };
+    let (manifest, _) = crate::package::project(&package);
+    // The declared budget applies before any example runs (ADR 0109 rule 4).
+    let options = match with_budget(options, manifest.max_memory, stderr)? {
+        Ok(options) => options,
+        Err(status) => return Ok(status),
+    };
     // Edition `0.1` redacts labeled fields in an example's results and reasons; edition `0.2`
     // shows every field, since an example's data come from the source (ADR 0078).
-    let redact = crate::package::project(&package).0.edition == una_project::Edition::V0_1;
+    let redact = manifest.edition == una_project::Edition::V0_1;
     let mut analysis = on_large_stack(|| analyze(&package, None));
     if analysis.diagnostics.is_empty() {
         let found = tier_one(&package, &analysis.program, &options.solving);

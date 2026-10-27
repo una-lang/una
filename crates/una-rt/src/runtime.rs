@@ -378,7 +378,15 @@ pub struct Meta {
     /// worker and both helper pools at full size before `main`, so that no thread starts at a
     /// moment that earlier code decided (ADR 0116 amendment, P8; `spec/27 §1` rule 4; #1145).
     pub threads: bool,
+    /// The package's declared memory budget in MiB, `[run] max_memory` or the `run` line
+    /// `max_memory`, from 1 to 4096, which `--max-memory` may lower and never raise (ADR 0109
+    /// rule 4).
+    pub max_memory: Option<u64>,
 }
+
+/// The largest declared memory budget, in MiB, while edition `0.3` is a preview: the default
+/// of `--max-memory`, so a declared budget never widens a run (ADR 0109 rule 4).
+pub const MAX_DECLARED_MEMORY: u64 = 4096;
 
 /// The `drive` section of a driven program, as `una build` embeds it (ADR 0116 rule 1).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -486,9 +494,21 @@ impl Meta {
             .get("threads")
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        // A budget outside 1 to 4096 MiB is no description at all, so the executable refuses
+        // to start rather than run with a budget the manifest could not declare (ADR 0109
+        // rule 4).
+        let max_memory = match value.get("max_memory") {
+            Some(max_memory) => Some(
+                max_memory
+                    .as_u64()
+                    .filter(|mib| (1..=MAX_DECLARED_MEMORY).contains(mib))?,
+            ),
+            None => None,
+        };
         Some(Meta {
             stops,
             threads,
+            max_memory,
             grants,
             uses,
             sites,
@@ -525,8 +545,10 @@ pub struct Options {
     pub trace: Option<PathBuf>,
     /// `--max-depth <n>`.
     pub max_depth: usize,
-    /// `--max-memory <MiB>` (ADR 0061).
+    /// `--max-memory <MiB>` (ADR 0061), or the budget [`with_budget`] sets.
     pub max_memory: usize,
+    /// Whether the command line gave `--max-memory` (ADR 0109 rule 4).
+    pub max_memory_given: bool,
     /// `--max-response <MiB>` and `--http-timeout <seconds>` (`spec/24 §4`).
     pub http: una_http::client::Settings,
     /// `--stop-after-iterations <n>`: the host's stop once `n` iterations have started (ADR
@@ -542,6 +564,25 @@ pub struct Options {
     /// `--workers`, `--task-depth`, `--io-threads` and `--file-threads` (ADR 0117 rules 2 and
     /// 3).
     pub concurrency: una_interp::Concurrency,
+}
+
+/// The options with the package's declared budget applied (ADR 0109 rule 4): without
+/// `--max-memory` the run gets the declared budget, and the flag may lower it, never raise it.
+/// A description with no budget leaves the options as they are. `Err` is the usage error. O(1).
+pub fn with_budget(mut options: Options, meta: &Meta) -> Result<Options, String> {
+    let Some(declared) = meta.max_memory else {
+        return Ok(options);
+    };
+    let declared_mib = usize::try_from(declared).unwrap_or(usize::MAX);
+    if !options.max_memory_given {
+        options.max_memory = declared_mib;
+    } else if options.max_memory > declared_mib {
+        return Err(format!(
+            "--max-memory {} is above the package's declared max_memory of {declared} MiB; it may lower the budget, never raise it",
+            options.max_memory
+        ));
+    }
+    Ok(options)
 }
 
 /// The command line, without the program name, or the message of a usage error.
@@ -579,6 +620,7 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
                 options.max_memory = text
                     .parse()
                     .map_err(|_| format!("`--max-memory {text}` is not a number"))?;
+                options.max_memory_given = true;
                 // No run fits in 0 MiB (#185).
                 if options.max_memory == 0 {
                     return Err("`--max-memory 0` holds nothing; give at least 1 MiB".to_owned());
@@ -1457,7 +1499,8 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
         );
         return 3;
     };
-    let options = match parse_args(args) {
+    // The declared budget applies right after the command line is read (ADR 0109 rule 4).
+    let options = match parse_args(args).and_then(|options| with_budget(options, &meta)) {
         Ok(options) => options,
         Err(message) => {
             let _ = writeln!(stderr, "error: {message}");
@@ -2403,12 +2446,43 @@ mod tests {
         assert_eq!(options.trace, Some(PathBuf::from("t.json")));
         assert_eq!(options.max_depth, 50);
         assert_eq!(options.max_memory, una_interp::DEFAULT_MAX_MEMORY);
+        assert!(!options.max_memory_given);
         let options = parse_args(&strings(&["--max-memory", "64"])).unwrap();
         assert_eq!(options.max_memory, 64);
+        assert!(options.max_memory_given);
         assert!(parse_args(&strings(&["--max-memory", "many"])).is_err());
         assert!(parse_args(&strings(&["--json"])).is_err());
         assert!(parse_args(&strings(&["--grant"])).is_err());
         assert!(parse_args(&strings(&["--max-depth", "many"])).is_err());
+    }
+
+    #[test]
+    fn a_declared_budget_is_the_default_and_the_flag_only_lowers_it() {
+        // ADR 0109 rule 4.
+        let meta = Meta::parse(r#"{"grants":[],"uses":[],"max_memory":256}"#).unwrap();
+        assert_eq!(meta.max_memory, Some(256));
+        let budget = |args: &[&str]| with_budget(parse_args(&strings(args)).unwrap(), &meta);
+        assert_eq!(budget(&[]).unwrap().max_memory, 256);
+        assert_eq!(budget(&["--max-memory", "64"]).unwrap().max_memory, 64);
+        assert_eq!(budget(&["--max-memory", "256"]).unwrap().max_memory, 256);
+        assert_eq!(
+            budget(&["--max-memory", "257"]).unwrap_err(),
+            "--max-memory 257 is above the package's declared max_memory of 256 MiB; it may lower the budget, never raise it"
+        );
+        let undeclared = Meta::parse(r#"{"grants":[],"uses":[]}"#).unwrap();
+        assert_eq!(undeclared.max_memory, None);
+        let options = with_budget(parse_args(&[]).unwrap(), &undeclared).unwrap();
+        assert_eq!(options.max_memory, una_interp::DEFAULT_MAX_MEMORY);
+        let options =
+            with_budget(parse_args(&strings(&["--max-memory", "8192"])).unwrap(), &undeclared)
+                .unwrap();
+        assert_eq!(options.max_memory, 8192);
+        // A budget the manifest could not declare makes the description invalid.
+        for bad in ["0", "4097", "-1", "\"64\"", "1.5"] {
+            let text = format!(r#"{{"grants":[],"uses":[],"max_memory":{bad}}}"#);
+            assert!(Meta::parse(&text).is_none(), "{bad}");
+        }
+        assert!(Meta::parse(r#"{"grants":[],"uses":[],"max_memory":4096}"#).is_some());
     }
 
     #[test]
