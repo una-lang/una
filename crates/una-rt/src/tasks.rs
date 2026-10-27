@@ -303,6 +303,61 @@ enum Decision {
     Win,
 }
 
+/// The site of the warm-up block (#1254): past the program's sites, so that its location is
+/// the runtime's own (`runtime::site_location`).
+const WARM_SITE: usize = usize::MAX;
+
+/// The task of the warm-up block: it gives its argument back and returns `unit`.
+fn warm_invoke(_closure: i64, arg: Option<i64>, _site: usize) -> (i64, i64) {
+    if let Some(arg) = arg {
+        values::release(arg);
+    }
+    (0, 0)
+}
+
+/// Runs one real task on every worker before `main`, `workers` of them (#1254; ADR 0116
+/// amendment, P8; `spec/27 §1` rule 4): a `together for` over the integers below `workers`,
+/// each applying [`warm_invoke`], through the path every block of the program takes: the
+/// start's reservation, the five channels of its signals, the export and import of its inputs,
+/// the task's state on its worker, its park in `go` and its resume, its report, the export of
+/// its value, the adoption and the join. Part `i + 1` runs on worker `(i + 1) mod N` from the
+/// root, so every worker runs one. What a task's first run on a worker makes and keeps, in the
+/// runtime's thread-locals and in the system allocator's per-thread caches, then exists before
+/// `main` on every worker whatever earlier code starts: the no-op coroutine of the scheduler's
+/// warm-up left those untouched, so a public block that followed `secret` code paid them, or
+/// not, by how many tasks that code had started. The block runs with the trace taken out, so it
+/// leaves no event, and its value is released, so it leaves no object; the caller lifts the
+/// memory budget around it. O(N) tasks in batches of [`WAVE`], once per run. Returns how many
+/// tasks returned.
+pub(crate) fn warm_up(workers: usize) -> usize {
+    let trace = with_state(|state| state.trace.take()).flatten();
+    let closure = values::int_word(&num_bigint::BigInt::from(0));
+    let items = values::list();
+    for item in 0..workers.max(1) {
+        let word = values::int_word(&num_bigint::BigInt::from(item));
+        values::push(items, word);
+        values::release(word);
+    }
+    let (block, status) = run(
+        Tasks::Over { closure, items },
+        false,
+        WARM_SITE,
+        warm_invoke,
+    );
+    let returned = if status == 0 {
+        usize::try_from(values::count(block)).unwrap_or(0)
+    } else {
+        0
+    };
+    if status != 2 {
+        values::release(block);
+    }
+    values::release(items);
+    values::release(closure);
+    with_state(|state| state.trace = trace);
+    returned
+}
+
 /// The width of a batch: [`WAVE`], or a narrower one that a test sets on the block's thread.
 fn wave() -> usize {
     #[cfg(test)]
@@ -2214,6 +2269,21 @@ mod tests {
         })
         .join()
         .unwrap()
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
+    fn the_warm_up_runs_one_real_task_per_item_and_leaves_nothing_behind() {
+        // #1254: the block runs through the real path, returns every task, and leaves no
+        // object, no event and no stop in the state that ran it.
+        let ((returned, live), stopped, trace) = in_task_as("1", true, String::new(), || {
+            let returned = warm_up(5);
+            (returned, values::live())
+        });
+        assert_eq!(returned, 5);
+        assert_eq!(live, 0);
+        assert_eq!(stopped, None);
+        assert_eq!(trace, Vec::<String>::new());
     }
 
     #[test]
