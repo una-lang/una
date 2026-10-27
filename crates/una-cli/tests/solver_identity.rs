@@ -29,7 +29,8 @@ fn scripts(path: &Path) -> Vec<String> {
     let layout = una_verify::SourceLayout::Joined;
     let obligations = una_verify::obligations(&checked.program, &checked.sources, layout).unwrap();
     let lock_text = std::fs::read_to_string(repository().join("verification.lock")).unwrap();
-    let lock = una_project::parse_lock(&lock_text).unwrap();
+    let (lock, problems) = una_project::parse_lock(&lock_text);
+    assert!(problems.is_empty(), "{problems:?}");
     let lock = una_verify::Lock {
         text: lock_text,
         solver_version: lock.solver_version,
