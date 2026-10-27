@@ -1,0 +1,1 @@
+- **The guide links the current Learn book** (#1137). Eleven links of the guide named routes of the earlier book; they now name the chapters and sections of the 19-chapter book, with its titles.
