@@ -403,27 +403,35 @@ pub fn event_end(site: i64, slot: i64, value: i64, failed: i64) {
     if failed == 2 {
         return;
     }
-    with_state(|state| {
+    // An outcome that holds an integer too long for text aborts the run at the operation
+    // (`spec/11 §7`, #923), its event left `aborted`.
+    let too_long = with_state(|state| {
         let Some(op) = state.ops.get(site) else {
-            return;
+            return false;
         };
         let outcome = if failed == 0 {
-            EventOutcome::Ok(state.types.redacted(
-                op.result.ty,
-                value,
-                op.result.redacted.as_deref(),
-            ))
+            state
+                .types
+                .redacted(op.result.ty, value, op.result.redacted.as_deref())
+                .map(EventOutcome::Ok)
         } else {
             let ty = op.error.unwrap_or(usize::MAX);
-            EventOutcome::Fail {
-                variant: state.types.variant_name(ty, value),
-                value: state.types.render(ty, value),
-            }
+            let variant = state.types.variant_name(ty, value);
+            state
+                .types
+                .render(ty, value)
+                .map(|value| EventOutcome::Fail { variant, value })
         };
+        let too_long = outcome.is_none();
         if let Some(event) = state.trace.as_mut().and_then(|trace| trace.get_mut(slot)) {
-            event.outcome = outcome;
+            event.outcome = outcome.unwrap_or(EventOutcome::Aborted);
         }
-    });
+        too_long
+    })
+    .unwrap_or(false);
+    if too_long {
+        crate::runtime::int_text_abort(i64::try_from(site).unwrap_or(i64::MAX));
+    }
 }
 
 /// The index of an `HttpError` variant in its declaration order (`spec/24 §1`), which the

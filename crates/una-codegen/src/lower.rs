@@ -2329,16 +2329,21 @@ impl<'p> Lowerer<'_, 'p, '_> {
                         }
                     ) {
                         let (value, _) = self.atom(first, env)?;
+                        // The site, where an integer too long for text aborts the run
+                        // (`spec/11 §7`, #923); a task stopped by it stops here.
+                        let site = self.site(*span);
                         // A type that holds type parameters is written through its composite
                         // descriptor (ADR 0068 D6).
                         if !type_params(&ty).is_empty() {
                             let desc = self.descriptor(&ty, Constraint::Eq, env)?;
-                            return self.call("una_rt_generic_write", &[desc, value]);
+                            let text = self.call("una_rt_generic_write", &[site, desc, value])?;
+                            return self.stopped_after(text);
                         }
                         let index =
                             i64::try_from(self.emitter.types.of(&ty)).map_err(crate::internal)?;
                         let index = self.builder.ins().iconst(types::I64, index);
-                        return self.call("una_rt_write", &[index, value]);
+                        let text = self.call("una_rt_write", &[site, index, value])?;
+                        return self.stopped_after(text);
                     }
                 }
                 // `"{t}..."` at the last use of the text of `t` takes it over, with every owned
@@ -2939,6 +2944,15 @@ impl<'p> Lowerer<'_, 'p, '_> {
     }
 
     /// Stops the task at once when `stopping` is not 0: for an abort only (see `stop`).
+    /// `value`, once the task has been checked for a stop that a runtime call raised at its
+    /// site, as an integer too long for text does (`spec/11 §7`, #923): a stopped task leaves
+    /// here, before it uses the value.
+    fn stopped_after(&mut self, value: Value) -> Result<Value, CodegenError> {
+        let stopped = self.call("una_rt_stopped", &[])?;
+        self.stop_if(stopped);
+        Ok(value)
+    }
+
     fn stop_if(&mut self, stopping: Value) {
         let next = self.builder.create_block();
         self.builder.ins().brif(stopping, self.stop, &[], next, &[]);
@@ -3290,8 +3304,14 @@ impl<'p> Lowerer<'_, 'p, '_> {
     ) -> Result<Value, CodegenError> {
         let cc = match prim {
             Prim::Convert(_) => return self.call("una_rt_generic_to_int", operands),
-            // Interpolation, by the type that instantiates the parameter (ADR 0068).
-            Prim::ToText => return self.call("una_rt_generic_write", operands),
+            // Interpolation, by the type that instantiates the parameter (ADR 0068), at its
+            // site, where an integer too long for text aborts the run (`spec/11 §7`, #923).
+            Prim::ToText => {
+                let mut sited = vec![self.site(span)];
+                sited.extend_from_slice(operands);
+                let text = self.call("una_rt_generic_write", &sited)?;
+                return self.stopped_after(text);
+            }
             Prim::Eq | Prim::Ne => {
                 // Within the memory budget, at the comparison's site (#815).
                 let equal = self.set("una_rt_generic_equal_at", operands, span)?;
@@ -3516,7 +3536,13 @@ impl<'p> Lowerer<'_, 'p, '_> {
             Prim::ToText => {
                 let (a, kind) = operand(first)?;
                 match kind {
-                    Kind::Int => self.call("una_rt_int_text", &[a]),
+                    // At its site, where an integer too long for text aborts the run
+                    // (`spec/11 §7`, #923).
+                    Kind::Int => {
+                        let site = self.site(span);
+                        let text = self.call("una_rt_int_text", &[site, a])?;
+                        self.stopped_after(text)
+                    }
                     Kind::Bool => self.call("una_rt_bool_text", &[a]),
                     Kind::F64 => {
                         let code = una_core::FloatOp::ALL
