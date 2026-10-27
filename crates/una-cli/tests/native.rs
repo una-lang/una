@@ -3723,7 +3723,8 @@ fn a_deadline_cuts_a_long_computation_at_a_check_point_in_both_engines() {
     // `spec/27 §5`, ADR 0117 rule 5: once the deadline passes, the expression is cancelled at
     // its next check point, here an iteration of a loop that would run for minutes, and the
     // `within` fails with its time-out, `Deadline.Expired`, which `if error use` handles. The
-    // timing label is `public`, so the result prints. One `timeout` event is in the trace.
+    // timing label is `public`, so the result prints. The trace has the `timeout` event, then
+    // the print.
     let program = "module busy\n\nimport std.time (millisecond)\n\nspin(n: Int) -> Int\n=\n  let edit total = 0\n  for i in 1..n\n    total = total + 1\n  total\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let total = spin(4000000000) within 20 * millisecond\n    if error use -1\n  @console.print(\"total {total}\")\n";
     let dir = within_package("busy", "busy", program);
     let started = std::time::Instant::now();
@@ -3737,7 +3738,17 @@ fn a_deadline_cuts_a_long_computation_at_a_check_point_in_both_engines() {
     );
     assert_eq!(
         document["trace"],
-        serde_json::json!([{"seq": 1, "outcome": {"kind": "timeout"}}])
+        serde_json::json!([
+            {"seq": 1, "outcome": {"kind": "timeout"}},
+            {
+                "seq": 2,
+                "instance": "host:Console",
+                "capability": "Console",
+                "op": "print",
+                "args": {"line": "\"total -1\""},
+                "outcome": {"kind": "ok", "value": "unit"}
+            }
+        ])
     );
     let exe = dir.join("target/una/busy");
     for workers in ["1", "4"] {
@@ -4067,12 +4078,15 @@ fn ten_thousand_races_release_what_their_losers_hold_in_both_engines() {
     let interpreted = una(&dir, &["run", ".", "--max-memory", "16"]);
     assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
     assert_eq!(String::from_utf8_lossy(&interpreted.stdout), "won 10000\n");
+    // A loser that is never cancelled computes for minutes: each run has a time limit, so a
+    // hang fails here instead of holding the test run (#1188).
     for workers in ["1", "2", "4"] {
-        let native = Command::new(dir.join("target/una/losers"))
-            .args(["--max-memory", "16", "--workers", workers])
-            .current_dir(&dir)
-            .output()
-            .unwrap();
+        let native = output_within(
+            Command::new(dir.join("target/una/losers"))
+                .args(["--max-memory", "16", "--workers", workers])
+                .current_dir(&dir),
+            std::time::Duration::from_secs(120),
+        );
         assert_eq!(
             native.status.code(),
             Some(0),
@@ -4083,11 +4097,34 @@ fn ten_thousand_races_release_what_their_losers_hold_in_both_engines() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The output of `command`, which must end within `limit`: otherwise it is killed and the test
+/// fails, naming the limit.
+fn output_within(command: &mut Command, limit: std::time::Duration) -> std::process::Output {
+    let mut child = command
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let started = std::time::Instant::now();
+    let mut late = false;
+    while child.try_wait().unwrap().is_none() {
+        if started.elapsed() > limit {
+            let _ = child.kill();
+            late = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let output = child.wait_with_output().unwrap();
+    assert!(!late, "still running after {limit:?}, killed: {output:?}");
+    output
+}
+
 #[test]
 fn a_branch_too_deep_for_task_depth_aborts_the_run_in_both_engines() {
     // `spec/27 §3` and `§6`, ADR 0117 rule 2: a branch may make at most `--task-depth` calls
     // below its block, in both engines, and one that goes deeper aborts the run with U6003.
-    let program = "module deep\n\ndown(n: Int) -> Int\n=\n  if n == 0 then 0 else down(n - 1) + 1\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let shallow = first of\n    down(5)\n    down(5)\n  @console.print(\"shallow {shallow}\")\n  let deep = first of\n    down(50)\n    down(50)\n  @console.print(\"deep {deep}\")\n";
+    let program = "module deep\n\ndown(n: Int) -> Int = if n == 0 then 0 else down(n - 1) + 1\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let shallow = first of\n    down(5)\n    down(5)\n  @console.print(\"shallow {shallow}\")\n  let deep = first of\n    down(50)\n    down(50)\n  @console.print(\"deep {deep}\")\n";
     let dir = within_package("taskdepth", "deep", program);
     let interpreted = una(&dir, &["run", ".", "--virtual-time", "--task-depth", "20"]);
     assert_eq!(interpreted.status.code(), Some(1), "{interpreted:?}");

@@ -1,0 +1,87 @@
+-- test: in edition 0.4, a `HashMap` lists its entries in the order its keys were first added: `has`, `get`, `set`, `remove`, `with`, `without`, `keys`, `values`, `entries`, `.len` and `same_entries` give their results, on the empty map too; `set` of a present key keeps its place, `remove` then `set` puts it last; `update` calls `change` once, and a failing `change` leaves the map as it was; records are keys; a map renders as `{k: v}` and keeps value semantics through a binding; both engines agree (ADR 0119 rules 8 to 12)
+-- spec: spec/28 §7
+-- grant: console
+-- expect: run-output "empty: {} 0 false None [] [] [] {}"
+-- expect: run-output "counts: {\"to\": 2, \"be\": 2, \"or\": 1, \"not\": 1} 4"
+-- expect: run-output "read: true false Some(2) None"
+-- expect: run-output "listed: [\"to\", \"be\", \"or\", \"not\"] [2, 2, 1, 1]"
+-- expect: run-output "entries: [Entry(key: \"to\", value: 2), Entry(key: \"be\", value: 2), Entry(key: \"or\", value: 1), Entry(key: \"not\", value: 1)]"
+-- expect: run-output "order: {\"to\": 7, \"be\": 2, \"not\": 1, \"or\": 5} 4"
+-- expect: run-output "values: {\"to\": 2, \"be\": 2, \"or\": 1, \"not\": 1} {\"to\": 2, \"be\": 2, \"or\": 1, \"not\": 1, \"a\": 9} {\"to\": 2, \"or\": 1, \"not\": 1}"
+-- expect: run-output "kept: {\"to\": 2, \"be\": 2, \"or\": 1, \"not\": 1} {\"to\": 2, \"be\": 2, \"or\": 1, \"not\": 1, \"is\": 3}"
+-- expect: run-output "raised: {\"to\": 2, \"be\": 2, \"or\": 2, \"not\": 1} / {\"to\": 2, \"be\": 2, \"or\": 1, \"not\": 1, \"new\": 1}"
+-- expect: run-output "stopped: TooMany, counts: {\"to\": 2, \"be\": 2, \"or\": 1, \"not\": 1}"
+-- expect: run-output "same: true false false true"
+-- expect: run-output "points: {Point(x: 0, y: 0): \"origin\", Point(x: 1, y: 2): \"b\"} Some(\"b\") 2"
+module maps
+
+import std.collections (HashMap, empty_hash_map)
+
+pub kind Stop = TooMany | Empty
+
+pub kind Point
+  x: Int
+  y: Int
+
+--- How often each word occurs, in the order the words first appear.
+count(words: List[Text]) -> HashMap[Text, Int]
+=
+  let edit counts: HashMap[Text, Int] = empty_hash_map()
+  for word in words
+    edit counts.update(key: word, initial: 0, change: fn(n) -> n + 1)
+  counts
+
+--- `m` with `key` raised by one, failing from 2 on.
+capped(m: HashMap[Text, Int], key: Text) -> HashMap[Text, Int]
+  fails Stop
+=
+  let edit out = m
+  edit out.update(key: key, initial: 0, change: fn(n) -> if n >= 2 then fail TooMany else n + 1)
+    if error pass
+  out
+
+--- The map, or the failure's name.
+shown(r: Result[HashMap[Text, Int], Stop]) -> Text
+=
+  when r
+    is Ok(m) -> "{m}"
+    is Err(e) -> "{e}"
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let empty: HashMap[Text, Int] = empty_hash_map()
+  let a = "a"
+  @console.print("empty: {empty} {empty.len} {empty.has(key: a)} {empty.get(key: a)} {empty.keys()} {empty.values()} {empty.entries()} {empty.without(key: a)}")
+  let counts = count(["to", "be", "or", "not", "to", "be"])
+  @console.print("counts: {counts} {counts.len}")
+  let be = "be"
+  let missing = "is"
+  let to = "to"
+  @console.print("read: {counts.has(key: be)} {counts.has(key: missing)} {counts.get(key: to)} {counts.get(key: missing)}")
+  @console.print("listed: {counts.keys()} {counts.values()}")
+  @console.print("entries: {counts.entries()}")
+  let edit order = counts
+  edit order.set(key: "to", value: 7)
+  edit order.remove(key: "or")
+  edit order.remove(key: "is")
+  edit order.set(key: "or", value: 5)
+  @console.print("order: {order} {order.len}")
+  let more = counts.with(key: "a", value: 9)
+  let less = counts.without(key: "be")
+  @console.print("values: {counts} {more} {less}")
+  let edit copy = counts
+  edit copy.set(key: "is", value: 3)
+  @console.print("kept: {counts} {copy}")
+  let raised = attempt capped(m: counts, key: "or")
+  let added = attempt capped(m: counts, key: "new")
+  @console.print("raised: {shown(raised)} / {shown(added)}")
+  let stopped = attempt capped(m: counts, key: "to")
+  @console.print("stopped: {shown(stopped)}, counts: {counts}")
+  let reordered = count(["not", "or", "be", "be", "to", "to"])
+  @console.print("same: {counts.same_entries(as: reordered)} {counts.same_entries(as: more)} {counts.same_entries(as: order)} {empty.same_entries(as: empty_hash_map())}")
+  let edit points: HashMap[Point, Text] = empty_hash_map()
+  edit points.set(key: Point(x: 0, y: 0), value: "origin")
+  edit points.set(key: Point(x: 1, y: 2), value: "a")
+  edit points.set(key: Point(x: 1, y: 2), value: "b")
+  @console.print("points: {points} {points.get(key: Point(x: 1, y: 2))} {points.len}")

@@ -43,6 +43,16 @@ pub(crate) enum Res {
     SetMethod(una_core::SetOp),
     /// `edit s.add(...)` or `edit s.remove(...)`: the set rebound to `With` or `Without`.
     SetUpdate(una_core::SetOp),
+    /// A built-in method of a `HashMap` that reads it or gives a new map (`spec/28 §7`).
+    HashMapMethod(una_core::HashMapOp),
+    /// `edit m.set(...)` or `edit m.remove(...)` on a `HashMap`: the map rebound to `With` or
+    /// `Without`.
+    HashMapUpdate(una_core::HashMapOp),
+    /// A built-in method of a `HashSet` that reads it or gives a new set (`spec/28 §7`).
+    HashSetMethod(una_core::HashSetOp),
+    /// `edit s.add(...)` or `edit s.remove(...)` on a `HashSet`: the set rebound to `With` or
+    /// `Without`.
+    HashSetUpdate(una_core::HashSetOp),
     /// A record field.
     Field { kind: KindId, index: usize },
     /// An operation of a capability.

@@ -9,7 +9,7 @@ use std::sync::atomic::AtomicBool;
 
 use una_lsp::{Checked, Workspace};
 
-use crate::package::load_with;
+use crate::package::{load_in, load_with};
 use crate::{ExitStatus, analyze, check_files, keyword_set, on_large_stack, verification};
 
 /// The CLI's checks and formatter, as the server needs them.
@@ -33,7 +33,7 @@ impl Workspace for CliWorkspace {
         solve: bool,
         cancel: &Arc<AtomicBool>,
     ) -> Checked {
-        let Ok(package) = load_with(root, overlay) else {
+        let Ok(package) = load_in(root, overlay, self.solving.itaoca.as_ref()) else {
             return Checked::default();
         };
         let mut analysis = on_large_stack(|| analyze(&package, None));
@@ -59,6 +59,7 @@ impl Workspace for CliWorkspace {
             &package.sources,
             &analysis,
             verification.as_ref(),
+            verification::source_layout(&package),
             &mut checked,
         );
         checked
@@ -102,6 +103,7 @@ fn index(
     sources: &una_syntax::SourceDb,
     analysis: &crate::Analysis,
     verification: Option<&verification::Verification>,
+    layout: una_verify::SourceLayout,
     checked: &mut Checked,
 ) {
     use una_syntax::ast::DeclKind;
@@ -140,7 +142,8 @@ fn index(
                     .headers
                     .iter()
                     .find(|h| h.module == module && h.name == name.as_str());
-                let contract = crate::contract::contract(&modules, &module, decl, function, header);
+                let contract =
+                    crate::contract::contract(&modules, &module, decl, function, header, layout);
                 Some(format!("```una\n{}\n```", contract.lines().join("\n")))
             })
             .clone();

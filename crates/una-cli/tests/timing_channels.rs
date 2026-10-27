@@ -27,7 +27,10 @@
 //! 45 ms, 9 and 1 timeouts in 20, and the same majority. A control compares one input with
 //! itself, 20 runs against 20, and must pass, so a machine whose noise alone would fail the
 //! test is seen as such. The deterministic test of P8 in `crates/una-rt/src/sched.rs` remains
-//! the primary guard at this slice.
+//! the primary guard at this slice. The oracle of the lazy timer (#1151) deviates from §G, as
+//! its own comment records: its channel cannot be amplified to a deadline outcome, so it
+//! measures a span, has low power before the fix, and the deterministic guards of #1151 are
+//! primary.
 //!
 //! The oracles of #1146 judge outcomes rather than times: each builds one program twice, with
 //! only its `secret` key changed, runs each executable 20 times on one worker, and requires
@@ -141,6 +144,12 @@ pub main() -> Unit
   unit
 "#
     );
+    build_flip(name, port, &program)
+}
+
+/// Writes the package `flip`, whose module `flip` is `program` and whose run may `get` from
+/// the server on `port`, in a directory named by `name`, and builds it.
+fn build_flip(name: &str, port: u16, program: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("una-timing-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("src")).unwrap();
@@ -198,7 +207,10 @@ fn a_public_block_s_timing_never_depends_on_how_many_tasks_secret_code_started()
     // The deadline is calibrated on this machine first: the same program with key 1 and a
     // deadline of a minute runs 20 times, the server notes each run's time from `/mark` to
     // `/hold`, and the deadline is the slowest of them, plus the hold, plus 25 ms. Then key 0
-    // and key 1 are built with it and run 20 times each, alternating.
+    // and key 1 are built with it and run 20 times each, alternating. Each run measures three
+    // samples, key 0, key 1 and key 1 again, in an order that cycles through all six, so every
+    // sample takes every place in a run 6 or 7 times (#1189): a cost of the first place in a
+    // run, which differs between machines, falls on no sample alone.
     //
     // The judgment is the rank test of the header: key 0's 20 times against key 1's, failing at
     // p < 0.001, with timeouts ranked above every time. The control runs key 1 twice as often
@@ -221,13 +233,33 @@ fn a_public_block_s_timing_never_depends_on_how_many_tasks_secret_code_started()
         placement_package("key1", 1, deadline, port),
     ];
     // Per run, key 0, key 1 and key 1 again: the time from `/mark` to `/hold` in ms, or
-    // infinity for a run that timed out or whose deadline passed before `/hold` started.
+    // infinity for a run that timed out or whose deadline passed before `/hold` started. Run
+    // `r` measures them in the order `ORDERS[r % 6]`.
+    const ORDERS: [[usize; 3]; 6] = [
+        [0, 1, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [0, 2, 1],
+        [2, 1, 0],
+        [1, 0, 2],
+    ];
+    // The 20 runs of ADR 0116 §G are not a multiple of 3, so the balance is as close as 20
+    // allows: each sample takes each place 6 or 7 times.
+    let mut places = [[0_usize; 3]; 3];
+    for run in 0..20 {
+        for (place, sample) in ORDERS[run % ORDERS.len()].into_iter().enumerate() {
+            places[sample][place] += 1;
+        }
+    }
+    assert!(
+        places.iter().flatten().all(|count| (6..=7).contains(count)),
+        "{places:?}"
+    );
     let mut samples: [Vec<f64>; 3] = [Vec::new(), Vec::new(), Vec::new()];
     for run in 0..20 {
-        for (sample, (key, dir)) in [(0, &dirs[0]), (1, &dirs[1]), (1, &dirs[1])]
-            .into_iter()
-            .enumerate()
-        {
+        for sample in ORDERS[run % ORDERS.len()] {
+            let key = usize::from(sample != 0);
+            let dir = &dirs[key];
             spans.lock().unwrap().clear();
             let late = timed_out(dir, run * 3 + sample);
             let span = spans.lock().unwrap().first().copied();
@@ -235,7 +267,9 @@ fn a_public_block_s_timing_never_depends_on_how_many_tasks_secret_code_started()
                 Some(span) if !late => span as f64 / 1000.0,
                 _ => f64::INFINITY,
             };
-            eprintln!("run {run} key {key}: /mark to /hold {span:?} us, timed out {late}");
+            eprintln!(
+                "run {run} sample {sample} key {key}: /mark to /hold {span:?} us, timed out {late}"
+            );
             samples[sample].push(value);
         }
     }
@@ -268,6 +302,54 @@ fn a_public_block_s_timing_never_depends_on_how_many_tasks_secret_code_started()
     }
 }
 
+/// The oracle's package of the lazy timer, with `key` as its `secret` input, built in a
+/// directory named by `name`.
+fn lazy_timer_package(name: &str, key: u8, port: u16) -> PathBuf {
+    let get = |path: &str| {
+        let url = format!("http://127.0.0.1:{port}/{path}");
+        format!(r#"attempt @http.get("{url}", headers: [], key_name: None)"#)
+    };
+    let (mark, hold) = (get("mark"), get("hold"));
+    let program = format!(
+        r#"module flip
+
+import std.time (second)
+
+warm(key: secret Int) -> secret Int
+=
+  let value = key within 60 * second
+    if error use 0
+  value
+
+pub main() -> Unit
+  uses @http: Http[get]
+=
+  let key: secret Int = {key}
+  let public_value = 7
+  let earlier = if key == 1 then warm(key) else 0
+  let at_mark = {mark}
+  let first = public_value within 60 * second
+    if error use 0
+  let at_hold = {hold}
+  unit
+"#
+    );
+    build_flip(name, port, &program)
+}
+
+/// The time of one run of the lazy timer's oracle from `/mark` to `/hold`, which follows the
+/// first public `within` at once, in milliseconds.
+fn span(dir: &Path, spans: &Mutex<Vec<u128>>) -> f64 {
+    spans.lock().unwrap().clear();
+    let native = Command::new(dir.join("target/una/flip"))
+        .args(["--workers", "2", "--http-timeout", "30"])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert_eq!(native.status.code(), Some(0), "{native:?}");
+    let span = spans.lock().unwrap().first().copied();
+    span.map_or(f64::INFINITY, |span| span as f64 / 1000.0)
+
 /// The program of #1146: a `secret` key, `key`, decides whether a task is started before a
 /// public race between a long branch, listed first, and a short one; the race prints its winner.
 ///
@@ -282,6 +364,88 @@ fn slicer_program(key: u8) -> String {
     format!(
         "module leak\n\nnoop() -> Unit = unit\n\nkey() -> secret Int = {key}\n\nwork(n: Int, answer: Int) -> Int\n=\n  let edit total = 0\n  for i in 1..n\n    total = total + 1\n  answer\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  if key() > 0\n    tasks\n      start noop()\n  let w = first of\n    work(300000000, answer: 1)\n    work(20000, answer: 2)\n  @console.print(\"{{w}}\")\n"
     )
+}
+
+#[test]
+#[ignore = "security timing oracle: run by the timing-channels step of local-ci and the release gates"]
+fn a_public_within_s_timing_never_depends_on_whether_secret_code_ran_a_within() {
+    // #1151, ADR 0116 amendment P8 and P13, `spec/27 §1` rule 4 and §5, on the real clock, in
+    // release form, at `--workers 2`. The `secret` key, 0 or 1, decides whether a `within`
+    // ran before `main`'s public section; nothing else differs. The public section is one
+    // `within` over a public value between a request to `/mark` and one to `/hold`, and the
+    // server notes the time between the two requests: the measurement is narrowed to the first
+    // public `within`, the only one that a lazy start could charge.
+    //
+    // Before the fix, the timer thread started at the first deadline, through a `OnceLock`:
+    // key 0's first public `within` paid the thread's start, key 1's did not. After it, both
+    // programs start the timer thread before `main` (they hold a `within`), and every
+    // deadline is armed and fired in nanoseconds, so the two keys' spans have one
+    // distribution.
+    //
+    // **A deviation from ADR 0116 amendment §G, recorded:** §G asks for an amplifier that
+    // turns the channel into a deadline outcome at least 25 ms from `d`. This channel cannot
+    // be amplified so: its effect is one thread start, tens of microseconds, once per
+    // process, since a process started its timer thread at most once, and the sub-millisecond
+    // phase of P13 is not cumulative either. So this oracle measures the span directly, has
+    // low power before the fix, below the noise of two local requests on most machines, and
+    // a pass before the fix proves nothing. The primary guards at this slice are
+    // deterministic and need no timing: `runtime::tests::the_timer_thread_runs_before_main_
+    // and_no_within_starts_it_whatever_ran_before`, `sched`'s `start_all` test, the history
+    // guard `timer::tests::a_history_of_cancelled_timers_leaves_no_state_and_no_later_wake`,
+    // and the tests of P13 on a clock the test drives (`timer.rs`, `wheel.rs`, `deadline.rs`,
+    // the driver's ticks in `runtime.rs` and the waits of `una-interp`'s `stopping.rs`). This
+    // oracle guards the whole executable after the fix: a lazy start, or any other cost that a
+    // `secret` `within` leaves to a later public one, large enough to see, fails it.
+    //
+    // The judgment is the rank test of the header: key 0's 20 spans against key 1's, failing
+    // at p < 0.001. The control runs key 0 twice as often and compares its two halves, which
+    // must pass at p >= 0.001.
+    let spans = Arc::new(Mutex::new(Vec::new()));
+    let port = holding_server(Arc::clone(&spans));
+    let dirs = [
+        lazy_timer_package("lazy0", 0, port),
+        lazy_timer_package("lazy1", 1, port),
+    ];
+    // Per run, key 0, key 1 and key 0 again.
+    let mut samples: [Vec<f64>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+    for run in 0..20 {
+        for (sample, key) in [0usize, 1, 0].into_iter().enumerate() {
+            let value = span(&dirs[key], &spans);
+            eprintln!("run {run} key {key}: /mark to /hold {value:.3} ms");
+            samples[sample].push(value);
+        }
+    }
+    let report = |what: &str, test: &RankTest, a: &[f64], b: &[f64]| {
+        eprintln!(
+            "{what}: U = {}, z = {:.3}, p = {:.3e}; {a:?} against {b:?}",
+            test.u, test.z, test.p
+        );
+    };
+    let secret = mann_whitney(&samples[0], &samples[1]);
+    report("key 0 against key 1", &secret, &samples[0], &samples[1]);
+    let control = mann_whitney(&samples[0], &samples[2]);
+    report(
+        "control, key 0 against key 0",
+        &control,
+        &samples[0],
+        &samples[2],
+    );
+    assert!(
+        control.p >= 0.001,
+        "the control failed: the machine's noise alone separates one input from itself"
+    );
+    assert!(
+        samples.iter().flatten().all(|value| value.is_finite()),
+        "a run never reached `/hold`"
+    );
+    assert!(
+        secret.p >= 0.001,
+        "key 0 and key 1 differ: p = {:.3e}",
+        secret.p
+    );
+    for dir in &dirs {
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }
 
 #[test]

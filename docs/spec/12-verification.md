@@ -168,6 +168,11 @@ The bindings cover the parameters, `result`, named `let`s, pattern variables and
 
 Each obligation has a stable id: `ob-` followed by the first 12 hex digits of SHA-256 over the module path, enclosing declaration, kind and normalized goal text. Ids survive edits that do not change the obligation, and two obligations of the same kind and goal in one declaration share one. Goals print in the surface syntax, with `it` replaced by the source text of the value; the normalized goal collapses white space (ADR 0033).
 
+The normalized goal depends on the package's edition (ADR 0125, amendment of 2026-10-25):
+
+- In editions 0.1 to 0.3, it collapses white space, as above and unchanged, so the ids of their sources stay what they were. The hypotheses an obligation lists show their source text as written.
+- In edition 0.4, whose canonical form wraps long lines (`spec/15 §2`), white space that holds a line break right before a `)` or `]` token is erased first, and then white space collapses. A `)` or `]` inside a text literal is no token and is left alone. A wrapped line therefore gives the same goal and id as the same line on one line. The hypotheses an obligation lists, and the header and clauses that `una contract` shows, are normalized the same way. The normalization lexes the text once and reads each closer once: linear time and space.
+
 ## 9. Lock file and cache
 
 `verification.lock` sits at the package root and is committed:

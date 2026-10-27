@@ -262,12 +262,46 @@ impl<'a> Checker<'_, 'a, '_> {
         ) {
             return ty;
         }
+        if let Some(ty) = self.hash_map_method(
+            target,
+            &target_ty,
+            place.as_ref(),
+            marker,
+            method,
+            args,
+            span,
+        ) {
+            return ty;
+        }
+        if let Some(ty) = self.hash_set_method(
+            target,
+            &target_ty,
+            place.as_ref(),
+            marker,
+            method,
+            args,
+            span,
+        ) {
+            return ty;
+        }
         // Edition 0.4: `edit m.update(key:, initial:, change:)` on a map is a built-in method
         // (ADR 0119 rule 18), declared where no name reaches it, so it resolves ahead of any
         // function `update` in scope, as every built-in method does.
         if method == "update"
             && let Some(id) = self.env.map_update
             && matches!(resolved, Ty::Map(..))
+        {
+            self.outside_rl(span, || format!("the method `{method}`"));
+            self.receiver_marker = Some((marker, target.clone()));
+            let ty = self.call_function(id, Some((target.span, target_ty)), args, span, site);
+            self.receiver_marker = None;
+            return ty;
+        }
+        // Edition 0.4: `update` on a hash map, the hidden function of `std.collections` (ADR
+        // 0119 rule 12), reached the same way.
+        if method == "update"
+            && let Some(id) = self.env.hash_map_update
+            && matches!(resolved, Ty::Coll(una_core::Coll::HashMap, _))
         {
             self.outside_rl(span, || format!("the method `{method}`"));
             self.receiver_marker = Some((marker, target.clone()));
@@ -823,12 +857,17 @@ impl<'a> Checker<'_, 'a, '_> {
                     type_args: Vec::new(),
                 },
             );
-            // A policy call is a release (`spec/07 §5`); into a boundary it is U3024 itself.
-            self.release_site(span);
+            // A policy call is a release (`spec/07 §5`); into a boundary it is U3024 itself,
+            // unless its policy is declared in a dependency's module that the root trusts by
+            // a trust line (ADR 0122 rule 53.1).
+            let trusted_policy = self.env.trusted_dependencies.contains(&def.module);
+            if !trusted_policy {
+                self.release_site(span);
+            }
             let result = self.call_policy(&def, &callee, receiver, args, span);
             if let Some(boundary) = crossing {
                 let granting = Granting {
-                    release: Some(span),
+                    release: (!trusted_policy).then_some(span),
                     ..Granting::default()
                 };
                 self.cross(
@@ -859,9 +898,11 @@ impl<'a> Checker<'_, 'a, '_> {
                 uses_of: def.uses_of.clone(),
                 fails_of: def.fails_of,
                 own_fails: def.fails.clone(),
-                // The map's `update` runs its argument as `spec/07 §7` rule 9 describes for
-                // the prelude's functions (ADR 0119 IF7).
-                prelude: (def.module == self.env.prelude || Some(id) == self.env.map_update)
+                // The `update` of a map and of a hash map runs its argument as `spec/07 §7`
+                // rule 9 describes for the prelude's functions (ADR 0119 IF7).
+                prelude: (def.module == self.env.prelude
+                    || Some(id) == self.env.map_update
+                    || Some(id) == self.env.hash_map_update)
                     .then(|| def.name.to_owned()),
                 raises: self
                     .env
