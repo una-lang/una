@@ -453,6 +453,8 @@ pub(crate) struct Env<'a> {
     /// The code of an invalid project setting: U7002 in `una.toml`, U7008 in `ita.una`
     /// (ADR 0122 rule 13).
     pub(crate) project_code: Code,
+    /// The package's manifest, `una.toml` or `ita.una`, as messages name it (ADR 0122 rule 13).
+    pub(crate) manifest_file: &'static str,
     /// The boundaries of `una.toml`, and the boundary whose extent holds each package module
     /// (ADR 0093 rules 1 and 9); empty before edition 0.3.
     pub(crate) boundaries: super::boundary::Boundaries,
@@ -596,6 +598,7 @@ impl<'a> Env<'a> {
             trusted_listed: BTreeSet::new(),
             trusted_dependencies: BTreeSet::new(),
             project_code: Code::U7002,
+            manifest_file: "una.toml",
             boundaries: super::boundary::Boundaries::default(),
             plain_vias: BTreeSet::new(),
             blocked_vias: BTreeMap::new(),

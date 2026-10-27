@@ -520,6 +520,7 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
         .map(|entry| entry.value.clone())
         .collect();
     env.project_code = package.settings.format.code();
+    env.manifest_file = package.settings.format.file();
     env.trusted_dependencies = env
         .modules
         .iter()
