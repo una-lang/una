@@ -1137,6 +1137,8 @@ const SILENT_PORT_FILE: &str = "UNA_TEST_SILENT_PORT_FILE";
 fn silent_server_helper() {
     // Started by `silent_server_process` with its descriptors raised: accepts connections and
     // never answers, until it is killed. Run alone, it returns at once.
+    // The test process reads the port file its parent named; no library code reads it.
+    #[allow(clippy::disallowed_methods)]
     let Some(file) = std::env::var_os(SILENT_PORT_FILE) else {
         return;
     };
@@ -1151,10 +1153,13 @@ fn silent_server_helper() {
 
 /// A server that accepts connections and never answers, in a process of its own whose limit of
 /// open descriptors is `fds`, so that it holds as many connections as the tests park.
+// The child is returned to the caller, which kills and waits for it; it is waited for here
+// only when it never started.
+#[allow(clippy::zombie_processes)]
 fn silent_server_process(fds: usize) -> (std::process::Child, u16) {
     let file = std::env::temp_dir().join(format!("una-silent-port-{}", std::process::id()));
     let _ = std::fs::remove_file(&file);
-    let child = Command::new("sh")
+    let mut child = Command::new("sh")
         .arg("-c")
         .arg(format!("ulimit -n {fds} && exec \"$0\" \"$@\""))
         .arg(std::env::current_exe().unwrap())
@@ -1178,8 +1183,13 @@ fn silent_server_process(fds: usize) -> (std::process::Child, u16) {
             let _ = std::fs::remove_file(&file);
             return (child, port);
         }
+        let late = started.elapsed() >= Duration::from_secs(30);
+        if late {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
         assert!(
-            started.elapsed() < Duration::from_secs(30),
+            !late,
             "the silent server did not start (is `ulimit -n {fds}` allowed?)"
         );
         std::thread::sleep(Duration::from_millis(20));
@@ -1207,8 +1217,8 @@ note() -> Unit
   uses @console: Console[print]
   uses @files: Files[read, write]
 =
-  let written = attempt @files.write("data/note.txt", content: "noted")
-  let read = attempt @files.read("data/note.txt")
+  let written = attempt @files.write("note.txt", content: "noted")
+  let read = attempt @files.read("note.txt")
   @console.print("noted")
 
 pub main() -> Unit
@@ -1242,6 +1252,13 @@ pub main() -> Unit
     std::fs::write(dir.join("src/stalled.una"), program).unwrap();
     let built = una(&dir, &["build", "."]);
     assert_eq!(built.status.code(), Some(0), "{built:?}");
+    // The system checks a new executable at its first launch, which can take seconds on a
+    // loaded machine: launched once first with a flag it refuses, so only the runs are timed.
+    let _ = Command::new(dir.join("target/una/stalled"))
+        .arg("--no-such-flag")
+        .current_dir(&dir)
+        .output()
+        .unwrap();
     for workers in ["1", "4"] {
         let started = std::time::Instant::now();
         let mut child = Command::new(dir.join("target/una/stalled"))
@@ -1356,11 +1373,11 @@ probe() -> Unit
 note() -> Unit
   uses @files: Files[read, write]
 =
-  let written = attempt @files.write("data/note.txt", content: "noted")
-  let read = attempt @files.read("data/note.txt")
+  let written = attempt @files.write("note.txt", content: "noted")
+  let read = attempt @files.read("note.txt")
   let copied = when read
-    is Ok(text) -> attempt @files.write("data/copy.txt", content: text)
-    is Err(failure) -> attempt @files.write("data/copy.txt", content: "unread")
+    is Ok(text) -> attempt @files.write("copy.txt", content: text)
+    is Err(failure) -> attempt @files.write("copy.txt", content: "unread")
   unit
 
 pub main() -> Unit

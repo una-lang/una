@@ -510,7 +510,7 @@ impl Reactor {
         }
         let cancel = Arc::clone(&wake);
         let on_cancel: crate::interrupt::Wake = Arc::new(move || cancel.send(Woken::Cancelled));
-        let registration = crate::interrupt::register(entries, &on_cancel);
+        let registration = crate::interrupt::register_job(entries, &on_cancel, None);
         let ready_wake = Arc::clone(&wake);
         let ready: crate::interrupt::Wake = Arc::new(move || ready_wake.send(Woken::Ready));
         drop((on_cancel, wake));
@@ -682,6 +682,12 @@ impl<'a> Parked<'a> {
 
 impl Interrupt for Parked<'_> {
     fn waits(&self) -> bool {
+        true
+    }
+
+    /// A cancellation wakes each parked wait through the reactor, so the abandon needs no
+    /// second handle of the socket, and a request holds the one descriptor its place counts.
+    fn cuts_itself(&self) -> bool {
         true
     }
 

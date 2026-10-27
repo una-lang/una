@@ -311,7 +311,8 @@ pub main() -> Unit
   uses @http: Http[get]
 =
   let first = attempt @http.get("http://127.0.0.1:{port}/a", headers: [], key_name: None)
-  let second = attempt @http.get("http://127.0.0.1:{port}/b", headers: [], key_name: None) within 100 * millisecond
+  let url = "http://127.0.0.1:{port}/b"
+  let second = attempt @http.get(url, headers: [], key_name: None) within 100 * millisecond
   @console.print("done")
 "#
     );
@@ -408,6 +409,13 @@ fn under_virtual_time_refills_move_the_clock_alike_in_both_engines() {
     let built = una(&dir, &["build", "."]);
     assert_eq!(built.status.code(), Some(0), "{built:?}");
     let trace_file = dir.join("trace.json");
+    // The system checks a new executable at its first launch, which can take a second or more
+    // on a loaded machine: launched once first with a flag it refuses, so only the run is timed.
+    let _ = Command::new(dir.join("target/una/refills"))
+        .arg("--no-such-flag")
+        .current_dir(&dir)
+        .output()
+        .unwrap();
     let native_started = Instant::now();
     let native = Command::new(dir.join("target/una/refills"))
         .args(["--virtual-time", "--trace"])

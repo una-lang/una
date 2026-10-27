@@ -143,11 +143,26 @@ pub(crate) const STD_DRIVE: &str = "std.drive";
 /// What `std.drive` exports: the kind of a tick (ADR 0116 rule 2).
 pub(crate) const STD_DRIVE_NAMES: [&str; 1] = ["Tick"];
 
+/// The path of the standard module of rate limits computed in code, edition 0.4 (ADR 0117
+/// rule 9).
+pub(crate) const STD_LIMIT: &str = "std.limit";
+
+/// What `std.limit` exports: the capability `Limit`, its failure kind `Limited`, and the
+/// handler `limiter`, which the runtime provides (ADR 0117 rule 9, `spec/27 §10`).
+pub(crate) const STD_LIMIT_NAMES: [&str; 3] = ["Limit", "Limited", "limiter"];
+
 /// The standard modules a package of `edition` may import (`spec/10 §11` rule 10, ADR 0119
-/// rule 0).
+/// rule 0, ADR 0117 rule 9).
 pub(crate) fn importable(edition: Edition) -> &'static [&'static str] {
     if edition >= Edition::V0_4 {
-        &[STD_HOST, STD_TESTING, STD_TIME, STD_DRIVE, STD_COLLECTIONS]
+        &[
+            STD_HOST,
+            STD_TESTING,
+            STD_TIME,
+            STD_DRIVE,
+            STD_COLLECTIONS,
+            STD_LIMIT,
+        ]
     } else {
         &[STD_HOST, STD_TESTING]
     }

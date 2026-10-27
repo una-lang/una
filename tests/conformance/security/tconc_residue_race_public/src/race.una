@@ -30,6 +30,7 @@ pub run(url: Text, m: Int, n: Int) -> Unit
     let got = first of
       busy(m + 1)
       busy(m)
+    unit
   let v = step(n) within 10 * millisecond
     if error use 0
   @console.print("{v}")

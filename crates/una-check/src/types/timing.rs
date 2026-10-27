@@ -192,6 +192,15 @@ impl Checker<'_, '_, '_> {
         self.findings.http_sites.push(site);
     }
 
+    /// Marks the innermost site as placed: an example's `do` line is the root of its run, which
+    /// a test runs alone, so nothing runs beside it, as nothing runs beside `main` (ADR 0116
+    /// IF6); the code of a task or a lambda inside it stays unplaced by its own sites.
+    pub(crate) fn timing_placed(&mut self) {
+        if let Some(frame) = self.timing.last_mut() {
+            frame.seed.unplaced = false;
+        }
+    }
+
     /// Ends the innermost site of [`Self::timing_start`] and returns its seed.
     pub(crate) fn timing_end(&mut self) -> TimingSeed {
         self.timing

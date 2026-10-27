@@ -1,25 +1,23 @@
--- test: a request written directly in a lambda reaches `Http` for the residue label (ADR 0116 P1, P9): the lambda, written outside the `tasks` statement, is passed to `run_with`, an effect-polymorphic started function that calls it, so the statement's tasks can leave its request on a helper; every lambda is one node of the call graph, whose edges include the operations its bodies perform, so `L_res` is the statement's label, `⊤` from the call of a function value, and the outcome of a later `within` over pure work, in a function no task reaches, is above the `internal` binding (U4001)
+-- test: a request written directly in a lambda reaches `Http` for the residue label (ADR 0116 P1, P9): the lambda, written as the argument of a `start`, since an effectful lambda is passed directly (U3004), is passed to `run_with`, an effect-polymorphic started function that calls it, so the statement's tasks can leave its request on a helper; every lambda is one node of the call graph, whose edges include the operations its bodies perform, so `L_res` is the statement's label, `⊤` from the call of a function value, and the outcome of a later `within` over pure work, in a function no task reaches, is above the `internal` binding (U4001)
 -- spec: spec/26 §7
--- expect: error U4001 at src/residue.una:30:25
+-- expect: error U4001 at src/residue.una:28:25
 module residue
 
 import std.time (millisecond)
 
-drop_reply[T](reply: T) -> Unit = unit
-
---- Calls its function value, whose effects are its own.
-run_with(go: fn(Text) -> Unit, url: Text) -> Unit
+--- Calls its function value, whose effects are its own, and drops what it returns.
+run_with[T](go: fn(Text) -> T, url: Text) -> Unit
   uses of go
 =
-  go(url)
+  let reply = go(url)
+  unit
 
 --- Starts `run_with` with a lambda that makes a request.
 pub serve(url: Text) -> Unit
   uses @http: Http[get]
 =
-  let fetch = fn(u: Text) -> drop_reply(attempt @http.get(u, headers: [], key_name: None))
   tasks
-    start run_with(fetch, url)
+    start run_with(fn(u: Text) -> attempt @http.get(u, headers: [], key_name: None), url)
   unit
 
 step(n: Int) -> Int = n + 1

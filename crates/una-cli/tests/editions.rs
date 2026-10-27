@@ -231,6 +231,12 @@ const EXPECTED_DIFFERENCES_0_4: &[Difference04] = &[
         added: &[("U2007", "src/poll.una:9:3")],
         removed: &[("U1001", "src/poll.una:18:8")],
     },
+    // ADR 0117 rule 9 (`spec/27 §10`): `std.limit` is an importable module from edition 0.4.
+    Difference04 {
+        case: "names/limit_0_3",
+        added: &[],
+        removed: &[("U1001", "src/gate.una:6:8")],
+    },
     // ADR 0119 rule 18: a package function `update` whose first parameter is a `Map`.
     Difference04 {
         case: "names/map_update_function_in_0_3",
@@ -265,6 +271,12 @@ const EXPECTED_DIFFERENCES_0_4: &[Difference04] = &[
         case: "syntax/stop_after_before_0_4",
         added: &[],
         removed: &[("U0101", "src/before.una:11:3")],
+    },
+    // ADR 0117 rules 1 and 2: `tasks` and `start` are statements from edition 0.4.
+    Difference04 {
+        case: "syntax/tasks_before_0_4",
+        added: &[],
+        removed: &[("U0101", "src/late.una:11:5")],
     },
     // ADR 0116 rule 7: `for until` is a loop form from edition 0.4.
     Difference04 {

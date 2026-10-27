@@ -380,17 +380,21 @@ fn standard_kinds(
         }
         let mut decls = Vec::new();
         for (decl, entity) in m.tree.decls.iter().zip(m.decls.clone()) {
-            let DeclKind::Kind(_) = &decl.kind else {
-                continue;
+            // ADR 0117 rule 9: a standard module's capabilities too, as `std.limit`'s `Limit`,
+            // whose operations both engines serve by its declaration.
+            let what = match &decl.kind {
+                DeclKind::Kind(_) => "standard kind",
+                DeclKind::Capability(_) => "standard capability",
+                _ => continue,
             };
             let core = entity.and_then(|entity| {
                 let mut fx = Fx::new(env, findings, dbs, module);
                 fx.decl(&decl.kind, entity)
             });
             match core {
-                Some(core @ Decl::Data { .. }) => decls.push(core),
+                Some(core @ (Decl::Data { .. } | Decl::Cap { .. })) => decls.push(core),
                 Some(_) => {}
-                None => dropped.push((decl.span, "standard kind")),
+                None => dropped.push((decl.span, what)),
             }
         }
         if !decls.is_empty() {

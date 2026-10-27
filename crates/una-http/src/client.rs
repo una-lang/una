@@ -140,6 +140,14 @@ pub trait Interrupt {
     fn cancelled(&self) -> bool {
         false
     }
+
+    /// Whether a cancellation of the request's task ends every wait of the exchange by itself,
+    /// as the native reactor's parked waits do (ADR 0117 slice S7): the abandon then needs no
+    /// second handle of the socket to shut it down, so a request holds one descriptor, the one
+    /// the reactor's cap on sockets counts.
+    fn cuts_itself(&self) -> bool {
+        false
+    }
 }
 
 /// The interruption an exchange sees (ADR 0116 P9, #1148): the engine's, and the cancellation
@@ -175,6 +183,10 @@ impl Interrupt for Cut<'_> {
 
     fn cancelled(&self) -> bool {
         self.abandon.abandoned()
+    }
+
+    fn cuts_itself(&self) -> bool {
+        self.interrupt.cuts_itself()
     }
 
     /// The engine's own resolution and connection, as the reactor's (ADR 0117 slice S7), with
@@ -752,11 +764,14 @@ fn connect(
     let stream = interrupt.open(&url.host, url.port, deadline, abandon)?;
     // The abandon's hook holds a second handle of the socket, which it shuts down, so a wait on
     // it ends at once, with no polling. A socket whose handle cannot be made, as when the
-    // process is out of descriptors, is not used: its waits could not be woken.
-    let socket = stream.try_clone().map_err(|_| Error::Unreachable)?;
-    abandon.on_abandon(Box::new(move || {
-        let _ = socket.shutdown(std::net::Shutdown::Both);
-    }));
+    // process is out of descriptors, is not used: its waits could not be woken. An interruption
+    // whose waits a cancellation ends by itself needs no such handle.
+    if !interrupt.cuts_itself() {
+        let socket = stream.try_clone().map_err(|_| Error::Unreachable)?;
+        abandon.on_abandon(Box::new(move || {
+            let _ = socket.shutdown(std::net::Shutdown::Both);
+        }));
+    }
     if interrupt.stopped() {
         return Err(Error::Interrupted);
     }

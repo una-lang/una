@@ -413,6 +413,8 @@ exported! {
     una_rt_is_json_number => json::is_json_number, (t);
     una_rt_host_instance => host::host_instance, (capability);
     una_rt_handler_instance => host::handler_instance, (name);
+    una_rt_limiter_instance => host::limiter_instance, (at_most, per, waiting);
+    una_rt_limit_acquire => host::limit_acquire, (site, instance);
     una_rt_event => host::event, (site, instance);
 }
 
@@ -478,6 +480,15 @@ pub extern "C" fn una_rt_enter(site: i64) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn una_rt_main_failed(failure: i64) {
     runtime::main_failed(failure);
+}
+
+/// Called by the C `main` of a program that performs an operation of `Http`, before
+/// `una_rt_start`: lets the run build the client's TLS settings before `main` when its grants
+/// include `Http` ([`runtime::enable_http`]). A program without `Http` never calls it, so the
+/// linker drops the TLS stack from its executable (ADR 0074 H7).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_http_enable() {
+    runtime::enable_http();
 }
 
 /// Checks the memory budget at an iteration of the loop at `site` (U6003 over it): 1 when

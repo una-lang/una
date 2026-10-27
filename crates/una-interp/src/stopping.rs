@@ -327,7 +327,8 @@ impl Interrupt for OpInterrupt<'_> {
                     Readiness::Woken | Readiness::TimedOut => Waited::TimedOut,
                 };
             };
-            match una_sys::signals::wait(Some(socket.as_raw_fd()), write, !self.stale.get(), slice) {
+            match una_sys::signals::wait(Some(socket.as_raw_fd()), write, !self.stale.get(), slice)
+            {
                 Readiness::Ready => return Waited::Ready,
                 Readiness::Failed => return Waited::Failed,
                 Readiness::TimedOut => {}
@@ -392,7 +393,7 @@ fn precise_rest(end: Option<Instant>, left: Duration) {
 
 #[cfg(test)]
 mod tests {
-    use std::os::fd::AsRawFd;
+    use std::os::fd::AsFd;
 
     use super::*;
 
@@ -464,7 +465,7 @@ mod tests {
         for k in 0..20u32 {
             let timeout = Duration::from_micros(1_300 + u64::from(k % 4) * 1_000);
             let start = Instant::now();
-            let waited = interrupt.wait(client.as_raw_fd(), false, timeout);
+            let waited = interrupt.wait(client.as_fd(), false, timeout);
             let took = start.elapsed();
             assert!(matches!(waited, Waited::TimedOut), "{waited:?}");
             assert!(took >= timeout, "{took:?} before {timeout:?}");
