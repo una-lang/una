@@ -126,7 +126,7 @@ fn the_clone_gate_checks_out_exactly_the_commit_and_records_it() {
     // A run of some gates is not a validation of the commit.
     assert!(
         record.contains(
-            "Verdict: INCOMPLETE (not run: build, deps, mac, linux, linux-arm64, release, reproducible, determinism, native, timing-channels, owner-replay, sanitize, site, formal, hunt, hunt-linux-arm64)"
+            "Verdict: INCOMPLETE (not run: build, deps, mac, linux, linux-arm64, release, reproducible, determinism, native, timing-channels, owner-replay, sanitize, site, formal, hunt, hunt-linux-arm64, solver-identity, limits, toolchain-free)"
         ),
         "{record}"
     );
@@ -968,6 +968,7 @@ fn the_docker_gates_refuse_any_context_but_docker_desktops() {
         "release",
         "reproducible",
         "hunt-linux-arm64",
+        "toolchain-free",
     ] {
         let output = gates_with_docker(&sha, &out, &["clone", gate], "other-runtime", None, None);
         assert_eq!(output.status.code(), Some(2), "{gate}");

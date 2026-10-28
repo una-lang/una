@@ -183,6 +183,12 @@ fn machine_memory() -> Option<u64> {
     }
 }
 
+/// The marker that `scripts/check-release.sh` looks for: a shipped `una` was never built with
+/// the test hooks (ADR 0124 rule 11). `#[used]` keeps its bytes in the binary.
+#[cfg(feature = "test-hooks")]
+#[used]
+static TEST_HOOKS_MARKER: [u8; 25] = *b"UNA_CLI_TEST_HOOKS_MARKER";
+
 /// The SHA-256 of this `una`'s build record, in hex: the `<build>` of the handshake.
 pub(crate) fn build_digest() -> String {
     format!("{:x}", Sha256::digest(crate::build_record().as_bytes()))

@@ -104,52 +104,11 @@ if [ "$#" -ne 0 ]; then
     exit 2
 fi
 
-# The pinned Z3: in UNA_LOCAL_CI_Z3 inside the container, else target/z3, where
-# scripts/install-z3.sh installs it for development (compiler/testing.md §3).
-z3=${UNA_LOCAL_CI_Z3:-$root/target/z3}
-if [ ! -x "$z3/bin/z3" ]; then
-    echo "== installing the Z3 release pinned in verification.lock in $z3"
-    scripts/install-z3.sh "$z3" || fail "installing Z3"
-fi
-PATH="$z3/bin:$PATH"
-export PATH
-
-# The Z3 built into una (ADR 0124 rules 1 and 19): the library of supply-chain/z3.lock, built
-# once per pin and toolchain by scripts/build-z3.sh into the cache UNA_Z3_CACHE (default
-# ~/.cache/una/z3; inside the container a named volume), under the key the script computes from
-# the pin and the toolchain, outside every worktree and target directory. The library's digest,
-# recorded by the build, is checked again here before the library is used: an entry whose
-# bytes changed is refused and built again (a cold build of 10 to 20 minutes; UNA_Z3_SOURCE
-# names a local copy of the pinned tarball until the mirror release exists). Every cargo step
-# gets the library by UNA_Z3_LIB; without it, `una check` would be U5003.
-z3_cache=${UNA_Z3_CACHE:-$HOME/.cache/una/z3}
-z3_key=$(scripts/build-z3.sh --key) || fail "the cache key of the Z3 library"
-z3_lib="$z3_cache/$z3_key/lib/libz3shell.a"
-z3_recorded="$z3_cache/$z3_key/library.sha256"
-z3_fresh=1
-if [ -f "$z3_lib" ] && [ -f "$z3_recorded" ]; then
-    if command -v sha256sum >/dev/null 2>&1; then
-        z3_actual=$(sha256sum "$z3_lib" | cut -d ' ' -f 1)
-    else
-        z3_actual=$(shasum -a 256 "$z3_lib" | cut -d ' ' -f 1)
-    fi
-    if [ "$z3_actual" = "$(cat "$z3_recorded")" ]; then
-        echo "== the Z3 library of supply-chain/z3.lock, from the cache $z3_cache/$z3_key ($z3_actual)"
-        z3_fresh=0
-    else
-        echo "== the cached Z3 library's digest differs from its record ($z3_actual); refused, building again"
-    fi
-fi
-if [ "$z3_fresh" = 1 ]; then
-    echo "== building the Z3 library of supply-chain/z3.lock into $z3_cache/$z3_key"
-    if [ -n "${UNA_Z3_SOURCE:-}" ]; then
-        scripts/build-z3.sh --source "$UNA_Z3_SOURCE" --out "$z3_cache" || fail "building the Z3 library"
-    else
-        scripts/build-z3.sh --out "$z3_cache" || fail "building the Z3 library"
-    fi
-    [ -f "$z3_lib" ] || fail "the Z3 build wrote no library at $z3_lib"
-fi
-UNA_Z3_LIB=$z3_lib
+# The Z3 built into una (ADR 0124 rules 1 and 19): scripts/z3-library.sh gives the library of
+# supply-chain/z3.lock from the cache (UNA_Z3_CACHE; inside the container a named volume),
+# verified against the digest its build recorded, or builds it once; every cargo step gets it
+# by UNA_Z3_LIB. No z3 on PATH is needed or used by una any more.
+UNA_Z3_LIB=$(scripts/z3-library.sh) || fail "the Z3 library of supply-chain/z3.lock"
 export UNA_Z3_LIB
 
 target=$(rustc -vV | sed -n 's/^host: //p')
@@ -159,7 +118,6 @@ step() {
     echo "== $name"
     "$@" || fail "$name"
 }
-step "Check the solver version" scripts/check-solver.sh
 # Every released section of CHANGELOG.md is the one its tag published (#645): an entry that a
 # rebase carried under a released heading fails here, before it merges. The run's evidence never
 # skips it: UNA_SKIP_RELEASED_SECTIONS from the caller is dropped, and only the container, whose

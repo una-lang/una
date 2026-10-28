@@ -144,6 +144,18 @@ for artifact in "$tmp/$name/una" "$tmp/$name/lib/libuna_rt.a"; do
         fi
     done
 done
+# The solver child's stand-in (the `test-hooks` feature of una-cli, ADR 0124 rule 11) exists
+# only in the toolchain's own test builds; its marker may be in no shipped una. And a shipped
+# una is never a development build: it has the release solver built in (rule 19).
+marker=UNA_CLI_TEST_HOOKS_MARKER
+if nm -a "$tmp/$name/una" 2>/dev/null | grep -q "$marker" || LC_ALL=C grep -a -q "$marker" "$tmp/$name/una"; then
+    echo "error: $tmp/$name/una was built with the solver's test hooks (ADR 0124 rule 11)" >&2
+    exit 1
+fi
+if "$tmp/$name/una" --version | grep -q '^development build$'; then
+    echo "error: $tmp/$name/una is a development build, with no release solver built in (ADR 0124 rule 19)" >&2
+    exit 1
+fi
 # AddressSanitizer's fiber interface and its unpoisoning are declared only in builds with
 # `--cfg una_asan`, which scripts/sanitize.sh alone sets (#1145): no shipped `una` or
 # `libuna_rt.a` may refer to them, by symbol or by bytes.
