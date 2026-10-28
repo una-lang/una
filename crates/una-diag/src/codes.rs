@@ -315,7 +315,7 @@ pub enum Code {
 
 impl Code {
     /// Every registered code, in the order of `spec/13 §4`.
-    pub const ALL: [Code; 118] = [
+    pub const ALL: [Code; 119] = [
         Code::U0001,
         Code::U0002,
         Code::U0003,

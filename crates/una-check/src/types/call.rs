@@ -16,7 +16,7 @@ use super::expr::count;
 use super::label::Label;
 use super::records::Res;
 use super::shared::Flagged as _;
-use super::ty::{FnTy, FnUse, KindId, KindLabels, Refinement, Shared, Ty, given};
+use super::ty::{FnTy, FnUse, KindId, KindLabels, Refinement, Shared, Ty};
 use super::unify::{Origin, Vars};
 
 /// A checked argument: where it is, its type, the type of its parameter, and the parameter.
@@ -1531,7 +1531,7 @@ impl<'a> Checker<'_, 'a, '_> {
         // rebindings the reference leads through; a handler installed in this body answers at
         // `public` here (rule 4).
         let gives = match self.resolve_cap(cap_name) {
-            super::authority::Resolved::Cap { gives, .. } => given(&gives, op_name),
+            super::authority::Resolved::Cap { gives, .. } => super::ty::given(&gives, op_name),
             _ => Label::public(),
         };
         let resolved = self.op_site(cap, op);

@@ -34,9 +34,8 @@ fn package(dir: &Path, source: &str) {
 /// A chain of `n` functions: each passes its labeled binding to the next by name, and the last
 /// reads the labeled operation.
 fn chain(n: usize) -> String {
-    let mut source = String::from(
-        "module m\n\npub capability Files\n  op owner(file: Text) -> Text\n\n",
-    );
+    let mut source =
+        String::from("module m\n\npub capability Files\n  op owner(file: Text) -> Text\n\n");
     for i in 0..n {
         let body = if i + 1 == n {
             "@files.owner(file)".to_owned()

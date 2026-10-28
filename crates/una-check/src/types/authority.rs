@@ -353,7 +353,11 @@ impl<'a> Checker<'_, 'a, '_> {
             above.push(format!(
                 "`@{declared}.{op}` gives `{gives_here}`, which is not within what {callee} reads it at (`{read}`)"
             ));
-            raised.push(format!("`@{}.{op}` to `{}`", need.name, read.join(&gives_here)));
+            raised.push(format!(
+                "`@{}.{op}` to `{}`",
+                need.name,
+                read.join(&gives_here)
+            ));
         }
         if above.is_empty() {
             return;

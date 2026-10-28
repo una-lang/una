@@ -1,6 +1,6 @@
--- test: a lambda reads a captured operation at the label the enclosing body gives it, so the capture passes and the answer carries the label into the lambda's result (ADR 0094 rule 3)
+-- test: a lambda reads a captured operation at the label the enclosing body gives it, but the call that hands the lambda to `each` also passes `@files`, which `each` reads at `public`, so the call is U3022 (ADR 0094 rule 3)
 -- spec: spec/05 §4
--- expect: ok
+-- expect: error U3022 at src/m.una:18:3
 module m
 
 pub capability Files
