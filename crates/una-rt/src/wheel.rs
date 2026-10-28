@@ -492,8 +492,10 @@ mod tests {
         let mut wheel = Wheel::new(0);
         let stale = wheel.arm(5, 1).unwrap();
         assert_eq!(fire(&mut wheel, 5), vec![1]);
-        // The freed entry is reused, many times over, by timers armed and cancelled in turn.
-        for value in 0..10_000 {
+        // The freed entry is reused, many times over, by timers armed and cancelled in turn:
+        // 200 times under Miri, where each step is slow (#1239), 10,000 otherwise.
+        let rounds = if cfg!(miri) { 200 } else { 10_000 };
+        for value in 0..rounds {
             let id = wheel.arm(1_000, value).unwrap();
             assert_eq!(id.index, stale.index);
             assert_eq!(wheel.cancel(id), Some(value));
@@ -509,7 +511,9 @@ mod tests {
         let mut ordered = Wheel::new(0);
         let mut unordered = Wheel::new(0);
         let mut random = Lcg(7);
-        for value in 0..2_000u64 {
+        // 200 timers under Miri (#1239), 2,000 otherwise.
+        let timers = if cfg!(miri) { 200 } else { 2_000u64 };
+        for value in 0..timers {
             let deadline = random.next() % 50_000;
             ordered.arm(deadline, value).unwrap();
             unordered.arm(deadline, value).unwrap();
@@ -663,7 +667,10 @@ mod tests {
         let mut model: BTreeMap<(u64, u64), TimerId> = BTreeMap::new();
         let mut live: Vec<(u64, u64, TimerId)> = Vec::new();
         let mut now = 0u64;
-        for value in 0..20_000u64 {
+        // 500 operations under Miri (#1239), 20,000 otherwise: the same mix of arms, cancels
+        // and advances, checked against the model at every step.
+        let operations = if cfg!(miri) { 500 } else { 20_000u64 };
+        for value in 0..operations {
             match random.next() % 4 {
                 0 | 1 => {
                     // In nanoseconds: within one level-0 window, a millisecond, a second and
@@ -721,8 +728,14 @@ mod tests {
             assert_eq!(fired.len() as u64, n / 2);
             wheel.moves as f64 / n as f64
         };
-        let small = per_timer(1_000);
-        let large = per_timer(100_000);
+        // Under Miri 200 then 2,000 timers (#1239), else 1,000 then 100,000: flat either way.
+        let (few, many) = if cfg!(miri) {
+            (200, 2_000)
+        } else {
+            (1_000, 100_000)
+        };
+        let small = per_timer(few);
+        let large = per_timer(many);
         assert!(
             small <= LEVELS as f64 && large <= LEVELS as f64,
             "{small} {large}"
