@@ -15,13 +15,25 @@ pub fn writable(fd: i32) -> bool {
     ready == 1 && entry.revents & libc::POLLOUT != 0
 }
 
-/// The soft limit of open descriptors (`RLIMIT_NOFILE`), or `None` when it cannot be read. The
-/// one read of it until the binding of #1005 (`server.rs`) serves the reactor too.
-pub fn descriptor_limit() -> Option<u64> {
-    // SAFETY: zero is a valid `rlimit`, which `getrlimit` fills in place.
-    let (read, limit) = unsafe {
-        let mut limit: libc::rlimit = std::mem::zeroed();
-        (libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut limit), limit)
+/// The soft and hard limits of open descriptors (`RLIMIT_NOFILE`): the crate's one binding of
+/// `getrlimit`, which [`descriptor_limit`] and the `serve:` grants of `server.rs` read (ADR 0058,
+/// amendment of 2026-10-25: each function of the C library is bound once). `rlim_t` is `u64` on
+/// the 64-bit targets the runtime serves.
+pub(crate) fn descriptor_limits() -> std::io::Result<libc::rlimit> {
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
     };
-    (read == 0).then_some(limit.rlim_cur)
+    // SAFETY: `limit` is a valid `rlimit` that `getrlimit` fills in place.
+    let read = unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut limit) };
+    if read == 0 {
+        Ok(limit)
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+/// The soft limit of open descriptors (`RLIMIT_NOFILE`), or `None` when it cannot be read.
+pub fn descriptor_limit() -> Option<u64> {
+    descriptor_limits().ok().map(|limit| limit.rlim_cur)
 }

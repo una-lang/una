@@ -49,15 +49,9 @@ pub fn identity() -> io::Result<Identity> {
 #[cfg(target_os = "macos")]
 const OPEN_MAX: u64 = 10_240;
 
-/// The limit of open descriptors. `rlim_t` is `u64` on the 64-bit targets the runtime serves.
+/// The limit of open descriptors, by the crate's one binding of `getrlimit` (`io.rs`).
 fn descriptor_limit() -> io::Result<libc::rlimit> {
-    let mut limit = libc::rlimit {
-        rlim_cur: 0,
-        rlim_max: 0,
-    };
-    // SAFETY: `limit` is a valid `rlimit` that `getrlimit` fills.
-    ok(unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut limit) })?;
-    Ok(limit)
+    crate::io::descriptor_limits()
 }
 
 /// Sets the soft limit of open descriptors to `soft`, keeping the hard limit `hard`.
