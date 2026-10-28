@@ -1,3 +1,67 @@
 # Runnable programs whose `una run` is rejected, by repository path, each with a reason after a
 # colon (#1045). The differential test (crates/una-cli/tests/native.rs) compares nothing for such
 # a case, so one that is not listed here fails the test, and a listed one that runs must be removed.
+docs/reviews/v0.1-final-review/adversarial/fr-op-arg-fn-refinement.una: U5001 refinement `result of zero: result > 0` is refuted
+docs/reviews/v0.1-final-review/adversarial/fr-op-arg-variance.una: U4001 parameter `s` of operation `Keeper.open` is `Sink[secret Int]`, and this value is `Sink[Int]`: a flow from `secret` to `public`
+docs/reviews/v0.1-final-review/round3/adversarial/r3-oparg-data-accepted.una: U4001 the result of this lambda is `Int`, and this value is `secret Int`: a flow from `secret` to `public`
+docs/reviews/v0.1-rereview/adversarial/rv-auth-field-fn-returning-effectful-fn.una: U3006 `note` uses capabilities or can fail, so as a value it may only be passed directly as an argument
+docs/reviews/v0.1-rereview/adversarial/rv-auth-join-fn-values.una: U3003 this function uses `@log: Log[write]`, which the expected function type does not allow
+docs/reviews/v0.1-rereview/adversarial/rv-flow-generic-effectful-param.una: U4001 parameter `f` of `feed` is `fn(secret Int) -> Unit`, and this value is `fn(Int) -> Unit`: a flow from `secret` to `public`
+docs/reviews/v0.1-rereview/adversarial/rv-flow-generic-fail-payload-use.una: U4001 field `same` of `Mismatch` is `Bool`, and this value is `label(T*) Bool`: a flow from `label(T*)` to `public`
+docs/reviews/v0.1-rereview/adversarial/rv-flow-record-field-label-equality.una: U4003 `@console.print` accepts `public` data, and this argument is `internal`
+docs/reviews/v0.1-rereview/adversarial/rv-gen-generic-fn-value-label.una: U4003 `@console.print` accepts `public` data, and this argument is `secret`
+docs/reviews/v0.1-rereview/adversarial/rv-gen-kind-contravariant-flows.una: U4001 lambda parameter `x` is `Int`, and this value is `secret Int`: a flow from `secret` to `public`
+docs/reviews/v0.1-rereview/adversarial/rv-gen-kind-contravariant.una: U4001 lambda parameter `x` is `Int`, and this value is `secret Int`: a flow from `secret` to `public`
+docs/reviews/v0.1-rereview/adversarial/rv-gen-refined-kind-arg.una: U2002 this type argument is the refined kind `Positive`, and a refined type cannot instantiate a type parameter in v0.1; write its base type `Int` and check the refinement where the value is used
+docs/reviews/v0.1-rereview/adversarial/rv-gen-sfun-branch-join.una: U3006 `loud` uses capabilities or can fail, so as a value it may only be passed directly as an argument
+docs/reviews/v0.1-rereview/adversarial/rv-hdl-fail-op-under-pc.una: U4002 `if error pass` depends on `secret` data, so its failure would reveal it; return a labeled value instead of failing
+docs/reviews/v0.1-rereview/adversarial/rv-hdl-fn-value-param.una: U4002 `out` has effects that accept at most `public` data, and it is called in an operation body whose callers may pass `secret` data, which it would reveal
+docs/reviews/v0.1-rereview/adversarial/rv-hdl-inferred-helper.una: U4002 `helper` has effects that accept at most `public` data, and it is called in an operation body whose callers may pass `secret` data, which it would reveal
+docs/reviews/v0.1-rereview/adversarial/rv-hdl-labeled-instance-args.una: U4001 the result of `write` is `public`, and which value it returns depends on this `secret` condition: a flow from `secret` to `public`
+docs/reviews/v0.1-rereview/adversarial/rv-hdl-nested-floor.una: U4003 `@bell.ring` accepts `public` data, and it runs in an operation body whose callers may pass `secret` data, which it would reveal
+docs/reviews/v0.1-rereview/adversarial/rv-hdl-result-kind-variance.una: U4001 lambda parameter `x` is `Int`, and this value is `secret Int`: a flow from `secret` to `public`
+docs/reviews/v0.1-rereview/adversarial/rv-hdl-testing-lambda.una: U3015 this `with` binding installs a handler that uses `std.testing`, which only `given` lines of examples may install
+docs/reviews/v0.1-rereview/adversarial/rv-id-example-given: U3010 this handler implements `lib.x.Gauge`, and `measure` needs `@g` to be `lib.y.Gauge`
+docs/reviews/v0.1-rereview/adversarial/rv-id-field-vs-function.una: U5001 division obligation `t.bump(5) != 0` is refuted
+docs/reviews/v0.1-rereview/adversarial/rv-id-fn-type-uses: U3003 this function uses `@g: lib.y.Gauge[read]`, which the expected function type does not allow
+docs/reviews/v0.1-rereview/adversarial/rv-id-handler-foreign: U3010 this handler implements `lib.x.Gauge`, and `measure` needs `@g` to be `lib.y.Gauge`
+docs/reviews/v0.1-rereview/adversarial/rv-id-host-rebind: U3001 `probe` needs `@e` to be `lib.fake.Env`, and here it is `std.host.Env`
+docs/reviews/v0.1-rereview/adversarial/rv-id-imported-capability-handler: U5001 postcondition of `read` is refuted
+docs/reviews/v0.1-rereview/adversarial/rv-id-nested-files: U3012 `main` uses `@files: Files`, which is not a host capability, so no grant can provide it
+docs/reviews/v0.1-rereview/adversarial/rv-id-opaque-reflect: U5001 refinement `valid(g)` is refuted
+docs/reviews/v0.1-rereview/adversarial/rv-id-policy-twins: U5001 division obligation `release(n) != 0` is refuted
+docs/reviews/v0.1-rereview/adversarial/rv-id-shadow-nat.una: U5001 division obligation `(n + 5) != 0` is refuted
+docs/reviews/v0.1-rereview/adversarial/rv-id-std-spoof: U5001 division obligation `zero != 0` is refuted
+docs/reviews/v0.1-rereview/adversarial/rv-id-twins: U5001 division obligation `y != 0` is refuted
+docs/reviews/v0.1-rereview/adversarial/rv-smt-module-mangling: U5001 division obligation `zero != 0` is refuted
+docs/reviews/v0.1-rereview/adversarial/rv-smt-predicate-function-same-name: U5001 precondition `x > 10` of this call is refuted
+docs/reviews/v0.1-rereview/adversarial/rv-verify-fn-refinement-annotated-let: U5001 refinement `result of make(): result > 0` is refuted
+docs/reviews/v0.1-rereview/adversarial/rv-verify-via-param: U4005 `via` function `pass_through` must have type `fn(Int) -> Pos`, except for labels; it is `fn(Pos) -> Int`
+docs/reviews/v0.1-rereview/adversarial/rv-verify-via-requires: U4005 `via` function `pass_through` must have type `fn(Int) -> Pos`, except for labels; it is `fn(Int) -> Int`
+docs/reviews/v0.1-review/adversarial/auth-escape-failure.una: U3009 this value holds a function that can fail with `Boom`, which the expected type does not allow
+docs/reviews/v0.1-review/adversarial/auth-escape-through-generic.una: U3016 this type argument is, or holds, a function type with `uses` or `fails`, which is second-class, so it cannot instantiate a type parameter; take the function as a parameter of function type instead
+docs/reviews/v0.1-review/adversarial/auth-escape-to-pure.una: U3016 this type argument is, or holds, a function type with `uses` or `fails`, which is second-class, so it cannot instantiate a type parameter; take the function as a parameter of function type instead
+docs/reviews/v0.1-review/adversarial/escape-policy-opaque-fact: U4005 `via` function `copy` must have type `fn(Text) -> Slug`, except for labels; it is `fn(Text) -> Text`
+docs/reviews/v0.1-review/adversarial/escape-testing-via-handler: U3015 `fake_hash` belongs to `std.testing`, whose functions may only be called, not used as values
+docs/reviews/v0.1-review/adversarial/flow-generic-equality.una: U4001 the result of `leak` is `Bool`, and this value is `secret Bool`: a flow from `secret` to `public`
+docs/reviews/v0.1-review/adversarial/flow-handler-pc.una: U4003 `@console.print` accepts `public` data, and it runs in an operation body whose callers may pass `secret` data, which it would reveal
+docs/reviews/v0.1-review/adversarial/flow-prelude-contains.una: U4001 the result of `leak` is `Bool`, and this value is `secret Bool`: a flow from `secret` to `public`
+docs/reviews/v0.1-review/adversarial/flow-secret-fn-value-effect.una: U4002 `f` has effects that accept at most `public` data, and it is called under a `secret` condition, which would be revealed
+docs/reviews/v0.1-review/adversarial/verify-fn-type-refinement-erased: U5001 refinement `result of the lambda: result > 0` is refuted
+docs/reviews/v0.1-review/adversarial/verify-function-value-goal-text: U5001 precondition `x == y` of `same`, passed as a function value whose type has no precondition, is refuted
+docs/reviews/v0.1-review/adversarial/verify-generic-sum-refinement: U2002 this type argument is the refined kind `Pos`, and a refined type cannot instantiate a type parameter in v0.1; write its base type `Int` and check the refinement where the value is used
+docs/reviews/v0.1-review/adversarial/verify-host-capability-name-confusion: U5001 division obligation `text.len != 0` is refuted
+docs/reviews/v0.1-review/adversarial/verify-host-capability-shadow: no run document: una.toml has no `[run] entry`; name the module whose `main` runs
+docs/reviews/v0.1-review/adversarial/verify-policy-to-refinement: U4005 `via` function `pass_through` must have type `fn(Int) -> Pos`, except for labels; it is `fn(Int) -> Int`
+docs/reviews/v0.1-review/adversarial/verify-prelude-module-variants: U1009 module `prelude` starts with `prelude`, a segment that only the standard library may use
+docs/reviews/v0.1-review/adversarial/verify-tag-field-collision: U5001 division obligation `zero != 0` is refuted
+docs/reviews/v0.1-review/adversarial/verify-text-literal-escapes: U5001 postcondition of `a` is refuted
+docs/reviews/v0.1-review/adversarial/verify-unknown-is-error-cached: U5002 division obligation `x != 0` could not be proven (max. resource limit exceeded)
+docs/reviews/v0.2-review/native/adversarial/equiv: no run document: directory `.` is not a package: it has no `ita.una` or `una.toml`
+docs/reviews/v0.2-review/native/adversarial/host: no run document: directory `.` is not a package: it has no `ita.una` or `una.toml`
+docs/reviews/v0.2-review/native/adversarial/integers: no run document: directory `.` is not a package: it has no `ita.una` or `una.toml`
+docs/reviews/v0.2-review/native/adversarial/memory: no run document: directory `.` is not a package: it has no `ita.una` or `una.toml`
+docs/reviews/v0.2-review/native/adversarial/tasks: no run document: directory `.` is not a package: it has no `ita.una` or `una.toml`
+tests/conformance/authority/module_capability_shadows_host.una: U3012 `main` uses `@clock: Clock`, which is not a host capability, so no grant can provide it
+tests/conformance/runtime/startup_grants.una: U3012 `main` uses `now` of `Clock`, which neither `[run] grants` nor a `--grant` flag grants
+tests/conformance/security/print_secret_field: U4003 `@console.print` accepts `public` data, and this argument is `secret`
