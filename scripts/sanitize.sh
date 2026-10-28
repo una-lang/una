@@ -79,7 +79,7 @@ ignored_count=$(echo "$summary" | sed -n 's/.* \([0-9]*\) ignored.*/\1/p')
 [ "$ignored_count" = "$expected_ignored" ] && [ $((passed + ignored_count)) = "$total" ] \
     || fail "Miri passed $passed and ignored $ignored_count of $total tests, where $expected_ignored are to be ignored"
 # Code that behaves differently under Miri does so only where counted here: every mention of
-# `miri` in una-rt, any module and any form, but the ignore attributes checked above. Today eighteen
+# `miri` in una-rt, any module and any form, but the ignore attributes checked above. Today nineteen
 # tests that run smaller under Miri, where each allocation is slow (#778): two deep values at
 # depth 1,000 rather than 1,000,000, a copy between heaps at depth 1,000 rather than 200,000,
 # 200 rounds of `find` rather than 10,000, the entry points with a pool of one word of each
@@ -95,7 +95,8 @@ ignored_count=$(echo "$summary" | sed -n 's/.* \([0-9]*\) ignored.*/\1/p')
 # with a history of 500 cancelled timers rather than 10,000, one mention each, and the timing
 # wheel's tests (#1239): 200 reuses of one entry rather than 10,000, 200 timers advanced in two
 # orders rather than 2,000, 500 random operations against the model rather than 20,000, and the
-# work per timer measured at 200 and 2,000 timers rather than 1,000 and 100,000, four mentions.
+# work per timer measured at 200 and 2,000 timers rather than 1,000 and 100,000, four mentions,
+# and maps of 16 and 64 keys built rather than up to 65,536 (#886), one mention.
 # Their full sizes run in the ordinary tests. And one constant: the
 # debug quarantine of freed slots is 64 rather than 65,536, so that the test of slot reuse runs
 # under Miri and Miri checks the reuse.
@@ -103,7 +104,7 @@ ignored_count=$(echo "$summary" | sed -n 's/.* \([0-9]*\) ignored.*/\1/p')
 # and the traced blocks) take no effect: those tests fork tasks onto coroutines, whose stacks and
 # switch Miri cannot run, so they are ignored under Miri with the scheduler's own tests (#1145).
 reduced=$(grep -rn 'miri' crates/una-rt | grep -vc 'cfg_attr(miri, ignore')
-[ "$reduced" = 22 ] || fail "una-rt mentions miri $reduced times outside its ignore attributes, and this script states 22"
+[ "$reduced" = 23 ] || fail "una-rt mentions miri $reduced times outside its ignore attributes, and this script states 23"
 
 asan=$(rustc +"$channel" --print sysroot)/lib/rustlib/$host/lib/librustc-nightly_rt.asan.dylib
 [ -f "$asan" ] || fail "the checking toolchain has no AddressSanitizer runtime at $asan"
