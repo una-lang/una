@@ -59,8 +59,10 @@ signed_int      = [ "-" ] int_lit ;
 
 ```ebnf
 cap_type_cond   = upper_ident [ "[" cap_op { "," cap_op } "]" ] ;
-cap_op          = lower_ident [ "where" line_expr ] ;
+cap_op          = lower_ident [ "gives" label ] [ "where" line_expr ] ;    (* "gives": ADR 0094 *)
 ```
+
+(v0.3, ADR 0094 rule 1.) `gives` and a label, the `label` of `spec/07 §2`, come before the condition: `owner gives internal[Service] where not dry_run`. In a function type's `uses`, `gives` is U0101 in every edition; in a header's `uses` before edition `0.3` it is U0103 (`spec/01 §5`).
 
 A `cap_op` ends at the first `,` or `]` at bracket and parenthesis depth 0: every nested `,`, `[ ]` or `( )` belongs to the expression. A function type's `uses` (`fn_type_clause`) keep `cap_type`, so `where` there is U0101 in every edition, as it is in a header's `uses` in editions `0.1` and `0.2`. The condition's meaning is in `spec/05 §3`.
 

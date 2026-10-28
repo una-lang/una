@@ -2973,6 +2973,33 @@ fn abort_run(state: State, code: Code, location: Location, message: String) {
             mem_ceiling(state.baseline, state.max_memory)
         );
     }
+    // A debug build run with `UNA_DEBUG_CHARGE` set prints what the run charged at this stop,
+    // term by term, so a stop that depends on load can be traced to its term (#1139): the heap
+    // the process holds and its peak, the baseline before `main`, the stacks the live tasks
+    // used, the reservations of copies in flight, the thread stacks counted for the count
+    // limit, and what this thread allocated.
+    // The executable is the process, as for `env_var` in `host.rs`: the variable is read only
+    // in a debug build, never in a released runtime.
+    #[cfg(debug_assertions)]
+    #[allow(clippy::disallowed_methods)]
+    let trace = std::env::var_os("UNA_DEBUG_CHARGE").is_some();
+    #[cfg(debug_assertions)]
+    if trace {
+        let _ = writeln!(
+            io::stderr(),
+            "una-rt charge: held {} peak {} baseline {} stack_charge {} reserved {} thread_stacks {} thread_allocated {} ceiling {} budget_mib {} on {}",
+            crate::held(),
+            crate::peak(),
+            state.baseline,
+            STACK_CHARGE.load(Ordering::Relaxed),
+            RESERVED.load(Ordering::SeqCst),
+            STACKS.load(Ordering::SeqCst),
+            crate::ffi::thread_allocated(),
+            mem_ceiling(state.baseline, state.max_memory),
+            state.max_memory,
+            std::thread::current().name().unwrap_or("?")
+        );
+    }
     let mut code = finish(state).max(least);
     if written.is_err() {
         code = USAGE;

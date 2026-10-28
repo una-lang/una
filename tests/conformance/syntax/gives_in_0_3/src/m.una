@@ -1,0 +1,13 @@
+-- test: in edition 0.3 an operation of a header's `uses` carries `gives` and a label, and the answer carries it (ADR 0094 rules 1 and 2)
+-- spec: spec/05 §3
+-- expect: ok
+module m
+
+pub capability Files
+  op owner(file: Text) -> Text
+  op role(file: Text) -> Text
+
+pub refusal(file: Text) -> internal[Service] Text
+  uses @service_files: Files[owner gives internal[Service], role]
+=
+  @service_files.owner(file)

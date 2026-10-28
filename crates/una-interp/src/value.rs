@@ -209,7 +209,8 @@ pub(crate) type Entries<'p> = BTreeMap<Key, (Value<'p>, Value<'p>)>;
 /// A map's key, in the order of `spec/03 §1` and `spec/20 §5`: an integer, a text by its
 /// scalar values, or a variant without fields by its declaration. A map holds keys of one
 /// type, so the order across these never applies.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(not(test), derive(PartialOrd, Ord))]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Key {
     Int(BigInt),
     /// An `F64` by the key of totalOrder (ADR 0114 rule 9.5).
@@ -218,6 +219,43 @@ pub(crate) enum Key {
     F32(i32),
     Text(Rc<Text>),
     Variant(usize),
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The comparisons of map keys this thread made, in tests: the derived order, counted, so a
+    /// test can bound a map's building by its size (#886).
+    pub(crate) static KEY_COMPARISONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+impl Ord for Key {
+    fn cmp(&self, other: &Key) -> Ordering {
+        KEY_COMPARISONS.with(|n| n.set(n.get() + 1));
+        // The derived order: by variant in declaration order, then by value.
+        let rank = |key: &Key| match key {
+            Key::Int(_) => 0,
+            Key::F64(_) => 1,
+            Key::F32(_) => 2,
+            Key::Text(_) => 3,
+            Key::Variant(_) => 4,
+        };
+        match (self, other) {
+            (Key::Int(a), Key::Int(b)) => a.cmp(b),
+            (Key::F64(a), Key::F64(b)) => a.cmp(b),
+            (Key::F32(a), Key::F32(b)) => a.cmp(b),
+            (Key::Text(a), Key::Text(b)) => a.cmp(b),
+            (Key::Variant(a), Key::Variant(b)) => a.cmp(b),
+            _ => rank(self).cmp(&rank(other)),
+        }
+    }
+}
+
+#[cfg(test)]
+impl PartialOrd for Key {
+    fn partial_cmp(&self, other: &Key) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 impl Key {
@@ -913,5 +951,34 @@ mod tests {
             .join()
             .unwrap();
         assert!(dropped);
+    }
+
+    /// A list nested `depth` deep, each level one fresh list holding the next: no sharing.
+    fn chain(depth: usize) -> Value<'static> {
+        let mut value = Value::List(Rc::new(Vec::new()));
+        for _ in 0..depth {
+            value = Value::List(Rc::new(vec![value]));
+        }
+        value
+    }
+
+    #[test]
+    fn two_fresh_chains_compare_in_one_step_per_level_at_every_depth() {
+        // #926: structural equality on a chain is linear in its depth, one step per pair of
+        // values with parts, whatever the depth. A list drops by native recursion, so the
+        // test runs on a large stack, as the interpreter runs a program on one.
+        std::thread::Builder::new()
+            .stack_size(512 * 1024 * 1024)
+            .spawn(|| {
+                for depth in [1_000usize, 10_000, 100_000] {
+                    let (a, b) = (chain(depth), chain(depth));
+                    let (taken, verdict) = steps(&a, &b);
+                    assert_eq!(verdict, Some(true), "depth {depth}");
+                    assert_eq!(taken, depth, "depth {depth}: {taken} steps");
+                }
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 }

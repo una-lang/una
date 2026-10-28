@@ -1527,6 +1527,13 @@ impl<'a> Checker<'_, 'a, '_> {
         let op_name = self.name(op);
         self.outside_rl(span, || format!("operation `@{cap_name}.{op_name}`"));
         self.impure(span, || format!("operation `@{cap_name}.{op_name}`"));
+        // ADR 0094 rule 2: the label the binding gives the operation's answers, through the
+        // rebindings the reference leads through; a handler installed in this body answers at
+        // `public` here (rule 4).
+        let gives = match self.resolve_cap(cap_name) {
+            super::authority::Resolved::Cap { gives, .. } => super::ty::given(&gives, op_name),
+            _ => Label::public(),
+        };
         let resolved = self.op_site(cap, op);
         if let Some(id) = resolved {
             self.timing_op(id, op_name);
@@ -1683,6 +1690,10 @@ impl<'a> Checker<'_, 'a, '_> {
             }
             decided = decided.join(&self.env.file_state);
         }
+        // ADR 0094 rule 2: whether the operation fails, and its payload, carry the label the
+        // binding gives it, as the value does below; the decision on the outcome then runs
+        // under the label (`spec/07 §3` rule 4).
+        decided = decided.join(&gives);
         if let Some(fails) = &def.fails {
             // Whether a host operation fails, and how, is labeled like the arguments that
             // decide it, as a prelude function's failure is (`spec/07 §7`): its
@@ -1703,7 +1714,13 @@ impl<'a> Checker<'_, 'a, '_> {
             site.top,
             site.handled,
         );
-        def.result.base.with_label(&carried)
+        let result = def.result.base.with_label(&carried);
+        // ADR 0094 rule 2: the answer carries the label at every position of its type.
+        if gives.is_public() {
+            result
+        } else {
+            result.raise_deep(&gives)
+        }
     }
 
     /// The capability bound to `@cap` and the position of its operation `op`.

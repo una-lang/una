@@ -13,7 +13,7 @@ use una_syntax::ast::{Body, ClauseKind, Expr, ExprKind, Ident};
 
 use super::check::Checker;
 use super::env::{Entity, Env, FnAst};
-use super::ty::{CapId, FnUse, Ty};
+use super::ty::{CapId, FnUse, Ty, given};
 use super::{Findings, Report};
 use crate::names::RunInput;
 
@@ -40,6 +40,9 @@ pub(crate) enum Bound {
         capability: Option<CapId>,
         ops: Option<Vec<String>>,
         clause: Option<Span>,
+        /// The label each operation gives through the binding (ADR 0094 rule 1); an
+        /// operation absent here gives `public`.
+        gives: Vec<(String, Label)>,
     },
     /// `with @x = @y`: `@y` of the enclosing frames; `with @x = @y[ops]` restricts it to
     /// `ops` (ADR 0093 rule 4).
@@ -89,6 +92,9 @@ pub(crate) enum Resolved {
         capability: Option<CapId>,
         ops: Option<Vec<String>>,
         clause: Option<Span>,
+        /// The labels the binding gives its operations, those a narrowing keeps (ADR 0094
+        /// rule 3).
+        gives: Vec<(String, Label)>,
     },
     /// An installed handler; `ops` restricts it when a narrowed rebinding leads to it.
     Handler {
@@ -195,10 +201,19 @@ pub(crate) fn resolve_in(frames: &[Frame], level: usize, name: &str) -> Resolved
                 capability,
                 ops,
                 clause,
+                gives,
             } => {
                 return Resolved::Cap {
                     name,
                     capability: *capability,
+                    gives: match &narrow {
+                        Some(narrow) => gives
+                            .iter()
+                            .filter(|(op, _)| narrow.contains(op))
+                            .cloned()
+                            .collect(),
+                        None => gives.clone(),
+                    },
                     // A narrowed binding permits what both allow; widening the header would
                     // not reach past the narrowing, so no clause is offered for it.
                     ops: match (ops, &narrow) {
@@ -269,13 +284,14 @@ impl<'a> Checker<'_, 'a, '_> {
     }
 
     /// Another capability binding in scope, of the same capability as `@declared`, that
-    /// permits every operation of `ops`: the first in name order, so the repair is
-    /// deterministic.
+    /// permits every operation of `ops` and gives each at most the label `reads` lists for it
+    /// (ADR 0094 rule 3): the first in name order, so the repair is deterministic.
     fn binding_permitting(
         &self,
         declared: &str,
         capability: Option<CapId>,
         ops: &[String],
+        reads: &[(String, Label)],
     ) -> Option<String> {
         let capability = capability?;
         let mut names: Vec<&str> = self
@@ -293,15 +309,71 @@ impl<'a> Checker<'_, 'a, '_> {
                     name: resolved,
                     capability: Some(other),
                     ops: Some(permitted),
+                    gives,
                     ..
                 } if other == capability
                     && resolved != declared
-                    && ops.iter().all(|op| permitted.contains(op)) =>
+                    && ops.iter().all(|op| permitted.contains(op))
+                    && ops
+                        .iter()
+                        .all(|op| given(&gives, op).flows_to(&given(reads, op))) =>
                 {
                     Some(name.to_owned())
                 }
                 _ => None,
             })
+    }
+
+    /// ADR 0094 rule 3: the callee `callee` reads each operation of `need` at the label its
+    /// own header gives it, `public` when it writes none, so the binding `@declared`, which
+    /// gives `gives`, is refused when one of its operations gives more: U3022 at `span`, once
+    /// per need, listing the operations. The callee would read those answers below their
+    /// label. One label comparison per operation. Neither repair lowers a label (rule 7):
+    /// another binding of the caller whose operations give within what the callee reads, then
+    /// the callee's header raised to the join, which changes its callers' flows; the second is
+    /// offered only to a callee with a header, which a lambda, a function value or a parameter
+    /// of function type is not.
+    fn labels_site(
+        &mut self,
+        callee: &str,
+        need: &FnUse,
+        span: Span,
+        declared: &str,
+        capability: Option<CapId>,
+        gives: &[(String, Label)],
+    ) {
+        let mut above: Vec<String> = Vec::new();
+        let mut raised: Vec<String> = Vec::new();
+        for op in &need.ops {
+            let gives_here = given(gives, op);
+            let read = given(&need.gives, op);
+            if gives_here.flows_to(&read) {
+                continue;
+            }
+            above.push(format!(
+                "`@{declared}.{op}` gives `{gives_here}`, which is not within what {callee} reads it at (`{read}`)"
+            ));
+            raised.push(format!(
+                "`@{}.{op}` to `{}`",
+                need.name,
+                read.join(&gives_here)
+            ));
+        }
+        if above.is_empty() {
+            return;
+        }
+        let mut diagnostic = self.report.make(Code::U3022, span, above.join("; "));
+        diagnostic
+            .repairs
+            .extend(self.rebinding(span, need, declared, capability));
+        let headed = !callee.starts_with("this ") && !callee.contains("used as a value");
+        if headed {
+            diagnostic.repairs.push(Report::advice(format!(
+                "raise the `gives` of {} in the header of {callee}, which changes what its callers receive",
+                raised.join(", ")
+            )));
+        }
+        self.report.push(diagnostic);
     }
 
     /// Whether diagnostics of this milestone are reported here.
@@ -345,6 +417,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 capability,
                 ops,
                 clause,
+                ..
             } => {
                 if self.authority()
                     && let Some(ops) = ops
@@ -361,7 +434,7 @@ impl<'a> Checker<'_, 'a, '_> {
                     // operation, using it ranks before widening this one, which would undo the
                     // attenuation the header states.
                     let other =
-                        self.binding_permitting(&declared, capability, &[op_name.to_owned()]);
+                        self.binding_permitting(&declared, capability, &[op_name.to_owned()], &[]);
                     // ADR 0097 rule 6: the message states the problem; the routes are repairs.
                     let mut diagnostic = self.report.make(
                         Code::U3002,
@@ -519,6 +592,7 @@ impl<'a> Checker<'_, 'a, '_> {
                     capability,
                     ops,
                     clause,
+                    gives,
                 } => {
                     if !self.authority() {
                         continue;
@@ -567,7 +641,11 @@ impl<'a> Checker<'_, 'a, '_> {
                                 self.widen(clause, &declared, capability, &ops, &missing),
                             );
                             self.report.push(diagnostic);
+                        } else {
+                            self.labels_site(callee, need, span, &declared, capability, &gives);
                         }
+                    } else {
+                        self.labels_site(callee, need, span, &declared, capability, &gives);
                     }
                 }
                 Resolved::Handler {
@@ -704,7 +782,7 @@ impl<'a> Checker<'_, 'a, '_> {
         if statement.expr != span || statement.bound.contains(&need.name) {
             return None;
         }
-        let other = self.binding_permitting(declared, capability, &need.ops)?;
+        let other = self.binding_permitting(declared, capability, &need.ops, &need.gives)?;
         let binding = format!("@{} = @{other}", need.name);
         let text = if statement.with {
             format!(", {binding}")
@@ -1484,11 +1562,14 @@ pub(crate) fn infer(env: &mut Env<'_>, collected: &Collected, report: &mut Repor
             let Some(span) = span.or_else(|| env.functions.get(id).map(|f| f.result_span)) else {
                 continue;
             };
+            // ADR 0094 rule 3: an inferred header reads every operation at `public` until
+            // its labels are inferred (#566, part 2).
             uses.push(super::env::Need {
                 usage: FnUse {
                     name,
                     capability,
                     ops,
+                    gives: Vec::new(),
                 },
                 span,
             });
@@ -3044,6 +3125,7 @@ mod narrowing_tests {
                     capability: Some(0),
                     ops: Some(vec!["read".to_owned(), "write".to_owned()]),
                     clause: Some(handler_span()),
+                    gives: Vec::new(),
                 },
             )]),
             frame(vec![("x", narrowed("y", &["write", "remove"]))]),

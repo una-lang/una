@@ -1,0 +1,18 @@
+-- test: a lambda reads a captured operation at the label the enclosing body gives it, but the call that hands the lambda to `each` also passes `@files`, which `each` reads at `public`, so the call is U3022 (ADR 0094 rule 3)
+-- spec: spec/05 §4
+-- expect: error U3022 at src/m.una:18:3
+module m
+
+pub capability Files
+  op owner(file: Text) -> Text
+  op role(file: Text) -> Text
+
+pub each(files: List[Text], f: fn(Text) -> internal[Service] Text uses @files: Files[owner]) -> List[internal[Service] Text]
+  uses @files: Files[owner]
+=
+  files.map(each: f)
+
+pub refusals(files: List[Text]) -> List[internal[Service] Text]
+  uses @files: Files[owner gives internal[Service]]
+=
+  each(files, f: fn(file) -> @files.owner(file))
