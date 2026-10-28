@@ -9,7 +9,7 @@ pub capability Files
 
 pub gives(file: Text) -> Text = file
 
-pub refusal(file: Text) -> Text
+pub refusal(file: Text) -> internal[Service] Text
   uses @service_files: Files[owner gives internal[Service], role]
 =
   @service_files.owner(file)

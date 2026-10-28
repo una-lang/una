@@ -42,8 +42,11 @@ fn chain(n: usize) -> String {
         } else {
             format!("f{}(file)", i + 1)
         };
+        if i > 0 {
+            source.push('\n');
+        }
         source.push_str(&format!(
-            "pub f{i}(file: Text) -> internal[Service] Text\n  uses @files: Files[owner gives internal[Service]]\n=\n  {body}\n\n"
+            "pub f{i}(file: Text) -> internal[Service] Text\n  uses @files: Files[owner gives internal[Service]]\n=\n  {body}\n"
         ));
     }
     source
