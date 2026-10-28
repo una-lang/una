@@ -1,0 +1,43 @@
+[package]
+name = "una-z3"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "The call into the Z3 front end built into una (ADR 0124 rule 2): the entry's declaration, its arguments and the call, and the solver's build"
+
+[dependencies]
+# The confinement record: the front end runs only in a process that confined itself (rule 7).
+una-sys = { workspace = true, features = ["solver"] }
+
+[build-dependencies]
+# The library's digest, checked against UNA_EMBED_Z3_SHA256 in a release build and recorded
+# in every build (ADR 0124 rules 18 to 20).
+sha2.workspace = true
+
+# The workspace lints, except `unsafe_code`: ADR 0058 (amended by ADR 0124) allows `unsafe` in this
+# crate for one thing, the call of Z3's front-end entry through its C interface. The crate holds at
+# most 150 lines under crates/una-z3/src/, depends on no crate of the repository but `una-sys`, and
+# every change to it gets a security review.
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+missing_docs = "deny"
+# `una_z3_linked`: the front end is linked in (UNA_Z3_LIB or UNA_EMBED_Z3 at build time);
+# `una_z3_release`: it is the release library, taken by digest. Both are set by build.rs only.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(una_z3_linked)", "cfg(una_z3_release)"] }
+
+[lints.clippy]
+dbg_macro = "deny"
+exit = "deny"
+expect_used = "deny"
+indexing_slicing = "deny"
+panic = "deny"
+print_stderr = "deny"
+print_stdout = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+unwrap_used = "deny"
+undocumented_unsafe_blocks = "deny"

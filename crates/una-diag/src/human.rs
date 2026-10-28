@@ -158,10 +158,13 @@ fn notes(diagnostic: &Diagnostic) -> Vec<String> {
                 value => format!("{} = {value}", binding.name),
             })
             .collect();
+        // #855: the solver's message names internal symbols and positions in the generated
+        // query, so the human note is fixed; the message stays in the `--json` document.
         match &counterexample.unavailable {
-            Some(error) => notes.push(format!(
-                "counterexample: not available (the solver gave no values: {error})"
-            )),
+            Some(_) => notes.push(
+                "counterexample: not available (the solver gave no values for the model)"
+                    .to_owned(),
+            ),
             None => notes.push(format!("counterexample: {}", bindings.join(", "))),
         }
     }

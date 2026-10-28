@@ -161,14 +161,15 @@ struct Session {
 }
 
 impl Session {
-    /// Starts `una lsp`, with `path` as its `PATH` when given, and initializes it with
-    /// UTF-32 positions.
+    /// Starts `una lsp`, with the program `z3` under `path` as the stand-in of its solver
+    /// child when given (ADR 0124; the test hooks), and initializes it with UTF-32 positions.
     fn start(path: Option<&Path>) -> Session {
         let mut command = Command::new(env!("CARGO_BIN_EXE_una"));
         command.env("HOME", env!("CARGO_TARGET_TMPDIR"));
         command.env_remove("UNA_PROOF_KEY");
+        command.env_remove("UNA_SOLVER_STAND_IN");
         if let Some(path) = path {
-            command.env("PATH", path);
+            command.env("UNA_SOLVER_STAND_IN", path.join("z3"));
         }
         let mut child = command
             .arg("lsp")
@@ -625,7 +626,7 @@ fn a_newer_change_cancels_tier_1_and_leaves_no_solver_behind() {
     std::fs::write(
         &staged,
         format!(
-            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo \"Z3 version 5.1.0 - 64 bit\"; exit 0; fi\necho $$ >> '{}'\nexec /bin/sleep 600\n",
+            "#!/bin/sh\necho \"$1\"\necho $$ >> '{}'\nexec /bin/sleep 600\n",
             pids.display()
         ),
     )

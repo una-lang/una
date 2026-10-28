@@ -1,0 +1,21 @@
+-- test: in edition 0.4, the condition of `for until` is evaluated again before each iteration, so a binding it passes to a call keeps its value for the next evaluation, in both engines (spec/26 §4, #1202)
+-- spec: spec/26 §4
+-- grant: console
+-- expect: run-output "count: 4"
+module recheck
+
+--- Whether `n` is past the length of `xs`.
+done(xs: List[Int], n: Int) -> Bool = n > xs.len
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let xs = [1, 2, 3]
+  let edit left: Nat = 100
+  let edit count = 0
+  for until done(xs, n: count) decreases left
+    if left == 0
+      stop
+    left = left - 1
+    count = count + 1
+  @console.print("count: {count}")

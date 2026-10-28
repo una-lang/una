@@ -12,10 +12,11 @@
 #    runtime to what `una build` links, so `una` itself has no hook for it. Any report aborts the
 #    program and fails the test.
 # 3. libFuzzer: the fuzz targets of fuzz/ (the literals, the entry points on any words, the JSON
-#    parser, and the readers of a provenance, an archive and ita.lock) run a fixed number of
-#    inputs each, under AddressSanitizer, after a canary target whose planted crash must be
-#    found, kept and minimized. A crash prints where its input and
-#    the minimized input are kept, under target/fuzz.
+#    parser, the readers of a provenance, an archive and ita.lock, and the parsers and verifiers
+#    of the documents a package registry serves) run a fixed number of inputs each, under
+#    AddressSanitizer, after a canary target whose planted crash must be found, kept and
+#    minimized. A crash prints where its input and the minimized input are kept, under
+#    target/fuzz.
 #
 # It ends with PASS, or FAIL and the step that failed. A missing or different checking toolchain
 # is a FAIL, never a skip. macOS only for now: the Linux image has no checking toolchain yet.
@@ -78,7 +79,7 @@ ignored_count=$(echo "$summary" | sed -n 's/.* \([0-9]*\) ignored.*/\1/p')
 [ "$ignored_count" = "$expected_ignored" ] && [ $((passed + ignored_count)) = "$total" ] \
     || fail "Miri passed $passed and ignored $ignored_count of $total tests, where $expected_ignored are to be ignored"
 # Code that behaves differently under Miri does so only where counted here: every mention of
-# `miri` in una-rt, any module and any form, but the ignore attributes checked above. Today fifteen
+# `miri` in una-rt, any module and any form, but the ignore attributes checked above. Today twenty
 # tests that run smaller under Miri, where each allocation is slow (#778): two deep values at
 # depth 1,000 rather than 1,000,000, a copy between heaps at depth 1,000 rather than 200,000,
 # 200 rounds of `find` rather than 10,000, the entry points with a pool of one word of each
@@ -88,15 +89,24 @@ ignored_count=$(echo "$summary" | sed -n 's/.* \([0-9]*\) ignored.*/\1/p')
 # and 100 texts counted rather than up to 100,000, blocks nested 3 deep rather than 200, and 4
 # and 8 traced blocks rather than up to 256, and flat lists of 1,000 integers compared rather
 # than 100,000 (#815), and texts of 4,301 and 17,200 digits rather than 100,000 and 1,000,000
-# refused by the integer digit cap, whose timing runs only outside Miri, two mentions (#914), and two fresh
-# chains of 64 and 256 levels compared rather than up to 100,000 (#926). Their full sizes run in the ordinary tests. And one constant: the
+# refused by the integer digit cap, whose timing runs only outside Miri, two mentions (#914),
+# two tests of the timers (#1151): the wheel's exact firing at offsets 99,991 ns apart
+# rather than 7,919, and the timer thread's at offsets 199,999 ns apart rather than 19,997,
+# with a history of 500 cancelled timers rather than 10,000, one mention each, and the timing
+# wheel's tests (#1239): 200 reuses of one entry rather than 10,000, 200 timers advanced in two
+# orders rather than 2,000, 500 random operations against the model rather than 20,000, and the
+# work per timer measured at 200 and 2,000 timers rather than 1,000 and 100,000, four mentions,
+# and maps of 16 and 64 keys built rather than up to 65,536 (#886), one mention,
+# and two fresh chains of 64 and 256 levels compared rather than up to 100,000 (#926), one
+# mention.
+# Their full sizes run in the ordinary tests. And one constant: the
 # debug quarantine of freed slots is 64 rather than 65,536, so that the test of slot reuse runs
 # under Miri and Miri checks the reuse.
 # Since #1065 the three reductions in the tests of tasks.rs (the staged block, the start depths
 # and the traced blocks) take no effect: those tests fork tasks onto coroutines, whose stacks and
 # switch Miri cannot run, so they are ignored under Miri with the scheduler's own tests (#1145).
 reduced=$(grep -rn 'miri' crates/una-rt | grep -vc 'cfg_attr(miri, ignore')
-[ "$reduced" = 17 ] || fail "una-rt mentions miri $reduced times outside its ignore attributes, and this script states 17"
+[ "$reduced" = 24 ] || fail "una-rt mentions miri $reduced times outside its ignore attributes, and this script states 24"
 
 asan=$(rustc +"$channel" --print sysroot)/lib/rustlib/$host/lib/librustc-nightly_rt.asan.dylib
 [ -f "$asan" ] || fail "the checking toolchain has no AddressSanitizer runtime at $asan"
@@ -197,18 +207,24 @@ fuzz_bin=$fuzz_out/build/$host/release
 # (docs/release-gates.md, the `sanitize` gate): each target takes about a minute on the release
 # machine, about ten times below the ceiling.
 FUZZ_SEED=766
+FUZZ_TARGETS="literal:350000 words:350000 json:450000"
 # The floors of provenance, archive and ita_lock (#997) come from a run of 300000 inputs each.
 # With a fixed seed a larger count runs those inputs first, so it reaches at least their
 # coverage: provenance and archive run about a minute, and ita_lock keeps 300000 (about two
 # minutes), since a lower count could end under its floor.
-FUZZ_TARGETS="literal:350000 words:350000 json:450000 provenance:1280000 archive:1280000 ita_lock:300000"
+FUZZ_TARGETS="$FUZZ_TARGETS provenance:1280000 archive:1280000 ita_lock:300000"
+# The parsers and verifiers of the documents a package registry serves (ADR 0122). Their counts
+# and floors are placeholders until a run on the release machine measures them.
+FUZZ_TARGETS="$FUZZ_TARGETS registry_note:350000 registry_root:350000 registry_statement:350000 registry_owner:350000 registry_map_tile:350000 registry_mirrors:350000 registry_tile:350000 registry_provenance:350000 registry_archive:350000 registry_proofs:350000 registry_map_walk:350000 registry_owner_replay:350000 registry_location:350000 registry_archive_check:350000 registry_root_chain:350000 registry_yank:350000 registry_advisory:350000 registry_entry:350000 registry_keyfile:350000 registry_bundle:350000 registry_watch:350000 registry_promise:350000"
 FUZZ_CEILING=600
 # The coverage each target must reach, so that a target that returns early on every input, or a
 # runtime built without libFuzzer's counters, fails rather than running its count for nothing:
 # the counters of the instrumented code libFuzzer loads, and the edges (`cov`) and features
 # (`ft`) its run ends with. Each floor is nine tenths of a measured run's value
 # (docs/release-gates.md).
-FUZZ_FLOORS="literal:244243:499:759 words:244798:4473:16955 json:244454:2124:7364 provenance:143114:340:758 archive:143109:617:1593 ita_lock:144242:2848:9344"
+FUZZ_FLOORS="literal:244243:499:759 words:244798:4473:16955 json:244454:2124:7364"
+FUZZ_FLOORS="$FUZZ_FLOORS provenance:143114:340:758 archive:143109:617:1593 ita_lock:144242:2848:9344"
+FUZZ_FLOORS="$FUZZ_FLOORS registry_note:1:1:1 registry_root:1:1:1 registry_statement:1:1:1 registry_owner:1:1:1 registry_map_tile:1:1:1 registry_mirrors:1:1:1 registry_tile:1:1:1 registry_provenance:1:1:1 registry_archive:1:1:1 registry_proofs:1:1:1 registry_map_walk:1:1:1 registry_owner_replay:1:1:1 registry_location:1:1:1 registry_archive_check:1:1:1 registry_root_chain:1:1:1 registry_yank:1:1:1 registry_advisory:1:1:1 registry_entry:1:1:1 registry_keyfile:1:1:1 registry_bundle:1:1:1 registry_watch:1:1:1 registry_promise:1:1:1"
 
 # The fuzz targets are exactly the canary and FUZZ_TARGETS: a target added to fuzz/Cargo.toml
 # and left out here, or the reverse, fails.

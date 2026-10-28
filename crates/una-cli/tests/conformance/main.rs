@@ -508,3 +508,41 @@ fn conformance_suite() {
         failures.join("\n  ")
     );
 }
+
+/// Advertised support must name a non-pending positive case discovered by this
+/// runner, in the edition parsed by the compiler itself, not a second parser.
+#[test]
+fn feature_evidence_is_part_of_the_positive_conformance_corpus() {
+    let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let root = repository.join("tests/conformance");
+    let specs = SpecIndex::load(&repository.join("docs/spec"));
+    let (cases, errors) = discover(&root);
+    assert!(errors.is_empty(), "{errors:?}");
+    let catalog: Value =
+        serde_json::from_slice(&std::fs::read(repository.join("docs/features.json")).unwrap())
+            .unwrap();
+    for feature in catalog["features"].as_array().unwrap() {
+        for path in feature["fixtures"].as_array().unwrap() {
+            let path = path.as_str().unwrap();
+            let location = cases.iter().find(|case| case.path == path).unwrap();
+            let files = read_case_files(&root, location);
+            let case = parse_case(location.kind, &files, &specs).unwrap();
+            assert!(case.pending.is_none(), "{path}: evidence is pending");
+            assert!(
+                !matches!(
+                    case.check,
+                    CheckExpectation::Errors(_) | CheckExpectation::Tier0Ok
+                ),
+                "{path}: advertised support requires a positive tier-1 case"
+            );
+            let text = std::str::from_utf8(files.get("una.toml").unwrap()).unwrap();
+            let (manifest, errors) = una_project::parse_manifest(text);
+            assert!(errors.is_empty(), "{path}: {errors:?}");
+            assert_eq!(
+                feature["edition"].as_str().unwrap(),
+                manifest.edition.name(),
+                "{path}: catalog edition differs from the compiler's manifest parser"
+            );
+        }
+    }
+}

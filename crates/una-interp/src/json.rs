@@ -54,9 +54,11 @@ pub(crate) fn error<'p>(error: json::Error) -> Value<'p> {
 /// An array or an object whose children are being converted.
 enum Building<'p> {
     Array(std::vec::IntoIter<Tree>, Vec<Value<'p>>),
+    /// An object's entries so far, in the order the parser sorted them, built into its map in
+    /// bulk once the object ends (#886).
     Object(
         std::vec::IntoIter<(String, Tree)>,
-        Entries<'p>,
+        Vec<(Key, (Value<'p>, Value<'p>))>,
         Option<Rc<Text>>,
     ),
 }
@@ -97,7 +99,12 @@ pub(crate) fn value<'p>(tree: Tree, within: &mut dyn FnMut() -> bool) -> Option<
                 }
                 Tree::Object(entries) => {
                     let entries = std::mem::take(entries);
-                    stack.push(Building::Object(entries.into_iter(), Entries::new(), None));
+                    let count = entries.len();
+                    stack.push(Building::Object(
+                        entries.into_iter(),
+                        Vec::with_capacity(count),
+                        None,
+                    ));
                     None
                 }
             };
@@ -111,7 +118,7 @@ pub(crate) fn value<'p>(tree: Tree, within: &mut dyn FnMut() -> bool) -> Option<
                     Some(Building::Array(_, out)) => out.push(value),
                     Some(Building::Object(_, out, key)) => {
                         if let Some(key) = key.take() {
-                            out.insert(Key::Text(Rc::clone(&key)), (Value::Text(key), value));
+                            out.push((Key::Text(Rc::clone(&key)), (Value::Text(key), value)));
                         }
                     }
                 }
@@ -137,9 +144,12 @@ pub(crate) fn value<'p>(tree: Tree, within: &mut dyn FnMut() -> bool) -> Option<
                         Some(Building::Array(_, out)) => {
                             Some(json(ARRAY, vec![Value::List(Rc::new(out))]))
                         }
-                        Some(Building::Object(_, out, _)) => {
-                            Some(json(OBJECT, vec![Value::Map(Rc::new(out))]))
-                        }
+                        // The parser gave the entries sorted and without duplicate keys, so the
+                        // map is built in bulk, in time linear in its size (spec/23 §6 rule 1).
+                        Some(Building::Object(_, out, _)) => Some(json(
+                            OBJECT,
+                            vec![Value::Map(Rc::new(Entries::from_iter(out)))],
+                        )),
                         None => None,
                     };
                     if done.is_none() {
@@ -168,6 +178,9 @@ pub(crate) enum NoTree {
     NotJson,
     /// The run is over its memory budget.
     OverBudget,
+    /// A `Number` holds an `Int` of more than `MAX_INT_DIGITS` digits, which is never written
+    /// (`spec/11 §7`, #923).
+    IntTooLong,
 }
 
 /// The tree of a `Json` value, asking `within` every [`json::CHECK_EVERY`] values whether the
@@ -193,7 +206,9 @@ pub(crate) fn tree(value: &Value<'_>, within: &mut dyn FnMut() -> bool) -> Resul
             done = match (data.ctor.index, field) {
                 (NULL, _) => Some(Tree::Null),
                 (BOOLEAN, Some(Value::Bool(b))) => Some(Tree::Bool(*b)),
-                (NUMBER, Some(Value::Int(n))) => Some(Tree::Int(n.to_string())),
+                (NUMBER, Some(Value::Int(n))) => {
+                    Some(Tree::Int(una_core::int_text(n).ok_or(NoTree::IntTooLong)?))
+                }
                 (DECIMAL, Some(Value::Text(t))) => Some(Tree::Decimal(t.to_string())),
                 (STR, Some(Value::Text(t))) => Some(Tree::Str(t.to_string())),
                 (ARRAY, Some(Value::List(items))) => {
@@ -252,6 +267,38 @@ pub(crate) fn tree(value: &Value<'_>, within: &mut dyn FnMut() -> bool) -> Resul
                     };
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+    use crate::value::KEY_COMPARISONS;
+
+    #[test]
+    fn an_object_with_keys_in_order_is_built_with_comparisons_linear_in_its_size() {
+        // #886, spec/23 §6 rule 1: the parser gives an object's keys sorted, and its map is
+        // built in bulk, a fixed number of comparisons per key at every size; inserting them
+        // one by one takes about log2 of the size per key, 16 at 2^16.
+        for k in [1_usize << 12, 1 << 14, 1 << 16] {
+            let entries = (0..k)
+                .map(|i| (format!("key{i:08}"), Tree::Int(i.to_string())))
+                .collect();
+            let before = KEY_COMPARISONS.with(std::cell::Cell::get);
+            let built = value(Tree::Object(entries), &mut || true).unwrap();
+            let compared = KEY_COMPARISONS.with(std::cell::Cell::get) - before;
+            assert!(compared <= 3 * k, "{k} keys: {compared} comparisons");
+            let size = match &built {
+                Value::Data(json) => match json.fields.first() {
+                    Some(Value::Map(map)) => Some(map.len()),
+                    _ => None,
+                },
+                _ => None,
+            };
+            assert_eq!(size, Some(k), "an Object of {k} entries");
         }
     }
 }

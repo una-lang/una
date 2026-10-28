@@ -8,8 +8,8 @@ use una_core::json::{self, Halt, Tree};
 use crate::host;
 use crate::runtime;
 use crate::values::{
-    data, field, int_value, int_word, list, list_items, map_empty, map_with_owned, map_words, push,
-    release, tag, text_value, text_word,
+    data, field, int_value, int_word, list, list_items, map_from_sorted, map_words, push, release,
+    tag, text_value, text_word,
 };
 
 /// The variants of `Json`, in declaration order (`spec/23 §1`).
@@ -32,7 +32,13 @@ fn wrap(variant: i64, value: i64) -> i64 {
 /// An array or an object whose children are being converted.
 enum Building {
     Array(std::vec::IntoIter<Tree>, i64),
-    Object(std::vec::IntoIter<(String, Tree)>, i64, Option<i64>),
+    /// An object's entries so far, keys and values owned, in the order the parser sorted them,
+    /// built into its map in bulk once the object ends (#886).
+    Object(
+        std::vec::IntoIter<(String, Tree)>,
+        Vec<(i64, i64)>,
+        Option<i64>,
+    ),
 }
 
 /// The `Json` word of `tree`, owned by the caller, asking `within` every
@@ -51,12 +57,15 @@ fn word(tree: Tree, within: &mut dyn FnMut() -> bool) -> Option<i64> {
                 if !within() {
                     for building in stack {
                         match building {
-                            Building::Array(_, out) | Building::Object(_, out, None) => {
-                                release(out)
-                            }
-                            Building::Object(_, out, Some(key)) => {
-                                release(out);
-                                release(key);
+                            Building::Array(_, out) => release(out),
+                            Building::Object(_, entries, key) => {
+                                for (key, value) in entries {
+                                    release(key);
+                                    release(value);
+                                }
+                                if let Some(key) = key {
+                                    release(key);
+                                }
                             }
                         }
                     }
@@ -79,7 +88,12 @@ fn word(tree: Tree, within: &mut dyn FnMut() -> bool) -> Option<i64> {
                 }
                 Tree::Object(entries) => {
                     let entries = std::mem::take(entries);
-                    stack.push(Building::Object(entries.into_iter(), map_empty(), None));
+                    let count = entries.len();
+                    stack.push(Building::Object(
+                        entries.into_iter(),
+                        Vec::with_capacity(count),
+                        None,
+                    ));
                     None
                 }
             };
@@ -92,13 +106,11 @@ fn word(tree: Tree, within: &mut dyn FnMut() -> bool) -> Option<i64> {
                         push(*out, value);
                         release(value);
                     }
-                    Some(Building::Object(_, out, key)) => {
-                        if let Some(key) = key.take() {
-                            *out = map_with_owned(*out, key, value);
-                            release(key);
-                        }
-                        release(value);
-                    }
+                    Some(Building::Object(_, out, key)) => match key.take() {
+                        // The entry takes over both words.
+                        Some(key) => out.push((key, value)),
+                        None => release(value),
+                    },
                 }
             }
             let next = match stack.last_mut() {
@@ -119,7 +131,11 @@ fn word(tree: Tree, within: &mut dyn FnMut() -> bool) -> Option<i64> {
                 }
                 None => match stack.pop() {
                     Some(Building::Array(_, out)) => done = Some(wrap(ARRAY, out)),
-                    Some(Building::Object(_, out, _)) => done = Some(wrap(OBJECT, out)),
+                    // Sorted and unique, as the parser gives them: built in bulk, in time linear
+                    // in the object's size (spec/23 §6 rule 1).
+                    Some(Building::Object(_, out, _)) => {
+                        done = Some(wrap(OBJECT, map_from_sorted(out)));
+                    }
                     None => return Some((NULL << 1) | 1),
                 },
             }
@@ -156,7 +172,13 @@ fn tree(word: i64, within: &mut dyn FnMut() -> bool) -> Option<Tree> {
             }
             done = match tag(word) {
                 BOOLEAN => Some(Tree::Bool(field(word, 0) != 0)),
-                NUMBER => Some(Tree::Int(int_value(field(word, 0)).to_string())),
+                NUMBER => match una_core::int_text(&int_value(field(word, 0))) {
+                    Some(digits) => Some(Tree::Int(digits)),
+                    None => {
+                        TOO_LONG.with(|cell| cell.set(true));
+                        return None;
+                    }
+                },
                 DECIMAL => Some(Tree::Decimal(text_value(field(word, 0)))),
                 STR => Some(Tree::Str(text_value(field(word, 0)))),
                 ARRAY => {
@@ -242,9 +264,21 @@ pub fn parse_json(t: i64, site: i64) -> i64 {
 /// checked as [`parse_json`] checks it.
 pub fn to_json(j: i64, site: i64) -> i64 {
     let mut within = || runtime::budget(usize::try_from(site).unwrap_or(usize::MAX)) == 0;
-    tree(j, &mut within)
-        .and_then(|tree| json::write_within(&tree, &mut within))
-        .map_or_else(stopped, text_word)
+    TOO_LONG.with(|cell| cell.set(false));
+    let text = tree(j, &mut within).and_then(|tree| json::write_within(&tree, &mut within));
+    // A `Number` whose `Int` is too long for text aborts the run at the call (`spec/11 §7`,
+    // #923); the task then stops as one over the budget does.
+    if TOO_LONG.with(|cell| cell.replace(false)) {
+        runtime::int_text_abort(site);
+        return stopped();
+    }
+    text.map_or_else(stopped, text_word)
+}
+
+thread_local! {
+    /// Whether the last `to_json` of this thread met an `Int` of more than `MAX_INT_DIGITS`
+    /// digits, which is never written (`spec/11 §7`, #923).
+    static TOO_LONG: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 thread_local! {

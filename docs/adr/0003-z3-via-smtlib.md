@@ -21,3 +21,7 @@ The verifier emits SMT-LIB 2 text and runs Z3 as a subprocess at the exact versi
 
 - **`z3` Rust bindings:** faster calls, but ties the build to a native library, complicates pinning and hides queries.
 - **Proof certificates checked by a small kernel:** stronger TCB story, deferred to v1 (backlog).
+
+## Amendment (2026-10-27, ADR 0124)
+
+The subprocess is `una` itself, re-executed in its solver mode, running the Z3 built into it at the pinned version, confined and bounded (ADR 0124 rules 1 to 11). Queries stay SMT-LIB text, which can be saved, diffed and replayed. A proof requires a normal exit with status 0.

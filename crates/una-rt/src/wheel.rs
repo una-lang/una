@@ -1,18 +1,31 @@
-//! The timing wheel of a worker's timers (ADR 0117 rule 5 and Costs, slice S2,
-//! `docs/plan/0117-s2-design.md`).
+//! The timing wheel of a run's timers (ADR 0117 rule 5 and Costs, slice S2,
+//! `docs/plan/0117-s2-design.md`; ADR 0116 amendment of 2026-10-25, P13, #1151).
 //!
 //! A `within` arms one timer when it starts and cancels it when its expression ends, both in
-//! O(1). The wheel is hierarchical: 11 levels of 64 slots each, where level `L` holds the timers
-//! whose deadline first differs from the wheel's time in the 6-bit group `L` of the millisecond
-//! count. Eleven groups of 6 bits cover every `u64`, so no deadline is too far for the wheel and
-//! nothing is clamped or wrapped. Each slot is an intrusive doubly linked list over one slab of
-//! entries, so arming and cancelling are O(1), and each level keeps a bitmap of its occupied
-//! slots, so the next slot to expire is found in O(levels).
+//! O(1). The wheel counts time in **nanoseconds** of the run's monotonic clock: a slot of level
+//! 0 is one nanosecond, so a timer fires at its own nanosecond, never at the end of a coarser
+//! slot (P13). The wheel is hierarchical: 11 levels of 64 slots each, where level `L` holds the
+//! timers whose deadline first differs from the wheel's time in the 6-bit group `L` of the
+//! nanosecond count. Eleven groups of 6 bits cover every `u64`, about 584 years of nanoseconds,
+//! so no deadline is too far for the wheel and nothing is clamped or wrapped. Each slot is an
+//! intrusive doubly linked list over one slab of entries, so arming and cancelling are O(1),
+//! and each level keeps a bitmap of its occupied slots, so the next slot to expire is found in
+//! O(levels).
 //!
 //! As time advances, the earliest occupied slot is reached: a level-0 slot holds the timers of
-//! exactly one millisecond, which fire; a higher slot is cascaded, each of its timers moving to a
-//! lower level. A timer moves down at most 10 times in its life, so firing costs O(1) amortized
-//! per timer.
+//! exactly one nanosecond, which fire; a higher slot is cascaded, each of its timers moving to
+//! a lower level. A timer moves down at most 10 times in its life, so firing costs O(1)
+//! amortized per timer.
+//!
+//! **No state from ended code.** Removal is eager everywhere: a cancelled timer leaves its list
+//! at once and its entry goes back to the free list, so after any history of arming and
+//! cancelling the wheel holds exactly its live timers, and every occupied slot holds a live
+//! timer. So [`Wheel::next_expiration`] is always the moment of a live timer, its exact
+//! deadline, or the start of a slot that holds it and is to be cascaded.
+//!
+//! **Costs.** Arming, cancelling and firing are O(1), firing amortized over at most 10 moves
+//! down the levels per timer, each O(1); finding the next expiration is O(levels). Space: one
+//! slab entry per live timer, reused after it fires or is cancelled.
 //!
 //! **Determinism.** Timers that fire together come out ordered by deadline, then by the order
 //! they were armed, whatever path they took through the levels, so a run under virtual time
@@ -22,7 +35,7 @@
 //! to the wheel's time. A timer armed with a deadline at or before the wheel's time is due at
 //! once, and fires at the next advance.
 
-/// Bits of a millisecond count that one level resolves.
+/// Bits of a nanosecond count that one level resolves.
 const SLOT_BITS: u32 = 6;
 
 /// Slots in each level.
@@ -65,7 +78,7 @@ struct Entry<T> {
     value: Option<T>,
 }
 
-/// A hierarchical timing wheel over a millisecond clock. See the module documentation.
+/// A hierarchical timing wheel over a clock in nanoseconds. See the module documentation.
 pub struct Wheel<T> {
     now: u64,
     heads: Vec<u32>,
@@ -84,18 +97,25 @@ pub struct Wheel<T> {
 }
 
 impl<T> Wheel<T> {
-    /// An empty wheel whose time is `now`, in milliseconds.
+    /// An empty wheel whose time is `now`, in nanoseconds.
     pub fn new(now: u64) -> Wheel<T> {
+        Wheel::with_capacity(now, 0)
+    }
+
+    /// An empty wheel whose time is `now`, in nanoseconds, with room for `timers` timers in its
+    /// slab, its free list and the lists it takes out while advancing, so that arming up to
+    /// that many, and firing them, allocates nothing.
+    pub fn with_capacity(now: u64, timers: usize) -> Wheel<T> {
         Wheel {
             now,
             heads: vec![NIL; DUE + 1],
             occupied: [0; LEVELS],
-            entries: Vec::new(),
-            free: Vec::new(),
+            entries: Vec::with_capacity(timers),
+            free: Vec::with_capacity(timers),
             len: 0,
             seq: 0,
-            batch: Vec::new(),
-            due: Vec::new(),
+            batch: Vec::with_capacity(timers),
+            due: Vec::with_capacity(timers),
             #[cfg(test)]
             moves: 0,
         }
@@ -168,9 +188,11 @@ impl<T> Wheel<T> {
     /// The earliest time at which a timer may fire: no timer fires before it, and a timer due
     /// now gives the wheel's time. `None` when no timer is armed. O(levels).
     ///
-    /// It is exact when the earliest slot is of level 0. Otherwise it is the start of a slot
-    /// that only cascades, and a caller that waits for the next timer (a worker, or virtual
-    /// time that jumps) advances to it and asks again, at most 10 times.
+    /// Every occupied slot holds a live timer, since removal is eager. It is that timer's exact
+    /// deadline when the earliest slot is of level 0, one nanosecond wide. Otherwise it is the
+    /// start of a slot that only cascades, and a caller that waits for the next timer (the
+    /// timer thread, or virtual time that jumps) advances to it and asks again, at most 10
+    /// times per timer.
     pub fn next_expiration(&self) -> Option<u64> {
         if self.head(DUE) != NIL {
             return Some(self.now);
@@ -258,7 +280,8 @@ impl<T> Wheel<T> {
     }
 
     /// The list a deadline belongs on at the wheel's time: [`DUE`] when it is not after it,
-    /// else the slot of the highest 6-bit group in which it differs from the wheel's time.
+    /// else the slot of the highest 6-bit group in which it differs from the wheel's time, in
+    /// nanoseconds.
     fn list_of(&self, deadline: u64) -> usize {
         if deadline <= self.now {
             return DUE;
@@ -357,6 +380,16 @@ impl<T> Wheel<T> {
     /// The first entry of the list `list`, or `NIL`.
     fn head(&self, list: usize) -> u32 {
         self.heads.get(list).copied().unwrap_or(NIL)
+    }
+
+    /// How many slots are occupied, over every level, and whether the due list holds a timer,
+    /// in tests.
+    #[cfg(test)]
+    fn occupied_slots(&self) -> (u32, bool) {
+        (
+            self.occupied.iter().map(|bits| bits.count_ones()).sum(),
+            self.head(DUE) != NIL,
+        )
     }
 
     /// The occupied slot that the wheel reaches first, as its list and the time it starts.
@@ -459,8 +492,10 @@ mod tests {
         let mut wheel = Wheel::new(0);
         let stale = wheel.arm(5, 1).unwrap();
         assert_eq!(fire(&mut wheel, 5), vec![1]);
-        // The freed entry is reused, many times over, by timers armed and cancelled in turn.
-        for value in 0..10_000 {
+        // The freed entry is reused, many times over, by timers armed and cancelled in turn:
+        // 200 times under Miri, where each step is slow (#1239), 10,000 otherwise.
+        let rounds = if cfg!(miri) { 200 } else { 10_000 };
+        for value in 0..rounds {
             let id = wheel.arm(1_000, value).unwrap();
             assert_eq!(id.index, stale.index);
             assert_eq!(wheel.cancel(id), Some(value));
@@ -476,7 +511,9 @@ mod tests {
         let mut ordered = Wheel::new(0);
         let mut unordered = Wheel::new(0);
         let mut random = Lcg(7);
-        for value in 0..2_000u64 {
+        // 200 timers under Miri (#1239), 2,000 otherwise.
+        let timers = if cfg!(miri) { 200 } else { 2_000u64 };
+        for value in 0..timers {
             let deadline = random.next() % 50_000;
             ordered.arm(deadline, value).unwrap();
             unordered.arm(deadline, value).unwrap();
@@ -501,15 +538,98 @@ mod tests {
         assert_eq!(wheel.cancel(id), None);
     }
 
+    /// The level of the list the live timer `id` is on, in tests.
+    fn level(wheel: &Wheel<u64>, id: TimerId) -> usize {
+        wheel.entries[id.index as usize].list as usize / SLOTS
+    }
+
     #[test]
     fn timers_that_fire_together_keep_their_arming_order() {
         let mut wheel = Wheel::new(0);
-        // The first goes high in the wheel, the second low, by the time it is armed.
-        wheel.arm(300_000, 1).unwrap();
-        wheel.advance(299_990, &mut Vec::new());
-        wheel.arm(300_000, 2).unwrap();
-        wheel.arm(299_995, 3).unwrap();
-        assert_eq!(fire(&mut wheel, 400_000), vec![3, 1, 2]);
+        // The first goes high in the wheel, the second low, by the time it is armed: one
+        // minute of nanoseconds differs from 0 in group 5, and from one minute less 10 ns only
+        // in group 0 or 1.
+        let minute = 60_000_000_000u64;
+        let high = wheel.arm(minute, 1).unwrap();
+        assert!(level(&wheel, high) >= 5, "level {}", level(&wheel, high));
+        wheel.advance(minute - 10, &mut Vec::new());
+        let low = wheel.arm(minute, 2).unwrap();
+        assert!(level(&wheel, low) <= 1, "level {}", level(&wheel, low));
+        wheel.arm(minute - 5, 3).unwrap();
+        assert_eq!(fire(&mut wheel, minute + 1), vec![3, 1, 2]);
+    }
+
+    #[test]
+    fn a_timer_fires_at_its_exact_nanosecond_whatever_its_offset_in_the_millisecond() {
+        // P13, #1151: a deadline armed at any offset within a millisecond fires exactly at its
+        // own nanosecond, `d` after it was armed, for `d` that stays in level 0 and `d` that
+        // cascades down from high levels; the wheel's origin is not on a millisecond either.
+        let ms = 1_000_000u64;
+        let stride = if cfg!(miri) { 99_991 } else { 7_919 };
+        let mut wheel = Wheel::new(7 * ms + 123);
+        let mut value = 0u64;
+        for offset in (0..ms).step_by(stride).chain([1, ms - 1]) {
+            for d in [1, 63, 999_999, ms, 5 * ms + 17, 70 * ms + 1, 61_000 * ms] {
+                let armed = (wheel.now() / ms + 1) * ms + offset;
+                assert!(fire(&mut wheel, armed).is_empty());
+                value += 1;
+                wheel.arm(armed + d, value).unwrap();
+                assert!(
+                    fire(&mut wheel, armed + d - 1).is_empty(),
+                    "offset {offset}, d {d}: fired early"
+                );
+                assert_eq!(
+                    fire(&mut wheel, armed + d),
+                    vec![value],
+                    "offset {offset}, d {d}: not fired at its deadline"
+                );
+            }
+        }
+        assert!(wheel.is_empty());
+        assert_eq!(wheel.occupied_slots(), (0, false));
+    }
+
+    #[test]
+    fn after_any_history_of_cancels_the_wheel_holds_nothing() {
+        // #1151, the deterministic guard of M1: removal is eager, so 20,000 timers of mixed
+        // lengths, from a nanosecond to a year, armed and cancelled in any order, leave no
+        // item and no occupied slot, and their entries are reused, so the wheel's state after
+        // such a history is that of a wheel that never saw it.
+        let mut random = Lcg(1151);
+        let mut wheel = Wheel::new(5);
+        let spans = [
+            1u64,
+            1_000,
+            1_000_000,
+            60_000_000_000,
+            31_536_000_000_000_000,
+        ];
+        let mut live = Vec::new();
+        for value in 0..20_000u64 {
+            let span = spans[(random.next() % spans.len() as u64) as usize];
+            let at = wheel.now() + 1 + random.next() % span;
+            live.push(wheel.arm(at, value).unwrap());
+            if random.next().is_multiple_of(3) {
+                let at = (random.next() as usize) % live.len();
+                let id = live.swap_remove(at);
+                assert!(wheel.cancel(id).is_some());
+            }
+        }
+        for id in live.drain(..) {
+            assert!(wheel.cancel(id).is_some());
+        }
+        assert!(wheel.is_empty());
+        assert_eq!(wheel.occupied_slots(), (0, false));
+        assert_eq!(wheel.next_expiration(), None);
+        assert_eq!(wheel.free.len(), wheel.entries.len());
+        // Nothing fires, and a timer armed now behaves as on a fresh wheel.
+        assert!(fire(&mut wheel, u64::MAX / 2).is_empty());
+        wheel.arm(u64::MAX / 2 + 10, 7).unwrap();
+        assert_eq!(
+            wheel.next_expiration().map(|at| at <= u64::MAX / 2 + 10),
+            Some(true)
+        );
+        assert_eq!(fire(&mut wheel, u64::MAX / 2 + 10), vec![7]);
     }
 
     #[test]
@@ -547,10 +667,16 @@ mod tests {
         let mut model: BTreeMap<(u64, u64), TimerId> = BTreeMap::new();
         let mut live: Vec<(u64, u64, TimerId)> = Vec::new();
         let mut now = 0u64;
-        for value in 0..20_000u64 {
+        // 500 operations under Miri (#1239), 20,000 otherwise: the same mix of arms, cancels
+        // and advances, checked against the model at every step.
+        let operations = if cfg!(miri) { 500 } else { 20_000u64 };
+        for value in 0..operations {
             match random.next() % 4 {
                 0 | 1 => {
-                    let span = [10, 1_000, 100_000, 10_000_000][(random.next() % 4) as usize];
+                    // In nanoseconds: within one level-0 window, a millisecond, a second and
+                    // an hour, so timers cascade through most levels against the model.
+                    let span = [10, 1_000_000, 1_000_000_000, 3_600_000_000_000]
+                        [(random.next() % 4) as usize];
                     let deadline = now + random.next() % span;
                     let id = wheel.arm(deadline, value).unwrap();
                     model.insert((deadline, value), id);
@@ -563,7 +689,8 @@ mod tests {
                     assert_eq!(wheel.cancel(id), expected);
                 }
                 _ => {
-                    now += random.next() % 5_000;
+                    now += random.next()
+                        % [5_000, 5_000_000, 5_000_000_000][(random.next() % 3) as usize];
                     let fired = fire(&mut wheel, now);
                     let mut expected = Vec::new();
                     while let Some((&(deadline, value), _)) = model.first_key_value() {
@@ -589,7 +716,7 @@ mod tests {
             let mut wheel = Wheel::new(0);
             let mut ids = Vec::new();
             for value in 0..n {
-                ids.push(wheel.arm(random.next() % (n * 1_000), value).unwrap());
+                ids.push(wheel.arm(random.next() % (n * 1_000_000), value).unwrap());
             }
             for id in ids.iter().step_by(2) {
                 wheel.cancel(*id);
@@ -601,8 +728,14 @@ mod tests {
             assert_eq!(fired.len() as u64, n / 2);
             wheel.moves as f64 / n as f64
         };
-        let small = per_timer(1_000);
-        let large = per_timer(100_000);
+        // Under Miri 200 then 2,000 timers (#1239), else 1,000 then 100,000: flat either way.
+        let (few, many) = if cfg!(miri) {
+            (200, 2_000)
+        } else {
+            (1_000, 100_000)
+        };
+        let small = per_timer(few);
+        let large = per_timer(many);
         assert!(
             small <= LEVELS as f64 && large <= LEVELS as f64,
             "{small} {large}"

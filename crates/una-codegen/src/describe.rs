@@ -70,6 +70,7 @@ impl<'p> Types<'p> {
             Base::F64 => json!({ "shape": "f64" }),
             // A decimal is its coefficient, written with its scale (`spec/29 §16`).
             Base::Decimal(scale) => json!({ "shape": "decimal", "scale": scale }),
+            Base::F32 => json!({ "shape": "f32" }),
             // Internal to the memory model: a tuple is never a value a trace or U6001 shows.
             Base::Tuple(_) => json!({ "shape": "other" }),
             Base::Named { module, name, args } if module == PRELUDE_MODULE => {
@@ -83,8 +84,12 @@ impl<'p> Types<'p> {
                         let (key, value) = (self.of(&arg(0)), self.of(&arg(1)));
                         json!({ "shape": "map", "key": key, "value": value })
                     }
-                    // No dense value reaches native code yet (`spec/29 §17`).
-                    "Array" | "Matrix" => json!({ "shape": "other" }),
+                    // A dense value says its kind and shape; its elements render by their type
+                    // (`spec/29 §17`, ADR 0120 rule 41).
+                    "Array" | "Matrix" | "Tensor" | "Lu" => {
+                        let element = self.of(&arg(0));
+                        json!({ "shape": "dense", "element": element })
+                    }
                     // JSON (`spec/23 §1`): `Json` holds itself through its arrays and objects,
                     // which refer to its own index.
                     "Json" => {
@@ -167,13 +172,36 @@ impl<'p> Types<'p> {
                     },
                 }
             }
-            // The collections of `std.collections` (ADR 0119) are the runtime's own values, which
-            // no description reads until their types land.
-            Base::Named { module, name, .. }
+            // The collections of `std.collections` (ADR 0119 rule 19), in their Una forms
+            // (`spec/28 §4`): a stack or a queue front first, and a priority queue in the order
+            // of its pops, as lists of their items; a set in braces; a bit set's members; a hash
+            // map and a hash set in insertion order.
+            Base::Named { module, name, args }
                 if module == una_core::COLLECTIONS_MODULE
                     && una_core::Coll::from_name(name).is_some() =>
             {
-                json!({ "shape": "other" })
+                let arg = |i: usize| args.get(i).cloned().unwrap_or_else(unknown);
+                match name.as_str() {
+                    "Stack" | "Queue" | "PriorityQueue" => {
+                        let item = self.of(&arg(0));
+                        json!({ "shape": "seq", "item": item })
+                    }
+                    "Set" => {
+                        let item = self.of(&arg(0));
+                        json!({ "shape": "set", "item": item })
+                    }
+                    "BitSet" => json!({ "shape": "bits" }),
+                    "HashMap" => {
+                        let key = self.of(&arg(0));
+                        let value = self.of(&arg(1));
+                        json!({ "shape": "hashmap", "key": key, "value": value })
+                    }
+                    "HashSet" => {
+                        let item = self.of(&arg(0));
+                        json!({ "shape": "hashset", "item": item })
+                    }
+                    _ => json!({ "shape": "other" }),
+                }
             }
             Base::Named { module, name, args } => match self.declared_shape(module, name, args) {
                 Some(shape) => shape,
@@ -222,7 +250,13 @@ impl<'p> Types<'p> {
                         field(name, ty, redacted, shown)
                     })
                     .collect();
-                variant(&v.name, fields)
+                // A complex value is written `complex(re: ..., im: ...)` (ADR 0120 rule 24).
+                let name = if una_core::complex::is_kind(module, name) {
+                    una_core::complex::CONSTRUCTOR
+                } else {
+                    v.name.as_str()
+                };
+                variant(name, fields)
             })
             .collect();
         Some(data(variants))
