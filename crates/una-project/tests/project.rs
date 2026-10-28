@@ -434,3 +434,21 @@ fn a_systems_package_that_runs_declares_its_budget() {
         assert!(errors.is_empty(), "{package} {run}: {errors:?}");
     }
 }
+
+#[test]
+fn a_listed_empty_grants_is_told_from_no_grants() {
+    // #925: `grants = []` is a final set that grants nothing, which `una check` and `una build`
+    // check `main` against; a `[run]` without `grants` lists none.
+    let (listed, errors) = parse_manifest(&format!(
+        "{PACKAGE}\n[run]\nentry = \"main\"\ngrants = []\n"
+    ));
+    assert_eq!(errors, vec![]);
+    assert!(listed.grants_listed);
+    assert!(listed.grants.is_empty());
+    let (absent, errors) = parse_manifest(&format!("{PACKAGE}\n[run]\nentry = \"main\"\n"));
+    assert_eq!(errors, vec![]);
+    assert!(!absent.grants_listed);
+    let (some, _) = parse_manifest(&format!("{PACKAGE}\n[run]\ngrants = [\"console\"]\n"));
+    assert!(some.grants_listed);
+    assert!(!parse_manifest(PACKAGE).0.grants_listed);
+}

@@ -308,6 +308,9 @@ pub fn parse_ita_manifest(text: &str) -> (Manifest, Vec<ProjectError>) {
                 ));
             }
         }
+        // A `grants` section is the final set of `una check` and `una build` (#925); its
+        // grammar holds at least one grant line.
+        manifest.grants_listed = !run.grants.is_empty();
         // The `serve` grants that are valid, by address and port, for the overlap check of
         // `spec/31 §2` rule 6, which reports the later grant of each overlap.
         // Addresses only (`core::net`, no socket): this crate opens no connection.

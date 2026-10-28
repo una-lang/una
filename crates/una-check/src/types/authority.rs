@@ -2077,7 +2077,8 @@ fn granted(grants: &[String]) -> BTreeMap<&'static str, BTreeSet<&'static str>> 
 /// (`spec/04 §8`, `spec/05 §7`), and so must those of `init`, `step` and `on_stop` of a
 /// `[drive]` module (ADR 0116 rule 2). A capability that is not a host capability
 /// can never be granted; host capabilities are compared with `[run] grants` when `una.toml`
-/// lists grants, and with the final grants of `una run` when it checks the package to run it.
+/// lists grants, even none, and with the final grants of `una run` when it checks the package
+/// to run it.
 pub(crate) fn grants(
     env: &Env<'_>,
     settings: &Manifest,
@@ -2149,7 +2150,9 @@ fn function_grants(
             report.push(diagnostic);
             continue;
         }
-        if run.is_none() && settings.grants.is_empty() {
+        // Without `una run`'s final grants, a listed `[run] grants` is the final set, an empty
+        // one included (#925); only a package that lists none is not checked against it.
+        if run.is_none() && !settings.grants_listed {
             continue;
         }
         let allowed = granted.get(capability.name);

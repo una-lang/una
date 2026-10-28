@@ -28,6 +28,9 @@ pub struct Manifest {
     pub entry: Option<Located>,
     /// `[run] grants`: the capabilities `una run` grants (`spec/13 §5`).
     pub grants: Vec<Located>,
+    /// Whether `una.toml` lists `[run] grants`, empty or not: a listed array is the final set
+    /// of `una check` and `una build`, so `grants = []` grants no host capability (#925).
+    pub grants_listed: bool,
     /// The `drive` section of `ita.una`, edition `0.4`: the host-driven step (ADR 0116 rule 1).
     pub drive: Option<Drive>,
     /// `[package] edition`: `0.1`, the default, or `0.2` (`spec/13 §7`, ADR 0056).
@@ -623,6 +626,7 @@ fn run(
                 }
             }
             "grants" => {
+                manifest.grants_listed = true;
                 for grant in strings("grants", value, Code::U7002, errors) {
                     // A server exists from edition 0.4, whose grants `ita.una` holds (ADR 0123
                     // rule 0, ADR 0122 Question 8.1): in `una.toml` it is never read.
