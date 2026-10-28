@@ -111,7 +111,7 @@ pub enum Grant {
     /// `serve:<scheme>://<address>:<port>` and its items (`spec/31 §2`), edition 0.4.
     Serve {
         /// The grant, as written.
-        grant: una_core::http::serve::ServeGrant,
+        grant: Box<una_core::http::serve::ServeGrant>,
         /// The certificate chain's path, resolved, on an `https` grant.
         certificate: Option<PathBuf>,
         /// The private key's path, resolved, on an `https` grant.
@@ -162,7 +162,7 @@ impl Grant {
                         None => (None, None),
                     };
                     return Some(Grant::Serve {
-                        grant,
+                        grant: Box::new(grant),
                         certificate,
                         key,
                     });
