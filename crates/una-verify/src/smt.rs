@@ -430,11 +430,24 @@ impl Query {
 
     /// The declarations and assertions as SMT-LIB text: sorts, constants and functions sorted
     /// by name, then definitions in dependency order, then the assertions, with the
-    /// distinctness of text literals first among them (`spec/12 §4`).
+    /// distinctness of text literals first among them (`spec/12 §4`). The run asks
+    /// [`Query::text_with`] for its requested terms; the tests compare this form.
+    #[cfg(test)]
     pub(crate) fn text(&self) -> String {
+        self.text_with(&[])
+    }
+
+    /// [`Query::text`] whose declarations also cover the symbols of `requested`, the terms a
+    /// `(get-value ...)` asks for after the query: a requested term may apply a symbol that no
+    /// assertion uses, such as the tag of a shown value of a sum kind, which the solver would
+    /// otherwise not know (#855). Only declarations come from them, never an assertion.
+    pub(crate) fn text_with(&self, requested: &[F]) -> String {
         let mut terms = Vec::new();
         for assertion in &self.assertions {
             assertion.visit(&mut terms);
+        }
+        for term in requested {
+            term.visit(&mut terms);
         }
         for definition in self.definitions.values() {
             definition.body.visit(&mut terms);
@@ -572,6 +585,47 @@ mod tests {
             sort: sort.to_owned(),
             role: ConstRole::Plain,
         })
+    }
+
+    #[test]
+    fn requested_terms_are_declared_without_being_asserted() {
+        // #855: a `(get-value ...)` term may apply a symbol that no assertion uses, such as
+        // the tag of a shown value of a sum kind; the script declares it and asserts nothing.
+        let measure = kind_sort("pantry.stock", "Measure", &[]);
+        let tag = F::App {
+            fun: Fun {
+                name: format!("i!tag!{measure}"),
+                args: vec![measure.clone()],
+                result: "Int".to_owned(),
+                role: FunRole::Other,
+            },
+            args: vec![constant("m", &measure)],
+        };
+        let query = Query {
+            assertions: vec![F::op(
+                "=",
+                vec![constant("n", "Int"), F::Int("1".to_owned())],
+            )],
+            definitions: BTreeMap::new(),
+        };
+        let plain = query.text();
+        assert!(!plain.contains("i!tag!"), "{plain}");
+        let with = query.text_with(&[tag]);
+        assert!(
+            with.contains(&format!("(declare-sort {measure} 0)")),
+            "{with}"
+        );
+        assert!(
+            with.contains(&format!("(declare-fun |u!v!m| () {measure})")),
+            "{with}"
+        );
+        assert!(
+            with.contains(&format!("(declare-fun i!tag!{measure} ({measure}) Int)")),
+            "{with}"
+        );
+        let asserted = |text: &str| text.lines().filter(|l| l.starts_with("(assert")).count();
+        assert_eq!(asserted(&with), asserted(&plain));
+        assert!(!with.contains("(assert (= (i!tag!"), "{with}");
     }
 
     #[test]
