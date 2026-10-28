@@ -19,6 +19,6 @@ pub use error::{SyntaxError, SyntaxRepair};
 pub use intern::{Interner, Symbol};
 pub use lexer::{Lexed, Rename, lex, lex_in, lex_project, rename_across};
 pub use parser::{MAX_NESTING, Parsed, parse, parse_uses_clause};
-pub use rewrite::{Declaration, DeclarationKind, declarations};
+pub use rewrite::{Declaration, DeclarationKind, declarations, declarations_in};
 pub use source::{FileId, SourceDb, SourceFile, Span};
 pub use token::{Comment, Keyword, KeywordSet, Token, TokenKind};

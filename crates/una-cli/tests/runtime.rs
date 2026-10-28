@@ -1299,10 +1299,16 @@ fn handler_instances_keep_their_ids_and_come_before_their_bodies() {
     );
 }
 
-/// The keys of every trace event's `args` in a `una.run/1` or `una.test/1` document.
+/// The keys of every trace event's `args` in a `una.run/1`, `una.test/1` or `una.test/2`
+/// document.
 fn trace_keys(document: &Value) -> Vec<String> {
     let mut traces = vec![&document["trace"]];
-    if let Some(examples) = document["examples"].as_array() {
+    let runs = if document["schema"] == "una.test/2" {
+        "tests"
+    } else {
+        "examples"
+    };
+    if let Some(examples) = document[runs].as_array() {
         traces.extend(examples.iter().map(|example| &example["trace"]));
     }
     traces

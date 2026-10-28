@@ -736,8 +736,9 @@ impl<'a> Checker<'_, 'a, '_> {
                         Code::U3014,
                         span,
                         format!(
-                            "{callee} needs `{}`, a host capability, and examples cannot use host capabilities; give it a handler with `given`",
-                            self.show_need(need)
+                            "{callee} needs `{}`, a host capability, and {} cannot use host capabilities; give it a handler with `given`",
+                            self.show_need(need),
+                            self.env.edition.tests_word()
                         ),
                     ),
                     Base::Example => self.report.error(
@@ -903,7 +904,8 @@ impl<'a> Checker<'_, 'a, '_> {
                 Code::U3015,
                 span,
                 format!(
-                    "`{name}` belongs to `std.testing`, which only handler operations and examples may use"
+                    "`{name}` belongs to `std.testing`, which only handler operations and {} may use",
+                    self.env.edition.tests_word()
                 ),
             );
         }
@@ -2773,8 +2775,12 @@ pub(crate) fn stored_effects(env: &Env<'_>, report: &mut Report<'_>) {
 
 /// U3015: a `with` binding that installs a handler whose operation bodies use `std.testing`,
 /// with the first use as a related span (ADR 0043 rule 2). Such a handler is installed only by
-/// `given` lines of examples.
-pub(crate) fn testing_installs(findings: &Findings, report: &mut Report<'_>) {
+/// `given` lines of examples, named by `edition`'s word for them (ADR 0105 rule 6).
+pub(crate) fn testing_installs(
+    findings: &Findings,
+    report: &mut Report<'_>,
+    edition: una_project::Edition,
+) {
     let mut installs: Vec<&(usize, Span)> = findings.with_installs.iter().collect();
     installs.sort_by_key(|(_, span)| (span.file, span.start, span.end));
     installs.dedup();
@@ -2785,7 +2791,10 @@ pub(crate) fn testing_installs(findings: &Findings, report: &mut Report<'_>) {
         let mut diagnostic = report.make(
             Code::U3015,
             *span,
-            "this `with` binding installs a handler that uses `std.testing`, which only `given` lines of examples may install",
+            format!(
+                "this `with` binding installs a handler that uses `std.testing`, which only `given` lines of {} may install",
+                edition.tests_word()
+            ),
         );
         diagnostic
             .related

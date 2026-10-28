@@ -1,0 +1,10 @@
+-- test: `una fmt` never rewrites `example` to `test`: the keyword is a repair of `una fix`, and a file with the U0103 has no canonical form, so it is left as written (ADR 0105 rule 8)
+-- spec: spec/15 §1
+-- expect: error U0103 at src/m.una:8:1
+module m
+
+pub double(x: Int) -> Int = x * 2
+
+example "doubling works"
+  do double(2)
+  expect result == 4

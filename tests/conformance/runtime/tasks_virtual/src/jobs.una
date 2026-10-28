@@ -67,25 +67,25 @@ pub serve() -> Int
       @log.write("stopping after {served}")
   served
 
-example "a tasks statement waits for its tasks, two at once"
+test "a tasks statement waits for its tasks, two at once"
   given @log = quiet()
   do every(5)
   expect result == 5
   expect performed @log.write
 
-example "a failing block cancels its tasks, which here never run"
+test "a failing block cancels its tasks, which here never run"
   given @log = quiet()
   do failing(1)
   expect fails Broken
   expect not performed @log.write
 
-example "a started task past --task-depth ends alone, and the others run on"
+test "a started task past --task-depth ends alone, and the others run on"
   given @log = quiet()
   do dives()
   expect result == 1
   expect performed @log.write
 
-example "a host stop ends the for ever of the block, then its tasks drain"
+test "a host stop ends the for ever of the block, then its tasks drain"
   given @log = quiet()
   do serve()
   expect result == 3

@@ -24,12 +24,12 @@ pub read() -> Text
 =
   @store.get("k")
 
-example "a rewinding store"
+test "a rewinding store"
   given @store = rewinding()
   do read()
   expect result == "v"
 
-example "a waiting store"
+test "a waiting store"
   given @store = waiting()
   do read()
   expect result == "v"

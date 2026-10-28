@@ -37,7 +37,7 @@ pub poll(key: Text) -> Int
     @log.write("stopped after {reads}")
   reads
 
-example "the loop reads the store twice, then stops"
+test "the loop reads the store twice, then stops"
   given @store = slow_store(delay: 150 * millisecond)
   given @log = memory_log()
   do poll("k")
@@ -45,14 +45,14 @@ example "the loop reads the store twice, then stops"
   expect performed @log.write
   stop after 2
 
-example "a thousand hours of virtual time pass at once"
+test "a thousand hours of virtual time pass at once"
   given @store = slow_store(delay: 60 * minute)
   given @log = memory_log()
   do poll("k")
   expect result == 1000
   stop after 1000
 
-example "a stop schedule with no loop changes nothing"
+test "a stop schedule with no loop changes nothing"
   given @log = memory_log()
   do once("k")
   expect result == 1

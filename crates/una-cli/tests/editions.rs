@@ -56,6 +56,16 @@ enum Difference {
         /// The added diagnostics.
         edition_0_3: &'static [(&'static str, &'static str)],
     },
+    /// The message of a diagnostic names the test declaration by the edition (ADR 0105 rule 6):
+    /// the diagnostics document of edition `0.3` is that of edition `0.2` with "its declaration
+    /// and examples" written "its declaration and tests" in its messages, and with exactly
+    /// these diagnostics added, each a code and `file:line:col`.
+    Renamed {
+        /// The package, relative to `tests/conformance`.
+        case: &'static str,
+        /// The added diagnostics, none when only the wording differs.
+        edition_0_3: &'static [(&'static str, &'static str)],
+    },
     /// The rule only removes errors, as ADR 0103 rule 9 lets edition `0.3` accept refined type
     /// arguments and the facts they give (`spec/13 §7`): the diagnostics document of edition
     /// `0.2` is that of edition `0.3` with exactly these diagnostics added, each a code and
@@ -74,6 +84,7 @@ impl Difference {
         match self {
             Difference::Syntax { case, .. }
             | Difference::Stricter { case, .. }
+            | Difference::Renamed { case, .. }
             | Difference::Looser { case, .. } => case,
         }
     }
@@ -82,7 +93,9 @@ impl Difference {
     fn packages(&self) -> Vec<&'static str> {
         match self {
             Difference::Syntax { case, twin, .. } => vec![*case, *twin],
-            Difference::Stricter { case, .. } | Difference::Looser { case, .. } => vec![*case],
+            Difference::Stricter { case, .. }
+            | Difference::Renamed { case, .. }
+            | Difference::Looser { case, .. } => vec![*case],
         }
     }
 }
@@ -90,6 +103,72 @@ impl Difference {
 /// The edition `0.2` packages whose output in edition `0.3` differs by design, with the exact
 /// result of each edition.
 const EXPECTED_DIFFERENCES: &[Difference] = &[
+    // ADR 0105 rule 3: an `example` declaration is U0103 in edition 0.3, where the test
+    // declaration is written `test`, with the exact rewrite that `una fix` applies.
+    Difference::Stricter {
+        case: "runtime/print_hashed",
+        edition_0_3: &[("U0103", "src/hashed/main.una:36:1")],
+    },
+    Difference::Stricter {
+        case: "security/edit_label_variables",
+        edition_0_3: &[
+            ("U0103", "src/main.una:35:1"),
+            ("U0103", "src/main.una:39:1"),
+        ],
+    },
+    Difference::Stricter {
+        case: "security/s14_ok_write_from_example",
+        edition_0_3: &[("U0103", "src/main.una:26:1")],
+    },
+    Difference::Stricter {
+        case: "security/s14_ok_write_in_do_line",
+        edition_0_3: &[("U0103", "src/main.una:19:1")],
+    },
+    Difference::Stricter {
+        case: "security/via_hmac_events_shape",
+        edition_0_3: &[("U0103", "src/main.una:20:1")],
+    },
+    // ADR 0105 rules 3 and 6: an `example` is U0103, and the message of a `Keys` handler named
+    // outside its declaration names the declaration `tests`.
+    Difference::Renamed {
+        case: "security/via_hmac_handler_in_comment",
+        edition_0_3: &[("U0103", "src/main.una:23:1")],
+    },
+    // ADR 0105 rule 6: only the message's word for the test declaration differs.
+    Difference::Renamed {
+        case: "security/via_hmac_handler_delegates",
+        edition_0_3: &[],
+    },
+    Difference::Renamed {
+        case: "security/via_hmac_handler_forwards",
+        edition_0_3: &[],
+    },
+    Difference::Renamed {
+        case: "security/via_hmac_handler_in_with",
+        edition_0_3: &[],
+    },
+    Difference::Renamed {
+        case: "security/via_hmac_second_handler",
+        edition_0_3: &[],
+    },
+    // ADR 0105 rule 4: a local named `test` is U0101 in edition 0.3, where `test` is a keyword.
+    Difference::Stricter {
+        case: "security/generic_result_summary_leaks",
+        edition_0_3: &[("U0101", "src/summaryleaks.una:41:7")],
+    },
+    Difference::Stricter {
+        case: "types/memory_example_do",
+        edition_0_3: &[
+            ("U0103", "src/memdo.una:18:1"),
+            ("U0103", "src/memdo.una:22:1"),
+        ],
+    },
+    // ADR 0105 rule 4: `test` is a keyword in edition 0.3, so a function and a local named
+    // `test` are U0101 there; the local's rename is the one edit.
+    Difference::Stricter {
+        case: "names/test_name_0_2",
+        edition_0_3: &[("U0101", "src/m.una:6:1"), ("U0101", "src/m.una:10:7")],
+    },
     // ADR 0104 rule 1: a unit declaration, a parse error before edition 0.3.
     Difference::Syntax {
         case: "types/units_edition_0_2",
@@ -928,6 +1007,9 @@ fn every_expected_difference_is_exact() {
             Difference::Stricter { case, edition_0_3 } => {
                 stricter(&root, &scratch, case, edition_0_3);
             }
+            Difference::Renamed { case, edition_0_3 } => {
+                renamed(&root, &scratch, case, edition_0_3);
+            }
             Difference::Looser { case, edition_0_2 } => {
                 looser(&root, &scratch, case, edition_0_2);
             }
@@ -1037,6 +1119,48 @@ fn stricter(root: &Path, scratch: &Path, name: &str, added: &[(&str, &str)]) {
     assert!(!added.is_empty(), "{name}: a stricter entry adds nothing");
     assert_eq!(status, Some(1), "{name} as edition 0.3");
     differs_by(name, "edition 0.3", "edition 0.2", after, &before, added);
+}
+
+/// A [`Difference::Renamed`]: edition `0.3` reports what edition `0.2` does, with the test
+/// declaration named `tests` in the messages that name it, and exactly the pinned diagnostics
+/// more.
+fn renamed(root: &Path, scratch: &Path, name: &str, added: &[(&str, &str)]) {
+    let case = root.join(name);
+    let (_, before, _) = check_as(&case, scratch, EDITION_0_2);
+    let (_, after, _) = check_as(&case, scratch, EDITION_0_3);
+    let mut before: Value = serde_json::from_slice(&before).unwrap();
+    let after: Value = serde_json::from_slice(&after).unwrap();
+    let mut renamed = 0;
+    rename_declaration(&mut before, &mut renamed);
+    assert!(renamed > 0, "{name}: a renamed entry renames nothing");
+    differs_by(name, "edition 0.3", "edition 0.2", after, &before, added);
+}
+
+/// Writes "its declaration and examples" as edition `0.3` does, "its declaration and tests", in
+/// every message of `value`, counting the messages changed.
+fn rename_declaration(value: &mut Value, renamed: &mut usize) {
+    match value {
+        Value::Object(map) => {
+            for (key, entry) in map.iter_mut() {
+                if key == "message"
+                    && let Value::String(text) = entry
+                    && text.contains("its declaration and examples")
+                {
+                    *text =
+                        text.replace("its declaration and examples", "its declaration and tests");
+                    *renamed += 1;
+                } else {
+                    rename_declaration(entry, renamed);
+                }
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                rename_declaration(item, renamed);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// A [`Difference::Looser`]: edition `0.2` reports exactly the pinned diagnostics more than

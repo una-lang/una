@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use una_check::Poison;
 use una_diag::{Diagnostic, Position};
-use una_syntax::{Declaration, DeclarationKind, SourceDb, declarations};
+use una_syntax::{Declaration, DeclarationKind, KeywordSet, SourceDb, declarations_in};
 
 /// The declarations of one file and which of them hold a syntax error.
 pub(crate) struct BrokenFile {
@@ -29,10 +29,10 @@ pub(crate) struct BrokenFile {
 }
 
 impl BrokenFile {
-    /// The declarations of `text` that hold one of the syntax errors at the byte offsets
-    /// `errors`.
-    pub(crate) fn new(text: &str, errors: &[usize]) -> BrokenFile {
-        let declarations = declarations(text);
+    /// The declarations of `text`, read under `keywords`, that hold one of the syntax errors
+    /// at the byte offsets `errors`.
+    pub(crate) fn new(text: &str, errors: &[usize], keywords: KeywordSet) -> BrokenFile {
+        let declarations = declarations_in(text, keywords);
         let mut broken = BTreeSet::new();
         let mut whole = declarations.is_empty();
         for &at in errors {
