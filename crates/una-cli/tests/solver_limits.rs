@@ -65,8 +65,10 @@ fn solver_child(
 #[test]
 #[ignore = "the limits release gate: needs the built solver"]
 fn a_query_past_the_memory_limit_is_memout_and_the_parent_lives() {
-    assert!(
-        una_z3::BUILD.linked,
+    // A linked solver records its library's digest (una-z3's build script).
+    assert_eq!(
+        una_z3::BUILD.library_sha256.len(),
+        64,
         "the una under test must link the solver"
     );
     // Probe P4: past `memory_max_size`, Z3 5.1.0's front end exits with 101, the message on
@@ -96,8 +98,10 @@ fn a_query_past_the_memory_limit_is_memout_and_the_parent_lives() {
 #[test]
 #[ignore = "the limits release gate: needs the built solver"]
 fn a_query_past_the_processor_time_ends_by_sigxcpu() {
-    assert!(
-        una_z3::BUILD.linked,
+    // A linked solver records its library's digest (una-z3's build script).
+    assert_eq!(
+        una_z3::BUILD.library_sha256.len(),
+        64,
         "the una under test must link the solver"
     );
     let (code, signal, _, stderr) = solver_child(1, 4096, HARD);
@@ -108,8 +112,10 @@ fn a_query_past_the_processor_time_ends_by_sigxcpu() {
 #[test]
 #[ignore = "the limits release gate: needs the built solver"]
 fn a_query_past_the_wall_clock_is_unknown_wallclock_through_una_check() {
-    assert!(
-        una_z3::BUILD.linked,
+    // A linked solver records its library's digest (una-z3's build script).
+    assert_eq!(
+        una_z3::BUILD.library_sha256.len(),
+        64,
         "the una under test must link the solver"
     );
     let output = Command::new(env!("CARGO_BIN_EXE_una"))

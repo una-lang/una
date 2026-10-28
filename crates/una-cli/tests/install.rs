@@ -81,6 +81,13 @@ fn release(dir: &Path, target: &str, version: &str, verdict: &str, listed: Optio
     let staging = dir.join("staging").join(&name);
     std::fs::create_dir_all(staging.join("lib")).unwrap();
     std::fs::write(staging.join("una"), "#!/bin/sh\necho una stub\n").unwrap();
+    // Executable, as in a real archive: the installer checks it before installing.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(staging.join("una"), std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+    }
     std::fs::write(staging.join("lib/libuna_rt.a"), "stub").unwrap();
     let releases = dir.join("releases").join(format!("v{version}"));
     std::fs::create_dir_all(&releases).unwrap();

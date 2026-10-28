@@ -94,8 +94,10 @@ fn the_solver_child_and_the_project_built_z3_write_the_same_bytes() {
     );
     #[allow(clippy::disallowed_methods)]
     let upstream = std::env::var_os("UNA_Z3_UPSTREAM").map(PathBuf::from);
-    assert!(
-        una_z3::BUILD.linked,
+    // A linked solver records its library's digest (una-z3's build script).
+    assert_eq!(
+        una_z3::BUILD.library_sha256.len(),
+        64,
         "the test binary must link the solver (UNA_Z3_LIB)"
     );
     let launcher = una_cli::solver_child::Launcher::new(4096);
