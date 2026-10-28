@@ -25,6 +25,8 @@ pub const DEFAULT_WALLCLOCK: Duration = Duration::from_secs(60);
 #[derive(Clone, Debug)]
 pub struct Solving {
     pub(crate) wallclock: Duration,
+    /// The memory limit of each solver child in MiB, `--solver-memory` (ADR 0124 rule 6).
+    pub(crate) memory_mib: u64,
     pub(crate) proof_key: Option<crate::proof_key::ProofKey>,
     pub(crate) itaoca: Option<una_project::itaoca::Itaoca>,
 }
@@ -34,6 +36,7 @@ impl Solving {
     pub fn new(wallclock: Duration) -> Solving {
         Solving {
             wallclock,
+            memory_mib: crate::solver_child::DEFAULT_MEMORY_MIB,
             proof_key: None,
             itaoca: None,
         }
@@ -150,7 +153,7 @@ pub(crate) fn report_unverified(
 pub(crate) fn settings(package: &Package, solving: &Solving) -> Settings {
     let (text, lock) = lock_of(package);
     Settings {
-        solver: std::sync::Arc::new(solver_launcher()),
+        solver: std::sync::Arc::new(solver_launcher(solving.memory_mib)),
         lock: una_verify::Lock {
             text,
             solver_version: lock.solver_version.clone(),
@@ -168,10 +171,10 @@ pub(crate) fn settings(package: &Package, solving: &Solving) -> Settings {
     }
 }
 
-/// The launcher of solver children (ADR 0124): `una` re-executed, limited to the default
-/// memory; in the toolchain's own test builds, a stand-in named by `UNA_SOLVER_STAND_IN`.
-fn solver_launcher() -> crate::solver_child::Launcher {
-    let launcher = crate::solver_child::Launcher::new(crate::solver_child::DEFAULT_MEMORY_MIB);
+/// The launcher of solver children (ADR 0124): `una` re-executed, each child limited to
+/// `memory_mib`; in the toolchain's own test builds, a stand-in named by `UNA_SOLVER_STAND_IN`.
+fn solver_launcher(memory_mib: u64) -> crate::solver_child::Launcher {
+    let launcher = crate::solver_child::Launcher::new(memory_mib);
     #[cfg(feature = "test-hooks")]
     let launcher = {
         #[allow(clippy::disallowed_methods)]

@@ -66,6 +66,10 @@ pub(crate) enum Command {
         /// Stop a solver query after this many seconds; the obligation is then unknown
         #[arg(long, value_name = "SECONDS", default_value_t = 60)]
         solver_wallclock: u64,
+
+        /// The memory limit of each solver query in MiB, from 256 to 1048576 (ADR 0124)
+        #[arg(long, value_name = "MIB", default_value_t = 4096, value_parser = clap::value_parser!(u64).range(256..=1_048_576))]
+        solver_memory: u64,
     },
     /// List the functions derived from a requirement, their contracts and their obligations
     Trace {
@@ -75,6 +79,10 @@ pub(crate) enum Command {
         /// Stop a solver query after this many seconds; the obligation is then unknown
         #[arg(long, value_name = "SECONDS", default_value_t = 60)]
         solver_wallclock: u64,
+
+        /// The memory limit of each solver query in MiB, from 256 to 1048576 (ADR 0124)
+        #[arg(long, value_name = "MIB", default_value_t = 4096, value_parser = clap::value_parser!(u64).range(256..=1_048_576))]
+        solver_memory: u64,
     },
     /// Print the package's Core IR; with --json, as `una.core/1` (ADR 0083)
     Core {
@@ -96,6 +104,10 @@ pub(crate) enum Command {
         /// Stop a solver query after this many seconds; the obligation is then unknown
         #[arg(long, value_name = "SECONDS", default_value_t = 60)]
         solver_wallclock: u64,
+
+        /// The memory limit of each solver query in MiB, from 256 to 1048576 (ADR 0124)
+        #[arg(long, value_name = "MIB", default_value_t = 4096, value_parser = clap::value_parser!(u64).range(256..=1_048_576))]
+        solver_memory: u64,
     },
     /// List every proof obligation with its status
     Obligations {
@@ -106,6 +118,10 @@ pub(crate) enum Command {
         /// Stop a solver query after this many seconds; the obligation is then unknown
         #[arg(long, value_name = "SECONDS", default_value_t = 60)]
         solver_wallclock: u64,
+
+        /// The memory limit of each solver query in MiB, from 256 to 1048576 (ADR 0124)
+        #[arg(long, value_name = "MIB", default_value_t = 4096, value_parser = clap::value_parser!(u64).range(256..=1_048_576))]
+        solver_memory: u64,
     },
     /// Apply the mechanical repairs of `una check`, then format, and report what remains
     Fix {
@@ -124,6 +140,10 @@ pub(crate) enum Command {
         /// Stop a solver query after this many seconds; the obligation is then unknown
         #[arg(long, value_name = "SECONDS", default_value_t = 60)]
         solver_wallclock: u64,
+
+        /// The memory limit of each solver query in MiB, from 256 to 1048576 (ADR 0124)
+        #[arg(long, value_name = "MIB", default_value_t = 4096, value_parser = clap::value_parser!(u64).range(256..=1_048_576))]
+        solver_memory: u64,
     },
     /// Rewrite files in canonical form, or report where they differ from it
     Fmt {
@@ -201,6 +221,10 @@ pub(crate) enum Command {
         #[arg(long, value_name = "SECONDS", default_value_t = 60)]
         solver_wallclock: u64,
 
+        /// The memory limit of each solver query in MiB, from 256 to 1048576 (ADR 0124)
+        #[arg(long, value_name = "MIB", default_value_t = 4096, value_parser = clap::value_parser!(u64).range(256..=1_048_576))]
+        solver_memory: u64,
+
         /// Request a host stop once this many iterations of `for ever` loops, the host's loop
         /// included, have started (ADR 0116)
         #[arg(long, value_name = "N", value_parser = iterations)]
@@ -235,6 +259,10 @@ pub(crate) enum Command {
         /// Stop a solver query after this many seconds; the obligation is then unknown
         #[arg(long, value_name = "SECONDS", default_value_t = 60)]
         solver_wallclock: u64,
+
+        /// The memory limit of each solver query in MiB, from 256 to 1048576 (ADR 0124)
+        #[arg(long, value_name = "MIB", default_value_t = 4096, value_parser = clap::value_parser!(u64).range(256..=1_048_576))]
+        solver_memory: u64,
     },
     /// Run every example
     Test {
@@ -270,6 +298,10 @@ pub(crate) enum Command {
         /// Stop a solver query after this many seconds; the obligation is then unknown
         #[arg(long, value_name = "SECONDS", default_value_t = 60)]
         solver_wallclock: u64,
+
+        /// The memory limit of each solver query in MiB, from 256 to 1048576 (ADR 0124)
+        #[arg(long, value_name = "MIB", default_value_t = 4096, value_parser = clap::value_parser!(u64).range(256..=1_048_576))]
+        solver_memory: u64,
     },
     /// Print the full header of a function, declared or inferred, with doc comments and
     /// requirements

@@ -712,7 +712,11 @@ fn verify_once(obligations: &[Obligation], settings: &Settings) -> Result<Vec<Ou
         .iter()
         .map(|obligation| {
             let (text, requested) = script(obligation, &settings.lock);
-            let key = cache::key(&settings.lock.text, &text);
+            let key = cache::key(
+                &settings.lock.text,
+                &settings.solver.library_digest(),
+                &text,
+            );
             (text, requested, key)
         })
         .collect();
@@ -758,7 +762,11 @@ fn verify_once(obligations: &[Obligation], settings: &Settings) -> Result<Vec<Ou
             let value = values(requested, answer);
             (answer.status == Status::Refuted && !agrees(obligation, &value)).then(|| {
                 let text = interpreted(obligation, &settings.lock);
-                let key = cache::key(&settings.lock.text, &text);
+                let key = cache::key(
+                    &settings.lock.text,
+                    &settings.solver.library_digest(),
+                    &text,
+                );
                 (text, key)
             })
         })
@@ -847,7 +855,11 @@ fn verify_once(obligations: &[Obligation], settings: &Settings) -> Result<Vec<Ou
                 return Ok(None);
             }
             let (text, requested) = script(first, &settings.lock);
-            let key = cache::key(&settings.lock.text, &text);
+            let key = cache::key(
+                &settings.lock.text,
+                &settings.solver.library_digest(),
+                &text,
+            );
             let cached = settings
                 .cache
                 .as_ref()

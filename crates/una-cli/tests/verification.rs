@@ -357,6 +357,32 @@ pub first() -> Int = book(4321)
 }
 
 #[test]
+fn the_solver_memory_flag_takes_an_integer_from_256_to_1048576() {
+    // ADR 0124 rule 6, `spec/13 §5`: another value is a usage error, exit code 2, before any
+    // package is read.
+    for value in ["255", "x", "1048577", "-1"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_una"))
+            .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+            .env_remove("UNA_PROOF_KEY")
+            // `=` keeps `-1` a value rather than a flag of its own.
+            .args(["check", &format!("--solver-memory={value}"), "."])
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{value}: {}",
+            stderr(&output)
+        );
+        assert!(
+            stderr(&output).contains("--solver-memory"),
+            "{value}: {}",
+            stderr(&output)
+        );
+    }
+}
+
+#[test]
 fn host_capabilities_are_declared_in_std_host_with_their_signatures() {
     // ADR 0038 D6, `spec/14 §3`: the verifier sees the host capabilities as declarations of
     // `std.host`, and operations name their capability by that identity.

@@ -9619,6 +9619,9 @@ mod tests {
             fn describe(&self) -> String {
                 "no solver".to_owned()
             }
+            fn library_digest(&self) -> String {
+                String::new()
+            }
             fn run(
                 &self,
                 _: &str,

@@ -19,6 +19,9 @@ pub trait Solver: Send + Sync + fmt::Debug {
     fn version(&self) -> Result<String, String>;
     /// How this `una` names itself in a U5003 message, as `this una (0.4.0)`.
     fn describe(&self) -> String;
+    /// The SHA-256 of the solver library built into this `una`, which the proof cache's key
+    /// covers (ADR 0124 rule 10); empty when none is.
+    fn library_digest(&self) -> String;
     /// Runs `script` on a fresh child within `wallclock`, stopping early when `cancel` is set.
     ///
     /// # Errors

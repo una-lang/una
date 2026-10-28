@@ -16,7 +16,7 @@ use std::io::{Read, Write};
 use std::os::fd::AsFd;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
+use std::sync::{Condvar, Mutex, OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
 use sha2::{Digest, Sha256};
@@ -51,6 +51,137 @@ pub const DEFAULT_MEMORY_MIB: u64 = 4096;
 /// The exit status of a child that could not confine itself or has no solver: it writes no
 /// handshake, and the parent reports U5003 with its stderr.
 const NOT_CONFINED: u8 = 4;
+
+/// How the children of this process were confined, from the last child that answered: `own`,
+/// or `outer` with the operations the outer sandbox denies (rule 7), for the report's `tcb`
+/// section (rule 28). `None` until a child has run.
+static CONFINEMENT_SEEN: Mutex<Option<(String, Vec<String>)>> = Mutex::new(None);
+
+/// The confinement the last solver child reported, for the report: the kind, `own` or
+/// `outer`, and the denied operations of an outer sandbox.
+pub(crate) fn confinement_seen() -> Option<(String, Vec<String>)> {
+    CONFINEMENT_SEEN.lock().ok().and_then(|seen| seen.clone())
+}
+
+/// The admission of children (rule 6): at most as many at once as the machine has processors,
+/// and at most `max(1, ⌊M / (2 × L)⌋)` for the machine's (or the container's) memory `M` and
+/// the per-child limit `L`, so that their limits together stay within half of the memory. The
+/// per-child limit is fixed, so a query's outcome never depends on how many run beside it.
+struct Admission {
+    running: Mutex<usize>,
+    freed: Condvar,
+}
+
+static ADMISSION: OnceLock<Admission> = OnceLock::new();
+
+/// A running child's seat, given back when dropped.
+struct Seat;
+
+impl Drop for Seat {
+    fn drop(&mut self) {
+        if let Some(admission) = ADMISSION.get() {
+            // A poisoned lock still counts: the seat was taken, so it is given back.
+            let mut running = admission
+                .running
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *running = running.saturating_sub(1);
+            // Every waiter wakes, since waiters may have different capacities.
+            admission.freed.notify_all();
+        }
+    }
+}
+
+/// How many children may run at once for a per-child limit of `memory_mib`, from `processors`
+/// and the machine's memory `memory_bytes` (none known: the processors alone bound it).
+fn capacity(processors: usize, memory_bytes: Option<u64>, memory_mib: u64) -> usize {
+    let by_memory = memory_bytes.map_or(usize::MAX, |memory| {
+        let per_child = memory_mib
+            .saturating_mul(2)
+            .saturating_mul(1024 * 1024)
+            .max(1);
+        usize::try_from(memory / per_child)
+            .unwrap_or(usize::MAX)
+            .max(1)
+    });
+    processors.max(1).min(by_memory)
+}
+
+/// Waits for a seat: blocks while the children running are at the capacity, waking every
+/// 50 ms to notice a cancellation, in which case no seat is taken. A poisoned lock is used
+/// all the same: the count is a plain integer that no panic leaves half-written.
+fn admit(memory_mib: u64, cancel: Option<&AtomicBool>) -> Option<Seat> {
+    let admission = ADMISSION.get_or_init(|| Admission {
+        running: Mutex::new(0),
+        freed: Condvar::new(),
+    });
+    let processors = std::thread::available_parallelism().map_or(1, usize::from);
+    let capacity = capacity(processors, machine_memory(), memory_mib);
+    let mut running = admission
+        .running
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    while *running >= capacity {
+        if cancel.is_some_and(|cancel| cancel.load(Ordering::Relaxed)) {
+            return None;
+        }
+        running = admission
+            .freed
+            .wait_timeout(running, Duration::from_millis(50))
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .0;
+    }
+    *running += 1;
+    Some(Seat)
+}
+
+/// The memory the children may share: the machine's physical memory, or the limit of the
+/// control group `una` runs in when that is lower (Linux `memory.max`, rule 6).
+fn machine_memory() -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        let physical = std::fs::read_to_string("/proc/meminfo")
+            .ok()
+            .and_then(|text| {
+                text.lines()
+                    .find_map(|line| line.strip_prefix("MemTotal:"))
+                    .and_then(|rest| rest.trim().split(' ').next()?.parse::<u64>().ok())
+                    .map(|kib| kib.saturating_mul(1024))
+            });
+        // The process's own control group (v2: `0::<path>` in /proc/self/cgroup), then the
+        // root, then the v1 limit.
+        let own = std::fs::read_to_string("/proc/self/cgroup")
+            .ok()
+            .and_then(|text| {
+                text.lines()
+                    .find_map(|line| line.strip_prefix("0::"))
+                    .map(|path| format!("/sys/fs/cgroup{}/memory.max", path.trim()))
+            });
+        let cgroup = own
+            .iter()
+            .map(String::as_str)
+            .chain([
+                "/sys/fs/cgroup/memory.max",
+                "/sys/fs/cgroup/memory/memory.limit_in_bytes",
+            ])
+            .find_map(|path| {
+                std::fs::read_to_string(path)
+                    .ok()?
+                    .trim()
+                    .parse::<u64>()
+                    .ok()
+            });
+        match (physical, cgroup) {
+            (Some(physical), Some(limit)) => Some(physical.min(limit)),
+            (Some(physical), None) => Some(physical),
+            (None, limit) => limit,
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        una_sys::solver::footprint::physical_memory().ok()
+    }
+}
 
 /// The SHA-256 of this `una`'s build record, in hex: the `<build>` of the handshake.
 pub(crate) fn build_digest() -> String {
@@ -220,14 +351,37 @@ impl Solver for Launcher {
         format!("this una ({})", env!("CARGO_PKG_VERSION"))
     }
 
+    fn library_digest(&self) -> String {
+        // A development build's digest differs from every release's (rule 10), and a stand-in
+        // of the test hooks from both: their answers never serve a release's cache. The
+        // release digest is the library's alone, the same on every machine.
+        if let Some(stand_in) = self.stand_in() {
+            return format!("stand-in:{}:{}", stand_in.display(), build_digest());
+        }
+        if una_z3::BUILD.release {
+            una_z3::BUILD.library_sha256.to_owned()
+        } else {
+            format!("dev:{}", build_digest())
+        }
+    }
+
     fn run(
         &self,
         script: &str,
         wallclock: Duration,
         cancel: Option<&AtomicBool>,
     ) -> Result<Raw, String> {
-        // The deadline runs from before the child starts, and holds while the query is written:
-        // a child that does not read its input must not keep the run past its time (#286).
+        // A seat first (rule 6), then the deadline, which runs from before the child starts and
+        // holds while the query is written: a child that does not read its input must not keep
+        // the run past its time (#286); the wait for a seat is not the child's time.
+        let Some(_seat) = admit(self.memory_mib, cancel) else {
+            return Ok(Raw {
+                stdout: String::new(),
+                stderr: String::new(),
+                ended: Ended::Cancelled,
+                outer_denied: None,
+            });
+        };
         let started = Instant::now();
         let deadline = started + wallclock;
         let exe = self.executable()?;
@@ -493,7 +647,7 @@ impl Solver for Launcher {
         // The handshake line, and the outer-sandbox line when there is one, are stripped.
         let text = String::from_utf8_lossy(&output);
         let mut rest = text.split_once('\n').map_or("", |(_, rest)| rest);
-        let mut outer_denied = None;
+        let mut outer_denied: Option<Vec<String>> = None;
         if let Some(line) = rest.strip_prefix("una-solver-outer ") {
             let (denied, after) = line.split_once('\n').unwrap_or((line, ""));
             outer_denied = Some(
@@ -504,6 +658,12 @@ impl Solver for Launcher {
                     .collect(),
             );
             rest = after;
+        }
+        if let Ok(mut seen) = CONFINEMENT_SEEN.lock() {
+            *seen = Some(match &outer_denied {
+                Some(denied) => ("outer".to_owned(), denied.clone()),
+                None => ("own".to_owned(), Vec::new()),
+            });
         }
         Ok(Raw {
             stdout: rest.to_owned(),
@@ -554,6 +714,19 @@ mod tests {
         assert!(line.len() <= HANDSHAKE_BYTES);
         // The digest is of the build record, so it changes with the solver's library.
         assert_eq!(parts.get(4).copied(), Some(build_digest().as_str()));
+    }
+
+    #[test]
+    fn the_capacity_is_bounded_by_the_processors_and_half_the_memory() {
+        // Rule 6: 16 GiB with 4 GiB per child admits 2; 8 GiB admits 1; no memory known, the
+        // processors; a tiny machine still admits one.
+        let gib = 1024 * 1024 * 1024;
+        assert_eq!(capacity(8, Some(16 * gib), 4096), 2);
+        assert_eq!(capacity(8, Some(8 * gib), 4096), 1);
+        assert_eq!(capacity(8, Some(64 * gib), 4096), 8);
+        assert_eq!(capacity(8, None, 4096), 8);
+        assert_eq!(capacity(0, Some(gib), 4096), 1);
+        assert_eq!(capacity(4, Some(16 * gib), 256), 4);
     }
 
     #[test]
