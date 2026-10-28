@@ -156,7 +156,13 @@ fn tree(word: i64, within: &mut dyn FnMut() -> bool) -> Option<Tree> {
             }
             done = match tag(word) {
                 BOOLEAN => Some(Tree::Bool(field(word, 0) != 0)),
-                NUMBER => Some(Tree::Int(int_value(field(word, 0)).to_string())),
+                NUMBER => match una_core::int_text(&int_value(field(word, 0))) {
+                    Some(digits) => Some(Tree::Int(digits)),
+                    None => {
+                        TOO_LONG.with(|cell| cell.set(true));
+                        return None;
+                    }
+                },
                 DECIMAL => Some(Tree::Decimal(text_value(field(word, 0)))),
                 STR => Some(Tree::Str(text_value(field(word, 0)))),
                 ARRAY => {
@@ -242,14 +248,31 @@ pub fn parse_json(t: i64, site: i64) -> i64 {
 /// checked as [`parse_json`] checks it.
 pub fn to_json(j: i64, site: i64) -> i64 {
     let mut within = || runtime::budget(usize::try_from(site).unwrap_or(usize::MAX)) == 0;
-    tree(j, &mut within)
-        .and_then(|tree| json::write_within(&tree, &mut within))
-        .map_or_else(stopped, text_word)
+    TOO_LONG.with(|cell| cell.set(false));
+    let text = tree(j, &mut within).and_then(|tree| json::write_within(&tree, &mut within));
+    // A `Number` whose `Int` is too long for text aborts the run at the call (`spec/11 §7`,
+    // #923); the task then stops as one over the budget does.
+    if TOO_LONG.with(|cell| cell.replace(false)) {
+        runtime::int_text_abort(site);
+        return stopped();
+    }
+    text.map_or_else(stopped, text_word)
+}
+
+thread_local! {
+    /// Whether the last `to_json` of this thread met an `Int` of more than `MAX_INT_DIGITS`
+    /// digits, which is never written (`spec/11 §7`, #923).
+    static TOO_LONG: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 thread_local! {
     /// Whether the last `parse_json` or `to_json` of this thread stopped over the budget.
     static STOPPED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Exchanges the thread's [`STOPPED`] with a parked task's (`sched`).
+pub(crate) fn swap_stopped(stopped: &mut bool) {
+    *stopped = STOPPED.with(|cell| cell.replace(*stopped));
 }
 
 /// The value of a JSON call that stopped over the budget: `Null`, which the task's stop

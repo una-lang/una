@@ -1,10 +1,9 @@
 #!/bin/sh
-# Installs Una (#240): the `una` binary, the native runtime `lib/libuna_rt.a` and Z3 at the
-# version the release pins, into UNA_HOME (default ~/.una), as
+# Installs Una (#240): the `una` binary, with the solver built into it (ADR 0124), and the
+# native runtime `lib/libuna_rt.a`, into UNA_HOME (default ~/.una), as
 #
 #   UNA_HOME/bin/una
 #   UNA_HOME/lib/libuna_rt.a        (where `una build` looks, beside `bin/`)
-#   UNA_HOME/z3/bin/z3, and UNA_HOME/bin/z3 linking to it
 #   UNA_HOME/docs/guide/*.md        (the guides, from releases that ship them, #410)
 #
 # Every download is checked before anything is installed:
@@ -12,9 +11,9 @@
 #   (docs/validation/<version>.md, docs/release-gates.md), whose verdict must be PASS. The
 #   summary is read from the release's tag and, for a release tagged before summaries were
 #   committed, from the main branch. A macOS archive that was packed again after its release is
-#   accepted only as docs/validation/repacked.md pairs it with the summary's digest;
-# - Z3, against the SHA-256 that the Z3 project publishes for its release, pinned below as in
-#   scripts/install-z3.sh.
+#   accepted only as docs/validation/repacked.md pairs it with the summary's digest.
+# Nothing else is downloaded: the Z3 solver is built into `una` (ADR 0124), so no separate Z3
+# is installed and none is looked for on PATH.
 # A mismatch stops the installation with exit code 1, and nothing is installed. Nothing outside
 # UNA_HOME is changed: the script prints the line to add to your shell's profile.
 #
@@ -35,16 +34,12 @@
 #   UNA_RECORDS       where validation summaries are, as <base>/<ref>/docs/validation/<version>.md
 #                     with <ref> the tag v<version>, then main
 #                     (default: https://raw.githubusercontent.com/una-lang/una)
-#   UNA_Z3_RELEASES   where Z3 archives are, as <base>/z3-<version>/<asset>.zip
-#                     (default: https://github.com/Z3Prover/z3/releases/download)
 #
-# Needs: curl or wget, tar, unzip, and shasum or sha256sum.
+# Needs: curl or wget, tar, and shasum or sha256sum.
 set -eu
 
-# The release this script installs by default, and the Z3 it pins; a test keeps them equal to
-# the workspace version and to verification.lock and scripts/install-z3.sh.
+# The release this script installs by default; a test keeps it equal to the workspace version.
 DEFAULT_VERSION=0.3.16
-Z3_VERSION=5.1.0
 
 say() { printf '%s\n' "una install: $*"; }
 fail() {
@@ -96,23 +91,16 @@ fi
 version=${UNA_VERSION:-$DEFAULT_VERSION}
 releases=${UNA_RELEASES:-https://github.com/una-lang/una/releases/download}
 records=${UNA_RECORDS:-https://raw.githubusercontent.com/una-lang/una}
-z3_releases=${UNA_Z3_RELEASES:-https://github.com/Z3Prover/z3/releases/download}
 
-# The platform: the target of the archive and the Z3 asset with its published digest.
+# The platform: the target of the archive.
 platform="$(uname -s) $(uname -m)"
 case $platform in
     "Darwin arm64")
-        target=aarch64-apple-darwin
-        z3_asset=z3-5.1.0-arm64-osx-13.3
-        z3_sha256=81d29e934fd863079a74af35eecaeaef8047e0e12414d33ca322b358d68383db ;;
+        target=aarch64-apple-darwin ;;
     "Linux x86_64")
-        target=x86_64-unknown-linux-gnu
-        z3_asset=z3-5.1.0-x64-glibc-2.39
-        z3_sha256=f47be8d27d3230e823bf1eeede2fe0abaca55bb78d0b59974370e6689a92284a ;;
+        target=x86_64-unknown-linux-gnu ;;
     "Linux aarch64" | "Linux arm64")
-        target=aarch64-unknown-linux-gnu
-        z3_asset=z3-5.1.0-arm64-glibc-2.38
-        z3_sha256=2832cfd43c6862fbaf78834b5f1e35d031b4a87e85456b696c1c6f609cd5609e ;;
+        target=aarch64-unknown-linux-gnu ;;
     *) fail "no Una release for $platform; the releases are for macOS on arm64 and Linux on x86_64 and arm64" ;;
 esac
 
@@ -130,7 +118,7 @@ elif command -v shasum > /dev/null 2>&1; then
 else
     fail "neither sha256sum nor shasum is installed"
 fi
-for tool in tar unzip; do
+for tool in tar; do
     command -v "$tool" > /dev/null 2>&1 || fail "$tool is not installed"
 done
 
@@ -179,35 +167,25 @@ if [ "$actual" != "$expected" ]; then
     say "$archive is the repacked archive of the gated $expected (docs/validation/repacked.md)"
 fi
 
-say "downloading Z3 $Z3_VERSION"
-fetch "$z3_releases/z3-$Z3_VERSION/$z3_asset.zip" "$work/$z3_asset.zip" \
-    || fail "cannot download $z3_asset.zip"
-actual=$(digest "$work/$z3_asset.zip")
-[ "$actual" = "$z3_sha256" ] \
-    || fail "SHA-256 mismatch for $z3_asset.zip: expected $z3_sha256, the download is $actual"
-
 # Unpacked and checked in the work directory, then moved into place.
 tar -xzf "$work/$archive" -C "$work"
 unpacked=$work/una-$version-$target
 [ -x "$unpacked/una" ] && [ -f "$unpacked/lib/libuna_rt.a" ] \
     || fail "$archive does not hold una and lib/libuna_rt.a"
-unzip -q "$work/$z3_asset.zip" "$z3_asset/bin/z3" -d "$work"
 
 # The directories this installation creates, kept from an earlier record when there is one, so
 # that uninstall removes them and no other.
 created=$work/created
 : > "$created"
 [ -f "$marker" ] && sed -n 's/^dir //p' "$marker" > "$created"
-for dir in . bin lib z3 z3/bin; do
+for dir in . bin lib; do
     [ -d "$home/$dir" ] || echo "$dir" >> "$created"
 done
-mkdir -p "$home/bin" "$home/lib" "$home/z3/bin"
+mkdir -p "$home/bin" "$home/lib"
 cp "$unpacked/una" "$home/bin/una.new" && mv "$home/bin/una.new" "$home/bin/una"
 cp "$unpacked/lib/libuna_rt.a" "$home/lib/libuna_rt.a"
-cp "$work/$z3_asset/bin/z3" "$home/z3/bin/z3"
-chmod +x "$home/bin/una" "$home/z3/bin/z3"
-ln -sf ../z3/bin/z3 "$home/bin/z3"
-files="bin/una bin/z3 lib/libuna_rt.a z3/bin/z3"
+chmod +x "$home/bin/una"
+files="bin/una lib/libuna_rt.a"
 for doc in README.md LICENSE; do
     if [ -f "$unpacked/$doc" ]; then
         cp "$unpacked/$doc" "$home/$doc"
@@ -241,7 +219,7 @@ fi
 
 # The version is the one the validation summary vouched for. From 0.3.0 `una --version` also
 # names the editions it serves (#305); an older `una` has no such flag, and prints nothing here.
-say "installed una $version and Z3 $Z3_VERSION in $home"
+say "installed una $version in $home"
 "$home/bin/una" --version 2>/dev/null | sed 's/^/    /' || true
 case ":$PATH:" in
     *":$home/bin:"*) ;;

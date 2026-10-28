@@ -1,0 +1,21 @@
+# The CMake cache settings of the Z3 build (ADR 0124 rule 1), one per line, passed by
+# scripts/build-z3.sh as -D<setting>. A line starting with # is a comment.
+# Release: Z3's own release configuration, -O3 -DNDEBUG with _EXTERNAL_RELEASE and _MP_INTERNAL
+# (its CMakeLists.txt and cmake/cxx_compiler_flags_overrides.cmake), as scripts/mk_unix_dist.py
+# uses for the binaries the Z3 project publishes.
+CMAKE_BUILD_TYPE=Release
+# A static library, and nothing under the LGPL: Z3's own multiple-precision arithmetic, not GMP.
+Z3_BUILD_LIBZ3_SHARED=OFF
+Z3_USE_LIB_GMP=OFF
+# No git information in the version text, so the bytes do not depend on the checkout.
+Z3_INCLUDE_GIT_HASH=OFF
+Z3_INCLUDE_GIT_DESCRIBE=OFF
+# No bindings, examples or documentation.
+Z3_BUILD_PYTHON_BINDINGS=OFF
+Z3_BUILD_DOTNET_BINDINGS=OFF
+Z3_BUILD_JAVA_BINDINGS=OFF
+Z3_BUILD_JULIA_BINDINGS=OFF
+Z3_BUILD_OCAML_BINDINGS=OFF
+Z3_ENABLE_EXAMPLE_TARGETS=OFF
+Z3_BUILD_DOCUMENTATION=OFF
+Z3_BUILD_TEST_EXECUTABLES=OFF

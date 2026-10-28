@@ -78,6 +78,18 @@ module shop
 pub same[T](a: T, b: T) -> Bool = a == b
 ```
 
+A generic function cannot use `+` on `T`: the built-in constraints do not include arithmetic. Pass the operation as a function value instead. This states only how to combine two values; it does not promise associativity or any other algebraic law:
+
+```una
+module shop
+
+pub fold_with[T](items: List[T], initial: T, step: fn(T, T) -> T) -> T = items.fold(initial: initial, step: step)
+
+pub total(items: List[Int]) -> Int = fold_with(items, initial: 0, step: fn(acc, item) -> acc + item)
+```
+
+The runtime case [generic_fold_run](../../../../tests/conformance/runtime/generic_fold_run/src/fold.una) checks that this explicit operation sums `[1, 2, 3]` to `6`.
+
 ## Edge cases
 
 **Type arguments must satisfy the constraint.** A sum whose variants carry payloads does not satisfy `Ord`:

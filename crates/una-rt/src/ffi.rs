@@ -68,6 +68,26 @@ pub(crate) fn thread_allocated() -> usize {
     THREAD_ALLOCATED.with(std::cell::Cell::get)
 }
 
+#[cfg(test)]
+std::thread_local! {
+    /// What a test lambda holds on its task until the task ends: a stand-in for memory the task
+    /// keeps, which `sched` swaps and drops with the task's other thread-locals.
+    pub(crate) static FILLER: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Exchanges the thread's [`FILLER`] with a parked task's, in tests.
+#[cfg(test)]
+pub(crate) fn swap_filler(filler: &mut Vec<u8>) {
+    FILLER.with(|cell| std::mem::swap(&mut *cell.borrow_mut(), filler));
+}
+
+/// Exchanges the thread's count of allocated bytes with a parked task's (`sched`), so that each
+/// task's count is its own, as on a thread of its own.
+#[cfg(debug_assertions)]
+pub(crate) fn swap_thread_allocated(allocated: &mut usize) {
+    *allocated = THREAD_ALLOCATED.with(|cell| cell.replace(*allocated));
+}
+
 // SAFETY: every method forwards to `Cap<System>`, a `GlobalAlloc`, with the caller's arguments
 // unchanged, so each keeps the contract the caller met for it; the wrapper only reads counters
 // after the inner call returns, and allocates nothing itself.
@@ -164,6 +184,8 @@ pub unsafe extern "C" fn una_rt_start(
     // SAFETY: the caller passes `meta_len` bytes at `meta` (this function's contract).
     let meta = unsafe { text(meta, meta_len) }.unwrap_or_default();
     ignore_sigpipe();
+    // The kernel variants are chosen once, at start, by the processor (ADR 0120 rule 56).
+    dispatched();
     runtime::start(&args, &meta, move || entry())
 }
 
@@ -251,6 +273,8 @@ macro_rules! exported {
     ($($name:ident => $function:path, ($($arg:ident),*);)*) => {
         $(
             #[doc = concat!("[`", stringify!($function), "`], for the generated code.")]
+            // A tensor's functions of rank 8 take its site, the tensor and 8 indices and an item.
+            #[allow(clippy::too_many_arguments)]
             #[unsafe(no_mangle)]
             pub extern "C" fn $name($($arg: i64),*) -> i64 {
                 $function($($arg),*)
@@ -293,7 +317,7 @@ exported! {
     una_rt_int_mod => values::rem, (a, b);
     una_rt_int_neg => values::neg, (a);
     una_rt_int_compare => values::compare, (a, b);
-    una_rt_int_text => values::int_text, (a);
+    una_rt_int_text => runtime::int_text, (site, a);
     una_rt_bool_text => values::bool_text, (a);
     una_rt_text_concat => values::concat, (a, b);
     una_rt_text_append_owned => values::text_append_owned, (t, part);
@@ -333,6 +357,9 @@ exported! {
     una_rt_f64_literal => values::f64_literal, (bits);
     una_rt_f64_op => values::f64_op, (op, a, b, c);
     una_rt_f64_from_bits => values::f64_from_bits, (bits);
+    una_rt_f32_op => values::f32_op, (op, a, b, c);
+    una_rt_f32_from_bits => values::f32_from_bits, (bits);
+    una_rt_parse_f32 => values::parse_f32, (t);
     una_rt_parse_f64_failure => values::parse_f64_failure, (t);
     una_rt_parse_f64 => values::parse_f64, (t);
     una_rt_as_f64 => values::as_f64, (j);
@@ -354,6 +381,27 @@ exported! {
     una_rt_map_without => values::map_without, (map, key);
     una_rt_map_without_owned => values::map_without_owned, (map, key);
     una_rt_map_list => values::map_list, (map, part);
+    una_rt_collection_len => values::collection_len, (c);
+    una_rt_seq_empty => values::seq_empty, ();
+    una_rt_seq_of => values::seq_of, (xs, stack);
+    una_rt_seq_op => values::seq_op, (op, s, item);
+    una_rt_seq_op_owned => values::seq_op_owned, (op, s, item);
+    una_rt_set_empty => values::set_empty, ();
+    una_rt_set_of => values::set_of, (xs);
+    una_rt_set_op => values::set_op, (op, s, a, b);
+    una_rt_set_op_owned => values::set_op_owned, (op, s, a, b);
+    una_rt_priority_empty => values::priority_empty, (highest);
+    una_rt_priority_op => values::priority_op, (op, q, item, priority);
+    una_rt_priority_op_owned => values::priority_op_owned, (op, q, item, priority);
+    una_rt_bit_set_empty => values::bit_set_empty, (site, size);
+    una_rt_bit_set_op => values::bit_set_op, (site, op, b, x);
+    una_rt_bit_set_op_owned => values::bit_set_op_owned, (site, op, b, x);
+    una_rt_hash_empty => values::hash_empty, (site, set);
+    una_rt_hash_of_list => values::hash_of_list, (site, set, desc, xs);
+    una_rt_hash_map_op => values::hash_map_op, (site, op, desc, m, a, b);
+    una_rt_hash_map_op_owned => values::hash_map_op_owned, (site, op, desc, m, a, b);
+    una_rt_hash_set_op => values::hash_set_op, (site, op, desc, s, a);
+    una_rt_hash_set_op_owned => values::hash_set_op_owned, (site, op, desc, s, a);
     una_rt_reuse => values::reuse, (old, tag);
     una_rt_sum => values::sum, (xs);
     una_rt_generic_compare => generic::compare, (desc, a, b);
@@ -364,8 +412,8 @@ exported! {
     una_rt_generic_contains_at => generic::contains, (site, desc, xs, item);
     una_rt_generic_sum => generic::sum, (desc, xs);
     una_rt_generic_sort => generic::sort, (desc, xs);
-    una_rt_generic_write => generic::write, (desc, x);
-    una_rt_write => runtime::write, (ty, word);
+    una_rt_generic_write => generic::write, (site, desc, x);
+    una_rt_write => runtime::write, (site, ty, word);
     una_rt_descriptor_composite => generic::composite, (ty, params);
     una_rt_or_else => values::or_else, (o, default);
     una_rt_op_code => values::op_code, (instance, index);
@@ -393,7 +441,153 @@ exported! {
     una_rt_is_json_number => json::is_json_number, (t);
     una_rt_host_instance => host::host_instance, (capability);
     una_rt_handler_instance => host::handler_instance, (name);
+    una_rt_limiter_instance => host::limiter_instance, (at_most, per, waiting);
+    una_rt_limit_acquire => host::limit_acquire, (site, instance);
     una_rt_event => host::event, (site, instance);
+    // Dense values (`spec/29 §17`, ADR 0120, design note D5): the site first, and a tensor's
+    // functions per rank.
+    una_rt_array => values::dense::array, (site, xs);
+    una_rt_array_filled => values::dense::array_filled, (site, length, value);
+    una_rt_matrix => values::dense::matrix, (site, rows, columns, elements);
+    una_rt_matrix_filled => values::dense::matrix_filled, (site, rows, columns, value);
+    una_rt_matrix_diagonal => values::dense::matrix_diagonal, (site, values);
+    una_rt_tensor => values::dense::tensor, (site, shape, elements);
+    una_rt_tensor_filled => values::dense::tensor_filled, (site, shape, value);
+    una_rt_dense_array_get => values::dense::array_get, (site, a, index);
+    una_rt_dense_array_at => values::dense::array_at, (site, a, index);
+    una_rt_dense_array_set => values::dense::array_set, (site, a, index, item);
+    una_rt_dense_array_set_owned => values::dense::array_set_owned, (site, a, index, item);
+    una_rt_dense_array_slice => values::dense::array_slice, (site, a, from, until);
+    una_rt_dense_array_compact => values::dense::array_compact, (site, a);
+    una_rt_dense_array_to_list => values::dense::array_to_list, (site, a);
+    una_rt_dense_array_multiply_elements => values::dense::array_multiply_elements, (site, a, by);
+    una_rt_dense_array_divide_elements => values::dense::array_divide_elements, (site, a, by);
+    una_rt_dense_array_sum => values::dense::array_sum, (site, a);
+    una_rt_dense_array_dot => values::dense::array_dot, (site, a, with);
+    una_rt_dense_array_norm2 => values::dense::array_norm2, (site, a);
+    una_rt_dense_array_all_finite => values::dense::array_all_finite, (site, a);
+    una_rt_dense_array_sum_exact => values::dense::array_sum_exact, (site, a);
+    una_rt_dense_array_dot_exact => values::dense::array_dot_exact, (site, a, with);
+    una_rt_dense_array_add_scaled => values::dense::array_add_scaled, (site, a, x, by);
+    una_rt_dense_array_add_scaled_owned => values::dense::array_add_scaled_owned, (site, a, x, by);
+    una_rt_dense_array_scale => values::dense::array_scale, (site, a, by);
+    una_rt_dense_array_scale_owned => values::dense::array_scale_owned, (site, a, by);
+    una_rt_dense_array_to_tensor => values::dense::array_to_tensor, (site, a);
+    una_rt_dense_matrix_get => values::dense::matrix_get, (site, m, row, column);
+    una_rt_dense_matrix_at => values::dense::matrix_at, (site, m, row, column);
+    una_rt_dense_matrix_set => values::dense::matrix_set, (site, m, row, column, item);
+    una_rt_dense_matrix_set_owned => values::dense::matrix_set_owned, (site, m, row, column, item);
+    una_rt_dense_matrix_row => values::dense::matrix_row, (site, m, index);
+    una_rt_dense_matrix_column => values::dense::matrix_column, (site, m, index);
+    una_rt_dense_matrix_block => values::dense::matrix_block, (site, m, row_from, row_until, column_from, column_until);
+    una_rt_dense_matrix_transpose => values::dense::matrix_transpose, (site, m);
+    una_rt_dense_matrix_compact => values::dense::matrix_compact, (site, m);
+    una_rt_dense_matrix_multiply_elements => values::dense::matrix_multiply_elements, (site, m, by);
+    una_rt_dense_matrix_divide_elements => values::dense::matrix_divide_elements, (site, m, by);
+    una_rt_dense_matrix_sum => values::dense::matrix_sum, (site, m);
+    una_rt_dense_matrix_row_sums => values::dense::matrix_row_sums, (site, m);
+    una_rt_dense_matrix_column_sums => values::dense::matrix_column_sums, (site, m);
+    una_rt_dense_matrix_all_finite => values::dense::matrix_all_finite, (site, m);
+    una_rt_dense_matrix_sum_exact => values::dense::matrix_sum_exact, (site, m);
+    una_rt_dense_matrix_multiply => values::dense::matrix_multiply, (site, m, by);
+    una_rt_dense_matrix_multiply_array => values::dense::matrix_multiply_array, (site, m, by);
+    una_rt_dense_matrix_add_product => values::dense::matrix_add_product, (site, m, of, and);
+    una_rt_dense_matrix_add_product_owned => values::dense::matrix_add_product_owned, (site, m, of, and);
+    una_rt_dense_matrix_scale => values::dense::matrix_scale, (site, m, by);
+    una_rt_dense_matrix_scale_owned => values::dense::matrix_scale_owned, (site, m, by);
+    una_rt_dense_matrix_to_tensor => values::dense::matrix_to_tensor, (site, m);
+    una_rt_dense_matrix_lu => values::dense::matrix_lu, (site, m);
+    una_rt_dense_matrix_solve => values::dense::matrix_solve, (site, m, rhs);
+    una_rt_dense_matrix_solve_array => values::dense::matrix_solve_array, (site, m, rhs);
+    una_rt_dense_matrix_cholesky => values::dense::matrix_cholesky, (site, m);
+    una_rt_dense_matrix_solve_lower => values::dense::matrix_solve_lower, (site, m, rhs, unit);
+    una_rt_dense_matrix_solve_upper => values::dense::matrix_solve_upper, (site, m, rhs, unit);
+    una_rt_dense_lu_solve => values::dense::lu_solve, (site, f, rhs);
+    una_rt_dense_lu_factors => values::dense::lu_factors, (site, f);
+    una_rt_dense_lu_pivots => values::dense::lu_pivots, (site, f);
+    una_rt_dense_tensor_make_1 => values::dense::tensor_make_1, (site, a0, elements);
+    una_rt_dense_tensor_filled_1 => values::dense::tensor_filled_1, (site, a0, value);
+    una_rt_dense_tensor_get_1 => values::dense::tensor_get_1, (site, t, a0);
+    una_rt_dense_tensor_at_1 => values::dense::tensor_at_1, (site, t, a0);
+    una_rt_dense_tensor_set_1 => values::dense::tensor_set_1, (site, t, a0, item);
+    una_rt_dense_tensor_set_1_owned => values::dense::tensor_set_1_owned, (site, t, a0, item);
+    una_rt_dense_tensor_permute_1 => values::dense::tensor_permute_1, (site, t, a0);
+    una_rt_dense_tensor_reshape_1 => values::dense::tensor_reshape_1, (site, t, a0);
+    una_rt_dense_tensor_make_2 => values::dense::tensor_make_2, (site, a0, a1, elements);
+    una_rt_dense_tensor_filled_2 => values::dense::tensor_filled_2, (site, a0, a1, value);
+    una_rt_dense_tensor_get_2 => values::dense::tensor_get_2, (site, t, a0, a1);
+    una_rt_dense_tensor_at_2 => values::dense::tensor_at_2, (site, t, a0, a1);
+    una_rt_dense_tensor_set_2 => values::dense::tensor_set_2, (site, t, a0, a1, item);
+    una_rt_dense_tensor_set_2_owned => values::dense::tensor_set_2_owned, (site, t, a0, a1, item);
+    una_rt_dense_tensor_permute_2 => values::dense::tensor_permute_2, (site, t, a0, a1);
+    una_rt_dense_tensor_reshape_2 => values::dense::tensor_reshape_2, (site, t, a0, a1);
+    una_rt_dense_tensor_make_3 => values::dense::tensor_make_3, (site, a0, a1, a2, elements);
+    una_rt_dense_tensor_filled_3 => values::dense::tensor_filled_3, (site, a0, a1, a2, value);
+    una_rt_dense_tensor_get_3 => values::dense::tensor_get_3, (site, t, a0, a1, a2);
+    una_rt_dense_tensor_at_3 => values::dense::tensor_at_3, (site, t, a0, a1, a2);
+    una_rt_dense_tensor_set_3 => values::dense::tensor_set_3, (site, t, a0, a1, a2, item);
+    una_rt_dense_tensor_set_3_owned => values::dense::tensor_set_3_owned, (site, t, a0, a1, a2, item);
+    una_rt_dense_tensor_permute_3 => values::dense::tensor_permute_3, (site, t, a0, a1, a2);
+    una_rt_dense_tensor_reshape_3 => values::dense::tensor_reshape_3, (site, t, a0, a1, a2);
+    una_rt_dense_tensor_make_4 => values::dense::tensor_make_4, (site, a0, a1, a2, a3, elements);
+    una_rt_dense_tensor_filled_4 => values::dense::tensor_filled_4, (site, a0, a1, a2, a3, value);
+    una_rt_dense_tensor_get_4 => values::dense::tensor_get_4, (site, t, a0, a1, a2, a3);
+    una_rt_dense_tensor_at_4 => values::dense::tensor_at_4, (site, t, a0, a1, a2, a3);
+    una_rt_dense_tensor_set_4 => values::dense::tensor_set_4, (site, t, a0, a1, a2, a3, item);
+    una_rt_dense_tensor_set_4_owned => values::dense::tensor_set_4_owned, (site, t, a0, a1, a2, a3, item);
+    una_rt_dense_tensor_permute_4 => values::dense::tensor_permute_4, (site, t, a0, a1, a2, a3);
+    una_rt_dense_tensor_reshape_4 => values::dense::tensor_reshape_4, (site, t, a0, a1, a2, a3);
+    una_rt_dense_tensor_make_5 => values::dense::tensor_make_5, (site, a0, a1, a2, a3, a4, elements);
+    una_rt_dense_tensor_filled_5 => values::dense::tensor_filled_5, (site, a0, a1, a2, a3, a4, value);
+    una_rt_dense_tensor_get_5 => values::dense::tensor_get_5, (site, t, a0, a1, a2, a3, a4);
+    una_rt_dense_tensor_at_5 => values::dense::tensor_at_5, (site, t, a0, a1, a2, a3, a4);
+    una_rt_dense_tensor_set_5 => values::dense::tensor_set_5, (site, t, a0, a1, a2, a3, a4, item);
+    una_rt_dense_tensor_set_5_owned => values::dense::tensor_set_5_owned, (site, t, a0, a1, a2, a3, a4, item);
+    una_rt_dense_tensor_permute_5 => values::dense::tensor_permute_5, (site, t, a0, a1, a2, a3, a4);
+    una_rt_dense_tensor_reshape_5 => values::dense::tensor_reshape_5, (site, t, a0, a1, a2, a3, a4);
+    una_rt_dense_tensor_make_6 => values::dense::tensor_make_6, (site, a0, a1, a2, a3, a4, a5, elements);
+    una_rt_dense_tensor_filled_6 => values::dense::tensor_filled_6, (site, a0, a1, a2, a3, a4, a5, value);
+    una_rt_dense_tensor_get_6 => values::dense::tensor_get_6, (site, t, a0, a1, a2, a3, a4, a5);
+    una_rt_dense_tensor_at_6 => values::dense::tensor_at_6, (site, t, a0, a1, a2, a3, a4, a5);
+    una_rt_dense_tensor_set_6 => values::dense::tensor_set_6, (site, t, a0, a1, a2, a3, a4, a5, item);
+    una_rt_dense_tensor_set_6_owned => values::dense::tensor_set_6_owned, (site, t, a0, a1, a2, a3, a4, a5, item);
+    una_rt_dense_tensor_permute_6 => values::dense::tensor_permute_6, (site, t, a0, a1, a2, a3, a4, a5);
+    una_rt_dense_tensor_reshape_6 => values::dense::tensor_reshape_6, (site, t, a0, a1, a2, a3, a4, a5);
+    una_rt_dense_tensor_make_7 => values::dense::tensor_make_7, (site, a0, a1, a2, a3, a4, a5, a6, elements);
+    una_rt_dense_tensor_filled_7 => values::dense::tensor_filled_7, (site, a0, a1, a2, a3, a4, a5, a6, value);
+    una_rt_dense_tensor_get_7 => values::dense::tensor_get_7, (site, t, a0, a1, a2, a3, a4, a5, a6);
+    una_rt_dense_tensor_at_7 => values::dense::tensor_at_7, (site, t, a0, a1, a2, a3, a4, a5, a6);
+    una_rt_dense_tensor_set_7 => values::dense::tensor_set_7, (site, t, a0, a1, a2, a3, a4, a5, a6, item);
+    una_rt_dense_tensor_set_7_owned => values::dense::tensor_set_7_owned, (site, t, a0, a1, a2, a3, a4, a5, a6, item);
+    una_rt_dense_tensor_permute_7 => values::dense::tensor_permute_7, (site, t, a0, a1, a2, a3, a4, a5, a6);
+    una_rt_dense_tensor_reshape_7 => values::dense::tensor_reshape_7, (site, t, a0, a1, a2, a3, a4, a5, a6);
+    una_rt_dense_tensor_make_8 => values::dense::tensor_make_8, (site, a0, a1, a2, a3, a4, a5, a6, a7, elements);
+    una_rt_dense_tensor_filled_8 => values::dense::tensor_filled_8, (site, a0, a1, a2, a3, a4, a5, a6, a7, value);
+    una_rt_dense_tensor_get_8 => values::dense::tensor_get_8, (site, t, a0, a1, a2, a3, a4, a5, a6, a7);
+    una_rt_dense_tensor_at_8 => values::dense::tensor_at_8, (site, t, a0, a1, a2, a3, a4, a5, a6, a7);
+    una_rt_dense_tensor_set_8 => values::dense::tensor_set_8, (site, t, a0, a1, a2, a3, a4, a5, a6, a7, item);
+    una_rt_dense_tensor_set_8_owned => values::dense::tensor_set_8_owned, (site, t, a0, a1, a2, a3, a4, a5, a6, a7, item);
+    una_rt_dense_tensor_permute_8 => values::dense::tensor_permute_8, (site, t, a0, a1, a2, a3, a4, a5, a6, a7);
+    una_rt_dense_tensor_reshape_8 => values::dense::tensor_reshape_8, (site, t, a0, a1, a2, a3, a4, a5, a6, a7);
+    una_rt_dense_tensor_dim => values::dense::tensor_dim, (site, t, axis);
+    una_rt_dense_tensor_compact => values::dense::tensor_compact, (site, t);
+    una_rt_dense_tensor_to_array => values::dense::tensor_to_array, (site, t);
+    una_rt_dense_tensor_to_matrix => values::dense::tensor_to_matrix, (site, t);
+    una_rt_dense_tensor_multiply_elements => values::dense::tensor_multiply_elements, (site, t, by);
+    una_rt_dense_tensor_divide_elements => values::dense::tensor_divide_elements, (site, t, by);
+    una_rt_dense_tensor_sum => values::dense::tensor_sum, (site, t);
+    una_rt_dense_tensor_sum_axis => values::dense::tensor_sum_axis, (site, t, axis);
+    una_rt_dense_tensor_all_finite => values::dense::tensor_all_finite, (site, t);
+    una_rt_dense_tensor_sum_exact => values::dense::tensor_sum_exact, (site, t);
+    una_rt_dense_tensor_contract => values::dense::tensor_contract, (site, t, with, axis, other);
+    una_rt_dense_count => values::dense::dense_count, (d);
+    una_rt_dense_item => values::dense::dense_item, (d, k);
+    una_rt_dense_builder => values::dense::dense_builder, (site, like);
+    una_rt_dense_zip_builder => values::dense::dense_zip_builder, (site, like, other);
+    una_rt_dense_push => values::dense::dense_push, (site, builder, item);
+    una_rt_dense_unique => values::dense::dense_unique, (site, d);
+    una_rt_dense_write => values::dense::dense_write, (d, k, item);
+    una_rt_dense_shape => values::dense::dense_shape, (d, axis);
 }
 
 /// A new closure of the compiled lambda at `code`, which takes the closure and `arity`
@@ -460,6 +654,15 @@ pub extern "C" fn una_rt_main_failed(failure: i64) {
     runtime::main_failed(failure);
 }
 
+/// Called by the C `main` of a program that performs an operation of `Http`, before
+/// `una_rt_start`: lets the run build the client's TLS settings before `main` when its grants
+/// include `Http` ([`runtime::enable_http`]). A program without `Http` never calls it, so the
+/// linker drops the TLS stack from its executable (ADR 0074 H7).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_http_enable() {
+    runtime::enable_http();
+}
+
 /// Checks the memory budget at an iteration of the loop at `site` (U6003 over it): 1 when
 /// the task must stop instead ([`runtime::budget`]).
 #[unsafe(no_mangle)]
@@ -467,10 +670,56 @@ pub extern "C" fn una_rt_budget(site: i64) -> i64 {
     runtime::budget(usize::try_from(site).unwrap_or(usize::MAX))
 }
 
+/// Enters a `for ever within` loop whose deadline is the borrowed integer `ms`
+/// ([`crate::deadline::enter`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_deadline_enter(ms: i64) {
+    crate::deadline::enter(ms);
+}
+
+/// Starts an iteration of a `for ever within` loop ([`crate::deadline::iteration`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_deadline_iteration() {
+    crate::deadline::iteration();
+}
+
+/// Leaves a `for ever within` loop ([`crate::deadline::leave`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_deadline_leave() {
+    crate::deadline::leave();
+}
+
+/// Enters `e within d`, whose deadline is the borrowed integer `ms`, and returns the frame's id
+/// ([`crate::deadline::within_enter`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_within_enter(ms: i64) -> i64 {
+    crate::deadline::within_enter(ms)
+}
+
+/// Ends the `within` of the frame `id`, after `e` returned or failed (`stopped` 0) or after its
+/// task stopped inside it (`stopped` 1): 0 when `e`'s outcome stands, 1 when it timed out, 2 when
+/// the task stops on ([`crate::deadline::within_end`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_within_end(id: i64, stopped: i64) -> i64 {
+    crate::deadline::within_end(id, stopped)
+}
+
 /// The next tick of a driven program's loop, or 0 when it stops ([`runtime::drive_tick`]).
 #[unsafe(no_mangle)]
 pub extern "C" fn una_rt_drive_tick() -> i64 {
     runtime::drive_tick()
+}
+
+/// 1 when a `for ever` stops at the iteration that starts now ([`runtime::ever_start`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_ever_start() -> i64 {
+    runtime::ever_start()
+}
+
+/// Leaves the body of a `for ever` ([`runtime::ever_end`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_ever_end() {
+    runtime::ever_end();
 }
 
 /// 1 when the task must stop before an operation ([`runtime::poll`]).
@@ -508,6 +757,33 @@ pub extern "C" fn una_rt_together(closures: i64, site: i64) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn una_rt_together_for(closure: i64, items: i64, site: i64) -> i64 {
     tasks::together_for(closure, items, usize::try_from(site).unwrap_or(usize::MAX))
+}
+
+/// Runs the branches of `first of` at `site` ([`tasks::first_of`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_first_of(closures: i64, site: i64) -> i64 {
+    tasks::first_of(closures, usize::try_from(site).unwrap_or(usize::MAX))
+}
+
+/// Opens the `tasks` statement at `site`, bounded by the integer of the borrowed word `bound`
+/// when `bounded` is 1: 0, or 2 when the task stops instead ([`crate::started::tasks_begin`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_tasks_begin(bound: i64, bounded: i64, site: i64) -> i64 {
+    crate::started::tasks_begin(bound, bounded, usize::try_from(site).unwrap_or(usize::MAX))
+}
+
+/// Starts a task for the closure `closure`, which the caller keeps, at the `start` at `site`:
+/// 0, or 2 when the task stops instead ([`crate::started::start`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_start_task(closure: i64, site: i64) -> i64 {
+    crate::started::start(closure, usize::try_from(site).unwrap_or(usize::MAX), invoke)
+}
+
+/// Ends the innermost `tasks` statement once its block has ended, cancelling its tasks first
+/// when `cancel` is 1, and waits for them ([`crate::started::tasks_end`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_tasks_end(cancel: i64) {
+    crate::started::tasks_end(cancel);
 }
 
 /// How the last block of tasks ended ([`tasks::status`]).
@@ -608,6 +884,152 @@ pub fn fuzz_literals(bytes: &[u8]) -> (i64, i64) {
         )
     }
 }
+
+// ===== The dispatch of the dense kernels' target variants (ADR 0120 rule 56, #989) =====
+//
+// A self-contained block: the table of the variant this processor runs, chosen once, and
+// `variant_call!`, the one `unsafe` site of the dispatch.
+
+/// The table of dense kernels this process runs, chosen once by [`select`] at its first use,
+/// which [`una_rt_start`] makes the start of the process (ADR 0120 rule 56).
+static DISPATCHED: std::sync::OnceLock<una_core::dense::variants::Kernels> =
+    std::sync::OnceLock::new();
+
+/// The dense kernels of the variant this processor runs: x86-64-v4's when it has every feature
+/// of `X86_64_V4_FEATURES`, else x86-64-v3's when it has every feature of
+/// `X86_64_V3_FEATURES`, else the baseline; on AArch64 the baseline, whose `fma` is the
+/// `fmadd` instruction already. Chosen once, by the processor alone (rule 56); every variant
+/// gives the same bits (rule 53). O(1) after the first call.
+pub fn dispatched() -> &'static una_core::dense::variants::Kernels {
+    DISPATCHED.get_or_init(select)
+}
+
+/// The tables of every variant this processor can run, the baseline first: each x86-64
+/// variant's only when the detection of exactly its features succeeds. For the tests that run
+/// every variant against the reference's bits (rule 53). O(1).
+#[cfg_attr(not(target_arch = "x86_64"), allow(unused_mut))]
+pub fn runnable() -> Vec<una_core::dense::variants::Kernels> {
+    let mut tables = vec![una_core::dense::variants::Kernels::BASELINE];
+    #[cfg(target_arch = "x86_64")]
+    {
+        if una_core::dense::variants::x86_64_v3::detected() {
+            tables.push(x86_64_v3::KERNELS);
+        }
+        if una_core::dense::variants::x86_64_v4::detected() {
+            tables.push(x86_64_v4::KERNELS);
+        }
+    }
+    tables
+}
+
+/// The table [`dispatched`] holds: the most capable variant whose features the standard
+/// library's safe detection finds, in order x86-64-v4, x86-64-v3, baseline.
+fn select() -> una_core::dense::variants::Kernels {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if una_core::dense::variants::x86_64_v4::detected() {
+            return x86_64_v4::KERNELS;
+        }
+        if una_core::dense::variants::x86_64_v3::detected() {
+            return x86_64_v3::KERNELS;
+        }
+    }
+    una_core::dense::variants::Kernels::BASELINE
+}
+
+/// The calls of the target variants of `una_core::dense::variants`. `variant_call!(name)`
+/// makes the private module `name`: a safe wrapper for each kernel of the variant `name`, which
+/// calls it, and `name::KERNELS`, the table of those wrappers, which only [`select`] and
+/// [`runnable`] read, each after `una_core::dense::variants::name::detected()` returned true.
+/// The `@wrap` arm makes one wrapper and holds the one `unsafe` block of the dispatch.
+#[cfg(target_arch = "x86_64")]
+macro_rules! variant_call {
+    (@wrap $variant:ident, $kernel:ident($($arg:ident: $ty:ty),*) $(-> $ret:ty)?) => {
+        fn $kernel($($arg: $ty),*) $(-> $ret)? {
+            // SAFETY: a wrapper is reached only through `KERNELS`, which `select` and `runnable`
+            // return only after `una_core::dense::variants::<variant>::detected()` found, by the
+            // standard library's detection, every feature of the variant's `FEATURES`; the
+            // variant's `#[target_feature]` attributes are generated from the same tokens, so
+            // the processor has every feature the called code may use, and the test of rule 56
+            // shows that the toolchain implies no other. Neither the inputs nor the environment
+            // select the variant, only the processor does, and every variant gives the
+            // reference's bits (ADR 0120 rules 53 and 56, ADR 0058).
+            unsafe { una_core::dense::variants::$variant::$kernel($($arg),*) }
+        }
+    };
+    ($variant:ident) => {
+        /// The safe wrappers of one target variant and their table.
+        mod $variant {
+            use una_core::dense::Triangle;
+            use una_core::dense::variants::Kernels;
+
+            variant_call!(@wrap $variant, sum(items: &[f64]) -> f64);
+            variant_call!(@wrap $variant, dot_from(start: f64, x: &[f64], y: &[f64]) -> f64);
+            variant_call!(@wrap $variant, dot_pairs(
+                start: f64,
+                pairs: &mut dyn Iterator<Item = (f64, f64)>
+            ) -> f64);
+            variant_call!(@wrap $variant, norm2(
+                scan: &mut dyn Iterator<Item = f64>,
+                items: &mut dyn Iterator<Item = f64>
+            ) -> f64);
+            variant_call!(@wrap $variant, add_product(
+                c: &mut [f64],
+                a: &[f64],
+                b: &[f64],
+                m: usize,
+                k: usize,
+                n: usize
+            ));
+            variant_call!(@wrap $variant, multiply_array(
+                a: &[f64],
+                m: usize,
+                k: usize,
+                v: &[f64],
+                out: &mut [f64]
+            ));
+            variant_call!(@wrap $variant, lu(a: &mut [f64], n: usize, pivots: &mut [usize]) -> bool);
+            variant_call!(@wrap $variant, cholesky(a: &mut [f64], n: usize) -> bool);
+            variant_call!(@wrap $variant, solve_triangular(
+                t: &[f64],
+                n: usize,
+                b: &mut [f64],
+                r: usize,
+                triangle: Triangle,
+                unit_diagonal: bool
+            ));
+            variant_call!(@wrap $variant, lu_solve(
+                factors: &[f64],
+                pivots: &[usize],
+                n: usize,
+                b: &mut [f64],
+                r: usize
+            ));
+
+            /// The table of this variant's wrappers, read only after its detection.
+            pub(super) const KERNELS: Kernels = Kernels {
+                name: una_core::dense::variants::$variant::NAME,
+                sum,
+                dot_from,
+                dot_pairs,
+                norm2,
+                add_product,
+                multiply_array,
+                lu,
+                cholesky,
+                solve_triangular,
+                lu_solve,
+            };
+        }
+    };
+}
+
+#[cfg(target_arch = "x86_64")]
+variant_call!(x86_64_v3);
+#[cfg(target_arch = "x86_64")]
+variant_call!(x86_64_v4);
+
+// ===== End of the dispatch of the dense kernels' target variants =====
 
 #[cfg(test)]
 mod tests {
@@ -956,8 +1378,8 @@ mod tests {
         *state
     }
 
-    /// The number of words of [`word_pool`]: 26 chosen, then 16 drawn.
-    const WORD_POOL_LEN: usize = 42;
+    /// The number of words of [`word_pool`]: 28 chosen, then 16 drawn.
+    const WORD_POOL_LEN: usize = 44;
 
     /// One call of the word tests: the entry point's name, its function on words, the words.
     type WordCase = (&'static str, fn(&[i64]) -> i64, Vec<i64>);
@@ -965,16 +1387,25 @@ mod tests {
     /// The calls of the word tests (#766), in a fixed order: every entry point of the table but
     /// the host operations, whose effects (output, files, network) need a run's grants and are
     /// tested with them. All tuples of `pool` for an arity of two or less, and `drawn` tuples
-    /// drawn with a fixed seed above. `range` takes its words from `bounds` when given.
-    fn word_cases(pool: &[i64], bounds: Option<&[i64]>, drawn: usize) -> Vec<WordCase> {
+    /// drawn with a fixed seed above. `range` and the dense values filled from one element take
+    /// their words from `bounds` when given. The entry points of dense values draw `dense_drawn`
+    /// tuples rather than `drawn`.
+    fn word_cases(
+        pool: &[i64],
+        bounds: Option<&[i64]>,
+        drawn: usize,
+        dense_drawn: usize,
+    ) -> Vec<WordCase> {
         let mut state: u64 = 0x766;
         let mut cases = Vec::new();
         for (name, function, arity, call) in super::exported_table() {
             if function.starts_with("host") {
                 continue;
             }
+            // Outside a run no memory budget bounds a range's list, or a dense value filled
+            // from one element (#989): they take small bounds there.
             let words = match bounds {
-                Some(bounds) if name == "una_rt_range" => bounds,
+                Some(bounds) if name == "una_rt_range" || name.contains("_filled") => bounds,
                 _ => pool,
             };
             let mut tuples: Vec<Vec<i64>> = Vec::new();
@@ -987,7 +1418,15 @@ mod tests {
                     }
                 }
                 _ => {
-                    for _ in 0..drawn {
+                    let dense = [
+                        "una_rt_dense_",
+                        "una_rt_array",
+                        "una_rt_matrix",
+                        "una_rt_tensor",
+                    ]
+                    .iter()
+                    .any(|prefix| name.starts_with(prefix));
+                    for _ in 0..if dense { dense_drawn } else { drawn } {
                         tuples.push(
                             (0..arity)
                                 .map(|_| {
@@ -1045,6 +1484,9 @@ mod tests {
             some_list,
             values::data(3),
             values::map_empty(),
+            // Dense values (#989): an array of raw `F64` elements, and a matrix of words.
+            values::dense::array_filled(0, int(3), values::f64_word(0.5)),
+            values::dense::matrix_filled(0, int(2), int(2), int(7)),
         ];
         let mut state: u64 = 0x0766_0766;
         for _ in 0..16 {
@@ -1081,7 +1523,7 @@ mod tests {
                 (word_pool(), 600, 10_000)
             };
             let small: Vec<i64> = (-3..=3).map(int).collect();
-            let cases = word_cases(&pool, Some(&small), drawn);
+            let cases = word_cases(&pool, Some(&small), drawn, drawn);
             assert!(cases.len() > least, "{}", cases.len());
             let mut failures = Vec::new();
             for (name, call, tuple) in &cases {
@@ -1124,11 +1566,18 @@ mod tests {
             .ok()
             .and_then(|text| text.trim().parse().ok())
             .unwrap_or(0);
-        let args = ["--max-memory".to_owned(), "8".to_owned()];
+        // The budget counts every byte the process holds, this scenario's own list of cases
+        // included, about 14 MiB with the dense entry points (#989): 24 MiB leaves the calls
+        // about the 8 MiB they had before that list grew.
+        let args = ["--max-memory".to_owned(), "24".to_owned()];
         runtime::start(&args, SET_META, move || {
             let pool = word_pool();
             // Fewer drawn tuples than outside a run: each call that ends the run costs a process.
-            let cases = word_cases(&pool, None, 100);
+            // Almost every drawn tuple of a dense value's entry point ends the run, on a
+            // precondition (U8001) or a refusal of the memory budget (U6003), as design note
+            // D4 and D2 of #989 ask, and each ended run costs a process: they draw 20 tuples
+            // here, and all their tuples outside a run.
+            let cases = word_cases(&pool, None, 100, 20);
             for (index, (name, call, tuple)) in cases.iter().enumerate().skip(from) {
                 eprintln!("{WORDS_CALL} {index} {name}{tuple:?}");
                 call(tuple);
@@ -1145,7 +1594,7 @@ mod tests {
     #[cfg_attr(miri, ignore = "runs a process of its own, which Miri cannot")]
     fn every_entry_point_takes_any_word_in_a_run() {
         // #766, step 1, inside a started run, with its heap, its sites and a memory budget of
-        // 8 MiB: the same calls, `range` with every word. A call either returns, or ends the
+        // 24 MiB, about 8 MiB beyond the scenario's own list of cases: the same calls, `range` with every word. A call either returns, or ends the
         // run as the model says (exit code 1 or 3 with its diagnostic: U6003 over the budget,
         // U8001 for a `set` outside its list), and the next run resumes after it. A panic, a
         // signal, another exit, or a run that does not end within `DEADLINE` (a call that hangs,
@@ -2028,10 +2477,7 @@ mod tests {
         assert_eq!(tasks, ["1", "2 cancelled"]);
     }
 
-    std::thread_local! {
-        /// What [`fills_after_cancel`] holds on its thread until the thread ends.
-        static FILLER: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
-    }
+    use super::FILLER;
 
     /// A lambda with one parameter that records one event, says it started, waits until its
     /// task is cancelled, then holds all but 4 bytes of what the budget leaves until its thread

@@ -17,8 +17,17 @@ num-bigint.workspace = true
 serde_json.workspace = true
 una-core.workspace = true
 una-diag.workspace = true
+# The keyed hashing of `HashMap` and `HashSet` (ADR 0119 rule 19): SipHash-2-4, the process key and
+# the ordered table, one implementation for both engines. Without its `test-hooks` feature.
+una-hash.workspace = true
 una-http.workspace = true
 una-interp.workspace = true
+una-sys.workspace = true
+
+# The tests of the request pool use the test-only hooks of una-http (#1148); a dev-dependency
+# never reaches the shipped `libuna_rt.a`.
+[dev-dependencies]
+una-http = { workspace = true, features = ["test-hooks"] }
 
 # The workspace lints, except `unsafe_code`: ADR 0058 allows `unsafe` in one module, the
 # C ABI boundary of `ffi.rs`, which the generated code calls. `deny` lets that module opt in;

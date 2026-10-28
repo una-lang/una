@@ -1342,24 +1342,29 @@ version = "0.3.16"
 dependencies = [
  "cap",
  "clap",
+ "ed25519-dalek",
  "insta",
  "pretty_assertions",
  "serde",
  "serde_json",
  "sha2",
  "una-check",
+ "una-cli",
  "una-codegen",
  "una-core",
  "una-diag",
  "una-explain",
  "una-fmt",
+ "una-hash",
  "una-http",
  "una-interp",
  "una-lsp",
  "una-project",
  "una-report",
  "una-syntax",
+ "una-sys",
  "una-verify",
+ "una-z3",
 ]
 
 [[package]]
@@ -1427,6 +1432,8 @@ dependencies = [
  "rcgen",
  "rustls",
  "una-core",
+ "una-http",
+ "una-sys",
  "webpki-roots",
 ]
 
@@ -1441,7 +1448,20 @@ dependencies = [
  "toml",
  "una-core",
  "una-diag",
+ "una-hash",
  "una-http",
+ "una-syntax",
+ "una-sys",
+]
+
+[[package]]
+name = "una-itaty"
+version = "0.3.16"
+dependencies = [
+ "ed25519-dalek",
+ "pretty_assertions",
+ "sha2",
+ "una-project",
  "una-syntax",
 ]
 
@@ -1483,8 +1503,10 @@ dependencies = [
  "serde_json",
  "una-core",
  "una-diag",
+ "una-hash",
  "una-http",
  "una-interp",
+ "una-sys",
 ]
 
 [[package]]
@@ -1517,6 +1539,14 @@ dependencies = [
  "una-core",
  "una-diag",
  "una-syntax",
+]
+
+[[package]]
+name = "una-z3"
+version = "0.3.16"
+dependencies = [
+ "sha2",
+ "una-sys",
 ]
 
 [[package]]
