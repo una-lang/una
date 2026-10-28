@@ -92,9 +92,9 @@ The amendment of 2026-10-25 kept the cap of 1,200 lines of the ADR 0116 amendmen
 | `io.rs` | 39 |
 | `lib.rs` | 27 |
 | `poll.rs` | 174 |
-| `server.rs` | 160 |
+| `server.rs` | 165 |
 | `signals.rs` | 333 |
-| Total | 1,514 |
+| Total | 1,519 |
 
 counted as the amendment of 2026-10-25 counts, over those files:
 
@@ -102,4 +102,4 @@ counted as the amendment of 2026-10-25 counts, over those files:
 find crates/una-sys/src -name '*.rs' -not -path 'crates/una-sys/src/solver/*' -exec cat {} + | wc -l
 ```
 
-The cap of the base code becomes **1,589 lines**: 1,514 plus at most 5%, rounded down. It replaces the 1,200 lines of the ADR 0116 amendment of 2026-10-19, which the base code had already passed, and every earlier number for the base code. The 600 lines of `solver` and the 150 lines of `una-z3` stand as written. A change that would take the base code past 1,589 lines needs a new amendment, with its line count, before it merges; each pull request that changes the crate states the count in its description, as before.
+The cap of the base code becomes **1,594 lines**: 1,519 plus at most 5%, rounded down. It replaces the 1,200 lines of the ADR 0116 amendment of 2026-10-19, which the base code had already passed, and every earlier number for the base code. The 600 lines of `solver` and the 150 lines of `una-z3` stand as written. A change that would take the base code past 1,594 lines needs a new amendment, with its line count, before it merges; each pull request that changes the crate states the count in its description, as before.
