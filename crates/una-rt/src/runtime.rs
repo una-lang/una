@@ -2898,6 +2898,11 @@ fn over_budget(state: &State, held: usize) -> Option<String> {
     })
 }
 
+/// The site of a call that has none, for an abort of an operation whose entry point takes no
+/// site (#1042): [`abort_at`] then reports at the fallback location, the start of an unnamed
+/// file, since no position of the program is known.
+pub(crate) const NO_SITE: usize = usize::MAX;
+
 fn site_location(state: &State, site: usize) -> Location {
     state.sites.get(site).cloned().unwrap_or(Location {
         file: String::new(),
