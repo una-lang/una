@@ -110,7 +110,9 @@ fn falls_back_to_plain_text_when_a_position_is_outside_the_source() {
 
 #[test]
 fn a_counterexample_without_values_says_so_in_text_and_json() {
-    // #668: a refutation whose solver gave no values names the error, never an empty model.
+    // #668: a refutation whose solver gave no values says so, never an empty model. #855: the
+    // human note is fixed, since the solver's message names internal symbols; the message stays
+    // in the `--json` document.
     let mut diagnostic = refuted();
     diagnostic.counterexample = Some(Counterexample {
         bindings: Vec::new(),
@@ -118,11 +120,11 @@ fn a_counterexample_without_values_says_so_in_text_and_json() {
     });
     let rendered = render_human(std::slice::from_ref(&diagnostic), &BTreeMap::new(), false);
     assert!(
-        rendered.contains(
-            "counterexample: not available (the solver gave no values: line 12 column 14: unknown constant)"
-        ),
+        rendered
+            .contains("counterexample: not available (the solver gave no values for the model)"),
         "{rendered}"
     );
+    assert!(!rendered.contains("unknown constant"), "{rendered}");
     assert_eq!(
         serde_json::to_value(&diagnostic).unwrap()["counterexample"],
         json!({ "bindings": [], "unavailable": "line 12 column 14: unknown constant" })

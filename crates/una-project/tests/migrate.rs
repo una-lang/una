@@ -19,6 +19,7 @@ name = "events-example"
 version = "0.1.0"
 # The edition before migration.
 edition = "0.3"
+profile = "systems"
 
 [labels]
 categories = ["PII", "Location"]
@@ -38,6 +39,7 @@ checked_per_module = 1  # one checked escape
 
 [run]
 entry = "events.main"
+max_memory = 256
 grants = ["console", "files:data/:read,write", "keys:keys.toml", "http:https://api.example.com:8443:get,post", "http:https://other.example"]
 "#;
     let migration = migrate(toml, Some(LOCK), None).unwrap();
@@ -48,6 +50,7 @@ ita events_example
   version 0.1.0
   -- The edition before migration.
   edition 0.4
+  profile systems
 
 labels
   PII
@@ -70,6 +73,7 @@ contracts
 
 run
   entry events.main
+  max_memory 256
   grants
     console
     files "data/" read, write
@@ -85,13 +89,16 @@ run
     assert_eq!(migration.edition, Edition::V0_3);
     assert_eq!(
         migration.comments_left,
-        [(15, "# one checked escape".to_owned())]
+        [(16, "# one checked escape".to_owned())]
     );
     assert!(!migration.default_lock);
     // The texts read back with no error, and the lock keeps the pin.
     let (manifest, errors) = parse_ita_manifest(&migration.manifest);
     assert_eq!(errors, []);
     assert_eq!(manifest.grants.len(), 5);
+    // ADR 0109 rules 2 and 4: the profile and the budget move with the package.
+    assert_eq!(manifest.profile, una_project::Profile::Systems);
+    assert_eq!(manifest.max_memory, Some(256));
     let (lock, errors) = parse_ita_lock(&migration.lock);
     assert_eq!(errors, []);
     assert_eq!(lock.solver.step_budget, 7);

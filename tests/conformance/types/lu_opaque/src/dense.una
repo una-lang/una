@@ -1,0 +1,15 @@
+-- test: an Lu has no constructor, so no program forges a factorization, and no operator applies to it; Matrix and Tensor have no constructor either: each attempt is U2001
+-- spec: spec/29 §17
+-- expect: error U2001 at src/dense.una:9:23
+-- expect: error U2001 at src/dense.una:11:37
+-- expect: error U2001 at src/dense.una:13:38
+-- expect: error U2001 at src/dense.una:15:22
+module dense
+
+pub forged() -> Int = Lu(size: 2).size
+
+pub summed(f: Lu[F64]) -> Lu[F64] = f + f
+
+pub negated(f: Lu[F64]) -> Lu[F64] = -f
+
+pub built() -> Int = Tensor(shape: [1]).rank

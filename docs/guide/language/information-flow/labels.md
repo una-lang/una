@@ -131,8 +131,6 @@ pub validate(value: internal Int) -> internal Positive
   if value > 0 then value else fail NonPositive
 ```
 
-
-
 ## Edge cases
 
 **An undeclared category** is rejected:
@@ -176,7 +174,7 @@ Further rules:
 
 ## Edition
 
-Labels are the same in editions `0.1` and `0.2`, except at calls of generic functions: edition `0.2` raises only the positions of the result that can carry each type argument's labels, and edition `0.1` raises every position.
+Labels are the same in editions `0.1` and `0.2`, except at calls of generic functions: edition `0.2` raises only the positions of the result that can carry each type argument's labels, and edition `0.1` raises every position. Editions `0.3` and `0.4` keep the rules of edition `0.2` (`spec/13 §7`).
 
 ## Normative source
 

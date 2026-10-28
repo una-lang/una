@@ -1,7 +1,7 @@
 ---
 construct: ensures
 editions: ["0.1", "0.2", "0.3"]
-spec: ["spec/04 §2", "spec/02 §3", "spec/02 §8", "spec/03 §3", "spec/12 §3", "spec/12 §6", "spec/12 §7", "spec/05 §2", "spec/17 §3"]
+spec: ["spec/04 §2", "spec/02 §3", "spec/02 §8", "spec/03 §3", "spec/12 §3", "spec/12 §6", "spec/12 §7", "spec/05 §2", "spec/17 §3", "spec/13 §7"]
 codes: [U0102, U2012, U2014, U5001, U5002]
 ---
 
@@ -205,7 +205,7 @@ Further rules:
 
 ## Edition
 
-`ensures` is the same in editions `0.1` and `0.2`. Edition `0.2` adds `edit` parameters, and `old(x)` with them.
+`ensures` is the same in editions `0.1` and `0.2`. Edition `0.2` adds `edit` parameters, and `old(x)` with them. Editions `0.3` and `0.4` keep the rules of edition `0.2` (`spec/13 §7`).
 
 ## Normative source
 

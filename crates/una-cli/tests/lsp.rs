@@ -56,6 +56,7 @@ fn uri(path: &Path) -> String {
 fn cli_check(dir: &Path) -> Value {
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
         .args(["--json", "check"])
         .arg(dir)
         .output()
@@ -160,13 +161,15 @@ struct Session {
 }
 
 impl Session {
-    /// Starts `una lsp`, with `path` as its `PATH` when given, and initializes it with
-    /// UTF-32 positions.
+    /// Starts `una lsp`, with the program `z3` under `path` as the stand-in of its solver
+    /// child when given (ADR 0124; the test hooks), and initializes it with UTF-32 positions.
     fn start(path: Option<&Path>) -> Session {
         let mut command = Command::new(env!("CARGO_BIN_EXE_una"));
         command.env("HOME", env!("CARGO_TARGET_TMPDIR"));
+        command.env_remove("UNA_PROOF_KEY");
+        command.env_remove("UNA_SOLVER_STAND_IN");
         if let Some(path) = path {
-            command.env("PATH", path);
+            command.env("UNA_SOLVER_STAND_IN", path.join("z3"));
         }
         let mut child = command
             .arg("lsp")
@@ -378,20 +381,20 @@ pub send() -> Unit = write_one()
     assert_eq!(session.published(&file), json!([]));
     session.change(&file, 2, widening);
     let diagnostics = session.published(&file);
-    assert!(
-        diagnostics
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|d| d["code"] == "U3003")
-    );
+    let widened = diagnostics
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["code"] == "U3003")
+        .expect("U3003 is published")
+        .clone();
     std::fs::write(&file, widening).unwrap();
     let actions = session.request(
         "textDocument/codeAction",
         json!({
             "textDocument": { "uri": uri(&file) },
-            "range": diagnostics[0]["range"].clone(),
-            "context": { "diagnostics": diagnostics },
+            "range": widened["range"].clone(),
+            "context": { "diagnostics": [widened] },
         }),
     );
     let titles: Vec<&str> = actions
@@ -415,6 +418,107 @@ pub send() -> Unit = write_one()
             .iter()
             .any(|title| title.contains(&format!("[widens authority; cost: {widening_cost}]"))),
         "{titles:?}"
+    );
+    session.finish();
+}
+
+/// The package of the `[escape_budget]` case: two `checked`, where one is allowed. Its U7003
+/// has two repairs without cost, equal in order key, and then an escape.
+const BUDGET: &str = "module app\n\npub kind ParseError = Empty | TooLong\n\npub nonempty(raw: Text) -> Text\n  fails ParseError\n=\n  checked(raw, raw.len > 0) else fail Empty\n\npub short(raw: Text) -> Text\n  fails ParseError\n=\n  checked(raw, raw.len < 80) else fail TooLong\n";
+
+/// The message of the first diagnostic with `code` that the server publishes for `text`.
+fn message_of(name: &str, text: &str, code: &str, budget: bool) -> String {
+    let dir = package(name, "module app\n\npub fine(n: Int) -> Int = n\n");
+    if budget {
+        let manifest = dir.join("una.toml");
+        let mut toml = std::fs::read_to_string(&manifest).unwrap();
+        toml.push_str("\n[escape_budget]\nchecked_per_module = 1\n");
+        std::fs::write(&manifest, toml).unwrap();
+    }
+    let file = dir.join("src/app.una");
+    let mut session = Session::start(None);
+    session.open(&file, "module app\n\npub fine(n: Int) -> Int = n\n");
+    assert_eq!(session.published(&file), json!([]));
+    session.change(&file, 2, text);
+    let diagnostics = session.published(&file);
+    session.finish();
+    diagnostics
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["code"] == code)
+        .expect("the diagnostic of the code is published")["message"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+#[test]
+fn help_lines_follow_the_cost_order_of_the_repairs() {
+    // Advice without cost, then the escape: the order of `una check` and the quick fixes.
+    let text = "module app\n\npredicate opaque valid_slug(t: Text) -> Bool = t.len >= 3\n\npub accept(raw: Text) -> Bool = valid_slug(raw)\n";
+    assert_eq!(
+        message_of("help-order", text, "U2016", false),
+        "opaque predicate `valid_slug` is called outside `checked`, so its fact would bypass the escape budget\nhelp: if the code needs only the test and not the fact, test with a function, not a predicate, with the body of `valid_slug`\nhelp [escape: checked; cost: a runtime test replaces the static proof: the program fails at run time where the proof would have rejected it; it counts against [escape_budget] and is listed in the build report]: check the value with `checked(value, valid_slug(it)) else fail <Variant>`"
+    );
+}
+
+#[test]
+fn help_lines_of_equal_order_key_keep_their_reporting_order() {
+    // The first two repairs tie (no escape, no widening, equal rank): reporting order stays.
+    // The escape, which has the same rank, comes after them by its cost.
+    assert_eq!(
+        message_of("help-tie", BUDGET, "U7003", true),
+        "module `app` uses `checked` 2 times, and `[escape_budget] checked_per_module` allows 1\nhelp: state the fact in a refined type or a `requires` clause, so that the solver proves it, and remove the `checked`\nhelp: handle the values where the fact does not hold with a guard (`if` or a `when` arm), and remove the `checked`\nhelp [escape: escape_budget; cost: the module may use more runtime tests in place of proofs; each one is listed in the build report and needs review]: raise `checked_per_module` in `[escape_budget]` of `una.toml`"
+    );
+}
+
+#[test]
+fn a_repair_without_cost_has_a_plain_help_line_and_an_unmarked_title() {
+    let text = "module app\n\npredicate opaque valid_slug(t: Text) -> Bool = t.len >= 3\n\npub accept(raw: Text) -> Bool = valid_slug(raw)\n";
+    let message = message_of("help-plain", text, "U2016", false);
+    assert_eq!(
+        message.lines().nth(1).unwrap(),
+        "help: if the code needs only the test and not the fact, test with a function, not a predicate, with the body of `valid_slug`"
+    );
+
+    // A repair with an edit and no cost: its quick-fix title has no marker.
+    let wrong = "module wrong\n\npub fine(n: Int) -> Int = n\n";
+    let dir = package("title-plain", "module app\n\npub fine(n: Int) -> Int = n\n");
+    let file = dir.join("src/app.una");
+    let mut session = Session::start(None);
+    session.open(&file, "module app\n\npub fine(n: Int) -> Int = n\n");
+    assert_eq!(session.published(&file), json!([]));
+    session.change(&file, 2, wrong);
+    let diagnostics = session.published(&file);
+    let mismatch = diagnostics
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["code"] == "U1008")
+        .expect("U1008 is published")
+        .clone();
+    assert_eq!(
+        mismatch["message"],
+        "module `wrong` is in `src/app.una`, which must hold module `app`"
+    );
+    let actions = session.request(
+        "textDocument/codeAction",
+        json!({
+            "textDocument": { "uri": uri(&file) },
+            "range": mismatch["range"].clone(),
+            "context": { "diagnostics": [mismatch] },
+        }),
+    );
+    let titles: Vec<&str> = actions
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|action| action["title"].as_str())
+        .collect();
+    assert_eq!(
+        titles,
+        ["declare `module app`, or move the file to match `wrong`"]
     );
     session.finish();
 }
@@ -522,7 +626,7 @@ fn a_newer_change_cancels_tier_1_and_leaves_no_solver_behind() {
     std::fs::write(
         &staged,
         format!(
-            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo \"Z3 version 5.1.0 - 64 bit\"; exit 0; fi\necho $$ >> '{}'\nexec /bin/sleep 600\n",
+            "#!/bin/sh\necho \"$1\"\necho $$ >> '{}'\nexec /bin/sleep 600\n",
             pids.display()
         ),
     )

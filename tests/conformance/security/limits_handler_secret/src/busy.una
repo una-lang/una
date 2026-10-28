@@ -1,0 +1,33 @@
+-- test: the history of a limit through a handler (ADR 0116 P1, P8, ADR 0117 IF4): the operation `go` of the handler `busy` calls `fetch`, works on its `secret` parameter, and calls `fetch` again, so the handler's operations are an ancestor of the request in `fetch`, reached through the operation of its capability, and the request is U4001
+-- spec: spec/27 §9
+-- expect: error U4001 at src/busy.una:13:25
+module busy
+
+capability Work
+  op go(url: Text) -> Unit
+
+--- One request, whose failure it handles.
+fetch(url: Text) -> Unit
+  uses @http: Http[get]
+=
+  let outcome = attempt @http.get(url, headers: [], key_name: None)
+  unit
+
+crunch(key: secret Int) -> secret Int = key * 3
+
+handler busy(seed: secret Int) for Work
+  uses @http: Http[get]
+  op go(url) =
+    fetch(url)
+    let spent = crunch(seed)
+    fetch(url)
+
+serve(url: Text) -> Unit
+  uses @work: Work[go]
+=
+  @work.go(url)
+
+pub run(url: Text, key: secret Int) -> Unit
+  uses @http: Http[get]
+=
+  serve(url) with @work = busy(seed: key)

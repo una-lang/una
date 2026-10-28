@@ -6,7 +6,12 @@
 #
 # Gates, in order (all of them when none is named):
 #   clone        a fresh clone of the commit, from the repository's remote
-#   build        cargo build --release -p una-cli -p una-rt, then cargo test --workspace, cold
+#   build        cargo build --release -p una-cli -p una-rt, then cargo test --workspace, cold,
+#                then scripts/no-libm-build.sh and scripts/no-libm.sh (#1092): the release
+#                `una` links the runtime conformance programs, and no C math library symbol
+#                in that `una`, the release `libuna_rt.a` or those executables
+#                then scripts/load-commands.sh (#1103): that `una` and examples/hello it links
+#                load only what scripts/load-commands.txt lists
 #   deps         scripts/deps-audit.sh (#770): cargo-deny at its pinned version against the
 #                advisory database fetched now (advisories, licenses, bans, crates.io only), and
 #                the supply-chain review record; the database's commit goes into the record
@@ -21,6 +26,18 @@
 #                twice, compared
 #   native       the interpreter against the native executable, on every runnable program of
 #                the repository (spec/16 §5): the equivalence test of crates/una-cli/tests/native.rs
+#   timing-channels
+#                the security timing oracles (#1145): `cargo test --release --locked -p una-cli --test
+#                timing_channels -- --ignored --test-threads=1 --nocapture`, the real-clock tests that a timing
+#                channel stays closed, which the ordinary test run ignores; it runs right after
+#                `native`, with no Docker gate running, so the machine is as quiet as the run gets
+#   owner-replay the exhaustive models of the replay of an owner's chain (spec/30 §14 rule 5)
+#                and of yanks against it (spec/30 §15 rule 6), both to depth 5: `cargo test
+#                --release --locked -p una-project --lib -- --ignored --exact
+#                tlog::owner::model::owner_replay_holds_its_contract_to_depth_five --nocapture`,
+#                then the same with registry::yank_model::yanks_hold_their_invariants_to_depth_five;
+#                the ordinary test run checks both to depth 3, and the gate passes only when both
+#                pass
 #   sanitize     scripts/sanitize.sh (#766): Miri on the unit tests of una-rt, and the native
 #                equivalence test against una-rt built with AddressSanitizer, with the checking
 #                toolchain of scripts/check-toolchain.toml; macOS only for now
@@ -56,12 +73,27 @@
 #
 # UNA_GATES_SOURCE overrides where the clone comes from (default: the remote `origin`), and
 # UNA_GATES_Z3 where the pinned solver is (default: target/z3 of this checkout or of the clone).
-# Exit code: 0 when no gate failed, 1 when one did, 2 for a usage error.
+# The Docker gates run on Docker Desktop's context only: run them with
+# DOCKER_CONTEXT=desktop-linux (#1082, below).
+# Exit code: 0 when no gate failed, 1 when one did, 2 for a usage error or a refused Docker
+# context.
 #
 # Usage: scripts/release-gates.sh SHA OUT [GATE...]
 set -u
+# A trace would print the patterns below, and a startup file could read them: refuse a trace,
+# whether `bash -x` or an exported SHELLOPTS turned it on (SHELLOPTS itself is read-only, and
+# holds no xtrace once this check passes), drop the startup files the shells of the gates would
+# read, and write no core file that could hold the patterns.
+case $- in
+    *x*)
+        echo "release gates: refusing to run with xtrace (set -x), which would print the patterns" >&2
+        exit 2
+        ;;
+esac
+unset BASH_ENV ENV
+ulimit -c 0
 
-ALL=(clone build deps mac linux linux-arm64 release reproducible determinism native sanitize site formal hunt hunt-linux-arm64)
+ALL=(clone build deps mac linux linux-arm64 release reproducible determinism native timing-channels owner-replay sanitize site formal hunt hunt-linux-arm64 solver-identity limits toolchain-free)
 
 usage() {
     echo "usage: scripts/release-gates.sh SHA OUT [GATE...]; SHA is a full 40-digit commit, GATE is one of: ${ALL[*]}" >&2
@@ -81,26 +113,97 @@ done
 
 REPO=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 
-# The privacy pattern of the public summary (#717, docs/release-gates.md §3): UNA_PRIVACY_PATTERN
-# when the caller set it, else the macOS Keychain item una-privacy-pattern. It is held in a shell
-# variable that is never exported, and the caller's UNA_PRIVACY_PATTERN is unset at once, so no
-# gate and no child of a gate inherits it; only the summary step receives it. It is never
-# printed, logged or written. Without it the run stops before any gate (fail closed), unless
-# UNA_GATES_UNCHECKED=1 asks for a run whose summary is unchecked and that prints no publish
-# command, such as a dry run.
-PRIVACY=${UNA_PRIVACY_PATTERN:-}
-unset UNA_PRIVACY_PATTERN
-if [ -z "$PRIVACY" ] && command -v security > /dev/null 2>&1; then
-    PRIVACY=$(security find-generic-password -s una-privacy-pattern -w 2> /dev/null) || PRIVACY=""
-fi
-if [ -z "$PRIVACY" ]; then
-    if [ "${UNA_GATES_UNCHECKED:-}" = 1 ]; then
-        echo "release gates: no privacy pattern; UNA_GATES_UNCHECKED=1, so the summary is unchecked and no publish command is printed" >&2
+# The Docker backend (#1082): the Docker gates run on Docker Desktop's context desktop-linux,
+# never on whichever context happens to be active, since another runtime on the same machine can
+# hold it. When a requested gate needs Docker, the run refuses before any gate unless
+# DOCKER_CONTEXT, or else the active context, is desktop-linux, and DOCKER_HOST, which would
+# override the context, is unset. The context is then exported, so that every gate and its
+# children use it even if the active context changes during the run. The record names the
+# context and the server's version.
+DOCKER_GATES=" linux linux-arm64 release reproducible hunt-linux-arm64 toolchain-free "
+DOCKER_REQUIRED=desktop-linux
+NEEDS_DOCKER=0
+for gate in "${GATES[@]}"; do
+    case "$DOCKER_GATES" in *" $gate "*) NEEDS_DOCKER=1 ;; esac
+done
+docker_context() {
+    if [ -n "${DOCKER_CONTEXT:-}" ]; then
+        printf '%s' "$DOCKER_CONTEXT"
     else
-        echo "release gates: no privacy pattern: set UNA_PRIVACY_PATTERN, or create the Keychain item una-privacy-pattern; UNA_GATES_UNCHECKED=1 runs the gates without it, for a run that is not published" >&2
+        docker context show 2> /dev/null
+    fi
+}
+if [ $NEEDS_DOCKER = 1 ]; then
+    if [ -n "${DOCKER_HOST:-}" ]; then
+        echo "release gates: DOCKER_HOST is set, and it would override the Docker context; unset it and run with DOCKER_CONTEXT=$DOCKER_REQUIRED (#1082)" >&2
         exit 2
     fi
+    context=$(docker_context)
+    if [ "$context" != "$DOCKER_REQUIRED" ]; then
+        echo "release gates: the Docker gates run on the context $DOCKER_REQUIRED, and the context is ${context:-unknown}; run with DOCKER_CONTEXT=$DOCKER_REQUIRED (#1082)" >&2
+        exit 2
+    fi
+    export DOCKER_CONTEXT=$DOCKER_REQUIRED
 fi
+
+# The two patterns of this run (docs/release-gates.md §3): the privacy pattern of the public
+# summary (#717) and the neutrality pattern of the public pages (ADR 0088, #789). Each comes
+# from its environment variable when the caller set it, else from its macOS Keychain item. Each
+# is held in a shell variable that is never exported, the caller's variable unset at once, and
+# reaches the one step that applies it on a pipe (file descriptor 3), never in an environment
+# or an argument, which other processes of the machine could read: the summary step for the
+# privacy pattern, the site gate for the neutrality pattern. Neither is ever printed, logged or
+# written. Each must be a valid extended regular expression (grep -E, the one dialect every
+# check uses) that matches the canary `una-pattern-canary`, so that a pattern that matches
+# nothing cannot pass for a check. Without either, the run stops before any gate (fail
+# closed), unless UNA_GATES_UNCHECKED=1 asks for a run whose summary says it is unchecked and
+# that prints no publish command, such as a dry run.
+unset PRIVACY NEUTRALITY
+
+# The pattern named $1 (privacy or neutrality), from $2 (the value of the variable $3) or the
+# Keychain item una-$1-pattern, checked, into the variable named $4.
+read_pattern() {
+    local name=$1 value=$2 variable=$3 into=$4 status
+    if [ -z "$value" ] && command -v security > /dev/null 2>&1; then
+        value=$(security find-generic-password -s "una-$name-pattern" -w 2> /dev/null) || value=""
+    fi
+    if [ -z "$value" ]; then
+        if [ "${UNA_GATES_UNCHECKED:-}" = 1 ]; then
+            echo "release gates: no $name pattern; UNA_GATES_UNCHECKED=1, so this run is unchecked and prints no publish command" >&2
+            printf -v "$into" '%s' ""
+            return 0
+        fi
+        echo "release gates: no $name pattern: set $variable, or create the Keychain item una-$name-pattern; UNA_GATES_UNCHECKED=1 runs the gates without it, for a run that is not published" >&2
+        exit 2
+    fi
+    # A value that cannot be a pattern of this project: blank, all hexadecimal digits (what
+    # `security -w` prints for a value it cannot print as text), or longer than a pipe holds.
+    if [ -z "${value//[[:space:]]/}" ] || [[ $value =~ ^[0-9A-Fa-f]+$ ]] || [ ${#value} -gt 60000 ]; then
+        echo "release gates: the $name pattern is blank, hexadecimal or too long; set it again" >&2
+        exit 2
+    fi
+    case $value in
+        *una-pattern-canary*) ;;
+        *)
+            echo "release gates: the $name pattern does not name the canary una-pattern-canary (docs/release-gates.md §3)" >&2
+            exit 2
+            ;;
+    esac
+    printf 'una-pattern-canary\n' | grep -Eiq -f <(printf '%s\n' "$value") 2> /dev/null
+    status=$?
+    if [ "$status" = 2 ]; then
+        echo "release gates: the $name pattern is not a valid extended regular expression (grep -E)" >&2
+        exit 2
+    elif [ "$status" != 0 ]; then
+        echo "release gates: the $name pattern does not match the canary una-pattern-canary" >&2
+        exit 2
+    fi
+    printf -v "$into" '%s' "$value"
+}
+read_pattern privacy "${UNA_PRIVACY_PATTERN:-}" UNA_PRIVACY_PATTERN PRIVACY
+unset UNA_PRIVACY_PATTERN
+read_pattern neutrality "${UNA_NEUTRALITY_PATTERN:-}" UNA_NEUTRALITY_PATTERN NEUTRALITY
+unset UNA_NEUTRALITY_PATTERN
 SOURCE=${UNA_GATES_SOURCE:-$(git -C "$REPO" remote get-url origin)}
 mkdir -p "$OUT/logs"
 OUT=$(CDPATH='' cd -- "$OUT" && pwd)
@@ -151,7 +254,16 @@ run() {
     start=$(date +%s)
     if ! exact; then
         echo "the clone is not exactly $SHA with no change; run the clone gate first" > "$log"
-    elif (cd "$CLONE" && "$@") > "$log" 2>&1; then
+    elif (
+        cd "$CLONE" || exit 1
+        # Only the site gate's command gets the neutrality pattern, on file descriptor 3 (a
+        # pipe), and UNA_NEUTRALITY_PATTERN_FD says so; no other gate has that descriptor.
+        if [ "$gate" = site ] && [ -n "$NEUTRALITY" ]; then
+            UNA_NEUTRALITY_PATTERN_FD=3 "$@" 3< <(printf '%s\n' "$NEUTRALITY")
+        else
+            "$@"
+        fi
+    ) > "$log" 2>&1; then
         result=PASS
     fi
     record "$gate" "$result" $(($(date +%s) - start))
@@ -176,11 +288,59 @@ gate_clone() {
 }
 
 gate_build() {
+    # The Z3 library built into una (ADR 0124): from the cache, verified, or built once; every
+    # cargo step of the clone gets it by UNA_Z3_LIB. The standalone z3 of scripts/install-z3.sh
+    # serves the hunt gate alone.
+    # Then no C math library symbol (#1092), in what ships: the release `una` just built links
+    # every runnable program of tests/conformance/runtime that the native backend compiles
+    # (scripts/no-libm-build.sh, into target/no-libm; target/ is ignored, so the clone stays
+    # exact), and scripts/no-libm.sh reads the release graph's features and the undefined symbols
+    # of that `una`, of the release `libuna_rt.a` and of those executables, strictly.
     run build sh -c '
+        UNA_Z3_LIB=$(scripts/z3-library.sh) || exit 1
+        export UNA_Z3_LIB
+        no_libm=$(pwd)/target/no-libm
+        rm -rf "${no_libm:?}"
+        cargo build --locked --release -p una-cli -p una-rt \
+            && cargo test --workspace --locked \
+            && scripts/no-libm-build.sh target/release/una "$no_libm" \
+            && scripts/no-libm.sh target/release/una target/release/libuna_rt.a "$no_libm/executables" \
+            && scripts/load-commands.sh target/release/una'
+}
+
+gate_solver-identity() {
+    # ADR 0124 rule 31: the solver child against the standalone z3 built from the same library,
+    # byte for byte, over every query of the repository's obligations, each twice; against the
+    # Z3 project's own release (UNA_GATES_Z3_UPSTREAM, else the one scripts/install-z3.sh
+    # installs) by status, listed for review. The log keeps the counts.
+    run solver-identity sh -c '
+        UNA_Z3_LIB=$(scripts/z3-library.sh) || exit 1
+        export UNA_Z3_LIB
+        UNA_Z3_STANDALONE=$(dirname "$(dirname "$UNA_Z3_LIB")")/bin/z3
+        export UNA_Z3_STANDALONE
         if [ ! -x "'"$Z3"'/bin/z3" ]; then scripts/install-z3.sh "'"$Z3"'" || exit 1; fi
-        scripts/check-solver.sh \
-            && cargo build --locked --release -p una-cli -p una-rt \
-            && cargo test --workspace --locked'
+        UNA_Z3_UPSTREAM=${UNA_GATES_Z3_UPSTREAM:-'"$Z3"'/bin/z3}
+        export UNA_Z3_UPSTREAM
+        cargo test --release --locked -p una-cli --test solver_identity -- --ignored --nocapture'
+}
+
+gate_limits() {
+    # ADR 0124 rule 31: memout, cpu and wallclock each end as their reason with the parent intact.
+    run limits sh -c '
+        UNA_Z3_LIB=$(scripts/z3-library.sh) || exit 1
+        export UNA_Z3_LIB
+        cargo test --release --locked -p una-cli --test solver_limits -- --ignored --nocapture'
+}
+
+gate_toolchain-free() {
+    # ADR 0124 rule 31, the build phase for `una check` and `una test`: the release una alone,
+    # under a sandbox that execs nothing but una (macOS) and in a bare container (linux/arm64).
+    run toolchain-free sh -c '
+        UNA_Z3_LIB=$(scripts/z3-library.sh) || exit 1
+        export UNA_Z3_LIB
+        [ -x target/release/una ] || cargo build --locked --release -p una-cli || exit 1
+        scripts/toolchain-free.sh target/release/una examples/events \
+            && scripts/toolchain-free.sh target/release/una examples/events --linux-arm64'
 }
 
 gate_deps() { run deps scripts/deps-audit.sh; }
@@ -305,16 +465,54 @@ gate_hunt-linux-arm64() {
 }
 
 gate_site() {
+    # The neutrality pattern reaches this one command on file descriptor 3 (`run`), never in
+    # its environment or arguments; the command reads it into a variable, closes the
+    # descriptor, and hands it to the bundle and the website steps each on a pipe of its own.
     run site sh -c '
+        unset neutrality
+        neutrality=
+        if [ -n "${UNA_NEUTRALITY_PATTERN_FD:-}" ]; then
+            neutrality=$(cat <&3)
+            exec 3<&-
+        fi
+        unset UNA_NEUTRALITY_PATTERN_FD
+        # Each step reads the pattern from its own pipe on descriptor 3, when there is one.
+        with_pattern() {
+            if [ -n "$neutrality" ]; then
+                printf "%s\n" "$neutrality" | { UNA_NEUTRALITY_PATTERN_FD=3 "$@" 3<&0 </dev/null; }
+            else
+                "$@"
+            fi
+        }
         version=$(sed -n "s/^version = \"\(.*\)\"$/\1/p" Cargo.toml | head -n 1)
         scripts/doc-links.py --self-test \
             && scripts/site-learn-release.sh --self-test \
             && scripts/site-learn-una.sh --self-test \
             && scripts/doc-links.py \
-            && UNA_BIN=target/release/una scripts/site-bundle.sh "'"$OUT"'/site-bundle" \
-            && UNA_SITE_LEARN_SAME_VERSION=1 UNA_BIN=target/release/una scripts/site-website.sh "'"$OUT"'/site-bundle/una-docs-$version" "'"$OUT"'/site-website"'
+            && with_pattern env UNA_BIN=target/release/una scripts/site-bundle.sh "'"$OUT"'/site-bundle" \
+            && with_pattern env UNA_SITE_LEARN_SAME_VERSION=1 UNA_BIN=target/release/una scripts/site-website.sh "'"$OUT"'/site-bundle/una-docs-$version" "'"$OUT"'/site-website"'
 }
 gate_formal() { run formal scripts/formal.sh; }
+
+gate_timing-channels() {
+    # The security timing oracles (#1145, crates/una-cli/tests/timing_channels.rs): each test is
+    # ignored in the ordinary run and runs only here and in the step of the same name of
+    # scripts/local-ci.sh, one at a time, on the real clock of a native host.
+    run timing-channels cargo test --release --locked -p una-cli --test timing_channels -- --ignored --test-threads=1 --nocapture
+}
+
+gate_owner-replay() {
+    # The exhaustive model of the replay of an owner's chain (spec/30 §14 rule 5), then the
+    # model of yanks against it (spec/30 §15 rule 6): both ignored in the ordinary run, which
+    # checks each to depth 3, and both run here to depth 5; the gate passes only when both
+    # pass. They are unit tests of una-project, since the model of signatures that stands in
+    # for Ed25519 exists only in that crate's test build; `--release`, for their millions of
+    # replays; `--nocapture`, so the log holds their counts.
+    run owner-replay sh -c '
+        cargo test --release --locked -p una-project --lib -- --ignored --exact tlog::owner::model::owner_replay_holds_its_contract_to_depth_five --nocapture &&
+        cargo test --release --locked -p una-project --lib -- --ignored --exact registry::yank_model::yanks_hold_their_invariants_to_depth_five --nocapture
+    '
+}
 
 # #766: Miri on the runtime's unit tests, and the native equivalence test against the runtime
 # built with AddressSanitizer, by the checking toolchain of scripts/check-toolchain.toml, which
@@ -326,8 +524,9 @@ for gate in "${GATES[@]}"; do
 done
 
 # The Docker volume that local-ci made for this clone's target directory (named from its
-# path), so that runs do not pile volumes up.
-if command -v docker > /dev/null 2>&1; then
+# path), so that runs do not pile volumes up. Only a run that used Docker removes them, on the
+# context it checked.
+if [ $NEEDS_DOCKER = 1 ] && command -v docker > /dev/null 2>&1; then
     checkout=$(printf '%s' "$CLONE" | shasum -a 256 | cut -c1-12)
     docker volume rm "una-local-ci-target-$checkout" "una-local-ci-target-$checkout-arm64" \
         > /dev/null 2>&1 || true
@@ -341,6 +540,14 @@ fi
     subject=$(git -C "$CLONE" log -1 --format=%s "$SHA" 2>/dev/null || echo unknown)
     echo "- Subject: $subject"
     echo "- Run: $(date -u +%Y-%m-%dT%H:%M:%SZ), $(uname -sm), $(rustc --version 2>/dev/null || echo 'rustc unknown'), $(docker --version 2>/dev/null || echo 'Docker unavailable')"
+    if command -v docker > /dev/null 2>&1; then
+        server=$(docker version --format '{{.Server.Version}}' 2> /dev/null) || server=""
+        line="context ${context:-$(docker_context)}, server ${server:-unavailable}"
+    else
+        line="unavailable"
+    fi
+    [ $NEEDS_DOCKER = 1 ] || line="$line (no Docker gate ran)"
+    echo "- Docker: $line"
     echo "- Script: \`scripts/release-gates.sh\` at \`$(git -C "$REPO" rev-parse HEAD 2>/dev/null || echo unknown)\`"
     echo
     echo "| Gate | Result | Seconds | Log sha256 |"
@@ -430,11 +637,23 @@ echo "record: $OUT/record.md"
 # whose summary passed the privacy check (docs/release-gates.md §4).
 version=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$CLONE/Cargo.toml" 2>/dev/null | head -1)
 rm -f "$OUT/summary.md" "$OUT/release-notes.md" "$OUT"/una-*-validation.md
-if [ -n "$version" ] && UNA_PRIVACY_PATTERN="$PRIVACY" python3 -B "$REPO/scripts/release-summary.py" "$version" "$OUT/record.md" "$OUT/summary.md"; then
+# The privacy pattern goes to the summary step on descriptor 3; a run without the neutrality
+# pattern is unchecked too, and its summary says so.
+summary() {
+    local neutrality=checked
+    [ -n "$NEUTRALITY" ] || neutrality=unchecked
+    if [ -n "$PRIVACY" ]; then
+        UNA_PRIVACY_PATTERN_FD=3 UNA_SUMMARY_NEUTRALITY=$neutrality python3 -B "$REPO/scripts/release-summary.py" "$@" 3< <(printf '%s\n' "$PRIVACY")
+    else
+        UNA_SUMMARY_NEUTRALITY=$neutrality python3 -B "$REPO/scripts/release-summary.py" "$@"
+    fi
+}
+if [ -n "$version" ] && summary "$version" "$OUT/record.md" "$OUT/summary.md"; then
     built=$CLONE/target/local-release/v$version
     if [ -f "$built/notes.md" ]; then
         { cat "$OUT/summary.md"; echo; cat "$built/notes.md"; } > "$OUT/release-notes.md"
-        if grep -qx 'Verdict: PASS (every gate)' "$OUT/summary.md" && [ -n "$PRIVACY" ]; then
+        # Published only when both patterns checked this run.
+        if grep -qx 'Verdict: PASS (every gate)' "$OUT/summary.md" && [ -n "$PRIVACY" ] && [ -n "$NEUTRALITY" ]; then
             cp "$OUT/summary.md" "$OUT/una-$version-validation.md"
             sh "$REPO/scripts/release-publish.sh" "$version" "$OUT" "$built"
         fi

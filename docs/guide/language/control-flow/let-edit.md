@@ -142,7 +142,7 @@ example "local rollback preserves an already performed effect"
   expect performed @store.write
 ```
 
-This scenario demonstrates only Una's local `edit` and trace behavior; it does not promise rollback of effects or transactions in an external system. If an application retries after an uncertain response, it needs a destination-defined idempotency key and a way to query whether the prior operation committed. Retry is safe only when the destination's contract says so. A compensating action is another effect that can fail; it is not an automatic rollback. A durable journal or reconciliation workflow belongs to the application/service design, outside Una's guarantee.
+Only the caller's `edit` arguments are restored (`spec/17 §7` rules 1 and 2). An operation performed before the failure stays performed, and the trace records it; Una rolls back nothing in an external system. Undoing it takes another operation, which can fail in turn.
 
 ## Edge cases
 

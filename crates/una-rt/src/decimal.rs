@@ -11,6 +11,7 @@ use num_bigint::{BigInt, Sign};
 use una_core::DecimalOp;
 use una_core::decimal::{self, MAX_SCALE, ParseFailure, Rounding};
 
+use crate::runtime;
 use crate::values::{
     NONE, data, f64_value, f64_word, field, int_value, int_word, is_data, push, release,
     some_owned, tag, text_value, text_word,
@@ -20,13 +21,22 @@ use crate::values::{
 const NUMBER: i64 = 2;
 const DECIMAL: i64 = 3;
 
-/// The mode of the `Rounding` word `r`, by its variant's position; `HalfEven` for a word that
-/// is no `Rounding`.
-fn rounding(r: i64) -> Rounding {
-    usize::try_from(tag(r))
-        .ok()
-        .and_then(Rounding::from_index)
-        .unwrap_or(Rounding::HalfEven)
+/// The mode of the `Rounding` word `r`, by its variant's position. A word that is no `Rounding`
+/// is an internal error (#1042): the checker admits only a variant, so the generated code or
+/// the runtime is wrong, and no operation has a default mode (`spec/29 §16` rule 4). The run
+/// aborts with U8001, as the interpreter's fault does; outside a run the fault is counted and
+/// the caller returns a word of the right shape (#766).
+fn rounding(r: i64) -> Option<Rounding> {
+    let mode = usize::try_from(tag(r)).ok().and_then(Rounding::from_index);
+    if mode.is_none() {
+        crate::values::fault();
+        runtime::abort_at(
+            runtime::NO_SITE,
+            una_diag::Code::U8001,
+            "internal error: a decimal operation received a `Rounding` word that is no variant of `Rounding`".to_owned(),
+        );
+    }
+    mode
 }
 
 /// A variant of `Json` with one field, which it takes over.
@@ -53,7 +63,10 @@ pub fn decimal(index: i64, packed: i64, a: i64, b: i64, r: i64) -> i64 {
     match op {
         DecimalOp::FromF64(s) => {
             let bits = una_core::float::to_bits(f64_value(a));
-            return match decimal::from_f64_bits(bits, s, rounding(b)) {
+            let Some(mode) = rounding(b) else {
+                return NONE;
+            };
+            return match decimal::from_f64_bits(bits, s, mode) {
                 Some(c) => some_owned(int_word(&c)),
                 None => NONE,
             };
@@ -86,18 +99,25 @@ pub fn decimal(index: i64, packed: i64, a: i64, b: i64, r: i64) -> i64 {
         DecimalOp::Gt(s, t) => flag(compare(s, t).is_gt()),
         DecimalOp::Ge(s, t) => flag(compare(s, t).is_ge()),
         DecimalOp::Widen(s, t) => int_word(&decimal::widen(&x, s, t)),
-        DecimalOp::Rescale(s, t) => int_word(&decimal::rescale(&x, s, t, rounding(b))),
+        DecimalOp::Rescale(s, t) => match rounding(b) {
+            Some(mode) => int_word(&decimal::rescale(&x, s, t, mode)),
+            None => zero(),
+        },
         // The precondition makes the rescaling exact; truncation then drops only zeros.
         DecimalOp::RescaleExact(s, t) => {
             int_word(&decimal::rescale(&x, s, t, Rounding::TowardZero))
         }
-        DecimalOp::Divide(s, t, u) => {
-            int_word(&decimal::divide(&x, s, &y, t, u, rounding(r)).unwrap_or_default())
-        }
+        DecimalOp::Divide(s, t, u) => match rounding(r) {
+            Some(mode) => int_word(&decimal::divide(&x, s, &y, t, u, mode).unwrap_or_default()),
+            None => zero(),
+        },
         DecimalOp::Remainder(s, t, u) => {
             int_word(&decimal::remainder(&x, s, &y, t, u).unwrap_or_default())
         }
-        DecimalOp::ToInt(s) => int_word(&decimal::rescale(&x, s, 0, rounding(b))),
+        DecimalOp::ToInt(s) => match rounding(b) {
+            Some(mode) => int_word(&decimal::rescale(&x, s, 0, mode)),
+            None => zero(),
+        },
         DecimalOp::Coefficient | DecimalOp::FromInt => int_word(&x),
         DecimalOp::ToText(s) => text_word(decimal::render(&x, s)),
         DecimalOp::ToJson(0) => json(NUMBER, int_word(&x)),
@@ -200,6 +220,51 @@ mod tests {
         assert_eq!(text_value(written), "-0.05");
         release(written);
         assert_eq!(int_value(decimal(99, 0, 1, 1, 1)), BigInt::default());
+    }
+
+    #[test]
+    fn an_invalid_rounding_word_is_a_counted_fault_never_a_default_mode() {
+        // #1042: a word that is no `Rounding` variant must not round as `HalfEven`. Outside a
+        // run the abort returns, the fault is counted and the result has the right shape, 0;
+        // in a run the same call ends it with U8001 (`every_entry_point_takes_any_word_in_a_run`).
+        let faults = crate::values::faults();
+        let not_a_mode = crate::values::data(9);
+        let (rescale, packed) = DecimalOp::Rescale(2, 0).code();
+        assert_eq!(
+            int_value(decimal(rescale, packed, word(1999), not_a_mode, 1)),
+            BigInt::default()
+        );
+        assert_eq!(crate::values::faults(), faults + 1);
+        let (divide, packed) = DecimalOp::Divide(2, 2, 2).code();
+        assert_eq!(
+            int_value(decimal(divide, packed, word(100), word(300), not_a_mode)),
+            BigInt::default()
+        );
+        let (to_int, packed) = DecimalOp::ToInt(2).code();
+        assert_eq!(
+            int_value(decimal(to_int, packed, word(1999), not_a_mode, 1)),
+            BigInt::default()
+        );
+        let (from, packed) = DecimalOp::FromF64(2).code();
+        let tenth = crate::values::f64_word(0.1);
+        assert_eq!(decimal(from, packed, tenth, not_a_mode, 1), NONE);
+        release(tenth);
+        assert_eq!(crate::values::faults(), faults + 4);
+        // A valid mode still rounds: `19.99` rescaled to scale 0 is 20.
+        assert_eq!(
+            int_value(decimal(
+                rescale,
+                packed_of(DecimalOp::Rescale(2, 0)),
+                word(1999),
+                1,
+                1
+            )),
+            BigInt::from(20)
+        );
+    }
+
+    fn packed_of(op: DecimalOp) -> i64 {
+        op.code().1
     }
 
     #[test]
