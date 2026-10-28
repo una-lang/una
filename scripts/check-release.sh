@@ -27,6 +27,85 @@ out="$root/target/release-archives"
 )
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
+# Each command that runs the packed `una` or what it builds runs under a time limit, so that a
+# hang fails the check in minutes instead of holding the leg for days (#1133). Under emulation
+# (the x86_64 leg on an arm64 Mac, through Rosetta), a multithreaded `una` that starts several
+# solver processes at once can deadlock inside the translator; the leg sets
+# UNA_RELEASE_CHECK_RETRY=1, and a command that runs out of time is then tried once more, after a
+# dump of its threads and its children's, with the retry and its cause in the log
+# (docs/release-gates.md).
+dump_threads() {
+    echo "-- threads of $1 and its children, at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    ps -o pid,ppid,stat,command -p "$1" 2>/dev/null || true
+    for pid in "$1" $(pgrep -P "$1" 2>/dev/null || true); do
+        [ -d "/proc/$pid/task" ] || continue
+        for task in "/proc/$pid/task"/*; do
+            echo "pid $pid tid ${task##*/} $(cat "$task/comm" 2>/dev/null) wchan=$(cat "$task/wchan" 2>/dev/null) syscall=$(cut -d' ' -f1 "$task/syscall" 2>/dev/null)"
+        done
+    done
+}
+# bounded SECONDS OUT COMMAND...: runs COMMAND with its stdout in OUT and its stderr in OUT.err;
+# exits with COMMAND's status, or 124 when it is still running after SECONDS, then dumped and
+# killed with its children.
+bounded() {
+    limit=$1 into=$2
+    shift 2
+    "$@" > "$into" 2> "$into.err" &
+    pid=$!
+    ticks=0
+    while kill -0 "$pid" 2>/dev/null; do
+        if [ "$ticks" -ge $((limit * 5)) ]; then
+            dump_threads "$pid" >&2
+            pkill -9 -P "$pid" 2>/dev/null || true
+            kill -9 "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+            return 124
+        fi
+        sleep 0.2
+        ticks=$((ticks + 1))
+    done
+    wait "$pid"
+}
+# limited SECONDS OUT COMMAND...: `bounded`, tried once more under UNA_RELEASE_CHECK_RETRY=1 when
+# the first try ran out of time. A second timeout, or a timeout without the retry, is reported and
+# leaves "$tmp/timed-out", which the check reads after every command, even one run inside `$(...)`.
+limited() {
+    status=0
+    bounded "$@" || status=$?
+    if [ "$status" = 124 ] && [ "${UNA_RELEASE_CHECK_RETRY:-}" = 1 ]; then
+        echo "retry: \`$3\` ran out of its $1 s; emulator deadlock suspected (#1133); trying it once more" >&2
+        status=0
+        bounded "$@" || status=$?
+    fi
+    if [ "$status" = 124 ]; then
+        seconds=$1
+        shift 2
+        echo "error: \`$*\` ran out of its time limit of $seconds s (#1133)" >&2
+        : > "$tmp/timed-out"
+    fi
+    return "$status"
+}
+# timed_out: fails the check when a command ran out of its time limit.
+timed_out() {
+    if [ -e "$tmp/timed-out" ]; then
+        exit 1
+    fi
+}
+# shown DIR SECONDS COMMAND...: what `$(cd DIR && COMMAND 2>/dev/null || echo "exit $?")` gives,
+# under the time limit: COMMAND's stdout, and `exit N` on a line of its own when it fails.
+shown() {
+    place=$1 seconds=$2
+    shift 2
+    code=0
+    (cd "$place" && limited "$seconds" "$tmp/shown" "$@") || code=$?
+    if [ "$code" = 124 ]; then
+        return 124
+    fi
+    cat "$tmp/shown"
+    if [ "$code" != 0 ]; then
+        echo "exit $code"
+    fi
+}
 tar -xzf "$out/$name.tar.gz" -C "$tmp"
 # Every entry is owned by 0:0 with no user or group name, so the archive does not carry the
 # account that built it (#679). The listing's owner columns differ between the two tars.
@@ -49,14 +128,34 @@ fi
 # Keyed hashing's test hooks (a fixed key, a probe counter, a constant hash) exist only in the
 # toolchain's own test builds (ADR 0119 rule 9). Their module holds a marker that its key path
 # keeps: neither the symbol, by `nm`, nor its bytes, which a stripped binary still holds, may be
-# in the shipped `una` or `libuna_rt.a`.
-marker=UNA_HASH_TEST_HOOKS_MARKER
+# in the shipped `una` or `libuna_rt.a`. The same holds for the test hooks of the `Http`
+# client's reach pool, a lookup and a connect function a test can make hang and a pool started
+# on a first request (#1148), which only una-http's `test-hooks` feature compiles, and which
+# can unify into the workspace's test builds.
 for artifact in "$tmp/$name/una" "$tmp/$name/lib/libuna_rt.a"; do
-    if nm -a "$artifact" 2>/dev/null | grep -q "$marker" || LC_ALL=C grep -a -q "$marker" "$artifact"; then
-        echo "error: $artifact was built with keyed hashing's test hooks (ADR 0119 rule 9)" >&2
-        exit 1
-    fi
+    for marker in UNA_HASH_TEST_HOOKS_MARKER UNA_HTTP_TEST_HOOKS_MARKER; do
+        if nm -a "$artifact" 2>/dev/null | grep -q "$marker" || LC_ALL=C grep -a -q "$marker" "$artifact"; then
+            case $marker in
+                UNA_HASH_*) what="keyed hashing's test hooks (ADR 0119 rule 9)" ;;
+                *) what="the Http client's test hooks (#1148)" ;;
+            esac
+            echo "error: $artifact was built with $what" >&2
+            exit 1
+        fi
+    done
 done
+# The solver child's stand-in (the `test-hooks` feature of una-cli, ADR 0124 rule 11) exists
+# only in the toolchain's own test builds; its marker may be in no shipped una. And a shipped
+# una is never a development build: it has the release solver built in (rule 19).
+marker=UNA_CLI_TEST_HOOKS_MARKER
+if nm -a "$tmp/$name/una" 2>/dev/null | grep -q "$marker" || LC_ALL=C grep -a -q "$marker" "$tmp/$name/una"; then
+    echo "error: $tmp/$name/una was built with the solver's test hooks (ADR 0124 rule 11)" >&2
+    exit 1
+fi
+if "$tmp/$name/una" --version | grep -q '^development build$'; then
+    echo "error: $tmp/$name/una is a development build, with no release solver built in (ADR 0124 rule 19)" >&2
+    exit 1
+fi
 # AddressSanitizer's fiber interface and its unpoisoning are declared only in builds with
 # `--cfg una_asan`, which scripts/sanitize.sh alone sets (#1145): no shipped `una` or
 # `libuna_rt.a` may refer to them, by symbol or by bytes.
@@ -87,9 +186,27 @@ if [ ! -f "$tmp/$name/lib/libuna_rt.a" ]; then
     exit 1
 fi
 una="$tmp/$name/una"
-"$una" check examples/events
-"$una" test examples/events > /dev/null
-greeting=$("$una" run examples/hello)
+limited 300 "$tmp/step" "$una" check examples/events || { cat "$tmp/step" "$tmp/step.err" >&2; exit 1; }
+# The FMA disassembly gate (#1216; ADR 0114 Appendix C rules 7 and 8, as ADR 0120 Appendix A
+# amends them): on x86-64, no FMA instruction in the shipped `una` or `libuna_rt.a` outside the
+# dispatched kernel variants of the allowlist, which the packed `una` records in its build report
+# (`native.kernels.fma_allowlist`); without a report, scripts/check-fma.sh uses its own copy of
+# una_core::dense::variants::ALLOWLIST. On AArch64 the scan prints that it is not applicable.
+allowlist=$("$una" --json report examples/events 2>/dev/null \
+    | grep -o '"fma_allowlist":\[[^]]*\]' \
+    | sed -e 's/^"fma_allowlist":\[//' -e 's/\]$//' \
+    | tr ',' '\n' | sed -e 's/^"//' -e 's/"$//' || true)
+set --
+for prefix in $allowlist; do
+    set -- "$@" --allow "$prefix"
+done
+if [ "$#" -eq 0 ]; then
+    echo "note: no fma_allowlist in the report of the packed una; scripts/check-fma.sh uses its own"
+fi
+scripts/check-fma.sh "$@" "$tmp/$name/una" "$tmp/$name/lib/libuna_rt.a"
+limited 300 "$tmp/step" "$una" test examples/events || { cat "$tmp/step" "$tmp/step.err" >&2; exit 1; }
+limited 300 "$tmp/step" "$una" run examples/hello || { cat "$tmp/step.err" >&2; exit 1; }
+greeting=$(cat "$tmp/step")
 if [ "$greeting" != "Hello, Una" ]; then
     echo "error: the packed una printed \"$greeting\" for examples/hello" >&2
     exit 1
@@ -100,9 +217,11 @@ for example in examples/*/; do
     example=${example%/}
     dir="$tmp/native-$(basename "$example")"
     cp -R "$example" "$dir"
-    expected=$(cd "$dir" && "$una" run . 2>/dev/null || echo "exit $?")
-    "$una" build "$dir" --out "$dir/native-exe" > /dev/null
-    native=$(cd "$dir" && ./native-exe 2>/dev/null || echo "exit $?")
+    expected=$(shown "$dir" 300 "$una" run .) || true
+    timed_out
+    limited 600 "$tmp/step" "$una" build "$dir" --out "$dir/native-exe" || { cat "$tmp/step.err" >&2; exit 1; }
+    native=$(shown "$dir" 120 ./native-exe) || true
+    timed_out
     if [ "$native" != "$expected" ]; then
         echo "error: the natively built $example printed \"$native\"; una run printed \"$expected\"" >&2
         exit 1
@@ -116,7 +235,7 @@ cp -R examples/hello "$tmp/placed"
 for install in "$tmp/install-one" "$tmp/a-second-install-elsewhere"; do
     mkdir -p "$install"
     cp -R "$tmp/$name/." "$install/"
-    "$install/una" build "$tmp/placed" --out "$install/out/hello" > /dev/null
+    limited 600 "$tmp/step" "$install/una" build "$tmp/placed" --out "$install/out/hello" || { cat "$tmp/step.err" >&2; exit 1; }
 done
 if ! cmp -s "$tmp/install-one/out/hello" "$tmp/a-second-install-elsewhere/out/hello"; then
     echo "error: examples/hello built by $name in two places gives two different executables" >&2

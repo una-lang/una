@@ -1,0 +1,56 @@
+diff --git a/src/shell/CMakeLists.txt b/src/shell/CMakeLists.txt
+index 22c0719..f8d33f0 100644
+--- a/src/shell/CMakeLists.txt
++++ b/src/shell/CMakeLists.txt
+@@ -54,3 +54,33 @@ z3_append_linker_flag_list_to_target(shell ${Z3_DEPENDENT_EXTRA_CXX_LINK_FLAGS})
+ install(TARGETS shell
+   RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+ )
++
++# Una (ADR 0124 rule 1): the same front end as a static library, libz3shell.a, from the same
++# sources, objects, defines and flags as the z3 executable above, with its entry renamed to
++# una_z3_shell_main (UNA_Z3_SHELL_LIBRARY in main.cpp). Nothing else differs, so the solver
++# built into una and the standalone z3 beside it run the same code.
++add_library(shell_lib STATIC
++  datalog_frontend.cpp
++  dimacs_frontend.cpp
++  drat_frontend.cpp
++  "${CMAKE_CURRENT_BINARY_DIR}/gparams_register_modules.cpp"
++  "${CMAKE_CURRENT_BINARY_DIR}/install_tactic.cpp"
++  main.cpp
++  "${CMAKE_CURRENT_BINARY_DIR}/mem_initializer.cpp"
++  opt_frontend.cpp
++  smtlib_frontend.cpp
++  z3_log_frontend.cpp
++  ${shell_object_files}
++)
++set_target_properties(shell_lib PROPERTIES
++    OUTPUT_NAME z3shell
++    POSITION_INDEPENDENT_CODE ON
++    CXX_VISIBILITY_PRESET hidden
++    VISIBILITY_INLINES_HIDDEN ON)
++target_compile_definitions(shell_lib PRIVATE ${Z3_COMPONENT_CXX_DEFINES} UNA_Z3_SHELL_LIBRARY)
++target_compile_options(shell_lib PRIVATE ${Z3_COMPONENT_CXX_FLAGS})
++target_include_directories(shell_lib PRIVATE ${Z3_COMPONENT_EXTRA_INCLUDE_DIRS})
++z3_add_component_dependencies_to_target(shell_lib ${shell_expanded_deps})
++install(TARGETS shell_lib
++  ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
++)
+diff --git a/src/shell/main.cpp b/src/shell/main.cpp
+index 0703f73..699410b 100644
+--- a/src/shell/main.cpp
++++ b/src/shell/main.cpp
+@@ -385,7 +385,13 @@ static void parse_cmd_line_args(std::string& input_file, int argc, char ** argv)
+ }
+ 
+ 
++#ifdef UNA_Z3_SHELL_LIBRARY
++// Una (ADR 0124 rule 2): the same front end as a library entry, called by the solver child
++// of `una`; renamed so that it does not clash with the `main` of the program it is linked into.
++extern "C" int una_z3_shell_main(int argc, char ** argv) {
++#else
+ int STD_CALL main(int argc, char ** argv) {
++#endif
+      try {
+         unsigned return_value = 0;
+         memory::initialize(0);

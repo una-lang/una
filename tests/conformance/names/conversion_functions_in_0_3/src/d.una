@@ -1,0 +1,3 @@
+module d
+
+pub to_decimal(x: F64) -> Int = 0

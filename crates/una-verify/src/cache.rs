@@ -62,16 +62,18 @@ struct Entry {
 /// `solver` section of `ita.lock`.
 pub const KEY_DOMAIN: &str = "una-proof-cache/2";
 
-/// The key of a query.
+/// The key of a query, which binds an answer to the solver's build (ADR 0124 rule 10):
+/// `build` is the SHA-256 of the solver library built into `una`, so entries of another build
+/// are simply not found and each machine verifies its caches once again.
 ///
 /// - Editions `0.1` to `0.3`: the hex SHA-256 of `verification.lock`'s contents, a NUL byte,
-///   and the script (`spec/12 §9`).
+///   the build digest, a NUL byte, and the script (`spec/12 §9`).
 /// - Edition `0.4` (ADR 0122 rule 48): the hex SHA-256 of [`KEY_DOMAIN`], then, for each of the
-///   canonical text of the lock's `solver` section and the script, its length in decimal, a NUL
-///   byte and the text. The tag and the length prefixes keep it apart from the key of the
-///   earlier editions, and it does not cover the packages of the lock, so adding a dependency
-///   invalidates nothing.
-pub(crate) fn key(lock: &str, script: &str) -> String {
+///   canonical text of the lock's `solver` section, the build digest and the script, its
+///   length in decimal, a NUL byte and the text. The tag and the length prefixes keep it apart
+///   from the key of the earlier editions, and it does not cover the packages of the lock, so
+///   adding a dependency invalidates nothing.
+pub(crate) fn key(lock: &str, build: &str, script: &str) -> String {
     let mut hasher = Sha256::new();
     match lock
         .strip_prefix(KEY_DOMAIN)
@@ -79,7 +81,7 @@ pub(crate) fn key(lock: &str, script: &str) -> String {
     {
         Some(solver) => {
             hasher.update(KEY_DOMAIN.as_bytes());
-            for part in [solver, script] {
+            for part in [solver, build, script] {
                 hasher.update(part.len().to_string().as_bytes());
                 hasher.update(b"\0");
                 hasher.update(part.as_bytes());
@@ -87,6 +89,8 @@ pub(crate) fn key(lock: &str, script: &str) -> String {
         }
         None => {
             hasher.update(lock.as_bytes());
+            hasher.update(b"\0");
+            hasher.update(build.as_bytes());
             hasher.update(b"\0");
             hasher.update(script.as_bytes());
         }
@@ -139,7 +143,10 @@ fn read_entry(path: &Path) -> Option<String> {
 /// leads inside the package: the link itself is replaced by the entry.
 pub(crate) fn put(cache: &ProofCache, key: &str, answer: &Answer) {
     if answer.status == Status::Unknown
-        && matches!(answer.reason.as_deref(), Some("wallclock" | "cancelled"))
+        && matches!(
+            answer.reason.as_deref(),
+            Some("wallclock" | "cancelled" | "cpu" | "memout" | "crash")
+        )
     {
         return;
     }
@@ -221,11 +228,19 @@ mod key_tests {
         let mut expected = Sha256::new();
         expected.update(KEY_DOMAIN.as_bytes());
         expected.update(format!("{}\0{solver}", solver.len()).as_bytes());
+        expected.update(b"2\0ab");
         expected.update(b"5\0(q 1)");
-        assert_eq!(key(&tagged, "(q 1)"), hex(&expected.finalize()));
-        assert_ne!(key(&tagged, "(q 1)"), key(solver, "(q 1)"));
-        // Moving bytes between the two parts changes the key.
-        assert_ne!(key(&tagged, "(q 1)"), key(&format!("{tagged}("), "q 1)"));
+        assert_eq!(key(&tagged, "ab", "(q 1)"), hex(&expected.finalize()));
+        assert_ne!(key(&tagged, "ab", "(q 1)"), key(solver, "ab", "(q 1)"));
+        // Moving bytes between the parts changes the key, and so does the solver's build
+        // (ADR 0124 rule 10).
+        assert_ne!(
+            key(&tagged, "ab", "(q 1)"),
+            key(&format!("{tagged}("), "ab", "q 1)")
+        );
+        assert_ne!(key(&tagged, "ab", "(q 1)"), key(&tagged, "a", "b(q 1)"));
+        assert_ne!(key(&tagged, "ab", "(q 1)"), key(&tagged, "cd", "(q 1)"));
+        assert_ne!(key(solver, "ab", "(q 1)"), key(solver, "cd", "(q 1)"));
     }
 }
 
@@ -265,6 +280,8 @@ mod tests {
             reason: None,
             values: Vec::new(),
             values_error: None,
+            detail: None,
+            error_after_sat: false,
         }
     }
 
@@ -273,7 +290,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("una-cache-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let mine = cache(&dir, b"0123456789abcdef0123456789abcdef");
-        let query = key("lock", "(check-sat)");
+        let query = key("lock", "", "(check-sat)");
         put(&mine, &query, &proven());
         assert_eq!(get(&mine, &query), Some(proven()));
         // Another user's key does not authenticate the entry.
@@ -285,7 +302,7 @@ mod tests {
         assert_eq!(get(&mine, &query), None);
         let forged = Entry {
             answer: proven(),
-            tag: tag(&mine.key, &key("lock", "other"), &proven()).unwrap(),
+            tag: tag(&mine.key, &key("lock", "", "other"), &proven()).unwrap(),
         };
         std::fs::write(&file, serde_json::to_string(&forged).unwrap()).unwrap();
         assert_eq!(get(&mine, &query), None);
@@ -308,7 +325,7 @@ mod tests {
             dir: package.join(".una").join("cache").join("proofs"),
             key: b"0123456789abcdef0123456789abcdef".to_vec(),
         };
-        let query = key("lock", "(check-sat)");
+        let query = key("lock", "", "(check-sat)");
         for planted in [".una", ".una/cache", ".una/cache/proofs"] {
             // `remove_dir_all` removes a link itself, never what it leads to.
             let _ = std::fs::remove_dir_all(package.join(".una"));
@@ -346,7 +363,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("una-cache-format-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let mine = cache(&dir, b"0123456789abcdef0123456789abcdef");
-        let query = key("lock", "(check-sat)");
+        let query = key("lock", "", "(check-sat)");
         let write = |answer: &str| {
             let mut message = query.as_bytes().to_vec();
             message.push(0);
@@ -367,6 +384,8 @@ mod tests {
             reason: None,
             values: vec!["0".to_owned()],
             values_error: None,
+            detail: None,
+            error_after_sat: false,
         };
         write(&serde_json::to_string(&current).unwrap());
         assert_eq!(get(&mine, &query), Some(current));
@@ -387,8 +406,10 @@ mod tests {
             reason: None,
             values: vec!["0".to_owned()],
             values_error: None,
+            detail: None,
+            error_after_sat: false,
         };
-        let query = key("lock", "(check-sat)");
+        let query = key("lock", "", "(check-sat)");
         put(&mine, &query, &refuted);
         let file = entry(&dir, &query);
         let good = std::fs::read_to_string(&file).unwrap();
@@ -397,7 +418,7 @@ mod tests {
         let mut flipped: serde_json::Value = serde_json::from_str(&good).unwrap();
         flipped["answer"]["status"] = serde_json::json!("proven");
         flipped["answer"]["values"] = serde_json::json!([]);
-        let other = key("lock", "(check-sat) (other)");
+        let other = key("lock", "", "(check-sat) (other)");
         put(&mine, &other, &proven());
         let foreign = std::fs::read(entry(&dir, &other)).unwrap();
         let damaged: Vec<(&str, Vec<u8>)> = vec![
@@ -434,7 +455,7 @@ mod tests {
             b"0123456789abcdef0123456789abcdef".to_vec(),
         )
         .unwrap();
-        let query = key("lock", "(check-sat)");
+        let query = key("lock", "", "(check-sat)");
         put(&mine, &query, &proven());
         let file = entry(&mine.dir, &query);
         let good = std::fs::read(&file).unwrap();
@@ -451,6 +472,8 @@ mod tests {
             reason: None,
             values: vec!["0".to_owned()],
             values_error: None,
+            detail: None,
+            error_after_sat: false,
         };
         put(&mine, &query, &refuted);
         assert!(std::fs::symlink_metadata(&file).unwrap().is_file());

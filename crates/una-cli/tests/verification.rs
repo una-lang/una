@@ -310,32 +310,40 @@ pub first() -> Int = book(4321)
 ",
         )],
     );
+    // ADR 0124 rule 11: nothing on PATH is ever run. A build with the solver linked in proves
+    // with an empty PATH; a development build without it is U5003 at the lock's pin, naming
+    // the script that builds the library (rule 19).
     let empty = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("no-solver-path");
     std::fs::create_dir_all(&empty).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
         .env_remove("UNA_PROOF_KEY")
+        .env_remove("UNA_SOLVER_STAND_IN")
         .args(["--json", "check", root.to_str().unwrap()])
         .env("PATH", &empty)
         .output()
         .unwrap();
-    assert_eq!(output.status.code(), Some(1));
     let document: Value = serde_json::from_str(stdout(&output)).unwrap();
-    let diagnostic = &document["diagnostics"][0];
-    assert_eq!(diagnostic["code"], "U5003");
-    assert_eq!(diagnostic["primary"]["file"], "verification.lock");
-    assert_eq!(
-        diagnostic["primary"]["start"],
-        json!({"line": 3, "col": 20})
-    );
-    assert!(
-        diagnostic["message"]
-            .as_str()
-            .unwrap()
-            .contains("install it with scripts/install-z3.sh"),
-        "{}",
-        stdout(&output)
-    );
+    if una_z3::BUILD.linked {
+        assert_eq!(output.status.code(), Some(0), "{}", stdout(&output));
+    } else {
+        assert_eq!(output.status.code(), Some(1));
+        let diagnostic = &document["diagnostics"][0];
+        assert_eq!(diagnostic["code"], "U5003");
+        assert_eq!(diagnostic["primary"]["file"], "verification.lock");
+        assert_eq!(
+            diagnostic["primary"]["start"],
+            json!({"line": 3, "col": 20})
+        );
+        assert!(
+            diagnostic["message"]
+                .as_str()
+                .unwrap()
+                .contains("no solver built in; run scripts/build-z3.sh"),
+            "{}",
+            stdout(&output)
+        );
+    }
     // Tier 0 needs no solver.
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
@@ -346,6 +354,32 @@ pub first() -> Int = book(4321)
         .unwrap();
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     assert!(Path::new(&root).exists());
+}
+
+#[test]
+fn the_solver_memory_flag_takes_an_integer_from_256_to_1048576() {
+    // ADR 0124 rule 6, `spec/13 §5`: another value is a usage error, exit code 2, before any
+    // package is read.
+    for value in ["255", "x", "1048577", "-1"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_una"))
+            .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+            .env_remove("UNA_PROOF_KEY")
+            // `=` keeps `-1` a value rather than a flag of its own.
+            .args(["check", &format!("--solver-memory={value}"), "."])
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{value}: {}",
+            stderr(&output)
+        );
+        assert!(
+            stderr(&output).contains("--solver-memory"),
+            "{value}: {}",
+            stderr(&output)
+        );
+    }
 }
 
 #[test]
@@ -433,8 +467,10 @@ fn collect_op_paths(expr: &una_core::Expr, out: &mut Vec<String>) {
         | Expr::With { body, .. }
         | Expr::Within { body, .. }
         | Expr::LetTuple { body, .. }
+        | Expr::Tasks { body, .. }
         | Expr::Loop { body, .. } => collect_op_paths(body, out),
-        Expr::Together { tasks, .. } => {
+        Expr::Start { task, .. } => collect_op_paths(task, out),
+        Expr::Together { tasks, .. } | Expr::FirstOf { tasks, .. } => {
             for task in tasks {
                 collect_op_paths(task, out);
             }
@@ -463,9 +499,11 @@ fn a_query_the_solver_rejects_is_u8001_and_exits_with_3() {
     // Written under another name and renamed into place, so that no process can execute the
     // file while it is still open for writing ("text file busy", #286).
     let staged = bin.join("z3.staged");
+    // A stand-in for the solver child (ADR 0124; the test hooks): it writes the handshake it
+    // is given, reads the query and rejects it.
     std::fs::write(
         &staged,
-        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'Z3 version 5.1.0 - 64 bit'; exit 0; fi\ncat > /dev/null\necho '(error \"line 1 column 1: rejected\")'\n",
+        "#!/bin/sh\necho \"$1\"\ncat > /dev/null\necho '(error \"line 1 column 1: rejected\")'\n",
     )
     .unwrap();
     std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -474,8 +512,8 @@ fn a_query_the_solver_rejects_is_u8001_and_exits_with_3() {
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
         .env_remove("UNA_PROOF_KEY")
+        .env("UNA_SOLVER_STAND_IN", &solver)
         .args(["--json", "check", root.to_str().unwrap()])
-        .env("PATH", &bin)
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(3), "{}", stdout(&output));
@@ -1757,11 +1795,13 @@ fn a_query_the_solver_rejects_is_an_internal_error_11() {
         .unwrap()
         .to_owned();
     let staged = bin.join("z3.tmp");
+    // A stand-in for the solver child (ADR 0124; the test hooks): it writes the handshake it
+    // is given, reads the query and rejects it. The version check is against the solver built
+    // into `una`, with no process started (rule 10), so the pinned version is not printed.
+    let _ = version;
     std::fs::write(
         &staged,
-        format!(
-            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo \"Z3 version {version} - 64 bit\"; exit 0; fi\ncat > /dev/null\necho '(error \"line 1 column 1: unknown constant\")'\n"
-        ),
+        "#!/bin/sh\necho \"$1\"\ncat > /dev/null\necho '(error \"line 1 column 1: unknown constant\")'\n",
     )
     .unwrap();
     std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -1773,13 +1813,10 @@ fn a_query_the_solver_rejects_is_an_internal_error_11() {
             "module app\n\npub kind Pos = Int where it > 0\n\npub one() -> Pos = 1\n",
         )],
     );
-    // The stand-in first, and the system's own `cat` for it to read the query with.
-    let path = format!("{}:/usr/bin:/bin", bin.display());
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", scratch.join("home"))
         .env_remove("UNA_PROOF_KEY")
-        .env("PATH", path)
-        .env_remove("UNA_PROOF_KEY")
+        .env("UNA_SOLVER_STAND_IN", bin.join("z3"))
         .args(["--json", "check"])
         .arg(&root)
         .output()
@@ -1942,6 +1979,113 @@ fn a_loop_state_of_n_components_gives_queries_linear_in_n() {
         growth < 12.0,
         "8x the loop state gave {growth:.1}x the query bytes"
     );
+}
+
+/// A package of edition 0.4 under the test's temporary directory, with `source` as its module
+/// `facts`: described by `ita.una` and locked by the lock of a conformance case of edition 0.4
+/// (ADR 0122).
+fn facts_package_0_4(name: &str, source: &str) -> PathBuf {
+    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join("verification")
+        .join(name);
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("ita.una"),
+        format!("ita {name}\n  version 0.1.0\n  edition 0.4\n"),
+    )
+    .unwrap();
+    std::fs::copy(
+        repository().join("tests/conformance/verification/collection_facts/ita.lock"),
+        root.join("ita.lock"),
+    )
+    .unwrap();
+    std::fs::write(root.join("src/facts.una"), source).unwrap();
+    root
+}
+
+/// The queries of every obligation of the edition 0.4 package `name` whose module is
+/// `source`, as text, generated but not solved.
+fn queries_0_4(name: &str, source: &str) -> Vec<String> {
+    let root = facts_package_0_4(name, source);
+    let (checked, obligations) = generated(&root);
+    assert!(!obligations.is_empty(), "{name}: {:?}", checked.diagnostics);
+    let text = std::fs::read_to_string(repository().join("verification.lock")).unwrap();
+    let (lock, _) = una_project::parse_lock(&text);
+    let lock = una_verify::Lock {
+        text,
+        solver_version: lock.solver_version,
+        step_budget: lock.step_budget,
+        random_seed: lock.random_seed,
+    };
+    let queries = una_verify::queries(&obligations, &lock);
+    let _ = std::fs::remove_dir_all(&root);
+    queries
+}
+
+/// `n` updates of a hash set at one key, then a lookup of another: n frames, one key term
+/// besides the updated key.
+fn frames_source(n: usize) -> String {
+    let mut out = String::from(
+        "module facts\n\nimport std.collections (HashSet)\n\npub f(s: HashSet[Int], x: Int, y: Int) -> Bool\n  ensures result\n=\n  let edit t = s\n",
+    );
+    for _ in 0..n {
+        out.push_str("  edit t.add(item: x)\n");
+    }
+    out.push_str("  t.has(item: y)\n");
+    out
+}
+
+/// One update of a hash set, under `requires` clauses that look `n` keys up, one each: one
+/// frame, n key terms besides the updated key.
+fn keys_source(n: usize) -> String {
+    let params: Vec<String> = (0..n).map(|i| format!("y{i}: Int")).collect();
+    let lookups: String = (0..n)
+        .map(|i| format!("  requires s.has(item: y{i})\n"))
+        .collect();
+    format!(
+        "module facts\n\nimport std.collections (HashSet)\n\npub f(s: HashSet[Int], x: Int, {}) -> Bool\n{lookups}  ensures result\n=\n  let edit t = s\n  edit t.remove(item: x)\n  t.len >= 0\n",
+        params.join(", "),
+    )
+}
+
+/// The bytes of `queries`, and the number of frame instances they hold (ADR 0119 V3).
+fn frame_instances(queries: &[String]) -> (usize, usize) {
+    let bytes = queries.iter().map(String::len).sum();
+    let instances = queries
+        .iter()
+        .map(|query| query.matches("(=> (and (i!frame!").count())
+        .sum();
+    (bytes, instances)
+}
+
+#[test]
+fn collection_frames_grow_linearly_in_updates_and_in_key_terms() {
+    // ADR 0119 V8: a frame is instantiated once per key term that the query looks up, so a
+    // query with k frames and t key terms gains O(k · t) facts. With t fixed, 8x the updates
+    // give about 8x the bytes; with k fixed, 8x the key terms give about 8x the bytes. A frame
+    // instantiated at every `Int` term, the lengths included, would grow as n² with the
+    // updates. The counts are exact, so the bound needs no timing margin.
+    for (what, source) in [
+        ("updates", frames_source as fn(usize) -> String),
+        ("key terms", keys_source),
+    ] {
+        let name = if what == "updates" { "frames" } else { "keys" };
+        let (small, small_instances) =
+            frame_instances(&queries_0_4(&format!("{name}_50"), &source(50)));
+        let (large, large_instances) =
+            frame_instances(&queries_0_4(&format!("{name}_400"), &source(400)));
+        assert!(
+            small_instances >= 50 && large_instances >= 400,
+            "{what}: {small_instances} and {large_instances} frame instances"
+        );
+        let growth = large as f64 / small as f64;
+        eprintln!("8x the {what}: {growth:.1}x the query bytes ({small}, {large})");
+        assert!(
+            growth < 12.0,
+            "8x the {what} gave {growth:.1}x the query bytes"
+        );
+    }
 }
 
 /// Every conformance case and example of the repository: package directories and single files.
