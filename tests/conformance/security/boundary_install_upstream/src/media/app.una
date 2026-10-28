@@ -103,7 +103,7 @@ pub given_value(n: Int) -> Int
 =
   forward(n) with @log = relay(cb: spill)
 
-example "a handler given to the example and granted on by name"
+test "a handler given to the example and granted on by name"
   given @disk = store()
   given @log = heavy()
   do forward(1)

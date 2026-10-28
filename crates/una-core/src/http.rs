@@ -1,6 +1,8 @@
 //! URLs and `http:` grants (`spec/24 §2`): which origins and methods a run may reach. Pure, so
 //! the checker, the manifest and both engines read grants alike; the client is `una-http`.
 
+pub mod serve;
+
 /// A method of `Http`, one per operation (`spec/24 §1`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Method {

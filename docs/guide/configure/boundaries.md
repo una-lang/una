@@ -242,7 +242,7 @@ pub preview(path: Text) -> Text
 =
   shrink(path) with @files = @files[read]
 
-example "a preview reads through the boundary"
+test "a preview reads through the boundary"
   given @files = fixed("pixels")
   do preview("a.png")
   expect result == "pixels"

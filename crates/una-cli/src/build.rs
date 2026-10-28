@@ -239,6 +239,12 @@ pub(crate) fn build_command(
         {
             object.insert("hashing".to_owned(), json!(true));
         }
+        // `spec/31 §2` rule 4: an executable of edition 0.4 may take `serve:` grants.
+        if manifest.edition >= una_project::Edition::V0_4
+            && let Some(object) = meta.as_object_mut()
+        {
+            object.insert("serve".to_owned(), json!(true));
+        }
         // ADR 0116 amendment, P8 (#1145): a program with a task construct or a `for ever`
         // starts its workers and helper pools before `main`, so no thread starts inside a
         // construct, at a moment that earlier code could have decided.

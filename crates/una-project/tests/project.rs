@@ -139,6 +139,21 @@ fn manifest_errors_are_located() {
 }
 
 #[test]
+fn serve_grants_are_refused_in_una_toml() {
+    for edition in ["0.1", "0.3"] {
+        assert_eq!(
+            manifest_errors(&format!(
+                "[package]\nname = \"p\"\nversion = \"0.1.0\"\nedition = \"{edition}\"\n[run]\ngrants = [\"console\", \"serve:http://127.0.0.1:8080\"]\n"
+            )),
+            [
+                "U7002 6:22 a `serve:` grant needs edition 0.4, whose grants are written in ita.una; una.toml cannot hold one"
+            ]
+        );
+    }
+    assert!(!is_grant("serve:http://127.0.0.1:8080"));
+}
+
+#[test]
 fn grants_and_module_paths() {
     for grant in [
         "console",
@@ -418,4 +433,22 @@ fn a_systems_package_that_runs_declares_its_budget() {
         let (_, errors) = parse_manifest(&profile_manifest("0.3", package, run));
         assert!(errors.is_empty(), "{package} {run}: {errors:?}");
     }
+}
+
+#[test]
+fn a_listed_empty_grants_is_told_from_no_grants() {
+    // #925: `grants = []` is a final set that grants nothing, which `una check` and `una build`
+    // check `main` against; a `[run]` without `grants` lists none.
+    let (listed, errors) = parse_manifest(&format!(
+        "{PACKAGE}\n[run]\nentry = \"main\"\ngrants = []\n"
+    ));
+    assert_eq!(errors, vec![]);
+    assert!(listed.grants_listed);
+    assert!(listed.grants.is_empty());
+    let (absent, errors) = parse_manifest(&format!("{PACKAGE}\n[run]\nentry = \"main\"\n"));
+    assert_eq!(errors, vec![]);
+    assert!(!absent.grants_listed);
+    let (some, _) = parse_manifest(&format!("{PACKAGE}\n[run]\ngrants = [\"console\"]\n"));
+    assert!(some.grants_listed);
+    assert!(!parse_manifest(PACKAGE).0.grants_listed);
 }

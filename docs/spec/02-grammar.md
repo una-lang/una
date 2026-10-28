@@ -22,7 +22,8 @@ import          = "import" module_path "(" import_name { "," import_name } ")" N
 import_name     = lower_ident | upper_ident ;
 
 decl            = kind_decl | predicate_decl | function_decl | capability_decl
-                | handler_decl | policy_decl | requirement_decl | example_decl ;
+                | handler_decl | policy_decl | requirement_decl | example_decl
+                | test_decl ;                                (* edition 0.3, ADR 0105 *)
 ```
 
 (v0.3, ADR 0104.) In edition `0.3`, `decl` also takes `measure_decl`, and a type takes a unit after its core, `type = [ label ] type_core [ "of" unit_expr ] [ "in" range ]` (`spec/25 §1`, `§2`).
@@ -59,8 +60,10 @@ signed_int      = [ "-" ] int_lit ;
 
 ```ebnf
 cap_type_cond   = upper_ident [ "[" cap_op { "," cap_op } "]" ] ;
-cap_op          = lower_ident [ "where" line_expr ] ;
+cap_op          = lower_ident [ "gives" label ] [ "where" line_expr ] ;    (* "gives": ADR 0094 *)
 ```
+
+(v0.3, ADR 0094 rule 1.) `gives` and a label, the `label` of `spec/07 §2`, come before the condition: `owner gives internal[Service] where not dry_run`. In a function type's `uses`, `gives` is U0101 in every edition; in a header's `uses` before edition `0.3` it is U0103 (`spec/01 §5`).
 
 A `cap_op` ends at the first `,` or `]` at bracket and parenthesis depth 0: every nested `,`, `[ ]` or `( )` belongs to the expression. A function type's `uses` (`fn_type_clause`) keep `cap_type`, so `where` there is U0101 in every edition, as it is in a header's `uses` in editions `0.1` and `0.2`. The condition's meaning is in `spec/05 §3`.
 
@@ -140,6 +143,12 @@ example_decl    = "example" text_lit NEWLINE INDENT
                     expectation { expectation }
                     [ "stop" "after" integer_literal NEWLINE ]    (* edition 0.4, spec/26 §8 *)
                   DEDENT ;
+test_decl       = "test" text_lit NEWLINE INDENT             (* edition 0.3, ADR 0105 *)
+                    { "given" cap_ref "=" handler_call NEWLINE }
+                    "do" line_expr NEWLINE
+                    expectation { expectation }
+                    [ "stop" "after" integer_literal NEWLINE ]    (* edition 0.4, spec/26 §8 *)
+                  DEDENT ;
 handler_call    = lower_ident "(" [ args ] ")" ;
 expectation     = "expect" ( "fails" upper_ident
                            | [ "not" ] "performed" cap_ref "." lower_ident
@@ -147,6 +156,8 @@ expectation     = "expect" ( "fails" upper_ident
 ```
 
 After `expect`, the parser checks for `fails`, `performed` and `not performed` before falling back to `line_expr`.
+
+(v0.3, ADR 0105.) `test_decl` is the test declaration of edition `0.3`, with the body of `example_decl`; `example_decl` is the one of editions `0.1` and `0.2` (`spec/08 §2`). In edition `0.3`, `example` at the start of a declaration is U0103 with the exact rewrite to `test` (`spec/01 §5`), and the parser reads the declaration as `test_decl`.
 
 ## 6. Blocks and statements
 

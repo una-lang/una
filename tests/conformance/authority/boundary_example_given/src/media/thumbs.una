@@ -18,7 +18,7 @@ pub look(path: Text) -> Text
 =
   @files.read(path)
 
-example "a look through a handler that posts"
+test "a look through a handler that posts"
   given @net = quiet_net()
   given @files = posting_files()
   do look("a")

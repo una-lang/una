@@ -1,0 +1,16 @@
+ita case
+  version 0.1.0
+  edition 0.4
+
+run
+  grants
+    serve "http://127.0.0.1:8080"
+    serve "http://127.0.0.1:8080"
+    serve "http://0.0.0.0:8080"
+    serve "http://[::]:8080"
+    serve "https://[::1]:8080"
+      certificate "tls/chain.pem"
+      key "tls/key.pem"
+    serve "http://[::1]:9090"
+    serve "http://[::]:9090"
+    serve "http://127.0.0.2:8080"
