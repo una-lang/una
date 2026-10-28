@@ -491,8 +491,9 @@ fn parse_hooked<E>(text: &str, within: &mut dyn FnMut() -> Result<(), E>) -> Res
                         Some('}') => {
                             parser.bump();
                             if let Some(Frame::Object { mut entries, .. }) = frames.pop() {
-                                // Keys are unique, so an unstable sort orders them fully; a
-                                // run of keys already in order sorts in one pass.
+                                // The standard library's stable sort, which finds runs: keys
+                                // already in order, as `to_json` writes them, sort in one pass,
+                                // O(k), and each engine then builds the map in bulk (#886).
                                 entries.sort_by(|a, b| a.0.cmp(&b.0));
                                 value = Some(Tree::Object(entries));
                             }
