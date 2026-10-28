@@ -1,0 +1,9 @@
+-- test: a declared memory budget of 0 MiB is U7008 at its value, and is not reported again as missing (ADR 0109 rule 4)
+-- spec: spec/30 §2
+-- expect: error U7008 at ita.una:8:14
+module main
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print("hello")

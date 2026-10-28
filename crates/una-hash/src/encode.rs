@@ -135,4 +135,12 @@ impl<'a, S: Sink> Encoder<'a, S> {
         self.len(bytes.len());
         self.sink.put(bytes);
     }
+
+    /// The 64-bit words of a `BitSet`, each as its 8 bytes, little-endian, with no tag: the size
+    /// written before them, as an integer, fixes their number (ADR 0119 rule 9).
+    pub fn words(&mut self, words: &[u64]) {
+        for word in words {
+            self.sink.put(&word.to_le_bytes());
+        }
+    }
 }

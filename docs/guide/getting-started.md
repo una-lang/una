@@ -94,7 +94,7 @@ pub main() -> Unit
 
 - A function is an equation: its header, then `=`, then its body.
 - `split` and `filter` are prelude functions, called with method syntax.
-- `main` says which capabilities it uses: `@console`, with the operation `print`. A line without `@` touches nothing outside the program.
+- `main` says which capabilities it uses: `@console`, with the operation `print`. An operation is written with `@`, and a call performs the effects of the function it calls, which the caller's `uses` cover. `una contract` prints a function's header, its `uses` included.
 
 In the `wordfreq` directory, check it and run it:
 

@@ -1,0 +1,42 @@
+-- test: Complex[F64] and Complex[F32] run their operations by the operations of their components, in the order of ADR 0120 rule 23 with no contraction: construction and the fields, `+`, `-`, `*`, unary `-`, `conj`, `scale` and `norm_sqr`; Smith's division at both branches, with no overflow where the naive formula overflows, with the documented loss where the ratio underflows (the exact real part is about 1.0e-40), and on infinities, zeros and NaN; no recovery of infinities after a NaN; `==` by identity of the components, with signed zeros distinct and the canonical NaN equal to itself; and the Una form `complex(re: ..., im: ...)`
+-- spec: spec/29 §19
+-- grant: console
+-- expect: run-output "make complex(re: 1.0, im: 2.0) 1.0 2.0 complex(re: 3.0, im: -4.0)"
+-- expect: run-output "arith complex(re: 4.0, im: -2.0) complex(re: -2.0, im: 6.0) complex(re: 11.0, im: 2.0) complex(re: -1.0, im: -2.0)"
+-- expect: run-output "methods complex(re: 1.0, im: -2.0) complex(re: 0.5, im: 1.0) 25.0"
+-- expect: run-output "smith complex(re: 0.6, im: 0.2) complex(re: -0.2, im: 0.4) complex(re: -1.0, im: -2.0)"
+-- expect: run-output "scaled complex(re: 1.0, im: 0.0) complex(re: nan, im: inf)"
+-- expect: run-output "underflow complex(re: 0.0, im: 1.0e290)"
+-- expect: run-output "special complex(re: inf, im: nan) complex(re: nan, im: nan) complex(re: 0.0, im: 0.0) complex(re: nan, im: nan) complex(re: nan, im: nan)"
+-- expect: run-output "equal false true true true true"
+-- expect: run-output "f32 complex(re: 0.1, im: 0.2) complex(re: -0.030000001, im: 0.040000003) complex(re: 0.043243248, im: 0.059459463) 0.050000004 complex(re: 9.0, im: 1.5) true"
+module complexes
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let x = complex(re: 1.0, im: 2.0)
+  let y = complex(re: 3.0, im: -4.0)
+  @console.print("make {x} {x.re} {x.im} {y}")
+  let n = -x
+  @console.print("arith {x + y} {x - y} {x * y} {n}")
+  @console.print("methods {x.conj()} {x.scale(by: 0.5)} {y.norm_sqr()}")
+  let w = complex(re: 1.0, im: 1.0)
+  let v = complex(re: 2.0, im: 1.0)
+  @console.print("smith {w / v} {x / y} {y / x}")
+  let big = complex(re: 1.0e300, im: 1.0e300)
+  @console.print("scaled {big / big} {big * big}")
+  let tall = complex(re: 0.0, im: 1.0e300)
+  let flat = complex(re: 1.0e10, im: 1.0e-320)
+  @console.print("underflow {tall / flat}")
+  let inf = complex(re: infinity(), im: 0.0)
+  let one = complex(re: 1.0, im: 0.0)
+  let zero = complex(re: 0.0, im: 0.0)
+  let nz = complex(re: -0.0, im: 0.0)
+  let bad = complex(re: nan(), im: 1.0)
+  @console.print("special {inf * one} {w / zero} {w / inf} {w / bad} {inf / inf}")
+  @console.print("equal {zero == nz} {zero != nz} {bad == complex(re: nan(), im: 1.0)} {bad == bad} {x == complex(re: 1.0, im: 2.0)}")
+  let u: Complex[F32] = complex(re: 0.1, im: 0.2)
+  let s: F32 = 3.0
+  let p = complex(re: s, im: 0.5)
+  @console.print("f32 {u} {u * u} {u / p} {u.norm_sqr()} {p.scale(by: s)} {u == complex(re: 0.1, im: 0.2)}")

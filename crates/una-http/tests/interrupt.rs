@@ -8,7 +8,7 @@
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::os::fd::RawFd;
+use std::os::fd::{AsRawFd, BorrowedFd};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -30,8 +30,8 @@ impl Interrupt for HostStop {
         una_sys::attention::stop_requests() > 0
     }
 
-    fn wait(&self, socket: RawFd, write: bool, timeout: Duration) -> Waited {
-        match wait(Some(socket), write, true, timeout) {
+    fn wait(&self, socket: BorrowedFd<'_>, write: bool, timeout: Duration) -> Waited {
+        match wait(Some(socket.as_raw_fd()), write, true, timeout) {
             Readiness::Ready => Waited::Ready,
             Readiness::Woken => Waited::Stopped,
             Readiness::TimedOut => Waited::TimedOut,
@@ -54,7 +54,7 @@ impl Interrupt for Flag {
         self.0.load(Ordering::SeqCst)
     }
 
-    fn wait(&self, socket: RawFd, write: bool, timeout: Duration) -> Waited {
+    fn wait(&self, socket: BorrowedFd<'_>, write: bool, timeout: Duration) -> Waited {
         let end = Instant::now() + timeout;
         loop {
             if self.stopped() {
@@ -65,7 +65,7 @@ impl Interrupt for Flag {
                 return Waited::TimedOut;
             }
             match wait(
-                Some(socket),
+                Some(socket.as_raw_fd()),
                 write,
                 false,
                 left.min(Duration::from_millis(100)),
