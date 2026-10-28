@@ -1,0 +1,50 @@
+-- test: in edition 0.4, the breadth-first walk of ADR 0119 rule 20 is proven from the facts of V2 alone: `visit`'s `ensures` keeps the measure `2 * (seen.size - seen.len) + waiting.len` from rising, each `add` is in its bit set's range, and one round of the walk, a `pop` then a `visit`, lowers the measure by at least 1 (`decreases_step`) and keeps it at least 0 (`decreases_bound`), from `len <= size` of every bit set and `len >= 0` of every queue; the obligations of ADR 0116's `decreases` are stated as `ensures` of the round
+-- spec: spec/28 §11
+-- expect: ok
+module walk
+
+import std.collections (BitSet, Queue, empty_bit_set, empty_queue)
+
+-- Marks and queues each unseen node among neighbors[start..], and keeps the measure from rising.
+visit(edit seen: BitSet, edit waiting: Queue[Int], neighbors: List[Int], start: Int) -> Unit
+  ensures seen.size == old(seen).size and 2 * (seen.size - seen.len) + waiting.len <= 2 * (old(seen).size - old(seen).len) + old(waiting).len
+=
+  if start >= 0 and start < neighbors.len
+    let n = neighbors.at(index: start)
+      if none use -1
+    if n >= 0 and n < seen.size and not seen.has(item: n)
+      edit seen.add(item: n)
+      edit waiting.push(item: n)
+    visit(edit seen, edit waiting, neighbors: neighbors, start: start + 1)
+
+-- One round of the walk: the body of rule 20's loop, with its measure's two obligations.
+round(edit seen: BitSet, edit waiting: Queue[Int], graph: List[List[Int]]) -> Unit
+  requires waiting.len != 0
+  ensures seen.size == old(seen).size
+  ensures 2 * (seen.size - seen.len) + waiting.len >= 0
+  ensures 2 * (seen.size - seen.len) + waiting.len < 2 * (old(seen).size - old(seen).len) + old(waiting).len
+=
+  let next = edit waiting.pop()
+  when next
+    is Some(node) ->
+      let neighbors = graph.at(index: node)
+        if none use []
+      visit(edit seen, edit waiting, neighbors: neighbors, start: 0)
+    is None -> unit
+
+-- The start of the walk, and its first round.
+pub reachable(graph: List[List[Int]], start: Int) -> BitSet
+  requires 0 <= start and start < graph.len
+=
+  let edit seen = empty_bit_set(size: graph.len)
+  let edit waiting: Queue[Int] = empty_queue()
+  edit seen.add(item: start)
+  edit waiting.push(item: start)
+  round(edit seen, edit waiting, graph: graph)
+  seen
+
+-- The measure is at least 0 for a bit set, whose length its size bounds.
+pub bounded(seen: BitSet, waiting: Queue[Int]) -> Int
+  ensures result >= 0
+=
+  2 * (seen.size - seen.len) + waiting.len

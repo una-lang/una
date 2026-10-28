@@ -1,0 +1,99 @@
+-- test: in edition 0.4, the verifier knows each collection operation's effect: a stack pushed then popped gives back the item and the stack before; a queue's `peek` after its first `push` is the item; membership holds after `add` and `set`, and is kept for another key, which a `requires` proves distinct; a set operation's membership; `first` of a bit set is a member; `same_entries` implies equal lengths; `requires q.len > 0` makes the `None` of a `pop` impossible; `.size`, `.len` and `has` are in the refinement language; and a map's update keeps its other keys (ADR 0119 V2 to V5, ADR 0069 amendment of 2026-10-19)
+-- spec: spec/28 §11
+-- expect: ok
+module facts
+
+import std.collections (BitSet, HashMap, HashSet, Queue, Set, Stack, empty_queue)
+
+pub kind Pos = Int where it > 0
+
+pub kind Hall = BitSet where it.size == 100
+
+pub push_then_pop(s: Stack[Int], x: Int) -> Bool
+  ensures result
+=
+  let edit t = s
+  edit t.push(item: x)
+  let back = edit t.pop()
+  when back
+    is Some(v) -> v == x and t == s
+    is None -> false
+
+pub first_push(x: Text) -> Bool
+  ensures result
+=
+  let edit q: Queue[Text] = empty_queue()
+  edit q.push(item: x)
+  let front = q.peek()
+  when front
+    is Some(v) -> v == x
+    is None -> false
+
+pub added(s: Set[Int], x: Int, y: Int) -> Bool
+  ensures result
+=
+  let edit t = s
+  edit t.add(item: x)
+  edit t.add(item: y)
+  t.has(item: x) and t.has(item: y)
+
+pub kept(m: HashMap[Text, Int], a: Text, b: Text) -> Bool
+  requires a != b
+  ensures result
+=
+  let edit n = m
+  edit n.set(key: a, value: 1)
+  edit n.remove(key: b)
+  n.has(key: a)
+
+pub kept_in_a_set(s: HashSet[Int], x: Int, y: Int) -> Bool
+  requires x < y and s.has(item: x)
+  ensures result
+=
+  let edit t = s
+  edit t.remove(item: y)
+  t.has(item: x)
+
+pub kept_in_a_map(m: Map[Text, Int], a: Text, b: Text) -> Bool
+  requires a != b
+  ensures result
+=
+  let edit n = m
+  edit n.set(key: a, value: 1)
+  edit n.remove(key: b)
+  n.has(key: a)
+
+pub joined(a: HashSet[Int], b: HashSet[Int], x: Int) -> Bool
+  requires a.has(item: x)
+  ensures result
+=
+  a.union(other: b).has(item: x) and not a.difference(other: a).has(item: x)
+
+pub first_member(b: BitSet) -> Bool
+  ensures result
+=
+  let least = b.first()
+  when least
+    is Some(i) -> b.has(item: i)
+    is None -> b.len == 0
+
+pub same_size(a: HashMap[Text, Int], b: HashMap[Text, Int]) -> Bool
+  ensures result
+=
+  if a.same_entries(as: b) then a.len == b.len else true
+
+pub front(q: Queue[Pos]) -> Int
+  requires q.len > 0
+  ensures result > 0
+=
+  let edit r: Queue[Pos] = q
+  let next = edit r.pop()
+  when next
+    is Some(v) -> v
+    is None -> 0
+
+pub seat(h: Hall, i: Int) -> BitSet
+  requires 0 <= i and i < h.size
+  ensures result.has(item: i) and result.len >= h.len
+=
+  h.with(item: i)

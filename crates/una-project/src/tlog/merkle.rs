@@ -28,13 +28,11 @@ pub fn node_hash(left: &Hash, right: &Hash) -> Hash {
     hasher.finalize().into()
 }
 
-/// The largest power of two smaller than `n`, for `n` at least 2.
+/// The largest power of two smaller than `n`, for `n` at least 2: from its leading zeros, so it
+/// ends for every size. O(1).
 fn split(n: usize) -> usize {
-    let mut k = 1;
-    while k << 1 < n {
-        k <<= 1;
-    }
-    k
+    let bits = usize::BITS - n.saturating_sub(1).leading_zeros();
+    1usize << bits.saturating_sub(1)
 }
 
 /// The root of the tree of `leaves`, given as leaf hashes (RFC 9162 §2.1.1). The empty tree's

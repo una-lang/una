@@ -1,0 +1,17 @@
+-- test: `add_product` adds a product to its receiver's elements, so a product in meters times meters added to meters times seconds is U2028 at `and` (ADR 0120 rule 64)
+-- spec: spec/25 §9
+-- expect: error U2028 at src/m.una:16:34
+module m
+
+pub measure Meter
+
+pub measure Second
+
+pub bad(c: Matrix[F64 of Meter * Second], a: Matrix[F64 of Meter],
+  b: Matrix[F64 of Meter]
+) -> Matrix[F64 of Meter * Second]
+  requires c.rows == a.rows and a.columns == b.rows and b.columns == c.columns
+=
+  let edit d = c
+  edit d.add_product(of: a, and: b)
+  d
