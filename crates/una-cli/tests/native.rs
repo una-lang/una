@@ -151,9 +151,12 @@ fn rejected() -> BTreeMap<String, String> {
         .map(str::trim)
         .filter(|line| !line.is_empty() && !line.starts_with('#'))
         .map(|line| {
-            let (name, reason) = line
-                .split_once(':')
-                .unwrap_or_else(|| panic!("tests/native/rejected.txt: `{line}` has no `: reason`"));
+            let parts = line.split_once(':');
+            assert!(
+                parts.is_some(),
+                "tests/native/rejected.txt: `{line}` has no `: reason`"
+            );
+            let (name, reason) = parts.unwrap();
             (name.trim().to_owned(), reason.trim().to_owned())
         })
         .collect()
