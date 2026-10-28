@@ -109,6 +109,7 @@ fn model_unavailable_line(line: &str) -> bool {
 
 /// Whether what the child wrote is a proof's exact output with exit status 1: `unsat` as the
 /// first line, every later line of stdout the pinned error or the reply to `:reason-unknown`,
+/// at least one of them the pinned error (the only cause of that status after a proof),
 /// nothing on stderr, and no other status word anywhere.
 fn exact_proof_output(stdout: &str, stderr: &str) -> bool {
     if !stderr.trim().is_empty() {
@@ -118,7 +119,12 @@ fn exact_proof_output(stdout: &str, stderr: &str) -> bool {
     if lines.next() != Some("unsat") {
         return false;
     }
-    lines.all(|line| line == NO_REASON || model_unavailable_line(line))
+    let mut unavailable = false;
+    lines.all(|line| {
+        let error = model_unavailable_line(line);
+        unavailable |= error;
+        error || line == NO_REASON
+    }) && unavailable
 }
 
 /// How many status words the output holds at the top level.
@@ -528,7 +534,7 @@ mod tests {
                 values: Vec::new(),
                 values_error: Some("line 12 column 14: unknown constant".to_owned()),
                 detail: None,
-                error_after_sat: false,
+                error_after_sat: true,
             })
         );
         // Fewer values than requested terms are no model either.

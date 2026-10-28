@@ -1639,6 +1639,8 @@ mod missing_values_tests {
             reason: None,
             values: Vec::new(),
             values_error: None,
+            detail: None,
+            error_after_sat: false,
         };
         let proven = outcome(&obligation, &[], &proof, None, false);
         assert_eq!(proven.status, ObligationStatus::Proven);

@@ -173,12 +173,11 @@ pub(crate) fn settings(package: &Package, solving: &Solving) -> Settings {
 fn solver_launcher() -> crate::solver_child::Launcher {
     let launcher = crate::solver_child::Launcher::new(crate::solver_child::DEFAULT_MEMORY_MIB);
     #[cfg(feature = "test-hooks")]
-    {
+    let launcher = {
         #[allow(clippy::disallowed_methods)]
         let stand_in = std::env::var_os("UNA_SOLVER_STAND_IN").map(PathBuf::from);
-        return launcher.with_stand_in(stand_in);
-    }
-    #[cfg(not(feature = "test-hooks"))]
+        launcher.with_stand_in(stand_in)
+    };
     launcher
 }
 
