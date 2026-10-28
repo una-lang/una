@@ -1,0 +1,10 @@
+[package]
+name = "gives_in_ceiling"
+version = "0.1.0"
+edition = "0.3"
+
+[labels]
+categories = ["Service"]
+
+[boundaries]
+"m.inner" = ["Files[owner gives internal[Service]]"]

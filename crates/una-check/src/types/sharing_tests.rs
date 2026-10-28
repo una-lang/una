@@ -311,6 +311,7 @@ fn some_type(random: &mut Random, depth: u32, pool: &mut Vec<Shared<Ty>>) -> Ty 
                                 .to_owned()
                             })
                             .collect(),
+                        gives: Vec::new(),
                     })
                     .collect(),
                 fails: (random.below(4) == 0).then(|| (*child(random, pool)).clone()),
@@ -516,6 +517,7 @@ fn a_function_node_with_two_uses_of_one_capability_is_rebuilt_when_met_with_itse
         name: "log".to_owned(),
         capability: None,
         ops: ops.iter().map(|o| (*o).to_owned()).collect(),
+        gives: Vec::new(),
     };
     let f = Ty::Fn(Shared::new(FnTy {
         params: Vec::new(),

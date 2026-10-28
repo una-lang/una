@@ -294,6 +294,10 @@ pub struct CapType {
     /// The condition of each operation in `ops`, in their order: `Some` after `where`, which
     /// only the `uses` of a function or a handler in edition 0.3 may write (ADR 0092 rule 1).
     pub conditions: Vec<Option<Expr>>,
+    /// The label each operation in `ops` gives, in their order: `Some` after `gives`, which
+    /// only the `uses` of a function or a handler in edition 0.3 may write, before the
+    /// condition (ADR 0094 rule 1).
+    pub gives: Vec<Option<Label>>,
     /// The whole capability type.
     pub span: Span,
 }
