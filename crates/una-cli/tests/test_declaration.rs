@@ -87,7 +87,10 @@ fn una_test_names_the_declaration_by_the_edition() {
     assert_eq!(document["passed"], 2);
     // The keys keep the order of `una.test/1`, `tests` where it has `examples`.
     let text = stdout(&output);
-    assert!(text.starts_with("{\"schema\":\"una.test/2\",\"tier\":"), "{text}");
+    assert!(
+        text.starts_with("{\"schema\":\"una.test/2\",\"tier\":"),
+        "{text}"
+    );
     let at = |key: &str| text.find(&format!("\"{key}\":")).unwrap();
     assert!(at("tier") < at("redacted"));
     assert!(at("redacted") < at("diagnostics"));
@@ -300,9 +303,14 @@ fn one_fix_run_rewrites_the_keyword_and_then_a_callee_condition() {
         "{document:#?}"
     );
     let text = std::fs::read_to_string(root.join("src/m.una")).unwrap();
-    assert!(text.contains("\ntest \"a dry run writes nothing\"\n"), "{text}");
     assert!(
-        text.contains("note(n: Int, quiet: Bool) -> Unit\n  uses @log: Log[write where not quiet]\n"),
+        text.contains("\ntest \"a dry run writes nothing\"\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "note(n: Int, quiet: Bool) -> Unit\n  uses @log: Log[write where not quiet]\n"
+        ),
         "{text}"
     );
     let check = una_in(&root, &["check", "."]);
@@ -344,7 +352,9 @@ fn una_fmt_leaves_an_example_in_edition_0_3_as_it_is() {
     let fmt = una_in(&root, &["fmt", "."]);
     assert_eq!(fmt.status.code(), Some(1), "{fmt:?}");
     assert!(
-        std::str::from_utf8(&fmt.stderr).unwrap().contains("[U0103]"),
+        std::str::from_utf8(&fmt.stderr)
+            .unwrap()
+            .contains("[U0103]"),
         "{fmt:?}"
     );
     assert_eq!(
@@ -375,8 +385,8 @@ fn earlier_edition_test_cases() -> Vec<PathBuf> {
                 let manifest = path.join("una.toml");
                 if manifest.is_file() {
                     let text = std::fs::read_to_string(&manifest).unwrap();
-                    let earlier = text.contains("edition = \"0.1\"")
-                        || text.contains("edition = \"0.2\"");
+                    let earlier =
+                        text.contains("edition = \"0.1\"") || text.contains("edition = \"0.2\"");
                     let runs = walk(&path.join("src"))
                         .iter()
                         .any(|file| expects_a_run(file));
@@ -419,8 +429,7 @@ fn expects_a_run(file: &Path) -> bool {
         text.lines()
             .take_while(|line| line.starts_with("--"))
             .any(|line| {
-                line.starts_with("-- expect: test-pass")
-                    || line.starts_with("-- expect: test-fail")
+                line.starts_with("-- expect: test-pass") || line.starts_with("-- expect: test-fail")
             })
     })
 }
@@ -440,7 +449,11 @@ fn editions_0_1_and_0_2_keep_una_test_1() {
             "{}: {text}",
             case.display()
         );
-        assert!(text.contains(",\"examples\":["), "{}: {text}", case.display());
+        assert!(
+            text.contains(",\"examples\":["),
+            "{}: {text}",
+            case.display()
+        );
         assert!(!text.contains("\"tests\":"), "{}: {text}", case.display());
         let document: Value = serde_json::from_str(text).unwrap();
         assert!(document["examples"].is_array(), "{}", case.display());

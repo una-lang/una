@@ -1096,7 +1096,9 @@ impl<'a> Parser<'a> {
 
     fn at_declaration_start(&self) -> bool {
         match self.peek() {
-            TokenKind::Keyword(keyword) => starts_declaration(keyword.as_str(), None, self.keywords),
+            TokenKind::Keyword(keyword) => {
+                starts_declaration(keyword.as_str(), None, self.keywords)
+            }
             TokenKind::LowerIdent(name) | TokenKind::Reserved(name) => {
                 let next = match self.peek_at(1) {
                     TokenKind::LParen => Some('('),
@@ -1254,7 +1256,8 @@ impl<'a> Parser<'a> {
             // has its U0103 from the lexer and is read the same way (rule 3). A `test` followed
             // by `(` or `[` is a function named with the keyword (rule 4).
             TokenKind::Keyword(Keyword::Test)
-                if !public && !matches!(self.peek_at(1), TokenKind::LParen | TokenKind::LBracket) =>
+                if !public
+                    && !matches!(self.peek_at(1), TokenKind::LParen | TokenKind::LBracket) =>
             {
                 self.example_decl()?
             }
@@ -2214,8 +2217,10 @@ impl<'a> Parser<'a> {
                 stop_after = Some(self.stop_after()?);
                 if !self.eat(&TokenKind::Dedent) && !self.at(&TokenKind::Eof) {
                     let span = self.span();
-                    let message =
-                        format!("`stop after` must be the last line of its {}", self.test_word());
+                    let message = format!(
+                        "`stop after` must be the last line of its {}",
+                        self.test_word()
+                    );
                     return self.fail(span, message);
                 }
                 break;

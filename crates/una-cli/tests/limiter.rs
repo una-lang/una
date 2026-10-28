@@ -169,7 +169,7 @@ twice() -> Int
   let second = attempt @gate.acquire()
   taken(first) + taken(second)
 
-example "one token of two"
+test "one token of two"
   given @gate = limiter(at_most: 1, per: second, waiting: 0)
   do twice()
   expect result == 1

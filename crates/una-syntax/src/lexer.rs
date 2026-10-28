@@ -1176,7 +1176,11 @@ impl Lexer<'_> {
         // stays the reserved keyword it is in every edition (rule 2).
         if word == "example"
             && self.out.keywords >= KeywordSet::V0_3
-            && (start == 0 || self.text.get(..start).is_some_and(|before| before.ends_with('\n')))
+            && (start == 0
+                || self
+                    .text
+                    .get(..start)
+                    .is_some_and(|before| before.ends_with('\n')))
             && self
                 .text
                 .get(self.pos..)

@@ -1,7 +1,7 @@
 ---
 construct: test
 editions: ["0.3", "0.4"]
-spec: ["spec/08 §2", "spec/02 §5", "spec/07 §4", "spec/04 §4", "spec/11 §5", "spec/13 §5", "spec/05 §9"]
+spec: ["spec/08 §2", "spec/01 §5", "spec/02 §5", "spec/07 §4", "spec/04 §4", "spec/11 §5", "spec/13 §5", "spec/05 §9"]
 codes: [U1001, U1002, U3001, U3014, U3020, U3021]
 ---
 

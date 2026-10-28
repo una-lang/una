@@ -753,7 +753,7 @@ fn test_is_the_keyword_of_the_test_declaration_from_edition_0_3() {
     let lexed = |keywords: una_syntax::KeywordSet| {
         let mut db = SourceDb::new();
         let mut interner = Interner::new();
-        let id = db.add("t.una", b"test\nexample\n  example\n");
+        let id = db.add("t.una", b"test\nexample \"x\"\n  example\n");
         let lexed = una_syntax::lex_in(db.file(id), id, &mut interner, keywords);
         let tokens: Vec<String> = lexed
             .tokens

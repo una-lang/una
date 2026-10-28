@@ -445,10 +445,7 @@ fn withhold_dependents(
         .map(|&id| {
             (
                 id,
-                una_syntax::declarations_in(
-                    sources.file(id).text(),
-                    keyword_set(manifest.edition),
-                ),
+                una_syntax::declarations_in(sources.file(id).text(), keyword_set(manifest.edition)),
             )
         })
         .collect();
