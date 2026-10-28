@@ -1,7 +1,7 @@
 ---
 construct: "predicate: reflect and opaque"
-editions: ["0.1", "0.2"]
-spec: ["spec/03 §3", "spec/03 §4", "spec/02 §3", "spec/06 §6", "spec/05 §2"]
+editions: ["0.1", "0.2", "0.3"]
+spec: ["spec/03 §3", "spec/03 §4", "spec/02 §3", "spec/06 §6", "spec/05 §2", "spec/13 §7"]
 codes: [U2014, U2015, U2016, U7003]
 ---
 
@@ -77,6 +77,53 @@ pub parse_phone(raw: Text) -> Phone
   checked(raw, valid_phone(it)) else fail Malformed
 ```
 
+## A nonlinear relation checked at run time
+
+The refinement language does not let the solver derive a general nonlinear equation such as `area = side * side`. An opaque predicate can express that runtime test; `checked` establishes the refined kind only when the test succeeds. With `checked_per_module = 1`, the package spends one escape for this check.
+
+`una.toml`
+
+```toml
+[package]
+name = "demo"
+version = "0.1.0"
+edition = "0.3"
+
+[escape_budget]
+checked_per_module = 1
+```
+
+`src/demo.una`
+
+```una
+module demo
+
+pub predicate opaque square_pair(value: Pair) -> Bool = value.area == value.side * value.side
+
+pub kind Pair
+  side: Int
+  area: Int
+
+pub kind Square = Pair where square_pair(it)
+
+pub kind ValidationError = | WrongArea
+
+pub validate(value: Pair) -> Square
+  fails ValidationError
+=
+  checked(value, square_pair(it)) else fail WrongArea
+
+example "valid"
+  do validate(Pair(side: 3, area: 9))
+  expect result.side == 3
+
+example "invalid"
+  do validate(Pair(side: 3, area: 8))
+  expect fails WrongArea
+```
+
+The solver knows only the predicate's name; it does not prove or learn the square equation. Each `checked` counts against the module's budget.
+
 ## Edge cases
 
 A `reflect` predicate can also be called in code, as an ordinary function:
@@ -144,7 +191,7 @@ Further rules:
 
 ## Edition
 
-Predicates are the same in editions `0.1` and `0.2`.
+Predicates are the same in editions `0.1` and `0.2`, and editions `0.3` and `0.4` keep the rules of edition `0.2` (`spec/13 §7`).
 
 ## Normative source
 

@@ -48,6 +48,7 @@ The host capability `Http` sends HTTP/1.1 requests to the origins that grants al
    - `Tls`: the TLS handshake or the certificate failed;
    - `Protocol`: the response is not valid HTTP/1.1 as §3 reads it, or its body is not UTF-8.
    - (Edition 0.4 preview, ADR 0116 rule 12.) `Interrupted`, a ninth variant after `Protocol`, in edition `0.4` only: a host stop request came while the operation waited, or before it started, in the body of a `for ever` (`spec/26 §6`). The request may or may not have reached its server.
+   - (Edition 0.4, ADR 0117 rule 8.) `RateLimited`, a tenth variant after `Interrupted`, in edition `0.4` only: the request had to wait at a limit of a grant whose queue was full (`spec/27 §9`). It was not sent.
 
    A header value with a control character other than a tab is no failure: the run aborts with U6004 at the operation, before anything is sent. A header's value is `internal` (§5), so a failure the program could handle would reveal whether it holds one; an abort is outside the noninterference model (`spec/07 §1`).
 
@@ -60,6 +61,7 @@ The host capability `Http` sends HTTP/1.1 requests to the origins that grants al
 2. **Deny by default.** A request is allowed when a grant matches its scheme, its host and its port (the scheme's default when absent), and allows its method. Otherwise it fails with `Denied`, before any connection.
 3. **Redirects.** For `301`, `302`, `303`, `307` and `308`, the client follows the `Location` when the method is `get`, or the status is `303` (which it follows as `get`), and a grant allows the target with that method. It follows at most 5 redirects in a row. Otherwise the redirect response is returned.
 4. **Checks.** `una check` and `una run` report a `uses` of an `Http` operation that no grant allows as U3012, as for every host capability.
+5. **Limits** (edition `0.4`, ADR 0117 rule 8). A grant MAY carry limits on the rate of its requests, on how many are in flight at once, and on how many wait, as limit lines under it in `ita.una` or suffixes of its spec, as in `http:https://api.example.com:get;100/minute;8/once;waiting=1000` (`spec/27 §9`). A request is charged to every grant that allows it, and each redirect to the grants that allow its target; one over a limit waits, and fails with `RateLimited` when the queue it must join is full.
 
 ## 3. Requests and responses
 
@@ -72,13 +74,20 @@ The host capability `Http` sends HTTP/1.1 requests to the origins that grants al
    - At most 10 `1xx` responses MAY precede the final one; one more, or a `101`, is `Protocol`.
    - Header names are kept as received, in order.
 4. **TLS** verifies the server's certificate chain against the Mozilla root store that the implementation compiles in, and the host name. There is no option to skip verification.
+   - **Settings up front** (ADR 0116 amendment, P8, #1148). In edition `0.4`, a run whose grants include `Http` builds its TLS client settings, the root store included, before `main` starts, in both engines, and a run without such a grant never builds them. Built at the first `https` request instead, they would be state left by earlier code: a request after earlier `secret` code that made one would save the time of building them, which a deadline could turn into a value.
 
 ## 4. Limits and time
 
 1. **Size.** A response's headers are at most 100, and at most 64 KiB together, else `Protocol`. Its body is at most `--max-response <MiB>` (default 16), else `TooLarge`, and the client reads no further.
-2. **Time.** Each request has one deadline, `--http-timeout <seconds>` (default 30, at most 86400, a day): the total wall-clock time of the request, covering name resolution, connecting, the TLS handshake, writing and reading, across its redirects. Past it the request fails with `TimedOut`.
+2. **Time.** Each request has one deadline, `--http-timeout <seconds>` (default 30, at most 86400, a day): the total wall-clock time of the request, covering name resolution, connecting, the TLS handshake, writing and reading, across its redirects, and in edition `0.4` its waits at the limits of grants (`spec/27 §9`). Past it the request fails with `TimedOut`. Name resolution and the TCP connection run on two bounded pools of threads, since the host's resolver has no timeout of its own, nothing in the process can cut a lookup, and a connection attempt cannot be woken without code of its own (#1148): the request hands each to its pool and waits only until its deadline, an instant, or until its task's cancellation abandons it, and then fails with `TimedOut` or `Interrupted` whatever the step does; the step in progress runs to its end on the pool's thread, which closes the connection, if one came, without using it.
+   - **The lookup pool** has `max(2, --io-threads / 4)` threads (64 helpers give 16): a lookup normally takes milliseconds against an exchange's tens to hundreds, so a quarter of the helpers serve their lookups without a queue, and lookups that hang hold at most that many threads. An address literal is not looked up and skips this pool.
+   - **The connect pool** has `--io-threads` threads, one per helper, so connecting is never capped below what the helpers could do themselves. A connection job looks at its request only between two addresses: an attempt in progress runs until it connects or the request's deadline passes.
+   - **Up front.** Every thread of both pools starts before `main` in a run whose grants include any `Http` grant, in every edition and in both engines, and none in another run (ADR 0116 amendment, P8); their stacks, 256 KiB each, are reserved and committed only as they are used. A thread that cannot start stops the run before `main` with U6003, and a request made without the pools fails with `Unreachable`. With the helpers, a run's `Http` requests take at most `2 × --io-threads + max(2, --io-threads / 4)` threads, and the run as a whole that number, `--workers` and `--file-threads`, all started before `main`. The pools are not capped below that, so a large `--io-threads` can pass the system's limit on a process's threads: at 4096, about 9,200 threads with the defaults, beyond macOS's usual limit (`kern.num_taskthreads`, often 8192) and many containers' limit on processes and threads. The run then stops before `main` with U6003, exit code 1, no position and the message `the lookup and connect threads of this run's requests could not be made`, or that of `spec/27 §1` rule 4 when the helpers are the ones refused; a smaller `--io-threads` runs.
+   - **The hand-off.** Each step costs one push and one pop under its pool's mutex, the wake of one pool thread and a reply on the request's own channel: O(1), about two thread wakes, against the milliseconds the step takes.
+   - **Hangs.** When every thread of a pool holds a step that hangs, new steps queue, and each of their requests still fails at its own deadline; a step still queued when its request gives up never runs. A lookup or a connection left running after its request gave up, its task cancelled or its deadline passed, is residue that the timing label `L_res` covers (`spec/26 §7` rule 5), at most the pools' sizes. The reactor of ADR 0117 step 6 replaces both pools.
+   - **Out of model** (ADR 0116 amendment, P12). The host's resolver may keep state of its own across lookups: glibc's name service switch loads its modules and reads its configuration at the process's first lookup, which can cost a few milliseconds once, and its caches, like the host's, keep answers of earlier lookups. Which lookups earlier code made can so change how long a later one takes. That state is the host's, as the processor's caches are, and stays out of model; a lookup's time reaches a value only through a deadline, whose label covers the request's operation.
 3. **Complexity.** A request takes time and space linear in the URL, headers and body it sends. A response takes time and space linear in what it reads, which rule 1 bounds.
-4. **Tasks.** A request blocks only its task's thread (`spec/19 §8`).
+4. **Tasks.** A request blocks only its task's thread (`spec/19 §8`). In native code, from edition `0.4`, it parks its task while it runs on a helper thread (`spec/27 §2`), where it also waits at the limits of its grants (`spec/27 §9`).
 
 ## 5. Information flow
 
@@ -94,5 +103,5 @@ An operation of `Http` is a trace event of `spec/11 §5`, with `instance` `host:
 ## 7. Examples and determinism
 
 1. Examples cannot use `Http` (U3014). A program's tests install handlers for it (`spec/05 §5`).
-2. The network is outside the model: two runs MAY get different responses. Grants, redirects, limits and the requests the client writes are deterministic.
+2. The network is outside the model: two runs MAY get different responses. Grants, redirects, the limits of §4 rule 1 and the requests the client writes are deterministic. Whether a request waits at, or is refused by, a limit of a grant (`spec/27 §9`) depends on the timing of the run's requests, which is outside the model; `RateLimited` carries the label of that timing.
 3. Both engines use one client, and give the same requests, responses and failures for the same server (`spec/16 §5`).

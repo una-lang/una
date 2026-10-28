@@ -1,0 +1,20 @@
+-- test: an `Int` of exactly 4300 digits, the bound of parsing, is still written as text by interpolation, in both engines (spec/11 §7, #923)
+-- spec: spec/11 §7
+-- grant: console
+-- expect: run-output "4300"
+module big
+
+--- Ten to the `exp`, built by a loop of multiplications.
+power(exp: Int) -> Int
+=
+  let edit n = 1
+  for i in 1..exp
+    n = n * 10
+  n
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let n = power(4299)
+  let text = "{n}"
+  @console.print("{text.len}")

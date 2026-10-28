@@ -1,0 +1,9 @@
+-- test: a systems package with a run entry and no max_memory is U7008 at the entry (ADR 0109 rule 4)
+-- spec: spec/30 §2
+-- expect: error U7008 at ita.una:7:9
+module main
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print("hello")

@@ -1,0 +1,10 @@
+-- test: before edition 0.4, `simd` is reserved for the systems profile (U0103)
+-- spec: spec/01 §5
+-- expect: error U0103 at src/simd03.una:9:7
+-- expect: error U0103 at src/simd03.una:10:3
+module simd03
+
+pub lanes() -> Int
+=
+  let simd = 4
+  simd * 2

@@ -1,12 +1,15 @@
 #!/bin/sh
 # Runs what .github/workflows/ci.yml runs, in the same order, on this machine: the solver check,
 # the released sections of CHANGELOG.md against their tags, fmt, clippy with warnings denied,
-# the tests, then packing and checking the release archive of the host's target. With --linux,
+# the tests, the C math library check of release artifacts (#1092), then packing the release
+# archive of the host's target, the load commands of its `una` and of a program it links
+# (#1103), and checking the archive. With --linux,
 # it runs the same inside a linux/amd64 container of CI's Ubuntu image
 # (scripts/local-ci/Dockerfile), emulated on an arm64 Mac, so it is slow and runs the tests one
 # at a time (#286); with --linux-arm64, inside a linux/arm64 one, native on such a Mac (#241),
-# with the tests in parallel. The target directory (one volume per checkout), the cargo registry
-# and Z3 live in named volumes, so later runs are incremental. It ends with PASS, or FAIL and
+# with the tests in parallel. The target directory (one volume per checkout), the cargo registry,
+# Z3 and the cache of the Z3 library built into una (ADR 0124, one volume per architecture,
+# kept across fresh target volumes) live in named volumes, so later runs are incremental. It ends with PASS, or FAIL and
 # the step that failed, and a non-zero exit on any failure. While GitHub Actions is unavailable,
 # this is the check before a merge (#156).
 #
@@ -24,8 +27,8 @@ fail() {
 if [ "${1:-}" = --linux ] || [ "${1:-}" = --linux-arm64 ]; then
     # --linux: x86_64, emulated on an arm64 Mac; --linux-arm64: aarch64, native on one (#241).
     case $1 in
-        --linux) arch=amd64 target=x86_64-unknown-linux-gnu suffix="" serial=1 ;;
-        *) arch=arm64 target=aarch64-unknown-linux-gnu suffix=-arm64 serial="" ;;
+        --linux) arch=amd64 target=x86_64-unknown-linux-gnu suffix="" serial=1 retry=1 ;;
+        *) arch=arm64 target=aarch64-unknown-linux-gnu suffix=-arm64 serial="" retry="" ;;
     esac
     command -v docker >/dev/null 2>&1 || fail "docker not found; $1 needs Docker"
     # The released sections of CHANGELOG.md need the repository's tags, which a worktree
@@ -80,9 +83,12 @@ if [ "${1:-}" = --linux ] || [ "${1:-}" = --linux-arm64 ]; then
         --volume una-local-ci-registry:/opt/cargo/registry \
         --volume "una-local-ci-z3$suffix:/opt/z3" \
         --env UNA_LOCAL_CI_Z3=/opt/z3 \
+        --volume "una-local-ci-z3-cache$suffix:/opt/z3-cache" \
+        --env UNA_Z3_CACHE=/opt/z3-cache \
         --volume "una-local-ci-lean$suffix:/opt/lean" \
         --env UNA_FORMAL_LEAN=/opt/lean \
         --env "UNA_LOCAL_CI_SERIAL=$serial" \
+        --env "UNA_RELEASE_CHECK_RETRY=$retry" \
         --env "CARGO_BUILD_JOBS=$jobs" \
         --env RUST_TEST_THREADS \
         --env UNA_LOCAL_CI_RELEASED_SECTIONS_ON_HOST=1 \
@@ -98,15 +104,12 @@ if [ "$#" -ne 0 ]; then
     exit 2
 fi
 
-# The pinned Z3: in UNA_LOCAL_CI_Z3 inside the container, else target/z3, where
-# scripts/install-z3.sh installs it for development (compiler/testing.md §3).
-z3=${UNA_LOCAL_CI_Z3:-$root/target/z3}
-if [ ! -x "$z3/bin/z3" ]; then
-    echo "== installing the Z3 release pinned in verification.lock in $z3"
-    scripts/install-z3.sh "$z3" || fail "installing Z3"
-fi
-PATH="$z3/bin:$PATH"
-export PATH
+# The Z3 built into una (ADR 0124 rules 1 and 19): scripts/z3-library.sh gives the library of
+# supply-chain/z3.lock from the cache (UNA_Z3_CACHE; inside the container a named volume),
+# verified against the digest its build recorded, or builds it once; every cargo step gets it
+# by UNA_Z3_LIB. No z3 on PATH is needed or used by una any more.
+UNA_Z3_LIB=$(scripts/z3-library.sh) || fail "the Z3 library of supply-chain/z3.lock"
+export UNA_Z3_LIB
 
 target=$(rustc -vV | sed -n 's/^host: //p')
 step() {
@@ -115,7 +118,6 @@ step() {
     echo "== $name"
     "$@" || fail "$name"
 }
-step "Check the solver version" scripts/check-solver.sh
 # Every released section of CHANGELOG.md is the one its tag published (#645): an entry that a
 # rebase carried under a released heading fails here, before it merges. The run's evidence never
 # skips it: UNA_SKIP_RELEASED_SECTIONS from the caller is dropped, and only the container, whose
@@ -157,6 +159,20 @@ else
     step "Timing channels (security oracles)" \
         cargo test --release --locked -p una-cli --test timing_channels -- --ignored --test-threads=1 --nocapture
 fi
+# No C math library symbol (#1092), in what ships: a test build unifies the features of
+# dev-dependencies in, so the check builds its own release `una` and `libuna_rt.a`, links with
+# that `una` every runnable program of tests/conformance/runtime that the native backend
+# compiles (scripts/no-libm-build.sh, into a fresh target/no-libm), and reads the release
+# graph's features and the undefined symbols of all of them (scripts/no-libm.sh), strictly.
+step "Build (release) for the C math library check" \
+    env CARGO_TARGET_DIR="$root/target" cargo build --locked --release -p una-cli -p una-rt
+no_libm="$root/target/no-libm"
+rm -rf "${no_libm:?}"
+step "Native executables of the release una" \
+    scripts/no-libm-build.sh "$root/target/release/una" "$no_libm"
+step "No C math library symbol" \
+    scripts/no-libm.sh "$root/target/release/una" "$root/target/release/libuna_rt.a" \
+    "$no_libm/executables"
 # The documents' links (#708): every link of the documents names a tracked file or directory,
 # and every fragment a heading of its document; the check's own test refuses each kind of
 # broken link first. It needs only Python 3 and git, so it runs everywhere, the containers
@@ -185,7 +201,17 @@ step "Formal replay" docs/reviews/formal-m2-replay/check.sh
 # A release build never trusts the test certificate authority of una-http (ADR 0074, N-28).
 step "Test (release, TLS trust)" cargo test --release --locked -p una-http --test tls
 step "Pack the release archive of $target" scripts/release.sh "$target"
-step "Check the release archive of $target" scripts/check-release.sh "$target"
+# The release `una` just packed, and examples/hello that it links, ask the dynamic loader only
+# for what scripts/load-commands.txt lists (#1103).
+step "Load commands" scripts/load-commands.sh "$root/target/release-remapped/release/una"
+# Under emulation the check runs the packed `una` with one verifier thread, as the serial tests do
+# (#286): a `una run` that starts several solver processes from many threads at once can deadlock
+# inside the translator (#1133). The check's own time limits and single retry are a second guard.
+if [ -n "${UNA_LOCAL_CI_SERIAL:-}" ]; then
+    step "Check the release archive of $target" env RAYON_NUM_THREADS=1 scripts/check-release.sh "$target"
+else
+    step "Check the release archive of $target" scripts/check-release.sh "$target"
+fi
 # In a container, the most memory the run used, which sizes the job count (#701).
 if [ -n "${UNA_LOCAL_CI_Z3:-}" ] && [ -r /sys/fs/cgroup/memory.peak ]; then
     echo "== peak memory of the container: $(($(cat /sys/fs/cgroup/memory.peak) / 1048576)) MiB, with CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-unset}"
