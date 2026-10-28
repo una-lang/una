@@ -138,11 +138,17 @@ thread_local! {
 impl Ord for MapKey {
     fn cmp(&self, other: &MapKey) -> std::cmp::Ordering {
         KEY_COMPARISONS.with(|n| n.set(n.get() + 1));
+        // The derived order: by variant in declaration order, then by value.
+        let rank = |key: &MapKey| match key {
+            MapKey::Int(_) => 0,
+            MapKey::Text(_) => 1,
+            MapKey::F64(_) => 2,
+        };
         match (self, other) {
             (MapKey::Int(a), MapKey::Int(b)) => a.cmp(b),
             (MapKey::Text(a), MapKey::Text(b)) => a.cmp(b),
-            (MapKey::Int(_), MapKey::Text(_)) => std::cmp::Ordering::Less,
-            (MapKey::Text(_), MapKey::Int(_)) => std::cmp::Ordering::Greater,
+            (MapKey::F64(a), MapKey::F64(b)) => a.cmp(b),
+            _ => rank(self).cmp(&rank(other)),
         }
     }
 }
@@ -4435,7 +4441,10 @@ mod tests {
             let before = KEY_COMPARISONS.with(std::cell::Cell::get);
             let map = map_from_sorted(entries);
             let compared = KEY_COMPARISONS.with(std::cell::Cell::get) - before;
-            assert!(compared <= 3 * k as usize, "{k} keys: {compared} comparisons");
+            assert!(
+                compared <= 3 * k as usize,
+                "{k} keys: {compared} comparisons"
+            );
             assert_eq!(map_len(map), n(i64::from(k)));
             release(map);
         }

@@ -8,8 +8,8 @@ use una_core::json::{self, Halt, Tree};
 use crate::host;
 use crate::runtime;
 use crate::values::{
-    data, field, int_value, int_word, list, list_items, map_from_sorted, map_words, push,
-    release, tag, text_value, text_word,
+    data, field, int_value, int_word, list, list_items, map_from_sorted, map_words, push, release,
+    tag, text_value, text_word,
 };
 
 /// The variants of `Json`, in declaration order (`spec/23 §1`).
@@ -34,7 +34,11 @@ enum Building {
     Array(std::vec::IntoIter<Tree>, i64),
     /// An object's entries so far, keys and values owned, in the order the parser sorted them,
     /// built into its map in bulk once the object ends (#886).
-    Object(std::vec::IntoIter<(String, Tree)>, Vec<(i64, i64)>, Option<i64>),
+    Object(
+        std::vec::IntoIter<(String, Tree)>,
+        Vec<(i64, i64)>,
+        Option<i64>,
+    ),
 }
 
 /// The `Json` word of `tree`, owned by the caller, asking `within` every

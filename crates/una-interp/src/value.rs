@@ -232,13 +232,18 @@ thread_local! {
 impl Ord for Key {
     fn cmp(&self, other: &Key) -> Ordering {
         KEY_COMPARISONS.with(|n| n.set(n.get() + 1));
+        // The derived order: by variant in declaration order, then by value.
         let rank = |key: &Key| match key {
             Key::Int(_) => 0,
-            Key::Text(_) => 1,
-            Key::Variant(_) => 2,
+            Key::F64(_) => 1,
+            Key::F32(_) => 2,
+            Key::Text(_) => 3,
+            Key::Variant(_) => 4,
         };
         match (self, other) {
             (Key::Int(a), Key::Int(b)) => a.cmp(b),
+            (Key::F64(a), Key::F64(b)) => a.cmp(b),
+            (Key::F32(a), Key::F32(b)) => a.cmp(b),
             (Key::Text(a), Key::Text(b)) => a.cmp(b),
             (Key::Variant(a), Key::Variant(b)) => a.cmp(b),
             _ => rank(self).cmp(&rank(other)),
