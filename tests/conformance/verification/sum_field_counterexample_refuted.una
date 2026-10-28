@@ -1,0 +1,15 @@
+-- test: a refuted obligation whose shown values include a field of a sum kind, which no assertion of the query mentions, still gives a counterexample with that value as a variant, never a solver error
+-- spec: spec/12 §7
+-- expect: error U5001 at 15:16
+module sum_field_counterexample_refuted
+
+pub kind Measure = Grams | Pieces
+
+pub kind Item
+  amount: Nat
+  measure: Measure
+
+pub use_up(item: Item, used: Nat) -> Item
+  ensures result.amount == item.amount - used
+=
+  Item(amount: item.amount - used, measure: item.measure)

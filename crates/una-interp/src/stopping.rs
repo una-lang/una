@@ -15,7 +15,7 @@
 //! request of another run left it readable.
 
 use std::cell::Cell;
-use std::os::fd::RawFd;
+use std::os::fd::{AsRawFd, BorrowedFd};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::time::{Duration, Instant};
@@ -125,11 +125,16 @@ impl RunStop {
     }
 
     /// The run's own stop request, by `--stop-after-iterations` (rule 19): one request, however
-    /// many threads make it.
+    /// many threads make it. It wakes the waits on the pipe, as the deadline's request does, so
+    /// a request parked on the native reactor in another `for ever` sees it at once.
     pub fn request_local(&self) {
-        let _ = self
+        if self
             .own
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst);
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            una_sys::signals::wake();
+        }
     }
 
     /// The request of `--deadline`, local to the run: one request, which also wakes the waits
@@ -291,7 +296,11 @@ impl Interrupt for OpInterrupt<'_> {
         self.stop.stopped()
     }
 
-    fn wait(&self, socket: RawFd, write: bool, timeout: Duration) -> Waited {
+    /// Ends at `timeout` exactly, not at the next millisecond: `poll` waits whole milliseconds,
+    /// rounded up, so it waits only the whole milliseconds left, and the sub-millisecond rest
+    /// is slept to the exact instant, then the socket is polled once without waiting, so a
+    /// readiness that came during that rest is still seen ([`precise_rest`], #1151).
+    fn wait(&self, socket: BorrowedFd<'_>, write: bool, timeout: Duration) -> Waited {
         let end = Instant::now().checked_add(timeout);
         loop {
             if self.stop.stopped() {
@@ -301,8 +310,25 @@ impl Interrupt for OpInterrupt<'_> {
             if left.is_zero() {
                 return Waited::TimedOut;
             }
-            let slice = left.min(SLICE);
-            match una_sys::signals::wait(Some(socket), write, !self.stale.get(), slice) {
+            let Some(slice) = whole_millis(left) else {
+                precise_rest(end, left);
+                if self.stop.stopped() {
+                    return Waited::Stopped;
+                }
+                return match una_sys::signals::wait(
+                    Some(socket.as_raw_fd()),
+                    write,
+                    !self.stale.get(),
+                    Duration::ZERO,
+                ) {
+                    Readiness::Ready => Waited::Ready,
+                    Readiness::Failed => Waited::Failed,
+                    Readiness::Woken if self.stop.stopped() => Waited::Stopped,
+                    Readiness::Woken | Readiness::TimedOut => Waited::TimedOut,
+                };
+            };
+            match una_sys::signals::wait(Some(socket.as_raw_fd()), write, !self.stale.get(), slice)
+            {
                 Readiness::Ready => return Waited::Ready,
                 Readiness::Failed => return Waited::Failed,
                 Readiness::TimedOut => {}
@@ -316,6 +342,12 @@ impl Interrupt for OpInterrupt<'_> {
 /// Waits `timeout` for the driver's next tick, unless a host stop request reaches the run
 /// first (rule 3): true when the wait ended at the tick. It waits in slices, so a stop is seen
 /// within one slice at worst.
+///
+/// It ends at `timeout` exactly, to the resolution of the system's sleep, not at the next
+/// millisecond (ADR 0116 amendment, P13, #1151): `poll` waits whole milliseconds, rounded up,
+/// so the slices cover only the whole milliseconds left, and the sub-millisecond rest is slept
+/// to the exact instant ([`precise_rest`]). A stop request that comes during that rest is seen
+/// at its end: the wait is uninterruptible for under 1 ms.
 pub fn wait_tick(stop: &RunStop, timeout: Duration) -> bool {
     let end = Instant::now().checked_add(timeout);
     let mut wake = true;
@@ -327,15 +359,42 @@ pub fn wait_tick(stop: &RunStop, timeout: Duration) -> bool {
         if left.is_zero() {
             return true;
         }
+        let Some(slice) = whole_millis(left) else {
+            precise_rest(end, left);
+            continue;
+        };
         // A pipe left readable by another run is ignored from then on.
-        if sleep_slice(wake, left) && !stop.stopped() {
+        if sleep_slice(wake, slice) && !stop.stopped() {
             wake = false;
         }
     }
 }
 
+/// The whole milliseconds of `left`, at most [`SLICE`]: what a `poll` can wait without
+/// passing the instant `left` ends at, since it rounds a wait up to whole milliseconds. `None`
+/// when under one millisecond is left.
+fn whole_millis(left: Duration) -> Option<Duration> {
+    let millis = u64::try_from(left.as_millis()).unwrap_or(u64::MAX);
+    (millis > 0).then(|| Duration::from_millis(millis).min(SLICE))
+}
+
+/// Sleeps the sub-millisecond rest `left` up to the instant `end`, reading the clock again
+/// after each sleep, so the wait ends at `end` exactly, to the resolution of the system's
+/// sleep, rather than at the next millisecond. Under 1 ms, and uninterruptible.
+fn precise_rest(end: Option<Instant>, left: Duration) {
+    let mut left = left;
+    while !left.is_zero() {
+        std::thread::sleep(left);
+        left = end.map_or(Duration::ZERO, |end| {
+            end.saturating_duration_since(Instant::now())
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::os::fd::AsFd;
+
     use super::*;
 
     #[test]
@@ -358,6 +417,65 @@ mod tests {
         assert!(start.elapsed() >= Duration::from_millis(20));
         stop.request_local();
         assert!(!wait_tick(&stop, Duration::from_secs(30)));
+    }
+
+    /// The median of `values`, which are not empty.
+    fn median(values: &mut [Duration]) -> Duration {
+        values.sort_unstable();
+        values.get(values.len() / 2).copied().unwrap_or_default()
+    }
+
+    #[test]
+    fn a_tick_wait_ends_at_its_exact_instant_not_at_the_next_millisecond() {
+        // #1151, P13: a wait of whole milliseconds plus a fraction ends at or after its exact
+        // instant, and close to it. The old wait polled for the time left rounded up to whole
+        // milliseconds, so it ended about 700 us late for a rest of 300 us, by the phase of the
+        // tick, plus the system's latency; here the rest is slept to the instant, and only
+        // that latency is left. The bound, 600 us, is on the median of 20 waits, so one late
+        // wake of a busy machine does not fail it, while the old rounding, late in every wait,
+        // does.
+        let stop = RunStop::new(1);
+        let mut late = Vec::new();
+        for k in 0..20u32 {
+            let timeout = Duration::from_micros(1_300 + u64::from(k % 4) * 1_000);
+            let start = Instant::now();
+            assert!(wait_tick(&stop, timeout));
+            let took = start.elapsed();
+            assert!(took >= timeout, "{took:?} before {timeout:?}");
+            late.push(took - timeout);
+        }
+        let median = median(&mut late);
+        assert!(
+            median < Duration::from_micros(600),
+            "median {median:?} past the instant: {late:?}"
+        );
+    }
+
+    #[test]
+    fn an_operation_wait_times_out_at_its_exact_instant() {
+        // #1151, P13 (M3): an `Http` wait bounded by a deadline, on a socket that never becomes
+        // readable, times out at or after its exact instant and close to it, not at the next
+        // millisecond.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let _server = listener.accept().unwrap();
+        let stop = RunStop::new(1);
+        let interrupt = stop.interrupt();
+        let mut late = Vec::new();
+        for k in 0..20u32 {
+            let timeout = Duration::from_micros(1_300 + u64::from(k % 4) * 1_000);
+            let start = Instant::now();
+            let waited = interrupt.wait(client.as_fd(), false, timeout);
+            let took = start.elapsed();
+            assert!(matches!(waited, Waited::TimedOut), "{waited:?}");
+            assert!(took >= timeout, "{took:?} before {timeout:?}");
+            late.push(took - timeout);
+        }
+        let median = median(&mut late);
+        assert!(
+            median < Duration::from_micros(600),
+            "median {median:?} past the instant: {late:?}"
+        );
     }
 
     #[test]

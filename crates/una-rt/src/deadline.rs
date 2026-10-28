@@ -16,7 +16,16 @@
 //! `e`, which inherit the entry, then stop, and the stop reaches the `within`, whose
 //! [`within_end`] decides what it means: its own time-out, an outer `within`'s, or a stop of the
 //! task that goes on. Interruptible operations inside `e` wait no longer than the earliest
-//! deadline that covers them. Arming and ending are O(1).
+//! deadline that covers them. Arming and ending are O(1) (`timer`).
+//!
+//! **Nanoseconds** (ADR 0116 amendment of 2026-10-25, P13, #1151). Every deadline here is a
+//! moment in nanoseconds of the run's clock (`Clock::now_nanos`), armed on a reading in
+//! nanoseconds and compared with one: a `within d` or an iteration of `for ever within d` lasts
+//! exactly `d` from the moment it was armed. A reading in whole milliseconds, as before, gave
+//! it between `d - 1` and `d` milliseconds, by the phase within a millisecond that earlier
+//! code, `secret` code included, left. A `u128` holds every such moment, so no deadline is
+//! beyond the clock. Under virtual time the readings are whole milliseconds, as before, and
+//! the outcomes are unchanged. `d` itself stays in milliseconds, as `Clock.now` does.
 //!
 //! The state is a task's own: a worker swaps it with the task's [`Slots`] (`sched`).
 
@@ -28,17 +37,40 @@ use std::time::Duration;
 use una_interp::{Event, EventOutcome};
 
 use crate::runtime::with_state;
+use crate::timer::Timers;
 use crate::values;
 use crate::wheel::TimerId;
+
+/// The nanoseconds of a millisecond.
+const NANOS_PER_MILLI: u128 = 1_000_000;
+
+/// The deadline `ms` milliseconds after the moment `now`, both in nanoseconds of the run's
+/// clock: exactly `now + ms × 1,000,000`, with no rounding (P13, #1151). `None` only past what
+/// a `u128` holds, which no reading reaches. O(1).
+pub(crate) fn deadline_after(now: u128, ms: u64) -> Option<u128> {
+    now.checked_add(u128::from(ms) * NANOS_PER_MILLI)
+}
+
+/// The duration of `nanos` nanoseconds, `Duration::MAX` past what it holds.
+pub(crate) fn duration(nanos: u128) -> Duration {
+    let seconds = u64::try_from(nanos / 1_000_000_000).unwrap_or(u64::MAX);
+    // Below 1,000,000,000, so `Duration::new` never carries into the seconds.
+    let rest = u32::try_from(nanos % 1_000_000_000).unwrap_or(0);
+    if seconds == u64::MAX {
+        Duration::MAX
+    } else {
+        Duration::new(seconds, rest)
+    }
+}
 
 /// The deadline of the iteration in progress.
 #[derive(Clone, Debug)]
 pub(crate) struct Deadline {
     /// The deadline of each iteration, in milliseconds.
     period: u64,
-    /// When the iteration's deadline passes, in milliseconds of the run's clock, real or
-    /// virtual (ADR 0116 rule 19); `None` when it is beyond what the clock holds.
-    at: Option<u64>,
+    /// When the iteration's deadline passes, in nanoseconds of the run's clock, real or
+    /// virtual (ADR 0116 rule 19); `None` before the first iteration.
+    at: Option<u128>,
     /// The iteration, from 1.
     iteration: u64,
     /// The path of the task that runs the loop.
@@ -54,7 +86,8 @@ pub(crate) struct Deadline {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Inherited {
     ever: Option<Deadline>,
-    within: Option<u64>,
+    /// In nanoseconds of the run's clock.
+    within: Option<u128>,
     /// The cancellation entries of those `within`s, to tell a cut from another cancellation.
     flags: Vec<Arc<AtomicUsize>>,
 }
@@ -63,12 +96,12 @@ pub(crate) struct Inherited {
 struct Frame {
     /// The frame's id in its task, which the generated code passes back to [`within_end`].
     id: i64,
-    /// When the deadline passes, in milliseconds of the run's clock; `None` beyond it.
-    at: Option<u64>,
+    /// When the deadline passes, in nanoseconds of the run's clock; `None` beyond it.
+    at: Option<u128>,
     /// The cancellation entry: cancelled once its count is below 1, which the timer does.
     flag: Arc<AtomicUsize>,
-    /// The timer, under the real clock.
-    timer: Option<TimerId>,
+    /// The timer, under the real clock, and the run's timers that hold it.
+    timer: Option<(Arc<Timers>, TimerId)>,
     /// What a cut restores: whether the task ran a `for ever` body, and that loop's deadline.
     in_ever: bool,
     ever: Option<Deadline>,
@@ -82,8 +115,9 @@ struct Frame {
 struct Local {
     ever: Option<Deadline>,
     withins: Vec<Frame>,
-    /// The earliest deadline of the `within`s of the task's ancestors that cover it.
-    inherited: Option<u64>,
+    /// The earliest deadline of the `within`s of the task's ancestors that cover it, in
+    /// nanoseconds.
+    inherited: Option<u128>,
     /// Their cancellation entries.
     inherited_flags: Vec<Arc<AtomicUsize>>,
     /// The id of the next frame.
@@ -147,12 +181,12 @@ pub fn enter(word: i64) {
     });
 }
 
-/// Starts an iteration of the loop: its deadline is the period after now.
+/// Starts an iteration of the loop: its deadline is the period after now, in nanoseconds.
 pub fn iteration() {
     local(|local| {
         if let Some(deadline) = local.ever.as_mut() {
             deadline.iteration += 1;
-            deadline.at = crate::runtime::clock().now().checked_add(deadline.period);
+            deadline.at = deadline_after(crate::runtime::clock().now_nanos(), deadline.period);
         }
     });
 }
@@ -192,8 +226,8 @@ pub(crate) fn current() -> Inherited {
     })
 }
 
-/// The earliest deadline of the `within`s that cover the task's code now.
-fn earliest(local: &Local) -> Option<u64> {
+/// The earliest deadline of the `within`s that cover the task's code now, in nanoseconds.
+fn earliest(local: &Local) -> Option<u128> {
     local
         .withins
         .iter()
@@ -291,8 +325,9 @@ pub(crate) fn left() -> Option<(Duration, Bound)> {
             }
             (one, other) => one.or(other)?,
         };
-        let now = crate::runtime::clock().now();
-        Some((Duration::from_millis(at.saturating_sub(now)), bound))
+        // The exact time left, in nanoseconds (P13).
+        let now = crate::runtime::clock().now_nanos();
+        Some((duration(at.saturating_sub(now)), bound))
     })
 }
 
@@ -353,25 +388,39 @@ fn timeout_event(task: String) {
                 outcome: EventOutcome::Timeout,
             });
         }
+        state.flush();
     });
 }
 
 /// Enters `e within d`, whose deadline is the integer of the borrowed word `word`, in
-/// milliseconds: the deadline is `d` after now on the run's clock (`spec/27 §5`). Returns the
-/// frame's id, which [`within_end`] takes. O(1).
+/// milliseconds: the deadline is exactly `d` after now on the run's clock, in nanoseconds
+/// (`spec/27 §5`; P13, #1151). Returns the frame's id, which [`within_end`] takes. O(1).
 pub fn within_enter(word: i64) -> i64 {
     let clock = crate::runtime::clock();
-    let at = clock.now().checked_add(millis(word));
+    let now = clock.now_nanos();
+    let at = deadline_after(now, millis(word));
     let flag = Arc::new(AtomicUsize::new(1));
     // A deadline that has passed already is cut at the first check point, and one beyond the
     // clock never is. Under virtual time only the run's own waits move the clock, which no
-    // check point inside `e` does, so the deadline is read when `e` returns.
+    // check point inside `e` does, so the deadline is read when `e` returns. On the real clock
+    // the run's timer thread already runs (P8): arming starts no thread. With no timers to arm
+    // on, the deadline counts as passed at once.
     let timer = match at {
-        Some(at) if at <= clock.now() => {
+        Some(at) if at <= now => {
             flag.store(0, Ordering::SeqCst);
             None
         }
-        Some(at) if !clock.is_virtual() => crate::timer::arm(at, &flag),
+        Some(at) if !clock.is_virtual() => match crate::runtime::timers() {
+            Some(timers) => {
+                // A deadline past 584 years of the run waits at the end of the wheel's time.
+                let at = u64::try_from(at).unwrap_or(u64::MAX);
+                timers.arm(at, &flag).map(|id| (timers, id))
+            }
+            None => {
+                flag.store(0, Ordering::SeqCst);
+                None
+            }
+        },
         _ => None,
     };
     let in_ever = with_state(|state| state.in_ever).unwrap_or(false);
@@ -393,8 +442,9 @@ pub fn within_enter(word: i64) -> i64 {
     })
 }
 
-/// Whether the frame's deadline has passed: its timer fired, or the clock has reached it.
-fn passed(frame: &Frame, now: u64) -> bool {
+/// Whether the frame's deadline has passed: its timer fired, or the clock, in nanoseconds, has
+/// reached it.
+fn passed(frame: &Frame, now: u128) -> bool {
     frame.flag.load(Ordering::SeqCst) == 0 || frame.at.is_some_and(|at| at <= now)
 }
 
@@ -423,7 +473,7 @@ pub fn within_end(id: i64, stopped: i64) -> i64 {
         return if stopped == 0 { SUCCEEDED } else { STOPPED };
     };
     end_frame(&frame);
-    let now = crate::runtime::clock().now();
+    let now = crate::runtime::clock().now_nanos();
     // An abort, or a cancellation of the task that is not this deadline's (a failed sibling, a
     // `within` of a task above it), stops the task on, and so does an outer deadline that
     // passed, which its own `within` reports (rule 5, Nesting).
@@ -457,8 +507,8 @@ pub fn within_end(id: i64, stopped: i64) -> i64 {
 
 /// Takes the frame's timer and cancellation entry away.
 fn end_frame(frame: &Frame) {
-    if let Some(timer) = frame.timer {
-        crate::timer::cancel(timer);
+    if let Some((timers, id)) = &frame.timer {
+        timers.cancel(*id);
     }
     crate::runtime::pop_cancel(&frame.flag);
 }
@@ -485,7 +535,7 @@ mod tests {
     fn deadline(period: u64) -> Deadline {
         Deadline {
             period,
-            at: Some(period),
+            at: Some(u128::from(period)),
             iteration: 1,
             owner: String::new(),
             reported: Arc::new(AtomicU64::new(0)),
@@ -525,5 +575,48 @@ mod tests {
         })
         .join()
         .unwrap();
+    }
+
+    #[test]
+    fn a_deadline_is_exactly_d_after_its_arming_at_any_offset_in_the_millisecond() {
+        // P13, #1151: the deadline of `within d` and of a `for ever within d` iteration is the
+        // nanosecond reading at arming plus `d` milliseconds, whatever the offset of that
+        // reading within its millisecond. The old arming on whole milliseconds put it up to
+        // 1 ms early, by that offset.
+        for millis_now in [0u128, 1, 17, 86_400_000] {
+            for offset in (0..1_000_000u128).step_by(7_717).chain([1, 999_999]) {
+                let now = millis_now * 1_000_000 + offset;
+                for d in [1u64, 10, 1_000, u64::MAX] {
+                    let at = deadline_after(now, d).unwrap();
+                    assert_eq!(at - now, u128::from(d) * 1_000_000);
+                }
+            }
+        }
+        // Through `iteration` itself, on the run's clock: the deadline, less `d`, is a reading
+        // taken between the two readings around the call, so not one rounded down to its
+        // millisecond, which would fall before the first reading at almost every offset.
+        std::thread::spawn(|| {
+            let clock = crate::runtime::clock();
+            let d = 250u64;
+            enter(values::int_word(&num_bigint::BigInt::from(d)));
+            for _ in 0..20 {
+                let before = clock.now_nanos();
+                iteration();
+                let after = clock.now_nanos();
+                let at = LOCAL.with(|cell| cell.borrow().ever.as_ref().and_then(|ever| ever.at));
+                let armed = at.unwrap() - u128::from(d) * 1_000_000;
+                assert!(
+                    before <= armed && armed <= after,
+                    "{before} {armed} {after}"
+                );
+            }
+            leave();
+        })
+        .join()
+        .unwrap();
+        // The time left is exact, in nanoseconds, and saturates.
+        assert_eq!(duration(1), Duration::from_nanos(1));
+        assert_eq!(duration(2_500_000_001), Duration::new(2, 500_000_001));
+        assert_eq!(duration(u128::MAX), Duration::MAX);
     }
 }

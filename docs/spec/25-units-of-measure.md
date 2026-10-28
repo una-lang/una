@@ -1,10 +1,10 @@
 # 25. Units of measure
 
-Status: Normative, v0.3 (ADR 0104).
+Status: Normative, v0.3 (ADR 0104), with the other number types of ADR 0114 rule 12 and ADR 0120 rules 61 to 65 (§9).
 
-A unit of measure is part of an integer type. `Int of Meter` is neither `Int` nor `Int of Second`, so a program cannot add meters to seconds, pass seconds where milliseconds are expected, or compare grams with milliliters. Units exist only at compile time: they are erased after the type check, so they cost nothing at run time or in verification, and they do not change a program's output.
+A unit of measure is part of a number type. `Int of Meter` is neither `Int` nor `Int of Second`, so a program cannot add meters to seconds, pass seconds where milliseconds are expected, or compare grams with milliliters. Units exist only at compile time: they are erased after the type check, so they cost nothing at run time or in verification, and they do not change a program's output.
 
-**Editions.** The rules of this chapter apply only to packages of edition `0.3` (`spec/13 §7`). In editions `0.1` and `0.2`, a `measure` declaration and `of` after a type are syntax errors (U0101).
+**Editions.** The rules of this chapter apply only to packages of edition `0.3` (`spec/13 §7`) and later. In editions `0.1` and `0.2`, a `measure` declaration and `of` after a type are syntax errors (U0101). `F64` takes a unit from edition `0.3`, and `F32`, `Decimal[s]`, the complex types and the elements of dense values in edition `0.4`, the editions that have them (§9).
 
 ## 1. Declarations
 
@@ -22,7 +22,7 @@ unit_term    = upper_ident | "(" unit_expr ")" | integer_literal ;
 
 ## 2. Measured types
 
-1. **Syntax.** `type = [ label ] type_core [ "of" unit_expr ] [ "in" range ] ;`. `of` follows `Int` or a fixed-width integer type (`spec/18`); after any other type it is U2029.
+1. **Syntax.** `type = [ label ] type_core [ "of" unit_expr ] [ "in" range ] ;`. `of` follows `Int` or a fixed-width integer type (`spec/18`), `F64`, and in edition `0.4` `F32`, `Decimal[s]`, `Complex[F64]` and `Complex[F32]` (§9); after any other type it is U2029. A dense value takes its unit in its element type, as `Array[F64 of Meter]`.
 2. **Normal form.** A unit's normal form is a positive rational scale, reduced, and a map from base units to nonzero integer exponents, ordered by module path and then name. Two units are equal exactly when their normal forms are equal.
 3. **No unit.** A unit with no base unit and scale 1, as `Meter / Meter` in a type, is no unit: the type is the plain integer type. A unit with no base unit and another scale, as `Kilometer / Meter`, stays a unit.
 4. **A type of its own.** A measured type is distinct from its integer type and from every other measured type. A flow between types that differ only in their units is U2028.
@@ -78,3 +78,28 @@ unit_term    = upper_ident | "(" unit_expr ")" | integer_literal ;
 | U2028 | Values of different units meet, or a measured and a unitless value |
 | U2029 | An invalid unit declaration or unit expression |
 | U2030 | A unit conversion without an expected unit, or not exact |
+
+## 9. Floats, decimals, complex values and dense values
+
+The rules of §1 to §8 apply to every number type that takes a unit, with these rules for the types that are not integers (ADR 0114 rule 12, ADR 0120 rules 61 to 65). An operator or a method is typed on the magnitudes by the rules of its type (`spec/29`), and its unit is the one these rules give.
+
+1. **`F64`** (ADR 0114 rule 12).
+   - `+`, `-`, unary `-`, the comparisons, the IEEE comparisons, `ieee_min`, `ieee_max` and `in` need one unit, and the results of `+`, `-`, unary `-`, `ieee_min` and `ieee_max` have it. `x.clamp(lo:, hi:)` needs one unit for all three, and has it. `*` and `/` multiply and divide units.
+   - `abs`, `floor`, `ceil`, `trunc`, both roundings and `copy_sign` keep the receiver's unit, and `copy_sign` takes any unit for `from`. `x.rem(by: y)` needs one unit and keeps it. `x.fma(times: y, plus: z)` needs `z` in the unit of `x * y`, and has it. The classifications take any unit. `to_bits` needs a unitless receiver (U2028).
+   - `x.sqrt()` gives the unit whose normal form has half of each exponent and the square root of the scale, when every exponent is even and the scale is the square of a rational: `F64 of Meter * Meter` gives `F64 of Meter`. Otherwise it is U2028, and `x.magnitude().sqrt().measured()` writes the conversion out.
+   - A constant expression made only of float literals and the operators takes the unit its context expects, as an integer constant does (§3 rule 3).
+   - `convert()` accepts a ratio of scales k or 1/k, with k a positive integer of at most 2^53, so that k is exact as an `F64`: it multiplies or divides the magnitude by k, rounded once. Any other ratio, as inch to centimeter (127/50), is U2030.
+   - Conversions between number types keep the unit: `n.to_f64()` on `Int of Meter` is `F64 of Meter`, and `x.to_int_exact()` on `F64 of Meter` is `Option[Int of Meter]`.
+2. **`F32`** follows rule 1 exactly (ADR 0120 rule 62), with k of a `convert()` at most 2^24, so that k is exact as an `F32`. `to_f32()` and `to_f64()` between the float types keep the unit.
+3. **`Decimal[s]`** (ADR 0120 rule 63). `+`, `-`, the comparisons, `widen`, `rescale`, `rescale_exact`, `abs` and `to_int` need or keep one unit, the comparisons across scales; `*` multiplies units; `divide` divides them; `remainder` needs one unit on both operands and keeps it; `to_f64()` keeps the unit, and `coefficient()` needs a unitless receiver (U2028). `convert()` accepts an integer ratio k and multiplies the coefficient by k, exactly; a ratio 1/k would need a rounding, so it is U2030, and `x.magnitude().divide(...).measured()` writes the division out with its scale and its rounding. A currency is a unit, so dollars cannot be added to euros, and an exchange rate is a value of a quotient unit:
+
+   ```una
+   measure Usd
+   measure Eur
+   let rate: Decimal[6] of Eur / Usd = 0.921350
+   let paid: Decimal[2] of Eur = (price * rate).rescale(scale: 2, rounding: HalfEven)
+   ```
+
+4. **`Complex[F64]` and `Complex[F32]`** (ADR 0120 rule 64). A measured complex value has one unit for both components: `complex(re:, im:)` takes it from its arguments, which need one unit (U2028 otherwise), or from the expected type for literals; `+` and `-` need one unit, `*` and `/` multiply and divide, `conj` keeps, `scale(by:)` multiplies by the scalar's unit, `norm_sqr()` squares, and `re` and `im` have the unit. A measured complex value satisfies `Eq` and not `Ord`, as its magnitude does. `convert()` on a complex value is U2030; its components convert one by one.
+5. **Dense values** (ADR 0120 rule 64). The element type carries the unit, one unit for every element: per-row units are not expressible. The element-wise operators follow the scalar rules, and the unit of a scalar multiplies or divides the elements' in `k * x`, `x * k` and `x / k`. `multiply_elements`, `dot`, `multiply` and `multiply_array` multiply the units of their operands, and `divide_elements` divides them. `add_product` and `add_scaled` add a product to their receiver, so the product is in the receiver's unit, and `scale(by:)` changes its receiver in place, so its factor is unitless (U2028 otherwise). `sum`, `norm2`, the row and column sums and the reads keep the unit. `x.magnitude()` and `x.measured()` on a dense value are O(1): the representation is the same. `convert()` on a dense value is U2030; `map` converts its elements. The units of `solve`, `cholesky` and `lu()` (ADR 0120 rule 64) apply when those methods land.
+6. **Erasure** (§7): `E(x.convert())` on an `F64` or an `F32` is `E(x) * k` or `E(x) / k`, with k the float literal of the ratio, and on a decimal `E(x) * k`, with k a `Decimal[0]` literal, which keeps the scale. Every other unit operation erases as in §7, so units cost nothing and change no value. A program with `F64` erases to a program of edition `0.3` without units, and one with the types of edition `0.4` to a program of edition `0.4` without units (ADR 0114 rule 15).

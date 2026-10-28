@@ -25,6 +25,22 @@ pub note(line: Text) -> Unit
   @log.write(line)
 ```
 
+A call may perform an effect even when its line has no `@`. Here, `emit` performs `@console.print`, and `main` calls it. Both public headers declare `Console[print]`. A public caller that leaves it out is U3003, as an example below shows.
+
+```una
+module shop
+
+pub emit() -> Unit
+  uses @console: Console[print]
+=
+  @console.print("hello")
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  emit()
+```
+
 ## Forms
 
 In the grammar below, each rule gives a name, `=`, what the name stands for and `;`, quoted words are written as shown, NEWLINE, INDENT and DEDENT stand for a line break and for one more or one less level of indentation, `[ ]` marks an optional part, `{ }` a part that may repeat, `|` separates alternatives, `( )` groups them, and `(* *)` holds a comment.

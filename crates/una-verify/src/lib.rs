@@ -18,3 +18,4 @@ pub use generate::{
 };
 pub use report::diagnostics;
 pub use run::{Lock, Outcome, Problem, Settings, queries, verify};
+pub use solver::{Ended, Raw, Solver};
