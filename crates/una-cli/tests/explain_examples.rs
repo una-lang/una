@@ -4,7 +4,8 @@
 //!
 //! An example is one `una` block, or a package whose files are fenced blocks
 //! each introduced by its path in backticks on its own line; the test completes a package with
-//! a default `una.toml` and the repository's `verification.lock` unless it gives its own.
+//! a default `una.toml` and the repository's `verification.lock` unless it gives its own, or
+//! gives an `ita.una` (edition 0.4).
 
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
@@ -66,6 +67,25 @@ fn example(text: &str, heading: &str) -> Option<Example> {
     }
 }
 
+/// The flags of `una run` that the example under `heading` names, in a line with
+/// ``Run it with `una run <flags>` ``: a runtime code that only a flag causes, such as U6007
+/// after `--deadline` (ADR 0116).
+fn run_flags(text: &str, heading: &str) -> Vec<String> {
+    let Some(section) = text
+        .split(heading)
+        .nth(1)
+        .and_then(|rest| rest.split("\n## ").next())
+    else {
+        return Vec::new();
+    };
+    section
+        .lines()
+        .find_map(|line| line.strip_prefix("Run it with `una run "))
+        .and_then(|rest| rest.split('`').next())
+        .map(|flags| flags.split_whitespace().map(str::to_owned).collect())
+        .unwrap_or_default()
+}
+
 /// The headings of the fixed examples of `text`, in order: `## Fixed example`, and
 /// `## Fixed example: <case>` for each further case.
 fn fixed_headings(text: &str) -> Vec<String> {
@@ -77,7 +97,7 @@ fn fixed_headings(text: &str) -> Vec<String> {
 
 /// The codes `check` reports for `example`, written under a directory named after the code.
 /// A fixed example is checked at tier 1, a failing one at the tier of its code.
-fn codes(code: Code, name: &str, example: &Example, fixed: bool) -> Vec<Code> {
+fn codes(code: Code, name: &str, example: &Example, fixed: bool, flags: &[String]) -> Vec<Code> {
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
         .join("explain-examples")
         .join(code.as_str())
@@ -92,10 +112,12 @@ fn codes(code: Code, name: &str, example: &Example, fixed: bool) -> Vec<Code> {
         }
         Example::Package(files) => {
             let given = |path: &str| files.iter().any(|(file, _)| file == path);
-            if !given("una.toml") {
+            // A package of edition 0.4 gives its own `ita.una` and `ita.lock` (ADR 0122).
+            let ita = given("ita.una");
+            if !ita && !given("una.toml") {
                 std::fs::write(dir.join("una.toml"), MANIFEST).unwrap();
             }
-            if !given("verification.lock") {
+            if !ita && !given("verification.lock") {
                 let lock = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../verification.lock");
                 std::fs::copy(lock, dir.join("verification.lock")).unwrap();
             }
@@ -107,12 +129,19 @@ fn codes(code: Code, name: &str, example: &Example, fixed: bool) -> Vec<Code> {
             dir.clone()
         }
     };
+    // U7014 comes from `una ita audit` alone (ADR 0122 rule 41), never from `una check`: its
+    // examples are audited against the registry state their text states.
+    if code == Code::U7014 {
+        return una_cli::audit_codes(&target, &mut stated_facts);
+    }
     // Runtime codes come from `una run`, whose JSON document lists them with the diagnostics
     // of the checks.
     if code.domain() == Domain::Runtime {
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
-        let args = ["una", "--json", "run", target.to_str().unwrap()];
+        let mut args = vec!["una", "--json", "run"];
+        args.extend(flags.iter().map(String::as_str));
+        args.push(target.to_str().unwrap());
         una_cli::run(
             args,
             &mut stdout,
@@ -144,6 +173,20 @@ fn codes(code: Code, name: &str, example: &Example, fixed: bool) -> Vec<Code> {
         .collect()
 }
 
+/// The registry state that the text of U7014 states, as the verified client would give it: at
+/// `acme`, `acme/ledger 0.3.1` is yanked and `0.3.2` is not, neither is advised, and the owner
+/// has no pending recovery and no key change.
+fn stated_facts(
+    locked: &una_project::registry::audit::Locked,
+) -> Result<una_project::registry::audit::Facts, String> {
+    Ok(una_project::registry::audit::Facts {
+        yanked: locked.source == "acme"
+            && locked.name == "acme/ledger"
+            && locked.version.to_string() == "0.3.1",
+        ..Default::default()
+    })
+}
+
 #[test]
 fn failing_examples_yield_their_code_and_fixed_examples_yield_nothing() {
     let mut checked = Vec::new();
@@ -155,7 +198,13 @@ fn failing_examples_yield_their_code_and_fixed_examples_yield_nothing() {
         ) else {
             continue;
         };
-        let reported = codes(code, "failing", &failing, false);
+        let reported = codes(
+            code,
+            "failing",
+            &failing,
+            false,
+            &run_flags(text, "## Failing example"),
+        );
         assert!(
             !reported.is_empty() && reported.iter().all(|found| *found == code),
             "{code}: the failing example reports {reported:?}"
@@ -164,7 +213,13 @@ fn failing_examples_yield_their_code_and_fixed_examples_yield_nothing() {
         for (n, heading) in fixed_headings(text).iter().enumerate() {
             let fixed = example(text, heading).unwrap();
             assert_eq!(
-                codes(code, &format!("fixed{n}"), &fixed, true),
+                codes(
+                    code,
+                    &format!("fixed{n}"),
+                    &fixed,
+                    true,
+                    &run_flags(text, heading)
+                ),
                 [],
                 "{code}: {heading}"
             );
@@ -172,9 +227,22 @@ fn failing_examples_yield_their_code_and_fixed_examples_yield_nothing() {
         checked.push(code.as_str());
     }
     // Every code has its examples, but U8001, an internal error, which no program should
-    // cause, and U6005, which the host's data causes and no program text does (ADR 0086).
+    // cause, U6005, which the host's data causes and no program text does (ADR 0086), and
+    // U6006, which the platform's floating-point environment causes (ADR 0114), U6009, which
+    // the host's random source causes (ADR 0119 rule 9), and U7013, which only `una ita`
+    // reports when it resolves, and `una check` never does (ADR 0122 rule 25). U7014's
+    // examples are audited against a stated registry state. U2039 and U3032 belong to the
+    // `simd required` clause of ADR 0120 rule 58, which this release does not read yet: remove
+    // with ADR 0120 S8 (#991), which lands the clause and writes their examples.
     for code in Code::ALL {
-        if code == Code::U8001 || code == Code::U6005 {
+        if code == Code::U8001
+            || code == Code::U2039
+            || code == Code::U3032
+            || code == Code::U6005
+            || code == Code::U6006
+            || code == Code::U6009
+            || code == Code::U7013
+        {
             assert!(
                 !una_explain::text(code).contains("Stub explanation."),
                 "{code} has its text"

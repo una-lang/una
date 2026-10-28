@@ -1,0 +1,30 @@
+-- test: parse_f64 fails as spec/29 §7 rule 3 states, at the first position at which no accepted text can continue, or at the text's length when one could still continue; records with float fields print in their Una form
+-- spec: spec/29 §7
+-- grant: console
+-- expect: run-output "[Err(Empty), Err(NoDigits), Err(NotADigit(2)), Err(NotADigit(2)), Err(NotADigit(2)), Err(NotADigit(5)), Err(NotADigit(4))]"
+-- expect: run-output "[Err(NotADigit(0)), Err(NotADigit(0)), Err(NotADigit(0)), Err(NotADigit(1)), Err(NotADigit(1)), Err(NotADigit(1))]"
+-- expect: run-output "[Err(NotADigit(3)), Err(NotADigit(3)), Err(NotADigit(1)), Err(NotADigit(0)), Err(NotADigit(0))]"
+-- expect: run-output "[Ok(1.0), Ok(-0.0), Ok(100000.0), Ok(nan), Ok(-inf)]"
+-- expect: run-output "P(x: nan, y: -0.0) P(x: inf, y: 5.0e-324)"
+module floats
+
+pub kind P
+  x: F64
+  y: F64
+
+parsed(t: Text) -> Result[F64, ParseError] = attempt parse_f64(t)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let a = ["", "-", "1.", "1e", "in", "1.5e-", "-inf "]
+  let b = ["+1", ".5", " 1", "01", "--1", "-nan"]
+  let c = ["1.0x", "nan ", "1_0", "Infinity", "NaN"]
+  let d = ["1", "-0", "1E+5", "nan", "-inf"]
+  @console.print("{map(a, each: parsed)}")
+  @console.print("{map(b, each: parsed)}")
+  @console.print("{map(c, each: parsed)}")
+  @console.print("{map(d, each: parsed)}")
+  let p = P(x: nan(), y: -0.0)
+  let q = P(x: infinity(), y: 5.0e-324)
+  @console.print("{p} {q}")

@@ -24,11 +24,27 @@
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
+use std::sync::Arc;
 
 use num_bigint::{BigInt, Sign};
 use una_core::Text;
 
 use crate::ffi::Code;
+
+mod collections;
+pub(crate) mod dense;
+mod hashes;
+
+pub use collections::{
+    bit_set_empty, bit_set_op, bit_set_op_owned, collection_len, priority_empty, priority_op,
+    priority_op_owned, seq_empty, seq_of, seq_op, seq_op_owned, set_empty, set_of, set_op,
+    set_op_owned,
+};
+pub(crate) use collections::{bit_set_members, collection_words};
+pub use hashes::{
+    hash_empty, hash_map_op, hash_map_op_owned, hash_of_list, hash_set_op, hash_set_op_owned,
+};
+pub(crate) use hashes::{hash_entries, read_process_key};
 
 /// The smallest integer that a tagged word holds.
 const SMALL_MIN: i64 = -(1 << 62);
@@ -57,6 +73,9 @@ enum Object {
     },
     /// A keyed hash.
     Hashed(Vec<u8>),
+    /// An `F64`, boxed, always canonical (ADR 0114 rule 9.6): every `F64` outside a register
+    /// is boxed until the raw cells of ADR 0107 land.
+    F64(f64),
     /// An instance of a capability (`spec/11 §2`): its id in traces, the code of each of its
     /// operations in the capability's order (none for a host instance), and the values and
     /// instances its handler holds.
@@ -67,6 +86,33 @@ enum Object {
     },
     /// A map, by the order of its keys (`spec/21 §5`): the word of each key, and of its value.
     Map(BTreeMap<MapKey, (i64, i64)>),
+    /// A dense value's header, an `Array`, `Matrix`, `Tensor` or `Lu` (`spec/29 §17`, ADR 0120
+    /// rule 28): its layout over its store, which it references as its one cell when the store
+    /// holds words ([`dense`]).
+    Dense(Box<dense::Dense>),
+    /// The store of a dense value's elements other than `F64`: words, counted non-atomically as
+    /// a list's items are, which views of one value share ([`dense`], design note D1).
+    Words(Vec<i64>),
+    /// A `Stack` or a `Queue` of `std.collections`, its own layout (ADR 0119 rule 19, ADR 0107
+    /// rule 2): a ring buffer of words, front first, a stack's top at its front.
+    Seq(VecDeque<i64>),
+    /// A `Set` of `std.collections`, its own layout: its items by their order (`spec/28 §6`),
+    /// each kept as its word for listing and rendering, as a map keeps its keys.
+    Set(BTreeMap<MapKey, i64>),
+    /// A `PriorityQueue` of `std.collections`, its own layout: a stable 4-ary heap of words
+    /// (`spec/28 §8`).
+    Priority(collections::PriorityHeap),
+    /// A `BitSet` of `std.collections`, its own layout: internal words that no walk reads as
+    /// values, its size and its count of members (`spec/28 §9`).
+    Bits(collections::Bits),
+    /// A `HashMap` of `std.collections`, its own layout: the ordered hash table of `una_hash`
+    /// over words, with its table's key (`spec/28 §7`). `None` only while an operation holds
+    /// the table outside the heap, to compare keys (`hashes`). Boxed, since a table inline would
+    /// grow every object, and so every slot of every heap, by its size.
+    HashMap(Option<Box<hashes::Table>>),
+    /// A `HashSet` of `std.collections`, its own layout: the same table, boxed, each item a key
+    /// whose value is `unit`.
+    HashSet(Option<Box<hashes::Table>>),
 }
 
 /// A map's key, copied out of the heap at insert: an integer, or a text. A variant
@@ -76,6 +122,8 @@ enum Object {
 enum MapKey {
     Int(BigInt),
     Text(String),
+    /// An `F64` by the key of totalOrder (ADR 0114 rule 9.5).
+    F64(i64),
 }
 
 impl MapKey {
@@ -87,6 +135,7 @@ impl MapKey {
         with(word, |object| match object {
             Object::Text(text) => MapKey::Text(text.as_str().to_owned()),
             Object::Int(value) => MapKey::Int(value.clone()),
+            Object::F64(x) => MapKey::F64(una_core::float::order_key(*x)),
             _ => MapKey::Int(BigInt::default()),
         })
         .unwrap_or(MapKey::Int(BigInt::default()))
@@ -101,26 +150,67 @@ impl Object {
                 .values()
                 .flat_map(|(key, value)| [*key, *value])
                 .collect(),
+            Object::Seq(items) => items.iter().copied().collect(),
+            Object::Set(items) => items.values().copied().collect(),
+            Object::Priority(heap) => heap.words().collect(),
+            Object::HashMap(table) => table.iter().flat_map(|t| t.words(false)).collect(),
+            Object::HashSet(table) => table.iter().flat_map(|t| t.words(true)).collect(),
             other => other.cells().to_vec(),
         }
+    }
+
+    /// Whether the object holds words that [`Object::cells`] does not give: a map's or a
+    /// collection's, which [`Object::children`] gives.
+    fn has_children_apart(&self) -> bool {
+        matches!(
+            self,
+            Object::Map(_)
+                | Object::Seq(_)
+                | Object::Set(_)
+                | Object::Priority(_)
+                | Object::HashMap(_)
+                | Object::HashSet(_)
+        )
     }
 
     /// The words the object references.
     fn cells(&self) -> &[i64] {
         match self {
-            Object::Int(_) | Object::Text(_) | Object::Hashed(_) | Object::Map(_) => &[],
+            Object::Int(_)
+            | Object::Text(_)
+            | Object::Hashed(_)
+            | Object::F64(_)
+            | Object::Map(_)
+            | Object::Seq(_)
+            | Object::Set(_)
+            | Object::Priority(_)
+            | Object::Bits(_)
+            | Object::HashMap(_)
+            | Object::HashSet(_) => &[],
             Object::Data { fields, .. } => fields,
-            Object::List(items) => items,
+            Object::List(items) | Object::Words(items) => items,
             Object::Closure { env, .. } => env,
             Object::Instance { cells, .. } => cells,
+            Object::Dense(header) => header.cells(),
         }
     }
 
     fn cells_mut(&mut self) -> Option<&mut Vec<i64>> {
         match self {
-            Object::Int(_) | Object::Text(_) | Object::Hashed(_) | Object::Map(_) => None,
+            Object::Int(_)
+            | Object::Text(_)
+            | Object::Hashed(_)
+            | Object::F64(_)
+            | Object::Map(_)
+            | Object::Dense(_)
+            | Object::Seq(_)
+            | Object::Set(_)
+            | Object::Priority(_)
+            | Object::Bits(_)
+            | Object::HashMap(_)
+            | Object::HashSet(_) => None,
             Object::Data { fields, .. } => Some(fields),
-            Object::List(items) => Some(items),
+            Object::List(items) | Object::Words(items) => Some(items),
             Object::Closure { env, .. } => Some(env),
             Object::Instance { cells, .. } => Some(cells),
         }
@@ -202,6 +292,31 @@ struct Heap {
 
 thread_local! {
     static HEAP: RefCell<Heap> = RefCell::new(Heap::default());
+}
+
+/// A task's heap, and its test counters, while it is parked (`sched`, ADR 0117 rule 2).
+#[derive(Default)]
+pub(crate) struct Slots {
+    heap: Heap,
+    #[cfg(test)]
+    counters: [usize; 3],
+}
+
+/// Exchanges the thread's heap and test counters with `slots`. A heap is never borrowed when a
+/// task parks or ends: a borrow here is a defect, which ends the process rather than mix two
+/// tasks' heaps.
+pub(crate) fn swap_slots(slots: &mut Slots) {
+    HEAP.with(|heap| match heap.try_borrow_mut() {
+        Ok(mut heap) => std::mem::swap(&mut *heap, &mut slots.heap),
+        Err(_) => std::process::abort(),
+    });
+    #[cfg(test)]
+    {
+        let [equality, objects, growth] = &mut slots.counters;
+        *equality = EQUALITY_STEPS.with(|cell| cell.replace(*equality));
+        *objects = OBJECT_STEPS.with(|cell| cell.replace(*objects));
+        *growth = MOST_GROWTH.with(|cell| cell.replace(*growth));
+    }
 }
 
 /// Whether `word` is a handle.
@@ -328,9 +443,10 @@ pub fn release(word: i64) {
             object
         });
         if let Some(object) = freed {
-            match &object {
-                Object::Map(_) => pending.extend(object.children()),
-                _ => pending.extend_from_slice(object.cells()),
+            if object.has_children_apart() {
+                pending.extend(object.children());
+            } else {
+                pending.extend_from_slice(object.cells());
             }
         }
     }
@@ -625,8 +741,8 @@ pub fn text_len(a: i64) -> i64 {
 }
 
 /// An `Int` as text, in decimal.
-pub fn int_text(a: i64) -> i64 {
-    text_word(int_value(a).to_string())
+pub fn int_text(a: i64) -> Option<i64> {
+    una_core::int_text(&int_value(a)).map(text_word)
 }
 
 /// A `Bool` as text, `true` or `false`.
@@ -786,12 +902,18 @@ pub(crate) fn equal_at(site: i64, a: i64, b: i64) -> Option<bool> {
 }
 
 /// A value with parts, compared through a worklist: a variant with fields, a record, a
-/// non-empty list or a non-empty map. Every other word is a leaf, compared as it is met.
+/// non-empty list, map, stack, queue or set, or a dense value. Every other word is a leaf,
+/// compared as it is met, a bit set included, as the interpreter compares them (`spec/28 §3`
+/// rule 3).
 fn has_parts(word: i64) -> bool {
     is_handle(word)
         && with(word, |object| match object {
             Object::Data { fields, .. } | Object::List(fields) => !fields.is_empty(),
             Object::Map(entries) => !entries.is_empty(),
+            // Its shape is a part, even with no elements (ADR 0120 rule 27).
+            Object::Dense(_) => true,
+            Object::Seq(items) => !items.is_empty(),
+            Object::Set(items) => !items.is_empty(),
             _ => false,
         })
         .unwrap_or(false)
@@ -806,9 +928,15 @@ fn leaf_equal(a: i64, b: i64) -> bool {
         Int(BigInt),
         Text(String),
         Bytes(Vec<u8>),
+        Float(u64),
         Variant(i64),
         List,
         Map,
+        Seq,
+        Set,
+        /// A bit set's size and words: the same size and the same members (`spec/28 §3` rule
+        /// 3), compared at once, in O(size / 64), since they hold no values.
+        Bits(usize, Vec<u64>),
         Other,
     }
     if a == b {
@@ -822,9 +950,14 @@ fn leaf_equal(a: i64, b: i64) -> bool {
             Object::Int(value) => Leaf::Int(value.clone()),
             Object::Text(text) => Leaf::Text(text.as_str().to_owned()),
             Object::Hashed(bytes) => Leaf::Bytes(bytes.clone()),
+            // `==` on `F64` is identity of the canonical bits (ADR 0114 rule 5.1).
+            Object::F64(x) => Leaf::Float(una_core::float::to_bits(*x)),
             Object::Data { tag, fields } if fields.is_empty() => Leaf::Variant(*tag),
             Object::List(items) if items.is_empty() => Leaf::List,
             Object::Map(entries) if entries.is_empty() => Leaf::Map,
+            Object::Seq(items) if items.is_empty() => Leaf::Seq,
+            Object::Set(items) if items.is_empty() => Leaf::Set,
+            Object::Bits(bits) => Leaf::Bits(bits.size, bits.words.clone()),
             _ => Leaf::Other,
         })
     };
@@ -864,23 +997,36 @@ fn admit(a: i64, b: i64, pending: &mut Vec<(i64, i64)>) -> bool {
 /// value has a `==` that is not reflexive. A type with one, such as a float under IEEE `==`,
 /// where NaN differs from itself, must revisit both (#819).
 fn equal_words(a: i64, b: i64, pairs: usize) -> Option<bool> {
-    /// The parts of a value with parts: a variant's tag or a list's `None`, then its words, or
-    /// a map's keys and values.
+    /// The parts of a value with parts: a variant's tag or a list's, a stack's or a queue's
+    /// `None`, then its words; a map's keys and values; a set's items, compared whole; or a
+    /// dense value's kind, shape and elements.
     enum Parts {
         Cells(Option<i64>, Vec<i64>),
         Map(Vec<MapKey>, Vec<i64>),
+        Keys(Vec<MapKey>),
+        Dense(dense::Parts),
+        /// A dense value, whose parts are read after the heap's borrow ends.
+        DenseHeader,
     }
     let parts = |word: i64| {
-        with(word, |object| match object {
+        let found = with(word, |object| match object {
             Object::Data { tag, fields } => Some(Parts::Cells(Some(*tag), fields.clone())),
             Object::List(items) => Some(Parts::Cells(None, items.clone())),
+            // The same elements in the same order, front first (`spec/28 §3` rule 3).
+            Object::Seq(items) => Some(Parts::Cells(None, items.iter().copied().collect())),
             Object::Map(entries) => Some(Parts::Map(
                 entries.keys().cloned().collect(),
                 entries.values().map(|(_, value)| *value).collect(),
             )),
+            Object::Dense(_) => Some(Parts::DenseHeader),
+            Object::Set(items) => Some(Parts::Keys(items.keys().cloned().collect())),
             _ => None,
         })
-        .flatten()
+        .flatten();
+        match found {
+            Some(Parts::DenseHeader) => dense::parts(word).map(Parts::Dense),
+            other => other,
+        }
     };
     let mut pending = Vec::new();
     if !admit(a, b, &mut pending) {
@@ -912,6 +1058,38 @@ fn equal_words(a: i64, b: i64, pairs: usize) -> Option<bool> {
             (Some(Parts::Map(kx, x)), Some(Parts::Map(ky, y))) => {
                 kx == ky && x.into_iter().zip(y).all(|(a, b)| admit(a, b, &mut pending))
             }
+            // The same kind and shape, then each element by its own `==` in row-major order,
+            // whatever the views' offsets and strides (ADR 0120 rule 27): a raw `F64` by the
+            // identity of its canonical bits, as `==` on `F64` is (ADR 0114 rule 5.1), and an
+            // element that is a word joins this worklist and its budget, as a list's item does.
+            // Every element is compared and the answer decided after, so the time does not
+            // reveal where two values differ (rule 54).
+            (Some(Parts::Dense(x)), Some(Parts::Dense(y))) => {
+                x.layout.kind == y.layout.kind
+                    && x.layout.shape == y.layout.shape
+                    && x.elements.len() == y.elements.len()
+                    && {
+                        let mut same = true;
+                        for (a, b) in x.elements.into_iter().zip(y.elements) {
+                            same &= match (a, b) {
+                                (dense::Element::Raw(a), dense::Element::Raw(b)) => {
+                                    una_core::float::equal(a, b)
+                                }
+                                (dense::Element::Word(a), dense::Element::Word(b)) => {
+                                    admit(a, b, &mut pending)
+                                }
+                                (dense::Element::Raw(a), dense::Element::Word(b))
+                                | (dense::Element::Word(b), dense::Element::Raw(a)) => {
+                                    dense::boxed(b).is_some_and(|b| una_core::float::equal(a, b))
+                                }
+                            };
+                        }
+                        same
+                    }
+            }
+            // The same items in the same order (`spec/28 §3` rule 3): a set's items are keys,
+            // compared whole, so no pair is left pending, as in the interpreter.
+            (Some(Parts::Keys(x)), Some(Parts::Keys(y))) => x == y,
             _ => false,
         };
         if !same {
@@ -1012,6 +1190,7 @@ enum Node {
     Int(BigInt),
     Text(String),
     Hashed(Vec<u8>),
+    F64(u64),
     Data {
         tag: i64,
         fields: Vec<Cell>,
@@ -1028,6 +1207,46 @@ enum Node {
         cells: Vec<Cell>,
     },
     Map(Vec<(Cell, Cell)>),
+    /// A stack's or a queue's elements, front first.
+    Seq(Vec<Cell>),
+    /// A set's items, in their order.
+    Set(Vec<Cell>),
+    /// A priority queue: its direction, the sequence number of its next push, and its entries
+    /// in heap order, each its sequence number, its priority and its item.
+    Priority {
+        highest: bool,
+        next: u64,
+        entries: Vec<(u64, Cell, Cell)>,
+    },
+    /// A bit set: its size, its count of members and its words.
+    Bits {
+        size: usize,
+        count: usize,
+        words: Vec<u64>,
+    },
+    /// A hash map or, when `set`, a hash set: its table's key, kept by the copy (ADR 0119 rule
+    /// 9), and its entries in insertion order, each its stored hash, its key and its value.
+    Hash {
+        set: bool,
+        key: (u64, u64),
+        entries: Vec<(u64, Cell, Cell)>,
+    },
+    /// A dense value's header and its store (design note D1).
+    Dense {
+        layout: Box<dense::Layout>,
+        store: NodeStore,
+    },
+    /// The words store of a dense value.
+    Words(Vec<Cell>),
+}
+
+/// The store of a dense value in a portable value: the same `Arc` of raw `F64` elements, so the
+/// copy shares the buffer and charges its header only (ADR 0113 amendment of 2026-10-19), or
+/// the node of the words store, copied as a list is.
+#[derive(Debug)]
+enum NodeStore {
+    F64(Arc<Vec<f64>>),
+    Words(Cell),
 }
 
 /// The entries in each segment of a copy's pending stack (ADR 0113 rule 5).
@@ -1170,6 +1389,27 @@ impl Object {
                     f(*value)?;
                 }
             }
+            Object::Seq(items) => {
+                for &item in items {
+                    f(item)?;
+                }
+            }
+            Object::Set(items) => {
+                for &item in items.values() {
+                    f(item)?;
+                }
+            }
+            Object::Priority(heap) => {
+                for word in heap.words() {
+                    f(word)?;
+                }
+            }
+            Object::HashMap(table) | Object::HashSet(table) => {
+                let set = matches!(self, Object::HashSet(_));
+                for word in table.iter().flat_map(|t| t.words(set)) {
+                    f(word)?;
+                }
+            }
             other => {
                 for &child in other.cells() {
                     f(child)?;
@@ -1187,6 +1427,7 @@ impl Object {
             Object::Int(value) => value.iter_u64_digits().len() * 8,
             Object::Text(text) => text.as_str().len(),
             Object::Hashed(bytes) => bytes.len(),
+            Object::F64(_) => 8,
             Object::Data { fields, .. } => cells(fields.len()),
             Object::List(items) => cells(items.len()),
             Object::Closure { env, .. } => cells(env.len()),
@@ -1196,6 +1437,16 @@ impl Object {
                 cells: held,
             } => id.len() + code.len() * size_of::<i64>() + cells(held.len()),
             Object::Map(entries) => entries.len() * size_of::<(Cell, Cell)>(),
+            // The header only: an `F64` store is shared, and a words store is a node of its own.
+            Object::Dense(_) => dense::HEADER_BYTES,
+            Object::Words(items) => cells(items.len()),
+            Object::Seq(items) => cells(items.len()),
+            Object::Set(items) => cells(items.len()),
+            Object::Priority(heap) => heap.entries.len() * size_of::<(u64, Cell, Cell)>(),
+            Object::Bits(bits) => bits.words.len() * size_of::<u64>(),
+            Object::HashMap(table) | Object::HashSet(table) => {
+                table.as_ref().map_or(0, |t| t.entries.len()) * size_of::<(u64, Cell, Cell)>()
+            }
         }
     }
 
@@ -1206,6 +1457,7 @@ impl Object {
             Object::Int(value) => Node::Int(value.clone()),
             Object::Text(text) => Node::Text(text.as_str().to_owned()),
             Object::Hashed(bytes) => Node::Hashed(bytes.clone()),
+            Object::F64(x) => Node::F64(una_core::float::to_bits(*x)),
             Object::Data { tag, fields } => Node::Data {
                 tag: *tag,
                 fields: cells(fields),
@@ -1231,6 +1483,40 @@ impl Object {
                     .map(|(key, value)| (cell(*key), cell(*value)))
                     .collect(),
             ),
+            Object::Dense(header) => Node::Dense {
+                layout: Box::new(header.layout),
+                store: match &header.store {
+                    dense::Store::F64(items) => NodeStore::F64(Arc::clone(items)),
+                    dense::Store::Words(words) => NodeStore::Words(cell(*words)),
+                },
+            },
+            Object::Words(items) => Node::Words(cells(items)),
+            Object::Seq(items) => Node::Seq(items.iter().map(|&item| cell(item)).collect()),
+            Object::Set(items) => Node::Set(items.values().map(|&item| cell(item)).collect()),
+            Object::Priority(heap) => Node::Priority {
+                highest: heap.highest,
+                next: heap.next,
+                entries: heap
+                    .entries
+                    .iter()
+                    .map(|entry| (entry.sequence, cell(entry.priority), cell(entry.item)))
+                    .collect(),
+            },
+            Object::Bits(bits) => Node::Bits {
+                size: bits.size,
+                count: bits.count,
+                words: bits.words.clone(),
+            },
+            Object::HashMap(table) | Object::HashSet(table) => Node::Hash {
+                set: matches!(self, Object::HashSet(_)),
+                key: table.as_ref().map_or((0, 0), |t| t.key_words()),
+                entries: table.as_ref().map_or_else(Vec::new, |t| {
+                    t.entries
+                        .iter_hashed()
+                        .map(|(hash, key, value)| (hash, cell(*key), cell(*value)))
+                        .collect()
+                }),
+            },
         }
     }
 }
@@ -1439,6 +1725,7 @@ fn node_matches(object: &Object, node: &Node, index: impl Fn(i64) -> Option<usiz
         (Object::Int(a), Node::Int(b)) => a == b,
         (Object::Text(a), Node::Text(b)) => a.as_str() == b,
         (Object::Hashed(a), Node::Hashed(b)) => a == b,
+        (Object::F64(a), Node::F64(b)) => una_core::float::to_bits(*a) == *b,
         (Object::Data { tag, fields }, Node::Data { tag: t, fields: f }) => {
             tag == t && same(fields, f)
         }
@@ -1465,6 +1752,64 @@ fn node_matches(object: &Object, node: &Node, index: impl Fn(i64) -> Option<usiz
                     .values()
                     .zip(pairs)
                     .all(|((key, value), &(k, v))| cell_of(*key) == k && cell_of(*value) == v)
+        }
+        (Object::Dense(header), Node::Dense { layout, store }) => {
+            header.layout == **layout
+                && match (&header.store, store) {
+                    (dense::Store::F64(a), NodeStore::F64(b)) => Arc::ptr_eq(a, b),
+                    (dense::Store::Words(words), NodeStore::Words(cell)) => {
+                        cell_of(*words) == *cell
+                    }
+                    _ => false,
+                }
+        }
+        (Object::Words(items), Node::Words(cells)) => same(items, cells),
+        (Object::Seq(items), Node::Seq(cells)) => {
+            items.len() == cells.len()
+                && items
+                    .iter()
+                    .zip(cells)
+                    .all(|(&item, &cell)| cell_of(item) == cell)
+        }
+        (Object::Set(items), Node::Set(cells)) => {
+            items.len() == cells.len()
+                && items
+                    .values()
+                    .zip(cells)
+                    .all(|(&item, &cell)| cell_of(item) == cell)
+        }
+        (
+            Object::Priority(heap),
+            Node::Priority {
+                highest,
+                next,
+                entries,
+            },
+        ) => {
+            heap.highest == *highest
+                && heap.next == *next
+                && heap.entries.len() == entries.len()
+                && heap.entries.iter().zip(entries).all(|(entry, &(s, p, i))| {
+                    entry.sequence == s && cell_of(entry.priority) == p && cell_of(entry.item) == i
+                })
+        }
+        (Object::Bits(bits), Node::Bits { size, count, words }) => {
+            bits.size == *size && bits.count == *count && bits.words == *words
+        }
+        (
+            Object::HashMap(Some(table)) | Object::HashSet(Some(table)),
+            Node::Hash { set, key, entries },
+        ) => {
+            matches!(object, Object::HashSet(_)) == *set
+                && table.key_words() == *key
+                && table.entries.len() == entries.len()
+                && table
+                    .entries
+                    .iter_hashed()
+                    .zip(entries)
+                    .all(|((hash, k, v), &(h, kc, vc))| {
+                        hash == h && cell_of(*k) == kc && cell_of(*v) == vc
+                    })
         }
         _ => false,
     }
@@ -1647,6 +1992,7 @@ fn node_matches_made(object: &Object, node: &Node, words: &[i64]) -> bool {
         (Object::Int(a), Node::Int(b)) => a == b,
         (Object::Text(a), Node::Text(b)) => a.as_str() == b,
         (Object::Hashed(a), Node::Hashed(b)) => a == b,
+        (Object::F64(a), Node::F64(b)) => una_core::float::to_bits(*a) == *b,
         (Object::Data { tag, fields }, Node::Data { tag: t, fields: f }) => {
             tag == t && same(fields, f)
         }
@@ -1674,6 +2020,74 @@ fn node_matches_made(object: &Object, node: &Node, words: &[i64]) -> bool {
                 && entries.values().zip(pairs).all(|((key, value), (k, v))| {
                     made_word(k, words) == Some(*key) && made_word(v, words) == Some(*value)
                 })
+        }
+        (Object::Dense(header), Node::Dense { layout, store }) => {
+            header.layout == **layout
+                && match (&header.store, store) {
+                    (dense::Store::F64(a), NodeStore::F64(b)) => Arc::ptr_eq(a, b),
+                    (dense::Store::Words(held), NodeStore::Words(cell)) => {
+                        made_word(cell, words) == Some(*held)
+                    }
+                    _ => false,
+                }
+        }
+        (Object::Words(items), Node::Words(cells)) => same(items, cells),
+        (Object::Seq(items), Node::Seq(cells)) => {
+            items.len() == cells.len()
+                && items
+                    .iter()
+                    .zip(cells)
+                    .all(|(&item, cell)| made_word(cell, words) == Some(item))
+        }
+        // A set's items are in their order, which the node keeps.
+        (Object::Set(items), Node::Set(cells)) => {
+            items.len() == cells.len()
+                && items
+                    .values()
+                    .zip(cells)
+                    .all(|(&item, cell)| made_word(cell, words) == Some(item))
+        }
+        (
+            Object::Priority(heap),
+            Node::Priority {
+                highest,
+                next,
+                entries,
+            },
+        ) => {
+            heap.highest == *highest
+                && heap.next == *next
+                && heap.entries.len() == entries.len()
+                && heap.entries.iter().zip(entries).all(|(entry, (s, p, i))| {
+                    entry.sequence == *s
+                        && made_word(p, words) == Some(entry.priority)
+                        && made_word(i, words) == Some(entry.item)
+                })
+        }
+        (
+            Object::Bits(bits),
+            Node::Bits {
+                size,
+                count,
+                words: w,
+            },
+        ) => bits.size == *size && bits.count == *count && bits.words == *w,
+        (
+            Object::HashMap(Some(table)) | Object::HashSet(Some(table)),
+            Node::Hash { set, key, entries },
+        ) => {
+            matches!(object, Object::HashSet(_)) == *set
+                && table.key_words() == *key
+                && table.entries.len() == entries.len()
+                && table
+                    .entries
+                    .iter_hashed()
+                    .zip(entries)
+                    .all(|((hash, k, v), (h, kc, vc))| {
+                        hash == *h
+                            && made_word(kc, words) == Some(*k)
+                            && made_word(vc, words) == Some(*v)
+                    })
         }
         _ => false,
     }
@@ -1723,6 +2137,10 @@ fn import_node(node: &Node, words: &[i64]) -> Result<i64, Refused> {
             let _step = step(bytes.len())?;
             alloc(Object::Hashed(bytes.clone()))
         }
+        Node::F64(bits) => {
+            let _step = step(8)?;
+            alloc(Object::F64(f64::from_bits(*bits)))
+        }
         Node::Data { tag, fields } => {
             let _step = step(cells(fields.len()))?;
             alloc(Object::Data {
@@ -1769,6 +2187,107 @@ fn import_node(node: &Node, words: &[i64]) -> Result<i64, Refused> {
                 drop(entry);
             }
             map
+        }
+        // The header, with the same `F64` buffer, its count one more: no element is copied
+        // (ADR 0113 amendment of 2026-10-19).
+        Node::Dense { layout, store } => {
+            let _step = step(dense::HEADER_BYTES)?;
+            let store = match store {
+                NodeStore::F64(items) => dense::Store::F64(Arc::clone(items)),
+                NodeStore::Words(cell) => {
+                    let word = cell_word(cell, words);
+                    retain(word);
+                    dense::Store::Words(word)
+                }
+            };
+            alloc(Object::Dense(Box::new(dense::Dense {
+                layout: **layout,
+                store,
+            })))
+        }
+        Node::Words(items) => {
+            let _step = step(cells(items.len()))?;
+            alloc(Object::Words(held(items)))
+        }
+        Node::Seq(items) => {
+            let _step = step(cells(items.len()))?;
+            let mut held_items = VecDeque::with_capacity(items.len());
+            for cell in items {
+                let word = cell_word(cell, words);
+                retain(word);
+                held_items.push_back(word);
+            }
+            alloc(Object::Seq(held_items))
+        }
+        // Each item a step, as a map's entry: its key is copied out of the item made before it.
+        Node::Set(items) => {
+            let set = alloc(Object::Set(BTreeMap::new()));
+            for cell in items {
+                let item = cell_word(cell, words);
+                let entry = match step(key_bytes(item).saturating_add(MAP_INSERT_BOUND)) {
+                    Ok(entry) => entry,
+                    Err(refused) => {
+                        release(set);
+                        return Err(refused);
+                    }
+                };
+                collections::set_insert(set, item);
+                drop(entry);
+            }
+            set
+        }
+        Node::Priority {
+            highest,
+            next,
+            entries,
+        } => {
+            let bytes = entries
+                .iter()
+                .map(|(_, priority, _)| key_bytes(cell_word(priority, words)))
+                .fold(
+                    entries.len() * size_of::<collections::Ranked>(),
+                    usize::saturating_add,
+                );
+            let _step = step(bytes)?;
+            alloc(Object::Priority(collections::PriorityHeap::imported(
+                *highest,
+                *next,
+                entries.iter().map(|(sequence, priority, item)| {
+                    (
+                        *sequence,
+                        cell_word(priority, words),
+                        cell_word(item, words),
+                    )
+                }),
+            )))
+        }
+        Node::Bits {
+            size,
+            count,
+            words: bits,
+        } => {
+            let _step = step(bits.len() * size_of::<u64>())?;
+            alloc(Object::Bits(collections::Bits {
+                words: bits.clone(),
+                size: *size,
+                count: *count,
+            }))
+        }
+        // The copy keeps its table's key and its order; each entry is placed by its stored
+        // hash, with no key hashed again, as one step.
+        Node::Hash { set, key, entries } => {
+            let _step = step(
+                entries
+                    .len()
+                    .saturating_mul(size_of::<(u64, i64, i64)>() + 2 * size_of::<u64>()),
+            )?;
+            alloc(hashes::Table::imported(
+                *set,
+                *key,
+                entries
+                    .iter()
+                    .map(|(hash, k, v)| (*hash, cell_word(k, words), cell_word(v, words))),
+            ))
         }
     };
     Ok(made)
@@ -1833,6 +2352,323 @@ fn items(list: i64) -> Vec<i64> {
 /// The items of a list, borrowed.
 pub(crate) fn list_items(list: i64) -> Vec<i64> {
     items(list)
+}
+
+/// Whether `word` is a handle to an `F64`.
+pub(crate) fn is_f64(word: i64) -> bool {
+    is_handle(word) && with(word, |object| matches!(object, Object::F64(_))).unwrap_or(false)
+}
+
+// ----- `F64` (`spec/29`, ADR 0114), boxed until ADR 0107 (rule 9.6) -----
+
+/// A new `F64`, canonical, which the caller owns.
+pub fn f64_word(x: f64) -> i64 {
+    alloc(Object::F64(una_core::float::canonical(x)))
+}
+
+/// The `F64` of `word`; the canonical NaN, with a fault, for a word that holds none.
+pub fn f64_value(word: i64) -> f64 {
+    let found = with(word, |object| match object {
+        Object::F64(x) => Some(*x),
+        _ => None,
+    })
+    .flatten();
+    match found {
+        Some(x) => x,
+        None => {
+            HEAP.with(|heap| heap.borrow_mut().faults += 1);
+            f64::from_bits(una_core::float::CANONICAL_NAN)
+        }
+    }
+}
+
+/// The word of the float literal of `bits`, made once for each literal and kept for the whole
+/// run, as an integer literal is. The word is borrowed.
+pub fn f64_literal(bits: i64) -> i64 {
+    let bits = u64::from_ne_bytes(bits.to_ne_bytes());
+    let key = format!("f64:{bits:016x}");
+    if let Some(word) = HEAP.with(|heap| heap.borrow().int_literals.get(&key).copied()) {
+        return word;
+    }
+    let word = f64_word(f64::from_bits(bits));
+    HEAP.with(|heap| heap.borrow_mut().int_literals.insert(key, word));
+    word
+}
+
+/// The operation of `F64` at position `op` of `FloatOp::ALL` on `a`, `b` and `c`, each
+/// borrowed: the same routine of `una-core` as the interpreter's, so both engines give the
+/// same bits (ADR 0114 rule 6). A new reference, or `0`/`1` for a `Bool`. O(1), or O(m) for
+/// `to_f64()` of an `Int` of m limbs.
+pub fn f64_op(op: i64, a: i64, b: i64, c: i64) -> i64 {
+    use una_core::FloatOp;
+    use una_core::float as f;
+    let Some(op) = usize::try_from(op)
+        .ok()
+        .and_then(|i| FloatOp::ALL.get(i).copied())
+    else {
+        HEAP.with(|heap| heap.borrow_mut().faults += 1);
+        return 0;
+    };
+    if op == FloatOp::FromInt {
+        return f64_word(f::from_int(&int_value(a)));
+    }
+    let (x, y, z) = (
+        f64_value(a),
+        if op.params().is_empty() && !binary_operator(op) {
+            0.0
+        } else {
+            f64_value(b)
+        },
+        if op.params().len() == 2 {
+            f64_value(c)
+        } else {
+            0.0
+        },
+    );
+    let flag = |value: bool| i64::from(value);
+    match op {
+        FloatOp::Add => f64_word(f::add(x, y)),
+        FloatOp::Sub => f64_word(f::sub(x, y)),
+        FloatOp::Mul => f64_word(f::mul(x, y)),
+        FloatOp::Div => f64_word(f::div(x, y)),
+        FloatOp::Neg => f64_word(f::neg(x)),
+        FloatOp::Eq => flag(f::equal(x, y)),
+        FloatOp::Ne => flag(!f::equal(x, y)),
+        FloatOp::Lt => flag(f::total_cmp(x, y).is_lt()),
+        FloatOp::Le => flag(f::total_cmp(x, y).is_le()),
+        FloatOp::Gt => flag(f::total_cmp(x, y).is_gt()),
+        FloatOp::Ge => flag(f::total_cmp(x, y).is_ge()),
+        FloatOp::Abs => f64_word(f::abs(x)),
+        FloatOp::Sqrt => f64_word(f::sqrt(x)),
+        FloatOp::Fma => f64_word(f::fma(x, y, z)),
+        FloatOp::Rem => f64_word(f::rem(x, y)),
+        FloatOp::Floor => f64_word(f::floor(x)),
+        FloatOp::Ceil => f64_word(f::ceil(x)),
+        FloatOp::Trunc => f64_word(f::trunc(x)),
+        FloatOp::RoundHalfEven => f64_word(f::round_half_even(x)),
+        FloatOp::RoundHalfAway => f64_word(f::round_half_away(x)),
+        FloatOp::CopySign => f64_word(f::copy_sign(x, y)),
+        FloatOp::IeeeMin => f64_word(f::ieee_min(x, y)),
+        FloatOp::IeeeMax => f64_word(f::ieee_max(x, y)),
+        FloatOp::Clamp => f64_word(f::clamp(x, y, z)),
+        FloatOp::IeeeEq => flag(f::ieee_compare(f::IeeeCompare::Eq, x, y)),
+        FloatOp::IeeeNe => flag(f::ieee_compare(f::IeeeCompare::Ne, x, y)),
+        FloatOp::IeeeLt => flag(f::ieee_compare(f::IeeeCompare::Lt, x, y)),
+        FloatOp::IeeeLe => flag(f::ieee_compare(f::IeeeCompare::Le, x, y)),
+        FloatOp::IeeeGt => flag(f::ieee_compare(f::IeeeCompare::Gt, x, y)),
+        FloatOp::IeeeGe => flag(f::ieee_compare(f::IeeeCompare::Ge, x, y)),
+        FloatOp::IsNan => flag(x.is_nan()),
+        FloatOp::IsFinite => flag(x.is_finite()),
+        FloatOp::IsInfinite => flag(x.is_infinite()),
+        FloatOp::IsSignNegative => flag(f::to_bits(x) >> 63 == 1),
+        FloatOp::IsZero => flag(x == 0.0),
+        FloatOp::IsPositiveZero => flag(f::to_bits(x) == 0),
+        FloatOp::IsNegativeZero => flag(f::to_bits(x) == 1 << 63),
+        FloatOp::ToBits => int_word(&BigInt::from(f::to_bits(x))),
+        FloatOp::ToIntExact => match f::to_int_exact(x) {
+            Some(n) => some_owned(int_word(&n)),
+            None => NONE,
+        },
+        FloatOp::FromInt => f64_word(f::from_int(&int_value(a))),
+        FloatOp::ToText => text_word(f::render(x)),
+        FloatOp::ToF32 => f32_word(una_core::float32::from_f64(x)),
+        // Never generated under `Prim::Float`.
+        FloatOp::ToF64 => {
+            HEAP.with(|heap| heap.borrow_mut().faults += 1);
+            f64_word(x)
+        }
+    }
+}
+
+/// The word of an `F32`: the tagged word of the key of totalOrder of its canonical bits
+/// (ADR 0120 rule 10). The key determines the bits, its integer order is totalOrder and its
+/// equality is identity, so a word compares as an integer; it fits 63 bits, so it never
+/// allocates. O(1).
+pub fn f32_word(x: f32) -> i64 {
+    (i64::from(una_core::float32::order_key(x)) << 1) | 1
+}
+
+/// The `F32` of the word `word`; the canonical NaN, with a fault, for a word that holds none.
+pub fn f32_value(word: i64) -> f32 {
+    match i32::try_from(word >> 1) {
+        Ok(key) if word & 1 == 1 => una_core::float32::from_order_key(key),
+        _ => {
+            HEAP.with(|heap| heap.borrow_mut().faults += 1);
+            f32::from_bits(una_core::float32::CANONICAL_NAN)
+        }
+    }
+}
+
+/// The operation of `F32` at position `op` of `FloatOp::ALL` on the words `a`, `b` and `c`,
+/// each borrowed: the routine of `una_core::float32` that the interpreter calls, so both
+/// engines give the same bits (ADR 0120 rule 5). A word of an `F32`, `0`/`1` for a `Bool`, or a
+/// new reference (a text, an `Option[Int]`, an `F64`). O(1), or O(m) for `to_f32()` of an
+/// `Int` of m limbs.
+pub fn f32_op(op: i64, a: i64, b: i64, c: i64) -> i64 {
+    use una_core::FloatOp;
+    use una_core::float::IeeeCompare;
+    use una_core::float32 as f;
+    let Some(op) = usize::try_from(op)
+        .ok()
+        .and_then(|i| FloatOp::ALL.get(i).copied())
+    else {
+        HEAP.with(|heap| heap.borrow_mut().faults += 1);
+        return 0;
+    };
+    if op == FloatOp::FromInt {
+        return f32_word(f::from_int(&int_value(a)));
+    }
+    let x = f32_value(a);
+    let y = if op.params().is_empty() && !binary_operator(op) {
+        0.0
+    } else {
+        f32_value(b)
+    };
+    let z = if op.params().len() == 2 {
+        f32_value(c)
+    } else {
+        0.0
+    };
+    let flag = |value: bool| i64::from(value);
+    match op {
+        FloatOp::Add => f32_word(f::add(x, y)),
+        FloatOp::Sub => f32_word(f::sub(x, y)),
+        FloatOp::Mul => f32_word(f::mul(x, y)),
+        FloatOp::Div => f32_word(f::div(x, y)),
+        FloatOp::Neg => f32_word(f::neg(x)),
+        FloatOp::Eq => flag(f::equal(x, y)),
+        FloatOp::Ne => flag(!f::equal(x, y)),
+        FloatOp::Lt => flag(f::total_cmp(x, y).is_lt()),
+        FloatOp::Le => flag(f::total_cmp(x, y).is_le()),
+        FloatOp::Gt => flag(f::total_cmp(x, y).is_gt()),
+        FloatOp::Ge => flag(f::total_cmp(x, y).is_ge()),
+        FloatOp::Abs => f32_word(f::abs(x)),
+        FloatOp::Sqrt => f32_word(f::sqrt(x)),
+        FloatOp::Fma => f32_word(f::fma(x, y, z)),
+        FloatOp::Rem => f32_word(f::rem(x, y)),
+        FloatOp::Floor => f32_word(f::floor(x)),
+        FloatOp::Ceil => f32_word(f::ceil(x)),
+        FloatOp::Trunc => f32_word(f::trunc(x)),
+        FloatOp::RoundHalfEven => f32_word(f::round_half_even(x)),
+        FloatOp::RoundHalfAway => f32_word(f::round_half_away(x)),
+        FloatOp::CopySign => f32_word(f::copy_sign(x, y)),
+        FloatOp::IeeeMin => f32_word(f::ieee_min(x, y)),
+        FloatOp::IeeeMax => f32_word(f::ieee_max(x, y)),
+        FloatOp::Clamp => f32_word(f::clamp(x, y, z)),
+        FloatOp::IeeeEq => flag(f::ieee_compare(IeeeCompare::Eq, x, y)),
+        FloatOp::IeeeNe => flag(f::ieee_compare(IeeeCompare::Ne, x, y)),
+        FloatOp::IeeeLt => flag(f::ieee_compare(IeeeCompare::Lt, x, y)),
+        FloatOp::IeeeLe => flag(f::ieee_compare(IeeeCompare::Le, x, y)),
+        FloatOp::IeeeGt => flag(f::ieee_compare(IeeeCompare::Gt, x, y)),
+        FloatOp::IeeeGe => flag(f::ieee_compare(IeeeCompare::Ge, x, y)),
+        FloatOp::IsNan => flag(x.is_nan()),
+        FloatOp::IsFinite => flag(x.is_finite()),
+        FloatOp::IsInfinite => flag(x.is_infinite()),
+        FloatOp::IsSignNegative => flag(f::to_bits(x) >> 31 == 1),
+        FloatOp::IsZero => flag(x == 0.0),
+        FloatOp::IsPositiveZero => flag(f::to_bits(x) == 0),
+        FloatOp::IsNegativeZero => flag(f::to_bits(x) == 1 << 31),
+        FloatOp::ToBits => int_word(&BigInt::from(f::to_bits(x))),
+        FloatOp::ToIntExact => match f::to_int_exact(x) {
+            Some(n) => some_owned(int_word(&n)),
+            None => NONE,
+        },
+        FloatOp::FromInt => f32_word(f::from_int(&int_value(a))),
+        FloatOp::ToText => text_word(f::render(x)),
+        FloatOp::ToF64 => f64_word(f::to_f64(x)),
+        // Never generated under `Prim::Float32`.
+        FloatOp::ToF32 => {
+            HEAP.with(|heap| heap.borrow_mut().faults += 1);
+            f32_word(x)
+        }
+    }
+}
+
+/// `f32_from_bits(bits:)`: the value with those bits, any NaN canonical (ADR 0120 rule 5).
+pub fn f32_from_bits(bits: i64) -> i64 {
+    let bits = u32::try_from(&int_value(bits)).unwrap_or(0);
+    f32_word(una_core::float32::from_bits(bits))
+}
+
+/// `parse_f32(t)` of a text that `parse_f64_failure` accepts: the grammar is the same, and the
+/// value is rounded once to binary32.
+pub fn parse_f32(t: i64) -> i64 {
+    f32_word(una_core::float32::parse(&text_value(t)).unwrap_or(0.0))
+}
+
+/// Whether `op` is a binary operator, whose second operand is an `F64`.
+fn binary_operator(op: una_core::FloatOp) -> bool {
+    use una_core::FloatOp;
+    matches!(
+        op,
+        FloatOp::Add
+            | FloatOp::Sub
+            | FloatOp::Mul
+            | FloatOp::Div
+            | FloatOp::Eq
+            | FloatOp::Ne
+            | FloatOp::Lt
+            | FloatOp::Le
+            | FloatOp::Gt
+            | FloatOp::Ge
+    )
+}
+
+/// `f64_from_bits(bits:)`: the value with those bits, any NaN canonical. A new reference.
+pub fn f64_from_bits(bits: i64) -> i64 {
+    let bits = u64::try_from(&int_value(bits)).unwrap_or(0);
+    f64_word(una_core::float::from_bits(bits))
+}
+
+/// Why `parse_f64(t)` fails, as the `ParseError` it fails with, or 0 when it does not
+/// (`spec/29 §7`), as `parse_failure` says for `parse_int`.
+pub fn parse_f64_failure(t: i64) -> i64 {
+    use una_core::float::ParseFailure;
+    match una_core::float::parse(&text_value(t)) {
+        Ok(_) => 0,
+        Err(ParseFailure::Empty) => 1,
+        Err(ParseFailure::NoDigits) => (2 << 1) | 1,
+        Err(ParseFailure::NotADigit(at)) => {
+            let failure = data(1);
+            let at = int_word(&BigInt::from(at));
+            push(failure, at);
+            release(at);
+            failure
+        }
+    }
+}
+
+/// `parse_f64(t)` of a text that `parse_f64_failure` accepts. A new reference.
+pub fn parse_f64(t: i64) -> i64 {
+    f64_word(una_core::float::parse(&text_value(t)).unwrap_or(0.0))
+}
+
+/// `as_f64(j)` (`spec/29 §10`): `Some` of the nearest `F64` of a number, `None` otherwise.
+pub fn as_f64(j: i64) -> i64 {
+    match tag(j) {
+        // `Number(value: Int)`.
+        2 => some_owned(f64_word(una_core::float::from_int(&int_value(field(j, 0))))),
+        // `Decimal(text: JsonNumber)`.
+        3 => match una_core::float::parse(&text_value(field(j, 0))) {
+            Ok(x) => some_owned(f64_word(x)),
+            Err(_) => NONE,
+        },
+        _ => NONE,
+    }
+}
+
+/// `json_number(x)` (`spec/29 §10`): `Some(Decimal(t))` with `t` the rendering of a finite `x`,
+/// `None` for NaN and the infinities.
+pub fn json_number(x: i64) -> i64 {
+    let x = f64_value(x);
+    if !x.is_finite() {
+        return NONE;
+    }
+    let decimal = data(3);
+    let text = text_word(una_core::float::render(x));
+    push(decimal, text);
+    release(text);
+    some_owned(decimal)
 }
 
 /// Whether `word` is a handle to a big integer.
@@ -2978,6 +3814,19 @@ mod tests {
     }
 
     #[test]
+    fn no_collection_layout_grows_the_slot() {
+        // Every heap's slot table holds one slot per object, live or free, and the budget
+        // counts it: a collection's layout that is larger than a capability instance's
+        // (`id`, `code` and `cells`, nine words) is boxed, so that no slot of any program
+        // grows with it.
+        assert!(
+            size_of::<Object>() <= 9 * size_of::<usize>(),
+            "{}",
+            size_of::<Object>()
+        );
+    }
+
+    #[test]
     fn find_is_some_exactly_when_contains_text_holds_at_a_match() {
         // The verifier gives both one uninterpreted symbol, which holds because both
         // run over one search. Texts and parts over a small alphabet, with a non-ASCII
@@ -3026,6 +3875,47 @@ mod tests {
         int_word(&BigInt::from(value))
     }
 
+    /// The position of `op` in `FloatOp::ALL`, the code the generated code passes.
+    fn code(op: una_core::FloatOp) -> i64 {
+        una_core::FloatOp::ALL
+            .iter()
+            .position(|x| *x == op)
+            .and_then(|i| i64::try_from(i).ok())
+            .unwrap_or(-1)
+    }
+
+    #[test]
+    fn floats_compute_as_the_interpreter_does_and_keep_one_nan() {
+        use una_core::FloatOp;
+        let zero = f64_literal(0);
+        let one = f64_literal(1f64.to_bits() as i64);
+        let nan = f64_op(code(FloatOp::Div), zero, zero, 0);
+        assert_eq!(
+            int_value(f64_op(code(FloatOp::ToBits), nan, 0, 0)),
+            BigInt::from(una_core::float::CANONICAL_NAN)
+        );
+        assert_eq!(f64_op(code(FloatOp::Eq), nan, nan, 0), 1);
+        assert_eq!(f64_op(code(FloatOp::Lt), one, nan, 0), 1);
+        let negative = f64_op(code(FloatOp::Neg), zero, 0, 0);
+        assert_eq!(f64_op(code(FloatOp::Eq), negative, zero, 0), 0);
+        assert_eq!(f64_op(code(FloatOp::IeeeEq), negative, zero, 0), 1);
+        let text = f64_op(code(FloatOp::ToText), negative, 0, 0);
+        assert_eq!(text_value(text), "-0.0");
+        let fused = f64_op(code(FloatOp::Fma), one, one, negative);
+        assert_eq!(
+            text_value(f64_op(code(FloatOp::ToText), fused, 0, 0)),
+            "1.0"
+        );
+        assert_eq!(parse_f64_failure(text_word("1.".to_owned())) & 1, 0);
+        assert_eq!(parse_f64_failure(text_word(String::new())), 1);
+        assert_eq!(
+            f64_value(parse_f64(text_word("-0".to_owned()))).to_bits(),
+            1 << 63
+        );
+        assert_eq!(f64_literal(0), zero, "a literal is made once");
+        assert!(leaf_equal(nan, f64_op(code(FloatOp::Div), zero, zero, 0)));
+    }
+
     #[test]
     fn integers_are_tagged_when_they_fit_and_promoted_when_they_do_not() {
         assert_eq!(n(5), 11);
@@ -3057,7 +3947,7 @@ mod tests {
         assert_eq!(int(text_len(concat(a, b))), "5");
         assert_eq!(text_compare(a, b), -1);
         assert_eq!(text_equal(a, text_word("hé".to_owned())), 1);
-        assert_eq!(text_value(int_text(n(-42))), "-42");
+        assert_eq!(text_value(int_text(n(-42)).unwrap()), "-42");
         assert_eq!(text_value(bool_text(1)), "true");
     }
 
@@ -3335,14 +4225,23 @@ mod tests {
         } else {
             [100_000, 1_000_000]
         };
+        // The shortest of several runs per size, so a preemption of the test thread (the
+        // library's tests run in parallel) inflates no measurement; the claim stays linear.
+        // Five runs on the full sizes; one on Miri's small ones (it is slow, and times nothing).
+        let runs = if sizes[0] >= 100_000 { 5 } else { 1 };
         let times: Vec<std::time::Duration> = sizes
             .iter()
             .map(|&size| {
                 let digits = "7".repeat(size);
-                let started = std::time::Instant::now();
-                assert_eq!(parse_failure(text_word(digits.clone())), too_long);
-                assert_eq!(to_int(text_word(digits)), NONE);
-                started.elapsed()
+                (0..runs)
+                    .map(|_| {
+                        let started = std::time::Instant::now();
+                        assert_eq!(parse_failure(text_word(digits.clone())), too_long);
+                        assert_eq!(to_int(text_word(digits.clone())), NONE);
+                        started.elapsed()
+                    })
+                    .min()
+                    .unwrap_or_default()
             })
             .collect();
         if !cfg!(miri) {

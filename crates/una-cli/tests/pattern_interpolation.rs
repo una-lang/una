@@ -36,6 +36,7 @@ fn package(edition: &str) -> PathBuf {
 fn una(dir: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
         .env("NO_COLOR", "1")
         .args(args)
         .current_dir(dir)
@@ -45,7 +46,7 @@ fn una(dir: &Path, args: &[&str]) -> Output {
 
 #[test]
 fn both_engines_refuse_a_pattern_that_interpolates_a_secret() {
-    for edition in ["0.1", "0.2", "0.3"] {
+    for edition in ["0.1", "0.2", "0.3", "0.4"] {
         let dir = package(edition);
         // The interpreter: nothing runs, so neither line is printed.
         let run = una(&dir, &["run", "."]);

@@ -138,6 +138,7 @@ example_decl    = "example" text_lit NEWLINE INDENT
                     { "given" cap_ref "=" handler_call NEWLINE }
                     "do" line_expr NEWLINE
                     expectation { expectation }
+                    [ "stop" "after" integer_literal NEWLINE ]    (* edition 0.4, spec/26 §8 *)
                   DEDENT ;
 handler_call    = lower_ident "(" [ args ] ")" ;
 expectation     = "expect" ( "fails" upper_ident
@@ -175,6 +176,30 @@ if_block        = "if" line_expr NEWLINE INDENT block DEDENT
 
 (v0.2, ADR 0065.) In edition `0.2`, a block also takes `together` statements, and a `let` the `together for` form (`spec/19 §1`).
 
+(Edition 0.4, ADR 0117 rule 5.) In edition `0.4`, a `handled` line MAY bound its expression by a deadline, after its `with` clause, and `attempt` MAY take one, which it then holds (`spec/27 §5`):
+
+```ebnf
+handled         = line_expr [ with_clause ] [ "within" add_expr ] NEWLINE [ INDENT handling { handling } DEDENT ] ;
+attempt_expr    = "attempt" postfix [ "within" add_expr ] ;
+```
+
+A `handled` whose `line_expr` is an `attempt` with its own `within` takes no second `within` (U0101).
+
+(Edition 0.4, ADR 0117 rule 6.) In edition `0.4`, a `block_expr` MAY also be a race of two or more branches, `first` followed by `of` and the end of its line opening it (`spec/27 §6`):
+
+```ebnf
+block_expr      = when_expr | if_block | together_for | first_of ;
+first_of        = "first" "of" NEWLINE INDENT handled handled { handled } DEDENT ;
+```
+
+(Edition 0.4, ADR 0117 rule 7.) In edition `0.4`, a statement MAY also be a `tasks` statement, whose block starts tasks with `start` (`spec/27 §7`). `tasks` begins one where a newline and an indented block, or `at`, follow it at the start of a statement, and `start` where a name, a capability reference or `attempt` follows it; elsewhere both are names. A `with` clause after the expression of `start` parses, and is U2035.
+
+```ebnf
+statement       = ... | tasks_stmt | start_stmt ;
+tasks_stmt      = "tasks" [ "at" "most" add_expr "at" "once" ] NEWLINE INDENT block DEDENT ;
+start_stmt      = "start" line_expr [ "within" add_expr ] NEWLINE [ INDENT handling { handling } DEDENT ] ;
+```
+
 ## 7. Expressions
 
 ```ebnf
@@ -209,6 +234,8 @@ call_args       = "(" [ arg { "," arg } ] ")" ;
 arg             = [ lower_ident ":" ] line_expr ;
 literal         = int_lit | text_lit | "true" | "false" | "unit" ;
 ```
+
+(v0.3, ADR 0114.) In edition `0.3`, `literal` also has `float_lit` (`spec/29 §2`), and an argument's label may be the keyword `from`, as in `x.copy_sign(from: y)` (`spec/29 §3`): `arg = [ ( lower_ident | "from" ) ":" ] line_expr`. Nowhere else does `from` serve as a name.
 
 ## 8. Context restrictions
 

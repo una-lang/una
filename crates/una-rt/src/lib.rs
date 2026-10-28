@@ -18,15 +18,24 @@ use std::alloc::System;
 
 use cap::Cap;
 
+pub mod deadline;
+pub mod decimal;
 #[allow(unsafe_code)]
 pub mod ffi;
 pub mod generic;
 pub mod host;
+mod interrupt;
 mod json;
+mod reactor;
 pub mod render;
 pub mod runtime;
+mod sched;
+mod sockets;
+mod started;
 pub mod tasks;
+mod timer;
 pub mod values;
+pub mod wheel;
 
 /// The allocator of the executable, which counts the bytes it holds and fails past a ceiling,
 /// for the memory limit of runs (ADR 0061). The `cap` crate wraps the system allocator, so the

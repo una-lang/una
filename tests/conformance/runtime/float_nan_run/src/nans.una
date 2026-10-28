@@ -1,0 +1,32 @@
+-- test: every NaN an operation makes is the canonical one, in both engines and on every target: 0.0 / 0.0, a remainder by zero, a remainder of an infinity, a fused infinity times zero and a negative square root each read back as 0x7FF8000000000000 through to_bits, and stay so held in a list, a record, a map key and across a task's fork and join; a negated NaN stays canonical
+-- spec: spec/29 §6
+-- grant: console
+-- expect: run-output "bits 9221120237041090560 9221120237041090560 9221120237041090560 9221120237041090560 9221120237041090560 9221120237041090560"
+-- expect: run-output "list true [9221120237041090560, 9221120237041090560, 9221120237041090560, 9221120237041090560, 9221120237041090560]"
+-- expect: run-output "record true true"
+-- expect: run-output "map 1 [nan]"
+-- expect: run-output "tasks [9221120237041090560, 9221120237041090560, 9221120237041090560, 9221120237041090560, 9221120237041090560] true"
+module nans
+
+pub kind Cell
+  value: F64
+
+made(i: Int) -> F64
+=
+  let zero = 0.0
+  if i == 0 then zero / zero else if i == 1 then 1.0.rem(by: zero) else if i == 2 then infinity().rem(by: 1.0) else if i == 3 then infinity().fma(times: zero, plus: 1.0) else (-1.0).sqrt()
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let xs = [made(0), made(1), made(2), made(3), made(4)]
+  @console.print("bits {made(0).to_bits()} {made(1).to_bits()} {made(2).to_bits()} {made(3).to_bits()} {made(4).to_bits()} {(-made(0)).to_bits()}")
+  let same = xs.fold(initial: true, step: fn(ok: Bool, x: F64) -> ok and x == nan())
+  @console.print("list {same} {xs.map(each: fn(x: F64) -> x.to_bits())}")
+  @console.print("record {Cell(value: made(0)) == Cell(value: nan())} {Cell(value: made(4)) == Cell(value: -made(3))}")
+  let m = xs.fold(initial: empty_map(), step: fn(acc, x) -> acc.with(key: x, value: x.to_bits()))
+  @console.print("map {m.len} {m.keys()}")
+  let forked = together for i in [0, 1, 2, 3, 4]
+    made(i)
+  let joined = forked.fold(initial: true, step: fn(ok: Bool, x: F64) -> ok and x == nan())
+  @console.print("tasks {forked.map(each: fn(x: F64) -> x.to_bits())} {joined}")

@@ -17,6 +17,7 @@ una-core = { path = "crates/una-core" }
 una-diag = { path = "crates/una-diag" }
 una-explain = { path = "crates/una-explain" }
 una-fmt = { path = "crates/una-fmt" }
+una-hash = { path = "crates/una-hash" }
 una-http = { path = "crates/una-http" }
 una-interp = { path = "crates/una-interp" }
 una-lsp = { path = "crates/una-lsp" }
@@ -24,9 +25,14 @@ una-project = { path = "crates/una-project" }
 una-report = { path = "crates/una-report" }
 una-rt = { path = "crates/una-rt" }
 una-syntax = { path = "crates/una-syntax" }
+una-sys = { path = "crates/una-sys" }
 una-verify = { path = "crates/una-verify" }
+una-z3 = { path = "crates/una-z3" }
 # External crates, only from the allowlist of compiler/architecture.md §7.
 ariadne = "0.6.0"
+# Allowed by ADR 0116 Appendix A (amendment of 2026-10-19), for `una-sys` only: Rust
+# declarations of the system interface, with no C source built.
+libc = "0.2.189"
 cap = "0.1.2"
 clap = { version = "4.6.7", features = ["derive"] }
 # Allowed by ADR 0055 for una-codegen and una-rt only.
@@ -34,14 +40,19 @@ cranelift-codegen = "0.136.1"
 cranelift-frontend = "0.136.1"
 cranelift-module = "0.136.1"
 cranelift-object = "0.136.1"
+# Allowed by ADR 0119 for una-hash only: the process key of keyed hashing, from the operating
+# system's cryptographic random source.
+getrandom = "0.4.3"
 indexmap = "2.14.2"
 insta = "1.48.0"
-num-bigint = "0.4.6"
+num-bigint = { version = "0.4.6", default-features = false }
 pretty_assertions = "1.4.1"
 rayon = "1.12.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 sha2 = "0.10.8"
+# Ed25519 for the registry client (ADR 0122 rule 38): pure Rust, no C, strict verification.
+ed25519-dalek = { version = "2.1", default-features = false, features = ["std", "fast"] }
 # Allowed by ADR 0055 for una-codegen and una-rt only.
 target-lexicon = "0.13.5"
 # Allowed by ADR 0074 for una-http only: the TLS stack of the `Http` capability.

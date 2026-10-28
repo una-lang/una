@@ -4,10 +4,23 @@ use std::collections::BTreeMap;
 
 use una_core::{Atom, Bound, Example, Expectation, Expr, LoopSource, Program, Rhs, Source};
 
+use crate::clock::Clock;
 use crate::host::{Grant, NoWorld, World};
 use crate::machine::{
-    Abort, Env, Event, EventOutcome, Flow, Form, Index, Limits, Machine, Stop, variant,
+    Abort, Drive, Env, Event, EventOutcome, Flow, Form, Index, IntTooLong, Limits, Machine, Stop,
+    hashes, variant,
 };
+
+/// What a test's reason says of a value that holds an integer too long for text (`spec/11 §7`,
+/// #923): the reason is a message, so the value is named rather than written.
+const INT_TOO_LONG: &str = "<an integer of more than 4300 digits>";
+
+/// The Una form of `value` for a message, or [`INT_TOO_LONG`].
+fn named(index: &Index<'_>, value: &Value<'_>, form: Form) -> String {
+    index
+        .shown(value, form)
+        .unwrap_or_else(|IntTooLong| INT_TOO_LONG.to_owned())
+}
 use crate::value::Value;
 
 /// What `una run` grants: the grants, with the keys of the key files of `keys:` grants loaded
@@ -18,6 +31,9 @@ pub struct Host {
     pub grants: Vec<Grant>,
     /// The keys of `keys:` grants, by name.
     pub keys: BTreeMap<String, Vec<u8>>,
+    /// `--virtual-time`: the run's clock is virtual, from 0 at its start, and only the run's
+    /// own waits move it (ADR 0116 rule 19, `spec/26 §8`).
+    pub virtual_time: bool,
 }
 
 /// How `main`, or the `do` line of an example, ended.
@@ -58,24 +74,113 @@ pub fn run_main(
 ) -> Option<Run> {
     let index = Index::new(program);
     let main = index.function(module, "main")?;
-    let mut machine = Machine::new(&index, world, &host.grants, &host.keys, limits);
-    let result = machine.run_main(main);
+    // The process key of keyed hashing, before any effect (`spec/28 §1` rule 3).
+    let hashing = match hashes::process_key(&index, &[&main.body]) {
+        Ok(hashing) => hashing,
+        Err(abort) => return Some(not_started(abort)),
+    };
+    let clock = Clock::for_run(host.virtual_time);
+    let mut machine = Machine::new(&index, world, &host.grants, &host.keys, limits, clock);
+    machine.keyed(hashing);
+    let result = machine
+        .rooted(|machine| machine.run_main(main))
+        .unwrap_or_else(unrooted);
     let completion = completion(&index, result, Form::Redacted);
     Some(Run {
         completion,
-        trace: machine.trace,
+        trace: machine.run.take_trace(),
     })
 }
 
+/// Why a module cannot be driven (ADR 0116 rule 2): a usage error of `una run`, as an entry
+/// without `main` is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DriveShape {
+    /// The module has no function `init`.
+    NoInit,
+    /// The module has no function `step`.
+    NoStep,
+}
+
+/// Runs the host-driven step of module `module` (ADR 0116 rule 3): `init`, then `step` once
+/// per tick, then `on_stop` when the module declares it, with the host capabilities of each
+/// one's `uses`, in `world`. The shapes of the functions were checked with the package.
+pub fn run_drive(
+    program: &Program,
+    module: &str,
+    world: &mut dyn World,
+    host: &Host,
+    limits: Limits<'_>,
+    drive: Drive,
+) -> Result<Run, DriveShape> {
+    let index = Index::new(program);
+    let init = index.function(module, "init").ok_or(DriveShape::NoInit)?;
+    let step = index.function(module, "step").ok_or(DriveShape::NoStep)?;
+    let on_stop = index.function(module, "on_stop");
+    let mut roots = vec![&init.body, &step.body];
+    roots.extend(on_stop.map(|fun| &fun.body));
+    let hashing = match hashes::process_key(&index, &roots) {
+        Ok(hashing) => hashing,
+        Err(abort) => return Ok(not_started(abort)),
+    };
+    let clock = Clock::for_run(host.virtual_time);
+    let mut machine = Machine::new(&index, world, &host.grants, &host.keys, limits, clock);
+    machine.keyed(hashing);
+    let result = machine
+        .rooted(|machine| machine.drive(init, step, on_stop, &drive))
+        .unwrap_or_else(unrooted);
+    let completion = completion(&index, result, Form::Redacted);
+    Ok(Run {
+        completion,
+        trace: machine.run.take_trace(),
+    })
+}
+
+/// The outcome of a root task that could not run as a coroutine (ADR 0117 rule 11): the abort
+/// rather than a value.
+fn unrooted<'p>(abort: Abort) -> Flow<'p> {
+    Err(Stop::Abort(abort))
+}
+
+/// A run that aborted before it started, with no trace: the host gave no random bytes for the
+/// process key (U6009, `spec/28 §1` rule 3).
+fn not_started(abort: Abort) -> Run {
+    Run {
+        completion: Completion::Aborted(abort),
+        trace: Vec::new(),
+    }
+}
+
 fn completion(index: &Index<'_>, result: Flow<'_>, form: Form) -> Completion {
+    // A final value or failure that holds an integer too long for text aborts the run, with no
+    // position (`spec/11 §7`, #923).
+    let too_long = || Completion::Aborted(Abort::IntText { span: None });
     match result {
-        Ok(value) => Completion::Ok(index.shown(&value, form)),
-        Err(Stop::Fail(failure)) => Completion::Failed {
-            variant: variant(&failure),
-            value: index.shown(&failure, form),
-            public: index.public_fields(&failure),
+        Ok(value) => match index.shown(&value, form) {
+            Ok(shown) => Completion::Ok(shown),
+            Err(IntTooLong) => too_long(),
         },
+        Err(Stop::Fail(failure)) => {
+            match (index.shown(&failure, form), index.public_fields(&failure)) {
+                (Ok(value), Ok(public)) => Completion::Failed {
+                    variant: variant(&failure),
+                    value,
+                    public,
+                },
+                _ => too_long(),
+            }
+        }
         Err(Stop::Abort(abort)) => Completion::Aborted(abort),
+        // Core puts an exit only in a loop's body, which catches it.
+        Err(Stop::Exit(..)) => Completion::Aborted(Abort::Fault {
+            message: "an exit outside a loop".to_owned(),
+            span: None,
+        }),
+        // Every cut is caught by the `within` it is for.
+        Err(Stop::Cut(_)) => Completion::Aborted(Abort::Fault {
+            message: "a deadline outside its `within`".to_owned(),
+            span: None,
+        }),
     }
 }
 
@@ -135,16 +240,44 @@ fn run_example<'p>(
     let mut world = NoWorld;
     let grants: Vec<Grant> = Vec::new();
     let keys = BTreeMap::new();
-    let mut machine = Machine::new(index, &mut world, &grants, &keys, limits);
-    let result = machine.eval_closed(&mut Env::new(), &example.body);
+    let hashing = match hashes::process_key(index, &hashes::example_roots(example)) {
+        Ok(hashing) => hashing,
+        Err(abort) => {
+            return ExampleRun {
+                module: module.to_owned(),
+                name: example.name.clone(),
+                failure: Some(ExampleFailure {
+                    expectation: None,
+                    reason: "the `do` line aborted".to_owned(),
+                }),
+                completion: Completion::Aborted(abort),
+                trace: Vec::new(),
+            };
+        }
+    };
+    // Time in a test is virtual, and its `stop after N` line is its stop schedule (ADR 0116
+    // rule 19, `spec/26 §8`).
+    let mut machine = Machine::new(
+        index,
+        &mut world,
+        &grants,
+        &keys,
+        limits,
+        Clock::virtual_time(),
+    );
+    machine.keyed(hashing);
+    machine.run.stop_after.set(example.stop_after);
+    let result = machine
+        .rooted(|machine| machine.eval_closed(&mut Env::new(), &example.body))
+        .unwrap_or_else(unrooted);
     let failure = match &result {
-        Err(Stop::Abort(_)) => Some(ExampleFailure {
+        Err(Stop::Abort(_) | Stop::Exit(..)) => Some(ExampleFailure {
             expectation: None,
             reason: "the `do` line aborted".to_owned(),
         }),
         _ => judge(&mut machine, index, example, &result, form),
     };
-    let trace = std::mem::take(&mut machine.trace);
+    let trace = machine.run.take_trace();
     ExampleRun {
         module: module.to_owned(),
         name: example.name.clone(),
@@ -181,7 +314,7 @@ fn judge<'p>(
             expectation: None,
             reason: format!(
                 "the `do` line failed with `{}`, and no `expect fails` line expects a failure",
-                index.shown(failure, form)
+                named(index, failure, form)
             ),
         }),
         _ => None,
@@ -213,27 +346,30 @@ where
                 Err(Stop::Fail(failure)) if mentions_result => {
                     let reason = format!(
                         "the `do` line failed with `{}`, so `result` has no value",
-                        index.shown(failure, form)
+                        named(index, failure, form)
                     );
                     return Some((*line, text, reason));
                 }
                 _ => {}
             }
-            let reason = match machine.eval_closed(&mut env, check) {
+            let checked = machine
+                .rooted(|machine| machine.eval_closed(&mut env, check))
+                .unwrap_or_else(unrooted);
+            let reason = match checked {
                 Ok(Value::Bool(true)) => return None,
                 Ok(_) => match result {
                     Ok(value) if mentions_result => {
                         format!(
                             "it is false, with `result` = `{}`",
-                            index.shown(value, form)
+                            named(index, value, form)
                         )
                     }
                     _ => "it is false".to_owned(),
                 },
                 Err(Stop::Fail(failure)) => {
-                    format!("it failed with `{}`", index.shown(&failure, form))
+                    format!("it failed with `{}`", named(index, &failure, form))
                 }
-                Err(Stop::Abort(_)) => "it aborted".to_owned(),
+                Err(Stop::Abort(_) | Stop::Exit(..) | Stop::Cut(_)) => "it aborted".to_owned(),
             };
             Some((*line, text, reason))
         }
@@ -245,13 +381,18 @@ where
             let reason = match result {
                 Err(Stop::Fail(failure)) if variant(failure) == *expected => return None,
                 Err(Stop::Fail(failure)) => {
-                    format!("the `do` line failed with `{}`", index.shown(failure, form))
+                    format!(
+                        "the `do` line failed with `{}`",
+                        named(index, failure, form)
+                    )
                 }
                 Ok(value) => format!(
                     "the `do` line completed with `{}`",
-                    index.shown(value, form)
+                    named(index, value, form)
                 ),
-                Err(Stop::Abort(_)) => "the `do` line aborted".to_owned(),
+                Err(Stop::Abort(_) | Stop::Exit(..) | Stop::Cut(_)) => {
+                    "the `do` line aborted".to_owned()
+                }
             };
             Some((*line, text, reason))
         }
@@ -263,8 +404,8 @@ where
             line,
         } => {
             let instance = format!("given:{cap}");
-            let mut events = machine
-                .trace
+            let trace = machine.run.trace();
+            let mut events = trace
                 .iter()
                 .filter(|e| e.instance == instance && e.op == *op);
             if *negated {
@@ -287,21 +428,34 @@ fn mentions(expr: &Expr, name: &str) -> bool {
         Expr::Atom { atom: a, .. } => atom(a),
         Expr::Unreachable { .. } => false,
         Expr::LetTuple { value, body, .. } => atom(value) || mentions(body, name),
-        Expr::Together { tasks, .. } => tasks.iter().any(|task| mentions(task, name)),
+        Expr::Together { tasks, .. } | Expr::FirstOf { tasks, .. } => {
+            tasks.iter().any(|task| mentions(task, name))
+        }
         Expr::TogetherFor { source, task, .. } => {
             (match source.as_ref() {
                 LoopSource::List(list) => atom(list),
                 LoopSource::Range { low, high, .. } => atom(low) || atom(high),
+                LoopSource::Until { cond, .. } => mentions(cond, name),
+                LoopSource::Ever { within } => within.as_ref().is_some_and(|(d, _)| atom(d)),
             }) || mentions(task, name)
         }
         Expr::Loop {
-            source, init, body, ..
+            source,
+            init,
+            body,
+            on_stop,
+            ..
         } => {
             (match source.as_ref() {
                 LoopSource::List(list) => atom(list),
                 LoopSource::Range { low, high, .. } => atom(low) || atom(high),
+                LoopSource::Until { cond, .. } => mentions(cond, name),
+                LoopSource::Ever { within } => within.as_ref().is_some_and(|(d, _)| atom(d)),
             }) || init.iter().any(atom)
                 || mentions(body, name)
+                || on_stop
+                    .as_ref()
+                    .is_some_and(|on_stop| mentions(&on_stop.body, name))
         }
         Expr::Let { value, body, .. } => {
             (match value.as_ref() {
@@ -324,8 +478,14 @@ fn mentions(expr: &Expr, name: &str) -> bool {
                 || otherwise.as_deref().is_some_and(|e| mentions(e, name))
         }
         Expr::Fail { args, .. } => args.iter().any(atom),
+        Expr::Exit { state, .. } => state.iter().any(atom),
         Expr::Handle { body, handler, .. } => mentions(body, name) || mentions(handler, name),
         Expr::Attempt { body, .. } => mentions(body, name),
+        Expr::Within { deadline, body, .. } => atom(deadline) || mentions(body, name),
+        Expr::Tasks { bound, body, .. } => {
+            bound.as_ref().is_some_and(|(b, _)| atom(b)) || mentions(body, name)
+        }
+        Expr::Start { task, .. } => mentions(task, name),
         Expr::With { source, body, .. } => {
             (match source {
                 Source::Rebind(_) => false,

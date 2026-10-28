@@ -1,0 +1,10 @@
+ita-advisory/1
+source acme
+name acme/ledger
+previous none
+id ITA-1
+line 0.3
+affected 0.3.0, 0.3.1
+fixed 0.3.2 sha256:3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b
+severity high
+summary An overflow

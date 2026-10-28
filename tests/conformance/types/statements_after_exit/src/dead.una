@@ -1,0 +1,32 @@
+-- test: a statement after an unconditional `stop` or `skip` in the same block never runs (U2040), in a loop body and in a nested block; after `stop when` and after the block that holds the exit, statements run (spec/26 §3, ADR 0116 amendment of 2026-10-19)
+-- spec: spec/26 §3
+-- expect: error U2040 at src/dead.una:13:5
+-- expect: error U2040 at src/dead.una:22:7
+module dead
+
+pub after_stop(xs: List[Int]) -> Int
+=
+  let edit n = 0
+  for x in xs
+    n = n + x
+    stop
+    n = n + 1
+  n
+
+pub nested(xs: List[Int]) -> Int
+=
+  let edit n = 0
+  for x in xs
+    if x > 3
+      skip
+      n = n - 1
+    n = n + x
+  n
+
+pub conditional(xs: List[Int]) -> Int
+=
+  let edit n = 0
+  for x in xs
+    stop when x > 9
+    n = n + x
+  n

@@ -7,6 +7,10 @@ use una_diag::Code;
 use crate::document::{Table, integer, parse, string, strings};
 use crate::{Located, ProjectError};
 
+/// A package's profile (ADR 0109): the one type of Core IR, which elaboration records in the
+/// program (rule 6), re-exported so that both manifest formats read into it.
+pub use una_core::Profile;
+
 /// The settings of a package's `una.toml`, or their defaults (ADR 0021 rule 2).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Manifest {
@@ -27,6 +31,8 @@ pub struct Manifest {
     /// Whether `una.toml` lists `[run] grants`, empty or not: a listed array is the final set
     /// of `una check` and `una build`, so `grants = []` grants no host capability (#925).
     pub grants_listed: bool,
+    /// The `drive` section of `ita.una`, edition `0.4`: the host-driven step (ADR 0116 rule 1).
+    pub drive: Option<Drive>,
     /// `[package] edition`: `0.1`, the default, or `0.2` (`spec/13 §7`, ADR 0056).
     pub edition: Edition,
     /// `[contracts]`, edition `0.3`: the locked `uses` clauses of public functions (ADR 0092
@@ -34,6 +40,137 @@ pub struct Manifest {
     pub contracts: Vec<Contract>,
     /// `[boundaries]`: the boundary modules and their ceilings, in edition `0.3` (ADR 0093).
     pub boundaries: Vec<Boundary>,
+    /// `[package] profile` in edition `0.3`, the head line `profile` in `ita.una`: `app`, the
+    /// default, or `systems` (ADR 0109 rule 1).
+    pub profile: Profile,
+    /// `[run] max_memory` in edition `0.3`, the `run` line `max_memory` in `ita.una`: the
+    /// declared memory budget in MiB, from 1 to [`MAX_MEMORY_CAP`], which `--max-memory` may
+    /// lower and never raise (ADR 0109 rule 4).
+    pub max_memory: Option<u64>,
+    /// The file the settings were read from: `una.toml`, or `ita.una` from edition `0.4`.
+    pub format: Format,
+    /// The path dependencies mounted into the program (ADR 0122 rule 47): each one's local
+    /// name, under which its modules are named, and where its files are. Filled when the
+    /// dependencies are loaded, empty otherwise.
+    pub mounts: Vec<Mount>,
+    /// The modules of dependencies that a trust line of the root names and the lock consents
+    /// to, by their paths in the program, `<local>.m` (ADR 0122 rule 53): each is an extent of
+    /// its own, and a release whose policy it declares is never U3024 (rule 53.1).
+    pub dependency_trusted: Vec<String>,
+    /// For `ita.una`, the file as read, with what only it writes: the head's `about`,
+    /// `license`, `home` and `publish to`, and the sections `sources`, `needs`, `replace` and
+    /// `trust` (ADR 0122).
+    pub ita: Option<Box<una_syntax::ita::Manifest>>,
+}
+
+/// A dependency mounted into the program: its modules `m` are the program's modules
+/// `<local>.m` (ADR 0122 rule 47).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Mount {
+    /// The local name, the first segment of its modules' paths in the program.
+    pub local: String,
+    /// The prefix of its module files' paths in the source database, ending with `src/`, such
+    /// as `../util/src/`.
+    pub src: String,
+}
+
+impl Manifest {
+    /// The mount whose module files include the file at `path`, if any: the file is a module
+    /// of that dependency. O(mounts).
+    pub fn mount_of(&self, path: &str) -> Option<&Mount> {
+        self.mounts
+            .iter()
+            .find(|mount| path.starts_with(&mount.src))
+    }
+}
+
+/// The file a package's settings are read from.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Format {
+    /// `una.toml`, editions `0.1` to `0.3` (ADR 0021).
+    #[default]
+    Toml,
+    /// `ita.una`, from edition `0.4` (ADR 0122).
+    Ita,
+}
+
+impl Format {
+    /// The code of an invalid setting: U7002 in `una.toml`, U7008 in `ita.una` (ADR 0122
+    /// rule 13).
+    pub fn code(self) -> Code {
+        match self {
+            Format::Toml => Code::U7002,
+            Format::Ita => Code::U7008,
+        }
+    }
+
+    /// How a message names a table of `una.toml` or its section of `ita.una`:
+    /// `[boundaries]` or `` `boundaries` ``; `[run] entry` or `` `run entry` ``.
+    pub fn section(self, toml: &str) -> String {
+        match self {
+            Format::Toml => toml.to_owned(),
+            Format::Ita => {
+                let plain: String = toml.chars().filter(|c| !matches!(c, '[' | ']')).collect();
+                let plain = match plain.as_str() {
+                    "escape_budget checked_per_module" => "escapes checked per module".to_owned(),
+                    "labels categories" => "labels".to_owned(),
+                    "trusted modules" => "trusted".to_owned(),
+                    _ => plain,
+                };
+                format!("`{plain}`")
+            }
+        }
+    }
+
+    /// The file's name.
+    pub fn file(self) -> &'static str {
+        match self {
+            Format::Toml => "una.toml",
+            Format::Ita => "ita.una",
+        }
+    }
+}
+
+/// The largest declared memory budget, in MiB, while edition `0.3` is a preview: the default of
+/// `--max-memory`, so a declared budget never widens edition `0.2` (ADR 0109 rule 4).
+pub const MAX_MEMORY_CAP: u64 = 4096;
+
+/// The message of a `systems` package with an entry and no declared budget (ADR 0109 rule 4),
+/// in the words of `format`.
+pub(crate) fn budget_missing(format: Format) -> String {
+    format!(
+        "a `systems` package with a {} declares {}, its memory budget in MiB",
+        format.section("[run] entry"),
+        format.section("[run] max_memory")
+    )
+}
+
+/// The message of a declared budget outside 1 to [`MAX_MEMORY_CAP`] (ADR 0109 rule 4).
+pub(crate) fn budget_out_of_range(format: Format, value: &str) -> String {
+    format!(
+        "{} is a number of MiB from 1 to {MAX_MEMORY_CAP}, not {value}",
+        format.section("[run] max_memory")
+    )
+}
+
+/// The longest tick period and step budget of `[drive]`, in milliseconds: a day (ADR 0116 rule
+/// 1).
+pub const MAX_DRIVE_MILLISECONDS: u64 = 86_400_000;
+
+/// The `drive` section of `ita.una`, edition `0.4` (ADR 0116 rule 1, ADR 0122 rule 11,
+/// `spec/26 §2`): the module whose `init`, `step` and `on_stop` the host drives, the tick period
+/// and the step budget, in milliseconds. `una.toml` has no such table: edition 0.4 reads only
+/// `ita.una`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Drive {
+    /// `module`, a module of the package.
+    pub module: Located,
+    /// `ticks`, the period, from 1 to [`MAX_DRIVE_MILLISECONDS`].
+    pub ticks: u64,
+    /// `budget`, the time limit of one step, with the same range.
+    pub budget: Option<u64>,
+    /// Where the table's name is written.
+    pub at: std::ops::Range<usize>,
 }
 
 /// A locked function of `[contracts]` (ADR 0092 rule 8, as amended): its qualified name and
@@ -54,6 +191,10 @@ pub struct Boundary {
     pub module: Located,
     /// The ceiling: the most authority a call into the boundary may grant.
     pub ceiling: Vec<Ceiling>,
+    /// Whether the boundary is a dependency's package extent (ADR 0122 rule 51): its key is a
+    /// local name, the prefix of the dependency's modules, not a module, and its ceiling, the
+    /// root's `may` lines, names host capabilities.
+    pub package: bool,
 }
 
 /// One `C[ops]` of a ceiling: a capability's name and the operations it allows, names only.
@@ -132,11 +273,14 @@ pub enum Edition {
     /// Edition `0.3`, a preview until ADRs 0092 to 0094 land: every construct of edition
     /// `0.2`, and the rules that target edition `0.3` (`spec/13 §7`).
     V0_3,
+    /// Edition `0.4`, a preview until the rules that target it land: every construct of
+    /// edition `0.3`, and those of ADR 0116 (`spec/26`) as they land.
+    V0_4,
 }
 
 impl Edition {
     /// Every edition, oldest first.
-    pub const ALL: [Edition; 3] = [Edition::V0_1, Edition::V0_2, Edition::V0_3];
+    pub const ALL: [Edition; 4] = [Edition::V0_1, Edition::V0_2, Edition::V0_3, Edition::V0_4];
 
     /// The edition's name, as `una.toml` writes it.
     pub fn name(self) -> &'static str {
@@ -144,11 +288,12 @@ impl Edition {
             Edition::V0_1 => "0.1",
             Edition::V0_2 => "0.2",
             Edition::V0_3 => "0.3",
+            Edition::V0_4 => "0.4",
         }
     }
 
-    /// Every edition's name, quoted, as a message lists them: `"0.1", "0.2" and "0.3"`.
-    fn listed() -> String {
+    /// Every edition's name, quoted, as a message lists them: `"0.1", "0.2", "0.3" and "0.4"`.
+    pub(crate) fn listed() -> String {
         let names: Vec<String> = Edition::ALL
             .iter()
             .map(|edition| format!("\"{}\"", edition.name()))
@@ -161,11 +306,12 @@ impl Edition {
     }
 
     /// The edition named `text` in `una.toml`, if it is one.
-    fn parse(text: &str) -> Option<Edition> {
+    pub(crate) fn parse(text: &str) -> Option<Edition> {
         match text {
             "0.1" => Some(Edition::V0_1),
             "0.2" => Some(Edition::V0_2),
             "0.3" => Some(Edition::V0_3),
+            "0.4" => Some(Edition::V0_4),
             _ => None,
         }
     }
@@ -185,6 +331,16 @@ pub fn parse_manifest(text: &str) -> (Manifest, Vec<ProjectError>) {
     // amended, and ADR 0093): earlier editions report them as the unknown tables they always
     // were, so their output does not change.
     let edition_0_3 = declared_edition(document.get_ref()) >= Edition::V0_3;
+    // Whether `[run] max_memory` is written, valid or not: one that is out of range is
+    // reported at its value, not again as missing.
+    let budget_written = edition_0_3
+        && document
+            .get_ref()
+            .get("run")
+            .is_some_and(|run| match run.get_ref() {
+                toml::de::DeValue::Table(table) => table.contains_key("max_memory"),
+                _ => false,
+            });
     for (key, value) in document.get_ref().iter() {
         let Some(table) = Table::of(key, value, Code::U7002, &mut errors) else {
             continue;
@@ -192,12 +348,12 @@ pub fn parse_manifest(text: &str) -> (Manifest, Vec<ProjectError>) {
         match key.get_ref().as_ref() {
             "package" => {
                 package = true;
-                package_table(&table, &mut manifest, &mut errors);
+                package_table(&table, edition_0_3, &mut manifest, &mut errors);
             }
             "labels" => labels(&table, &mut manifest, &mut errors),
             "trusted" => trusted(&table, &mut manifest, &mut errors),
             "escape_budget" => escape_budget(&table, &mut manifest, &mut errors),
-            "run" => run(&table, &mut manifest, &mut errors),
+            "run" => run(&table, edition_0_3, &mut manifest, &mut errors),
             "contracts" if edition_0_3 => contracts(&table, &mut manifest, &mut errors),
             "boundaries" if edition_0_3 => boundaries(&table, &mut manifest, &mut errors),
             other => errors.push(ProjectError::new(
@@ -216,6 +372,17 @@ pub fn parse_manifest(text: &str) -> (Manifest, Vec<ProjectError>) {
     }
     if !manifest.boundaries.is_empty() {
         boundary_conflicts(&manifest, &mut errors);
+    }
+    // A `systems` package that runs declares its budget (ADR 0109 rule 4), at the entry.
+    if manifest.profile == Profile::Systems
+        && !budget_written
+        && let Some(entry) = &manifest.entry
+    {
+        errors.push(ProjectError::new(
+            Code::U7002,
+            entry.range.clone(),
+            budget_missing(Format::Toml),
+        ));
     }
     (manifest, errors)
 }
@@ -251,11 +418,34 @@ fn contracts(table: &Table<'_, '_>, manifest: &mut Manifest, errors: &mut Vec<Pr
     }
 }
 
-fn package_table(table: &Table<'_, '_>, manifest: &mut Manifest, errors: &mut Vec<ProjectError>) {
+fn package_table(
+    table: &Table<'_, '_>,
+    edition_0_3: bool,
+    manifest: &mut Manifest,
+    errors: &mut Vec<ProjectError>,
+) {
     let mut seen = Vec::new();
     for (key, value) in table.entries.iter() {
         let name = key.get_ref().as_ref();
         match name {
+            // Edition 0.3 only (ADR 0109 rule 1): earlier editions report it as the unknown key
+            // it always was, and their packages are `app`.
+            "profile" if edition_0_3 => {
+                let Some(located) = string(name, value, Code::U7002, errors) else {
+                    continue;
+                };
+                match Profile::parse(&located.value) {
+                    Some(profile) => manifest.profile = profile,
+                    None => errors.push(ProjectError::new(
+                        Code::U7002,
+                        located.range,
+                        format!(
+                            "unknown profile `{}`; the profiles are \"app\" and \"systems\"",
+                            located.value
+                        ),
+                    )),
+                }
+            }
             "name" | "version" | "edition" => {
                 seen.push(name.to_owned());
                 let Some(located) = string(name, value, Code::U7002, errors) else {
@@ -269,6 +459,16 @@ fn package_table(table: &Table<'_, '_>, manifest: &mut Manifest, errors: &mut Ve
                     ));
                 } else if name == "edition" {
                     match Edition::parse(&located.value) {
+                        // Edition 0.4 is described by `ita.una` (ADR 0122 Question 8.1): the
+                        // package is still checked in edition 0.4, and `una migrate` moves it.
+                        Some(Edition::V0_4) => {
+                            manifest.edition = Edition::V0_4;
+                            errors.push(ProjectError::new(
+                                Code::U7002,
+                                located.range,
+                                "edition 0.4 is described by ita.una, not una.toml; run `una migrate`",
+                            ));
+                        }
                         Some(edition) => manifest.edition = edition,
                         None => errors.push(ProjectError::new(
                             Code::U7002,
@@ -368,9 +568,29 @@ fn escape_budget(table: &Table<'_, '_>, manifest: &mut Manifest, errors: &mut Ve
     }
 }
 
-fn run(table: &Table<'_, '_>, manifest: &mut Manifest, errors: &mut Vec<ProjectError>) {
+fn run(
+    table: &Table<'_, '_>,
+    edition_0_3: bool,
+    manifest: &mut Manifest,
+    errors: &mut Vec<ProjectError>,
+) {
     for (key, value) in table.entries.iter() {
         match key.get_ref().as_ref() {
+            // Edition 0.3 only (ADR 0109 rule 4), from 1 to the cap.
+            "max_memory" if edition_0_3 => {
+                if let Some(budget) = integer("max_memory", value, Code::U7002, errors) {
+                    match u64::try_from(budget) {
+                        Ok(budget) if (1..=MAX_MEMORY_CAP).contains(&budget) => {
+                            manifest.max_memory = Some(budget);
+                        }
+                        _ => errors.push(ProjectError::new(
+                            Code::U7002,
+                            value.span(),
+                            budget_out_of_range(Format::Toml, &budget.to_string()),
+                        )),
+                    }
+                }
+            }
             "entry" => {
                 let Some(entry) = string("entry", value, Code::U7002, errors) else {
                     continue;
@@ -452,7 +672,11 @@ fn boundaries(table: &Table<'_, '_>, manifest: &mut Manifest, errors: &mut Vec<P
                 )),
             }
         }
-        manifest.boundaries.push(Boundary { module, ceiling });
+        manifest.boundaries.push(Boundary {
+            module,
+            ceiling,
+            package: false,
+        });
     }
 }
 
@@ -481,7 +705,11 @@ fn parse_ceiling(text: &str) -> Option<(String, Vec<String>)> {
 /// U7002 for keys whose extents overlap, a boundary that is also trusted, and a `[run]` entry
 /// inside a boundary (ADR 0093 rules 8 to 10). The keys are sorted, so a key and a key below it
 /// are found in one pass: O(k log k).
-fn boundary_conflicts(manifest: &Manifest, errors: &mut Vec<ProjectError>) {
+pub(crate) fn boundary_conflicts(manifest: &Manifest, errors: &mut Vec<ProjectError>) {
+    let code = manifest.format.code();
+    let boundaries = manifest.format.section("[boundaries]");
+    let trusted_section = manifest.format.section("[trusted] modules");
+    let entry_section = manifest.format.section("[run] entry");
     let mut keys: Vec<&Boundary> = manifest.boundaries.iter().collect();
     keys.sort_by(|a, b| a.module.value.cmp(&b.module.value));
     let mut open: Vec<&Boundary> = Vec::new();
@@ -494,10 +722,10 @@ fn boundary_conflicts(manifest: &Manifest, errors: &mut Vec<ProjectError>) {
         }
         if let Some(outer) = open.last() {
             errors.push(ProjectError::new(
-                Code::U7002,
+                code,
                 boundary.module.range.clone(),
                 format!(
-                    "[boundaries] lists `{}` inside `{}`, which already covers it; a module has one ceiling",
+                    "{boundaries} lists `{}` inside `{}`, which already covers it; a module has one ceiling",
                     boundary.module.value, outer.module.value
                 ),
             ));
@@ -513,10 +741,10 @@ fn boundary_conflicts(manifest: &Manifest, errors: &mut Vec<ProjectError>) {
     for trusted in &manifest.trusted {
         if let Some(boundary) = boundary_of(&trusted.value) {
             errors.push(ProjectError::new(
-                Code::U7002,
+                code,
                 trusted.range.clone(),
                 format!(
-                    "`{}` is in [trusted] modules and inside the boundary `{}`; a boundary module never releases",
+                    "`{}` is in {trusted_section} and inside the boundary `{}`; a boundary module never releases",
                     trusted.value, boundary.module.value
                 ),
             ));
@@ -526,10 +754,10 @@ fn boundary_conflicts(manifest: &Manifest, errors: &mut Vec<ProjectError>) {
         && let Some(boundary) = boundary_of(&entry.value)
     {
         errors.push(ProjectError::new(
-            Code::U7002,
+            code,
             entry.range.clone(),
             format!(
-                "the [run] entry `{}` is inside the boundary `{}`, whose grants would bypass its ceiling",
+                "the {entry_section} `{}` is inside the boundary `{}`, whose grants would bypass its ceiling",
                 entry.value, boundary.module.value
             ),
         ));
@@ -572,14 +800,14 @@ pub fn is_grant(text: &str) -> bool {
 }
 
 /// Whether `name` is UpperCamelCase (`spec/01 §4`).
-fn is_upper_camel(name: &str) -> bool {
+pub(crate) fn is_upper_camel(name: &str) -> bool {
     let mut chars = name.chars();
     chars.next().is_some_and(|first| first.is_ascii_uppercase())
         && chars.all(|c| c.is_ascii_alphanumeric())
 }
 
 /// A suggestion in UpperCamelCase for `name`.
-fn upper_camel(name: &str) -> String {
+pub(crate) fn upper_camel(name: &str) -> String {
     let mut out = String::new();
     let mut upper = true;
     for c in name.chars() {

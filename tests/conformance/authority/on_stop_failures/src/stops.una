@@ -1,0 +1,23 @@
+-- test: the statements of `on stop` must not fail: each fallible one is handled where it is (U3029) (spec/26 §5, ADR 0116 rule 10)
+-- spec: spec/26 §5
+-- expect: error U3029 at src/stops.una:20:5
+module stops
+
+pub kind Lost = | Gone
+
+check(name: Text) -> Unit
+  fails Lost
+=
+  if name == "" then fail Gone else unit
+
+pub main() -> Unit
+  fails Lost
+  diverges
+=
+  for ever
+    stop
+  on stop
+    check("x")
+    check("y")
+      if error use unit
+  unit

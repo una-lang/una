@@ -6,23 +6,51 @@ use std::collections::BTreeMap;
 
 use una_core::{
     Arm as CoreArm, Atom, Base, BinOp, Bound, CapOp as CoreCapOp, Clause as CoreClause, Ctor,
-    DataVariant, Decl, Example, Expectation, Expr as CoreExpr, Fun, HandlerOp as CoreHandlerOp,
-    Label, LoopSource, MapOp, Module as CoreModule, Name, Path, Prim, Program,
-    Refinement as CoreRefinement, Rhs, Signature, Source, Term, Type, Use,
+    DataVariant, Decl, Example, ExitTag, Expectation, Expr as CoreExpr, FloatOp, Fun,
+    HandlerOp as CoreHandlerOp, Label, LoopSource, MapOp, Module as CoreModule, Name, Path, Prim,
+    Program, Refinement as CoreRefinement, Rhs, Signature, Source, Term, Type, Use,
 };
 use una_syntax::ast::{
     Arg, BinaryOp, Block, BlockExpr, Body, CapBindingValue, Clause, ClauseKind, Convention,
-    DeclKind, ElseBranch, ExampleDecl, ExpectationKind, Expr, ExprKind, ForSource, ForStmt,
-    FunctionDecl, Handled, HandlingKind, IfBlock, IfThenStmt, IsTarget, LetValue, Literal,
-    OpClauseKind, PatternKind, Range, SignedInt, Stmt, TextLit, TextPart, TogetherFor,
-    TogetherStmt, UnaryOp, UsesClause, VariantExpr, WhenExpr,
+    DeclKind, ElseBranch, EverStmt, ExampleDecl, ExpectationKind, Expr, ExprKind, FirstOf,
+    ForSource, ForStmt, FunctionDecl, Handled, HandlingKind, IfBlock, IfThenStmt, IsTarget,
+    LetValue, Literal, OpClauseKind, PatternKind, Range, SignedInt, StartStmt, Stmt, TasksStmt,
+    TextLit, TextPart, TogetherFor, TogetherStmt, UnaryOp, UntilStmt, UsesClause, VariantExpr,
+    WhenExpr,
 };
 use una_syntax::{SourceDb, Span};
 
 use super::Findings;
+use super::complex::ComplexMethod;
 use super::env::{Constraint, Entity, Env, FnAst, FnDef, FnKind, Need};
-use super::records::{Records, Res};
+use super::records::{ConvertNumber, DenseOp, Records, Res};
 use super::ty::{Declared, FnUse, Refinement, Ty};
+
+/// A complex operation whose operands are one complex value, and a factor for `scale`
+/// (ADR 0120 rule 23).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ComplexStep {
+    /// `-x`.
+    Neg,
+    /// `x.conj()`.
+    Conj,
+    /// `x.scale(by: k)`.
+    Scale,
+    /// `x.norm_sqr()`.
+    NormSqr,
+}
+
+/// What the elaboration of a complex operation at `span` builds with: the complex type, its
+/// component type, whether that is `F32`, the label of the result, which every temporary
+/// carries, and the record constructor of the complex kind.
+struct ComplexParts {
+    ty: Type,
+    component: Type,
+    f32: bool,
+    label: Label,
+    ctor: Ctor,
+    span: Span,
+}
 
 /// One binding of a `let` chain being built.
 struct Let {
@@ -65,39 +93,174 @@ impl Let {
     }
 }
 
+/// What [`program`] could not carry into Core IR, each an internal error (U8001) unless
+/// something else rejects the package.
+#[derive(Debug, Default)]
+pub(crate) struct Gaps {
+    /// The components of checker types that a Core IR binder type lost, with the span of
+    /// their declaration ([`lost`]).
+    pub(crate) lost: Vec<(Span, String)>,
+    /// The declarations of the package that type-checked yet have no Core IR, by span, and
+    /// what they are (#1050): none of their obligations would be generated.
+    pub(crate) missing: Vec<(Span, &'static str)>,
+    /// The declarations of the standard modules whose contract, host capability or prelude
+    /// kind did not elaborate, by span in the standard sources (#1050): a call into one would
+    /// be verified without its `requires`.
+    pub(crate) standard: Vec<(Span, &'static str)>,
+}
+
 /// Elaborates the package's modules, in path order, and the contracts of the standard
 /// library; a declaration with a diagnostic, or with a resolution missing, is left out.
-/// Returns the program, and the components of checker types that a Core IR binder type
-/// lost, with the span of their declaration ([`lost`]).
+/// Returns the program, and its [`Gaps`]: what Core IR lost of the checked types, and every
+/// declaration that type-checked but is missing from it, found by [`missing`] over the program
+/// built, whatever path of the elaboration left it out (#1050).
 pub(crate) fn program(
     env: &Env<'_>,
     findings: &Findings,
     sources: &SourceDb,
     standard: &SourceDb,
-) -> (Program, Vec<(Span, String)>) {
+) -> (Program, Gaps) {
     let dbs = Dbs { sources, standard };
-    let mut lost = Vec::new();
+    let mut gaps = Gaps::default();
     let mut modules: Vec<CoreModule> = (0..env.prelude)
         .filter(|module| env.reports(*module))
-        .map(|module| elaborate_module(env, findings, dbs, module, &mut lost))
+        .map(|module| elaborate_module(env, findings, dbs, module, &mut gaps.lost))
         .collect();
-    if let Some(kinds) = prelude_kinds(env, findings, dbs) {
+    if let Some(kinds) = prelude_kinds(env, findings, dbs, &mut gaps.standard) {
         modules.push(kinds);
     }
+    modules.extend(standard_kinds(env, findings, dbs, &mut gaps.standard));
     modules.sort_by(|a, b| a.path.cmp(&b.path));
+    // The map's `update` is elaborated at each call (ADR 0119 rule 18), so Core declares no
+    // signature for it.
     let library = (env.prelude..env.modules.len())
-        .flat_map(|module| library(env, findings, dbs, module))
+        .filter(|module| Some(*module) != env.map_module)
+        .flat_map(|module| library(env, findings, dbs, module, &mut gaps.standard))
         .collect();
-    let host = host(env, findings, dbs);
-    (
-        Program {
-            modules,
-            library,
-            host,
-            condition_edits: condition_edits(findings),
-        },
-        lost,
-    )
+    let host = host(env, findings, dbs, &mut gaps.standard);
+    let program = Program {
+        // ADR 0109 rule 6: the profile is part of the program, which the verifier and the
+        // Core export read.
+        profile: env.profile,
+        modules,
+        library,
+        host,
+        condition_edits: condition_edits(findings),
+        // ADR 0069, amendment of 2026-10-19: the frames of a map, in edition `0.4`.
+        map_frames: env.edition >= una_project::Edition::V0_4,
+    };
+    gaps.missing = missing(env, &program);
+    (program, gaps)
+}
+
+/// What a declaration of the package is in Core IR, and its name there, when it has one: a
+/// type, a function (predicates and policies included), a capability, a handler or an
+/// example. `None` for a requirement or a unit of measure, which Core IR does not hold.
+fn core_key(
+    env: &Env<'_>,
+    module: usize,
+    kind: &DeclKind,
+    entity: Option<Entity>,
+) -> Option<(&'static str, String)> {
+    let key = match (kind, entity) {
+        (DeclKind::Example(example), _) => ("example", example_name(example)),
+        (DeclKind::Kind(_), Some(Entity::Alias(id))) => (
+            "type",
+            env.aliases.get(id).map_or("", |a| a.name).to_owned(),
+        ),
+        (DeclKind::Kind(_), Some(Entity::Kind(id))) => {
+            ("type", env.kinds.get(id).map_or("", |k| k.name).to_owned())
+        }
+        (DeclKind::Kind(kind), _) => ("type", env.text(module, kind.name.name).to_owned()),
+        (DeclKind::Function(function), _) => {
+            ("function", env.text(module, function.name.name).to_owned())
+        }
+        (DeclKind::Predicate(predicate), _) => (
+            "predicate",
+            env.text(module, predicate.name.name).to_owned(),
+        ),
+        (DeclKind::Policy(policy), _) => ("policy", env.text(module, policy.name.name).to_owned()),
+        (DeclKind::Capability(capability), _) => (
+            "capability",
+            env.text(module, capability.name.name).to_owned(),
+        ),
+        (DeclKind::Handler(handler), _) => {
+            ("handler", env.text(module, handler.name.name).to_owned())
+        }
+        (DeclKind::Requirement(_) | DeclKind::Measure(_), _) => return None,
+    };
+    Some(key)
+}
+
+/// The key of a Core IR declaration, as [`core_key`] names the source declaration it comes
+/// from.
+pub(crate) fn decl_key(decl: &Decl) -> (&'static str, &str) {
+    match decl {
+        Decl::Alias { name, .. } | Decl::Data { name, .. } => ("type", name),
+        Decl::Fun(fun) => ("function", &fun.name),
+        Decl::Pred { name, .. } => ("predicate", name),
+        Decl::Policy { name, .. } => ("policy", name),
+        Decl::Cap { name, .. } => ("capability", name),
+        Decl::Handler { name, .. } => ("handler", name),
+    }
+}
+
+/// The final cross-check of elaboration (#1050): each declaration of a package module that
+/// reports, which Core IR holds, must be in the module's Core IR, an example among its
+/// examples. Returns the spans of those that are not, with what they are; each is an internal
+/// error unless something else rejects the package, never a declaration accepted without its
+/// obligations. A declaration with a diagnostic is not in Core IR and is listed too, as that
+/// diagnostic rejects the package. Two declarations of a module with one key are counted, and
+/// both are listed when Core IR holds fewer. O(d log d) in the d declarations.
+pub(crate) fn missing(env: &Env<'_>, program: &Program) -> Vec<(Span, &'static str)> {
+    let mut held: BTreeMap<(&str, &'static str, &str), usize> = BTreeMap::new();
+    for module in &program.modules {
+        for decl in &module.decls {
+            let (what, name) = decl_key(decl);
+            *held.entry((module.path.as_str(), what, name)).or_default() += 1;
+        }
+        for example in &module.examples {
+            *held
+                .entry((module.path.as_str(), "example", example.name.as_str()))
+                .or_default() += 1;
+        }
+    }
+    let mut out = Vec::new();
+    for module in (0..env.prelude).filter(|module| env.reports(*module)) {
+        let Some(m) = env.modules.get(module) else {
+            continue;
+        };
+        let mut wanted: BTreeMap<(&'static str, String), Vec<Span>> = BTreeMap::new();
+        for (decl, entity) in m.tree.decls.iter().zip(m.decls.iter().copied()) {
+            if let Some(key) = core_key(env, module, &decl.kind, entity) {
+                wanted.entry(key).or_default().push(decl.span);
+            }
+        }
+        for ((what, name), spans) in wanted {
+            let count = held
+                .get(&(m.path.as_str(), what, name.as_str()))
+                .copied()
+                .unwrap_or(0);
+            if count < spans.len() {
+                out.extend(spans.into_iter().map(|span| (span, what)));
+            }
+        }
+    }
+    out.sort_by_key(|(span, _)| (span.file, span.start, span.end));
+    out
+}
+
+/// The name of an example, its text without interpolations.
+fn example_name(example: &ExampleDecl) -> String {
+    example
+        .name
+        .parts
+        .iter()
+        .map(|part| match part {
+            TextPart::Text(text) => text.clone(),
+            TextPart::Interpolation(_) => String::new(),
+        })
+        .collect()
 }
 
 /// The edits of callees' conditions that the package's sites ask for (ADR 0092, amendment of
@@ -167,9 +330,18 @@ pub(crate) fn rejected(
 }
 
 /// The kinds of the prelude that Core IR declares, in the module `prelude`; the others are
-/// [`una_core::PRELUDE_ENGINE_KINDS`], which each engine knows itself (#407).
-pub(crate) const PRELUDE_CORE_KINDS: [&str; 5] =
-    ["Json", "JsonError", "Header", "Response", "HttpError"];
+/// [`una_core::PRELUDE_ENGINE_KINDS`], which each engine knows itself (#407). `Rounding` and
+/// the two complex kinds are edition 0.4's (`spec/29 §16`, `§19`).
+pub(crate) const PRELUDE_CORE_KINDS: [&str; 8] = [
+    "Json",
+    "JsonError",
+    "Header",
+    "Response",
+    "HttpError",
+    "Rounding",
+    una_core::complex::COMPLEX_F64,
+    una_core::complex::COMPLEX_F32,
+];
 
 /// The kinds of JSON and their opaque predicate `is_json_number`, which the prelude declares in
 /// edition 0.2 (`spec/23 §1`), in a module of the prelude's path: so the verifier generates the
@@ -177,15 +349,34 @@ pub(crate) const PRELUDE_CORE_KINDS: [&str; 5] =
 /// from the facts of `checked`, and both engines read their fields, as for a kind of the
 /// package. Both engines call the predicate by name, never its placeholder body. `None` in
 /// edition 0.1, where the prelude does not declare them.
-fn prelude_kinds(env: &Env<'_>, findings: &Findings, dbs: Dbs<'_>) -> Option<CoreModule> {
+/// A kind of [`PRELUDE_CORE_KINDS`] or the predicate that does not elaborate is recorded in
+/// `dropped` (#1050).
+fn prelude_kinds(
+    env: &Env<'_>,
+    findings: &Findings,
+    dbs: Dbs<'_>,
+    dropped: &mut Vec<(Span, &'static str)>,
+) -> Option<CoreModule> {
     let m = env.modules.get(env.prelude)?;
     let mut decls = Vec::new();
     for (decl, entity) in m.tree.decls.iter().zip(m.decls.clone()) {
-        let Some(entity) = entity else {
-            continue;
+        let wanted = match &decl.kind {
+            DeclKind::Kind(kind) => PRELUDE_CORE_KINDS
+                .contains(&env.text(env.prelude, kind.name.name))
+                .then_some("prelude kind"),
+            DeclKind::Predicate(predicate) => (env.text(env.prelude, predicate.name.name)
+                == "is_json_number")
+                .then_some("prelude predicate"),
+            _ => None,
         };
-        let mut fx = Fx::new(env, findings, dbs, env.prelude);
-        let Some(core) = fx.decl(&decl.kind, entity) else {
+        let core = entity.and_then(|entity| {
+            let mut fx = Fx::new(env, findings, dbs, env.prelude);
+            fx.decl(&decl.kind, entity)
+        });
+        let Some(core) = core else {
+            if let Some(what) = wanted {
+                dropped.push((decl.span, what));
+            }
             continue;
         };
         let json = match &core {
@@ -204,19 +395,77 @@ fn prelude_kinds(env: &Env<'_>, findings: &Findings, dbs: Dbs<'_>) -> Option<Cor
     })
 }
 
-/// The host capabilities, which the prelude declares for `std.host` (`spec/14 §3`).
-fn host(env: &Env<'_>, findings: &Findings, dbs: Dbs<'_>) -> Vec<Decl> {
+/// The kinds of the standard modules after `std.testing`, such as `Tick` of `std.drive`
+/// (ADR 0116 rule 2), which programs build and read like their own: each such module with its
+/// kinds, by path. One that does not elaborate is recorded in `dropped` (#1050).
+fn standard_kinds(
+    env: &Env<'_>,
+    findings: &Findings,
+    dbs: Dbs<'_>,
+    dropped: &mut Vec<(Span, &'static str)>,
+) -> Vec<CoreModule> {
+    let mut out = Vec::new();
+    for module in env.prelude + 1..env.modules.len() {
+        let Some(m) = env.modules.get(module) else {
+            continue;
+        };
+        if !m.path.starts_with("std.") || m.path == "std.testing" {
+            continue;
+        }
+        let mut decls = Vec::new();
+        for (decl, entity) in m.tree.decls.iter().zip(m.decls.clone()) {
+            // ADR 0117 rule 9: a standard module's capabilities too, as `std.limit`'s `Limit`,
+            // whose operations both engines serve by its declaration.
+            let what = match &decl.kind {
+                DeclKind::Kind(_) => "standard kind",
+                DeclKind::Capability(_) => "standard capability",
+                _ => continue,
+            };
+            let core = entity.and_then(|entity| {
+                let mut fx = Fx::new(env, findings, dbs, module);
+                fx.decl(&decl.kind, entity)
+            });
+            match core {
+                Some(core @ (Decl::Data { .. } | Decl::Cap { .. })) => decls.push(core),
+                Some(_) => {}
+                None => dropped.push((decl.span, what)),
+            }
+        }
+        if !decls.is_empty() {
+            out.push(CoreModule {
+                path: m.path.clone(),
+                decls,
+                ..CoreModule::default()
+            });
+        }
+    }
+    out
+}
+
+/// The host capabilities, which the prelude declares for `std.host` (`spec/14 §3`). One that
+/// does not elaborate is recorded in `dropped` (#1050).
+fn host(
+    env: &Env<'_>,
+    findings: &Findings,
+    dbs: Dbs<'_>,
+    dropped: &mut Vec<(Span, &'static str)>,
+) -> Vec<Decl> {
     let Some(m) = env.modules.get(env.prelude) else {
         return Vec::new();
     };
     let mut out = Vec::new();
     for (decl, entity) in m.tree.decls.iter().zip(m.decls.clone()) {
-        if let (DeclKind::Capability(_), Some(entity @ Entity::Capability(_))) =
-            (&decl.kind, entity)
-        {
-            let mut fx = Fx::new(env, findings, dbs, env.prelude);
-            if let Some(core) = fx.decl(&decl.kind, entity) {
-                out.push(core);
+        if let DeclKind::Capability(_) = &decl.kind {
+            let core = match entity {
+                Some(entity @ Entity::Capability(_)) => {
+                    let mut fx = Fx::new(env, findings, dbs, env.prelude);
+                    fx.decl(&decl.kind, entity)
+                }
+                _ => None,
+            };
+            match core {
+                Some(core) => out.push(core),
+                None => dropped.push((decl.span, "host capability")),
             }
         }
     }
@@ -310,17 +559,32 @@ fn elaborate_module(
     out
 }
 
-/// The signatures of the functions of a standard module.
-fn library(env: &Env<'_>, findings: &Findings, dbs: Dbs<'_>, module: usize) -> Vec<Signature> {
+/// The signatures of the functions of a standard module. A function whose signature does not
+/// elaborate is recorded in `dropped` (#1050): a call into it would otherwise be verified
+/// without its contract.
+fn library(
+    env: &Env<'_>,
+    findings: &Findings,
+    dbs: Dbs<'_>,
+    module: usize,
+    dropped: &mut Vec<(Span, &'static str)>,
+) -> Vec<Signature> {
     let Some(m) = env.modules.get(module) else {
         return Vec::new();
     };
     let mut out = Vec::new();
     for (decl, entity) in m.tree.decls.iter().zip(m.decls.clone()) {
-        if let (DeclKind::Function(function), Some(Entity::Function(id))) = (&decl.kind, entity) {
-            let mut fx = Fx::new(env, findings, dbs, module);
-            if let Some(signature) = fx.signature(function, id) {
-                out.push(signature);
+        if let DeclKind::Function(function) = &decl.kind {
+            let signature = match entity {
+                Some(Entity::Function(id)) => {
+                    let mut fx = Fx::new(env, findings, dbs, module);
+                    fx.signature(function, id)
+                }
+                _ => None,
+            };
+            match signature {
+                Some(signature) => out.push(signature),
+                None => dropped.push((decl.span, "standard function")),
             }
         }
     }
@@ -346,7 +610,7 @@ struct Fx<'e, 'a> {
     it: Option<Name>,
     result: Option<Name>,
     /// A resolution was missing: the declaration is not elaborated.
-    broken: bool,
+    broken: std::cell::Cell<bool>,
     /// What the Core IR types of this declaration lost of the checker types they come from
     /// (ADR 0038 D1, the consistency check of `spec/10 §2`).
     lost: std::cell::RefCell<Vec<String>>,
@@ -363,6 +627,9 @@ struct Fx<'e, 'a> {
     current_join: Option<Wrap>,
     /// The tuple type of the call at a span, for a call with `edit` arguments.
     call_tuple: Option<(Span, Type)>,
+    /// The names of the state of the innermost loop whose body is elaborated, outside any
+    /// task in it: what its `skip` and `stop` exit with (`spec/26 §3`).
+    loop_names: Option<Vec<String>>,
 }
 
 /// How a tail value is wrapped into a tuple (`spec/17 §4`).
@@ -391,13 +658,14 @@ impl<'e, 'a> Fx<'e, 'a> {
             error: None,
             it: None,
             result: None,
-            broken: false,
+            broken: std::cell::Cell::new(false),
             lost: std::cell::RefCell::new(Vec::new()),
             types: BTreeMap::new(),
             returning: None,
             in_ensures: false,
             tail_wrap: None,
             current_join: None,
+            loop_names: None,
             call_tuple: None,
         }
     }
@@ -468,6 +736,14 @@ impl<'e, 'a> Fx<'e, 'a> {
                 fails: function.fails.as_ref().map(|f| self.kind_name(f)),
                 label: Label::public(),
             },
+            // ADR 0119 rule 3: the top label of a collection covers its shape, every label of
+            // its items, keys or priorities, the labels their kinds' fields declare included,
+            // so that a trace redacts it as a whole.
+            Ty::Coll(..) => Type::Base {
+                base: self.base(ty),
+                refinements: Vec::new(),
+                label: implied_label(ty, &self.env.kind_labels),
+            },
             other => Type::Base {
                 base: self.base(other),
                 refinements: Vec::new(),
@@ -485,15 +761,31 @@ impl<'e, 'a> Fx<'e, 'a> {
             Ty::Text => Base::Text,
             Ty::Unit => Base::Unit,
             Ty::Hashed => Base::Hashed,
+            Ty::F64 => Base::F64,
+            Ty::Decimal(scale) => Base::Decimal(*scale),
+            Ty::F32 => Base::F32,
             Ty::List(element) => Base::Named {
                 module: "prelude".to_owned(),
                 name: "List".to_owned(),
+                args: vec![self.convert(element)],
+            },
+            // ADR 0120: `Array[T]` and `Matrix[T]` are kinds of the prelude in Core, whose sorts
+            // the verifier names `i!Array_<T>` and `i!Matrix_<T>`.
+            Ty::Dense(dense, element) => Base::Named {
+                module: "prelude".to_owned(),
+                name: dense.as_str().to_owned(),
                 args: vec![self.convert(element)],
             },
             Ty::Map(key, value) => Base::Named {
                 module: "prelude".to_owned(),
                 name: "Map".to_owned(),
                 args: vec![self.convert(key), self.convert(value)],
+            },
+            // ADR 0119: a collection is named in its module, as a map is in the prelude.
+            Ty::Coll(coll, args) => Base::Named {
+                module: una_core::COLLECTIONS_MODULE.to_owned(),
+                name: coll.as_str().to_owned(),
+                args: args.iter().map(|a| self.convert(a)).collect(),
             },
             Ty::Kind(id, args) => Base::Named {
                 module: self
@@ -552,6 +844,13 @@ impl<'e, 'a> Fx<'e, 'a> {
             .iter()
             .filter_map(|refinement| fx.refinement(refinement))
             .collect();
+        // A clause that did not elaborate holds a placeholder, never a refinement to keep:
+        // the declaration is not elaborated, and what the clause's types lost is this
+        // declaration's (#1050).
+        if fx.broken.get() {
+            self.broken.set(true);
+        }
+        self.lost.borrow_mut().extend(fx.lost.take());
         if let Type::Base {
             refinements: slot, ..
         } = &mut ty
@@ -772,6 +1071,53 @@ impl<'e, 'a> Fx<'e, 'a> {
         self.uses_of(&uses)
     }
 
+    /// Whether the expression at `span` is an `F64` (`spec/29`).
+    fn is_f64_at(&self, span: Span) -> bool {
+        matches!(
+            self.type_at(span),
+            Type::Base {
+                base: Base::F64,
+                ..
+            }
+        )
+    }
+
+    /// The scale of the expression at `span` when it is a `Decimal[s]` (`spec/29 §16`).
+    fn decimal_at(&self, span: Span) -> Option<u8> {
+        match self.type_at(span) {
+            Type::Base {
+                base: Base::Decimal(scale),
+                ..
+            } => Some(scale),
+            _ => None,
+        }
+    }
+
+    /// Whether the expression at `span` is an `F32` (ADR 0120 rule 5).
+    fn is_f32_at(&self, span: Span) -> bool {
+        matches!(
+            self.type_at(span),
+            Type::Base {
+                base: Base::F32,
+                ..
+            }
+        )
+    }
+
+    /// Whether the expression at `span` is a complex value: `Some(true)` for a `Complex[F32]`,
+    /// `Some(false)` for a `Complex[F64]` (ADR 0120 rule 22).
+    fn complex_at(&self, span: Span) -> Option<bool> {
+        match self.type_at(span) {
+            Type::Base {
+                base: Base::Named { module, name, .. },
+                ..
+            } if una_core::complex::is_kind(&module, &name) => {
+                Some(name == una_core::complex::COMPLEX_F32)
+            }
+            _ => None,
+        }
+    }
+
     /// The recorded type of the expression or binder at `span`.
     fn type_at(&self, span: Span) -> Type {
         self.records
@@ -801,7 +1147,7 @@ impl<'e, 'a> Fx<'e, 'a> {
 
     fn ctor(&mut self, kind: usize, variant: Option<usize>) -> Ctor {
         let Some(def) = self.env.kinds.get(kind) else {
-            self.broken = true;
+            self.broken.set(true);
             return Ctor {
                 kind: self.path(self.module, "?"),
                 name: "?".to_owned(),
@@ -870,7 +1216,7 @@ impl<'e, 'a> Fx<'e, 'a> {
     fn res(&mut self, span: Span) -> Option<Res> {
         let res = self.records.res.get(&span).cloned();
         if res.is_none() {
-            self.broken = true;
+            self.broken.set(true);
         }
         res
     }
@@ -907,6 +1253,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                 | ClauseKind::Fails(_)
                 | ClauseKind::UsesOf(_)
                 | ClauseKind::FailsOf(_)
+                | ClauseKind::Diverges
                 | ClauseKind::DerivedFrom(_) => {}
             }
         }
@@ -918,7 +1265,17 @@ impl<'e, 'a> Fx<'e, 'a> {
     fn term(&mut self, expr: &Expr) -> Term {
         match &expr.kind {
             ExprKind::Paren(inner) => self.term(inner),
-            ExprKind::Literal(literal) => self.literal_term(literal),
+            // A decimal is its coefficient (`spec/29 §16`, ADR 0120 V2).
+            ExprKind::Literal(Literal::Float(text)) if self.decimal_at(expr.span).is_some() => {
+                let scale = self.decimal_at(expr.span).unwrap_or(0);
+                match una_core::decimal::literal(text, scale) {
+                    una_core::decimal::Literal::Value(coefficient) => {
+                        Term::Int(coefficient.to_string())
+                    }
+                    _ => self.outside(),
+                }
+            }
+            ExprKind::Literal(literal) => self.literal_term(literal, expr.span),
             ExprKind::Name(ident) => {
                 let name = self.name(ident);
                 // In `ensures`, an `edit` parameter is its final value, a component of the
@@ -929,9 +1286,18 @@ impl<'e, 'a> Fx<'e, 'a> {
                         index,
                     };
                 }
-                match self.local(name) {
-                    Some(binder) => Term::Var(binder),
-                    None => self.outside(),
+                #[cfg(test)]
+                if hook::eager() {
+                    let _ = self.res(ident.span);
+                }
+                // `res` marks the elaboration broken when nothing is recorded, as for a local:
+                // it is asked only for a name that is not one.
+                if let Some(binder) = self.local(name) {
+                    return Term::Var(binder);
+                }
+                match self.res(ident.span) {
+                    Some(Res::Constant(value)) => Term::Int(value.to_string()),
+                    _ => self.outside(),
                 }
             }
             ExprKind::Old(inner) => match &inner.kind {
@@ -953,10 +1319,62 @@ impl<'e, 'a> Fx<'e, 'a> {
                 _ => Term::Result,
             },
             ExprKind::It => Term::It,
-            ExprKind::Binary { op, left, right } => Term::Binary {
-                op: bin_op(*op),
-                left: Box::new(self.term(left)),
-                right: Box::new(self.term(right)),
+            ExprKind::Binary { op, left, right }
+                if (self.is_f64_at(left.span) && self.is_f64_at(right.span))
+                    || (self.is_f32_at(left.span) && self.is_f32_at(right.span)) =>
+            {
+                let f32 = self.is_f32_at(left.span);
+                let op = match op {
+                    BinaryOp::Add => FloatOp::Add,
+                    BinaryOp::Sub => FloatOp::Sub,
+                    BinaryOp::Mul => FloatOp::Mul,
+                    BinaryOp::Div => FloatOp::Div,
+                    BinaryOp::Eq => FloatOp::Eq,
+                    BinaryOp::NotEq => FloatOp::Ne,
+                    BinaryOp::Lt => FloatOp::Lt,
+                    BinaryOp::Le => FloatOp::Le,
+                    BinaryOp::Gt => FloatOp::Gt,
+                    BinaryOp::Ge => FloatOp::Ge,
+                    _ => return self.outside(),
+                };
+                let args = vec![self.term(left), self.term(right)];
+                if f32 {
+                    Term::Float32 { op, args }
+                } else {
+                    Term::Float { op, args }
+                }
+            }
+            ExprKind::Binary { op, left, right } => {
+                // Decimal operands of `+`, `-` and the comparisons are aligned by a literal
+                // power of ten to the larger scale (ADR 0120 V2); `*` multiplies coefficients.
+                let (left_term, right_term) = (self.term(left), self.term(right));
+                let (left_term, right_term) =
+                    match (self.decimal_at(left.span), self.decimal_at(right.span)) {
+                        (Some(a), Some(b)) if *op != BinaryOp::Mul => {
+                            let m = a.max(b);
+                            (aligned(left_term, m - a), aligned(right_term, m - b))
+                        }
+                        _ => (left_term, right_term),
+                    };
+                Term::Binary {
+                    op: bin_op(*op),
+                    left: Box::new(left_term),
+                    right: Box::new(right_term),
+                }
+            }
+            ExprKind::Unary {
+                op: UnaryOp::Neg,
+                operand,
+            } if self.is_f64_at(operand.span) => Term::Float {
+                op: FloatOp::Neg,
+                args: vec![self.term(operand)],
+            },
+            ExprKind::Unary {
+                op: UnaryOp::Neg,
+                operand,
+            } if self.is_f32_at(operand.span) => Term::Float32 {
+                op: FloatOp::Neg,
+                args: vec![self.term(operand)],
             },
             ExprKind::Unary { op, operand } => {
                 let operand = Box::new(self.term(operand));
@@ -978,7 +1396,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                     IsTarget::Literal(literal) => Term::Binary {
                         op: BinOp::Eq,
                         left: value,
-                        right: Box::new(self.literal_term(literal)),
+                        right: Box::new(self.literal_term(literal, expr.span)),
                     },
                 }
             }
@@ -990,6 +1408,15 @@ impl<'e, 'a> Fx<'e, 'a> {
             },
             ExprKind::Field { target, .. } => match self.res(expr.span) {
                 Some(Res::Len) => Term::Len(Box::new(self.term(target))),
+                // `b.size` of a bit set (ADR 0119 V5).
+                Some(Res::BitSetMethod(una_core::BitSetOp::Size)) => {
+                    Term::Size(Box::new(self.term(target)))
+                }
+                // `m.rows` and `m.columns` (`spec/29 §17`).
+                Some(Res::Shape(fun)) => Term::Shape {
+                    fun,
+                    value: Box::new(self.term(target)),
+                },
                 Some(Res::Field { kind, index }) => {
                     let (kind, field) = self.field(kind, index);
                     Term::Field {
@@ -1017,14 +1444,138 @@ impl<'e, 'a> Fx<'e, 'a> {
                     left: Box::new(self.term(target)),
                     right: Box::new(Term::Int(ratio.to_string())),
                 },
-                // `m.has(key: k)` of a map (`spec/21 §4` rule 4).
-                Some(Res::MapMethod(MapOp::Has)) => match args.first() {
-                    Some(key) => Term::Has {
-                        map: Box::new(self.term(target)),
-                        key: Box::new(self.term(&key.value)),
+                // ADR 0114 rule 12.7 and ADR 0120 rule 65: on a float, the product or quotient
+                // by the float literal of the ratio; on a decimal, its coefficient times the
+                // ratio.
+                Some(Res::Convert {
+                    ratio,
+                    divide,
+                    number,
+                }) => {
+                    let value = self.term(target);
+                    let op = if divide { FloatOp::Div } else { FloatOp::Mul };
+                    match number {
+                        ConvertNumber::F64 => Term::Float {
+                            op,
+                            args: vec![value, Term::F64(float_ratio(ratio).to_bits())],
+                        },
+                        ConvertNumber::F32 => Term::Float32 {
+                            op,
+                            args: vec![value, Term::F32(float32_ratio(ratio).to_bits())],
+                        },
+                        ConvertNumber::Decimal(_) => Term::Binary {
+                            op: BinOp::Mul,
+                            left: Box::new(value),
+                            right: Box::new(Term::Int(ratio.to_string())),
+                        },
+                    }
+                }
+                // `x.coefficient()` is the decimal's own term (ADR 0120 V2).
+                Some(Res::IntMethod(Prim::Decimal(una_core::DecimalOp::Coefficient))) => {
+                    self.term(target)
+                }
+                // `n.to_f64()` of an integer (ADR 0114 rule 8.4), with its type's width.
+                Some(Res::IntMethod(Prim::Float(FloatOp::FromInt))) => Term::ToF64 {
+                    value: Box::new(self.term(target)),
+                    from: match self.type_at(target.span) {
+                        Type::Base {
+                            base: Base::Fixed(int),
+                            ..
+                        } => Some(int),
+                        _ => None,
+                    },
+                },
+                // `n.to_f32()` of an integer (ADR 0120 V1), with its type's width.
+                Some(Res::IntMethod(Prim::Float32(FloatOp::FromInt))) => Term::ToF32 {
+                    value: Box::new(self.term(target)),
+                    from: match self.type_at(target.span) {
+                        Type::Base {
+                            base: Base::Fixed(int),
+                            ..
+                        } => Some(int),
+                        _ => None,
+                    },
+                },
+                // A method of `F64` of the refinement language (ADR 0114 rule 8.4), `to_f32()`
+                // of an `F64` included (ADR 0120 V1).
+                Some(Res::IntMethod(Prim::Float(op))) if op.in_refinement_language() => {
+                    let mut terms = vec![self.term(target)];
+                    terms.extend(args.iter().map(|arg| self.term(&arg.value)));
+                    Term::Float { op, args: terms }
+                }
+                // The element of a dense value at its indices (`spec/29 §17`).
+                Some(Res::DenseElement(order)) => {
+                    let value = Box::new(self.term(target));
+                    let mut indices = Vec::new();
+                    for position in order {
+                        match args.get(position) {
+                            Some(arg) => indices.push(self.term(&arg.value)),
+                            None => return self.outside(),
+                        }
+                    }
+                    Term::Element {
+                        value,
+                        indices,
+                        tensor: false,
+                    }
+                }
+                // The element of a tensor at the indices of a list literal (`spec/29 §17`).
+                Some(Res::TensorElement(position)) => {
+                    let value = Box::new(self.term(target));
+                    let Some(ExprKind::List(items)) = args.get(position).map(|arg| &arg.value.kind)
+                    else {
+                        return self.outside();
+                    };
+                    let indices = items.iter().map(|item| self.term(item)).collect();
+                    Term::Element {
+                        value,
+                        indices,
+                        tensor: true,
+                    }
+                }
+                // `t.dim(axis: k)` (`spec/29 §17`).
+                Some(Res::Dim(position)) => match args.get(position) {
+                    Some(axis) => Term::Dim {
+                        value: Box::new(self.term(target)),
+                        axis: Box::new(self.term(&axis.value)),
                     },
                     None => self.outside(),
                 },
+                // A method of `F32` of the refinement language, `to_f64()` included.
+                Some(Res::IntMethod(Prim::Float32(op))) if op.in_refinement_language() => {
+                    let mut terms = vec![self.term(target)];
+                    terms.extend(args.iter().map(|arg| self.term(&arg.value)));
+                    Term::Float32 { op, args: terms }
+                }
+                // `x.complex(im: y)` (ADR 0120 V3).
+                Some(Res::Ctor { kind, variant }) => {
+                    let receiver = self.term(target);
+                    let parts = self.ordered_terms(expr.span, Some(receiver), args);
+                    self.complex_term(kind, variant, parts)
+                }
+                // `s.has(item: x)` of a set, a hash set or a bit set (ADR 0119 V5).
+                Some(
+                    Res::SetMethod(una_core::SetOp::Has)
+                    | Res::HashSetMethod(una_core::HashSetOp::Has)
+                    | Res::BitSetMethod(una_core::BitSetOp::Has),
+                ) => match args.first() {
+                    Some(item) => Term::Member {
+                        set: Box::new(self.term(target)),
+                        item: Box::new(self.term(&item.value)),
+                    },
+                    None => self.outside(),
+                },
+                // `m.has(key: k)` of a map (`spec/21 §4` rule 4), and of a hash map (ADR 0119
+                // V5).
+                Some(Res::MapMethod(MapOp::Has) | Res::HashMapMethod(una_core::HashMapOp::Has)) => {
+                    match args.first() {
+                        Some(key) => Term::Has {
+                            map: Box::new(self.term(target)),
+                            key: Box::new(self.term(&key.value)),
+                        },
+                        None => self.outside(),
+                    }
+                }
                 Some(Res::Function { id, .. }) => {
                     let receiver = self.term(target);
                     let args = self.ordered_terms(expr.span, Some(receiver), args);
@@ -1036,6 +1587,23 @@ impl<'e, 'a> Fx<'e, 'a> {
                 _ => self.outside(),
             },
             ExprKind::Call { args, .. } => match self.res(expr.span) {
+                // `nan()` and `infinity()` are constants (ADR 0114 rule 8.4).
+                Some(Res::Function { id, .. })
+                    if self.env.functions.get(id).is_some_and(|f| {
+                        f.module == self.env.prelude && matches!(f.name, "nan" | "infinity")
+                    }) =>
+                {
+                    let infinity = self
+                        .env
+                        .functions
+                        .get(id)
+                        .is_some_and(|f| f.name == "infinity");
+                    Term::F64(if infinity {
+                        f64::INFINITY.to_bits()
+                    } else {
+                        una_core::float::CANONICAL_NAN
+                    })
+                }
                 Some(Res::Function { id, .. }) => {
                     let args = self.ordered_terms(expr.span, None, args);
                     Term::Call {
@@ -1043,15 +1611,49 @@ impl<'e, 'a> Fx<'e, 'a> {
                         args,
                     }
                 }
+                // `complex(re: x, im: y)` (ADR 0120 V3).
+                Some(Res::Ctor { kind, variant }) => {
+                    let parts = self.ordered_terms(expr.span, None, args);
+                    self.complex_term(kind, variant, parts)
+                }
                 _ => self.outside(),
             },
             _ => self.outside(),
         }
     }
 
-    fn literal_term(&mut self, literal: &Literal) -> Term {
+    /// `complex(re: a, im: b)` as a term, from its components in parameter order (ADR 0120
+    /// V3); the checker admits no other construction in a clause.
+    fn complex_term(&mut self, kind: usize, variant: Option<usize>, parts: Vec<Term>) -> Term {
+        let ctor = self.ctor(kind, variant);
+        if !una_core::complex::is_kind(&ctor.kind.module, &ctor.kind.name) {
+            return self.outside();
+        }
+        let mut parts = parts.into_iter();
+        match (parts.next(), parts.next(), parts.next()) {
+            (Some(re), Some(im), None) => Term::Complex {
+                ctor,
+                re: Box::new(re),
+                im: Box::new(im),
+            },
+            _ => self.outside(),
+        }
+    }
+
+    fn literal_term(&mut self, literal: &Literal, span: Span) -> Term {
         match literal {
             Literal::Int(digits) => Term::Int(digits.clone()),
+            // A float literal by its exact bits, at the type it took (ADR 0120 rule 6).
+            Literal::Float(text) if self.is_f32_at(span) => {
+                match una_core::float32::literal(text) {
+                    una_core::float32::Literal::Value(value) => Term::F32(value.to_bits()),
+                    _ => self.outside(),
+                }
+            }
+            Literal::Float(text) => match una_core::float::literal(text) {
+                una_core::float::Literal::Value(value) => Term::F64(value.to_bits()),
+                _ => self.outside(),
+            },
             Literal::Bool(value) => Term::Bool(*value),
             Literal::Unit => Term::Unit,
             Literal::Text(text) => match plain_text(text) {
@@ -1064,7 +1666,7 @@ impl<'e, 'a> Fx<'e, 'a> {
     /// A form outside the refinement language, which the checker reports (U2014): the
     /// declaration is not elaborated.
     fn outside(&mut self) -> Term {
-        self.broken = true;
+        self.broken.set(true);
         Term::Bool(false)
     }
 
@@ -1076,14 +1678,14 @@ impl<'e, 'a> Fx<'e, 'a> {
             written.push(self.term(&arg.value));
         }
         if written.len() != order.len() {
-            self.broken = true;
+            self.broken.set(true);
         }
         let count = order.iter().flatten().max().map_or(0, |max| max + 1);
         let mut slots: Vec<Option<Term>> = vec![None; count.max(written.len())];
         for (value, target) in written.into_iter().zip(order.iter().copied()) {
             match target.and_then(|t| slots.get_mut(t)) {
                 Some(slot) => *slot = Some(value),
-                None => self.broken = true,
+                None => self.broken.set(true),
             }
         }
         slots.into_iter().flatten().collect()
@@ -1100,7 +1702,11 @@ impl<'e, 'a> Fx<'e, 'a> {
         let result = self.returning(&def.params, &params, declared_result);
         let (requires, ensures) = self.contracts(&function.clauses);
         self.returning = None;
-        (!self.broken).then(|| Signature {
+        #[cfg(test)]
+        if hook::breaks(def.name) {
+            self.broken.set(true);
+        }
+        (!self.broken.get()).then(|| Signature {
             path: self.path(def.module, def.name),
             type_params: def.type_params.iter().map(|p| (*p).to_owned()).collect(),
             constraints: core_constraints(&def.constraints, def.type_params.len()),
@@ -1346,7 +1952,11 @@ impl<'e, 'a> Fx<'e, 'a> {
             }
             _ => return None,
         };
-        (!self.broken).then_some(decl)
+        #[cfg(test)]
+        if hook::breaks(decl_key(&decl).1) {
+            self.broken.set(true);
+        }
+        (!self.broken.get()).then_some(decl)
     }
 
     fn params(&mut self, params: &[super::env::ParamDef<'a>]) -> Vec<(Name, Type)> {
@@ -1362,15 +1972,11 @@ impl<'e, 'a> Fx<'e, 'a> {
     }
 
     fn example(&mut self, example: &'a ExampleDecl) -> Option<Example> {
-        let name: String = example
-            .name
-            .parts
-            .iter()
-            .map(|part| match part {
-                TextPart::Text(text) => text.clone(),
-                TextPart::Interpolation(_) => String::new(),
-            })
-            .collect();
+        let name = example_name(example);
+        #[cfg(test)]
+        if hook::breaks(&name) {
+            self.broken.set(true);
+        }
         let mut lets = Vec::new();
         let mut givens = Vec::new();
         for given in &example.givens {
@@ -1437,10 +2043,11 @@ impl<'e, 'a> Fx<'e, 'a> {
                 },
             });
         }
-        (!self.broken).then_some(Example {
+        (!self.broken.get()).then_some(Example {
             name,
             body,
             expectations,
+            stop_after: example.stop_after.as_ref().map(|line| line.iterations),
         })
     }
 
@@ -1502,9 +2109,69 @@ impl<'e, 'a> Fx<'e, 'a> {
         let mut wrapped = false;
         for (index, stmt) in block.stmts.iter().enumerate() {
             match stmt {
-                // A `together for` is wrapped as a whole, after its tasks (`spec/19 §5`).
+                // `stop` and `skip` end the block's path with the loop's state; nothing after
+                // them in the block runs (`spec/26 §3`).
+                Stmt::Stop(stmt) if stmt.condition.is_none() => {
+                    tail = self.exit(ExitTag::Stop, stmt.span);
+                    wrapped = true;
+                    break;
+                }
+                Stmt::Skip(span) => {
+                    tail = self.exit(ExitTag::Next, *span);
+                    wrapped = true;
+                    break;
+                }
+                Stmt::Ever(stmt) => {
+                    self.ever_loop(&mut lets, stmt);
+                    if index == last {
+                        tail = CoreExpr::Atom {
+                            atom: Atom::Unit,
+                            span: stmt.span,
+                        };
+                        tail_span = stmt.span;
+                    }
+                }
+                // U2034, already reported.
+                Stmt::OnStop(_) => self.broken.set(true),
+                Stmt::Until(stmt) => {
+                    self.until_loop(&mut lets, stmt);
+                    if index == last {
+                        tail = CoreExpr::Atom {
+                            atom: Atom::Unit,
+                            span: stmt.span,
+                        };
+                        tail_span = stmt.span;
+                    }
+                }
+                // `stop when c` is `if c` around `stop`.
+                Stmt::Stop(stmt) => {
+                    let cond = match &stmt.condition {
+                        Some(condition) => self.atom(&mut lets, condition),
+                        None => Atom::Bool(true),
+                    };
+                    let expr = CoreExpr::If {
+                        cond,
+                        then: Box::new(self.exit(ExitTag::Stop, stmt.span)),
+                        otherwise: Box::new(CoreExpr::Atom {
+                            atom: Atom::Unit,
+                            span: stmt.span,
+                        }),
+                    };
+                    bind_expr(&mut lets, "_".to_owned(), unit(), expr, stmt.span, false);
+                    if index == last {
+                        tail = CoreExpr::Atom {
+                            atom: Atom::Unit,
+                            span: stmt.span,
+                        };
+                        tail_span = stmt.span;
+                    }
+                }
+                // A `together for` and a `first of` are wrapped as a whole, after their tasks
+                // (`spec/19 §5`, `spec/27 §6`).
                 Stmt::BlockExpr(expr)
-                    if index == last && returning && !matches!(expr, BlockExpr::TogetherFor(_)) =>
+                    if index == last
+                        && returning
+                        && !matches!(expr, BlockExpr::TogetherFor(_) | BlockExpr::FirstOf(_)) =>
                 {
                     let saved = self.current_join.replace(Wrap::Return);
                     tail = self.block_expr(expr);
@@ -1515,6 +2182,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                     if index == last
                         && returning
                         && handled.with.is_empty()
+                        && handled.within.is_none()
                         && handled.handlings.is_empty()
                         && !self.marked(&handled.expr) =>
                 {
@@ -1535,6 +2203,27 @@ impl<'e, 'a> Fx<'e, 'a> {
                 }
                 // Never the last line of a block, which the parser reports.
                 Stmt::Together(stmt) => self.together(&mut lets, stmt),
+                // As the last line, the value is `unit` (`spec/27 §7`).
+                Stmt::Tasks(stmt) => {
+                    self.tasks(&mut lets, stmt);
+                    if index == last {
+                        tail = CoreExpr::Atom {
+                            atom: Atom::Unit,
+                            span: stmt.span,
+                        };
+                        tail_span = stmt.span;
+                    }
+                }
+                Stmt::Start(stmt) => {
+                    self.start(&mut lets, stmt);
+                    if index == last {
+                        tail = CoreExpr::Atom {
+                            atom: Atom::Unit,
+                            span: stmt.span,
+                        };
+                        tail_span = stmt.span;
+                    }
+                }
                 Stmt::For(stmt) => {
                     self.for_loop(&mut lets, stmt);
                     if index == last {
@@ -1641,10 +2330,27 @@ impl<'e, 'a> Fx<'e, 'a> {
         handled: &Handled,
         tuple: Option<(Vec<Atom>, Vec<Type>)>,
     ) -> (CoreExpr, Vec<Type>) {
+        self.handled_body(handled, tuple, None)
+    }
+
+    /// [`Self::handled_in`], with `body` in place of the elaboration of `handled.expr` when it
+    /// is given: the in-place update of a map, a set or a sequence under a deadline, whose
+    /// tuple is `(new value, result)`.
+    fn handled_body(
+        &mut self,
+        handled: &Handled,
+        tuple: Option<(Vec<Atom>, Vec<Type>)>,
+        body: Option<CoreExpr>,
+    ) -> (CoreExpr, Vec<Type>) {
         let (places, mut components) = tuple.unwrap_or_default();
         let mut lets: Vec<Let> = Vec::new();
         let mut bindings = Vec::new();
         let span = handled.expr.span;
+        // `e within d`: `d` is evaluated first (`spec/27 §5`).
+        let deadline = handled
+            .within
+            .as_ref()
+            .map(|deadline| (self.atom(&mut lets, deadline), deadline.span));
         for binding in &handled.with {
             let cap = self.name(&binding.cap).to_owned();
             let source = match &binding.value {
@@ -1684,7 +2390,23 @@ impl<'e, 'a> Fx<'e, 'a> {
             };
             bindings.push((cap, source));
         }
-        let mut current = self.expr(&handled.expr);
+        let mut current = match body {
+            Some(body) => body,
+            None => self.expr(&handled.expr),
+        };
+        if let Some((atom, deadline_span)) = deadline {
+            let passing = handled
+                .handlings
+                .iter()
+                .any(|handling| matches!(handling.kind, HandlingKind::ErrorPass));
+            current = self.within_core(
+                current,
+                atom,
+                deadline_span,
+                passing,
+                span.to(deadline_span),
+            );
+        }
         let value_ty = self.type_at(handled.expr.span);
         for handling in &handled.handlings {
             current = match &handling.kind {
@@ -1770,6 +2492,63 @@ impl<'e, 'a> Fx<'e, 'a> {
         (close(lets, current), components)
     }
 
+    /// `body` bounded by the deadline `deadline`, whose source is `deadline_span`, as the
+    /// whole `e within d` at `span` (`spec/27 §5`, ADR 0117 rule 5). Its time-out is `TimedOut`
+    /// of `Timed` with failures wrapped in `Failed`, or `Expired` of `Deadline`, as the checker
+    /// typed it; under `if error pass` (`passing`), the function's own `TimedOut`, with failures
+    /// passed as they are.
+    fn within_core(
+        &mut self,
+        body: CoreExpr,
+        deadline: Atom,
+        deadline_span: Span,
+        passing: bool,
+        span: Span,
+    ) -> CoreExpr {
+        let variant = |fx: &mut Self, kind: usize, name: &str| -> Option<Ctor> {
+            let index = fx
+                .env
+                .kinds
+                .get(kind)?
+                .variants
+                .iter()
+                .position(|v| v.name == name)?;
+            Some(fx.ctor(kind, Some(index)))
+        };
+        let failure = self.records.withins.get(&deadline_span).cloned();
+        let own = self.records.within_passes.get(&deadline_span).cloned();
+        let shape = match (passing, own, failure) {
+            (true, Some(Ty::Kind(own, _)), _) => {
+                variant(self, own, "TimedOut").map(|timeout| (timeout, None))
+            }
+            (false, _, Some(Ty::Kind(kind, args))) if !args.is_empty() => {
+                match (
+                    variant(self, kind, "TimedOut"),
+                    variant(self, kind, "Failed"),
+                ) {
+                    (Some(timeout), Some(wrap)) => Some((timeout, Some(wrap))),
+                    _ => None,
+                }
+            }
+            (false, _, Some(Ty::Kind(kind, _))) => {
+                variant(self, kind, "Expired").map(|timeout| (timeout, None))
+            }
+            _ => None,
+        };
+        let Some((timeout, wrap)) = shape else {
+            self.broken.set(true);
+            return body;
+        };
+        CoreExpr::Within {
+            deadline,
+            deadline_span,
+            body: Box::new(body),
+            timeout: Box::new(timeout),
+            wrap: wrap.map(Box::new),
+            span,
+        }
+    }
+
     /// `if none` on the last component of a call's tuple: the places keep their new values,
     /// and the option is unwrapped.
     fn unwrap_last(
@@ -1795,7 +2574,7 @@ impl<'e, 'a> Fx<'e, 'a> {
             .collect();
         lets.push(Let::destructure(names.clone(), Atom::Var(t), span));
         let Some(((option, option_ty), kept)) = names.split_last() else {
-            self.broken = true;
+            self.broken.set(true);
             return close(lets, otherwise);
         };
         let inner = match option_ty {
@@ -1908,7 +2687,7 @@ impl<'e, 'a> Fx<'e, 'a> {
             ExprKind::Name(ident) => {
                 let name = self.name(ident);
                 let Some(old) = self.local(name) else {
-                    self.broken = true;
+                    self.broken.set(true);
                     return;
                 };
                 let ty = self.binding_type(&old, ident.span);
@@ -1919,7 +2698,7 @@ impl<'e, 'a> Fx<'e, 'a> {
             }
             ExprKind::Field { target, .. } => {
                 let Some(Res::Field { kind, index }) = self.res(place.span) else {
-                    self.broken = true;
+                    self.broken.set(true);
                     return;
                 };
                 let v = self.temp();
@@ -1976,7 +2755,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                     span,
                 );
             }
-            _ => self.broken = true,
+            _ => self.broken.set(true),
         }
     }
 
@@ -2077,7 +2856,7 @@ impl<'e, 'a> Fx<'e, 'a> {
             Wrap::Return => match self.returning.clone() {
                 Some((names, ty)) => (names, ty),
                 None => {
-                    self.broken = true;
+                    self.broken.set(true);
                     return tail;
                 }
             },
@@ -2095,7 +2874,7 @@ impl<'e, 'a> Fx<'e, 'a> {
         let mut types = Vec::new();
         for name in &names {
             let Some(binder) = self.local(name) else {
-                self.broken = true;
+                self.broken.set(true);
                 continue;
             };
             types.push(self.binding_type(&binder, span));
@@ -2176,7 +2955,7 @@ impl<'e, 'a> Fx<'e, 'a> {
         let mut types = Vec::new();
         for name in names {
             let Some(binder) = self.local(name) else {
-                self.broken = true;
+                self.broken.set(true);
                 continue;
             };
             types.push(self.binding_type(&binder, span));
@@ -2193,6 +2972,26 @@ impl<'e, 'a> Fx<'e, 'a> {
             atom: Atom::Var(t),
             span,
         }
+    }
+
+    /// `exit_k(b, ...)` with the current values of the innermost loop's state (`spec/26 §3`).
+    fn exit(&mut self, tag: ExitTag, span: Span) -> CoreExpr {
+        let Some(names) = self.loop_names.clone() else {
+            // Outside a loop body: U2034, already reported.
+            self.broken.set(true);
+            return CoreExpr::Atom {
+                atom: Atom::Unit,
+                span,
+            };
+        };
+        let mut state = Vec::new();
+        for name in &names {
+            match self.local(name) {
+                Some(binder) => state.push(Atom::Var(binder)),
+                None => self.broken.set(true),
+            }
+        }
+        CoreExpr::Exit { tag, state, span }
     }
 
     /// `for x in source` (`spec/17 §4`): a Core loop over the bindings its body updates, whose
@@ -2233,7 +3032,9 @@ impl<'e, 'a> Fx<'e, 'a> {
         self.tail_wrap = Some(Wrap::State {
             names: names.clone(),
         });
+        let outer = self.loop_names.replace(names.clone());
         let body = self.block(&stmt.block);
+        self.loop_names = outer;
         self.scope.truncate(mark);
         let looped = CoreExpr::Loop {
             source: Box::new(source),
@@ -2241,6 +3042,7 @@ impl<'e, 'a> Fx<'e, 'a> {
             state,
             init,
             body: Box::new(body),
+            on_stop: None,
             span: stmt.span,
         };
         let t = self.temp();
@@ -2264,16 +3066,255 @@ impl<'e, 'a> Fx<'e, 'a> {
         lets.push(Let::destructure(after, Atom::Var(t), stmt.span));
     }
 
+    /// `for until c decreases m` (`spec/26 §4`): a Core loop from `until(c)` over the bindings
+    /// its body updates, `c` evaluated before each iteration with the state bound, and `m` a
+    /// clause over the state for the verifier only (ADR 0116 rules 7 and 20).
+    fn until_loop(&mut self, lets: &mut Vec<Let>, stmt: &UntilStmt) {
+        let mut names = Vec::new();
+        self.scan_block(&stmt.block, &[], &mut names);
+        names.retain(|name| self.local(name).is_some());
+        let mut init = Vec::new();
+        let mut types = Vec::new();
+        for name in &names {
+            let binder = self.local(name).unwrap_or_default();
+            types.push(self.binding_type(&binder, stmt.span));
+            init.push(Atom::Var(binder));
+        }
+        let mark = self.scope.len();
+        let var = (self.temp(), unit());
+        let mut state = Vec::new();
+        for (name, ty) in names.iter().zip(&types) {
+            let binder = self.bind(name);
+            self.types.insert(binder.clone(), ty.clone());
+            state.push((binder, ty.clone()));
+        }
+        // The condition and the measure read the state of the iteration about to start.
+        let mut cond_lets = Vec::new();
+        let cond_atom = self.atom(&mut cond_lets, &stmt.condition);
+        let cond = close(
+            cond_lets,
+            CoreExpr::Atom {
+                atom: cond_atom,
+                span: stmt.condition.span,
+            },
+        );
+        let holds = self
+            .findings
+            .refinable_conditions
+            .contains(&stmt.condition.span)
+            .then(|| Box::new(self.clause(&stmt.condition)));
+        let measure = Box::new(self.clause(&stmt.measure));
+        let source = LoopSource::Until {
+            cond: Box::new(cond),
+            holds,
+            measure,
+            decreases: stmt.decreases,
+        };
+        self.tail_wrap = Some(Wrap::State {
+            names: names.clone(),
+        });
+        let outer = self.loop_names.replace(names.clone());
+        let body = self.block(&stmt.block);
+        self.loop_names = outer;
+        self.scope.truncate(mark);
+        let looped = CoreExpr::Loop {
+            source: Box::new(source),
+            var: Box::new(var),
+            state,
+            init,
+            body: Box::new(body),
+            on_stop: None,
+            span: stmt.span,
+        };
+        let t = self.temp();
+        bind_expr(
+            lets,
+            t.clone(),
+            tuple_type(types.clone()),
+            looped,
+            stmt.span,
+            false,
+        );
+        if names.is_empty() {
+            return;
+        }
+        let mut after = Vec::new();
+        for (name, ty) in names.iter().zip(types) {
+            let binder = self.bind(name);
+            self.types.insert(binder.clone(), ty.clone());
+            after.push((binder, ty));
+        }
+        lets.push(Let::destructure(after, Atom::Var(t), stmt.span));
+    }
+
+    /// `for ever` with its `on stop` (`spec/26 §5`): a Core loop from `ever` over the bindings
+    /// its body and its `on stop` update, whose `on stop` block binds the state afresh and
+    /// returns it (ADR 0116 rules 10 and 20).
+    fn ever_loop(&mut self, lets: &mut Vec<Let>, stmt: &EverStmt) {
+        // `within d`: evaluated once, before the first iteration (`spec/26 §7`).
+        let within = stmt
+            .within
+            .as_ref()
+            .map(|deadline| (self.atom(lets, deadline), deadline.span));
+        let mut names = Vec::new();
+        self.scan_block(&stmt.block, &[], &mut names);
+        if let Some(on_stop) = &stmt.on_stop {
+            self.scan_block(&on_stop.block, &[], &mut names);
+        }
+        names.retain(|name| self.local(name).is_some());
+        let mut init = Vec::new();
+        let mut types = Vec::new();
+        for name in &names {
+            let binder = self.local(name).unwrap_or_default();
+            types.push(self.binding_type(&binder, stmt.span));
+            init.push(Atom::Var(binder));
+        }
+        let mark = self.scope.len();
+        let var = (self.temp(), unit());
+        let mut state = Vec::new();
+        for (name, ty) in names.iter().zip(&types) {
+            let binder = self.bind(name);
+            self.types.insert(binder.clone(), ty.clone());
+            state.push((binder, ty.clone()));
+        }
+        self.tail_wrap = Some(Wrap::State {
+            names: names.clone(),
+        });
+        let outer = self.loop_names.replace(names.clone());
+        let body = self.block(&stmt.block);
+        self.loop_names = outer;
+        self.scope.truncate(mark);
+        let on_stop = stmt.on_stop.as_ref().map(|on_stop| {
+            let mut binders = Vec::new();
+            for (name, ty) in names.iter().zip(&types) {
+                let binder = self.bind(name);
+                self.types.insert(binder.clone(), ty.clone());
+                binders.push((binder, ty.clone()));
+            }
+            self.tail_wrap = Some(Wrap::State {
+                names: names.clone(),
+            });
+            // No `stop` or `skip` of this loop in its `on stop` (U2034).
+            let outer = self.loop_names.take();
+            let body = self.block(&on_stop.block);
+            self.loop_names = outer;
+            self.scope.truncate(mark);
+            Box::new(una_core::OnStop {
+                state: binders,
+                body,
+            })
+        });
+        let looped = CoreExpr::Loop {
+            source: Box::new(LoopSource::Ever { within }),
+            var: Box::new(var),
+            state,
+            init,
+            body: Box::new(body),
+            on_stop,
+            span: stmt.span,
+        };
+        let t = self.temp();
+        bind_expr(
+            lets,
+            t.clone(),
+            tuple_type(types.clone()),
+            looped,
+            stmt.span,
+            false,
+        );
+        if names.is_empty() {
+            return;
+        }
+        let mut after = Vec::new();
+        for (name, ty) in names.iter().zip(types) {
+            let binder = self.bind(name);
+            self.types.insert(binder.clone(), ty.clone());
+            after.push((binder, ty));
+        }
+        lets.push(Let::destructure(after, Atom::Var(t), stmt.span));
+    }
+
+    /// `tasks [at most b at once]` with its block: `let (x₁, ..., xₙ) = tasks(b) e`, where `e`
+    /// is the block, which returns the new values of the outer bindings it updates, as the
+    /// block of an `if` without `else` does (`spec/27 §7`, `spec/17 §4`). `stop` and `skip` in
+    /// it stay those of the enclosing loop, whose `exit`s cross the statement.
+    fn tasks(&mut self, lets: &mut Vec<Let>, stmt: &TasksStmt) {
+        let bound = stmt
+            .bound
+            .as_ref()
+            .map(|bound| (self.atom(lets, bound), bound.span));
+        let names = self.block_updates(&stmt.block);
+        if names.is_empty() {
+            let body = self.block(&stmt.block);
+            let expr = CoreExpr::Tasks {
+                bound,
+                body: Box::new(body),
+                span: stmt.span,
+            };
+            bind_expr(lets, "_".to_owned(), unit(), expr, stmt.span, false);
+            return;
+        }
+        self.tail_wrap = Some(Wrap::Join {
+            names: names.clone(),
+            ty: unit(),
+        });
+        let body = self.block(&stmt.block);
+        let expr = CoreExpr::Tasks {
+            bound,
+            body: Box::new(body),
+            span: stmt.span,
+        };
+        self.bind_join(lets, &names, unit(), expr, stmt.span);
+    }
+
+    /// `start e`: `start(e)`, whose task is `e` with its deadline and handling clauses, closed
+    /// over the bindings before it, its tail never a return (`spec/27 §7`).
+    fn start(&mut self, lets: &mut Vec<Let>, stmt: &StartStmt) {
+        // A started task is not a loop body for `skip` and `stop` (U2034).
+        let outer = self.loop_names.take();
+        let wrap = self.tail_wrap.take();
+        let join = self.current_join.take();
+        let mark = self.scope.len();
+        let handled = &stmt.handled;
+        let mut inner = Vec::new();
+        let value = if self.marked(&handled.expr) {
+            let atom = self.marked_call(&mut inner, handled);
+            CoreExpr::Atom {
+                atom,
+                span: handled.expr.span,
+            }
+        } else {
+            self.handled(handled)
+        };
+        // The task's own names end with it.
+        self.scope.truncate(mark);
+        self.tail_wrap = wrap;
+        self.current_join = join;
+        self.loop_names = outer;
+        let expr = CoreExpr::Start {
+            task: Box::new(close(inner, value)),
+            span: stmt.span,
+        };
+        bind_expr(lets, "_".to_owned(), unit(), expr, stmt.span, false);
+    }
+
     /// `together` with branches: `let (x₁, ..., xₙ) = together(e₁ ∥ ... ∥ eₙ)`, where each task
     /// `eᵢ` binds its branch's value as its `let` would, the refinement of a written type an
     /// obligation there, and returns it (`spec/19 §5`).
     fn together(&mut self, lets: &mut Vec<Let>, stmt: &TogetherStmt) {
+        // A task is not a loop body for `skip` and `stop` (U2034).
+        let outer = self.loop_names.take();
+        self.together_tasks(lets, stmt);
+        self.loop_names = outer;
+    }
+
+    fn together_tasks(&mut self, lets: &mut Vec<Let>, stmt: &TogetherStmt) {
         let mut tasks = Vec::new();
         let mut types = Vec::new();
         let mut names = Vec::new();
         for branch in &stmt.body {
             let Stmt::Let(branch) = branch else {
-                self.broken = true;
+                self.broken.set(true);
                 return;
             };
             let mark = self.scope.len();
@@ -2332,6 +3373,13 @@ impl<'e, 'a> Fx<'e, 'a> {
     /// `together for x in s` with its block: `together_for x in s. e`, whose task is the
     /// block, with no wrapping of its tail (`spec/19 §5`).
     fn together_for(&mut self, together: &TogetherFor) -> CoreExpr {
+        let outer = self.loop_names.take();
+        let expr = self.together_for_tasks(together);
+        self.loop_names = outer;
+        expr
+    }
+
+    fn together_for_tasks(&mut self, together: &TogetherFor) -> CoreExpr {
         let mut lets = Vec::new();
         let source = match &together.source {
             ForSource::List(list) => LoopSource::List(self.atom(&mut lets, list)),
@@ -2376,6 +3424,61 @@ impl<'e, 'a> Fx<'e, 'a> {
             CoreExpr::Atom {
                 atom: Atom::Var(t),
                 span: together.span,
+            },
+        )
+    }
+
+    /// `first of` with its branches: `first_of(e₁ | ... | eₙ)`, whose tasks are the branches'
+    /// expressions with their `with` bindings and handling clauses, each closed over the
+    /// bindings before the block, bound to a temporary (`spec/27 §6`, ADR 0117 rule 6).
+    fn first_of(&mut self, first: &FirstOf) -> CoreExpr {
+        // A branch is not a loop body for `skip` and `stop` (U2034), and its tail is no return.
+        let outer = self.loop_names.take();
+        let wrap = self.tail_wrap.take();
+        let join = self.current_join.take();
+        let mut tasks = Vec::new();
+        for branch in &first.body {
+            let Stmt::Handled(handled) = branch else {
+                self.broken.set(true);
+                continue;
+            };
+            let mark = self.scope.len();
+            let mut inner = Vec::new();
+            let value = if self.marked(&handled.expr) {
+                let atom = self.marked_call(&mut inner, handled);
+                CoreExpr::Atom {
+                    atom,
+                    span: handled.expr.span,
+                }
+            } else {
+                self.handled(handled)
+            };
+            // The branch's own names end with it.
+            self.scope.truncate(mark);
+            tasks.push(close(inner, value));
+        }
+        self.tail_wrap = wrap;
+        self.current_join = join;
+        self.loop_names = outer;
+        let t = self.temp();
+        let ty = self.type_at(first.span);
+        let mut lets = Vec::new();
+        bind_expr(
+            &mut lets,
+            t.clone(),
+            ty,
+            CoreExpr::FirstOf {
+                tasks,
+                span: first.span,
+            },
+            first.span,
+            false,
+        );
+        close(
+            lets,
+            CoreExpr::Atom {
+                atom: Atom::Var(t),
+                span: first.span,
             },
         )
     }
@@ -2428,10 +3531,26 @@ impl<'e, 'a> Fx<'e, 'a> {
         let expr = &handled.expr;
         let span = expr.span;
         // `edit m.set(key: k, value: v)` is `m = with(m, k, v)`, and `edit m.remove(key: k)`
-        // is `m = without(m, k)` (`spec/21 §2` rule 1).
-        if let Some(Res::MapUpdate(op)) = self.res(span) {
+        // is `m = without(m, k)` (`spec/21 §2` rule 1); `edit s.add(item: x)` is
+        // `s = with(s, x)`, and `edit s.remove(item: x)` is `s = without(s, x)` (`spec/28 §6`), as
+        // they are on a bit set (`spec/28 §9`).
+        let update = match self.res(span) {
+            Some(Res::MapUpdate(op)) => Some(Prim::Map(op)),
+            Some(Res::SetUpdate(op)) => Some(Prim::Set(op)),
+            // The same for a hash map and a hash set (`spec/28 §7`).
+            Some(Res::HashMapUpdate(op)) => Some(Prim::HashMap(op)),
+            Some(Res::HashSetUpdate(op)) => Some(Prim::HashSet(op)),
+            Some(Res::BitSetUpdate(op)) => Some(Prim::BitSet(op)),
+            _ => None,
+        };
+        if handled.within.is_some()
+            && let Some(atom) = self.update_within(lets, handled)
+        {
+            return atom;
+        }
+        if let Some(prim) = update {
             let ExprKind::MethodCall { target, args, .. } = &expr.kind else {
-                self.broken = true;
+                self.broken.set(true);
                 return Atom::Unit;
             };
             let mut arg_spans = vec![target.span];
@@ -2446,7 +3565,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                 t.clone(),
                 ty,
                 Bound::Rhs(Rhs::Prim {
-                    prim: Prim::Map(op),
+                    prim,
                     args: values,
                     arg_spans,
                     span,
@@ -2460,14 +3579,30 @@ impl<'e, 'a> Fx<'e, 'a> {
             self.assign(lets, target, value, span);
             return Atom::Unit;
         }
+        if let Some(Res::SeqUpdate(op)) = self.res(span) {
+            return self.removing_update(lets, expr, Prim::Seq(op), op.removed().map(Prim::Seq));
+        }
+        if let Some(Res::PriorityUpdate { op, read }) = self.res(span) {
+            return self.removing_update(lets, expr, Prim::Priority(op), read.map(Prim::Priority));
+        }
         let Some(Res::Function { id, type_args }) = self.res(span) else {
-            self.broken = true;
+            self.broken.set(true);
             return Atom::Unit;
         };
         let Some(def) = self.env.functions.get(id) else {
-            self.broken = true;
+            self.broken.set(true);
             return Atom::Unit;
         };
+        // ADR 0120: a function that computes new elements keeps no refinement of its type
+        // arguments in the new values of its `edit` places either (`super::dense::SYNTHESIZING`),
+        // so a place whose declared type claims one gets an obligation, as its call's result
+        // does (review of #1048, R2).
+        let type_args: Vec<Ty> =
+            if super::dense::synthesizes(self.env.prelude, def.module, def.name) {
+                type_args.iter().map(Ty::without_refinements).collect()
+            } else {
+                type_args
+            };
         let mut components: Vec<Type> = Vec::new();
         for param in &def.params {
             if param.convention == Some(Convention::Edit) {
@@ -2484,7 +3619,7 @@ impl<'e, 'a> Fx<'e, 'a> {
         }));
         let places = self.edit_places(expr);
         if places.len() + 1 != components.len() {
-            self.broken = true;
+            self.broken.set(true);
             return Atom::Unit;
         }
         let current: Vec<Atom> = places.iter().map(|place| self.atom(lets, place)).collect();
@@ -2517,6 +3652,175 @@ impl<'e, 'a> Fx<'e, 'a> {
             .map_or(Atom::Unit, |(name, _)| Atom::Var(name.clone()))
     }
 
+    /// The in-place update of a map, a set or a sequence bounded by `within` (`spec/27 §5`):
+    /// the update, and the read of a removal, run inside the `within`, as `(new value, result)`;
+    /// the target takes the new value only when the `within` succeeds, and keeps its value from
+    /// before otherwise, as a call's `edit` places do (`spec/17 §7` rule 1). `None` when
+    /// `handled` is no such update.
+    fn update_within(&mut self, lets: &mut Vec<Let>, handled: &Handled) -> Option<Atom> {
+        let expr = &handled.expr;
+        let span = expr.span;
+        let (prim, read) = match self.res(span) {
+            Some(Res::MapUpdate(op)) => (Prim::Map(op), None),
+            Some(Res::SetUpdate(op)) => (Prim::Set(op), None),
+            Some(Res::SeqUpdate(op)) => (Prim::Seq(op), op.removed().map(Prim::Seq)),
+            _ => return None,
+        };
+        let ExprKind::MethodCall { target, args, .. } = &expr.kind else {
+            self.broken.set(true);
+            return Some(Atom::Unit);
+        };
+        // Only the place's current value is read before the `within`; the arguments are
+        // computed inside it, so its deadline bounds them, after `d` (`spec/27 §5` rules 2
+        // and 5), as for a call with `edit` arguments.
+        let mut arg_spans = vec![target.span];
+        let old = self.atom(lets, target);
+        let mut values = vec![old.clone()];
+        let mut inner = Vec::new();
+        for arg in args {
+            arg_spans.push(arg.value.span);
+            values.push(self.atom(&mut inner, &arg.value));
+        }
+        let target_ty = self.type_at(target.span);
+        let result_ty = self.type_at(span);
+        let result = match read {
+            Some(read) => {
+                let r = self.temp();
+                inner.push(Let::inferred(
+                    r.clone(),
+                    result_ty.clone(),
+                    Bound::Rhs(Rhs::Prim {
+                        prim: read,
+                        args: values.clone(),
+                        arg_spans: arg_spans.clone(),
+                        span,
+                    }),
+                    span,
+                ));
+                Atom::Var(r)
+            }
+            None => Atom::Unit,
+        };
+        let t = self.temp();
+        inner.push(Let::inferred(
+            t.clone(),
+            target_ty.clone(),
+            Bound::Rhs(Rhs::Prim {
+                prim,
+                args: values,
+                arg_spans,
+                span,
+            }),
+            span,
+        ));
+        let components = vec![target_ty, result_ty];
+        let pair = self.temp();
+        inner.push(Let::inferred(
+            pair.clone(),
+            tuple_type(components.clone()),
+            Bound::Rhs(Rhs::Tuple(vec![Atom::Var(t), result])),
+            span,
+        ));
+        let body = close(
+            inner,
+            CoreExpr::Atom {
+                atom: Atom::Var(pair),
+                span,
+            },
+        );
+        let (value, components) =
+            self.handled_body(handled, Some((vec![old], components)), Some(body));
+        let whole = self.temp();
+        bind_expr(
+            lets,
+            whole.clone(),
+            tuple_type(components.clone()),
+            value,
+            span,
+            false,
+        );
+        let binders: Vec<(Name, Type)> = components
+            .iter()
+            .map(|ty| (self.temp(), ty.clone()))
+            .collect();
+        lets.push(Let::destructure(binders.clone(), Atom::Var(whole), span));
+        let (Some((updated, _)), Some((result, _))) = (binders.first(), binders.get(1)) else {
+            self.broken.set(true);
+            return Some(Atom::Unit);
+        };
+        let value = CoreExpr::Atom {
+            atom: Atom::Var(updated.clone()),
+            span: target.span,
+        };
+        self.assign(lets, target, value, span);
+        Some(Atom::Var(result.clone()))
+    }
+
+    /// `edit q.push(item: x)`, `edit q.pop()` and the other updates of a `Stack` or a `Queue`
+    /// (`spec/28 §5`) and of a `PriorityQueue` (`spec/28 §8`): `q = update(q, x)`, as a map's
+    /// `set` is `m = with(m, k, v)`. A removal first reads what it removes, by `read`
+    /// (`PeekFront` or `PeekBack` of a sequence, `Peek` or `PeekRanked` of a priority queue),
+    /// which is the call's value; a push's value is `unit`. The read holds no reference to the
+    /// collection, so the removal still updates it in place when nothing else holds it. O(1)
+    /// besides the arguments.
+    fn removing_update(
+        &mut self,
+        lets: &mut Vec<Let>,
+        expr: &Expr,
+        update: Prim,
+        read: Option<Prim>,
+    ) -> Atom {
+        let span = expr.span;
+        let ExprKind::MethodCall { target, args, .. } = &expr.kind else {
+            self.broken.set(true);
+            return Atom::Unit;
+        };
+        let mut arg_spans = vec![target.span];
+        let mut values = vec![self.atom(lets, target)];
+        for arg in args {
+            arg_spans.push(arg.value.span);
+            values.push(self.atom(lets, &arg.value));
+        }
+        let result = match read {
+            Some(read) => {
+                let r = self.temp();
+                let ty = self.type_at(span);
+                lets.push(Let::inferred(
+                    r.clone(),
+                    ty,
+                    Bound::Rhs(Rhs::Prim {
+                        prim: read,
+                        args: values.clone(),
+                        arg_spans: arg_spans.clone(),
+                        span,
+                    }),
+                    span,
+                ));
+                Atom::Var(r)
+            }
+            None => Atom::Unit,
+        };
+        let t = self.temp();
+        let ty = self.type_at(target.span);
+        lets.push(Let::inferred(
+            t.clone(),
+            ty,
+            Bound::Rhs(Rhs::Prim {
+                prim: update,
+                args: values,
+                arg_spans,
+                span,
+            }),
+            span,
+        ));
+        let value = CoreExpr::Atom {
+            atom: Atom::Var(t),
+            span: target.span,
+        };
+        self.assign(lets, target, value, span);
+        result
+    }
+
     /// The bindings of the enclosing scope that an `if` or a `when` updates, in order of
     /// first update.
     fn updates(&self, expr: &BlockExpr) -> Vec<String> {
@@ -2542,6 +3846,8 @@ impl<'e, 'a> Fx<'e, 'a> {
                 inner.push(self.name(&together.var).to_owned());
                 self.scan_block(&together.block, &inner, found);
             }
+            // A branch updates no binding declared outside it (U2023).
+            BlockExpr::FirstOf(_) => {}
             BlockExpr::When(when) => {
                 for arm in &when.arms {
                     if let Body::Block(block) = &arm.body {
@@ -2597,6 +3903,18 @@ impl<'e, 'a> Fx<'e, 'a> {
                     }
                 }
                 Stmt::BlockExpr(expr) => self.scan_block_expr(expr, &local, found),
+                Stmt::Stop(_) | Stmt::Skip(_) => {}
+                Stmt::Until(stmt) => self.scan_block(&stmt.block, &local, found),
+                Stmt::Ever(stmt) => {
+                    self.scan_block(&stmt.block, &local, found);
+                    if let Some(on_stop) = &stmt.on_stop {
+                        self.scan_block(&on_stop.block, &local, found);
+                    }
+                }
+                Stmt::OnStop(on_stop) => self.scan_block(&on_stop.block, &local, found),
+                Stmt::Tasks(stmt) => self.scan_block(&stmt.block, &local, found),
+                // A started task updates no binding declared outside it (U2023).
+                Stmt::Start(_) => {}
             }
         }
     }
@@ -2649,7 +3967,7 @@ impl<'e, 'a> Fx<'e, 'a> {
         span: Span,
     ) -> CoreExpr {
         let Some(kind) = self.env.prelude_kind("Option") else {
-            self.broken = true;
+            self.broken.set(true);
             return option;
         };
         let t = self.temp();
@@ -2703,6 +4021,7 @@ impl<'e, 'a> Fx<'e, 'a> {
             BlockExpr::If(block) => self.if_block(block),
             BlockExpr::When(when) => self.when(when),
             BlockExpr::TogetherFor(together) => self.together_for(together),
+            BlockExpr::FirstOf(first) => self.first_of(first),
         }
     }
 
@@ -2883,7 +4202,7 @@ impl<'e, 'a> Fx<'e, 'a> {
             self.lost
                 .borrow_mut()
                 .push("a text literal with interpolation in a pattern (U4008)".to_owned());
-            self.broken = true;
+            self.broken.set(true);
             return Atom::Unit;
         }
         self.literal_atom(lets, literal, span)
@@ -2985,10 +4304,24 @@ impl<'e, 'a> Fx<'e, 'a> {
                 )
             }
             ExprKind::Fail(variant) => self.fail(variant),
-            ExprKind::Attempt(operand) => CoreExpr::Attempt {
-                body: Box::new(self.expr(operand)),
-                span: expr.span,
-            },
+            ExprKind::Attempt { operand, within } => {
+                // `attempt e within d`: `d` first, then `e` bounded by it (`spec/27 §5`).
+                let mut lets = Vec::new();
+                let deadline = within
+                    .as_ref()
+                    .map(|deadline| (self.atom(&mut lets, deadline), deadline.span));
+                let mut body = self.expr(operand);
+                if let Some((atom, deadline_span)) = deadline {
+                    body = self.within_core(body, atom, deadline_span, false, expr.span);
+                }
+                close(
+                    lets,
+                    CoreExpr::Attempt {
+                        body: Box::new(body),
+                        span: expr.span,
+                    },
+                )
+            }
             _ => {
                 let mut lets = Vec::new();
                 let atom = self.atom(&mut lets, expr);
@@ -3001,6 +4334,160 @@ impl<'e, 'a> Fx<'e, 'a> {
                 )
             }
         }
+    }
+
+    /// An operator of dense values at `span`, over `operands` in source order (ADR 0120 rule
+    /// 34): the `map` or `zip_map` that its [`Res::DenseOp`] names, with a lambda that applies
+    /// the element type's operator. Its parameters have the operands' element types,
+    /// refinements included, and its result the result's element type, so a fixed-width
+    /// element type carries the lambda's `overflow` obligation, over two values of the element
+    /// type, and a division by a scalar its `division` obligation, once. A scalar operand is
+    /// evaluated in its place and captured.
+    fn dense_op(&mut self, lets: &mut Vec<Let>, span: Span, operands: &[&Expr]) -> Atom {
+        let Some(Res::DenseOp { id, op }) = self.res(span) else {
+            self.broken.set(true);
+            return Atom::Unit;
+        };
+        let element = |ty: &Type| match ty {
+            Type::Base {
+                base: Base::Named { module, name, args },
+                ..
+            } if module == "prelude" && matches!(name.as_str(), "Array" | "Matrix" | "Tensor") => {
+                args.first().cloned()
+            }
+            _ => None,
+        };
+        let mut dense = Vec::new();
+        let mut scalar = None;
+        let mut scalar_span = span;
+        let mut arg_spans = Vec::new();
+        for operand in operands {
+            let ty = self.type_at(operand.span);
+            let atom = self.atom(lets, operand);
+            match element(&ty) {
+                Some(element) => {
+                    dense.push((atom, element));
+                    arg_spans.push(operand.span);
+                }
+                None => {
+                    scalar = Some(atom);
+                    scalar_span = operand.span;
+                }
+            }
+        }
+        let Some(out) = element(&self.type_at(span)) else {
+            self.broken.set(true);
+            return Atom::Unit;
+        };
+        let float = matches!(
+            dense.first(),
+            Some((
+                _,
+                Type::Base {
+                    base: Base::F64,
+                    ..
+                }
+            ))
+        );
+        let params: Vec<(Name, Type)> = dense
+            .iter()
+            .map(|(_, element)| (self.temp(), element.clone()))
+            .collect();
+        let p = |index: usize| {
+            params
+                .get(index)
+                .map_or(Atom::Unit, |(name, _)| Atom::Var(name.clone()))
+        };
+        let k = scalar.clone().unwrap_or(Atom::Unit);
+        let (prim, args) = match (op, float) {
+            (DenseOp::Add, true) => (Prim::Float(una_core::FloatOp::Add), vec![p(0), p(1)]),
+            (DenseOp::Add, false) => (Prim::Add, vec![p(0), p(1)]),
+            (DenseOp::Sub, true) => (Prim::Float(una_core::FloatOp::Sub), vec![p(0), p(1)]),
+            (DenseOp::Sub, false) => (Prim::Sub, vec![p(0), p(1)]),
+            (DenseOp::Neg, true) => (Prim::Float(una_core::FloatOp::Neg), vec![p(0)]),
+            (DenseOp::Neg, false) => (Prim::Neg, vec![p(0)]),
+            (DenseOp::Scale { scalar_first }, float) => {
+                let prim = if float {
+                    Prim::Float(una_core::FloatOp::Mul)
+                } else {
+                    Prim::Mul
+                };
+                let args = if scalar_first {
+                    vec![k, p(0)]
+                } else {
+                    vec![p(0), k]
+                };
+                (prim, args)
+            }
+            (DenseOp::Divide, true) => (Prim::Float(una_core::FloatOp::Div), vec![p(0), k]),
+            (DenseOp::Divide, false) => (Prim::Div, vec![p(0), k]),
+        };
+        // An element carries the operator's span, and the scalar its own (the verifier's
+        // obligations name the divisor by it).
+        let element_spans: Vec<Span> = args
+            .iter()
+            .map(|arg| {
+                if scalar.as_ref() == Some(arg)
+                    && !params.iter().any(|(n, _)| *arg == Atom::Var(n.clone()))
+                {
+                    scalar_span
+                } else {
+                    span
+                }
+            })
+            .collect();
+        let r = self.temp();
+        let body = CoreExpr::Let {
+            name: r.clone(),
+            ty: out.clone(),
+            value: Box::new(Bound::Rhs(Rhs::Prim {
+                prim,
+                args,
+                arg_spans: element_spans,
+                span,
+            })),
+            body: Box::new(CoreExpr::Atom {
+                atom: Atom::Var(r),
+                span,
+            }),
+            span,
+            written: false,
+        };
+        let lambda_ty = Type::Fn {
+            params: params.iter().map(|(_, ty)| ty.clone()).collect(),
+            result: Box::new(out.clone()),
+            uses: Vec::new(),
+            fails: None,
+            label: Label::public(),
+        };
+        let f = self.temp();
+        lets.push(Let::inferred(
+            f.clone(),
+            lambda_ty,
+            Bound::Rhs(Rhs::Lambda {
+                params,
+                body: Box::new(body),
+                function: None,
+            }),
+            span,
+        ));
+        let mut type_args: Vec<Type> = dense.iter().map(|(_, element)| element.clone()).collect();
+        type_args.push(out);
+        let mut args: Vec<Atom> = dense.into_iter().map(|(atom, _)| atom).collect();
+        args.push(Atom::Var(f));
+        arg_spans.push(span);
+        let function = self.function_path(id);
+        self.push(
+            lets,
+            span,
+            Rhs::Call {
+                function,
+                type_args,
+                args,
+                arg_spans,
+                span,
+            },
+        )
     }
 
     /// Binds `rhs` to a fresh temporary of the type recorded at `span`.
@@ -3024,7 +4511,7 @@ impl<'e, 'a> Fx<'e, 'a> {
         let span = expr.span;
         match &expr.kind {
             ExprKind::Old(_) => {
-                self.broken = true;
+                self.broken.set(true);
                 Atom::Unit
             }
             ExprKind::Literal(literal) => self.literal_atom(lets, literal, span),
@@ -3039,6 +4526,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                         let lambda = self.function_value(id, &type_args, ident.span);
                         self.push(lets, span, lambda)
                     }
+                    Some(Res::Constant(value)) => Atom::Int(value.to_string()),
                     _ => Atom::Unit,
                 }
             }
@@ -3062,10 +4550,28 @@ impl<'e, 'a> Fx<'e, 'a> {
                 self.push(lets, span, Rhs::List(items))
             }
             ExprKind::Binary { op, left, right } => self.binary(lets, *op, left, right, span),
+            ExprKind::Unary { operand, .. }
+                if matches!(self.records.res.get(&span), Some(Res::DenseOp { .. })) =>
+            {
+                self.dense_op(lets, span, &[operand])
+            }
+            ExprKind::Unary {
+                op: UnaryOp::Neg,
+                operand,
+            } if self.complex_at(operand.span).is_some() => {
+                let value = self.atom(lets, operand);
+                self.complex_unary(lets, ComplexStep::Neg, value, None, span)
+            }
             ExprKind::Unary { op, operand } => {
                 let operand_span = operand.span;
+                let float = self.is_f64_at(operand_span);
+                let decimal = self.decimal_at(operand_span).is_some();
+                let float32 = self.is_f32_at(operand_span);
                 let operand = self.atom(lets, operand);
                 let prim = match op {
+                    UnaryOp::Neg if float => Prim::Float(una_core::FloatOp::Neg),
+                    UnaryOp::Neg if float32 => Prim::Float32(una_core::FloatOp::Neg),
+                    UnaryOp::Neg if decimal => Prim::Decimal(una_core::DecimalOp::Neg),
                     UnaryOp::Neg => Prim::Neg,
                     UnaryOp::Not => Prim::Not,
                 };
@@ -3132,7 +4638,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                 let value = self.atom(lets, value);
                 self.range_test(lets, &value, value_span, range)
             }
-            ExprKind::IfLine { .. } | ExprKind::Fail(_) | ExprKind::Attempt(_) => {
+            ExprKind::IfLine { .. } | ExprKind::Fail(_) | ExprKind::Attempt { .. } => {
                 let inner = self.expr(expr);
                 self.push_expr(lets, span, inner)
             }
@@ -3220,6 +4726,36 @@ impl<'e, 'a> Fx<'e, 'a> {
                         },
                     )
                 }
+                // `m.rows` and `m.columns` of a matrix (`spec/29 §17`).
+                Some(Res::Shape(fun)) => {
+                    let target_span = target.span;
+                    let value = self.atom(lets, target);
+                    self.push(
+                        lets,
+                        span,
+                        Rhs::Prim {
+                            prim: Prim::Shape(fun),
+                            args: vec![value],
+                            arg_spans: vec![target_span],
+                            span,
+                        },
+                    )
+                }
+                // `b.size` of a bit set (`spec/28 §9`).
+                Some(Res::BitSetMethod(op)) => {
+                    let target_span = target.span;
+                    let value = self.atom(lets, target);
+                    self.push(
+                        lets,
+                        span,
+                        Rhs::Prim {
+                            prim: Prim::BitSet(op),
+                            args: vec![value],
+                            arg_spans: vec![target_span],
+                            span,
+                        },
+                    )
+                }
                 Some(Res::Function { id, type_args }) => {
                     let receiver = self.atom(lets, target);
                     let receiver = (receiver, target.span);
@@ -3245,17 +4781,80 @@ impl<'e, 'a> Fx<'e, 'a> {
                         },
                     )
                 }
-                // A built-in method of an integer type (`spec/18 §4`, `§5`), or one of a map
-                // that reads it (`spec/21 §2`).
-                Some(res @ (Res::IntMethod(_) | Res::MapMethod(_))) => {
+                // ADR 0114 rule 12.7: `E(x.convert())` on an `F64` is `E(x) * k` or `E(x) / k`
+                // with `k` the float literal of the ratio, and the same on an `F32`; on a
+                // decimal, `E(x) * k` with `k` a `Decimal[0]` literal, which keeps the scale
+                // (ADR 0120 rules 63 and 65).
+                Some(Res::Convert {
+                    ratio,
+                    divide,
+                    number,
+                }) => {
+                    let arg_spans = vec![target.span, span];
+                    let left = self.atom(lets, target);
+                    let op = if divide { FloatOp::Div } else { FloatOp::Mul };
+                    let (prim, k) = match number {
+                        ConvertNumber::F64 => {
+                            (Prim::Float(op), Atom::F64(float_ratio(ratio).to_bits()))
+                        }
+                        ConvertNumber::F32 => {
+                            (Prim::Float32(op), Atom::F32(float32_ratio(ratio).to_bits()))
+                        }
+                        ConvertNumber::Decimal(_) => (
+                            Prim::Decimal(una_core::DecimalOp::Mul),
+                            Atom::Decimal {
+                                coefficient: ratio.to_string(),
+                                scale: 0,
+                            },
+                        ),
+                    };
+                    self.push(
+                        lets,
+                        span,
+                        Rhs::Prim {
+                            prim,
+                            args: vec![left, k],
+                            arg_spans,
+                            span,
+                        },
+                    )
+                }
+                // A built-in method of an integer type (`spec/18 §4`, `§5`), or one of a map, a
+                // stack or a queue that reads it (`spec/21 §2`, `spec/28 §5`), or one of a set,
+                // a hash map or a hash set that reads it or gives a new one (`spec/28 §6`, `§7`),
+                // or one of a priority queue that reads it (`spec/28 §8`), or one of a bit set
+                // that reads it or gives a new one (`spec/28 §9`).
+                Some(
+                    res @ (Res::IntMethod(_)
+                    | Res::MapMethod(_)
+                    | Res::SeqMethod(_)
+                    | Res::SetMethod(_)
+                    | Res::HashMapMethod(_)
+                    | Res::HashSetMethod(_)
+                    | Res::PriorityMethod(_)
+                    | Res::BitSetMethod(_)),
+                ) => {
                     let prim = match res {
                         Res::MapMethod(op) => Prim::Map(op),
+                        Res::SeqMethod(op) => Prim::Seq(op),
+                        Res::SetMethod(op) => Prim::Set(op),
+                        Res::HashMapMethod(op) => Prim::HashMap(op),
+                        Res::HashSetMethod(op) => Prim::HashSet(op),
+                        Res::PriorityMethod(op) => Prim::Priority(op),
+                        Res::BitSetMethod(op) => Prim::BitSet(op),
                         Res::IntMethod(prim) => prim,
                         _ => Prim::Len,
                     };
                     let mut arg_spans = vec![target.span];
                     let mut values = vec![self.atom(lets, target)];
                     for arg in args {
+                        // A decimal method's `scale:` is static, part of its operation
+                        // (`spec/29 §16`), and no operand.
+                        if matches!(prim, Prim::Decimal(_))
+                            && arg.label.as_ref().is_some_and(|l| self.name(l) == "scale")
+                        {
+                            continue;
+                        }
                         arg_spans.push(arg.value.span);
                         values.push(self.atom(lets, &arg.value));
                     }
@@ -3267,6 +4866,33 @@ impl<'e, 'a> Fx<'e, 'a> {
                             args: values,
                             arg_spans,
                             span,
+                        },
+                    )
+                }
+                // `x.conj()`, `x.scale(by: k)` and `x.norm_sqr()` (ADR 0120 rule 23).
+                Some(Res::Complex(method)) => {
+                    let value = self.atom(lets, target);
+                    let factor = args.first().map(|arg| self.atom(lets, &arg.value));
+                    let step = match method {
+                        ComplexMethod::Conj => ComplexStep::Conj,
+                        ComplexMethod::Scale => ComplexStep::Scale,
+                        ComplexMethod::NormSqr => ComplexStep::NormSqr,
+                    };
+                    self.complex_unary(lets, step, value, factor, span)
+                }
+                // `x.complex(im: y)` (ADR 0120 rule 22).
+                Some(Res::Ctor { kind, variant }) => {
+                    let receiver = self.atom(lets, target);
+                    let (args, arg_spans) =
+                        self.ordered_values(lets, span, Some((receiver, target.span)), args);
+                    let ctor = self.ctor(kind, variant);
+                    self.push(
+                        lets,
+                        span,
+                        Rhs::Construct {
+                            ctor,
+                            args,
+                            arg_spans,
                         },
                     )
                 }
@@ -3383,7 +5009,7 @@ impl<'e, 'a> Fx<'e, 'a> {
             ExprKind::It => self.it.clone().map_or(Atom::Unit, Atom::Var),
             ExprKind::Error => self.error.clone().map_or(Atom::Unit, Atom::Var),
             ExprKind::CapRef(_) => {
-                self.broken = true;
+                self.broken.set(true);
                 Atom::Unit
             }
         }
@@ -3391,7 +5017,49 @@ impl<'e, 'a> Fx<'e, 'a> {
 
     fn literal_atom(&mut self, lets: &mut Vec<Let>, literal: &Literal, span: Span) -> Atom {
         match literal {
+            // ADR 0109 rule 3: an `Int` literal outside the tagged range in a `systems`
+            // package is bound to its own temporary at its span, where the verifier finds its
+            // `overflow` site. The value is the same, so no engine sees a difference.
+            Literal::Int(digits)
+                if self.env.in_package(self.module)
+                    && self.findings.int_literals.contains(&span) =>
+            {
+                self.push(lets, span, Rhs::Atom(Atom::Int(digits.clone())))
+            }
             Literal::Int(digits) => Atom::Int(digits.clone()),
+            // A literal typed as a decimal is its coefficient at that scale (`spec/29 §16`).
+            Literal::Float(text) if self.decimal_at(span).is_some() => {
+                let scale = self.decimal_at(span).unwrap_or(0);
+                match una_core::decimal::literal(text, scale) {
+                    una_core::decimal::Literal::Value(coefficient) => Atom::Decimal {
+                        coefficient: coefficient.to_string(),
+                        scale,
+                    },
+                    // U2037, which the checker reported.
+                    _ => {
+                        self.broken.set(true);
+                        Atom::Unit
+                    }
+                }
+            }
+            Literal::Float(text) if self.is_f32_at(span) => {
+                match una_core::float32::literal(text) {
+                    una_core::float32::Literal::Value(value) => Atom::F32(value.to_bits()),
+                    // U2031, which the checker reported.
+                    _ => {
+                        self.broken.set(true);
+                        Atom::F32(0)
+                    }
+                }
+            }
+            Literal::Float(text) => match una_core::float::literal(text) {
+                una_core::float::Literal::Value(value) => Atom::F64(value.to_bits()),
+                // U2031, which the checker reported.
+                _ => {
+                    self.broken.set(true);
+                    Atom::F64(0)
+                }
+            },
             Literal::Bool(value) => Atom::Bool(*value),
             Literal::Unit => Atom::Unit,
             Literal::Text(text) => self.text_atom(lets, text, span),
@@ -3412,6 +5080,17 @@ impl<'e, 'a> Fx<'e, 'a> {
                     part_spans.push(span);
                 }
                 TextPart::Interpolation(expr) => {
+                    // An `F64` is written by its shortest round-trip text (`spec/29 §7`).
+                    let prim = if self.is_f64_at(expr.span) {
+                        Prim::Float(una_core::FloatOp::ToText)
+                    } else if let Some(scale) = self.decimal_at(expr.span) {
+                        // A decimal is written with exactly its scale's digits (`spec/29 §16`).
+                        Prim::Decimal(una_core::DecimalOp::ToText(scale))
+                    } else if self.is_f32_at(expr.span) {
+                        Prim::Float32(una_core::FloatOp::ToText)
+                    } else {
+                        Prim::ToText
+                    };
                     let value = self.atom(lets, expr);
                     let t = self.temp();
                     // The text holds the value's fields in clear (`spec/10 §12` rule 14), so it
@@ -3421,7 +5100,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                         t.clone(),
                         with_label(text_ty(), &label),
                         Bound::Rhs(Rhs::Prim {
-                            prim: Prim::ToText,
+                            prim,
                             args: vec![value],
                             arg_spans: vec![expr.span],
                             span: expr.span,
@@ -3461,6 +5140,12 @@ impl<'e, 'a> Fx<'e, 'a> {
             BinaryOp::Implies => Some((true, Some(true))),
             _ => None,
         };
+        // An operator of dense values: its `map` or `zip_map` (`spec/29 §17`).
+        // A plain operator records nothing, so the lookup is not `res`, which would mark the
+        // declaration broken.
+        if matches!(self.records.res.get(&span), Some(Res::DenseOp { .. })) {
+            return self.dense_op(lets, span, &[left, right]);
+        }
         if let Some((then_right, constant)) = short {
             let cond = self.atom(lets, left);
             let right = self.expr(right);
@@ -3480,23 +5165,61 @@ impl<'e, 'a> Fx<'e, 'a> {
             };
             return self.push_expr(lets, span, test);
         }
+        // The arithmetic of `Complex[F64]` and `Complex[F32]` is that of their components (ADR
+        // 0120 rule 23); `==` and `!=` are the records' equality.
+        if matches!(
+            op,
+            BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div
+        ) && self.complex_at(span).is_some()
+        {
+            let x = self.atom(lets, left);
+            let y = self.atom(lets, right);
+            return self.complex_binary(lets, op, x, y, span);
+        }
         let arg_spans = vec![left.span, right.span];
+        let float = self.is_f64_at(left.span) && self.is_f64_at(right.span);
+        let float32 = self.is_f32_at(left.span) && self.is_f32_at(right.span);
+        let decimal = match (self.decimal_at(left.span), self.decimal_at(right.span)) {
+            (Some(a), Some(b)) => decimal_op(op, a, b),
+            _ => None,
+        };
         let left = self.atom(lets, left);
         let right = self.atom(lets, right);
-        let prim = match op {
-            BinaryOp::Eq => Prim::Eq,
-            BinaryOp::NotEq => Prim::Ne,
-            BinaryOp::Lt => Prim::Lt,
-            BinaryOp::Le => Prim::Le,
-            BinaryOp::Gt => Prim::Gt,
-            BinaryOp::Ge => Prim::Ge,
-            BinaryOp::Add => Prim::Add,
-            BinaryOp::Sub => Prim::Sub,
-            BinaryOp::Mul => Prim::Mul,
-            BinaryOp::Div => Prim::Div,
-            BinaryOp::Mod => Prim::Mod,
-            BinaryOp::And | BinaryOp::Or | BinaryOp::Implies => Prim::Eq,
+        let wrap = |prim: Prim| match prim {
+            Prim::Float(op) if float32 => Prim::Float32(op),
+            other => other,
         };
+        let prim = match (op, float || float32) {
+            // The operators of `Decimal` carry their operands' scales (`spec/29 §16`).
+            _ if decimal.is_some() => Prim::Decimal(decimal.unwrap_or(una_core::DecimalOp::Mul)),
+            // The operators of `F64` are their own primitives (ADR 0114 rule 17).
+            (BinaryOp::Add, true) => Prim::Float(una_core::FloatOp::Add),
+            (BinaryOp::Sub, true) => Prim::Float(una_core::FloatOp::Sub),
+            (BinaryOp::Mul, true) => Prim::Float(una_core::FloatOp::Mul),
+            (BinaryOp::Div, true) => Prim::Float(una_core::FloatOp::Div),
+            (BinaryOp::Eq, true) => Prim::Float(una_core::FloatOp::Eq),
+            (BinaryOp::NotEq, true) => Prim::Float(una_core::FloatOp::Ne),
+            (BinaryOp::Lt, true) => Prim::Float(una_core::FloatOp::Lt),
+            (BinaryOp::Le, true) => Prim::Float(una_core::FloatOp::Le),
+            (BinaryOp::Gt, true) => Prim::Float(una_core::FloatOp::Gt),
+            (BinaryOp::Ge, true) => Prim::Float(una_core::FloatOp::Ge),
+            (op, _) => match op {
+                BinaryOp::Eq => Prim::Eq,
+                BinaryOp::NotEq => Prim::Ne,
+                BinaryOp::Lt => Prim::Lt,
+                BinaryOp::Le => Prim::Le,
+                BinaryOp::Gt => Prim::Gt,
+                BinaryOp::Ge => Prim::Ge,
+                BinaryOp::Add => Prim::Add,
+                BinaryOp::Sub => Prim::Sub,
+                BinaryOp::Mul => Prim::Mul,
+                BinaryOp::Div => Prim::Div,
+                BinaryOp::Mod => Prim::Mod,
+                BinaryOp::And | BinaryOp::Or | BinaryOp::Implies => Prim::Eq,
+            },
+        };
+        // The same operators of `F32` are `Float32` primitives (ADR 0120 rule 5).
+        let prim = wrap(prim);
         self.push(
             lets,
             span,
@@ -3507,6 +5230,335 @@ impl<'e, 'a> Fx<'e, 'a> {
                 span,
             },
         )
+    }
+
+    // ----- `Complex[F64]` and `Complex[F32]` -----
+
+    /// The complex type recorded at `span`, its width (`true` for `Complex[F32]`), its label,
+    /// and the record constructor of its kind.
+    fn complex_shape(&mut self, span: Span) -> (Type, bool, Label, Ctor) {
+        let ty = self.type_at(span);
+        let (f32, label, ctor) = match &ty {
+            Type::Base {
+                base: Base::Named { module, name, .. },
+                label,
+                ..
+            } => (
+                name == una_core::complex::COMPLEX_F32,
+                label.clone(),
+                Ctor {
+                    kind: Path {
+                        module: module.clone(),
+                        name: name.clone(),
+                    },
+                    name: name.clone(),
+                    index: 0,
+                },
+            ),
+            _ => {
+                self.broken.set(true);
+                (
+                    false,
+                    Label::public(),
+                    Ctor {
+                        kind: self.path(self.module, "?"),
+                        name: "?".to_owned(),
+                        index: 0,
+                    },
+                )
+            }
+        };
+        (ty, f32, label, ctor)
+    }
+
+    /// Binds `rhs` to a fresh temporary of type `ty`.
+    fn push_typed(&mut self, lets: &mut Vec<Let>, span: Span, ty: Type, rhs: Rhs) -> Atom {
+        let t = self.temp();
+        lets.push(Let::inferred(t.clone(), ty, Bound::Rhs(rhs), span));
+        Atom::Var(t)
+    }
+
+    /// The components `re` and `im` of the complex value `value`, each read into a temporary.
+    fn complex_parts(
+        &mut self,
+        lets: &mut Vec<Let>,
+        parts: &ComplexParts,
+        value: Atom,
+    ) -> (Atom, Atom) {
+        let re = self.push_typed(
+            lets,
+            parts.span,
+            parts.component.clone(),
+            Rhs::Field {
+                value: value.clone(),
+                field: "re".to_owned(),
+                index: 0,
+            },
+        );
+        let im = self.push_typed(
+            lets,
+            parts.span,
+            parts.component.clone(),
+            Rhs::Field {
+                value,
+                field: "im".to_owned(),
+                index: 1,
+            },
+        );
+        (re, im)
+    }
+
+    /// The operation `op` of the component type on `args`, bound to a temporary of type `ty`:
+    /// one rounding, never fused with another (ADR 0120 rule 23).
+    fn component_op(
+        &mut self,
+        lets: &mut Vec<Let>,
+        parts: &ComplexParts,
+        op: FloatOp,
+        args: Vec<Atom>,
+        ty: Type,
+    ) -> Atom {
+        let prim = if parts.f32 {
+            Prim::Float32(op)
+        } else {
+            Prim::Float(op)
+        };
+        let arg_spans = vec![parts.span; args.len()];
+        self.push_typed(
+            lets,
+            parts.span,
+            ty,
+            Rhs::Prim {
+                prim,
+                args,
+                arg_spans,
+                span: parts.span,
+            },
+        )
+    }
+
+    /// [`Fx::component_op`] with a result of the component type.
+    fn component(
+        &mut self,
+        lets: &mut Vec<Let>,
+        parts: &ComplexParts,
+        op: FloatOp,
+        args: Vec<Atom>,
+    ) -> Atom {
+        let ty = parts.component.clone();
+        self.component_op(lets, parts, op, args, ty)
+    }
+
+    /// The binary operation `op` of the component type on `x` and `y`.
+    fn op2(
+        &mut self,
+        lets: &mut Vec<Let>,
+        parts: &ComplexParts,
+        op: FloatOp,
+        x: &Atom,
+        y: &Atom,
+    ) -> Atom {
+        self.component(lets, parts, op, vec![x.clone(), y.clone()])
+    }
+
+    /// `complex(re: re, im: im)`, bound to a temporary of the complex type.
+    fn complex_value(
+        &mut self,
+        lets: &mut Vec<Let>,
+        parts: &ComplexParts,
+        re: Atom,
+        im: Atom,
+    ) -> Atom {
+        self.push_typed(
+            lets,
+            parts.span,
+            parts.ty.clone(),
+            Rhs::Construct {
+                ctor: parts.ctor.clone(),
+                args: vec![re, im],
+                arg_spans: vec![parts.span, parts.span],
+            },
+        )
+    }
+
+    /// `-x`, `x.conj()`, `x.scale(by: k)` and `x.norm_sqr()` at `span`, by the operations of
+    /// the components (ADR 0120 rule 23): O(1).
+    fn complex_unary(
+        &mut self,
+        lets: &mut Vec<Let>,
+        step: ComplexStep,
+        value: Atom,
+        factor: Option<Atom>,
+        span: Span,
+    ) -> Atom {
+        // The receiver's type: the result of `norm_sqr()` is a component.
+        let parts = self.complex_parts_at(span, step);
+        let (a, b) = self.complex_parts(lets, &parts, value);
+        match step {
+            ComplexStep::Neg => {
+                let re = self.component(lets, &parts, FloatOp::Neg, vec![a]);
+                let im = self.component(lets, &parts, FloatOp::Neg, vec![b]);
+                self.complex_value(lets, &parts, re, im)
+            }
+            ComplexStep::Conj => {
+                let im = self.component(lets, &parts, FloatOp::Neg, vec![b]);
+                self.complex_value(lets, &parts, a, im)
+            }
+            ComplexStep::Scale => {
+                let Some(k) = factor else {
+                    self.broken.set(true);
+                    return Atom::Unit;
+                };
+                let re = self.component(lets, &parts, FloatOp::Mul, vec![a, k.clone()]);
+                let im = self.component(lets, &parts, FloatOp::Mul, vec![b, k]);
+                self.complex_value(lets, &parts, re, im)
+            }
+            ComplexStep::NormSqr => {
+                let aa = self.component(lets, &parts, FloatOp::Mul, vec![a.clone(), a]);
+                let bb = self.component(lets, &parts, FloatOp::Mul, vec![b.clone(), b]);
+                self.component(lets, &parts, FloatOp::Add, vec![aa, bb])
+            }
+        }
+    }
+
+    /// The shape of the complex values of the operation `step` at `span`: the result's, or,
+    /// for `norm_sqr()`, whose result is a component, the complex type of that component.
+    fn complex_parts_at(&mut self, span: Span, step: ComplexStep) -> ComplexParts {
+        if step != ComplexStep::NormSqr {
+            return self.complex_parts_of(span);
+        }
+        let ty = self.type_at(span);
+        let (f32, label) = match &ty {
+            Type::Base {
+                base: Base::F32,
+                label,
+                ..
+            } => (true, label.clone()),
+            Type::Base { label, .. } => (false, label.clone()),
+            Type::Fn { .. } => (false, Label::public()),
+        };
+        let name = if f32 {
+            una_core::complex::COMPLEX_F32
+        } else {
+            una_core::complex::COMPLEX_F64
+        };
+        let kind = Path {
+            module: una_core::PRELUDE_MODULE.to_owned(),
+            name: name.to_owned(),
+        };
+        ComplexParts {
+            ty: with_label(
+                plain(Base::Named {
+                    module: kind.module.clone(),
+                    name: kind.name.clone(),
+                    args: Vec::new(),
+                }),
+                &label,
+            ),
+            component: ty,
+            f32,
+            label,
+            ctor: Ctor {
+                kind,
+                name: name.to_owned(),
+                index: 0,
+            },
+            span,
+        }
+    }
+
+    /// The shape of the complex value of the expression at `span`.
+    fn complex_parts_of(&mut self, span: Span) -> ComplexParts {
+        let (ty, f32, label, ctor) = self.complex_shape(span);
+        let base = if f32 { Base::F32 } else { Base::F64 };
+        ComplexParts {
+            ty,
+            component: with_label(plain(base), &label),
+            f32,
+            label,
+            ctor,
+            span,
+        }
+    }
+
+    /// `x + y`, `x - y`, `x * y` and `x / y` of two complex values at `span`, by the operations
+    /// of the components in the order of ADR 0120 rule 23, with no contraction; division is
+    /// Smith's algorithm, with its two branches chosen by `c.abs().ieee_ge(other: d.abs())`.
+    /// O(1).
+    fn complex_binary(
+        &mut self,
+        lets: &mut Vec<Let>,
+        op: BinaryOp,
+        x: Atom,
+        y: Atom,
+        span: Span,
+    ) -> Atom {
+        let parts = self.complex_parts_of(span);
+        let (a, b) = self.complex_parts(lets, &parts, x);
+        let (c, d) = self.complex_parts(lets, &parts, y);
+        match op {
+            BinaryOp::Add | BinaryOp::Sub => {
+                let float = if op == BinaryOp::Add {
+                    FloatOp::Add
+                } else {
+                    FloatOp::Sub
+                };
+                let re = self.component(lets, &parts, float, vec![a, c]);
+                let im = self.component(lets, &parts, float, vec![b, d]);
+                self.complex_value(lets, &parts, re, im)
+            }
+            BinaryOp::Mul => {
+                // `re = a * c - b * d`, `im = a * d + b * c`.
+                let ac = self.op2(lets, &parts, FloatOp::Mul, &a, &c);
+                let bd = self.op2(lets, &parts, FloatOp::Mul, &b, &d);
+                let re = self.op2(lets, &parts, FloatOp::Sub, &ac, &bd);
+                let ad = self.op2(lets, &parts, FloatOp::Mul, &a, &d);
+                let bc = self.op2(lets, &parts, FloatOp::Mul, &b, &c);
+                let im = self.op2(lets, &parts, FloatOp::Add, &ad, &bc);
+                self.complex_value(lets, &parts, re, im)
+            }
+            _ => {
+                let c_abs = self.component(lets, &parts, FloatOp::Abs, vec![c.clone()]);
+                let d_abs = self.component(lets, &parts, FloatOp::Abs, vec![d.clone()]);
+                let flag = with_label(bool_ty(), &parts.label);
+                let wide =
+                    self.component_op(lets, &parts, FloatOp::IeeeGe, vec![c_abs, d_abs], flag);
+                // `|c| >= |d|`: `t = d / c`, `n = c + d * t`, `re = (a + b * t) / n`,
+                // `im = (b - a * t) / n`.
+                let mut first = Vec::new();
+                let t = self.op2(&mut first, &parts, FloatOp::Div, &d, &c);
+                let dt = self.op2(&mut first, &parts, FloatOp::Mul, &d, &t);
+                let n = self.op2(&mut first, &parts, FloatOp::Add, &c, &dt);
+                let bt = self.op2(&mut first, &parts, FloatOp::Mul, &b, &t);
+                let p = self.op2(&mut first, &parts, FloatOp::Add, &a, &bt);
+                let re = self.op2(&mut first, &parts, FloatOp::Div, &p, &n);
+                let at = self.op2(&mut first, &parts, FloatOp::Mul, &a, &t);
+                let q = self.op2(&mut first, &parts, FloatOp::Sub, &b, &at);
+                let im = self.op2(&mut first, &parts, FloatOp::Div, &q, &n);
+                let r = self.complex_value(&mut first, &parts, re, im);
+                // Otherwise: `t = c / d`, `n = c * t + d`, `re = (a * t + b) / n`,
+                // `im = (b * t - a) / n`.
+                let mut second = Vec::new();
+                let t = self.op2(&mut second, &parts, FloatOp::Div, &c, &d);
+                let ct = self.op2(&mut second, &parts, FloatOp::Mul, &c, &t);
+                let n = self.op2(&mut second, &parts, FloatOp::Add, &ct, &d);
+                let at = self.op2(&mut second, &parts, FloatOp::Mul, &a, &t);
+                let p = self.op2(&mut second, &parts, FloatOp::Add, &at, &b);
+                let re = self.op2(&mut second, &parts, FloatOp::Div, &p, &n);
+                let bt = self.op2(&mut second, &parts, FloatOp::Mul, &b, &t);
+                let q = self.op2(&mut second, &parts, FloatOp::Sub, &bt, &a);
+                let im = self.op2(&mut second, &parts, FloatOp::Div, &q, &n);
+                let s = self.complex_value(&mut second, &parts, re, im);
+                let quotient = CoreExpr::If {
+                    cond: wide,
+                    then: Box::new(close(first, CoreExpr::Atom { atom: r, span })),
+                    otherwise: Box::new(close(second, CoreExpr::Atom { atom: s, span })),
+                };
+                let t = self.temp();
+                bind_expr(lets, t.clone(), parts.ty.clone(), quotient, span, false);
+                Atom::Var(t)
+            }
+        }
     }
 
     /// A call of a declared function, predicate or policy; a policy call is `declassify`.
@@ -3520,20 +5572,53 @@ impl<'e, 'a> Fx<'e, 'a> {
         args: &[Arg],
     ) -> Atom {
         let Some(def) = self.env.functions.get(id) else {
-            self.broken = true;
+            self.broken.set(true);
             return Atom::Unit;
         };
+        // A tensor's shape, index or permutation: the elements of its list literal are the
+        // arguments, as the checker bound them (`spec/29 §17`).
+        let spread_args: Vec<Arg>;
+        let args = match self.records.spread.get(&span) {
+            Some(position) => {
+                spread_args = super::dense::spread(args, *position);
+                spread_args.as_slice()
+            }
+            None => args,
+        };
         let (values, arg_spans) = self.ordered_values(lets, span, receiver, args);
+        // `json_decimal(x)` writes `x` at its scale, which only its type knows: an operation
+        // of `Decimal` with that scale (`spec/29 §16`).
+        if def.module == self.env.prelude
+            && def.name == "json_decimal"
+            && let Some(scale) = arg_spans.first().and_then(|at| self.decimal_at(*at))
+        {
+            return self.push(
+                lets,
+                span,
+                Rhs::Prim {
+                    prim: Prim::Decimal(una_core::DecimalOp::ToJson(scale)),
+                    args: values,
+                    arg_spans,
+                    span,
+                },
+            );
+        }
+        if Some(id) == self.env.map_update {
+            return self.map_update(lets, span, type_args, values, arg_spans, false);
+        }
+        if Some(id) == self.env.hash_map_update {
+            return self.map_update(lets, span, type_args, values, arg_spans, true);
+        }
         if def.kind == FnKind::Policy {
             let FnAst::Policy(policy) = def.ast else {
-                self.broken = true;
+                self.broken.set(true);
                 return Atom::Unit;
             };
             let via_name = self.env.text(def.module, policy.via.name);
             let via = match self.env.lower(def.module, via_name) {
                 Some(Entity::Function(via)) => self.function_path(via),
                 _ => {
-                    self.broken = true;
+                    self.broken.set(true);
                     return Atom::Unit;
                 }
             };
@@ -3551,7 +5636,22 @@ impl<'e, 'a> Fx<'e, 'a> {
                 },
             );
         }
-        let type_args: Vec<Type> = type_args.iter().map(|t| self.ty(t)).collect();
+        // ADR 0120: the type arguments of a call of a function that computes new elements keep
+        // no refinement (`super::dense::SYNTHESIZING`), so the verifier derives its result, and
+        // the new values of its `edit` places, without the element type's refinement: a
+        // binding or a place whose declared type claims it gets an obligation that the call's
+        // facts cannot prove, and the program is refused, never accepted on a false fact.
+        let synthesizes = super::dense::synthesizes(self.env.prelude, def.module, def.name);
+        let type_args: Vec<Type> = type_args
+            .iter()
+            .map(|t| {
+                if synthesizes {
+                    self.ty(&t.without_refinements())
+                } else {
+                    self.ty(t)
+                }
+            })
+            .collect();
         let function = self.function_path(id);
         let call = Rhs::Call {
             function,
@@ -3581,9 +5681,147 @@ impl<'e, 'a> Fx<'e, 'a> {
                         "the tuple of a call with `edit` arguments outside a statement or `let`"
                             .to_owned(),
                     );
-                    self.broken = true;
+                    self.broken.set(true);
                 }
                 self.push(lets, span, call)
+            }
+        }
+    }
+
+    /// `edit m.update(key: k, initial: i, change: f)` on a map, edition 0.4 (ADR 0119 rule
+    /// 18): `v = when m.get(k) is Some(x) -> x, None -> i`, then `m.with(k, f(v))`, as the
+    /// tuple `(m', unit)` of a call with an `edit` argument (`spec/17 §4`). `f` is called
+    /// exactly once, and a failure of it leaves `m` as it was, since the place takes its new
+    /// value only when the call returns (`spec/17 §7` rule 1). A lookup and an insertion,
+    /// O(log n) each (`spec/21 §5`). `values` and `arg_spans` are in parameter order. With
+    /// `hashed`, the same on a hash map (ADR 0119 rule 12), O(|k|) expected each.
+    fn map_update(
+        &mut self,
+        lets: &mut Vec<Let>,
+        span: Span,
+        type_args: &[Ty],
+        values: Vec<Atom>,
+        arg_spans: Vec<Span>,
+        hashed: bool,
+    ) -> Atom {
+        let (get, with) = if hashed {
+            (
+                Prim::HashMap(una_core::HashMapOp::Get),
+                Prim::HashMap(una_core::HashMapOp::With),
+            )
+        } else {
+            (Prim::Map(MapOp::Get), Prim::Map(MapOp::With))
+        };
+        let ([map, key, initial, change], [map_span, key_span, initial_span, change_span]) =
+            (values.as_slice(), arg_spans.as_slice())
+        else {
+            self.broken.set(true);
+            return Atom::Unit;
+        };
+        // The receiver's type as the checker recorded it, else `Map[K, V]` at the call's type
+        // arguments.
+        let map_ty = match self.records.types.get(map_span) {
+            Some(ty) => self.ty(ty),
+            None => {
+                let arg = |index: usize| type_args.get(index).cloned().unwrap_or_else(Ty::error);
+                if hashed {
+                    self.ty(&Ty::Coll(
+                        una_core::Coll::HashMap,
+                        vec![arg(0), arg(1)].into(),
+                    ))
+                } else {
+                    self.ty(&Ty::Map(
+                        super::ty::Shared::new(arg(0)),
+                        super::ty::Shared::new(arg(1)),
+                    ))
+                }
+            }
+        };
+        let value_ty = match &map_ty {
+            Type::Base {
+                base: Base::Named { args, .. },
+                ..
+            } => args.get(1).cloned().unwrap_or_else(unknown),
+            _ => unknown(),
+        };
+        let option_ty = Type::Base {
+            base: Base::Named {
+                module: una_core::PRELUDE_MODULE.to_owned(),
+                name: "Option".to_owned(),
+                args: vec![value_ty.clone()],
+            },
+            refinements: Vec::new(),
+            label: Label::public(),
+        };
+        let found = self.temp();
+        lets.push(Let::inferred(
+            found.clone(),
+            option_ty.clone(),
+            Bound::Rhs(Rhs::Prim {
+                prim: get,
+                args: vec![map.clone(), key.clone()],
+                arg_spans: vec![*map_span, *key_span],
+                span,
+            }),
+            span,
+        ));
+        let current = self.unwrap_option(
+            CoreExpr::Atom {
+                atom: Atom::Var(found),
+                span,
+            },
+            option_ty,
+            CoreExpr::Atom {
+                atom: initial.clone(),
+                span: *initial_span,
+            },
+            span,
+        );
+        let before = self.temp();
+        bind_expr(lets, before.clone(), value_ty.clone(), current, span, false);
+        let after = self.temp();
+        lets.push(Let::inferred(
+            after.clone(),
+            value_ty,
+            Bound::Rhs(Rhs::Apply {
+                callee: change.clone(),
+                args: vec![Atom::Var(before)],
+                arg_spans: vec![*initial_span],
+                span: *change_span,
+            }),
+            span,
+        ));
+        let updated = self.temp();
+        lets.push(Let::inferred(
+            updated.clone(),
+            map_ty,
+            Bound::Rhs(Rhs::Prim {
+                prim: with,
+                args: vec![map.clone(), key.clone(), Atom::Var(after)],
+                arg_spans: vec![*map_span, *key_span, *change_span],
+                span,
+            }),
+            span,
+        ));
+        match self.call_tuple.take() {
+            Some((at, ty)) if at == span => {
+                let t = self.temp();
+                lets.push(Let::inferred(
+                    t.clone(),
+                    ty,
+                    Bound::Rhs(Rhs::Tuple(vec![Atom::Var(updated), Atom::Unit])),
+                    span,
+                ));
+                Atom::Var(t)
+            }
+            other => {
+                self.call_tuple = other;
+                self.lost.borrow_mut().push(
+                    "the tuple of a call with `edit` arguments outside a statement or `let`"
+                        .to_owned(),
+                );
+                self.broken.set(true);
+                Atom::Unit
             }
         }
     }
@@ -3613,14 +5851,14 @@ impl<'e, 'a> Fx<'e, 'a> {
             written.push((atom, arg.value.span));
         }
         if written.len() != order.len() {
-            self.broken = true;
+            self.broken.set(true);
         }
         let count = order.iter().flatten().max().map_or(0, |max| max + 1);
         let mut slots: Vec<Option<(Atom, Span)>> = vec![None; count.max(written.len())];
         for (value, target) in written.into_iter().zip(order.iter().copied()) {
             match target.and_then(|t| slots.get_mut(t)) {
                 Some(slot) => *slot = Some(value),
-                None => self.broken = true,
+                None => self.broken.set(true),
             }
         }
         slots.into_iter().flatten().unzip()
@@ -3630,8 +5868,17 @@ impl<'e, 'a> Fx<'e, 'a> {
     /// the declared names and types, refinements included (ADR 0037 rule 1).
     fn function_value(&mut self, id: usize, type_args: &[Ty], span: Span) -> Rhs {
         let Some(def) = self.env.functions.get(id) else {
-            self.broken = true;
+            self.broken.set(true);
             return Rhs::Atom(Atom::Unit);
+        };
+        // A function that computes new elements is U2001 as a value; should that ever change,
+        // its call here keeps no refinement of the element type either, as every call does.
+        let stripped: Vec<Ty>;
+        let type_args = if super::dense::synthesizes(self.env.prelude, def.module, def.name) {
+            stripped = type_args.iter().map(Ty::without_refinements).collect();
+            stripped.as_slice()
+        } else {
+            type_args
         };
         let mark = self.scope.len();
         let params: Vec<(Name, Type)> = def
@@ -3750,6 +5997,14 @@ fn bind_expr(lets: &mut Vec<Let>, name: Name, ty: Type, expr: CoreExpr, span: Sp
                     last.destructure.is_none()
                         && last.name == var
                         && !(written && last.ty != ty && has_fn_type(&ty))
+                        // The temporary of an `Int` literal outside the tagged range, which a
+                        // `systems` package binds, keeps its own span, the literal's
+                        // `overflow` site (ADR 0109 rule 3).
+                        && !matches!(
+                            &last.value,
+                            Bound::Rhs(Rhs::Atom(Atom::Int(digits)))
+                                if !super::fixed::fits_word(false, digits)
+                        )
                 }) =>
             {
                 if let Some(last) = lets.pop() {
@@ -3808,6 +6063,7 @@ fn block_expr_span(expr: &BlockExpr) -> Span {
         BlockExpr::When(when) => when.span,
         BlockExpr::If(block) => block.span,
         BlockExpr::TogetherFor(together) => together.span,
+        BlockExpr::FirstOf(first) => first.span,
     }
 }
 
@@ -3871,7 +6127,13 @@ fn lost(ty: &Ty, core: &Type) -> Option<String> {
     if matches!(ty.unlabeled(), Ty::Var(_) | Ty::Never | Ty::Error(_)) {
         return None;
     }
-    if *label != ty.top_label() {
+    // A collection's Core label also holds the label its shape implies (ADR 0119 rule 3),
+    // which only raises it.
+    let kept = match ty.unlabeled() {
+        Ty::Coll(..) => ty.top_label().flows_to(label),
+        _ => *label == ty.top_label(),
+    };
+    if !kept {
         return Some(format!("the label `{}` became `{label}`", ty.top_label()));
     }
     // ADR 0103: every refinement of a nested position is in Core IR.
@@ -3940,7 +6202,7 @@ fn lost(ty: &Ty, core: &Type) -> Option<String> {
         }
         (Ty::Fn(_), Type::Base { .. }) => Some("a function type".to_owned()),
         (
-            Ty::List(element),
+            Ty::List(element) | Ty::Dense(_, element),
             Type::Base {
                 base: Base::Named { args, .. },
                 ..
@@ -3957,7 +6219,7 @@ fn lost(ty: &Ty, core: &Type) -> Option<String> {
             .zip(args)
             .find_map(|(ty, core)| lost(ty, core)),
         (
-            Ty::Kind(_, args),
+            Ty::Kind(_, args) | Ty::Coll(_, args),
             Type::Base {
                 base: Base::Named { args: core, .. },
                 ..
@@ -3969,6 +6231,22 @@ fn lost(ty: &Ty, core: &Type) -> Option<String> {
             args.iter().zip(core).find_map(|(ty, core)| lost(ty, core))
         }
         _ => None,
+    }
+}
+
+/// The label that the shape of the collection type `ty` implies on its top (ADR 0119 rule 3,
+/// IF2 to IF4): every label of the arguments that are part of its shape, the labels that
+/// their kinds' fields declare included; `public` for any other type.
+fn implied_label(ty: &Ty, kinds: &super::ty::KindLabels) -> Label {
+    match ty.unlabeled() {
+        Ty::Coll(coll, args) => args
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| coll.is_shape(*index))
+            .fold(Label::public(), |label, (_, arg)| {
+                label.join(&arg.every_label(kinds))
+            }),
+        _ => Label::public(),
     }
 }
 
@@ -4072,6 +6350,56 @@ fn core_constraints(constraints: &[Constraint], count: usize) -> Vec<una_core::C
             },
         )
         .collect()
+}
+
+/// A failure injected into elaboration, compiled only in tests (#1050): while a [`Break`] is
+/// held on this thread, the declaration, standard signature or example of its name does not
+/// elaborate, and no diagnostic says so, as a bug of the elaboration would leave it.
+#[cfg(test)]
+pub(crate) mod hook {
+    use std::cell::RefCell;
+
+    use std::cell::Cell;
+
+    thread_local! {
+        static BROKEN: RefCell<Option<String>> = const { RefCell::new(None) };
+        static EAGER: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// An injected failure, until dropped.
+    pub(crate) struct Break;
+
+    impl Break {
+        /// Breaks the elaboration of the declaration named `name`.
+        pub(crate) fn of(name: &str) -> Break {
+            BROKEN.with(|broken| *broken.borrow_mut() = Some(name.to_owned()));
+            Break
+        }
+
+        /// Looks every name of a formula up as a resolution, a local's too, whose span the
+        /// records never hold: [`super::Fx::res`] then finds nothing and marks the declaration
+        /// broken without a diagnostic, the regression found while adding the host-driven step
+        /// (#1050).
+        pub(crate) fn eager_resolution() -> Break {
+            EAGER.with(|eager| eager.set(true));
+            Break
+        }
+    }
+
+    impl Drop for Break {
+        fn drop(&mut self) {
+            BROKEN.with(|broken| *broken.borrow_mut() = None);
+            EAGER.with(|eager| eager.set(false));
+        }
+    }
+
+    pub(super) fn breaks(name: &str) -> bool {
+        BROKEN.with(|broken| broken.borrow().as_deref() == Some(name))
+    }
+
+    pub(super) fn eager() -> bool {
+        EAGER.with(Cell::get)
+    }
 }
 
 #[cfg(test)]
@@ -4263,5 +6591,47 @@ impl Scope {
     fn find(&self, name: &str) -> Option<Name> {
         let position = self.index.get(name)?.last()?;
         self.items.get(*position).map(|(_, binder)| binder.clone())
+    }
+}
+
+/// The operation of `Decimal` for the operator `op` on operands of scales `a` and `b`
+/// (`spec/29 §16`, ADR 0120 rule 13); `None` for an operator decimals do not have.
+/// The ratio of a `convert()` on an `F64`, at most 2^53, so exact (ADR 0114 rule 12.5).
+fn float_ratio(ratio: u128) -> f64 {
+    ratio as f64
+}
+
+/// The ratio of a `convert()` on an `F32`, at most 2^24, so exact (ADR 0120 rule 62).
+fn float32_ratio(ratio: u128) -> f32 {
+    ratio as f32
+}
+
+fn decimal_op(op: BinaryOp, a: u8, b: u8) -> Option<una_core::DecimalOp> {
+    use una_core::DecimalOp;
+    Some(match op {
+        BinaryOp::Add => DecimalOp::Add(a, b),
+        BinaryOp::Sub => DecimalOp::Sub(a, b),
+        BinaryOp::Mul => DecimalOp::Mul,
+        BinaryOp::Eq => DecimalOp::Eq(a, b),
+        BinaryOp::NotEq => DecimalOp::Ne(a, b),
+        BinaryOp::Lt => DecimalOp::Lt(a, b),
+        BinaryOp::Le => DecimalOp::Le(a, b),
+        BinaryOp::Gt => DecimalOp::Gt(a, b),
+        BinaryOp::Ge => DecimalOp::Ge(a, b),
+        _ => return None,
+    })
+}
+
+/// `term` times the literal 10^k, a coefficient aligned to a scale k larger (ADR 0120 V2).
+fn aligned(term: Term, k: u8) -> Term {
+    if k == 0 {
+        return term;
+    }
+    Term::Binary {
+        op: BinOp::Mul,
+        left: Box::new(Term::Int(
+            una_core::decimal::pow10(u32::from(k)).to_string(),
+        )),
+        right: Box::new(term),
     }
 }

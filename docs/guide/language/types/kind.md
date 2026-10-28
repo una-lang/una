@@ -18,7 +18,7 @@ codes: [U0101, U1002, U2001, U2002, U5001]
 
 Records and sums are nominal, which means a type is known by its name: two declarations of the same shape are two types. Aliases and refinements are structural over their base, which means they are the type they rename or narrow, so a `Seats` value is an `Int` wherever an `Int` is expected.
 
-Learn more: [Records](/learn/kinds/records/) and [Sum kinds](/learn/kinds/sum-kinds/).
+Learn more: [Records](/learn/kinds/records/) and [Sum kinds, and is](/learn/kinds/sum-kinds-and-is/).
 
 ```una
 module shop

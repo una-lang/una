@@ -1,0 +1,6 @@
+mirrors
+  itaty
+    "https://ita-mirror.example.net"
+    "file:///srv/ita-mirror"
+  acme
+    "file:///srv/acme"

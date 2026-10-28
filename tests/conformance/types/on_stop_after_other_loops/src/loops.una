@@ -1,0 +1,23 @@
+-- test: `on stop` follows only `for ever` (U2034), and a `stop` or `skip` in the `on stop` block of its own loop is U2034 (spec/26 §5, ADR 0116 rules 5 and 6)
+-- spec: spec/26 §5
+-- expect: error U2034 at src/loops.una:12:3
+-- expect: error U2034 at src/loops.una:22:5
+module loops
+
+pub sum(xs: List[Int]) -> Int
+=
+  let edit total = 0
+  for x in xs
+    total = total + x
+  on stop
+    total = 0
+  total
+
+pub spin() -> Unit
+  diverges
+=
+  for ever
+    stop
+  on stop
+    stop
+  unit

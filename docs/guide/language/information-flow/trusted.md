@@ -1,7 +1,7 @@
 ---
 construct: trusted modules
 editions: ["0.1", "0.2"]
-spec: ["spec/07 §6", "spec/07 §5", "spec/02 §1", "spec/13 §6", "spec/13 §7"]
+spec: ["spec/07 §6", "spec/07 §5", "spec/07 §1", "spec/02 §1", "spec/13 §6", "spec/13 §7"]
 codes: [U4004, U7005]
 ---
 
@@ -132,6 +132,18 @@ Further rules:
 - **Everything else is checked.** Only the `via` functions of policies skip label checks; every other declaration of a trusted module is checked normally, and every obligation of a `via` function is proven.
 - **Reported.** `una report` lists each trusted module with its line count under `tcb`.
 
+## Reading the trust report
+
+Read the report fields separately:
+
+- `proven` gives the number of proven obligations as `semantic`; `security` and `authority` are `"by typing"`. A proof shows that the program keeps its contracts, not that the contracts capture the whole requirement or that an external system behaves as declared.
+- `assumptions` lists every capability the package declares, with its operations and their `ensures` clauses; those clauses are assumed of the implementation, not proven.
+- `escapes.checked` lists every module that uses `checked`, with its count and its budget.
+- `tcb` lists the trusted modules with their line counts, the host capabilities, the solver and the proof cache with its key. Line counts locate the code to review; they do not say whether a policy's purpose is appropriate.
+- `out_of_model` lists the channels outside the information-flow guarantee, such as timing, termination and divergence, resource consumption, hard links, and external systems beyond their declared signatures.
+
+A review of the report still compares each policy's purpose and owner with the requirement, and reads the assumptions and the excluded channels. These fields are defined in `spec/13 §6`; the information-flow scope is in `spec/07 §1`.
+
 ## Diagnostics
 
 - [U4004](../../../../crates/una-explain/explain/U4004.md): a policy in a module that is not trusted.
@@ -139,7 +151,7 @@ Further rules:
 
 ## Edition
 
-Trusted modules are the same in editions `0.1` and `0.2`. Edition `0.3`, a preview, adds boundaries (groups of modules whose authority `una.toml` caps): a module inside a boundary is never trusted, and a call into a boundary that could reach a policy call is rejected. See [`[boundaries]`](../../configure/boundaries.md) and [Edition 0.3 preview: conditions and boundaries](/learn/capabilities/edition-0-3-preview-conditions-and-boundaries/).
+Trusted modules are the same in editions `0.1` and `0.2`. Edition `0.3`, a preview, adds boundaries (groups of modules whose authority `una.toml` caps): a module inside a boundary is never trusted, and a call into a boundary that could reach a policy call is rejected. See [`[boundaries]`](../../configure/boundaries.md) and [A ceiling for a module: boundaries](/learn/authority/a-ceiling-for-a-module-boundaries/).
 
 ## Normative source
 

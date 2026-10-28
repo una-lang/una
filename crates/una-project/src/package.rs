@@ -1,14 +1,16 @@
-//! Finding the files of a package (ADR 0021 rule 1).
+//! Finding the files of a package (ADR 0021 rule 1, ADR 0122 rule 2).
 
 use std::fmt;
 use std::path::{Path, PathBuf};
+
+use crate::manifest::Format;
 
 /// Why a path cannot be loaded; a usage error of the command (`spec/13 §5`, exit code 2).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LoadError {
     /// The path does not exist.
     Missing(PathBuf),
-    /// The path is a directory without `una.toml`.
+    /// The path is a directory without `ita.una` or `una.toml`.
     NotAPackage(PathBuf),
     /// The path is a package without a `src/` directory.
     NoSourceDirectory(PathBuf),
@@ -27,7 +29,7 @@ impl fmt::Display for LoadError {
             LoadError::Missing(path) => write!(f, "path `{}` does not exist", path.display()),
             LoadError::NotAPackage(path) => write!(
                 f,
-                "directory `{}` is not a package: it has no `una.toml`",
+                "directory `{}` is not a package: it has no `ita.una` or `una.toml`",
                 path.display()
             ),
             LoadError::NoSourceDirectory(path) => {
@@ -45,9 +47,9 @@ impl std::error::Error for LoadError {}
 /// What a file of a package is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Role {
-    /// `una.toml`.
+    /// `una.toml`, or `ita.una` from edition `0.4`.
     Manifest,
-    /// `verification.lock`.
+    /// `verification.lock`, or `ita.lock` from edition `0.4`.
     Lock,
     /// A module.
     Module,
@@ -66,12 +68,18 @@ pub struct LoadedFile {
     pub role: Role,
 }
 
-/// The files of a package: its `una.toml` and `verification.lock` when it has them, then
-/// its modules in path order.
+/// The files of a package: its manifest and lock when it has them, then its modules in path
+/// order.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Loaded {
     /// Whether the package is a single file checked on its own (ADR 0021 rule 1).
     pub single: bool,
+    /// Which manifest the package has: `ita.una` when the directory holds one, else
+    /// `una.toml` (ADR 0122 rule 2).
+    pub format: Format,
+    /// Whether the directory holds both `ita.una` and `una.toml`, which is U7008: a package
+    /// never has two manifests that could disagree (ADR 0122 rule 2).
+    pub both_manifests: bool,
     /// The files.
     pub files: Vec<LoadedFile>,
 }
@@ -86,6 +94,8 @@ pub fn discover(path: &Path) -> Result<Loaded, LoadError> {
             .unwrap_or_default();
         return Ok(Loaded {
             single: true,
+            format: Format::Toml,
+            both_manifests: false,
             files: vec![LoadedFile {
                 name,
                 path: path.to_path_buf(),
@@ -97,25 +107,31 @@ pub fn discover(path: &Path) -> Result<Loaded, LoadError> {
     if !path.is_dir() {
         return Err(LoadError::Missing(path.to_path_buf()));
     }
-    // A directory is a package only with `una.toml` and `src/`.
-    let manifest = path.join("una.toml");
-    if !manifest.is_file() {
+    // A directory is a package only with a manifest, `ita.una` or `una.toml`, and `src/`.
+    let ita = path.join("ita.una");
+    let toml = path.join("una.toml");
+    let (format, manifest, lock_name) = if ita.is_file() {
+        (Format::Ita, ita, "ita.lock")
+    } else if toml.is_file() {
+        (Format::Toml, toml.clone(), "verification.lock")
+    } else {
         return Err(LoadError::NotAPackage(path.to_path_buf()));
-    }
+    };
+    let both_manifests = format == Format::Ita && toml.is_file();
     let src = path.join("src");
     if !src.is_dir() {
         return Err(LoadError::NoSourceDirectory(path.to_path_buf()));
     }
     let mut files = vec![LoadedFile {
-        name: "una.toml".to_owned(),
+        name: format.file().to_owned(),
         bytes: read(&manifest)?,
         path: manifest,
         role: Role::Manifest,
     }];
-    let lock = path.join("verification.lock");
+    let lock = path.join(lock_name);
     if lock.is_file() {
         files.push(LoadedFile {
-            name: "verification.lock".to_owned(),
+            name: lock_name.to_owned(),
             bytes: read(&lock)?,
             path: lock,
             role: Role::Lock,
@@ -134,8 +150,95 @@ pub fn discover(path: &Path) -> Result<Loaded, LoadError> {
     }
     Ok(Loaded {
         single: false,
+        format,
+        both_manifests,
         files,
     })
+}
+
+/// Loads the path dependency at `dir` (ADR 0122 rules 7 and 30): a directory with `ita.una`
+/// and `src/`, its files named `<written>/ita.una` and `<written>/src/...` after the path the
+/// root writes. No symbolic link is followed, in the directory or below it: an entry that is
+/// one refuses the dependency, so a package never reads a file outside it through a link.
+/// Its lock is not read (rule 23).
+pub fn discover_dependency(dir: &Path, written: &str) -> Result<Loaded, LoadError> {
+    let not_followed = |path: &Path| -> Result<(), LoadError> {
+        match std::fs::symlink_metadata(path) {
+            Ok(meta) if meta.file_type().is_symlink() => Err(LoadError::Unreadable {
+                path: path.to_path_buf(),
+                reason: "it is a symbolic link, which a dependency may not hold".to_owned(),
+            }),
+            Ok(_) => Ok(()),
+            Err(error) => Err(unreadable(path, &error)),
+        }
+    };
+    not_followed(dir)?;
+    let manifest = dir.join("ita.una");
+    if !manifest.is_file() {
+        return Err(LoadError::NotAPackage(dir.to_path_buf()));
+    }
+    not_followed(&manifest)?;
+    let src = dir.join("src");
+    if !src.is_dir() {
+        return Err(LoadError::NoSourceDirectory(dir.to_path_buf()));
+    }
+    not_followed(&src)?;
+    let mut files = vec![LoadedFile {
+        name: format!("{written}/ita.una"),
+        bytes: read_unlinked(&manifest)?,
+        path: manifest,
+        role: Role::Manifest,
+    }];
+    let mut modules = Vec::new();
+    collect_no_links(&src, &format!("{written}/src"), &mut modules)?;
+    modules.sort();
+    for (name, file) in modules {
+        files.push(LoadedFile {
+            name,
+            bytes: read_unlinked(&file)?,
+            path: file,
+            role: Role::Module,
+        });
+    }
+    Ok(Loaded {
+        single: false,
+        format: Format::Ita,
+        both_manifests: false,
+        files,
+    })
+}
+
+/// [`collect`], refusing every symbolic link instead of following it.
+fn collect_no_links(
+    dir: &Path,
+    prefix: &str,
+    files: &mut Vec<(String, PathBuf)>,
+) -> Result<(), LoadError> {
+    let entries = std::fs::read_dir(dir).map_err(|error| unreadable(dir, &error))?;
+    for entry in entries {
+        let entry = entry.map_err(|error| unreadable(dir, &error))?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if is_hidden(&name) {
+            continue;
+        }
+        let path = entry.path();
+        let kind = entry
+            .file_type()
+            .map_err(|error| unreadable(&path, &error))?;
+        if kind.is_symlink() {
+            return Err(LoadError::Unreadable {
+                path,
+                reason: "it is a symbolic link, which a dependency may not hold".to_owned(),
+            });
+        }
+        let relative = format!("{prefix}/{name}");
+        if kind.is_dir() {
+            collect_no_links(&path, &relative, files)?;
+        } else if kind.is_file() && name.ends_with(".una") {
+            files.push((relative, path));
+        }
+    }
+    Ok(())
 }
 
 /// Collects the `.una` files under `dir`, named `prefix/...`.
@@ -166,6 +269,15 @@ fn is_hidden(name: &str) -> bool {
 
 fn read(path: &Path) -> Result<Vec<u8>, LoadError> {
     std::fs::read(path).map_err(|error| unreadable(path, &error))
+}
+
+/// Reads a file of a dependency through a descriptor opened with no link followed, checked to
+/// be the regular file its directory lists (ADR 0122 rule 30).
+fn read_unlinked(path: &Path) -> Result<Vec<u8>, LoadError> {
+    crate::tree::read_unlinked(path).map_err(|reason| LoadError::Unreadable {
+        path: path.to_path_buf(),
+        reason,
+    })
 }
 
 fn unreadable(path: &Path, error: &std::io::Error) -> LoadError {

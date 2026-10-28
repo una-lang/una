@@ -16,6 +16,38 @@ A fix made before any release that it would affect is not an advisory. Neither i
 
 ## Advisories
 
+### UNA-SA-019: the v0.1 proof cache accepted entries it had not written
+
+- **Severity:** High
+- **Affected:** every published release of the v0.1 line up to and including v0.1.12, at tier 1 (`una check`, the build report), in edition `0.1`. Releases from v0.2.0-alpha.3 on, including the v0.3 line, authenticate their cache (ADR 0064) and are not affected.
+- **Fixed in:** v0.1.13.
+- **Summary:** the v0.1 verifier kept the solver's answers in `.una/cache/proofs/` inside the package and reused any entry whose name matched a query. The name is a hash of `verification.lock` and of the query, both derived from the package itself, and the entries carried no authentication. A repository could therefore ship cache entries marking any proof obligation as proven, a false one included. Running `una check` in a clone of it then reported those contracts as proved without running the solver, and the build report counted them the same way. Entries now carry an HMAC-SHA-256 tag under a key that belongs to the user and lives outside the package (the file `UNA_PROOF_KEY` names, else `~/.una/proof-cache.key`, made on first use, readable by the user only). An entry without a valid tag is ignored and its query solved again, so caches written by earlier releases are rebuilt once. The build report names the key file instead of listing the cache as trusted. The key file is used only when it is a regular file with one link, owned by the user, granting nothing to group or others, of 16 to 4096 bytes; otherwise the cache is off.
+- **References:** #1164, ADR 0064.
+
+### UNA-SA-018: `una fmt` followed a symbolic link planted at its temporary file
+
+- **Severity:** High
+- **Affected:** every published release up to and including v0.3.16 and v0.1.12: `una fmt` in both lines, and `una fix` in the v0.3 line, in every edition.
+- **Fixed in:** v0.3.17; v0.1.13.
+- **Summary:** `una fmt` replaced a source file by writing a temporary file at a fixed name next to it (`.<name>.fmt-tmp`) and renaming it over the file. The write followed a symbolic link at that name. A repository can commit such a link, so running `una fmt` in a clone of it could overwrite any file the user can write, outside the repository, with text the repository chose, and leave the source file as a link to it. `una fix` in the v0.3 line used the same write, and the proof cache that `una check` keeps in `.una/cache/proofs/` wrote its entries the same way. The temporary file is now created exclusively, under a name unique to the write, so nothing already at that name is written through, and the proof cache stores nothing when `.una`, `.una/cache` or `.una/cache/proofs` is a link that leads outside the package. A source file that is itself a symbolic link is still formatted in place only when the file it resolves to is inside the package; a link leading outside it is refused. Users of an affected release should not run `una fmt` or `una fix` in a repository they do not trust until they update.
+- **References:** #1160, #1161, #1162, #1163.
+
+### UNA-SA-017: releasing a deeply nested value overflowed the interpreter's stack
+
+- **Severity:** Availability
+- **Affected:** every published release up to and including v0.3.16 and v0.1.12, in the interpreter (`una run`), in every edition. Native executables are not affected.
+- **Fixed in:** v0.3.17; v0.1.13.
+- **Summary:** the interpreter released a value that a function value closes over by recursion on the native stack, one level per level of nesting. A loop that nests values through function values, such as a kind `L(next: fn() -> F)` built two million levels deep, finished its work and then aborted `una run` with a stack overflow when the value was released, instead of ending normally. A program whose nesting depth followed untrusted input could be made to abort this way. Function values now release the values they close over and the handlers of their capabilities by the same worklist that releases records. The v0.1 line had no worklist at all, so its fix gives one to records and function values together. There, reaching the overflow at the default `--max-depth` took a value of about 650,000 levels, which costs quadratic time to build, and a lower `--max-depth` reached it sooner.
+- **References:** #1071, #1076, ADR 0060 rule R5.
+
+### UNA-SA-016: parsing a long integer from text took time quadratic in its digits
+
+- **Severity:** Availability
+- **Affected:** every published release up to and including v0.3.15 and v0.1.11: `to_int` in every edition, and `parse_int` from edition 0.2.
+- **Fixed in:** v0.3.16; v0.1.12.
+- **Summary:** `to_int` and `parse_int` converted a text of d digits to an `Int` in O(d²) time, so a program that parsed untrusted text could be made to spend quadratic time in one call. Both now refuse a text of more than 4300 digits, the sign excluded and leading zeros included, after one O(b) scan and before any conversion: `to_int` returns `None`, and `parse_int` fails with the new `ParseError` variant `TooLong`, the bound that JSON integers already had. A `when` over `ParseError` that names each variant without an `else` arm must now handle `TooLong`. The v0.1 line has no `parse_int`, so its fix bounds `to_int` alone.
+- **References:** #914, #922, #1027, `spec/22 §4`, `spec/14 §1`, `spec/23 §3`.
+
 ### UNA-SA-015: an interpolated text pattern let a secret choose a branch or a public Bool
 
 - **Severity:** High

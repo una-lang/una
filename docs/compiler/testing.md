@@ -14,7 +14,7 @@ Status: Normative for the reference implementation.
 
 ## 2. Conformance case format
 
-Single-module cases are one file, compiled as a package containing only that module, with default `una.toml` settings and without the module path check (U1008). Multi-module cases are a directory with `una.toml` and `src/`.
+Single-module cases are one file, compiled as a package containing only that module, with default `una.toml` settings and without the module path check (U1008). Multi-module cases are a directory with `una.toml` and `src/`, or, for edition `0.4`, with `ita.una`, `ita.lock` and `src/` (ADR 0122).
 
 ```text
 tests/conformance/<area>/<case>.una
@@ -78,7 +78,7 @@ Exactly one `.una` file under the case's `src/` carries the directive block; the
 
 ### Discovery
 
-Every directory directly under `tests/conformance/` MUST be one of the areas above; files there (such as `README.md`) are not cases. Inside an area, every `.una` file is a single-module case and every directory containing `una.toml` is a multi-module case; any other entry is malformed. A run that discovers no case fails. Entries whose names start with `.` are ignored everywhere: at the root, inside areas and among the files of a multi-module case (ADR 0013, D6).
+Every directory directly under `tests/conformance/` MUST be one of the areas above; files there (such as `README.md`) are not cases. Inside an area, every `.una` file is a single-module case and every directory containing `una.toml` or `ita.una` is a multi-module case; any other entry is malformed. A run that discovers no case fails. Entries whose names start with `.` are ignored everywhere: at the root, inside areas and among the files of a multi-module case (ADR 0013, D6).
 
 ### Pending cases
 
@@ -96,6 +96,8 @@ An expectation the compiler cannot evaluate yet (for example `run-output` before
 ## 3. Solver tests
 
 Tests that reach tier 1 require Z3 at the version in the repository's `verification.lock`. If the binary is missing or mismatched, they fail with U5003 and a message explaining how to install the pinned version. They are never skipped.
+
+(ADR 0124.) From step 1 of that record, the solver is the Z3 built into `una` itself: a `una` built without it is a development build whose tier-1 tests fail with U5003, "this development build has no solver built in; run scripts/build-z3.sh". The library is built once per pin and toolchain by `scripts/build-z3.sh` from the tarball that `supply-chain/z3.lock` pins and the patches it lists, into a cache outside every worktree and target directory: `UNA_Z3_CACHE`, else `~/.cache/una/z3`, under a key that is the SHA-256 over the tarball's digest, each patch's digest in the lock's order, and the toolchain (the C++ compiler's and cmake's version lines and the machine), so a cold worktree never pays the 10 to 20 minutes of the build again on one machine. Each entry holds `lib/libz3shell.a`, `bin/z3` (the standalone front end from the same objects, for the `solver-identity` gate), `build-record.txt`, `configure.log` and `library.sha256`, the library's digest, written last, so that a half-written entry never counts. `scripts/z3-library.sh` computes the key (`scripts/build-z3.sh --key`), checks the library against `library.sha256`, refuses and rebuilds an entry whose bytes changed, and prints the library's path, which `scripts/local-ci.sh` and the release gates name to every cargo step by `UNA_Z3_LIB`; `cargo` alone needs `UNA_Z3_LIB` set to that path (`crates/una-z3/build.rs`). The Docker legs keep the cache in a named volume per architecture, `una-local-ci-z3-cache<suffix>`, mounted at `/opt/z3-cache` and kept across fresh target volumes. Until the mirror release of the tarball exists, `UNA_Z3_SOURCE` names a local copy of it.
 
 ## 4. Determinism tests
 
@@ -117,6 +119,7 @@ Tests that reach tier 1 require Z3 at the version in the repository's `verificat
 
   An excerpt is checked with one rule. With trailing spaces removed from every line, its lines are consecutive lines of the file or the output, except that a line that is exactly `...` stands for any number of lines, none included. It is the only wildcard. An excerpt of an output is anchored: it starts at the output's first line and ends at its last, unless it starts or ends with `...`. An excerpt of a file may be anywhere in it. An excerpt with no line but blank ones and `...` fails. So does a `text` block without a marker, with another attribute, or with both `una` and `file`, and a fence of tildes or an indented fence, which the check would not read. Every mismatch is listed together. The website shows the blocks unchanged: its renderer reads only the language and its own attributes.
 - `crates/una-cli/tests/guide.rs` checks every block of `docs/guide/una-for-agents.md`: a `una` block is a whole module that checks clean at tier 1, or yields only the code its first line names (`-- fails with U####`); blocks after file paths form a package that checks clean; a `json` block parses and names a schema the CLI prints; each `una` line of a `sh` block exits with 0, or with the code of its `# exit N`, from the repository root or the directory of its `# in <dir>` (ADR 0035 rule 2). It also checks that every `una` block of `README.md` is copied from a checked file or checks clean.
+- `scripts/no-libm.sh` checks that no part of Una reaches the C math library (#1092, `docs/release-gates.md`, the `build` gate). It reads release artifacts only, built for the check, since a test build unifies the features of dev-dependencies in and is not what ships: `scripts/local-ci.sh`, after its tests, runs `cargo build --locked --release -p una-cli -p una-rt`, then `scripts/no-libm-build.sh`, which links with `target/release/una` every runnable program of `tests/conformance/runtime` that `tests/native/unsupported.txt` does not list, chosen as the native differential chooses them, into a fresh `target/no-libm`, then `scripts/no-libm.sh` on `target/release/una`, `target/release/libuna_rt.a` and those executables. It asserts that the release graph enables no `std` feature of num-bigint, num-integer and num-traits, and fails on any symbol of the C math library that one of the artifacts leaves undefined, with no exception. The conformance package `tests/conformance/runtime/no_libm_run` gives it an executable that uses big `Int`, `F64`, text, lists and maps.
 
 ## 7. Memory budgets in native tests
 

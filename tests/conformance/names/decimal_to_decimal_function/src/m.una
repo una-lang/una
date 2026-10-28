@@ -1,0 +1,6 @@
+-- test: in edition 0.4 a package function `to_decimal` on an integer is U1002: the built-in conversion resolves ahead of it
+-- spec: spec/29 §16
+-- expect: error U1002 at src/m.una:6:5
+module m
+
+pub to_decimal(n: Int) -> Int = n

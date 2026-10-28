@@ -1,0 +1,14 @@
+ita ita_limit_lines
+  version 0.1.0
+  edition 0.4
+
+run
+  entry main
+  grants
+    console
+    http "https://api.payments.example" get, post
+      at most 100 per minute
+      at most 8 at once
+      waiting at most 1000
+    http "https://api.example.com"
+      at most 3 per second

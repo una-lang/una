@@ -1,0 +1,4 @@
+[package]
+name = "stop_after_before_0_4"
+version = "0.1.0"
+edition = "0.3"

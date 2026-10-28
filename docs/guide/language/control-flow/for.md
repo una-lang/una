@@ -1,7 +1,7 @@
 ---
 construct: for
 editions: ["0.2"]
-spec: ["spec/17 §1", "spec/17 §2", "spec/17 §4", "spec/17 §5", "spec/17 §6", "spec/17 §7", "spec/01 §5", "spec/12 §6", "spec/17 §3"]
+spec: ["spec/17 §1", "spec/17 §2", "spec/17 §4", "spec/17 §5", "spec/17 §6", "spec/17 §7", "spec/01 §5", "spec/12 §6", "spec/17 §3", "spec/11 §7"]
 codes: [U0101, U0103, U2017, U2019, U4002, U5002]
 ---
 
@@ -11,7 +11,7 @@ codes: [U0101, U0103, U2017, U2019, U4002, U5002]
 
 From edition `0.2`, `for x in xs` runs its body once for each element of a list, in order, and `for i in a..<b` or `for i in a..b` once for each integer of a range, in increasing order. A loop is a statement with the value `unit` (the value that carries no information): it does its work by updating `let edit` bindings, names whose value the code may change, declared before it.
 
-Learn more: [Loops: for and let edit](/learn/collections/loops-for-and-let-edit/).
+Learn more: [for over ranges and texts](/learn/loops/for-over-ranges-and-texts/).
 
 ```una
 module shop
@@ -84,6 +84,30 @@ pub order_total(prices: List[Int]) -> Int
   cents
 ```
 
+## A bounded loop is not a general cost proof
+
+A precondition can bound a particular range. The function below accepts at most 1,000 iterations and returns the count for this input:
+
+```una
+module demo
+
+pub count_up(limit: Int) -> Nat
+  requires limit >= 0 and limit <= 1000
+=
+  let edit count: Nat = 0
+  for i in 0..<limit
+    count = count + 1
+  count
+
+example "bounded"
+  do count_up(5)
+  expect result == 5
+```
+
+This example's `expect` checks the chosen input; it is not a proof that every possible call returns the limit. The checker preserves declared refinements such as `Nat`; it does not infer the equality between this counter and the processed prefix. The `requires` bounds the range only when callers prove it; it is not a bound on the cost of each iteration or on allocations the body performs.
+
+Runtime limits are separate: `--max-depth` caps calls in progress, and `--max-memory` caps heap held by a run. Exceeding either aborts with U6003; neither proves that a function terminates or that it meets a time/cost contract. See [U6003](../../../../crates/una-explain/explain/U6003.md) for the runtime behavior. A general termination or cost guarantee needs a separate language design.
+
 ## Edge cases
 
 **Invariants come from types.** The verifier (the part of `una check` that proves each obligation, a fact the program must be shown to keep) checks the body once, for any iteration, with the bindings the loop updates fresh at their declared types. No fact about their values survives the loop, and there is no `invariant` clause. So a refinement (a condition a type adds to its values, as `Int in 0..100`) that one iteration cannot preserve on its own is not proven:
@@ -104,7 +128,7 @@ pub basket_size(prices: List[Int]) -> Basket
 
 The diagnostic's reason says what the loop forgets, and what to do: "guard the use with an `if`, or move the update into a helper with an `edit` parameter whose `ensures` states what the use needs".
 
-**A labeled list raises the program counter** (the label of the conditions that decide whether a line runs; see [Branches and failures](/learn/information-flow/branches-and-failures-implicit-flows/)). The body runs under the top label of the list, or of a range's bounds, since how often it runs depends on them. There, `fail` and calls that can fail are U4002:
+**A labeled list raises the program counter** (the label of the conditions that decide whether a line runs; see [Branches and failures: implicit flows](/learn/information-flow/branches-and-failures-implicit-flows/)). The body runs under the top label of the list, or of a range's bounds, since how often it runs depends on them. There, `fail` and calls that can fail are U4002:
 
 ```una
 -- fails with U4002

@@ -78,6 +78,18 @@ module shop
 pub same[T](a: T, b: T) -> Bool = a == b
 ```
 
+A generic function cannot use `+` on `T`: the built-in constraints do not include arithmetic. Pass the operation as a function value instead. This states only how to combine two values; it does not promise associativity or any other algebraic law:
+
+```una
+module shop
+
+pub fold_with[T](items: List[T], initial: T, step: fn(T, T) -> T) -> T = items.fold(initial: initial, step: step)
+
+pub total(items: List[Int]) -> Int = fold_with(items, initial: 0, step: fn(acc, item) -> acc + item)
+```
+
+The runtime case [generic_fold_run](../../../../tests/conformance/runtime/generic_fold_run/src/fold.una) checks that this explicit operation sums `[1, 2, 3]` to `6`.
+
 ## Edge cases
 
 **Type arguments must satisfy the constraint.** A sum whose variants carry payloads does not satisfy `Ord`:
@@ -125,7 +137,7 @@ Further rules:
 
 - **Labels do not count.** `secret Int` satisfies `Integer`.
 - **Operators keep their meaning.** `==` is structural equality and `<` the built-in order, on every type that satisfies the constraint.
-- **Information flow.** A comparison on values of `T` carries the labels of its operands, the symbolic label of `T` included, a stand-in for whatever label the caller's type carries. Branching on it raises the program counter, the label of the conditions that decide whether a line runs (see [Branches and failures](/learn/information-flow/branches-and-failures-implicit-flows/)).
+- **Information flow.** A comparison on values of `T` carries the labels of its operands, the symbolic label of `T` included, a stand-in for whatever label the caller's type carries. Branching on it raises the program counter, the label of the conditions that decide whether a line runs (see [Branches and failures: implicit flows](/learn/information-flow/branches-and-failures-implicit-flows/)).
 - **Verification.** In a generic body, the verifier knows nothing about `<` on a `T: Ord` but its name, so no law such as transitivity (`a < b` and `b < c` give `a < c`) is assumed.
 - **The prelude.** In edition `0.2`, `min`, `max`, `contains`, `sum` and `sort` are generic over these constraints.
 

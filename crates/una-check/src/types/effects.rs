@@ -25,6 +25,15 @@ pub(crate) struct Mentions {
     /// The body fails on its own: a `fail`, an `if error fail` or `if none fail`, or `if error
     /// pass` on another call.
     pub(crate) own_failures: bool,
+    /// The body holds a `tasks` statement or a `first of`, at any depth, lambdas included.
+    pub(crate) constructs: bool,
+}
+
+/// Whether `body` holds a `tasks` statement or a `first of`, at any depth, lambdas included: one
+/// pass over the body, O(its size) (ADR 0116 P9, #1148). A parameter name no identifier has
+/// makes [`mentions`] scan for nothing else.
+pub(crate) fn holds_task_construct(body: &Body, text: &dyn Fn(&Ident) -> String) -> bool {
+    mentions(body, "\u{0}", text).constructs
 }
 
 /// How `body` mentions the parameter `name`; `text` gives the text of an identifier.
@@ -88,6 +97,38 @@ impl Scan<'_, '_> {
             }
             Stmt::Handled(handled) => self.handled(handled),
             Stmt::BlockExpr(expr) => self.block_expr(expr),
+            Stmt::Stop(stmt) => {
+                if let Some(condition) = &stmt.condition {
+                    self.expr(condition);
+                }
+            }
+            Stmt::Skip(_) => {}
+            // The measure is never evaluated (ADR 0116 rule 7).
+            Stmt::Until(stmt) => {
+                self.expr(&stmt.condition);
+                self.block(&stmt.block);
+            }
+            Stmt::Ever(stmt) => {
+                // The deadline is evaluated once, before the first iteration (`spec/26 §7`).
+                if let Some(within) = &stmt.within {
+                    self.expr(within);
+                }
+                self.block(&stmt.block);
+                if let Some(on_stop) = &stmt.on_stop {
+                    self.block(&on_stop.block);
+                }
+            }
+            Stmt::OnStop(on_stop) => self.block(&on_stop.block),
+            // The bound is evaluated once; a started expression is a statement of its own
+            // (`spec/27 §7`).
+            Stmt::Tasks(stmt) => {
+                self.found.constructs = true;
+                if let Some(bound) = &stmt.bound {
+                    self.expr(bound);
+                }
+                self.block(&stmt.block);
+            }
+            Stmt::Start(stmt) => self.handled(&stmt.handled),
         }
     }
 
@@ -118,6 +159,16 @@ impl Scan<'_, '_> {
     fn handled(&mut self, handled: &Handled) {
         let of_param =
             matches!(&handled.expr.kind, ExprKind::Call { callee, .. } if self.is_param(callee));
+        // A `within` passes its time-out as the function's own `TimedOut` (ADR 0117 rule 5): a
+        // failure of the function itself, whatever it passes on besides.
+        if handled.within.is_some()
+            && handled
+                .handlings
+                .iter()
+                .any(|h| matches!(h.kind, HandlingKind::ErrorPass))
+        {
+            self.found.own_failures = true;
+        }
         for handling in &handled.handlings {
             match &handling.kind {
                 HandlingKind::ErrorPass if of_param => self.found.passed = true,
@@ -132,6 +183,9 @@ impl Scan<'_, '_> {
             if let CapBindingValue::Handler(call) = &binding.value {
                 self.args(&call.args, false);
             }
+        }
+        if let Some(within) = &handled.within {
+            self.expr(within);
         }
         for handling in &handled.handlings {
             match &handling.kind {
@@ -169,6 +223,13 @@ impl Scan<'_, '_> {
             BlockExpr::TogetherFor(together) => {
                 self.source(&together.source);
                 self.block(&together.block);
+            }
+            // Each branch is a statement of its own (ADR 0117 rule 6).
+            BlockExpr::FirstOf(first) => {
+                self.found.constructs = true;
+                for branch in &first.body {
+                    self.stmt(branch);
+                }
             }
         }
     }
@@ -230,9 +291,22 @@ impl Scan<'_, '_> {
                 self.lambda -= 1;
             }
             // `attempt f(x)` and `(f(x))` stand where the call does (#270).
-            ExprKind::Paren(inner) | ExprKind::Attempt(inner) => {
+            ExprKind::Paren(inner)
+            | ExprKind::Attempt {
+                operand: inner,
+                within: None,
+            } => {
                 self.top = top;
                 self.expr(inner);
+            }
+            ExprKind::Attempt {
+                operand: inner,
+                within: Some(within),
+            } => {
+                self.top = top;
+                self.expr(inner);
+                self.top = false;
+                self.expr(within);
             }
             // `is` reads only its value: its literal is a constant, since interpolating in it is
             // U4008 (`spec/07 §7` rule 3, S-28), so walking `value` alone is complete.
@@ -523,6 +597,25 @@ impl<'a> Checker<'_, 'a, '_> {
                 (self.labeled(&list).top_label(), false)
             }
             (Some("first_where"), Some(list)) => (self.deep(&list), true),
+            // The `update` of a map or a hash map calls `change` once, with the stored value or
+            // `initial` depending on whether the map holds the key: under the map's top label,
+            // its key position's labels and the key's (ADR 0119 IF7).
+            (Some("update"), Some(map)) => {
+                let map = self.labeled(&map);
+                let kinds = self.env.kind_labels.clone();
+                let keys = match map.unlabeled() {
+                    Ty::Map(key, _) => key.every_label(&kinds),
+                    Ty::Coll(una_core::Coll::HashMap, kv) => kv
+                        .first()
+                        .map_or_else(Label::public, |key| key.every_label(&kinds)),
+                    _ => Label::public(),
+                };
+                let key = checked
+                    .iter()
+                    .find(|(_, _, _, name)| *name == "key")
+                    .map_or_else(Label::public, |(_, found, _, _)| self.deep(found));
+                (map.top_label().join(&keys).join(&key), false)
+            }
             (None, _) => (
                 of.raises
                     .get(&target)

@@ -306,6 +306,9 @@ pub enum KeywordSet {
     V0_2,
     /// Edition 0.3: the keywords of edition 0.2 (`spec/13 §7`).
     V0_3,
+    /// Edition 0.4: the keywords of edition 0.3, with `diverges` and `within` reserved
+    /// (`spec/26 §1`, ADR 0116 rule 0), and `simd` no longer reserved (ADR 0120 rule 1).
+    V0_4,
 }
 
 /// The kind of a token.
@@ -323,6 +326,12 @@ pub enum TokenKind {
     CapRef(Symbol),
     /// An integer literal: its decimal digits, without underscores or leading zeros.
     Int(String),
+    /// A float literal of edition 0.3, as written, or its accepted form after U0007
+    /// (`spec/29`).
+    Float(String),
+    /// A version, as written, in the project files of edition 0.4 only (ADR 0122 rule 4):
+    /// `1.4`, `0.1.0` or `1.0.0-rc.1`. Module sources never produce it.
+    Version(String),
     /// The opening quote of a text literal.
     TextStart,
     /// A run of literal text, with escapes decoded.
@@ -398,7 +407,8 @@ impl TokenKind {
                 format!("`{}`", interner.resolve(*name))
             }
             TokenKind::CapRef(name) => format!("`@{}`", interner.resolve(*name)),
-            TokenKind::Int(digits) => format!("`{digits}`"),
+            TokenKind::Int(digits) | TokenKind::Float(digits) => format!("`{digits}`"),
+            TokenKind::Version(text) => format!("version `{text}`"),
             TokenKind::TextStart | TokenKind::TextChunk(_) | TokenKind::TextEnd => {
                 "text literal".to_owned()
             }
