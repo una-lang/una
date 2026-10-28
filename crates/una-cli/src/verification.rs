@@ -150,7 +150,7 @@ pub(crate) fn report_unverified(
 pub(crate) fn settings(package: &Package, solving: &Solving) -> Settings {
     let (text, lock) = lock_of(package);
     Settings {
-        solver: PathBuf::from("z3"),
+        solver: std::sync::Arc::new(solver_launcher()),
         lock: una_verify::Lock {
             text,
             solver_version: lock.solver_version.clone(),
@@ -166,6 +166,19 @@ pub(crate) fn settings(package: &Package, solving: &Solving) -> Settings {
             }),
         cancel: None,
     }
+}
+
+/// The launcher of solver children (ADR 0124): `una` re-executed, limited to the default
+/// memory; in the toolchain's own test builds, a stand-in named by `UNA_SOLVER_STAND_IN`.
+fn solver_launcher() -> crate::solver_child::Launcher {
+    let launcher = crate::solver_child::Launcher::new(crate::solver_child::DEFAULT_MEMORY_MIB);
+    #[cfg(feature = "test-hooks")]
+    let launcher = {
+        #[allow(clippy::disallowed_methods)]
+        let stand_in = std::env::var_os("UNA_SOLVER_STAND_IN").map(PathBuf::from);
+        launcher.with_stand_in(stand_in)
+    };
+    launcher
 }
 
 /// How the verifier and `una contract` normalize the source text they show, by the package's

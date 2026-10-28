@@ -9609,8 +9609,27 @@ mod tests {
         assert_eq!(overflow[0].source, at);
         assert_eq!(overflow[0].site.unknown.as_deref(), Some(reason));
         assert_eq!(overflow[0].site.flow.as_deref(), Some(repair));
+        // No solver can run: the obligation unknown by construction must send no query.
+        #[derive(Debug)]
+        struct Unavailable;
+        impl crate::solver::Solver for Unavailable {
+            fn version(&self) -> Result<String, String> {
+                Err("no solver in this test".to_owned())
+            }
+            fn describe(&self) -> String {
+                "no solver".to_owned()
+            }
+            fn run(
+                &self,
+                _: &str,
+                _: std::time::Duration,
+                _: Option<&std::sync::atomic::AtomicBool>,
+            ) -> Result<crate::solver::Raw, String> {
+                Err("no solver in this test".to_owned())
+            }
+        }
         let settings = crate::run::Settings {
-            solver: std::path::PathBuf::from("/nonexistent/una-no-solver"),
+            solver: std::sync::Arc::new(Unavailable),
             lock: crate::run::Lock {
                 text: String::new(),
                 solver_version: "0.0.0".to_owned(),

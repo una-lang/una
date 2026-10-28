@@ -25,14 +25,25 @@ una-lsp.workspace = true
 una-project.workspace = true
 una-report.workspace = true
 una-syntax.workspace = true
-una-sys.workspace = true
+# The solver child's confinement and spawn (ADR 0124), for `una __solver` and its parent.
+una-sys = { workspace = true, features = ["solver"] }
 una-verify.workspace = true
 una-z3.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 
+[features]
+# The toolchain's own test builds only (ADR 0124 rule 11, as `test-hooks` of `una-hash`): a
+# stand-in program in the solver child's place, named by UNA_SOLVER_STAND_IN, so that tests can
+# answer a query with anything. No shipped `una` enables it; scripts/check-release.sh refuses a
+# binary that has it.
+test-hooks = []
+
 [dev-dependencies]
+# The tests run the binary with the test hooks on (a dev-dependency on the crate itself enables
+# the feature for the test builds alone).
+una-cli = { path = ".", features = ["test-hooks"] }
 # The tests' own registry signs root metadata, checkpoints and release statements (ADR 0122).
 ed25519-dalek.workspace = true
 insta.workspace = true
@@ -42,5 +53,22 @@ pretty_assertions.workspace = true
 # never reaches a shipped `una`.
 una-hash = { workspace = true, features = ["test-hooks"] }
 
-[lints]
-workspace = true
+# The workspace lints, written out because a crate cannot both inherit them and declare a
+# cfg: `una_asan` is set only by scripts/sanitize.sh for its AddressSanitizer builds, where the
+# solver child sets no address-space backstop (ADR 0124 rule 6).
+[lints.rust]
+unsafe_code = "forbid"
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(una_asan)"] }
+
+[lints.clippy]
+dbg_macro = "deny"
+exit = "deny"
+expect_used = "deny"
+indexing_slicing = "deny"
+panic = "deny"
+print_stderr = "deny"
+print_stdout = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+unwrap_used = "deny"

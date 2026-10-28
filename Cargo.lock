@@ -1349,6 +1349,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "una-check",
+ "una-cli",
  "una-codegen",
  "una-core",
  "una-diag",
