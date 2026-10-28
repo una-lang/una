@@ -780,7 +780,7 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
         }
         findings.standard_records = standard_findings.records;
     }
-    authority::testing_installs(&findings, &mut report);
+    authority::testing_installs(&findings, &mut report, env.edition);
     // Edition 0.3: no release is reachable from a call into a boundary (ADR 0093 rule 8).
     crossing::releases(&env, &findings, &mut report);
     facts::predicate_recursion(&env, &findings, &mut report);
@@ -2104,7 +2104,8 @@ example \"step adds one\"
     #[test]
     fn the_package_checks_and_elaborates_without_a_failure() {
         for edition in Edition::ALL {
-            let (check, codes) = run(SOURCE, edition);
+            let source = SOURCE.replace("\nexample \"", &format!("\n{} \"", edition.test_word()));
+            let (check, codes) = run(&source, edition);
             assert_eq!(codes, Vec::new(), "{edition:?}");
             let module = check
                 .program
@@ -2131,7 +2132,9 @@ example \"step adds one\"
         ] {
             for edition in Edition::ALL {
                 let _broken = Break::of(name);
-                let (check, codes) = run(SOURCE, edition);
+                let source =
+                    SOURCE.replace("\nexample \"", &format!("\n{} \"", edition.test_word()));
+                let (check, codes) = run(&source, edition);
                 assert!(
                     codes.contains(&(Code::U8001, line)),
                     "{name} in {edition:?}: {codes:?}"

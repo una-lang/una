@@ -88,7 +88,8 @@ pub fn lex_in(
     apply(&mut lexer.out, &chosen);
     let out = &mut lexer.out;
     // The renames of names that start with `_` (ADR 0096 A).
-    crate::rewrite::underscore_renames(&out.text, file, &mut out.errors);
+    let keywords = out.keywords;
+    crate::rewrite::underscore_renames(&out.text, file, keywords, &mut out.errors);
     lexer.out
 }
 
@@ -217,9 +218,12 @@ const DECLARATION_KEYWORDS: [&str; 11] = [
 ];
 
 /// Whether a lower-case word at column 1 starts a declaration: a declaration keyword, or a
-/// function name followed by `(`, or by `[` for a generic function.
-pub(crate) fn starts_declaration(word: &str, next: Option<char>) -> bool {
-    DECLARATION_KEYWORDS.contains(&word) || matches!(next, Some('(' | '['))
+/// function name followed by `(`, or by `[` for a generic function; `test` is the test
+/// declaration of edition 0.3, under a keyword set that has it (ADR 0105), and a name before.
+pub(crate) fn starts_declaration(word: &str, next: Option<char>, keywords: KeywordSet) -> bool {
+    DECLARATION_KEYWORDS.contains(&word)
+        || (word == "test" && keywords >= KeywordSet::V0_3)
+        || matches!(next, Some('(' | '['))
 }
 
 /// Why a character is not allowed anywhere, including text literals and comments (ADR 0017).
@@ -461,6 +465,25 @@ impl Lexer<'_> {
         self.out.errors.push(error);
     }
 
+    /// U0103 for `example` at column 1 of a package of edition 0.3, where the test declaration
+    /// is written `test` (ADR 0105 rule 3). The first repair is the exact rewrite of the
+    /// keyword, which `una fix` applies; the token stays the keyword `example`, so the parser
+    /// reads the declaration as a test's and the body gets its own checks.
+    fn example_in_0_3(&mut self, start: usize) {
+        let span = self.span(start, self.pos);
+        let mut error = SyntaxError::new(
+            Code::U0103,
+            span,
+            "`example` is written `test` in edition 0.3",
+        );
+        error.repairs.push(SyntaxRepair {
+            description: "write `test`".to_owned(),
+            edit: Some((span, "test".to_owned())),
+        });
+        error.recovered = true;
+        self.out.errors.push(error);
+    }
+
     /// Whether the next token is in the module path of a `module` or `import` line: the line
     /// starts with one of them, and, for `import`, its `(` has not come yet.
     fn in_module_path(&self) -> bool {
@@ -594,7 +617,11 @@ impl Lexer<'_> {
             .count();
         let word = rest.get(..length).unwrap_or("");
         word.starts_with(|c: char| c.is_ascii_lowercase())
-            && starts_declaration(word, rest.get(length..).and_then(|r| r.chars().next()))
+            && starts_declaration(
+                word,
+                rest.get(length..).and_then(|r| r.chars().next()),
+                self.out.keywords,
+            )
     }
 
     /// Applies the indentation algorithm of `spec/01 §2` to a logical line. A tab reports only
@@ -1144,6 +1171,23 @@ impl Lexer<'_> {
         let deadline = word == "within"
             && self.out.keywords >= KeywordSet::V0_4
             && (self.after_for_ever() || self.after_expression());
+        // Edition 0.3: the test declaration is written `test`, so `example` at column 1, where
+        // a declaration starts, is U0103 with the exact rewrite (ADR 0105 rule 3); as a name it
+        // stays the reserved keyword it is in every edition (rule 2).
+        if word == "example"
+            && self.out.keywords >= KeywordSet::V0_3
+            && (start == 0
+                || self
+                    .text
+                    .get(..start)
+                    .is_some_and(|before| before.ends_with('\n')))
+            && self
+                .text
+                .get(self.pos..)
+                .is_some_and(|rest| rest.trim_start_matches(' ').starts_with('"'))
+        {
+            self.example_in_0_3(start);
+        }
         let kind = if (word == "with" && after_dot && self.out.keywords >= KeywordSet::V0_2)
             || clause
             || deadline

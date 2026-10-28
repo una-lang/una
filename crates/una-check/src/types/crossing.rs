@@ -859,7 +859,10 @@ impl Checker<'_, '_, '_> {
         let grants = self.handler_uses(handler);
         self.ceiling_site(
             boundary,
-            &format!("this example's `given` of handler `{name}`"),
+            &format!(
+                "this {}'s `given` of handler `{name}`",
+                self.env.edition.test_word()
+            ),
             &grants,
             span,
         );

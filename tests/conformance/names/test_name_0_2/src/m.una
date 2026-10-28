@@ -1,0 +1,11 @@
+-- test: in editions 0.1 and 0.2 `test` stays an identifier: a function and a local may take the name (ADR 0105 rule 1)
+-- spec: spec/01 §5
+-- expect: ok
+module m
+
+test(x: Int) -> Int = x
+
+pub add(x: Int) -> Int
+=
+  let test = test(x) + 1
+  test

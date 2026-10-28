@@ -155,3 +155,7 @@ Nothing grows with the program beyond what the existing passes cost.
 - **Rename the key in `una.core/1` as well.** Not chosen: Core IR is internal to the toolchain and the formal track, the node does not change between editions, and the change would cost a schema version and an importer change for no meaning.
 - **A new diagnostic code for `example` in edition `0.3`.** Not chosen: U0103 already reports a keyword of another edition, with a message per keyword (`spec/01 §5`).
 - **`check` or `case` as the keyword.** Not chosen: `checked` already exists (`spec/06 §6`), `case` reads as a branch of `when`, and `test` matches `una test` and `std.testing`.
+
+## Amendment (2026-10-27): rule 4 read with ADR 0096's amendment of 2026-10-15
+
+Rule 4 says that a local or a parameter named `test` gets the exact rename to `test_value`, with reference to ADR 0096's row for `result`, `error`, `unit` and `it`. ADR 0096's amendment of 2026-10-15 narrowed that row and added the one for declaration keywords bound as names, which `test` joins in edition `0.3`: the exact rename applies to a binding inside a function body or a handler operation body (a `let`, a lambda parameter, a binding of a pattern, a parameter of a handler operation), and never to a parameter of a function or of a handler declaration, since callers name those. So a function parameter named `test` gets the rename as a description, with `edit: null`, as a function named `test` does. The rule's other cases stay as written. Implementation: #740.

@@ -7,17 +7,17 @@ module bounds
 
 pub one() -> Int = 1
 
-example "zero"
+test "zero"
   do one()
   expect result == 1
   stop after 0
 
-example "too many"
+test "too many"
   do one()
   expect result == 1
   stop after 9_223_372_036_854_775_808
 
-example "not last"
+test "not last"
   do one()
   expect result == 1
   stop after 2

@@ -113,11 +113,11 @@ pub validate(value: Pair) -> Square
 =
   checked(value, square_pair(it)) else fail WrongArea
 
-example "valid"
+test "valid"
   do validate(Pair(side: 3, area: 9))
   expect result.side == 3
 
-example "invalid"
+test "invalid"
   do validate(Pair(side: 3, area: 8))
   expect fails WrongArea
 ```

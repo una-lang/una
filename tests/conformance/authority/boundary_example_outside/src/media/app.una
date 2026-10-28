@@ -10,7 +10,7 @@ handler memory() for Files
   op read(path) = path
   op write(path, data) = unit
 
-example "a look into the boundary"
+test "a look into the boundary"
   given @files = memory()
   do shrink("a")
   expect result == "a"
