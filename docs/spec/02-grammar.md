@@ -194,6 +194,21 @@ attempt_expr    = "attempt" postfix [ "within" add_expr ] ;
 
 A `handled` whose `line_expr` is an `attempt` with its own `within` takes no second `within` (U0101).
 
+(Edition 0.4, ADR 0117 rule 6.) In edition `0.4`, a `block_expr` MAY also be a race of two or more branches, `first` followed by `of` and the end of its line opening it (`spec/27 §6`):
+
+```ebnf
+block_expr      = when_expr | if_block | together_for | first_of ;
+first_of        = "first" "of" NEWLINE INDENT handled handled { handled } DEDENT ;
+```
+
+(Edition 0.4, ADR 0117 rule 7.) In edition `0.4`, a statement MAY also be a `tasks` statement, whose block starts tasks with `start` (`spec/27 §7`). `tasks` begins one where a newline and an indented block, or `at`, follow it at the start of a statement, and `start` where a name, a capability reference or `attempt` follows it; elsewhere both are names. A `with` clause after the expression of `start` parses, and is U2035.
+
+```ebnf
+statement       = ... | tasks_stmt | start_stmt ;
+tasks_stmt      = "tasks" [ "at" "most" add_expr "at" "once" ] NEWLINE INDENT block DEDENT ;
+start_stmt      = "start" line_expr [ "within" add_expr ] NEWLINE [ INDENT handling { handling } DEDENT ] ;
+```
+
 ## 7. Expressions
 
 ```ebnf

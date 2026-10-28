@@ -1,0 +1,239 @@
+# 0126. Module constants: named values declared at the top level
+
+- Status: Proposed
+- Date: 2026-10-27
+- Deciders:
+- Resolves: issue #949
+- Related:
+  - ADR 0116 (long-running programs), whose amendment of 2026-10-19 made `millisecond`, `second` and `minute` built-in names of `std.time` because Una declares no module-level value;
+  - ADR 0120 (the numeric foundation), whose programs want named constants: π, physical constants, tolerances and limits;
+  - ADR 0104 and `spec/25` (units of measure), whose rule 3 of §3 gives a constant expression the unit its context expects;
+  - ADR 0114 and `spec/29` (`F64`), whose operations are exactly specified, so that a value folded at compile time equals the one computed at run time;
+  - ADR 0121 (the terms of a preview edition), whose rule 1 lets edition `0.4` add a construct that widens what a program can do;
+  - ADR 0061 (the memory budget), which counts every value a run constructs.
+- Target: edition `0.4` (ADR 0116 rule 0). Editions `0.1` to `0.3` do not change.
+- Amends:
+  - **Grammar:** `spec/02 §1` (`decl` gains `constant_decl`), `§7` (a constant name is a `primary`), and, under Question 4, `§2` (a range bound may name a constant);
+  - **Lexical structure:** `spec/01 §5` (no new keyword: `let` at the top level);
+  - **Static semantics:** `spec/10 §8` (the typing of a constant), `§11` (the lower-case namespace holds constants; a cycle among constants), `§12`;
+  - **Verification:** `spec/12 §3` (the `refinement` obligation of a constant), `§4` (a reference is its value);
+  - **Dynamic semantics:** `spec/11 §2` (a reference evaluates to the value);
+  - **Core IR:** `spec/09 §3` (references are substituted at elaboration; Core IR gains no declaration);
+  - **Canonical form:** `spec/15 §4`, `§8` (one line per constant, blank lines as for other declarations);
+  - **Diagnostics:** `spec/13 §4` (two codes), `§7` (edition gating);
+  - **Standard library:** `spec/14 §3` and `spec/26 §2` (`std.time` declares its constants in Una);
+  - **Accepted records:** ADR 0116, by the dated amendment of Appendix A.
+
+> **In plain words.**
+> - **What a programmer writes.** A module can name a value at the top level, with its type, and export it: `pub let pi: F64 = 3.141592653589793`, `pub let max_items: Int in 1..1000 = 500`, `pub let light: Int of Meter / Second = 299_792_458`. The name is used like any value, in bodies and in contracts.
+> - **What the value may be.** Something the compiler can work out from the source alone: literals, arithmetic on them, constructors and lists of such values, and other constants. No call, no capability, no lambda. The compiler computes it once, at check time, and every use sees that exact value: the verifier proves contracts with the value itself, the interpreter and native code use it as a literal.
+> - **What it is not.** It is not a variable (Una has none), not a function (nothing runs at a use), and not a place where code runs when a module loads: a module still does nothing until a function is called.
+
+## Questions for acceptance
+
+Each question changes what a programmer writes or can rely on, and states its recommendation; the text below follows the recommendations. The decisions are the project's.
+
+1. **The syntax: `let` at the top level, or a new keyword?**
+   - **(a) Recommended:** `[pub] let name: type = value`, on one line. `let` already binds an immutable value in a block; at the top level it binds one for the module. The type is required, so that the unit, the refinement and the label are stated where the value is declared, and so that the declaration reads as a signature does. No keyword is added, and `const`, `static` and `val` stay what they are today: identifiers.
+   - **(b)** A new contextual keyword, such as `constant pi: F64 = ...`, as `measure` is a contextual keyword for units.
+   - **Cost of (a):** a block-local `let` and a module `let` share a word; the type annotation, required at the top level and optional in a block, tells them apart on sight.
+   - **Cost of (b):** one more keyword, and one more thing to teach; it buys nothing that the required annotation does not.
+   - **Decided:**
+
+   ```una
+   module geometry
+
+   --- The ratio of a circle's circumference to its diameter.
+   pub let pi: F64 = 3.141592653589793
+
+   pub area(radius: F64) -> F64 = pi * radius * radius
+   ```
+
+2. **Must the value be a compile-time constant?**
+   - **Recommended: yes,** a constant expression (rule 3). The compiler computes it at check time, once, with the same results as a run would give, and the value is exact everywhere: in queries, in traces, in native code.
+   - **The alternative** is a module value computed when the program starts, from any expression without effects. It needs an initialization order, a story for a value that fails to compute, and an evaluation the verifier cannot see through.
+   - **Cost to the programmer:** a value that needs a call, as `sqrt(2.0)` or a parsed `Decimal`, is written as a function instead, as today.
+   - **Decided:**
+
+   ```una
+   pub let origin: Point = Point(x: 0, y: 0)        -- yes: a constructor of constants
+   pub let root_two: F64 = sqrt(2.0)                 -- no, U2041: a call; write a function
+   ```
+
+3. **Labels on a constant's type.**
+   - **Recommended:** the declared type may carry a label, as any type may, and the value, a literal, flows into it (`spec/07 §7`); a constant cannot hold internal data, since its value is in the source, so a label above `public` only makes every use carry that label. Nothing is forbidden, and nothing new is added.
+   - **Cost to the programmer:** none.
+   - **Decided:**
+
+4. **May a constant appear in types and contracts?**
+   - **Recommended: yes.** In `requires`, `ensures`, `where` refinements and `given` lines, a constant name is an ordinary expression. In a range of a type (`Int in 1..max_items`), a bound may name a constant of an integer type, since after substitution it is a literal; `spec/02 §2`'s `range` gains that form. The verifier sees the literal in every case.
+   - **Cost to the programmer:** none. The cost to the implementation is a resolution of names inside types, which refinements already need for `where`.
+   - **Decided:**
+
+   ```una
+   pub let max_items: Int = 1000
+
+   pub kind Batch
+     items: List[Item] where it.len <= max_items
+   ```
+
+5. **Which types may a constant have?**
+   - **Recommended:** every type whose values a constant expression can write (rule 3): `Int` and the fixed-width integers, `F64`, `Decimal[s]`, `Text`, `Bool`, `Unit`, measured and refined forms of these, and record, sum and list types whose contents are such values. Not function types, not capability types, not `Map` or the collections of `spec/28`, which have no literal.
+   - **Cost to the programmer:** a constant map is written as a list of pairs, or built by a function.
+   - **Decided:**
+
+6. **`std.time` declares its constants in Una.**
+   - **Recommended: yes.** `millisecond`, `second` and `minute` become `pub let` declarations of `crates/una-check/src/std/time.una`, and the built-in special case (`STD_TIME_CONSTANTS`, `Entity::Constant`) is removed. Nothing changes for a program: the names, types and values stay.
+   - **Cost to the programmer:** none.
+   - **Decided:**
+
+## Glossary
+
+- **Constant.** A module-level `let`: a name bound to a value the compiler computes at check time.
+- **Constant expression.** An expression the compiler can evaluate from the source alone (rule 3).
+- **Substitution.** Replacing a reference to a constant by its value's expression at elaboration, so that Core IR holds no reference.
+- **Fit.** Whether a value lies in a fixed-width integer type's range (`spec/18 §2`).
+
+## Context
+
+- **No module-level value.** `spec/02 §1`'s `decl` has kinds, predicates, functions, capabilities, handlers, policies, requirements, examples and, from edition `0.3`, measures. A library cannot export a named value. `std.time`'s `millisecond`, `second` and `minute` are built-in names for that reason: the checker resolves them by a table (`crates/una-check/src/names/prelude.rs`, `STD_TIME_CONSTANTS`) and types them as `Int of Millisecond` through a special entity (`crates/una-check/src/types/env.rs`, `Entity::Constant`), which the standard module's own source cannot express (`crates/una-check/src/std/time.una`).
+- **What wants constants.** The numeric foundation (ADR 0120): π, e, physical constants, tolerances, iteration limits, the sizes of matrices; servers (ADR 0123): limits, time-outs, header names; every program: a `max_items`, a `default_port`, a `version` text.
+- **What exists for literals.** Literals are `public` (`spec/07 §7` rule 3); a constant expression of integer literals takes the unit its context expects (`spec/25 §3` rule 3) and the fixed-width type its context expects (`spec/18 §2`); `F64` arithmetic is specified operation by operation (`spec/29`), with round-to-nearest-even and no fast-math, so folding an expression at compile time gives the run's value; text literals are distinct constants in queries (`spec/12 §4`).
+- **The verifier's names.** Binders of a query are the program's parameters, `let`s and pattern variables (`spec/12 §4`), quantifier-free; a constant that entered a query as an uninterpreted symbol would need an equation per query; one that enters as its literal needs nothing.
+- **The preview edition.** ADR 0121 rule 1 lets edition `0.4`, while a preview, add constructs that widen what a program can do; rule 4 keeps every accepted program's meaning or rejects it with a diagnostic.
+- **The way Una is written.** Una's syntax is its own (`spec/01`, `spec/02`): declarations read as signatures, values are immutable, and a word means one thing. `let` is the word for binding a value.
+
+## Decision
+
+In one paragraph: a module may declare a constant, `[pub] let name: type = value`, whose value is a constant expression that the compiler evaluates at check time by the language's own semantics; the value must flow into the declared type, with its refinement an obligation like that of an annotated `let`; a reference to the constant is substituted by its value at elaboration, so Core IR, the verifier, the interpreter and native code see a literal; constants live in the lower-case namespace, are exported with `pub` and imported by name, may refer to one another without a cycle, and may appear in contracts, refinements and, as bounds, in ranges; the construct exists in edition `0.4` only, and `std.time` uses it for its three constants.
+
+1. **Syntax.** In `spec/02 §1`, `decl` gains:
+
+   ```ebnf
+   constant_decl = [ "pub" ] "let" lower_ident ":" type "=" line_expr NEWLINE ;
+   ```
+
+   The type is required. The declaration is one logical line, continued inside brackets as any line is (ADR 0125). A doc comment (`---`) may lead it, as for any declaration. In `spec/02 §7`, a `primary` that is a `lower_ident` may resolve to a constant (rule 4). In editions `0.1` to `0.3`, `let` at the top level is U0101 at the keyword, as today.
+
+2. **Names.** A constant is in the module's lower-case namespace (`spec/10 §11` rule 1), with functions, predicates, handlers and policies; two declarations of one name are U1002; the conventions of rule 9 apply. `pub` exports it; an import brings it in by name (rule 6). A local of the same name shadows it, as a local shadows any non-local name (rule 5). A constant is identified by its module path and its name (rule 8).
+
+3. **Constant expressions.** The value is one of:
+   - a literal: an integer, a float or a decimal (edition `0.3` and later, `spec/29`), a text without interpolation, `true`, `false`, `unit`;
+   - `-` applied to a constant expression of a numeric type;
+   - `+`, `-`, `*`, `/`, `mod` on two constant expressions of one integer type, with `/` and `mod` by a divisor that is not zero (U2041 otherwise, at check time, never an obligation); `+`, `-`, `*`, `/` on two of type `F64`; and `+`, `-` on two decimals of one scale (`spec/29 §16`);
+   - `and`, `or`, `not`, `==`, `!=`, `<`, `<=`, `>`, `>=` on constant expressions, where the operators are defined (`spec/10 §3`);
+   - a constructor of a record or a sum kind whose every field value is a constant expression, with the labels of the arguments written as anywhere;
+   - a list literal whose every element is a constant expression;
+   - parentheses around a constant expression;
+   - the name of a constant of this module or an imported one.
+
+   Nothing else: not a call, a method, a lambda, a capability reference, `attempt`, `fail`, `checked`, `if`, `when`, `result`, `it`, `error`, an interpolated text or a field access. A value outside this set is U2041 at the expression, naming the construct. The set is closed: a later record widens it by a dated amendment.
+
+4. **Cycles.** A constant may name constants declared before or after it; a constant that depends on itself, directly or through others, is U1011 at the first declaration of the cycle in path order, once per cycle, as U1003 reports an import cycle.
+
+5. **Evaluation.** The compiler evaluates the value at check time, in dependency order, by the dynamic semantics of `spec/11` for those operators: integers with arbitrary precision, `F64` as `spec/29` defines each operation, texts as written. The evaluation is deterministic and total: a division by zero is U2041 (rule 3), and no other failure exists in the set of rule 3.
+   - **Caps.** A constant integer with more than 4,300 decimal digits, and a constant value holding more than 1,000,000 elements, fields and characters together, are U2041, "the constant is too large": a chain of constants that square one another, or nest one list in another, must not make `una check` compute without bound. The caps match the digit cap of `parse_decimal` (ADR 0120) and the order of a source file's own size.
+
+6. **Typing** (`spec/10 §8`, T-Const). The value's type must flow into the declared type, as at an annotated `let`: a mismatch of base types is U2001, of units U2028, of labels U4001. An integer literal or expression takes the declared fixed-width type and must fit it (`spec/18 §2`); an expression whose value does not fit is U2041, "the constant's value `v` does not fit `I32`", at check time, never an `overflow` obligation. A constant expression of integers takes the declared unit (`spec/25 §3` rule 3); one that mixes two constants of different units is U2028, and `*` and `/` combine units as `spec/25 §3` rule 2 says.
+
+7. **Refinements** (`spec/12 §3`). A declared type with a refinement gives one `refinement` obligation at the value, as an annotated `let` does, whose goal is the refinement over the value and which has no hypotheses: `max_items: Int in 1..1000 = 500` obliges `1 <= 500 and 500 <= 1000`. Tier 0 leaves it unknown as it leaves every obligation; tier 1 proves it, and a refuted one is U5001 at the value with no counterexample note, since the goal is closed and has no binder to show (`spec/12 §7`, R-021). A nested refinement, as of a record field or a list element, gives its obligation at the position, as `spec/12 §3` states for nested positions.
+
+8. **Substitution.** At elaboration (`spec/09 §3`), every reference to a constant is replaced by its value's Core expression: a literal, or a constructor or list of such. Core IR gains no declaration, and `una core` shows the value where the source wrote the name. So:
+   - **the verifier** encodes a reference as the literal (`spec/12 §4`): an integer or Boolean as itself, a text as that literal's constant, a float by `spec/29 §8`, a constructor by its tag and field equations, a list by its elements and length. A contract that names a constant is proven with its value, and a counterexample never binds a constant: it is not a binder;
+   - **the interpreter and native code** evaluate the literal expression at each use. A scalar costs what a literal costs. A record or list constant is constructed at each use, and each construction counts against the memory budget (ADR 0061), as a literal written at that place would; an engine MAY construct it once per run and share it, which no program can observe, since values are immutable and Una has no identity on values.
+
+9. **In types and contracts** (Question 4). A constant name is an expression in `requires`, `ensures`, `where`, `given` lines and examples. In `spec/02 §2`, `range` gains `signed_int | lower_ident` for each bound; a bound that names a constant must resolve to a constant of an integer type (U1001 if unresolved, U2002 if it is not a constant or not an integer), and is substituted before the range is read; a range with both bounds constants whose values are out of order is the error a literal range gives today. A constant may not be used in its own type.
+
+10. **Editions and canonical form.** The construct exists in edition `0.4` and later (`spec/13 §7`). The canonical form writes a constant as one logical line, `pub let name: type = value`, with one space around `:` and `=`, the value as `spec/15` writes expressions, and the blank-line rules of `spec/15 §8` between declarations; declarations keep their order, as today.
+
+11. **Tooling.** `una contract` does not list constants; `una core` shows substituted values; the language server (ADR 0063) shows a constant's type and value on hover, and goes to its declaration; `una fmt` formats it; the `una std` listing of `docs/std/listing.json` lists the constants of standard modules with their types and values.
+
+12. **`std.time`** (Question 6). `crates/una-check/src/std/time.una` declares `pub let millisecond: Int of Millisecond = 1`, `pub let second: Int of Millisecond = 1000` and `pub let minute: Int of Millisecond = 60_000`, and `STD_TIME_CONSTANTS` and `Entity::Constant` are removed. The names, types and values that `spec/26 §2` states are unchanged.
+
+## Security
+
+- **No code runs at load.** A module declares values; it still does nothing until a function is called. There is no initialization order, no module initializer and no effect at the top level: rule 3 admits no call and no capability.
+- **The evaluator is small, and the same as the run's.** The check-time evaluation of rule 5 covers literals, the operators of rule 3, constructors and lists, by the semantics every engine implements. A divergence between the folded value and the run's value would be a soundness bug of the verifier, which proves with the folded value: the conformance cases compare `una check`'s substituted Core, the interpreter's and the native backend's results on every operator of rule 3, in both engines (`spec/16 §5`).
+- **Bounded compilation.** Rule 5's caps make the cost of checking a module's constants linear in their size: a package, which under ADR 0122 may be someone else's, cannot make `una check` compute a number with 2^40 digits or a list of 2^30 elements.
+- **Information flow.** A constant's value is in the source: it is `public` by construction, and a label on its type only raises the uses (Question 3). No release or declassification is involved, and no rule of `spec/07` changes.
+- **Native code.** Substitution means the native backend compiles literals it already compiles; no new runtime entry point and no new `unsafe` code.
+
+## Verification
+
+- **Obligations.** One `refinement` obligation per refined position of a constant's type (rule 7), with a closed goal. Nothing else is new.
+- **Queries.** A reference is a literal (rule 8); the query's size grows by the literal's size at each reference. For a record or list constant referenced many times in one obligation, the encoder MAY bind the value once as a Core `let` temporary before the uses, which is what a source `let` of the same value gives, and which keeps the query linear in the number of references.
+- **Determinism** (`spec/12 §10`): the folded value is a function of the source, so queries are.
+- **The formal model** (`formal/`) does not model declarations by name; the substitution of a closed value for a name is the standard substitution lemma, and no theorem changes.
+
+## Information flow
+
+No label, rule or theorem of `spec/07` changes. Literals are `public`; a constant is a literal by rule 8, and its declared label applies to each use by the flow rules that apply to any annotated binding.
+
+## Costs
+
+| Operation | Time | Memory |
+| --- | --- | --- |
+| Check-time evaluation of all constants | O(total size of their values), each constant once, in dependency order, under rule 5's caps | O(total size of the values) |
+| Cycle detection | O(constants + references), one traversal | O(constants) |
+| A reference, at check | O(1) lookup | O(1) |
+| A reference, in Core | O(size of the value) written at the reference; a scalar is O(1) | the same |
+| A reference, at run time | a scalar: that of a literal, O(1); a record or list: one construction, O(size), unless the engine shares one | the construction counts against the budget |
+| A reference, in a query | O(size of the value), with the encoder's `let` sharing for repeated uses | the same |
+
+The whole addition is linear in the source and in the values. **Scaling tests:** modules of 10, 100, 1,000 and 10,000 constants, each referencing the previous one, check in time growing at most linearly (each doubling at most ×2.3, medians of 9 runs); a constant list of 10, 100, 1,000 and 10,000 elements referenced 100 times in one function checks, elaborates and runs in time linear in the product, in both engines; the cap of rule 5 refuses a chain of 40 squarings at the 4,300-digit cap in time linear in the chain.
+
+## Diagnostics
+
+Two new codes, which join `spec/13 §4` with the implementation. U1010 and U2040 are the highest in their domains on `main`; U1011 and U2041 are free on `main` and in every open pull request at the time of writing.
+
+| Code | Domain | Meaning |
+| --- | --- | --- |
+| U1011 | names | A constant depends on itself, directly or through other constants |
+| U2041 | types | The value of a constant is not a constant expression (a call, a lambda, a capability, an interpolation, a control construct), divides by zero, does not fit its fixed-width type, or exceeds the size caps |
+
+Existing codes cover the rest: U0101 for `let` at the top level in editions before `0.4`, and for a missing type annotation; U1001 and U1002 for names; U2001, U2002, U2028 and U4001 for a value that does not flow into the declared type; U5001 for a refuted refinement (rule 7); U1005 for the conventions.
+
+## Consequences
+
+- **Libraries export values.** A package can name π, limits, defaults and units of its domain once, and its users and its contracts read them by name.
+- **`std.time` is written in Una** for its constants too; one special case leaves the checker.
+- **No run-time cost for scalars;** a record or list constant costs a construction per use unless the engine shares it, which a later record may require if measurement shows the need.
+- **Core IR is unchanged,** and so are the Core export (`una.core/1`), the report and the trace: a reference leaves no mark. A program's trace is the same whether a value was written as a constant or inline.
+- **A closed set of constant expressions.** Widening it (`if` over constants, a call of a pure function, decimal multiplication) is a dated amendment, not a quiet change.
+- **The preview edition grows,** under ADR 0121 rule 1; no program of edition `0.3` changes meaning.
+
+## Alternatives considered
+
+- **A. Functions without parameters,** `pub pi() -> F64 = 3.14...`, used as `pi()`. Not chosen: a call where a value is meant; the verifier would see an uninterpreted application unless the function were inlined, and the parentheses say "something runs".
+- **B. A new keyword** (`constant`, `fixed`, `value`). Not chosen (Question 1): `let` already means "bind this value", and the required annotation tells a module `let` from a block one.
+- **C. Module values computed at start,** from any effect-free expression. Not chosen (Question 2): an initialization order, failures at start, and values the verifier cannot see through.
+- **D. A Core IR declaration** (`Decl::Const`) with references by name, and a fact `name = value` in queries. Not chosen for now: every engine, the encoder and the Core export would gain a form, for a benefit, sharing one construction of a record or list, that rule 8 lets an engine have anyway. If measurement shows that substitution bloats Core or queries, a later record moves to it.
+- **E. Constants only of scalar types.** Not chosen (Question 5): an `origin: Point` or a list of allowed values is what programs name most; the caps of rule 5 keep them bounded.
+- **F. Allowing text interpolation of constants.** Not chosen: it is computed text, which `spec/07 §7` rule 3 treats with care in patterns (S-28); a constant text is written out.
+- **G. Keeping `std.time`'s built-ins.** Not chosen (Question 6): the special case exists only because the language lacked the construct.
+
+## Implementation plan
+
+Each step ships behind edition `0.4`, with its conformance cases, in both engines, and with a changelog fragment.
+
+1. **Syntax, names and form.** The grammar (`spec/02 §1`), U0101 in earlier editions, the lower-case namespace with U1002 and U1005, the cycle check U1011, the canonical form and `una fmt`, the language server's hover and definition.
+2. **Evaluation and typing.** The constant evaluator over rule 3's set with the caps of rule 5 and U2041; the flow into the declared type with units, labels and fixed-width fit; the `refinement` obligation of rule 7.
+3. **Substitution and the engines.** Elaboration substitutes values; `una core` shows them; the differential cases of `spec/16 §5` cover every operator and every type of rule 3 in the interpreter and the native backend; the encoder's `let` sharing for repeated references.
+4. **Types and contracts** (Question 4): constants in `requires`, `ensures`, `where`, `given`, and as range bounds.
+5. **`std.time` and the documents.** `time.una` declares its constants; the built-in table and `Entity::Constant` are removed; `spec/14 §3`, `spec/26 §2`, the guide's chapter on modules, Una by Example's chapter on numerics and the `una std` listing show the construct.
+
+## Conformance
+
+- **Syntax and names:** a `pub let` with a type parses and resolves; one without a type is U0101 at `=`; `let` at the top level in edition `0.3` is U0101; two constants of one name, and a constant named as a function of the module, are U1002; a `pub let` imported by name resolves, and one without `pub` imported is U1004; a local shadows a constant; a constant named `max__items` is U1005.
+- **Constant expressions:** each form of rule 3 is accepted; a call, a lambda, a capability reference, an interpolated text, an `if`, a `when`, a field access and `result` are each U2041 naming the construct; `1 / 0` and `1 mod 0` are U2041; a cycle of two constants is U1011 once; a constant of 4,301 digits, and a list constant that nests another past 1,000,000 elements, are U2041.
+- **Typing:** `let n: I32 = 3_000_000_000` is U2041; `let d: Int of Meter = 5 * 2` is accepted and `let d: Int of Meter = other_seconds` is U2028; `let s: secret Int = 1` is accepted and `print(s)` is U4003; `let m: Int in 1..1000 = 500` has a proven `refinement` obligation, `= 0` a refuted one with U5001 at the value and no counterexample note; a record constant whose field is refined gives the obligation at the field.
+- **Substitution and engines:** `una core` shows the value where the source wrote the name; for every operator and type of rule 3, a program that computes with a constant and one that writes the literal give the same output, trace and status in both engines, and the same obligation statuses; a list constant used in a loop of 1,000 iterations under a memory budget behaves as the literal would.
+- **Types and contracts:** `requires n <= max_items` is proven and refuted by callers as with the literal; `Int in 1..max_items` as a parameter type; a range bound that names a function is U2002 and one that names a `Text` constant is U2002.
+- **`std.time`:** `import std.time (second)` and `2 * second` keep their type and value; the `una std` listing lists the three constants with their types and values.
+- **Canonical form:** `una fmt` writes `pub let x: Int = 1` from `pub let x :Int=1`, and keeps declaration order.
+
+## Appendix A. Amendments to records
+
+To be appended, dated, when this record is accepted:
+
+**ADR 0116, Amendment.** The amendment of 2026-10-19 made `millisecond`, `second` and `minute` built-in names of `std.time`. Under ADR 0126 they are declared in `std.time` itself, as `pub let` constants of type `Int of Millisecond`, with the same values.

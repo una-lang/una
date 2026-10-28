@@ -5,16 +5,23 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
-description = "The unsafe code that the Una runtime and interpreter share: signal handlers, attention words, coroutines and a write-readiness check (ADR 0116 rule 18, ADR 0117)"
+description = "The unsafe code that the Una runtime and interpreter share: signal handlers, attention words, coroutines, a write-readiness check and the reactor's kqueue or epoll instance (ADR 0116 rule 18, ADR 0117)"
 
 [dependencies]
 libc.workspace = true
 
+[features]
+# ADR 0124 rules 7 and 35: the solver child's confinement record, and in later slices its
+# confinement, limits, spawn attributes and footprint reading, for `una-cli` and `una-z3` only.
+# `una-rt` and `una-interp` never enable it; a test of `una-cli` checks the feature graph.
+solver = []
+
 # The workspace lints, except `unsafe_code`: ADR 0058 (amended by ADRs 0116 and 0117) allows
 # `unsafe` in this crate, in the modules that call the operating system or switch stacks:
-# `signals.rs`, `coroutine.rs` (Rust `naked_asm!` only, no assembly files, no build script, no C)
-# and `io.rs`, each of which opts in. Every other module keeps compiler/conventions.md §1. The
-# crate stays under 1,200 lines, one assembly instruction per line (ADR 0116 amendment).
+# `signals.rs`, `coroutine.rs` (Rust `naked_asm!` only, no assembly files, no build script, no C),
+# `io.rs` and `poll.rs` (kqueue or epoll, ADR 0117 slice S7), each of which opts in. Every other
+# module keeps compiler/conventions.md §1. The crate stays under 1,200 lines, one assembly
+# instruction per line (ADR 0116 amendment).
 [lints.rust]
 unsafe_code = "deny"
 unsafe_op_in_unsafe_fn = "deny"

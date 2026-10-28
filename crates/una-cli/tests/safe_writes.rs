@@ -30,7 +30,7 @@ const RAW_WRITES: [&str; 10] = [
 const CRATES: [&str; 4] = ["una-cli", "una-verify", "una-codegen", "una-project"];
 
 /// The raw writes that remain, by file and call, with how many there are and why each is safe.
-const ALLOWED: [(&str, &str, usize, &str); 11] = [
+const ALLOWED: [(&str, &str, usize, &str); 14] = [
     (
         "crates/una-cli/src/build.rs",
         "create_dir_all(",
@@ -70,10 +70,19 @@ const ALLOWED: [(&str, &str, usize, &str); 11] = [
     (
         "crates/una-project/src/tree.rs",
         "OpenOptions::new(",
-        2,
+        3,
         "the package store of `una ita` (ADR 0122 rules 14 and 30), under Itaoca or the vendor \
-         directory: a package file opened for reading with `O_NOFOLLOW`, and a file \
-         created in the fresh private directory with `create_new` and `O_NOFOLLOW`, mode 0600",
+         directory: a package file opened for reading with `O_NOFOLLOW`, a file created in \
+         the fresh private directory with `create_new` and `O_NOFOLLOW`, mode 0600, and the \
+         floor lock of a registry in Itaoca (rule 39), opened with `O_NOFOLLOW`",
+    ),
+    (
+        "crates/una-project/src/tree.rs",
+        ".create(true)",
+        1,
+        "the floor lock of a registry in Itaoca (rule 39), outside any package: an empty file \
+         for an advisory lock, never truncated or written, mode 0600, opened with `O_NOFOLLOW` \
+         so a link at its name is refused",
     ),
     (
         "crates/una-project/src/tree.rs",
@@ -106,6 +115,23 @@ const ALLOWED: [(&str, &str, usize, &str); 11] = [
         "the package store of `una ita` (ADR 0122 rules 14 and 30), under Itaoca or the vendor \
          directory: a stored provenance linked to its name, which fails when anything is \
          there, so it is never replaced",
+    ),
+    (
+        "crates/una-project/src/transport.rs",
+        "hard_link(",
+        1,
+        "a submission to a registry served from a local directory (ADR 0122 rule 57): the \
+         bytes are stored through `tree::store_file` under a staged name, then linked to their \
+         name, which fails when anything is there, a link included, so nothing is replaced or \
+         followed",
+    ),
+    (
+        "crates/una-cli/src/runtime.rs",
+        "File::create(",
+        1,
+        "the trace file of `una run --trace`, streamed as the run goes (ADR 0117 rule 10): the \
+         path the user names on the command line, not one the package chooses, as for `una build \
+         --out`",
     ),
     (
         "crates/una-cli/src/runtime.rs",

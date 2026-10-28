@@ -324,7 +324,7 @@ pub enum KeywordSet {
     /// Edition 0.3: the keywords of edition 0.2 (`spec/13 §7`), and `test` (ADR 0105).
     V0_3,
     /// Edition 0.4: the keywords of edition 0.3, with `diverges` and `within` reserved
-    /// (`spec/26 §1`, ADR 0116 rule 0).
+    /// (`spec/26 §1`, ADR 0116 rule 0), and `simd` no longer reserved (ADR 0120 rule 1).
     V0_4,
 }
 
