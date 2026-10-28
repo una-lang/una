@@ -1,0 +1,31 @@
+-- test: the twin of `tconc_residue` whose started task works on `public` data, the same program but for that label: `L_res` is `internal`, from `ρ` of `Http`, so the deadline of the later request is `internal`, which the failure of `Http.get` carries, and the program is accepted (ADR 0116 P9)
+-- spec: spec/27 §5
+-- expect: ok
+module residue
+
+import std.time (millisecond)
+
+crunch(key: Int) -> Int = key * 3
+
+--- Work on `key`, then a request, in a started task.
+churn(key: Int, url: Text) -> Unit
+  uses @http: Http[get]
+=
+  let spent = crunch(key)
+  let outcome = attempt @http.get(url, headers: [], key_name: None)
+  unit
+
+--- Starts `churn`, whose request a cancellation of the task can leave on a helper.
+pub serve(key: Int, url: Text) -> Unit
+  uses @http: Http[get]
+=
+  tasks
+    start churn(key, url)
+  unit
+
+--- A later request under a deadline, in a function no task reaches.
+pub poll(url: Text) -> Unit
+  uses @http: Http[get]
+=
+  let reply = attempt @http.get(url, headers: [], key_name: None) within 100 * millisecond
+  unit

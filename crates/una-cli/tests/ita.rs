@@ -566,6 +566,22 @@ fn a_dependency_reached_through_a_link_is_refused() {
 }
 
 #[test]
+fn a_ceiling_message_names_the_manifest_of_the_package() {
+    // #1084: in edition 0.4 a dependency's ceiling is written in `ita.una`, so the message of a
+    // grant beyond it names `ita.una`, never `una.toml`.
+    let case = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/conformance/project/ita_path_dep_beyond_ceiling");
+    let (code, _, stderr) = una(&["una", "check", path(&case)]);
+    assert_eq!(code, 1, "{stderr}");
+    assert!(stderr.contains("[U3021]"), "{stderr}");
+    assert!(
+        stderr.contains("whose ceiling in `ita.una` allows"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("una.toml"), "{stderr}");
+}
+
+#[test]
 fn tree_prints_each_dependency_with_its_ceiling_and_authority() {
     let dir = with_dependency("tree", "    may Console[print]\n");
     let (code, _, _) = una(&[
@@ -1193,7 +1209,11 @@ mod registry {
             leaf_hash(statement.as_bytes()),
         ];
         let top = tree_root(&leaves);
-        let checkpoint_text = format!("{LOG}\n2\n{}\n", encode_base64(&top));
+        let checkpoint_text = format!(
+            "{LOG}\n2\n{}\nita-root 1 {}\n",
+            encode_base64(&top),
+            una_project::tlog::root::digest(&root_document)
+        );
         let checkpoint = format!(
             "{checkpoint_text}\n{}{}",
             sign_line(&log_pair, &log, &checkpoint_text),

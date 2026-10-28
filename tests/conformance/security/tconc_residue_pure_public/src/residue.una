@@ -1,0 +1,33 @@
+-- test: the twin of `tconc_residue_pure` whose started task works on `public` data, the same program but for that label: `L_res` is `internal`, from `ρ` of `Http`, so the outcome of the `within` over pure work is `internal`, and the `internal` binding accepts it (ADR 0116 P9)
+-- spec: spec/27 §5
+-- expect: ok
+module residue
+
+import std.time (millisecond)
+
+crunch(key: Int) -> Int = key * 3
+
+--- Work on `key`, then a request, in a started task.
+churn(key: Int, url: Text) -> Unit
+  uses @http: Http[get]
+=
+  let spent = crunch(key)
+  let outcome = attempt @http.get(url, headers: [], key_name: None)
+  unit
+
+--- Starts `churn`, whose request a cancellation of the task can leave on a helper.
+pub serve(key: Int, url: Text) -> Unit
+  uses @http: Http[get]
+=
+  tasks
+    start churn(key, url)
+  unit
+
+step(n: Int) -> Int = n + 1
+
+--- Pure work under a deadline, in a function no task reaches.
+pub measured(n: Int) -> internal Int
+=
+  let v: internal Int = step(n) within 10 * millisecond
+    if error use 0
+  v

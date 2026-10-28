@@ -186,6 +186,10 @@ fn find_word(s: &str, word: &str) -> Option<usize> {
 enum Part {
     Inline(String),
     Lines(usize, usize),
+    /// An `else if` chain that continues the `if` (#935): the lines from its `else if` line
+    /// to the end of the chain, kept at the indentation of the `if`, with a `then` that ends an
+    /// `else if` line removed, since the chain's branches are blocks.
+    Chain(usize, usize),
 }
 
 /// Appends `part` indented at `at`, keeping the relative indentation of source lines.
@@ -196,7 +200,8 @@ fn emit(out: &mut String, lines: &[Line<'_>], part: &Part, at: usize) {
             out.push_str(text.trim());
             out.push('\n');
         }
-        Part::Lines(from, to) => {
+        Part::Lines(from, to) | Part::Chain(from, to) => {
+            let chain = matches!(part, Part::Chain(..));
             let body = lines.get(*from..*to).unwrap_or(&[]);
             let least = body
                 .iter()
@@ -209,11 +214,50 @@ fn emit(out: &mut String, lines: &[Line<'_>], part: &Part, at: usize) {
                     out.push('\n');
                 } else {
                     out.push_str(&" ".repeat(line.indent - least + at));
-                    out.push_str(line.content());
+                    let content = line.content();
+                    // A chain line `else if c then` opens a block: `then` goes (#935).
+                    let content = match content.trim_end().strip_suffix(" then") {
+                        Some(head) if chain && line.indent == least && is_else_if(content) => head,
+                        _ => content,
+                    };
+                    out.push_str(content);
                     out.push('\n');
                 }
             }
         }
+    }
+}
+
+/// Whether `content` opens an `else if` branch: the words `else` and `if`.
+fn is_else_if(content: &str) -> bool {
+    content
+        .strip_prefix("else")
+        .and_then(|rest| rest.strip_prefix(' '))
+        .map(str::trim_start)
+        .and_then(|rest| rest.strip_prefix("if"))
+        .is_some_and(|rest| !rest.starts_with(is_word_char))
+}
+
+/// The end of the `else if` chain whose `else if` line is `at` (#935): that line's block, then
+/// each `else` line at `indent` with its block, blank lines between them included.
+fn chain_end(lines: &[Line<'_>], at: usize, end: usize, indent: usize) -> usize {
+    let mut stop = deeper(lines, at + 1, end, indent).max(at + 1);
+    loop {
+        let mut next = stop;
+        while lines.get(next).is_some_and(|l| l.blank()) {
+            next += 1;
+        }
+        let Some(line) = lines.get(next).filter(|_| next < end) else {
+            return stop;
+        };
+        let after = line.content().get(4..).unwrap_or("x");
+        if line.indent != indent
+            || !line.content().starts_with("else")
+            || after.starts_with(is_word_char)
+        {
+            return stop;
+        }
+        stop = deeper(lines, next + 1, end, indent).max(next + 1);
     }
 }
 
@@ -441,6 +485,12 @@ fn if_at(lines: &[Line<'_>], k: usize, end: usize) -> Option<Candidate> {
             return None;
         }
         (Part::Lines(next + 1, stop), stop)
+    } else if is_else_if(else_line.content()) {
+        // `else if d` continues the chain with blocks of its own (#935): it stays at the
+        // indentation of the `if`, its lines as they are, rather than becoming a branch whose
+        // block the edit would leave unindented.
+        let stop = chain_end(lines, next, end, else_indent);
+        (Part::Chain(next, stop), stop)
     } else {
         (Part::Inline(rest.to_owned()), next + 1)
     };
@@ -470,9 +520,14 @@ fn build(
     out.push_str(condition);
     out.push('\n');
     emit(&mut out, lines, then, ind + 2);
-    out.push_str(&" ".repeat(ind));
-    out.push_str("else\n");
-    emit(&mut out, lines, otherwise, ind + 2);
+    if matches!(otherwise, Part::Chain(..)) {
+        // The chain brings its own `else if` lines, at the `if`'s indentation (#935).
+        emit(&mut out, lines, otherwise, ind);
+    } else {
+        out.push_str(&" ".repeat(ind));
+        out.push_str("else\n");
+        emit(&mut out, lines, otherwise, ind + 2);
+    }
     out
 }
 
@@ -988,14 +1043,15 @@ fn declared(body: &str) -> (DeclarationKind, Vec<String>) {
 }
 
 /// The prelude and `std.testing`, whose names a rename never takes (ADR 0096 rule 3a), with
-/// what edition 0.4 adds to `std.testing` (ADR 0116 rule 19) and the variant it adds to
-/// `HttpError` (ADR 0116 rule 12).
-const PRELUDES: [&str; 5] = [
+/// what edition 0.4 adds to `std.testing` (ADR 0116 rule 19) and the variants it adds to
+/// `HttpError` (ADR 0116 rule 12, ADR 0117 rule 8).
+const PRELUDES: [&str; 6] = [
     include_str!("../../una-check/src/std/prelude.una"),
     include_str!("../../una-check/src/std/prelude_0_2.una"),
     include_str!("../../una-check/src/std/testing.una"),
     include_str!("../../una-check/src/std/testing_0_4.una"),
     "Interrupted",
+    "RateLimited",
 ];
 
 fn words(text: &str) -> impl Iterator<Item = &str> {
@@ -1253,6 +1309,32 @@ mod tests {
         assert_eq!(
             rewrite(source).as_deref(),
             Some("module m\n\nf(x: Int) -> Int\n=\n  if x > 0\n    x\n  else\n    0\n")
+        );
+    }
+
+    #[test]
+    fn then_at_the_end_of_a_line_before_an_else_if_chain_keeps_the_chain() {
+        // #935: the `else if` branch has a block of its own, which stays indented under it, and
+        // the chain's last `else` stays at the `if`'s indentation.
+        let source = "module m\n\nf(grams: Int) -> Text\n=\n  if grams <= 1_000 then\n    \"small\"\n  else if grams <= 5_000\n    let kilos = (grams + 999) / 1_000\n    \"medium {kilos}\"\n  else\n    \"large\"\n";
+        assert_eq!(
+            rewrite(source).as_deref(),
+            Some(
+                "module m\n\nf(grams: Int) -> Text\n=\n  if grams <= 1_000\n    \"small\"\n  else if grams <= 5_000\n    let kilos = (grams + 999) / 1_000\n    \"medium {kilos}\"\n  else\n    \"large\"\n"
+            )
+        );
+    }
+
+    #[test]
+    fn then_at_the_end_of_an_else_if_line_goes_with_the_chain() {
+        // #935: a chain whose `else if` line ends with `then` too is repaired in one edit, so
+        // the edited range parses.
+        let source = "module m\n\nf(x: Int) -> Int\n=\n  if x > 10 then\n    2\n  else if x > 0 then\n    1\n  else\n    0\n";
+        assert_eq!(
+            rewrite(source).as_deref(),
+            Some(
+                "module m\n\nf(x: Int) -> Int\n=\n  if x > 10\n    2\n  else if x > 0\n    1\n  else\n    0\n"
+            )
         );
     }
 
