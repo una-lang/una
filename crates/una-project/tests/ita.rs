@@ -9,7 +9,7 @@ use una_diag::Code;
 use una_project::ita::{
     check_lock_consistency, parse_ita_lock, parse_ita_manifest, parse_workspace,
 };
-use una_project::{Edition, Format, ProjectError};
+use una_project::{Edition, Format, Profile, ProjectError};
 
 const HEAD: &str = "ita case\n  version 0.1.0\n  edition 0.4\n";
 const LOCK: &str = "lock 1\n\nsolver\n  encoding \"una-smt-1\"\n  name \"z3\"\n  version \"5.1.0\"\n  logic \"QF_UFLIA\"\n  steps 5000000\n  seed 0\n";
@@ -94,22 +94,31 @@ fn the_head_is_checked() {
         "not an owner name",
     );
     has(
-        &format!("{HEAD}  profile systems\n"),
+        &format!("{HEAD}  profile kernel\n"),
         Code::U7008,
-        "not supported by this release",
+        "unknown profile `kernel`",
     );
     has(
         &format!("{HEAD}  home \"http://x\"\n"),
         Code::U7008,
         "`https://` URL",
     );
-    has(
-        &format!("{HEAD}  publish to acme\n"),
-        Code::U7008,
-        "names no source",
-    );
+    // A name reserved for an origin is no source; any other source name is checked against
+    // the workspace's `itaty.una` when the package is published (`spec/30 §2` rule 4).
+    for reserved in ["path", "git", "workspace"] {
+        has(
+            &format!("{HEAD}  publish to {reserved}\n"),
+            Code::U7008,
+            "names no source",
+        );
+    }
     assert_eq!(
         errors(&format!("{HEAD}  profile app\n  publish to itaty\n")),
+        Vec::<String>::new()
+    );
+    // A published package has no `sources`: its own manifest accepts the line.
+    assert_eq!(
+        errors(&format!("{HEAD}  publish to acme\n")),
         Vec::<String>::new()
     );
 }
@@ -280,13 +289,24 @@ fn trust_lines_are_checked() {
 }
 
 #[test]
-fn unsupported_settings_are_refused_not_ignored() {
+fn limits_on_http_grants_are_read_and_refused_elsewhere() {
+    // ADR 0117 rule 8 (slice S5): a limit line under an `http` grant is read into the grant's
+    // text form, never dropped; under another grant it is refused, since the grant would
+    // otherwise allow more than written.
+    let (manifest, errors) = parse_ita_manifest(&format!(
+        "{HEAD}\nrun\n  grants\n    http \"https://a.example\" get\n      at most 1 per minute\n"
+    ));
+    assert_eq!(render(&errors), Vec::<String>::new());
+    assert_eq!(manifest.grants.len(), 1);
+    assert!(
+        manifest.grants[0].value.ends_with(";1/minute"),
+        "{:?}",
+        manifest.grants[0].value
+    );
     has(
-        &format!(
-            "{HEAD}\nrun\n  grants\n    http \"https://a.example\" get\n      at most 1 per minute\n"
-        ),
+        &format!("{HEAD}\nrun\n  grants\n    console\n      at most 1 per minute\n"),
         Code::U7008,
-        "limits on grants",
+        "limits apply to `http` grants only",
     );
 }
 
@@ -411,7 +431,31 @@ fn workspaces_are_checked() {
 fn every_una_toml_check_has_its_ita_una_twin() {
     use una_project::parse_manifest;
     const TOML: &str = "[package]\nname = \"case\"\nversion = \"0.1.0\"\nedition = \"0.3\"\n";
-    let twins: [(&str, &str, &str, Code); 17] = [
+    let twins: [(&str, &str, &str, Code); 21] = [
+        (
+            "an unknown profile",
+            "profile = \"kernel\"\n",
+            "  profile kernel\n",
+            Code::U7008,
+        ),
+        (
+            "a budget of 0",
+            "[run]\nmax_memory = 0\n",
+            "\nrun\n  max_memory 0\n",
+            Code::U7008,
+        ),
+        (
+            "a budget above the cap",
+            "[run]\nmax_memory = 4097\n",
+            "\nrun\n  max_memory 4097\n",
+            Code::U7008,
+        ),
+        (
+            "a systems package with an entry and no budget",
+            "profile = \"systems\"\n\n[run]\nentry = \"main\"\n",
+            "  profile systems\n\nrun\n  entry main\n",
+            Code::U7008,
+        ),
         (
             "an unknown table",
             "[extra]\nkey = 1\n",
@@ -600,4 +644,47 @@ fn serve_grants_are_checked_item_by_item() {
             "serve:http://127.0.0.1:8082"
         ]
     );
+}
+
+#[test]
+fn a_systems_package_declares_its_budget_in_ita_una() {
+    // ADR 0109 rules 1 and 4 under ADR 0122: `profile systems` is accepted, `max_memory` is
+    // from 1 to 4096, and a `systems` package with a `run entry` declares it, at the entry.
+    let text = format!("{HEAD}  profile systems\n\nrun\n  entry main\n  max_memory 64\n");
+    let (manifest, found) = parse_ita_manifest(&text);
+    assert_eq!(render(&found), Vec::<String>::new());
+    assert_eq!(manifest.profile, Profile::Systems);
+    assert_eq!(manifest.max_memory, Some(64));
+    let (manifest, found) = parse_ita_manifest(&format!("{HEAD}  profile app\n"));
+    assert_eq!(render(&found), Vec::<String>::new());
+    assert_eq!(manifest.profile, Profile::App);
+    assert_eq!(manifest.max_memory, None);
+    // Without an entry, or as `app`, no budget is needed.
+    for text in [
+        format!("{HEAD}  profile systems\n"),
+        format!("{HEAD}\nrun\n  entry main\n"),
+    ] {
+        assert_eq!(errors(&text), Vec::<String>::new(), "{text}");
+    }
+    let text = format!("{HEAD}  profile systems\n\nrun\n  entry main\n");
+    let (_, found) = parse_ita_manifest(&text);
+    assert_eq!(
+        render(&found),
+        [
+            "U7008 a `systems` package with a `run entry` declares `run max_memory`, its memory budget in MiB"
+        ]
+    );
+    assert_eq!(&text[found[0].range.clone()], "main");
+    for bad in ["0", "4097"] {
+        let text = format!("{HEAD}  profile systems\n\nrun\n  entry main\n  max_memory {bad}\n");
+        let (manifest, found) = parse_ita_manifest(&text);
+        assert_eq!(
+            render(&found),
+            [format!(
+                "U7008 `run max_memory` is a number of MiB from 1 to 4096, not {bad}"
+            )]
+        );
+        assert_eq!(&text[found[0].range.clone()], bad);
+        assert_eq!(manifest.max_memory, None);
+    }
 }

@@ -10,7 +10,7 @@
 //! The stop is sticky, so the pipe is never drained: once a request has come, its read end
 //! stays readable, and every thread that waits on it afterwards wakes at once.
 //!
-//! The only `unsafe` code of the crate is here: the calls of the operating system through the
+//! The `unsafe` code here is the calls of the operating system through the
 //! `libc` crate, which is Rust declarations of the system interface only, with no C source
 //! built (ADR 0116 Appendix A, amendment of 2026-10-19).
 #![allow(unsafe_code)]
@@ -52,7 +52,7 @@ pub fn install() -> Result<(), InstallError> {
 }
 
 fn install_once() -> Result<(), InstallError> {
-    let [read, write] = wake_pipe()?;
+    let [read, write] = open_pipe()?;
     WAKE_READ.store(read, Ordering::Release);
     WAKE_WRITE.store(write, Ordering::Release);
     // SAFETY: zero is a valid `sigaction` (no handler, no flags, an empty mask), and every
@@ -103,7 +103,7 @@ pub(crate) unsafe fn fcntl(fd: libc::c_int, cmd: libc::c_int, arg: libc::c_int) 
 
 /// The two ends of a new pipe, non-blocking and close-on-exec, at descriptors of [`HIGH_FD`] or
 /// above; on failure, nothing stays open.
-fn wake_pipe() -> Result<[libc::c_int; 2], InstallError> {
+fn open_pipe() -> Result<[libc::c_int; 2], InstallError> {
     let mut fds: [libc::c_int; 2] = [-1, -1];
     // SAFETY: `fds` is a valid array of two `c_int`s that the call writes the two ends into.
     #[cfg(target_os = "linux")]
@@ -160,6 +160,14 @@ fn close_both(fds: [libc::c_int; 2]) {
 pub fn wake_fd() -> Option<libc::c_int> {
     let fd = WAKE_READ.load(Ordering::Acquire);
     (fd >= 0).then_some(fd)
+}
+
+/// [`wake_fd`] borrowed for the life of the process, for the reactor's poller, once [`install`]
+/// has succeeded: only a failed install closes the pipe, and a successful one is never undone.
+pub fn wake_pipe() -> Option<std::os::fd::BorrowedFd<'static>> {
+    let fd = wake_fd().filter(|_| matches!(INSTALLED.get(), Some(Ok(()))))?;
+    // SAFETY: the install succeeded, so `fd` is open, and nothing closes it afterwards.
+    Some(unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) })
 }
 
 /// What [`wait`] saw.

@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 
 use pretty_assertions::assert_eq;
 use una_project::{
-    DEFAULT_SOLVER_VERSION, LoadError, Lock, Role, discover, is_grant, is_module_path, parse_lock,
-    parse_manifest,
+    DEFAULT_SOLVER_VERSION, LoadError, Lock, MAX_MEMORY_CAP, Profile, Role, discover, is_grant,
+    is_module_path, parse_lock, parse_manifest,
 };
 
 fn repository() -> PathBuf {
@@ -322,4 +322,115 @@ fn boundaries_are_a_table_of_edition_0_3() {
     assert_eq!(key("a"), None);
     assert_eq!(key("c.d"), Some("c"));
     assert_eq!(key("c"), Some("c"));
+}
+
+/// A manifest of `edition` with `package` as line 5, under `[package]`, and `run` as line 7,
+/// under `[run]`.
+fn profile_manifest(edition: &str, package: &str, run: &str) -> String {
+    format!(
+        "[package]\nname = \"p\"\nversion = \"0.1.0\"\nedition = \"{edition}\"\n{package}\n[run]\n{run}\n"
+    )
+}
+
+#[test]
+fn a_package_declares_its_profile_in_edition_0_3() {
+    // ADR 0109 rule 1: `app` by default, `systems` declared; any other value is U7002.
+    let (manifest, errors) = parse_manifest(&profile_manifest("0.3", "", ""));
+    assert!(errors.is_empty(), "{errors:?}");
+    assert_eq!(manifest.profile, Profile::App);
+    assert_eq!(manifest.max_memory, None);
+    let text = profile_manifest("0.3", "profile = \"systems\"", "max_memory = 256");
+    let (manifest, errors) = parse_manifest(&text);
+    assert!(errors.is_empty(), "{errors:?}");
+    assert_eq!(manifest.profile, Profile::Systems);
+    assert_eq!(manifest.max_memory, Some(256));
+    let text = profile_manifest("0.3", "profile = \"app\"", "");
+    assert_eq!(parse_manifest(&text).0.profile, Profile::App);
+    assert_eq!(
+        manifest_errors(&profile_manifest("0.3", "profile = \"kernel\"", "")),
+        ["U7002 5:11 unknown profile `kernel`; the profiles are \"app\" and \"systems\""]
+    );
+    assert_eq!(Profile::parse("systems"), Some(Profile::Systems));
+    assert_eq!(Profile::Systems.name(), "systems");
+    assert_eq!(Profile::App.name(), "app");
+}
+
+#[test]
+fn the_profile_and_the_budget_are_unknown_before_edition_0_3() {
+    // ADR 0109 rules 1 and 4: editions 0.1 and 0.2 keep both keys unknown, and their packages
+    // are `app`, with no declared budget.
+    for edition in ["0.1", "0.2"] {
+        let text = profile_manifest(edition, "profile = \"systems\"", "max_memory = 256");
+        assert_eq!(
+            manifest_errors(&text),
+            [
+                "U7002 5:1 unknown key `profile` in [package]",
+                "U7002 7:1 unknown key `max_memory` in [run]"
+            ],
+            "{edition}"
+        );
+        let (manifest, _) = parse_manifest(&text);
+        assert_eq!(manifest.profile, Profile::App);
+        assert_eq!(manifest.max_memory, None);
+    }
+}
+
+#[test]
+fn a_declared_budget_is_from_1_to_the_cap() {
+    // ADR 0109 rule 4: from 1 to 4096 MiB while edition 0.3 is a preview.
+    assert_eq!(MAX_MEMORY_CAP, 4096);
+    for good in [1, 4096] {
+        let text = profile_manifest("0.3", "", &format!("max_memory = {good}"));
+        let (manifest, errors) = parse_manifest(&text);
+        assert!(errors.is_empty(), "{good}: {errors:?}");
+        assert_eq!(manifest.max_memory, Some(good));
+    }
+    for bad in ["0", "4097", "-1"] {
+        assert_eq!(
+            manifest_errors(&profile_manifest("0.3", "", &format!("max_memory = {bad}"))),
+            [format!(
+                "U7002 7:14 [run] max_memory is a number of MiB from 1 to 4096, not {bad}"
+            )]
+        );
+    }
+    let errors = manifest_errors(&profile_manifest("0.3", "", "max_memory = \"256\""));
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(errors[0].starts_with("U7002 7:14"), "{errors:?}");
+}
+
+#[test]
+fn a_systems_package_that_runs_declares_its_budget() {
+    // ADR 0109 rule 4: `systems`, an entry and no budget is U7002 at the entry; without an
+    // entry, or as `app`, no budget is needed.
+    assert_eq!(
+        manifest_errors(&profile_manifest(
+            "0.3",
+            "profile = \"systems\"",
+            "entry = \"app.main\""
+        )),
+        [
+            "U7002 7:9 a `systems` package with a [run] entry declares [run] max_memory, its memory budget in MiB"
+        ]
+    );
+    // A budget out of range is reported at its value only, not again as missing.
+    assert_eq!(
+        manifest_errors(&profile_manifest(
+            "0.3",
+            "profile = \"systems\"",
+            "entry = \"app.main\"\nmax_memory = 0"
+        )),
+        ["U7002 8:14 [run] max_memory is a number of MiB from 1 to 4096, not 0"]
+    );
+    for (package, run) in [
+        (
+            "profile = \"systems\"",
+            "entry = \"app.main\"\nmax_memory = 64",
+        ),
+        ("profile = \"systems\"", ""),
+        ("", "entry = \"app.main\""),
+        ("profile = \"app\"", "entry = \"app.main\"\nmax_memory = 64"),
+    ] {
+        let (_, errors) = parse_manifest(&profile_manifest("0.3", package, run));
+        assert!(errors.is_empty(), "{package} {run}: {errors:?}");
+    }
 }

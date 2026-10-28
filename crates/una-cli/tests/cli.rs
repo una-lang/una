@@ -1017,9 +1017,11 @@ fn version_names_the_editions_and_the_pinned_z3() {
     let version = env!("CARGO_PKG_VERSION");
     let output = una(&["--version"]);
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    // The tests run a development build, which says so on its last line and in its document
+    // (ADR 0124 rule 19); a release build prints neither.
     assert_eq!(
         stdout(&output),
-        format!("una {version}\neditions: 0.1, 0.2, 0.3, 0.4\nz3: 5.1.0\n")
+        format!("una {version}\neditions: 0.1, 0.2, 0.3, 0.4\nz3: 5.1.0\ndevelopment build\n")
     );
     assert_eq!(stderr(&output), "");
     let output = una(&["--json", "--version"]);
@@ -1027,7 +1029,7 @@ fn version_names_the_editions_and_the_pinned_z3() {
     assert_eq!(
         stdout(&output),
         format!(
-            "{{\"schema\":\"una.version/1\",\"version\":\"{version}\",\"editions\":[\"0.1\",\"0.2\",\"0.3\",\"0.4\"],\"z3\":\"5.1.0\"}}\n"
+            "{{\"schema\":\"una.version/1\",\"version\":\"{version}\",\"editions\":[\"0.1\",\"0.2\",\"0.3\",\"0.4\"],\"z3\":\"5.1.0\",\"build\":\"development\"}}\n"
         )
     );
     // The pinned Z3 is the one of the repository's lock.
@@ -1061,6 +1063,13 @@ fn core_prints_the_package_s_core_ir_as_una_core_1() {
     );
     let document: Value = serde_json::from_str(text).unwrap();
     assert_eq!(document["complete"], true);
+    // ADR 0109 rule 6: the header records the profile, after the edition; `app` by default.
+    assert!(
+        text.starts_with(
+            "{\"schema\":\"una.core/1\",\"edition\":\"0.1\",\"profile\":\"app\",\"complete\":"
+        ),
+        "{text}"
+    );
     let module = &document["modules"][0];
     assert_eq!(module["path"], "hello");
     let main = &module["decls"][0];

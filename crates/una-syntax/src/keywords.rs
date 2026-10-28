@@ -89,16 +89,26 @@ pub const RESERVED_IN_0_2: [(&str, &str); 13] = [
 ];
 
 /// The words that edition 0.4 reserves for the constructs of ADR 0116 (`spec/26 §1`), with
-/// the message of their U0103 diagnostic, until each becomes a keyword.
-pub const RESERVED_IN_0_4: [(&str, &str); 2] = [
+/// the message of their U0103 diagnostic, until each becomes a keyword, and the rows whose
+/// message edition 0.4 changes: `async` and `await` (`spec/27 §7`, ADR 0117 Diagnostics).
+pub const RESERVED_IN_0_4: [(&str, &str); 4] = [
     (
         "diverges",
         "reserved for edition 0.4 (long-running programs)",
     ),
     ("within", "reserved for edition 0.4 (long-running programs)"),
+    (
+        "async",
+        "not supported; use `tasks` and `start`, or `together`",
+    ),
+    (
+        "await",
+        "not supported; use `tasks` and `start`, or `together`",
+    ),
 ];
 
-/// The U0103 message text of `word` under the keyword set `set`, if it is reserved.
+/// The U0103 message text of `word` under the keyword set `set`, if it is reserved. In edition
+/// 0.4, `simd` is not reserved (ADR 0120 rule 1).
 pub fn reserved_in(word: &str, set: KeywordSet) -> Option<&'static str> {
     if set >= KeywordSet::V0_4
         && let Some((_, message)) = RESERVED_IN_0_4
@@ -106,6 +116,11 @@ pub fn reserved_in(word: &str, set: KeywordSet) -> Option<&'static str> {
             .find(|(reserved, _)| *reserved == word)
     {
         return Some(message);
+    }
+    // ADR 0120 rule 1: `simd` stops being reserved in edition 0.4, where it is an identifier
+    // outside the clause of rule 58.
+    if set >= KeywordSet::V0_4 && word == "simd" {
+        return None;
     }
     if set >= KeywordSet::V0_2 {
         if matches!(word, "edit" | "take" | "together") {
@@ -132,4 +147,42 @@ pub fn reserved_for_later(word: &str) -> Option<&'static str> {
 /// Whether `word` is a contextual keyword.
 pub fn is_contextual(word: &str) -> bool {
     CONTEXTUAL.contains(&word)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn simd_is_reserved_before_edition_0_4_only() {
+        // ADR 0120 rule 1: `simd` stays reserved in editions 0.1 to 0.3.
+        for set in [KeywordSet::V0_1, KeywordSet::V0_2, KeywordSet::V0_3] {
+            assert_eq!(
+                reserved_in("simd", set),
+                Some("reserved for v0.2 (systems profile)")
+            );
+        }
+        assert_eq!(reserved_in("simd", KeywordSet::V0_4), None);
+        assert!(reserved_in("profile", KeywordSet::V0_4).is_some());
+    }
+
+    #[test]
+    fn async_and_await_name_tasks_and_start_in_edition_0_4() {
+        // ADR 0117 Diagnostics, `spec/19 §9`: the message of each edition.
+        let message = "not supported; use `tasks` and `start`, or `together`";
+        for word in ["async", "await"] {
+            assert_eq!(reserved_in(word, KeywordSet::V0_4), Some(message));
+            assert_eq!(
+                reserved_in(word, KeywordSet::V0_3),
+                Some("not supported; use `together`")
+            );
+            assert_eq!(
+                reserved_in(word, KeywordSet::V0_1),
+                Some("not supported; see structured concurrency in v0.2")
+            );
+        }
+        // `tasks` and `start` are no reserved words: they are names outside their statements.
+        assert_eq!(reserved_in("tasks", KeywordSet::V0_4), None);
+        assert_eq!(reserved_in("start", KeywordSet::V0_4), None);
+    }
 }

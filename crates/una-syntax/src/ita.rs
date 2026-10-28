@@ -712,6 +712,29 @@ pub struct ContractEntry {
     pub clauses: Vec<At<String>>,
 }
 
+/// The kind of a limit line (ADR 0117 rule 8, `spec/27 §9`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LimitKind {
+    /// `at most <n> per second|minute|hour`, with the period's word.
+    Rate(String),
+    /// `at most <n> at once`.
+    AtOnce,
+    /// `waiting at most <n>`.
+    Waiting,
+}
+
+/// A limit line under an `http` grant (ADR 0117 rule 8): its kind, its count as written, and
+/// its line. The count's range is checked by the reader of the manifest (U7008).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Limit {
+    /// The kind.
+    pub kind: LimitKind,
+    /// The count.
+    pub count: At<u64>,
+    /// The line.
+    pub range: Range<usize>,
+}
+
 /// A grant of `run grants` (ADR 0122 rule 12).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Grant {
@@ -719,8 +742,9 @@ pub struct Grant {
     pub spec: String,
     /// The grant's line.
     pub range: Range<usize>,
-    /// The limit lines below an `http` grant (ADR 0117 rule 8), each the range of its line.
-    pub limits: Vec<Range<usize>>,
+    /// The limit lines below it that parse (ADR 0117 rule 8); each that does not is an error.
+    /// A `serve` grant has none: its lines are its items.
+    pub limits: Vec<Limit>,
     /// The item lines below a `serve` grant (`spec/31 §2` rule 3), each the range of its line,
     /// in the order of the `;` items of `spec`.
     pub items: Vec<Range<usize>>,
@@ -731,6 +755,9 @@ pub struct Grant {
 pub struct Run {
     /// `entry`.
     pub entry: Option<At<String>>,
+    /// `max_memory <MiB>`: the declared memory budget (ADR 0109 rule 4), checked by the
+    /// project crate.
+    pub max_memory: Option<At<u64>>,
     /// The grants.
     pub grants: Vec<Grant>,
 }
@@ -1401,6 +1428,12 @@ fn run(line: &Line, errors: &mut Vec<Error>) -> Run {
                 Ok(_) if run.entry.is_some() => {
                     errors.push(Error::new(child.range.clone(), "`entry` appears twice"));
                 }
+                Ok(_) if run.max_memory.is_some() => {
+                    errors.push(Error::new(
+                        child.range.clone(),
+                        "`entry` comes before `max_memory`",
+                    ));
+                }
                 Ok(_) if grants_seen => {
                     errors.push(Error::new(
                         child.range.clone(),
@@ -1408,6 +1441,28 @@ fn run(line: &Line, errors: &mut Vec<Error>) -> Run {
                     ));
                 }
                 Ok(entry) => run.entry = Some(entry),
+                Err(error) => errors.push(error),
+            }
+        } else if cursor.eat_word("max_memory") {
+            // `max_memory <int>` (ADR 0109 rule 4): its range is the project crate's check.
+            no_children(child, errors);
+            match cursor
+                .int("the value of `max_memory`")
+                .and_then(|value| cursor.end().map(|()| value))
+            {
+                Ok(_) if run.max_memory.is_some() => {
+                    errors.push(Error::new(
+                        child.range.clone(),
+                        "`max_memory` appears twice",
+                    ));
+                }
+                Ok(_) if grants_seen => {
+                    errors.push(Error::new(
+                        child.range.clone(),
+                        "`max_memory` comes before `grants`",
+                    ));
+                }
+                Ok(value) => run.max_memory = Some(value),
                 Err(error) => errors.push(error),
             }
         } else if cursor.eat_word("grants") {
@@ -1421,32 +1476,89 @@ fn run(line: &Line, errors: &mut Vec<Error>) -> Run {
             }
             grants_seen = true;
             for grant_line in &child.children {
-                match grant(grant_line) {
+                match grant(grant_line, errors) {
                     Ok(grant) => run.grants.push(grant),
-                    Err(found) => errors.extend(found),
+                    Err(error) => errors.push(error),
                 }
             }
         } else {
             errors.push(Error::new(
                 child.range.clone(),
-                "the lines of `run` are `entry <module>` and `grants`",
+                "the lines of `run` are `entry <module>`, `max_memory <MiB>` and `grants`",
             ));
         }
     }
     run
 }
 
-/// A grant line. Every problem of a `serve` grant's item lines is reported, and the grant is
-/// then dropped, so no grant is ever read with fewer limits than written.
-fn grant(line: &Line) -> Result<Grant, Vec<Error>> {
+/// A limit line (ADR 0117 rule 8): `at most <n> per second|minute|hour`, `at most <n> at once`
+/// or `waiting at most <n>`, with no lines below it.
+fn limit(line: &Line, errors: &mut Vec<Error>) -> Result<Limit, Error> {
+    no_children(line, errors);
     let mut cursor = Cursor::new(line);
-    if cursor.eat_word("serve") {
-        return serve_grant(line, &mut cursor);
+    let form = "a limit: `at most <n> per second`, `minute` or `hour`, `at most <n> at once`, or `waiting at most <n>`";
+    let waiting = cursor.eat_word("waiting");
+    if !cursor.eat_word("at") {
+        return Err(expected(form, cursor.peek(), cursor.here()));
     }
-    grant_line(line, &mut cursor).map_err(|error| vec![error])
+    if !cursor.eat_word("most") {
+        return Err(expected("`most` after `at`", cursor.peek(), cursor.here()));
+    }
+    let count = cursor.int("the count of the limit")?;
+    let kind = if waiting {
+        LimitKind::Waiting
+    } else if cursor.eat_word("per") {
+        let period = cursor.word("`second`, `minute` or `hour`")?;
+        if !matches!(period.value.as_str(), "second" | "minute" | "hour") {
+            return Err(Error::new(
+                period.range,
+                "a rate's period is `second`, `minute` or `hour`",
+            ));
+        }
+        LimitKind::Rate(period.value)
+    } else if cursor.eat_word("at") {
+        if !cursor.eat_word("once") {
+            return Err(expected("`once` after `at`", cursor.peek(), cursor.here()));
+        }
+        LimitKind::AtOnce
+    } else {
+        return Err(expected(
+            "`per second`, `per minute`, `per hour` or `at once`",
+            cursor.peek(),
+            cursor.here(),
+        ));
+    };
+    cursor.end()?;
+    Ok(Limit {
+        kind,
+        count,
+        range: line.range.clone(),
+    })
 }
 
-fn grant_line(line: &Line, cursor: &mut Cursor<'_>) -> Result<Grant, Error> {
+/// A grant line. Every problem of a `serve` grant's item lines, or of another grant's limit
+/// lines, is reported, and the grant is then dropped, so no grant is ever read with fewer limits
+/// than written.
+fn grant(line: &Line, errors: &mut Vec<Error>) -> Result<Grant, Error> {
+    let mut cursor = Cursor::new(line);
+    if cursor.eat_word("serve") {
+        // The last error is the result; the others are reported beside it.
+        return serve_grant(line, &mut cursor).map_err(|mut found| {
+            let last = found
+                .pop()
+                .unwrap_or_else(|| Error::new(line.range.clone(), "invalid serve grant"));
+            errors.extend(found);
+            last
+        });
+    }
+    grant_line(line, &mut cursor, errors)
+}
+
+fn grant_line(
+    line: &Line,
+    cursor: &mut Cursor<'_>,
+    errors: &mut Vec<Error>,
+) -> Result<Grant, Error> {
     let kind =
         cursor.word("a grant: `console`, `clock`, `env`, `keys`, `files`, `http` or `serve`")?;
     let spec = match kind.value.as_str() {
@@ -1528,11 +1640,23 @@ fn grant_line(line: &Line, cursor: &mut Cursor<'_>) -> Result<Grant, Error> {
         }
     };
     cursor.end()?;
-    let limits = line
-        .children
-        .iter()
-        .map(|limit| limit.range.clone())
-        .collect();
+    // A grant whose limit lines do not all parse is dropped: read without one of its limits,
+    // it would allow more than written.
+    let mut limits = Vec::new();
+    let mut failed: Option<Error> = None;
+    for child in &line.children {
+        match limit(child, errors) {
+            Ok(limit) => limits.push(limit),
+            Err(error) => {
+                if let Some(earlier) = failed.replace(error) {
+                    errors.push(earlier);
+                }
+            }
+        }
+    }
+    if let Some(error) = failed {
+        return Err(error);
+    }
     Ok(Grant {
         spec,
         range: line.range.clone(),
@@ -1774,6 +1898,25 @@ pub struct LockRegistry {
     pub checkpoint_size: At<u64>,
     /// The resolution point: the checkpoint's root hash.
     pub checkpoint_hash: At<String>,
+    /// `accepted <owner> <index> …`: per owner, the recoveries, disputes and co-signer changes
+    /// of its chain pending at the resolution point whose pending state the lock was written under
+    /// (`spec/30 §14`).
+    pub accepted: Vec<LockAccepted>,
+    /// `effect <owner> <index> …`: per owner, the recoveries, disputes and co-signer changes of
+    /// its chain in effect at the resolution point whose taking effect the lock was written under.
+    pub effects: Vec<LockAccepted>,
+}
+
+/// An `accepted` line of a `registry` section: an owner and the log indices of the entries of
+/// its chain whose key change is consented to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LockAccepted {
+    /// The owner.
+    pub owner: At<String>,
+    /// The log indices, ascending, each once.
+    pub indices: Vec<At<u64>>,
+    /// Where the line is.
+    pub range: Range<usize>,
 }
 
 /// Where a locked package comes from (ADR 0122 rule 16, `lock_origin`).
@@ -2046,10 +2189,77 @@ fn registry(line: &Line, errors: &mut Vec<Error>) -> Option<LockRegistry> {
     };
     let mut root = None;
     let mut checkpoint = None;
+    let mut accepted: Vec<LockAccepted> = Vec::new();
+    let mut effects: Vec<LockAccepted> = Vec::new();
     for child in &line.children {
         no_children(child, errors);
         let mut cursor = Cursor::new(child);
-        if cursor.eat_word("root") && root.is_none() && checkpoint.is_none() {
+        let consent = if checkpoint.is_none() {
+            None
+        } else if cursor.eat_word("accepted") && effects.is_empty() {
+            Some(false)
+        } else if cursor.eat_word("effect") {
+            Some(true)
+        } else {
+            None
+        };
+        if let Some(effect) = consent {
+            let size = checkpoint
+                .as_ref()
+                .map_or(0, |(size, _): &(At<u64>, At<String>)| size.value);
+            let owner = match cursor.word("the owner whose key change is consented to") {
+                Ok(owner) => owner,
+                Err(error) => {
+                    errors.push(error);
+                    continue;
+                }
+            };
+            let mut indices: Vec<At<u64>> = Vec::new();
+            let mut bad = false;
+            while !cursor.done() {
+                match cursor.int("a log index") {
+                    Ok(index) if index.value >= size => {
+                        errors.push(Error::new(
+                            index.range.clone(),
+                            format!(
+                                "the {} index {} is not below the registry's checkpoint size {size}",
+                                if effect { "effect" } else { "accepted" },
+                                index.value
+                            ),
+                        ));
+                        bad = true;
+                    }
+                    Ok(index) => indices.push(index),
+                    Err(error) => {
+                        errors.push(error);
+                        bad = true;
+                        break;
+                    }
+                }
+            }
+            if bad {
+                continue;
+            }
+            let list = if effect { &mut effects } else { &mut accepted };
+            let ascending = indices
+                .windows(2)
+                .all(|pair| matches!(pair, [a, b] if a.value < b.value));
+            let ordered = list
+                .last()
+                .is_none_or(|previous: &LockAccepted| previous.owner.value < owner.value);
+            if indices.is_empty() || !ascending || !ordered {
+                errors.push(Error::new(
+                    child.range.clone(),
+                    "an `accepted` or `effect` line names an owner after the previous one's, then its log indices in ascending order, each once; `accepted` lines come before `effect` lines",
+                ));
+                continue;
+            }
+            list.push(LockAccepted {
+                owner,
+                indices,
+                range: child.range.clone(),
+            });
+        } else if cursor.eat_word("root") && root.is_none() && checkpoint.is_none() {
             match cursor
                 .text("the digest of the root metadata")
                 .and_then(|value| cursor.end().map(|()| value))
@@ -2069,7 +2279,7 @@ fn registry(line: &Line, errors: &mut Vec<Error>) -> Option<LockRegistry> {
         } else {
             errors.push(Error::new(
                 child.range.clone(),
-                "a registry's lines are `root \"...\"` then `checkpoint <size> \"...\"`, once each",
+                "a registry's lines are `root \"...\"` then `checkpoint <size> \"...\"`, once each, then its `accepted` and `effect` lines",
             ));
         }
     }
@@ -2079,6 +2289,8 @@ fn registry(line: &Line, errors: &mut Vec<Error>) -> Option<LockRegistry> {
             root,
             checkpoint_size,
             checkpoint_hash,
+            accepted,
+            effects,
         }),
         _ => {
             errors.push(Error::new(

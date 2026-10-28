@@ -196,6 +196,8 @@ pub(crate) fn build_command(
         &entry,
         manifest.drive.is_some(),
     );
+    // A program with a `tasks` statement runs `main` as a coroutine (ADR 0117 rule 11).
+    let tasks = una_core::has_tasks(&analysis.program);
     let meta = |described: &una_codegen::Described<'_>| {
         let sites: Vec<una_diag::Location> = described
             .sites
@@ -208,6 +210,9 @@ pub(crate) fn build_command(
                 section => format!("`{section}`"),
             },
             "stops": stops,
+            "tasks": tasks,
+            // This backend never elides a check (ADR 0112): `--virtual-time` is accepted.
+            "elision": false,
             "grants": grants,
             "uses": uses,
             "sites": sites,
@@ -220,6 +225,19 @@ pub(crate) fn build_command(
             && let Some(object) = meta.as_object_mut()
         {
             object.insert("float_environment".to_owned(), json!(true));
+        }
+        // ADR 0120 rule 5: edition 0.4 adds the binary32 probes.
+        if manifest.edition >= una_project::Edition::V0_4
+            && let Some(object) = meta.as_object_mut()
+        {
+            object.insert("float32_probes".to_owned(), json!(true));
+        }
+        // ADR 0119 rule 9: an executable whose code can make a hash table reads the process key
+        // of keyed hashing before `main`; one that makes none never reads it.
+        if described.hashing
+            && let Some(object) = meta.as_object_mut()
+        {
+            object.insert("hashing".to_owned(), json!(true));
         }
         // `spec/31 §2` rule 4: an executable of edition 0.4 may take `serve:` grants.
         if manifest.edition >= una_project::Edition::V0_4
@@ -243,6 +261,24 @@ pub(crate) fn build_command(
         }
         if let (Some(drive), Some(object)) = (&drive, meta.as_object_mut()) {
             object.insert("drive".to_owned(), drive.clone());
+        }
+        // The declared budget, which `--max-memory` may lower, never raise (ADR 0109 rule 4).
+        if let (Some(max_memory), Some(object)) = (manifest.max_memory, meta.as_object_mut()) {
+            object.insert("max_memory".to_owned(), json!(max_memory));
+        }
+        // ADR 0117 IF4: `L_lim`, which a grant with limits needs at most `internal`, for an
+        // executable of edition 0.4 only; one without it takes no limits (`spec/27 §9`).
+        if manifest.edition >= una_project::Edition::V0_4
+            && let Some(object) = meta.as_object_mut()
+        {
+            object.insert(
+                "limit_label".to_owned(),
+                json!(analysis.limit_label.to_string()),
+            );
+            object.insert(
+                "limits_allowed".to_owned(),
+                json!(analysis.limit_label.flows_to(&internal_label())),
+            );
         }
         meta.to_string()
     };
@@ -455,6 +491,17 @@ fn link(object: &Path, output: &Path, environment: crate::Environment<'_>) -> Re
     } else if cfg!(target_os = "linux") {
         command.arg("-Wl,--gc-sections");
     }
+    // Only the system libraries the executable imports a symbol from get a load command or a
+    // `NEEDED` entry (#1103): ld64 drops the others with `-dead_strip_dylibs`, and GNU ld, with
+    // `--as-needed` before the libraries below, records none of them that the link does not use
+    // (since glibc 2.34, `libutil`, `librt`, `libpthread` and `libdl` are empty stubs). Some
+    // distributions' compilers pass `--as-needed` by default, others do not, so it is explicit.
+    // scripts/load-commands.sh fails on any load command outside scripts/load-commands.txt.
+    if cfg!(target_os = "macos") {
+        command.arg("-Wl,-dead_strip_dylibs");
+    } else if cfg!(target_os = "linux") {
+        command.arg("-Wl,--as-needed");
+    }
     // The system libraries that the Rust standard library inside `una-rt` needs, as
     // `rustc --print native-static-libs` lists them for each target.
     if cfg!(target_os = "linux") {
@@ -533,6 +580,14 @@ fn runtime_library(environment: crate::Environment<'_>) -> Result<PathBuf, Strin
         .find(|path| path.is_file())
         .cloned()
         .ok_or_else(|| missing_runtime(&dir))
+}
+
+/// The label `internal`, the most `L_lim` may be for grants with limits (ADR 0117 IF4).
+pub(crate) fn internal_label() -> una_core::Label {
+    una_core::Label {
+        level: una_syntax::ast::Level::Internal,
+        ..una_core::Label::public()
+    }
 }
 
 #[cfg(test)]

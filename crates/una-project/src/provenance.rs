@@ -274,9 +274,26 @@ pub fn verify(provenance: &Provenance, expected: &Expected) -> Result<Statement,
     let next: Vec<&str> = next.iter().map(String::as_str).collect();
     // Walked once for the last version's log and witnesses, then again at the checkpoint's
     // witness time, which the last version must not have passed.
-    let last = root::walk(&pinned, &next, 0)?;
+    root::walk(&pinned, &next, 0)?;
+    let chain: Vec<(root::Root, String)> = root::walk_all(&pinned, &next, 0)?
+        .into_iter()
+        .zip(
+            provenance
+                .roots
+                .iter()
+                .map(|document| root::digest(document)),
+        )
+        .collect();
     let signed = note::parse_note(&provenance.checkpoint)?;
     let checkpoint = note::parse_checkpoint(&signed.text)?;
+    // Verified under the root version it names, which the stored chain must hold.
+    let last = crate::client::named_root(&checkpoint, &chain)
+        .map_err(|error| match error {
+            crate::client::OpenError::Unavailable(why)
+            | crate::client::OpenError::Omitted(_, why)
+            | crate::client::OpenError::Refused(why) => why,
+        })?
+        .clone();
     if checkpoint.origin != last.log.name {
         return Err(format!(
             "the checkpoint is of the log `{}`, not of `{}`",

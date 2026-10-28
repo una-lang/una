@@ -4,9 +4,11 @@
 //! what the host does for its `serve:` grants before `main`.
 
 pub mod client;
+pub mod limit;
 pub mod parse;
 pub mod reply;
 pub mod request;
+pub mod resolve;
 pub mod serve;
 pub mod strict;
 

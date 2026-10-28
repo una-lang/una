@@ -538,7 +538,8 @@ impl Vars {
             | (Ty::Text, Ty::Text)
             | (Ty::Unit, Ty::Unit)
             | (Ty::Hashed, Ty::Hashed)
-            | (Ty::F64, Ty::F64) => true,
+            | (Ty::F64, Ty::F64)
+            | (Ty::F32, Ty::F32) => true,
             (Ty::Decimal(a), Ty::Decimal(b)) => a == b,
             (Ty::List(x), Ty::List(y)) => self.unify_in(x, y, fixed),
             (Ty::Dense(a, x), Ty::Dense(b, y)) => a == b && self.unify_in(x, y, fixed),
