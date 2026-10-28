@@ -60,6 +60,32 @@ for config in "$root/.cargo/config.toml" "$root/.cargo/config" "$cargo_home/conf
     fi
 done
 RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$root=/una --remap-path-prefix=$cargo_home=/cargo --remap-path-prefix=$sysroot=/rust"
+# The Z3 built into the release una (ADR 0124 rules 1 and 18): the library whose digest
+# supply-chain/z3.lock records for this target, taken from the cache by that digest, never
+# rebuilt here; una-cli's build checks the digest again. On Linux, libstdc++ and libgcc are
+# linked statically into una, so it depends on glibc alone (rule 1).
+z3_digest=$(sed -n '/^\[library\]$/,$s/^"'"$target"'" *= *"\([0-9a-f]*\)"$/\1/p' supply-chain/z3.lock | head -n 1)
+if [ -z "$z3_digest" ]; then
+    echo "error: supply-chain/z3.lock records no library digest for $target; build it with scripts/build-z3.sh --reproducible and record its digest in the [library] table" >&2
+    exit 2
+fi
+z3_cache=${UNA_Z3_CACHE:-$HOME/.cache/una/z3}
+z3_lib=
+for recorded in "$z3_cache"/*/library.sha256; do
+    [ -f "$recorded" ] || continue
+    if [ "$(cat "$recorded")" = "$z3_digest" ]; then
+        z3_lib=$(dirname "$recorded")/lib/libz3shell.a
+        break
+    fi
+done
+[ -n "$z3_lib" ] && [ -f "$z3_lib" ] \
+    || { echo "error: no entry of $z3_cache holds the Z3 library $z3_digest that the lock records for $target; build it with scripts/build-z3.sh --reproducible" >&2; exit 2; }
+UNA_EMBED_Z3=$z3_lib
+UNA_EMBED_Z3_SHA256=$z3_digest
+export UNA_EMBED_Z3 UNA_EMBED_Z3_SHA256
+case $target in
+    *-linux-*) RUSTFLAGS="$RUSTFLAGS -C link-arg=-static-libstdc++ -C link-arg=-static-libgcc" ;;
+esac
 export RUSTFLAGS
 # The C and assembly sources of dependencies (ring's), which the `cc` crate compiles, the same.
 CFLAGS="${CFLAGS:-} -ffile-prefix-map=$root=/una -ffile-prefix-map=$cargo_home=/cargo"

@@ -1,0 +1,11 @@
+-- test: in edition 0.4, `simd` is no longer reserved: it is an identifier outside the `simd required` clause (ADR 0120 rule 1)
+-- spec: spec/01 §5
+-- expect: ok
+module simd04
+
+pub simd(lanes: Int) -> Int = lanes * 2
+
+pub lanes() -> Int
+=
+  let simd = 4
+  simd * 2

@@ -22,21 +22,12 @@ If code and spec disagree, the spec wins. If the spec is wrong, ambiguous or inc
 
 ## How to work
 
-1. Work milestone by milestone, in order (`docs/plan/milestones-v0.1.md`). A milestone is done only when all its acceptance criteria pass.
-2. Before coding a task, read the spec sections the milestone lists. Quote the section in the PR or commit description.
-3. Tests first: add conformance cases in `tests/conformance/` that encode the spec rule (see `docs/compiler/testing.md`), then implement.
-4. Keep changes scoped to one milestone task. No drive-by refactors across crates.
-5. After each task: `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`.
-
-## Work rules
-
-GitHub issues are the unit of work, tracked on the org project "Una roadmap" (https://github.com/orgs/una-lang/projects/1); `docs/plan/backlog.md` stays the scope guard, and each of its rows links to its issue.
-
-1. Work only on an issue in Ready that the coordinator assigned to you (the board's Agent field). Anything new you find goes to the coordinator first, who creates its issue before work starts. New issues use `.github/ISSUE_TEMPLATE/work-item.md`.
-2. Branch `dev/<issue>-<topic>` from `main`, for example `dev/6-integration-rule`. One issue per branch and per pull request, and one writer per branch.
-3. Every commit references its issue: `Refs #6`.
-4. The pull request into `main` closes its issue. Write the keyword once per issue, `Closes #6` and `Closes #7` on separate lines: a list after one keyword, `Closes #6, #7`, closes only the first.
-5. Status on the board: set In progress when you start, and In review when the pull request is pushed with CI green. Only the coordinator sets Done. An item is Done when it is merged into `main`.
+1. Board first: every change is a card on the "Una roadmap" board (https://github.com/orgs/una-lang/projects/1) in Ready before any code, with its spec or ADR reference (skill `board`). One card, one branch `dev/<issue>-<topic>` from `origin/main`, one pull request that `Closes #N`; status In progress -> In review -> Done.
+2. Before coding, read the spec sections the card names and quote them in the PR. Tests first: conformance cases in `tests/conformance/` encode the rule (`docs/compiler/testing.md`), then the implementation, in both engines.
+3. Keep a change scoped to its card. No drive-by refactors across crates.
+4. After each task: `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace --locked`.
+5. One session works here with subagents (`.claude/agents/`: builder, reviewer, mechanic, scout); procedures are skills (`.claude/skills/`); the state of the work is `.claude/state/STATE.md` and `.claude/plan/NEXT.md` (skill `state`). Read `.claude/docs/HARNESS.md` and `.claude/docs/WORKFLOW.md` once per session.
+6. Only `main` is long-lived (plus `release/v0.1` and `release/v0.3`). A branch and its worktree (`.claude/worktrees/<issue>`) are deleted at merge.
 
 ## Commands
 
@@ -51,19 +42,18 @@ cargo run -p una-cli -- check examples/events        # end-to-end smoke test
 
 ## Validation
 
-GitHub Actions is not used: never wait for it. Validation is local and recorded (#232, `docs/release-gates.md`):
+GitHub Actions is not used: never wait for it. Validation is local and recorded (`docs/release-gates.md`):
 
-- A pull request merges on a `scripts/local-ci.sh` PASS on its exact tip, on macOS. Linux is confirmed on `main` by the next gate run (`scripts/local-ci.sh --linux`, in Docker).
-- Except a pull request that changes what the Linux run runs (`scripts/local-ci.sh`, `scripts/local-ci/`, a script one of its steps calls, or a new tool a step needs): it also needs a `scripts/local-ci.sh --linux-arm64` PASS on its exact tip (#605, `docs/release-gates.md` §1 rule 1).
-- A tag needs `scripts/release-gates.sh <sha> <out>` with every gate PASS on the gated SHA, and its public summary committed as `docs/validation/<version>.md` (and, until the repository is public, the full record as `docs/releases/<version>-validation.md`) in the tagged commit (`docs/release-gates.md` §1 rule 2). The release archives come from `scripts/local-release.sh`.
+- A pull request merges on a green build gate on this machine: `cargo build --workspace`, `cargo test --workspace --locked`, clippy and fmt, plus an adversarial review (skill `review`) for code changes (skill `merge`).
+- The heavy evidence (sanitize, Miri, fuzzing, the hunt, timing oracles, Linux legs, benchmarks, parity measurements) runs on a release candidate, not per pull request (skill `release`). A tag needs `scripts/release-gates.sh <sha> <out>` with every gate PASS on the gated SHA and its summary committed as `docs/validation/<version>.md`.
 
 Tests that need the SMT solver require Z3 at the exact version in `verification.lock`. If it is missing or mismatched, those tests must fail with diagnostic U5003, never skip silently.
 
 ## Performance
 
-Every design choice favors the best average-case algorithmic complexity (owner's rule, 2026-10-06):
+Every design choice favors the best average-case algorithmic complexity (project rule, 2026-10-06):
 
-- An ADR states the time and space complexity of each option. Prefer O(1) or O(log n) operations and O(n) or O(n log n) passes. A quadratic choice needs a written reason and the owner's acceptance.
+- An ADR states the time and space complexity of each option. Prefer O(1) or O(log n) operations and O(n) or O(n log n) passes. A quadratic choice needs a written reason and the project's acceptance.
 - A pull request that touches a hot path (the runtime, the interpreter, codegen, the checker's fixpoints, the verifier's encoding) states the complexity it achieves. It includes a scaling test at growing sizes that would fail on quadratic behavior.
 - Value semantics stay cheap: updates of uniquely held values happen in place (#30, #201), and shared values are copied only when written.
 

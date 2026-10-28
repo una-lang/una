@@ -14,6 +14,19 @@ use cap::Cap;
 static ALLOCATOR: Cap<System> = Cap::new(System, usize::MAX);
 
 fn main() -> ExitCode {
+    // The solver child (ADR 0124 rule 3): `una __solver <limits...>`, before anything else
+    // reads the environment or the package; it exits with the front end's own status.
+    // Read as OS strings, since an argument of another command need not be UTF-8.
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|first| first == "__solver")
+    {
+        let args: Vec<String> = std::env::args_os()
+            .skip(2)
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        return ExitCode::from(una_cli::solver_child::serve(&args));
+    }
     let stdout = std::io::stdout();
     let stderr = std::io::stderr();
     // `--color auto` follows stderr, where human diagnostics go (ADR 0015 D1).

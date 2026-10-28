@@ -1,0 +1,10 @@
+-- test: a systems package with a run entry declares its memory budget in ita.una, and runs (ADR 0109 rules 1 and 4)
+-- spec: spec/30 §2
+-- grant: console
+-- expect: run-output "hello"
+module main
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print("hello")

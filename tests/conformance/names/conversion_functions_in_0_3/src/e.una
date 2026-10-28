@@ -1,0 +1,3 @@
+module e
+
+pub to_decimal[T](x: T) -> Int = 0
