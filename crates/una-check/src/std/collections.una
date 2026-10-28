@@ -44,3 +44,49 @@ pub update[K: Eq, V](edit m: HashMap[K, V], key: K, initial: V, change: fn(V) ->
   fails of change
 =
   unit
+
+-- The bodies of `lowest_first` and `highest_first` are placeholders: both engines make the
+-- queue themselves, with its direction.
+--- An empty priority queue whose `pop` gives the item of the least priority first, of the item
+--- and priority types that the expected type gives (`spec/28 §8`). O(1).
+pub lowest_first[T, P: Ord]() -> PriorityQueue[T, P] = lowest_first()
+
+--- An empty priority queue whose `pop` gives the item of the greatest priority first, of the
+--- item and priority types that the expected type gives (`spec/28 §8`). O(1).
+pub highest_first[T, P: Ord]() -> PriorityQueue[T, P] = highest_first()
+
+-- The body of `empty_bit_set` is a placeholder: both engines make the bit set themselves, after
+-- the memory budget admits its words.
+--- A bit set of `size` bits, holding none of the integers from 0 to `size - 1`
+--- (`spec/28 §9`). O(size / 64).
+pub empty_bit_set(size: Int) -> BitSet
+  requires size >= 0
+=
+  empty_bit_set(size: size)
+
+-- The conversions of a list (`spec/28 §10`, ADR 0119 rule 16), called with method syntax on it.
+-- Their bodies are placeholders: both engines build the collections themselves.
+
+--- A stack of the elements of `xs`, the last one on top (`spec/28 §10`). O(n).
+pub to_stack[T](xs: List[T]) -> Stack[T]
+  ensures result.len == xs.len
+=
+  to_stack(xs)
+
+--- A queue of the elements of `xs`, the first one in front (`spec/28 §10`). O(n).
+pub to_queue[T](xs: List[T]) -> Queue[T]
+  ensures result.len == xs.len
+=
+  to_queue(xs)
+
+--- A set of the elements of `xs`, each once (`spec/28 §10`). O(n log n) comparisons, and O(n)
+--- when `xs` is sorted.
+pub to_set[T: Ord](xs: List[T]) -> Set[T] = to_set(xs)
+
+--- A hash set of the elements of `xs`, each once, listed in the order of its first occurrence
+--- in `xs` (`spec/28 §10`). O(n · |k|) expected.
+pub to_hash_set[T: Eq](xs: List[T]) -> HashSet[T] = to_hash_set(xs)
+
+--- A hash map of the entries of `es`, each key listed in the order of its first occurrence in
+--- `es`, with the value of its last entry (`spec/28 §10`). O(n · |k|) expected.
+pub to_hash_map[K: Eq, V](es: List[Entry[K, V]]) -> HashMap[K, V] = to_hash_map(es)

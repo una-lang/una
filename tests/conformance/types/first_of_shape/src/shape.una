@@ -1,0 +1,20 @@
+-- test: a `first of` with one branch, or with a line that is not an expression, is U2035 at `first of` (spec/27 §6, ADR 0117 rule 6)
+-- spec: spec/27 §6
+-- expect: error U2035 at src/shape.una:11:15
+-- expect: error U2035 at src/shape.una:17:15
+module shape
+
+primary(n: Int) -> Int = n + 1
+
+pub alone(n: Int) -> Int
+=
+  let price = first of
+    primary(n)
+  price
+
+pub with_let(n: Int) -> Int
+=
+  let price = first of
+    let x = primary(n)
+    primary(n)
+  price

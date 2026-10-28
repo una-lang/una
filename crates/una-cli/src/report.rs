@@ -29,8 +29,8 @@ const PROOF_CACHE: &str = ".una/cache/";
 /// in their order (R-041; the last entry is ADR 0038 D9 rule 4). `una.report/2` says "stack
 /// exhaustion", since native executables exhaust their stack too (ADR 0055), and ends with the
 /// order of effects across `together` tasks (ADR 0065, `spec/19 §3`), then the three entries of
-/// long-running programs (ADR 0116 rule 21).
-const OUT_OF_MODEL: [&str; 11] = [
+/// long-running programs (ADR 0116 rule 21), then the two of ADR 0117 rule 13.
+const OUT_OF_MODEL: [&str; 13] = [
     "timing",
     "termination and divergence",
     "resource consumption and allocation",
@@ -42,6 +42,8 @@ const OUT_OF_MODEL: [&str; 11] = [
     "the time of a host stop",
     "interference of the host's load with the timing of an expression",
     "uncatchable termination",
+    "waits at limits and at `start`",
+    "which branch of `first of` wins, beyond its label",
 ];
 
 /// The capabilities of the prelude, whose implementations the host provides (`spec/14 §3`).
@@ -67,7 +69,7 @@ struct Report {
     coverage: CoverageDoc,
     native: NativeDoc,
     generic_results: Vec<GenericResultDoc>,
-    out_of_model: [&'static str; 11],
+    out_of_model: [&'static str; 13],
 }
 
 /// A public generic function and its result summary (ADR 0067, `spec/13 §6`).
@@ -93,18 +95,35 @@ struct ResultLabelDoc {
     from: Vec<String>,
 }
 
-/// The native backend (ADR 0055): the host target, and the bindings whose `Int` stays
-/// arbitrary precision in native code.
+/// The native backend (ADR 0055): the host target, the bindings whose `Int` stays
+/// arbitrary precision in native code, and the dense kernels' variants (ADR 0120).
 #[derive(Serialize)]
 struct NativeDoc {
     target: String,
     arbitrary_precision: Vec<String>,
+    kernels: KernelsDoc,
+}
+
+/// The variants of the dense kernels that an executable for the host target holds and chooses
+/// among at start (ADR 0120 rules 56 and 57), and the allowlist of the FMA disassembly gate:
+/// the demangled prefixes of the symbols where an x86-64 executable may hold an FMA
+/// instruction (ADR 0120 Appendix A, the amendment of ADR 0106 item 3).
+#[derive(Serialize)]
+struct KernelsDoc {
+    variants: Vec<String>,
+    fma_allowlist: Vec<String>,
 }
 
 #[derive(Serialize)]
 struct PackageDoc {
     name: String,
     version: String,
+    /// `app` or `systems` (ADR 0109 rule 7).
+    profile: String,
+    /// The declared memory budget in MiB, present only when the manifest declares one (ADR
+    /// 0109 rule 4).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_memory: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -144,7 +163,7 @@ pub(crate) struct DependencyDoc {
     package: String,
     version: String,
     local: String,
-    source: &'static str,
+    source: String,
     path: Option<String>,
     digest: Option<String>,
     signed: Option<String>,
@@ -249,8 +268,8 @@ struct TcbDoc {
     /// The key file that authenticates the cache's entries, part of the Trusted zone, or `null`
     /// when the run used no cache (ADR 0064).
     proof_cache_key: Option<String>,
-    /// Each registry source of the program, with the digest of its root metadata (ADR 0122
-    /// rule 58): none while only path dependencies load.
+    /// Each registry source of the program's mounted releases, with the digest of its root
+    /// metadata that the lock records (ADR 0122 rule 58).
     registries: Vec<RegistryDoc>,
     /// The trusted modules of dependencies that the root consented to, with their line counts,
     /// by package: none while trust lines do not load.
@@ -465,6 +484,8 @@ fn build(
             .version
             .as_ref()
             .map_or_else(|| "0.0.0".to_owned(), |version| version.value.clone()),
+        profile: manifest.profile.name().to_owned(),
+        max_memory: manifest.max_memory,
     };
     let public: BTreeMap<String, bool> = program
         .modules
@@ -753,7 +774,7 @@ fn build(
             solver: format!("z3 {}", lock.solver_version),
             proof_cache: PROOF_CACHE,
             proof_cache_key,
-            registries: Vec::new(),
+            registries: registries_of(package, &manifest),
             dependency_trust,
             solver_build: una_z3::BUILD.linked.then(|| SolverBuildDoc {
                 source_sha256: una_z3::BUILD.source_sha256.to_owned(),
@@ -774,6 +795,16 @@ fn build(
         native: NativeDoc {
             target: una_codegen::host_target(),
             arbitrary_precision: arbitrary_precision(program),
+            kernels: KernelsDoc {
+                variants: una_core::dense::variants::variant_names()
+                    .iter()
+                    .map(|name| (*name).to_owned())
+                    .collect(),
+                fma_allowlist: una_core::dense::variants::ALLOWLIST
+                    .iter()
+                    .map(|prefix| (*prefix).to_owned())
+                    .collect(),
+            },
         },
         generic_results,
         out_of_model: OUT_OF_MODEL,
@@ -845,7 +876,7 @@ impl Sites {
                 self.expr(body);
             }
             Expr::LetTuple { body, .. } | Expr::Loop { body, .. } => self.expr(body),
-            Expr::Together { tasks, .. } => {
+            Expr::Together { tasks, .. } | Expr::FirstOf { tasks, .. } => {
                 for task in tasks {
                     self.expr(task);
                 }
@@ -871,9 +902,13 @@ impl Sites {
                 self.expr(body);
                 self.expr(handler);
             }
-            Expr::Attempt { body, .. } | Expr::With { body, .. } | Expr::Within { body, .. } => {
+            Expr::Attempt { body, .. }
+            | Expr::With { body, .. }
+            | Expr::Within { body, .. }
+            | Expr::Tasks { body, .. } => {
                 self.expr(body);
             }
+            Expr::Start { task, .. } => self.expr(task),
             Expr::Atom { .. }
             | Expr::Fail { .. }
             | Expr::Exit { .. }
@@ -1014,6 +1049,10 @@ fn human(report: &Report) -> String {
         "package {} {}",
         report.package.name, report.package.version
     ));
+    line(format!("profile: {}", report.package.profile));
+    if let Some(max_memory) = report.package.max_memory {
+        line(format!("max memory: {max_memory} MiB"));
+    }
     line(format!(
         "lock: z3 {}, sha256 {}",
         report.lock.solver_version, report.lock.hash
@@ -1157,6 +1196,14 @@ fn human(report: &Report) -> String {
         "  arbitrary precision: {}",
         report.native.arbitrary_precision.join(", ")
     ));
+    line(format!(
+        "  kernels: {}",
+        report.native.kernels.variants.join(", ")
+    ));
+    line(format!(
+        "  fma allowlist: {}",
+        report.native.kernels.fma_allowlist.join(", ")
+    ));
     for generic in &report.generic_results {
         let parts: Vec<String> = generic
             .result_labels
@@ -1197,6 +1244,10 @@ pub(crate) fn dependencies(
         .as_ref()
         .map(|name| name.value.to_string())
         .unwrap_or_default();
+    // The lock, for a registry release's line and its key.
+    let lock = package
+        .lock
+        .map(|id| una_project::ita::parse_ita_lock(package.sources.file(id).text()).0);
     let mut out = Vec::new();
     for mount in &manifest.mounts {
         let Some(dependency) = package
@@ -1272,44 +1323,39 @@ pub(crate) fn dependencies(
         let effective_ceiling = render_authority(effective.get(1).cloned().unwrap_or_default());
         // What its code uses: the `uses` of its functions and handlers.
         let prefix = format!("{}.", mount.local);
-        let mut used = una_project::authority::Authority::new();
-        for header in analysis
-            .headers
-            .iter()
-            .filter(|h| h.module.starts_with(&prefix))
-        {
-            for u in &header.uses {
-                for op in &u.ops {
-                    used.insert((u.capability.clone(), op.clone()));
-                }
-            }
-        }
-        for module in analysis
-            .program
-            .modules
-            .iter()
-            .filter(|m| m.path.starts_with(&prefix))
-        {
-            for decl in &module.decls {
-                if let Decl::Handler { uses, .. } = decl {
-                    for u in uses {
-                        for op in &u.ops {
-                            used.insert((u.capability.clone(), op.clone()));
-                        }
-                    }
-                }
-            }
-        }
+        let used = authority_under(analysis, &prefix);
+        // The lock's line of the package: by its index for a registry release, by its directory
+        // for a path package.
+        let locked = lock.as_ref().and_then(|lock| match &dependency.registry {
+            Some(origin) => lock.read.packages.get(origin.lock),
+            None => lock.read.packages.iter().find(|p| {
+                p.name.value == need.name.value
+                    && matches!(
+                        p.from.as_ref().map(|f| &f.value),
+                        Some(una_syntax::ita::LockOrigin::Path(dir)) if dir.trim_end_matches('/') == dependency.dir
+                    )
+            }),
+        });
         // The digest of the code analysed: the bytes loaded, which the checks read.
         let digest = crate::package::dependency_digest(dependency).ok();
+        let (source, path, signed) = match &dependency.registry {
+            Some(origin) => (
+                origin.source.clone(),
+                None,
+                locked
+                    .and_then(|p| p.signed.as_ref())
+                    .map(|s| s.value.clone()),
+            ),
+            None => ("path".to_owned(), Some(dependency.dir.clone()), None),
+        };
         out.push(DependencyDoc {
             package: need.name.value.to_string(),
             version,
             local: mount.local.clone(),
-            source: "path",
-            path: Some(dependency.dir.clone()),
+            source,
+            path,
             digest,
-            signed: None,
+            signed,
             replaced: false,
             edition,
             profile,
@@ -1334,6 +1380,78 @@ pub(crate) fn dependencies(
     out
 }
 
+/// What the code of the modules whose path starts with `prefix` uses: the union of the `uses` of
+/// their functions and handlers, as the report's `authority` of a dependency gives it (ADR 0122
+/// rule 58), and as a release statement's `authority` must cover it (rule 37). An empty prefix
+/// takes every module. O(H) for H headers and handlers.
+pub(crate) fn authority_under(
+    analysis: &crate::Analysis,
+    prefix: &str,
+) -> una_project::authority::Authority {
+    let mut used = una_project::authority::Authority::new();
+    for header in analysis
+        .headers
+        .iter()
+        .filter(|h| h.module.starts_with(prefix))
+    {
+        for u in &header.uses {
+            for op in &u.ops {
+                used.insert((u.capability.clone(), op.clone()));
+            }
+        }
+    }
+    for module in analysis
+        .program
+        .modules
+        .iter()
+        .filter(|m| m.path.starts_with(prefix))
+    {
+        for decl in &module.decls {
+            if let Decl::Handler { uses, .. } = decl {
+                for u in uses {
+                    for op in &u.ops {
+                        used.insert((u.capability.clone(), op.clone()));
+                    }
+                }
+            }
+        }
+    }
+    used
+}
+
+/// The registry sources of the program's mounted releases, each with the digest of its root
+/// metadata that the lock records (ADR 0122 rule 58), in source order.
+fn registries_of(package: &Package, manifest: &una_project::Manifest) -> Vec<RegistryDoc> {
+    let Some(id) = package.lock else {
+        return Vec::new();
+    };
+    let lock = una_project::ita::parse_ita_lock(package.sources.file(id).text()).0;
+    let mut out: BTreeMap<String, String> = BTreeMap::new();
+    for dependency in &package.dependencies {
+        let Some(origin) = &dependency.registry else {
+            continue;
+        };
+        let mounted = manifest
+            .mounts
+            .iter()
+            .any(|mount| mount.src == format!("{}/src/", dependency.dir));
+        if !mounted {
+            continue;
+        }
+        if let Some(registry) = lock
+            .read
+            .registries
+            .iter()
+            .find(|r| r.source.value == origin.source)
+        {
+            out.insert(origin.source.clone(), registry.root.value.clone());
+        }
+    }
+    out.into_iter()
+        .map(|(source, root)| RegistryDoc { source, root })
+        .collect()
+}
+
 /// A set of operations as `Cap[op, op]` entries, by capability.
 fn render_authority(set: una_project::authority::Authority) -> Vec<String> {
     let mut by_capability: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -1349,9 +1467,14 @@ fn render_authority(set: una_project::authority::Authority) -> Vec<String> {
 /// The human line of a dependency (ADR 0122 rule 58): `http 1.4.2 (itaty): may Http[get] (by
 /// store); uses Http[get]; trust none`.
 pub(crate) fn dependency_line(dependency: &DependencyDoc) -> String {
-    let origin = match &dependency.path {
-        Some(path) => format!("path {path}"),
-        None => dependency.source.to_owned(),
+    let origin = match (&dependency.path, &dependency.signed) {
+        (Some(path), _) => format!("path {path}"),
+        (None, Some(signed)) => format!(
+            "{}, signed {}",
+            dependency.source,
+            signed.split(':').nth(1).unwrap_or_default()
+        ),
+        (None, None) => dependency.source.clone(),
     };
     let granted: Vec<String> = dependency
         .granted_by

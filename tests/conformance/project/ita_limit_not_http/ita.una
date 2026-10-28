@@ -1,0 +1,10 @@
+ita ita_limit_not_http
+  version 0.1.0
+  edition 0.4
+
+run
+  grants
+    console
+      at most 10 per second
+    files "data/" read
+      at most 2 at once

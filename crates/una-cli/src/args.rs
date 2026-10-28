@@ -188,9 +188,10 @@ pub(crate) enum Command {
         #[arg(long, value_name = "N", default_value_t = una_interp::DEFAULT_MAX_DEPTH)]
         max_depth: usize,
 
-        /// The memory a run may hold, in MiB
-        #[arg(long, value_name = "MIB", default_value_t = una_interp::DEFAULT_MAX_MEMORY, value_parser = memory_budget)]
-        max_memory: usize,
+        /// The memory a run may hold, in MiB: 4096 by default, or the package's declared
+        /// max_memory, which it may lower and never raise
+        #[arg(long, value_name = "MIB", value_parser = memory_budget)]
+        max_memory: Option<usize>,
 
         /// The largest HTTP response body, in MiB (`spec/24 §4`)
         #[arg(long, value_name = "MIB", default_value_t = 16, value_parser = at_least_one)]
@@ -208,7 +209,7 @@ pub(crate) enum Command {
         #[arg(long, value_name = "N", value_parser = task_number)]
         task_depth: Option<usize>,
 
-        /// The helper threads of `Http`, from 1 to 4096; by default 64 (ADR 0117)
+        /// The helper threads of `Http`, from 1 to 4096; by default 64 (ADR 0117). A run granted `Http` starts 2 x N + max(2, N / 4) threads for its requests before `main`, besides --workers and --file-threads, so a large N can pass the system's limit on a process's threads, and the run then stops with U6003
         #[arg(long, value_name = "N", value_parser = task_number)]
         io_threads: Option<usize>,
 
@@ -240,6 +241,10 @@ pub(crate) enum Command {
         /// (ADR 0116)
         #[arg(long, value_name = "SECONDS", default_value_t = una_interp::stopping::DEFAULT_GRACE_SECS, value_parser = stop_grace)]
         stop_grace: u64,
+
+        /// Write the trace to this file as a JSON array, each event as it happens (ADR 0117)
+        #[arg(long, value_name = "FILE")]
+        trace: Option<PathBuf>,
     },
     /// Compile `main` of the `[run] entry` module into a native executable
     Build {
@@ -269,9 +274,10 @@ pub(crate) enum Command {
         #[arg(long, value_name = "N", default_value_t = una_interp::DEFAULT_MAX_DEPTH)]
         max_depth: usize,
 
-        /// The memory a run may hold, in MiB
-        #[arg(long, value_name = "MIB", default_value_t = una_interp::DEFAULT_MAX_MEMORY, value_parser = memory_budget)]
-        max_memory: usize,
+        /// The memory a run may hold, in MiB: 4096 by default, or the package's declared
+        /// max_memory, which it may lower and never raise
+        #[arg(long, value_name = "MIB", value_parser = memory_budget)]
+        max_memory: Option<usize>,
 
         /// The threads that run tasks, from 1 to 1024; by default one per core (ADR 0117)
         #[arg(long, value_name = "N", value_parser = task_number)]
@@ -281,7 +287,7 @@ pub(crate) enum Command {
         #[arg(long, value_name = "N", value_parser = task_number)]
         task_depth: Option<usize>,
 
-        /// The helper threads of `Http`, from 1 to 4096; by default 64 (ADR 0117)
+        /// The helper threads of `Http`, from 1 to 4096; by default 64 (ADR 0117). A run granted `Http` starts 2 x N + max(2, N / 4) threads for its requests before `main`, besides --workers and --file-threads, so a large N can pass the system's limit on a process's threads, and the run then stops with U6003
         #[arg(long, value_name = "N", value_parser = task_number)]
         io_threads: Option<usize>,
 
@@ -341,6 +347,11 @@ pub(crate) enum ItaCommand {
         #[arg(long)]
         check: bool,
 
+        /// With --check: also read a checkpoint less than 24 hours old from a place or a
+        /// mirror, and fail on a package whose owner's chain froze since the lock was written
+        #[arg(long, requires = "check")]
+        fresh: bool,
+
         /// Record the ceiling of this package wider than the one the lock records: an
         /// authority change; repeat it for each package
         #[arg(long, value_name = "PACKAGE")]
@@ -350,6 +361,11 @@ pub(crate) enum ItaCommand {
         /// digest, which the review prints; repeat it for each package
         #[arg(long, value_name = "PACKAGE@DIGEST")]
         accept_trust: Vec<String>,
+
+        /// Record a change of the keys of this package's owner: a key added or revoked, a
+        /// threshold, a recovery or a dispute, or another signing key
+        #[arg(long, value_name = "PACKAGE")]
+        accept_key: Vec<String>,
 
         /// Print the review of the changes, and write nothing
         #[arg(long)]
@@ -379,6 +395,11 @@ pub(crate) enum ItaCommand {
         #[arg(long, value_name = "PACKAGE@DIGEST")]
         accept_trust: Vec<String>,
 
+        /// Record a change of the keys of this package's owner: a key added or revoked, a
+        /// threshold, a recovery or a dispute, or another signing key
+        #[arg(long, value_name = "PACKAGE")]
+        accept_key: Vec<String>,
+
         /// Print the review of the changes, and write nothing
         #[arg(long)]
         dry_run: bool,
@@ -407,6 +428,12 @@ pub(crate) enum ItaCommand {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Fetch each locked registry package into Itaoca, verified, with its provenance
+    Fetch {
+        /// The package directory
+        #[arg(default_value = ".")]
+        path: PathBuf,
+    },
     /// Copy each locked registry package from Itaoca into vendor/ita/, with its provenance
     Vendor {
         /// The package directory
@@ -415,6 +442,57 @@ pub(crate) enum ItaCommand {
     },
     /// Verify each locked registry package again, in vendor/ita/ and in Itaoca
     Verify {
+        /// The package directory
+        #[arg(default_value = ".")]
+        path: PathBuf,
+    },
+    /// Check, build, sign and send a release of the package to the registry it names
+    Publish {
+        /// The package directory
+        #[arg(default_value = ".")]
+        path: PathBuf,
+    },
+    /// Yank a release of the package: new resolutions skip it, and existing locks keep it
+    Yank {
+        /// The version to yank, a full version
+        version: String,
+
+        /// The package directory
+        #[arg(default_value = ".")]
+        path: PathBuf,
+    },
+    /// Check each locked registry package for yanks, advisories and key changes (U7014)
+    Audit {
+        /// The package directory
+        #[arg(default_value = ".")]
+        path: PathBuf,
+    },
+    /// Print the new entries of an owner's chains, and any promise its registry broke
+    Watch {
+        /// The owner's name
+        owner: String,
+
+        /// More package names to follow besides those the registry lists for the owner
+        names: Vec<String>,
+
+        /// The source the owner belongs to
+        #[arg(long, value_name = "SOURCE", default_value = "itaty")]
+        from: String,
+    },
+    /// Write each locked registry package, with its provenance, into one file
+    Bundle {
+        /// The file to write
+        file: PathBuf,
+
+        /// The package directory
+        #[arg(default_value = ".")]
+        path: PathBuf,
+    },
+    /// Verify a bundle against the lock, and store its packages in Itaoca
+    Unbundle {
+        /// The bundle to read
+        file: PathBuf,
+
         /// The package directory
         #[arg(default_value = ".")]
         path: PathBuf,

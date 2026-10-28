@@ -36,7 +36,7 @@ let pages = together for id in ids
 3. **Malformed bodies.** A `together` body that holds a statement other than `let`, or fewer than two `let` statements, is U2024 at `together`.
 4. **Placement.** `together` followed by a newline is a statement. Written as an expression, as `let x = together` with branches, it is U0101 with the message `` `together` with branches is a statement; write `together for` to build a list ``.
 5. **Nesting.** A task may contain a `together` block or a `together for`, inside a called function or inside the expression of its branch.
-6. There are no task values, no detached tasks, no `race` or `select`, no timeouts and no channels.
+6. There are no task values, no detached tasks, no `race` or `select`, no timeouts and no channels. (Edition 0.4, ADR 0117.) `first of` races branches, `within` bounds an expression's time, and `tasks` and `start` run a dynamic number of tasks, all ended before their statement (`spec/27 §5` to `§7`); there are still no task values and no channels.
 
 ## 2. Static semantics
 
@@ -131,6 +131,8 @@ These rules extend `spec/11 §5`.
 | --- | --- |
 | `parallel`, `actor` | reserved for a later version (concurrency beyond `together`) |
 | `async`, `await` | not supported; use `together` |
+
+(Edition 0.4, ADR 0117 rule 7.) In edition `0.4`, the message of `async` and `await` is `` not supported; use `tasks` and `start`, or `together` ``.
 
 ## 10. Diagnostic codes
 

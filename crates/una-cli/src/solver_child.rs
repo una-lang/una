@@ -300,6 +300,10 @@ impl Launcher {
         if let Some(program) = self.stand_in() {
             return Ok(program.to_path_buf());
         }
+        #[cfg(feature = "test-hooks")]
+        if let Some(una) = test_harness_una() {
+            return Ok(una);
+        }
         #[cfg(target_os = "linux")]
         {
             let exe = Path::new("/proc/self/exe");
@@ -321,6 +325,23 @@ impl Launcher {
             .filter(|dir| !dir.starts_with(std::env::temp_dir()))
             .map_or_else(|| "/".to_owned(), |dir| dir.display().to_string())
     }
+}
+
+/// In the toolchain's own test builds only: a test harness that calls `una_cli` in its own
+/// process (under `target/<profile>/deps/`) has no solver mode, so its children are the `una`
+/// binary of the same build, `target/<profile>/una`, which links the same solver; the
+/// handshake still checks that the child is that build. `None` for any other process.
+#[cfg(feature = "test-hooks")]
+fn test_harness_una() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let deps = exe.parent()?;
+    if deps.file_name()? != "deps" {
+        return None;
+    }
+    let una = deps
+        .parent()?
+        .join(format!("una{}", std::env::consts::EXE_SUFFIX));
+    una.is_file().then_some(una)
 }
 
 impl Solver for Launcher {
@@ -607,7 +628,8 @@ impl Solver for Launcher {
         // never decided from the exit alone.
         if !handshake_seen && handshake_failure.is_none() {
             match lines.recv() {
-                Ok(Ok(line)) if line == handshake => handshake_seen = true,
+                // The handshake matched: nothing reads `handshake_seen` after this point.
+                Ok(Ok(line)) if line == handshake => {}
                 Ok(Ok(line)) => handshake_failure = Some(shown_first_line(&line)),
                 Ok(Err(reason)) => handshake_failure = Some(reason),
                 Err(_) => handshake_failure = Some("no handshake".to_owned()),
@@ -631,7 +653,7 @@ impl Solver for Launcher {
         // The handshake line, and the outer-sandbox line when there is one, are stripped.
         let text = String::from_utf8_lossy(&output);
         let mut rest = text.split_once('\n').map_or("", |(_, rest)| rest);
-        let mut outer_denied = None;
+        let mut outer_denied: Option<Vec<String>> = None;
         if let Some(line) = rest.strip_prefix("una-solver-outer ") {
             let (denied, after) = line.split_once('\n').unwrap_or((line, ""));
             outer_denied = Some(
@@ -694,7 +716,7 @@ mod tests {
         assert_eq!(parts.get(1).copied(), Some("1"));
         assert_eq!(parts.get(2).copied(), Some("z3"));
         assert_eq!(parts.get(3).copied(), Some(una_z3::BUILD.version));
-        assert_eq!(parts.get(4).map(str::len), Some(64));
+        assert_eq!(parts.get(4).copied().map(str::len), Some(64));
         assert!(line.len() <= HANDSHAKE_BYTES);
         // The digest is of the build record, so it changes with the solver's library.
         assert_eq!(parts.get(4).copied(), Some(build_digest().as_str()));

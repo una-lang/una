@@ -24,6 +24,7 @@ pub struct Limits {
 }
 
 /// The margin above the memory limit that the address space may use: 1 GiB, in MiB.
+#[cfg(target_os = "linux")]
 const ADDRESS_SPACE_MARGIN_MIB: u64 = 1024;
 
 /// The most descriptors the child may have open: its three pipes and what Z3 opens, which is
@@ -96,7 +97,7 @@ pub fn current(resource: Resource) -> io::Result<(u64, u64)> {
     };
     // SAFETY: `limit` is a valid `rlimit` that the call writes.
     if unsafe { libc::getrlimit(resource, &raw mut limit) } == 0 {
-        Ok((u64::from(limit.rlim_cur), u64::from(limit.rlim_max)))
+        Ok((limit.rlim_cur, limit.rlim_max))
     } else {
         Err(io::Error::last_os_error())
     }

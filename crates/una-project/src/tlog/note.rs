@@ -15,6 +15,10 @@ use super::merkle::Hash;
 /// checkpoint is far smaller).
 pub const MAX_NOTE: usize = 64 << 10;
 
+/// The most signature lines of a note: each line costs a verification per key tried, so a
+/// served note cannot make a client verify without bound.
+pub const MAX_SIGNATURES: usize = 64;
+
 /// The signature type byte of Ed25519 in a key hash.
 const ED25519_TYPE: u8 = 0x01;
 /// The signature type byte of a cosignature/v1 in a key hash.
@@ -73,8 +77,9 @@ pub struct Note {
 }
 
 /// Parses a signed note: a text of lines without control characters, ending with a line feed;
-/// a blank line; then one or more lines `— <name> <base64>`, each ending with a line feed. A
-/// name has no space and no `+`; the base64 decodes to a 4-byte key hash and the signature.
+/// a blank line; then one to [`MAX_SIGNATURES`] lines `— <name> <base64>`, each ending with a
+/// line feed, at most one per key name and key hash. A name has no space and no `+`; the base64
+/// decodes to a 4-byte key hash and the signature. O(n) to read, O(s²) for s lines, s bounded.
 pub fn parse_note(document: &str) -> Result<Note, String> {
     if document.len() > MAX_NOTE {
         return Err(format!("the note is longer than {MAX_NOTE} bytes"));
@@ -113,6 +118,17 @@ pub fn parse_note(document: &str) -> Result<Note, String> {
         else {
             return Err("a signature is too short".to_owned());
         };
+        if signatures.len() == MAX_SIGNATURES {
+            return Err(format!(
+                "the note has more than {MAX_SIGNATURES} signature lines"
+            ));
+        }
+        if signatures
+            .iter()
+            .any(|s: &Signature| s.name == name && s.id == *id)
+        {
+            return Err("the note has two signature lines of one key".to_owned());
+        }
         signatures.push(Signature {
             name: name.to_owned(),
             id: *id,
@@ -202,6 +218,9 @@ pub fn parse_checkpoint(text: &str) -> Result<Checkpoint, String> {
         .ok()
         .filter(|_| size_ok)
         .ok_or("a checkpoint's size is not a decimal without a leading zero")?;
+    if size >= 1 << 63 {
+        return Err("a checkpoint's size is 2^63 or more".to_owned());
+    }
     let root = lines
         .next()
         .and_then(base64)
