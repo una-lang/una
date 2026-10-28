@@ -112,8 +112,13 @@ fn every_dense_contract_keeps_each_of_its_clauses() {
     let (_, types) = run("0.4", "module m\n\npub f() -> Int = 1\n");
     let source = standard_source(Edition::V0_4).prelude;
     let start = source.find("pub array[").expect("the dense prelude");
+    // The dense section ends where the declarations of `F32` (`spec/29 §18` rule 9) begin.
+    let end = start
+        + source[start..]
+            .find("pub f32_from_bits(")
+            .expect("the F32 prelude after the dense one");
     let mut expected: Vec<(String, usize, usize)> = Vec::new();
-    for line in source[start..].lines() {
+    for line in source[start..end].lines() {
         if let Some(rest) = line.strip_prefix("pub ") {
             let end = rest.find(['(', '[']).unwrap();
             expected.push((rest[..end].to_owned(), 0, 0));
@@ -125,7 +130,7 @@ fn every_dense_contract_keeps_each_of_its_clauses() {
             }
         }
     }
-    assert_eq!(expected.len(), 48, "{expected:?}");
+    assert_eq!(expected.len(), 132, "{expected:?}");
     for (name, requires, ensures) in expected {
         let signature = types
             .program
@@ -145,10 +150,36 @@ fn a_function_that_computes_elements_keeps_no_refinement_in_its_result() {
     let source = "module m\n\npub f(a: Array[I32 in 1..10]) -> I32\n  requires a.len >= 2\n=\n  let d = matrix_diagonal(values: a)\n  let x = d.get(row: 0, column: 1)\n  100 / x\n";
     let (names, types) = run("0.4", source);
     assert!(names.is_empty() && types.diagnostics.is_empty());
-    let decls = format!("{:?}", types.program.modules[0].decls);
-    assert!(
-        !decls.contains("Matrix\", args: [Base { base: Fixed(I32), refinements: [Refinement"),
-        "{decls}"
+    // Core's own text, which writes a refined type as `{base | refinements}` (review of #1048,
+    // N6): the matrix is over the base, and no matrix of the function is over a refined type.
+    let core = una_core::print_module(&types.program.modules[0]);
+    assert!(core.contains("Matrix[I32]"), "{core}");
+    assert!(!core.contains("Matrix[{"), "{core}");
+}
+
+#[test]
+fn tensor_methods_take_the_function_of_their_rank() {
+    // A list literal of r elements selects the prelude function of rank r, and its elements
+    // are the arguments (`spec/29 §17`): the call in Core is to that function, with as many
+    // index arguments as the literal has.
+    let source = "module m\n\npub f(t: Tensor[F64]) -> F64\n  requires t.rank == 3 and t.dim(axis: 0) > 1 and t.dim(axis: 1) > 2 and t.dim(axis: 2) > 3\n=\n  t.get(at: [1, 2, 3])\n\npub g() -> Tensor[I8]\n=\n  let zero: I8 = 0\n  tensor_filled(shape: [2, 2], value: zero)\n";
+    let (names, types) = run("0.4", source);
+    assert!(names.is_empty(), "{names:?}");
+    assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
+    let core = una_core::print_module(&types.program.modules[0]);
+    assert!(core.contains("dense_tensor_get_3"), "{core}");
+    assert!(core.contains("dense_tensor_filled_2"), "{core}");
+    let (_, types) = run(
+        "0.4",
+        "module m\n\npub f(s: List[Int]) -> Tensor[F64] = tensor_filled(shape: s, value: 0.0)\n",
+    );
+    assert_eq!(
+        types
+            .diagnostics
+            .iter()
+            .map(|d| d.code.as_str())
+            .collect::<Vec<_>>(),
+        vec!["U2038"]
     );
 }
 

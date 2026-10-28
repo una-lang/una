@@ -1,0 +1,8 @@
+[package]
+name = "no_libm_run"
+version = "0.1.0"
+edition = "0.3"
+
+[run]
+entry = "mathfree"
+grants = ["console"]

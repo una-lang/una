@@ -1,0 +1,1 @@
+- **Guide: document the [contracts] dry-run lock** (#871). Document the conditional effect lock with executable dry-run and live-write examples.

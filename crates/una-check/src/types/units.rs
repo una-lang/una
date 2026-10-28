@@ -97,6 +97,29 @@ impl Unit {
         self.mul(&inverse)
     }
 
+    /// The square root of the unit: half of each exponent and the square root of the scale,
+    /// when every exponent is even and the scale is the square of a rational (ADR 0114 rule
+    /// 12.3); `None` otherwise. `Meter * Meter` gives `Meter`; `Meter` and `10 * Meter * Meter`
+    /// give none.
+    pub(crate) fn sqrt(&self) -> Option<Unit> {
+        let mut dims = BTreeMap::new();
+        for (base, exponent) in &self.dims {
+            if exponent % 2 != 0 {
+                return None;
+            }
+            dims.insert(base.clone(), exponent / 2);
+        }
+        let root = |n: u128| {
+            let r = n.isqrt();
+            (r.checked_mul(r) == Some(n)).then_some(r)
+        };
+        Some(Unit {
+            num: root(self.num)?,
+            den: root(self.den)?,
+            dims,
+        })
+    }
+
     /// Whether this is no unit: scale 1 and no base unit (ADR 0104 rule 2).
     pub(crate) fn is_one(&self) -> bool {
         self.dims.is_empty() && self.num == 1 && self.den == 1
@@ -241,6 +264,22 @@ mod tests {
             Unit::factor(1000).unwrap().mul(&meter).unwrap().to_string(),
             "1000 * Meter"
         );
+    }
+
+    #[test]
+    fn a_square_root_halves_even_exponents_and_square_scales() {
+        let meter = base("m", "Meter");
+        let second = base("m", "Second");
+        let area = meter.mul(&meter).unwrap();
+        assert_eq!(area.sqrt(), Some(meter.clone()));
+        assert_eq!(meter.sqrt(), None);
+        // `100 * Meter * Meter / (Second * Second)` is the square of `10 * Meter / Second`.
+        let ten = Unit::factor(10).unwrap();
+        let speed = ten.mul(&meter).unwrap().div(&second).unwrap();
+        assert_eq!(speed.mul(&speed).unwrap().sqrt(), Some(speed));
+        // A scale that is not a square has no root.
+        assert_eq!(ten.mul(&area).unwrap().sqrt(), None);
+        assert_eq!(Unit::one().sqrt(), Some(Unit::one()));
     }
 
     #[test]

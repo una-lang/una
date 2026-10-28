@@ -17,7 +17,7 @@ use std::collections::BTreeSet;
 use std::rc::Rc;
 
 use num_bigint::{BigInt, Sign};
-use una_core::{Bound, Expectation, Expr, HashMapOp, HashSetOp, Rhs, Source};
+use una_core::{Bound, Expectation, Expr, HashMapOp, HashSetOp, LoopSource, Rhs, Source};
 use una_hash::{Encoder, KeyError, ProcessKey, Sink, SipKey};
 use una_syntax::Span;
 
@@ -96,12 +96,25 @@ fn reaches_tables<'p>(index: &Index<'p>, roots: &[&'p Expr]) -> bool {
             | Expr::Exit { .. }
             | Expr::Fail { .. }
             | Expr::Unreachable { .. } => {}
-            Expr::Let { value, body, .. } => {
+            Expr::Let {
+                name: _,
+                ty: _,
+                value,
+                body,
+                span: _,
+                written: _,
+            } => {
                 pending.push(body);
                 match value.as_ref() {
                     Bound::Expr(inner) => pending.push(inner),
                     Bound::Rhs(rhs) => match rhs {
-                        Rhs::Call { function, .. } => {
+                        Rhs::Call {
+                            function,
+                            type_args: _,
+                            args: _,
+                            arg_spans: _,
+                            span: _,
+                        } => {
                             if function.module == una_core::COLLECTIONS_MODULE
                                 && constructs(&function.name)
                             {
@@ -115,9 +128,28 @@ fn reaches_tables<'p>(index: &Index<'p>, roots: &[&'p Expr]) -> bool {
                                 &mut pending,
                             );
                         }
-                        Rhs::Lambda { body, .. } => pending.push(body),
-                        Rhs::Checked { predicate, .. } => pending.push(predicate),
-                        Rhs::Declassify { via, .. } => {
+                        Rhs::Lambda {
+                            params: _,
+                            body,
+                            function: _,
+                        } => pending.push(body),
+                        Rhs::Checked {
+                            value: _,
+                            it: _,
+                            predicate,
+                            formula: _,
+                            ctor: _,
+                            args: _,
+                            arg_spans: _,
+                            span: _,
+                        } => pending.push(predicate),
+                        Rhs::Declassify {
+                            policy: _,
+                            via,
+                            arg: _,
+                            arg_span: _,
+                            span: _,
+                        } => {
                             enter(index, &mut visited, &via.module, &via.name, &mut pending);
                         }
                         Rhs::Atom(_)
@@ -131,35 +163,98 @@ fn reaches_tables<'p>(index: &Index<'p>, roots: &[&'p Expr]) -> bool {
                     },
                 }
             }
-            Expr::LetTuple { body, .. }
-            | Expr::Loop { body, .. }
-            | Expr::Attempt { body, .. }
-            | Expr::Within { body, .. } => {
+            Expr::LetTuple {
+                names: _,
+                value: _,
+                body,
+                span: _,
+            }
+            | Expr::Attempt { body, span: _ }
+            | Expr::Within {
+                deadline: _,
+                deadline_span: _,
+                body,
+                timeout: _,
+                wrap: _,
+                span: _,
+            }
+            | Expr::Tasks {
+                bound: _,
+                body,
+                span: _,
+            } => {
                 pending.push(body);
             }
-            Expr::Together { tasks, .. } => pending.extend(tasks.iter()),
-            Expr::TogetherFor { task, .. } => pending.push(task),
+            Expr::Loop {
+                source,
+                var: _,
+                state: _,
+                init: _,
+                body,
+                on_stop,
+                span: _,
+            } => {
+                pending.push(body);
+                // The `on stop` block runs when the loop ends, and can make a table of its own.
+                if let Some(on_stop) = on_stop {
+                    pending.push(&on_stop.body);
+                }
+                pending.extend(source_condition(source));
+            }
+            Expr::Together { tasks, span: _ } | Expr::FirstOf { tasks, .. } => {
+                pending.extend(tasks.iter());
+            }
+            Expr::TogetherFor {
+                source,
+                var: _,
+                task,
+                span: _,
+            } => {
+                pending.push(task);
+                pending.extend(source_condition(source));
+            }
+            // A started task runs code of the run as a `together` task does (`spec/27 §7`).
+            Expr::Start { task, span: _ } => pending.push(task),
             Expr::If {
-                then, otherwise, ..
+                cond: _,
+                then,
+                otherwise,
             } => {
                 pending.push(then);
                 pending.push(otherwise);
             }
             Expr::Case {
-                arms, otherwise, ..
+                scrutinee: _,
+                arms,
+                otherwise,
             } => {
                 pending.extend(arms.iter().map(|arm| &arm.body));
                 if let Some(otherwise) = otherwise {
                     pending.push(otherwise);
                 }
             }
-            Expr::Handle { body, handler, .. } => {
+            Expr::Handle {
+                body,
+                error: _,
+                handler,
+            } => {
                 pending.push(body);
                 pending.push(handler);
             }
-            Expr::With { source, body, .. } => {
+            Expr::With {
+                cap: _,
+                source,
+                body,
+            } => {
                 pending.push(body);
-                if let Source::Handler { handler, .. } = source {
+                if let Source::Handler {
+                    handler,
+                    args: _,
+                    arg_spans: _,
+                    given: _,
+                    span: _,
+                } = source
+                {
                     enter(
                         index,
                         &mut visited,
@@ -172,6 +267,25 @@ fn reaches_tables<'p>(index: &Index<'p>, roots: &[&'p Expr]) -> bool {
         }
     }
     false
+}
+
+/// The condition of an `until` source, the only part of a loop's source that is an expression.
+fn source_condition(source: &LoopSource) -> Option<&Expr> {
+    match source {
+        LoopSource::Until {
+            cond,
+            holds: _,
+            measure: _,
+            decreases: _,
+        } => Some(cond),
+        LoopSource::List(_)
+        | LoopSource::Range {
+            low: _,
+            high: _,
+            inclusive: _,
+        }
+        | LoopSource::Ever { within: _ } => None,
+    }
 }
 
 /// Queues the body of the function or predicate, or the operations of the handler, named
@@ -226,6 +340,8 @@ fn encode<S: Sink>(encoder: &mut Encoder<'_, S>, value: &Value<'_>) -> bool {
             // Every `F64` is canonical, so every NaN encodes alike, and `-0.0` and `0.0` differ,
             // as their `==` does (ADR 0114 rule 6.1).
             Value::F64(x) => encoder.f64_bits(una_core::float::to_bits(*x)),
+            // The integer whose value is its 32 canonical bits (`spec/28 §1` rule 2).
+            Value::F32(x) => encoder.uint(u64::from(una_core::float32::to_bits(*x))),
             // Its coefficient: the keys of one table share one type, so one scale (ADR 0120,
             // the amendment of ADR 0119 rule 9).
             Value::Decimal(coefficient, _) => integer(encoder, coefficient),
@@ -284,7 +400,15 @@ fn encode<S: Sink>(encoder: &mut Encoder<'_, S>, value: &Value<'_>) -> bool {
                     }
                 }
             }
-            Value::Closure(_) | Value::HashMap(_) | Value::HashSet(_) => return false,
+            // Its size as an integer, then its words, little-endian (ADR 0119 rule 9). The bits
+            // past the size stay zero, so two equal bit sets encode alike.
+            Value::BitSet(bits) => {
+                encoder.len(bits.size);
+                encoder.words(&bits.words);
+            }
+            Value::Closure(_) | Value::HashMap(_) | Value::HashSet(_) | Value::Priority(_) => {
+                return false;
+            }
         }
     }
     true
@@ -500,6 +624,42 @@ fn holds_all<'p>(
     Ok(true)
 }
 
+/// `xs.to_hash_set()` and `es.to_hash_map()` (`spec/28 §10`, ADR 0119 rule 16): a new table
+/// under `key`, filled from the list in its order. A set holds each item once, at its first
+/// occurrence; a map lists each key at its first occurrence, with the value of its last entry,
+/// as `set` of a present key keeps its place. O(n · |k|) expected, amortized.
+pub(super) fn from_list<'p>(
+    name: &str,
+    key: SipKey,
+    args: &[Value<'p>],
+    budget: &Budget,
+) -> Flow<'p> {
+    let Some(Value::List(xs)) = args.first() else {
+        return Err(fault(format!("`{name}` without a list")));
+    };
+    let mut table = HashTable::new(key);
+    if name == "to_hash_map" {
+        for entry in xs.iter() {
+            let Value::Data(entry) = entry else {
+                return Err(fault("`to_hash_map` of an element that is not an `Entry`"));
+            };
+            let [k, v] = entry.fields.as_slice() else {
+                return Err(fault("`to_hash_map` of an element that is not an `Entry`"));
+            };
+            let hash = hash_of(table.key, k)?;
+            insert(&mut table, hash, k.clone(), v.clone(), budget)?;
+        }
+        return Ok(Value::HashMap(Rc::new(table)));
+    }
+    for item in xs.iter() {
+        let hash = hash_of(table.key, item)?;
+        if lookup(&table, hash, item, budget)?.is_none() {
+            insert(&mut table, hash, item.clone(), Value::Unit, budget)?;
+        }
+    }
+    Ok(Value::HashSet(Rc::new(table)))
+}
+
 /// A hash set's built-in method over its arguments, receiver first (`spec/28 §7`). Each item
 /// is a key whose value is `unit`.
 pub(super) fn set_apply<'p>(op: HashSetOp, args: Vec<Value<'p>>, budget: &Budget) -> Flow<'p> {
@@ -663,14 +823,21 @@ fn difference<'p>(
     Ok(Rc::new(out))
 }
 
+/// What stops a run that makes a hash table its analysis found it makes none of: a defect of the
+/// analysis, so an internal fault, U8001, in both engines.
+pub(crate) const UNFORESEEN_TABLE: &str =
+    "a hash table made in a run whose code the analysis found makes none";
+
 /// The key of a new table, from the process key's counter (ADR 0119 rule 9): U6003 when the
 /// counter is exhausted, and an internal fault when the run read no process key, which the
 /// analysis of [`process_key`] rules out.
 pub(super) fn table_key<'p>(process: Option<&ProcessKey>, span: Span) -> Result<SipKey, Stop<'p>> {
     let Some(process) = process else {
-        return Err(fault(
-            "a hash table made in a run whose code the analysis found makes none",
-        ));
+        // Native code stops at the same site with the same message (ADR 0119 rule 9).
+        return Err(Stop::Abort(Abort::Fault {
+            message: UNFORESEEN_TABLE.to_owned(),
+            span: Some(span),
+        }));
     };
     process.next_table_key().map_err(|error| match error {
         KeyError::CounterExhausted => Stop::Abort(Abort::Tables { span }),
@@ -756,5 +923,23 @@ mod tests {
         let mut bytes = Vec::new();
         let table = Value::HashSet(Rc::new(HashTable::new(SipKey { k0: 1, k1: 2 })));
         assert!(!encode(&mut Encoder::new(&mut bytes), &table));
+    }
+
+    #[test]
+    fn a_table_the_analysis_missed_stops_the_run_at_the_table() {
+        // ADR 0119 rule 9: no key is read late. A table made in a run that read no process key
+        // is an internal fault at its site, with the message native code reports there too.
+        let mut sources = una_syntax::SourceDb::new();
+        let file = sources.add("table.una", b"");
+        let span = Span::new(file, 3, 9);
+        let stopped = table_key(None, span);
+        assert!(
+            matches!(
+                &stopped,
+                Err(Stop::Abort(Abort::Fault { message, span: Some(at) }))
+                    if message == UNFORESEEN_TABLE && *at == span
+            ),
+            "a table without a process key was not a fault at its site"
+        );
     }
 }
