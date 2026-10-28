@@ -310,7 +310,8 @@ pub fn parse_ita_manifest(text: &str) -> (Manifest, Vec<ProjectError>) {
         }
         // The `serve` grants that are valid, by address and port, for the overlap check of
         // `spec/31 §2` rule 6, which reports the later grant of each overlap.
-        let mut listeners: Vec<(std::net::IpAddr, u16, std::ops::Range<usize>)> = Vec::new();
+        // Addresses only (`core::net`, no socket): this crate opens no connection.
+        let mut listeners: Vec<(core::net::IpAddr, u16, std::ops::Range<usize>)> = Vec::new();
         for grant in &run.grants {
             if grant.spec.starts_with(una_core::http::serve::PREFIX) {
                 match una_core::http::serve::ServeGrant::parse(&grant.spec) {
@@ -356,7 +357,7 @@ pub fn parse_ita_manifest(text: &str) -> (Manifest, Vec<ProjectError>) {
             una_core::http::serve::overlapping(listeners.iter().map(|(a, p, _)| (*a, *p)));
         for index in overlaps {
             if let Some((address, port, range)) = listeners.get(index) {
-                let listener = std::net::SocketAddr::new(*address, *port);
+                let listener = core::net::SocketAddr::new(*address, *port);
                 errors.push(error(
                     code,
                     range.clone(),

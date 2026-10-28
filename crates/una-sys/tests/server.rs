@@ -9,6 +9,11 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 
 use una_sys::server::{OPEN_FLAGS, identity, listen, raise_descriptor_limit};
 
+/// Held by the tests that start a child process and by the test that rebinds a port. On macOS
+/// close-on-exec is set apart from `socket` and `accept` (as in std), so a child started by a
+/// parallel test in between keeps a copy of a socket, and a rebind then finds the port held.
+static CHILDREN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[test]
 fn the_identity_owns_what_the_process_creates() {
     let me = identity().unwrap();
@@ -25,6 +30,9 @@ fn the_identity_owns_what_the_process_creates() {
 
 #[test]
 fn the_open_flags_keep_a_fifo_from_blocking() {
+    let _children = CHILDREN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let path = std::env::temp_dir().join(format!("una-sys-fifo-{}", std::process::id()));
     let _ = std::fs::remove_file(&path);
     let made = std::process::Command::new("mkfifo").arg(&path).status();
@@ -59,6 +67,9 @@ fn the_descriptor_limit_rises_or_says_where_it_stays() {
 
 #[test]
 fn a_listener_is_not_inherited_by_a_child() {
+    let _children = CHILDREN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     use std::os::fd::AsRawFd;
     let listener = listen(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)), 16).unwrap();
     let fd = listener.as_raw_fd();
@@ -87,6 +98,9 @@ fn a_listener_accepts_connections() {
 /// which `SO_REUSEADDR` allows (`spec/31 §2` rule 7).
 #[test]
 fn a_restart_rebinds_while_old_connections_are_in_time_wait() {
+    let _children = CHILDREN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     use std::io::Read;
     let first = listen(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)), 16).unwrap();
     let bound = first.local_addr().unwrap();

@@ -73,6 +73,11 @@ pub fn raise_descriptor_limit(wanted: u64) -> io::Result<u64> {
         return Ok(limit.rlim_cur);
     }
     let soft = wanted.min(limit.rlim_max);
+    // macOS may accept a soft limit above `OPEN_MAX` and still never open that many: the raise
+    // stops there, unless the limit in force is already above it, so the caller's check of
+    // what it needs fails closed.
+    #[cfg(target_os = "macos")]
+    let soft = soft.min(OPEN_MAX.max(limit.rlim_cur));
     let set = set_descriptor_limit(soft, limit.rlim_max);
     // macOS refuses a soft limit above `OPEN_MAX` with `EINVAL`, even under an infinite hard
     // limit: the reachable limit is tried, so the caller's message names it.

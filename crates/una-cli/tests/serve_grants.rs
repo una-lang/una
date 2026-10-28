@@ -163,10 +163,15 @@ fn serve_flags_need_edition_0_4() {
             "error: `{spec}` needs a package of edition 0.4, described by ita.una; this package is of edition 0.3\n"
         )
     );
-    // A single file is of edition 0.1.
-    let file = dir.join("src/main.una");
+    // A single file outside any package is of edition 0.1: a file inside a package's
+    // directory is read as that package.
+    let alone = std::env::temp_dir().join(format!("una-serve-alone-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&alone);
+    std::fs::create_dir_all(&alone).unwrap();
+    let file = alone.join("main.una");
+    std::fs::write(&file, MAIN).unwrap();
     let output = una(
-        &dir,
+        &alone,
         &[
             "run",
             file.to_str().unwrap(),
@@ -178,6 +183,7 @@ fn serve_flags_need_edition_0_4() {
     );
     assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
     assert!(stderr(&output).ends_with("this package is of edition 0.1\n"));
+    let _ = std::fs::remove_dir_all(&alone);
     let _ = std::fs::remove_dir_all(&dir);
 }
 

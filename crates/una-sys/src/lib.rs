@@ -3,13 +3,13 @@
 //! of SIGINT and SIGTERM, the attention words, coroutines, a write-readiness check, and the
 //! `kqueue` or `epoll` instance of the reactor (ADR 0117 slice S7).
 //!
-//! The crate stays under 1,200 lines, with one assembly instruction per line (ADR 0116 amendment
-//! of 2026-10-19), and depends on no crate of the repository. Every change to it gets a security
-//! review before it merges. Only `signals`, `coroutine`, `io`, `poll`, `server` (`serve:`
-//! grants) and, behind the feature of that name, `solver` hold `unsafe` code, each block with a
-//! `// SAFETY:` comment; `solver` holds the solver child's confinement, limits, spawn attributes
-//! and footprint reading, and the record of its confinement (ADR 0124 rules 5 to 7). The context
-//! switch is Rust `naked_asm!` only,
+//! The base code stays under its cap of 1,594 lines (ADR 0058, amendment of 2026-10-28), with one
+//! assembly instruction per line, and depends on no crate of the repository. Every change to
+//! it gets a security review before it merges. Only `signals`, `coroutine`, `io`, `poll`,
+//! `server` (`serve:` grants) and, behind the feature of that name, `solver` hold `unsafe` code,
+//! each block with a `// SAFETY:` comment; `solver` holds the solver child's confinement, limits,
+//! spawn attributes and footprint reading, and the record of its confinement (ADR 0124 rules 5 to
+//! 7). The context switch is Rust `naked_asm!` only,
 //! assembled by the toolchain: no `.s` or `.S` file, no build script, and no C is compiled.
 //! It assumes no x86 shadow stacks (CET) and no AArch64 branch targets (BTI) are enforced, as for
 //! Rust binaries on these targets today; if either is turned on, the switch must be revisited.
