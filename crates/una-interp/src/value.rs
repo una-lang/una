@@ -952,4 +952,33 @@ mod tests {
             .unwrap();
         assert!(dropped);
     }
+
+    /// A list nested `depth` deep, each level one fresh list holding the next: no sharing.
+    fn chain(depth: usize) -> Value<'static> {
+        let mut value = Value::List(Rc::new(Vec::new()));
+        for _ in 0..depth {
+            value = Value::List(Rc::new(vec![value]));
+        }
+        value
+    }
+
+    #[test]
+    fn two_fresh_chains_compare_in_one_step_per_level_at_every_depth() {
+        // #926: structural equality on a chain is linear in its depth, one step per pair of
+        // values with parts, whatever the depth. A list drops by native recursion, so the
+        // test runs on a large stack, as the interpreter runs a program on one.
+        std::thread::Builder::new()
+            .stack_size(512 * 1024 * 1024)
+            .spawn(|| {
+                for depth in [1_000usize, 10_000, 100_000] {
+                    let (a, b) = (chain(depth), chain(depth));
+                    let (taken, verdict) = steps(&a, &b);
+                    assert_eq!(verdict, Some(true), "depth {depth}");
+                    assert_eq!(taken, depth, "depth {depth}: {taken} steps");
+                }
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
 }
