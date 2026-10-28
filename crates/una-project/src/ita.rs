@@ -308,7 +308,33 @@ pub fn parse_ita_manifest(text: &str) -> (Manifest, Vec<ProjectError>) {
                 ));
             }
         }
+        // The `serve` grants that are valid, by address and port, for the overlap check of
+        // `spec/31 §2` rule 6, which reports the later grant of each overlap.
+        // Addresses only (`core::net`, no socket): this crate opens no connection.
+        let mut listeners: Vec<(core::net::IpAddr, u16, std::ops::Range<usize>)> = Vec::new();
         for grant in &run.grants {
+            if grant.spec.starts_with(una_core::http::serve::PREFIX) {
+                match una_core::http::serve::ServeGrant::parse(&grant.spec) {
+                    Ok(serve) => {
+                        listeners.push((serve.address, serve.port, grant.range.clone()));
+                        manifest.grants.push(Located {
+                            value: grant.spec.clone(),
+                            range: grant.range.clone(),
+                        });
+                    }
+                    Err(found) => {
+                        for problem in found {
+                            let range = problem
+                                .item
+                                .and_then(|index| grant.items.get(index))
+                                .unwrap_or(&grant.range)
+                                .clone();
+                            errors.push(error(code, range, problem.message));
+                        }
+                    }
+                }
+                continue;
+            }
             if !is_grant(&grant.spec) {
                 errors.push(error(
                     code,
@@ -326,6 +352,20 @@ pub fn parse_ita_manifest(text: &str) -> (Manifest, Vec<ProjectError>) {
                 value: format!("{}{suffix}", grant.spec),
                 range: grant.range.clone(),
             });
+        }
+        let overlaps =
+            una_core::http::serve::overlapping(listeners.iter().map(|(a, p, _)| (*a, *p)));
+        for index in overlaps {
+            if let Some((address, port, range)) = listeners.get(index) {
+                let listener = core::net::SocketAddr::new(*address, *port);
+                errors.push(error(
+                    code,
+                    range.clone(),
+                    format!(
+                        "`{listener}` overlaps an earlier serve grant: each address and port is granted once, and a wildcard shares its port with no grant of its family"
+                    ),
+                ));
+            }
         }
     }
     // The host-driven step (ADR 0116 rule 1, `spec/26 §2`): its keys, their ranges, and no

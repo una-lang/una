@@ -2053,6 +2053,11 @@ fn granted(grants: &[String]) -> BTreeMap<&'static str, BTreeSet<&'static str>> 
                     None => continue,
                 }
             }
+            // A `serve:` grant allows all three operations of `HttpServer` (`spec/31 §2`); the
+            // capability itself lands with ADR 0123 step 5.
+            _ if grant.starts_with(una_core::http::serve::PREFIX) => {
+                ("HttpServer", vec!["next", "reply", "close"])
+            }
             _ => match grant
                 .strip_prefix("files:")
                 .and_then(|rest| rest.rsplit_once(':'))

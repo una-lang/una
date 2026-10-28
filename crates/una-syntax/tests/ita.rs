@@ -469,6 +469,96 @@ fn files_past_their_bound_are_refused_whole() {
     assert_eq!(errors[0].range, 0..0);
 }
 
+/// The lines of a `serve` grant become the items of its text spec, one per line, each with
+/// the range of its line (`spec/31 §2` rule 3).
+#[test]
+fn serve_grant_lines_become_the_text_spec() {
+    let text = "ita x\n  version 0.1.0\n  edition 0.4\n\nrun\n  grants\n    serve \"https://0.0.0.0:8443\"\n      certificate \"tls/chain.pem\"\n      key \"tls/key.pem\"\n      tls12\n      at most 256 at once\n      at most 6000 per minute\n      waiting at most 0\n      connections at most 4096\n      peer none\n      handshakes at most 512 per second\n      requests at most 9\n      headers at most 100\n      line at most 8 KiB\n      header at most 16 KiB\n      body at most 64 KiB\n      buffers at most 64 MiB\n      peer_buffers at most 2 MiB\n      peer_replies none\n      delivered at most 256 MiB\n      idle within 1 second\n      answer within 10 seconds\n      hosts \"shop.example\", \"*.shop.example\"\n    serve \"http://127.0.0.1:8080\"\n";
+    let (manifest, errors) = parse_manifest(text);
+    assert_eq!(errors, vec![]);
+    let run = manifest.run.unwrap();
+    assert_eq!(
+        run.grants[0].spec,
+        "serve:https://0.0.0.0:8443;certificate=tls/chain.pem;key=tls/key.pem;tls12;256/once;\
+         6000/minute;waiting=0;connections=4096;peer=none;handshakes=512;requests=9;headers=100;\
+         line=8;header=16;body=64;buffers=64;peer_buffers=2;peer_replies=none;delivered=256;\
+         idle=1;answer=10;hosts=shop.example,*.shop.example"
+    );
+    assert_eq!(run.grants[0].items.len(), 21);
+    let first = run.grants[0].items[0].clone();
+    assert_eq!(&text[first], "certificate \"tls/chain.pem\"");
+    assert!(run.grants[0].limits.is_empty());
+    assert_eq!(run.grants[1].spec, "serve:http://127.0.0.1:8080");
+    assert!(run.grants[1].items.is_empty());
+}
+
+/// An item line of another form is an error at its line, and its grant is dropped.
+#[test]
+fn serve_item_lines_of_other_forms_are_errors() {
+    for (line, message) in [
+        (
+            "line at most 8 MiB",
+            "`line` is a number of KiB, written `line at most <n> KiB`",
+        ),
+        (
+            "body at most 1024",
+            "`body` is a number of KiB, written `body at most <n> KiB`",
+        ),
+        (
+            "buffers at most 1 KiB",
+            "`buffers` is a number of MiB, written `buffers at most <n> MiB`",
+        ),
+        ("idle within 5 minutes", "`idle` is a number of seconds"),
+        (
+            "idle at most 5 seconds",
+            "expected `idle within <n> seconds`",
+        ),
+        ("connections none", "expected `at most` and a number"),
+        (
+            "backlog at most 5",
+            "`backlog` is not an item of a serve grant (spec/31 §2)",
+        ),
+        (
+            "at most 5 per day",
+            "a rate is per `second`, `minute` or `hour`",
+        ),
+        ("at most 5", "expected `at once`, or `per` and a period"),
+        (
+            "handshakes at most 5",
+            "`handshakes` is a number per second: `handshakes at most 512 per second`",
+        ),
+        (
+            "certificate \"a;b\"",
+            "the path of `certificate` holds `;`, which ends an item of a grant",
+        ),
+        ("hosts \"a,b\"", "`a,b` is not a host name"),
+        ("tls12 on", "unexpected `on` at the end of this line"),
+    ] {
+        let text = format!(
+            "ita x\n  version 0.1.0\n  edition 0.4\n\nrun\n  grants\n    serve \"http://127.0.0.1:8080\"\n      waiting at most 1\n      {line}\n"
+        );
+        let (manifest, errors) = parse_manifest(&text);
+        let messages: Vec<&str> = errors.iter().map(|e| e.message.as_str()).collect();
+        assert_eq!(messages, [message], "{line}");
+        let at = text.find(line).unwrap();
+        assert_eq!(errors[0].range.start, at, "{line}");
+        assert!(manifest.run.unwrap().grants.is_empty(), "{line}");
+    }
+}
+
+/// The origin of a `serve` grant cannot carry an item after a `;`.
+#[test]
+fn serve_origins_hold_no_items() {
+    let text = "ita x\n  version 0.1.0\n  edition 0.4\n\nrun\n  grants\n    serve \"http://127.0.0.1:8080;peer=none\"\n";
+    let (manifest, errors) = parse_manifest(text);
+    let messages: Vec<&str> = errors.iter().map(|e| e.message.as_str()).collect();
+    assert_eq!(
+        messages,
+        ["the address of a serve grant holds no `;`; write each item on a line below it"]
+    );
+    assert!(manifest.run.unwrap().grants.is_empty());
+}
+
 #[test]
 fn the_run_section_declares_a_memory_budget() {
     // ADR 0109 rule 4 under ADR 0122: `max_memory <MiB>` after `entry`, before `grants`; its
