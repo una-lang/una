@@ -2940,8 +2940,13 @@ fn abort_run(state: State, code: Code, location: Location, message: String) {
     // the process holds and its peak, the baseline before `main`, the stacks the live tasks
     // used, the reservations of copies in flight, the thread stacks counted for the count
     // limit, and what this thread allocated.
+    // The executable is the process, as for `env_var` in `host.rs`: the variable is read only
+    // in a debug build, never in a released runtime.
     #[cfg(debug_assertions)]
-    if std::env::var_os("UNA_DEBUG_CHARGE").is_some() {
+    #[allow(clippy::disallowed_methods)]
+    let trace = std::env::var_os("UNA_DEBUG_CHARGE").is_some();
+    #[cfg(debug_assertions)]
+    if trace {
         let _ = writeln!(
             io::stderr(),
             "una-rt charge: held {} peak {} baseline {} stack_charge {} reserved {} thread_stacks {} thread_allocated {} ceiling {} budget_mib {} on {}",
