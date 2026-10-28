@@ -16,7 +16,7 @@ mod native_build;
 #[path = "common/timing.rs"]
 mod timing;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -140,6 +140,28 @@ fn files(dir: &Path, extension: &str) -> Vec<PathBuf> {
     out
 }
 
+/// The runnable programs whose `una run` is rejected, by repository path with a reason
+/// (`tests/native/rejected.txt`, #1045): a rejected case drops out of the comparison, so one
+/// that is not listed is a failure, and so is a listed one that runs. The list must be exact.
+fn rejected() -> BTreeMap<String, String> {
+    let list = root().join("tests/native/rejected.txt");
+    std::fs::read_to_string(list)
+        .unwrap_or_default()
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(|line| {
+            let parts = line.split_once(':');
+            assert!(
+                parts.is_some(),
+                "tests/native/rejected.txt: `{line}` has no `: reason`"
+            );
+            let (name, reason) = parts.unwrap();
+            (name.trim().to_owned(), reason.trim().to_owned())
+        })
+        .collect()
+}
+
 /// The programs listed as not compiled yet, by repository path.
 fn unsupported() -> BTreeSet<String> {
     let list = root().join("tests/native/unsupported.txt");
@@ -156,6 +178,19 @@ fn every_runnable_program_runs_natively_as_in_the_interpreter() {
     runtime();
     let root = root();
     let listed = unsupported();
+    let rejected_list = rejected();
+    let mut seen_rejected: BTreeSet<String> = BTreeSet::new();
+    let candidate_names: BTreeSet<String> = candidates()
+        .iter()
+        .map(|program| {
+            program
+                .path
+                .strip_prefix(&root)
+                .unwrap()
+                .display()
+                .to_string()
+        })
+        .collect();
     let scratch = std::env::temp_dir().join(format!("una-native-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&scratch);
     std::fs::create_dir_all(&scratch).unwrap();
@@ -186,11 +221,30 @@ fn every_runnable_program_runs_natively_as_in_the_interpreter() {
             run_args.push(grant);
         }
         let run = una(&work, &run_args);
-        let Ok(document) = serde_json::from_slice::<Value>(&run.stdout) else {
+        // A case that `una run` rejects, or whose document does not parse, is compared with
+        // nothing, so it is a failure unless tests/native/rejected.txt lists it with a reason
+        // (#1045); a listed case that runs must leave the list.
+        let document = serde_json::from_slice::<Value>(&run.stdout).ok();
+        let is_rejected = document
+            .as_ref()
+            .is_none_or(|document| document["status"] == "rejected");
+        if is_rejected {
+            if rejected_list.contains_key(&name) {
+                seen_rejected.insert(name.clone());
+            } else {
+                failures.push(format!(
+                    "{name}: una run rejected it, so nothing is compared, and it is not listed in tests/native/rejected.txt: {}",
+                    String::from_utf8_lossy(&run.stderr).trim()
+                ));
+            }
             continue;
-        };
-        if document["status"] == "rejected" {
-            continue;
+        }
+        // INVARIANT: a document that is not rejected parsed.
+        let document = document.unwrap_or(Value::Null);
+        if let Some(reason) = rejected_list.get(&name) {
+            failures.push(format!(
+                "{name}: runs now; remove it from tests/native/rejected.txt (listed as: {reason})"
+            ));
         }
         let exe = dir.join("native-exe");
         let built = una(
@@ -274,6 +328,13 @@ fn every_runnable_program_runs_natively_as_in_the_interpreter() {
         if !compiled.contains(name) && !not_compiled.contains(name) {
             failures.push(format!(
                 "{name}: listed in tests/native/unsupported.txt, but not a runnable program"
+            ));
+        }
+    }
+    for name in rejected_list.keys() {
+        if !seen_rejected.contains(name) && !candidate_names.contains(name) {
+            failures.push(format!(
+                "{name}: listed in tests/native/rejected.txt, but not a runnable program"
             ));
         }
     }
