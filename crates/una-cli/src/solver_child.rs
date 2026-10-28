@@ -647,7 +647,7 @@ impl Solver for Launcher {
         // The handshake line, and the outer-sandbox line when there is one, are stripped.
         let text = String::from_utf8_lossy(&output);
         let mut rest = text.split_once('\n').map_or("", |(_, rest)| rest);
-        let mut outer_denied = None;
+        let mut outer_denied: Option<Vec<String>> = None;
         if let Some(line) = rest.strip_prefix("una-solver-outer ") {
             let (denied, after) = line.split_once('\n').unwrap_or((line, ""));
             outer_denied = Some(

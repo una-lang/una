@@ -1201,8 +1201,12 @@ fn run_command(
                     }
                     ItaCommand::Publish { path } => {
                         // A refused proof cache key is a note on this command's stderr (#1164).
-                        let solving =
-                            solving(DEFAULT_WALLCLOCK.as_secs(), json, &mut *output.stderr);
+                        let solving = solving(
+                            DEFAULT_WALLCLOCK.as_secs(),
+                            crate::solver_child::DEFAULT_MEMORY_MIB,
+                            json,
+                            &mut *output.stderr,
+                        );
                         let home = variable(environment, "HOME");
                         let keys = ita_registry::keys_dir(home.as_deref());
                         let git_variable = ["GIT_DIR", "GIT_WORK_TREE"]
@@ -1359,7 +1363,15 @@ fn run_command(
                 runtime::test_command(&path, options, stdout, stderr)
             }
             Command::Explain { code } => explain_command(&code, json, stdout, stderr),
-            Command::Lsp => lsp::serve(stdout, solving(DEFAULT_WALLCLOCK.as_secs(), false, stderr)),
+            Command::Lsp => lsp::serve(
+                stdout,
+                solving(
+                    DEFAULT_WALLCLOCK.as_secs(),
+                    crate::solver_child::DEFAULT_MEMORY_MIB,
+                    false,
+                    stderr,
+                ),
+            ),
         },
         // clap reports `--help` as an error that belongs on stdout with exit code 0.
         Err(error) => {
@@ -2041,6 +2053,7 @@ mod tests {
             tier: crate::args::TierArg::Zero,
             dump_core: None,
             solver_wallclock: 60,
+            solver_memory: crate::solver_child::DEFAULT_MEMORY_MIB,
         };
         // A package: 1:1 of its `una.toml`; a file: 1:1 of that file; no package: nowhere.
         assert_eq!(panic_location(Some(&check(root.clone()))).file, "una.toml");

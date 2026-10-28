@@ -364,7 +364,8 @@ fn the_solver_memory_flag_takes_an_integer_from_256_to_1048576() {
         let output = Command::new(env!("CARGO_BIN_EXE_una"))
             .env("HOME", env!("CARGO_TARGET_TMPDIR"))
             .env_remove("UNA_PROOF_KEY")
-            .args(["check", "--solver-memory", value, "."])
+            // `=` keeps `-1` a value rather than a flag of its own.
+            .args(["check", &format!("--solver-memory={value}"), "."])
             .output()
             .unwrap();
         assert_eq!(

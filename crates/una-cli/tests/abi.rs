@@ -58,6 +58,11 @@ fn the_report_of_the_events_example() {
         .replace(
             &format!("\"variants\":{variants}"),
             "\"variants\":\"<host>\"",
+        )
+        // The digest of the Z3 library linked in (ADR 0124 rule 28) differs between builds.
+        .replace(
+            &format!("\"library_sha256\":\"{}\"", una_z3::BUILD.library_sha256),
+            "\"library_sha256\":\"<build>\"",
         );
     insta::assert_snapshot!("report_events_json", text);
     let report = json(&output);
