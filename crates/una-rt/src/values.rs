@@ -118,12 +118,46 @@ enum Object {
 /// A map's key, copied out of the heap at insert: an integer, or a text. A variant
 /// without fields is an immediate `index << 1 | 1`, which reads as the integer `index`, in the
 /// order of its declaration. A map holds keys of one type, so no other order applies.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(not(test), derive(PartialOrd, Ord))]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum MapKey {
     Int(BigInt),
     Text(String),
     /// An `F64` by the key of totalOrder (ADR 0114 rule 9.5).
     F64(i64),
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The comparisons of map keys this thread made, in tests: the derived order, counted, so a
+    /// test can bound a map's building by its size (#886).
+    pub(crate) static KEY_COMPARISONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+impl Ord for MapKey {
+    fn cmp(&self, other: &MapKey) -> std::cmp::Ordering {
+        KEY_COMPARISONS.with(|n| n.set(n.get() + 1));
+        // The derived order: by variant in declaration order, then by value.
+        let rank = |key: &MapKey| match key {
+            MapKey::Int(_) => 0,
+            MapKey::Text(_) => 1,
+            MapKey::F64(_) => 2,
+        };
+        match (self, other) {
+            (MapKey::Int(a), MapKey::Int(b)) => a.cmp(b),
+            (MapKey::Text(a), MapKey::Text(b)) => a.cmp(b),
+            (MapKey::F64(a), MapKey::F64(b)) => a.cmp(b),
+            _ => rank(self).cmp(&rank(other)),
+        }
+    }
+}
+
+#[cfg(test)]
+impl PartialOrd for MapKey {
+    fn partial_cmp(&self, other: &MapKey) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 impl MapKey {
@@ -3171,6 +3205,33 @@ pub fn map_empty() -> i64 {
     alloc(Object::Map(BTreeMap::new()))
 }
 
+/// A new map of `entries`, whose words the caller gives up, built in bulk: in time linear in
+/// their number when their keys come sorted and without duplicates, as the JSON parser gives
+/// them (spec/23 §6 rule 1, #886), and O(n log n) otherwise. Of equal keys the last is kept and
+/// the others' words released.
+pub(crate) fn map_from_sorted(entries: Vec<(i64, i64)>) -> i64 {
+    let mut keyed: Vec<(MapKey, (i64, i64))> = entries
+        .into_iter()
+        .map(|(key, value)| (MapKey::of(key), (key, value)))
+        .collect();
+    // A stable sort, O(n) on keys already in order.
+    keyed.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut unique: Vec<(MapKey, (i64, i64))> = Vec::with_capacity(keyed.len());
+    for entry in keyed {
+        if let Some(last) = unique.last_mut()
+            && last.0 == entry.0
+        {
+            let (key, value) = std::mem::replace(&mut last.1, entry.1);
+            release(key);
+            release(value);
+            continue;
+        }
+        unique.push(entry);
+    }
+    // Sorted and unique: `BTreeMap` builds it in bulk, in linear time.
+    alloc(Object::Map(unique.into_iter().collect()))
+}
+
 /// Puts `key` with `value` into `map`, which the caller holds alone, retaining both and
 /// releasing the entry it replaces. O(log n), plus O(key length) to copy a text key.
 fn map_insert(map: i64, key: i64, value: i64) {
@@ -4361,5 +4422,124 @@ mod tests {
         assert_eq!(equal(0, a, b), 1);
         release(a);
         release(b);
+    }
+
+    #[test]
+    fn a_map_of_keys_in_order_is_built_with_comparisons_linear_in_its_size() {
+        // #886, spec/23 §6 rule 1: keys already in order, as the JSON parser gives them, build
+        // a map with a fixed number of comparisons per key at every size; inserting them one by
+        // one takes about log2 of the size per key, 16 at 2^16.
+        let sizes: &[i32] = if cfg!(miri) {
+            &[1 << 4, 1 << 6]
+        } else {
+            &[1 << 12, 1 << 14, 1 << 16]
+        };
+        for &k in sizes {
+            let entries: Vec<(i64, i64)> = (0..k)
+                .map(|i| (text_word(format!("key{i:08}")), n(i64::from(i))))
+                .collect();
+            let before = KEY_COMPARISONS.with(std::cell::Cell::get);
+            let map = map_from_sorted(entries);
+            let compared = KEY_COMPARISONS.with(std::cell::Cell::get) - before;
+            assert!(
+                compared <= 3 * k as usize,
+                "{k} keys: {compared} comparisons"
+            );
+            assert_eq!(map_len(map), n(i64::from(k)));
+            release(map);
+        }
+    }
+
+    #[test]
+    fn a_map_from_entries_out_of_order_or_repeated_keeps_the_last() {
+        let (a, b) = (text_word("a".to_owned()), text_word("b".to_owned()));
+        let (a2, b2) = (text_word("a".to_owned()), text_word("b".to_owned()));
+        let map = map_from_sorted(vec![(b, n(1)), (a, n(2)), (a2, n(3)), (b2, n(4))]);
+        assert_eq!(map_len(map), n(2));
+        let probe = text_word("a".to_owned());
+        let got = map_get(map, probe);
+        assert_eq!(field(got, 0), n(3));
+        release(got);
+        release(probe);
+        release(map);
+    }
+
+    /// A list nested `depth` deep, each level one fresh list holding the next: no sharing, so a
+    /// comparison with another such chain meets `depth` pairs of values with parts.
+    fn chain(depth: usize) -> i64 {
+        let mut value = list();
+        for _ in 0..depth {
+            let outer = list();
+            push(outer, value);
+            release(value);
+            value = outer;
+        }
+        value
+    }
+
+    #[test]
+    fn two_fresh_chains_compare_in_one_step_per_level_at_every_depth() {
+        // #926: structural equality on a chain is linear in its depth, one step per pair of
+        // values with parts, whatever the depth, under Miri at depths 64 and 256.
+        let depths: &[usize] = if cfg!(miri) {
+            &[64, 256]
+        } else {
+            &[1_000, 10_000, 100_000]
+        };
+        for &depth in depths {
+            let (a, b) = (chain(depth), chain(depth));
+            let (taken, verdict) = steps(a, b);
+            assert_eq!(verdict, Some(true), "depth {depth}");
+            assert_eq!(taken, depth, "depth {depth}: {taken} steps");
+            // A chain against a copy of itself through a portable: the same count.
+            let copy = import(&export(a).unwrap()).unwrap();
+            let (taken, verdict) = steps(a, copy);
+            assert_eq!(verdict, Some(true), "depth {depth}, copy");
+            assert_eq!(taken, depth, "depth {depth}, copy: {taken} steps");
+            release(copy);
+            release(a);
+            release(b);
+        }
+    }
+
+    #[test]
+    #[ignore = "timing: run in a quiet window (#926), with `--release` for the native figure"]
+    fn two_fresh_chains_compare_in_time_linear_in_their_depth() {
+        // #926: the time of `equal` on fresh chains of 10^3, 10^4 and 10^5 levels, against
+        // another fresh chain and against a copy through a portable, grows linearly: ten times
+        // the depth takes at most about ten times the time, measured as the median of three.
+        let mut per_level = Vec::new();
+        for depth in [1_000usize, 10_000, 100_000] {
+            let (a, b) = (chain(depth), chain(depth));
+            let copy = import(&export(a).unwrap()).unwrap();
+            let mut fresh = Vec::new();
+            let mut copied = Vec::new();
+            for _ in 0..3 {
+                let started = std::time::Instant::now();
+                assert_eq!(equal_words(a, b, usize::MAX), Some(true));
+                fresh.push(started.elapsed().as_secs_f64());
+                let started = std::time::Instant::now();
+                assert_eq!(equal_words(a, copy, usize::MAX), Some(true));
+                copied.push(started.elapsed().as_secs_f64());
+            }
+            fresh.sort_by(f64::total_cmp);
+            copied.sort_by(f64::total_cmp);
+            let (f, c) = (fresh[1], copied[1]);
+            eprintln!("depth {depth}: fresh {f:.6}s, copy {c:.6}s");
+            per_level.push((f / depth as f64, c / depth as f64));
+            release(copy);
+            release(a);
+            release(b);
+        }
+        // The cost per level at 10^5 is at most four times that at 10^3: no superlinear term.
+        let (first, last) = (per_level[0], per_level[2]);
+        assert!(
+            last.0 <= first.0 * 4.0 + 1e-7,
+            "fresh: {first:?} then {last:?}"
+        );
+        assert!(
+            last.1 <= first.1 * 4.0 + 1e-7,
+            "copy: {first:?} then {last:?}"
+        );
     }
 }

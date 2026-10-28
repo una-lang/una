@@ -1,0 +1,28 @@
+ita case
+  version 0.1.0
+  edition 0.4
+
+run
+  grants
+    serve "http://127.0.0.1:8080"
+      hosts "shop.example", "*.shop.example", "api_v2.shop.example."
+    serve "http://127.0.0.1:8081"
+      hosts "127.0.0.1"
+    serve "http://127.0.0.1:8082"
+      hosts "a/b"
+    serve "http://127.0.0.1:8083"
+      hosts "*.*.example"
+    serve "http://127.0.0.1:8084"
+      hosts "shop.example", "Shop.Example."
+    serve "http://127.0.0.1:8085"
+      hosts "*", "shop.example"
+    serve "http://127.0.0.1:8086"
+      hosts "shop.example:80"
+    serve "http://127.0.0.1:8087"
+      hosts ""
+    serve "http://127.0.0.1:8088"
+      hosts "a,b"
+    serve "http://127.0.0.1:8089"
+      hosts "[::1]"
+    serve "http://127.0.0.1:8090"
+      hosts "shop..example"

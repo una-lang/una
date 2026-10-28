@@ -442,7 +442,12 @@ fn withhold_dependents(
     let clean: Vec<(FileId, Vec<una_syntax::Declaration>)> = modules
         .iter()
         .filter(|id| !broken_files.contains_key(id))
-        .map(|&id| (id, una_syntax::declarations(sources.file(id).text())))
+        .map(|&id| {
+            (
+                id,
+                una_syntax::declarations_in(sources.file(id).text(), keyword_set(manifest.edition)),
+            )
+        })
         .collect();
     // A dependency's module `m` is `<local>.m` in the program, and so are the modules it
     // imports, but the standard ones (ADR 0122 rule 47).
@@ -546,10 +551,12 @@ fn check_files(
         .zip(lexed)
         .map(|(&id, lexed)| {
             let parsed = parse(&lexed, id, interner);
+            // An error the parser reads past keeps its declaration (ADR 0105 rule 3).
             let errors = lexed
                 .errors
                 .iter()
                 .chain(&parsed.errors)
+                .filter(|error| !error.recovered)
                 .map(|error| error.span.start)
                 .collect();
             let syntax: Vec<Diagnostic> = lexed
@@ -569,7 +576,7 @@ fn check_files(
             (None, None)
         } else {
             let text = sources.file(id).text();
-            let broken = recovery::BrokenFile::new(text, &errors);
+            let broken = recovery::BrokenFile::new(text, &errors, keywords);
             tree.decls.retain(|decl| !broken.in_broken(decl.span.start));
             tree.imports
                 .retain(|import| !broken.in_broken(import.span.start));

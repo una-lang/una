@@ -585,6 +585,67 @@ fn every_una_toml_check_has_its_ita_una_twin() {
     }
 }
 
+/// `serve` grants (`spec/31 §2`): read into their text spec, every problem U7008 at its item
+/// line or at the grant, and the later grant of an overlap refused.
+#[test]
+fn serve_grants_are_checked_item_by_item() {
+    let text = format!(
+        "{HEAD}\nrun\n  grants\n    serve \"https://[::1]:8443\"\n      certificate \"c.pem\"\n      key \"k.pem\"\n      body at most 64 KiB\n    serve \"http://127.0.0.1:8080\"\n"
+    );
+    let (manifest, errors) = parse_ita_manifest(&text);
+    assert_eq!(render(&errors), Vec::<String>::new());
+    let grants: Vec<&str> = manifest.grants.iter().map(|g| g.value.as_str()).collect();
+    assert_eq!(
+        grants,
+        [
+            "serve:https://[::1]:8443;certificate=c.pem;key=k.pem;body=64",
+            "serve:http://127.0.0.1:8080"
+        ]
+    );
+    let bad = format!(
+        "{HEAD}\nrun\n  grants\n    serve \"http://127.0.0.1:8080\"\n      body at most 2000000 KiB\n      tls12\n    serve \"https://127.0.0.1:8081\"\n      key \"k.pem\"\n    serve \"http://0.0.0.0:8080\"\n    serve \"http://127.0.0.1:8082\"\n    serve \"http://127.0.0.1:8082\"\n"
+    );
+    let (manifest, errors) = parse_ita_manifest(&bad);
+    let located: Vec<(String, usize)> = errors
+        .iter()
+        .map(|e| {
+            (
+                e.message.clone(),
+                bad[..e.range.start].matches('\n').count() + 1,
+            )
+        })
+        .collect();
+    assert_eq!(
+        located,
+        [
+            (
+                "`body` is a number of KiB from 0 to 1048576, not `2000000`".to_owned(),
+                8
+            ),
+            (
+                "`tls12` is for https grants only; this grant is http".to_owned(),
+                9
+            ),
+            ("an https grant names its `certificate` file".to_owned(), 10),
+            (
+                "`127.0.0.1:8082` overlaps an earlier serve grant: each address and port is granted once, and a wildcard shares its port with no grant of its family".to_owned(),
+                14
+            ),
+        ]
+    );
+    assert!(errors.iter().all(|e| e.code == Code::U7008));
+    // `0.0.0.0:8080` would overlap the first grant, which is refused, so it is kept.
+    let kept: Vec<&str> = manifest.grants.iter().map(|g| g.value.as_str()).collect();
+    assert_eq!(
+        kept,
+        [
+            "serve:http://0.0.0.0:8080",
+            "serve:http://127.0.0.1:8082",
+            "serve:http://127.0.0.1:8082"
+        ]
+    );
+}
+
 #[test]
 fn a_systems_package_declares_its_budget_in_ita_una() {
     // ADR 0109 rules 1 and 4 under ADR 0122: `profile systems` is accepted, `max_memory` is

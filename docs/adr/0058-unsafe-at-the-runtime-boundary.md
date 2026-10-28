@@ -80,3 +80,26 @@ On `main` at the time of this amendment the count is 363. This amendment does no
 The amendment of ADRs 0116 and 0117 says that `una-sys` holds only the signal handlers and the coroutine stacks, and the amendment of 2026-10-25 lists the bindings it may hold. It now holds: that base code; and behind the feature `solver`, which only `una-cli` enables (and `una-z3`, through which `una-cli` gets it), the solver child's confinement, limits, spawn attributes and footprint reading of ADR 0124 rules 5 to 7, at most 600 lines, counted as the amendment of 2026-10-25 counts, over the files that the feature gates. A third place may hold `unsafe` code: the crate `una-z3`, holding only the declaration of Z3's front-end entry, the construction of its arguments and the call, at most 150 lines under `crates/una-z3/src/`, depending only on `una-sys`. `ffi.rs` also holds the RELRO protection at start-up (ADR 0124 rule 25) from the Linux step of that record. Each is under rule 1's comments and lint settings, and every change gets a security review.
 
 ADR 0124 rule 35 states the base code's limit as 800 lines, from the count at its writing; the amendment of 2026-10-25, later and specific to the count, governs the base code's cap, and this amendment does not change it. The first slice of ADR 0124 step 1 adds `solver.rs` with the confinement record alone, with no `unsafe` code.
+
+## Amendment (2026-10-28): the exact count
+
+The amendment of 2026-10-25 kept the cap of 1,200 lines of the ADR 0116 amendment of 2026-10-19 until a later amendment set it at the exact count of the merged slices, with at most 5% of headroom. This is that amendment. The base code of `una-sys` (every Rust file under `crates/una-sys/src/` but those of the feature `solver`, which the amendment of 2026-10-27 caps on its own at 600 lines) holds, on `main` with ADR 0123 S3 (#1005) merged:
+
+| Module | Lines |
+| --- | --- |
+| `attention.rs` | 115 |
+| `coroutine.rs` | 666 |
+| `io.rs` | 39 |
+| `lib.rs` | 27 |
+| `poll.rs` | 174 |
+| `server.rs` | 165 |
+| `signals.rs` | 333 |
+| Total | 1,519 |
+
+counted as the amendment of 2026-10-25 counts, over those files:
+
+```sh
+find crates/una-sys/src -name '*.rs' -not -path 'crates/una-sys/src/solver/*' -exec cat {} + | wc -l
+```
+
+The cap of the base code becomes **1,594 lines**: 1,519 plus at most 5%, rounded down. It replaces the 1,200 lines of the ADR 0116 amendment of 2026-10-19, which the base code had already passed, and every earlier number for the base code. The 600 lines of `solver` and the 150 lines of `una-z3` stand as written. A change that would take the base code past 1,594 lines needs a new amendment, with its line count, before it merges; each pull request that changes the crate states the count in its description, as before.

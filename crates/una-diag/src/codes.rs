@@ -82,7 +82,7 @@ pub enum Code {
     U0101,
     /// Clause out of order or repeated.
     U0102,
-    /// Reserved keyword not available in v0.1.
+    /// Reserved keyword not available in the package's edition.
     U0103,
     /// Unresolved name.
     U1001,
@@ -229,6 +229,9 @@ pub enum Code {
     U3020,
     /// A call that grants a boundary module more than its ceiling (edition 0.3, ADR 0093).
     U3021,
+    /// A labeled operation passed to code that reads its answers lower (edition 0.3, ADR
+    /// 0094).
+    U3022,
     /// A locked function's header grants more than its lock.
     U3023,
     /// A call into a boundary module from which a release is reachable (edition 0.3, ADR 0093).
@@ -312,7 +315,7 @@ pub enum Code {
 
 impl Code {
     /// Every registered code, in the order of `spec/13 §4`.
-    pub const ALL: [Code; 118] = [
+    pub const ALL: [Code; 119] = [
         Code::U0001,
         Code::U0002,
         Code::U0003,
@@ -393,6 +396,7 @@ impl Code {
         Code::U3019,
         Code::U3020,
         Code::U3021,
+        Code::U3022,
         Code::U3023,
         Code::U3024,
         Code::U3025,
@@ -498,7 +502,7 @@ impl Code {
             Code::U0103 => &Entry {
                 code: "U0103",
                 domain: Domain::Syntax,
-                meaning: "Reserved keyword not available in v0.1",
+                meaning: "Reserved keyword not available in the package's edition",
             },
             Code::U1001 => &Entry {
                 code: "U1001",
@@ -849,6 +853,11 @@ impl Code {
                 code: "U3021",
                 domain: Domain::Authority,
                 meaning: "Call that grants a boundary module more than its ceiling",
+            },
+            Code::U3022 => &Entry {
+                code: "U3022",
+                domain: Domain::Authority,
+                meaning: "Labeled operation passed to code that reads it lower",
             },
             Code::U3023 => &Entry {
                 code: "U3023",

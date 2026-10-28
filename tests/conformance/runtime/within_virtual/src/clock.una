@@ -97,44 +97,44 @@ pub strict(key: Text) -> Int
     if error pass
   value
 
-example "a deadline met keeps the value"
+test "a deadline met keeps the value"
   given @store = slow_store(delay: 50 * millisecond)
   do bounded("k")
   expect result == 7
 
-example "a deadline missed gives the fallback"
+test "a deadline missed gives the fallback"
   given @store = slow_store(delay: 150 * millisecond)
   do bounded("k")
   expect result == 0
 
-example "an expression that returns at its deadline has missed it"
+test "an expression that returns at its deadline has missed it"
   given @store = slow_store(delay: 100 * millisecond)
   do bounded("k")
   expect result == 0
 
-example "the deadline cuts the expression at its next check point"
+test "the deadline cuts the expression at its next check point"
   given @store = slow_store(delay: 150 * millisecond)
   given @log = memory_log()
   do bounded_logged("k")
   expect result == -1
   expect not performed @log.write
 
-example "nested, only the outer deadline reports"
+test "nested, only the outer deadline reports"
   given @store = slow_store(delay: 150 * millisecond)
   do outer("k")
   expect result == -2
 
-example "tasks inside a within are cancelled with it"
+test "tasks inside a within are cancelled with it"
   given @store = slow_store(delay: 30 * millisecond)
   do bounded_pair("k")
   expect result == -3
 
-example "if error pass passes the time-out as the function's TimedOut"
+test "if error pass passes the time-out as the function's TimedOut"
   given @store = slow_store(delay: 150 * millisecond)
   do strict("k")
   expect fails TimedOut
 
-example "in time, the value passes"
+test "in time, the value passes"
   given @store = slow_store(delay: 10 * millisecond)
   do strict("k")
   expect result == 7
@@ -161,7 +161,7 @@ pub bounded_polling(key: Text) -> Int
     if error use -4
   value
 
-example "a for ever inside a within runs its on stop when the deadline cuts it"
+test "a for ever inside a within runs its on stop when the deadline cuts it"
   given @store = slow_store(delay: 30 * millisecond)
   given @log = memory_log()
   do bounded_polling("k")

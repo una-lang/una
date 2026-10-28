@@ -1,0 +1,7 @@
+-- test: a serve grant in una.toml is U7002 in edition 0.4 too, beside the edition itself, since edition 0.4 reads its grants from ita.una (spec/31 §2, spec/30 §2)
+-- spec: spec/31 §2
+-- expect: error U7002 at una.toml:4:11
+-- expect: error U7002 at una.toml:7:11
+module main
+
+pub small(n: I32) -> I32 = n

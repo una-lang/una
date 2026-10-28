@@ -58,12 +58,12 @@ handler catalog() for Catalog
   op price(sku) = 0
   op set_price(sku, cents) = unit
 
-example "dry run has no writes"
+test "dry run has no writes"
   given @catalog = catalog()
   do update(1, cents: 10, dry_run: true)
   expect not performed @catalog.set_price
 
-example "live writes"
+test "live writes"
   given @catalog = catalog()
   do update(1, cents: 10, dry_run: false)
   expect performed @catalog.set_price

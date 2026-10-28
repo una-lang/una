@@ -92,6 +92,8 @@ Ranked by the worst class, then by what guards it today:
 
 The host operations (`Clock`, `Env`, `Files`, `Keys`, `Http`) have two implementations, one in the interpreter (`crates/una-interp/src/host.rs`) and one in the runtime (`crates/una-rt/src/host.rs`). `Http` uses `una-http` (about 1,100 lines) over `rustls` with the `ring` provider and `webpki-roots`, which are trusted (`docs/compiler/architecture.md`).
 
+(Edition 0.4 preview, ADR 0123 step 3.) Before `main`, a run with `serve:` grants runs `una_http::serve::prepare` in both engines: it checks overlaps, raises the descriptor limit, opens each TLS key and certificate once and checks the open descriptor (owner, group and mode for the key), and binds one listening socket per grant through the OS bindings of `una-sys` (`server.rs`; its scope and cap are amended by a separate docs-only change). A bug there could accept a key file that others can read or write, or let another process share a listener. Nothing accepts on the listeners yet, and no TLS server is built until the decision on the provider (#1059).
+
 - **A bug can cause:** soundness through labels: a failure or an outcome that depends on internal data but is labeled public. Four advisories were of this kind (UNA-SA-003, 008, 009 and 010). Also a wrong result where the two implementations differ.
 - **Guards:**
   - the host table, which states each operation's labels and failures, and the conformance cases on it;

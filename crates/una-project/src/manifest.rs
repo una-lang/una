@@ -28,6 +28,9 @@ pub struct Manifest {
     pub entry: Option<Located>,
     /// `[run] grants`: the capabilities `una run` grants (`spec/13 §5`).
     pub grants: Vec<Located>,
+    /// Whether `una.toml` lists `[run] grants`, empty or not: a listed array is the final set
+    /// of `una check` and `una build`, so `grants = []` grants no host capability (#925).
+    pub grants_listed: bool,
     /// The `drive` section of `ita.una`, edition `0.4`: the host-driven step (ADR 0116 rule 1).
     pub drive: Option<Drive>,
     /// `[package] edition`: `0.1`, the default, or `0.2` (`spec/13 §7`, ADR 0056).
@@ -278,6 +281,26 @@ pub enum Edition {
 impl Edition {
     /// Every edition, oldest first.
     pub const ALL: [Edition; 4] = [Edition::V0_1, Edition::V0_2, Edition::V0_3, Edition::V0_4];
+
+    /// The keyword of the test declaration in this edition: `test` from edition `0.3`, and
+    /// `example` in editions `0.1` and `0.2` (`spec/08 §2`, ADR 0105). Messages and the output
+    /// of `una test` name the declaration by it.
+    pub fn test_word(self) -> &'static str {
+        if self >= Edition::V0_3 {
+            "test"
+        } else {
+            "example"
+        }
+    }
+
+    /// The plural of [`Edition::test_word`]: `tests` or `examples`.
+    pub fn tests_word(self) -> &'static str {
+        if self >= Edition::V0_3 {
+            "tests"
+        } else {
+            "examples"
+        }
+    }
 
     /// The edition's name, as `una.toml` writes it.
     pub fn name(self) -> &'static str {
@@ -603,7 +626,18 @@ fn run(
                 }
             }
             "grants" => {
+                manifest.grants_listed = true;
                 for grant in strings("grants", value, Code::U7002, errors) {
+                    // A server exists from edition 0.4, whose grants `ita.una` holds (ADR 0123
+                    // rule 0, ADR 0122 Question 8.1): in `una.toml` it is never read.
+                    if grant.value.starts_with(una_core::http::serve::PREFIX) {
+                        errors.push(ProjectError::new(
+                            Code::U7002,
+                            grant.range,
+                            "a `serve:` grant needs edition 0.4, whose grants are written in ita.una; una.toml cannot hold one",
+                        ));
+                        continue;
+                    }
                     if is_grant(&grant.value) {
                         manifest.grants.push(grant);
                     } else {

@@ -394,6 +394,9 @@ pub struct Meta {
     /// How U3012 names the grants of the manifest: `` `[run] grants` `` in `una.toml`, and
     /// `` `run grants` `` in `ita.una`.
     pub grants_section: String,
+    /// Whether the program is of edition 0.4, whose runs may take `serve:` grants
+    /// (`spec/31 §2` rule 4).
+    pub serve: bool,
     /// Whether the program has a `for ever`, so the run takes host stops: the executable then
     /// installs the handlers of SIGINT and SIGTERM (ADR 0116 rule 18).
     pub stops: bool,
@@ -531,6 +534,7 @@ impl Meta {
             Some(section) => section.as_str()?.to_owned(),
             None => "`[run] grants`".to_owned(),
         };
+        let serve = value.get("serve").and_then(Value::as_bool).unwrap_or(false);
         let float32_probes = value
             .get("float32_probes")
             .and_then(Value::as_bool)
@@ -584,6 +588,7 @@ impl Meta {
             hashing,
             drive,
             grants_section,
+            serve,
             float32_probes,
         })
     }
@@ -1957,6 +1962,15 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
             return USAGE;
         }
     };
+    // Nothing accepts on the listeners until the serve threads of ADR 0123 step 4 take them
+    // over; they are held until the run ends.
+    let _listeners = match serve(&grants) {
+        Ok(prepared) => prepared,
+        Err(message) => {
+            let _ = writeln!(stderr, "error: {message}");
+            return USAGE;
+        }
+    };
     let drive = meta.drive.map(|drive| Driver {
         ticks: drive.ticks,
         origin: None,
@@ -2319,13 +2333,37 @@ fn grants(meta: &Meta, options: &Options) -> Result<Vec<Grant>, String> {
         .iter()
         .chain(&options.grants)
         .map(|spec| {
-            Grant::parse(spec, Path::new("")).ok_or_else(|| {
-                format!(
-                    "`{spec}` is not a grant; grants are console, clock, env, keys:<file>, files:<path>:<access> and http:<origin>[:<methods>]"
-                )
-            })
+            // A server exists from edition 0.4 (`spec/31 §2` rule 4).
+            if !meta.serve && spec.starts_with(una_core::http::serve::PREFIX) {
+                return Err(format!(
+                    "`{spec}` needs a program of edition 0.4; this executable is of an earlier edition"
+                ));
+            }
+            Grant::parse(spec, Path::new("")).ok_or_else(|| una_interp::invalid_grant(spec))
         })
         .collect()
+}
+
+/// The `serve:` grants of the run, before `main` (`spec/31 §2` rule 7), as `una run` prepares
+/// them: the descriptor limit, the TLS files checked on their open descriptors, and one
+/// listener per grant, held until the run ends.
+fn serve(grants: &[Grant]) -> Result<una_http::serve::Prepared, String> {
+    let inputs: Vec<una_http::serve::ServeInput<'_>> = grants
+        .iter()
+        .filter_map(|grant| match grant {
+            Grant::Serve {
+                grant,
+                certificate,
+                key,
+            } => Some(una_http::serve::ServeInput {
+                grant,
+                certificate: certificate.as_deref(),
+                key: key.as_deref(),
+            }),
+            _ => None,
+        })
+        .collect();
+    una_http::serve::prepare(&inputs)
 }
 
 /// The `Http` grants among `grants`, in order: what the run's governor of limits holds (ADR 0117
@@ -2933,6 +2971,33 @@ fn abort_run(state: State, code: Code, location: Location, message: String) {
             "una-rt test: peak {} ceiling {}",
             crate::peak(),
             mem_ceiling(state.baseline, state.max_memory)
+        );
+    }
+    // A debug build run with `UNA_DEBUG_CHARGE` set prints what the run charged at this stop,
+    // term by term, so a stop that depends on load can be traced to its term (#1139): the heap
+    // the process holds and its peak, the baseline before `main`, the stacks the live tasks
+    // used, the reservations of copies in flight, the thread stacks counted for the count
+    // limit, and what this thread allocated.
+    // The executable is the process, as for `env_var` in `host.rs`: the variable is read only
+    // in a debug build, never in a released runtime.
+    #[cfg(debug_assertions)]
+    #[allow(clippy::disallowed_methods)]
+    let trace = std::env::var_os("UNA_DEBUG_CHARGE").is_some();
+    #[cfg(debug_assertions)]
+    if trace {
+        let _ = writeln!(
+            io::stderr(),
+            "una-rt charge: held {} peak {} baseline {} stack_charge {} reserved {} thread_stacks {} thread_allocated {} ceiling {} budget_mib {} on {}",
+            crate::held(),
+            crate::peak(),
+            state.baseline,
+            STACK_CHARGE.load(Ordering::Relaxed),
+            RESERVED.load(Ordering::SeqCst),
+            STACKS.load(Ordering::SeqCst),
+            crate::ffi::thread_allocated(),
+            mem_ceiling(state.baseline, state.max_memory),
+            state.max_memory,
+            std::thread::current().name().unwrap_or("?")
         );
     }
     let mut code = finish(state).max(least);

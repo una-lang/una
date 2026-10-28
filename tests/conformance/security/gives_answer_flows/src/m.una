@@ -1,0 +1,13 @@
+-- test: the answer of a labeled operation carries the label, so returning it as public is U4001 (ADR 0094 rule 2)
+-- spec: spec/07 §3
+-- expect: error U4001 at src/m.una:13:3
+module m
+
+pub capability Files
+  op owner(file: Text) -> Text
+  op role(file: Text) -> Text
+
+pub refusal(file: Text) -> Text
+  uses @service_files: Files[owner gives internal[Service]]
+=
+  @service_files.owner(file)

@@ -526,7 +526,10 @@ impl<'p, 'a> Checker<'p, 'a> {
                         Some(&first) => self.duplicate(
                             example.name.span,
                             first,
-                            format!("example \"{text}\" is defined twice in this module"),
+                            format!(
+                                "{} \"{text}\" is defined twice in this module",
+                                self.package.settings.edition.test_word()
+                            ),
                         ),
                         None => {
                             examples.insert(text, example.name.span);

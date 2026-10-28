@@ -1,0 +1,11 @@
+-- test: in edition 0.3 the body of an `example` declaration is checked as a test's, so an error in it is reported beside the U0103 and no U0101 is (ADR 0105 rule 3, recovery)
+-- spec: spec/01 §5
+-- expect: error U0103 at src/m.una:9:1
+-- expect: error U1001 at src/m.una:11:20
+module m
+
+pub double(x: Int) -> Int = x * 2
+
+example "doubling works"
+  do double(2)
+  expect result == nothing_here
