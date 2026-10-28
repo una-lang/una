@@ -4488,14 +4488,14 @@ mod tests {
         };
         for &depth in depths {
             let (a, b) = (chain(depth), chain(depth));
-            let (steps, verdict) = steps(a, b);
+            let (taken, verdict) = steps(a, b);
             assert_eq!(verdict, Some(true), "depth {depth}");
-            assert_eq!(steps, depth, "depth {depth}: {steps} steps");
+            assert_eq!(taken, depth, "depth {depth}: {taken} steps");
             // A chain against a copy of itself through a portable: the same count.
             let copy = import(&export(a).unwrap()).unwrap();
-            let (steps, verdict) = steps(a, copy);
+            let (taken, verdict) = steps(a, copy);
             assert_eq!(verdict, Some(true), "depth {depth}, copy");
-            assert_eq!(steps, depth, "depth {depth}, copy: {steps} steps");
+            assert_eq!(taken, depth, "depth {depth}, copy: {taken} steps");
             release(copy);
             release(a);
             release(b);
