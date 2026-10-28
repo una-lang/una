@@ -106,11 +106,11 @@ pub kind ValidationError = | NonPositive
 
 pub validate(value: internal Int) -> internal Result[internal Positive, ValidationError] = if value > 0 then Ok(value) else Err(NonPositive)
 
-example "valid"
+test "valid"
   do validate(3)
   expect result is Ok
 
-example "invalid"
+test "invalid"
   do validate(0)
   expect result is Err
 ```

@@ -393,20 +393,31 @@ impl Dumper<'_> {
         if cap_type.ops.is_empty() {
             name
         } else {
-            // An operation's condition (ADR 0092) is shown as its source text.
+            // An operation's label (ADR 0094) and condition (ADR 0092) are shown as their
+            // source text.
             let ops: Vec<String> = cap_type
                 .ops
                 .iter()
                 .enumerate()
-                .map(|(index, op)| match cap_type.conditions.get(index) {
-                    Some(Some(condition)) => format!(
-                        "{} where {}",
-                        self.name(op),
-                        self.text
-                            .get(condition.span.start..condition.span.end)
-                            .unwrap_or_default()
-                    ),
-                    _ => self.name(op),
+                .map(|(index, op)| {
+                    let mut text = self.name(op);
+                    if let Some(Some(label)) = cap_type.gives.get(index) {
+                        text.push_str(" gives ");
+                        text.push_str(
+                            self.text
+                                .get(label.span.start..label.span.end)
+                                .unwrap_or_default(),
+                        );
+                    }
+                    if let Some(Some(condition)) = cap_type.conditions.get(index) {
+                        text.push_str(" where ");
+                        text.push_str(
+                            self.text
+                                .get(condition.span.start..condition.span.end)
+                                .unwrap_or_default(),
+                        );
+                    }
+                    text
                 })
                 .collect();
             format!("{name}[{}]", ops.join(", "))

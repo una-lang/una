@@ -392,6 +392,19 @@ pub(crate) struct FnUse {
     pub(crate) capability: Option<CapId>,
     /// The operations it needs, in the capability's declaration order.
     pub(crate) ops: Vec<String>,
+    /// The label each operation gives through this binding, `op gives l` (ADR 0094 rule 1),
+    /// in the capability's declaration order; an operation absent here gives `public`. A
+    /// function type never labels an operation, so a value's `uses` clear it
+    /// (`function_value`), and a lambda's are seeded from the body that captures them.
+    pub(crate) gives: Vec<(String, Label)>,
+}
+
+/// The label `op` gives in `gives`, `public` when it is not listed (ADR 0094 rule 2).
+pub(crate) fn given(gives: &[(String, Label)], op: &str) -> Label {
+    gives
+        .iter()
+        .find(|(name, _)| name == op)
+        .map_or_else(Label::public, |(_, label)| label.clone())
 }
 
 /// A refinement contributed by an alias kind, with the alias's type arguments, or by range

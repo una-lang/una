@@ -137,6 +137,19 @@ pub(crate) fn resolve<'a>(env: &mut Env<'a>, locks: &'a [Lock], report: &mut Rep
                 );
                 continue;
             }
+            // A lock that labels an operation (ADR 0094 with ADR 0092 rule 8) is refused
+            // rather than read as a lock that checks nothing: locked labels land with the
+            // second part of #566.
+            if parsed.cap_type.gives.iter().any(Option::is_some) {
+                report.error(
+                    code,
+                    clause.span,
+                    format!(
+                        "the lock of `{name}` writes `gives` on an operation, which a lock cannot carry in this version"
+                    ),
+                );
+                continue;
+            }
             entries.push(Entry {
                 clause: parsed,
                 binding,

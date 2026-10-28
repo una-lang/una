@@ -5,7 +5,7 @@ module before
 
 pub one() -> Int = 1
 
-example "a stop schedule"
+test "a stop schedule"
   do one()
   expect result == 1
   stop after 1

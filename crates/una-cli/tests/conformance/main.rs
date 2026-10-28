@@ -131,7 +131,13 @@ fn test_case(path: &Path) -> (TestResult, BTreeSet<ExpectedError>) {
         path.display().to_string(),
     ];
     let document: Value = serde_json::from_str(&una(&args)).unwrap();
-    let examples = document["examples"].as_array().cloned().unwrap_or_default();
+    // `una.test/2`, from edition 0.3, lists the runs under `tests` (ADR 0105 rule 6).
+    let runs = if document["schema"] == "una.test/2" {
+        "tests"
+    } else {
+        "examples"
+    };
+    let examples = document[runs].as_array().cloned().unwrap_or_default();
     let failed = examples
         .iter()
         .filter(|example| example["outcome"] == "fail")

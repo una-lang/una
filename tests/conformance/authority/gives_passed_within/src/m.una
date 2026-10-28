@@ -1,0 +1,26 @@
+-- test: a labeled binding passes to a callee that reads the operation at the label or above, by name, by rebinding and by a narrowed rebinding (ADR 0094 rule 3)
+-- spec: spec/05 §4
+-- expect: ok
+module m
+
+pub capability Files
+  op owner(file: Text) -> Text
+  op role(file: Text) -> Text
+
+owner_seen(file: Text) -> internal[Service] Text
+  uses @files: Files[owner gives internal[Service]]
+=
+  @files.owner(file)
+
+owner_kept(file: Text) -> internal[Service] Text
+  uses @service_files: Files[owner gives internal[Service]]
+=
+  @service_files.owner(file)
+
+pub refusal(file: Text) -> internal[Service] Text
+  uses @service_files: Files[owner gives internal[Service], role]
+=
+  let by_name = owner_kept(file)
+  let rebound = owner_seen(file) with @files = @service_files
+  let narrowed = owner_seen(file) with @files = @service_files[owner]
+  "{by_name} {rebound} {narrowed}"

@@ -1,0 +1,10 @@
+-- test: a function type's `uses` carries no operation labels, so `gives` there is U0101 (ADR 0094 rule 1)
+-- spec: spec/02 §3
+-- expect: error U0101 at src/m.una:10:56
+module m
+
+pub capability Files
+  op owner(file: Text) -> Text
+  op role(file: Text) -> Text
+
+pub apply(f: fn(Text) -> Text uses @files: Files[owner gives internal[Service]], file: Text) -> Text = f(file)

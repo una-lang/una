@@ -1,0 +1,20 @@
+-- test: a function that uses capabilities is not a value outside a direct argument, so naming one that would read a labeled operation lower is U3006 at the reference and at its use, before any U3022 (ADR 0094 rule 3, spec/05 §4)
+-- spec: spec/05 §4
+-- expect: error U3006 at src/m.una:19:11
+-- expect: error U3006 at src/m.una:20:3
+module m
+
+pub capability Files
+  op owner(file: Text) -> Text
+  op role(file: Text) -> Text
+
+owner_seen(file: Text) -> Text
+  uses @files: Files[owner]
+=
+  @files.owner(file)
+
+pub pick() -> fn(Text) -> Text uses @files: Files[owner]
+  uses @files: Files[owner gives internal[Service]]
+=
+  let f = owner_seen
+  f

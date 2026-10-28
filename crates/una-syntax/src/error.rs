@@ -15,6 +15,10 @@ pub struct SyntaxError {
     pub message: String,
     /// Repair candidates, best first.
     pub repairs: Vec<SyntaxRepair>,
+    /// Whether the construct is read on despite the error, so that recovery keeps its
+    /// declaration in the tree and the later passes check it: `example` in edition 0.3,
+    /// which the parser reads as a test's declaration (ADR 0105 rule 3).
+    pub recovered: bool,
 }
 
 /// A repair candidate for a syntax error. Syntax repairs use no escape hatch.
@@ -34,6 +38,7 @@ impl SyntaxError {
             span,
             message: message.into(),
             repairs: Vec::new(),
+            recovered: false,
         }
     }
 

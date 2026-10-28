@@ -62,6 +62,7 @@ pub(crate) fn parse_plain(lexed: &Lexed, file: FileId, interner: &Interner) -> P
         errors: Vec::new(),
         v0_2: lexed.keywords >= KeywordSet::V0_2,
         v0_3: lexed.keywords >= KeywordSet::V0_3,
+        keywords: lexed.keywords,
         v0_4: lexed.keywords >= KeywordSet::V0_4,
         in_body: false,
         from_label: lexed.from_label,
@@ -124,6 +125,7 @@ pub fn parse_uses_clause(
         errors: Vec::new(),
         v0_2: true,
         v0_3: true,
+        keywords: KeywordSet::V0_3,
         v0_4: true,
         in_body: false,
         from_label: None,
@@ -222,6 +224,8 @@ struct Parser<'a> {
     v0_2: bool,
     /// Whether the constructs of edition 0.3 parse (`spec/13 §7`).
     v0_3: bool,
+    /// The keyword set of the package's edition, for the declaration starts.
+    keywords: KeywordSet,
     /// Whether the constructs of edition 0.4 parse (`spec/26 §1`).
     v0_4: bool,
     /// Whether a function body or a handler operation body is being parsed, where a
@@ -625,7 +629,7 @@ impl<'a> Parser<'a> {
     /// The keywords that cannot stand in a function's body, clauses or types, so that within a
     /// binding's scope every token of one of them is a use of the binding: a binding named with
     /// one is renamed by an exact edit (ADR 0096, amendment of 2026-10-15).
-    const DECLARATION_KEYWORDS: [&'static str; 19] = [
+    const DECLARATION_KEYWORDS: [&'static str; 20] = [
         "accepts",
         "capability",
         "do",
@@ -644,8 +648,15 @@ impl<'a> Parser<'a> {
         "pub",
         "reflect",
         "requirement",
+        "test",
         "trusted",
     ];
+
+    /// The word of the test declaration in the package's edition: `test` from edition 0.3,
+    /// `example` before (ADR 0105), for the messages that name it.
+    fn test_word(&self) -> &'static str {
+        if self.v0_3 { "test" } else { "example" }
+    }
 
     /// A lower-case name. A word reserved for a later version is read as a name; the lexer has
     /// reported its U0103 (approved M1 plan, recovery rules).
@@ -661,12 +672,27 @@ impl<'a> Parser<'a> {
                 // #743: a reserved keyword where a module path segment or an operation is named
                 // says what the rule is, with a name to use instead. Renaming one changes other
                 // files or declarations (a module's file and imports, an operation's every use),
-                // so the repair is advice (ADR 0096 rule 2(a)).
+                // so the repair is advice (ADR 0096 rule 2(a)). `test`, the keyword of edition
+                // 0.3, says the same where a function, a field, a handler or a predicate is
+                // named (ADR 0105 rule 4): renaming those reaches every caller, constructor or
+                // import.
+                let module_path = matches!(expected, "a module path" | "a module path segment")
+                    && *keyword == Keyword::Test;
                 let role = match expected {
                     "a module path" | "a module path segment" => {
                         Some(("a module path segment", "module"))
                     }
                     "an operation name" => Some(("an operation name", "op")),
+                    "a function name" if *keyword == Keyword::Test => {
+                        Some(("a function name", "fn"))
+                    }
+                    "a field name" if *keyword == Keyword::Test => Some(("a field name", "field")),
+                    "a handler name" if *keyword == Keyword::Test => {
+                        Some(("a handler name", "handler"))
+                    }
+                    "a predicate name" if *keyword == Keyword::Test => {
+                        Some(("a predicate name", "predicate"))
+                    }
                     _ => None,
                 };
                 match role {
@@ -677,8 +703,15 @@ impl<'a> Parser<'a> {
                             self.span(),
                             format!("`{word}` is a reserved keyword, so it cannot be {role}"),
                         );
+                        let description = if module_path {
+                            format!(
+                                "choose another name, such as `{fresh}`, and rename the file or directory to match"
+                            )
+                        } else {
+                            format!("choose another name, such as `{fresh}`")
+                        };
                         error.repairs.push(SyntaxRepair {
-                            description: format!("choose another name, such as `{fresh}`"),
+                            description,
                             edit: None,
                         });
                         Err(self.report_error(error))
@@ -1063,14 +1096,16 @@ impl<'a> Parser<'a> {
 
     fn at_declaration_start(&self) -> bool {
         match self.peek() {
-            TokenKind::Keyword(keyword) => starts_declaration(keyword.as_str(), None),
+            TokenKind::Keyword(keyword) => {
+                starts_declaration(keyword.as_str(), None, self.keywords)
+            }
             TokenKind::LowerIdent(name) | TokenKind::Reserved(name) => {
                 let next = match self.peek_at(1) {
                     TokenKind::LParen => Some('('),
                     TokenKind::LBracket => Some('['),
                     _ => None,
                 };
-                starts_declaration(self.interner.resolve(*name), next)
+                starts_declaration(self.interner.resolve(*name), next, self.keywords)
             }
             _ => false,
         }
@@ -1217,6 +1252,20 @@ impl<'a> Parser<'a> {
             TokenKind::Keyword(Keyword::Policy) => self.policy_decl(public)?,
             TokenKind::Keyword(Keyword::Requirement) if !public => self.requirement_decl()?,
             TokenKind::Keyword(Keyword::Example) if !public => self.example_decl()?,
+            // Edition 0.3 writes the test declaration `test` (ADR 0105 rule 1); `example` there
+            // has its U0103 from the lexer and is read the same way (rule 3). A `test` followed
+            // by `(` or `[` is a function named with the keyword (rule 4).
+            TokenKind::Keyword(Keyword::Test)
+                if !public
+                    && !matches!(self.peek_at(1), TokenKind::LParen | TokenKind::LBracket) =>
+            {
+                self.example_decl()?
+            }
+            TokenKind::Keyword(Keyword::Test)
+                if matches!(self.peek_at(1), TokenKind::LParen | TokenKind::LBracket) =>
+            {
+                self.function_decl(public)?
+            }
             // ADR 0104 rule 1: `measure` is the keyword only at a declaration's start, before
             // an upper identifier, in edition 0.3; `measure(x)` stays a function.
             TokenKind::LowerIdent(_)
@@ -1592,7 +1641,7 @@ impl<'a> Parser<'a> {
         let start = self.advance();
         let cap = self.cap_name()?;
         self.expect(&TokenKind::Colon, "`:` and the capability type")?;
-        let cap_type = self.cap_type(conditions && self.v0_3)?;
+        let cap_type = self.cap_type(conditions)?;
         Ok(UsesClause {
             cap,
             cap_type,
@@ -1616,14 +1665,45 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn cap_type(&mut self, conditions: bool) -> Parse<CapType> {
+    /// `header` says whether the clause is a function's or a handler's header's, which may
+    /// condition and label its operations in edition 0.3; a function type's never does.
+    fn cap_type(&mut self, header: bool) -> Parse<CapType> {
+        let conditions = header && self.v0_3;
         let start = self.span();
         let name = self.upper_name("a capability name")?;
         let mut ops = Vec::new();
         let mut written = Vec::new();
+        let mut gives = Vec::new();
         if self.eat(&TokenKind::LBracket) {
             loop {
                 ops.push(self.lower_name("an operation name")?);
+                // ADR 0094 rule 1: `gives` and a label, before the condition, in the `uses` of
+                // a function's or a handler's header in edition 0.3. The word is a contextual
+                // keyword here only (rule 6): before edition 0.3 it is U0103, and in a function
+                // type, which carries no operation labels, U0101.
+                gives.push(if self.at_word("gives") {
+                    let span = self.span();
+                    if !header {
+                        return self.fail(
+                            span,
+                            "`gives` is not allowed in a function type's `uses`, which carries no operation labels",
+                        );
+                    }
+                    if !self.v0_3 {
+                        return Err(self.report_error(SyntaxError::new(
+                            Code::U0103,
+                            span,
+                            "`gives` is a keyword of edition 0.3 (operation labels)",
+                        )));
+                    }
+                    self.advance();
+                    let Some(level) = level(self.peek()) else {
+                        return Err(self.unexpected("a label after `gives`"));
+                    };
+                    Some(self.label(level)?)
+                } else {
+                    None
+                });
                 // An operation's condition ends at the first `,` or `]` outside brackets and
                 // parentheses, which no expression holds at its top level (ADR 0092 rule 1).
                 written.push(if conditions && self.eat_keyword(Keyword::Where) {
@@ -1636,7 +1716,7 @@ impl<'a> Parser<'a> {
                 }
             }
             let expected = if conditions {
-                "`,`, `where` or `]`"
+                "`,`, `gives`, `where` or `]`"
             } else {
                 "`,` or `]`"
             };
@@ -1646,6 +1726,7 @@ impl<'a> Parser<'a> {
             name,
             ops,
             conditions: written,
+            gives,
             span: self.since(start),
         })
     }
@@ -2100,11 +2181,18 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// `example_decl`, or `test_decl` in edition 0.3 (`spec/02 §5`, ADR 0105): the same
+    /// body under either keyword.
     fn example_decl(&mut self) -> Parse<DeclKind> {
         self.advance();
         let name = self.text_literal_only()?;
         self.expect_line_end()?;
-        self.expect(&TokenKind::Indent, "the indented example lines")?;
+        let lines = if self.v0_3 {
+            "the indented test lines"
+        } else {
+            "the indented example lines"
+        };
+        self.expect(&TokenKind::Indent, lines)?;
         let mut givens = Vec::new();
         while self.at_keyword(Keyword::Given) {
             let start = self.advance();
@@ -2129,7 +2217,11 @@ impl<'a> Parser<'a> {
                 stop_after = Some(self.stop_after()?);
                 if !self.eat(&TokenKind::Dedent) && !self.at(&TokenKind::Eof) {
                     let span = self.span();
-                    return self.fail(span, "`stop after` must be the last line of its example");
+                    let message = format!(
+                        "`stop after` must be the last line of its {}",
+                        self.test_word()
+                    );
+                    return self.fail(span, message);
                 }
                 break;
             }

@@ -76,26 +76,26 @@ pub top(n: Int) -> restricted Int
     middle(n)
     middle(n + 100)
 
-example "the first branch wins, though the second would end sooner"
+test "the first branch wins, though the second would end sooner"
   given @slow = timed(delay: 50 * millisecond, value: 1)
   given @fast = timed(delay: 10 * millisecond, value: 2)
   do race("k")
   expect result == 1
 
-example "branches that end at the same virtual time: the lowest index wins"
+test "branches that end at the same virtual time: the lowest index wins"
   given @slow = timed(delay: 10 * millisecond, value: 1)
   given @fast = timed(delay: 10 * millisecond, value: 2)
   do race("k")
   expect result == 1
 
-example "a failing branch lets the next one win"
+test "a failing branch lets the next one win"
   do fallback(-1)
   expect result == 104
 
-example "when every branch fails, the race fails with the first branch's failure"
+test "when every branch fails, the race fails with the first branch's failure"
   do both_fail(-1)
   expect fails Missing
 
-example "races nest with together three levels deep"
+test "races nest with together three levels deep"
   do top(1)
   expect result == 24
