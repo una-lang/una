@@ -129,6 +129,11 @@ fn codes(code: Code, name: &str, example: &Example, fixed: bool, flags: &[String
             dir.clone()
         }
     };
+    // U7014 comes from `una ita audit` alone (ADR 0122 rule 41), never from `una check`: its
+    // examples are audited against the registry state their text states.
+    if code == Code::U7014 {
+        return una_cli::audit_codes(&target, &mut stated_facts);
+    }
     // Runtime codes come from `una run`, whose JSON document lists them with the diagnostics
     // of the checks.
     if code.domain() == Domain::Runtime {
@@ -166,6 +171,20 @@ fn codes(code: Code, name: &str, example: &Example, fixed: bool, flags: &[String
         .iter()
         .map(|diagnostic| diagnostic.code)
         .collect()
+}
+
+/// The registry state that the text of U7014 states, as the verified client would give it: at
+/// `acme`, `acme/ledger 0.3.1` is yanked and `0.3.2` is not, neither is advised, and the owner
+/// has no pending recovery and no key change.
+fn stated_facts(
+    locked: &una_project::registry::audit::Locked,
+) -> Result<una_project::registry::audit::Facts, String> {
+    Ok(una_project::registry::audit::Facts {
+        yanked: locked.source == "acme"
+            && locked.name == "acme/ledger"
+            && locked.version.to_string() == "0.3.1",
+        ..Default::default()
+    })
 }
 
 #[test]
@@ -211,17 +230,17 @@ fn failing_examples_yield_their_code_and_fixed_examples_yield_nothing() {
     // cause, U6005, which the host's data causes and no program text does (ADR 0086), and
     // U6006, which the platform's floating-point environment causes (ADR 0114), U6009, which
     // the host's random source causes (ADR 0119 rule 9), and U7013, which only `una ita`
-    // reports when it resolves, and `una check` never does (ADR 0122 rule 25). U7010 and U7011
-    // are reachable only with a registry need, which this release refuses (U7008), so a locked
-    // registry package is U7009 too and no example can report the code alone: remove with #998,
-    // which lets registry needs load and writes their examples.
+    // reports when it resolves, and `una check` never does (ADR 0122 rule 25). U7014's
+    // examples are audited against a stated registry state. U2039 and U3032 belong to the
+    // `simd required` clause of ADR 0120 rule 58, which this release does not read yet: remove
+    // with ADR 0120 S8 (#991), which lands the clause and writes their examples.
     for code in Code::ALL {
         if code == Code::U8001
+            || code == Code::U2039
+            || code == Code::U3032
             || code == Code::U6005
             || code == Code::U6006
             || code == Code::U6009
-            || code == Code::U7010
-            || code == Code::U7011
             || code == Code::U7013
         {
             assert!(

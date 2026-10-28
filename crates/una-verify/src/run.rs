@@ -232,6 +232,27 @@ fn forgotten(items: &[(String, Collection)], kind: ObligationKind) -> String {
 pub(crate) const UNENCODABLE_LOCK: &str =
     "the locked condition is outside what the verifier encodes (`spec/12 §2`)";
 
+/// The outcome of an obligation unknown by construction, with `reason` (ADR 0109 rule 3).
+fn unknown_outcome(reason: &str) -> Outcome {
+    Outcome {
+        status: ObligationStatus::Unknown,
+        reason: Some(reason.to_owned()),
+        cached: false,
+        path: None,
+        bindings: Vec::new(),
+        division: None,
+        values_error: None,
+    }
+}
+
+/// The reason of an `overflow` obligation over the result of `callee`, a prelude function that
+/// states no bound on it, whose refutation is no run (ADR 0109 rule 3).
+pub(crate) fn unbounded_result(callee: &str) -> String {
+    format!(
+        "`{callee}` states no bound on its result, so the counterexample sets it freely; in a `systems` package, compute it with operations whose own `overflow` obligations a guard or a refinement proves, or over a fixed-width type"
+    )
+}
+
 pub(crate) const UNINTERPRETED: &str = "the refutation depends on a product, quotient or remainder of two values, which the encoding of `spec/12 §2` leaves uninterpreted";
 
 /// Whether the model agrees with real arithmetic at every application of uninterpreted
@@ -336,6 +357,27 @@ fn solve(settings: &Settings, id: &str, text: &str, values: usize) -> Result<Ans
 /// Discharges `obligations`: cached answers first, then the solver for the others, in
 /// parallel; outcomes come in the order of the obligations.
 pub fn verify(obligations: &[Obligation], settings: &Settings) -> Result<Vec<Outcome>, Problem> {
+    // An obligation unknown by construction sends no query (ADR 0109 rule 3): the others are
+    // solved, and the outcomes are put back in order.
+    if obligations.iter().any(|o| o.site.unknown.is_some()) {
+        let sent: Vec<Obligation> = obligations
+            .iter()
+            .filter(|o| o.site.unknown.is_none())
+            .cloned()
+            .collect();
+        let mut solved = verify(&sent, settings)?.into_iter();
+        return Ok(obligations
+            .iter()
+            .map(|obligation| match &obligation.site.unknown {
+                Some(reason) => unknown_outcome(reason),
+                // INVARIANT: `verify` gives one outcome per obligation sent, so one is left for
+                // each obligation that was; a missing one is unknown, never proven.
+                None => solved.next().unwrap_or_else(|| {
+                    unknown_outcome("internal error: no outcome for this obligation")
+                }),
+            })
+            .collect());
+    }
     let mut outcomes = verify_once(obligations, settings)?;
     // The obligation whose query decided each status, when it is not the obligation itself:
     // the full query of a refutation (ADR 0114 rule 8.3).
@@ -456,6 +498,12 @@ const I64_END: &str = "9223372036854775808";
 /// The reason of a refutation through the conversion of an `Int` beyond 64 bits to `F64`.
 pub(crate) const TO_F64_UNCHECKED: &str = "the refutation depends on the conversion of an `Int` outside -2^63..2^63 to `F64`, which the encoding leaves uninterpreted; give the integer a range refinement or a fixed-width type";
 
+/// Whether `name` is an uninterpreted conversion of an `Int` beyond 64 bits: `i!to_f64!Int`,
+/// or `i!to_f32!Int` (ADR 0120 V1).
+fn is_beyond_conversion(name: &str) -> bool {
+    name == "i!to_f64!Int" || name == "i!to_f32!Int"
+}
+
 /// The arguments of the uninterpreted conversion `i!to_f64!Int` in `query` and in `entry`,
 /// each once. A defined function is a macro the solver expands at each application, so a
 /// conversion in a definition is instantiated with the arguments of each application, through
@@ -480,7 +528,7 @@ fn collect_conversions(terms: &[F], query: &crate::smt::Query, depth: usize, out
         let F::App { fun, args } = term else {
             continue;
         };
-        if fun.name == "i!to_f64!Int" {
+        if is_beyond_conversion(&fun.name) {
             for argument in args {
                 if !out.contains(argument) {
                     out.push(argument.clone());
@@ -580,16 +628,21 @@ fn weight_of_terms<'q>(
                 "fp.mul" | "fp.div" | "fp.sqrt" => 4,
                 "fp.add" | "fp.sub" => 1,
                 op if op.contains("to_fp") => {
-                    // The integer of a conversion through `int2bv`, once per integer.
-                    let integer = args.iter().find_map(|a| match a {
-                        F::Op { op, args }
-                            if op.contains("int2bv") && !is_literal_conversion(a) =>
-                        {
-                            args.first().map(F::text)
+                    // The value converted: an integer through `int2bv`, its two forms once per
+                    // integer, or a value of the other float format (ADR 0120 V1); a literal
+                    // weighs nothing.
+                    let value = args.iter().skip(1).find_map(|a| match a {
+                        F::Op { op, args } if op.contains("int2bv") => {
+                            if is_literal_conversion(a) {
+                                None
+                            } else {
+                                args.first().map(F::text)
+                            }
                         }
-                        _ => None,
+                        F::Float(_) | F::Float32(_) | F::Int(_) => None,
+                        other => Some(other.text()),
                     });
-                    match integer {
+                    match value {
                         Some(text) => {
                             if converted.insert(text) {
                                 4
@@ -625,9 +678,14 @@ fn weight_of_terms<'q>(
     weight
 }
 
-/// Whether `f`, the argument of a conversion, is `((_ int2bv w) n)` of an integer literal.
+/// Whether `f`, the argument of a conversion after its rounding mode, is a literal: a float
+/// literal, or `((_ int2bv w) n)` of an integer literal.
 fn is_literal_conversion(f: &F) -> bool {
-    matches!(f, F::Op { args, .. } if matches!(args.as_slice(), [F::Int(_)]))
+    match f {
+        F::Float(_) | F::Float32(_) | F::Int(_) => true,
+        F::Op { args, .. } => matches!(args.as_slice(), [F::Int(_)]),
+        _ => false,
+    }
 }
 
 /// The answer of a float query that weighs more than the bound, which is never sent.
@@ -906,6 +964,21 @@ fn outcome(
             values_error,
         };
     }
+    // ADR 0109 rule 3: the result of a prelude call that states no bound on it, as `sum`'s,
+    // is free in the query, so a model that sets it outside the range is no run.
+    if answer.status == Status::Refuted
+        && let Some(callee) = &obligation.site.unbounded
+    {
+        return Outcome {
+            status: ObligationStatus::Unknown,
+            reason: Some(unbounded_result(callee)),
+            cached,
+            path: None,
+            bindings: Vec::new(),
+            division: None,
+            values_error,
+        };
+    }
     // ADR 0053: a refutation whose model disagrees with real arithmetic at an application of
     // uninterpreted arithmetic is no execution, so the obligation is unknown, with no
     // counterexample.
@@ -1063,10 +1136,8 @@ fn shown_bindings(shown: &[Shown], requested: &[F], answer: &Answer) -> Vec<Bind
                 match texts.iter().find(|(v, _)| *v == raw) {
                     Some((_, text)) => serde_json::Value::String(una_core::quote(text)),
                     // An `F64` shows its rendering, as a JSON string (ADR 0114 rule 8.6).
-                    None => match float_value(&raw) {
-                        Some(bits) => {
-                            serde_json::Value::String(una_core::float::render(f64::from_bits(bits)))
-                        }
+                    None => match float_rendering(&raw) {
+                        Some(text) => serde_json::Value::String(text),
                         None => serde_json::Value::String(identity(kind, &raw)),
                     },
                 }
@@ -1091,8 +1162,8 @@ fn number_or_bool(text: &str) -> serde_json::Value {
     }
     // An `F64` shows its rendering, as a JSON string: JSON has no NaN, and a JSON number
     // would be read back rounded (ADR 0114 rule 8.6).
-    if let Some(bits) = float_value(text) {
-        return serde_json::Value::String(una_core::float::render(f64::from_bits(bits)));
+    if let Some(rendered) = float_rendering(text) {
+        return serde_json::Value::String(rendered);
     }
     let digits = match text.strip_prefix("(- ").and_then(|t| t.strip_suffix(')')) {
         Some(positive) => format!("-{}", positive.trim()),
@@ -1102,6 +1173,52 @@ fn number_or_bool(text: &str) -> serde_json::Value {
         Ok(n) => serde_json::Value::from(n),
         Err(_) => serde_json::Value::String(digits),
     }
+}
+
+/// The rendering of a float value as the solver prints it, of `Float64` (`spec/29 §7`) or of
+/// `Float32` (ADR 0120 rule 5), by its width.
+pub(crate) fn float_rendering(text: &str) -> Option<String> {
+    if let Some(bits) = float_value(text) {
+        return Some(una_core::float::render(f64::from_bits(bits)));
+    }
+    float32_value(text).map(|bits| una_core::float32::render(f32::from_bits(bits)))
+}
+
+/// The bits of a value of `Float32` as the solver prints it, as [`float_value`] reads one of
+/// `Float64`.
+pub(crate) fn float32_value(text: &str) -> Option<u32> {
+    let text = text.trim();
+    match text {
+        "(_ +zero 8 24)" => return Some(0),
+        "(_ -zero 8 24)" => return Some(1 << 31),
+        "(_ +oo 8 24)" => return Some(f32::INFINITY.to_bits()),
+        "(_ -oo 8 24)" => return Some(f32::NEG_INFINITY.to_bits()),
+        "(_ NaN 8 24)" => return Some(una_core::float32::CANONICAL_NAN),
+        _ => {}
+    }
+    let (bits, width) = fp_parts(text)?;
+    (width == 32)
+        .then(|| u32::try_from(bits).ok())
+        .flatten()
+        .map(|bits| una_core::float32::to_bits(f32::from_bits(bits)))
+}
+
+/// The concatenated bits and their width of `(fp #b.. #b.. #x..)`.
+fn fp_parts(text: &str) -> Option<(u64, usize)> {
+    let inner = text.strip_prefix("(fp ")?.strip_suffix(')')?;
+    let mut bits: u64 = 0;
+    let mut width = 0;
+    for part in inner.split_whitespace() {
+        let (value, size) = if let Some(binary) = part.strip_prefix("#b") {
+            (u64::from_str_radix(binary, 2).ok()?, binary.len())
+        } else {
+            let hex = part.strip_prefix("#x")?;
+            (u64::from_str_radix(hex, 16).ok()?, hex.len() * 4)
+        };
+        bits = bits.checked_shl(u32::try_from(size).ok()?).unwrap_or(0) | value;
+        width += size;
+    }
+    Some((bits, width))
 }
 
 /// The bits of a value of `Float64` as the solver prints it: `(fp #b0 #b... #x...)`, with
@@ -1117,19 +1234,7 @@ pub(crate) fn float_value(text: &str) -> Option<u64> {
         "(_ NaN 11 53)" => return Some(una_core::float::CANONICAL_NAN),
         _ => {}
     }
-    let inner = text.strip_prefix("(fp ")?.strip_suffix(')')?;
-    let mut bits: u64 = 0;
-    let mut width = 0;
-    for part in inner.split_whitespace() {
-        let (value, size) = if let Some(binary) = part.strip_prefix("#b") {
-            (u64::from_str_radix(binary, 2).ok()?, binary.len())
-        } else {
-            let hex = part.strip_prefix("#x")?;
-            (u64::from_str_radix(hex, 16).ok()?, hex.len() * 4)
-        };
-        bits = bits.checked_shl(u32::try_from(size).ok()?).unwrap_or(0) | value;
-        width += size;
-    }
+    let (bits, width) = fp_parts(text)?;
     (width == 64).then(|| una_core::float::to_bits(f64::from_bits(bits)))
 }
 
@@ -1321,7 +1426,7 @@ mod missing_values_tests {
     use una_diag::{ObligationKind, ObligationStatus};
     use una_syntax::{SourceDb, Span};
 
-    use super::{Answer, Status, UNENCODABLE_LOCK, outcome, shown_bindings};
+    use super::{Answer, Status, UNENCODABLE_LOCK, outcome, shown_bindings, unbounded_result};
     use crate::generate::{Effect, EffectAt, Obligation, Show, Shown, Site, Within};
     use crate::smt::{Const, ConstRole, F, Fun, FunRole, Query};
 
@@ -1436,6 +1541,9 @@ mod missing_values_tests {
                 flow: None,
                 function_value: None,
                 guard: None,
+                int: false,
+                unbounded: None,
+                unknown: None,
                 effect: None,
             },
             forgotten: Vec::new(),
@@ -1477,6 +1585,80 @@ mod missing_values_tests {
     }
 
     #[test]
+    fn a_refuted_overflow_of_an_unbounded_prelude_result_is_unknown() {
+        // ADR 0109 rule 3: `sum` states no bound on its result, which is free in the query, so
+        // a model that sets it outside the range is no run: unknown (U5002), with the reason
+        // and no counterexample. A proof stays proven.
+        let mut sources = SourceDb::new();
+        let file = sources.add("src/m.una", b"sum(xs)\n");
+        let r = constant("r", "Int");
+        let obligation = Obligation {
+            id: "ob-test".to_owned(),
+            kind: ObligationKind::Overflow,
+            module: "m".to_owned(),
+            declaration: "m.f".to_owned(),
+            goal: "sum(xs) in -4611686018427387904..4611686018427387903".to_owned(),
+            source: Span::new(file, 0, 7),
+            related: None,
+            paths: Vec::new(),
+            hypotheses: Vec::new(),
+            query: Query::default(),
+            shown: vec![shown("r", &r, Show::Value)],
+            site: Site {
+                within: Within::Function { public: false },
+                parameter: None,
+                over_parameters: false,
+                ground: false,
+                flow: None,
+                function_value: None,
+                guard: None,
+                int: true,
+                unbounded: Some("sum".to_owned()),
+                unknown: None,
+                effect: None,
+            },
+            forgotten: Vec::new(),
+            entry: Vec::new(),
+            divisions: Vec::new(),
+            unencodable: None,
+            full: None,
+        };
+        let refutation = outcome(
+            &obligation,
+            std::slice::from_ref(&r),
+            &refuted(&["4611686018427387904"], None),
+            None,
+            false,
+        );
+        assert_eq!(refutation.status, ObligationStatus::Unknown);
+        assert_eq!(refutation.reason, Some(unbounded_result("sum")));
+        assert_eq!(refutation.bindings, []);
+        let diagnostics = crate::report::diagnostics(
+            std::slice::from_ref(&obligation),
+            std::slice::from_ref(&refutation),
+            &sources,
+        );
+        assert_eq!(diagnostics[0].code, una_diag::Code::U5002);
+        assert!(
+            diagnostics[0].message.starts_with(
+                "overflow obligation `sum(xs) in -4611686018427387904..4611686018427387903` could not be proven (`sum` states no bound"
+            ),
+            "{}",
+            diagnostics[0].message
+        );
+        let proof = Answer {
+            status: Status::Proven,
+            reason: None,
+            values: Vec::new(),
+            values_error: None,
+            detail: None,
+            error_after_sat: false,
+        };
+        let proven = outcome(&obligation, &[], &proof, None, false);
+        assert_eq!(proven.status, ObligationStatus::Proven);
+    }
+
+    #[test]
     fn an_unencodable_lock_is_unknown_at_its_entry() {
         // #638: the checker rejects a locked condition outside the encoding as U7002, so this
         // obligation is synthetic. Its refutation is unknown, U5002 at the lock's entry in
@@ -1508,6 +1690,9 @@ mod missing_values_tests {
                 flow: None,
                 function_value: None,
                 guard: None,
+                int: false,
+                unbounded: None,
+                unknown: None,
                 effect: Some(Effect {
                     operation: "@catalog.set_price".to_owned(),
                     condition: "mode == unit".to_owned(),

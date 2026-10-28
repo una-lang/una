@@ -99,7 +99,7 @@ run 1 "[U5002] Error: postcondition of \`total\` could not be proven" "src/budge
     check "$demo/budget"
 
 echo "-- A solver other than the pinned one is refused"
-run 1 "[U5003] Error: the solver is z3" "verification.lock pins z3 4.8.0" check "$demo/other-solver"
+run 1 "[U5003] Error: verification.lock pins z3 4.8.0, and this una" "verification.lock:3:20" check "$demo/other-solver"
 
 echo "-- Every obligation of the reference example, with its status"
 run 0 "postcondition src/events/seating.una:23:11 e.remaining < 1 implies result is SoldOut" \

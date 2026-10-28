@@ -6,7 +6,8 @@
 //!
 //! The calls: every entry point of the export table but the host's effects, which need a run's
 //! grants (EFFECTS); `una_rt_range` takes small bounds, since outside a run no memory budget
-//! bounds its list. And the entry points outside the table that take only words (EXTRA): the
+//! bounds its list, and so do the dense values filled from one element (`array_filled`,
+//! `matrix_filled`, a tensor's `filled`), whose lengths no list bounds (#989). And the entry points outside the table that take only words (EXTRA): the
 //! reference counts, building objects, the call depth, the budget and the operation and event
 //! state. Not called: `una_rt_closure` and `una_rt_push_op`, which take the address of
 //! compiled code, `together` and `together for`, which run such code on tasks, `una_rt_start`
@@ -164,7 +165,7 @@ fuzz_target!(|bytes: &[u8]| {
                     break;
                 };
                 rest = after;
-                let word = if *name == "una_rt_range" {
+                let word = if *name == "una_rt_range" || name.contains("_filled") {
                     small[usize::from(choice) % small.len()]
                 } else if usize::from(choice) < POOL_CAP {
                     pool[usize::from(choice) % pool.len()]
