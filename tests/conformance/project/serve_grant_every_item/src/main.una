@@ -1,0 +1,6 @@
+-- test: every item of a serve grant, each at a bound of its range, with `none` where the table allows it; `una check` does not read the TLS files, which are read before `main` (spec/31 §2, ADR 0123 rules 7 and 9)
+-- spec: spec/31 §2
+-- expect: ok
+module main
+
+pub one() -> Int = 1

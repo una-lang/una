@@ -29,18 +29,18 @@ pub count_to(limit: Int) -> Int
     n = n + 1
   n
 
-example "no stop schedule"
+test "no stop schedule"
   given @log = memory_log()
   do spin()
   expect result == 0
 
-example "an expectation may not diverge"
+test "an expectation may not diverge"
   given @log = memory_log()
   do spin()
   expect result == count_to(3)
   stop after 1
 
-example "under a stop schedule"
+test "under a stop schedule"
   given @log = memory_log()
   do spin()
   expect result == 3

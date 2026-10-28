@@ -1,4 +1,4 @@
-# 08. Requirements and examples
+# 08. Requirements and tests
 
 Status: Normative, v0.1.
 
@@ -30,12 +30,12 @@ Rules:
 
 `una trace EVENTS_3` lists every function deriving from the requirement, its contract clauses and the verification status of each obligation. It reads the package in the current directory and checks it at tier 1, then prints the requirement (identifier, status, text, source, owner) and every function derived from it, by qualified name, with its `requires` and `ensures` clauses and the status of each of its obligations. With `--json` it prints `{"schema":"una.trace/1","requirement":{...},"functions":[{"function":...,"requires":[...],"ensures":[...],"obligations":[{"id":...,"kind":...,"status":...,"goal":...}]}]}`. The package's diagnostics, those of its project files included, are reported before the identifier is resolved, with exit code 1 (ADR 0036); in a package without diagnostics, an unknown identifier is a usage error (exit code 2), and an obligation that is not proven gives exit code 1 (ADR 0034).
 
-## 2. Examples
+## 2. Tests
 
-Examples are executable evidence. They live next to the code they exercise and run with `una test`.
+Tests are executable evidence. They live next to the code they exercise and run with `una test`. (v0.3, ADR 0105.) In edition `0.3` the declaration is written `test`; editions `0.1` and `0.2` write it `example`, with the same body, and every rule of this section holds of a declaration under either keyword. This chapter says "test" for both.
 
 ```una
-example "an unknown attendee fails and is not audited"
+test "an unknown attendee fails and is not audited"
   given @registrations = no_registrations()
   given @audit = audit_log()
   given @keys = fake_keys()
@@ -46,7 +46,7 @@ example "an unknown attendee fails and is not audited"
 
 | Line | Meaning |
 | --- | --- |
-| `given @x = h(args)` | Install handler `h` as capability `@x` for this example |
+| `given @x = h(args)` | Install handler `h` as capability `@x` for this test |
 | `do e` | The expression under test. It MAY be effectful or fallible; it needs no handling clauses |
 | `expect e` | `e` is a `Bool` expression over `result`; it MUST evaluate to `true` |
 | `expect fails V` | `do` failed with variant `V` |
@@ -56,10 +56,10 @@ example "an unknown attendee fails and is not audited"
 
 Rules:
 
-1. Examples MUST NOT use host capabilities (U3014); every capability `do` needs comes from `given` (U3001 if missing). This makes examples deterministic.
-2. `expect e` lines with `result` are allowed only when `do` completed normally; if `do` failed, such an expectation fails the example with the failure shown.
-3. Example names are unique per module (U1002).
-4. Examples are type-checked, information-flow checked and verified like any other code, except for the sink exemption in `spec/07 §4`.
-5. The one-effect-per-line rule (U3013) does not apply to `do` lines: they may nest fallible and effectful calls, evaluated left to right, and any failure ends the example.
-6. Each example runs in a fresh abstract machine. `una test --json` reports, per example, the outcome, the failed expectation if any and the full effect trace (`spec/11 §5`).
-7. The expectations of an example are checked in order, and the first that does not hold fails it; then a `do` line that failed with no `expect fails` line fails it too. An `expect` line that does not mention `result` runs even when `do` failed. `expect performed @x.op` holds when the trace has a completed or failed `op` event of the instance of `given @x`, and `expect not performed @x.op` when it has none. An example whose run aborts fails (ADR 0032).
+1. Tests MUST NOT use host capabilities (U3014); every capability `do` needs comes from `given` (U3001 if missing). This makes tests deterministic.
+2. `expect e` lines with `result` are allowed only when `do` completed normally; if `do` failed, such an expectation fails the test with the failure shown.
+3. Test names are unique per module (U1002).
+4. Tests are type-checked, information-flow checked and verified like any other code, except for the sink exemption in `spec/07 §4`.
+5. The one-effect-per-line rule (U3013) does not apply to `do` lines: they may nest fallible and effectful calls, evaluated left to right, and any failure ends the test.
+6. Each test runs in a fresh abstract machine. `una test --json` reports, per test, the outcome, the failed expectation if any and the full effect trace (`spec/11 §5`).
+7. The expectations of a test are checked in order, and the first that does not hold fails it; then a `do` line that failed with no `expect fails` line fails it too. An `expect` line that does not mention `result` runs even when `do` failed. `expect performed @x.op` holds when the trace has a completed or failed `op` event of the instance of `given @x`, and `expect not performed @x.op` when it has none. A test whose run aborts fails (ADR 0032).

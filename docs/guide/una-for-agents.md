@@ -1197,7 +1197,7 @@ Every command takes `--json` and prints one document whose `schema` names its sh
 | `una check`, `una fmt --check` | `una.diagnostics/1` |
 | `una fix` | `una.fix/1`, the edits applied and skipped, and the diagnostics that remain (v0.2) |
 | `una obligations` | `una.obligations/1`, every obligation with `status`, `goal` and `hypotheses` |
-| `una test` | `una.test/1`, every example with its outcome and effect trace |
+| `una test` | `una.test/1`, every example with its outcome and effect trace; `una.test/2` for a package of edition `0.3`, the same document with the key `tests` |
 | `una run` | `una.run/1`, the program's output and trace |
 | `una build` | `una.build/1`, the native executable's path, or the diagnostics that rejected the package (v0.2, `spec/16`) |
 | `una contract <module.function>` | `una.contract/1`, the header, declared or inferred |
