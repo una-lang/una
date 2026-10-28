@@ -3,7 +3,7 @@
 -- expect: error U5001 at 15:16
 module sum_field_counterexample_refuted
 
-pub kind Measure = | Grams | Pieces
+pub kind Measure = Grams | Pieces
 
 pub kind Item
   amount: Nat

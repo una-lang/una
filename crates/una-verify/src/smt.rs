@@ -430,7 +430,9 @@ impl Query {
 
     /// The declarations and assertions as SMT-LIB text: sorts, constants and functions sorted
     /// by name, then definitions in dependency order, then the assertions, with the
-    /// distinctness of text literals first among them (`spec/12 §4`).
+    /// distinctness of text literals first among them (`spec/12 §4`). The run asks
+    /// [`Query::text_with`] for its requested terms; the tests compare this form.
+    #[cfg(test)]
     pub(crate) fn text(&self) -> String {
         self.text_with(&[])
     }
