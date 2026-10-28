@@ -204,6 +204,7 @@ Other diagnostics MAY include repairs (for example, a missing label with its mec
 | U3019 | authority | `of` clause that names a function type with its own `uses` or `fails` |
 | U3020 | authority | Call into a boundary module whose capability is not granted with `with` |
 | U3021 | authority | Call that grants a boundary module more than its ceiling |
+| U3022 | authority | Labeled operation passed to code that reads it lower |
 | U3023 | authority | Header that grants more than its lock in `una.toml` |
 | U3024 | authority | Call into a boundary module from which a release is reachable |
 | U3025 | authority | `if error` clause on an expression that cannot fail |

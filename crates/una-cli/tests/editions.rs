@@ -205,6 +205,15 @@ const EXPECTED_DIFFERENCES: &[Difference] = &[
         twin: "types/float_literal_edition_0_2_erased",
         erased: ("src/m.una", "\n\npub half() -> F64 = 1.0"),
     },
+    // ADR 0094 rule 6: `gives` after an operation of a header's `uses`, U0103 before edition
+    // 0.3. Erasing it gives a program that edition 0.2 accepts.
+    Difference::Syntax {
+        case: "syntax/gives_before_0_3",
+        edition_0_2: ("U0103", "src/m.una:13:36"),
+        edition_0_3: &[],
+        twin: "syntax/gives_before_0_3_erased",
+        erased: ("src/m.una", " gives internal[Service]"),
+    },
     // ADR 0114 rule 15: a declaration named `F64`, built in from edition 0.3.
     Difference::Stricter {
         case: "types/float_names_edition_0_2",
