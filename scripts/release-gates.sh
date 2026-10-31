@@ -9,9 +9,13 @@
 #   build        cargo build --release -p una-cli -p una-rt, then cargo test --workspace, cold,
 #                then scripts/no-libm-build.sh and scripts/no-libm.sh (#1092): the release
 #                `una` links the runtime conformance programs, and no C math library symbol
-#                in that `una`, the release `libuna_rt.a` or those executables
+#                in the release `libuna_rt.a` or those executables, nor in that `una` beyond
+#                the solver's imports of scripts/no-libm-una.txt (#1277)
 #                then scripts/load-commands.sh (#1103): that `una` and examples/hello it links
-#                load only what scripts/load-commands.txt lists
+#                load only what scripts/load-commands.txt lists, and `una` also what
+#                scripts/load-commands-una.txt lists (the solver's C++ runtime, #1277);
+#                each check after its canaries (scripts/no-libm-test.sh,
+#                scripts/load-commands-test.sh) fail as they must
 #   deps         scripts/deps-audit.sh (#770): cargo-deny at its pinned version against the
 #                advisory database fetched now (advisories, licenses, bans, crates.io only), and
 #                the supply-chain review record; the database's commit goes into the record
@@ -295,7 +299,9 @@ gate_build() {
     # every runnable program of tests/conformance/runtime that the native backend compiles
     # (scripts/no-libm-build.sh, into target/no-libm; target/ is ignored, so the clone stays
     # exact), and scripts/no-libm.sh reads the release graph's features and the undefined symbols
-    # of that `una`, of the release `libuna_rt.a` and of those executables, strictly.
+    # of the release `libuna_rt.a` and of those executables, strictly, and of that `una`, which
+    # holds the solver, against scripts/no-libm-una.txt too (#1277). Each symbol and load
+    # command check first runs its canaries, which must fail it.
     run build sh -c '
         UNA_Z3_LIB=$(scripts/z3-library.sh) || exit 1
         export UNA_Z3_LIB
@@ -304,7 +310,9 @@ gate_build() {
         cargo build --locked --release -p una-cli -p una-rt \
             && cargo test --workspace --locked \
             && scripts/no-libm-build.sh target/release/una "$no_libm" \
-            && scripts/no-libm.sh target/release/una target/release/libuna_rt.a "$no_libm/executables" \
+            && scripts/no-libm-test.sh \
+            && scripts/no-libm.sh target/release/una target/release/libuna_rt.a "$no_libm/executables" "$no_libm/una-without-solver" \
+            && scripts/load-commands-test.sh \
             && scripts/load-commands.sh target/release/una'
 }
 

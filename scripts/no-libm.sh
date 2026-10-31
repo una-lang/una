@@ -4,13 +4,23 @@
 # operator that lowers to a call (float `%` is `fmod`) nor the code of a dependency, so this
 # check reads the release artifacts: it lists their undefined symbols with `nm -u` and fails on
 # every name of scripts/no-libm.txt, after it drops the platform's prefix (the leading `_` of
-# Mach-O) and a symbol version (`@GLIBC_2.2.5`). Every artifact is strict, with no exception:
+# Mach-O) and a symbol version (`@GLIBC_2.2.5`). The runtime and the executables, what a Una
+# program contains, are strict, with no exception:
 #
-# - UNA, the release `una` binary;
 # - LIBUNA_RT, the release `libuna_rt.a`, listed with `nm -A -u`, so each hit names its object;
 # - EXECUTABLES, a directory of executables that release `una` linked
-#   (scripts/no-libm-build.sh): every file there. On Linux both the static and the dynamic
-#   symbol tables of `una` and of the executables are read (`nm -u` and `nm -D -u`).
+#   (scripts/no-libm-build.sh): every file there.
+#
+# - UNA_WITHOUT_SOLVER, the same release `una` built without the Z3 solver
+#   (scripts/no-libm-build.sh): Una's own Rust code, the interpreter's included.
+#
+# UNA, the release `una` binary, holds the Z3 solver (ADR 0124), C++ that calls the math library
+# in its heuristics (#1277). It is checked against the same list, except for the names of
+# scripts/no-libm-una.txt, each of which must also be on scripts/no-libm.txt and, when `una`
+# imports it, be imported by the Z3 library that UNA_Z3_LIB names, the one `una` was linked with
+# (`nm -A -u`): a name `una` imports that the solver does not, or with no UNA_Z3_LIB to tie it
+# to, fails. On Linux both the static and the dynamic symbol tables of `una` and of the
+# executables are read (`nm -u` and `nm -D -u`).
 #
 # First it asserts the release dependency graph (`cargo tree --locked -e normal,features -p
 # una-cli -p una-rt`): none of num-bigint, num-integer and num-traits has its `std` or `default`
@@ -25,19 +35,21 @@
 # or a tool that exits non-zero or reports anything but an object without symbols is a failure,
 # never a skip.
 #
-# Usage: scripts/no-libm.sh UNA LIBUNA_RT EXECUTABLES
+# Usage: scripts/no-libm.sh UNA LIBUNA_RT EXECUTABLES UNA_WITHOUT_SOLVER
 set -u
 
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 deny=$root/scripts/no-libm.txt
+solver=$root/scripts/no-libm-una.txt
 
-if [ "$#" -ne 3 ]; then
-    echo "usage: scripts/no-libm.sh UNA LIBUNA_RT EXECUTABLES" >&2
+if [ "$#" -ne 4 ]; then
+    echo "usage: scripts/no-libm.sh UNA LIBUNA_RT EXECUTABLES UNA_WITHOUT_SOLVER" >&2
     exit 2
 fi
 una=$1
 archive=$2
 executables=$3
+rust_una=$4
 
 fail() {
     echo "no-libm: FAIL ($1)" >&2
@@ -45,7 +57,9 @@ fail() {
 }
 
 [ -f "$deny" ] && [ -r "$deny" ] || fail "no denylist at $deny"
+[ -f "$solver" ] && [ -r "$solver" ] || fail "no list of the solver's imports at $solver"
 [ -f "$una" ] && [ -r "$una" ] || fail "no una binary at $una"
+[ -f "$rust_una" ] && [ -r "$rust_una" ] || fail "no una without the solver at $rust_una"
 [ -f "$archive" ] && [ -r "$archive" ] || fail "no runtime library at $archive"
 [ -d "$executables" ] || fail "no executable directory at $executables"
 present=0
@@ -97,9 +111,13 @@ list() {
 }
 
 # Checks the listing in $tmp/out of the artifact $1, strictly; with $2 = archive, each line
-# names its object (`nm -A`). Prints each finding; exits non-zero on one.
+# names its object (`nm -A`); with $2 = una, a name of scripts/no-libm-una.txt is not a finding
+# but is written to $tmp/solver, to be tied to the Z3 library. Prints each finding; exits
+# non-zero on one.
 check() {
-    awk -v artifact="$1" -v mode="${2:-binary}" -v os="$os" -v denyfile="$deny" '
+    : > "$tmp/solver"
+    awk -v artifact="$1" -v mode="${2:-binary}" -v os="$os" -v denyfile="$deny" \
+        -v solverfile="$solver" -v solverout="$tmp/solver" '
         function trim(s) { sub(/#.*/, "", s); gsub(/^[ \t]+|[ \t]+$/, "", s); return s }
         function name(s) {
             sub(/@.*/, "", s)
@@ -112,6 +130,13 @@ check() {
                 if (line != "") denied[line] = 1
             }
             close(denyfile)
+            if (mode == "una") {
+                while ((getline line < solverfile) > 0) {
+                    line = trim(line)
+                    if (line != "") solver[line] = 1
+                }
+                close(solverfile)
+            }
             prefix = artifact ":"
         }
         /^[ \t]*$/ { next }
@@ -129,6 +154,7 @@ check() {
             k = split(rest, w, /[ \t]+/)
             s = name(w[k])
             if (!(s in denied)) next
+            if (mode == "una" && (s in solver)) { print s > solverout; next }
             print "no-libm: " where ": " s
             bad = 1
         }
@@ -138,6 +164,14 @@ check() {
 
 findings=0
 
+# The solver's list: every name must be one of the denylist's, so a typo or a name that is not
+# the math library's cannot hide anything.
+for name in $(sed 's/#.*//' "$solver"); do
+    if ! sed 's/#.*//' "$deny" | grep -qxF "$name"; then
+        echo "no-libm: $solver: $name is not a name of $deny"
+        findings=1
+    fi
+done
 # The release dependency graph: no `std` (nor `default`, which means `std`) feature of the
 # crates whose `std` code calls the C math library. `cargo tree -i` of a crate the graph does
 # not hold fails too, so a renamed or replaced dependency is a failure to look at, not a pass.
@@ -164,7 +198,38 @@ done
 : > "$tmp/out"
 if list -u "$una"; then
     if [ "$os" = linux ]; then list -D -u "$una" || findings=1; fi
-    check "$una" || findings=1
+    check "$una" una || findings=1
+    imported=$(LC_ALL=C sort -u "$tmp/solver" | tr '\n' ' ' | sed 's/ $//')
+    if [ -n "$imported" ]; then
+        # Each of them must be an import of the Z3 library `una` was linked with.
+        if [ -z "${UNA_Z3_LIB:-}" ] || [ ! -f "$UNA_Z3_LIB" ]; then
+            echo "no-libm: $una imports $imported, which only the solver may, and UNA_Z3_LIB names no Z3 library to tie them to"
+            findings=1
+        else
+            : > "$tmp/out"
+            if list -A -u "$UNA_Z3_LIB"; then
+                awk -v os="$os" '{ s = $NF; sub(/@.*/, "", s); if (os == "macos") sub(/^_/, "", s); print s }' \
+                    "$tmp/out" | LC_ALL=C sort -u > "$tmp/z3"
+                for name in $imported; do
+                    if ! grep -qxF "$name" "$tmp/z3"; then
+                        echo "no-libm: $una: $name, which the Z3 library $UNA_Z3_LIB does not import"
+                        findings=1
+                    fi
+                done
+                echo "no-libm: $una: the solver's imports, allowed by $solver: $imported"
+            else
+                findings=1
+            fi
+        fi
+    fi
+else
+    findings=1
+fi
+
+: > "$tmp/out"
+if list -u "$rust_una"; then
+    if [ "$os" = linux ]; then list -D -u "$rust_una" || findings=1; fi
+    check "$rust_una" || findings=1
 else
     findings=1
 fi
@@ -195,6 +260,6 @@ for exe in "$executables"/* "$executables"/.[!.]*; do
 done
 
 if [ "$findings" -ne 0 ]; then
-    fail "a std feature, a C math library symbol, or a cargo tree or nm error above, in $una, $archive or $count executables of $executables"
+    fail "a std feature, a C math library symbol, or a cargo tree or nm error above, in $una, $rust_una, $archive or $count executables of $executables"
 fi
-echo "no-libm: PASS ($una, $archive and $count executables of $executables)"
+echo "no-libm: PASS ($una, $rust_una, $archive and $count executables of $executables)"

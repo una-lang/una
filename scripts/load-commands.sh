@@ -7,6 +7,10 @@
 # RUNPATH, AUXILIARY, FILTER, AUDIT or DEPAUDIT entry fails. A linker or a crate's `#[link]`
 # that adds a library, as the libc crate's `iconv` did, fails here.
 #
+# UNA alone may also load the entries of scripts/load-commands-una.txt (#1277): the C++ runtime
+# of the Z3 solver built into it (ADR 0124). The executables are held to scripts/load-commands.txt
+# alone, so nothing of that list reaches a program that `una build` links.
+#
 # It reads UNA, then every file of the directory EXECUTABLES, executables that UNA linked. When
 # EXECUTABLES is not given, it links examples/hello with UNA into a fresh temporary directory
 # (a copy of the example, HOME there, without UNA_RT_LIB, so UNA links the `libuna_rt.a` beside
@@ -21,6 +25,7 @@ set -u
 
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 allow=$root/scripts/load-commands.txt
+allow_una=$root/scripts/load-commands-una.txt
 
 if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
     echo "usage: scripts/load-commands.sh UNA [EXECUTABLES]" >&2
@@ -35,6 +40,7 @@ fail() {
 }
 
 [ -f "$allow" ] && [ -r "$allow" ] || fail "no allowlist at $allow"
+[ -f "$allow_una" ] && [ -r "$allow_una" ] || fail "no allowlist of una at $allow_una"
 [ -f "$una" ] && [ -x "$una" ] || fail "no una binary at $una"
 
 case $(uname -s) in
@@ -138,22 +144,28 @@ entries() {
     return $status
 }
 
-# Checks the artifact $1: prints each entry the allowlist does not hold, and fails on one.
+# Checks the artifact $1: prints each entry the allowlists do not hold, and fails on one. The
+# allowlist is scripts/load-commands.txt, with $2 (scripts/load-commands-una.txt, for `una`
+# alone) added when it is given.
 check() {
     entries "$1" > "$tmp/found" || {
         cat "$tmp/found" >&2
         return 1
     }
-    awk -v os="$os" -v artifact="$1" -v allowfile="$allow" '
-        BEGIN {
-            while ((getline line < allowfile) > 0) {
+    awk -v os="$os" -v artifact="$1" -v allowfile="$allow" -v extrafile="${2:-}" '
+        function read(file) {
+            while ((getline line < file) > 0) {
                 sub(/#.*/, "", line)
                 n = split(line, field, /[ \t]+/)
                 start = (field[1] == "") ? 2 : 1
                 if (n < start + 2) continue
                 if (field[start] == os) allowed[field[start + 1] " " field[start + 2]] = 1
             }
-            close(allowfile)
+            close(file)
+        }
+        BEGIN {
+            read(allowfile)
+            if (extrafile != "") read(extrafile)
         }
         {
             if (!($0 in allowed)) {
@@ -168,11 +180,14 @@ failures=0
 count=0
 for artifact in "$una" "$@"; do
     count=$((count + 1))
-    if check "$artifact"; then
+    # The first artifact is UNA, the only one checked against scripts/load-commands-una.txt too.
+    extra=""
+    [ "$count" -eq 1 ] && extra=$allow_una
+    if check "$artifact" "$extra"; then
         echo "load-commands: ok $artifact: $(grep -E '^(dylib|needed|interpreter|dylinker) ' "$tmp/found" | cut -d' ' -f2- | tr '\n' ' ')"
     else
         failures=$((failures + 1))
     fi
 done
-[ "$failures" -eq 0 ] || fail "$failures of $count artifacts load what scripts/load-commands.txt does not allow"
+[ "$failures" -eq 0 ] || fail "$failures of $count artifacts load what scripts/load-commands.txt (and for una scripts/load-commands-una.txt) does not allow"
 echo "load-commands: PASS ($count artifacts, $os)"

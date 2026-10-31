@@ -1,0 +1,1 @@
+- **The macOS Z3 library is reproducible** (#1277). Two builds of the same objects gave two libraries because the archive's member headers carried each object's time, owner and group; `scripts/build-z3.sh` now builds with `ZERO_AR_DATE=1`, and two cold builds give one digest, which `supply-chain/z3.lock` records for `aarch64-apple-darwin`.

@@ -170,9 +170,10 @@ no_libm="$root/target/no-libm"
 rm -rf "${no_libm:?}"
 step "Native executables of the release una" \
     scripts/no-libm-build.sh "$root/target/release/una" "$no_libm"
+step "No C math library symbol (canaries)" scripts/no-libm-test.sh
 step "No C math library symbol" \
     scripts/no-libm.sh "$root/target/release/una" "$root/target/release/libuna_rt.a" \
-    "$no_libm/executables"
+    "$no_libm/executables" "$no_libm/una-without-solver"
 # The documents' links (#708): every link of the documents names a tracked file or directory,
 # and every fragment a heading of its document; the check's own test refuses each kind of
 # broken link first. It needs only Python 3 and git, so it runs everywhere, the containers
@@ -203,6 +204,7 @@ step "Test (release, TLS trust)" cargo test --release --locked -p una-http --tes
 step "Pack the release archive of $target" scripts/release.sh "$target"
 # The release `una` just packed, and examples/hello that it links, ask the dynamic loader only
 # for what scripts/load-commands.txt lists (#1103).
+step "Load commands (canaries)" scripts/load-commands-test.sh
 step "Load commands" scripts/load-commands.sh "$root/target/release-remapped/release/una"
 # Under emulation the check runs the packed `una` with one verifier thread, as the serial tests do
 # (#286): a `una run` that starts several solver processes from many threads at once can deadlock
