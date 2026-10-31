@@ -82,6 +82,7 @@ These signatures replace those of `spec/14 §1` in edition `0.2`:
 2. `sort` returns the elements in ascending order, and keeps the order of the list for equal elements (stable).
 3. `abs` stays `abs(x: Int) -> Int`, since `abs` of a fixed-width value can overflow.
 4. Calls with `Int` arguments keep their meaning and contracts.
+5. **Costs** (ADR 0132). `min` and `max` take one comparison; `contains(xs, item)` takes O(n + Σ min(s(x), s(item))) over the elements x it compares, at most O(size(xs)); `sum(xs)` takes O(size(xs)); `sort(xs)` takes O(n log n) comparisons, and O(n) comparisons when `xs` is already in order, in O(n) space. n, s and size, and the cost of a comparison of a type that instantiates `T`, are those of `spec/14 §5`.
 
 ## 7. Dynamic semantics
 

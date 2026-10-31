@@ -146,7 +146,7 @@ The prelude (`spec/14 §1`) gains one function:
 | --- | --- |
 | `set[T](edit xs: List[T], index: Int, item: T) -> Unit` | `requires 0 <= index and index < xs.len`; `ensures xs.len == old(xs).len` |
 
-It is written `edit xs.set(index: i, item: v)`. Graphs and cyclic structures use arenas and indices (V2-3, issue #82).
+It is written `edit xs.set(index: i, item: v)`. (ADR 0132.) It takes O(1) when `xs` is held once or given up at the call, and O(n) for a copy first otherwise, n its length (`spec/14 §5`, ADR 0107). Graphs and cyclic structures use arenas and indices (V2-3, issue #82).
 
 ## 9. Reserved words
 
