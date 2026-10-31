@@ -17,7 +17,7 @@ This is a snapshot of `main` at `358ab4d1` (workspace version 0.3.16) and of the
 | compiler_builtins C and assembly objects (from LLVM compiler-rt) | Shipped inside `libuna_rt.a` by the prebuilt standard library; not linked into `una` nor into the hello program | Kept out of linked artifacts by the #1092 symbol check; removing them from the archive needs a standard library built without compiler-builtins' C part (open, toolchain) |
 | Unwinder (`_Unwind_*`) | libunwind inside libSystem (macOS); `libgcc_s` on Linux, which `una build` links | Part of the open question below |
 | System linker `cc` | `una build` links through the host C compiler driver | A host tool, not code in the artifacts; no issue yet |
-| C-emitting release backend (ADR 0106) | Accepted design; no code on `main` | Withdrawn by epic #1097 item "Withdraw the C-emitting backend (ADR 0106)" |
+| C-emitting release backend (ADR 0106) | Accepted design; no code on `main` | Withdrawn by ADR 0106's amendment of 2026-10-31 (#1099, epic #1097); release builds become Una's own code generation (#1305) |
 | Z3 5.1.0 | The SMT solver, an external program run as `z3 -in -smt2`, pinned by `verification.lock` | Accepted exception |
 
 ## 1. Method
@@ -100,7 +100,7 @@ Also carried by the artifacts, outside the crate graph:
 | compiler_builtins C and assembly objects | The prebuilt standard library ships compiler_builtins with objects compiled from LLVM compiler-rt: 43 C objects (`int_util.o`, `absvdi2.o`, `mulvti3.o`, `muldc3.o`, ...; `int_util.o` imports `___assert_rtn`), the CPU feature detection `aarch64.o` (from compiler-rt's `cpu_model/aarch64.c`; imports `___stack_chk_fail`, `___stack_chk_guard`, `_sysctlbyname`) and 100 objects of outline atomics (`lse_cas1_acq.o`, ..., from compiler-rt's `lse.S`) | `libuna_rt.a` only: none of their symbols is in `una` or `hello` | Kept out of linked artifacts by the #1092 symbol check. Removing them from the archive needs a standard library built without compiler-builtins' C part; open, toolchain |
 | The unwinder | `_Unwind_*` functions for panics and backtraces | All three (`panic_unwind`, std's backtrace, `_Unwind_Resume` in every crate's landing pads) | Section 4 (libSystem on macOS, `libgcc_s` on Linux) |
 | System linker `cc` | `una build` links the program object and `libuna_rt.a` through the host C compiler driver (`crates/una-cli/src/build.rs`, ADR 0055 NB-1); on Linux it adds `-lgcc_s -lutil -lrt -lpthread -lm -ldl -lc`, after `-Wl,--as-needed` since #1103, so only the libraries the program uses get a `NEEDED` entry | Not in the artifacts; a host tool needed to build | No issue yet |
-| C-emitting release backend | ADR 0106 (accepted) chose C compiled by the system C compiler for release builds; no C emission exists in the code of `main` | None | Withdrawn by epic #1097 |
+| C-emitting release backend | ADR 0106 (accepted) chose C compiled by the system C compiler for release builds; no C emission exists in the code of `main` | None | Withdrawn by ADR 0106's amendment of 2026-10-31 (#1099, epic #1097) |
 | Z3 5.1.0 | `una-verify` runs `z3 -in -smt2` as a child process (`crates/una-verify/src/solver.rs`); the version is pinned by `verification.lock` | None (an external program, not linked) | Accepted exception |
 
 ## 3. C library symbols of the artifacts
