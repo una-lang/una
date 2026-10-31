@@ -3,8 +3,9 @@
 
 Reads a validation record that scripts/release-gates.sh wrote (record.md) and writes its
 summary from a fixed template: the commit, the run's date, OS and architecture, the toolchain,
-the gate table without log digests, the archives with their SHA-256, the dependency audit's
-tool and advisory database (#770) and the verdict. Nothing
+the gate table without log digests, the archives with their SHA-256, the strip that removed
+the debug sections of each embedded runtime, with its version and its binary's digest (#1359),
+the dependency audit's tool and advisory database (#770) and the verdict. Nothing
 else of the record is copied: no subject, no notes, no log digest, no docs bundle.
 
 Every field is checked against its shape before it is written, and a field that does not match
@@ -52,6 +53,15 @@ DEPS_DB = re.compile(
     r"\(([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:Z|[+-][0-9]{2}:[0-9]{2}))\)"
 )
 DEPS_NONE = "None: the deps gate did not run or did not fetch the advisory database."
+# The strip of each embedded runtime (#1359), as scripts/release.sh prints it: on macOS the Xcode
+# toolchain's, named by its Xcode release or Command Line Tools version; on Linux GNU strip's
+# version line; each with the SHA-256 of the strip binary.
+STRIP_ROW = re.compile(
+    r"- ([a-z0-9_]+(?:-[a-z0-9_]+)*): "
+    r"(xcrun strip -S \((?:Xcode [0-9.]+ build [0-9A-Za-z]+|Command Line Tools [0-9.]+)\)"
+    r"|GNU strip \([A-Za-z0-9 .]+\) [0-9][0-9.]* --strip-debug -D), sha256 [0-9a-f]{64}"
+)
+STRIP_NONE = "None: the release gate did not run or did not record the strip tool."
 VERDICT = re.compile(r"Verdict: (PASS \(every gate\)|FAIL \([a-z0-9, -]+\)|INCOMPLETE \(not run: [a-z0-9, -]+\))")
 
 
@@ -118,6 +128,16 @@ def main():
                 fail(f"{m.group(1)} is not an archive of {version}")
             archives.append(m.groups())
 
+    # The strip of each embedded runtime: every line in shape, or none.
+    strips = [line for line in section(lines, "## Runtime strip")
+              if line.startswith("- ") or line.startswith("None")]
+    if strips and strips != [STRIP_NONE]:
+        for line in strips:
+            if not STRIP_ROW.fullmatch(line):
+                fail(f"a runtime strip line out of shape: {line[:40]!r}")
+    else:
+        strips = []
+
     # The dependency audit: its two lines in shape, or none when the gate did not reach them.
     deps = [line for line in section(lines, "## Dependency audit")
             if line.startswith("- ") or line.startswith("None")]
@@ -150,6 +170,8 @@ def main():
         text += [f"| `{name}` | `{digest}` |" for name, digest in archives]
     else:
         text += ["None: the release gate did not run or did not pack them."]
+    text += ["", "## Runtime strip", ""]
+    text += strips if strips else [STRIP_NONE]
     text += ["", "## Dependency audit", ""]
     text += deps if deps else [DEPS_NONE]
     text += ["", f"Verdict: {verdict}", "",

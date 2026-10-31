@@ -96,24 +96,46 @@ export CFLAGS
 built="$root/target/release-remapped"
 # The build order of ADR 0124 rule 18: the runtime first, from this commit, then `una`, which
 # embeds it. The runtime loses its debug sections (rule 12), so that no path or line table of
-# this machine reaches an executable and the embedded bytes are smaller: `strip -S` on macOS,
-# with ZERO_AR_DATE=1 so that the archive's member headers carry no time, and GNU strip's
-# `--strip-debug` with deterministic archive headers (`-D`) on Linux. una-cli's build script
-# checks the stripped file against the digest given here and embeds it; a built `una` never
-# reads these variables.
+# this machine reaches an executable and the embedded bytes are smaller: the Xcode toolchain's
+# `strip -S` on macOS, by `xcrun`, so that no other `strip` on PATH is taken, with
+# ZERO_AR_DATE=1 so that the archive's member headers carry no time, and GNU strip's
+# `--strip-debug` with deterministic archive headers (`-D`) on Linux. The tool is printed on a
+# line `strip: <target>: <tool>`, its version and the SHA-256 of its binary, which the release
+# gates copy into the validation record and its summary (#1359); scripts/check-release.sh
+# checks that no debug section is left. una-cli's build script checks the stripped file
+# against the digest given here and embeds it; a built `una` never reads these variables.
 cargo build --release --locked --target-dir "$built" --package una-rt
 embed="$built/embed"
 rm -rf "${embed:?}"
 mkdir -p "$embed"
 cp "$built/release/libuna_rt.a" "$embed/libuna_rt.a"
+sha256_of() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | cut -d ' ' -f 1
+    else
+        shasum -a 256 "$1" | cut -d ' ' -f 1
+    fi
+}
 case $target in
     *-apple-darwin)
-        ZERO_AR_DATE=1 strip -S "$embed/libuna_rt.a"
-        strip_tool="strip -S (macOS)"
+        strip_binary=$(xcrun --find strip) \
+            || { echo "error: xcrun finds no strip; install Xcode or its Command Line Tools" >&2; exit 2; }
+        ZERO_AR_DATE=1 xcrun strip -S "$embed/libuna_rt.a"
+        # Apple's strip prints no version: the Xcode release it comes with names it, or, with
+        # the Command Line Tools alone, their package version, and its digest pins the binary.
+        toolchain=$(xcodebuild -version 2>/dev/null | sed -n -e 's/^Xcode \([0-9.]*\)$/Xcode \1/p' -e 's/^Build version \([0-9A-Za-z]*\)$/build \1/p' | paste -sd ' ' -)
+        case $toolchain in
+            "Xcode "*" build "*) ;;
+            *)
+                toolchain=$(pkgutil --pkg-info=com.apple.pkg.CLTools_Executables 2>/dev/null | sed -n 's/^version: \([0-9.]*\)$/Command Line Tools \1/p')
+                ;;
+        esac
+        [ -n "$toolchain" ] || { echo "error: neither xcodebuild nor pkgutil names the toolchain of $strip_binary" >&2; exit 2; }
+        strip_tool="xcrun strip -S ($toolchain), sha256 $(sha256_of "$strip_binary")"
         ;;
     *-linux-*)
         strip --strip-debug -D "$embed/libuna_rt.a"
-        strip_tool="$(strip --version | head -n 1) --strip-debug -D"
+        strip_tool="$(strip --version | head -n 1) --strip-debug -D, sha256 $(sha256_of "$(command -v strip)")"
         ;;
     *)
         echo "error: no strip recipe for $target" >&2
@@ -125,7 +147,8 @@ if command -v sha256sum >/dev/null 2>&1; then
 else
     runtime_digest=$(shasum -a 256 "$embed/libuna_rt.a" | cut -d ' ' -f 1)
 fi
-echo "runtime: $embed/libuna_rt.a, stripped with $strip_tool, sha256 $runtime_digest"
+echo "runtime: $embed/libuna_rt.a, sha256 $runtime_digest, stripped with $strip_tool"
+echo "strip: $target: $strip_tool"
 UNA_EMBED_RUNTIME=$embed/libuna_rt.a
 UNA_EMBED_RUNTIME_SHA256=$runtime_digest
 export UNA_EMBED_RUNTIME UNA_EMBED_RUNTIME_SHA256

@@ -7,6 +7,11 @@
 //! it needs no compiler, no assembler and no installed target: only a disassembler that reads
 //! x86-64, which the gate needs too. Where none does (GNU `objdump` of another architecture),
 //! the test prints that it is skipped; the x86-64 leg, `scripts/local-ci.sh --linux`, runs it.
+//!
+//! The same canaries in Mach-O (#1356): an x86-64 Mach-O object and an archive of it, which
+//! the `objdump -f` of LLVM refuses and the gate reads with `otool -hv`, fail it; an arm64
+//! Mach-O object, as the macOS `una` and `libuna_rt.a` are, is not applicable; a universal
+//! file fails. They run on macOS, where a stock Xcode toolchain has `objdump` and `otool`.
 
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
@@ -126,6 +131,150 @@ fn object(functions: &[(&str, &[u8])]) -> Vec<u8> {
     out
 }
 
+/// The CPU type of x86-64 in a Mach-O header (`CPU_TYPE_X86_64`).
+const MACHO_X86_64: u32 = 0x0100_0007;
+
+/// The CPU type of arm64 in a Mach-O header (`CPU_TYPE_ARM64`).
+const MACHO_ARM64: u32 = 0x0100_000C;
+
+/// `ret` on arm64.
+const ARM64_RET: &[u8] = &[0xC0, 0x03, 0x5F, 0xD6];
+
+/// A Mach-O relocatable object (`MH_OBJECT`) for `cpu` whose `__TEXT,__text` holds each
+/// function of `functions`, a name and its code, as an external symbol of that section.
+fn macho_object(cpu: u32, functions: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut text = Vec::new();
+    let mut strtab = vec![0_u8];
+    let mut symbols = Vec::new();
+    for (name, code) in functions {
+        pad(&mut text, 16);
+        let name_offset = u32::try_from(strtab.len()).unwrap();
+        strtab.extend_from_slice(name.as_bytes());
+        strtab.push(0);
+        symbols.push((name_offset, text.len() as u64));
+        text.extend_from_slice(code);
+    }
+    pad(&mut strtab, 8);
+    let segment_size = 72 + 80;
+    let symtab_size = 24;
+    let commands = segment_size + symtab_size;
+    let text_offset = 32 + commands;
+    let symbols_offset = text_offset + text.len().next_multiple_of(8);
+    let strings_offset = symbols_offset + 16 * symbols.len();
+    let fixed = |name: &str| {
+        let mut field = [0_u8; 16];
+        field[..name.len()].copy_from_slice(name.as_bytes());
+        field
+    };
+    let mut out = Vec::new();
+    u32le(&mut out, 0xFEED_FACF); // MH_MAGIC_64
+    u32le(&mut out, cpu);
+    u32le(&mut out, if cpu == MACHO_X86_64 { 3 } else { 0 }); // the "all" subtype
+    u32le(&mut out, 1); // MH_OBJECT
+    u32le(&mut out, 2);
+    u32le(&mut out, u32::try_from(commands).unwrap());
+    u32le(&mut out, 0);
+    u32le(&mut out, 0);
+    // LC_SEGMENT_64 with one section, __TEXT,__text.
+    u32le(&mut out, 0x19);
+    u32le(&mut out, u32::try_from(segment_size).unwrap());
+    out.extend_from_slice(&fixed(""));
+    u64le(&mut out, 0);
+    u64le(&mut out, text.len() as u64);
+    u64le(&mut out, text_offset as u64);
+    u64le(&mut out, text.len() as u64);
+    u32le(&mut out, 7);
+    u32le(&mut out, 7);
+    u32le(&mut out, 1);
+    u32le(&mut out, 0);
+    out.extend_from_slice(&fixed("__text"));
+    out.extend_from_slice(&fixed("__TEXT"));
+    u64le(&mut out, 0);
+    u64le(&mut out, text.len() as u64);
+    u32le(&mut out, u32::try_from(text_offset).unwrap());
+    u32le(&mut out, 4); // aligned to 2^4
+    u32le(&mut out, 0);
+    u32le(&mut out, 0);
+    u32le(&mut out, 0x8000_0400); // S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS
+    u32le(&mut out, 0);
+    u32le(&mut out, 0);
+    u32le(&mut out, 0);
+    // LC_SYMTAB.
+    u32le(&mut out, 0x2);
+    u32le(&mut out, u32::try_from(symtab_size).unwrap());
+    u32le(&mut out, u32::try_from(symbols_offset).unwrap());
+    u32le(&mut out, u32::try_from(symbols.len()).unwrap());
+    u32le(&mut out, u32::try_from(strings_offset).unwrap());
+    u32le(&mut out, u32::try_from(strtab.len()).unwrap());
+    assert_eq!(out.len(), text_offset);
+    out.extend_from_slice(&text);
+    pad(&mut out, 8);
+    for (name, value) in &symbols {
+        u32le(&mut out, *name);
+        out.push(0x0F); // N_SECT | N_EXT
+        out.push(1);
+        u16le(&mut out, 0);
+        u64le(&mut out, *value);
+    }
+    out.extend_from_slice(&strtab);
+    out
+}
+
+/// A Unix `ar` archive holding `member`, named `name` (at most 15 bytes), as `libuna_rt.a`
+/// holds its objects.
+fn archive(name: &str, member: &[u8]) -> Vec<u8> {
+    let mut out = b"!<arch>\n".to_vec();
+    let header = format!(
+        "{name:<16}{:<12}{:<6}{:<6}{:<8}{:<10}`\n",
+        0,
+        0,
+        0,
+        644,
+        member.len()
+    );
+    assert_eq!(header.len(), 60);
+    out.extend_from_slice(header.as_bytes());
+    out.extend_from_slice(member);
+    pad(&mut out, 2);
+    out
+}
+
+/// A universal (fat) Mach-O file holding `slices`, each a CPU type and its object.
+fn universal(slices: &[(u32, &[u8])]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(&0xCAFE_BABE_u32.to_be_bytes());
+    out.extend_from_slice(&u32::try_from(slices.len()).unwrap().to_be_bytes());
+    let mut offset = (8 + 20 * slices.len()).next_multiple_of(16);
+    for (cpu, object) in slices {
+        let subtype: u32 = if *cpu == MACHO_X86_64 { 3 } else { 0 };
+        for field in [
+            *cpu,
+            subtype,
+            u32::try_from(offset).unwrap(),
+            u32::try_from(object.len()).unwrap(),
+            4,
+        ] {
+            out.extend_from_slice(&field.to_be_bytes());
+        }
+        offset = (offset + object.len()).next_multiple_of(16);
+    }
+    for (_, object) in slices {
+        pad(&mut out, 16);
+        out.extend_from_slice(object);
+    }
+    out
+}
+
+/// Whether the Mach-O canaries run here: on macOS, where the gate reads Mach-O with `otool`.
+#[allow(clippy::print_stderr)]
+fn reads_macho() -> bool {
+    if cfg!(target_os = "macos") {
+        return true;
+    }
+    eprintln!("skipped: the Mach-O canaries run on macOS, where the gate reads Mach-O with otool");
+    false
+}
+
 /// Writes `bytes` to a fresh file named `name` under the test's directory.
 fn write(name: &str, bytes: &[u8]) -> PathBuf {
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("fma-gate");
@@ -243,4 +392,80 @@ fn the_default_allowlist_is_the_kernels_allowlist() {
     for prefix in una_core::dense::variants::ALLOWLIST {
         assert!(script.contains(&format!("{prefix}\n")), "{prefix}");
     }
+}
+
+#[test]
+fn a_macho_fma_instruction_outside_the_allowlist_fails_the_gate() {
+    // #1356: the `objdump -f` of LLVM refuses Mach-O; the gate must still read the
+    // architecture, from `otool -hv`, and scan an x86-64 Mach-O object and an archive of one.
+    if !reads_macho() {
+        return;
+    }
+    let planted = macho_object(
+        MACHO_X86_64,
+        &[("_planted_outside_the_allowlist", FMA), ("_clean", ADD)],
+    );
+    let object = write("planted-macho.o", &planted);
+    let library = write("libplanted.a", &archive("planted.o", &planted));
+    for artifact in [&object, &library] {
+        let output = gate(&[], &[artifact]);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(1), "{artifact:?}: {stderr}");
+        assert!(
+            stderr.contains("FMA instructions outside the allowlist"),
+            "{artifact:?}: {stderr}"
+        );
+        assert!(
+            stderr.contains("planted_outside_the_allowlist"),
+            "{artifact:?}: {stderr}"
+        );
+    }
+    // The same instruction in an allowlisted variant's symbol passes.
+    let variant = write(
+        "variant-macho.o",
+        &macho_object(
+            MACHO_X86_64,
+            &[(&format!("_{VARIANT}"), FMA), ("_clean", ADD)],
+        ),
+    );
+    let output = gate(&[], &[&variant]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn an_arm64_macho_artifact_is_not_applicable_and_a_universal_one_fails() {
+    // #1356: the macOS `una` and `libuna_rt.a` are arm64 Mach-O, a file and an archive; the
+    // gate reports them not applicable instead of failing on the format. A universal file,
+    // whose x86-64 slice `objdump -f` does not name, is refused rather than passed.
+    if !reads_macho() {
+        return;
+    }
+    let arm = macho_object(MACHO_ARM64, &[("_main", ARM64_RET)]);
+    let object = write("arm64-macho.o", &arm);
+    let library = write("libarm64.a", &archive("arm64.o", &arm));
+    for artifact in [&object, &library] {
+        let output = gate(&[], &[artifact]);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{artifact:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(stdout.contains("not applicable"), "{artifact:?}: {stdout}");
+    }
+    let x86 = macho_object(MACHO_X86_64, &[("_planted_outside_the_allowlist", FMA)]);
+    let fat = write(
+        "universal-macho",
+        &universal(&[(MACHO_X86_64, &x86), (MACHO_ARM64, &arm)]),
+    );
+    let output = gate(&[], &[&fat]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(stderr.contains("universal"), "{stderr}");
 }

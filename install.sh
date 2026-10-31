@@ -10,7 +10,8 @@
 # `lib/libuna_rt.a`, where its `una build` looks; for such a release the installer installs
 # UNA_HOME/lib/libuna_rt.a as well. A later archive holds no `lib/`, and the installation has
 # none. An archive whose top level holds anything but `una`, `LICENSE`, `README.md`, `docs/` and
-# that `lib/libuna_rt.a` is refused.
+# that `lib/libuna_rt.a` is refused, and so is one with an entry outside its own directory or an
+# entry that is a link, symbolic or hard, or anything else that is neither a file nor a directory.
 #
 # Every download is checked before anything is installed:
 # - the release archive, against the SHA-256 that the release's validation summary lists
@@ -176,8 +177,25 @@ fi
 # Unpacked and checked in the work directory, then moved into place. `una` is the one program
 # of the archive; `lib/libuna_rt.a`, the runtime of a release before ADR 0124 step 2, is the one
 # other file that may be installed outside the documents.
+# Before anything is unpacked: every entry lies under the archive's own directory, with no `..`
+# component, and is a file or a directory, never a link (the first character of the listing's
+# mode column, in both tars), so that nothing reaches outside the work directory or installs
+# what the archive does not hold.
+top=una-$version-$target
+tar -tzf "$work/$archive" > "$work/entries" || fail "cannot list $archive"
+awk -v top="$top" '
+    $0 != top && $0 != top "/" && index($0, top "/") != 1 { bad = 1 }
+    $0 ~ /(^|\/)\.\.(\/|$)/ { bad = 1 }
+    END { exit bad }' "$work/entries" \
+    || fail "$archive holds an entry outside $top/, which this installer refuses"
+tar -tvzf "$work/$archive" > "$work/listing" || fail "cannot list $archive"
+awk 'substr($1, 1, 1) != "-" && substr($1, 1, 1) != "d" { bad = 1 } END { exit bad }' "$work/listing" \
+    || fail "$archive holds a link or another entry that is neither a file nor a directory, which this installer refuses"
 tar -xzf "$work/$archive" -C "$work"
-unpacked=$work/una-$version-$target
+unpacked=$work/$top
+# And after: what was unpacked holds no link and nothing but files and directories.
+[ -z "$(find "$unpacked" ! -type f ! -type d | head -n 1)" ] \
+    || fail "$archive holds a link or another entry that is neither a file nor a directory, which this installer refuses"
 [ -f "$unpacked/una" ] && [ -x "$unpacked/una" ] || fail "$archive does not hold una"
 for entry in "$unpacked"/* "$unpacked"/.[!.]* "$unpacked"/..?*; do
     [ -e "$entry" ] || [ -L "$entry" ] || continue

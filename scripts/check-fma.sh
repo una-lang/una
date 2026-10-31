@@ -12,8 +12,12 @@
 # Usage: scripts/check-fma.sh [--allow PREFIX]... ARTIFACT...
 #   --allow PREFIX  a prefix of the allowlist; without any, the two prefixes of
 #                   una_core::dense::variants::ALLOWLIST below.
-# It disassembles with `objdump -d -C`, or `llvm-objdump -d -C` when there is no `objdump`;
-# a disassembler that fails, or reads no instruction, fails the gate.
+# It disassembles with `objdump -d -C`, or `llvm-objdump -d -C` when there is no `objdump`, or
+# the `objdump` of the Xcode toolchain (`xcrun --find objdump`); a disassembler that fails, or
+# reads no instruction, fails the gate. The architecture comes from `objdump -f`; for a Mach-O
+# file or an archive of Mach-O objects, which the `objdump -f` of LLVM refuses (#1356), from
+# `otool -hv` (`otool`, else `xcrun otool`), which names the CPU type of each object. A file
+# that neither names, and a universal (fat) Mach-O file, fail the gate.
 set -eu
 
 usage() {
@@ -47,9 +51,18 @@ if command -v objdump >/dev/null 2>&1; then
     objdump=objdump
 elif command -v llvm-objdump >/dev/null 2>&1; then
     objdump=llvm-objdump
+elif command -v xcrun >/dev/null 2>&1 && xcrun --find objdump >/dev/null 2>&1; then
+    objdump=$(xcrun --find objdump)
 else
     echo "error: the FMA gate needs objdump or llvm-objdump (#1216)" >&2
     exit 1
+fi
+# The reader of Mach-O headers, when there is one (macOS): `otool`, else the Xcode toolchain's.
+otool=
+if command -v otool >/dev/null 2>&1; then
+    otool=otool
+elif command -v xcrun >/dev/null 2>&1 && xcrun --find otool >/dev/null 2>&1; then
+    otool=$(xcrun --find otool)
 fi
 
 tmp=$(mktemp -d)
@@ -62,14 +75,39 @@ for artifact in "$@"; do
         echo "error: $artifact is not a file" >&2
         exit 1
     fi
-    if ! "$objdump" -f "$artifact" > "$tmp/headers" 2> "$tmp/errors"; then
+    # The architecture: from `objdump -f` (ELF, and every format GNU objdump reads), else, for
+    # Mach-O, from the CPU type that `otool -hv` prints for the file or each archive member.
+    # An `objdump -f` that names no architecture, as LLVM's for a universal file, counts as one
+    # that cannot read the file.
+    if "$objdump" -f "$artifact" > "$tmp/headers" 2> "$tmp/errors" && grep -q 'architecture:' "$tmp/headers"; then
+        if ! grep -q -i -E 'x86-64|x86_64' "$tmp/headers"; then
+            echo "ok: FMA scan of $artifact not applicable: not x86-64 (AArch64's fmadd is baseline, ADR 0114)"
+            continue
+        fi
+    elif [ -n "$otool" ] && "$otool" -hv "$artifact" > "$tmp/headers" 2> "$tmp/errors.otool"; then
+        if grep -q -E '^Fat headers' "$tmp/headers" || "$otool" -f "$artifact" 2>/dev/null | grep -q -E '^Fat headers'; then
+            echo "error: $artifact is a universal (fat) Mach-O file; scan each architecture's file (lipo -thin)" >&2
+            exit 1
+        fi
+        # The CPU type is the second column of each header line, after the magic number.
+        awk '$1 ~ /^MH_(MAGIC|CIGAM)(_64)?$/ { print $2 }' "$tmp/headers" | LC_ALL=C sort -u > "$tmp/cpus"
+        if [ ! -s "$tmp/cpus" ]; then
+            echo "error: $otool names no Mach-O header in $artifact; the FMA gate cannot tell its architecture" >&2
+            exit 1
+        fi
+        if ! grep -q -x 'X86_64' "$tmp/cpus"; then
+            if grep -q -v -x -E 'ARM64|ARM64E|ARM64_32' "$tmp/cpus"; then
+                echo "error: $artifact holds Mach-O objects for $(tr '\n' ' ' < "$tmp/cpus")which the FMA gate does not know" >&2
+                exit 1
+            fi
+            echo "ok: FMA scan of $artifact not applicable: not x86-64 (AArch64's fmadd is baseline, ADR 0114)"
+            continue
+        fi
+    else
         echo "error: $objdump cannot read $artifact:" >&2
         cat "$tmp/errors" >&2
+        [ -n "$otool" ] && cat "$tmp/errors.otool" >&2
         exit 1
-    fi
-    if ! grep -q -i -E 'x86-64|x86_64' "$tmp/headers"; then
-        echo "ok: FMA scan of $artifact not applicable: not x86-64 (AArch64's fmadd is baseline, ADR 0114)"
-        continue
     fi
     if ! "$objdump" -d -C "$artifact" > "$tmp/disassembly" 2> "$tmp/errors"; then
         echo "error: $objdump cannot disassemble $artifact:" >&2

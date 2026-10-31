@@ -123,13 +123,33 @@ if [ "$owners" != "$expected" ]; then
     echo "error: $name.tar.gz has entries owned by $owners; expected only 0/0 with no names" >&2
     exit 1
 fi
+# Every entry lies under the archive's own directory, `$name/`, with no `..` component, and is a
+# file or a directory: no link, hard or symbolic, which could lead an unpacking outside it or
+# install something the archive does not hold (#1359). The listing's first column is the mode,
+# whose first character is the entry's type in both tars.
+entries=$(tar -tzf "$out/$name.tar.gz")
+outside=$(printf '%s\n' "$entries" | awk -v top="$name" '
+    $0 != top && $0 != top "/" && index($0, top "/") != 1 { print; next }
+    $0 ~ /(^|\/)\.\.(\/|$)/ { print }' | head -5)
+if [ -n "$outside" ]; then
+    echo "error: $name.tar.gz has entries outside $name/:" >&2
+    echo "$outside" >&2
+    exit 1
+fi
+links=$(tar -tvzf "$out/$name.tar.gz" | awk 'substr($1, 1, 1) != "-" && substr($1, 1, 1) != "d"' | head -5)
+if [ -n "$links" ]; then
+    echo "error: $name.tar.gz has entries that are neither files nor directories:" >&2
+    echo "$links" >&2
+    exit 1
+fi
 # The runtime is built into `una` (ADR 0124 step 2): an archive with a `lib/` entry, which an
 # older `una` read its runtime from, is refused.
 if [ -e "$tmp/$name/lib" ] || tar -tzf "$out/$name.tar.gz" | grep -q "^$name/lib\(/\|$\)"; then
     echo "error: $name.tar.gz has a lib/ entry; the runtime is built into una (ADR 0124 step 2)" >&2
     exit 1
 fi
-contents=$(cd "$tmp/$name" && LC_ALL=C ls | tr '\n' ' ')
+# `ls -A`, so that a dotfile at the top level is seen too (#1359).
+contents=$(cd "$tmp/$name" && LC_ALL=C ls -A | tr '\n' ' ')
 if [ "$contents" != "LICENSE README.md docs una " ]; then
     echo "error: $name.tar.gz holds $contents; expected LICENSE README.md docs una" >&2
     exit 1
@@ -161,6 +181,40 @@ if [ -z "$reported" ] || [ "$reported" != "$embedded" ]; then
     echo "error: the packed una reports the runtime \"$reported\"; $runtime is $embedded" >&2
     exit 1
 fi
+# The runtime lost its debug sections (ADR 0124 rule 12, #1359), so that no line table or path of
+# the machine that built it reaches an executable: no `__DWARF` segment or `__debug_*` section in
+# a Mach-O member (`otool -l`), no `.debug_*` section in an ELF one (`objdump -h`). The runtime
+# as cargo built it, before scripts/release.sh stripped it, is the canary: the same scan must
+# find its debug sections, or the scan proves nothing.
+debug_sections() {
+    case $target in
+        *-apple-darwin)
+            otool -l "$1" > "$tmp/sections" || return 2
+            grep -E '^[[:space:]]*(segname __DWARF|sectname __debug_)' "$tmp/sections" | LC_ALL=C sort -u | head -5
+            ;;
+        *)
+            objdump -h "$1" > "$tmp/sections" || return 2
+            grep -E '[[:space:]]\.debug_[a-z_]*' "$tmp/sections" | awk '{ print $2 }' | LC_ALL=C sort -u | head -5
+            ;;
+    esac
+}
+unstripped="$root/target/release-remapped/release/libuna_rt.a"
+if [ ! -f "$unstripped" ]; then
+    echo "error: $unstripped, the runtime before scripts/release.sh stripped it, is missing; the debug-section scan has no canary" >&2
+    exit 1
+fi
+found=$(debug_sections "$unstripped") || { echo "error: cannot list the sections of $unstripped" >&2; exit 1; }
+if [ -z "$found" ]; then
+    echo "error: the debug-section scan finds no debug section in the unstripped $unstripped; it cannot be trusted" >&2
+    exit 1
+fi
+found=$(debug_sections "$runtime") || { echo "error: cannot list the sections of $runtime" >&2; exit 1; }
+if [ -n "$found" ]; then
+    echo "error: $runtime, the runtime built into una, still has debug sections (ADR 0124 rule 12):" >&2
+    echo "$found" >&2
+    exit 1
+fi
+echo "ok: the runtime built into una has no debug section"
 # Keyed hashing's test hooks (a fixed key, a probe counter, a constant hash) exist only in the
 # toolchain's own test builds (ADR 0119 rule 9). Their module holds a marker that its key path
 # keeps: neither the symbol, by `nm`, nor its bytes, which a stripped binary still holds, may be

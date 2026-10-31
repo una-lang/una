@@ -144,11 +144,20 @@ impl Drop for PrivateDir {
     }
 }
 
+/// How old a private directory left by an earlier process must be before [`private_dir`]
+/// removes it: one hour, far longer than any link (#1359).
+pub const STALE_PRIVATE_DIR: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
 /// Creates a fresh private directory next to `near`, for an external program, such as the
 /// linker, to write its output in instead of at `near` itself. The directory of `near` must
 /// resolve inside `root`. The new directory has a name unique to this process and call, is
 /// created with `mkdir`, which fails when anything, a link included, already has that name,
 /// and has mode 0700 on Unix. Move the program's output into place with [`install`].
+///
+/// A process ended by a signal, such as an interrupt, never drops its [`PrivateDir`], so the
+/// directory stays. Once the new one exists, the private directories that earlier processes
+/// left in the same directory are removed ([`sweep_stale_private_dirs`]): only those named as
+/// this function names them, owned by the same user, and older than [`STALE_PRIVATE_DIR`].
 ///
 /// # Errors
 ///
@@ -168,12 +177,86 @@ pub fn private_dir(root: &Path, near: &Path) -> io::Result<PrivateDir> {
         #[cfg(unix)]
         std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
         match builder.create(&candidate) {
-            Ok(()) => return Ok(PrivateDir { path: candidate }),
+            Ok(()) => {
+                sweep_stale_private_dirs(
+                    &directory,
+                    &candidate,
+                    STALE_PRIVATE_DIR,
+                    std::time::SystemTime::now(),
+                );
+                return Ok(PrivateDir { path: candidate });
+            }
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => last = Some(error),
             Err(error) => return Err(error),
         }
     }
     Err(last.unwrap_or_else(|| io::Error::other("no fresh temporary name")))
+}
+
+/// Removes from `directory` the private directories that earlier processes left there, best
+/// effort (#1359): each entry named `.<name>.<process>.<serial>.una-tmp`, as [`private_dir`]
+/// names them, that is a directory and not a link, owned by the owner of `fresh` (the private
+/// directory this process just created, so the same user), and last modified more than
+/// `older_than` before `now`. A directory of a build still running is younger than that, and a
+/// file, such as the temporary file of a write, is never touched. `remove_dir_all` removes a
+/// link inside, never what it leads to. Nothing happens off Unix, where the owner cannot be
+/// read. O(entries of `directory`).
+pub fn sweep_stale_private_dirs(
+    directory: &Path,
+    fresh: &Path,
+    older_than: std::time::Duration,
+    now: std::time::SystemTime,
+) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let Ok(owner) = std::fs::symlink_metadata(fresh).map(|metadata| metadata.uid()) else {
+            return;
+        };
+        let Ok(entries) = std::fs::read_dir(directory) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path == fresh || !is_private_dir_name(&entry.file_name()) {
+                continue;
+            }
+            let Ok(metadata) = std::fs::symlink_metadata(&path) else {
+                continue;
+            };
+            let stale = metadata
+                .modified()
+                .ok()
+                .and_then(|modified| now.duration_since(modified).ok())
+                .is_some_and(|age| age > older_than);
+            if metadata.file_type().is_dir() && metadata.uid() == owner && stale {
+                let _ = std::fs::remove_dir_all(&path);
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = (directory, fresh, older_than, now);
+}
+
+/// Whether `name` is one that [`unique_name`] makes: `.<name>.<process>.<serial>.una-tmp`, with
+/// a nonempty name and decimal process and serial numbers.
+fn is_private_dir_name(name: &OsStr) -> bool {
+    let Some(name) = name.to_str() else {
+        return false;
+    };
+    let Some(inner) = name
+        .strip_prefix('.')
+        .and_then(|rest| rest.strip_suffix(".una-tmp"))
+    else {
+        return false;
+    };
+    let mut parts = inner.rsplitn(3, '.');
+    let digits = |part: Option<&str>| {
+        part.is_some_and(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+    };
+    digits(parts.next())
+        && digits(parts.next())
+        && parts.next().is_some_and(|rest| !rest.is_empty())
 }
 
 /// Moves the file `produced`, which an external program wrote inside `root` (in a
@@ -508,6 +591,76 @@ mod tests {
         );
         let output = checked_output(&package, &made.join("app")).unwrap();
         assert_eq!(output, made.join("app"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stale_private_directories_of_the_same_user_are_swept_and_nothing_else() {
+        // #1359: a build ended by a signal leaves its private directory, with the runtime copy
+        // in it. The next private directory in the same place removes it once it is older
+        // than an hour, and leaves a young one (a build still running), a file of the same
+        // name shape, a link, and any other entry alone.
+        let (dir, package, outside) = scratch("sweep");
+        let made = create_dir_inside(&package, &package.join("target/una")).unwrap();
+        let hour_and_more = STALE_PRIVATE_DIR + std::time::Duration::from_secs(60);
+        let old = std::time::SystemTime::now() - hour_and_more;
+        let age = |path: &Path| {
+            File::open(path).unwrap().set_modified(old).unwrap();
+        };
+        let stale = made.join(".app.4242.0.una-tmp");
+        std::fs::create_dir(&stale).unwrap();
+        std::fs::write(stale.join("libuna_rt.a"), b"runtime").unwrap();
+        age(&stale);
+        let young = made.join(".app.4243.0.una-tmp");
+        std::fs::create_dir(&young).unwrap();
+        let file = made.join(".app.4244.0.una-tmp");
+        std::fs::write(&file, b"a temporary file").unwrap();
+        age(&file);
+        let other = made.join(".app.backup");
+        std::fs::create_dir(&other).unwrap();
+        age(&other);
+        let link = made.join(".app.4245.0.una-tmp");
+        std::fs::create_dir(outside.join("kept")).unwrap();
+        std::fs::write(outside.join("kept/file"), b"kept").unwrap();
+        std::os::unix::fs::symlink(outside.join("kept"), &link).unwrap();
+        let fresh = private_dir(&package, &made.join("app")).unwrap();
+        assert!(!stale.exists());
+        for kept in [&young, &file, &other, fresh.path()] {
+            assert!(kept.exists(), "{kept:?}");
+        }
+        assert!(std::fs::symlink_metadata(&link).is_ok());
+        assert_eq!(std::fs::read(outside.join("kept/file")).unwrap(), b"kept");
+        // An older time limit than the directory's age keeps it; the shape of the name counts.
+        let again = made.join(".app.4246.1.una-tmp");
+        std::fs::create_dir(&again).unwrap();
+        age(&again);
+        sweep_stale_private_dirs(
+            &made,
+            fresh.path(),
+            hour_and_more + std::time::Duration::from_secs(3600),
+            std::time::SystemTime::now(),
+        );
+        assert!(again.exists());
+        sweep_stale_private_dirs(
+            &made,
+            fresh.path(),
+            STALE_PRIVATE_DIR,
+            std::time::SystemTime::now(),
+        );
+        assert!(!again.exists());
+        for (name, shaped) in [
+            (".app.1.2.una-tmp", true),
+            (".a.b.1.2.una-tmp", true),
+            ("app.1.2.una-tmp", false),
+            (".1.2.una-tmp", false),
+            (".app.x.2.una-tmp", false),
+            (".app.1..una-tmp", false),
+            (".app.1.2.una-tmp.keep", false),
+        ] {
+            assert_eq!(is_private_dir_name(OsStr::new(name)), shaped, "{name}");
+        }
+        drop(fresh);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

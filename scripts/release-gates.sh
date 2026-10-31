@@ -343,12 +343,33 @@ gate_limits() {
 gate_toolchain-free() {
     # ADR 0124 rule 31, the build phase for `una check` and `una test`: the release una alone,
     # under a sandbox that execs nothing but una (macOS) and in a bare container (linux/arm64).
+    # The una under test is the one each archive of the release gate holds, which
+    # scripts/release.sh built with the solver and the runtime inside it (ADR 0124 step 2,
+    # #1357): the aarch64-apple-darwin archive's on macOS, the aarch64-unknown-linux-gnu
+    # archive's in the container. Each archive is checked against its .sha256 file and unpacked
+    # in OUT/toolchain-free, outside the clone; without the release gate's archives the gate
+    # fails and says so.
+    local version
+    version=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$CLONE/Cargo.toml" 2>/dev/null | head -1)
     run toolchain-free sh -c '
-        UNA_Z3_LIB=$(scripts/z3-library.sh) || exit 1
-        export UNA_Z3_LIB
-        [ -x target/release/una ] || cargo build --locked --release -p una-cli || exit 1
-        scripts/toolchain-free.sh target/release/una examples/events \
-            && scripts/toolchain-free.sh target/release/una examples/events --linux-arm64'
+        version=$1 unpacked=$2
+        built=target/local-release/v$version
+        rm -rf "${unpacked:?}"
+        mkdir -p "$unpacked" || exit 1
+        # unpacked_una TARGET: the una of that archive, checked and unpacked; its path on stdout.
+        unpacked_una() {
+            name=una-$version-$1
+            [ -f "$built/$name.tar.gz" ] && [ -f "$built/$name.tar.gz.sha256" ] \
+                || { echo "no $built/$name.tar.gz; run the release gate first" >&2; return 1; }
+            (cd "$built" && shasum -a 256 --check "$name.tar.gz.sha256" >&2) || return 1
+            mkdir -p "$unpacked/$1" && tar -xzf "$built/$name.tar.gz" -C "$unpacked/$1" || return 1
+            echo "$unpacked/$1/$name/una"
+        }
+        una=$(unpacked_una aarch64-apple-darwin) \
+            && scripts/toolchain-free.sh "$una" examples/events \
+            && una=$(unpacked_una aarch64-unknown-linux-gnu) \
+            && scripts/toolchain-free.sh "$una" examples/events --linux-arm64' \
+        sh "$version" "$OUT/toolchain-free"
 }
 
 gate_deps() { run deps scripts/deps-audit.sh; }
@@ -575,6 +596,17 @@ fi
         for archive in $archives; do
             echo "| \`$(basename "$archive")\` | \`$(digest "$archive")\` |"
         done
+    fi
+    echo
+    # The strip that removed the debug sections of each runtime built into una (#1359), as
+    # scripts/release.sh printed it in the release gate's log: its version and its binary's digest.
+    echo "## Runtime strip"
+    echo
+    strips=$(sed -n 's/^strip: \([a-z0-9_-]*\): \(.*\)$/- \1: \2/p' "$OUT/logs/release.log" 2>/dev/null | LC_ALL=C sort -u)
+    if [ -z "$strips" ]; then
+        echo "None: the release gate did not run or did not record the strip tool."
+    else
+        printf '%s\n' "$strips"
     fi
     echo
     echo "## Dependency audit"

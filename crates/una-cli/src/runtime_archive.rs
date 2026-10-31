@@ -73,6 +73,16 @@ pub(crate) fn embedded(environment: crate::Environment<'_>) -> Result<Option<Emb
     }
 }
 
+/// The digest that the build report names as `native.runtime_sha256` (ADR 0124 rule 28): the
+/// recorded digest of the runtime built into this `una`, the one [`embedded`] holds, so the
+/// report and the link read the same value; `None` in a development build.
+pub(crate) fn reported_sha256(environment: crate::Environment<'_>) -> Option<String> {
+    match embedded(environment) {
+        Ok(Some(runtime)) => Some(runtime.sha256.into_owned()),
+        Ok(None) | Err(_) => None,
+    }
+}
+
 impl Embedded {
     /// The bytes, once they match the recorded digest.
     ///
@@ -114,7 +124,10 @@ const NAMES: [&str; 2] = ["libuna_rt.a", "libuna_rt-embedded.a"];
 /// Writes `bytes` into `private`, the link's private directory (mode 0700, fresh for this
 /// build, #1160), as a new file of mode 0600 that no other file may already hold
 /// (`create_new`, `O_EXCL`), under a name distinct from each of `taken`, and returns its path.
-/// The file goes with the directory when the build ends. O(size of the runtime).
+/// Names are compared without regard to ASCII case, since a file system such as APFS may not
+/// tell `LIBUNA_RT.A` from `libuna_rt.a` (#1359). The file is not synced to disk: the linker
+/// reads it right away, and it goes with the directory when the build ends, so a crash loses
+/// nothing that must survive. O(size of the runtime).
 ///
 /// # Errors
 ///
@@ -123,7 +136,11 @@ pub(crate) fn write_into(bytes: &[u8], private: &Path, taken: &[&Path]) -> io::R
     let path = NAMES
         .iter()
         .map(|name| private.join(name))
-        .find(|path| !taken.contains(&path.as_path()))
+        .find(|path| {
+            !taken
+                .iter()
+                .any(|other| other.as_os_str().eq_ignore_ascii_case(path.as_os_str()))
+        })
         .ok_or_else(|| io::Error::other("no free name for the runtime"))?;
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
@@ -131,7 +148,6 @@ pub(crate) fn write_into(bytes: &[u8], private: &Path, taken: &[&Path]) -> io::R
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
     let mut file = options.open(&path)?;
     file.write_all(bytes)?;
-    file.sync_all()?;
     Ok(path)
 }
 
@@ -169,13 +185,53 @@ mod tests {
         assert!(held.verified().is_err());
     }
 
-    #[cfg(not(una_runtime_embedded))]
+    #[cfg(all(not(una_runtime_embedded), feature = "test-hooks"))]
     #[test]
-    fn a_development_build_embeds_no_runtime() {
-        // The test builds are development builds: no runtime, no digest (rule 19).
-        assert_eq!(SHA256, None);
-        let environment = |_: &str| -> Result<Option<String>, una_interp::NotText> { Ok(None) };
-        assert!(matches!(embedded(&environment), Ok(None)));
+    fn the_test_hook_stands_in_only_with_its_digest_and_is_checked_like_the_runtime() {
+        // The stand-in of the toolchain's own test builds (`test-hooks`): without its variable
+        // there is no runtime, as in a development build; with the file but no digest it is
+        // refused; with both, its bytes are checked against the digest like the embedded
+        // runtime's, so a missing file or a wrong digest fails closed.
+        let dir = std::env::temp_dir().join(format!("una-rt-hook-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("runtime.a");
+        std::fs::write(&file, b"!<arch>\nmembers").unwrap();
+        let path = file.to_string_lossy().into_owned();
+        let good = digest(b"!<arch>\nmembers");
+        let with = |variables: Vec<(&'static str, String)>| {
+            move |name: &str| -> Result<Option<String>, una_interp::NotText> {
+                Ok(variables
+                    .iter()
+                    .find(|(key, _)| *key == name)
+                    .map(|(_, value)| value.clone()))
+            }
+        };
+        let none = with(vec![]);
+        assert!(matches!(embedded(&none), Ok(None)));
+        let without_digest = with(vec![("UNA_TEST_EMBEDDED_RUNTIME", path.clone())]);
+        assert!(embedded(&without_digest).is_err());
+        let held = with(vec![
+            ("UNA_TEST_EMBEDDED_RUNTIME", path.clone()),
+            ("UNA_TEST_EMBEDDED_RUNTIME_SHA256", good.clone()),
+        ]);
+        let runtime = embedded(&held).unwrap().unwrap();
+        assert_eq!(runtime.verified().unwrap(), b"!<arch>\nmembers");
+        let wrong = with(vec![
+            ("UNA_TEST_EMBEDDED_RUNTIME", path),
+            ("UNA_TEST_EMBEDDED_RUNTIME_SHA256", "0".repeat(64)),
+        ]);
+        assert!(embedded(&wrong).unwrap().unwrap().verified().is_err());
+        let missing = with(vec![
+            (
+                "UNA_TEST_EMBEDDED_RUNTIME",
+                dir.join("absent.a").to_string_lossy().into_owned(),
+            ),
+            ("UNA_TEST_EMBEDDED_RUNTIME_SHA256", good),
+        ]);
+        let message = embedded(&missing).unwrap().unwrap().verified().unwrap_err();
+        assert!(message.contains("is missing"), "{message}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[cfg(unix)]
@@ -197,6 +253,13 @@ mod tests {
         let produced = dir.join("libuna_rt.a");
         let other = write_into(b"runtime", &dir, &[&produced]).unwrap();
         assert_eq!(other, dir.join("libuna_rt-embedded.a"));
+        // A name that differs only in case is the same file on a case-insensitive file system
+        // (#1359): it is taken too.
+        std::fs::remove_file(&written).unwrap();
+        std::fs::remove_file(&other).unwrap();
+        let shouting = dir.join("LIBUNA_RT.A");
+        let beside = write_into(b"runtime", &dir, &[&shouting]).unwrap();
+        assert_eq!(beside, dir.join("libuna_rt-embedded.a"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -1049,6 +1049,7 @@ fn run_command(
                     json,
                     color: use_color(color, stderr_is_terminal),
                     solving: solving(solver_wallclock, solver_memory, json, stderr),
+                    runtime_sha256: runtime_archive::reported_sha256(environment),
                 };
                 report::report_command(&path, options, stdout, stderr)
             }
