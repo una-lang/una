@@ -1296,3 +1296,13 @@ Amendment 12, decision 2, says the source is looked up "before anything is built
 ## Amendment (2026-10-19): `serve` grants (ADR 0123)
 
 Rule 12's grants gain `serve "<scheme>://<address>:<port>"`, the `ita.una` form of the `serve:` grant of ADR 0123 rules 6 to 9, with its items as lines below it, one item per line: `certificate "F"`, `key "F"`, `tls12`, `at most N at once`, `at most N per second|minute|hour`, `waiting|connections|requests|headers at most N`, `peer at most N` or `peer none`, `handshakes at most N per second`, `line|header|body at most N KiB`, `buffers|replies|delivered at most N MiB`, `peer_buffers|peer_replies at most N MiB` or `none`, `idle|read|write|answer within N second|seconds`, and `hosts "a", "b"`. The grammar, the mapping of each line to the item of the text form, and the errors are those of `spec/31 §2` rules 3 and 4; every error is U7008 at its line (rule 13). The production `grant` of rule 5 gains the alternative `serve_grant` of `spec/31 §2` rule 3, and the limit lines of ADR 0117 stay under `http` grants only. As for every grant, `--grant` keeps the text form, and a dependency's `run` section is not read.
+
+## Amendment of 2026-10-31: `una migrate` converts `quality.toml` (ADR 0131)
+
+Proposed together with ADR 0131 (issue #1302). It takes effect when ADR 0131 is accepted and its migration slice lands; until then rule 64 reads as written.
+
+1. **Rule 64, a package that already has `ita.una`.** Rule 64 makes `una migrate` on such a package a usage error. With this amendment, when the package root holds `quality.toml`, `una migrate` converts it to `quality.una` (ADR 0131 rule 12) and does nothing else; it stays a usage error only when there is nothing to convert.
+2. **Rule 64, a package of edition `0.1` to `0.3`.** `una migrate` also converts `quality.toml` when the package root holds one, in the same run as the edition move. `una migrate --only quality` converts the quality file alone and leaves the manifest, the lock and the edition unchanged.
+3. **Question 8.1.** "One manifest format and one parser" in edition `0.4` is kept and extended: every configuration file of an edition `0.4` package is in the lexical syntax of rule 4, read by the syntax crate (ADR 0131 rules 3 and 4). The TOML reader that `quality.toml` uses until the slice lands is accepted for that interim (ADR 0131 rule 17).
+
+No other rule of this record changes.
