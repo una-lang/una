@@ -148,3 +148,59 @@ One elision query per `Int` operation of an `app` package and one per operand, i
 **F. Elide the division tests where the divisor is proven nonzero.** Not chosen: in C, a zero divisor or `MIN / -1` is undefined behavior, so a wrong proof would not stay a wrong value; the test is one predictable branch.
 
 **G. Elide bounds checks on a proven index now.** Not chosen: under RB-3a, a false unsat for a bounds goal is a read or write out of bounds, and nothing checks the solver's answer today. §9 states what #66 would need.
+
+## Amendment (2026-10-31): check elision without emitted C (#1309)
+
+ADR 0106's amendment of 2026-10-31 withdraws the C-emitting backend. The release path of `una build --release` becomes Una's own optimizing code generation over Core IR, inside `una`, under that amendment's requirements RP-1 to RP-10, and its design is a separate record (#1305). This record was written against the emitted C: where elision happens, how the present checks are read back, and some of its reasons, are stated in terms of C. This amendment restates each of those parts for the release path. It changes no rule on which checks may be elided, and it chooses no representation, pass or algorithm of the code generator; those are the design record's (ADR 0106's amendment, OQ-1 to OQ-4).
+
+### What stands unchanged
+
+- **EL-2, EL-2a and RB-3a.** Only the `Int` promotion path (result and operands proven in the tagged range, on the canonical representation of EL-2a) and the fixed-width overflow test (its `overflow` obligation proven) may be elided. Division and remainder tests, memory-safety checks (handles, inline bounds, runtime bounds), resource and cancellation checks, the abort after the last arm of a `when`, and `checked` always stay. A later kind still needs its own amendment of this record.
+- **EL-3, EL-4 and EL-7:** the proofs that count, the advisory elision queries, the proof cache and its deterministic limits, and the trust each elision rests on.
+- **`una build --release --no-elision`:** a release executable with every check, built by the same release path, running no elision query, with `elided` empty. The `elision-equivalence` gate keeps its meaning: with and without elision, a program gives the same output, failures, trace and exit code, and the same as the interpreter.
+- **§9** (what would unlock bounds elision) and **§10** (complexity).
+
+### Terms
+
+In this amendment, the **release representation** is any representation of a package that the release path builds between Core IR and the machine code it writes, whatever the design record makes it (one or several, or none beyond Core IR). The **machine code** is the object the release path writes, before linking. Every operation of each is defined at every input (RP-5).
+
+### Restatements, by section
+
+1. **Target (the record's header) and Context.** "The release backend of ADR 0106" reads as the release path of ADR 0106's amendment, §3. "Before C is emitted" reads as "before machine code is generated", as ADR 0106's amendment, §2, states RB-3: no optimization removes or weakens a check that the Cranelift build makes, except where this record elides it on a proof, before code generation, recorded in the build report.
+
+2. **EL-1, where elision happens.** Elision happens in release builds only, before machine code is generated, at a point of the release path where every check still carries the Core IR site it came from: on Core IR itself or on the release representation. Which of these is the design record's choice. Wherever it is applied, each elision is decided by EL-2 and EL-3 for one Core IR check site, and is the one entry of `native.elided` for that site. `una build` without `--release` and the interpreter keep every check, as before.
+
+3. **EL-2, the remaining operation (RB-7's forms).** Where the record says "in the unsigned form of RB-7", it means an operation that ADR 0106's amendment keeps under RB-7 and RP-5: defined at every input, with a wrong proof giving a wrong value.
+   - **The `Int` promotion path.** The remaining operation is the 64-bit operation modulo 2^64 on the untagged two's-complement values (wrapping addition, subtraction, multiplication and negation), and the result is retagged by a logical left shift by one of its 64-bit pattern, with bit 0 set. Both are defined for every input, in every representation of the release path; neither has a case that a later pass may treat as impossible. The text `((uint64_t)r << 1) | 1` states this retagging in C, and is read so.
+   - **The fixed-width overflow test.** The remaining operation is the wrapping operation of the type's width (modulo 2^w, read back in the type's signedness), and a narrowing conversion is the truncation to the width's bit pattern, read back in the target type.
+   - The elided path still never retains or releases an operand.
+
+4. **EL-2, the reason division and remainder keep their tests.** The rule is unchanged: the zero-divisor and `MIN / -1` tests stay, and Alternative F stays rejected. The reason "in C, both cases are undefined behavior" is restated: under RP-5, no representation of the release path has an operation that is undefined at some input, so a division without its tests would have to define both cases itself; and the machine instructions do not give a wrong value for them on every target: on x86-64, `idiv` raises a divide-error exception for a zero divisor and for `MIN / -1`, which ends the process with neither a wrong value nor the interpreter's failure (on AArch64, `sdiv` returns 0 and `MIN` without a trap). A wrong proof there would therefore not stay a wrong value, which EL-2 requires, and the test costs one predictable branch beside a division. The sign correction of the Euclidean remainder is not a check: RB-7's defined form (the unsigned remainder, where the dividend is proven non-negative, as ADR 0106's measurement shows) removes it there.
+
+5. **EL-2, the abort after the last arm of a `when`.** The rule is unchanged: the abort stays. The reason "its only removal form, `__builtin_unreachable`, is excluded by RB-7" reads: its only removal form would be an "unreachable" construct, which RP-5 excludes from every representation of the release path.
+
+6. **EL-5, the record and the three sets.** "Before the C compiler runs" reads as "before the release path writes the executable". The three sets stay as written, each computed independently of the others:
+   1. **The required checks:** every check site that Core IR calls for, enumerated by a pass over Core IR that is separate from the passes of the release path that place, move or remove checks.
+   2. **The present checks:** the checks that the code the release path generates contains, read back from that code: from the release representation at the last point where each check is still identifiable by its site, or from the machine code. They are read by a pass separate from the code generator's passes, never from the code generator's own account of what it emitted. Each check carries what names its site down to that point, as the emitter's marker did in the C. How a check carries its site, and at which point the set is read, is the design record's choice; any pass after that point MUST be one that cannot remove or merge a check (RP-4), and `check-survival` and its canaries cover it.
+   3. **The elided checks:** `native.elided`.
+
+   The comparison is unchanged: the first set equals the union of the other two, and the other two are disjoint; anything else is U8001 and no executable is written; no flag, environment variable or build mode skips it, `--no-elision` included. If the design record lets a pass remove or hoist a check under a rule of its own (ADR 0106's amendment, RP-4 and OQ-4), each such removal is listed in the build report with its rule and its site, and counts in the comparison as a fourth set, disjoint from the others and never part of `native.elided`; until the design states such a rule, there is none, and the comparison is the three sets above. So the report still lists exactly the checks that are absent.
+
+7. **EL-6, with the release path.**
+   - **"Before the C"** reads: an elision removes a check and adds no fact. No pass of the release path receives the proof behind an elision as a premise (an assumed range, a failure path marked impossible) that it could use to remove, move or weaken another check (RP-4, RP-5). A proven fact that the release path uses for speed is used only under RB-7, in a defined form, recorded with its obligation (RP-10).
+   - **"Defined forms only"** reads: the remaining operation uses the forms of item 3. `__builtin_assume`, `__builtin_unreachable` and `restrict` read as any construct of the release path whose false premise has no defined meaning: an assumption, an "unreachable" mark, a poison-like value, or a promise that two accesses do not overlap. RP-5 excludes them all.
+   - **"No weakened neighbor"** stands as written.
+   - **`check-survival`.** Its Una-program triggers stand as written. Its harness builds, for the fixed-width overflow and division kinds, are test builds of the release path itself that keep the check present and feed the failing values directly, showing that the check fires with the shipped release path and its shipped settings; no C harness is involved. The stale-handle trigger is ADR 0106's amendment's (#1307).
+
+8. **§8, gates and tests.**
+   - **`elision-record`:** its canary is a test build of the code generator (in the record, "the emitter") that drops one check without recording it, and it must give U8001.
+   - **A wrong proof stays defined:** the test build that marks one refuted `overflow` obligation proven builds an executable that computes the wrapped value of item 3, equal to that value as the interpreter's model of the width computes it. The record's "the `sanitize` gate's flags report nothing on it" referred to the sanitizer run over the emitted C, which ADR 0106's amendment withdraws; it reads as the evidence that replaces that run (ADR 0106's amendment, OQ-8, #1307), which MUST report nothing on this executable once it exists.
+   - The other gates and tests stand as written.
+
+9. **Alternative C.** "Tell the C compiler the proven facts with `__builtin_assume`" reads as: give the release path's optimizer a proven fact as an assumption whose false premise has no defined meaning. It stays rejected, by RB-7 and RP-5.
+
+10. **Consequences.** "The kernels of ADR 0106 and ADR 0107" are measured in Una, through the release path (#1306); their C versions remain measurement records that `una` never builds.
+
+### Effect
+
+With this amendment, no rule of this record depends on emitted C. It is implementable with the release path, once the design record (#1305) is accepted, and it binds that record: the design states where elision is applied (item 2), how the present checks are read (item 6), and how each check carries its site.

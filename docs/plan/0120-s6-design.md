@@ -90,7 +90,7 @@ enum Store {
 
 - Raw cells and packed integer stores (#736, #1089); the inlined lambda lowering of rule 35 (follow-up of #736).
 - The hash encoding of dense values in native tables (with the native hash tables).
-- `simd required` (S8, #991) and the C release backend's vector forms.
+- `simd required` (S8, #991) and its lowering in release builds (the C release backend's vector forms are withdrawn by ADR 0106's amendment of 2026-10-31; open question OQ-6 there, #1308).
 - `F32`, `Complex` and `Decimal` elements in native dense values: the checker admits `F64` and the fixed-width integers today (`dense_numeric`); the other element types follow their own slices.
 
 ## 6. Costs
