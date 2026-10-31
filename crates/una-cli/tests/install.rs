@@ -81,6 +81,7 @@ fn release(dir: &Path, target: &str, version: &str, verdict: &str, listed: Optio
 
 /// [`release`], with the archive also holding `extra` files, by path and content: the
 /// `lib/libuna_rt.a` of a release before ADR 0124 step 2, or an entry the installer refuses.
+/// A content `symlink:<target>` makes the entry a symbolic link to `<target>`.
 fn release_holding(
     dir: &Path,
     target: &str,
@@ -100,7 +101,12 @@ fn release_holding(
     for (path, text) in extra {
         let path = staging.join(path);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, text).unwrap();
+        if let Some(target) = text.strip_prefix("symlink:") {
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(target, &path).unwrap();
+        } else {
+            std::fs::write(path, text).unwrap();
+        }
     }
     std::fs::write(staging.join("una"), "#!/bin/sh\necho una stub\n").unwrap();
     // Executable, as in a real archive: the installer checks it before installing.
@@ -353,6 +359,62 @@ fn an_archive_without_lib_installs_no_runtime_and_an_earlier_one_still_installs_
         assert!(stderr(&output).contains("refuses"), "{}", stderr(&output));
         assert!(!home.exists());
     }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn an_archive_with_a_link_is_refused_before_anything_is_installed() {
+    // #1359 (L2): a symbolic link in the archive, at its top level or among the guides, could
+    // make the installer copy a file the archive does not hold, such as one of the machine's,
+    // into UNA_HOME. Every link is refused, wherever it is and wherever it leads, before
+    // anything is unpacked or installed.
+    let Some(target) = target() else {
+        return;
+    };
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("install-links");
+    let _ = std::fs::remove_dir_all(&dir);
+    let version = "9.9.6";
+    let home = dir.join("home/.una");
+    let pass = "PASS (every gate)";
+    for extra in [
+        [("README.md", "symlink:/etc/hosts"), ("LICENSE", "license")],
+        [("README.md", "readme"), ("LICENSE", "symlink:README.md")],
+        [
+            ("README.md", "readme"),
+            ("docs/guide/getting-started.md", "symlink:/etc/hosts"),
+        ],
+        [
+            ("lib/libuna_rt.a", "symlink:/etc/hosts"),
+            ("README.md", "readme"),
+        ],
+    ] {
+        release_holding(&dir, target, version, pass, None, &extra);
+        let output = install(&dir, version, &[]);
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "{extra:?}: {}",
+            stderr(&output)
+        );
+        assert!(
+            stderr(&output).contains("holds a link"),
+            "{extra:?}: {}",
+            stderr(&output)
+        );
+        assert!(!home.exists(), "{extra:?}");
+    }
+    // The same archive without the link installs.
+    release_holding(
+        &dir,
+        target,
+        version,
+        pass,
+        None,
+        &[("README.md", "readme"), ("LICENSE", "license")],
+    );
+    let output = install(&dir, version, &[]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     let _ = std::fs::remove_dir_all(&dir);
 }
 

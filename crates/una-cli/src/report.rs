@@ -341,6 +341,9 @@ pub(crate) struct ReportOptions {
     pub(crate) color: bool,
     /// How tier 1 runs the solver (ADR 0064).
     pub(crate) solving: crate::verification::Solving,
+    /// The digest of the runtime built into `una`, `native.runtime_sha256` (ADR 0124 rule 28),
+    /// from [`crate::runtime_archive::reported_sha256`]; `None` in a development build.
+    pub(crate) runtime_sha256: Option<String>,
 }
 
 /// `una report [path]`: checks the package at tier 1 and prints its build report; the
@@ -424,7 +427,14 @@ pub(crate) fn report_command(
         .cache
         .and(options.solving.proof_key.as_ref())
         .map(|key| key.shown.clone());
-    let document = build(&package, &analysis, counts, &trivial, key);
+    let document = build(
+        &package,
+        &analysis,
+        counts,
+        &trivial,
+        key,
+        options.runtime_sha256.clone(),
+    );
     if options.json {
         match serde_json::to_string(&document) {
             Ok(text) => writeln!(stdout, "{text}")?,
@@ -460,6 +470,7 @@ fn build(
     counts: Counts,
     trivial: &BTreeSet<(String, Span)>,
     proof_cache_key: Option<String>,
+    runtime_sha256: Option<String>,
 ) -> Report {
     let (manifest, _) = crate::package::project(package);
     let modules = Modules {
@@ -808,7 +819,7 @@ fn build(
                     .map(|prefix| (*prefix).to_owned())
                     .collect(),
             },
-            runtime_sha256: crate::runtime_archive::SHA256.map(str::to_owned),
+            runtime_sha256,
         },
         generic_results,
         out_of_model: OUT_OF_MODEL,

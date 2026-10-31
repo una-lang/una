@@ -245,18 +245,20 @@ fn the_summary_is_the_template_of_the_record_and_nothing_else() {
     let digest = "a".repeat(64);
     let log = "b".repeat(64);
     let record = format!(
-        "# Validation record\n\n- Commit: `{commit}`\n- Subject: a subject that is not copied\n- Run: 2026-10-14T13:12:34Z, Darwin arm64, rustc 1.98.1 (48a229cea 2026-09-01), Docker version 24.0.7, build afdd53b4e3\n- Script: `scripts/release-gates.sh` at `{commit}`\n\n| Gate | Result | Seconds | Log sha256 |\n| --- | --- | --- | --- |\n| clone | PASS | 2 | `{log}` |\n| build | PASS | 398 | `{log}` |\n\n## Archives\n\n| Archive | sha256 |\n| --- | --- |\n| `una-9.9.9-aarch64-apple-darwin.tar.gz` | `{digest}` |\n\n## Dependency audit\n\n- Tool: cargo-deny 0.20.2\n- Advisory database: `{database}` (2026-10-14T22:18:32+02:00)\n\n## Docs bundle\n\n| Bundle | sha256 |\n| --- | --- |\n| `una-docs-9.9.9.tar.gz` | `{digest}` |\n\nVerdict: PASS (every gate)\n\n## Notes\n\nFree text that is not copied.\n",
+        "# Validation record\n\n- Commit: `{commit}`\n- Subject: a subject that is not copied\n- Run: 2026-10-14T13:12:34Z, Darwin arm64, rustc 1.98.1 (48a229cea 2026-09-01), Docker version 24.0.7, build afdd53b4e3\n- Script: `scripts/release-gates.sh` at `{commit}`\n\n| Gate | Result | Seconds | Log sha256 |\n| --- | --- | --- | --- |\n| clone | PASS | 2 | `{log}` |\n| build | PASS | 398 | `{log}` |\n\n## Archives\n\n| Archive | sha256 |\n| --- | --- |\n| `una-9.9.9-aarch64-apple-darwin.tar.gz` | `{digest}` |\n\n## Runtime strip\n\n- aarch64-apple-darwin: xcrun strip -S (Xcode 27.2 build 27B52), sha256 {strip}\n- x86_64-unknown-linux-gnu: GNU strip (GNU Binutils for Ubuntu) 2.42 --strip-debug -D, sha256 {strip}\n\n## Dependency audit\n\n- Tool: cargo-deny 0.20.2\n- Advisory database: `{database}` (2026-10-14T22:18:32+02:00)\n\n## Docs bundle\n\n| Bundle | sha256 |\n| --- | --- |\n| `una-docs-9.9.9.tar.gz` | `{digest}` |\n\nVerdict: PASS (every gate)\n\n## Notes\n\nFree text that is not copied.\n",
         commit = "c".repeat(40),
         database = "d".repeat(40),
+        strip = "e".repeat(64),
     );
     let (code, written) = summary(&dir, "9.9.9", &record, Some("not-in-the-summary"));
     assert_eq!(code, Some(0));
     assert_eq!(
         written,
         format!(
-            "# Una v9.9.9: release validation\n\n- Commit: `{commit}`\n- Run: 2026-10-14T13:12:34Z, Darwin arm64\n- Toolchain: rustc 1.98.1 (48a229cea 2026-09-01); Docker version 24.0.7, build afdd53b4e3\n\n| Gate | Result | Seconds |\n| --- | --- | --- |\n| clone | PASS | 2 |\n| build | PASS | 398 |\n\n## Archives\n\n| Archive | sha256 |\n| --- | --- |\n| `una-9.9.9-aarch64-apple-darwin.tar.gz` | `{digest}` |\n\n## Dependency audit\n\n- Tool: cargo-deny 0.20.2\n- Advisory database: `{database}` (2026-10-14T22:18:32+02:00)\n\nVerdict: PASS (every gate)\n\nThe gates are defined in `docs/release-gates.md` at the commit above.\n",
+            "# Una v9.9.9: release validation\n\n- Commit: `{commit}`\n- Run: 2026-10-14T13:12:34Z, Darwin arm64\n- Toolchain: rustc 1.98.1 (48a229cea 2026-09-01); Docker version 24.0.7, build afdd53b4e3\n\n| Gate | Result | Seconds |\n| --- | --- | --- |\n| clone | PASS | 2 |\n| build | PASS | 398 |\n\n## Archives\n\n| Archive | sha256 |\n| --- | --- |\n| `una-9.9.9-aarch64-apple-darwin.tar.gz` | `{digest}` |\n\n## Runtime strip\n\n- aarch64-apple-darwin: xcrun strip -S (Xcode 27.2 build 27B52), sha256 {strip}\n- x86_64-unknown-linux-gnu: GNU strip (GNU Binutils for Ubuntu) 2.42 --strip-debug -D, sha256 {strip}\n\n## Dependency audit\n\n- Tool: cargo-deny 0.20.2\n- Advisory database: `{database}` (2026-10-14T22:18:32+02:00)\n\nVerdict: PASS (every gate)\n\nThe gates are defined in `docs/release-gates.md` at the commit above.\n",
             commit = "c".repeat(40),
             database = "d".repeat(40),
+            strip = "e".repeat(64),
         )
     );
     // A summary that matches the privacy pattern is not written.
@@ -270,6 +272,10 @@ fn the_summary_is_the_template_of_the_record_and_nothing_else() {
         ("| build | PASS |", "| deploy | PASS |"),
         ("cargo-deny 0.20.2", "cargo-deny 0.20.2 on a named host"),
         ("(2026-10-14T22:18:32+02:00)", "(yesterday)"),
+        // The strip lines (#1359): a path or free text instead of the version, or no digest.
+        ("(Xcode 27.2 build 27B52)", "(/Users/someone/bin/strip)"),
+        ("Ubuntu) 2.42", "Ubuntu) 2.42 on a named host"),
+        (", sha256 eeee", ", eeee"),
     ] {
         let (code, written) = summary(&dir, "9.9.9", &record.replace(from, to), None);
         assert_eq!(code, Some(1), "{to}");
@@ -311,7 +317,13 @@ fn a_pre_release_has_a_summary_and_is_published_as_a_pre_release() {
         )),
         "{written}"
     );
-    // A record with no dependency audit: the summary says so.
+    // A record with no strip lines (#1359), and none with a dependency audit: the summary says so.
+    assert!(
+        written.contains(
+            "## Runtime strip\n\nNone: the release gate did not run or did not record the strip tool.\n"
+        ),
+        "{written}"
+    );
     assert!(
         written.contains(
             "## Dependency audit\n\nNone: the deps gate did not run or did not fetch the advisory database.\n"

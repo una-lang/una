@@ -1,7 +1,14 @@
+# NOT USED. GitHub Actions is not used by this project: releases are built and validated on the
+# project's own machine by scripts/release-gates.sh and scripts/local-release.sh
+# (docs/release-gates.md). This file is kept for reference only and describes what a hosted
+# run would do; it is not evidence of anything (#1358).
+#
 # Milestone M10, task 3: release archives for Linux and macOS, built when a tag v* is pushed and
 # attached to a draft release that the project publishes (ADR 0035 rules 3 and 4).
 # One native runner per target, with the scripts the CI workflow also runs.
 # The project pushes the tag, from main after review; the autonomous run never does.
+# Since ADR 0124 step 2 the archive holds `una`, with the Z3 solver and the native runtime built
+# into it, the license, the readme and the guides, and no lib/; no Z3 is installed on PATH.
 name: Release
 
 on:
@@ -25,7 +32,7 @@ jobs:
         run: >
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft --verify-tag
           --title "Una $GITHUB_REF_NAME"
-          --notes "The una binary with its native runtime library (lib/libuna_rt.a), license and readme, for Linux (x86_64) and macOS (arm64), each with its SHA-256 digest. una checks at tier 1 with Z3 at the version pinned in verification.lock on PATH; scripts/install-z3.sh installs it."
+          --notes "The una binary, with the Z3 solver and the native runtime built into it (ADR 0124), with its license, readme and guides, for Linux (x86_64) and macOS (arm64), each with its SHA-256 digest. Nothing else is needed to check and test Una programs; una build still uses the system cc until ADR 0124 step 3."
 
   build:
     name: ${{ matrix.target }}
@@ -49,10 +56,11 @@ jobs:
           rustup toolchain install
           rustc --version
 
-      - name: Install the Z3 release pinned in verification.lock
-        run: |
-          scripts/install-z3.sh "$RUNNER_TEMP/z3"
-          echo "$RUNNER_TEMP/z3/bin" >> "$GITHUB_PATH"
+      # The Z3 library that supply-chain/z3.lock records for the target, which scripts/release.sh
+      # embeds into una by its digest (ADR 0124 rules 1 and 18); a target without a recorded
+      # digest cannot be released.
+      - name: Build the Z3 library recorded in supply-chain/z3.lock
+        run: scripts/build-z3.sh --reproducible
 
       - name: Pack the archive
         run: scripts/release.sh ${{ matrix.target }}

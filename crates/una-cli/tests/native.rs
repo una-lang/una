@@ -707,7 +707,26 @@ fn build_with_embedded(
     sha256: &str,
     rt_lib: &Path,
 ) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_una"))
+    build_with_embedded_by(
+        Path::new(env!("CARGO_BIN_EXE_una")),
+        dir,
+        out,
+        embedded,
+        sha256,
+        rt_lib,
+    )
+}
+
+/// [`build_with_embedded`], run by the `una` at `una`.
+fn build_with_embedded_by(
+    una: &Path,
+    dir: &Path,
+    out: &Path,
+    embedded: &Path,
+    sha256: &str,
+    rt_lib: &Path,
+) -> Output {
+    Command::new(una)
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
         .env_remove("UNA_PROOF_KEY")
         .env("UNA_TEST_EMBEDDED_RUNTIME", embedded)
@@ -726,14 +745,37 @@ fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", sha2::Sha256::digest(bytes))
 }
 
+/// A `una` placed at `install/bin/una`, a hard link to (or else a copy of) the test build's, with
+/// a file that is no runtime at each place a development build looks for one (ADR 0059 rule 2
+/// and its amendment): `bin/lib/libuna_rt.a`, `bin/libuna_rt.a` and `lib/libuna_rt.a`.
+fn una_beside_junk_runtimes(install: &Path) -> PathBuf {
+    let bin = install.join("bin");
+    std::fs::create_dir_all(bin.join("lib")).unwrap();
+    std::fs::create_dir_all(install.join("lib")).unwrap();
+    let una = bin.join("una");
+    if std::fs::hard_link(env!("CARGO_BIN_EXE_una"), &una).is_err() {
+        std::fs::copy(env!("CARGO_BIN_EXE_una"), &una).unwrap();
+    }
+    for junk in [
+        bin.join("lib/libuna_rt.a"),
+        bin.join("libuna_rt.a"),
+        install.join("lib/libuna_rt.a"),
+    ] {
+        std::fs::write(junk, "not a runtime\n").unwrap();
+    }
+    una
+}
+
 #[test]
 fn an_embedded_runtime_is_linked_and_una_rt_lib_has_no_effect() {
     // ADR 0124 rules 14 and 15 (step 2): a `una` with its runtime built in links that runtime,
     // checked against its digest, and reads no variable and no file for it: `UNA_RT_LIB`
-    // naming a file that is no runtime at all, and a junk `libuna_rt.a` beside the package,
-    // change nothing, so a runtime older than `una` can no longer fail the link (#203). The
-    // runtime goes into the link's private directory and leaves with it. The executable is the
-    // one a development build links from the same runtime file.
+    // naming a file that is no runtime at all, and such a file at each place a development
+    // build looks beside `una`, change nothing, so a runtime older than `una` can no longer
+    // fail the link (#203). The same `una` without the stand-in reads those files and fails, so
+    // they are where it would look (#1359, L5). The runtime goes into the link's private
+    // directory and leaves with it. The executable is the one a development build links from
+    // the same runtime file.
     let built = built_runtime();
     let dir = package(
         "embedded",
@@ -743,10 +785,12 @@ fn an_embedded_runtime_is_linked_and_una_rt_lib_has_no_effect() {
     let bytes = std::fs::read(&built).unwrap();
     let embedded = dir.join("embedded-runtime.a");
     std::fs::write(&embedded, &bytes).unwrap();
-    let junk = dir.join("libuna_rt.a");
+    let junk = dir.join("not-a-runtime.a");
     std::fs::write(&junk, "not a runtime\n").unwrap();
+    let una = una_beside_junk_runtimes(&dir.join("install"));
     let out = dir.join("out");
-    let output = build_with_embedded(
+    let output = build_with_embedded_by(
+        &una,
         &dir,
         &out.join("hello"),
         &embedded,
@@ -767,6 +811,19 @@ fn an_embedded_runtime_is_linked_and_una_rt_lib_has_no_effect() {
         .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
     assert_eq!(left, ["hello"]);
+    // The same `una` as a development build, with no stand-in and no `UNA_RT_LIB`, reads the
+    // junk beside it, and its link fails: the files above are where it looks.
+    let development = Command::new(&una)
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
+        .env_remove("UNA_TEST_EMBEDDED_RUNTIME")
+        .env_remove("UNA_RT_LIB")
+        .args(["build", "--out"])
+        .arg(dir.join("dev-beside/hello"))
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert_eq!(development.status.code(), Some(2), "{development:?}");
     // A development build reads `UNA_RT_LIB`: the junk file fails its link.
     let development = Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
@@ -795,6 +852,63 @@ fn an_embedded_runtime_is_linked_and_una_rt_lib_has_no_effect() {
         std::fs::read(out.join("hello")).unwrap() == std::fs::read(dir.join("dev/hello")).unwrap(),
         "the embedded and the file runtime link different executables"
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_report_names_the_digest_of_the_embedded_runtime() {
+    // ADR 0124 rule 28 (#1359, L5): the report of a `una` with its runtime built in names that
+    // runtime's recorded digest, `native.runtime_sha256` in JSON and a `runtime sha256:` line
+    // in text, the digest its links check; a development build's report names none.
+    // scripts/check-release.sh compares the release `una`'s with the file it embedded.
+    let built = built_runtime();
+    let dir = package(
+        "report-runtime",
+        "\n[run]\nentry = \"hello\"\ngrants = [\"console\"]\n",
+        &[("src/hello.una", HELLO)],
+    );
+    let bytes = std::fs::read(&built).unwrap();
+    let embedded = dir.join("embedded-runtime.a");
+    std::fs::write(&embedded, &bytes).unwrap();
+    let digest = sha256_hex(&bytes);
+    let report = |json: bool, stand_in: bool| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_una"));
+        command
+            .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+            .env_remove("UNA_PROOF_KEY")
+            .env_remove("UNA_TEST_EMBEDDED_RUNTIME")
+            .env_remove("UNA_TEST_EMBEDDED_RUNTIME_SHA256")
+            .env("NO_COLOR", "1")
+            .current_dir(&dir);
+        if stand_in {
+            command
+                .env("UNA_TEST_EMBEDDED_RUNTIME", &embedded)
+                .env("UNA_TEST_EMBEDDED_RUNTIME_SHA256", &digest);
+        }
+        if json {
+            command.arg("--json");
+        }
+        let output = command.arg("report").output().unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap()
+    };
+    let json = report(true, true);
+    assert!(
+        json.contains(&format!("\"runtime_sha256\":\"{digest}\"")),
+        "{json}"
+    );
+    let text = report(false, true);
+    assert!(
+        text.contains(&format!("  runtime sha256: {digest}\n")),
+        "{text}"
+    );
+    assert!(!report(true, false).contains("runtime_sha256"));
+    assert!(!report(false, false).contains("runtime sha256"));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
