@@ -1,0 +1,13 @@
+# What the `una` binary alone may ask the dynamic loader for beyond scripts/load-commands.txt
+# (#1277): the C++ runtime of the Z3 solver built into it (ADR 0124 rule 1), read by
+# scripts/load-commands.sh for `una` only. An executable that `una build` links stays strict
+# against scripts/load-commands.txt. The format is that file's: PLATFORM KIND VALUE, then `#`
+# and the reason; an entry allows, it never requires.
+macos dylib /usr/lib/libc++.1.dylib  # the system's C++ runtime, which Z3's C++ code needs (una-z3's build script links it, ADR 0124 rule 1: on macOS `una` uses the system's libc++)
+#
+# Linux: a release `una` links libstdc++ and libgcc statically (scripts/release.sh, ADR 0124
+# rule 1), so the C++ runtime adds no NEEDED entry. The math functions Z3 imports
+# (scripts/no-libm-una.txt) are glibc's libm, a library of its own there. Not yet observed: no
+# Linux leg has linked the solver as of 2026-10-31, and anything else it finds fails the check
+# until it is reviewed and listed here.
+linux needed libm.so.6  # glibc's math library, for the solver's imports of scripts/no-libm-una.txt only

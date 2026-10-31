@@ -149,6 +149,13 @@ build() {
     # under the Release configuration, and the configure log records them.
     flags="-ffile-prefix-map=$src=/z3-src -ffile-prefix-map=$bld=/z3-build"
     case "$src$bld" in *" "*) fail "a build path has a space, which CMAKE_CXX_FLAGS cannot hold: $dir" ;; esac
+    # The archive's member headers carry each object's modification time, owner and group, so
+    # two builds of the same objects gave two libraries (#1277: the objects were equal byte for
+    # byte, the headers' times were not). ZERO_AR_DATE=1 makes Apple's ar, ranlib and libtool
+    # write zero for all three (`ar tv` shows 0/0 and the epoch), as GNU ar's deterministic mode,
+    # the default of the Linux distributions' binutils, already does.
+    ZERO_AR_DATE=1
+    export ZERO_AR_DATE
     start=$(date +%s)
     cmake -S "$src" -B "$bld" -G "Unix Makefiles" -DCMAKE_CXX_COMPILER="$cxx" \
         -DCMAKE_CXX_FLAGS="$flags" "$@" > "$dir/configure.log" 2>&1 \
@@ -196,6 +203,7 @@ chmod 755 "$staged/bin/z3"
     echo "cxx $("$cxx" --version 2>/dev/null | head -n 1)"
     echo "cmake $(cmake --version | head -n 1)"
     echo "jobs $jobs"
+    echo "archive ZERO_AR_DATE=1"
     echo "seconds $(cat "$work/one/seconds")"
     [ "$reproducible" = 1 ] && echo "reproducible yes, two cold builds, second build $(cat "$work/two/seconds") s"
     echo "built $(date -u +%Y-%m-%dT%H:%M:%SZ)"

@@ -10,8 +10,14 @@
 # repository, and `una build` runs there with HOME=OUT/home and without UNA_RT_LIB, so it links
 # the `libuna_rt.a` beside UNA. The executables go to OUT/executables, each named after its
 # program's repository path with every `/` written as `__`. OUT must not exist; it is made here.
-# It fails closed: a missing UNA, an existing OUT, a program that does not build, no program at
-# all, or no executable of no_libm_run is a failure.
+# It also builds `una` without the solver (#1277), the same release build with neither UNA_Z3_LIB
+# nor UNA_EMBED_Z3, into its own target directory, target/no-solver (kept between runs, so
+# cargo rebuilds only what changed), and copies it to OUT/una-without-solver: the Rust code of
+# `una`, the interpreter's included, which scripts/no-libm.sh holds to scripts/no-libm.txt with
+# no exception, so that a math call of Una's own code cannot hide behind one of the solver's.
+#
+# It fails closed: a missing UNA, an existing OUT, a build that fails, a program that does not
+# build, no program at all, or no executable of no_libm_run is a failure.
 #
 # Usage: scripts/no-libm-build.sh UNA OUT
 set -u
@@ -68,6 +74,17 @@ LC_ALL=C comm -23 "$programs" "$out/unsupported.txt" > "$out/build.txt" || fail 
 [ -s "$out/build.txt" ] || fail "no runnable program in $suite"
 grep -qx 'tests/conformance/runtime/no_libm_run' "$out/build.txt" \
     || fail "tests/conformance/runtime/no_libm_run is not among the programs"
+
+# `una` without the solver.
+if ! (cd "$root" && env -u UNA_Z3_LIB -u UNA_EMBED_Z3 -u UNA_EMBED_Z3_SHA256 \
+    CARGO_TARGET_DIR="$root/target/no-solver" cargo build --locked --release -p una-cli) \
+    > "$out/una-without-solver.log" 2>&1; then
+    cat "$out/una-without-solver.log" >&2
+    fail "cannot build una without the solver"
+fi
+cp "$root/target/no-solver/release/una" "$out/una-without-solver" \
+    || fail "the build without the solver wrote no una"
+echo "no-libm-build: built una without the solver at $out/una-without-solver"
 
 failures=0
 count=0

@@ -50,9 +50,8 @@ mirror = "https://github.com/una-lang/una/releases/download/mirror/z3-5.1.0/z3-5
 # target's line is added by the first reproducible build on it, with the toolchain of its
 # build record.
 [library]
-# aarch64-apple-darwin: Apple clang 21.0.0 (clang-2100.3.34.2), cmake 4.4.4, built 2026-10-27
-# (cache key c01701a4e4c5183a4338fe45aca07fed13771e1cca7e3e4061ec67ea130dcb54). One cold build,
-# NOT yet shown reproducible: `scripts/build-z3.sh --reproducible` on the same machine gave two
-# other digests (885a61ac... and ba626bcc...), so the macOS library is not deterministic yet;
-# until it is, this digest names that one cached build, for the release scripts of this machine.
-"aarch64-apple-darwin" = "3e63a160af87adb34803371de1f02b99c5c8452a42f6bf508750a583069c9de4"
+# aarch64-apple-darwin: Apple clang 21.0.0 (clang-2100.4.1.1), cmake 4.4.4, built 2026-10-31,
+# shown reproducible by two cold builds with equal digests (scripts/build-z3.sh --reproducible,
+# with ZERO_AR_DATE=1, #1277). The digests before it differed only in the archive's member
+# headers: the objects were byte for byte equal.
+"aarch64-apple-darwin" = "4fcda925f158098beb0edb0650cd98caa0b66215c387f6d165ccf39bd33f0baa"
