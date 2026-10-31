@@ -139,3 +139,7 @@ Rule 3 adds one obligation per `Int` operation of a `systems` package: linear in
 **D. `systems` that traps on promotion at run time** instead of proving its absence. Not chosen: a program would abort under `systems` where it computes a value under `app`, which breaks rule 2.2, and the trap is a run-time check where a proof can do better.
 
 **E. No profiles; gate FFI and SIMD by `[trusted]` alone.** Simpler. Not chosen: `[trusted]` already means "skips label checks inside `via`"; overloading it with foreign code mixes two trusted bases, and the machine-integer guarantee of rule 3 still needs a package-level opt-in.
+
+## Note (2026-10-31): read through ADR 0106's amendment (#1311)
+
+ADR 0106's amendment of 2026-10-31 withdraws the C-emitting backend; the release path of `una build --release` is Una's own code generation over Core IR. No rule of this record changes. Rule 3's "the optimized backend's arithmetic is defined at every input (ADR 0106, RB-7)" reads as the release path, which that amendment keeps under RB-7 and its requirement RP-5; check elision in `systems` packages follows ADR 0112 as amended on 2026-10-31. `docs/plan/c-emission-inventory.md` lists the passage.

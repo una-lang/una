@@ -153,3 +153,84 @@ The release backend compiles `F64` (ADR 0114) under these rules, which join RB-2
    - **The inline store of a raw cell**, in a field edit of a record of ADR 0107 rule 3 or an unboxed record of ADR 0108, and **the packed `set`**, store an `F64`, preceded by the canonicalization of ADR 0114 rule 6.1 unless the value is canonical by construction there.
    - **Bit conversions** (`to_bits`, `f64_from_bits`, the totalOrder key, canonicalization's test of the bits) are a `memcpy` of 8 bytes between a `double` local and a `uint64_t` local, RB-2's own `memcpy` form, never a union or a pointer cast, so the `sanitize` gate sees no type punning.
    - Loads and stores of an `F64` cell are `memcpy` of 8 bytes, or a `double` member of the declared cell layout, as RB-2 states for the other raw cells.
+
+## Amendment (2026-10-31): the C-emitting backend is withdrawn (#1099)
+
+On 2026-10-27 the project ruled on the toolchain's scope (ADR 0124, Questions 1 and 2): Una admits no foreign code, no C code is embedded in Una or in the executables `una` writes, and no C compiler goes into `una`. Under that ruling, the route this record chose, C compiled by the system C compiler, is withdrawn. The release path becomes Una's own optimizing code generation over Core IR. This amendment records what is withdrawn, what survives, and what the release path must satisfy. It chooses no route and no algorithm: the measurement above does not rank one, and the design is follow-up work (the cards listed at the end).
+
+No code of this record was ever implemented: no C emission exists in the compiler, and `una build --release` does not exist. The withdrawal therefore removes no shipped behavior.
+
+### 1. Withdrawn
+
+- **The choice of Option 2** in the Decision, and the paragraph that supports it ("the C route reaches that optimizer with no new tool for users").
+- **RB-1's route:** "`una build --release` emits C for the package and compiles it with the system C compiler". The two profiles survive (§2).
+- **RB-2 as a subset of C:** the checked builtins and `-fwrapv`, the integer promotions, shifts, conversions and division written in C, the generated header with `_Static_assert`, the `memcpy` spelling of accesses, `-fno-strict-aliasing` and `-fno-delete-null-pointer-checks`, evaluation order and initialization in C, C11 6.8.5p6, and the fixed C flags with `CFLAGS` ignored. What these rules protected survives as requirements RP-5 and RP-7 (§3).
+- **RB-3's C mechanics:** failure entry points compiled into a separate object without bitcode, `pure`, `const`, `noreturn` and `noinline` attributes, and link-time optimization across languages. RB-3's rule itself survives (§2).
+- **RB-5 entirely:** the C compiler in the trusted computing base, the matrix of supported compilers, the fail-closed probe of `cc --version` and of each flag, and the gates on the oldest and newest compiler.
+- **RB-6's C mechanics:** `-ffile-prefix-map` and the absence of `__DATE__` and `__TIME__`. RB-6's rule survives (§2).
+- **RB-7's list of C constructs** (`__builtin_assume`, `__builtin_unreachable`, `restrict`). RB-7's rule survives (§2).
+- **The release gates as written for C:** `opt-levels` (the emitted C at `-O0` against the shipped level) and the `sanitize` run over the emitted C (UndefinedBehaviorSanitizer and AddressSanitizer on generated C, and its build without the RB-7 statements). The `sanitize` gate over the runtime, as `docs/release-gates.md` runs it today, is unchanged. What replaces the two is open question OQ-8.
+- **The C parts of the amendment of 2026-10-16** (floating point): rule 1 (the C flags and `#pragma STDC FP_CONTRACT OFF`), rule 2 (the forbidden C flags), rule 3 (`<float.h>` and `FLT_EVAL_METHOD`), rule 4 (the compiler probe), rule 5's `__builtin_sqrt`, rule 7 (the contraction canary built with `-ffp-contract`) and rule 8's compiler flags. Their intent survives as requirement RP-6.
+- **Item 2 of ADR 0120's amendment of this record (2026-10-19):** the `simd required` variants written with GCC and Clang vector types, `__attribute__((target(...)))` and `__builtin_cpu_supports`. How `simd required` lowers in the release path is open question OQ-6.
+- **The Consequences** that follow from C: release builds "get LLVM's or GCC's optimizer", "the C compiler is trusted for release builds", and "compile time of release builds is the C compiler's".
+- **The alternatives as reasons:** Option 1 (LLVM IR linked into `una`) and Option 4 stay rejected, now also because LLVM is foreign code inside `una`. Option 3 (Rust source through `rustc`) stays rejected: a user would need a Rust toolchain, which ADR 0124's `toolchain-free` gate forbids. It is no longer a fallback.
+
+### 2. What survives
+
+- **Two build profiles.** `una build` keeps Cranelift (ADR 0055), fast to compile, for tests and local work, with every check. `una build --release` builds with an optimizing release path. Both produce executables with the same meaning.
+- **The four constraints of the Context:** security first, equivalence with the interpreter, reproducibility, and nothing more for users to install (now stronger: nothing at all, ADR 0124).
+- **No weakening (RB-3, RB-3a).** No optimization removes or weakens a check that the Cranelift build makes, except where ADR 0112 elides it on a proof, before code generation, recorded in the build report. RB-3a stands unchanged: only a check whose failure, were the proof wrong, stays a wrong value may be elided on the verifier's proof alone; a bounds check only with a certificate checked by a small kernel (#66); handle, stack and resource checks never.
+- **Equivalence (RB-4).** Release executables join the differential run of ADR 0055 NB-4 (`spec/16 §5`): the interpreter, the Cranelift executable and the release executable give identical output, failures, exit status and trace. A divergence fails.
+- **Reproducibility (RB-6).** Two release builds of one commit give the same bytes, with no path, time or account in the artifact.
+- **Proven facts in defined forms only (RB-7).** A fact the verifier proved may be used only in a form whose failure, were the fact wrong, is a wrong value and never a memory-safety bug; a stated fact never replaces or weakens a check; each one carries the obligation that proved it, recorded in the build report.
+- **The memory forms of RB-2,** as rules about which accesses generated code may make, not about C: the closed list (header reads; forms 1, 2 and 3 with their checks in their order; exactly three kinds of inline store; every retain and release a runtime call; no address computed before a runtime call used after it), as ADR 0107 and ADR 0108 define them, extended by rule 9 of the amendment of 2026-10-16 (`F64`) and item 1 of ADR 0120's amendment (dense headers).
+- **The release gates' purposes:** `native-release` (equivalence) and `check-survival` (each kind of check, in each context, fails as in the interpreter, with a canary per kind that removes the check and must make the gate fail), now built with the shipped release path; and `reproducible` for release builds.
+- **Floating point, beyond C:** rule 5's routines of `una-rt` instead of a platform `libm`, rule 6's guarded float-to-integer conversion, rule 9's `F64` memory forms, and items 3 and 4 of ADR 0120's amendment (FMA only inside the allowlisted kernel variants, checked by the FMA disassembly gate that `docs/release-gates.md` already runs; no contraction outside a written `fma`, no fast-math transformation).
+- **The Gate 2 targets** (this record's Context, ADR 0107): Una native over Rust `--release`, geometric mean at most 1.1x, no program above 1.5x, memory at most 1.2x.
+- **The measurement** of this record and its kit (`docs/adr/evidence/0106/`): on checked kernels, the optimizing backends ran 6x (K1, calls) to 27x (K2, an arithmetic loop) faster than Cranelift, and the K2 variants showed that a stated, defined fact (an unsigned remainder on a dividend proven non-negative) gives the whole measured gain. The kit's C and Rust files are measurement records: `una` never builds them, and they are in no shipped artifact.
+- **The stack-depth consequence:** frame sizes can differ between the Cranelift build and the release build, so a program at the edge of the stack budget (U6003) can differ until the budget is counted independently of frame sizes.
+
+### 3. What the release path needs (requirements)
+
+The release path of `una build --release` is Una's own optimizing code generation, inside `una`. Its design is a separate record (#1305), which MUST satisfy:
+
+- **RP-1. No foreign code, no external tool.** The release path is Rust code of the repository, or of a reviewed Rust dependency, built into `una`. It runs no compiler, assembler or linker outside `una` (ADR 0124), and the `toolchain-free` gate covers `una build --release`.
+- **RP-2. Input and meaning.** Its input is the Core IR of a package that checks at tier 1 (`spec/16 §1`). Its executables refine the UAM exactly as the Cranelift build does (`spec/16 §1` rule 4), with the runtime representation of ADR 0107 and ADR 0108 and the calling convention of ADR 0107 rule 7.
+- **RP-3. Equivalence evidence.** RB-4's three-way differential run over the conformance cases, the examples and the generated programs of the hunt, plus whatever per-pass evidence the design states (OQ-3).
+- **RP-4. Checks.** §2's no-weakening rule. A pass that removes or moves a check on its own, outside ADR 0112, does so only by a rule the design states and justifies against RB-3a (OQ-4); `check-survival` and its canaries cover every such rule.
+- **RP-5. Defined at every input.** Every operation of every representation the release path uses is defined at every input. No representation has an operation whose false premise lets a later pass delete a check, read or write out of bounds, or change a value outside the operation (no "assume", "unreachable" or poison-like construct that a wrong fact can reach). A wrong proof stays a wrong value (RB-7).
+- **RP-6. Floating point.** Binary64 and binary32 computed in their own precision; no contraction outside a written `fma`; no reassociation, reciprocal or other fast-math transformation; no flush-to-zero; canonical NaN where ADR 0114 rule 6.1 requires it; no platform `libm`; float-to-integer conversion behind ADR 0114 rule 4.2's guard; FMA instructions only inside the allowlist of ADR 0120's amendment.
+- **RP-7. Memory.** Generated code makes only the accesses of §2's closed list, in their order of checks. The layout facts that the generated header and `_Static_assert` were to check are asserted on the runtime's side and in the code generator, and tested against each other.
+- **RP-8. Determinism.** Every pass is deterministic: no iteration order of a hash table, no time and no randomness reaches the output, so RB-6 holds on every machine.
+- **RP-9. Cost.** Each pass states its time and space complexity in the size of the function or the package. Passes are linear or O(n log n), or carry a stated bound (an inlining budget, an iteration limit) so that no package can make a release build superlinear without that bound. Performance claims against Gate 2 use a pre-registered method on the frozen program set, never microbenchmarks alone.
+- **RP-10. Trusted base and report.** The release path joins the Trusted zone (charter §3) for release builds, and the design states its addition to `docs/security/tcb.md`. The build report's `native` section names the release path by `una`'s version and lists the elided checks and the stated facts with their obligations.
+
+### 4. Open questions
+
+The design record (#1305) answers them, after the measured prototype of #1306:
+
+- **OQ-1. The route.** An optimizer over Core IR, or over a new mid-level representation, that keeps Cranelift as the machine-code layer; Una's own instruction selection and register allocation per target; or a combination. For each: time and space complexity, size added to `una`, compile time, and addition to the trusted base.
+- **OQ-2. The passes.** Which optimizations (inlining, loop-invariant code motion, scalar replacement of unboxed records, range-based simplification from proven facts, vectorization), in which order, and the measured share of the 6x to 27x gap each closes.
+- **OQ-3. Correctness evidence per pass.** Translation validation per function or per pass, differential testing alone, or proofs for some passes, and which of them must exist before release builds ship (#1307).
+- **OQ-4. Check redundancy.** Which removals or hoists of a check the optimizer may make without ADR 0112 (a check dominated by an identical check on the same values, a bounds check hoisted out of a loop by versioning), each justified against RB-3a.
+- **OQ-5. Targets and order.** Which of `aarch64-apple-darwin`, `x86_64` and `aarch64` Linux the release path supports first.
+- **OQ-6. `simd required`.** How the variants of ADR 0120 rules 56 to 58 lower without C vector types, and how one is chosen at start (#1308).
+- **OQ-7. Secret values.** Timing is outside the model (`spec/07 §1`); what the release path still promises for branch-free code on secret data and for stores that clear secrets (#1310).
+- **OQ-8. Gates without C.** What replaces `opt-levels` and the sanitizer run over the emitted C, for example the release path with optimizations off compared with the shipped one (#1307).
+
+### 5. Effect on other records
+
+- **ADR 0112** keeps its rules on which checks may be elided (EL-2, and RB-3a here) and `--no-elision`. Its C mechanics (elision "in the C that ADR 0106 emits", the present checks read back from the C, the reasons given in terms of C's undefined behavior) need a dated amendment before it can be implemented (#1309).
+- **ADR 0124:** Question 1 is closed by this amendment: no release compiler is built into `una`, so its rule 9 ("the release compiler, if ADR 0106's amendment builds one in") has no subject, the linker's inputs gain the release path's object in place of "the release compiler's object", and "no external tool is run by `una`" holds for release builds too.
+- **ADRs 0107, 0108, 0109, 0113, 0114 and 0120** mention the C backend; their text stands as written, read through this amendment, and #1311 lists each passage for its own dated note.
+- **`spec/16`** describes the Cranelift build only and needs no change now. Release builds get their normative text with the design record.
+
+### 6. Follow-up
+
+- #1305: ADR, Una's own optimizing code generation for release builds.
+- #1306: a prototype, and measurement of the release-path candidates on this record's kernels and the Gate 2 set.
+- #1307: equivalence and correctness evidence without emitted C (`native-release`, `check-survival`, translation validation, what replaces `opt-levels`).
+- #1308: floating point and `simd required` without emitted C.
+- #1309: an amendment of ADR 0112, check elision without emitted C.
+- #1310: secret values under optimization (timing, zeroization).
+- #1311: an inventory of the C-emission text in accepted records and documents, with a dated note on each.

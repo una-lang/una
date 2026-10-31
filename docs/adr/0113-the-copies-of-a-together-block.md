@@ -323,3 +323,7 @@ The determinism of "Which programs get a deterministic site" does not extend to 
 ## Amendment (2026-10-18, ADR 0117)
 
 The tasks of a batch are coroutines, not threads, and a join parks its task. Rules 1 to 4, on the order of the copies and the checks before each allocation, are unchanged. The batch width, 64, stays a constant of the runtime, which may grow once coroutines make each task cheap.
+
+## Note (2026-10-31): read through ADR 0106's amendment (#1311)
+
+ADR 0106's amendment of 2026-10-31 withdraws the C-emitting backend; the release path of `una build --release` is Una's own code generation over Core IR. No rule of this record changes. Rule 5's "ADR 0106's C backend" reads as that release path, which keeps the 32-bit count and mark and their limits exactly as stated there. `docs/plan/c-emission-inventory.md` lists the passage.
