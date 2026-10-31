@@ -13,8 +13,9 @@
 #
 # It reads UNA, then every file of the directory EXECUTABLES, executables that UNA linked. When
 # EXECUTABLES is not given, it links examples/hello with UNA into a fresh temporary directory
-# (a copy of the example, HOME there, without UNA_RT_LIB, so UNA links the `libuna_rt.a` beside
-# it) and reads that executable; the build needs the pinned Z3 on PATH.
+# (a copy of the example, HOME there, without UNA_RT_LIB, so UNA links the runtime built into
+# it, a release build's (ADR 0124 step 2), or the `libuna_rt.a` beside it, a development
+# build's) and reads that executable.
 #
 # It fails closed: a missing UNA, list or tool, an empty executable directory, a build that
 # fails, a tool that exits non-zero, or a listing with no load command, no dylib, no NEEDED

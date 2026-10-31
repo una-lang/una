@@ -1,7 +1,10 @@
 #!/bin/sh
 # Checks the archive that scripts/release.sh packed for TARGET: its SHA-256 digest, its contents,
-# the packed binary on the examples, and a native build of every example with the packed runtime;
-# it needs the pinned Z3 on PATH and the system `cc` (ADR 0035 rule 3, ADR 0059).
+# the packed binary on the examples, and a native build of every example with the runtime built
+# into the packed `una` (ADR 0035 rule 3, ADR 0059 and its amendment, ADR 0124 step 2). The
+# archive holds no `lib/`: the runtime is scanned as scripts/release.sh left it,
+# target/release-remapped/embed/libuna_rt.a, once its digest is the one the packed `una`
+# reports. `una build` still needs the system `cc` until ADR 0124 step 3.
 #
 # Usage: scripts/check-release.sh TARGET
 set -eu
@@ -120,9 +123,42 @@ if [ "$owners" != "$expected" ]; then
     echo "error: $name.tar.gz has entries owned by $owners; expected only 0/0 with no names" >&2
     exit 1
 fi
+# The runtime is built into `una` (ADR 0124 step 2): an archive with a `lib/` entry, which an
+# older `una` read its runtime from, is refused.
+if [ -e "$tmp/$name/lib" ] || tar -tzf "$out/$name.tar.gz" | grep -q "^$name/lib\(/\|$\)"; then
+    echo "error: $name.tar.gz has a lib/ entry; the runtime is built into una (ADR 0124 step 2)" >&2
+    exit 1
+fi
 contents=$(cd "$tmp/$name" && LC_ALL=C ls | tr '\n' ' ')
-if [ "$contents" != "LICENSE README.md docs lib una " ]; then
-    echo "error: $name.tar.gz holds $contents; expected LICENSE README.md docs lib una" >&2
+if [ "$contents" != "LICENSE README.md docs una " ]; then
+    echo "error: $name.tar.gz holds $contents; expected LICENSE README.md docs una" >&2
+    exit 1
+fi
+una="$tmp/$name/una"
+# A shipped una is never a development build: it has the release solver and the runtime built
+# in (ADR 0124 rule 19).
+if "$una" --version | grep -q '^development build$'; then
+    echo "error: $una is a development build, without the release solver or the runtime built in (ADR 0124 rule 19)" >&2
+    exit 1
+fi
+# The runtime built into the packed `una`, as scripts/release.sh stripped and embedded it: its
+# digest must be the one the packed `una` reports (`native.runtime_sha256`, ADR 0124 rule 28),
+# so the scans below read the bytes that every executable links.
+runtime="$root/target/release-remapped/embed/libuna_rt.a"
+if [ ! -f "$runtime" ]; then
+    echo "error: $runtime, the runtime scripts/release.sh embedded, is missing" >&2
+    exit 1
+fi
+limited 300 "$tmp/report" "$una" --json report examples/events || true
+timed_out
+reported=$(grep -o '"runtime_sha256":"[0-9a-f]*"' "$tmp/report" | sed -e 's/^"runtime_sha256":"//' -e 's/"$//' || true)
+if command -v sha256sum >/dev/null 2>&1; then
+    embedded=$(sha256sum "$runtime" | cut -d ' ' -f 1)
+else
+    embedded=$(shasum -a 256 "$runtime" | cut -d ' ' -f 1)
+fi
+if [ -z "$reported" ] || [ "$reported" != "$embedded" ]; then
+    echo "error: the packed una reports the runtime \"$reported\"; $runtime is $embedded" >&2
     exit 1
 fi
 # Keyed hashing's test hooks (a fixed key, a probe counter, a constant hash) exist only in the
@@ -132,7 +168,7 @@ fi
 # client's reach pool, a lookup and a connect function a test can make hang and a pool started
 # on a first request (#1148), which only una-http's `test-hooks` feature compiles, and which
 # can unify into the workspace's test builds.
-for artifact in "$tmp/$name/una" "$tmp/$name/lib/libuna_rt.a"; do
+for artifact in "$una" "$runtime"; do
     for marker in UNA_HASH_TEST_HOOKS_MARKER UNA_HTTP_TEST_HOOKS_MARKER; do
         if nm -a "$artifact" 2>/dev/null | grep -q "$marker" || LC_ALL=C grep -a -q "$marker" "$artifact"; then
             case $marker in
@@ -144,23 +180,19 @@ for artifact in "$tmp/$name/una" "$tmp/$name/lib/libuna_rt.a"; do
         fi
     done
 done
-# The solver child's stand-in (the `test-hooks` feature of una-cli, ADR 0124 rule 11) exists
-# only in the toolchain's own test builds; its marker may be in no shipped una. And a shipped
-# una is never a development build: it has the release solver built in (rule 19).
+# The solver child's stand-in and the stand-in for the embedded runtime (the `test-hooks` feature
+# of una-cli, ADR 0124 rule 11 and step 2) exist only in the toolchain's own test builds; their
+# marker may be in no shipped una.
 marker=UNA_CLI_TEST_HOOKS_MARKER
 if nm -a "$tmp/$name/una" 2>/dev/null | grep -q "$marker" || LC_ALL=C grep -a -q "$marker" "$tmp/$name/una"; then
     echo "error: $tmp/$name/una was built with the solver's test hooks (ADR 0124 rule 11)" >&2
-    exit 1
-fi
-if "$tmp/$name/una" --version | grep -q '^development build$'; then
-    echo "error: $tmp/$name/una is a development build, with no release solver built in (ADR 0124 rule 19)" >&2
     exit 1
 fi
 # AddressSanitizer's fiber interface and its unpoisoning are declared only in builds with
 # `--cfg una_asan`, which scripts/sanitize.sh alone sets (#1145): no shipped `una` or
 # `libuna_rt.a` may refer to them, by symbol or by bytes.
 asan_symbols="-e __sanitizer_start_switch_fiber -e __sanitizer_finish_switch_fiber -e __asan_unpoison_memory_region"
-for artifact in "$tmp/$name/una" "$tmp/$name/lib/libuna_rt.a"; do
+for artifact in "$una" "$runtime"; do
     # shellcheck disable=SC2086 # the patterns are split on purpose
     if nm -a "$artifact" 2>/dev/null | grep -q $asan_symbols \
         || LC_ALL=C grep -a -q $asan_symbols "$artifact"; then
@@ -181,19 +213,13 @@ for guide in getting-started.md syntax-reference.md una-compact.md una-for-agent
         exit 1
     fi
 done
-if [ ! -f "$tmp/$name/lib/libuna_rt.a" ]; then
-    echo "error: $name.tar.gz has no lib/libuna_rt.a" >&2
-    exit 1
-fi
-una="$tmp/$name/una"
 limited 300 "$tmp/step" "$una" check examples/events || { cat "$tmp/step" "$tmp/step.err" >&2; exit 1; }
 # The FMA disassembly gate (#1216; ADR 0114 Appendix C rules 7 and 8, as ADR 0120 Appendix A
 # amends them): on x86-64, no FMA instruction in the shipped `una` or `libuna_rt.a` outside the
 # dispatched kernel variants of the allowlist, which the packed `una` records in its build report
 # (`native.kernels.fma_allowlist`); without a report, scripts/check-fma.sh uses its own copy of
 # una_core::dense::variants::ALLOWLIST. On AArch64 the scan prints that it is not applicable.
-allowlist=$("$una" --json report examples/events 2>/dev/null \
-    | grep -o '"fma_allowlist":\[[^]]*\]' \
+allowlist=$(grep -o '"fma_allowlist":\[[^]]*\]' "$tmp/report" \
     | sed -e 's/^"fma_allowlist":\[//' -e 's/\]$//' \
     | tr ',' '\n' | sed -e 's/^"//' -e 's/"$//' || true)
 set --
@@ -203,7 +229,7 @@ done
 if [ "$#" -eq 0 ]; then
     echo "note: no fma_allowlist in the report of the packed una; scripts/check-fma.sh uses its own"
 fi
-scripts/check-fma.sh "$@" "$tmp/$name/una" "$tmp/$name/lib/libuna_rt.a"
+scripts/check-fma.sh "$@" "$una" "$runtime"
 limited 300 "$tmp/step" "$una" test examples/events || { cat "$tmp/step" "$tmp/step.err" >&2; exit 1; }
 limited 300 "$tmp/step" "$una" run examples/hello || { cat "$tmp/step.err" >&2; exit 1; }
 greeting=$(cat "$tmp/step")
@@ -211,7 +237,7 @@ if [ "$greeting" != "Hello, Una" ]; then
     echo "error: the packed una printed \"$greeting\" for examples/hello" >&2
     exit 1
 fi
-# Every example, built natively with the packed runtime, prints what `una run` prints and exits
+# Every example, built natively with the runtime built into the packed una, prints what `una run` prints and exits
 # with its status (spec/16 §5); each runs in its own directory, where its grants resolve.
 for example in examples/*/; do
     example=${example%/}
@@ -227,6 +253,24 @@ for example in examples/*/; do
         exit 1
     fi
 done
+# The release una reads no variable and no file for its runtime (ADR 0124 rules 14 and 15):
+# UNA_RT_LIB naming a file that is no runtime, and such a file at each place a development build
+# looks (lib/ beside una, beside una, ../lib), change nothing, so a runtime older than una cannot
+# fail its link (#203).
+cp -R examples/hello "$tmp/ignored"
+mkdir -p "$tmp/ignored-install/bin/lib" "$tmp/ignored-install/lib"
+cp "$una" "$tmp/ignored-install/bin/una"
+for junk in "$tmp/ignored-install/bin/lib/libuna_rt.a" "$tmp/ignored-install/bin/libuna_rt.a" "$tmp/ignored-install/lib/libuna_rt.a" "$tmp/not-a-runtime.a"; do
+    echo "not a runtime" > "$junk"
+done
+limited 600 "$tmp/step" env UNA_RT_LIB="$tmp/not-a-runtime.a" "$tmp/ignored-install/bin/una" build "$tmp/ignored" --out "$tmp/ignored/native-exe" \
+    || { cat "$tmp/step.err" >&2; echo "error: the packed una read UNA_RT_LIB or a runtime file beside it (ADR 0124 rule 15)" >&2; exit 1; }
+greeting=$(shown "$tmp/ignored" 120 ./native-exe) || true
+timed_out
+if [ "$greeting" != "Hello, Una" ]; then
+    echo "error: examples/hello built with UNA_RT_LIB set printed \"$greeting\"" >&2
+    exit 1
+fi
 # The archive and what it builds carry no path of a machine (#382, S-13). The same program built
 # by the archive unpacked in two places is the same executable; and neither the packed `una`, nor
 # its runtime, nor that executable names a home directory or the source tree it was built from.
@@ -244,7 +288,7 @@ fi
 # The builder's user name is refused too, in any form (`~name`, a home elsewhere), when it is long
 # enough to mean something; inside Rust's own path, as a CI runner's user is, it is allowed.
 user=$(id -un 2>/dev/null || true)
-for file in "$tmp/$name/una" "$tmp/$name/lib/libuna_rt.a" "$tmp/install-one/out/hello"; do
+for file in "$una" "$runtime" "$tmp/install-one/out/hello"; do
     found=$(grep -a -o -E '(/Users|/home)/[^[:space:][:cntrl:]"]*' "$file" | grep -v '^/Users/runner/work/rust/' | LC_ALL=C sort -u | head -5 || true)
     if [ "${#user}" -ge 4 ] && [ -z "$found" ]; then
         found=$(LC_ALL=C grep -a -o -E ".{0,16}$user.{0,16}" "$file" | grep -v -F '/Users/runner/work/rust' | LC_ALL=C sort -u | head -5 || true)
@@ -255,4 +299,4 @@ for file in "$tmp/$name/una" "$tmp/$name/lib/libuna_rt.a" "$tmp/install-one/out/
         exit 1
     fi
 done
-echo "ok: $name.tar.gz checks and runs the examples, and builds each of them natively"
+echo "ok: $name.tar.gz checks and runs the examples, and builds each of them natively with the runtime built into una"

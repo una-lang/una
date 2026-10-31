@@ -30,3 +30,7 @@ ADR 0035 rule 3 makes a release archive hold `una`, `LICENSE` and `README.md`. A
 ## Amendment (2026-10-02)
 
 While GitHub Actions is unavailable, `scripts/local-release.sh` builds the archives instead of the release workflow, with the same contents, `lib/libuna_rt.a` included. ADR 0035's amendment of the same date describes it (#156).
+
+## Amendment (2026-10-31): the runtime is built into `una` (ADR 0124)
+
+Appended when ADR 0124 step 2 (#1207) was implemented, as ADR 0124's Appendix A states. Release archives no longer ship the runtime: it is built into `una` (ADR 0124 rules 12 to 19). Rule 1's archive holds `una`, `LICENSE`, `README.md` and the guides, and no `lib/`; rule 3's check expects those entries and refuses a `lib/` entry. Rule 2's search order holds for development builds only: a release `una` reads no file and no `UNA_RT_LIB` for its runtime. The Alternative "embed the library in the `una` binary, and write it out at build time" is the one taken: `scripts/release.sh` builds the runtime first and `una`'s build script embeds it by digest, so Cargo needs no ordering of its own, and until ADR 0124 step 3 `una build` writes it out into the link's private directory.

@@ -1,10 +1,16 @@
 #!/bin/sh
-# Installs Una (#240): the `una` binary, with the solver built into it (ADR 0124), and the
-# native runtime `lib/libuna_rt.a`, into UNA_HOME (default ~/.una), as
+# Installs Una (#240): the `una` binary, with the solver and the native runtime built into it
+# (ADR 0124), into UNA_HOME (default ~/.una), as
 #
 #   UNA_HOME/bin/una
-#   UNA_HOME/lib/libuna_rt.a        (where `una build` looks, beside `bin/`)
+#   UNA_HOME/README.md, LICENSE
 #   UNA_HOME/docs/guide/*.md        (the guides, from releases that ship them, #410)
+#
+# A release before the runtime was built into `una` (ADR 0124 step 2) ships it as
+# `lib/libuna_rt.a`, where its `una build` looks; for such a release the installer installs
+# UNA_HOME/lib/libuna_rt.a as well. A later archive holds no `lib/`, and the installation has
+# none. An archive whose top level holds anything but `una`, `LICENSE`, `README.md`, `docs/` and
+# that `lib/libuna_rt.a` is refused.
 #
 # Every download is checked before anything is installed:
 # - the release archive, against the SHA-256 that the release's validation summary lists
@@ -167,25 +173,48 @@ if [ "$actual" != "$expected" ]; then
     say "$archive is the repacked archive of the gated $expected (docs/validation/repacked.md)"
 fi
 
-# Unpacked and checked in the work directory, then moved into place.
+# Unpacked and checked in the work directory, then moved into place. `una` is the one program
+# of the archive; `lib/libuna_rt.a`, the runtime of a release before ADR 0124 step 2, is the one
+# other file that may be installed outside the documents.
 tar -xzf "$work/$archive" -C "$work"
 unpacked=$work/una-$version-$target
-[ -x "$unpacked/una" ] && [ -f "$unpacked/lib/libuna_rt.a" ] \
-    || fail "$archive does not hold una and lib/libuna_rt.a"
+[ -f "$unpacked/una" ] && [ -x "$unpacked/una" ] || fail "$archive does not hold una"
+for entry in "$unpacked"/* "$unpacked"/.[!.]* "$unpacked"/..?*; do
+    [ -e "$entry" ] || [ -L "$entry" ] || continue
+    case ${entry##*/} in
+        una | LICENSE | README.md | docs) ;;
+        lib)
+            [ "$(ls -A "$entry")" = libuna_rt.a ] && [ -f "$entry/libuna_rt.a" ] && [ ! -L "$entry/libuna_rt.a" ] \
+                || fail "$archive holds a lib/ with more than lib/libuna_rt.a, which this installer refuses"
+            ;;
+        *) fail "$archive holds '${entry##*/}', which this installer refuses: a release holds una, LICENSE, README.md and docs/" ;;
+    esac
+done
+runtime=
+[ -f "$unpacked/lib/libuna_rt.a" ] && runtime=lib/libuna_rt.a
 
 # The directories this installation creates, kept from an earlier record when there is one, so
 # that uninstall removes them and no other.
 created=$work/created
 : > "$created"
 [ -f "$marker" ] && sed -n 's/^dir //p' "$marker" > "$created"
-for dir in . bin lib; do
+for dir in . bin ${runtime:+lib}; do
     [ -d "$home/$dir" ] || echo "$dir" >> "$created"
 done
-mkdir -p "$home/bin" "$home/lib"
+mkdir -p "$home/bin"
 cp "$unpacked/una" "$home/bin/una.new" && mv "$home/bin/una.new" "$home/bin/una"
-cp "$unpacked/lib/libuna_rt.a" "$home/lib/libuna_rt.a"
 chmod +x "$home/bin/una"
-files="bin/una lib/libuna_rt.a"
+files="bin/una"
+if [ -n "$runtime" ]; then
+    mkdir -p "$home/lib"
+    cp "$unpacked/$runtime" "$home/$runtime"
+    files="$files $runtime"
+elif [ -f "$marker" ] && grep -qx 'file lib/libuna_rt.a' "$marker" && [ -f "$home/lib/libuna_rt.a" ]; then
+    # The runtime an earlier installation put there, which this `una` never reads: it stays in
+    # the record, so that uninstall still removes it. Removing it now is the migration of ADR
+    # 0124 step 5.
+    files="$files lib/libuna_rt.a"
+fi
 for doc in README.md LICENSE; do
     if [ -f "$unpacked/$doc" ]; then
         cp "$unpacked/$doc" "$home/$doc"
