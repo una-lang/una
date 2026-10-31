@@ -99,6 +99,17 @@ Tests that reach tier 1 require Z3 at the version in the repository's `verificat
 
 (ADR 0124.) From step 1 of that record, the solver is the Z3 built into `una` itself: a `una` built without it is a development build whose tier-1 tests fail with U5003, "this development build has no solver built in; run scripts/build-z3.sh". The library is built once per pin and toolchain by `scripts/build-z3.sh` from the tarball that `supply-chain/z3.lock` pins and the patches it lists, into a cache outside every worktree and target directory: `UNA_Z3_CACHE`, else `~/.cache/una/z3`, under a key that is the SHA-256 over the tarball's digest, each patch's digest in the lock's order, and the toolchain (the C++ compiler's and cmake's version lines and the machine), so a cold worktree never pays the 10 to 20 minutes of the build again on one machine. Each entry holds `lib/libz3shell.a`, `bin/z3` (the standalone front end from the same objects, for the `solver-identity` gate), `build-record.txt`, `configure.log` and `library.sha256`, the library's digest, written last, so that a half-written entry never counts. `scripts/z3-library.sh` computes the key (`scripts/build-z3.sh --key`), checks the library against `library.sha256`, refuses and rebuilds an entry whose bytes changed, and prints the library's path, which `scripts/local-ci.sh` and the release gates name to every cargo step by `UNA_Z3_LIB`; `cargo` alone needs `UNA_Z3_LIB` set to that path (`crates/una-z3/build.rs`). The Docker legs keep the cache in a named volume per architecture, `una-local-ci-z3-cache<suffix>`, mounted at `/opt/z3-cache` and kept across fresh target volumes. Until the mirror release of the tarball exists, `UNA_Z3_SOURCE` names a local copy of it.
 
+A fresh checkout is ready for the tests with one command, which builds the library when the cache has none for this machine's toolchain (a new C++ compiler or cmake changes the key, so an update of the toolchain builds it once more) and exports its path:
+
+```bash
+eval "$(scripts/z3-library.sh --export)"   # UNA_Z3_LIB=~/.cache/una/z3/<key>/lib/libz3shell.a
+cargo test --workspace --locked
+```
+
+Without `UNA_Z3_LIB`, `cargo` builds a development `una` with no solver and the build of `una-z3` warns so; about 120 tests then fail with U5003. Changing `UNA_Z3_LIB` rebuilds `una-z3` and what depends on it.
+
+A test harness that calls `una_cli` in its own process starts its solver children from the `una` of the same build (`target/<profile>/una`, under the feature `test-hooks`), a file it does not run from. The first launch of a newly linked executable costs the operating system's one-time work before the program's first instruction, more than a second for the debug `una` on macOS, so the harness runs its `una` once (`una --version`) before its first child, outside the child's 2-second handshake window, which starts at the spawn (#1278). A shipped `una` re-executes the file it already runs from and never pays that cost in the window.
+
 ## 4. Determinism tests
 
 - Running `una check --json` twice on each example produces byte-identical output.

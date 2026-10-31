@@ -341,7 +341,44 @@ fn test_harness_una() -> Option<PathBuf> {
     let una = deps
         .parent()?
         .join(format!("una{}", std::env::consts::EXE_SUFFIX));
-    una.is_file().then_some(una)
+    if !una.is_file() {
+        return None;
+    }
+    static WARMED: OnceLock<()> = OnceLock::new();
+    WARMED.get_or_init(|| warm(&una));
+    Some(una)
+}
+
+/// In the toolchain's own test builds only: runs the harness's `una` once, as `una --version`,
+/// before its first solver child (#1278). The first execution of a newly linked executable
+/// costs the operating system's first-launch work (on macOS, more than a second for the debug
+/// `una`, before the program's first instruction), which a child of the harness, unlike a child
+/// of `una` itself, would otherwise pay inside its handshake's window: `una` re-executes the
+/// file it already runs from, so its own children never pay it. The handshake of every child
+/// is still checked; this only moves the one-time cost out of the window. The run is bounded
+/// and its outcome ignored: a `una` that cannot start fails at its child's handshake instead.
+#[cfg(feature = "test-hooks")]
+fn warm(una: &Path) {
+    const WARM_WITHIN: Duration = Duration::from_secs(60);
+    let Ok(mut child) = std::process::Command::new(una)
+        .arg("--version")
+        .env_clear()
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    else {
+        return;
+    };
+    let started = Instant::now();
+    while started.elapsed() < WARM_WITHIN {
+        match child.try_wait() {
+            Ok(None) => std::thread::sleep(Duration::from_millis(10)),
+            Ok(Some(_)) | Err(_) => return,
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 impl Solver for Launcher {
@@ -388,8 +425,9 @@ impl Solver for Launcher {
                 outer_denied: None,
             });
         };
-        let started = Instant::now();
-        let deadline = started + wallclock;
+        // What the parent needs before the child starts is resolved first, so that neither the
+        // deadline nor the handshake's window counts it (#1278): they run from just before the
+        // spawn and measure the child alone.
         let exe = self.executable()?;
         let exe_c = CString::new(exe.as_os_str().as_encoded_bytes())
             .map_err(|_| "the path of `una` holds a NUL byte".to_owned())?;
@@ -431,6 +469,8 @@ impl Solver for Launcher {
                 outer_denied: None,
             });
         }
+        let started = Instant::now();
+        let deadline = started + wallclock;
         let (stdin_reader, mut stdin_writer) = std::io::pipe().map_err(|e| e.to_string())?;
         let (mut stdout_reader, stdout_writer) = std::io::pipe().map_err(|e| e.to_string())?;
         let (mut stderr_reader, stderr_writer) = std::io::pipe().map_err(|e| e.to_string())?;

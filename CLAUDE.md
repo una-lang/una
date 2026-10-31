@@ -32,6 +32,7 @@ If code and spec disagree, the spec wins. If the spec is wrong, ambiguous or inc
 ## Commands
 
 ```bash
+eval "$(scripts/z3-library.sh --export)"             # once per shell: UNA_Z3_LIB, the Z3 built into una
 cargo build --workspace
 cargo test --workspace
 cargo insta review                                    # review snapshot changes; never accept blindly
@@ -47,7 +48,7 @@ GitHub Actions is not used: never wait for it. Validation is local and recorded 
 - A pull request merges on a green build gate on this machine: `cargo build --workspace`, `cargo test --workspace --locked`, clippy and fmt, plus an adversarial review (skill `review`) for code changes (skill `merge`).
 - The heavy evidence (sanitize, Miri, fuzzing, the hunt, timing oracles, Linux legs, benchmarks, parity measurements) runs on a release candidate, not per pull request (skill `release`). A tag needs `scripts/release-gates.sh <sha> <out>` with every gate PASS on the gated SHA and its summary committed as `docs/validation/<version>.md`.
 
-Tests that need the SMT solver require Z3 at the exact version in `verification.lock`. If it is missing or mismatched, those tests must fail with diagnostic U5003, never skip silently.
+Tests that need the SMT solver require Z3 at the exact version in `verification.lock`. If it is missing or mismatched, those tests must fail with diagnostic U5003, never skip silently. Since ADR 0124 the solver is the Z3 library built into `una`: `cargo` needs `UNA_Z3_LIB` naming it (`~/.cache/una/z3/<key>/lib/libz3shell.a`), which `eval "$(scripts/z3-library.sh --export)"` sets, building the library once when the cache has none (`docs/compiler/testing.md` §3).
 
 ## Performance
 

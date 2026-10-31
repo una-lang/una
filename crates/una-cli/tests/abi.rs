@@ -504,10 +504,13 @@ fn every_command_prints_one_json_document_with_its_schema() {
 
 #[test]
 fn json_outputs_are_byte_identical_across_runs_and_thread_counts() {
-    // `compiler/testing.md §4`, for every command with a document, on the examples; the
-    // obligation listing runs once first, so both runs read a warm cache.
+    // `compiler/testing.md §4`, for every command with a document, on the examples. Each
+    // command runs once before the compared runs, so all of them read a warm proof cache: a
+    // run that proves (a cold cache, as in a fresh checkout) reports `obligations.cached` 0
+    // and `tcb.solver_confinement`, since a solver child ran (`spec/13 §3`), which a run that
+    // reads every result from the cache does not (#1287). That difference is the cache's, and
+    // `a_cold_and_a_warm_report_differ_only_by_the_cache` pins it to those keys.
     let events = Path::new("examples/events");
-    let _ = una(&["--json", "obligations", "examples/events"]);
     let commands: Vec<(&Path, Vec<&str>)> = vec![
         (Path::new("."), vec!["--json", "report", "examples/events"]),
         (
@@ -523,6 +526,7 @@ fn json_outputs_are_byte_identical_across_runs_and_thread_counts() {
         (events, vec!["--json", "trace", "EVENTS_3"]),
     ];
     for (dir, args) in commands {
+        let _ = una_in(dir, &args);
         let first = una_in(dir, &args);
         let second = una_in(dir, &args);
         let single = Command::new(env!("CARGO_BIN_EXE_una"))
@@ -536,4 +540,63 @@ fn json_outputs_are_byte_identical_across_runs_and_thread_counts() {
         assert_eq!(first.stdout, second.stdout, "{args:?}");
         assert_eq!(first.stdout, single.stdout, "{args:?}");
     }
+}
+
+/// Copies the package at `from` to `to`, without its proof cache (`.una/`).
+fn copy_package(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let name = entry.file_name();
+        if name == ".una" {
+            continue;
+        }
+        let kind = entry.file_type().unwrap();
+        if kind.is_dir() {
+            copy_package(&entry.path(), &to.join(&name));
+        } else if kind.is_file() {
+            std::fs::copy(entry.path(), to.join(&name)).unwrap();
+        }
+    }
+}
+
+#[test]
+fn a_cold_and_a_warm_report_differ_only_by_the_cache() {
+    // #1287: the report of a package with no proof cache proves every obligation and the next
+    // one reads them all from the cache. They differ in `obligations.cached` and, since only
+    // the first started solver children, in `tcb.solver_confinement` (and, under an outer
+    // sandbox, `tcb.solver_outer_denied`), and in nothing else (`spec/13 §3`).
+    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("abi-cold-warm");
+    let _ = std::fs::remove_dir_all(&root);
+    copy_package(&repository().join("examples/events"), &root);
+    let report = |label: &str| {
+        let output = una_in(&root, &["--json", "report", "."]);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{label}: {}",
+            stderr(&output)
+        );
+        json(&output)
+    };
+    let mut cold = report("cold");
+    let mut warm = report("warm");
+    let proven = cold["obligations"]["proven"].clone();
+    assert!(proven.as_u64().is_some_and(|n| n > 0), "{proven}");
+    assert_eq!(cold["obligations"]["cached"], json!(0));
+    assert_eq!(warm["obligations"]["cached"], proven);
+    let confinement = cold["tcb"]["solver_confinement"].clone();
+    assert!(
+        confinement == json!("own") || confinement == json!("outer"),
+        "a cold report names how the solver children were confined: {confinement}"
+    );
+    assert_eq!(warm["tcb"].get("solver_confinement"), None);
+    assert_eq!(warm["tcb"].get("solver_outer_denied"), None);
+    for report in [&mut cold, &mut warm] {
+        report["obligations"]["cached"] = json!("<cache>");
+        let tcb = report["tcb"].as_object_mut().unwrap();
+        tcb.remove("solver_confinement");
+        tcb.remove("solver_outer_denied");
+    }
+    assert_eq!(cold, warm);
 }

@@ -6,8 +6,10 @@
 //!   the one given, which `scripts/release.sh` takes from `supply-chain/z3.lock`; otherwise the
 //!   build fails;
 //! - `UNA_Z3_LIB`: a development build, with the library at that path, usually
-//!   `target/z3/<digest>/lib/libz3shell.a`; its digest is recorded, not checked;
-//! - neither: a development build with no solver built in, in which `una check` is U5003.
+//!   `~/.cache/una/z3/<key>/lib/libz3shell.a` (`scripts/z3-library.sh`); its digest is recorded,
+//!   not checked;
+//! - neither: a development build with no solver built in, in which `una check` is U5003; the
+//!   build warns, naming `scripts/z3-library.sh --export`.
 //!
 //! The pin of `supply-chain/z3.lock` (version, commit, tree, source digest) goes into the crate
 //! as environment constants. This script runs no program, downloads nothing and compiles
@@ -66,7 +68,14 @@ fn main() -> Result<(), String> {
             (Some((path, Some(want))), true)
         }
         (None, Some(path)) => (Some((path, None)), false),
-        (None, None) => (None, false),
+        (None, None) => {
+            // Not an error: a development build without the solver is a supported build
+            // (rule 19). The warning says how to get one with it, since its tier-1 tests fail.
+            println!(
+                "cargo:warning=UNA_Z3_LIB is not set: this una has no solver built in and its tier-1 tests fail with U5003; run `eval \"$(scripts/z3-library.sh --export)\"` first (docs/compiler/testing.md §3)"
+            );
+            (None, false)
+        }
     };
     let mut library_sha256 = String::new();
     if let Some((path, want)) = library {
