@@ -147,7 +147,7 @@ if command -v sha256sum >/dev/null 2>&1; then
 else
     runtime_digest=$(shasum -a 256 "$embed/libuna_rt.a" | cut -d ' ' -f 1)
 fi
-echo "runtime: $embed/libuna_rt.a, stripped with $strip_tool, sha256 $runtime_digest"
+echo "runtime: $embed/libuna_rt.a, sha256 $runtime_digest, stripped with $strip_tool"
 echo "strip: $target: $strip_tool"
 UNA_EMBED_RUNTIME=$embed/libuna_rt.a
 UNA_EMBED_RUNTIME_SHA256=$runtime_digest
