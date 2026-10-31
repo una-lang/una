@@ -6,3 +6,6 @@
 - Edition 0.4 on main: ADR 0116 S1-S8, 0117 S1-S7, 0119 S1-S9, 0120 S1-S7, 0109 S1-S2, 0122 S1-S8, 0123 S1-S3, 0124 step 1 (Z3 inside una). Open: 0123 S4-S7, 0124 steps 2-5, 0120 S8.
 - Open P1s: #1254 (timing warm-up channel; fix #1255 merged, oracle to confirm on a quiet machine), #1265 (pool bounds), #1266 (reactor/helper deadline outcome), #1277 (una loads libc++/libm with Z3: release build gate), #1278 (solver handshake miss), #1287 (cold-cache report test), #1288 (Z3 library for tests).
 - Machine: Docker Desktop (desktop-linux), amd64 under Rosetta (the million-task test self-skips there, #1246); cmake 4.4.4; Z3 cache under ~/.cache/una/z3; gate outputs under /Users/leocardoso/Projects/una-lang/ops/gates; GitHub Actions blocked on billing (local gates are the evidence).
+
+## Board sweep 2026-10-31
+The board was audited: 34 closed issues set to Done, 6 open issues added, the Agent field of open items set to "coordinator" (process v4 has no Una-N sessions), stale In progress / In review items without a PR or branch moved to Ready or Backlog (epics kept In progress). Decisions are logged in ops/coordination/OWNER-DECISIONS-OVERNIGHT.md (N-473 to N-475). The owner is away; the Coordenador works the open cards autonomously.
