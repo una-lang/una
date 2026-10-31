@@ -27,6 +27,7 @@ Edition `0.4` is the next preview edition, under the terms of ADR 0121. Its lang
 | Packages | Itá: the package manager, `ita.una` and `ita.lock`, and its registry | ADR 0122 | Accepted |
 | HTTP servers | `HttpServer` and `Listener`, granted by address | ADR 0123 | Accepted |
 | One binary | `una` checks, proves and builds with nothing else installed | ADR 0124 | Accepted (2026-10-27) |
+| Optimized release builds | `una build --release` through Una's own optimizing code generation over Core IR; the C-emitting route of ADR 0106 is withdrawn | ADR 0106, amendment of 2026-10-31 | Design open (#1305) |
 
 Una admits no foreign code: no foreign function interface, in any form, in any edition.
 
