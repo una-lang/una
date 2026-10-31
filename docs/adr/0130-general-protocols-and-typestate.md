@@ -374,16 +374,16 @@ So **B05 is not covered**, and this record says so instead of stretching rule 8 
 
 ## Slices
 
-Each slice is a card in Needs spec, after this record is accepted:
+Each slice is a card in Needs spec, to start after this record is accepted:
 
-1. **Spec:** `spec/05` (facts, start values, `on` lines), `spec/12` (versions, frames, `fact_frame`, `no`, the encoding), `spec/13` (U2042, U2043, repairs), `spec/02` grammar, conformance cases first.
-2. **Parser and checker:** fact declarations, clause scopes, U2042, U2043, `changes` and `no` in headers.
-3. **Verifier, straight-line:** versions and frames of operations and failures inside one body; preconditions and ADR 0092 conditions naming facts; the scaling test of rule 16.
-4. **Verifier, calls and loops:** function frames, `changes` and `fact_frame`, whole-fact clauses, start values at bindings' beginnings, loops, `together` and `start`.
-5. **Diagnostics and repairs:** the messages of rule 14, the ranked repairs of rule 15, the `unknown` reasons of rule 9, the Assumed zone entries.
-6. **Formal model:** the protocol-safety theorem and its two lemmas (rule 17).
-7. **Benchmark argument:** B04's scaffold and reference under this record, run against the implementation, in the benchmark repository.
-8. **Record: facts over list elements** (B05's batch form), a separate Proposed ADR.
+1. **Spec:** (#1325) `spec/05` (facts, start values, `on` lines), `spec/12` (versions, frames, `fact_frame`, `no`, the encoding), `spec/13` (U2042, U2043, repairs), `spec/02` grammar, conformance cases first.
+2. **Parser and checker:** (#1326) fact declarations, clause scopes, U2042, U2043, `changes` and `no` in headers.
+3. **Verifier, straight-line:** (#1327) versions and frames of operations and failures inside one body; preconditions and ADR 0092 conditions naming facts; the scaling test of rule 16.
+4. **Verifier, calls and loops:** (#1328) function frames, `changes` and `fact_frame`, whole-fact clauses, start values at bindings' beginnings, loops, `together` and `start`.
+5. **Diagnostics and repairs:** (#1329) the messages of rule 14, the ranked repairs of rule 15, the `unknown` reasons of rule 9, the Assumed zone entries.
+6. **Formal model:** (#1330) the protocol-safety theorem and its two lemmas (rule 17).
+7. **Benchmark argument:** (#1331) B04's scaffold and reference under this record, run against the implementation, in the benchmark repository.
+8. **Record: facts over list elements** (#1332) (B05's batch form), a separate Proposed ADR.
 
 ## Open obligations
 

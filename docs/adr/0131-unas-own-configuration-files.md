@@ -194,13 +194,13 @@ ADR 0122 already chose Una's own syntax for edition `0.4`'s project files, for t
 
 ## Slices
 
-Each slice is a card in Needs spec, after this record is accepted:
+Each slice is a card in Needs spec, to start after this record is accepted:
 
-1. **Spec:** `spec/30 §1` names Una data syntax and rules 3 to 8 as the family's shared rules; `spec/32 §14` gives the grammar of `quality.una`; `spec/13 §5` states rule 8. Conformance cases first.
-2. **Parser:** the grammar of `quality.una` in the syntax crate, sharing the lexer and the classifier of rule 5; the size and depth bounds; a fuzz target.
-3. **`una migrate` and the quality reader:** the conversion of rule 12 with its round-trip test (rule 13); `una quality` reading `quality.una`; UQ0001 for `quality.toml`.
-4. **Editor support:** `una lsp` classification, diagnostics, formatting, completion and hover for configuration files (rule 15); the Language Pack entries (rule 16).
-5. **Record: the key file's format** (Open items).
+1. **Spec:** (#1333) `spec/30 §1` names Una data syntax and rules 3 to 8 as the family's shared rules; `spec/32 §14` gives the grammar of `quality.una`; `spec/13 §5` states rule 8. Conformance cases first.
+2. **Parser:** (#1334) the grammar of `quality.una` in the syntax crate, sharing the lexer and the classifier of rule 5; the size and depth bounds; a fuzz target.
+3. **`una migrate` and the quality reader:** (#1335) the conversion of rule 12 with its round-trip test (rule 13); `una quality` reading `quality.una`; UQ0001 for `quality.toml`.
+4. **Editor support:** (#1336) `una lsp` classification, diagnostics, formatting, completion and hover for configuration files (rule 15); the Language Pack entries (rule 16).
+5. **Record: the key file's format** (#1337) (Open items).
 
 ## Open items
 
