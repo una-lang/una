@@ -590,3 +590,7 @@ other status is excused. Anything else is `unknown`, never cached. The alternati
 with the child that sends `(get-model)` only after `sat`, was rejected: rule 6's whole script
 and the solver-identity comparison stay as they are. The conformance test is the real
 transcript and its near misses (crates/una-verify/src/solver.rs).
+
+## Note (2026-10-31): read through ADR 0106's amendment (#1311)
+
+ADR 0106's amendment of 2026-10-31 withdraws the C-emitting backend and closes Question 1, as its §5 states: no release compiler is built into `una`. No rule of this record changes. Its passages on the release compiler read through that amendment: the header's relation to ADR 0106, Question 1's history and its cost line, the Context's and the first Departure's reference to an amendment, rule 9 (which has no subject), rule 22's "the release compiler's object" (the release path's object), the Consequences' exception for "the C compiler of release builds" (none: no external tool is run for release builds either) and the Implementation plan's last line. `docs/plan/c-emission-inventory.md` lists each passage by line.
