@@ -1,6 +1,8 @@
 //! `una build [path]` (`spec/16 §2`, ADR 0055): checks the package at tier 1, compiles `main`
 //! of the `[run] entry` module into an object through `una-codegen`, and links it with the
-//! runtime library `una-rt` through the system `cc` into a native executable.
+//! runtime library `una-rt` through the system `cc` into a native executable. A release `una`
+//! links the runtime built into it (ADR 0124 step 2, `crate::runtime_archive`); a development
+//! build reads it from a file (rule 19).
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -34,7 +36,7 @@ pub(crate) struct BuildOptions<'a> {
     pub(crate) color: bool,
     /// How tier 1 runs the solver (ADR 0064).
     pub(crate) solving: crate::verification::Solving,
-    /// The environment variables, for `UNA_RT_LIB`.
+    /// The environment variables, for `UNA_RT_LIB` (development builds only, ADR 0124 rule 15).
     pub(crate) environment: crate::Environment<'a>,
 }
 
@@ -329,10 +331,18 @@ pub(crate) fn build_command(
             return Ok(ExitStatus::Usage);
         }
     };
-    if let Err(message) = link(&placed.object, &placed.produced, options.environment) {
-        // Dropping `placed` removes the private directory.
-        writeln!(stderr, "error: {message}")?;
-        return Ok(ExitStatus::Usage);
+    if let Err(failure) = link(&placed, options.environment) {
+        // Dropping `placed` removes the private directory, with the runtime written there.
+        return match failure {
+            LinkFailure::Usage(message) => {
+                writeln!(stderr, "error: {message}")?;
+                Ok(ExitStatus::Usage)
+            }
+            LinkFailure::Internal(message) => {
+                writeln!(stderr, "internal compiler error (U8001): {message}")?;
+                Ok(ExitStatus::Internal)
+            }
+        };
     }
     if let Err(error) =
         una_diag::safe_write::install(&placed.root, &placed.produced, &placed.output)
@@ -385,8 +395,9 @@ struct Placed {
     /// The executable as the linker writes it, under its final name in the private directory,
     /// since a linker may record that name in what it writes.
     produced: PathBuf,
-    /// The private directory, removed when this value is dropped, on every path.
-    _private: una_diag::safe_write::PrivateDir,
+    /// The private directory, removed when this value is dropped, on every path. A release
+    /// `una` writes its runtime here for `cc` (ADR 0124 step 2).
+    private: una_diag::safe_write::PrivateDir,
 }
 
 /// Creates the directory of `output`, a fresh private directory next to it, and the object
@@ -458,7 +469,7 @@ fn placed(root: &Path, explicit: bool, output: &Path, object: &[u8]) -> io::Resu
         output,
         object: object_path,
         produced,
-        _private: private,
+        private,
     })
 }
 
@@ -473,9 +484,18 @@ fn package_root(package: &crate::package::Package) -> PathBuf {
         .unwrap_or_default()
 }
 
-/// Links `object` with the runtime library into the executable `output` through `cc`.
-fn link(object: &Path, output: &Path, environment: crate::Environment<'_>) -> Result<(), String> {
-    let runtime = runtime_library(environment)?;
+/// Why a link failed: a usage error (exit code 2, `spec/16 §2` rule 3), or U8001 when the
+/// runtime built into `una` is missing or damaged (exit code 3).
+enum LinkFailure {
+    Usage(String),
+    Internal(String),
+}
+
+/// Links the object of `placed` with the runtime library into its executable through `cc`, in
+/// its private directory.
+fn link(placed: &Placed, environment: crate::Environment<'_>) -> Result<(), LinkFailure> {
+    let (object, output) = (placed.object.as_path(), placed.produced.as_path());
+    let (runtime, embedded_runtime) = runtime(environment, placed)?;
     let mut command = Command::new("cc");
     command.arg(object).arg(&runtime).arg("-o").arg(output);
     // No debug information (#382, S-13): the macOS debug map names each object by the absolute
@@ -515,19 +535,21 @@ fn link(object: &Path, output: &Path, environment: crate::Environment<'_>) -> Re
             "-lc",
         ]);
     }
-    let result = command
-        .output()
-        .map_err(|error| format!("cannot run the system linker `cc`: {error}"))?;
+    let result = command.output().map_err(|error| {
+        LinkFailure::Usage(format!("cannot run the system linker `cc`: {error}"))
+    })?;
     if result.status.success() {
         Ok(())
     } else {
         let output = String::from_utf8_lossy(&result.stderr);
         let mut message = format!("the system linker `cc` failed:\n{}", output.trim_end());
-        if let Some(hint) = stale_runtime_hint(&output, &runtime) {
+        // A runtime built into `una` is the one it was built with, so it cannot be stale (ADR
+        // 0124 rule 14); the hint is for a runtime read from a file.
+        if !embedded_runtime && let Some(hint) = stale_runtime_hint(&output, &runtime) {
             message.push('\n');
             message.push_str(&hint);
         }
-        Err(message)
+        Err(LinkFailure::Usage(message))
     }
 }
 
@@ -550,14 +572,43 @@ fn stale_runtime_hint(linker_output: &str, runtime: &Path) -> Option<String> {
 /// The message when no runtime library is found beside `una` in `dir` (#203).
 fn missing_runtime(dir: &Path) -> String {
     format!(
-        "the native runtime `{RUNTIME}` is not next to `una` ({}); a source build makes it with `{SOURCE_BUILD}` (without `--release` for target/debug), or set UNA_RT_LIB to its path",
+        "the native runtime `{RUNTIME}` is not next to this development build of `una` ({}); a source build makes it with `{SOURCE_BUILD}` (without `--release` for target/debug), or set UNA_RT_LIB to its path",
         dir.display()
     )
 }
 
-/// The runtime library: `UNA_RT_LIB` when set, else `libuna_rt.a` in the `lib` directory
-/// beside the `una` binary, as a release archive ships it (ADR 0059), next to the binary, as a
-/// Cargo build leaves it, or in `../lib`.
+/// The runtime library to link, and whether it is the one built into `una`.
+///
+/// A release `una` (and a test build with the hook of `crate::runtime_archive::embedded`)
+/// checks its embedded runtime against the digest recorded at its build and writes it into the
+/// link's private directory (mode 0700, fresh for this build, #1160) as a new file of mode 0600,
+/// which goes with the directory on every path. It reads no variable and no other file: neither
+/// `UNA_RT_LIB` nor a `libuna_rt.a` beside `una` changes what it links (ADR 0124 rules 14 and
+/// 15). A development build searches as ADR 0059 rule 2 does ([`runtime_library`]).
+fn runtime(
+    environment: crate::Environment<'_>,
+    placed: &Placed,
+) -> Result<(PathBuf, bool), LinkFailure> {
+    let embedded = crate::runtime_archive::embedded(environment).map_err(LinkFailure::Usage)?;
+    let Some(embedded) = embedded else {
+        return runtime_library(environment)
+            .map(|path| (path, false))
+            .map_err(LinkFailure::Usage);
+    };
+    let bytes = embedded.verified().map_err(LinkFailure::Internal)?;
+    let taken = [placed.object.as_path(), placed.produced.as_path()];
+    crate::runtime_archive::write_into(bytes, placed.private.path(), &taken)
+        .map(|path| (path, true))
+        .map_err(|error| {
+            LinkFailure::Usage(format!(
+                "cannot write the native runtime for the system linker: {error}"
+            ))
+        })
+}
+
+/// The runtime library of a development build (ADR 0124 rule 19; ADR 0059 rule 2 and its
+/// amendment): `UNA_RT_LIB` when set, else `libuna_rt.a` in the `lib` directory beside the
+/// `una` binary, next to the binary, as a Cargo build leaves it, or in `../lib`.
 fn runtime_library(environment: crate::Environment<'_>) -> Result<PathBuf, String> {
     if let Some(path) = crate::variable(environment, "UNA_RT_LIB") {
         return Ok(PathBuf::from(path));
@@ -568,8 +619,8 @@ fn runtime_library(environment: crate::Environment<'_>) -> Result<PathBuf, Strin
         .and_then(std::fs::canonicalize)
         .map_err(|error| format!("cannot locate the `una` binary: {error}"))?;
     let dir = exe.parent().map(Path::to_path_buf).unwrap_or_default();
-    // A release archive ships it in `lib/` beside `una` (ADR 0059); a Cargo build leaves it
-    // next to `una`.
+    // An archive before ADR 0124 step 2 shipped it in `lib/` beside `una` (ADR 0059); a Cargo
+    // build leaves it next to `una`.
     let candidates = [
         dir.join("lib").join(RUNTIME),
         dir.join(RUNTIME),

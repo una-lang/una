@@ -72,14 +72,36 @@ fn sha256(path: &Path) -> String {
     String::from_utf8(output.stdout).unwrap()[..64].to_owned()
 }
 
-/// A release of `version` under `dir`: an archive holding a stub `una` and runtime, and, in the
-/// tree of its tag, a validation summary (#717) whose verdict is `verdict` and that lists
-/// `listed` as the archive's digest (its own digest when `None`).
+/// A release of `version` under `dir`: an archive holding a stub `una`, with the runtime built
+/// in (ADR 0124 step 2), and, in the tree of its tag, a validation summary (#717) whose verdict
+/// is `verdict` and that lists `listed` as the archive's digest (its own digest when `None`).
 fn release(dir: &Path, target: &str, version: &str, verdict: &str, listed: Option<&str>) {
-    let _ = std::fs::remove_dir_all(dir);
+    release_holding(dir, target, version, verdict, listed, &[]);
+}
+
+/// [`release`], with the archive also holding `extra` files, by path and content: the
+/// `lib/libuna_rt.a` of a release before ADR 0124 step 2, or an entry the installer refuses.
+fn release_holding(
+    dir: &Path,
+    target: &str,
+    version: &str,
+    verdict: &str,
+    listed: Option<&str>,
+    extra: &[(&str, &str)],
+) {
+    // The release's own trees; an installation under `dir/home` stays, so that a release can be
+    // installed over an earlier one.
+    for tree in ["staging", "releases", "records"] {
+        let _ = std::fs::remove_dir_all(dir.join(tree));
+    }
     let name = format!("una-{version}-{target}");
     let staging = dir.join("staging").join(&name);
-    std::fs::create_dir_all(staging.join("lib")).unwrap();
+    std::fs::create_dir_all(&staging).unwrap();
+    for (path, text) in extra {
+        let path = staging.join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
     std::fs::write(staging.join("una"), "#!/bin/sh\necho una stub\n").unwrap();
     // Executable, as in a real archive: the installer checks it before installing.
     #[cfg(unix)]
@@ -88,7 +110,6 @@ fn release(dir: &Path, target: &str, version: &str, verdict: &str, listed: Optio
         std::fs::set_permissions(staging.join("una"), std::fs::Permissions::from_mode(0o755))
             .unwrap();
     }
-    std::fs::write(staging.join("lib/libuna_rt.a"), "stub").unwrap();
     let releases = dir.join("releases").join(format!("v{version}"));
     std::fs::create_dir_all(&releases).unwrap();
     let archive = releases.join(format!("{name}.tar.gz"));
@@ -154,6 +175,7 @@ fn the_installer_installs_nothing_that_the_validation_summary_does_not_vouch_for
         return;
     };
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("install");
+    let _ = std::fs::remove_dir_all(&dir);
     let version = "9.9.9";
     let home = dir.join("home/.una");
     // A digest that is not the archive's: refused, and nothing installed.
@@ -186,7 +208,7 @@ fn the_installer_installs_nothing_that_the_validation_summary_does_not_vouch_for
     release(&dir, target, version, "PASS (every gate)", None);
     let output = install(&dir, version, &[]);
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
-    assert!(home.join("bin/una").exists() && home.join("lib/libuna_rt.a").exists());
+    assert!(home.join("bin/una").exists() && !home.join("lib").exists());
     assert!(!home.join("z3").exists() && !home.join("bin/z3").exists());
     assert!(
         !std::fs::read_to_string(home.join(".una-install"))
@@ -259,11 +281,88 @@ fn the_installer_installs_nothing_that_the_validation_summary_does_not_vouch_for
 }
 
 #[test]
+fn an_archive_without_lib_installs_no_runtime_and_an_earlier_one_still_installs_its_own() {
+    // ADR 0124 step 2: the runtime is built into `una`, so a fresh installation holds `bin/una`
+    // and the documents and no `lib/`. An archive of an earlier release, whose `una` reads its
+    // runtime from `lib/libuna_rt.a`, still installs it; an archive holding anything else at
+    // its top level, or more under `lib/`, is refused before anything is installed.
+    let Some(target) = target() else {
+        return;
+    };
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("install-no-lib");
+    let _ = std::fs::remove_dir_all(&dir);
+    let version = "9.9.7";
+    let home = dir.join("home/.una");
+    let pass = "PASS (every gate)";
+    let documents = [
+        ("README.md", "readme"),
+        ("LICENSE", "license"),
+        ("docs/guide/getting-started.md", "guide"),
+    ];
+    // A fresh installation from an archive without `lib/`.
+    release_holding(&dir, target, version, pass, None, &documents);
+    let output = install(&dir, version, &[]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let record = std::fs::read_to_string(home.join(".una-install")).unwrap();
+    assert_eq!(
+        record,
+        format!(
+            "# Una {version}, installed by install.sh; `sh install.sh --uninstall` removes what follows.\nversion {version}\ndir .\ndir bin\ndir docs\ndir docs/guide\nfile bin/una\nfile README.md\nfile LICENSE\nfile docs/guide/getting-started.md\n"
+        )
+    );
+    let mut held: Vec<String> = std::fs::read_dir(&home)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    held.sort();
+    assert_eq!(
+        held,
+        [".una-install", "LICENSE", "README.md", "bin", "docs"]
+    );
+    std::fs::remove_dir_all(&home).unwrap();
+    // An earlier release, with its runtime in `lib/`: installed with it, as before.
+    let earlier = [("lib/libuna_rt.a", "runtime"), ("README.md", "readme")];
+    release_holding(&dir, target, version, pass, None, &earlier);
+    let output = install(&dir, version, &[]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(
+        std::fs::read_to_string(home.join("lib/libuna_rt.a")).unwrap(),
+        "runtime"
+    );
+    // A later release over it: the earlier runtime, which the new `una` never reads, is left
+    // for the migration of step 5, and stays in the record, so that uninstall removes it.
+    release_holding(&dir, target, version, pass, None, &documents);
+    let output = install(&dir, version, &[]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let record = std::fs::read_to_string(home.join(".una-install")).unwrap();
+    assert!(record.contains("file lib/libuna_rt.a\n"), "{record}");
+    let output = install(&dir, version, &["--uninstall"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(!dir.join("home/.una").exists());
+    // Refused: another program beside `una`, or more than the runtime under `lib/`.
+    for extra in [
+        [("z3", "#!/bin/sh\n"), ("README.md", "readme")],
+        [
+            ("lib/libuna_rt.a", "runtime"),
+            ("lib/libz3.dylib", "library"),
+        ],
+    ] {
+        release_holding(&dir, target, version, pass, None, &extra);
+        let output = install(&dir, version, &[]);
+        assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+        assert!(stderr(&output).contains("refuses"), "{}", stderr(&output));
+        assert!(!home.exists());
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn a_repacked_archive_is_accepted_only_as_repacked_md_pairs_it() {
     let Some(target) = target() else {
         return;
     };
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("install-repacked");
+    let _ = std::fs::remove_dir_all(&dir);
     let version = "9.9.8";
     let home = dir.join("home/.una");
     let name = format!("una-{version}-{target}.tar.gz");
@@ -290,7 +389,7 @@ fn a_repacked_archive_is_accepted_only_as_repacked_md_pairs_it() {
     table(&[(&name, &gated, &published)]);
     let output = install(&dir, version, &[]);
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
-    assert!(home.join("bin/una").exists() && home.join("lib/libuna_rt.a").exists());
+    assert!(home.join("bin/una").exists() && !home.join("lib").exists());
     assert!(!home.join("z3").exists() && !home.join("bin/z3").exists());
     assert!(
         !std::fs::read_to_string(home.join(".una-install"))

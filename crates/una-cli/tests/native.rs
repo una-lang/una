@@ -688,6 +688,157 @@ fn una_build_finds_the_runtime_through_a_symlinked_una() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The runtime that the test builds' `una` links, beside the binary.
+fn built_runtime() -> PathBuf {
+    runtime();
+    Path::new(env!("CARGO_BIN_EXE_una"))
+        .parent()
+        .unwrap()
+        .join("libuna_rt.a")
+}
+
+/// `una build --out <out>` in `dir`, with the runtime built into `una` stood in by `embedded`
+/// with the digest `sha256` (the test hook of `runtime_archive`, ADR 0124 step 2), and
+/// `UNA_RT_LIB` naming `rt_lib`.
+fn build_with_embedded(
+    dir: &Path,
+    out: &Path,
+    embedded: &Path,
+    sha256: &str,
+    rt_lib: &Path,
+) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_una"))
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
+        .env("UNA_TEST_EMBEDDED_RUNTIME", embedded)
+        .env("UNA_TEST_EMBEDDED_RUNTIME_SHA256", sha256)
+        .env("UNA_RT_LIB", rt_lib)
+        .env("NO_COLOR", "1")
+        .args(["build", "--out"])
+        .arg(out)
+        .current_dir(dir)
+        .output()
+        .unwrap()
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    format!("{:x}", sha2::Sha256::digest(bytes))
+}
+
+#[test]
+fn an_embedded_runtime_is_linked_and_una_rt_lib_has_no_effect() {
+    // ADR 0124 rules 14 and 15 (step 2): a `una` with its runtime built in links that runtime,
+    // checked against its digest, and reads no variable and no file for it: `UNA_RT_LIB`
+    // naming a file that is no runtime at all, and a junk `libuna_rt.a` beside the package,
+    // change nothing, so a runtime older than `una` can no longer fail the link (#203). The
+    // runtime goes into the link's private directory and leaves with it. The executable is the
+    // one a development build links from the same runtime file.
+    let built = built_runtime();
+    let dir = package(
+        "embedded",
+        "\n[run]\nentry = \"hello\"\ngrants = [\"console\"]\n",
+        &[("src/hello.una", HELLO)],
+    );
+    let bytes = std::fs::read(&built).unwrap();
+    let embedded = dir.join("embedded-runtime.a");
+    std::fs::write(&embedded, &bytes).unwrap();
+    let junk = dir.join("libuna_rt.a");
+    std::fs::write(&junk, "not a runtime\n").unwrap();
+    let out = dir.join("out");
+    let output = build_with_embedded(
+        &dir,
+        &out.join("hello"),
+        &embedded,
+        &sha256_hex(&bytes),
+        &junk,
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let run = Command::new(out.join("hello")).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "Hello, Una\n");
+    // The private directory, with the runtime written there, is gone.
+    let left: Vec<String> = std::fs::read_dir(&out)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(left, ["hello"]);
+    // A development build reads `UNA_RT_LIB`: the junk file fails its link.
+    let development = Command::new(env!("CARGO_BIN_EXE_una"))
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
+        .env_remove("UNA_TEST_EMBEDDED_RUNTIME")
+        .env("UNA_RT_LIB", &junk)
+        .args(["build", "--out"])
+        .arg(dir.join("dev/hello"))
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert_eq!(development.status.code(), Some(2), "{development:?}");
+    // And, from the same runtime file, it links the same executable.
+    let development = Command::new(env!("CARGO_BIN_EXE_una"))
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
+        .env_remove("UNA_TEST_EMBEDDED_RUNTIME")
+        .env("UNA_RT_LIB", &embedded)
+        .args(["build", "--out"])
+        .arg(dir.join("dev/hello"))
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert_eq!(development.status.code(), Some(0), "{development:?}");
+    assert!(
+        std::fs::read(out.join("hello")).unwrap() == std::fs::read(dir.join("dev/hello")).unwrap(),
+        "the embedded and the file runtime link different executables"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_missing_or_damaged_embedded_runtime_fails_closed_with_u8001() {
+    // ADR 0124 step 2: `una build` checks the runtime built into `una` against the digest its
+    // build recorded before every link. A runtime that is missing, or whose bytes differ by
+    // one bit, is U8001 (exit code 3): nothing is linked, no executable is written, and the
+    // private directory is removed. `UNA_RT_LIB` naming a good runtime is no way around it.
+    let built = built_runtime();
+    let dir = package(
+        "damaged",
+        "\n[run]\nentry = \"hello\"\ngrants = [\"console\"]\n",
+        &[("src/hello.una", HELLO)],
+    );
+    let bytes = std::fs::read(&built).unwrap();
+    let recorded = sha256_hex(&bytes);
+    let mut flipped = bytes;
+    let middle = flipped.len() / 2;
+    flipped[middle] ^= 0x01;
+    let damaged = dir.join("damaged-runtime.a");
+    std::fs::write(&damaged, &flipped).unwrap();
+    let cases = [
+        (damaged, "does not match the digest recorded at its build"),
+        (dir.join("no-such-runtime.a"), "is missing"),
+    ];
+    for (embedded, expected) in cases {
+        let out = dir.join("out");
+        let output = build_with_embedded(&dir, &out.join("hello"), &embedded, &recorded, &built);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(3), "{stderr}");
+        assert!(
+            stderr.starts_with(
+                "internal compiler error (U8001): the native runtime built into `una`"
+            ),
+            "{stderr}"
+        );
+        assert!(stderr.contains(expected), "{stderr}");
+        assert!(stderr.contains("reinstall"), "{stderr}");
+        assert_eq!(std::fs::read_dir(&out).unwrap().count(), 0, "{out:?}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn an_executable_does_not_depend_on_where_una_and_its_runtime_are_installed() {
     // #382 (S-13): a built executable carries no path of the machine that built it. The link
