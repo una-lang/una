@@ -6,7 +6,7 @@ Every code block of this tutorial is checked by the test suite (`crates/una-cli/
 
 ## 1. Install
 
-The installer puts a release in `~/.una`: the `una` binary, the native runtime that `una build` links, and Z3 at the version the proofs need.
+The installer puts a release in `~/.una`: the `una` binary, with the native runtime that `una build` links built into it, and Z3 at the version the proofs need.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/una-lang/una/main/install.sh | sh

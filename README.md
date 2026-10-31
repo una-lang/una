@@ -50,8 +50,7 @@ Before its tag, every area of v0.3.0 was reviewed by someone other than its auth
 ## Install
 
 The installer puts a release in `~/.una`:
-- the `una` binary;
-- the native runtime that `una build` links;
+- the `una` binary, with the native runtime that `una build` links built into it (ADR 0124; a release before that built-in runtime ships it as `lib/libuna_rt.a`, which the installer puts beside `bin/`);
 - Z3 at the version the proofs need.
 
 ```bash
@@ -67,7 +66,7 @@ What the installer checks:
 
 `UNA_VERSION` picks another release, and `UNA_HOME` picks another directory. The installer needs `curl` or `wget`, `tar`, `unzip`, and `shasum` or `sha256sum`. `una build` also needs a C compiler available as `cc`. To uninstall, run `sh install.sh --uninstall`, which removes exactly what the installer recorded.
 
-The [releases page](https://github.com/una-lang/una/releases) also has an archive per platform with its digest beside it: macOS arm64, Linux x86_64 and Linux arm64. Each archive, and an installation, also holds the guides under `docs/guide/`: [Getting started](docs/guide/getting-started.md), the [language guide](docs/guide/syntax-reference.md), [Una for agents](docs/guide/una-for-agents.md) and its [compact form](docs/guide/una-compact.md), under 2,000 tokens, so an agent can learn Una from the archive alone, with `una explain <code>` for each diagnostic. Keep `lib/` beside `una`, and put Z3 5.1.0 on `PATH` (`scripts/install-z3.sh DIR` installs it). Without the pinned Z3, `una check` fails with U5003: verification never passes silently.
+The [releases page](https://github.com/una-lang/una/releases) also has an archive per platform with its digest beside it: macOS arm64, Linux x86_64 and Linux arm64. Each archive, and an installation, also holds the guides under `docs/guide/`: [Getting started](docs/guide/getting-started.md), the [language guide](docs/guide/syntax-reference.md), [Una for agents](docs/guide/una-for-agents.md) and its [compact form](docs/guide/una-compact.md), under 2,000 tokens, so an agent can learn Una from the archive alone, with `una explain <code>` for each diagnostic. An archive whose `una` has the runtime built in holds no `lib/`; with an earlier archive, keep `lib/` beside `una`. Put Z3 5.1.0 on `PATH` (`scripts/install-z3.sh DIR` installs it). Without the pinned Z3, `una check` fails with U5003: verification never passes silently.
 
 ## A taste
 

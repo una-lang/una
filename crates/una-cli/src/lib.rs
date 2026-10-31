@@ -21,6 +21,7 @@ mod recovery;
 mod registry;
 mod report;
 mod runtime;
+mod runtime_archive;
 mod std_builtins;
 mod std_listing;
 mod trace;
@@ -1412,15 +1413,16 @@ struct VersionDocument {
 }
 
 /// Whether this `una` is a development build (ADR 0124 rule 19): one built without the
-/// release solver taken by digest. A release build has it, and from step 2 of that record
-/// the embedded runtime too.
+/// release solver taken by digest, or without the embedded runtime (step 2 of that record). A
+/// release build has both.
 fn development_build() -> bool {
-    !una_z3::BUILD.release
+    !una_z3::BUILD.release || runtime_archive::SHA256.is_none()
 }
 
 /// The build record (ADR 0124 rule 20): what this `una` was built with, as one JSON document
 /// with keys in a fixed order, which the solver child's handshake hashes and the report lists.
-/// It grows with the embedded runtime in step 2 of that record.
+/// `runtime_sha256` is the digest of the embedded runtime (step 2), empty in a development
+/// build.
 #[derive(serde::Serialize)]
 struct BuildRecord {
     schema: &'static str,
@@ -1430,6 +1432,7 @@ struct BuildRecord {
     z3_tree: &'static str,
     z3_source_sha256: &'static str,
     z3_library_sha256: &'static str,
+    runtime_sha256: &'static str,
     development: bool,
 }
 
@@ -1444,6 +1447,7 @@ pub fn build_record() -> String {
         z3_tree: z3.tree,
         z3_source_sha256: z3.source_sha256,
         z3_library_sha256: z3.library_sha256,
+        runtime_sha256: runtime_archive::SHA256.unwrap_or_default(),
         development: development_build(),
     };
     // INVARIANT: a struct of strings and a bool always serializes.

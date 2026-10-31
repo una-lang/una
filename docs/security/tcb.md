@@ -86,7 +86,7 @@ Ranked by the worst class, then by what guards it today:
     - Miri on the unit tests of `una-rt`, which reports undefined behavior in the Rust code they reach, `ffi.rs` included, with permissive provenance, since the runtime's handles are integers: a known weakening of its checks. Each allocation is slow under Miri, so five tests run smaller there, at sizes the gate pins (#778): two deep values at depth 1,000 rather than 1,000,000, the copy between heaps of #775 at depth 1,000 rather than 200,000, 200 rounds of `find` rather than 10,000, and the entry points with one word of each kind. Their full sizes run in the ordinary tests, which alone check that those walks use no recursion, since Miri emulates no native stack limit. Twenty-three tests are not run under Miri, a set the gate pins by name (`scripts/sanitize-miri-ignored.txt`): 14 scenarios that run in a process of their own, and 9 tests that start such a process.
     - libFuzzer: three targets of `fuzz/`, a crate outside the workspace with its own lock, under AddressSanitizer: `literal`, the two entry points that read bytes by pointer and length, on any bytes; `words`, sequences of calls on words the generated code never passes, outside a run, where every word a call returns can be an argument of the next: the 87 entry points of the export table but its 10 host effects (console, clock, environment, files, keys and HTTP, which need a run's grants), and 13 entry points outside it (reference counts, `push`, `enter`, `leave`, `budget`, `poll`, `stopped`, the operation and event state, and the status of `together`); and `json`, the runtime's JSON parser on any text, whose canonical text must parse back to itself and agree with the entry points. Each runs a fixed number of inputs from committed seeds with a fixed seed, and a canary target's planted crash must be found and minimized first. Not fuzzed: `una_rt_closure` and `una_rt_push_op`, which take the address of compiled code, `together` and `together for`, which run such code on tasks, `una_rt_start` and `una_rt_main_failed`, which start and end a run, the host effects, and any entry point inside a run. The fuzzed code is built with `--cfg una_fuzz`, which only adds the two hooks the targets call.
   - The sanitizer gate runs on macOS only, where LeakSanitizer does not run: no leak is detected by it. The `words` target calls the entry points outside a run only, as the word tests do, and none of the targets reaches the host operations or the generated code.
-  - The build report's `tcb` section does not list the runtime, although it is in the Trusted zone.
+  - (Closed by ADR 0124 step 2, #1207.) The build report did not record the runtime, although it is in the Trusted zone. A release `una` now carries the runtime built from its own commit and build, pinned by the digest its build checked, which `una build` checks again before each link (U8001 on a mismatch) and the report records as `native.runtime_sha256` (`spec/13 §6`). A development build reads the runtime from a file and records none.
 
 ### 3.4 Host capabilities and the prelude
 
@@ -104,14 +104,14 @@ The host operations (`Clock`, `Env`, `Files`, `Keys`, `Http`) have two implement
 
 ### 3.5 Native codegen and the linker
 
-`una-codegen` (about 4,500 lines) lowers Core to Cranelift and emits an object file; `una build` links it with `libuna_rt.a` through the system `cc` (`crates/una-cli/src/build.rs`).
+`una-codegen` (about 4,500 lines) lowers Core to Cranelift and emits an object file; `una build` links it with `libuna_rt.a` through the system `cc` (`crates/una-cli/src/build.rs`). (ADR 0124 step 2, #1207.) The runtime of a release `una` is the one built into it, pinned by its digest and recorded by the report (§3.3); no variable or file replaces it, so `UNA_RT_LIB` cannot put code into every executable. Until step 3, `una build` writes it into the link's private directory (mode 0700, created for the build; the file new, with mode 0600) for `cc` to read, and removes it after the link.
 
 - **A bug can cause:** a wrong result. The generated code has no `unsafe` of its own and reaches objects only through the runtime's entry points, which refuse a word that is not a live handle (§3.3).
 - **Guards:** the native gate, the `unsupported` list that names every runnable program native does not compile yet (it must be exact), and the reproducible and determinism gates.
 - **Formal coverage:** none.
 - **Open gaps:**
   - A program outside the runnable corpus is compared with nothing.
-  - The system `cc` and linker are trusted, their version is neither pinned nor recorded in the build report.
+  - The system `cc` and linker are trusted, their version is neither pinned nor recorded in the build report. They stay so until the internal linker of ADR 0124 step 3. Between the write of the runtime into the private directory and the link, a process of the same user could replace it there, as it could replace `cc` itself.
 
 ### 3.6 The reference interpreter
 

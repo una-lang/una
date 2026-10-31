@@ -27,6 +27,8 @@ Status: Normative, v0.2 (ADR 0055).
 6. Without `--json`, `una build` prints `built <output>` on stdout.
 7. **Slices.** Until the backend compiles the whole language (#26), a construct it does not compile yet is a usage error, exit code 2. `una build` names the construct on stderr, as in "the native backend does not compile calls of functions yet", and writes no executable.
 
+8. (ADR 0124 step 2.) **The runtime.** A release `una` links the runtime library built into it, from the same commit and the same build, without debug sections, whose SHA-256 its build recorded (`native.runtime_sha256` of the report, `spec/13 §6`). It reads no file and no variable for the runtime: `UNA_RT_LIB` and a `libuna_rt.a` in any place have no effect, so a runtime older than `una` cannot be linked. Before each link it checks the embedded bytes against that digest; bytes that are missing or differ are U8001, exit code 3, and no executable is written. Until `una` links by itself (ADR 0124 step 3), it writes the runtime for the system linker into the private directory of the link, created for that build with mode 0700, as a new file of mode 0600, and removes it with the directory after the link, on every path. A development build (`spec/13 §5`), which has no runtime built in, reads it from `UNA_RT_LIB`, else from `lib/libuna_rt.a` beside the `una` binary, next to the binary, or in `../lib` (ADR 0059 rule 2 and its amendment).
+
 ## 3. The executable
 
 1. **Output contract.** The executable follows the human contract of `una run` (`spec/13 §5`):

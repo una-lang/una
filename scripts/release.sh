@@ -1,8 +1,11 @@
 #!/bin/sh
-# Builds `una` and the native runtime library in release mode and packs them with the license
-# and the readme into target/release-archives/una-<version>-<target>.tar.gz, with `una`,
-# `lib/libuna_rt.a`, `LICENSE`, `README.md` and the four guides under `docs/guide/` (#410, #430), and its SHA-256 digest beside it in a .sha256
-# file (ADR 0035 rule 3, ADR 0059). Each target builds natively on its own
+# Builds the native runtime library and then `una`, with that runtime built into it, in release
+# mode (ADR 0124 rules 12, 14 and 18, step 2), and packs `una` with the license and the readme
+# into target/release-archives/una-<version>-<target>.tar.gz, with `una`, `LICENSE`, `README.md`
+# and the four guides under `docs/guide/` (#410, #430) and no `lib/` (ADR 0059's amendment of
+# ADR 0124), and its SHA-256 digest beside it in a .sha256 file (ADR 0035 rule 3). The runtime
+# that `una` embeds stays at target/release-remapped/embed/libuna_rt.a, where
+# scripts/check-release.sh scans it. Each target builds natively on its own
 # runner, so TARGET must be the host's. Two builds of one commit give the same archive (#679):
 # its entries take the commit's time, SOURCE_DATE_EPOCH when set, else `git log -1 %ct`.
 #
@@ -91,15 +94,49 @@ export RUSTFLAGS
 CFLAGS="${CFLAGS:-} -ffile-prefix-map=$root=/una -ffile-prefix-map=$cargo_home=/cargo"
 export CFLAGS
 built="$root/target/release-remapped"
-cargo build --release --locked --target-dir "$built" --package una-cli --package una-rt
+# The build order of ADR 0124 rule 18: the runtime first, from this commit, then `una`, which
+# embeds it. The runtime loses its debug sections (rule 12), so that no path or line table of
+# this machine reaches an executable and the embedded bytes are smaller: `strip -S` on macOS,
+# with ZERO_AR_DATE=1 so that the archive's member headers carry no time, and GNU strip's
+# `--strip-debug` with deterministic archive headers (`-D`) on Linux. una-cli's build script
+# checks the stripped file against the digest given here and embeds it; a built `una` never
+# reads these variables.
+cargo build --release --locked --target-dir "$built" --package una-rt
+embed="$built/embed"
+rm -rf "${embed:?}"
+mkdir -p "$embed"
+cp "$built/release/libuna_rt.a" "$embed/libuna_rt.a"
+case $target in
+    *-apple-darwin)
+        ZERO_AR_DATE=1 strip -S "$embed/libuna_rt.a"
+        strip_tool="strip -S (macOS)"
+        ;;
+    *-linux-*)
+        strip --strip-debug -D "$embed/libuna_rt.a"
+        strip_tool="$(strip --version | head -n 1) --strip-debug -D"
+        ;;
+    *)
+        echo "error: no strip recipe for $target" >&2
+        exit 2
+        ;;
+esac
+if command -v sha256sum >/dev/null 2>&1; then
+    runtime_digest=$(sha256sum "$embed/libuna_rt.a" | cut -d ' ' -f 1)
+else
+    runtime_digest=$(shasum -a 256 "$embed/libuna_rt.a" | cut -d ' ' -f 1)
+fi
+echo "runtime: $embed/libuna_rt.a, stripped with $strip_tool, sha256 $runtime_digest"
+UNA_EMBED_RUNTIME=$embed/libuna_rt.a
+UNA_EMBED_RUNTIME_SHA256=$runtime_digest
+export UNA_EMBED_RUNTIME UNA_EMBED_RUNTIME_SHA256
+cargo build --release --locked --target-dir "$built" --package una-cli
 name="una-$version-$target"
 out="$root/target/release-archives"
 rm -rf "${out:?}/$name" "$out/$name.tar.gz" "$out/$name.tar.gz.sha256"
-mkdir -p "$out/$name/lib" "$out/$name/docs/guide"
+mkdir -p "$out/$name/docs/guide"
 cp "$built/release/una" LICENSE README.md "$out/$name/"
 # The guides, at the paths the README links, so the archive alone teaches Una (#410, N-65).
 cp docs/guide/getting-started.md docs/guide/syntax-reference.md docs/guide/una-compact.md docs/guide/una-for-agents.md "$out/$name/docs/guide/"
-cp "$built/release/libuna_rt.a" "$out/$name/lib/"
 
 # The archive is a function of the commit, so two builds of one commit give the same bytes
 # (#679): the binaries already are, with the paths above remapped, and the packing fixes what

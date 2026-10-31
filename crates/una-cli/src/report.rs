@@ -96,12 +96,15 @@ struct ResultLabelDoc {
 }
 
 /// The native backend (ADR 0055): the host target, the bindings whose `Int` stays
-/// arbitrary precision in native code, and the dense kernels' variants (ADR 0120).
+/// arbitrary precision in native code, the dense kernels' variants (ADR 0120), and the digest
+/// of the runtime built into `una`, in a release build (ADR 0124 rule 28).
 #[derive(Serialize)]
 struct NativeDoc {
     target: String,
     arbitrary_precision: Vec<String>,
     kernels: KernelsDoc,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    runtime_sha256: Option<String>,
 }
 
 /// The variants of the dense kernels that an executable for the host target holds and chooses
@@ -805,6 +808,7 @@ fn build(
                     .map(|prefix| (*prefix).to_owned())
                     .collect(),
             },
+            runtime_sha256: crate::runtime_archive::SHA256.map(str::to_owned),
         },
         generic_results,
         out_of_model: OUT_OF_MODEL,
@@ -1204,6 +1208,9 @@ fn human(report: &Report) -> String {
         "  fma allowlist: {}",
         report.native.kernels.fma_allowlist.join(", ")
     ));
+    if let Some(runtime) = &report.native.runtime_sha256 {
+        line(format!("  runtime sha256: {runtime}"));
+    }
     for generic in &report.generic_results {
         let parts: Vec<String> = generic
             .result_labels
