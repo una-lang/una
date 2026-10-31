@@ -7,6 +7,7 @@
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -67,7 +68,10 @@ fn una_sandboxed(own: &Path, profile: &str, args: &[&str]) -> Option<Output> {
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
     if stderr.starts_with("sandbox-exec: sandbox_apply") {
-        eprintln!("this test runs under a sandbox that refuses a nested one: {stderr}");
+        let _ = writeln!(
+            std::io::stderr(),
+            "this test runs under a sandbox that refuses a nested one: {stderr}"
+        );
         return None;
     }
     Some(output)

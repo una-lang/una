@@ -385,7 +385,10 @@ fn run_sandboxed(profile: &str, scenario: &str, test: &str) -> Option<(Ended, St
     let err = errors.join().unwrap();
     let _ = std::fs::remove_dir_all(&dir);
     if err.starts_with("sandbox-exec: sandbox_apply") {
-        eprintln!("this test runs under a sandbox that refuses a nested one: {err}");
+        let _ = writeln!(
+            std::io::stderr(),
+            "this test runs under a sandbox that refuses a nested one: {err}"
+        );
         return None;
     }
     Some((ended, out, err))
@@ -397,10 +400,10 @@ fn run_sandboxed(profile: &str, scenario: &str, test: &str) -> Option<(Ended, St
 fn confine_and_tell() -> ! {
     let outcome = confine(&limits(), c"/private/etc/hosts");
     let open: Vec<i32> = (3..64).filter(|fd| is_open(*fd)).collect();
-    match outcome {
-        Ok(confinement) => println!("outcome={confinement:?} open={open:?}"),
-        Err(error) => println!("refused={error} open={open:?}"),
-    }
+    let _ = match outcome {
+        Ok(confinement) => writeln!(std::io::stdout(), "outcome={confinement:?} open={open:?}"),
+        Err(error) => writeln!(std::io::stdout(), "refused={error} open={open:?}"),
+    };
     std::process::exit(0);
 }
 
