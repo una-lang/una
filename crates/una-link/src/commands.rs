@@ -148,12 +148,15 @@ pub(crate) fn write(image: &Image<'_>, target: &Target13, signed: &Signed<'_>) -
     }
     let (locals, externals) = image.symbol_counts;
     let first_import = locals + externals;
+    let positions: std::collections::BTreeMap<&[u8], u32> = image
+        .imports
+        .iter()
+        .enumerate()
+        .map(|(p, (n, _))| (*n, u32::try_from(p).unwrap_or(u32::MAX)))
+        .collect();
     let import_index = |name: &[u8]| -> Result<u32> {
-        image
-            .imports
-            .iter()
-            .position(|(n, _)| *n == name)
-            .and_then(|p| u32::try_from(p).ok())
+        positions
+            .get(name)
             .map(|p| first_import + p)
             .ok_or_else(|| Problem::internal("an indirect symbol that is not an import"))
     };

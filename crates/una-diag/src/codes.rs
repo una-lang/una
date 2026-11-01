@@ -309,13 +309,16 @@ pub enum Code {
     /// A locked release yanked, under an advisory or signed after a stated compromise, or a
     /// pending recovery, a key change or a transfer of its owner.
     U7014,
+    /// The executable cannot be laid out: a branch beyond its target's range, or a section
+    /// larger than its format allows (ADR 0124).
+    U7015,
     /// Internal compiler error (always a bug).
     U8001,
 }
 
 impl Code {
     /// Every registered code, in the order of `spec/13 §4`.
-    pub const ALL: [Code; 119] = [
+    pub const ALL: [Code; 120] = [
         Code::U0001,
         Code::U0002,
         Code::U0003,
@@ -434,6 +437,7 @@ impl Code {
         Code::U7012,
         Code::U7013,
         Code::U7014,
+        Code::U7015,
         Code::U8001,
     ];
 
@@ -1043,6 +1047,11 @@ impl Code {
                 code: "U7014",
                 domain: Domain::Project,
                 meaning: "A locked release yanked, under an advisory or signed after a stated compromise, or a pending recovery, a key change or a transfer of its owner",
+            },
+            Code::U7015 => &Entry {
+                code: "U7015",
+                domain: Domain::Project,
+                meaning: "The executable cannot be laid out: a branch beyond its target's range, or a section larger than its format allows",
             },
             Code::U8001 => &Entry {
                 code: "U8001",

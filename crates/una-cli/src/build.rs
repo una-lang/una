@@ -615,6 +615,16 @@ fn linker(environment: crate::Environment<'_>) -> Result<Linker, String> {
     }
 }
 
+/// The linker that `una build` uses by default, as the report names it (ADR 0124 rule 28):
+/// `una <version>` for the internal linker, `cc` for the system's.
+pub(crate) fn linker_name() -> String {
+    if INTERNAL_TARGET {
+        format!("una {}", env!("CARGO_PKG_VERSION"))
+    } else {
+        "cc".to_owned()
+    }
+}
+
 /// Links the program's `object` with the runtime through the internal linker (ADR 0124 step 3),
 /// and writes the executable, mode 0755, as a new file in the private directory of `placed`. No
 /// other program runs, and nothing but the executable is written: the runtime is read in place

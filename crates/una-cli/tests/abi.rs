@@ -59,6 +59,12 @@ fn the_report_of_the_events_example() {
             &format!("\"variants\":{variants}"),
             "\"variants\":\"<host>\"",
         )
+        // The linker of `una build` (ADR 0124 rule 28) differs between targets and versions.
+        .replace(
+            &format!("\"linker\":\"una {}\"", env!("CARGO_PKG_VERSION")),
+            "\"linker\":\"<host>\"",
+        )
+        .replace("\"linker\":\"cc\"", "\"linker\":\"<host>\"")
         // The digest of the Z3 library linked in (ADR 0124 rule 28) differs between builds.
         .replace(
             &format!("\"library_sha256\":\"{}\"", una_z3::BUILD.library_sha256),
@@ -121,6 +127,14 @@ fn the_report_of_the_events_example() {
     assert_eq!(report["tcb"]["dependency_trust"], json!([]));
     assert_eq!(report["handler_authority"], json!([]));
     assert_eq!(report["native"]["target"], target.as_str());
+    // ADR 0124 rule 28: the linker of `una build`, and executables not debuggable by default.
+    let linker = if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        format!("una {}", env!("CARGO_PKG_VERSION"))
+    } else {
+        "cc".to_owned()
+    };
+    assert_eq!(report["native"]["linker"], linker.as_str());
+    assert_eq!(report["native"]["debuggable"], false);
     // `clamp_seats` returns `Seats`, `Int in 0..5000`, a machine width (FW-1); its parameter
     // `raw` is an unbounded `Int`.
     assert_eq!(

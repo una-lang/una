@@ -468,6 +468,78 @@ fn every_runnable_program_runs_alike_linked_by_una_link_and_by_cc() {
     assert!(failures.is_empty(), "{failures:#?}");
 }
 
+/// The internal linker through `una build` (ADR 0124 rules 27 and 29, step 3): the same package
+/// built from two directories gives the same bytes; a runtime the linker refuses is U8001 with
+/// exit code 3 and leaves no executable and no private directory; `--debuggable` adds the
+/// entitlement and nothing else of the program changes.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+fn una_build_links_by_itself_deterministically_and_fails_closed() {
+    runtime();
+    let scratch = std::env::temp_dir().join(format!("una-link-cli-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    let mut built = Vec::new();
+    for place in ["a", "a-much-longer-second-place/nested"] {
+        let dir = scratch.join(place);
+        std::fs::create_dir_all(&dir).unwrap();
+        let package = copy(&root().join("examples/hello"), &dir);
+        let out = una(&package, &["build", ".", "--out", "out/hello"]);
+        assert_eq!(out.status.code(), Some(0), "{out:?}");
+        built.push(std::fs::read(package.join("out/hello")).unwrap());
+    }
+    assert_eq!(built[0], built[1], "two directories gave two executables");
+    // The signature carries the hardened runtime, and only `--debuggable` the entitlement.
+    let package = scratch.join("a/hello");
+    let out = una(
+        &package,
+        &["build", ".", "--out", "out/debuggable", "--debuggable"],
+    );
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let shown = |name: &str| {
+        let out = Command::new("codesign")
+            .args(["-d", "-vvv", "--entitlements", "-"])
+            .arg(package.join("out").join(name))
+            .output()
+            .unwrap();
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        )
+    };
+    assert!(shown("hello").contains("flags=0x30002(adhoc,runtime,linker-signed)"));
+    assert!(!shown("hello").contains("get-task-allow"));
+    assert!(shown("debuggable").contains("com.apple.security.get-task-allow"));
+    for name in ["hello", "debuggable"] {
+        let run = Command::new(package.join("out").join(name))
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&run.stdout), "Hello, Una\n");
+    }
+    // A runtime the linker refuses: U8001, exit code 3, nothing written.
+    let broken = scratch.join("broken.a");
+    std::fs::write(&broken, b"!<arch>\nnot an archive member").unwrap();
+    let refused = Command::new(env!("CARGO_BIN_EXE_una"))
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env("NO_COLOR", "1")
+        .env("UNA_RT_LIB", &broken)
+        .args(["build", "."])
+        .current_dir(&package)
+        .output()
+        .unwrap();
+    assert_eq!(refused.status.code(), Some(3), "{refused:?}");
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("U8001"),
+        "{refused:?}"
+    );
+    assert!(!package.join("target/una/hello").exists());
+    let left: Vec<_> = std::fs::read_dir(package.join("target/una"))
+        .unwrap()
+        .collect();
+    assert!(left.is_empty(), "the refused link left {left:?}");
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
 fn starts_tasks(trace: &Value) -> bool {
     trace
         .as_array()

@@ -214,13 +214,17 @@ pub(crate) fn lay_out<'a>(
         need_import(*personality, &mut imports);
         got.insert(*personality);
     }
-    // Weak references among the imports.
+    // Weak references among the imports: one pass over the loaded objects' symbols.
+    let weak_references: BTreeSet<&'a [u8]> = graph
+        .resolved
+        .objects
+        .iter()
+        .flat_map(|object| object.symbols.iter())
+        .filter(|s| s.undefined() && s.n_desc & input::nlist::N_WEAK_REF != 0)
+        .map(|s| s.name)
+        .collect();
     for (name, weak) in &mut imports {
-        *weak = graph.resolved.objects.iter().any(|object| {
-            object.symbols.iter().any(|s| {
-                s.undefined() && s.name == *name && s.n_desc & input::nlist::N_WEAK_REF != 0
-            })
-        });
+        *weak = weak_references.contains(name);
     }
     for name in imports.keys() {
         if !exports(name) {
@@ -514,15 +518,22 @@ pub(crate) fn lay_out<'a>(
                     continue;
                 }
             }
+            // A private extern is local to the executable, as ld64 writes it: `N_PEXT` without
+            // `N_EXT`.
+            let private = symbol.n_type & input::nlist::N_PEXT != 0;
+            let n_type = if private {
+                input::nlist::N_SECT | input::nlist::N_PEXT
+            } else {
+                symbol.n_type & (input::nlist::N_TYPE | input::nlist::N_EXT)
+            };
             let out_symbol = OutSymbol {
                 name: symbol.name,
-                n_type: symbol.n_type
-                    & (input::nlist::N_TYPE | input::nlist::N_EXT | input::nlist::N_PEXT),
+                n_type,
                 n_sect: ordinal_of(atom_info.out),
                 n_desc: symbol.n_desc & input::nlist::N_WEAK_DEF,
                 value: placing.address(target)?,
             };
-            if symbol.external() {
+            if symbol.external() && !private {
                 externals.insert(symbol.name, out_symbol);
             } else {
                 locals.push(out_symbol);
