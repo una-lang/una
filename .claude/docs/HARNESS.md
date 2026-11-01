@@ -16,3 +16,7 @@ One session works on Una, spawning subagents; there are no parallel "Una-N" sess
 Project documents the harness points to: `docs/00-charter.md` (principles), `docs/spec/` (normative), `docs/adr/` (decisions; accepted text is immutable, amend by dated sections), `docs/compiler/` (architecture, testing), `docs/plan/` (roadmap, backlog, design notes), `docs/security/` (advisories, TCB), `docs/release-gates.md`.
 
 Operational files that are not part of the language live outside the repository in `/Users/leocardoso/Projects/una-lang/ops/` (coordination logs, gate outputs, local install mirror).
+
+## Workspace harness (evidence and gates)
+
+`../AGENTS.md` and `../.agents/` at the workspace root hold the Engineering Harness: roles with models, workflows, policies and scripts that run gates and record evidence in `../.una-harness/runs`. It complements this folder; where they conflict, this folder wins (board writes only through `tools/board/board_set.py`, no tag or release without the owner). The `verification` gate is `una check --tier 1` on every `examples/` package and needs `UNA_Z3_LIB` (`eval "$(scripts/z3-library.sh --export)"`). Consultation work goes to `scout` first (`../.agents/policies/delegation.md`).
