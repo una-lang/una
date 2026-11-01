@@ -1447,6 +1447,7 @@ dependencies = [
  "serde_json",
  "una-core",
  "una-crypto",
+ "una-hash",
  "una-http",
  "una-sys",
  "webpki-roots",

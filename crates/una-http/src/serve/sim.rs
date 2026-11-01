@@ -1,0 +1,403 @@
+//! A run of serve threads over scripted sockets and a clock the test drives (ADR 0123 rule 21,
+//! `docs/plan/0123-s4-design.md` §11). The real engine, parser, limits, shares, timers and
+//! writer run on scripted bytes, so the same script gives the same output in every engine.
+//! Compiled for the toolchain's own test builds only.
+#![allow(clippy::expect_used)]
+
+use std::collections::{BTreeMap, VecDeque};
+use std::io;
+use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::Receiver;
+use std::sync::{Arc, Mutex};
+
+use una_core::http::serve::ServeGrant;
+use una_hash::SipKey;
+
+use super::grant::{AcceptRefusal, lock};
+use super::net::{Clock, Readiness, Socket, Waker};
+use super::run::{Exchange, Msg, Next, Shared};
+use super::thread::Thread;
+
+/// 2023-11-14T22:13:20Z, the instant virtual time zero stands for.
+pub const EPOCH: u64 = 1_700_000_000;
+
+/// A clock the test sets.
+#[derive(Debug, Default)]
+pub struct SimClock(AtomicU64);
+
+impl SimClock {
+    /// Sets the time, in nanoseconds.
+    pub fn set(&self, nanos: u64) {
+        self.0.store(nanos, Ordering::SeqCst);
+    }
+}
+
+impl Clock for SimClock {
+    fn now(&self) -> u64 {
+        self.0.load(Ordering::SeqCst)
+    }
+
+    fn unix_seconds(&self) -> u64 {
+        EPOCH + self.now() / 1_000_000_000
+    }
+}
+
+struct NoWake;
+
+impl Waker for NoWake {
+    fn wake(&self) {}
+}
+
+/// The peer's side of a scripted connection.
+#[derive(Debug, Default)]
+pub struct Wire {
+    inbound: VecDeque<u8>,
+    peer_closed: bool,
+    allowance: u64,
+    /// What the server wrote, with the virtual time of each write.
+    pub out: Vec<(u64, Vec<u8>)>,
+    /// The server shut down its sending side.
+    pub shut: bool,
+    /// The server closed the connection.
+    pub closed: bool,
+}
+
+impl Wire {
+    /// Everything the server wrote, joined.
+    pub fn received(&self) -> Vec<u8> {
+        self.out
+            .iter()
+            .flat_map(|(_, bytes)| bytes.clone())
+            .collect()
+    }
+}
+
+struct SimSocket {
+    wire: Arc<Mutex<Wire>>,
+    clock: Arc<SimClock>,
+}
+
+impl Socket for SimSocket {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let mut wire = lock(&self.wire);
+        if wire.inbound.is_empty() {
+            return if wire.peer_closed {
+                Ok(0)
+            } else {
+                Err(io::ErrorKind::WouldBlock.into())
+            };
+        }
+        let mut n = 0;
+        while let Some(slot) = buf.get_mut(n) {
+            let Some(byte) = wire.inbound.pop_front() else {
+                break;
+            };
+            *slot = byte;
+            n += 1;
+        }
+        Ok(n)
+    }
+
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let mut wire = lock(&self.wire);
+        if wire.allowance == 0 {
+            return Err(io::ErrorKind::WouldBlock.into());
+        }
+        let n = usize::try_from(wire.allowance)
+            .unwrap_or(usize::MAX)
+            .min(buf.len());
+        if wire.allowance != u64::MAX {
+            wire.allowance -= n as u64;
+        }
+        let now = self.clock.now();
+        wire.out
+            .push((now, buf.get(..n).unwrap_or_default().to_vec()));
+        Ok(n)
+    }
+
+    fn shutdown_write(&mut self) {
+        lock(&self.wire).shut = true;
+    }
+}
+
+impl Drop for SimSocket {
+    fn drop(&mut self) {
+        lock(&self.wire).closed = true;
+    }
+}
+
+struct SimReadiness;
+
+impl Readiness for SimReadiness {
+    fn set(&mut self, _token: u64, _socket: &dyn Socket, _read: bool, _write: bool) {}
+
+    fn forget(&mut self, _token: u64, _socket: &dyn Socket) {}
+}
+
+/// How a scripted peer reads the server's bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reads {
+    /// As fast as the server writes.
+    Eager,
+    /// Only as many bytes as [`Sim::allow`] lets through.
+    Paced,
+}
+
+struct Peer {
+    wire: Arc<Mutex<Wire>>,
+    token: Option<u64>,
+    thread: usize,
+}
+
+/// A run of serve threads over scripted sockets. Every connection of a script has an address
+/// of its own: the address is how an accepted connection is matched to its scripted peer.
+pub struct Sim {
+    /// What the threads share.
+    pub shared: Arc<Shared>,
+    /// The clock.
+    pub clock: Arc<SimClock>,
+    threads: Vec<Thread>,
+    inboxes: Vec<Receiver<Msg>>,
+    peers: BTreeMap<u64, Peer>,
+    by_address: BTreeMap<SocketAddr, u64>,
+    /// Connections the server refused at accept, with the reason.
+    pub refused: Vec<(u64, AcceptRefusal)>,
+}
+
+impl Sim {
+    /// A run of `threads` serve threads over the grants `specs` (`serve:` specs of
+    /// `spec/31 §2`).
+    pub fn new(specs: &[&str], threads: usize) -> Sim {
+        let grants: Vec<ServeGrant> = specs
+            .iter()
+            .map(|spec| ServeGrant::parse(spec).expect("a valid serve grant"))
+            .collect();
+        let clock = Arc::new(SimClock::default());
+        let wakers: Vec<Box<dyn Waker>> = (0..threads)
+            .map(|_| Box::new(NoWake) as Box<dyn Waker>)
+            .collect();
+        let key = SipKey::from_bytes([0x42; 16]);
+        let (shared, inboxes) = Shared::new(&grants, threads, key, clock.clone(), wakers);
+        let threads = (0..shared.threads)
+            .map(|index| Thread::new(index, shared.clone(), Box::new(SimReadiness), 0))
+            .collect();
+        Sim {
+            shared,
+            clock,
+            threads,
+            inboxes,
+            peers: BTreeMap::new(),
+            by_address: BTreeMap::new(),
+            refused: Vec::new(),
+        }
+    }
+
+    /// The time, in nanoseconds.
+    pub fn now(&self) -> u64 {
+        self.clock.now()
+    }
+
+    /// Delivers every message waiting for the threads.
+    pub fn settle(&mut self) {
+        loop {
+            let mut any = false;
+            for (index, inbox) in self.inboxes.iter().enumerate() {
+                while let Ok(msg) = inbox.try_recv() {
+                    any = true;
+                    let now = self.clock.now();
+                    let adopted = match &msg {
+                        Msg::Adopt(adopt) => Some(Arc::clone(&adopt.conn)),
+                        _ => None,
+                    };
+                    if let Some(thread) = self.threads.get_mut(index) {
+                        thread.handle(msg, now);
+                    }
+                    if let Some(conn) = adopted {
+                        let (slot, generation) = conn.placed();
+                        let token = (u64::from(slot) << 32) | u64::from(generation);
+                        if let Some(k) = self.by_address.get(&conn.address)
+                            && let Some(peer) = self.peers.get_mut(k)
+                        {
+                            peer.token = Some(token);
+                            peer.thread = index;
+                        }
+                    }
+                }
+            }
+            if !any {
+                break;
+            }
+        }
+    }
+
+    /// A peer opens connection `k` on grant `grant` from `from`. `false` when the host closes
+    /// it at accept.
+    pub fn connect(&mut self, k: u64, grant: usize, from: &str, reads: Reads) -> bool {
+        let address: SocketAddr = from.parse().expect("a socket address");
+        let wire = Arc::new(Mutex::new(Wire {
+            allowance: match reads {
+                Reads::Eager => u64::MAX,
+                Reads::Paced => 0,
+            },
+            ..Wire::default()
+        }));
+        let socket = SimSocket {
+            wire: wire.clone(),
+            clock: self.clock.clone(),
+        };
+        let Some(state) = self.shared.grants.get(grant) else {
+            return false;
+        };
+        let now = self.clock.now();
+        if !state.take_slot() {
+            lock(&wire).closed = true;
+            self.refused.push((k, AcceptRefusal::Full));
+            self.peers.insert(
+                k,
+                Peer {
+                    wire,
+                    token: None,
+                    thread: 0,
+                },
+            );
+            return false;
+        }
+        self.by_address.insert(address, k);
+        self.peers.insert(
+            k,
+            Peer {
+                wire: wire.clone(),
+                token: None,
+                thread: 0,
+            },
+        );
+        let accepted = self.shared.accept(grant, Box::new(socket), address, now);
+        self.settle();
+        match accepted {
+            Ok(()) => true,
+            Err(why) => {
+                self.refused.push((k, why));
+                false
+            }
+        }
+    }
+
+    /// Wakes the connection: the scripted socket changed.
+    fn wake(&mut self, k: u64) {
+        let now = self.clock.now();
+        if let Some(peer) = self.peers.get(&k)
+            && let Some(token) = peer.token
+            && let Some(thread) = self.threads.get_mut(peer.thread)
+        {
+            thread.ready(token, now);
+        }
+        self.settle();
+    }
+
+    /// Connection `k` sends `bytes`.
+    pub fn send(&mut self, k: u64, bytes: &[u8]) {
+        if let Some(peer) = self.peers.get(&k) {
+            lock(&peer.wire).inbound.extend(bytes.iter().copied());
+        }
+        self.wake(k);
+    }
+
+    /// Connection `k`'s peer will read `n` more bytes.
+    pub fn allow(&mut self, k: u64, n: u64) {
+        if let Some(peer) = self.peers.get(&k) {
+            let mut wire = lock(&peer.wire);
+            wire.allowance = wire.allowance.saturating_add(n);
+        }
+        self.wake(k);
+    }
+
+    /// Connection `k`'s peer closes its side.
+    pub fn close_peer(&mut self, k: u64) {
+        if let Some(peer) = self.peers.get(&k) {
+            lock(&peer.wire).peer_closed = true;
+        }
+        self.wake(k);
+    }
+
+    /// What the server wrote to connection `k`, joined.
+    pub fn received(&self, k: u64) -> Vec<u8> {
+        self.peers
+            .get(&k)
+            .map(|peer| lock(&peer.wire).received())
+            .unwrap_or_default()
+    }
+
+    /// What the server wrote to connection `k`: each write with its time.
+    pub fn writes(&self, k: u64) -> Vec<(u64, Vec<u8>)> {
+        self.peers
+            .get(&k)
+            .map(|peer| lock(&peer.wire).out.clone())
+            .unwrap_or_default()
+    }
+
+    /// Whether the server closed connection `k`.
+    pub fn closed(&self, k: u64) -> bool {
+        self.peers
+            .get(&k)
+            .is_some_and(|peer| lock(&peer.wire).closed)
+    }
+
+    /// Whether the server shut down its sending side of connection `k`.
+    pub fn shut(&self, k: u64) -> bool {
+        self.peers.get(&k).is_some_and(|peer| lock(&peer.wire).shut)
+    }
+
+    /// Moves the clock to `nanos`, handling every timer on the way in order.
+    pub fn run_to(&mut self, nanos: u64) {
+        loop {
+            let due = self
+                .threads
+                .iter()
+                .filter_map(Thread::next_wake)
+                .min()
+                .filter(|at| *at <= nanos);
+            let Some(at) = due else { break };
+            let at = at.max(self.clock.now());
+            self.clock.set(at);
+            for thread in &mut self.threads {
+                while thread.advance(at) {}
+            }
+            self.settle();
+        }
+        self.clock.set(nanos.max(self.clock.now()));
+        let now = self.clock.now();
+        for thread in &mut self.threads {
+            while thread.advance(now) {}
+        }
+        self.settle();
+    }
+
+    /// Moves the clock to `ms` milliseconds.
+    pub fn run_to_ms(&mut self, ms: u64) {
+        self.run_to(ms.saturating_mul(1_000_000));
+    }
+
+    /// The next request, if one can be delivered now.
+    pub fn next(&mut self) -> Option<Exchange> {
+        match self.shared.next(self.clock.now()) {
+            Next::Exchange(exchange) => Some(*exchange),
+            Next::Blocked(_) | Next::Empty => None,
+        }
+    }
+
+    /// Delivers what a reply, a close or a stop sent to the threads.
+    pub fn flush(&mut self) {
+        self.settle();
+    }
+
+    /// Open connections over all threads.
+    pub fn open(&self) -> usize {
+        self.threads.iter().map(Thread::open).sum()
+    }
+
+    /// Timers armed over all threads.
+    pub fn timers(&self) -> usize {
+        self.threads.iter().map(Thread::timers).sum()
+    }
+}

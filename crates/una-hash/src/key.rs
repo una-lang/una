@@ -78,6 +78,18 @@ impl ProcessKey {
     }
 }
 
+impl SipKey {
+    /// A fresh 128-bit key from the host's random source, for a use that is not a table's
+    /// (the serve threads' placement of connections, ADR 0123 rule 19). When the host gives no
+    /// random bytes the run aborts with U6009, as for the process key: no fixed or guessable key
+    /// ever replaces it. The key has no `Debug` that shows it.
+    pub fn from_host() -> Result<SipKey, KeyError> {
+        let mut bytes = [0u8; 16];
+        getrandom::fill(&mut bytes).map_err(|_| KeyError::NoRandomBytes)?;
+        Ok(SipKey::from_bytes(bytes))
+    }
+}
+
 /// Table n's key under the process key `process`.
 pub fn table_key(process: SipKey, n: u64) -> SipKey {
     let x1 = n.to_le_bytes();

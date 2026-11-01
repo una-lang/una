@@ -9,6 +9,18 @@
 //! server configuration is built, pending the decision on the TLS provider (#1059); that step
 //! also checks that the key matches the certificate.
 
+pub mod gate;
+pub mod gcra;
+pub mod grant;
+pub mod net;
+pub mod peer;
+pub mod place;
+pub mod pressure;
+pub mod run;
+#[cfg(feature = "test-hooks")]
+pub mod sim;
+pub mod thread;
+
 use std::fs::{File, Metadata, OpenOptions};
 use std::io::Read;
 use std::net::{SocketAddr, TcpListener};

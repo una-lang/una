@@ -25,6 +25,7 @@ own-provider = ["own-crypto"]
 [dependencies]
 una-core.workspace = true
 una-sys.workspace = true
+una-hash.workspace = true
 rustls.workspace = true
 webpki-roots.workspace = true
 una-crypto = { workspace = true, optional = true }

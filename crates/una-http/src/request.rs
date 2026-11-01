@@ -117,6 +117,9 @@ pub struct RequestReader {
     body: Vec<u8>,
     /// What the head decided, once it is read.
     head: Option<Head>,
+    /// Whether a feed stops at the end of the head, so that the caller admits the body before
+    /// any byte of it is read.
+    pause_at_head: bool,
 }
 
 /// What the end of the head decided.
@@ -156,7 +159,26 @@ impl RequestReader {
             headers: Vec::new(),
             body: Vec::new(),
             head: None,
+            pause_at_head: false,
         }
+    }
+
+    /// A reader whose [`RequestReader::feed`] stops once the head is read, with the rest of
+    /// its bytes unused, so that the serve threads reserve the body (rule 13) before they feed
+    /// any of it.
+    pub fn stopping_at_head(mut self) -> RequestReader {
+        self.pause_at_head = true;
+        self
+    }
+
+    /// The `Host` of the request, once the head is read.
+    pub fn host(&self) -> Option<&Host> {
+        self.head.as_ref().map(|head| &head.host)
+    }
+
+    /// Whether the head is read and admitted by the reader's own checks.
+    pub fn head_read(&self) -> bool {
+        self.head.is_some()
     }
 
     /// Whether any byte of the request has been read, which starts the `read` timer (rule 12).
@@ -187,6 +209,7 @@ impl RequestReader {
         let mut used = 0usize;
         while used < bytes.len() && !matches!(self.stage, Stage::Done) {
             let rest = bytes.get(used..).unwrap_or_default();
+            let in_head = matches!(self.stage, Stage::Line | Stage::Headers);
             used += match self.stage {
                 Stage::Done => 0,
                 Stage::Line => self.line_bytes(rest)?,
@@ -211,6 +234,9 @@ impl RequestReader {
                     read
                 }
             };
+            if self.pause_at_head && in_head && self.head.is_some() {
+                break;
+            }
         }
         Ok(Progress {
             used,
