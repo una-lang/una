@@ -2,6 +2,8 @@
 
 Una is a verification-first programming language for machine-generated software. This repository contains its reference compiler, written in Rust. Editions `0.1` and `0.2` are stable, edition `0.3` is a preview, and edition `0.4` is a preview under the terms of ADR 0121, declared in `ita.una` (`docs/spec/13-diagnostics-and-abi.md` §7). Read `docs/00-charter.md`, identify the package edition, and read its applicable chapters in `docs/spec/` and accepted ADRs before any task.
 
+Agent harness (workspace root): see `../AGENTS.md`. It complements, and does not override, the process in `.claude/`.
+
 ## Source of truth
 
 When documents disagree, this order wins:
