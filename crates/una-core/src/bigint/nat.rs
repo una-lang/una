@@ -235,26 +235,37 @@ pub(super) fn mul(a: &[u64], b: &[u64]) -> Vec<u64> {
 /// `a × b` in `|a| + |b|` limbs; `square` when `a` and `b` are the same value.
 fn product(a: &[u64], b: &[u64], square: bool) -> Vec<u64> {
     let (a, b) = (trim(a), trim(b));
-    let (a, b) = if a.len() <= b.len() { (a, b) } else { (b, a) };
-    if a.is_empty() {
+    if a.is_empty() || b.is_empty() {
         return Vec::new();
     }
+    let mut out = zeros(a.len() + b.len());
+    product_into(&mut out, a, b, square);
+    out
+}
+
+/// `out = a × b`, `out` zero and at least `|a| + |b|` limbs long.
+fn product_into(out: &mut [u64], a: &[u64], b: &[u64], square: bool) {
+    let (a, b) = (trim(a), trim(b));
+    let (a, b) = if a.len() <= b.len() { (a, b) } else { (b, a) };
+    if a.is_empty() {
+        return;
+    }
     if a.len() < KARATSUBA {
-        let mut out = zeros(a.len() + b.len());
         if square {
-            square_schoolbook(&mut out, a);
+            square_schoolbook(out, a);
         } else {
-            schoolbook(&mut out, a, b);
+            schoolbook(out, a, b);
         }
-        return out;
+    } else if 2 * a.len() <= b.len() {
+        unbalanced(out, a, b);
+    } else if a.len() >= TOOM3 && a.len() > 2 * b.len().div_ceil(3) {
+        let p = toom3(a, b, square);
+        for (slot, &limb) in out.iter_mut().zip(&p) {
+            *slot = limb;
+        }
+    } else {
+        karatsuba(out, a, b, square);
     }
-    if 2 * a.len() <= b.len() {
-        return unbalanced(a, b);
-    }
-    if a.len() >= TOOM3 && a.len() > 2 * b.len().div_ceil(3) {
-        return toom3(a, b, square);
-    }
-    karatsuba(a, b, square)
 }
 
 /// `out += a × b`, `out` zero and at least `|a| + |b|` limbs. O(|a|·|b|).
@@ -323,40 +334,40 @@ fn square_schoolbook(out: &mut [u64], a: &[u64]) {
     }
 }
 
-/// `a × b` for `2|a| <= |b|`: `b` in blocks of `|a|` limbs, each block multiplied by `a`.
-/// O((|b|/|a|)·M(|a|)).
-fn unbalanced(a: &[u64], b: &[u64]) -> Vec<u64> {
-    let mut out = zeros(a.len() + b.len());
+/// `out = a × b` for `2|a| <= |b|`: `b` in blocks of `|a|` limbs, each block multiplied by
+/// `a` into a scratch buffer and added. O((|b|/|a|)·M(|a|)).
+fn unbalanced(out: &mut [u64], a: &[u64], b: &[u64]) {
     let len = out.len();
+    let mut scratch = zeros(2 * a.len());
     for (i, block) in b.chunks(a.len()).enumerate() {
-        let p = product(a, block, false);
-        add_in(part_mut(&mut out, i * a.len(), len), trim(&p));
+        scratch.fill(0);
+        product_into(&mut scratch, a, block, false);
+        add_in(part_mut(out, i * a.len(), len), trim(&scratch));
     }
-    out
 }
 
-/// Karatsuba: three half-size products instead of four, for `|b|/2 < |a| <= |b|`.
-/// O(n^log2(3)) = O(n^1.585).
-fn karatsuba(a: &[u64], b: &[u64], square: bool) -> Vec<u64> {
+/// Karatsuba into `out` (zero, `|a| + |b|` limbs): the low and high products straight into
+/// their places, the middle one in a buffer, for `|b|/2 < |a| <= |b|`. O(n^log2(3)) =
+/// O(n^1.585).
+fn karatsuba(out: &mut [u64], a: &[u64], b: &[u64], square: bool) {
     let m = b.len() / 2;
     let (a0, a1) = (trim(part(a, 0, m)), part(a, m, a.len()));
     let (b0, b1) = (trim(part(b, 0, m)), part(b, m, b.len()));
-    let z0 = product(a0, b0, square);
-    let z2 = product(a1, b1, square);
+    let len = out.len();
+    let Some((low, high)) = out.split_at_mut_checked(2 * m) else {
+        return;
+    };
+    product_into(low, a0, b0, square);
+    product_into(high, a1, b1, square);
     let sa = add(a0, a1);
     let mut z1 = if square {
         product(&sa, &sa, true)
     } else {
         product(&sa, &add(b0, b1), false)
     };
-    sub_in(&mut z1, trim(&z0));
-    sub_in(&mut z1, trim(&z2));
-    let mut out = zeros(a.len() + b.len());
-    let len = out.len();
-    add_in(&mut out, trim(&z0));
-    add_in(part_mut(&mut out, m, len), trim(&z1));
-    add_in(part_mut(&mut out, 2 * m, len), trim(&z2));
-    out
+    sub_in(&mut z1, trim(low));
+    sub_in(&mut z1, trim(high));
+    add_in(part_mut(out, m, len), trim(&z1));
 }
 
 /// A signed value of limbs, for the evaluation points of Toom-3. Zero is never negative.

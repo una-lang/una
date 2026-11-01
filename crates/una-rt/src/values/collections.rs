@@ -33,7 +33,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, VecDeque};
 use std::ops::Bound;
 
-use num_bigint::BigInt;
+use una_core::bigint::BigInt;
 use una_core::{BitSetOp, PriorityOp, SeqOp, SetOp};
 
 use super::{
@@ -1006,7 +1006,7 @@ fn priority_apply(op: i64, q: i64, item: i64, priority: i64, owned: bool) -> i64
 /// stops the run or the task with U6003 at the call, as in the interpreter. O(n / 64).
 pub fn bit_set_empty(site: i64, size: i64) -> i64 {
     let size = int_value(size);
-    if size.sign() == num_bigint::Sign::Minus {
+    if size.sign() == una_core::bigint::Sign::Minus {
         return precondition_outside(site, BITS_NEGATIVE);
     }
     let at = usize::try_from(site).unwrap_or(usize::MAX);

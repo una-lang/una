@@ -918,3 +918,12 @@ The second step of section E, `Tensor[T]` and `Lu[T]` with the factorizations an
 ## Note (2026-10-31): read through ADR 0106's amendment (#1311)
 
 ADR 0106's amendment of 2026-10-31 withdraws the C-emitting backend; the release path of `una build --release` is Una's own code generation over Core IR. No rule of this record changes. Its C passages read through that amendment: the Context's FMA item (the allowlist and the disassembly gate stay), rule 9's "`float` in the C backend under `FLT_EVAL_METHOD == 0`" (binary32 in its own precision, RP-6), rule 58's lowering with GCC and Clang vector types and `__attribute__((target(...)))`, step 8 of the Implementation plan, and item 2 of Appendix A's amendment of ADR 0106 (withdrawn; how `simd required` lowers is that amendment's OQ-6, #1308, while rules 56 to 58 on targets, features and dispatch stand). Items 1, 3 and 4 of that Appendix A amendment survive. `docs/plan/c-emission-inventory.md` lists each passage by line.
+
+## Note (2026-11-01, #1093): the costs with Una's own big integer
+
+`num-bigint` is no longer a workspace dependency: the coefficients of `Decimal` are Una's own big integer, `una_core::bigint` (#1093), with the same results bit for bit. The Costs table changes where a coefficient has d limbs beyond a threshold:
+
+- `Decimal` `*`: O(d²) below 40 limbs, O(d^1.585) (Karatsuba), O(d^1.465) (Toom-3) from 256 limbs.
+- `divide`, `remainder`: O(d²) when the divisor or the quotient has fewer than 64 limbs, O(M(d) log d) above (Burnikel-Ziegler), M(d) the cost of `*`.
+- Rendering a coefficient the program grew: O(d²) below 32 limbs, O(M(d) log d) above (divide and conquer over powers of ten).
+- `parse_decimal` and `as_decimal` are unchanged: at most 4,300 digits (the cap of #914), read by Horner's rule.

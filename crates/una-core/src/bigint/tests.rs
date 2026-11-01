@@ -91,8 +91,8 @@ fn ref_add(a: &[u64], b: &[u64]) -> Vec<u64> {
 fn ref_sub(a: &[u64], b: &[u64]) -> Vec<u64> {
     let mut out = Vec::new();
     let mut borrow = 0i128;
-    for i in 0..a.len() {
-        let mut t = i128::from(a[i]) - i128::from(*b.get(i).unwrap_or(&0)) - borrow;
+    for (i, &x) in a.iter().enumerate() {
+        let mut t = i128::from(x) - i128::from(*b.get(i).unwrap_or(&0)) - borrow;
         borrow = 0;
         if t < 0 {
             t += 1 << 64;
@@ -256,18 +256,36 @@ fn limb_boundaries_and_fixed_widths() {
     assert_eq!(((&max + 1) - 1u8), max);
     assert_eq!(pow2(64).bits(), 65);
     assert_eq!(pow2(64).trailing_zeros(), Some(64));
-    assert_eq!(pow2(128).to_string(), "340282366920938463463374607431768211456");
+    assert_eq!(
+        pow2(128).to_string(),
+        "340282366920938463463374607431768211456"
+    );
     assert_eq!(i64::try_from(&int(i128::from(i64::MIN))), Ok(i64::MIN));
-    assert_eq!(i64::try_from(&int(i128::from(i64::MIN) - 1)), Err(TryFromBigIntError));
-    assert_eq!(i64::try_from(&int(i128::from(i64::MAX) + 1)), Err(TryFromBigIntError));
+    assert_eq!(
+        i64::try_from(&int(i128::from(i64::MIN) - 1)),
+        Err(TryFromBigIntError)
+    );
+    assert_eq!(
+        i64::try_from(&int(i128::from(i64::MAX) + 1)),
+        Err(TryFromBigIntError)
+    );
     assert_eq!(u64::try_from(&int(-1)), Err(TryFromBigIntError));
     assert_eq!(u64::try_from(&max), Ok(u64::MAX));
     assert_eq!(i128::try_from(&int(i128::MIN)), Ok(i128::MIN));
-    assert_eq!(i128::try_from(&(int(i128::MIN) - 1)), Err(TryFromBigIntError));
+    assert_eq!(
+        i128::try_from(&(int(i128::MIN) - 1)),
+        Err(TryFromBigIntError)
+    );
     assert_eq!(u128::try_from(&BigInt::from(u128::MAX)), Ok(u128::MAX));
-    assert_eq!(u128::try_from(&(BigInt::from(u128::MAX) + 1)), Err(TryFromBigIntError));
+    assert_eq!(
+        u128::try_from(&(BigInt::from(u128::MAX) + 1)),
+        Err(TryFromBigIntError)
+    );
     assert_eq!(usize::try_from(BigInt::from(7)), Ok(7));
-    assert_eq!(u8::try_from(&BigUint::from(256u32)), Err(TryFromBigIntError));
+    assert_eq!(
+        u8::try_from(&BigUint::from(256u32)),
+        Err(TryFromBigIntError)
+    );
     assert_eq!(u64::try_from(&BigUint::from(u64::MAX)), Ok(u64::MAX));
     for v in [i128::MIN, i128::MIN + 1, -1, 0, 1, i128::MAX] {
         assert_eq!(i128::try_from(BigInt::from(v)), Ok(v));
@@ -278,7 +296,10 @@ fn limb_boundaries_and_fixed_widths() {
         (Sign::Minus, vec![2, 1]),
         "the hash encoding's bytes"
     );
-    assert_eq!(pow2(64).to_bytes_le(), (Sign::Plus, vec![0, 0, 0, 0, 0, 0, 0, 0, 1]));
+    assert_eq!(
+        pow2(64).to_bytes_le(),
+        (Sign::Plus, vec![0, 0, 0, 0, 0, 0, 0, 0, 1])
+    );
 }
 
 #[test]
@@ -296,7 +317,9 @@ fn text_grammar_is_that_of_num_bigint() {
     ok("1_", 1);
     ok("1__2", 12);
     ok("-1_0", -10);
-    for t in ["_1", "-_1", "+_1", "+-1", "-+1", "--1", "++1", "1a", " 1", "1 ", "_", "0x10"] {
+    for t in [
+        "_1", "-_1", "+_1", "+-1", "-+1", "--1", "++1", "1a", " 1", "1 ", "_", "0x10",
+    ] {
         assert_eq!(t.parse::<BigInt>(), Err(invalid.clone()), "{t:?}");
     }
     for t in ["", "-", "+"] {
@@ -312,7 +335,16 @@ fn text_grammar_is_that_of_num_bigint() {
     assert_eq!(BigInt::from_str_radix("1", 1), Err(invalid));
     assert_eq!(empty.to_string(), "cannot parse integer from empty string");
     // Formatting honors the flags as integers do.
-    assert_eq!(format!("{:>6}|{:+}|{:<4}|{:05}", int(-42), int(42), int(7), int(-42)), "   -42|+42|7   |-0042");
+    assert_eq!(
+        format!(
+            "{:>6}|{:+}|{:<4}|{:05}",
+            int(-42),
+            int(42),
+            int(7),
+            int(-42)
+        ),
+        "   -42|+42|7   |-0042"
+    );
     assert_eq!(format!("{:?}", int(-42)), "-42");
 }
 
@@ -355,7 +387,13 @@ fn division_agrees_with_the_slow_reference() {
         }
         let a = rng.limbs(m + n);
         let (q, r) = nat::divrem(&a, &b).unwrap();
-        assert_eq!((q, r), ref_divrem(&a, &b), "{} by {} limbs", a.len(), b.len());
+        assert_eq!(
+            (q, r),
+            ref_divrem(&a, &b),
+            "{} by {} limbs",
+            a.len(),
+            b.len()
+        );
     }
 }
 
@@ -399,7 +437,10 @@ fn shifts_and_bits() {
         let b = rng.int(m);
         assert_eq!(&a ^ &b ^ &b, a);
         assert_eq!((&a & &b) + (&a | &b), &a + &b);
-        assert_eq!(a.bits(), a.magnitude().to_str_radix(2).len() as u64 * u64::from(!a.is_zero()));
+        assert_eq!(
+            a.bits(),
+            a.magnitude().to_str_radix(2).len() as u64 * u64::from(!a.is_zero())
+        );
     }
     assert_eq!(BigInt::from(-1) >> u64::MAX, int(-1));
     assert_eq!(BigInt::from(5) >> u64::MAX, int(0));
@@ -422,8 +463,15 @@ fn text_round_trips_in_every_radix() {
         let a = rng.int(n);
         let radix = 2 + (round % 35) as u32;
         let text = a.to_str_radix(radix);
-        assert_eq!(BigInt::from_str_radix(&text, radix), Ok(a.clone()), "radix {radix}");
-        assert_eq!(BigInt::from_str_radix(&text.to_uppercase(), radix), Ok(a.clone()));
+        assert_eq!(
+            BigInt::from_str_radix(&text, radix),
+            Ok(a.clone()),
+            "radix {radix}"
+        );
+        assert_eq!(
+            BigInt::from_str_radix(&text.to_uppercase(), radix),
+            Ok(a.clone())
+        );
         let decimal = a.to_string();
         if n <= 40 {
             let reference = ref_decimal(a.magnitude().limbs());
@@ -437,7 +485,10 @@ fn text_round_trips_in_every_radix() {
     let text = big.to_string();
     assert_eq!(text.len(), 33_804);
     assert!(text.starts_with("834834849946771739398189689082"));
-    assert!(text.ends_with("000000"), "7^40000 = 2401^10000 ends in ...000001");
+    assert!(
+        text.ends_with("000000"),
+        "7^40000 = 2401^10000 ends in ...000001"
+    );
     let digit_sum: u64 = text.bytes().map(|b| u64::from(b - b'0')).sum();
     assert_eq!(digit_sum, 151_737);
     assert_eq!(text.parse::<BigInt>(), Ok(big));

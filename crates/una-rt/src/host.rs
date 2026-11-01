@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use num_bigint::{BigInt, Sign};
 use serde_json::Value;
+use una_core::bigint::{BigInt, Sign};
 use una_interp::{Event, EventOutcome, FileFault, Grant, NotText, World};
 
 use crate::render::index;
@@ -228,7 +228,7 @@ pub fn clock_now() -> i64 {
     } else {
         Machine.now()
     };
-    values::int_word(&num_bigint::BigInt::from(now))
+    values::int_word(&una_core::bigint::BigInt::from(now))
 }
 
 /// `Env.get(name)` at the call `site`: the variable, or `None`. A value that is not valid UTF-8
@@ -916,7 +916,7 @@ fn http(
                 values::release(header);
             }
             let record = values::data(0);
-            let status = values::int_word(&num_bigint::BigInt::from(response.status));
+            let status = values::int_word(&una_core::bigint::BigInt::from(response.status));
             let body = values::text_word(response.body);
             for field in [status, list, body] {
                 values::push(record, field);

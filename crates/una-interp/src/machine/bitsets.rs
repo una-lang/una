@@ -21,8 +21,8 @@
 use std::collections::VecDeque;
 use std::rc::Rc;
 
-use num_bigint::{BigInt, Sign};
 use una_core::BitSetOp;
+use una_core::bigint::{BigInt, Sign};
 use una_syntax::Span;
 
 use super::{Abort, Flow, Machine, Stop, fault, none, precondition, some};

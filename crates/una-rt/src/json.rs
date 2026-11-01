@@ -2,7 +2,7 @@
 //! shared with the interpreter; this converts its trees to and from heap words, iteratively, so
 //! no value's depth recurses on the native stack (ADR 0060).
 
-use num_bigint::BigInt;
+use una_core::bigint::BigInt;
 use una_core::json::{self, Halt, Tree};
 
 use crate::host;

@@ -96,7 +96,11 @@ fn power_of_two_digits(a: &[u64], bits: u32) -> Vec<u8> {
         let offset = (at % 64) as u32;
         let low = nat::part(a, limb, limb + 1).first().copied().unwrap_or(0) >> offset;
         let high = if offset + bits > 64 {
-            nat::part(a, limb + 1, limb + 2).first().copied().unwrap_or(0) << (64 - offset)
+            nat::part(a, limb + 1, limb + 2)
+                .first()
+                .copied()
+                .unwrap_or(0)
+                << (64 - offset)
         } else {
             0
         };
@@ -124,7 +128,10 @@ fn emit(
     let Some(level) = level else {
         let digits = small_digits(a, radix);
         if let Some(width) = width {
-            out.extend(std::iter::repeat_n(b'0', width.saturating_sub(digits.len())));
+            out.extend(std::iter::repeat_n(
+                b'0',
+                width.saturating_sub(digits.len()),
+            ));
         }
         out.extend(digits);
         return;
@@ -134,7 +141,14 @@ fn emit(
     };
     let low = d << level;
     let (q, r) = nat::divrem(a, power).unwrap_or_default();
-    emit(&q, width.map(|w| w.saturating_sub(low)), radix, d, powers, out);
+    emit(
+        &q,
+        width.map(|w| w.saturating_sub(low)),
+        radix,
+        d,
+        powers,
+        out,
+    );
     emit(&r, Some(low), radix, d, powers, out);
 }
 

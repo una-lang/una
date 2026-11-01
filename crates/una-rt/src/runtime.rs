@@ -1468,7 +1468,7 @@ pub fn drive_tick() -> i64 {
         Some((at, missed)) => {
             set_in_ever(true);
             let word = |n: u64| {
-                values::int_word(&num_bigint::BigInt::from(
+                values::int_word(&una_core::bigint::BigInt::from(
                     i64::try_from(n).unwrap_or(i64::MAX),
                 ))
             };
@@ -3361,7 +3361,7 @@ mod tests {
                 let mut during = None;
                 if before.is_some() {
                     // A minute: no deadline passes in this test.
-                    let d = values::int_word(&num_bigint::BigInt::from(60_000));
+                    let d = values::int_word(&una_core::bigint::BigInt::from(60_000));
                     for _ in 0..earlier {
                         let id = crate::deadline::within_enter(d);
                         assert_eq!(crate::deadline::within_end(id, 0), 0);

@@ -18,7 +18,7 @@
 use std::cmp::Ordering;
 use std::hint::black_box;
 
-use num_bigint::{BigInt, BigUint, Sign};
+use crate::bigint::{BigInt, BigUint, Sign};
 
 /// The bits of the one NaN of the language: positive, quiet, payload zero (rule 1.1).
 pub const CANONICAL_NAN: u64 = 0x7FF8_0000_0000_0000;

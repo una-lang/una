@@ -331,10 +331,10 @@ fn warm_invoke(_closure: i64, arg: Option<i64>, _site: usize) -> (i64, i64) {
 /// tasks returned.
 pub(crate) fn warm_up(workers: usize) -> usize {
     let trace = with_state(|state| state.trace.take()).flatten();
-    let closure = values::int_word(&num_bigint::BigInt::from(0));
+    let closure = values::int_word(&una_core::bigint::BigInt::from(0));
     let items = values::list();
     for item in 0..workers.max(1) {
-        let word = values::int_word(&num_bigint::BigInt::from(item));
+        let word = values::int_word(&una_core::bigint::BigInt::from(item));
         values::push(items, word);
         values::release(word);
     }

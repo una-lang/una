@@ -26,8 +26,8 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::sync::Arc;
 
-use num_bigint::{BigInt, Sign};
 use una_core::Text;
+use una_core::bigint::{BigInt, Sign};
 
 use crate::ffi::Code;
 

@@ -34,9 +34,8 @@ use std::cmp::Ordering;
 use std::fmt;
 use std::iter::{Product, Sum};
 use std::ops::{
-    Add, AddAssign, BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Div,
-    DivAssign, Mul, MulAssign, Neg, Not, Rem, RemAssign, Shl, ShlAssign, Shr, ShrAssign, Sub,
-    SubAssign,
+    Add, AddAssign, BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Div, DivAssign,
+    Mul, MulAssign, Neg, Not, Rem, RemAssign, Shl, ShlAssign, Shr, ShrAssign, Sub, SubAssign,
 };
 use std::str::FromStr;
 
@@ -141,7 +140,7 @@ impl BigUint {
 
     /// The number of significant bits, 0 for zero. O(1).
     pub fn bits(&self) -> u64 {
-        nat::bits(&self.limbs())
+        nat::bits(self.limbs())
     }
 
     /// Whether bit `i` is set, bit 0 the least significant. O(1).
@@ -173,7 +172,7 @@ impl BigUint {
         for i in (0..31 - e.leading_zeros()).rev() {
             out = nat::mul(&out, &out);
             if (e >> i) & 1 == 1 {
-                out = nat::mul(&out, &self.limbs());
+                out = nat::mul(&out, self.limbs());
             }
         }
         BigUint::from_limbs(out)
@@ -182,7 +181,7 @@ impl BigUint {
     /// The digits in `radix`, lowercase, most significant first; the radix is clamped to 2 to
     /// 36. O(M(n) log n), O(n) for a power of two.
     pub fn to_str_radix(&self, radix: u32) -> String {
-        radix::to_text(&self.limbs(), radix)
+        radix::to_text(self.limbs(), radix)
     }
 
     /// The natural number of `s` in `radix` (2 to 36): an optional `+`, then digits, with `_`
@@ -355,7 +354,7 @@ impl BigInt {
     fn shift_left(&self, n: i128) -> BigInt {
         let amount = u64::try_from(n.unsigned_abs()).unwrap_or(u64::MAX);
         if n >= 0 {
-            BigInt::signed(self.negative(), nat::shl(&self.magnitude.limbs(), amount))
+            BigInt::signed(self.negative(), nat::shl(self.magnitude.limbs(), amount))
         } else {
             self.shift_right_floor(amount)
         }
@@ -367,13 +366,13 @@ impl BigInt {
         if n >= 0 {
             self.shift_right_floor(amount)
         } else {
-            BigInt::signed(self.negative(), nat::shl(&self.magnitude.limbs(), amount))
+            BigInt::signed(self.negative(), nat::shl(self.magnitude.limbs(), amount))
         }
     }
 
     /// The quotient by `2^n` rounded toward negative infinity: an arithmetic shift.
     fn shift_right_floor(&self, n: u64) -> BigInt {
-        let q = nat::shr(&self.magnitude.limbs(), n);
+        let q = nat::shr(self.magnitude.limbs(), n);
         let inexact = self.magnitude.trailing_zeros().is_some_and(|z| z < n);
         if self.negative() && inexact {
             BigInt::signed(true, nat::add(&q, &[1]))
@@ -385,7 +384,7 @@ impl BigInt {
     /// The limbs of the two's complement of `self` in `len` limbs.
     fn twos(&self, len: usize) -> Vec<u64> {
         let mut v = if self.negative() {
-            nat::sub(&self.magnitude.limbs(), &[1])
+            nat::sub(self.magnitude.limbs(), &[1])
         } else {
             self.magnitude.limbs().to_vec()
         };
@@ -412,18 +411,25 @@ impl BigInt {
 
     /// `f` applied to each limb of the two's complements of `self` and `other`. O(n).
     fn bitwise(&self, other: &BigInt, f: impl Fn(u64, u64) -> u64) -> BigInt {
-        let len = self.magnitude.limbs().len().max(other.magnitude.limbs().len()) + 1;
+        let len = self
+            .magnitude
+            .limbs()
+            .len()
+            .max(other.magnitude.limbs().len())
+            + 1;
         let (a, b) = (self.twos(len), other.twos(len));
         BigInt::from_twos(a.iter().zip(&b).map(|(x, y)| f(*x, *y)).collect())
     }
 
     fn convert<T: TryFrom<i128> + TryFrom<u128>>(&self) -> Result<T, TryFromBigIntError> {
-        let m = to_u128(&self.magnitude.limbs()).ok_or(TryFromBigIntError)?;
+        let m = to_u128(self.magnitude.limbs()).ok_or(TryFromBigIntError)?;
         if self.negative() {
             let value = if m == 1 << 127 {
                 i128::MIN
             } else {
-                i128::try_from(m).map_err(|_| TryFromBigIntError)?.wrapping_neg()
+                i128::try_from(m)
+                    .map_err(|_| TryFromBigIntError)?
+                    .wrapping_neg()
             };
             T::try_from(value).map_err(|_| TryFromBigIntError)
         } else {
@@ -459,7 +465,7 @@ fn to_u128(limbs: &[u64]) -> Option<u128> {
 
 impl Ord for BigUint {
     fn cmp(&self, other: &Self) -> Ordering {
-        nat::cmp(&self.limbs(), &other.limbs())
+        nat::cmp(self.limbs(), other.limbs())
     }
 }
 
@@ -606,7 +612,7 @@ macro_rules! try_into_primitive {
         impl TryFrom<&BigUint> for $p {
             type Error = TryFromBigIntError;
             fn try_from(n: &BigUint) -> Result<$p, TryFromBigIntError> {
-                let m = to_u128(&n.limbs()).ok_or(TryFromBigIntError)?;
+                let m = to_u128(n.limbs()).ok_or(TryFromBigIntError)?;
                 <$p>::try_from(m).map_err(|_| TryFromBigIntError)
             }
         }
@@ -624,11 +630,21 @@ try_into_primitive!(
 );
 
 fn add_int(a: &BigInt, b: &BigInt) -> BigInt {
-    add_parts(a.negative(), &a.magnitude.limbs(), b.negative(), &b.magnitude.limbs())
+    add_parts(
+        a.negative(),
+        a.magnitude.limbs(),
+        b.negative(),
+        b.magnitude.limbs(),
+    )
 }
 
 fn sub_int(a: &BigInt, b: &BigInt) -> BigInt {
-    add_parts(a.negative(), &a.magnitude.limbs(), !b.negative(), &b.magnitude.limbs())
+    add_parts(
+        a.negative(),
+        a.magnitude.limbs(),
+        !b.negative(),
+        b.magnitude.limbs(),
+    )
 }
 
 /// `±a ± b`: a sum of magnitudes when the signs agree, else a difference. O(n).
@@ -654,7 +670,7 @@ fn add_parts(a_negative: bool, a: &[u64], b_negative: bool, b: &[u64]) -> BigInt
 }
 
 fn mul_int(a: &BigInt, b: &BigInt) -> BigInt {
-    if let (Some(x), Some(y)) = (to_u64(&a.magnitude.limbs()), to_u64(&b.magnitude.limbs())) {
+    if let (Some(x), Some(y)) = (to_u64(a.magnitude.limbs()), to_u64(b.magnitude.limbs())) {
         return BigInt::with_sign(
             a.negative() != b.negative(),
             BigUint::from(u128::from(x) * u128::from(y)),
@@ -662,22 +678,25 @@ fn mul_int(a: &BigInt, b: &BigInt) -> BigInt {
     }
     BigInt::signed(
         a.negative() != b.negative(),
-        nat::mul(&a.magnitude.limbs(), &b.magnitude.limbs()),
+        nat::mul(a.magnitude.limbs(), b.magnitude.limbs()),
     )
 }
 
 /// The truncating quotient and remainder, the remainder with the sign of `a`; `(0, a)` for a
 /// zero `b`, so `a = q × b + r` holds there too.
 fn div_rem_int(a: &BigInt, b: &BigInt) -> (BigInt, BigInt) {
-    if let (Some(x), Some(y)) = (to_u64(&a.magnitude.limbs()), to_u64(&b.magnitude.limbs()))
+    if let (Some(x), Some(y)) = (to_u64(a.magnitude.limbs()), to_u64(b.magnitude.limbs()))
         && y != 0
     {
         return (
-            BigInt::with_sign(a.negative() != b.negative(), BigUint::from(u128::from(x / y))),
+            BigInt::with_sign(
+                a.negative() != b.negative(),
+                BigUint::from(u128::from(x / y)),
+            ),
             BigInt::with_sign(a.negative(), BigUint::from(u128::from(x % y))),
         );
     }
-    match nat::divrem(&a.magnitude.limbs(), &b.magnitude.limbs()) {
+    match nat::divrem(a.magnitude.limbs(), b.magnitude.limbs()) {
         None => (BigInt::ZERO, a.clone()),
         Some((q, r)) => (
             BigInt::signed(a.negative() != b.negative(), q),
@@ -707,30 +726,36 @@ fn xor_int(a: &BigInt, b: &BigInt) -> BigInt {
 }
 
 fn add_nat(a: &BigUint, b: &BigUint) -> BigUint {
-    BigUint::from_limbs(nat::add(&a.limbs(), b.limbs()))
+    BigUint::from_limbs(nat::add(a.limbs(), b.limbs()))
 }
 
 /// `a - b`, 0 when `b > a`.
 fn sub_nat(a: &BigUint, b: &BigUint) -> BigUint {
-    BigUint::from_limbs(nat::sub(&a.limbs(), b.limbs()))
+    BigUint::from_limbs(nat::sub(a.limbs(), b.limbs()))
 }
 
 fn mul_nat(a: &BigUint, b: &BigUint) -> BigUint {
-    BigUint::from_limbs(nat::mul(&a.limbs(), b.limbs()))
+    BigUint::from_limbs(nat::mul(a.limbs(), b.limbs()))
 }
 
 /// The quotient, 0 for a zero divisor.
 fn div_nat(a: &BigUint, b: &BigUint) -> BigUint {
-    nat::divrem(&a.limbs(), b.limbs()).map_or(BigUint::ZERO, |(q, _)| BigUint::from_limbs(q))
+    nat::divrem(a.limbs(), b.limbs()).map_or(BigUint::ZERO, |(q, _)| BigUint::from_limbs(q))
 }
 
 /// The remainder, `a` for a zero divisor.
 fn rem_nat(a: &BigUint, b: &BigUint) -> BigUint {
-    nat::divrem(&a.limbs(), b.limbs()).map_or_else(|| a.clone(), |(_, r)| BigUint::from_limbs(r))
+    nat::divrem(a.limbs(), b.limbs()).map_or_else(|| a.clone(), |(_, r)| BigUint::from_limbs(r))
 }
 
 fn and_nat(a: &BigUint, b: &BigUint) -> BigUint {
-    BigUint::from_limbs(a.limbs().iter().zip(b.limbs()).map(|(x, y)| x & y).collect())
+    BigUint::from_limbs(
+        a.limbs()
+            .iter()
+            .zip(b.limbs())
+            .map(|(x, y)| x & y)
+            .collect(),
+    )
 }
 
 fn or_nat(a: &BigUint, b: &BigUint) -> BigUint {
@@ -949,9 +974,9 @@ impl BigUint {
     fn shift(&self, n: i128) -> BigUint {
         let amount = u64::try_from(n.unsigned_abs()).unwrap_or(u64::MAX);
         BigUint::from_limbs(if n >= 0 {
-            nat::shl(&self.limbs(), amount)
+            nat::shl(self.limbs(), amount)
         } else {
-            nat::shr(&self.limbs(), amount)
+            nat::shr(self.limbs(), amount)
         })
     }
 }

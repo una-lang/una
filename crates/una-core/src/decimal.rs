@@ -10,7 +10,7 @@
 //! Every function is exact. Costs are stated per function, with d the digits or limbs of a
 //! coefficient and b the bytes of a text.
 
-use num_bigint::{BigInt, BigUint, Sign};
+use crate::bigint::{BigInt, BigUint, Sign};
 
 use crate::MAX_INT_DIGITS;
 

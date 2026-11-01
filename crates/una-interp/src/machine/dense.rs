@@ -15,7 +15,7 @@
 use std::borrow::Cow;
 use std::rc::Rc;
 
-use num_bigint::BigInt;
+use una_core::bigint::BigInt;
 use una_core::dense::{self as chains, fma};
 use una_core::float;
 use una_syntax::Span;
@@ -162,7 +162,7 @@ fn bad<'p>(name: &str) -> Stop<'p> {
 /// reads back is always the exact one it gave.
 fn dimension<'p>(value: Option<&Value<'p>>, name: &str, over: Stop<'p>) -> Result<usize, Stop<'p>> {
     match value {
-        Some(Value::Int(n)) if n.sign() == num_bigint::Sign::Minus => Err(bad(name)),
+        Some(Value::Int(n)) if n.sign() == una_core::bigint::Sign::Minus => Err(bad(name)),
         Some(Value::Int(n)) => match usize::try_from(n) {
             Ok(n) if isize::try_from(n).is_ok() => Ok(n),
             _ => Err(over),

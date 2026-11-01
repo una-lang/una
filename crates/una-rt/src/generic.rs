@@ -8,8 +8,8 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
-use num_bigint::BigInt;
 use una_core::Descriptor;
+use una_core::bigint::BigInt;
 
 use crate::runtime;
 use crate::values::{self, fault, int_value, int_word, retain, tag, text_value};

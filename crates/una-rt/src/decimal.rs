@@ -7,8 +7,8 @@
 //! generated code never passes gives a result of the right shape and no fault (#766): a zero
 //! divisor, which the `division` obligation excludes, gives 0, as `una_rt_int_div` does.
 
-use num_bigint::{BigInt, Sign};
 use una_core::DecimalOp;
+use una_core::bigint::{BigInt, Sign};
 use una_core::decimal::{self, MAX_SCALE, ParseFailure, Rounding};
 
 use crate::runtime;
