@@ -1358,6 +1358,7 @@ dependencies = [
  "una-hash",
  "una-http",
  "una-interp",
+ "una-link",
  "una-lsp",
  "una-project",
  "una-report",

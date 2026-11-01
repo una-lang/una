@@ -83,3 +83,13 @@ todo = "deny"
 unimplemented = "deny"
 unreachable = "deny"
 unwrap_used = "deny"
+
+# The internal linker reads and hashes the whole runtime archive (tens of MB) on every
+# `una build`; the tests build hundreds of executables, so a development build optimizes it and
+# the crates it reads and hashes with (ADR 0124 step 3). Behavior is the same at every level.
+[profile.dev.package.una-link]
+opt-level = 3
+[profile.dev.package.object]
+opt-level = 3
+[profile.dev.package.sha2]
+opt-level = 3

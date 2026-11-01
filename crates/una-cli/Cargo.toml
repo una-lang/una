@@ -21,6 +21,7 @@ una-explain.workspace = true
 una-fmt.workspace = true
 una-http.workspace = true
 una-interp.workspace = true
+una-link.workspace = true
 una-lsp.workspace = true
 una-project.workspace = true
 una-report.workspace = true

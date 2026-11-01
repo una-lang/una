@@ -324,14 +324,26 @@ pub(crate) fn build_command(
     // #1160: the object and the executable are written only inside the package, or inside the
     // directory `--out` names, never through a link planted there that leads elsewhere. The
     // linker writes into a private directory, and the executable is installed from there.
-    let placed = match placed(&root, options.out.is_some(), &output, &object) {
+    let linker = match linker(options.environment) {
+        Ok(linker) => linker,
+        Err(message) => {
+            writeln!(stderr, "error: {message}")?;
+            return Ok(ExitStatus::Usage);
+        }
+    };
+    let written_object = (linker == Linker::SystemCc).then_some(object.as_slice());
+    let placed = match placed(&root, options.out.is_some(), &output, written_object) {
         Ok(placed) => placed,
         Err(error) => {
             writeln!(stderr, "error: cannot write `{shown}`: {error}")?;
             return Ok(ExitStatus::Usage);
         }
     };
-    if let Err(failure) = link(&placed, options.environment) {
+    let linked = match linker {
+        Linker::Internal => link_internal(&placed, &object, options.environment),
+        Linker::SystemCc => link(&placed, options.environment),
+    };
+    if let Err(failure) = linked {
         // Dropping `placed` removes the private directory, with the runtime written there.
         return match failure {
             LinkFailure::Usage(message) => {
@@ -341,6 +353,10 @@ pub(crate) fn build_command(
             LinkFailure::Internal(message) => {
                 writeln!(stderr, "internal compiler error (U8001): {message}")?;
                 Ok(ExitStatus::Internal)
+            }
+            LinkFailure::Layout(message) => {
+                writeln!(stderr, "error[U7015]: {message}")?;
+                Ok(ExitStatus::Errors)
             }
         };
     }
@@ -414,7 +430,7 @@ struct Placed {
 /// through [`una_diag::safe_write::write_atomically`], and the executable both live in a
 /// [`una_diag::safe_write::private_dir`] until [`una_diag::safe_write::install`] moves the
 /// executable into place.
-fn placed(root: &Path, explicit: bool, output: &Path, object: &[u8]) -> io::Result<Placed> {
+fn placed(root: &Path, explicit: bool, output: &Path, object: Option<&[u8]>) -> io::Result<Placed> {
     let write_root = if explicit {
         let directory = match output.parent().filter(|p| !p.as_os_str().is_empty()) {
             Some(parent) => parent.to_path_buf(),
@@ -463,7 +479,9 @@ fn placed(root: &Path, explicit: bool, output: &Path, object: &[u8]) -> io::Resu
         }
         other => other,
     };
-    una_diag::safe_write::write_atomically(&write_root, &object_path, object, true, true)?;
+    if let Some(object) = object {
+        una_diag::safe_write::write_atomically(&write_root, &object_path, object, true, true)?;
+    }
     Ok(Placed {
         root: write_root,
         output,
@@ -484,11 +502,13 @@ fn package_root(package: &crate::package::Package) -> PathBuf {
         .unwrap_or_default()
 }
 
-/// Why a link failed: a usage error (exit code 2, `spec/16 §2` rule 3), or U8001 when the
-/// runtime built into `una` is missing or damaged (exit code 3).
+/// Why a link failed: a usage error (exit code 2, `spec/16 §2` rule 3), U8001 when the runtime
+/// built into `una` is missing or damaged or the internal linker refuses Una's own inputs (exit
+/// code 3), or U7015 when the executable cannot be laid out (ADR 0124, Diagnostics).
 enum LinkFailure {
     Usage(String),
     Internal(String),
+    Layout(String),
 }
 
 /// Links the object of `placed` with the runtime library into its executable through `cc`, in
@@ -551,6 +571,92 @@ fn link(placed: &Placed, environment: crate::Environment<'_>) -> Result<(), Link
         }
         Err(LinkFailure::Usage(message))
     }
+}
+
+/// Which program links the executable (ADR 0124 rules 22 and 19).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Linker {
+    /// `una-link`, inside `una` (ADR 0124 step 3), on `aarch64-apple-darwin`.
+    Internal,
+    /// The system `cc`, the linker of every other target until step 4.
+    SystemCc,
+}
+
+/// Whether this `una` is built for the target of the internal linker.
+const INTERNAL_TARGET: bool = cfg!(all(target_os = "macos", target_arch = "aarch64"));
+
+/// The linker of this build: the internal linker on `aarch64-apple-darwin`, the system `cc`
+/// elsewhere. `UNA_LINKER` (`internal` or `cc`) chooses in a development build only, for the
+/// tests that compare the two (ADR 0124 rule 19); a release `una`, one with the runtime built in,
+/// ignores it, as it ignores `UNA_RT_LIB` (rule 15).
+fn linker(environment: crate::Environment<'_>) -> Result<Linker, String> {
+    let default = if INTERNAL_TARGET {
+        Linker::Internal
+    } else {
+        Linker::SystemCc
+    };
+    let release = crate::runtime_archive::SHA256.is_some();
+    match crate::variable(environment, "UNA_LINKER").as_deref() {
+        _ if release => Ok(default),
+        None | Some("") => Ok(default),
+        Some("internal") if INTERNAL_TARGET => Ok(Linker::Internal),
+        Some("internal") => Err(
+            "UNA_LINKER=internal: the internal linker builds for aarch64-apple-darwin only"
+                .to_owned(),
+        ),
+        Some("cc") => Ok(Linker::SystemCc),
+        Some(other) => Err(format!(
+            "UNA_LINKER must be `internal` or `cc`, not `{other}`"
+        )),
+    }
+}
+
+/// Links the program's `object` with the runtime through the internal linker (ADR 0124 step 3),
+/// and writes the executable, mode 0755, as a new file in the private directory of `placed`. No
+/// other program runs, and nothing but the executable is written: the runtime is read in place
+/// (rule 13). A refusal of the linker is U8001 or U7015, and leaves no file behind.
+fn link_internal(
+    placed: &Placed,
+    object: &[u8],
+    environment: crate::Environment<'_>,
+) -> Result<(), LinkFailure> {
+    let embedded = crate::runtime_archive::embedded(environment).map_err(LinkFailure::Usage)?;
+    let from_file;
+    let runtime: &[u8] = match &embedded {
+        Some(embedded) => embedded.verified().map_err(LinkFailure::Internal)?,
+        None => {
+            let path = runtime_library(environment).map_err(LinkFailure::Usage)?;
+            from_file = std::fs::read(&path).map_err(|error| {
+                LinkFailure::Usage(format!(
+                    "cannot read the native runtime `{}`: {error}",
+                    path.display()
+                ))
+            })?;
+            &from_file
+        }
+    };
+    let identifier = placed
+        .output
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let options = una_link::Options {
+        identifier: &identifier,
+        debuggable: false,
+    };
+    let bytes =
+        una_link::link(object, runtime, &options).map_err(|problem| match problem.code {
+            una_link::Code::U8001 => LinkFailure::Internal(problem.message),
+            una_link::Code::U7015 => LinkFailure::Layout(problem.message),
+        })?;
+    let mut open = std::fs::OpenOptions::new();
+    open.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut open, 0o755);
+    let written = open
+        .open(&placed.produced)
+        .and_then(|mut file| file.write_all(&bytes).and_then(|()| file.sync_all()));
+    written.map_err(|error| LinkFailure::Usage(format!("cannot write the executable: {error}")))
 }
 
 /// The command that builds `una` with its runtime, for a source build (#203).
@@ -655,7 +761,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let dir = std::fs::canonicalize(&dir).unwrap();
         let output = dir.join("target/una/app");
-        let placed = placed(&dir, false, &output, b"object").unwrap();
+        let placed = placed(&dir, false, &output, Some(b"object")).unwrap();
         let private = placed.produced.parent().unwrap().to_path_buf();
         assert_eq!(placed.output, output);
         assert_ne!(placed.produced, output);
@@ -678,7 +784,7 @@ mod tests {
 
     #[cfg(unix)]
     fn placed_err(root: &Path, output: &Path) -> bool {
-        placed(root, false, output, b"object").is_err()
+        placed(root, false, output, Some(b"object")).is_err()
     }
 
     #[test]
