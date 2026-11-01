@@ -201,6 +201,8 @@ fn wycheproof_pss() {
     ];
     let (mut total, mut accepted, mut refused_by_policy, mut skipped_hash) = (0, 0, 0, 0);
     let mut rejected_invalid = 0;
+    let mut rejected_unsupported = 0usize;
+    let mut accepted_unsupported = Vec::new();
     for file in files {
         let root = wycheproof(file);
         let mut ran = 0;
@@ -242,7 +244,18 @@ fn wycheproof_pss() {
                         assert!(!ok, "{file} tc {id} must be rejected: {}", t["comment"]);
                         rejected_invalid += 1;
                     }
-                    "invalid" => {}
+                    // Outside the policy, an invalid vector must still be rejected, with one
+                    // known exception: the vector made by changing the salt length of the
+                    // `sLen = 0` file to 32 is a correct signature with the 32-byte salt that
+                    // this crate requires, so it verifies (the file's own parameters make it
+                    // invalid). Nothing else may verify.
+                    "invalid" => {
+                        if ok {
+                            accepted_unsupported.push((file, id));
+                        } else {
+                            rejected_unsupported += 1;
+                        }
+                    }
                     other => panic!("{file} tc {id}: unexpected result {other}"),
                 }
             }
@@ -263,6 +276,15 @@ fn wycheproof_pss() {
     assert!(
         rejected_invalid > 200,
         "invalid vectors ran: {rejected_invalid}"
+    );
+    assert_eq!(
+        accepted_unsupported,
+        [("rsa_pss_2048_sha256_mgf1_0_test.json", 69)],
+        "the only invalid vector outside the policy that verifies"
+    );
+    assert!(
+        rejected_unsupported > 50,
+        "invalid vectors outside the policy ran: {rejected_unsupported}"
     );
     assert_eq!(
         skipped_hash, 60,

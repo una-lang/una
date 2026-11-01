@@ -11,18 +11,37 @@ publish.workspace = true
 # place of the system's, to make them hang, and a pool started on a client's first request for
 # the tests that call the client directly. No shipped `una` or `libuna_rt.a` enables it.
 test-hooks = []
+# The TLS provider (ADR 0133 rule 17). `ring` is the default until the independent review of
+# ADR 0133 slice 8 allows the switch; it needs `ring`'s C and assembly.
+default = ["ring"]
+ring = ["rustls/ring"]
+# Compiles the own provider (`provider`: `rustls` on `una-crypto`, pure Rust, no `ring`, no
+# `cc`); `Settings` of the process still use `ring` unless `own-provider` is on.
+own-crypto = ["dep:una-crypto", "dep:getrandom", "dep:zeroize"]
+# Builds the process's TLS settings on the own provider. With `--no-default-features` the
+# build holds neither `ring` nor `cc`.
+own-provider = ["own-crypto"]
 
 [dependencies]
 una-core.workspace = true
 una-sys.workspace = true
 rustls.workspace = true
 webpki-roots.workspace = true
+una-crypto = { workspace = true, optional = true }
+getrandom = { workspace = true, optional = true }
+zeroize = { workspace = true, optional = true }
 
 # The tests use the test-only hooks; a dev-dependency never reaches a shipped build.
 [dev-dependencies]
-una-http = { path = ".", features = ["test-hooks"] }
+una-http = { path = ".", features = ["test-hooks", "own-crypto"] }
 una-sys.workspace = true
 rcgen.workspace = true
+# The test servers sign with `ring` (a client provider does not sign) and the differential
+# tests compare the providers; a dev-dependency never reaches a shipped build.
+rustls = { workspace = true, features = ["ring"] }
+una-crypto.workspace = true
+ring = { workspace = true, features = ["alloc"] }
+serde_json.workspace = true
 
 [lints]
 workspace = true

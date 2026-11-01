@@ -1440,12 +1440,17 @@ dependencies = [
 name = "una-http"
 version = "0.3.16"
 dependencies = [
+ "getrandom 0.4.3",
  "rcgen",
+ "ring",
  "rustls",
+ "serde_json",
  "una-core",
+ "una-crypto",
  "una-http",
  "una-sys",
  "webpki-roots",
+ "zeroize",
 ]
 
 [[package]]

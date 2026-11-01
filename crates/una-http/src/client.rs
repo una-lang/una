@@ -649,7 +649,24 @@ fn io_error(error: &std::io::Error, deadline: Instant) -> Error {
 }
 
 /// The TLS settings of the process, built once ([`tls_config`]).
-static TLS_CONFIG: OnceLock<Arc<rustls::ClientConfig>> = OnceLock::new();
+static TLS_CONFIG: OnceLock<Option<Arc<rustls::ClientConfig>>> = OnceLock::new();
+
+#[cfg(not(any(feature = "ring", feature = "own-provider")))]
+compile_error!("una-http needs a TLS provider: enable the `ring` or the `own-provider` feature");
+
+/// The provider of the process (ADR 0133 rule 17): the own one on `una-crypto` when
+/// `own-provider` is on, else `ring`'s. Always passed explicitly to the builder; no
+/// process-wide default provider is ever installed or read.
+#[cfg(feature = "own-provider")]
+fn provider() -> Arc<rustls::crypto::CryptoProvider> {
+    Arc::new(crate::provider::crypto_provider())
+}
+
+/// See above: `ring`'s provider while the own one is not the default.
+#[cfg(all(feature = "ring", not(feature = "own-provider")))]
+fn provider() -> Arc<rustls::crypto::CryptoProvider> {
+    Arc::new(rustls::crypto::ring::default_provider())
+}
 
 /// Builds the TLS settings now, when they are not built yet (ADR 0116 amendment, P8 and P9,
 /// #1148). Built lazily at a run's first `https` request, they would be state that earlier code
@@ -663,38 +680,34 @@ pub fn prepare() {
 
 /// Whether the TLS settings of the process are built ([`prepare`]).
 pub fn tls_ready() -> bool {
-    TLS_CONFIG.get().is_some()
+    TLS_CONFIG.get().is_some_and(Option::is_some)
 }
 
 /// The TLS settings: the Mozilla roots compiled in (`spec/24 §3` rule 4); in debug builds only,
 /// also the roots of the PEM file that `UNA_HTTP_TEST_ROOTS` names, for the tests' local
 /// servers. Release builds have no such hook.
-fn tls_config() -> Arc<rustls::ClientConfig> {
-    Arc::clone(TLS_CONFIG.get_or_init(|| {
-        let roots = rustls::RootCertStore {
-            roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
-        };
-        #[cfg(debug_assertions)]
-        let roots = {
-            let mut roots = roots;
-            test_roots(&mut roots);
-            roots
-        };
-        let provider = Arc::new(rustls::crypto::ring::default_provider());
-        let config = rustls::ClientConfig::builder_with_provider(provider)
-            .with_safe_default_protocol_versions()
-            .map(|builder| builder.with_root_certificates(roots).with_no_client_auth());
-        match config {
-            Ok(config) => Arc::new(config),
-            // INVARIANT: the ring provider supports the default versions; an empty config
-            // would refuse every handshake, which fails safe.
-            Err(_) => Arc::new(
-                rustls::ClientConfig::builder()
-                    .with_root_certificates(rustls::RootCertStore::empty())
-                    .with_no_client_auth(),
-            ),
-        }
-    }))
+fn tls_config() -> Option<Arc<rustls::ClientConfig>> {
+    TLS_CONFIG
+        .get_or_init(|| {
+            let roots = rustls::RootCertStore {
+                roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+            };
+            #[cfg(debug_assertions)]
+            let roots = {
+                let mut roots = roots;
+                test_roots(&mut roots);
+                roots
+            };
+            // A provider that does not support the default protocol versions leaves no
+            // configuration: every https request then fails with `Error::Tls`, which fails safe.
+            rustls::ClientConfig::builder_with_provider(provider())
+                .with_safe_default_protocol_versions()
+                .ok()
+                .map(|builder| {
+                    Arc::new(builder.with_root_certificates(roots).with_no_client_auth())
+                })
+        })
+        .clone()
 }
 
 /// The PEM file of test roots that [`trust_test_roots`] names, in debug builds only.
@@ -791,7 +804,8 @@ fn connect(
         .trim_end_matches(']')
         .to_owned();
     let server = rustls::pki_types::ServerName::try_from(name).map_err(|_| Error::BadUrl)?;
-    let client = rustls::ClientConnection::new(tls_config(), server).map_err(|_| Error::Tls)?;
+    let config = tls_config().ok_or(Error::Tls)?;
+    let client = rustls::ClientConnection::new(config, server).map_err(|_| Error::Tls)?;
     let mut connection = Connection::Tls(Box::new(rustls::StreamOwned::new(client, stream)));
     // The handshake, within the deadline, each step through `io`.
     while matches!(&connection, Connection::Tls(tls) if tls.conn.is_handshaking()) {
