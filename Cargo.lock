@@ -1464,6 +1464,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "una-link"
+version = "0.3.16"
+dependencies = [
+ "object",
+ "sha2",
+]
+
+[[package]]
 name = "una-lsp"
 version = "0.3.16"
 dependencies = [
