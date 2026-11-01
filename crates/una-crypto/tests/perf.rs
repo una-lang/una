@@ -128,3 +128,55 @@ fn ed25519_verification_is_fast_and_linear_in_the_message() {
     let ratio = t_large / t_small;
     assert!((3.0..16.0).contains(&ratio), "ratio {ratio:.2}");
 }
+
+#[test]
+fn ecdsa_verification_is_fast_and_linear_in_the_message() {
+    use ring::rand::SystemRandom;
+    use ring::signature::{
+        ECDSA_P256_SHA256_FIXED_SIGNING, ECDSA_P384_SHA384_FIXED_SIGNING, EcdsaKeyPair, KeyPair,
+    };
+    use una_crypto::ecdsa::{Curve, HashAlg, verify_fixed};
+    if cfg!(debug_assertions) {
+        return;
+    }
+    let rng = SystemRandom::new();
+    for (curve, hash, alg, budget) in [
+        (
+            Curve::P256,
+            HashAlg::Sha256,
+            &ECDSA_P256_SHA256_FIXED_SIGNING,
+            3e-3,
+        ),
+        (
+            Curve::P384,
+            HashAlg::Sha384,
+            &ECDSA_P384_SHA384_FIXED_SIGNING,
+            8e-3,
+        ),
+    ] {
+        let pkcs8 = EcdsaKeyPair::generate_pkcs8(alg, &rng).unwrap();
+        let kp = EcdsaKeyPair::from_pkcs8(alg, pkcs8.as_ref(), &rng).unwrap();
+        let pk = kp.public_key().as_ref().to_vec();
+        // A fixed-size message: the group work is constant (O(1)) and fast.
+        let tiny = b"x";
+        let sig_tiny = kp.sign(&rng, tiny).unwrap().as_ref().to_vec();
+        let t = seconds(|| {
+            for _ in 0..10 {
+                assert!(verify_fixed(curve, hash, &pk, tiny, &sig_tiny).is_ok());
+            }
+        }) / 10.0;
+        eprintln!("{curve:?}: {:.0} us per verification", t * 1e6);
+        assert!(t < budget, "{curve:?}: {:.2} ms per verification", t * 1e3);
+        // Large messages: the cost is the hash, linear in the size.
+        let small = vec![1u8; 1 << 20];
+        let large = vec![1u8; 8 << 20];
+        let sig_small = kp.sign(&rng, &small).unwrap().as_ref().to_vec();
+        let sig_large = kp.sign(&rng, &large).unwrap().as_ref().to_vec();
+        let t_small =
+            seconds(|| assert!(verify_fixed(curve, hash, &pk, &small, &sig_small).is_ok()));
+        let t_large =
+            seconds(|| assert!(verify_fixed(curve, hash, &pk, &large, &sig_large).is_ok()));
+        let ratio = t_large / t_small;
+        assert!((3.0..16.0).contains(&ratio), "{curve:?}: ratio {ratio:.2}");
+    }
+}
