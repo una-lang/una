@@ -304,7 +304,11 @@ impl PublicKey {
         }
         let m: Wide = self.mont.pow_public(&s, self.e);
         let out = &mut out[..self.len];
-        DynMont::to_be(&m, out);
+        // `m < n` fits in `len` bytes by construction; the check makes it a fact, not an
+        // assumption, and refuses otherwise.
+        if !DynMont::to_be(&m, out) {
+            return Err(Error);
+        }
         Ok(out)
     }
 }

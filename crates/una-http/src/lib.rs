@@ -6,6 +6,8 @@
 pub mod client;
 pub mod limit;
 pub mod parse;
+#[cfg(feature = "own-crypto")]
+pub mod provider;
 pub mod reply;
 pub mod request;
 pub mod resolve;

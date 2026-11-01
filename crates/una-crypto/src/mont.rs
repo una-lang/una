@@ -321,13 +321,29 @@ impl DynMont {
         Some(out)
     }
 
-    /// The `len` low bytes of `a`, big-endian, into `out[..len]` (`a` must fit).
-    pub(crate) fn to_be(a: &Wide, out: &mut [u8]) {
+    /// The `out.len()` low bytes of `a`, big-endian, into `out`. Returns whether `a` fits: no
+    /// bit of `a` at or above bit `8 * out.len()` is set (checked in every build, limb by limb
+    /// and in the partial limb too), and `out` is not longer than the field. When it does not
+    /// fit, `out` holds the low bytes only and the caller must refuse the value.
+    #[must_use]
+    pub(crate) fn to_be(a: &Wide, out: &mut [u8]) -> bool {
         let len = out.len();
+        if len > MAX_LIMBS * 8 {
+            return false;
+        }
         for (i, slot) in out.iter_mut().rev().enumerate() {
             *slot = (a[i / 8] >> (8 * (i % 8))) as u8;
         }
-        debug_assert!(a.iter().skip(len.div_ceil(8)).all(|&w| w == 0));
+        let (whole, rest) = (len / 8, len % 8);
+        let mut high = 0u64;
+        for (index, &word) in a.iter().enumerate() {
+            if index > whole {
+                high |= word;
+            } else if index == whole {
+                high |= word >> (8 * rest);
+            }
+        }
+        high == 0
     }
 
     /// Whether `a < m`.
@@ -471,6 +487,37 @@ mod tests {
             }
             assert_eq!(u128::from(d.pow_public(&wa, e)[0]), expected, "{a}^{e}");
         }
+    }
+
+    #[test]
+    fn to_be_reports_whether_the_value_fits() {
+        let mut a = [0u64; MAX_LIMBS];
+        a[0] = 0x0102_0304_0506_0708;
+        a[1] = 0x1112;
+        let mut out = [0u8; 10];
+        assert!(DynMont::to_be(&a, &mut out));
+        assert_eq!(out, [0x11, 0x12, 1, 2, 3, 4, 5, 6, 7, 8]);
+        // One byte short: the 0x11 byte (bits 72 to 79) does not fit in 9 bytes.
+        let mut short = [0u8; 9];
+        assert!(!DynMont::to_be(&a, &mut short));
+        // A bit just above a partial limb, a bit in the far limb, and a field-length output.
+        let mut b = [0u64; MAX_LIMBS];
+        b[1] = 1 << 8;
+        let mut nine = [0u8; 9];
+        assert!(!DynMont::to_be(&b, &mut nine));
+        let mut ten = [0u8; 10];
+        assert!(DynMont::to_be(&b, &mut ten));
+        let mut far = [0u64; MAX_LIMBS];
+        far[MAX_LIMBS - 1] = 1;
+        let mut low = [0u8; 64];
+        assert!(!DynMont::to_be(&far, &mut low));
+        let mut full = [0u8; MAX_LIMBS * 8];
+        assert!(DynMont::to_be(&far, &mut full));
+        let mut zero = [0u8; 0];
+        assert!(DynMont::to_be(&[0u64; MAX_LIMBS], &mut zero));
+        assert!(!DynMont::to_be(&a, &mut zero));
+        let mut too_long = [0u8; MAX_LIMBS * 8 + 1];
+        assert!(!DynMont::to_be(&a, &mut too_long));
     }
 
     #[test]
