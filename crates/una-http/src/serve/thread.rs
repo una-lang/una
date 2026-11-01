@@ -687,10 +687,7 @@ impl Core {
             }
         }
         let available = c.input.len() - c.off;
-        let take = match self.chunk_room(c, now) {
-            Some(room) => room.min(available),
-            None => return None,
-        };
+        let take = self.chunk_room(c, now)?.min(available);
         let progress = {
             let bytes = c.input.get(c.off..c.off + take).unwrap_or_default();
             c.reader.feed(bytes)

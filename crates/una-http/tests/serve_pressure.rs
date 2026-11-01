@@ -2,6 +2,9 @@
 //! maximum over random histories, the bound on pending bytes, and the closing of the slowest
 //! connections while a fresh client is answered.
 
+// Tests may unwrap freely (compiler/conventions.md §1).
+#![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
+
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -233,7 +236,7 @@ fn slow_readers_are_closed_while_a_fresh_client_is_answered() {
         let from = format!("192.0.2.{}:{}", (k % 200) + 1, 20_000 + k);
         assert!(sim.connect(k, 0, &from, Reads::Paced));
         sim.send(k, b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n");
-        pending.push(sim.next().expect("a request"));
+        pending.push(sim.deliver().expect("a request"));
     }
     let grant = Arc::clone(&sim.shared.grants[0]);
     let mut max = 0;
@@ -255,7 +258,7 @@ fn slow_readers_are_closed_while_a_fresh_client_is_answered() {
     // A fresh client is answered.
     assert!(sim.connect(500, 0, "192.0.2.250:30000", Reads::Eager));
     sim.send(500, b"GET /fresh HTTP/1.1\r\nHost: localhost\r\n\r\n");
-    let mut fresh = sim.next().expect("the fresh request");
+    let mut fresh = sim.deliver().expect("the fresh request");
     assert_eq!(fresh.request.target, "/fresh");
     fresh.reply(&reply_of(5)).unwrap();
     sim.flush();

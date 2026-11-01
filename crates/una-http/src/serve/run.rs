@@ -209,6 +209,11 @@ pub enum Sent {
     NotHeld,
 }
 
+/// What runs when a request is queued or an exchange ends.
+pub type Ready = Arc<dyn Fn() + Send + Sync>;
+/// What runs when a connection of a grant closes: the grant's number.
+pub type Freed = Arc<dyn Fn(usize) + Send + Sync>;
+
 /// What the serve threads of a run share.
 pub struct Shared {
     /// The grants, in the order of the run's `serve:` grants.
@@ -228,8 +233,8 @@ pub struct Shared {
     pub hard: AtomicBool,
     /// The clock.
     pub clock: Arc<dyn Clock>,
-    notify: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
-    freed: Mutex<Option<Arc<dyn Fn(usize) + Send + Sync>>>,
+    notify: Mutex<Option<Ready>>,
+    freed: Mutex<Option<Freed>>,
 }
 
 impl Shared {
@@ -283,13 +288,13 @@ impl Shared {
 
     /// Sets what runs when a request is queued, an exchange ends or the run stops: the
     /// program's `next` waits on it.
-    pub fn on_ready(&self, f: Arc<dyn Fn() + Send + Sync>) {
+    pub fn on_ready(&self, f: Ready) {
         *lock(&self.notify) = Some(f);
     }
 
     /// Sets what runs when a connection of grant `index` closes and frees a slot: the acceptor
     /// registers the listener again.
-    pub fn on_slot_freed(&self, f: Arc<dyn Fn(usize) + Send + Sync>) {
+    pub fn on_slot_freed(&self, f: Freed) {
         *lock(&self.freed) = Some(f);
     }
 
@@ -335,13 +340,13 @@ impl Shared {
         let owner = place::owner(self.key, self.threads, grant, address);
         let peer = match state.admit(address.ip(), now) {
             Ok(peer) => peer,
-            Err((refusal, expiry)) => {
+            Err(refused) => {
                 state.give_slot();
                 self.slot_freed(grant);
-                if let Some((peer, at)) = expiry {
+                if let Some((peer, at)) = refused.expiry {
                     self.send(owner, Msg::PeerExpiry { grant, peer, at });
                 }
-                return Err(refusal);
+                return Err(refused.reason);
             }
         };
         let conn = ConnShared::new(Arc::clone(state), peer, owner, address);

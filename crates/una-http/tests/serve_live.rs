@@ -2,6 +2,9 @@
 //! the first server operation, requests are delivered to a consumer written in Rust and
 //! answered, connections spread over the threads, and a stop drains.
 
+// Tests may unwrap freely (compiler/conventions.md §1).
+#![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
+
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Condvar, Mutex};

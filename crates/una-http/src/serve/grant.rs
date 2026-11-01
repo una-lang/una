@@ -16,7 +16,7 @@ use una_core::http::serve::{Hosts, Limits, ServeGrant};
 use una_hash::SipKey;
 
 use super::gcra::Gcra;
-use super::peer::{Peer, PeerKey, PeerTable, Refused};
+use super::peer::{Peer, PeerKey, PeerTable};
 use super::pressure::{Pressure, Registry};
 
 /// An atomic on a cache line of its own, so counters that different threads write do not share
@@ -67,6 +67,16 @@ pub enum AcceptRefusal {
     Handshakes,
     /// The peer's share of the handshake rate is spent this second.
     PeerHandshakes,
+}
+
+/// A connection refused at accept: why, and when its peer's entry may be forgotten if it is
+/// kept until then.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Refused {
+    /// The reason.
+    pub reason: AcceptRefusal,
+    /// The peer and the time at which its handshake bucket is full, when its entry stays.
+    pub expiry: Option<(PeerKey, u64)>,
 }
 
 /// Why a request waits for delivery.
@@ -203,15 +213,14 @@ impl GrantState {
     /// peer's entry is held by the connection. On a refusal nothing stays taken but the slot,
     /// which the caller gives back, and the time at which the peer's entry may be forgotten,
     /// when it is kept until then. O(1) expected.
-    pub fn admit(
-        &self,
-        address: IpAddr,
-        now: u64,
-    ) -> Result<Arc<Peer>, (AcceptRefusal, Option<(PeerKey, u64)>)> {
+    pub fn admit(&self, address: IpAddr, now: u64) -> Result<Arc<Peer>, Refused> {
         let peer = self
             .peers
             .open(PeerKey::of(address), self.limits.peer)
-            .map_err(|Refused::TooMany| (AcceptRefusal::PeerLimit, None))?;
+            .map_err(|super::peer::Refused::TooMany| Refused {
+                reason: AcceptRefusal::PeerLimit,
+                expiry: None,
+            })?;
         if self.tls {
             let refusal = if peer.handshakes.take(now).is_err() {
                 Some(AcceptRefusal::PeerHandshakes)
@@ -222,7 +231,10 @@ impl GrantState {
             };
             if let Some(refusal) = refusal {
                 let expiry = self.peers.close(&peer, now).map(|at| (peer.key, at));
-                return Err((refusal, expiry));
+                return Err(Refused {
+                    reason: refusal,
+                    expiry,
+                });
             }
         }
         Ok(peer)

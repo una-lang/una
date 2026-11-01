@@ -59,8 +59,12 @@ pub struct Wire {
     pub out: Vec<(u64, Vec<u8>)>,
     /// The server shut down its sending side.
     pub shut: bool,
+    /// When the server shut down its sending side, in nanoseconds.
+    pub shut_at: Option<u64>,
     /// The server closed the connection.
     pub closed: bool,
+    /// When the server closed the connection, in nanoseconds.
+    pub closed_at: Option<u64>,
 }
 
 impl Wire {
@@ -117,13 +121,17 @@ impl Socket for SimSocket {
     }
 
     fn shutdown_write(&mut self) {
-        lock(&self.wire).shut = true;
+        let mut wire = lock(&self.wire);
+        wire.shut = true;
+        wire.shut_at.get_or_insert(self.clock.now());
     }
 }
 
 impl Drop for SimSocket {
     fn drop(&mut self) {
-        lock(&self.wire).closed = true;
+        let mut wire = lock(&self.wire);
+        wire.closed = true;
+        wire.closed_at.get_or_insert(self.clock.now());
     }
 }
 
@@ -161,8 +169,8 @@ pub struct Sim {
     inboxes: Vec<Receiver<Msg>>,
     peers: BTreeMap<u64, Peer>,
     by_address: BTreeMap<SocketAddr, u64>,
-    /// Connections the server refused at accept, with the reason.
-    pub refused: Vec<(u64, AcceptRefusal)>,
+    /// Connections the server refused at accept, with the reason and the time.
+    pub refused: Vec<(u64, AcceptRefusal, u64)>,
 }
 
 impl Sim {
@@ -251,8 +259,13 @@ impl Sim {
         };
         let now = self.clock.now();
         if !state.take_slot() {
-            lock(&wire).closed = true;
-            self.refused.push((k, AcceptRefusal::Full));
+            {
+                let mut wire = lock(&wire);
+                wire.closed = true;
+                wire.closed_at = Some(self.clock.now());
+            }
+            self.refused
+                .push((k, AcceptRefusal::Full, self.clock.now()));
             self.peers.insert(
                 k,
                 Peer {
@@ -277,7 +290,7 @@ impl Sim {
         match accepted {
             Ok(()) => true,
             Err(why) => {
-                self.refused.push((k, why));
+                self.refused.push((k, why, now));
                 false
             }
         }
@@ -343,6 +356,26 @@ impl Sim {
             .is_some_and(|peer| lock(&peer.wire).closed)
     }
 
+    /// What the server did on connection `k`, as the wire kept it.
+    pub fn wire(&self, k: u64) -> Option<Wire> {
+        self.peers.get(&k).map(|peer| {
+            let wire = lock(&peer.wire);
+            Wire {
+                out: wire.out.clone(),
+                shut: wire.shut,
+                shut_at: wire.shut_at,
+                closed: wire.closed,
+                closed_at: wire.closed_at,
+                ..Wire::default()
+            }
+        })
+    }
+
+    /// The connections of the script, by number.
+    pub fn connections(&self) -> Vec<u64> {
+        self.peers.keys().copied().collect()
+    }
+
     /// Whether the server shut down its sending side of connection `k`.
     pub fn shut(&self, k: u64) -> bool {
         self.peers.get(&k).is_some_and(|peer| lock(&peer.wire).shut)
@@ -379,7 +412,7 @@ impl Sim {
     }
 
     /// The next request, if one can be delivered now.
-    pub fn next(&mut self) -> Option<Exchange> {
+    pub fn deliver(&mut self) -> Option<Exchange> {
         match self.shared.next(self.clock.now()) {
             Next::Exchange(exchange) => Some(*exchange),
             Next::Blocked(_) | Next::Empty => None,
