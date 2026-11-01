@@ -3559,9 +3559,8 @@ fn native_text_len_and_slice_take_constant_time_on_any_text() {
     }
 }
 
-/// A text of 2^`LOG` * 2 scalar values, `ab` repeated, built by doubling, then `K` rounds of
-/// `starts_with`, `ends_with`, `==` and `<` against a prefix, a suffix and a text that differs
-/// at the first scalar value.
+/// A text of 2^`LOG` * 2 scalar values, `ab` repeated, built by doubling, then `K` rounds of one
+/// read, `OPERATION`, against a prefix, a suffix or a text that differs at the first scalar value.
 const TEXT_READS_SCALE: &str = "module scale
 
 pub main() -> Unit
@@ -3574,13 +3573,7 @@ pub main() -> Unit
   let u = \"b{t}\"
   let edit hits = 0
   for i in 0..<K
-    if t.starts_with(prefix: p)
-      hits = hits + 1
-    if t.ends_with(suffix: p)
-      hits = hits + 1
-    if t == u
-      hits = hits + 100
-    if t < u
+    if OPERATION
       hits = hits + 1
   @console.print(\"{t.len} {hits}\")
 ";
@@ -3637,54 +3630,78 @@ fn text_scale_packages(
 
 #[test]
 fn native_text_reads_stop_at_the_first_difference_whatever_the_text_size() {
-    // ADR 0132 rules 5 and 16, `spec/22 §2` (`ends_with`, O(m)): `starts_with`, `ends_with`,
-    // `==` and `<` on a text of b scalar values and a short operand take constant time, so a
-    // text 16 times as long takes under 4 times as long, about 1x in place against about 16x
-    // when each call copies the text (#1341). A miss is measured twice more before it fails
-    // (#341).
+    // `spec/22 §2` (`ends_with`, O(m)) and the complexity rule of the Proposed ADR for the
+    // standard library: `starts_with`, `ends_with`, `==` and `<` on a text of b scalar values
+    // and a short operand take constant time, so a text of 4096 times the size takes under 4
+    // times as long, about 1x in place against 25x or more when each call copies the text
+    // (#1341). Each operation is measured alone, so a miss names it. A miss is measured twice
+    // more before it fails (#341).
     const ROUNDS: usize = 10_000;
     let logs = [8, 20];
     // The sizes are the scalar values of the text or the item: 2 << log.
     let sizes: Vec<usize> = logs.iter().map(|log| 2usize << log).collect();
-    let dirs = text_scale_packages("reads", TEXT_READS_SCALE, &logs, "LOG", &[("K", ROUNDS)]);
-    // The fixed cost of a run: the same program with no rounds, on the smaller text.
-    let idle = text_scale_packages("reads_idle", TEXT_READS_SCALE, &[8], "LOG", &[("K", 0)]);
-    let run_idle = || {
-        timing::timed(|| {
-            Command::new(idle[0].join("target/una/reads_idle_8"))
-                .current_dir(&idle[0])
-                .output()
-                .unwrap()
-        })
-        .1
-    };
-    let fixed = timing::best_of_three(run_idle);
-    let measure = |size: usize| {
-        let log = size.trailing_zeros() as usize - 1;
-        let dir = &dirs[logs.iter().position(|&s| s == log).unwrap()];
-        let (output, seconds) = timing::timed(|| {
-            Command::new(dir.join(format!("target/una/reads_{log}")))
-                .current_dir(dir)
-                .output()
-                .unwrap()
-        });
-        assert_eq!(output.status.code(), Some(0));
-        // Each round adds 1 for the prefix, 1 for the suffix and 1 for the order; never for `==`.
-        assert_eq!(
-            String::from_utf8_lossy(&output.stdout),
-            format!("{} {}\n", 2usize << log, 3 * ROUNDS)
+    // The operation, its test, and how many rounds it holds on: `==` holds on none.
+    let operations = [
+        ("starts_with", "t.starts_with(prefix: p)", ROUNDS),
+        ("ends_with", "t.ends_with(suffix: p)", ROUNDS),
+        ("equal", "t == u", 0),
+        ("less", "t < u", ROUNDS),
+    ];
+    for (name, test, holds) in operations {
+        let source = TEXT_READS_SCALE.replace("OPERATION", test);
+        let dirs = text_scale_packages(
+            &format!("reads_{name}"),
+            &source,
+            &logs,
+            "LOG",
+            &[("K", ROUNDS)],
         );
-        seconds
-    };
-    timing::assert_growth("reads", &sizes, fixed, timing::FLOOR, 4.0, measure);
-    for dir in dirs.iter().chain(&idle) {
-        let _ = std::fs::remove_dir_all(dir);
+        // The fixed cost of a run: the same program with no rounds, on the smaller text.
+        let idle = text_scale_packages(
+            &format!("reads_idle_{name}"),
+            &source,
+            &[8],
+            "LOG",
+            &[("K", 0)],
+        );
+        let run_idle = || {
+            timing::timed(|| {
+                Command::new(idle[0].join(format!("target/una/reads_idle_{name}_8")))
+                    .current_dir(&idle[0])
+                    .output()
+                    .unwrap()
+            })
+            .1
+        };
+        let fixed = timing::best_of_three(run_idle);
+        let measure = |size: usize| {
+            let log = size.trailing_zeros() as usize - 1;
+            let dir = &dirs[logs.iter().position(|&s| s == log).unwrap()];
+            let (output, seconds) = timing::timed(|| {
+                Command::new(dir.join(format!("target/una/reads_{name}_{log}")))
+                    .current_dir(dir)
+                    .output()
+                    .unwrap()
+            });
+            assert_eq!(output.status.code(), Some(0), "{name}");
+            assert_eq!(
+                String::from_utf8_lossy(&output.stdout),
+                format!("{} {holds}\n", 2usize << log),
+                "{name}"
+            );
+            seconds
+        };
+        timing::assert_growth(name, &sizes, fixed, timing::FLOOR, 4.0, measure);
+        for dir in dirs.iter().chain(&idle) {
+            let _ = std::fs::remove_dir_all(dir);
+        }
     }
 }
 
 #[test]
 fn native_contains_over_short_texts_does_not_depend_on_the_length_of_the_item() {
-    // ADR 0132 rules 5, 10 and 16: `contains` of a long item over 100 000 short texts compares
+    // `spec/22 §2` and the complexity rule of the Proposed ADR for the standard library:
+    // `contains` of a long item over 100 000 short texts compares
     // each element in O(1) when the lengths differ, so the cost is linear in size(xs) and a
     // 16 times longer item takes under 4 times as long, about 1x in place against about 16x
     // when each comparison copies the item (#1341). A miss is measured twice more (#341).

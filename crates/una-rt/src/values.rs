@@ -422,12 +422,23 @@ fn with<R>(word: i64, f: impl FnOnce(&Object) -> R) -> Option<R> {
 }
 
 /// `f` of the texts of `a` and `b`, read in place: borrowed from the heap with no copy, so a
-/// read that stops early costs what it reads (ADR 0132 rule 5, #1341). A word that is not a text
+/// read that stops early costs what it reads (#1341). A word that is not a text
 /// reads as the empty text, as in [`text_value`]. `f` runs under the heap's borrow and must not
 /// call back into the heap.
 pub(crate) fn with_texts<R>(a: i64, b: i64, f: impl FnOnce(&str, &str) -> R) -> R {
     HEAP.with(|heap| {
-        let heap = heap.borrow();
+        let mut heap = heap.borrow_mut();
+        // A handle whose slot holds no object is a use of a freed value: a fault, as in `with`.
+        let mut dead = 0;
+        for word in [a, b] {
+            let index = slot(word);
+            let live = index
+                .and_then(|index| heap.slots.get(index))
+                .is_some_and(|slot| slot.object.is_some());
+            dead += usize::from(index.is_some() && !live);
+        }
+        heap.faults += dead;
+        let heap = &*heap;
         let read = |word: i64| -> &str {
             match slot(word)
                 .and_then(|index| heap.slots.get(index))
@@ -1000,7 +1011,7 @@ fn leaf_equal(a: i64, b: i64) -> bool {
     if !is_handle(a) || !is_handle(b) {
         return false;
     }
-    // Two texts are read in place and stop at the first difference (ADR 0132 rule 5).
+    // Two texts are read in place and stop at the first difference (spec/22 §2).
     if is_text(a) && is_text(b) {
         return with_texts(a, b, |x, y| x == y);
     }

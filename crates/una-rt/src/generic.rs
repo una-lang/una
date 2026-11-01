@@ -291,6 +291,24 @@ mod tests {
     }
 
     #[test]
+    fn a_text_read_in_place_counts_a_fault_for_a_freed_text() {
+        let (live, dead) = (
+            values::text_word("ab".to_owned()),
+            values::text_word("a".to_owned()),
+        );
+        values::release(dead);
+        let before = values::faults();
+        assert_eq!(values::starts_with(live, live), 1);
+        assert_eq!(values::faults(), before);
+        // A freed handle reads as the empty text and is counted, as `text_value` counted it.
+        assert_eq!(values::starts_with(live, dead), 1);
+        assert_eq!(values::faults(), before + 1);
+        assert_eq!(values::text_equal(dead, dead), 1);
+        assert_eq!(values::faults(), before + 3);
+        values::release(live);
+    }
+
+    #[test]
     fn a_composite_is_the_same_word_in_every_thread() {
         // ADR 0068 D6: the table is the process's, so tasks agree on a type's descriptor, and
         // a deeper composite costs one entry more.
