@@ -14,6 +14,7 @@ publish = false
 una-check = { path = "crates/una-check" }
 una-codegen = { path = "crates/una-codegen" }
 una-core = { path = "crates/una-core" }
+una-crypto = { path = "crates/una-crypto" }
 una-diag = { path = "crates/una-diag" }
 una-explain = { path = "crates/una-explain" }
 una-fmt = { path = "crates/una-fmt" }
@@ -65,6 +66,14 @@ webpki-roots = "1"
 # at test time, so the repository holds no private key (N-31).
 rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
 toml = "1.1.6"
+# Allowed by ADR 0133 for una-crypto only: the wipe of secrets (a volatile write), so the crate
+# keeps `unsafe_code` forbidden. Already in the tree through rustls; pure Rust.
+zeroize = { version = "1", default-features = false }
+# A dev-dependency of una-crypto only (differential tests, ADR 0133 rule 12): the reference the
+# own code is compared with until the provider switch removes ring.
+ring = { version = "0.17", default-features = false }
+# A dev-dependency of una-crypto only: a second independent X25519 for the differential tests.
+curve25519-dalek = { version = "4.1", default-features = false }
 
 # The Rust rules of compiler/conventions.md §1, enforced for every target of
 # every crate. clippy.toml relaxes them inside tests, which may unwrap freely.

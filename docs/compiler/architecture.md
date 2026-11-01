@@ -27,6 +27,7 @@ crates/
   una-report/             reserved for build report assembly; v0.1 assembles the report in una-cli (D-132)
   una-codegen/            native code generation: Core IR to an object file through Cranelift (v0.2, ADR 0055)
   una-http/               the HTTP/1.1 client of `Http`, over TCP or rustls, shared by both engines (v0.2, ADR 0074)
+  una-crypto/             own cryptography for TLS: SHA-2, HMAC, HKDF, ChaCha20-Poly1305, X25519 (more in later slices); pure Rust, `unsafe` forbidden (ADR 0133, proposed)
   una-hash/               keyed hashing: SipHash-2-4, the hash encoding, the process and table keys, the ordered hash table, shared by both engines (ADR 0119)
   una-rt/                 the runtime library of native executables; its ffi.rs is the only unsafe code (ADR 0058)
   una-lsp/                the language server of `una lsp`: LSP over stdio, the server's state (v0.2, ADR 0063)
@@ -98,6 +99,8 @@ Allowed by ADR 0074, for `una-http` only (v0.2): `rustls` with its `ring` provid
 Allowed by ADR 0116 (Appendix A, amendment of 2026-10-19), for `una-sys` only: `libc`, the Rust declarations of the operating system's interface (`sigaction`, `pipe`, `fcntl`, `write`, `read`, `raise`). It is bindings only: no C source is built, and it adds nothing to the supply chain, since it is already a dependency of crates in the lockfile (`getrandom`, `cpufeatures`, `ring`, `rustix`).
 
 Allowed by ADR 0119, for `una-hash` only: `getrandom`, the process key of keyed hashing from the operating system's cryptographic random source. Its own `unsafe` code puts it in the trusted base (`docs/security/tcb.md`).
+
+Allowed by ADR 0133 (Proposed), for `una-crypto` only: `zeroize`, the volatile wipe of secrets, already in the lockfile through `rustls`; pure Rust. As dev-dependencies of `una-crypto` only: `ring` and `curve25519-dalek` (the references of the differential tests), `serde_json` and `sha2`. No build script, no `-sys` crate, no foreign code.
 
 `una-lsp` (ADR 0063) adds no dependency: its JSON-RPC transport and its LSP types are written on `serde_json`.
 

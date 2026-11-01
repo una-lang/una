@@ -1391,6 +1391,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "una-crypto"
+version = "0.3.16"
+dependencies = [
+ "curve25519-dalek",
+ "ring",
+ "serde_json",
+ "sha2",
+ "zeroize",
+]
+
+[[package]]
 name = "una-diag"
 version = "0.3.16"
 dependencies = [
