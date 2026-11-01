@@ -1448,7 +1448,7 @@ mod tests {
     /// by their position here: a word added or moved changes [`WORD_POOL_LEN`] and those
     /// positions with it.
     fn word_pool() -> Vec<i64> {
-        use num_bigint::BigInt;
+        use una_core::bigint::BigInt;
 
         let int = |value: i64| values::int_word(&BigInt::from(value));
         let freed = values::text_word("freed".to_owned());
@@ -1503,7 +1503,7 @@ mod tests {
         // since outside a run no memory budget bounds its list. The same calls inside a run
         // are `every_entry_point_takes_any_word_in_a_run`.
         std::thread::spawn(|| {
-            use num_bigint::BigInt;
+            use una_core::bigint::BigInt;
 
             let int = |value: i64| values::int_word(&BigInt::from(value));
             // Under Miri (#778), where each allocation is slow, a pool of one word of each kind

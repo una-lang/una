@@ -157,7 +157,7 @@ fn local<R>(f: impl FnOnce(&mut Local) -> R) -> R {
 /// refutes, is 0, so it has passed at once; one beyond `u64` never passes.
 fn millis(word: i64) -> u64 {
     let value = values::int_value(word);
-    if value.sign() == num_bigint::Sign::Minus {
+    if value.sign() == una_core::bigint::Sign::Minus {
         0
     } else {
         u64::try_from(&value).unwrap_or(u64::MAX)
@@ -642,7 +642,7 @@ mod tests {
         std::thread::spawn(|| {
             let clock = crate::runtime::clock();
             let d = 250u64;
-            enter(values::int_word(&num_bigint::BigInt::from(d)));
+            enter(values::int_word(&una_core::bigint::BigInt::from(d)));
             for _ in 0..20 {
                 let before = clock.now_nanos();
                 iteration();
@@ -696,7 +696,7 @@ mod tests {
                 while clock.now_nanos() % 1_000_000 < phase {
                     std::hint::spin_loop();
                 }
-                let id = within_enter(values::int_word(&num_bigint::BigInt::from(100)));
+                let id = within_enter(values::int_word(&una_core::bigint::BigInt::from(100)));
                 let at = LOCAL.with(|cell| cell.borrow().withins.last().and_then(|f| f.at));
                 let covering = left().unwrap();
                 assert_eq!(Some(covering.at), at);

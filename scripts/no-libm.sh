@@ -22,11 +22,11 @@
 # to, fails. On Linux both the static and the dynamic symbol tables of `una` and of the
 # executables are read (`nm -u` and `nm -D -u`).
 #
-# First it asserts the release dependency graph (`cargo tree --locked -e normal,features -p
-# una-cli -p una-rt`): none of num-bigint, num-integer and num-traits has its `std` or `default`
-# feature, since num-bigint's `std` code calls the C math library (`log2` while parsing, `ln`,
-# `exp` and `cbrt` in its roots), and its other code is integer-only. The graph holds normal
-# dependencies only: a test build unifies dev-dependencies' features in and is not what ships.
+# First it asserts the release dependency graph (`cargo tree --locked -e normal -p una-cli -p
+# una-rt`): it holds none of num-bigint, num-integer and num-traits, whose `std` code called the
+# C math library (`log2` while parsing, `ln`, `exp` and `cbrt` in their roots); Una's own big
+# integer in una-core replaced them (#1093). The graph holds normal dependencies only: a test
+# build unifies dev-dependencies in and is not what ships.
 #
 # The tool is, on macOS, the `llvm-nm` of the pinned Rust toolchain (the `llvm-tools` component),
 # whose LLVM reads the bitcode that Rust's objects carry, else `llvm-nm`, else `nm`; on Linux,
@@ -172,26 +172,21 @@ for name in $(sed 's/#.*//' "$solver"); do
         findings=1
     fi
 done
-# The release dependency graph: no `std` (nor `default`, which means `std`) feature of the
-# crates whose `std` code calls the C math library. `cargo tree -i` of a crate the graph does
-# not hold fails too, so a renamed or replaced dependency is a failure to look at, not a pass.
+# The release dependency graph holds none of the crates whose `std` code called the C math
+# library (#1093). Cargo reports a package the graph does not hold as an ID specification that
+# matches no package; a graph that holds one, or any other failure of `cargo tree`, is a finding.
 for crate in num-bigint num-integer num-traits; do
-    if ! (cd "$root" && cargo tree --locked -e normal,features -p una-cli -p una-rt -i "$crate") \
+    if (cd "$root" && cargo tree --locked -e normal -p una-cli -p una-rt -i "$crate") \
         > "$tmp/tree" 2> "$tmp/err"; then
+        cat "$tmp/tree" "$tmp/err" >&2
+        echo "no-libm: the release graph holds $crate"
+        findings=1
+    elif grep -qF "package ID specification \`$crate\` did not match any packages" "$tmp/err"; then
+        echo "no-libm: $crate is not in the release graph"
+    else
         cat "$tmp/err" >&2
         echo "no-libm: cargo tree of $crate failed"
         findings=1
-    elif ! grep -q "^$crate v" "$tmp/tree"; then
-        cat "$tmp/tree" "$tmp/err" >&2
-        echo "no-libm: cargo tree printed no $crate"
-        findings=1
-    elif grep -E "$crate feature \"(std|default)\"" "$tmp/tree"; then
-        echo "no-libm: the release graph enables the std feature of $crate"
-        findings=1
-    else
-        features=$(grep -E -o "$crate feature \"[^\"]*\"" "$tmp/tree" | sed 's/.* feature //' \
-            | LC_ALL=C sort -u | tr '\n' ' ' | sed 's/ $//')
-        echo "no-libm: $crate in the release graph, features: ${features:-none}"
     fi
 done
 

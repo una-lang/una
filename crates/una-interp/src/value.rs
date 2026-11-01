@@ -4,7 +4,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::rc::Rc;
 
-use num_bigint::BigInt;
+use una_core::bigint::BigInt;
 use una_core::{Ctor, Expr, Name};
 
 use crate::machine::{Caps, Env, Instance};

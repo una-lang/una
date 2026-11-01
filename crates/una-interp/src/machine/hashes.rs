@@ -16,7 +16,7 @@ use std::cell::Cell;
 use std::collections::BTreeSet;
 use std::rc::Rc;
 
-use num_bigint::{BigInt, Sign};
+use una_core::bigint::{BigInt, Sign};
 use una_core::{Bound, Expectation, Expr, HashMapOp, HashSetOp, LoopSource, Rhs, Source};
 use una_hash::{Encoder, KeyError, ProcessKey, Sink, SipKey};
 use una_syntax::Span;

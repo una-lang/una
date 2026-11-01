@@ -1385,7 +1385,6 @@ dependencies = [
 name = "una-core"
 version = "0.3.16"
 dependencies = [
- "num-bigint",
  "una-diag",
  "una-syntax",
 ]
@@ -1441,7 +1440,6 @@ dependencies = [
 name = "una-interp"
 version = "0.3.16"
 dependencies = [
- "num-bigint",
  "serde",
  "serde_json",
  "sha2",
@@ -1499,7 +1497,6 @@ name = "una-rt"
 version = "0.3.16"
 dependencies = [
  "cap",
- "num-bigint",
  "serde_json",
  "una-core",
  "una-diag",

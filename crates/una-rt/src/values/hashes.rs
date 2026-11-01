@@ -30,7 +30,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
 
-use num_bigint::{BigInt, Sign};
+use una_core::bigint::{BigInt, Sign};
 use una_core::{Descriptor, HashMapOp, HashSetOp};
 use una_diag::Code;
 use una_hash::{Encoder, KeyError, OrderedTable, ProcessKey, Sink, SipKey};

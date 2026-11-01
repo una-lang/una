@@ -22,7 +22,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use num_bigint::BigInt;
+use una_core::bigint::BigInt;
 use una_rt::{ffi, values};
 
 /// The most calls one input makes.

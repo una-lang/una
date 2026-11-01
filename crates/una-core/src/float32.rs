@@ -19,7 +19,7 @@
 use std::cmp::Ordering;
 use std::hint::black_box;
 
-use num_bigint::{BigInt, BigUint, Sign};
+use crate::bigint::{BigInt, BigUint, Sign};
 
 use crate::float::{self, IeeeCompare, ParseFailure, Rounded};
 

@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use num_bigint::{BigInt, Sign};
+use una_core::bigint::{BigInt, Sign};
 use una_core::json::Halt;
 use una_core::{
     Atom, Bound, CapOp, Ctor, DecimalOp, Decl, ExitTag, Expr, FixedOp, FloatOp, Fun, HandlerOp,
@@ -4486,7 +4486,7 @@ fn decimal_apply<'p>(op: DecimalOp, args: &[Value<'p>]) -> Flow<'p> {
         },
         DecimalOp::Abs => match args.first() {
             Some(Value::Decimal(x, a)) => Value::Decimal(
-                BigInt::from_biguint(num_bigint::Sign::Plus, x.magnitude().clone()),
+                BigInt::from_biguint(una_core::bigint::Sign::Plus, x.magnitude().clone()),
                 *a,
             ),
             _ => return Err(bad()),

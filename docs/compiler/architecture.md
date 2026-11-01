@@ -88,7 +88,7 @@ A declaration with tier 0 errors is not elaborated and produces no obligations. 
 
 ## 7. Dependencies
 
-Allowed without an ADR: `clap`, `serde`, `serde_json`, `toml`, `ariadne` (human diagnostics rendering), `indexmap`, `sha2`, `rayon`, `num-bigint` (for `Int`), `insta` and `pretty_assertions` (dev only). Anything else needs an ADR stating why the standard library or an allowed crate is insufficient.
+Allowed without an ADR: `clap`, `serde`, `serde_json`, `toml`, `ariadne` (human diagnostics rendering), `indexmap`, `sha2`, `rayon`, `insta` and `pretty_assertions` (dev only). Anything else needs an ADR stating why the standard library or an allowed crate is insufficient. `Int` and every exact integer step use Una's own big integer, `una_core::bigint` (#1093), not a crate.
 
 Allowed by ADR 0055, for the native backend crates `una-codegen` and `una-rt` only (v0.2): `cranelift-codegen`, `cranelift-frontend`, `cranelift-module`, `cranelift-object` and `target-lexicon`.
 

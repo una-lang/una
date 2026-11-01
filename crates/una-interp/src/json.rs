@@ -4,7 +4,7 @@
 
 use std::rc::Rc;
 
-use num_bigint::BigInt;
+use una_core::bigint::BigInt;
 use una_core::json::{self, Tree};
 
 use crate::machine::prelude_ctor;

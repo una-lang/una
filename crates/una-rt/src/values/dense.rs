@@ -26,7 +26,7 @@
 use std::borrow::Cow;
 use std::sync::Arc;
 
-use num_bigint::BigInt;
+use una_core::bigint::BigInt;
 use una_core::dense::{self as chains, fma, variants::Kernels};
 use una_core::float;
 
@@ -601,7 +601,7 @@ fn clones_heap(words: impl Iterator<Item = i64>) -> usize {
 /// the interpreter.
 fn dimension(site: i64, word: i64) -> Option<usize> {
     let n = int_value(word);
-    if n.sign() == num_bigint::Sign::Minus {
+    if n.sign() == una_core::bigint::Sign::Minus {
         return bad();
     }
     match usize::try_from(&n) {

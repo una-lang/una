@@ -4,6 +4,7 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+pub mod bigint;
 pub mod complex;
 pub mod decimal;
 pub mod dense;
@@ -21,9 +22,10 @@ mod text;
 
 /// The most decimal digits of an integer that a text may write, its sign excluded and leading
 /// zeros included, for JSON (`spec/23 §3`), `parse_int` (`spec/22 §4`) and `to_int`
-/// (`spec/14 §1`): converting d digits to an exact integer takes O(d²), so a longer text is
-/// refused before any conversion, as in CPython (#914). The same bound holds the other way: an
-/// integer of more digits is never written as text ([`int_text`], `spec/11 §7`, #923).
+/// (`spec/14 §1`): a longer text is refused before any conversion, as in CPython (#914). The
+/// same bound holds the other way: an integer of more digits is never written as text
+/// ([`int_text`], `spec/11 §7`, #923). The bound is the specification's; the conversions of
+/// [`bigint`] are subquadratic past it, O(M(d) log d), and lifting it is #1223.
 pub const MAX_INT_DIGITS: usize = 4300;
 
 /// The message of U6003 when a run writes an integer beyond [`MAX_INT_DIGITS`] as text
@@ -32,19 +34,19 @@ pub const INT_TEXT_LIMIT_MESSAGE: &str =
     "an integer of more than 4300 digits is written as text here, past the limit of a run";
 
 /// The decimal text of `n` when it has at most [`MAX_INT_DIGITS`] digits, its sign excluded,
-/// else `None` (`spec/11 §7`, #923): converting d digits takes O(d²), so a longer integer is
-/// refused before any conversion, as a longer text is before parsing. Decided in O(1) from the
-/// bit length: only an integer with as many bits as 10^4300 is compared with it, computed once.
-pub fn int_text(n: &num_bigint::BigInt) -> Option<String> {
+/// else `None` (`spec/11 §7`, #923): a longer integer is refused before any conversion, as a
+/// longer text is before parsing. Decided in O(1) from the bit length: only an integer with as
+/// many bits as 10^4300 is compared with it, computed once.
+pub fn int_text(n: &bigint::BigInt) -> Option<String> {
     int_fits(n).then(|| n.to_string())
 }
 
 /// Whether `n` has at most [`MAX_INT_DIGITS`] decimal digits, its sign excluded, in O(1) apart
 /// from one comparison at the bound.
-pub fn int_fits(n: &num_bigint::BigInt) -> bool {
-    static BOUND: std::sync::OnceLock<num_bigint::BigUint> = std::sync::OnceLock::new();
+pub fn int_fits(n: &bigint::BigInt) -> bool {
+    static BOUND: std::sync::OnceLock<bigint::BigUint> = std::sync::OnceLock::new();
     let bound = BOUND.get_or_init(|| {
-        num_bigint::BigUint::from(10u32).pow(u32::try_from(MAX_INT_DIGITS).unwrap_or(u32::MAX))
+        bigint::BigUint::from(10u32).pow(u32::try_from(MAX_INT_DIGITS).unwrap_or(u32::MAX))
     });
     let bits = n.bits();
     if bits < bound.bits() {
@@ -74,7 +76,7 @@ pub use text::Text;
 #[cfg(test)]
 mod int_text_tests {
     use super::*;
-    use num_bigint::BigInt;
+    use crate::bigint::BigInt;
 
     #[test]
     fn the_bound_of_writing_is_the_bound_of_parsing() {

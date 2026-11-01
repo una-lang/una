@@ -142,7 +142,7 @@ pub fn tasks_begin(bound: i64, bounded: i64, _site: usize) -> i64 {
         let value = values::int_value(bound);
         // A bound below 1 is refuted by verification; one beyond `usize` bounds nothing.
         usize::try_from(&value)
-            .unwrap_or(if value.sign() == num_bigint::Sign::Minus {
+            .unwrap_or(if value.sign() == una_core::bigint::Sign::Minus {
                 1
             } else {
                 usize::MAX
