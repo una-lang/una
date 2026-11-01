@@ -63,19 +63,21 @@ pub fn link(program: &[u8], runtime: &[u8], options: &Options<'_>) -> Result<Vec
         libsystem_version: libsystem::current_version(),
     };
     let bytes = commands::write(&image, &target, &signed)?;
-    verify::verify(&bytes, &|name| exports.contains(name))?;
+    verify::verify(&bytes, options.debuggable, &|name| exports.contains(name))?;
     Ok(bytes)
 }
 
 /// Reads an executable back and refuses it unless it holds the hardening of ADR 0124 rule 34:
-/// what [`link`] runs on every output, for the tests and the canaries of the gate.
+/// what [`link`] runs on every output, for the tests and the canaries of the gate. `debuggable`
+/// says whether the executable was built with `--debuggable`: without it, an entitlements blob
+/// (a `get-task-allow`) is refused.
 ///
 /// # Errors
 ///
 /// U8001 naming the first check that fails.
-pub fn verify(executable: &[u8]) -> Result<()> {
+pub fn verify(executable: &[u8], debuggable: bool) -> Result<()> {
     let exports = libsystem::exports();
-    verify::verify(executable, &|name| exports.contains(name))
+    verify::verify(executable, debuggable, &|name| exports.contains(name))
 }
 
 /// The entry point: the `main` that the program's object defines (`spec/16 §3`).

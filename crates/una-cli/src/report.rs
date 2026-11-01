@@ -109,7 +109,8 @@ struct NativeDoc {
     /// links, `cc` where the system's links.
     linker: String,
     /// Whether `una build` makes executables a debugger may attach to without `--debuggable`:
-    /// never (ADR 0124 rule 27, Question 7).
+    /// not where the internal linker signs them with the hardened runtime (ADR 0124 rule 27,
+    /// Question 7); the system linker's are.
     debuggable: bool,
 }
 
@@ -827,7 +828,7 @@ fn build(
             },
             runtime_sha256,
             linker: crate::build::linker_name(),
-            debuggable: false,
+            debuggable: crate::build::linker_name() == "cc",
         },
         generic_results,
         out_of_model: OUT_OF_MODEL,

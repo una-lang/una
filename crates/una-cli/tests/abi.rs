@@ -65,6 +65,8 @@ fn the_report_of_the_events_example() {
             "\"linker\":\"<host>\"",
         )
         .replace("\"linker\":\"cc\"", "\"linker\":\"<host>\"")
+        .replace("\"debuggable\":false", "\"debuggable\":\"<host>\"")
+        .replace("\"debuggable\":true", "\"debuggable\":\"<host>\"")
         // The digest of the Z3 library linked in (ADR 0124 rule 28) differs between builds.
         .replace(
             &format!("\"library_sha256\":\"{}\"", una_z3::BUILD.library_sha256),
@@ -134,7 +136,7 @@ fn the_report_of_the_events_example() {
         "cc".to_owned()
     };
     assert_eq!(report["native"]["linker"], linker.as_str());
-    assert_eq!(report["native"]["debuggable"], false);
+    assert_eq!(report["native"]["debuggable"], linker == "cc");
     // `clamp_seats` returns `Seats`, `Int in 0..5000`, a machine width (FW-1); its parameter
     // `raw` is an unbounded `Int`.
     assert_eq!(

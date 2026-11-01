@@ -587,10 +587,10 @@ fn the_hardened_runtime_refuses_injected_libraries_and_debuggers_unless_debuggab
 #[test]
 fn the_verifier_refuses_each_canary() {
     let bytes = link(&hi().bytes(), &runtime(), &options("canary")).unwrap();
-    assert_eq!(una_link::verify(&bytes), Ok(()));
+    assert_eq!(una_link::verify(&bytes, false), Ok(()));
     let parsed = commands(&bytes);
     let refused = |mutated: &[u8], why: &str| {
-        let problem = una_link::verify(mutated).unwrap_err();
+        let problem = una_link::verify(mutated, false).unwrap_err();
         assert_eq!(problem.code, Code::U8001);
         assert!(problem.message.contains(why), "{why}: {}", problem.message);
     };
@@ -662,4 +662,182 @@ fn input_sections_that_overlap_are_u8001() {
     let problem = link(&bytes, &runtime(), &options("t")).unwrap_err();
     assert_eq!(problem.code, Code::U8001);
     assert!(problem.message.contains("overlap"), "{}", problem.message);
+}
+
+/// A program whose `main` takes the address of `_big`, the start of a zero-fill `__bss` of 16
+/// bytes, so the section is live; `patch` then rewrites the object's section headers.
+fn with_bss(patch: impl Fn(&mut Vec<u8>)) -> Vec<u8> {
+    let mut code = text(&[0x9000_0008, 0x9100_0108, mov_w0(0), RET]);
+    code.relocs = vec![reloc(0, 1, PAGE21), reloc(4, 1, PAGEOFF12)];
+    let bss = Section {
+        zerofill: 16,
+        ..data("__DATA", "__bss", 0x1, &[])
+    };
+    let mut bytes = Object {
+        sections: vec![code, bss],
+        symbols: vec![global("_main", 1, 0), local("_big", 2, 0)],
+    }
+    .bytes();
+    patch(&mut bytes);
+    bytes
+}
+
+/// The offset of a field of section `index`'s header in a [`common::Object`]'s bytes.
+fn section_field(index: usize, field: usize) -> usize {
+    32 + 72 + 80 * index + field
+}
+
+#[test]
+fn a_section_too_large_or_out_of_reach_is_refused_without_wrapping() {
+    assert!(link(&with_bss(|_| {}), &runtime(), &options("t")).is_ok());
+    for size in [0xffff_ffff_ffff_fff0u64, u64::MAX, 1 << 32] {
+        let bytes = with_bss(|b| {
+            b[section_field(1, 40)..section_field(1, 48)].copy_from_slice(&size.to_le_bytes())
+        });
+        let problem = link(&bytes, &runtime(), &options("t")).unwrap_err();
+        assert_eq!(problem.code, Code::U8001, "{size:#x}: {}", problem.message);
+        assert!(problem.message.contains("4 GiB"), "{}", problem.message);
+    }
+    // Two sections at the top of the address space, which a sum would wrap.
+    let bytes = with_bss(|b| {
+        b[section_field(0, 32)..section_field(0, 40)]
+            .copy_from_slice(&0x8000_0000_0000_0000u64.to_le_bytes());
+        b[section_field(1, 32)..section_field(1, 40)]
+            .copy_from_slice(&0x8000_0000_0000_0010u64.to_le_bytes());
+    });
+    let problem = link(&bytes, &runtime(), &options("t")).unwrap_err();
+    assert_eq!(problem.code, Code::U8001, "{}", problem.message);
+    // A zero-fill section within 4 GiB that does not fit the image beside the rest is U7015.
+    let bytes = with_bss(|b| {
+        b[section_field(1, 40)..section_field(1, 48)].copy_from_slice(&0xffff_ff00u64.to_le_bytes())
+    });
+    let problem = link(&bytes, &runtime(), &options("t")).unwrap_err();
+    assert_eq!(problem.code, Code::U7015, "{}", problem.message);
+}
+
+/// The verifier's other refusals (rule 34), each on one mutation of a valid executable.
+#[test]
+fn the_verifier_refuses_every_structural_canary() {
+    let bytes = link(&hi().bytes(), &runtime(), &options("canary")).unwrap();
+    let parsed = commands(&bytes);
+    let word = |b: &[u8], at: usize| u32::from_le_bytes(b[at..at + 4].try_into().unwrap());
+    let quad = |b: &[u8], at: usize| u64::from_le_bytes(b[at..at + 8].try_into().unwrap());
+    let refused = |mutated: &[u8], why: &str| {
+        let problem = una_link::verify(mutated, false).unwrap_err();
+        assert_eq!(problem.code, Code::U8001);
+        assert!(problem.message.contains(why), "{why}: {}", problem.message);
+    };
+    // The offset of the load command of kind `cmd`.
+    let command = |cmd: u32| {
+        let mut at = 32;
+        loop {
+            if word(&bytes, at) == cmd {
+                return at;
+            }
+            at += word(&bytes, at + 4) as usize;
+        }
+    };
+    let segment_fileoff = |name: &str| {
+        let index = parsed
+            .segments
+            .iter()
+            .position(|(n, _, _)| n == name)
+            .unwrap();
+        quad(&bytes, parsed.segment_at[index] + 40) as usize
+    };
+    // Not position-independent.
+    let mut b = bytes.clone();
+    let flags = parsed.flags & !0x20_0000;
+    b[24..28].copy_from_slice(&flags.to_le_bytes());
+    refused(&b, "position-independent");
+    // A second library: LC_DATA_IN_CODE turned into an LC_LOAD_DYLIB.
+    let mut b = bytes.clone();
+    let at = command(0x29);
+    b[at..at + 4].copy_from_slice(&0xcu32.to_le_bytes());
+    refused(&b, "load");
+    // An unknown load command.
+    let mut b = bytes.clone();
+    b[at..at + 4].copy_from_slice(&0x99u32.to_le_bytes());
+    refused(&b, "outside rule 25");
+    // The first GOT slot, a bind to `_write`: an ordinal that names no import; a chain that
+    // leaves its page; a chain to a place that is not 8-aligned.
+    let got = segment_fileoff("__DATA_CONST");
+    let slot = quad(&bytes, got);
+    assert_eq!(slot >> 63, 1, "the first GOT slot is a bind");
+    let mut b = bytes.clone();
+    b[got..got + 8].copy_from_slice(&((slot & !0xff_ffff) | 7).to_le_bytes());
+    refused(&b, "does not exist");
+    let mut b = bytes.clone();
+    b[got..got + 8].copy_from_slice(&((slot & !(0xfff << 51)) | (0xfff << 51)).to_le_bytes());
+    refused(&b, "outside its page or not 8-aligned");
+    let mut b = bytes.clone();
+    b[got..got + 8].copy_from_slice(&((slot & !(0xfff << 51)) | (1 << 51)).to_le_bytes());
+    refused(&b, "outside its page or not 8-aligned");
+    // The pointer of `__DATA`, a rebase: a target outside the image.
+    let data = segment_fileoff("__DATA");
+    let pointer = quad(&bytes, data);
+    assert_eq!(pointer >> 63, 0, "the first pointer of __DATA is a rebase");
+    let mut b = bytes.clone();
+    b[data..data + 8].copy_from_slice(&((pointer & !((1 << 36) - 1)) | 0x10).to_le_bytes());
+    refused(&b, "outside the image");
+    // A UUID that is not the file's digest.
+    let mut b = bytes.clone();
+    b[parsed.uuid_at] ^= 1;
+    refused(&b, "UUID");
+    // A signature that is not the file's last bytes.
+    let mut b = bytes.clone();
+    b.extend_from_slice(&[0; 16]);
+    refused(&b, "last bytes");
+    // A code limit that is not the signature's offset, and an executable segment that is not
+    // __TEXT.
+    let cd = parsed.signature_at + 20;
+    let mut b = bytes.clone();
+    let limit = u32::from_be_bytes(b[cd + 32..cd + 36].try_into().unwrap()) - 4096;
+    b[cd + 32..cd + 36].copy_from_slice(&limit.to_be_bytes());
+    refused(&b, "code limit");
+    let mut b = bytes.clone();
+    let exec = u64::from_be_bytes(b[cd + 72..cd + 80].try_into().unwrap()) + 0x4000;
+    b[cd + 72..cd + 80].copy_from_slice(&exec.to_be_bytes());
+    refused(&b, "executable segment");
+    // An identifier that is not a name inside the CodeDirectory.
+    let mut b = bytes.clone();
+    b[cd + 20..cd + 24].copy_from_slice(&0x7fff_0000u32.to_be_bytes());
+    refused(&b, "identifier");
+    // A section whose bytes are not at its segment's file offset.
+    let mut b = bytes.clone();
+    let text = parsed.segment_at[1] + 72;
+    let offset = word(&b, text + 48) + 8;
+    b[text + 48..text + 52].copy_from_slice(&offset.to_le_bytes());
+    refused(&b, "file range");
+    // A debuggable executable verified as a default build: its entitlement is refused.
+    let debuggable = link(
+        &hi().bytes(),
+        &runtime(),
+        &Options {
+            identifier: "canary",
+            debuggable: true,
+        },
+    )
+    .unwrap();
+    assert_eq!(una_link::verify(&debuggable, true), Ok(()));
+    refused_by(&debuggable, "blobs");
+}
+
+fn refused_by(bytes: &[u8], why: &str) {
+    let problem = una_link::verify(bytes, false).unwrap_err();
+    assert!(problem.message.contains(why), "{why}: {}", problem.message);
+}
+
+#[test]
+fn two_relocations_at_one_place_are_u8001() {
+    let mut program = calling("_helper");
+    let first = program.sections[0].relocs[0].clone();
+    program.sections[0].relocs.push(first);
+    let problem = failure(&program, &archive(&[("helper.o", &function("_helper", 1))]));
+    assert_eq!(problem.code, Code::U8001);
+    assert!(
+        problem.message.contains("two relocations"),
+        "{}",
+        problem.message
+    );
 }

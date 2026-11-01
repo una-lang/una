@@ -708,6 +708,23 @@ fn pointer_width(encoding: u8) -> Option<u64> {
     }
 }
 
+/// The bits of one LEB128 group at `shift`, refusing a number wider than 64 bits.
+fn leb_part(bits: u64, shift: u32) -> Result<u64> {
+    let too_wide = || Problem::internal("an LEB128 number of __eh_frame wider than 64 bits");
+    if shift >= 64 {
+        return if bits == 0 && shift < 70 {
+            Ok(0)
+        } else {
+            Err(too_wide())
+        };
+    }
+    let part = bits.checked_shl(shift).ok_or_else(too_wide)?;
+    if part >> shift != bits {
+        return Err(too_wide());
+    }
+    Ok(part)
+}
+
 /// A reader over a record's bytes.
 struct Cursor<'d> {
     data: &'d [u8],
@@ -741,9 +758,7 @@ impl Cursor<'_> {
         let mut shift = 0u32;
         loop {
             let byte = self.u8()?;
-            if shift < 64 {
-                value |= u64::from(byte & 0x7f) << shift;
-            }
+            value |= leb_part(u64::from(byte & 0x7f), shift)?;
             shift += 7;
             if byte & 0x80 == 0 {
                 return Ok(value);
@@ -756,13 +771,11 @@ impl Cursor<'_> {
         let mut shift = 0u32;
         loop {
             let byte = self.u8()?;
-            if shift < 64 {
-                value |= i64::from(byte & 0x7f) << shift;
-            }
+            value |= leb_part(u64::from(byte & 0x7f), shift)?.cast_signed();
             shift += 7;
             if byte & 0x80 == 0 {
                 if shift < 64 && byte & 0x40 != 0 {
-                    value |= -1i64 << shift;
+                    value |= (-1i64).checked_shl(shift).unwrap_or(0);
                 }
                 return Ok(value);
             }

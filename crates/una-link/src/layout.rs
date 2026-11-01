@@ -229,7 +229,7 @@ pub(crate) fn lay_out<'a>(
     for name in imports.keys() {
         if !exports(name) {
             return Err(Problem::internal(format!(
-                "the symbol `{}` is defined by no input and is not in libSystem's export list for macOS 13",
+                "the symbol `{}` is defined by no input and is not in the export list of libSystem built into `una` (from the macOS 12.1 SDK)",
                 shown(name)
             )));
         }
@@ -307,21 +307,28 @@ pub(crate) fn lay_out<'a>(
                 (align, 0)
             }
         };
-        let start = align_up(cursor, 1u64 << align);
-        let mut end = start + size;
+        // Every address is checked against the 4 GiB image as it is made, so no size an input
+        // states can wrap the arithmetic (U7015).
+        let too_large =
+            || Problem::layout("the executable is larger than the 4 GiB this layout supports");
+        let limit = BASE + (1u64 << 32);
+        let within = |value: Option<u64>| value.filter(|v| *v < limit).ok_or_else(too_large);
+        let start = within(Some(align_up(cursor, 1u64 << align)))?;
+        let mut end = within(start.checked_add(size))?;
         if let Some(atoms) = by_out.get(&out) {
             let mut at = start;
             for index in atoms {
                 let atom = graph.atom(*index)?;
                 let section = graph.section(atom.object, atom.section)?;
                 let modulus = 1u64 << section.align;
-                let wanted = (section.addr + atom.start) % modulus;
+                let wanted = section.addr.checked_add(atom.start).ok_or_else(too_large)? % modulus;
                 let here = at % modulus;
-                at += (wanted + modulus - here) % modulus;
+                at = within(at.checked_add((wanted + modulus - here) % modulus))?;
                 if let Some(slot) = placing.atom_addr.get_mut(*index) {
                     *slot = at;
                 }
-                at += atom.end - atom.start;
+                let length = atom.end.checked_sub(atom.start).ok_or_else(too_large)?;
+                at = within(at.checked_add(length))?;
             }
             end = end.max(at);
         }
@@ -329,11 +336,6 @@ pub(crate) fn lay_out<'a>(
             Out::Got => placing.got_addr = start,
             Out::Stubs => placing.stubs_addr = start,
             _ => {}
-        }
-        if end - BASE >= 1 << 32 {
-            return Err(Problem::layout(
-                "the executable is larger than the 4 GiB this layout supports",
-            ));
         }
         sections.push(OutSection {
             out,

@@ -312,6 +312,22 @@ fn read_section<'a>(
     );
     let bad =
         |what: String| Problem::internal(format!("`{object}`, section {segment},{name}: {what}"));
+    // No input section of Una's own inputs comes near 4 GiB; a larger size, which a zero-fill
+    // section could state without bytes, is refused before any address is computed from it.
+    if size > u64::from(u32::MAX) {
+        return Err(bad(format!(
+            "a size of {size:#x}, beyond the 4 GiB the linker accepts"
+        )));
+    }
+    let section_addr = section.addr(endian);
+    if section_addr
+        .checked_add(size)
+        .is_none_or(|end| end > 1u64 << 48)
+    {
+        return Err(bad(format!(
+            "an address range at {section_addr:#x} beyond the linker's reach"
+        )));
+    }
     let bytes = if zerofill {
         &[][..]
     } else {
@@ -420,6 +436,14 @@ fn read_section<'a>(
     // Relocations are applied and looked up by place: sorted by offset, stably, so the input's
     // order (usually descending) never matters.
     relocs.sort_by_key(|reloc| reloc.offset);
+    // Two relocations at one place would patch it twice: refused, as no assembler writes them.
+    if let Some(pair) = relocs
+        .windows(2)
+        .find(|pair| matches!(pair, [a, b] if a.offset == b.offset))
+    {
+        let at = pair.first().map_or(0, |r| r.offset);
+        return Err(bad(format!("two relocations at the place {at:#x}")));
+    }
     Ok(InSection {
         segment,
         name,

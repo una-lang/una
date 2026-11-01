@@ -45,7 +45,7 @@ struct Segment {
 /// # Errors
 ///
 /// U8001 naming the first check that fails.
-pub(crate) fn verify(file: &[u8], exports: &dyn Fn(&[u8]) -> bool) -> Result<()> {
+pub(crate) fn verify(file: &[u8], debuggable: bool, exports: &dyn Fn(&[u8]) -> bool) -> Result<()> {
     let word =
         |at: u64| bytes::u32_at(file, at).map_err(|_| refuse("a field lies outside the file"));
     let quad =
@@ -128,6 +128,19 @@ pub(crate) fn verify(file: &[u8], exports: &dyn Fn(&[u8]) -> bool) -> Result<()>
                             segment.name
                         )));
                     }
+                    let offset = u64::from(word(section + 48)?);
+                    let kind = word(section + 64)? & 0xff;
+                    let zerofill = matches!(kind, 0x1 | 0xc | 0x12);
+                    if !zerofill
+                        && (offset != segment.fileoff + (addr - segment.vmaddr)
+                            || offset.saturating_add(size)
+                                > segment.fileoff.saturating_add(segment.filesize))
+                    {
+                        return Err(refuse(format!(
+                            "a section's bytes lie outside the file range of the segment {}",
+                            segment.name
+                        )));
+                    }
                 }
                 segments.push(segment);
             }
@@ -198,7 +211,7 @@ pub(crate) fn verify(file: &[u8], exports: &dyn Fn(&[u8]) -> bool) -> Result<()>
     {
         return Err(refuse("the UUID is not the digest of the file"));
     }
-    verify_signature(file, signature_at, &segments)
+    verify_signature(file, signature_at, signature_size, debuggable, &segments)
 }
 
 fn verify_fixups(
@@ -327,7 +340,13 @@ fn verify_fixups(
     Ok(())
 }
 
-fn verify_signature(file: &[u8], signature_at: u64, segments: &[Segment]) -> Result<()> {
+fn verify_signature(
+    file: &[u8],
+    signature_at: u64,
+    signature_size: u64,
+    debuggable: bool,
+    segments: &[Segment],
+) -> Result<()> {
     let be = |offset: u64| {
         bytes::array::<4>(file, signature_at + offset)
             .map(u32::from_be_bytes)
@@ -336,16 +355,79 @@ fn verify_signature(file: &[u8], signature_at: u64, segments: &[Segment]) -> Res
     if be(0)? != 0xfade_0cc0 {
         return Err(refuse("the signature is not a SuperBlob"));
     }
+    let blob_length = u64::from(be(4)?);
+    if blob_length > signature_size || blob_length < 12 {
+        return Err(refuse("the SuperBlob's length is not within the signature"));
+    }
     let count = u64::from(be(8)?);
+    // Rule 27's layout: one CodeDirectory, and an entitlements blob only with `--debuggable`.
+    let expected = if debuggable { 2 } else { 1 };
+    if count != expected {
+        return Err(refuse(format!(
+            "the signature holds {count} blobs, not the {expected} of rule 27"
+        )));
+    }
     let mut directory = None;
+    let mut entitlements = None;
     for index in 0..count {
-        if be(12 + 8 * index)? == 0 {
-            directory = Some(u64::from(be(16 + 8 * index)?));
+        let (slot, offset) = (be(12 + 8 * index)?, u64::from(be(16 + 8 * index)?));
+        if offset < 12 + 8 * count || offset.saturating_add(8) > blob_length {
+            return Err(refuse("a blob of the signature lies outside the SuperBlob"));
+        }
+        match slot {
+            0 => directory = Some(offset),
+            5 if debuggable => entitlements = Some(offset),
+            other => {
+                return Err(refuse(format!(
+                    "the signature holds a blob of slot {other} that rule 27 does not allow here"
+                )));
+            }
         }
     }
     let cd = directory.ok_or_else(|| refuse("the signature has no CodeDirectory"))?;
     if be(cd)? != 0xfade_0c02 || be(cd + 8)? != 0x20500 {
         return Err(refuse("the CodeDirectory is not of version 0x20500"));
+    }
+    let cd_length = u64::from(be(cd + 4)?);
+    if cd.saturating_add(cd_length) > blob_length {
+        return Err(refuse("the CodeDirectory's length runs past the SuperBlob"));
+    }
+    let ident = u64::from(be(cd + 20)?);
+    let ident_ok = ident == 96
+        && file
+            .get(
+                usize::try_from(signature_at + cd + ident).unwrap_or(usize::MAX)
+                    ..usize::try_from(signature_at + cd + cd_length).unwrap_or(usize::MAX),
+            )
+            .is_some_and(|rest| rest.first().is_some_and(|b| *b != 0) && rest.contains(&0));
+    if !ident_ok {
+        return Err(refuse(
+            "the CodeDirectory's identifier is not a name inside it",
+        ));
+    }
+    let special = u64::from(be(cd + 24)?);
+    if special != if debuggable { 5 } else { 0 } {
+        return Err(refuse(
+            "the CodeDirectory's special slots are not those of rule 27",
+        ));
+    }
+    if let Some(at) = entitlements {
+        let length = u64::from(be(at + 4)?);
+        if be(at)? != 0xfade_7171 || at.saturating_add(length) > blob_length {
+            return Err(refuse("the entitlements blob is malformed"));
+        }
+        let blob = file
+            .get(
+                usize::try_from(signature_at + at).unwrap_or(usize::MAX)
+                    ..usize::try_from(signature_at + at + length).unwrap_or(usize::MAX),
+            )
+            .unwrap_or(&[]);
+        let slot = signature_at + cd + u64::from(be(cd + 16)?) - 5 * 32;
+        let recorded = bytes::array::<32>(file, slot)
+            .map_err(|_| refuse("the entitlements' hash lies outside the file"))?;
+        if Sha256::digest(blob).as_slice() != recorded {
+            return Err(refuse("the hash of the entitlements does not match them"));
+        }
     }
     let flags = be(cd + 12)?;
     if flags & 0x2 == 0 || flags & 0x1_0000 == 0 {
