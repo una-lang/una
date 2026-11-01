@@ -42,7 +42,6 @@ fn solver_child(
             "__solver",
             &cpu_seconds.to_string(),
             &memory_mib.to_string(),
-            "/",
         ])
         .env_clear()
         .stdin(Stdio::piped())

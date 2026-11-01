@@ -9,7 +9,7 @@
 //! The handshake is the child's first line, `una-solver 1 z3 <version> <build>`, where
 //! `<build>` is the SHA-256 of this `una`'s build record (rule 4): it detects an accidental
 //! replacement of `una` during a run, not a malicious one. Under an outer sandbox (macOS) a
-//! second line, `una-solver-outer <op>,<op>,...`, lists what the outer profile denies.
+//! second line, `una-solver-outer <probe>,<probe>,...`, lists the probes the outer profile denies.
 
 use std::ffi::{CStr, CString};
 use std::io::{Read, Write};
@@ -203,30 +203,40 @@ fn expected_handshake() -> String {
     )
 }
 
-/// `una __solver <cpu-seconds> <memory-mib> <outside-temp> [--no-address-space-backstop]`:
+/// `una __solver <cpu-seconds> <memory-mib> [--no-address-space-backstop]`:
 /// the child. Confines itself, writes the handshake, runs the front end on stdin, and exits
 /// with the front end's status; a step that fails writes its reason on stderr and exits with
 /// [`NOT_CONFINED`], with no handshake.
 pub fn serve(args: &[String]) -> u8 {
-    let (cpu_seconds, memory_mib, outside_temp) = match args {
-        [cpu, memory, outside, ..] => match (cpu.parse::<u64>(), memory.parse::<u64>()) {
-            (Ok(cpu), Ok(memory)) => (cpu, memory, outside.clone()),
+    let (cpu_seconds, memory_mib) = match args {
+        [cpu, memory, ..] => match (cpu.parse::<u64>(), memory.parse::<u64>()) {
+            (Ok(cpu), Ok(memory)) => (cpu, memory),
             _ => return refuse("the solver mode's limits are not integers"),
         },
-        _ => return refuse("the solver mode needs its limits and a path"),
+        _ => return refuse("the solver mode needs its limits"),
     };
     let backstop = !args.iter().any(|a| a == "--no-address-space-backstop");
-    let Ok(outside) = CString::new(outside_temp) else {
-        return refuse("the path outside the temporary directory holds a NUL byte");
-    };
     let limits = Limits {
         cpu_seconds,
         memory_mib,
         address_space_backstop: backstop,
     };
-    let confinement = match confine(&limits, &outside) {
+    let confinement = match confine(&limits) {
         Ok(confinement) => confinement,
-        Err(error) => return refuse(&format!("the solver could not be confined: {error}")),
+        Err(error) => {
+            let reason = format!("the solver could not be confined: {error}");
+            // When descriptor 2 could not be put back, the reason goes to the process's own
+            // stderr, which the error kept (#1364 L2); the exit status fails closed either way.
+            if let Some(mut stderr) = error
+                .original_stderr()
+                .and_then(|fd| fd.try_clone_to_owned().ok())
+                .map(std::fs::File::from)
+            {
+                let _ = writeln!(stderr, "{reason}");
+                return NOT_CONFINED;
+            }
+            return refuse(&reason);
+        }
     };
     let mut stdout = std::io::stdout().lock();
     let mut lines = expected_handshake();
@@ -316,14 +326,6 @@ impl Launcher {
         {
             std::env::current_exe().map_err(|e| format!("cannot re-execute `una`: {e}"))
         }
-    }
-
-    /// A path outside the temporary directory, for the outer-sandbox check (rule 7).
-    fn outside_temp() -> String {
-        std::env::current_dir()
-            .ok()
-            .filter(|dir| !dir.starts_with(std::env::temp_dir()))
-            .map_or_else(|| "/".to_owned(), |dir| dir.display().to_string())
     }
 }
 
@@ -433,7 +435,6 @@ impl Solver for Launcher {
             .map_err(|_| "the path of `una` holds a NUL byte".to_owned())?;
         let cpu = wallclock.as_secs().saturating_add(1).to_string();
         let memory = self.memory_mib.to_string();
-        let outside = Self::outside_temp();
         let handshake = expected_handshake();
         let args: Vec<CString> = if self.stand_in().is_some() {
             [
@@ -446,13 +447,7 @@ impl Solver for Launcher {
             .map(CString::new)
             .collect::<Result<_, _>>()
         } else {
-            let mut args = vec![
-                "una".to_owned(),
-                "__solver".to_owned(),
-                cpu,
-                memory,
-                outside,
-            ];
+            let mut args = vec!["una".to_owned(), "__solver".to_owned(), cpu, memory];
             if !self.address_space_backstop {
                 args.push("--no-address-space-backstop".to_owned());
             }

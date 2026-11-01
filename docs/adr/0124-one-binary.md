@@ -594,3 +594,59 @@ transcript and its near misses (crates/una-verify/src/solver.rs).
 ## Note (2026-10-31): read through ADR 0106's amendment (#1311)
 
 ADR 0106's amendment of 2026-10-31 withdraws the C-emitting backend and closes Question 1, as its §5 states: no release compiler is built into `una`. No rule of this record changes. Its passages on the release compiler read through that amendment: the header's relation to ADR 0106, Question 1's history and its cost line, the Context's and the first Departure's reference to an amendment, rule 9 (which has no subject), rule 22's "the release compiler's object" (the release path's object), the Consequences' exception for "the C compiler of release builds" (none: no external tool is run for release builds either) and the Implementation plan's last line. `docs/plan/c-emission-inventory.md` lists each passage by line.
+
+## Amendment (2026-11-01): the outer sandbox's probes (rule 7, Question 6, #1363, #1364)
+
+Rule 7 asked an outer sandbox about `network-outbound` and `network-inbound` with no filter and
+about three writes at `/` and at the parent's working directory, or at `/` again when that
+directory was under the temporary directory. `sandbox_check` with no filter answers "denied"
+for an operation that the profile allows only under a filter, so a profile that allowed
+connections to `localhost` was accepted (#1363); and a profile that allowed writes under the
+home directory, or everywhere but two paths, or every write but data, create and unlink, was
+accepted too (#1364). The check of rule 7 becomes the following fixed list, in the order the
+report keeps; the outer sandbox counts as the confinement only if it denies every required
+probe, otherwise U5003, "the outer sandbox is too permissive for the solver: <probe> is
+allowed".
+
+- **The network, required.** `network-outbound`, `network-inbound` and `network-bind`, each
+  asked with no filter; toward `127.0.0.1` and `::1` over TCP and over UDP, by
+  `sandbox_check_network` on a socket of each kind at the ports 0, 1, 22, 53, 80, 443, 631,
+  3000, 5000, 5432, 6379, 8000, 8080, 8443, 9000 and 65535 (a profile's address filter names
+  every port or one); and toward local sockets, by `sandbox_check` with a path filter at each
+  place below and at `/private/var/run`. They are named `<operation>`,
+  `<operation> <tcp|udp> <address>` and `<operation> unix-socket`.
+  `sandbox_check_network` is looked up at run time: where the system has none, the check fails
+  closed with U5003.
+- **Writes, required.** `file-write-data`, `file-write-create`, `file-write-unlink`,
+  `file-write-xattr`, `file-write-mode`, `file-write-flags`, `file-write-times` and
+  `file-write-owner`, each at `/`, `/Users`, `/private/var`, `/private/tmp`, `/Volumes`, the
+  home directory of the user's account (its passwd entry, not `HOME`), named `(home)`, and the
+  user's temporary directory (`confstr(_CS_DARWIN_USER_TEMP_DIR)`, not `TMPDIR`), named
+  `(temporary directory)`, each by its resolved path. No place comes from the working
+  directory or the environment, and the child's command line no longer carries a path:
+  `una __solver <cpu-seconds> <memory-mib> [--no-address-space-backstop]`. `sandbox_check`
+  answers "denied" for a path that does not exist whatever the profile, so a place that does
+  not resolve is U5003. They are named `<operation> <place>`.
+- **Recorded, not required.** `file-read-data` at `/` and at `(home)`, `process-exec*` and
+  `process-fork`.
+- **An answer that is neither "denied" nor "allowed"**, such as the -1 the library gives for an
+  operation it does not know, is U5003, "cannot ask the outer sandbox about <probe>", and never
+  counts as a denial.
+- **No descriptor after the check.** Once the outer sandbox is taken, the child sets its
+  open-file limit to zero, soft and hard: no socket or file can be opened from then on, so a
+  filter of the outer profile that the probes do not ask about (another port, another socket
+  path) is never reached by the solver. Under the child's own profile, rule 6's limit of 16
+  stands.
+- **What the probes cannot see.** The system answers "denied" for some writes at some places
+  whatever the profile (a create at `/`, on the sealed system volume, for example): those
+  probes cannot be loosened by any profile and are reported as denied. A write that needs no
+  descriptor (rename, a new directory, a link, an attribute) at a path below a place, which
+  the list does not name, is not asked about; neither is `mach-lookup`, which the profiles of
+  the project's gates allow.
+- **Recorded.** `tcb.solver_outer_denied` names every denied probe of the list, so every
+  required one whenever `tcb.solver_confinement` is `"outer"`; Question 6's example reads with
+  these names.
+- **Cost.** A fixed number of system calls per solver child, about 300, O(1) in the query.
+- **Size.** The files behind the feature `solver` count 1,664 lines with this change (1,274
+  before it, already above the cap of 1,224 that the amendment of 2026-10-27 set). The cap
+  becomes this count plus 5%: 1,747.

@@ -12,8 +12,9 @@
 //! the child with an empty environment and only its three pipes, and on macOS [`footprint`]
 //! to read the child's physical footprint.
 //!
-//! The bindings are through the `libc` crate's declarations, and three of macOS's that it
-//! lacks (`sandbox_init`, `sandbox_free_error`, `sandbox_check`), each bound once here.
+//! The bindings are through the `libc` crate's declarations, and four of macOS's that it
+//! lacks (`sandbox_init`, `sandbox_free_error`, `sandbox_check`, `mach_task_self_`), each bound
+//! once here; `sandbox_check_network` is looked up at run time ([`sandbox`]).
 #![allow(unsafe_code)]
 
 pub mod descriptors;
@@ -26,7 +27,6 @@ pub mod sandbox;
 pub mod seccomp;
 pub mod spawn;
 
-use std::ffi::CStr;
 use std::fmt;
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -57,8 +57,8 @@ pub enum Confinement {
     /// An outer sandbox confines it; `denied` lists, in rule 7's order, the operations of the
     /// fixed list that the outer profile denies.
     Outer {
-        /// The denied operations, by their names in the report.
-        denied: Vec<&'static str>,
+        /// The denied probes, by their names in the report.
+        denied: Vec<String>,
     },
 }
 
@@ -103,17 +103,28 @@ impl fmt::Display for ConfineError {
     }
 }
 
+impl ConfineError {
+    /// The process's own stderr when the confinement left descriptor 2 elsewhere (macOS: it
+    /// could not be put back after the sandbox), so that the reason can still be written there.
+    pub fn original_stderr(&self) -> Option<std::os::fd::BorrowedFd<'_>> {
+        match self {
+            #[cfg(target_os = "macos")]
+            Self::Sandbox(e) => e.original_stderr(),
+            _ => None,
+        }
+    }
+}
+
 impl std::error::Error for ConfineError {}
 
 /// Confines this process as the solver child (rule 7), in the order the module describes, and
-/// records it. `outside_temp` is a path outside the temporary directory, passed by the parent,
-/// at which the outer-sandbox check of macOS tests writes and reads; Linux ignores it.
+/// records it.
 ///
 /// # Errors
 ///
 /// The first step that fails, with no step taken back: a process that reaches an error here
 /// writes no handshake and exits.
-pub fn confine(limits: &Limits, outside_temp: &CStr) -> Result<Confinement, ConfineError> {
+pub fn confine(limits: &Limits) -> Result<Confinement, ConfineError> {
     // SAFETY: `geteuid` has no arguments and cannot fail.
     if unsafe { libc::geteuid() } == 0 {
         return Err(ConfineError::Root);
@@ -121,13 +132,13 @@ pub fn confine(limits: &Limits, outside_temp: &CStr) -> Result<Confinement, Conf
     std::env::set_current_dir("/").map_err(ConfineError::WorkingDirectory)?;
     descriptors::close_above_stdio().map_err(ConfineError::Descriptors)?;
     limits::apply(limits).map_err(|(name, e)| ConfineError::Limit(name, e))?;
-    let confinement = platform_confine(outside_temp)?;
+    let confinement = platform_confine()?;
     record_confined();
     Ok(confinement)
 }
 
 #[cfg(target_os = "linux")]
-fn platform_confine(_: &CStr) -> Result<Confinement, ConfineError> {
+fn platform_confine() -> Result<Confinement, ConfineError> {
     // An inherited `READ_IMPLIES_EXEC` personality would make every readable mapping
     // executable behind the filter's `PROT_EXEC` check: it is cleared, not tolerated.
     // SAFETY: `personality` with the query value reads the current personality and changes
@@ -154,8 +165,8 @@ fn platform_confine(_: &CStr) -> Result<Confinement, ConfineError> {
 }
 
 #[cfg(target_os = "macos")]
-fn platform_confine(outside_temp: &CStr) -> Result<Confinement, ConfineError> {
-    sandbox::confine(outside_temp).map_err(ConfineError::Sandbox)
+fn platform_confine() -> Result<Confinement, ConfineError> {
+    sandbox::confine().map_err(ConfineError::Sandbox)
 }
 
 #[cfg(test)]

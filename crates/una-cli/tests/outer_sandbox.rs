@@ -2,7 +2,9 @@
 //! profile that meets Question 6's minimum, as the toolchain-free gate's does, the solver
 //! children take the outer sandbox as their confinement and every obligation of the events
 //! example is proven; under a profile short of that minimum no child answers, and the run
-//! fails with U5003. Tier 1: it needs the solver built into `una`.
+//! fails with U5003, naming the probe it allows (#1363, #1364). Under a sandbox of its own that
+//! refuses a nested one, each test fails unless `UNA_SKIP_NESTED_SANDBOX_TESTS=1` is set
+//! (`docs/compiler/testing.md`). Tier 1: it needs the solver built into `una`.
 #![cfg(target_os = "macos")]
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
@@ -50,10 +52,15 @@ fn fresh(label: &str) -> PathBuf {
 }
 
 /// `una args` under `sandbox-exec` with `profile` and an empty PATH, from the repository's
-/// root, where the profile denies writes (the path outside the temporary directory that the
-/// child checks), as `scripts/toolchain-free.sh` runs it. `None` when this process is itself
-/// under a sandbox that refuses a nested one.
+/// root, as `scripts/toolchain-free.sh` runs it. `None` when this process is itself under a
+/// sandbox that refuses a nested one and `UNA_SKIP_NESTED_SANDBOX_TESTS=1` is set; without it
+/// the test fails there (#1364 L1).
 fn una_sandboxed(own: &Path, profile: &str, args: &[&str]) -> Option<Output> {
+    una_sandboxed_in(own, profile, args, &repository())
+}
+
+/// As [`una_sandboxed`], from the working directory `cwd`.
+fn una_sandboxed_in(own: &Path, profile: &str, args: &[&str], cwd: &Path) -> Option<Output> {
     let output = Command::new("/usr/bin/sandbox-exec")
         .arg("-p")
         .arg(profile)
@@ -63,14 +70,21 @@ fn una_sandboxed(own: &Path, profile: &str, args: &[&str]) -> Option<Output> {
         .env("HOME", own.join("home"))
         .env("TMPDIR", own.join("tmp"))
         .env("PATH", own.join("tmp"))
-        .current_dir(repository())
+        .current_dir(cwd)
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
     if stderr.starts_with("sandbox-exec: sandbox_apply") {
+        #[allow(clippy::disallowed_methods)]
+        let skip = std::env::var_os("UNA_SKIP_NESTED_SANDBOX_TESTS").is_some_and(|v| v == "1");
+        assert!(
+            skip,
+            "this test runs under a sandbox that refuses a nested one, and \
+             UNA_SKIP_NESTED_SANDBOX_TESTS=1 is not set: {stderr}"
+        );
         let _ = writeln!(
             std::io::stderr(),
-            "this test runs under a sandbox that refuses a nested one: {stderr}"
+            "skipped (UNA_SKIP_NESTED_SANDBOX_TESTS=1): this test runs under a sandbox that refuses a nested one: {stderr}"
         );
         return None;
     }
@@ -123,14 +137,43 @@ fn under_a_compliant_outer_sandbox_every_obligation_is_proven() {
     assert_eq!(report.status.code(), Some(0), "{text}");
     let json: Value = serde_json::from_str(&text).unwrap();
     assert_eq!(json["tcb"]["solver_confinement"], "outer", "{text}");
-    let denied = json["tcb"]["solver_outer_denied"].to_string();
+    // Every probe the minimum requires is named in the report (#1364).
+    let denied: Vec<String> = json["tcb"]["solver_outer_denied"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_owned())
+        .collect();
+    let mut required = Vec::new();
+    for op in ["network-outbound", "network-inbound", "network-bind"] {
+        required.push(op.to_owned());
+        for filter in [
+            "tcp 127.0.0.1",
+            "tcp ::1",
+            "udp 127.0.0.1",
+            "udp ::1",
+            "unix-socket",
+        ] {
+            required.push(format!("{op} {filter}"));
+        }
+    }
     for op in [
-        "network-outbound",
-        "network-inbound",
-        "file-write-data",
-        "file-write-unlink",
+        "data", "create", "unlink", "xattr", "mode", "flags", "times", "owner",
     ] {
-        assert!(denied.contains(op), "{denied}");
+        for place in [
+            "/",
+            "/Users",
+            "/private/var",
+            "/private/tmp",
+            "/Volumes",
+            "(home)",
+            "(temporary directory)",
+        ] {
+            required.push(format!("file-write-{op} {place}"));
+        }
+    }
+    for name in &required {
+        assert!(denied.contains(name), "{name}: {denied:?}");
     }
     assert!(
         json["obligations"]["proven"]
@@ -163,8 +206,104 @@ fn under_a_loose_outer_sandbox_no_obligation_is_proven_and_the_run_fails_with_u5
     );
     assert!(
         text.contains(
-            "the outer sandbox is too permissive for the solver: file-write-data is allowed"
+            "the outer sandbox is too permissive for the solver: file-write-data / is allowed"
         ),
         "{text}"
+    );
+}
+
+/// `una --json check` of a fresh copy under `profile`, from `cwd`: it must fail with U5003
+/// alone, naming `allowed` (a prefix of the probe's name), and prove nothing.
+fn refused_naming(label: &str, profile: impl Fn(&Path) -> String, cwd: &Path, allowed: &str) {
+    let own = fresh(label);
+    let package = own.join("events");
+    let Some(check) = una_sandboxed_in(
+        &own,
+        &profile(&own),
+        &["--json", "check", package.to_str().unwrap()],
+        cwd,
+    ) else {
+        return;
+    };
+    let text = String::from_utf8_lossy(&check.stdout).into_owned();
+    assert_ne!(check.status.code(), Some(0), "{text}");
+    let found = diagnostics(&check);
+    assert!(!found.is_empty(), "{text}");
+    assert!(found.iter().all(|d| d["code"] == "U5003"), "{text}");
+    let refused = format!("the outer sandbox is too permissive for the solver: {allowed}");
+    assert!(text.contains(&refused), "{refused}: {text}");
+}
+
+#[test]
+fn an_outer_sandbox_that_allows_outbound_network_to_localhost_is_refused() {
+    // #1363: before the fix, 11 of 11 proven under this profile, `outer`.
+    refused_naming(
+        "localhost",
+        |own| {
+            format!(
+                "(version 1)(allow default)(deny network*)\
+                 (allow network-outbound (remote ip \"localhost:*\"))(deny file-write*)\
+                 (allow file-write* (subpath \"{}\"))(allow file-write* (literal \"/dev/null\"))",
+                own.display()
+            )
+        },
+        &repository(),
+        "network-outbound tcp 127.0.0.1 is allowed",
+    );
+}
+
+/// The resolved home directory of this user's account.
+fn home() -> PathBuf {
+    #[allow(clippy::disallowed_methods)]
+    let home = std::env::var_os("HOME").unwrap();
+    PathBuf::from(home).canonicalize().unwrap()
+}
+
+#[test]
+fn an_outer_sandbox_that_allows_writes_under_home_is_refused_from_any_working_directory() {
+    // #1364: from `/`, the old path "outside the temporary directory" was `/` again.
+    refused_naming(
+        "home",
+        |_| {
+            format!(
+                "(version 1)(allow default)(deny network*)(deny file-write*)\
+                 (allow file-write* (subpath \"{}\"))(allow file-write* (literal \"/dev/null\"))",
+                home().display()
+            )
+        },
+        Path::new("/"),
+        "file-write-data (home) is allowed",
+    );
+}
+
+#[test]
+fn an_outer_sandbox_that_denies_writes_at_two_paths_only_is_refused() {
+    // #1364: writes denied at `/` and at the working directory, allowed everywhere else.
+    refused_naming(
+        "two-paths",
+        |_| {
+            format!(
+                "(version 1)(allow default)(deny network*)\
+                 (deny file-write* (literal \"/\") (literal \"{}\"))",
+                repository().display()
+            )
+        },
+        &repository(),
+        "file-write-data /Users is allowed",
+    );
+}
+
+#[test]
+fn an_outer_sandbox_that_leaves_extended_attributes_and_modes_open_is_refused() {
+    // #1364: data, create and unlink denied, the other writes open.
+    refused_naming(
+        "xattr",
+        |_| {
+            "(version 1)(allow default)(deny network*)(deny file-write-data)\
+             (deny file-write-create)(deny file-write-unlink)"
+                .to_owned()
+        },
+        &repository(),
+        "file-write-xattr ",
     );
 }
