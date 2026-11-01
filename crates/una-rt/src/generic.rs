@@ -12,7 +12,7 @@ use una_core::Descriptor;
 use una_core::bigint::BigInt;
 
 use crate::runtime;
-use crate::values::{self, fault, int_value, int_word, retain, tag, text_value};
+use crate::values::{self, fault, int_value, int_word, retain, tag};
 
 /// The composite descriptors of the run (ADR 0068 D6): each entry is a type description that
 /// holds type parameters, with the descriptor of each, by position. One table for the process,
@@ -101,7 +101,7 @@ fn order(desc: i64, a: i64, b: i64) -> Option<Ordering> {
             Some(int_value(a).cmp(&int_value(b)))
         }
         Some(Descriptor::Text) if values::is_text(a) && values::is_text(b) => {
-            Some(text_value(a).cmp(&text_value(b)))
+            Some(values::with_texts(a, b, |x, y| x.cmp(y)))
         }
         Some(Descriptor::Sum(_)) if values::is_data(a) && values::is_data(b) => {
             Some(tag(a).cmp(&tag(b)))
@@ -288,6 +288,24 @@ mod tests {
         let converted = to_int(u8, large);
         values::release(converted);
         assert_eq!(values::faults(), before + 5);
+    }
+
+    #[test]
+    fn a_text_read_in_place_counts_a_fault_for_a_freed_text() {
+        let (live, dead) = (
+            values::text_word("ab".to_owned()),
+            values::text_word("a".to_owned()),
+        );
+        values::release(dead);
+        let before = values::faults();
+        assert_eq!(values::starts_with(live, live), 1);
+        assert_eq!(values::faults(), before);
+        // A freed handle reads as the empty text and is counted, as `text_value` counted it.
+        assert_eq!(values::starts_with(live, dead), 1);
+        assert_eq!(values::faults(), before + 1);
+        assert_eq!(values::text_equal(dead, dead), 1);
+        assert_eq!(values::faults(), before + 3);
+        values::release(live);
     }
 
     #[test]
