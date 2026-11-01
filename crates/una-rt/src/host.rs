@@ -143,6 +143,11 @@ impl World for Machine {
     fn step(&mut self, directory: &Path, name: &std::ffi::OsStr) -> Option<PathBuf> {
         una_interp::disk_step(directory, name)
     }
+
+    /// Only a component that does not exist leaves a path to the operation (#1380).
+    fn absent(&mut self, path: &Path) -> bool {
+        una_interp::disk_absent(path)
+    }
 }
 
 fn file_fault(error: io::Error) -> FileFault {

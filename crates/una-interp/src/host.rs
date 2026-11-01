@@ -58,6 +58,16 @@ pub trait World {
     fn step(&mut self, directory: &Path, name: &OsStr) -> Option<PathBuf> {
         self.canonical(&directory.join(name))
     }
+    /// Whether `path`, which [`World::canonical`] did not resolve, does not exist: a component
+    /// of it is missing or is not a directory. Any other failure to resolve it, a host limit
+    /// (a resolved path longer than the host takes, more links than it follows) or a
+    /// directory that may not be searched, is not absence, and [`confine`] denies the path
+    /// (`spec/14 §3` rule 2, #1380): the operation would otherwise open the lexical path,
+    /// through links that confinement never checked. The default is `false`, so a world that
+    /// does not tell denies every path whose directory does not resolve.
+    fn absent(&mut self, _path: &Path) -> bool {
+        false
+    }
     /// Takes `event` as it is written, as the trace file of `una run --trace` does (ADR 0117
     /// rule 10): `true` when the run need not keep it. The default keeps every event.
     fn trace_event(&mut self, _event: &crate::machine::Event) -> bool {
@@ -278,8 +288,10 @@ pub fn normalize(path: &Path) -> PathBuf {
 ///    that leaves the prefix, and a path with no final component are denied;
 /// 2. every intermediate directory, the prefix included, is resolved with its links followed
 ///    and must lie inside the canonical prefix; a dangling link there is denied, and a
-///    component that does not exist leaves the rest to the operation, which fails with
-///    `NotFound`;
+///    component that does not exist ([`World::absent`]) leaves the rest to the operation,
+///    which fails with `NotFound` (or `Io` for a component that is not a directory); a
+///    directory that does not resolve for any other reason, a host limit included, is
+///    denied (#1380);
 /// 3. the final component is never followed: a symbolic link there, dangling or not, is
 ///    denied. The world opens the returned path without creating a file through a link.
 ///
@@ -397,16 +409,31 @@ pub fn disk_step(directory: &Path, name: &OsStr) -> Option<PathBuf> {
     }
 }
 
+/// [`World::absent`] on the machine's file system, for the worlds of `una run` and of native
+/// executables: the canonicalization of `path` fails because a component is missing
+/// (`ENOENT`) or is not a directory (`ENOTDIR`). Any other failure (`ENAMETOOLONG`, `ELOOP`,
+/// `EACCES`, ...), or a canonicalization that now succeeds, is not absence.
+pub fn disk_absent(path: &Path) -> bool {
+    std::fs::canonicalize(path).is_err_and(|error| {
+        matches!(
+            error.kind(),
+            std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+        )
+    })
+}
+
 /// The outcome of [`confine`] when the intermediate directory `lexical` does not resolve: a
-/// dangling link is denied, and a missing directory yields the lexical path, whose operation
-/// then fails with `NotFound` without touching anything outside the prefix.
+/// dangling link is denied, a directory that does not exist yields the lexical path, whose
+/// operation then fails with `NotFound` without touching anything outside the prefix, and
+/// any other failure to resolve is denied (#1380): the lexical path would be opened through
+/// links that were never checked.
 fn missing(
     world: &mut dyn World,
     lexical: &Path,
     prefix: &Path,
     parts: &[&OsStr],
 ) -> Option<PathBuf> {
-    if world.is_link(lexical) {
+    if world.is_link(lexical) || !world.absent(lexical) {
         return None;
     }
     let mut out = prefix.to_path_buf();
