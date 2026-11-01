@@ -114,6 +114,9 @@ const TREE: &[(&str, &str)] = &[
     ("outside", "dir"),
     ("outside/secret.txt", "file"),
     ("outside/dir", "dir"),
+    ("outside/back_in", "->{R}/box/sub"),
+    ("outside/inner", "dir"),
+    ("outside/inner/back", "->../../box"),
     ("boxlink", "->box"),
     ("dangling_prefix", "->{R}/nowhere"),
 ];
@@ -143,6 +146,8 @@ const NAMES: &[&str] = &[
     "loop",
     "chain",
     "secret.txt",
+    "back_in",
+    "inner",
     "box",
     "missing",
     ".",
@@ -517,6 +522,10 @@ fn confinement_keeps_the_outcomes_of_resolving_every_prefix_1343() {
         ("out_dir/secret.txt", None),
         ("out_abs/secret.txt", None),
         ("sub/out2/secret.txt", None),
+        // D-134: out of the prefix and back into it is denied.
+        ("out_dir/back_in/inner.txt", None),
+        ("out_abs/inner/back/note.txt", None),
+        ("up/outside/back_in/inner.txt", None),
         ("up/box/note.txt", None),
         ("loop/x", None),
         ("../outside/secret.txt", None),
@@ -641,4 +650,100 @@ fn host_limits_keep_the_outcomes_of_resolving_every_prefix_1343() {
     }
     // The host's link limit denies the longest chains.
     assert!(denied > 0, "{denied}");
+}
+
+/// The disk, counting the canonicalizations of one path.
+struct Counting<'a> {
+    path: &'a Path,
+    count: usize,
+}
+
+impl World for Counting<'_> {
+    no_io!();
+    fn canonical(&mut self, path: &Path) -> Option<PathBuf> {
+        self.count += usize::from(path == self.path);
+        Disk.canonical(path)
+    }
+    fn is_link(&mut self, path: &Path) -> bool {
+        Disk.is_link(path)
+    }
+    fn step(&mut self, directory: &Path, name: &OsStr) -> Option<PathBuf> {
+        disk_step(directory, name)
+    }
+}
+
+#[test]
+fn case_variant_spellings_keep_the_outcomes_of_resolving_every_prefix_1343() {
+    // Names that differ only in case: on a case-insensitive file system the hosts' step keeps
+    // the name as spelled while `canonical` returns it as stored, so the confirmation
+    // disagrees and the prefix-by-prefix resolution decides; on a case-sensitive one they are
+    // other names, mostly missing. Either way the outcomes are the earlier algorithm's.
+    let root = fresh("case");
+    let r = root.to_str().unwrap().to_owned();
+    std::fs::create_dir_all(root.join("box/sub/deep")).unwrap();
+    std::fs::create_dir_all(root.join("outside")).unwrap();
+    std::fs::write(root.join("box/sub/inner.txt"), "content\n").unwrap();
+    std::fs::write(root.join("box/F.TXT"), "content\n").unwrap();
+    std::fs::write(root.join("outside/secret.txt"), "secret\n").unwrap();
+    std::os::unix::fs::symlink("SUB", root.join("box/upper")).unwrap();
+    std::os::unix::fs::symlink(format!("{r}/BOX/Sub"), root.join("box/abs")).unwrap();
+    std::os::unix::fs::symlink("../OUTSIDE", root.join("box/out")).unwrap();
+    std::os::unix::fs::symlink(format!("{r}/box/SUB"), root.join("outside/BACK")).unwrap();
+    let insensitive = root.join("BOX/SUB/INNER.TXT").exists();
+    let names = [
+        "sub",
+        "SUB",
+        "Sub",
+        "deep",
+        "DEEP",
+        "inner.txt",
+        "INNER.TXT",
+        "f.txt",
+        "F.TXT",
+        "upper",
+        "abs",
+        "out",
+        "back",
+        "BACK",
+        "box",
+        "BOX",
+        "..",
+    ];
+    let mut fell_back = 0;
+    for prefix in ["box", "BOX", "box/SUB", "Box/sub/../Sub"] {
+        let on = root.join(prefix);
+        for relative in paths(&names, 3) {
+            let expected = confine_quadratic(&mut Disk, &on, &relative);
+            let mut counting = Counting {
+                path: &on,
+                count: 0,
+            };
+            assert_eq!(
+                confine(&mut counting, &on, &relative),
+                expected,
+                "prefix {prefix}, path {relative:?}"
+            );
+            assert_eq!(
+                confine(&mut DiskDefault, &on, &relative),
+                expected,
+                "default step, prefix {prefix}, path {relative:?}"
+            );
+            // The fallback canonicalizes the prefix a second time.
+            fell_back += usize::from(counting.count > 1);
+        }
+    }
+    if insensitive {
+        let on = root.join("box");
+        let mut counting = Counting {
+            path: &on,
+            count: 0,
+        };
+        let opened = confine(&mut counting, &on, "SUB/inner.txt");
+        assert_eq!(counting.count, 2, "the respelled directory falls back");
+        let stored = std::fs::canonicalize(&on).unwrap().join("sub/inner.txt");
+        assert_eq!(opened, Some(stored));
+        assert!(fell_back > 100, "{fell_back}");
+        // Out of the prefix and back into it, respelled: denied.
+        assert_eq!(confine(&mut Disk, &on, "out/BACK/inner.txt"), None);
+    }
 }

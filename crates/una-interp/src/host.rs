@@ -44,12 +44,17 @@ pub trait World {
     fn canonical(&mut self, path: &Path) -> Option<PathBuf>;
     /// Whether `path` itself is a symbolic link, dangling or not, without following it.
     fn is_link(&mut self, path: &Path) -> bool;
-    /// One step of [`confine`]: the canonical form of `directory/name`, following a link at
-    /// `name`, or `None` when it does not resolve, where `directory` is a canonical path that
-    /// [`World::canonical`] or an earlier step returned. It MUST agree with
-    /// `canonical(directory/name)`, which is what the default does. A host overrides it to
-    /// look up only `name` in the directory already resolved, so that confinement makes O(c)
-    /// lookups of components for a path of c components, not O(c²) (#1343).
+    /// One step of [`confine`]: the entry `name` of `directory`, a canonical path that
+    /// [`World::canonical`] or an earlier step returned, as a path naming the same location as
+    /// `canonical(directory/name)` (a link at `name` followed), or `None` when it does not
+    /// resolve. The default is `canonical(directory/name)` itself. A host overrides it to look
+    /// up only `name` in the directory already resolved, so that confinement makes O(c)
+    /// lookups of components for a path of c components on its normal path (#1343); such a
+    /// step may keep `name` as spelled where a case-insensitive file system spells it
+    /// otherwise, and counts host limits (links followed, path length) from `directory` only.
+    /// So a step alone is not a canonicalization: [`confine`] never trusts it alone, but
+    /// confirms it with [`World::canonical`] and, when they disagree, decides by resolving
+    /// every lexical prefix.
     fn step(&mut self, directory: &Path, name: &OsStr) -> Option<PathBuf> {
         self.canonical(&directory.join(name))
     }
@@ -286,7 +291,8 @@ pub fn normalize(path: &Path) -> PathBuf {
 /// prefix-by-prefix resolution does. Where they disagree, which takes a host limit (more links
 /// than the host follows in one path, a lexical path longer than the host takes) or a name
 /// that a case-insensitive file system spells otherwise, the prefix-by-prefix resolution
-/// decides, in O(c²) lookups.
+/// decides, in O(c²) lookups: the bound of O(c) holds on the normal path, and the fallback,
+/// which any path can reach, keeps the cost the earlier algorithm had for every path.
 ///
 /// Races between this check and the operation are outside the v0.1 model (D9 rule 4).
 pub fn confine(world: &mut dyn World, prefix: &Path, relative: &str) -> Option<PathBuf> {
