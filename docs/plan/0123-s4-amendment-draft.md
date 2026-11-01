@@ -74,3 +74,14 @@ IF-S1. **The label of the serve threads, `L_srv`.** (Named so as not to collide 
 ## G. The measurement condition
 
 Before ADR 0123's performance step, the project measures, on a quiet machine in release form: connections accepted per second and the cost of each listener event (up to `M` wakes and `2M` `epoll_ctl` calls), CPU time per request at saturation, the 50th and 99th percentile latency under uniform and skewed handler costs, and memory per idle connection, for (i) this design, (ii) a prototype with the engine on the workers and per-worker accept, and (iii) the `hyper` on `tokio` baseline of ADR 0123 Costs. When (i) is above the parity bar against (iii), CPU time per request at saturation above 1.1 times, and (ii) is within it, a further amendment weighs that gap against the label that (ii) needs.
+
+## Decisions of the implementation (added with the review of #1375)
+
+1. **Half-close ends the exchange.** A peer's end of stream while its request waits for a reply ends the exchange and the reply is dropped (rule 14); a client that sends a request and shuts down its sending side loses the reply.
+2. **No byte, no `408`.** A connection that sends no byte within `read` is closed without an answer; with any byte, `408`.
+3. **`Host` ignores the port.** The port of `Host` is read for syntax and not compared with the grant's.
+4. **The registry lock.** Besides atomics, a reply takes one short lock of one of 16 registry shards (to find the connections with a reply pending in O(c) when pressure begins) and its connection's outbox lock. "No lock outside pressure" in the design means no shared lock between serve threads and the program on the request path, except these two.
+5. **Shares not implemented.** `waiting`, `/once` and `delivered` have no per-peer share (rule 13 has none for them): about 16 well-behaved addresses can fill `waiting` at the defaults. Whether S5 or an amendment adds them is open.
+6. **Accept turn.** The accept poller is watched by one serve thread at a time and the turn passes round, instead of every thread watching it (which woke all threads on every listener event).
+7. **Stop races.** A reply serialized before a stop and delivered after it closes its connection, and may lack `Connection: close`.
+

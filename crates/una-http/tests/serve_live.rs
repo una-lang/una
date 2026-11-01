@@ -264,3 +264,25 @@ fn an_https_grant_is_not_served_until_the_tls_provider_is_decided() {
     assert!(error.contains("https"), "{error}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+#[ignore = "measurement of the accept rate by the number of serve threads; run with --ignored --nocapture"]
+fn accept_rate_by_serve_threads() {
+    for threads in [1, 4, 16, 64, 256] {
+        let live = start(";connections=4096;peer=none", threads);
+        live.server.begin();
+        let start = Instant::now();
+        let clients: Vec<TcpStream> = (0..2000).map(|_| live.client()).collect();
+        let end = Instant::now() + Duration::from_secs(20);
+        while live.server.shared().grants[0].counters().connections < 2000 && Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        println!(
+            "{threads} serve threads: 2000 connections accepted in {:?}",
+            start.elapsed()
+        );
+        drop(clients);
+        live.server.stop();
+        live.server.join();
+    }
+}

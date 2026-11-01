@@ -362,12 +362,19 @@ impl Context {
         );
         let mut events = Events::with_capacity(EVENTS);
         self.arm_wake();
-        self.arm_accept();
+        // The turn to accept starts with thread 0 and passes round (see `accept_ready`).
+        if self.index == 0 {
+            self.arm_accept();
+        }
         loop {
             let now = self.clock.now();
             let mut busy = false;
             while let Ok(msg) = self.inbox.try_recv() {
-                thread.handle(msg, self.clock.now());
+                if matches!(msg, Msg::Accept) {
+                    self.arm_accept();
+                } else {
+                    thread.handle(msg, self.clock.now());
+                }
                 busy = true;
             }
             if thread.advance(self.clock.now()) {
@@ -381,7 +388,9 @@ impl Context {
                 // The acceptor is closed, so nothing adopts any more; what was sent before is
                 // in the inbox, and handled by the next pass if it came late.
                 if let Ok(msg) = self.inbox.try_recv() {
-                    thread.handle(msg, self.clock.now());
+                    if !matches!(msg, Msg::Accept) {
+                        thread.handle(msg, self.clock.now());
+                    }
                     continue;
                 }
                 return;
@@ -397,7 +406,11 @@ impl Context {
                     port.announce_sleep();
                     if let Ok(msg) = self.inbox.try_recv() {
                         port.announce_awake();
-                        thread.handle(msg, self.clock.now());
+                        if matches!(msg, Msg::Accept) {
+                            self.arm_accept();
+                        } else {
+                            thread.handle(msg, self.clock.now());
+                        }
                         continue;
                     }
                 }
@@ -466,10 +479,15 @@ impl Context {
         }
     }
 
-    /// The accept poller is ready for some thread: the one that receives a listener's event
-    /// accepts; every thread registers the accept poller again.
+    /// The accept poller is ready for the thread that holds the turn: it accepts the bursts of
+    /// the listeners that fired, then passes the turn to the next serve thread, which registers
+    /// the accept poller. Only one thread watches the accept poller at a time, so a listener
+    /// event wakes one thread and costs a message and a registration, whatever the number of
+    /// threads, and a burst of connections is spread over the threads in turn. A thread that
+    /// finds no event keeps the turn.
     fn accept_ready(&mut self) {
         let mut found = Events::with_capacity(16);
+        let mut accepted = false;
         if self
             .acceptor
             .poller
@@ -477,11 +495,17 @@ impl Context {
             .is_ok()
         {
             let grants: Vec<u64> = found.tokens().collect();
+            accepted = !grants.is_empty();
             for grant in grants {
                 self.accept_burst(grant as usize);
             }
         }
-        self.arm_accept();
+        let next = (self.index + 1) % self.shared.threads;
+        if accepted && next != self.index && !self.acceptor.closed.load(Ordering::SeqCst) {
+            self.shared.send(next, Msg::Accept);
+        } else {
+            self.arm_accept();
+        }
     }
 
     /// Accepts at most [`BURST`] connections from listener `grant`, then registers it again

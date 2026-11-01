@@ -43,7 +43,7 @@ pub const LINGER_NANOS: u64 = 1_000_000_000;
 pub const CHUNK_STEP: u64 = 64 * 1024;
 
 /// The work one pump of a connection does before it yields to the others.
-const PUMP_STEPS: usize = 1024;
+const PUMP_STEPS: usize = 64;
 
 const SECOND: u64 = 1_000_000_000;
 
@@ -207,6 +207,7 @@ impl Thread {
             Msg::PeerExpiry { grant, peer, at } => {
                 self.core.arm_peer(grant, peer, at);
             }
+            Msg::Accept => {}
             Msg::Stop => self.each(now, |core, c, now| core.on_stop(c, now)),
             Msg::HardStop => self.each(now, |core, c, now| core.on_hard_stop(c, now)),
         }
@@ -432,7 +433,7 @@ impl Core {
         match self.wheel.arm(now.saturating_add(after), timer) {
             Ok(id) => c.timer = Some((id, kind, c.sequence)),
             // More timers than the wheel can hold: the connection cannot be timed, so it goes.
-            Err(_) => c.closed = true,
+            Err(_) => self.close(c, now),
         }
     }
 
@@ -806,7 +807,13 @@ impl Core {
             c.grant.release_body(&c.shared.peer, c.reserved);
             c.reserved = 0;
         }
-        c.own.clear();
+        // An interim response half on the wire is finished first, so the peer never reads a
+        // status line cut in two; one not started is dropped.
+        if c.own_off > 0 {
+            c.own.drain(..c.own_off.min(c.own.len()));
+        } else {
+            c.own.clear();
+        }
         c.own_off = 0;
         reply::write_answer(status, retry_after, true, self.now_date(), &mut c.own);
         c.phase = Phase::Writing;
@@ -821,6 +828,8 @@ impl Core {
         if c.phase != Phase::Waiting {
             return;
         }
+        // A stop that came after the reply was serialized still closes the connection.
+        let close = close || self.shared.is_stopping();
         c.after = if close { After::Close } else { After::Keep };
         c.phase = Phase::Writing;
         let secs = c.grant.limits.write;
@@ -832,6 +841,9 @@ impl Core {
     fn after_write(&mut self, c: &mut Conn, now: u64) {
         self.disarm(c);
         c.exch = None;
+        if c.after == After::Keep && self.shared.is_stopping() {
+            c.after = After::Close;
+        }
         match c.after {
             After::Close => self.close(c, now),
             After::Linger => {

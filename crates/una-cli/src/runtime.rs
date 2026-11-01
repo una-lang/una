@@ -507,7 +507,14 @@ pub(crate) fn run_command(
     // A `--serve-threads` out of range is refused below; here it only sizes the descriptors.
     let serve_threads =
         una_interp::concurrency::serve_threads(options.tasks.serve_threads).unwrap_or(1);
-    let _listeners = match una_http::serve::prepare(&serve_inputs(&grants), serve_threads, 1) {
+    let _listeners = match una_http::serve::prepare(
+        &serve_inputs(&grants),
+        serve_threads,
+        options
+            .tasks
+            .file_threads
+            .unwrap_or(una_interp::concurrency::DEFAULT_FILE_THREADS),
+    ) {
         Ok(prepared) => prepared,
         Err(message) => {
             writeln!(stderr, "error: {message}")?;

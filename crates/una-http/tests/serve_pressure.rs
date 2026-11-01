@@ -264,3 +264,45 @@ fn slow_readers_are_closed_while_a_fresh_client_is_answered() {
     sim.flush();
     assert!(String::from_utf8_lossy(&sim.received(500)).ends_with("xxxxx"));
 }
+
+#[test]
+fn heaps_stay_bounded_while_slow_readers_keep_pressure_on() {
+    // Five slow readers hold 3.5 MiB of a 4 MiB `replies`: above three quarters, so pressure
+    // lasts. Twenty thousand small replies pass meanwhile; their entries must not pile up.
+    let state = state("serve:http://127.0.0.1:8080;replies=4");
+    let mut slow = Vec::new();
+    for p in 0..5u64 {
+        let conn = connect(&state, p as u32, p);
+        let Reserve::Reserved(_) = state.reserve_reply(&conn.shared, MIB) else {
+            panic!("refused");
+        };
+        assert!(conn.shared.push(vec![0; MIB as usize]));
+        slow.push(conn);
+    }
+    assert!(state.under_pressure());
+    // Half a MiB written: 3.5 MiB held.
+    let mut left: i64 = 512 * 1024;
+    while left > 0 {
+        let Step::Wrote { written, .. } = slow[4].shared.write_front(|b| Ok(b.len())).unwrap()
+        else {
+            panic!("nothing pending");
+        };
+        left -= written as i64;
+    }
+    assert!(state.under_pressure(), "{:?}", state.counters());
+    let mut most = 0;
+    for n in 0..20_000u64 {
+        let conn = connect(&state, 100 + (n % 50) as u32, 10_000 + n);
+        let Reserve::Reserved(_) = state.reserve_reply(&conn.shared, 200) else {
+            panic!("refused");
+        };
+        assert!(conn.shared.push(vec![1; 200]));
+        conn.shared.write_front(|b| Ok(b.len())).unwrap();
+        conn.shared.close();
+        state.peers.close(&conn.shared.peer, 0);
+        most = most.max(state.pressure_entries());
+    }
+    assert!(state.under_pressure());
+    assert_eq!(state.counters().replies, 3 * MIB + MIB / 2);
+    assert!(most < 300, "the heaps grew to {most} entries");
+}

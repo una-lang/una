@@ -547,3 +547,40 @@ fn the_hard_stop_answers_open_exchanges_without_waiting() {
     sim.run_to_ms(1_000);
     quiet(&sim);
 }
+
+#[test]
+fn a_refusal_after_a_half_written_continue_finishes_the_interim_response_first() {
+    // The peer reads 5 bytes of `100 Continue`, never sends the body, and `read` passes: the
+    // stream the peer reads is `100 Continue` whole, then `408`, never a status line cut in two.
+    let mut sim = Sim::new(&[GRANT], 1);
+    sim.connect(1, 0, &addr(1), Reads::Paced);
+    sim.allow(1, 5);
+    sim.send(
+        1,
+        b"POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 5\r\nExpect: 100-continue\r\n\r\n",
+    );
+    sim.run_to_ms(21_000);
+    sim.allow(1, 100_000);
+    sim.run_to_ms(22_000);
+    let out = text(&sim.received(1));
+    assert!(
+        out.starts_with("HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 408 Request Timeout\r\n"),
+        "{out:?}"
+    );
+}
+
+#[test]
+fn a_stop_that_races_a_reply_still_closes_the_connection() {
+    let mut sim = Sim::new(&[GRANT], 1);
+    sim.connect(1, 0, &addr(1), Reads::Eager);
+    sim.send(1, &get("/"));
+    let mut exchange = sim.deliver().unwrap();
+    // The reply is serialized before the stop and reaches the owner after it.
+    exchange.reply(&ok("x")).unwrap();
+    sim.shared
+        .stopping
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    sim.flush();
+    assert!(sim.closed(1), "the keep-alive connection stayed open");
+    quiet(&sim);
+}

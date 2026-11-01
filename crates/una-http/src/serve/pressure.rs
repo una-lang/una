@@ -28,7 +28,7 @@ use std::cmp::{Ordering as Cmp, Reverse};
 use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 use std::io;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use super::grant::{GrantState, lock, sub};
@@ -244,6 +244,7 @@ impl ConnShared {
 #[derive(Debug)]
 pub struct Registry {
     shards: Vec<Mutex<HashMap<u64, Weak<ConnShared>>>>,
+    count: AtomicUsize,
 }
 
 impl Default for Registry {
@@ -252,6 +253,7 @@ impl Default for Registry {
             shards: (0..REGISTRY_SHARDS)
                 .map(|_| Mutex::new(HashMap::new()))
                 .collect(),
+            count: AtomicUsize::new(0),
         }
     }
 }
@@ -263,15 +265,19 @@ impl Registry {
 
     /// Adds a connection. O(1) expected.
     pub fn insert(&self, conn: &Arc<ConnShared>) {
-        if let Some(shard) = self.shard(conn.id) {
-            lock(shard).insert(conn.id, Arc::downgrade(conn));
+        if let Some(shard) = self.shard(conn.id)
+            && lock(shard).insert(conn.id, Arc::downgrade(conn)).is_none()
+        {
+            self.count.fetch_add(1, Ordering::AcqRel);
         }
     }
 
     /// Removes a connection. O(1) expected.
     pub fn remove(&self, id: u64) {
-        if let Some(shard) = self.shard(id) {
-            lock(shard).remove(&id);
+        if let Some(shard) = self.shard(id)
+            && lock(shard).remove(&id).is_some()
+        {
+            self.count.fetch_sub(1, Ordering::AcqRel);
         }
     }
 
@@ -286,7 +292,7 @@ impl Registry {
 
     /// The number of connections with a reply pending.
     pub fn len(&self) -> usize {
-        self.shards.iter().map(|shard| lock(shard).len()).sum()
+        self.count.load(Ordering::Acquire)
     }
 
     /// Whether no connection has a reply pending.
@@ -373,15 +379,37 @@ impl Pressure {
             over: over(&conn.peer, share),
             peer: Arc::clone(&conn.peer),
         });
+        self.compact(grant);
+    }
+
+    /// The entries of the three kinds of heap.
+    pub fn entries(&self) -> usize {
+        self.all.len()
+            + self.peers.len()
+            + self.by_peer.values().map(BinaryHeap::len).sum::<usize>()
+    }
+
+    /// Rebuilds the heaps from the registry when they hold more than twice the connections
+    /// with a reply pending, plus a constant: entries of finished replies and of closed
+    /// connections sit below the larger keys and would otherwise stay as long as pressure does.
+    /// The rebuild is O(c) and follows at least c more pushes, so each push stays O(1)
+    /// amortized besides its O(log c).
+    fn compact(&mut self, grant: &GrantState) {
+        let live = grant.registry.len();
+        let limit = live.saturating_mul(2).saturating_add(64);
+        if self.all.len() > limit || self.peers.len() > limit {
+            self.build(grant);
+        }
     }
 
     /// A reservation raised the peer's excess over its share: the peer enters the heap again
     /// with its new key, and the older entry is dropped when it reaches the top. O(log c).
-    fn raise(&mut self, peer: &Arc<Peer>, share: u64) {
+    fn raise(&mut self, peer: &Arc<Peer>, grant: &GrantState, share: u64) {
         self.peers.push(PeerEntry {
             over: over(peer, share),
             peer: Arc::clone(peer),
         });
+        self.compact(grant);
     }
 
     /// Builds the heaps from every connection with a reply pending. O(c).
@@ -509,7 +537,7 @@ impl GrantState {
             let mut pressure = lock(&self.pressure);
             if self.pressure_on.load(Ordering::Acquire) {
                 // Every reservation made while the heaps exist updates its peer's key.
-                pressure.raise(&conn.peer, share);
+                pressure.raise(&conn.peer, self, share);
             } else if self.replies.load(Ordering::Acquire) > cap {
                 pressure.build(self);
                 self.pressure_on.store(true, Ordering::Release);
@@ -542,6 +570,11 @@ impl GrantState {
                 self.pressure_on.store(false, Ordering::Release);
             }
         }
+    }
+
+    /// The entries held by the pressure heaps; 0 outside pressure.
+    pub fn pressure_entries(&self) -> usize {
+        lock(&self.pressure).entries()
     }
 
     /// Whether pressure heaps exist.

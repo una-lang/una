@@ -13,7 +13,7 @@ use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering, fence};
 use std::sync::mpsc::{Receiver, Sender, channel};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use una_core::http::serve::ServeGrant;
 use una_hash::SipKey;
@@ -50,6 +50,9 @@ pub enum Msg {
         /// The time at which its handshake bucket is full.
         at: u64,
     },
+    /// The turn to accept passes to this thread: it registers the accept poller. Handled by
+    /// the thread's loop, not by its connections.
+    Accept,
     /// A host stop: close idle connections, refuse what is not delivered, drain the rest.
     Stop,
     /// The hard stop: answer every open exchange once, without waiting, and close everything.
@@ -251,8 +254,8 @@ pub struct Shared {
     pub hard: AtomicBool,
     /// The clock.
     pub clock: Arc<dyn Clock>,
-    notify: Mutex<Option<Ready>>,
-    freed: Mutex<Option<Freed>>,
+    notify: OnceLock<Ready>,
+    freed: OnceLock<Freed>,
 }
 
 impl Shared {
@@ -298,8 +301,8 @@ impl Shared {
             stopping: AtomicBool::new(false),
             hard: AtomicBool::new(false),
             clock,
-            notify: Mutex::new(None),
-            freed: Mutex::new(None),
+            notify: OnceLock::new(),
+            freed: OnceLock::new(),
         };
         (Arc::new(shared), receivers)
     }
@@ -307,25 +310,24 @@ impl Shared {
     /// Sets what runs when a request is queued, an exchange ends or the run stops: the
     /// program's `next` waits on it.
     pub fn on_ready(&self, f: Ready) {
-        *lock(&self.notify) = Some(f);
+        // Set once, before serving starts; read on every event without a lock.
+        let _ = self.notify.set(f);
     }
 
     /// Sets what runs when a connection of grant `index` closes and frees a slot: the acceptor
     /// registers the listener again.
     pub fn on_slot_freed(&self, f: Freed) {
-        *lock(&self.freed) = Some(f);
+        let _ = self.freed.set(f);
     }
 
     pub(crate) fn notify(&self) {
-        let f = lock(&self.notify).clone();
-        if let Some(f) = f {
+        if let Some(f) = self.notify.get() {
             f();
         }
     }
 
     pub(crate) fn slot_freed(&self, grant: usize) {
-        let f = lock(&self.freed).clone();
-        if let Some(f) = f {
+        if let Some(f) = self.freed.get() {
             f(grant);
         }
     }

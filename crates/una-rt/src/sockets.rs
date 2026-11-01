@@ -65,11 +65,16 @@ pub(crate) struct Gate {
 /// of them, so a server whose connections are all open still leaves its program's requests a
 /// socket each.
 pub(crate) fn cap_for(soft: Option<u64>, reserved: u64) -> usize {
-    let soft = usize::try_from(soft.unwrap_or(256).min(1 << 20)).unwrap_or(256);
     if reserved > 0 {
-        let held = usize::try_from(reserved).unwrap_or(usize::MAX);
-        return soft.saturating_sub(held).max(1);
+        // The limit is clamped after the server's share is taken, not before: a server of a
+        // million connections still leaves its program's requests the rest.
+        let places = soft
+            .unwrap_or(256)
+            .saturating_sub(reserved)
+            .clamp(1, 1 << 20);
+        return usize::try_from(places).unwrap_or(1 << 20);
     }
+    let soft = usize::try_from(soft.unwrap_or(256).min(1 << 20)).unwrap_or(256);
     soft.saturating_sub((soft / 4).max(64)).max(1)
 }
 
@@ -224,6 +229,8 @@ mod tests {
         assert_eq!(cap_for(Some(1324), 1068), 256);
         assert_eq!(cap_for(Some(5000), 1068), 3932);
         assert_eq!(cap_for(Some(100), 4000), 1);
+        assert_eq!(cap_for(Some(2_000_000), 1_100_000), 900_000);
+        assert_eq!(cap_for(Some(u64::MAX), 1_000), 1 << 20);
     }
 
     #[test]
