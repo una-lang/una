@@ -7,6 +7,11 @@
 //! subtraction are applied with masks. The only data-dependent control flow is in callers, on
 //! public data (ADR 0133 rule 8). Values are "in Montgomery form" when they carry the factor
 //! `R = 2^(64 N)`; `mul` of a Montgomery-form operand and a plain one yields a plain product.
+//!
+//! [`DynMont`] is the same arithmetic for a modulus whose limb count is only known at run time
+//! (RSA, 2048 to 8192 bits, ADR 0133 rule 18), on stack arrays of [`MAX_LIMBS`] limbs. It is used
+//! on public data only (the public key and the signature), and its exponentiation is variable
+//! time in the exponent; [`Mont::pow`] is public-exponent only for the same reason.
 // Indices are constants or loop counters over fixed arrays (ADR 0133 rule 6).
 #![allow(clippy::indexing_slicing)]
 
@@ -58,8 +63,17 @@ pub(crate) struct Mont<const N: usize> {
 }
 
 impl<const N: usize> Mont<N> {
-    /// Sets up for an odd modulus with its top bit set (true of P-256 and P-384 and their orders).
+    /// Sets up for an odd modulus whose top limb is not zero (so `N` is its true limb count;
+    /// the moduli here are P-256 and P-384 and their group orders, which have the top bit set).
+    ///
+    /// Preconditions, checked in debug builds only because every caller passes compiled-in
+    /// constants: `m` is odd (Montgomery reduction divides by a power of two, which needs `m`
+    /// invertible modulo it), `m > 1`, and `m[N - 1] != 0`. [`DynMont::new`] is the checked
+    /// variant for moduli that come from input.
     pub(crate) fn new(m: Limbs<N>) -> Self {
+        debug_assert!(m[0] & 1 == 1, "Montgomery modulus must be odd");
+        debug_assert!(m[N - 1] != 0, "Montgomery modulus must fill its top limb");
+        debug_assert!(N > 1 || m[0] > 1, "Montgomery modulus must exceed 1");
         // Newton iteration for the inverse of m[0] modulo 2^64 (each step doubles the bits).
         let mut inv = 1u64;
         for _ in 0..6 {
@@ -167,8 +181,13 @@ impl<const N: usize> Mont<N> {
         self.mul(a, &one)
     }
 
-    /// `a^e` for a Montgomery-form `a` and a plain exponent (4-bit windows). The exponent is
-    /// public in every use here (`m - 2`).
+    /// `a^e` for a Montgomery-form `a` and a plain exponent (4-bit windows).
+    ///
+    /// **The exponent must be public.** The multiplication by `table[nibble]` reads a table at an
+    /// index taken from the exponent, so both the memory access pattern and (through the cache) the
+    /// timing depend on its value; the squarings and the `N * 16` windows do not. Every use here
+    /// has a public exponent (`m - 2` for a Fermat inverse, with `m` a published curve parameter).
+    /// A secret exponent needs a different routine (a scan of the whole table with masks).
     pub(crate) fn pow(&self, a: &Limbs<N>, e: &Limbs<N>) -> Limbs<N> {
         let mut table = [self.r1; 16];
         for i in 1..16 {
@@ -216,9 +235,257 @@ pub(crate) fn from_hex<const N: usize>(s: &str) -> Limbs<N> {
     from_be_bytes::<N>(&bytes[..8 * N]).unwrap_or([0; N])
 }
 
+/// The most limbs of a [`DynMont`] modulus: 8192 bits, the largest modulus webpki accepts.
+pub(crate) const MAX_LIMBS: usize = 128;
+
+/// An integer below `2^(64 MAX_LIMBS)`; only the first `k` limbs of a [`DynMont`] are used, the
+/// others are zero.
+pub(crate) type Wide = [u64; MAX_LIMBS];
+
+/// Montgomery arithmetic modulo an odd `m` of `k` limbs, `1 <= k <= MAX_LIMBS`, `k` chosen at run
+/// time. Cost: `mul` is `O(k^2)` (two `k`-by-`k` word products per output limb, no division);
+/// setup is `O(k)` for `R mod m` and `O(k^2 log k)` for `R^2 mod m`.
+pub(crate) struct DynMont {
+    k: usize,
+    m: Wide,
+    /// `-m^-1 mod 2^64`.
+    n0: u64,
+    /// `R mod m`, the Montgomery form of 1, with `R = 2^(64 k)`.
+    r1: Wide,
+    /// `R^2 mod m`.
+    r2: Wide,
+}
+
+impl DynMont {
+    /// Sets up for the modulus whose big-endian bytes are `m_be`. `None` unless the modulus is
+    /// odd, greater than 1, has a nonzero first byte (minimal encoding: `k` is then its limb
+    /// count) and fits `MAX_LIMBS` limbs.
+    pub(crate) fn new(m_be: &[u8]) -> Option<Self> {
+        if m_be.first().is_none_or(|&b| b == 0) || m_be.len() > MAX_LIMBS * 8 {
+            return None;
+        }
+        let k = m_be.len().div_ceil(8);
+        let m = Self::limbs_from_be(m_be)?;
+        if m[0] & 1 == 0 || (k == 1 && m[0] == 1) {
+            return None;
+        }
+        let mut inv = 1u64;
+        for _ in 0..6 {
+            inv = inv.wrapping_mul(2u64.wrapping_sub(m[0].wrapping_mul(inv)));
+        }
+        let mut c = Self {
+            k,
+            m,
+            n0: inv.wrapping_neg(),
+            r1: [0; MAX_LIMBS],
+            r2: [0; MAX_LIMBS],
+        };
+        // R mod m: 2^(bits - 1) < m, doubled modulo m until it is 2^(64 k).
+        let bits = 64 * k - m[k - 1].leading_zeros() as usize;
+        let mut x = [0u64; MAX_LIMBS];
+        x[(bits - 1) / 64] = 1u64 << ((bits - 1) % 64);
+        for _ in 0..64 * k - (bits - 1) {
+            x = c.add(&x, &x);
+        }
+        c.r1 = x;
+        // R^2 mod m is the Montgomery form of 2^(64 k) (= R): the Montgomery form of 2 raised to
+        // 64 k by square-and-multiply, whose product keeps the factor R.
+        let two = c.add(&c.r1, &c.r1);
+        let exponent = 64 * k;
+        let mut acc = c.r1;
+        for bit in (0..usize::BITS - exponent.leading_zeros()).rev() {
+            acc = c.mul(&acc, &acc);
+            if (exponent >> bit) & 1 == 1 {
+                acc = c.mul(&acc, &two);
+            }
+        }
+        c.r2 = acc;
+        Some(c)
+    }
+
+    /// The limb count of the modulus.
+    #[cfg(test)]
+    pub(crate) fn limbs(&self) -> usize {
+        self.k
+    }
+
+    /// Big-endian bytes (at most `8 * MAX_LIMBS`, any length) to limbs.
+    pub(crate) fn limbs_from_be(b: &[u8]) -> Option<Wide> {
+        if b.len() > MAX_LIMBS * 8 {
+            return None;
+        }
+        let mut out = [0u64; MAX_LIMBS];
+        for (i, &byte) in b.iter().rev().enumerate() {
+            out[i / 8] |= u64::from(byte) << (8 * (i % 8));
+        }
+        Some(out)
+    }
+
+    /// The `len` low bytes of `a`, big-endian, into `out[..len]` (`a` must fit).
+    pub(crate) fn to_be(a: &Wide, out: &mut [u8]) {
+        let len = out.len();
+        for (i, slot) in out.iter_mut().rev().enumerate() {
+            *slot = (a[i / 8] >> (8 * (i % 8))) as u8;
+        }
+        debug_assert!(a.iter().skip(len.div_ceil(8)).all(|&w| w == 0));
+    }
+
+    /// Whether `a < m`.
+    pub(crate) fn is_below_modulus(&self, a: &Wide) -> bool {
+        self.sub_raw(a, &self.m).1 == 1 && a[self.k..].iter().all(|&w| w == 0)
+    }
+
+    fn sub_raw(&self, a: &Wide, b: &Wide) -> (Wide, u64) {
+        let mut out = [0u64; MAX_LIMBS];
+        let mut borrow = 0u64;
+        for i in 0..self.k {
+            let (d1, b1) = a[i].overflowing_sub(b[i]);
+            let (d2, b2) = d1.overflowing_sub(borrow);
+            out[i] = d2;
+            borrow = u64::from(b1 | b2);
+        }
+        (out, borrow)
+    }
+
+    fn select(&self, mask: u64, a: &Wide, b: &Wide) -> Wide {
+        let mut out = [0u64; MAX_LIMBS];
+        for i in 0..self.k {
+            out[i] = (a[i] & mask) | (b[i] & !mask);
+        }
+        out
+    }
+
+    /// `a + b mod m` for `a, b < m`.
+    fn add(&self, a: &Wide, b: &Wide) -> Wide {
+        let mut s = [0u64; MAX_LIMBS];
+        let mut carry = 0u64;
+        for i in 0..self.k {
+            let (s1, c1) = a[i].overflowing_add(b[i]);
+            let (s2, c2) = s1.overflowing_add(carry);
+            s[i] = s2;
+            carry = u64::from(c1 | c2);
+        }
+        let (d, borrow) = self.sub_raw(&s, &self.m);
+        self.select(mask64(carry | (borrow ^ 1)), &d, &s)
+    }
+
+    /// The Montgomery product `a * b / R mod m` for `a, b < m` (the result is below `m`).
+    pub(crate) fn mul(&self, a: &Wide, b: &Wide) -> Wide {
+        let k = self.k;
+        let mut t = [0u64; MAX_LIMBS];
+        let mut top = 0u64;
+        for &bi in &b[..k] {
+            let mut carry = 0u64;
+            for j in 0..k {
+                let v = u128::from(t[j]) + u128::from(a[j]) * u128::from(bi) + u128::from(carry);
+                t[j] = v as u64;
+                carry = (v >> 64) as u64;
+            }
+            let v = u128::from(top) + u128::from(carry);
+            top = v as u64;
+            let top2 = (v >> 64) as u64;
+            let q = t[0].wrapping_mul(self.n0);
+            let v = u128::from(t[0]) + u128::from(q) * u128::from(self.m[0]);
+            let mut carry = (v >> 64) as u64;
+            for j in 1..k {
+                let v =
+                    u128::from(t[j]) + u128::from(q) * u128::from(self.m[j]) + u128::from(carry);
+                t[j - 1] = v as u64;
+                carry = (v >> 64) as u64;
+            }
+            let v = u128::from(top) + u128::from(carry);
+            t[k - 1] = v as u64;
+            top = top2 + (v >> 64) as u64;
+        }
+        let (d, borrow) = self.sub_raw(&t, &self.m);
+        self.select(mask64(top | (borrow ^ 1)), &d, &t)
+    }
+
+    /// `a^e mod m` for a plain `a < m` and a public exponent `e >= 1` (left-to-right binary:
+    /// `bits(e)` squarings and `popcount(e) - 1` products; 17 products for `e = 65537`). Variable
+    /// time in `e`, which is public; the base and the modulus are public too in every use.
+    pub(crate) fn pow_public(&self, a: &Wide, e: u64) -> Wide {
+        debug_assert!(e >= 1);
+        let base = self.mul(a, &self.r2);
+        let mut acc = base;
+        for bit in (0..63 - e.leading_zeros()).rev() {
+            acc = self.mul(&acc, &acc);
+            if (e >> bit) & 1 == 1 {
+                acc = self.mul(&acc, &base);
+            }
+        }
+        let mut one = [0u64; MAX_LIMBS];
+        one[0] = 1;
+        self.mul(&acc, &one)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn be_of<const N: usize>(a: &Limbs<N>) -> Vec<u8> {
+        a.iter().rev().flat_map(|w| w.to_be_bytes()).collect()
+    }
+
+    #[test]
+    fn dynamic_field_matches_the_fixed_one() {
+        let m = from_hex::<4>("ffffffff00000001000000000000000000000000ffffffffffffffffffffffff");
+        let fixed = Mont::new(m);
+        let dynamic = DynMont::new(&be_of(&m)).unwrap();
+        assert_eq!(dynamic.limbs(), 4);
+        assert_eq!(&dynamic.r1[..4], &fixed.r1);
+        assert_eq!(&dynamic.r2[..4], &fixed.r2);
+        let a = [0x1234_5678_9abc_def0, 11, 22, 33];
+        let b = [0xfedc_ba98_7654_3210, 0xdead_beef, 5, 0x0fff_ffff_0000_0001];
+        let (mut wa, mut wb) = ([0u64; MAX_LIMBS], [0u64; MAX_LIMBS]);
+        wa[..4].copy_from_slice(&a);
+        wb[..4].copy_from_slice(&b);
+        assert_eq!(
+            &dynamic.mul(&wa, &wb)[..4],
+            &fixed.mul(&a, &b),
+            "Montgomery product"
+        );
+        for e in [1u64, 2, 3, 65537, (1 << 33) - 1, 0xdead_beef_1234] {
+            let mut e_limbs = [0u64; 4];
+            e_limbs[0] = e;
+            let expected = fixed.demont(&fixed.pow(&fixed.to_mont(&a), &e_limbs));
+            assert_eq!(&dynamic.pow_public(&wa, e)[..4], &expected, "e = {e}");
+        }
+        assert!(dynamic.is_below_modulus(&wa));
+        let mut mm = [0u64; MAX_LIMBS];
+        mm[..4].copy_from_slice(&m);
+        assert!(!dynamic.is_below_modulus(&mm));
+    }
+
+    #[test]
+    fn dynamic_field_one_limb_against_u128() {
+        let m = 0xffff_ffff_ffff_ffc5u64; // 2^64 - 59, prime
+        let d = DynMont::new(&m.to_be_bytes()).unwrap();
+        for (a, e) in [(2u64, 10u64), (12345, 65537), (m - 1, 3), (7, 1)] {
+            let mut wa = [0u64; MAX_LIMBS];
+            wa[0] = a;
+            let mut expected = 1u128;
+            for _ in 0..e {
+                expected = expected * u128::from(a) % u128::from(m);
+            }
+            assert_eq!(u128::from(d.pow_public(&wa, e)[0]), expected, "{a}^{e}");
+        }
+    }
+
+    #[test]
+    fn dynamic_field_refuses_bad_moduli() {
+        assert!(DynMont::new(&[]).is_none());
+        assert!(DynMont::new(&[0]).is_none());
+        assert!(DynMont::new(&[1]).is_none());
+        assert!(DynMont::new(&[0, 3]).is_none()); // not minimal
+        assert!(DynMont::new(&[4]).is_none()); // even
+        assert!(DynMont::new(&[0xff; 1024]).is_some());
+        assert!(DynMont::new(&[0xff; 1025]).is_none());
+        let mut even = vec![0xffu8; 256];
+        *even.last_mut().unwrap() = 0xfe;
+        assert!(DynMont::new(&even).is_none());
+    }
 
     #[test]
     fn montgomery_roundtrip_and_small_products() {

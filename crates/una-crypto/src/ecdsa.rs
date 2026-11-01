@@ -510,6 +510,127 @@ mod tests {
         check_params(p384());
     }
 
+    /// `limbs + t` for a small `t` (no carry out in the cases here).
+    fn add_small<const N: usize>(limbs: &Limbs<N>, t: u64) -> Limbs<N> {
+        let mut out = *limbs;
+        let mut carry = t;
+        for w in &mut out {
+            let (v, c) = w.overflowing_add(carry);
+            *w = v;
+            carry = u64::from(c);
+        }
+        assert_eq!(carry, 0);
+        out
+    }
+
+    fn be_bytes<const N: usize>(limbs: &Limbs<N>) -> Vec<u8> {
+        limbs.iter().rev().flat_map(|w| w.to_be_bytes()).collect()
+    }
+
+    /// A signature whose `R` has `x(R)` in `[n, p)`, so `r = x(R) mod n = x(R) - n` differs from the
+    /// x coordinate and verification must reduce it (FIPS 186-5 section 6.4.2 step 7). Such an `R`
+    /// occurs for about one signature in `2^32` (P-256) or `2^64` (P-384) and no vector set holds
+    /// one, so it is constructed: pick `x = n + t` on the curve, set `s = 1`, so that
+    /// `u1 = z` and `u2 = r`, and solve `Q = r^-1 (R - z G)` for the public key.
+    fn check_reduction_of_x<const N: usize>(
+        c: &Params<N>,
+        curve: Curve,
+        hash: HashAlg,
+        digest_of: impl Fn(&[u8]) -> Vec<u8>,
+    ) {
+        let (fp, fnn) = (&c.fp, &c.fnn);
+        let (p, n) = (fp.modulus(), fnn.modulus());
+        // p = 3 mod 4 for both curves, so a square root is `rhs^((p + 1) / 4)`.
+        let sqrt_exp = {
+            let mut q = p;
+            for i in 0..N {
+                q[i] = (p[i] >> 2) | p.get(i + 1).map_or(0, |hi| hi << 62);
+            }
+            add_small(&q, 1)
+        };
+        assert_eq!(p[0] & 3, 3);
+        let (mut t, mut found) = (1u64, None);
+        while found.is_none() {
+            let x = add_small(&n, t);
+            assert!(fp.is_below_modulus(&x), "n + t must stay below p");
+            let xm = fp.to_mont(&x);
+            let x3 = fp.mul(&fp.mul(&xm, &xm), &xm);
+            let three_x = fp.add(&fp.add(&xm, &xm), &xm);
+            let rhs = fp.add(&fp.sub(&x3, &three_x), &c.b);
+            let ym = fp.pow(&rhs, &sqrt_exp);
+            if fp.mul(&ym, &ym) == rhs {
+                found = Some((x, xm, ym));
+            } else {
+                t += 1;
+            }
+        }
+        let (x, xm, ym) = found.unwrap();
+        assert!(c.on_curve(&xm, &ym));
+        let big_r = Point {
+            x: xm,
+            y: ym,
+            z: fp.one(),
+        };
+        // r = x - n = t, in [1, n - 1]; s = 1.
+        let mut r = [0u64; N];
+        r[0] = t;
+        let message = b"x(R) in [n, p)";
+        let digest = digest_of(message);
+        let len = N * 8;
+        let mut zbytes = vec![0u8; len];
+        let take = digest.len().min(len);
+        zbytes[len - take..].copy_from_slice(&digest[..take]);
+        let z = fnn.reduce_once(&from_be_bytes::<N>(&zbytes).unwrap());
+        let r_inv_m = fnn.pow(&fnn.to_mont(&r), &c.n_minus_2);
+        let r_inv = fnn.demont(&r_inv_m);
+        let neg_z_over_r = fnn.sub(&[0; N], &fnn.mul(&r_inv_m, &z));
+        // Q = (-z / r) G + (1 / r) R.
+        let q = c.joint_mul(&neg_z_over_r, &r_inv, &big_r);
+        assert!(!Params::is_infinity(&q));
+        let zi = fp.pow(&q.z, &c.p_minus_2);
+        let zi2 = fp.mul(&zi, &zi);
+        let qx = fp.demont(&fp.mul(&q.x, &zi2));
+        let qy = fp.demont(&fp.mul(&q.y, &fp.mul(&zi2, &zi)));
+        // The premise: u1 G + u2 Q (u1 = z, u2 = r) really is R, whose x is not below n.
+        let back = c.joint_mul(
+            &z,
+            &r,
+            &Point {
+                x: fp.to_mont(&qx),
+                y: fp.to_mont(&qy),
+                z: fp.one(),
+            },
+        );
+        assert_eq!(fp.demont(&c.affine_x(&back)), x);
+        assert!(!fnn.is_below_modulus(&x), "x(R) is at least n");
+        let mut key = vec![4u8];
+        key.extend_from_slice(&be_bytes(&qx));
+        key.extend_from_slice(&be_bytes(&qy));
+        let mut sig = be_bytes(&r);
+        sig.extend_from_slice(&be_bytes(&{
+            let mut one = [0u64; N];
+            one[0] = 1;
+            one
+        }));
+        assert_eq!(verify_fixed(curve, hash, &key, message, &sig), Ok(()));
+        // The same signature over another message must fail (the key is not special).
+        assert!(verify_fixed(curve, hash, &key, b"another", &sig).is_err());
+        // And r + n would be the unreduced value: not a valid scalar, refused.
+        let mut wrong = sig.clone();
+        wrong[len - 1] ^= 1;
+        assert!(verify_fixed(curve, hash, &key, message, &wrong).is_err());
+    }
+
+    #[test]
+    fn x_of_r_between_n_and_p_is_reduced_modulo_n() {
+        check_reduction_of_x(p256(), Curve::P256, HashAlg::Sha256, |m| {
+            Sha256::digest(m).to_vec()
+        });
+        check_reduction_of_x(p384(), Curve::P384, HashAlg::Sha384, |m| {
+            Sha384::digest(m).to_vec()
+        });
+    }
+
     #[test]
     fn der_parser_is_strict() {
         let ok = [0x30, 0x06, 0x02, 0x01, 0x01, 0x02, 0x01, 0x02];

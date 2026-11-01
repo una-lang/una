@@ -1,8 +1,8 @@
 //! Una's own cryptography for TLS (ADR 0133, issue #1100, epic #1097): pure Rust, no C, no
 //! assembly, no foreign function interface, `unsafe` forbidden.
 //!
-//! Slices 1 to 3 and 5 hold the hash, MAC, key-derivation, AEAD, key-agreement and the Ed25519
-//! and ECDSA verification primitives of the TLS 1.3 suites and their transcript hashes:
+//! Slices 1 to 3, 5 and 6 hold the hash, MAC, key-derivation, AEAD, key-agreement and the Ed25519,
+//! ECDSA and RSA verification primitives of the TLS 1.3 suites and their transcript hashes:
 //!
 //! | Module | Specification |
 //! | --- | --- |
@@ -13,6 +13,7 @@
 //! | [`aes_gcm`] | FIPS 197 and NIST SP 800-38D: AES-128/256-GCM |
 //! | [`ecdsa`] | FIPS 186-5, SEC 1: P-256 and P-384 signature verification |
 //! | [`ed25519`] | RFC 8032: strict signature verification |
+//! | [`rsa`] | RFC 8017: PKCS#1 v1.5 and PSS signature verification, 2048 to 8192 bits |
 //! | [`x25519`] | RFC 7748 |
 //!
 //! **Constant time.** No branch and no memory index depends on a secret value; secret
@@ -28,6 +29,7 @@ pub mod ecdsa;
 pub mod ed25519;
 pub mod hkdf;
 pub mod hmac;
+pub mod rsa;
 pub mod sha2;
 pub mod x25519;
 
