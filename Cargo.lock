@@ -1358,6 +1358,7 @@ dependencies = [
  "una-hash",
  "una-http",
  "una-interp",
+ "una-link",
  "una-lsp",
  "una-project",
  "una-report",
@@ -1461,6 +1462,14 @@ dependencies = [
  "sha2",
  "una-project",
  "una-syntax",
+]
+
+[[package]]
+name = "una-link"
+version = "0.3.16"
+dependencies = [
+ "object",
+ "sha2",
 ]
 
 [[package]]

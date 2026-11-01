@@ -256,6 +256,10 @@ pub(crate) enum Command {
         #[arg(long, value_name = "FILE")]
         out: Option<PathBuf>,
 
+        /// Let a debugger or profiler attach to the executable (macOS: the get-task-allow entitlement)
+        #[arg(long)]
+        debuggable: bool,
+
         /// Stop a solver query after this many seconds; the obligation is then unknown
         #[arg(long, value_name = "SECONDS", default_value_t = 60)]
         solver_wallclock: u64,

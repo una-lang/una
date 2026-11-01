@@ -1,0 +1,8 @@
+# The SDK whose libSystem export list the internal linker binds against (ADR 0124 rule 23,
+# docs/plan/0124-step3-design.md decision D3), made by scripts/libsystem-exports.sh. The list
+# changes only with this pin; crates/una-link checks the list's digest at its build.
+sdk = "macosx12.1"
+libsystem_current_version = "1311"
+libsystem_tbd_sha256 = "fab2063344145b71cb4ea083f1ce360aa1afd59115e540782b316f37b9078692"
+exports_sha256 = "6f1561479171fbc262b9c8d34499009befe5e48a4be480a56caefccea02f03b4"
+symbols = 7634

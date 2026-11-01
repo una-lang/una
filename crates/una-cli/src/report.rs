@@ -105,6 +105,13 @@ struct NativeDoc {
     kernels: KernelsDoc,
     #[serde(skip_serializing_if = "Option::is_none")]
     runtime_sha256: Option<String>,
+    /// The linker of `una build` (ADR 0124 rule 28): `una <version>` where the internal linker
+    /// links, `cc` where the system's links.
+    linker: String,
+    /// Whether `una build` makes executables a debugger may attach to without `--debuggable`:
+    /// not where the internal linker signs them with the hardened runtime (ADR 0124 rule 27,
+    /// Question 7); the system linker's are.
+    debuggable: bool,
 }
 
 /// The variants of the dense kernels that an executable for the host target holds and chooses
@@ -820,6 +827,8 @@ fn build(
                     .collect(),
             },
             runtime_sha256,
+            linker: crate::build::linker_name(),
+            debuggable: crate::build::linker_name() == "cc",
         },
         generic_results,
         out_of_model: OUT_OF_MODEL,
@@ -1222,6 +1231,7 @@ fn human(report: &Report) -> String {
     if let Some(runtime) = &report.native.runtime_sha256 {
         line(format!("  runtime sha256: {runtime}"));
     }
+    line(format!("  linker: {}", report.native.linker));
     for generic in &report.generic_results {
         let parts: Vec<String> = generic
             .result_labels

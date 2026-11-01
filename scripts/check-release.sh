@@ -4,7 +4,8 @@
 # into the packed `una` (ADR 0035 rule 3, ADR 0059 and its amendment, ADR 0124 step 2). The
 # archive holds no `lib/`: the runtime is scanned as scripts/release.sh left it,
 # target/release-remapped/embed/libuna_rt.a, once its digest is the one the packed `una`
-# reports. `una build` still needs the system `cc` until ADR 0124 step 3.
+# reports. On macOS `una build` links by itself (ADR 0124 step 3); on Linux it still needs the
+# system `cc` until step 4.
 #
 # Usage: scripts/check-release.sh TARGET
 set -eu
@@ -343,7 +344,11 @@ fi
 # enough to mean something; inside Rust's own path, as a CI runner's user is, it is allowed.
 user=$(id -un 2>/dev/null || true)
 for file in "$una" "$runtime" "$tmp/install-one/out/hello"; do
-    found=$(grep -a -o -E '(/Users|/home)/[^[:space:][:cntrl:]"]*' "$file" | grep -v '^/Users/runner/work/rust/' | LC_ALL=C sort -u | head -5 || true)
+    # The solver child's probes of an outer sandbox name the fixed places `/Users`, `/private/var`
+    # and `/private/tmp` (crates/una-sys/src/solver/sandbox.rs), which the binary stores side by
+    # side, so they read as `/Users/private/...`: a probe, not a home directory. Only a match made
+    # of those places alone, whole, is skipped.
+    found=$(grep -a -o -E '(/Users|/home)/[^[:space:][:cntrl:]"]*' "$file" | grep -v '^/Users/runner/work/rust/' | grep -v -x -E '/Users(/private/(var|tmp))+(\(temporary)?' | LC_ALL=C sort -u | head -5 || true)
     if [ "${#user}" -ge 4 ] && [ -z "$found" ]; then
         found=$(LC_ALL=C grep -a -o -E ".{0,16}$user.{0,16}" "$file" | grep -v -F '/Users/runner/work/rust' | LC_ALL=C sort -u | head -5 || true)
     fi

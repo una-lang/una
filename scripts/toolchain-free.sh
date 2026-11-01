@@ -8,8 +8,10 @@
 # package, so that each starts the solver rather than reading the proof cache; on
 # Linux it runs in a container of the bare Ubuntu image of scripts/local-ci/ with none of those
 # tools installed, with `una` and the package mounted read-only and the same empty PATH. Any
-# attempt to start another program fails the gate. The run phase (`una build`) comes with the
-# linker steps of that record.
+# attempt to start another program fails the gate. On macOS it then builds examples/hello with
+# `una build` under the same profile, which links with the linker inside `una` (ADR 0124 step
+# 3), and runs the executable under a profile that lets only it start; on Linux, the build phase
+# comes with step 4.
 #
 # Usage: scripts/toolchain-free.sh UNA PACKAGE [--linux-arm64 | --linux]
 #   UNA       the release `una` to test (a development build fails: it has no solver)
@@ -67,6 +69,18 @@ case $leg in
             || { echo "error: una report failed under the sandbox" >&2; exit 1; }
         grep -q '"solver_confinement":"outer"' "$empty/report.json" \
             || { echo "error: the report does not record the outer confinement" >&2; cat "$empty/report.json" >&2; exit 1; }
+        # The build phase of `una build` (ADR 0124 step 3): `una` links examples/hello by
+        # itself, under the same profile, which lets it start no linker and no compiler.
+        echo "== toolchain-free (macOS): una build under the same sandbox"
+        cp -R "$root/examples/hello" "$empty/hello" && rm -rf "${empty:?}/hello/.una" "${empty:?}/hello/target" || exit 1
+        HOME="$own/home" TMPDIR="$own/tmp" PATH="$empty" "$sandbox" -p "$profile" "$una" build "$empty/hello" --out "$own/hello-exe" > "$empty/build.log" 2>&1 \
+            || { echo "error: una build failed under the sandbox" >&2; cat "$empty/build.log" >&2; exit 1; }
+        # The run phase: the executable alone may start, under a second profile.
+        echo "== toolchain-free (macOS): the executable under a sandbox that execs only it"
+        run_profile="(version 1)(allow default)(deny network*)(deny signal (target others))(deny file-write*)(allow file-write* (subpath \"$own\"))(allow file-write* (literal \"/dev/null\") (literal \"/dev/tty\"))(deny process-exec*)(allow process-exec* (literal \"$own/hello-exe\"))"
+        output=$(HOME="$own/home" TMPDIR="$own/tmp" PATH="$empty" "$sandbox" -p "$run_profile" "$own/hello-exe") \
+            || { echo "error: the executable failed under the sandbox" >&2; exit 1; }
+        [ "$output" = "Hello, Una" ] || { echo "error: the executable printed: $output" >&2; exit 1; }
         ;;
     --linux | --linux-arm64)
         arch=amd64

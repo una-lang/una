@@ -158,6 +158,9 @@ runtime=$root/target/sanitize/$host/debug/libuna_rt.a
 step "una and its tests, linked by the system linker" \
     env "$linker_var=/usr/bin/cc" CC=/usr/bin/cc cargo build -p una-cli --tests
 
+# `una build` links through the system linker here (`UNA_LINKER=cc`, a development build's
+# choice, ADR 0124 rule 19, `spec/16 §6` rule 7): only it can add the sanitizer's runtime, a
+# library outside libSystem that the internal linker refuses.
 # A canary: an executable that `una build` links through the shim runs with AddressSanitizer
 # active, or this gate would check nothing.
 canary=$root/target/sanitize/canary
@@ -168,7 +171,7 @@ printf '[package]\nname = "canary"\nversion = "0.1.0"\nedition = "0.1"\n\n[run]\
 printf 'module canary\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  @console.print("sanitized")\n' \
     > "$canary/src/canary.una"
 build_canary() {
-    (cd "$canary" && env UNA_RT_LIB="$runtime" PATH="$shim:$PATH" "$root/target/debug/una" build .)
+    (cd "$canary" && env UNA_LINKER=cc UNA_RT_LIB="$runtime" PATH="$shim:$PATH" "$root/target/debug/una" build .)
 }
 step "The canary, linked through the shim" build_canary
 ASAN_OPTIONS="verbosity=1" "$canary/target/una/canary" 2>&1 \
@@ -179,7 +182,7 @@ nm -u "$canary/target/una/canary" | grep -q '___asan_report' \
     || fail "the runtime linked through the shim is not instrumented with AddressSanitizer"
 
 step "The native equivalence test against it" \
-    env "$linker_var=/usr/bin/cc" CC=/usr/bin/cc UNA_RT_LIB="$runtime" PATH="$shim:$PATH" \
+    env "$linker_var=/usr/bin/cc" CC=/usr/bin/cc UNA_LINKER=cc UNA_RT_LIB="$runtime" PATH="$shim:$PATH" \
     ASAN_OPTIONS="abort_on_error=1:detect_leaks=0" \
     cargo test -p una-cli --test native every_runnable_program_runs_natively_as_in_the_interpreter \
     -- --exact --nocapture

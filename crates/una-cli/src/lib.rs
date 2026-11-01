@@ -1322,11 +1322,13 @@ fn run_command(
             Command::Build {
                 path,
                 out,
+                debuggable,
                 solver_wallclock,
                 solver_memory,
             } => {
                 let options = build::BuildOptions {
                     out,
+                    debuggable,
                     json,
                     color: use_color(color, stderr_is_terminal),
                     solving: solving(solver_wallclock, solver_memory, json, stderr),

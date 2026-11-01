@@ -1,0 +1,17 @@
+[package]
+name = "una-link"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "The internal linker of `una build` (ADR 0124 rules 22 to 29): Mach-O for aarch64-apple-darwin"
+
+[dependencies]
+# Allowed by ADR 0124 rule 22 for una-link only: the readers of `ar` and Mach-O, already in
+# Cargo.lock through cranelift-object. The writer is this crate's own.
+object.workspace = true
+sha2.workspace = true
+
+[lints]
+workspace = true

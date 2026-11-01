@@ -71,3 +71,7 @@ The memory model of v0.2 (mutable value semantics, no mutable aliasing) and fixe
 ## Note (2026-11-01, #1093): Una's own big integer
 
 Rule 5's arbitrary-precision integers are Una's own big integer, `una_core::bigint`, the type the interpreter uses, in place of `num-bigint`. No rule of this record changes.
+
+## Amendment (2026-11-01, #1208): the internal linker (NB-1)
+
+ADR 0124 rule 22 replaces the system linker of this record's rule NB-1 on `aarch64-apple-darwin`: `una build` links the object of rule NB-1 with the runtime through `una-link`, inside `una`, and runs no other program (`spec/16 §1` rule 1 and §6). On `x86_64-unknown-linux-gnu` the system `cc` stays until ADR 0124 step 4. Every other rule of this record stands; the differential test of NB-4 runs on the internal linker's output, and a second test compares each program linked by both linkers.
