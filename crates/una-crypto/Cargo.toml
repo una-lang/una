@@ -1,0 +1,22 @@
+[package]
+name = "una-crypto"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Una's own cryptography for TLS: pure Rust, constant time, no foreign code (ADR 0133)"
+
+[dependencies]
+zeroize.workspace = true
+
+# Dev-dependencies never reach a shipped build. `ring` and `curve25519-dalek` are the references
+# of the differential tests (ADR 0133 rule 12); `serde_json` reads the vendored test vectors.
+[dev-dependencies]
+ring.workspace = true
+curve25519-dalek.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+
+[lints]
+workspace = true
