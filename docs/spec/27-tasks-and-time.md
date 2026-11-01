@@ -42,7 +42,7 @@ The executable (`spec/16 §3`), `una run` and `una test` take these flags:
 | `--io-threads <n>` | 1 to 4096 | 64 |
 | `--file-threads <n>` | 1 to 256 | 4 |
 
-A value that is not a number, or is out of its range, is a usage error, exit code 2, before `main` starts. `--task-depth` is checked against `--max-depth` whatever their order on the command line. `--task-depth` bounds the branches of `first of` (§6) and the tasks of `start` (§7): a branch may make at most that many calls below the depth of its block, a started task below the depth of its `start`, never more than `--max-depth` allows, and its stack is sized from that depth. Both engines apply the same limit, so both stop at the same depth.
+The executable and `una run`, not `una test`, also take `--serve-threads <n>`, 1 to 256, by default the number of the machine's cores, the threads that serve the connections of `serve:` grants (`spec/31 §6` rule 1); a run that serves nothing accepts it and uses none. A value that is not a number, or is out of its range, is a usage error, exit code 2, before `main` starts. `--task-depth` is checked against `--max-depth` whatever their order on the command line. `--task-depth` bounds the branches of `first of` (§6) and the tasks of `start` (§7): a branch may make at most that many calls below the depth of its block, a started task below the depth of its `start`, never more than `--max-depth` allows, and its stack is sized from that depth. Both engines apply the same limit, so both stop at the same depth.
 
 ## 4. Stacks and memory
 
