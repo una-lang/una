@@ -17,6 +17,7 @@ pub mod peer;
 pub mod place;
 pub mod pressure;
 pub mod run;
+pub mod server;
 #[cfg(feature = "test-hooks")]
 pub mod sim;
 pub mod thread;

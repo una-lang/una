@@ -1,0 +1,555 @@
+//! The serve threads of a run over real sockets (ADR 0123 rules 17 to 19,
+//! `docs/plan/0123-s4-design.md` §3 to §5): one thread per `--serve-threads`, each with a
+//! `kqueue` or `epoll` of its own, a wake pair and an inbox, and one accept poller for the run.
+//!
+//! **Accepting.** Each grant keeps the one listening socket that [`super::prepare`] bound,
+//! without `SO_REUSEPORT`, so no other process shares its connections. Every listener is
+//! registered one-shot in one accept poller, which is itself registered one-shot in each
+//! thread's poller. When a listener is ready, the threads whose registration is armed wake; the
+//! first to wait on the accept poller with a zero timeout receives the listener's event,
+//! accepts at most 16 connections and registers the listener again; the others find no event
+//! and register the accept poller again. Exactly one thread accepts from a listener at a time,
+//! through the bytes of a flag that only the thread holding the event may set. A slot of
+//! `connections` is taken before each `accept`, so every descriptor the server accepts holds
+//! one; at the cap the listener is not registered again until a connection closes, and the
+//! kernel's backlog holds the rest. Each connection goes to the thread its keyed hash names.
+//!
+//! **Waiting and waking.** A thread tries every read and write at once and registers a socket
+//! only when the call would block. Before it blocks in its poller it announces that it sleeps,
+//! checks its inbox once more, and a sender wakes it by writing one byte to its wake pair only
+//! when it announced (`Port`), so a busy thread is never woken and no wake is lost.
+//!
+//! **Beginning.** The threads and their pollers exist from [`Server::start`], but no listener
+//! is registered and nothing is accepted until [`Server::begin`], the run's first server
+//! operation: until then a peer's connection waits in the kernel's backlog, the network's.
+
+use std::collections::HashMap;
+use std::io::{self, Read, Write};
+use std::net::TcpListener;
+use std::os::fd::AsFd;
+use std::os::unix::net::UnixStream;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::Receiver;
+use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
+use std::time::Duration;
+
+use una_core::http::serve::ServeGrant;
+use una_hash::SipKey;
+use una_sys::poll::{Events, Interest, Poller};
+
+use super::grant::lock;
+use super::net::{Clock, Readiness, Socket, SystemClock, Waker};
+use super::run::{Exchange, Msg, Next, Shared};
+use super::thread::Thread;
+use super::{Listener, Prepared};
+
+/// The token of a serve thread's wake pair.
+const WAKE: u64 = u64::MAX;
+/// The token of the accept poller in a serve thread's poller.
+const ACCEPT: u64 = u64::MAX - 1;
+/// Connections accepted at one event of a listener.
+const BURST: usize = 16;
+/// Events handled at one pass of a serve thread's loop.
+const EVENTS: usize = 256;
+/// How long accepting stops on a listener after an error that is not the peer's.
+const BACKOFF: Duration = Duration::from_millis(100);
+
+/// One listener and whether it is registered in the accept poller.
+struct Listening {
+    socket: Mutex<Option<TcpListener>>,
+    /// Registered in the accept poller. Set by the thread that registers it, cleared by the
+    /// thread that takes its event, so two threads never register one listener at once.
+    armed: AtomicBool,
+    /// Not registered because its grant was at `connections`.
+    blocked: AtomicBool,
+}
+
+/// The accept poller and the listeners of a run.
+struct Acceptor {
+    poller: Poller,
+    listeners: Vec<Listening>,
+    begun: AtomicBool,
+    closed: AtomicBool,
+}
+
+impl Acceptor {
+    /// Registers listener `index` unless it is. On Linux a fired registration stays,
+    /// disabled, until it is deleted, so registering again is a delete and an add.
+    fn arm(&self, index: usize) {
+        let Some(listening) = self.listeners.get(index) else {
+            return;
+        };
+        if self.closed.load(Ordering::SeqCst) {
+            return;
+        }
+        if listening
+            .armed
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return;
+        }
+        let socket = lock(&listening.socket);
+        if let Some(socket) = socket.as_ref() {
+            let _ = self.poller.delete(socket.as_fd(), Interest::Read);
+            if self
+                .poller
+                .add(socket.as_fd(), Interest::Read, index as u64)
+                .is_err()
+            {
+                listening.armed.store(false, Ordering::SeqCst);
+            }
+        }
+    }
+
+    /// Closes every listener at once (rule 18).
+    fn close(&self) {
+        self.closed.store(true, Ordering::SeqCst);
+        for listening in &self.listeners {
+            let mut socket = lock(&listening.socket);
+            if let Some(socket) = socket.take() {
+                let _ = self.poller.delete(socket.as_fd(), Interest::Read);
+            }
+        }
+    }
+}
+
+/// Wakes a serve thread through its wake pair.
+struct PairWaker(UnixStream);
+
+impl Waker for PairWaker {
+    fn wake(&self) {
+        // A full pair already holds a wake; any other failure leaves the thread to its timeout.
+        let _ = (&self.0).write(&[1]);
+    }
+}
+
+/// What the thread's registrations are, so that a fired one-shot registration is registered
+/// again and a closing socket is forgotten: for each token, its interest and whether the event
+/// fired.
+#[derive(Clone)]
+struct Armed(Arc<Mutex<HashMap<u64, (Interest, bool)>>>);
+
+struct RealReadiness {
+    poller: Arc<Poller>,
+    armed: Armed,
+}
+
+impl Readiness for RealReadiness {
+    fn set(&mut self, token: u64, socket: &dyn Socket, read: bool, write: bool) {
+        let Some(fd) = socket.fd() else { return };
+        let mut armed = lock(&self.armed.0);
+        let wanted = if write {
+            Some(Interest::Write)
+        } else if read {
+            Some(Interest::Read)
+        } else {
+            None
+        };
+        let had = armed.get(&token).copied();
+        if let (Some((old, false)), Some(new)) = (had, wanted)
+            && old == new
+        {
+            return;
+        }
+        if let Some((old, _)) = had {
+            // On Linux a fired registration stays, disabled, until it is deleted.
+            let _ = self.poller.delete(fd, old);
+            armed.remove(&token);
+        }
+        if let Some(interest) = wanted
+            && self.poller.add(fd, interest, token).is_ok()
+        {
+            armed.insert(token, (interest, false));
+        }
+    }
+
+    fn forget(&mut self, token: u64, socket: &dyn Socket) {
+        let mut armed = lock(&self.armed.0);
+        if let (Some((old, _)), Some(fd)) = (armed.remove(&token), socket.fd()) {
+            let _ = self.poller.delete(fd, old);
+        }
+    }
+}
+
+/// The serve threads of a run.
+pub struct Server {
+    shared: Arc<Shared>,
+    acceptor: Arc<Acceptor>,
+    clock: Arc<SystemClock>,
+    handles: Mutex<Vec<JoinHandle<()>>>,
+}
+
+impl Server {
+    /// Starts `threads` serve threads for the listeners `prepared` bound, for `grants`. The
+    /// threads wait; nothing is accepted before [`Server::begin`]. An `https` grant is refused
+    /// until the TLS provider is decided (#1059): a server never serves plain bytes on an
+    /// `https` address.
+    pub fn start(
+        prepared: Prepared,
+        grants: &[ServeGrant],
+        threads: usize,
+    ) -> Result<Server, String> {
+        let threads = threads.max(1);
+        if prepared.listeners.iter().any(|l| l.tls.is_some()) {
+            return Err(
+                "an https serve grant cannot be served yet: the TLS server waits for the decision on the TLS provider (#1059)".to_owned(),
+            );
+        }
+        let key = SipKey::from_host()
+            .map_err(|_| "the host gave no random bytes for the placement key".to_owned())?;
+        let failed = |what: &str, error: io::Error| {
+            format!("cannot start the serve threads: {what}: {error}")
+        };
+        let accept_poller = Poller::new().map_err(|e| failed("the accept poller", e))?;
+        let mut listeners = Vec::new();
+        for Listener { socket, .. } in prepared.listeners {
+            socket
+                .set_nonblocking(true)
+                .map_err(|e| failed("a listener", e))?;
+            listeners.push(Listening {
+                socket: Mutex::new(Some(socket)),
+                armed: AtomicBool::new(false),
+                blocked: AtomicBool::new(false),
+            });
+        }
+        let acceptor = Arc::new(Acceptor {
+            poller: accept_poller,
+            listeners,
+            begun: AtomicBool::new(false),
+            closed: AtomicBool::new(false),
+        });
+        let mut pairs = Vec::new();
+        let mut wakers: Vec<Box<dyn Waker>> = Vec::new();
+        for _ in 0..threads {
+            let (rx, tx) = UnixStream::pair().map_err(|e| failed("a wake pair", e))?;
+            for end in [&rx, &tx] {
+                end.set_nonblocking(true)
+                    .map_err(|e| failed("a wake pair", e))?;
+            }
+            wakers.push(Box::new(PairWaker(tx)));
+            pairs.push(rx);
+        }
+        let clock = Arc::new(SystemClock::new());
+        let (shared, inboxes) = Shared::new(grants, threads, key, clock.clone(), wakers);
+        {
+            let acceptor = Arc::clone(&acceptor);
+            shared.on_slot_freed(Arc::new(move |grant| {
+                if let Some(listening) = acceptor.listeners.get(grant)
+                    && listening.blocked.swap(false, Ordering::SeqCst)
+                {
+                    acceptor.arm(grant);
+                }
+            }));
+        }
+        let mut handles = Vec::new();
+        for (index, (inbox, wake_rx)) in inboxes.into_iter().zip(pairs).enumerate() {
+            let poller = Arc::new(Poller::new().map_err(|e| failed("a poller", e))?);
+            let armed = Armed(Arc::new(Mutex::new(HashMap::new())));
+            let context = Context {
+                index,
+                shared: Arc::clone(&shared),
+                acceptor: Arc::clone(&acceptor),
+                clock: clock.clone(),
+                inbox,
+                wake_rx,
+                poller: Arc::clone(&poller),
+                armed: armed.clone(),
+                backoff: Vec::new(),
+            };
+            let handle = std::thread::Builder::new()
+                .name(format!("una-serve-{index}"))
+                .spawn(move || context.run())
+                .map_err(|e| failed("a thread", e))?;
+            handles.push(handle);
+        }
+        Ok(Server {
+            shared,
+            acceptor,
+            clock,
+            handles: Mutex::new(handles),
+        })
+    }
+
+    /// What the serve threads share: the grants, the counters, the stop.
+    pub fn shared(&self) -> &Arc<Shared> {
+        &self.shared
+    }
+
+    /// The run's first server operation: from here the listeners are registered and
+    /// connections are accepted. Once only; later calls do nothing.
+    pub fn begin(&self) {
+        if self
+            .acceptor
+            .begun
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return;
+        }
+        for index in 0..self.acceptor.listeners.len() {
+            self.acceptor.arm(index);
+        }
+    }
+
+    /// Whether accepting began.
+    pub fn begun(&self) -> bool {
+        self.acceptor.begun.load(Ordering::SeqCst)
+    }
+
+    /// The next request, if one can be delivered now.
+    pub fn next(&self) -> Next {
+        self.shared.next(self.clock.now())
+    }
+
+    /// The next request as an exchange, when one can be delivered now.
+    pub fn take(&self) -> Option<Exchange> {
+        match self.next() {
+            Next::Exchange(exchange) => Some(*exchange),
+            Next::Blocked(_) | Next::Empty => None,
+        }
+    }
+
+    /// A host stop (rule 18): the listeners close at once, idle connections close, requests
+    /// not delivered or still being read get `503`, and the open exchanges drain.
+    pub fn stop(&self) {
+        self.acceptor.close();
+        self.shared.stop();
+    }
+
+    /// The hard stop: every open exchange is answered in one write and every connection
+    /// closes, without waiting on a peer.
+    pub fn hard_stop(&self) {
+        self.acceptor.close();
+        self.shared.hard_stop();
+    }
+
+    /// Waits for the serve threads to end, which they do once the run is stopping and every
+    /// connection is closed. Call [`Server::stop`] first.
+    pub fn join(&self) {
+        let handles = std::mem::take(&mut *lock(&self.handles));
+        for handle in handles {
+            let _ = handle.join();
+        }
+    }
+}
+
+/// Everything a serve thread owns.
+struct Context {
+    index: usize,
+    shared: Arc<Shared>,
+    acceptor: Arc<Acceptor>,
+    clock: Arc<SystemClock>,
+    inbox: Receiver<Msg>,
+    wake_rx: UnixStream,
+    poller: Arc<Poller>,
+    armed: Armed,
+    /// Listeners to register again, and when, after an error of `accept`.
+    backoff: Vec<(u64, usize)>,
+}
+
+impl Context {
+    fn run(mut self) {
+        let mut thread = Thread::new(
+            self.index,
+            Arc::clone(&self.shared),
+            Box::new(RealReadiness {
+                poller: Arc::clone(&self.poller),
+                armed: self.armed.clone(),
+            }),
+            self.clock.now(),
+        );
+        let mut events = Events::with_capacity(EVENTS);
+        self.arm_wake();
+        self.arm_accept();
+        loop {
+            let now = self.clock.now();
+            let mut busy = false;
+            while let Ok(msg) = self.inbox.try_recv() {
+                thread.handle(msg, self.clock.now());
+                busy = true;
+            }
+            if thread.advance(self.clock.now()) {
+                busy = true;
+            }
+            self.retry_listeners(now);
+            if self.shared.is_stopping()
+                && self.acceptor.closed.load(Ordering::SeqCst)
+                && thread.open() == 0
+            {
+                // The acceptor is closed, so nothing adopts any more; what was sent before is
+                // in the inbox, and handled by the next pass if it came late.
+                if let Ok(msg) = self.inbox.try_recv() {
+                    thread.handle(msg, self.clock.now());
+                    continue;
+                }
+                return;
+            }
+            let timeout = if busy {
+                Some(Duration::ZERO)
+            } else {
+                self.sleep_timeout(&thread)
+            };
+            if !busy {
+                let port = self.shared.port(self.index);
+                if let Some(port) = port {
+                    port.announce_sleep();
+                    if let Ok(msg) = self.inbox.try_recv() {
+                        port.announce_awake();
+                        thread.handle(msg, self.clock.now());
+                        continue;
+                    }
+                }
+                let _ = self.poller.wait(&mut events, timeout);
+                if let Some(port) = port {
+                    port.announce_awake();
+                }
+            } else {
+                let _ = self.poller.wait(&mut events, timeout);
+            }
+            let tokens: Vec<u64> = events.tokens().collect();
+            for token in tokens {
+                match token {
+                    WAKE => {
+                        let mut drain = [0u8; 64];
+                        while matches!((&self.wake_rx).read(&mut drain), Ok(n) if n > 0) {}
+                        self.arm_wake();
+                    }
+                    ACCEPT => self.accept_ready(),
+                    _ => {
+                        if let Some(entry) = lock(&self.armed.0).get_mut(&token) {
+                            entry.1 = true;
+                        }
+                        thread.ready(token, self.clock.now());
+                    }
+                }
+            }
+        }
+    }
+
+    /// The longest this thread may sleep: until its earliest timer or backed-off listener.
+    fn sleep_timeout(&self, thread: &Thread) -> Option<Duration> {
+        let now = self.clock.now();
+        let timer = thread.next_wake();
+        let retry = self.backoff.iter().map(|(at, _)| *at).min();
+        let at = match (timer, retry) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }?;
+        Some(Duration::from_nanos(at.saturating_sub(now)))
+    }
+
+    fn arm_wake(&self) {
+        let fd = self.wake_rx.as_fd();
+        let _ = self.poller.delete(fd, Interest::Read);
+        let _ = self.poller.add(fd, Interest::Read, WAKE);
+    }
+
+    fn arm_accept(&self) {
+        let fd = self.acceptor.poller.as_fd();
+        let _ = self.poller.delete(fd, Interest::Read);
+        let _ = self.poller.add(fd, Interest::Read, ACCEPT);
+    }
+
+    /// Registers again the listeners whose backoff ended.
+    fn retry_listeners(&mut self, now: u64) {
+        let due: Vec<usize> = self
+            .backoff
+            .iter()
+            .filter(|(at, _)| *at <= now)
+            .map(|(_, grant)| *grant)
+            .collect();
+        self.backoff.retain(|(at, _)| *at > now);
+        for grant in due {
+            self.acceptor.arm(grant);
+        }
+    }
+
+    /// The accept poller is ready for some thread: the one that receives a listener's event
+    /// accepts; every thread registers the accept poller again.
+    fn accept_ready(&mut self) {
+        let mut found = Events::with_capacity(16);
+        if self
+            .acceptor
+            .poller
+            .wait(&mut found, Some(Duration::ZERO))
+            .is_ok()
+        {
+            let grants: Vec<u64> = found.tokens().collect();
+            for grant in grants {
+                self.accept_burst(grant as usize);
+            }
+        }
+        self.arm_accept();
+    }
+
+    /// Accepts at most [`BURST`] connections from listener `grant`, then registers it again
+    /// unless its grant is at `connections` or `accept` failed.
+    fn accept_burst(&mut self, grant: usize) {
+        let (Some(listening), Some(state)) = (
+            self.acceptor.listeners.get(grant),
+            self.shared.grants.get(grant),
+        ) else {
+            return;
+        };
+        // This thread took the listener's event, so it alone registers it again.
+        listening.armed.store(false, Ordering::SeqCst);
+        let mut at_cap = false;
+        let mut failed = false;
+        {
+            let socket = lock(&listening.socket);
+            let Some(listener) = socket.as_ref() else {
+                return;
+            };
+            for _ in 0..BURST {
+                if !state.take_slot() {
+                    at_cap = true;
+                    break;
+                }
+                match listener.accept() {
+                    Ok((stream, address)) => {
+                        if stream.set_nonblocking(true).is_err()
+                            || stream.set_nodelay(true).is_err()
+                        {
+                            state.give_slot();
+                            self.shared.slot_freed(grant);
+                            continue;
+                        }
+                        // A refusal closes the socket by dropping it, before any work.
+                        let _ =
+                            self.shared
+                                .accept(grant, Box::new(stream), address, self.clock.now());
+                    }
+                    Err(error) => {
+                        state.give_slot();
+                        match error.kind() {
+                            io::ErrorKind::WouldBlock => break,
+                            io::ErrorKind::ConnectionAborted | io::ErrorKind::Interrupted => {}
+                            _ => {
+                                // A full descriptor table and the like: stop accepting on this
+                                // listener for 100 ms, so no thread spins.
+                                failed = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if failed {
+            let at = self.clock.now().saturating_add(BACKOFF.as_nanos() as u64);
+            self.backoff.push((at, grant));
+        } else if at_cap {
+            listening.blocked.store(true, Ordering::SeqCst);
+            // A slot freed between the failed take and the flag would not see it.
+            if state.open_connections() < state.connection_cap()
+                && listening.blocked.swap(false, Ordering::SeqCst)
+            {
+                self.acceptor.arm(grant);
+            }
+        } else {
+            self.acceptor.arm(grant);
+        }
+    }
+}

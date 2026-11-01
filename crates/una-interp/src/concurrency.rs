@@ -1,5 +1,5 @@
 //! The settings of tasks that both engines read from the command line (ADR 0117 rules 2 and 3):
-//! `--workers`, `--task-depth`, `--io-threads` and `--file-threads`, with their ranges and
+//! `--workers`, `--task-depth`, `--io-threads` and `--file-threads`, and the serve threads' `--serve-threads` (ADR 0123 rule 20), with their ranges and
 //! defaults. A value that is not a number, or is out of its range, is a usage error, exit code
 //! 2 (ADR 0117, Diagnostics).
 
@@ -13,6 +13,8 @@ pub const DEFAULT_IO_THREADS: usize = 64;
 pub const MAX_FILE_THREADS: usize = 256;
 /// The default of `--file-threads`.
 pub const DEFAULT_FILE_THREADS: usize = 4;
+/// The most `--serve-threads` allows (ADR 0123 rule 20).
+pub const MAX_SERVE_THREADS: usize = 256;
 /// The default of `--task-depth`, lowered to `--max-depth` when that is smaller.
 pub const DEFAULT_TASK_DEPTH: usize = 1000;
 
@@ -73,6 +75,19 @@ impl Concurrency {
             settings.file_threads = within("--file-threads", n, MAX_FILE_THREADS)?;
         }
         Ok(settings)
+    }
+}
+
+/// The serve threads of a run that serves (ADR 0123 rule 20): `--serve-threads` from 1 to
+/// [`MAX_SERVE_THREADS`], or by default the number of the machine's cores within that range. A
+/// run that does not serve accepts the flag and uses none.
+pub fn serve_threads(given: Option<usize>) -> Result<usize, String> {
+    match given {
+        Some(n) => within("--serve-threads", n, MAX_SERVE_THREADS),
+        None => {
+            let cores = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
+            Ok(cores.clamp(1, MAX_SERVE_THREADS))
+        }
     }
 }
 
@@ -172,6 +187,15 @@ mod tests {
         }
         assert!(number("--workers", "many").is_err());
         assert_eq!(number("--workers", "3"), Ok(3));
+    }
+
+    #[test]
+    fn serve_threads_take_their_range_and_default_to_the_cores() {
+        assert!((1..=MAX_SERVE_THREADS).contains(&serve_threads(None).unwrap()));
+        assert_eq!(serve_threads(Some(1)), Ok(1));
+        assert_eq!(serve_threads(Some(256)), Ok(256));
+        assert!(serve_threads(Some(0)).is_err());
+        assert!(serve_threads(Some(257)).is_err());
     }
 
     #[test]

@@ -2681,6 +2681,10 @@ fn the_flags_of_tasks_out_of_range_are_usage_errors_in_both_engines() {
         &["--max-depth", "50", "--task-depth", "51"],
         &["--io-threads", "4097"],
         &["--file-threads", "257"],
+        // ADR 0123 rule 20: the serve threads, from 1 to 256.
+        &["--serve-threads", "0"],
+        &["--serve-threads", "257"],
+        &["--serve-threads", "x"],
     ] {
         let native = Command::new(&exe)
             .args(args)
@@ -2708,12 +2712,16 @@ fn the_flags_of_tasks_out_of_range_are_usage_errors_in_both_engines() {
             "1",
             "--file-threads",
             "1",
+            "--serve-threads",
+            "256",
         ])
         .current_dir(&dir)
         .output()
         .unwrap();
     assert_eq!(native.status.code(), Some(0), "{native:?}");
     assert_eq!(String::from_utf8_lossy(&native.stdout), "ran\n");
+    let interpreted = una(&dir, &["run", ".", "--serve-threads", "1"]);
+    assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

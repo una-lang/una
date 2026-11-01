@@ -93,6 +93,8 @@ pub(crate) struct TaskFlags {
     pub(crate) task_depth: Option<usize>,
     pub(crate) io_threads: Option<usize>,
     pub(crate) file_threads: Option<usize>,
+    /// `--serve-threads` (ADR 0123 rule 20): checked, and unused until a run serves.
+    pub(crate) serve_threads: Option<usize>,
 }
 
 impl TaskFlags {
@@ -100,6 +102,7 @@ impl TaskFlags {
     /// interpreter runs no coroutine before `first of` and `start` (ADR 0117 rule 11), so it
     /// only checks them, and refuses what the executable refuses.
     fn check(self, max_depth: usize) -> Result<una_interp::Concurrency, String> {
+        una_interp::concurrency::serve_threads(self.serve_threads)?;
         una_interp::Concurrency::from_flags(
             max_depth,
             self.workers,
