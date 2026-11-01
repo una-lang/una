@@ -618,17 +618,22 @@ allowed".
   `sandbox_check_network` is looked up at run time: where the system has none, the check fails
   closed with U5003.
 - **Writes, required.** `file-write-data`, `file-write-create`, `file-write-unlink`,
-  `file-write-xattr`, `file-write-mode`, `file-write-flags`, `file-write-times` and
-  `file-write-owner`, each at `/`, `/Users`, `/private/var`, `/private/tmp`, `/Volumes`, the
-  home directory of the user's account (its passwd entry, not `HOME`), named `(home)`, and the
-  user's temporary directory (`confstr(_CS_DARWIN_USER_TEMP_DIR)`, not `TMPDIR`), named
-  `(temporary directory)`, each by its resolved path. No place comes from the working
-  directory or the environment, and the child's command line no longer carries a path:
-  `una __solver <cpu-seconds> <memory-mib> [--no-address-space-backstop]`. `sandbox_check`
+  `file-write-xattr`, `file-write-mode`, `file-write-flags`, `file-write-times`,
+  `file-write-owner`, `file-write-acl` and `file-write-finderinfo` (the last two caught a
+  profile that denied only the first eight and left ACLs through `acl_set_file` and Finder info
+  through `setattrlist` open, #1365), each at `/`, `/Users`, `/private/var`, `/private/tmp`,
+  `/Volumes`, the home directory of the user's account (its passwd entry, not `HOME`), named
+  `(home)`, and the user's temporary directory (`confstr(_CS_DARWIN_USER_TEMP_DIR)`, not
+  `TMPDIR`), named `(temporary directory)`, each by its resolved path. All ten are covered by a
+  profile's `file-write*`, so a harness that denies that denies them all. No place comes from
+  the working directory or the environment, and the child's command line no longer carries a
+  path: `una __solver <cpu-seconds> <memory-mib> [--no-address-space-backstop]`. `sandbox_check`
   answers "denied" for a path that does not exist whatever the profile, so a place that does
   not resolve is U5003. They are named `<operation> <place>`.
-- **Recorded, not required.** `file-read-data` at `/` and at `(home)`, `process-exec*` and
-  `process-fork`.
+- **Recorded, not required.** `file-read-data` at `/` and at `(home)`, `file-revoke` at every
+  place (the `revoke` call; a profile's `file-write*` does not cover it, so requiring it would
+  reject a harness that denies only `file-write*`, and it is irrelevant to a child that opens
+  nothing), `process-exec*` and `process-fork`.
 - **An answer that is neither "denied" nor "allowed"**, such as the -1 the library gives for an
   operation it does not know, is U5003, "cannot ask the outer sandbox about <probe>", and never
   counts as a denial.
@@ -637,16 +642,50 @@ allowed".
   filter of the outer profile that the probes do not ask about (another port, another socket
   path) is never reached by the solver. Under the child's own profile, rule 6's limit of 16
   stands.
-- **What the probes cannot see.** The system answers "denied" for some writes at some places
-  whatever the profile (a create at `/`, on the sealed system volume, for example): those
-  probes cannot be loosened by any profile and are reported as denied. A write that needs no
-  descriptor (rename, a new directory, a link, an attribute) at a path below a place, which
-  the list does not name, is not asked about; neither is `mach-lookup`, which the profiles of
-  the project's gates allow.
-- **Recorded.** `tcb.solver_outer_denied` names every denied probe of the list, so every
-  required one whenever `tcb.solver_confinement` is `"outer"`; Question 6's example reads with
-  these names.
-- **Cost.** A fixed number of system calls per solver child, about 300, O(1) in the query.
-- **Size.** The files behind the feature `solver` count 1,664 lines with this change (1,274
+- **A denied probe is denied under the outer sandbox**, by the profile or by the system: the
+  system denies some writes at some places whatever the profile (a create at `/`, on the sealed
+  system volume, for example), so `tcb.solver_outer_denied` listing a probe does not, on its
+  own, say the profile denied it. The report makes no such claim; `spec/13 §6` says the same.
+- **Denial at the temporary directories is stricter than Question 6's wording, and accepted.**
+  Question 6 speaks of "writing files outside the temporary directory", yet `/private/tmp` and
+  the user's temporary directory are among the required places: the outer sandbox must deny
+  writes there too. A solver child writes nothing (rule 7), so it needs no temporary directory;
+  denying writes there as well removes a place where a compromised child could drop a file for
+  another process, and the project's own sandboxes already deny it. The stricter reading is the
+  one taken.
+- **A probe needs the place's metadata and the home directory.** `sandbox_check` with a path
+  filter reads the path's metadata, so a harness that denies `file-read-metadata` on one of the
+  places, or an account with no home directory, makes a place fail to resolve and the run fail
+  with U5003 ("cannot find <place> ..."). This is availability only: a run that would prove
+  under the outer sandbox fails closed instead of proving; it never weakens the confinement.
+
+**Accepted residuals.** Two things the probes cannot close are accepted, and the project's own
+sandboxes (the `hunt` gate and `scripts/toolchain-free.sh`) deny them in their profiles so the
+project never relies on the residual:
+
+- **Signals to other processes.** An outer `(allow default)` profile lets the child send a
+  signal to another process of the same user, and the open-file limit does not stop it. This is
+  a denial-of-service nuisance, not a breach of the verification's confidentiality or integrity:
+  the child holds nothing but its pipes, and a signal reveals nothing and changes no proof.
+  `sandbox_check` cannot be made to answer for `(deny signal (target others))` (it answers
+  "allowed" with no filter whether or not the profile denies it), and `kill` with signal 0 is
+  not mediated, so there is no sound empirical probe that does not risk a real process; a real
+  signal to a process guaranteed to be external and to survive is not available. The project
+  adds `(deny signal (target others))` to the `hunt` and toolchain-free profiles; a harness
+  that wants the residual closed does the same.
+- **Writes that need no descriptor, outside the seven directories.** A profile that denies
+  writes only at the seven named places (as literals) still lets `rename`, `unlink`,
+  `truncate`, `symlink`, `link` and `mkdir` succeed at any other path, since none needs an open
+  descriptor and the probes cannot enumerate every path (`sandbox_check` answers "denied" for a
+  path that does not exist, so a probe at an invented path is meaningless, and a canary has no
+  path that a compliant profile both lets it create and lets the residual be tested at). The
+  project accepts this residual: a harness that confines the solver denies `file-write*` without
+  a place filter, as the `hunt` and toolchain-free profiles do, which leaves no write of any
+  kind outside the one writable directory.
+
+- **Cost.** A fixed number of system calls per solver child, about 350, O(1) in the query.
+- **Size.** The files behind the feature `solver` count 1,687 lines with this change (1,274
   before it, already above the cap of 1,224 that the amendment of 2026-10-27 set). The cap
-  becomes this count plus 5%: 1,747.
+  becomes this count plus 5%: 1,768, enforced by `crates/una-sys/tests/solver_size.rs` so it
+  cannot drift; a later change that needs more raises the cap with a dated amendment stating the
+  new count. ADR 0058's note of 2026-11-01 records the same.

@@ -45,7 +45,7 @@ case $leg in
         # TMPDIR (#1357); without that minimum the child fails with U5003.
         own=$(CDPATH='' cd -- "$empty" && pwd -P)
         mkdir -p "$own/home" "$own/tmp"
-        profile="(version 1)(allow default)(deny network*)(deny file-write*)(allow file-write* (subpath \"$own\"))(allow file-write* (literal \"/dev/null\") (literal \"/dev/tty\") (literal \"/dev/dtracehelper\"))(deny process-exec*)(allow process-exec* (literal \"$una\"))"
+        profile="(version 1)(allow default)(deny network*)(deny signal (target others))(deny file-write*)(allow file-write* (subpath \"$own\"))(allow file-write* (literal \"/dev/null\") (literal \"/dev/tty\") (literal \"/dev/dtracehelper\"))(deny process-exec*)(allow process-exec* (literal \"$una\"))"
         # By its absolute path: with PATH holding only the empty directory, the shell would not
         # find it (#1357).
         sandbox=/usr/bin/sandbox-exec

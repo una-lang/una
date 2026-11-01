@@ -422,11 +422,11 @@ fn confine_and_tell() -> ! {
     std::process::exit(0);
 }
 
-/// The minimum of Question 6, as the toolchain-free gate's profile has it: the network and
-/// every write denied, the rest allowed.
+/// The minimum of Question 6, as the toolchain-free gate's profile has it: the network, signals
+/// to other processes and every write denied, the rest allowed.
 #[cfg(target_os = "macos")]
-const COMPLIANT: &str = "(version 1)(allow default)(deny network*)(deny file-write*)\
-     (allow file-write* (literal \"/dev/null\"))";
+const COMPLIANT: &str = "(version 1)(allow default)(deny network*)(deny signal (target others))\
+     (deny file-write*)(allow file-write* (literal \"/dev/null\"))";
 
 #[cfg(target_os = "macos")]
 #[test]
@@ -500,6 +500,16 @@ fn an_outer_sandbox_short_of_the_minimum_is_not_the_confinement() {
              (deny file-write-create)(deny file-write-unlink)"
                 .to_owned(),
             "file-write-xattr ".to_owned(),
+        ),
+        // The eight write operations of the first fix denied, but ACLs and Finder info open
+        // (#1365 M2): the first of those is the first refused.
+        (
+            "(version 1)(allow default)(deny network*)(deny file-write-data)\
+             (deny file-write-create)(deny file-write-unlink)(deny file-write-xattr)\
+             (deny file-write-mode)(deny file-write-flags)(deny file-write-times)\
+             (deny file-write-owner)"
+                .to_owned(),
+            "file-write-acl ".to_owned(),
         ),
         // Outbound network to localhost allowed (#1363).
         (
@@ -606,6 +616,8 @@ fn required_names() -> Vec<String> {
         "file-write-flags",
         "file-write-times",
         "file-write-owner",
+        "file-write-acl",
+        "file-write-finderinfo",
     ] {
         for (label, _) in places() {
             names.push(format!("{op} {label}"));

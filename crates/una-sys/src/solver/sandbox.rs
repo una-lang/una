@@ -4,10 +4,14 @@
 //! `una` (as the `hunt` gate's does, and some harnesses do), the child asks the system whether it
 //! is sandboxed and asks the outer sandbox about each probe of a fixed list: the network
 //! operations with no filter, toward the loopback addresses over TCP and UDP and toward local
-//! sockets, and eight write operations at seven fixed places, none derived from the working
-//! directory or the environment. It takes the outer sandbox as its confinement only if every
-//! one of those is denied, and then lowers its open-file limit to zero, so that no socket or
-//! file can be opened whatever a filter of the outer profile allows. `sandbox_init` and
+//! sockets, and ten write operations (including ACLs and Finder info) at seven fixed places,
+//! none derived from the working directory or the environment. It takes the outer sandbox as
+//! its confinement only if every one of those is denied, and then lowers its open-file limit to
+//! zero, so that no socket or file can be opened whatever a filter of the outer profile allows.
+//! Two residuals an outer `(allow default)` profile leaves open, signals to other processes and
+//! writes that need no descriptor outside those places, cannot be probed soundly and are the
+//! outer profile's to deny; the ADR's amendment of 2026-11-01 records them as accepted and the
+//! project's own profiles deny them. `sandbox_init` and
 //! `sandbox_check` are deprecated interfaces, used because they are the ones the system offers
 //! to a process confining itself; `sandbox_check_network` is looked up at run time, and its
 //! absence fails closed.
@@ -69,8 +73,9 @@ const NETWORK: [&CStr; 3] = [c"network-outbound", c"network-inbound", c"network-
 const PORTS: [u16; 16] = [
     0, 1, 22, 53, 80, 443, 631, 3000, 5000, 5432, 6379, 8000, 8080, 8443, 9000, 65535,
 ];
-/// The write operations, each probed at every place of [`places`].
-const WRITES: [&CStr; 8] = [
+/// The write operations, each probed at every place of [`places`] and required to be denied.
+/// All are covered by a profile's `file-write*`, so a harness that denies that denies them all.
+const WRITES: [&CStr; 10] = [
     c"file-write-data",
     c"file-write-create",
     c"file-write-unlink",
@@ -79,6 +84,8 @@ const WRITES: [&CStr; 8] = [
     c"file-write-flags",
     c"file-write-times",
     c"file-write-owner",
+    c"file-write-acl",
+    c"file-write-finderinfo",
 ];
 /// The fixed places of the write probes, each by its resolved path; the home directory of the
 /// user's account and the user's temporary directory follow.
@@ -214,7 +221,9 @@ pub fn confine() -> Result<Confinement, SandboxError> {
     let denied = judge(&survey()?)?;
     // No descriptor can be opened from here on, a socket least of all: a filter of the outer
     // profile that the probes did not ask about (a port not in [`PORTS`], a socket elsewhere)
-    // is then never reached. The front end opens nothing (rule 7).
+    // is then never reached. The front end opens nothing (rule 7). It does not stop a signal to
+    // another process, nor a write that needs no descriptor at a path the probes do not name:
+    // those residuals are the outer profile's to close, and the ADR's amendment records them.
     let none = libc::rlimit {
         rlim_cur: 0,
         rlim_max: 0,
@@ -309,6 +318,16 @@ pub fn survey() -> Result<Vec<Answer>, SandboxError> {
             format!("file-read-data {label}"),
             false,
             ask(pid, c"file-read-data", Some(path)),
+        );
+    }
+    // `file-revoke` (the `revoke` call) is recorded, not required: a profile's `file-write*`
+    // does not cover it, so requiring it would reject a harness that denies only `file-write*`;
+    // it is irrelevant to a child that opens nothing.
+    for (label, path) in &places {
+        add(
+            format!("file-revoke {label}"),
+            false,
+            ask(pid, c"file-revoke", Some(path)),
         );
     }
     // `sandbox_check` refuses the plain name `process-exec` with `EINVAL`.
@@ -436,7 +455,8 @@ struct Network {
 
 impl Network {
     fn new(pid: libc::pid_t) -> Result<Network, SandboxError> {
-        let unable = || SandboxError::Check("network-outbound tcp 127.0.0.1".to_owned());
+        let unable =
+            |cause: &str| SandboxError::Check(format!("network-outbound tcp 127.0.0.1 ({cause})"));
         let mut token = [0_u32; 8];
         let mut count: libc::mach_msg_type_number_t = 8;
         // SAFETY: `token` is valid for the eight words the flavor writes, and `count` says so.
@@ -448,18 +468,21 @@ impl Network {
                 &raw mut count,
             )
         };
-        // The token's sixth word is the process id: a check against another token would
-        // answer for another process.
-        if status != libc::KERN_SUCCESS
-            || count != 8
-            || token.get(5) != u32::try_from(pid).ok().as_ref()
-        {
-            return Err(unable());
+        // The token's sixth word is this process's id: it is checked, since a token of another
+        // process would make `sandbox_check_network` answer for that one, which a wrong answer
+        // here must never do. The answer itself, 0 or 1, is the sandbox's; it is not trusted to
+        // tell a real denial from an error, so [`judge`] takes only 1 as a denial and the
+        // open-file limit of zero stops every connection whatever any answer was.
+        if status != libc::KERN_SUCCESS {
+            return Err(unable("the audit token is unavailable"));
+        }
+        if count != 8 || token.get(5) != u32::try_from(pid).ok().as_ref() {
+            return Err(unable("the audit token is not this process's"));
         }
         // SAFETY: `dlsym` with the default handle and a NUL-terminated name only looks up.
         let symbol = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c"sandbox_check_network".as_ptr()) };
         if symbol.is_null() {
-            return Err(unable());
+            return Err(unable("sandbox_check_network is missing"));
         }
         // SAFETY: the symbol is the library's `sandbox_check_network`, of the type
         // `CheckNetwork` (read from the library on macOS 26: an audit token, attributes, an
@@ -470,7 +493,7 @@ impl Network {
             // SAFETY: `socket` with integer arguments; a valid result is owned below.
             let fd = unsafe { libc::socket(family, kind, 0) };
             if fd < 0 {
-                return Err(unable());
+                return Err(unable("a probe socket could not be opened"));
             }
             // SAFETY: `fd` is a fresh descriptor that nothing else owns.
             Ok(unsafe { OwnedFd::from_raw_fd(fd) })

@@ -91,12 +91,12 @@ fn una_sandboxed_in(own: &Path, profile: &str, args: &[&str], cwd: &Path) -> Opt
     Some(output)
 }
 
-/// The toolchain-free gate's profile for `own`: the network denied, writes only in `own`,
-/// and no program started but `una`.
+/// The toolchain-free gate's profile for `own`: the network and signals to other processes
+/// denied, writes only in `own`, and no program started but `una`.
 fn compliant(own: &Path) -> String {
     let una = Path::new(env!("CARGO_BIN_EXE_una")).canonicalize().unwrap();
     format!(
-        "(version 1)(allow default)(deny network*)(deny file-write*)\
+        "(version 1)(allow default)(deny network*)(deny signal (target others))(deny file-write*)\
          (allow file-write* (subpath \"{}\"))\
          (allow file-write* (literal \"/dev/null\") (literal \"/dev/tty\") (literal \"/dev/dtracehelper\"))\
          (deny process-exec*)(allow process-exec* (literal \"{}\"))",
@@ -158,7 +158,16 @@ fn under_a_compliant_outer_sandbox_every_obligation_is_proven() {
         }
     }
     for op in [
-        "data", "create", "unlink", "xattr", "mode", "flags", "times", "owner",
+        "data",
+        "create",
+        "unlink",
+        "xattr",
+        "mode",
+        "flags",
+        "times",
+        "owner",
+        "acl",
+        "finderinfo",
     ] {
         for place in [
             "/",
@@ -252,11 +261,33 @@ fn an_outer_sandbox_that_allows_outbound_network_to_localhost_is_refused() {
     );
 }
 
-/// The resolved home directory of this user's account.
+/// The resolved home directory of this user's account, from the directory service (the passwd
+/// source on macOS), as the code takes it from the passwd entry, not `HOME`, which
+/// `una_sandboxed` sets to a directory inside the run: a profile that allows writes under this
+/// directory is what the solver's probe must refuse. `una-cli` forbids `unsafe`, so the passwd
+/// entry is read through `dscl` rather than `getpwuid`.
 fn home() -> PathBuf {
-    #[allow(clippy::disallowed_methods)]
-    let home = std::env::var_os("HOME").unwrap();
-    PathBuf::from(home).canonicalize().unwrap()
+    let output = Command::new("/usr/bin/dscl")
+        .args([".", "-read"])
+        .arg(format!("/Users/{}", whoami()))
+        .arg("NFSHomeDirectory")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    let dir = text
+        .strip_prefix("NFSHomeDirectory:")
+        .unwrap()
+        .trim()
+        .to_owned();
+    PathBuf::from(dir).canonicalize().unwrap()
+}
+
+/// This user's short name (`id -un`), the key of its directory-service record.
+fn whoami() -> String {
+    let output = Command::new("/usr/bin/id").arg("-un").output().unwrap();
+    assert!(output.status.success());
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
 }
 
 #[test]
