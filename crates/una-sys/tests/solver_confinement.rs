@@ -102,7 +102,7 @@ fn the_child_has_no_environment_and_only_its_pipes_after_confining() {
         assert!(!confined());
         assert!(is_open(fd));
         let before = std::env::current_dir().unwrap();
-        let outcome = confine(&limits(), c"/");
+        let outcome = confine(&limits());
         #[allow(clippy::disallowed_methods)]
         let variables = std::env::vars_os().count();
         println!(
@@ -296,7 +296,7 @@ fn under_the_sandbox_files_and_the_network_are_denied() {
         if scenario != "sandbox" {
             return;
         }
-        let outcome = sandbox::confine(c"/private/etc/hosts").unwrap();
+        let outcome = sandbox::confine().unwrap();
         let file = std::fs::File::open("/etc/hosts").is_ok();
         let connect = std::net::TcpStream::connect("127.0.0.1:9").is_ok();
         let created = std::fs::File::create("/tmp/una-sys-sandbox-probe").is_ok();
@@ -317,7 +317,7 @@ fn under_the_sandbox_files_and_the_network_are_denied() {
         // network and write denials are the minimum, reads may be allowed.
         assert!(text.contains("outcome=Outer"), "{text}");
         assert!(text.contains("\"network-outbound\""), "{text}");
-        assert!(text.contains("\"file-write-create\""), "{text}");
+        assert!(text.contains("\"file-write-create /Users\""), "{text}");
     }
 }
 
@@ -385,20 +385,35 @@ fn run_sandboxed(profile: &str, scenario: &str, test: &str) -> Option<(Ended, St
     let err = errors.join().unwrap();
     let _ = std::fs::remove_dir_all(&dir);
     if err.starts_with("sandbox-exec: sandbox_apply") {
-        let _ = writeln!(
-            std::io::stderr(),
-            "this test runs under a sandbox that refuses a nested one: {err}"
-        );
+        nested_refused(&err);
         return None;
     }
     Some((ended, out, err))
+}
+
+/// Under a sandbox that refuses a nested one, the outer sandbox of the test is not the one
+/// under test: the test fails, unless `UNA_SKIP_NESTED_SANDBOX_TESTS=1` says to skip it
+/// (`docs/compiler/testing.md`), never silently (#1364 L1).
+#[cfg(target_os = "macos")]
+fn nested_refused(err: &str) {
+    #[allow(clippy::disallowed_methods)]
+    let skip = std::env::var_os("UNA_SKIP_NESTED_SANDBOX_TESTS").is_some_and(|v| v == "1");
+    assert!(
+        skip,
+        "this test runs under a sandbox that refuses a nested one, and \
+         UNA_SKIP_NESTED_SANDBOX_TESTS=1 is not set: {err}"
+    );
+    let _ = writeln!(
+        std::io::stderr(),
+        "skipped (UNA_SKIP_NESTED_SANDBOX_TESTS=1): this test runs under a sandbox that refuses a nested one: {err}"
+    );
 }
 
 /// The scenario of the outer-sandbox tests: the whole confinement of rule 7, then what it
 /// gave, and whether a descriptor above the three standard ones is open.
 #[cfg(target_os = "macos")]
 fn confine_and_tell() -> ! {
-    let outcome = confine(&limits(), c"/private/etc/hosts");
+    let outcome = confine(&limits());
     let open: Vec<i32> = (3..64).filter(|fd| is_open(*fd)).collect();
     let _ = match outcome {
         Ok(confinement) => writeln!(std::io::stdout(), "outcome={confinement:?} open={open:?}"),
@@ -407,11 +422,11 @@ fn confine_and_tell() -> ! {
     std::process::exit(0);
 }
 
-/// The minimum of Question 6, as the toolchain-free gate's profile has it: the network and
-/// every write denied, the rest allowed.
+/// The minimum of Question 6, as the toolchain-free gate's profile has it: the network, signals
+/// to other processes and every write denied, the rest allowed.
 #[cfg(target_os = "macos")]
-const COMPLIANT: &str = "(version 1)(allow default)(deny network*)(deny file-write*)\
-     (allow file-write* (literal \"/dev/null\"))";
+const COMPLIANT: &str = "(version 1)(allow default)(deny network*)(deny signal (target others))\
+     (deny file-write*)(allow file-write* (literal \"/dev/null\"))";
 
 #[cfg(target_os = "macos")]
 #[test]
@@ -430,11 +445,11 @@ fn under_a_compliant_outer_sandbox_the_child_takes_it_and_writes_nothing_on_stde
     assert!(out.contains("outcome=Outer"), "{out}{err}");
     assert!(out.contains("\"network-outbound\""), "{out}");
     assert!(out.contains("\"network-inbound\""), "{out}");
-    assert!(
-        out.contains("\"file-write-data (outside the temporary directory)\""),
-        "{out}"
-    );
-    assert!(out.contains("\"file-write-unlink\""), "{out}");
+    // Every probe of the fixed list is named (#1364): the network ones, and each write at
+    // each place.
+    for name in required_names() {
+        assert!(out.contains(&format!("\"{name}\"")), "{name}: {out}");
+    }
     assert!(out.contains("\"process-exec*\""), "{out}");
     // #1360: `sandbox_init`, refused under the outer sandbox, writes its own line on stderr,
     // and a proof that ends with exit status 1 requires nothing there; and the descriptors
@@ -453,36 +468,373 @@ fn an_outer_sandbox_short_of_the_minimum_is_not_the_confinement() {
         return;
     }
     let test = "an_outer_sandbox_short_of_the_minimum_is_not_the_confinement";
-    for (profile, allowed) in [
+    let home = home();
+    let loose = [
         // Writes allowed: the first write of the list is the first refused.
         (
-            "(version 1)(allow default)(deny network*)",
-            "file-write-data",
+            "(version 1)(allow default)(deny network*)".to_owned(),
+            "file-write-data /".to_owned(),
         ),
         // The network allowed.
         (
-            "(version 1)(allow default)(deny file-write*)(allow file-write* (literal \"/dev/null\"))",
-            "network-outbound",
+            "(version 1)(allow default)(deny file-write*)(allow file-write* (literal \"/dev/null\"))"
+                .to_owned(),
+            "network-outbound".to_owned(),
         ),
-        // Writes denied at `/` but allowed outside the temporary directory.
+        // Writes denied at `/` but allowed everywhere else (#1364).
         (
-            "(version 1)(allow default)(deny network*)(deny file-write* (literal \"/\"))",
-            "file-write-data (outside the temporary directory)",
+            "(version 1)(allow default)(deny network*)(deny file-write* (literal \"/\"))".to_owned(),
+            "file-write-data /Users".to_owned(),
         ),
-    ] {
+        // Writes allowed under the home directory only, whatever the working directory (#1364).
+        (
+            format!(
+                "(version 1)(allow default)(deny network*)(deny file-write*)\
+                 (allow file-write* (subpath \"{home}\"))(allow file-write* (literal \"/dev/null\"))"
+            ),
+            "file-write-data (home)".to_owned(),
+        ),
+        // Only data, create and unlink denied: the other writes are open (#1364).
+        (
+            "(version 1)(allow default)(deny network*)(deny file-write-data)\
+             (deny file-write-create)(deny file-write-unlink)"
+                .to_owned(),
+            "file-write-xattr ".to_owned(),
+        ),
+        // The eight write operations of the first fix denied, but ACLs and Finder info open
+        // (#1365 M2): the first of those is the first refused.
+        (
+            "(version 1)(allow default)(deny network*)(deny file-write-data)\
+             (deny file-write-create)(deny file-write-unlink)(deny file-write-xattr)\
+             (deny file-write-mode)(deny file-write-flags)(deny file-write-times)\
+             (deny file-write-owner)"
+                .to_owned(),
+            "file-write-acl ".to_owned(),
+        ),
+        // Outbound network to localhost allowed (#1363).
+        (
+            format!("{COMPLIANT}(allow network-outbound (remote ip \"localhost:*\"))"),
+            "network-outbound tcp 127.0.0.1".to_owned(),
+        ),
+        // To one port of localhost only: a port of the probes' list (#1363).
+        (
+            format!("{COMPLIANT}(allow network-outbound (remote ip \"localhost:8080\"))"),
+            "network-outbound tcp 127.0.0.1".to_owned(),
+        ),
+    ];
+    for (profile, allowed) in &loose {
         let Some((ended, out, err)) = run_sandboxed(profile, "outer", test) else {
             return;
         };
         assert_eq!(ended, Ended::Exited(0), "{profile}: {out}{err}");
-        assert!(
-            out.contains(&format!(
-                "refused=the outer sandbox is too permissive for the solver: {allowed} is allowed"
-            )),
-            "{profile}: {out}{err}"
-        );
+        let refused =
+            format!("refused=the outer sandbox is too permissive for the solver: {allowed}");
+        assert!(out.contains(&refused), "{profile}: {out}{err}");
         assert!(!out.contains("outcome="), "{profile}: {out}");
         assert_eq!(err, "", "{profile}: {out}");
     }
+}
+
+/// The resolved home directory of this user's account (its passwd entry).
+#[cfg(target_os = "macos")]
+fn home() -> String {
+    // SAFETY: `getpwuid` returns null or an entry whose `pw_dir` is a NUL-terminated text,
+    // read at once.
+    let dir = unsafe {
+        let entry = libc::getpwuid(libc::getuid());
+        assert!(!entry.is_null());
+        std::ffi::CStr::from_ptr((*entry).pw_dir)
+            .to_string_lossy()
+            .into_owned()
+    };
+    resolved(&dir)
+}
+
+/// The resolved temporary directory of this user (`confstr`).
+#[cfg(target_os = "macos")]
+fn user_temp() -> String {
+    let mut buffer = vec![0_u8; 1025];
+    // SAFETY: `buffer` is valid for writes of its length.
+    let n = unsafe {
+        libc::confstr(
+            libc::_CS_DARWIN_USER_TEMP_DIR,
+            buffer.as_mut_ptr().cast(),
+            buffer.len(),
+        )
+    };
+    assert!(n > 0);
+    resolved(
+        std::ffi::CStr::from_bytes_until_nul(&buffer)
+            .unwrap()
+            .to_str()
+            .unwrap(),
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn resolved(path: &str) -> String {
+    std::fs::canonicalize(path)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned()
+}
+
+/// The places of the write probes, by label and resolved path, as ADR 0124's amendment of
+/// 2026-11-01 lists them, independently of `una-sys`'s own list.
+#[cfg(target_os = "macos")]
+fn places() -> Vec<(String, String)> {
+    let mut places: Vec<(String, String)> =
+        ["/", "/Users", "/private/var", "/private/tmp", "/Volumes"]
+            .iter()
+            .map(|p| ((*p).to_owned(), resolved(p)))
+            .collect();
+    places.push(("(home)".to_owned(), home()));
+    places.push(("(temporary directory)".to_owned(), user_temp()));
+    places
+}
+
+/// Every probe the minimum requires the outer sandbox to deny, by its name in the report.
+#[cfg(target_os = "macos")]
+fn required_names() -> Vec<String> {
+    let mut names = Vec::new();
+    for op in ["network-outbound", "network-inbound", "network-bind"] {
+        names.push(op.to_owned());
+        for protocol in ["tcp", "udp"] {
+            for host in ["127.0.0.1", "::1"] {
+                names.push(format!("{op} {protocol} {host}"));
+            }
+        }
+        names.push(format!("{op} unix-socket"));
+    }
+    for op in [
+        "file-write-data",
+        "file-write-create",
+        "file-write-unlink",
+        "file-write-xattr",
+        "file-write-mode",
+        "file-write-flags",
+        "file-write-times",
+        "file-write-owner",
+        "file-write-acl",
+        "file-write-finderinfo",
+    ] {
+        for (label, _) in places() {
+            names.push(format!("{op} {label}"));
+        }
+    }
+    names
+}
+
+/// The rule that allows exactly the probe `name` and nothing else of the list.
+#[cfg(target_os = "macos")]
+fn allowing(name: &str) -> String {
+    let (op, filter) = name.split_once(' ').unwrap_or((name, ""));
+    let side = if op == "network-outbound" {
+        "remote"
+    } else {
+        "local"
+    };
+    match filter {
+        "" => format!("(allow {op})"),
+        "unix-socket" => format!("(allow {op} ({side} unix-socket))"),
+        _ if op.starts_with("network-") => {
+            let (protocol, host) = filter.split_once(' ').unwrap();
+            let family = if host == "::1" { "6" } else { "4" };
+            format!("(allow {op} ({side} {protocol}{family} \"localhost:*\"))")
+        }
+        label => {
+            let path = places()
+                .into_iter()
+                .find(|(l, _)| l == label)
+                .map(|(_, p)| p)
+                .unwrap();
+            format!("(allow {op} (literal \"{path}\"))")
+        }
+    }
+}
+
+/// What `survey` answers under `profile`, as (name, required, answer).
+#[cfg(target_os = "macos")]
+fn surveyed(profile: &str, test: &str) -> Option<Vec<(String, bool, i32)>> {
+    let (ended, out, err) = run_sandboxed(profile, "survey", test)?;
+    assert_eq!(ended, Ended::Exited(0), "{out}{err}");
+    Some(
+        out.lines()
+            // The harness's own "test ... " may precede the first line.
+            .filter_map(|line| line.split_once("answer\t").map(|(_, rest)| rest))
+            .map(|line| {
+                let mut fields = line.split('\t');
+                let name = fields.next().unwrap().to_owned();
+                let required = fields.next().unwrap() == "true";
+                let answer = fields.next().unwrap().parse().unwrap();
+                (name, required, answer)
+            })
+            .collect(),
+    )
+}
+
+/// The scenario of the survey: every probe's answer, one line each.
+#[cfg(target_os = "macos")]
+fn survey_and_tell() -> ! {
+    let mut out = String::new();
+    match una_sys::solver::sandbox::survey() {
+        Ok(answers) => {
+            for a in answers {
+                out.push_str(&format!(
+                    "answer\t{}\t{}\t{}\n",
+                    a.name, a.required, a.answer
+                ));
+            }
+        }
+        Err(error) => out.push_str(&format!("refused={error}\n")),
+    }
+    let _ = std::io::stdout().write_all(out.as_bytes());
+    std::process::exit(0);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn every_network_and_write_probe_is_required() {
+    if let Some(scenario) = scenario() {
+        if scenario == "survey" {
+            survey_and_tell();
+        }
+        return;
+    }
+    // The mutation check of #1364 M2 for the list itself: a probe of the network or of a write
+    // that is only recorded, or missing, fails here.
+    let test = "every_network_and_write_probe_is_required";
+    let Some(answers) = surveyed(COMPLIANT, test) else {
+        return;
+    };
+    for name in required_names() {
+        let found = answers.iter().find(|(n, _, _)| *n == name);
+        assert!(
+            matches!(found, Some((_, true, 1))),
+            "{name} must be required and denied: {found:?}"
+        );
+    }
+    for (name, required, _) in &answers {
+        assert_eq!(
+            *required,
+            name.starts_with("network-") || name.starts_with("file-write-"),
+            "{name}"
+        );
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn each_required_probe_alone_allowed_is_refused_by_its_name() {
+    if let Some(scenario) = scenario() {
+        match scenario.as_str() {
+            "survey" => survey_and_tell(),
+            "outer" => confine_and_tell(),
+            _ => return,
+        }
+    }
+    // #1364 M2: for each required probe, a profile that meets the minimum but for that one
+    // probe; the probe must be the one refused, so a probe that is not required, not asked,
+    // or asked wrong fails here. A probe the system denies whatever the profile (a write at
+    // `/` on the sealed system volume) cannot be loosened by a profile, and is listed apart.
+    let test = "each_required_probe_alone_allowed_is_refused_by_its_name";
+    let Some(open) = surveyed("(version 1)(allow default)", test) else {
+        return;
+    };
+    let mut loosened = 0;
+    let mut fixed = Vec::new();
+    for name in required_names() {
+        let answer = open.iter().find(|(n, _, _)| *n == name).map(|a| a.2);
+        if answer == Some(1) {
+            fixed.push(name);
+            continue;
+        }
+        assert_eq!(answer, Some(0), "{name}: {open:?}");
+        let profile = format!("{COMPLIANT}{}", allowing(&name));
+        let (ended, out, err) = run_sandboxed(&profile, "outer", test).unwrap();
+        assert_eq!(ended, Ended::Exited(0), "{profile}: {out}{err}");
+        let refused = format!(
+            "refused=the outer sandbox is too permissive for the solver: {name} is allowed"
+        );
+        assert!(out.contains(&refused), "{profile}: {out}{err}");
+        loosened += 1;
+    }
+    let _ = writeln!(
+        std::io::stderr(),
+        "{loosened} probes loosened one by one; denied by the system whatever the profile: {fixed:?}"
+    );
+    // Every network probe can be loosened, and so can each write somewhere.
+    assert!(
+        fixed.iter().all(|name| name.starts_with("file-write-")),
+        "{fixed:?}"
+    );
+    assert!(loosened >= 18 + 8, "{loosened}");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn an_operation_the_library_does_not_know_is_an_error_naming_it() {
+    if let Some(scenario) = scenario() {
+        if scenario == "unknown" {
+            use una_sys::solver::sandbox::{Answer, ask, judge};
+            // SAFETY: `getpid` cannot fail.
+            let pid = unsafe { libc::getpid() };
+            let answer = ask(pid, c"file-write-bogus", Some(c"/"));
+            let judged = judge(&[Answer {
+                name: "file-write-bogus /".to_owned(),
+                required: true,
+                answer,
+            }]);
+            let shown = judged.err().map(|e| e.to_string());
+            println!("answer={answer} error={shown:?}");
+            std::process::exit(0);
+        }
+        return;
+    }
+    let test = "an_operation_the_library_does_not_know_is_an_error_naming_it";
+    let Some((ended, out, err)) = run_sandboxed(COMPLIANT, "unknown", test) else {
+        return;
+    };
+    assert_eq!(ended, Ended::Exited(0), "{out}{err}");
+    assert!(out.contains("answer=-1"), "{out}");
+    assert!(
+        out.contains("cannot ask the outer sandbox about file-write-bogus /"),
+        "{out}"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn under_an_accepted_outer_sandbox_no_descriptor_can_be_opened() {
+    if let Some(scenario) = scenario() {
+        if scenario == "no-descriptor" {
+            let outcome = confine(&limits());
+            let connect =
+                std::net::TcpStream::connect("127.0.0.1:12345").map_err(|e| e.raw_os_error());
+            let file = std::fs::File::open("/private/etc/hosts").map_err(|e| e.raw_os_error());
+            println!(
+                "outcome={} connect={:?} file={:?}",
+                outcome.is_ok(),
+                connect.err(),
+                file.err()
+            );
+            std::process::exit(0);
+        }
+        return;
+    }
+    // A filter the probes do not ask about, one port outside their list: the outer sandbox is
+    // taken, and the open-file limit of zero still stops every socket and file (#1363).
+    let test = "under_an_accepted_outer_sandbox_no_descriptor_can_be_opened";
+    let profile = format!("{COMPLIANT}(allow network-outbound (remote ip \"localhost:12345\"))");
+    let Some((ended, out, err)) = run_sandboxed(&profile, "no-descriptor", test) else {
+        return;
+    };
+    assert_eq!(ended, Ended::Exited(0), "{out}{err}");
+    let emfile = Some(Some(libc::EMFILE));
+    assert!(out.contains("outcome=true"), "{out}");
+    assert!(out.contains(&format!("connect={emfile:?}")), "{out}");
+    assert!(out.contains(&format!("file={emfile:?}")), "{out}");
 }
 
 #[test]

@@ -103,3 +103,7 @@ find crates/una-sys/src -name '*.rs' -not -path 'crates/una-sys/src/solver/*' -e
 ```
 
 The cap of the base code becomes **1,594 lines**: 1,519 plus at most 5%, rounded down. It replaces the 1,200 lines of the ADR 0116 amendment of 2026-10-19, which the base code had already passed, and every earlier number for the base code. The 600 lines of `solver` and the 150 lines of `una-z3` stand as written. A change that would take the base code past 1,594 lines needs a new amendment, with its line count, before it merges; each pull request that changes the crate states the count in its description, as before.
+
+## Note (2026-11-01): the `solver` files' cap (ADR 0124, #1365)
+
+The 600 lines stated for the files behind the feature `solver` on lines 80 and 86 are the estimate of ADR 0124 rule 35, not a cap; ADR 0124's amendment of 2026-10-27 set the cap at the measured count plus 5 percent, and its amendment of 2026-11-01 (the outer-sandbox probes of #1363, #1364 and #1365) restates it at **1,768 lines**: the measured 1,687 plus 5 percent. That cap governs `crates/una-sys/src/solver/`, is enforced by `crates/una-sys/tests/solver_size.rs`, and replaces the 600 for those files; the base code cap of 1,594 above and the 150 of `una-z3` are unchanged. A change that needs more raises the cap with a dated amendment of ADR 0124 stating the new count. This note adds to the accepted text, which is unchanged.
