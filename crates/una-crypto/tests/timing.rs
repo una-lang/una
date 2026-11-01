@@ -1,7 +1,7 @@
 //! A dudect-style statistical timing check (ADR 0133 rule 9): two input classes that differ only
 //! in a secret are timed in interleaved random order, the slowest tail is cropped, and Welch's
 //! t statistic must stay small. It is evidence for the release gate, not a proof: it runs on a
-//! quiet machine with `cargo test --release -p una-crypto --test timing -- --ignored`.
+//! quiet machine with `cargo test --release -p una-crypto --test timing -- --ignored --test-threads=1` (parallel tests disturb each other's clocks).
 
 #![allow(clippy::unwrap_used, clippy::indexing_slicing, clippy::panic)]
 
