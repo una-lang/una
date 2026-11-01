@@ -180,3 +180,80 @@ fn ecdsa_verification_is_fast_and_linear_in_the_message() {
         assert!((3.0..16.0).contains(&ratio), "{curve:?}: ratio {ratio:.2}");
     }
 }
+
+/// `(RSAPublicKey DER, message, PKCS#1 v1.5 SHA-256 signature)` of a known-answer key.
+fn rsa_known_answer(doc: &serde_json::Value, name: &str) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    let key = doc["keys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|k| k["name"] == name)
+        .unwrap();
+    let hex_text = key["n"].as_str().unwrap();
+    let n = common::hex(&format!(
+        "{}{hex_text}",
+        if hex_text.len() % 2 == 1 { "0" } else { "" }
+    ));
+    let integer = |v: &[u8]| {
+        let v = if v[0] & 0x80 != 0 {
+            [&[0u8][..], v].concat()
+        } else {
+            v.to_vec()
+        };
+        let mut out = vec![0x02, 0x82, (v.len() >> 8) as u8, v.len() as u8];
+        out.extend_from_slice(&v);
+        out
+    };
+    let body = [integer(&n), vec![0x02, 0x03, 1, 0, 1]].concat();
+    let mut der = vec![0x30, 0x82, (body.len() >> 8) as u8, body.len() as u8];
+    der.extend_from_slice(&body);
+    let msg = key["message_utf8"].as_str().unwrap().as_bytes().to_vec();
+    let kat = &key["kats"][0];
+    assert_eq!(kat["scheme"], "pkcs1");
+    assert_eq!(kat["hash"], "sha256");
+    (der, msg, common::hex(kat["sig"].as_str().unwrap()))
+}
+
+#[test]
+fn rsa_verification_is_quadratic_in_the_modulus_and_linear_in_the_message() {
+    use una_crypto::rsa::{HashAlg, PublicKey};
+    if cfg!(debug_assertions) {
+        return;
+    }
+    // Known answers made with plain big-integer arithmetic (tests/vectors/rsa_test_keys.json).
+    let doc: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(common::vector_path("rsa_test_keys.json")).unwrap(),
+    )
+    .unwrap();
+    let mut times = Vec::new();
+    for name in ["k2048", "k4096", "k8192"] {
+        let (der, msg, sig) = rsa_known_answer(&doc, name);
+        // Key parsing and setup are part of the cost; e = 65537 is 16 squarings and one product.
+        let t = seconds(|| {
+            for _ in 0..5 {
+                let key = PublicKey::from_rsa_public_key_der(&der).unwrap();
+                assert!(key.verify_pkcs1(HashAlg::Sha256, &msg, &sig).is_ok());
+            }
+        }) / 5.0;
+        eprintln!("{name}: {:.0} us per verification", t * 1e6);
+        times.push(t);
+    }
+    // Doubling the modulus quadruples a Montgomery product (O(k^2)); fixed costs and memory
+    // effects widen the band: 2.5 to 7 (a cubic algorithm would give 8).
+    for (pair, label) in times.windows(2).zip(["2048 to 4096", "4096 to 8192"]) {
+        let ratio = pair[1] / pair[0];
+        assert!((2.5..7.0).contains(&ratio), "{label}: ratio {ratio:.2}");
+    }
+    assert!(times[0] < 3e-3, "{:.2} ms for 2048 bits", times[0] * 1e3);
+    assert!(times[2] < 40e-3, "{:.2} ms for 8192 bits", times[2] * 1e3);
+    // Large messages: the cost is the hash, linear in the size. The signature does not match the
+    // message, so the result is a refusal after the hash and the exponentiation both ran.
+    let (der, _, sig) = rsa_known_answer(&doc, "k2048");
+    let key = PublicKey::from_rsa_public_key_der(&der).unwrap();
+    let small = vec![1u8; 1 << 20];
+    let large = vec![1u8; 8 << 20];
+    let t_small = seconds(|| assert!(key.verify_pkcs1(HashAlg::Sha256, &small, &sig).is_err()));
+    let t_large = seconds(|| assert!(key.verify_pkcs1(HashAlg::Sha256, &large, &sig).is_err()));
+    let ratio = t_large / t_small;
+    assert!((3.0..16.0).contains(&ratio), "message ratio {ratio:.2}");
+}
