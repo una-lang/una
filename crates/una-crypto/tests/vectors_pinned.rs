@@ -20,12 +20,18 @@ fn every_vendored_file_matches_its_pinned_digest() {
     let mut checked = 0;
     for line in pins.lines().filter(|l| !l.trim().is_empty()) {
         let (digest, name) = line.split_once("  ").unwrap();
-        let bytes = std::fs::read(vector_path(&format!("wycheproof/{name}"))).unwrap();
+        // The RFC 6979 file sits beside the Wycheproof directory; everything else is in it.
+        let path = if name.starts_with("rfc") {
+            vector_path(name)
+        } else {
+            vector_path(&format!("wycheproof/{name}"))
+        };
+        let bytes = std::fs::read(path).unwrap();
         assert_eq!(to_hex(&Sha256::digest(&bytes)), digest, "{name}");
         assert_eq!(hex(digest).len(), 32);
         checked += 1;
     }
-    assert_eq!(checked, 10, "every vendored vector file has a pin");
+    assert_eq!(checked, 16, "every vendored vector file has a pin");
     let on_disk = std::fs::read_dir(vector_path("wycheproof"))
         .unwrap()
         .filter(|e| {
@@ -36,5 +42,5 @@ fn every_vendored_file_matches_its_pinned_digest() {
                 .ends_with("_test.json")
         })
         .count();
-    assert_eq!(on_disk, checked, "a vector file without a pin");
+    assert_eq!(on_disk + 1, checked, "a vector file without a pin");
 }

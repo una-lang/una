@@ -66,7 +66,9 @@ fn reduce(mut p: [u64; 15]) -> Planes {
         p[k - 7] ^= v;
         p[k - 8] ^= v;
     }
-    [p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7]]
+    let out = [p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7]];
+    p.zeroize();
+    out
 }
 
 fn gf_mul(a: &Planes, b: &Planes) -> Planes {
@@ -90,11 +92,19 @@ fn gf_square(a: &Planes) -> Planes {
 
 /// The AES S-box on all lanes: the inverse `x^254` (0 maps to 0) and the affine transformation.
 fn sub_bytes(x: &Planes) -> Planes {
-    let x3 = gf_mul(&gf_square(x), x); // x^3
-    let x7 = gf_mul(&gf_square(&x3), x); // x^7
-    let x63 = gf_mul(&gf_square(&gf_square(&gf_square(&x7))), &x7); // x^(8*7+7)
-    let x127 = gf_mul(&gf_square(&x63), x); // x^127
-    let inv = gf_square(&x127); // x^254
+    // Every named intermediate is a power of a secret byte; all are wiped before returning
+    // (ADR 0133 rule 7).
+    let mut sq = gf_square(x);
+    let mut x3 = gf_mul(&sq, x); // x^3
+    sq = gf_square(&x3);
+    let mut x7 = gf_mul(&sq, x); // x^7
+    sq = gf_square(&x7);
+    let mut t = gf_square(&sq);
+    sq = gf_square(&t);
+    let mut x63 = gf_mul(&sq, &x7); // x^(8*7+7)
+    sq = gf_square(&x63);
+    let mut x127 = gf_mul(&sq, x); // x^127
+    let mut inv = gf_square(&x127); // x^254
     let mut out = [0u64; 8];
     for i in 0..8 {
         let mut v =
@@ -104,6 +114,13 @@ fn sub_bytes(x: &Planes) -> Planes {
         }
         out[i] = v;
     }
+    sq.zeroize();
+    t.zeroize();
+    x3.zeroize();
+    x7.zeroize();
+    x63.zeroize();
+    x127.zeroize();
+    inv.zeroize();
     out
 }
 
