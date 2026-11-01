@@ -3101,9 +3101,7 @@ impl<'p, 'w> Machine<'p, 'w> {
             }
             "std.testing" if function.name == "fake_hash" => {
                 return match args.first() {
-                    Some(Value::Int(seed)) => {
-                        Ok(Value::Hashed(Rc::from(host::fake_hash(&seed.to_string()))))
-                    }
+                    Some(Value::Int(seed)) => Ok(Value::Hashed(Rc::from(host::fake_hash(seed)))),
                     _ => Err(fault("`fake_hash` without an `Int` seed")),
                 };
             }
