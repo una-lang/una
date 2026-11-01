@@ -3055,6 +3055,116 @@ fn the_executable_checks_each_operation_against_the_files_modes() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The program of [`the_executable_confines_files_through_links_as_una_run_does_1343`]: it
+/// reads or writes each path and prints the outcome.
+#[cfg(unix)]
+fn confined_program(cases: &[(&str, String)]) -> String {
+    let mut program = String::from(
+        "module files\n\ndescribe(failure: FileError) -> Text\n=\n  when failure\n    is NotFound -> \"not found\"\n    is Denied -> \"denied\"\n    is Io -> \"io\"\n\nshow(path: Text) -> Text\n  uses @files: Files[read]\n=\n  let content = attempt @files.read(path)\n  when content\n    is Ok -> \"read\"\n    is Err(failure) -> describe(failure)\n\nsave(path: Text) -> Text\n  uses @files: Files[write]\n=\n  let saved = attempt @files.write(path, content: \"entry\")\n  when saved\n    is Ok -> \"written\"\n    is Err(failure) -> describe(failure)\n\npub main() -> Unit\n  uses @console: Console[print]\n  uses @files: Files[read, write]\n=\n",
+    );
+    for (index, (operation, path)) in cases.iter().enumerate() {
+        let call = if *operation == "read" { "show" } else { "save" };
+        program.push_str(&format!(
+            "  let r{index} = {call}(\"{path}\")\n  @console.print(\"{index} {operation}: {{r{index}}}\")\n"
+        ));
+    }
+    program
+}
+
+#[cfg(unix)]
+#[test]
+fn the_executable_confines_files_through_links_as_una_run_does_1343() {
+    // `spec/14 §3`, #1343: the native world resolves each directory from the one before it
+    // (`una_interp::disk_step`), with the outcomes of `una run`: links inside and outside the
+    // prefix, dangling links, a link loop, more links in one path than the host follows, and
+    // a lexical path longer than the host takes.
+    use std::os::unix::fs::symlink;
+    runtime();
+    let depth = 40;
+    let mut cases: Vec<(&str, String)> = [
+        "in_dir/inner.txt",
+        "in_dir/../note.txt",
+        "out_dir/secret.txt",
+        "dangling",
+        "dangling_dir/new.txt",
+        "in_link",
+        "loop/x",
+        "up/box/note.txt",
+        "back/note.txt",
+        "missing/new.txt",
+        "note.txt",
+    ]
+    .into_iter()
+    .flat_map(|path| [("read", path.to_owned()), ("write", path.to_owned())])
+    .collect();
+    for links in [0, 1, 20, 31, 32, 33, 39, 40] {
+        let path = format!("{}{}f.txt", "l/".repeat(links), "d/".repeat(depth - links));
+        cases.push(("write", path.clone()));
+        cases.push(("read", path));
+    }
+    cases.push(("read", format!("{}note.txt", "self/".repeat(300))));
+    let program = confined_program(&cases);
+    let dir = package(
+        "confined",
+        "\n[run]\nentry = \"files\"\ngrants = [\"console\", \"files:box:read,write\"]\n",
+        &[("src/files.una", &program)],
+    );
+    for (path, text) in [
+        ("box/note.txt", "inside\n"),
+        ("box/sub/inner.txt", "inner\n"),
+        ("outside/secret.txt", "secret\n"),
+    ] {
+        std::fs::create_dir_all(dir.join(path).parent().unwrap()).unwrap();
+        std::fs::write(dir.join(path), text).unwrap();
+    }
+    let boxed = dir.join("box");
+    symlink("sub", boxed.join("in_dir")).unwrap();
+    symlink("../outside", boxed.join("out_dir")).unwrap();
+    symlink("missing_target", boxed.join("dangling")).unwrap();
+    symlink("../outside/nope", boxed.join("dangling_dir")).unwrap();
+    symlink("note.txt", boxed.join("in_link")).unwrap();
+    symlink("loop", boxed.join("loop")).unwrap();
+    symlink("..", boxed.join("up")).unwrap();
+    symlink("../box", boxed.join("back")).unwrap();
+    symlink(".", boxed.join("self")).unwrap();
+    let mut at = boxed.clone();
+    for _ in 0..depth {
+        symlink("d", at.join("l")).unwrap();
+        at.push("d");
+        std::fs::create_dir(&at).unwrap();
+    }
+    let built = una(&dir, &["build"]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    let native = Command::new(dir.join("target/una/confined"))
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert_eq!(native.status.code(), Some(0), "{native:?}");
+    let interpreted = una(&dir, &["run"]);
+    assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
+    let stdout = String::from_utf8_lossy(&native.stdout);
+    assert_eq!(stdout, String::from_utf8_lossy(&interpreted.stdout));
+    let outcomes: Vec<&str> = stdout.lines().collect();
+    assert_eq!(outcomes.len(), cases.len(), "{stdout}");
+    // A few outcomes of `spec/14 §3`, by case.
+    for (index, outcome) in [
+        (0, "read"),
+        (4, "denied"),
+        (6, "denied"),
+        (11, "denied"),
+        (18, "not found"),
+        (19, "not found"),
+        (20, "read"),
+    ] {
+        assert_eq!(
+            outcomes[index],
+            format!("{index} {}: {outcome}", cases[index].0)
+        );
+    }
+    assert!(!dir.join("outside/new.txt").exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Builds the package `name` of edition 0.2 whose entry module `closed` is `source`, and
 /// returns its directory and executable.
 fn closed_package(name: &str, source: &str) -> (PathBuf, PathBuf) {

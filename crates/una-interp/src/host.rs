@@ -2,6 +2,7 @@
 //! `una run`, the confinement of `Files` to its prefix, and HMAC-SHA-256 for `Keys`.
 
 use std::collections::BTreeMap;
+use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
 
 use sha2::{Digest, Sha256};
@@ -43,6 +44,15 @@ pub trait World {
     fn canonical(&mut self, path: &Path) -> Option<PathBuf>;
     /// Whether `path` itself is a symbolic link, dangling or not, without following it.
     fn is_link(&mut self, path: &Path) -> bool;
+    /// One step of [`confine`]: the canonical form of `directory/name`, following a link at
+    /// `name`, or `None` when it does not resolve, where `directory` is a canonical path that
+    /// [`World::canonical`] or an earlier step returned. It MUST agree with
+    /// `canonical(directory/name)`, which is what the default does. A host overrides it to
+    /// look up only `name` in the directory already resolved, so that confinement makes O(c)
+    /// lookups of components for a path of c components, not O(c²) (#1343).
+    fn step(&mut self, directory: &Path, name: &OsStr) -> Option<PathBuf> {
+        self.canonical(&directory.join(name))
+    }
     /// Takes `event` as it is written, as the trace file of `una run --trace` does (ADR 0117
     /// rule 10): `true` when the run need not keep it. The default keeps every event.
     fn trace_event(&mut self, _event: &crate::machine::Event) -> bool {
@@ -268,26 +278,70 @@ pub fn normalize(path: &Path) -> PathBuf {
 /// 3. the final component is never followed: a symbolic link there, dangling or not, is
 ///    denied. The world opens the returned path without creating a file through a link.
 ///
+/// The outcome is that of canonicalizing each lexical prefix `prefix/d1/../dk` of the path in
+/// turn (`confine_by_prefixes`), in O(c) lookups of components for c components (#1343):
+/// each directory is resolved from the one before it with [`World::step`], which looks up only
+/// its own component, to find where that resolution stops or leaves the prefix; then one
+/// canonicalization of the lexical prefix there confirms it, and the next one decides as the
+/// prefix-by-prefix resolution does. Where they disagree, which takes a host limit (more links
+/// than the host follows in one path, a lexical path longer than the host takes) or a name
+/// that a case-insensitive file system spells otherwise, the prefix-by-prefix resolution
+/// decides, in O(c²) lookups.
+///
 /// Races between this check and the operation are outside the v0.1 model (D9 rule 4).
 pub fn confine(world: &mut dyn World, prefix: &Path, relative: &str) -> Option<PathBuf> {
-    // Rule 1: lexical normalization.
-    let mut parts: Vec<&std::ffi::OsStr> = Vec::new();
-    for component in Path::new(relative).components() {
-        match component {
-            Component::Normal(part) => parts.push(part),
-            Component::CurDir => {}
-            Component::ParentDir => {
-                parts.pop()?;
-            }
-            Component::RootDir | Component::Prefix(_) => return None,
-        }
-    }
+    let parts = normalized(relative)?;
     // D-133: a path that names the prefix itself (``, `.`, `a/..`) has no final
     // component to open, and is denied.
     let (last, directories) = parts.split_last()?;
+    let Some(root) = world.canonical(prefix) else {
+        return missing(world, prefix, prefix, &parts);
+    };
+    // Rule 2, located: `resolved` is the canonical form of `prefix/d1/../d(depth)`, since
+    // `canonical(a/b)` is `canonical(canonical(a)/b)` for a normal component `b`.
+    let mut resolved = root.clone();
+    let mut depth = 0;
+    for part in directories {
+        match world.step(&resolved, part) {
+            Some(directory) if directory.starts_with(&root) => resolved = directory,
+            _ => break,
+        }
+        depth += 1;
+    }
+    // Confirmed: the lexical prefix of `depth` directories resolves to `resolved`, so every
+    // shorter one resolves too, inside the prefix, as each step was checked.
+    let mut lexical = prefix.to_path_buf();
+    lexical.extend(directories.iter().take(depth));
+    if depth > 0 && world.canonical(&lexical).as_ref() != Some(&resolved) {
+        return confine_by_prefixes(world, prefix, relative);
+    }
+    let Some(next) = directories.get(depth) else {
+        // Rule 3: the final component is never followed.
+        let target = resolved.join(last);
+        return (!world.is_link(&target)).then_some(target);
+    };
+    // The resolution stops at the next directory, or leaves the prefix there: decided as by
+    // the prefix-by-prefix resolution. D-134: each directory is checked, not only the last,
+    // so a path never passes through a directory outside the prefix even when it comes back
+    // inside.
+    lexical.push(next);
+    match world.canonical(&lexical) {
+        None => missing(world, &lexical, prefix, &parts),
+        Some(directory) if !directory.starts_with(&root) => None,
+        Some(_) => confine_by_prefixes(world, prefix, relative),
+    }
+}
+
+/// [`confine`] by canonicalizing every lexical prefix of the path from the grant prefix, in
+/// O(c²) lookups of components for c components: the definition that [`confine`] keeps, and
+/// what decides when its located resolution and a canonicalization disagree.
+fn confine_by_prefixes(world: &mut dyn World, prefix: &Path, relative: &str) -> Option<PathBuf> {
+    // Rule 1: lexical normalization.
+    let parts = normalized(relative)?;
+    // D-133: no final component, denied.
+    let (last, directories) = parts.split_last()?;
     // Rule 2: every intermediate directory resolves inside the canonical prefix.
-    // D-134: each one is checked, not only the last, so a path never passes through
-    // a directory outside the prefix even when it comes back inside.
+    // D-134: each one is checked, not only the last.
     let mut lexical = prefix.to_path_buf();
     let Some(root) = world.canonical(prefix) else {
         return missing(world, &lexical, prefix, &parts);
@@ -306,6 +360,37 @@ pub fn confine(world: &mut dyn World, prefix: &Path, relative: &str) -> Option<P
     (!world.is_link(&target)).then_some(target)
 }
 
+/// Rule 1 of [`confine`]: the normal components of `relative` with `.` removed and `..`
+/// applied lexically, or `None` when it is absolute or a `..` leaves the prefix.
+fn normalized(relative: &str) -> Option<Vec<&OsStr>> {
+    let mut parts = Vec::new();
+    for component in Path::new(relative).components() {
+        match component {
+            Component::Normal(part) => parts.push(part),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                parts.pop()?;
+            }
+            Component::RootDir | Component::Prefix(_) => return None,
+        }
+    }
+    Some(parts)
+}
+
+/// [`World::step`] on the machine's file system, for the worlds of `una run` and of native
+/// executables: one `lstat` of `directory/name`, and a canonicalization only when `name` is a
+/// link. Since `directory` is canonical and `name` a normal component, `directory/name` is
+/// canonical when it is not a link.
+pub fn disk_step(directory: &Path, name: &OsStr) -> Option<PathBuf> {
+    let path = directory.join(name);
+    let metadata = std::fs::symlink_metadata(&path).ok()?;
+    if metadata.file_type().is_symlink() {
+        std::fs::canonicalize(&path).ok()
+    } else {
+        Some(path)
+    }
+}
+
 /// The outcome of [`confine`] when the intermediate directory `lexical` does not resolve: a
 /// dangling link is denied, and a missing directory yields the lexical path, whose operation
 /// then fails with `NotFound` without touching anything outside the prefix.
@@ -313,7 +398,7 @@ fn missing(
     world: &mut dyn World,
     lexical: &Path,
     prefix: &Path,
-    parts: &[&std::ffi::OsStr],
+    parts: &[&OsStr],
 ) -> Option<PathBuf> {
     if world.is_link(lexical) {
         return None;
