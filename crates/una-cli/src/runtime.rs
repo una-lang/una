@@ -93,6 +93,8 @@ pub(crate) struct TaskFlags {
     pub(crate) task_depth: Option<usize>,
     pub(crate) io_threads: Option<usize>,
     pub(crate) file_threads: Option<usize>,
+    /// `--serve-threads` (ADR 0123 rule 20): checked, and unused until a run serves.
+    pub(crate) serve_threads: Option<usize>,
 }
 
 impl TaskFlags {
@@ -100,6 +102,7 @@ impl TaskFlags {
     /// interpreter runs no coroutine before `first of` and `start` (ADR 0117 rule 11), so it
     /// only checks them, and refuses what the executable refuses.
     fn check(self, max_depth: usize) -> Result<una_interp::Concurrency, String> {
+        una_interp::concurrency::serve_threads(self.serve_threads)?;
         una_interp::Concurrency::from_flags(
             max_depth,
             self.workers,
@@ -501,7 +504,17 @@ pub(crate) fn run_command(
     // The `serve:` grants, before `main` (`spec/31 §2` rule 7): the descriptor limit, the TLS
     // files checked on their open descriptors, and the listeners, held until the run ends.
     // Nothing accepts on them until the serve threads of ADR 0123 step 4 take them over.
-    let _listeners = match una_http::serve::prepare(&serve_inputs(&grants)) {
+    // A `--serve-threads` out of range is refused below; here it only sizes the descriptors.
+    let serve_threads =
+        una_interp::concurrency::serve_threads(options.tasks.serve_threads).unwrap_or(1);
+    let _listeners = match una_http::serve::prepare(
+        &serve_inputs(&grants),
+        serve_threads,
+        options
+            .tasks
+            .file_threads
+            .unwrap_or(una_interp::concurrency::DEFAULT_FILE_THREADS),
+    ) {
         Ok(prepared) => prepared,
         Err(message) => {
             writeln!(stderr, "error: {message}")?;

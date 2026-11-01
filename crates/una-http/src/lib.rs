@@ -13,6 +13,7 @@ pub mod request;
 pub mod resolve;
 pub mod serve;
 pub mod strict;
+pub mod wheel;
 
 /// URLs and grants, which `una-core` holds for every crate that reads grants.
 pub use una_core::http as grant;

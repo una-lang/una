@@ -217,6 +217,10 @@ pub(crate) enum Command {
         #[arg(long, value_name = "N", value_parser = task_number)]
         file_threads: Option<usize>,
 
+        /// The threads that serve the connections of `serve:` grants, from 1 to 256; by default one per core (ADR 0123). Accepted and unused by a run that does not serve
+        #[arg(long, value_name = "N", value_parser = task_number)]
+        serve_threads: Option<usize>,
+
         /// Stop a solver query after this many seconds; the obligation is then unknown
         #[arg(long, value_name = "SECONDS", default_value_t = 60)]
         solver_wallclock: u64,

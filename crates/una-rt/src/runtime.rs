@@ -636,6 +636,9 @@ pub struct Options {
     /// `--workers`, `--task-depth`, `--io-threads` and `--file-threads` (ADR 0117 rules 2 and
     /// 3).
     pub concurrency: una_interp::Concurrency,
+    /// `--serve-threads` (ADR 0123 rule 20), from 1 to 256: the serve threads of a run that
+    /// serves; 0 until the command line is read.
+    pub serve_threads: usize,
 }
 
 /// The options with the package's declared budget applied (ADR 0109 rule 4): without
@@ -665,7 +668,7 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
         ..Options::default()
     };
     // The flags of tasks, checked once every flag is read: `--task-depth` against `--max-depth`.
-    let mut tasks: [Option<usize>; 4] = [None; 4];
+    let mut tasks: [Option<usize>; 5] = [None; 5];
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
         let (flag, inline) = match arg.split_once('=') {
@@ -760,13 +763,15 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
                     options.stop_grace = Some(n);
                 }
             }
-            "--workers" | "--task-depth" | "--io-threads" | "--file-threads" => {
+            "--workers" | "--task-depth" | "--io-threads" | "--file-threads"
+            | "--serve-threads" => {
                 let n = una_interp::concurrency::number(flag, &value()?)?;
                 let slot = match flag {
                     "--workers" => 0,
                     "--task-depth" => 1,
                     "--io-threads" => 2,
-                    _ => 3,
+                    "--file-threads" => 3,
+                    _ => 4,
                 };
                 if let Some(cell) = tasks.get_mut(slot) {
                     *cell = Some(n);
@@ -774,12 +779,12 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
             }
             other => {
                 return Err(format!(
-                    "unexpected argument `{other}`; the options are --grant <spec>, --trace <file>, --max-depth <n>, --max-memory <MiB>, --max-response <MiB>, --http-timeout <seconds>, --stop-after-iterations <n>, --deadline <seconds>, --stop-grace <seconds>, --virtual-time, --workers <n>, --task-depth <n>, --io-threads <n> and --file-threads <n>"
+                    "unexpected argument `{other}`; the options are --grant <spec>, --trace <file>, --max-depth <n>, --max-memory <MiB>, --max-response <MiB>, --http-timeout <seconds>, --stop-after-iterations <n>, --deadline <seconds>, --stop-grace <seconds>, --virtual-time, --workers <n>, --task-depth <n>, --io-threads <n>, --file-threads <n> and --serve-threads <n>"
                 ));
             }
         }
     }
-    let [workers, task_depth, io_threads, file_threads] = tasks;
+    let [workers, task_depth, io_threads, file_threads, serve_threads] = tasks;
     options.concurrency = una_interp::Concurrency::from_flags(
         options.max_depth,
         workers,
@@ -787,6 +792,7 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
         io_threads,
         file_threads,
     )?;
+    options.serve_threads = una_interp::concurrency::serve_threads(serve_threads)?;
     Ok(options)
 }
 
@@ -1964,7 +1970,11 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
     };
     // Nothing accepts on the listeners until the serve threads of ADR 0123 step 4 take them
     // over; they are held until the run ends.
-    let _listeners = match serve(&grants) {
+    let _listeners = match serve(
+        &grants,
+        options.serve_threads.max(1),
+        options.concurrency.file_threads,
+    ) {
         Ok(prepared) => prepared,
         Err(message) => {
             let _ = writeln!(stderr, "error: {message}");
@@ -2347,7 +2357,11 @@ fn grants(meta: &Meta, options: &Options) -> Result<Vec<Grant>, String> {
 /// The `serve:` grants of the run, before `main` (`spec/31 §2` rule 7), as `una run` prepares
 /// them: the descriptor limit, the TLS files checked on their open descriptors, and one
 /// listener per grant, held until the run ends.
-fn serve(grants: &[Grant]) -> Result<una_http::serve::Prepared, String> {
+fn serve(
+    grants: &[Grant],
+    serve_threads: usize,
+    file_threads: usize,
+) -> Result<una_http::serve::Prepared, String> {
     let inputs: Vec<una_http::serve::ServeInput<'_>> = grants
         .iter()
         .filter_map(|grant| match grant {
@@ -2363,7 +2377,7 @@ fn serve(grants: &[Grant]) -> Result<una_http::serve::Prepared, String> {
             _ => None,
         })
         .collect();
-    una_http::serve::prepare(&inputs)
+    una_http::serve::prepare(&inputs, serve_threads, file_threads)
 }
 
 /// The `Http` grants among `grants`, in order: what the run's governor of limits holds (ADR 0117
@@ -3213,8 +3227,10 @@ mod tests {
             "8",
             "--file-threads",
             "2",
+            "--serve-threads=5",
         ]))
         .unwrap();
+        assert_eq!(options.serve_threads, 5);
         let tasks = options.concurrency;
         assert_eq!(
             (
@@ -3233,6 +3249,10 @@ mod tests {
             &["--io-threads", "4097"],
             &["--file-threads", "257"],
             &["--file-threads"],
+            &["--serve-threads", "0"],
+            &["--serve-threads", "257"],
+            &["--serve-threads", "x"],
+            &["--serve-threads"],
         ] {
             assert!(parse_args(&strings(wrong)).is_err(), "{wrong:?}");
         }

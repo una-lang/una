@@ -1,0 +1,989 @@
+//! A serve thread's connections: the state machine of ADR 0123 rule 12 and everything the host
+//! does on its own for them (rules 8, 10 and 14), with no system call of its own
+//! (`docs/plan/0123-s4-design.md` §5 and §7).
+//!
+//! A [`Thread`] owns its connections in a slab and one timing wheel. It is driven from outside:
+//! [`Thread::ready`] when a socket can be read or written, [`Thread::handle`] for a message,
+//! [`Thread::advance`] when time passes. Every read and write is tried at once and a
+//! connection registers its interest only when the call would block, one-shot. A connection
+//! has at most one timer at a time: `idle` while it waits for a request's first byte, `read`
+//! while it reads one (for the first request, from the accept), `answer` from the end of
+//! reading to the reply, `write` while a reply is written, and one second while it drains
+//! after a refusal.
+//!
+//! **Costs.** Accepting, reading a request, queueing it, arming and cancelling a timer, and
+//! closing are O(1) apart from the O(b) of reading b bytes (the reader examines each byte a
+//! bounded number of times). A pass handles a bounded number of timers.
+
+use std::collections::VecDeque;
+use std::io;
+use std::sync::Arc;
+
+use super::grant::GrantState;
+use super::net::Readiness;
+use super::peer::PeerKey;
+use super::pressure::ConnShared;
+use super::run::{Adopt, ExchState, Msg, Pending, Shared};
+use crate::reply::{self, CONTINUE};
+use crate::request::{RequestLimits, RequestReader, Scheme};
+use crate::strict::BodyFraming;
+use crate::wheel::{TimerId, Wheel};
+
+/// The most timers one pass of [`Thread::advance`] handles, so due timers and ready events do
+/// not starve each other.
+pub const TIMERS_PER_PASS: usize = 1024;
+
+/// The bytes of a refused peer's data a connection reads and drops, and the time it does it
+/// for, before it closes (rule 10).
+pub const LINGER_BYTES: u64 = 64 * 1024;
+/// See [`LINGER_BYTES`].
+pub const LINGER_NANOS: u64 = 1_000_000_000;
+
+/// The body bytes a chunked body reserves before each step (rule 13).
+pub const CHUNK_STEP: u64 = 64 * 1024;
+
+/// The work one pump of a connection does before it yields to the others.
+const PUMP_STEPS: usize = 64;
+
+const SECOND: u64 = 1_000_000_000;
+
+/// Which timer a connection has.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kind {
+    Idle,
+    Read,
+    Answer,
+    Write,
+    Linger,
+}
+
+/// A timer of the wheel.
+#[derive(Clone, Copy, Debug)]
+enum Timer {
+    Conn {
+        slot: u32,
+        generation: u32,
+        sequence: u64,
+        kind: Kind,
+    },
+    Peer {
+        grant: usize,
+        key: PeerKey,
+    },
+}
+
+/// Where a connection is in rule 12.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Phase {
+    /// Reading a request, or waiting for its first byte.
+    Reading,
+    /// A request was read and waits for delivery or for its reply.
+    Waiting,
+    /// A reply, or the host's own answer, is being written.
+    Writing,
+    /// A refusal was written; the peer's data is read and dropped.
+    Lingering,
+}
+
+/// What a connection does when it has written what it owes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum After {
+    Keep,
+    Close,
+    Linger,
+}
+
+struct Conn {
+    slot: u32,
+    generation: u32,
+    sock: Box<dyn super::net::Socket>,
+    shared: Arc<ConnShared>,
+    grant: Arc<GrantState>,
+    phase: Phase,
+    after: After,
+    reader: RequestReader,
+    input: Vec<u8>,
+    off: usize,
+    timer: Option<(TimerId, Kind, u64)>,
+    sequence: u64,
+    served: u64,
+    exch: Option<Arc<ExchState>>,
+    request_bytes: u64,
+    reserved: u64,
+    admitted: bool,
+    started: bool,
+    own: Vec<u8>,
+    own_off: usize,
+    drained: u64,
+    closed: bool,
+}
+
+struct Slot {
+    generation: u32,
+    conn: Option<Box<Conn>>,
+}
+
+/// What a thread needs besides its connections.
+struct Core {
+    index: usize,
+    shared: Arc<Shared>,
+    readiness: Box<dyn Readiness>,
+    wheel: Wheel<Timer>,
+    scratch: Vec<u8>,
+    live: usize,
+}
+
+/// One serve thread's connections and timers.
+pub struct Thread {
+    core: Core,
+    slots: Vec<Slot>,
+    free: Vec<u32>,
+    fired: Vec<(TimerId, Timer)>,
+    backlog: VecDeque<Timer>,
+}
+
+fn token(slot: u32, generation: u32) -> u64 {
+    (u64::from(slot) << 32) | u64::from(generation)
+}
+
+fn seconds(n: u64) -> u64 {
+    n.saturating_mul(SECOND)
+}
+
+impl Thread {
+    /// Serve thread number `index` of the run `shared`, whose sockets `readiness` watches.
+    pub fn new(
+        index: usize,
+        shared: Arc<Shared>,
+        readiness: Box<dyn Readiness>,
+        now: u64,
+    ) -> Thread {
+        Thread {
+            core: Core {
+                index,
+                shared,
+                readiness,
+                wheel: Wheel::new(now),
+                scratch: vec![0; 16 * 1024],
+                live: 0,
+            },
+            slots: Vec::new(),
+            free: Vec::new(),
+            fired: Vec::new(),
+            backlog: VecDeque::new(),
+        }
+    }
+
+    /// Open connections this thread owns.
+    pub fn open(&self) -> usize {
+        self.core.live
+    }
+
+    /// Timers armed.
+    pub fn timers(&self) -> usize {
+        self.core.wheel.len()
+    }
+
+    /// The earliest time something is due: the wheel's next expiration, or now when due
+    /// timers wait for another pass.
+    pub fn next_wake(&self) -> Option<u64> {
+        if self.backlog.is_empty() {
+            self.core.wheel.next_expiration()
+        } else {
+            Some(self.core.wheel.now())
+        }
+    }
+
+    /// Handles a message.
+    pub fn handle(&mut self, msg: Msg, now: u64) {
+        match msg {
+            Msg::Adopt(adopt) => self.adopt(*adopt, now),
+            Msg::Reply { conn, close } => {
+                self.with_conn(&conn, now, |core, c, now| core.on_reply(c, close, now));
+            }
+            Msg::Close(conn) => {
+                self.with_conn(&conn, now, |core, c, now| core.close(c, now));
+            }
+            Msg::PeerExpiry { grant, peer, at } => {
+                self.core.arm_peer(grant, peer, at);
+            }
+            Msg::Accept => {}
+            Msg::Stop => self.each(now, |core, c, now| core.on_stop(c, now)),
+            Msg::HardStop => self.each(now, |core, c, now| core.on_hard_stop(c, now)),
+        }
+    }
+
+    /// The socket of `token` can be read or written (or failed): try both at once.
+    pub fn ready(&mut self, token_value: u64, now: u64) {
+        let slot = (token_value >> 32) as u32;
+        let generation = (token_value & 0xffff_ffff) as u32;
+        let Some(entry) = self.slots.get_mut(slot as usize) else {
+            return;
+        };
+        if entry.generation != generation {
+            return;
+        }
+        self.run(slot, now, |core, c, now| core.pump(c, now));
+    }
+
+    /// Time reached `now`: handles the timers due, at most [`TIMERS_PER_PASS`] of them; `true`
+    /// when more are due and another pass is needed.
+    pub fn advance(&mut self, now: u64) -> bool {
+        self.core.wheel.advance(now, &mut self.fired);
+        for (_, timer) in self.fired.drain(..) {
+            self.backlog.push_back(timer);
+        }
+        for _ in 0..TIMERS_PER_PASS {
+            let Some(timer) = self.backlog.pop_front() else {
+                break;
+            };
+            match timer {
+                Timer::Peer { grant, key } => {
+                    if let Some(state) = self.core.shared.grants.get(grant)
+                        && let Some(at) = state.peers.expire(key, now)
+                    {
+                        self.core.arm_peer(grant, key, at);
+                    }
+                }
+                Timer::Conn {
+                    slot,
+                    generation,
+                    sequence,
+                    kind,
+                } => {
+                    let live = self
+                        .slots
+                        .get(slot as usize)
+                        .is_some_and(|entry| entry.generation == generation);
+                    if live {
+                        self.run(slot, now, |core, c, now| {
+                            if c.timer.is_some_and(|(_, k, s)| k == kind && s == sequence) {
+                                c.timer = None;
+                                core.fire(c, kind, now);
+                            }
+                        });
+                    }
+                }
+            }
+        }
+        !self.backlog.is_empty()
+    }
+
+    /// Takes a connection out of its slot, runs `f` on it, and puts it back or frees the slot.
+    fn run(&mut self, slot: u32, now: u64, f: impl FnOnce(&mut Core, &mut Conn, u64)) {
+        let Some(entry) = self.slots.get_mut(slot as usize) else {
+            return;
+        };
+        let Some(mut conn) = entry.conn.take() else {
+            return;
+        };
+        f(&mut self.core, &mut conn, now);
+        if conn.closed {
+            entry.generation = entry.generation.wrapping_add(1);
+            self.free.push(slot);
+            self.core.live = self.core.live.saturating_sub(1);
+        } else {
+            entry.conn = Some(conn);
+        }
+    }
+
+    /// [`Thread::run`] for the connection `shared`, when this thread still owns it.
+    fn with_conn(
+        &mut self,
+        shared: &Arc<ConnShared>,
+        now: u64,
+        f: impl FnOnce(&mut Core, &mut Conn, u64),
+    ) {
+        let (slot, generation) = shared.placed();
+        let matches = self.slots.get(slot as usize).is_some_and(|entry| {
+            entry.generation == generation
+                && entry
+                    .conn
+                    .as_ref()
+                    .is_some_and(|c| Arc::ptr_eq(&c.shared, shared))
+        });
+        if matches {
+            self.run(slot, now, f);
+        }
+    }
+
+    /// Runs `f` on every connection. O(connections).
+    fn each(&mut self, now: u64, f: impl Fn(&mut Core, &mut Conn, u64)) {
+        for slot in 0..self.slots.len() {
+            self.run(slot as u32, now, &f);
+        }
+    }
+
+    fn adopt(&mut self, adopt: Adopt, now: u64) {
+        let slot = match self.free.pop() {
+            Some(slot) => slot,
+            None => {
+                let Ok(slot) = u32::try_from(self.slots.len()) else {
+                    adopt.conn.close();
+                    release(&adopt.conn, now, &mut self.core);
+                    return;
+                };
+                self.slots.push(Slot {
+                    generation: 0,
+                    conn: None,
+                });
+                slot
+            }
+        };
+        let generation = self.slots.get(slot as usize).map_or(0, |e| e.generation);
+        adopt.conn.place(slot, generation);
+        let grant = Arc::clone(&adopt.conn.grant);
+        let reader = new_reader(&grant);
+        let mut conn = Box::new(Conn {
+            slot,
+            generation,
+            sock: adopt.socket,
+            shared: adopt.conn,
+            grant,
+            phase: Phase::Reading,
+            after: After::Keep,
+            reader,
+            input: Vec::new(),
+            off: 0,
+            timer: None,
+            sequence: 0,
+            served: 0,
+            exch: None,
+            request_bytes: 0,
+            reserved: 0,
+            admitted: false,
+            started: false,
+            own: Vec::new(),
+            own_off: 0,
+            drained: 0,
+            closed: false,
+        });
+        self.core.live += 1;
+        if self.core.shared.is_stopping() {
+            self.core.close(&mut conn, now);
+        } else {
+            // The first request is read within `read` of the accept (rule 7).
+            let secs = conn.grant.limits.read;
+            self.core.arm(&mut conn, Kind::Read, now, seconds(secs));
+        }
+        if let Some(entry) = self.slots.get_mut(slot as usize) {
+            entry.conn = Some(conn);
+        }
+        self.run(slot, now, |core, c, now| core.pump(c, now));
+    }
+}
+
+/// Gives back what a connection that was never placed holds.
+fn release(conn: &Arc<ConnShared>, now: u64, core: &mut Core) {
+    let grant = &conn.grant;
+    if let Some(at) = grant.peers.close(&conn.peer, now) {
+        core.arm_peer(grant.index, conn.peer.key, at);
+    }
+    grant.give_slot();
+    core.shared.slot_freed(grant.index);
+}
+
+/// A reader for a new request through `grant`.
+fn new_reader(grant: &GrantState) -> RequestReader {
+    let limits = RequestLimits {
+        line: usize::try_from(grant.limits.line).unwrap_or(usize::MAX),
+        headers: usize::try_from(grant.limits.headers).unwrap_or(usize::MAX),
+        header: usize::try_from(grant.limits.header).unwrap_or(usize::MAX),
+        body: grant.limits.body,
+    };
+    let scheme = if grant.tls {
+        Scheme::Https
+    } else {
+        Scheme::Http
+    };
+    RequestReader::new(limits, scheme).stopping_at_head()
+}
+
+/// Interest of a connection that waits for the socket.
+#[derive(Clone, Copy)]
+struct Interest {
+    read: bool,
+    write: bool,
+}
+
+impl Core {
+    fn now_date(&self) -> u64 {
+        self.shared.clock.unix_seconds()
+    }
+
+    fn tell(&mut self, c: &Conn, interest: Interest) {
+        self.readiness.set(
+            token(c.slot, c.generation),
+            &*c.sock,
+            interest.read,
+            interest.write,
+        );
+    }
+
+    /// Arms the connection's one timer, replacing the one it had.
+    fn arm(&mut self, c: &mut Conn, kind: Kind, now: u64, after: u64) {
+        self.disarm(c);
+        c.sequence = c.sequence.wrapping_add(1);
+        let timer = Timer::Conn {
+            slot: c.slot,
+            generation: c.generation,
+            sequence: c.sequence,
+            kind,
+        };
+        match self.wheel.arm(now.saturating_add(after), timer) {
+            Ok(id) => c.timer = Some((id, kind, c.sequence)),
+            // More timers than the wheel can hold: the connection cannot be timed, so it goes.
+            Err(_) => self.close(c, now),
+        }
+    }
+
+    fn disarm(&mut self, c: &mut Conn) {
+        if let Some((id, _, _)) = c.timer.take() {
+            self.wheel.cancel(id);
+        }
+    }
+
+    fn arm_peer(&mut self, grant: usize, key: PeerKey, at: u64) {
+        let _ = self.wheel.arm(at, Timer::Peer { grant, key });
+    }
+
+    /// Does everything the connection can do now, then says what it waits for.
+    fn pump(&mut self, c: &mut Conn, now: u64) {
+        let interest = self.pump_steps(c, now);
+        if !c.closed {
+            self.tell(c, interest);
+        }
+    }
+
+    fn pump_steps(&mut self, c: &mut Conn, now: u64) -> Interest {
+        let none = Interest {
+            read: false,
+            write: false,
+        };
+        for _ in 0..PUMP_STEPS {
+            if c.closed {
+                return none;
+            }
+            // The host's own bytes first: `100 Continue`, a refusal.
+            if c.own_off < c.own.len() {
+                match c.sock.write(c.own.get(c.own_off..).unwrap_or_default()) {
+                    Ok(0) => {
+                        self.close(c, now);
+                        return none;
+                    }
+                    Ok(n) => {
+                        c.own_off += n;
+                        if c.own_off >= c.own.len() {
+                            c.own.clear();
+                            c.own_off = 0;
+                        }
+                        continue;
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                        return Interest {
+                            read: false,
+                            write: true,
+                        };
+                    }
+                    Err(_) => {
+                        self.close(c, now);
+                        return none;
+                    }
+                }
+            }
+            match c.phase {
+                Phase::Writing => match self.write_reply(c, now) {
+                    Some(interest) => return interest,
+                    None => continue,
+                },
+                Phase::Lingering => match self.drain(c, now) {
+                    Some(interest) => return interest,
+                    None => continue,
+                },
+                Phase::Waiting => match self.watch(c, now) {
+                    Some(interest) => return interest,
+                    None => continue,
+                },
+                Phase::Reading => match self.read_request(c, now) {
+                    Some(interest) => return interest,
+                    None => continue,
+                },
+            }
+        }
+        // Yield to the other connections: both interests fire at once on a ready socket.
+        Interest {
+            read: matches!(c.phase, Phase::Reading | Phase::Lingering | Phase::Waiting),
+            write: matches!(c.phase, Phase::Writing),
+        }
+    }
+
+    /// Writes the pending reply. `None` to go round again, `Some` when it must wait.
+    fn write_reply(&mut self, c: &mut Conn, now: u64) -> Option<Interest> {
+        let step = c.shared.write_front(|bytes| c.sock.write(bytes));
+        match step {
+            Ok(super::pressure::Step::Wrote { written: 0, .. }) => {
+                self.close(c, now);
+                Some(Interest {
+                    read: false,
+                    write: false,
+                })
+            }
+            Ok(super::pressure::Step::Wrote {
+                finished: false, ..
+            }) => None,
+            Ok(super::pressure::Step::Wrote { finished: true, .. })
+            | Ok(super::pressure::Step::Empty) => {
+                self.after_write(c, now);
+                None
+            }
+            Ok(super::pressure::Step::Discarded) => {
+                self.close(c, now);
+                Some(Interest {
+                    read: false,
+                    write: false,
+                })
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => None,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => Some(Interest {
+                read: false,
+                write: true,
+            }),
+            Err(_) => {
+                self.close(c, now);
+                Some(Interest {
+                    read: false,
+                    write: false,
+                })
+            }
+        }
+    }
+
+    /// Reads and drops what a refused peer still sends.
+    fn drain(&mut self, c: &mut Conn, now: u64) -> Option<Interest> {
+        let n = self.scratch.len();
+        match c.sock.read(self.scratch.get_mut(..n).unwrap_or_default()) {
+            Ok(0) => {
+                self.close(c, now);
+                Some(Interest {
+                    read: false,
+                    write: false,
+                })
+            }
+            Ok(n) => {
+                c.drained = c.drained.saturating_add(n as u64);
+                if c.drained >= LINGER_BYTES {
+                    self.close(c, now);
+                    return Some(Interest {
+                        read: false,
+                        write: false,
+                    });
+                }
+                None
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => None,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => Some(Interest {
+                read: true,
+                write: false,
+            }),
+            Err(_) => {
+                self.close(c, now);
+                Some(Interest {
+                    read: false,
+                    write: false,
+                })
+            }
+        }
+    }
+
+    /// While a request waits for its reply, reads within the head reserve so that a peer that
+    /// leaves is seen at once (rule 14); the bytes read are kept for the next request.
+    fn watch(&mut self, c: &mut Conn, now: u64) -> Option<Interest> {
+        let reserve = c.grant.limits.line.saturating_add(c.grant.limits.header);
+        let held = (c.input.len() - c.off) as u64;
+        if held >= reserve {
+            return Some(Interest {
+                read: false,
+                write: false,
+            });
+        }
+        let room = usize::try_from(reserve - held)
+            .unwrap_or(usize::MAX)
+            .min(self.scratch.len());
+        match c
+            .sock
+            .read(self.scratch.get_mut(..room).unwrap_or_default())
+        {
+            Ok(0) => {
+                // The peer left: its exchange ends, and its reply is never written.
+                self.close(c, now);
+                Some(Interest {
+                    read: false,
+                    write: false,
+                })
+            }
+            Ok(n) => {
+                c.input
+                    .extend_from_slice(self.scratch.get(..n).unwrap_or_default());
+                None
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => None,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => Some(Interest {
+                read: true,
+                write: false,
+            }),
+            Err(_) => {
+                self.close(c, now);
+                Some(Interest {
+                    read: false,
+                    write: false,
+                })
+            }
+        }
+    }
+
+    /// Reads the request: bytes from the socket into the reader, the head admitted, the body
+    /// reserved before it is read. `None` to go round again.
+    fn read_request(&mut self, c: &mut Conn, now: u64) -> Option<Interest> {
+        let blocked = Interest {
+            read: true,
+            write: false,
+        };
+        let gone = Interest {
+            read: false,
+            write: false,
+        };
+        if c.off >= c.input.len() {
+            c.input.clear();
+            c.off = 0;
+            let reserve = c.grant.limits.line.saturating_add(c.grant.limits.header);
+            let room = usize::try_from(reserve)
+                .unwrap_or(usize::MAX)
+                .clamp(1, self.scratch.len());
+            match c
+                .sock
+                .read(self.scratch.get_mut(..room).unwrap_or_default())
+            {
+                Ok(0) => {
+                    self.close(c, now);
+                    return Some(gone);
+                }
+                Ok(n) => {
+                    c.input
+                        .extend_from_slice(self.scratch.get(..n).unwrap_or_default());
+                }
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => return None,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Some(blocked),
+                Err(_) => {
+                    self.close(c, now);
+                    return Some(gone);
+                }
+            }
+        }
+        if !c.started {
+            c.started = true;
+            if c.timer.is_some_and(|(_, kind, _)| kind == Kind::Idle) {
+                let secs = c.grant.limits.read;
+                self.arm(c, Kind::Read, now, seconds(secs));
+            }
+        }
+        let available = c.input.len() - c.off;
+        let take = self.chunk_room(c, now)?.min(available);
+        let progress = {
+            let bytes = c.input.get(c.off..c.off + take).unwrap_or_default();
+            c.reader.feed(bytes)
+        };
+        match progress {
+            Err(refusal) => {
+                self.refuse(c, refusal.status(), false, now);
+                None
+            }
+            Ok(progress) => {
+                c.off += progress.used;
+                c.request_bytes = c.request_bytes.saturating_add(progress.used as u64);
+                if !c.admitted && c.reader.head_read() && !self.admit_head(c, now) {
+                    return None;
+                }
+                if progress.done {
+                    self.complete(c, now);
+                }
+                None
+            }
+        }
+    }
+
+    /// How many bytes the reader may be fed now. A chunked body reserves 64 KiB before each
+    /// step, so the room is what the reservation still covers; every other state is not
+    /// limited. `None` when the reservation was refused and the connection answered `503`.
+    fn chunk_room(&mut self, c: &mut Conn, now: u64) -> Option<usize> {
+        if !c.admitted || c.reader.framing() != Some(BodyFraming::Chunked) {
+            return Some(usize::MAX);
+        }
+        let body = c.grant.limits.body;
+        if c.reserved >= body {
+            return Some(usize::MAX);
+        }
+        let used = c.reader.body_length() as u64;
+        let mut room = c.reserved.saturating_sub(used);
+        if room == 0 {
+            let step = CHUNK_STEP.min(body - c.reserved);
+            if !c.grant.reserve_body(&c.shared.peer, step) {
+                self.refuse(c, 503, true, now);
+                return None;
+            }
+            c.reserved += step;
+            room = step;
+        }
+        Some(usize::try_from(room).unwrap_or(usize::MAX))
+    }
+
+    /// The head is read: `Host` against the grant's names (`421`), the body's reservation
+    /// (`503` at once when it does not fit), and `100 Continue` after it (rule 10).
+    fn admit_head(&mut self, c: &mut Conn, now: u64) -> bool {
+        let allowed = c
+            .reader
+            .host()
+            .is_some_and(|host| c.grant.hosts.allows(&host.name, host.ip));
+        if !allowed {
+            self.refuse(c, 421, false, now);
+            return false;
+        }
+        if self.shared.is_stopping() {
+            self.refuse(c, 503, true, now);
+            return false;
+        }
+        let wanted = match c.reader.framing() {
+            Some(BodyFraming::Length(n)) => n,
+            Some(BodyFraming::Chunked) => CHUNK_STEP.min(c.grant.limits.body),
+            Some(BodyFraming::Empty) | None => 0,
+        };
+        if wanted > 0 {
+            if !c.grant.reserve_body(&c.shared.peer, wanted) {
+                self.refuse(c, 503, true, now);
+                return false;
+            }
+            c.reserved = wanted;
+        }
+        if c.reader.expects_continue() {
+            c.own.extend_from_slice(CONTINUE);
+        }
+        c.admitted = true;
+        true
+    }
+
+    /// The request is read in full: queue it, and wait for its reply within `answer`.
+    fn complete(&mut self, c: &mut Conn, now: u64) {
+        let finished = std::mem::replace(&mut c.reader, new_reader(&c.grant)).finish();
+        let request = match finished {
+            Ok(request) => request,
+            Err(refusal) => {
+                self.refuse(c, refusal.status(), false, now);
+                return;
+            }
+        };
+        if self.shared.is_stopping() || !c.grant.queue_waiting() {
+            self.refuse(c, 503, true, now);
+            return;
+        }
+        c.served += 1;
+        let close = request.close || c.served >= c.grant.limits.requests;
+        let exch = Arc::new(ExchState::new(request, c.request_bytes, c.reserved, close));
+        c.reserved = 0;
+        c.exch = Some(Arc::clone(&exch));
+        c.phase = Phase::Waiting;
+        let secs = c.grant.limits.answer;
+        self.arm(c, Kind::Answer, now, seconds(secs));
+        if c.closed {
+            // The timer could not be made: the connection is gone, and nothing is queued.
+            return;
+        }
+        self.shared.enqueue(
+            self.index,
+            c.grant.index,
+            Pending::new(exch, Arc::clone(&c.shared)),
+        );
+    }
+
+    /// Answers a refusal or one of the host's own answers, and then drains and closes.
+    /// Every one of them closes the connection (rule 10).
+    fn refuse(&mut self, c: &mut Conn, status: u16, retry_after: bool, now: u64) {
+        if c.reserved > 0 {
+            c.grant.release_body(&c.shared.peer, c.reserved);
+            c.reserved = 0;
+        }
+        // An interim response half on the wire is finished first, so the peer never reads a
+        // status line cut in two; one not started is dropped.
+        if c.own_off > 0 {
+            c.own.drain(..c.own_off.min(c.own.len()));
+        } else {
+            c.own.clear();
+        }
+        c.own_off = 0;
+        reply::write_answer(status, retry_after, true, self.now_date(), &mut c.own);
+        c.phase = Phase::Writing;
+        c.after = After::Linger;
+        c.exch = None;
+        let secs = c.grant.limits.write;
+        self.arm(c, Kind::Write, now, seconds(secs));
+    }
+
+    /// The program's reply, or the host's own answer, is queued.
+    fn on_reply(&mut self, c: &mut Conn, close: bool, now: u64) {
+        if c.phase != Phase::Waiting {
+            return;
+        }
+        // A stop that came after the reply was serialized still closes the connection.
+        let close = close || self.shared.is_stopping();
+        c.after = if close { After::Close } else { After::Keep };
+        c.phase = Phase::Writing;
+        let secs = c.grant.limits.write;
+        self.arm(c, Kind::Write, now, seconds(secs));
+        self.pump(c, now);
+    }
+
+    /// Everything owed is written.
+    fn after_write(&mut self, c: &mut Conn, now: u64) {
+        self.disarm(c);
+        c.exch = None;
+        if c.after == After::Keep && self.shared.is_stopping() {
+            c.after = After::Close;
+        }
+        match c.after {
+            After::Close => self.close(c, now),
+            After::Linger => {
+                c.sock.shutdown_write();
+                c.phase = Phase::Lingering;
+                c.drained = 0;
+                self.arm(c, Kind::Linger, now, LINGER_NANOS);
+            }
+            After::Keep => {
+                c.phase = Phase::Reading;
+                c.admitted = false;
+                c.request_bytes = 0;
+                c.started = c.off < c.input.len();
+                if c.started {
+                    let secs = c.grant.limits.read;
+                    self.arm(c, Kind::Read, now, seconds(secs));
+                } else {
+                    let secs = c.grant.limits.idle;
+                    self.arm(c, Kind::Idle, now, seconds(secs));
+                }
+            }
+        }
+    }
+
+    /// A timer of the connection fired.
+    fn fire(&mut self, c: &mut Conn, kind: Kind, now: u64) {
+        match kind {
+            Kind::Idle | Kind::Write | Kind::Linger => self.close(c, now),
+            Kind::Read => {
+                if c.started || c.reader.started() {
+                    self.refuse(c, 408, false, now);
+                    self.pump(c, now);
+                } else {
+                    self.close(c, now);
+                }
+            }
+            Kind::Answer => {
+                let Some(exch) = c.exch.clone() else {
+                    return;
+                };
+                if exch.expire_queued() {
+                    c.grant.unqueue_waiting();
+                    c.grant.release_body(&c.shared.peer, exch.body);
+                    self.shared.queued_died(self.index, c.grant.index);
+                } else if exch.expire_open() {
+                    c.grant.end_exchange(exch.bytes);
+                    self.shared.notify();
+                } else {
+                    // The reply is on its way: `answer` ends where the reply starts.
+                    return;
+                }
+                c.exch = None;
+                self.refuse(c, 503, true, now);
+                self.pump(c, now);
+            }
+        }
+    }
+
+    /// Ends the connection: its exchange, its reservations, its reply, its timer, its place.
+    fn close(&mut self, c: &mut Conn, now: u64) {
+        if c.closed {
+            return;
+        }
+        c.closed = true;
+        self.disarm(c);
+        if let Some(exch) = c.exch.take() {
+            if exch.expire_queued() {
+                c.grant.unqueue_waiting();
+                c.grant.release_body(&c.shared.peer, exch.body);
+                self.shared.queued_died(self.index, c.grant.index);
+            } else if exch.expire_open() {
+                c.grant.end_exchange(exch.bytes);
+            }
+        }
+        if c.reserved > 0 {
+            c.grant.release_body(&c.shared.peer, c.reserved);
+            c.reserved = 0;
+        }
+        c.shared.close();
+        self.readiness.forget(token(c.slot, c.generation), &*c.sock);
+        if let Some(at) = c.grant.peers.close(&c.shared.peer, now) {
+            self.arm_peer(c.grant.index, c.shared.peer.key, at);
+        }
+        c.grant.give_slot();
+        self.shared.slot_freed(c.grant.index);
+        self.shared.notify();
+    }
+
+    /// A host stop (rule 18): idle connections close, requests not delivered or still being
+    /// read get `503`, open exchanges drain and close after their reply.
+    fn on_stop(&mut self, c: &mut Conn, now: u64) {
+        match c.phase {
+            Phase::Reading => {
+                if c.started || c.reader.started() {
+                    self.refuse(c, 503, true, now);
+                    self.pump(c, now);
+                } else {
+                    self.close(c, now);
+                }
+            }
+            Phase::Waiting => {
+                let queued = c.exch.as_ref().is_some_and(|exch| exch.expire_queued());
+                if queued {
+                    if let Some(exch) = c.exch.take() {
+                        c.grant.unqueue_waiting();
+                        c.grant.release_body(&c.shared.peer, exch.body);
+                        self.shared.queued_died(self.index, c.grant.index);
+                    }
+                    self.refuse(c, 503, true, now);
+                    self.pump(c, now);
+                }
+            }
+            Phase::Writing => {
+                if c.after == After::Keep {
+                    c.after = After::Close;
+                }
+            }
+            Phase::Lingering => {}
+        }
+    }
+
+    /// The hard stop (rule 18 item 6): the answer of every open exchange in one non-blocking
+    /// write, then every connection closes, without waiting on a peer.
+    fn on_hard_stop(&mut self, c: &mut Conn, now: u64) {
+        let open = c.exch.as_ref().is_some_and(|exch| exch.expire_open());
+        if open {
+            if let Some(exch) = c.exch.take() {
+                c.grant.end_exchange(exch.bytes);
+            }
+            // After half of an interim response the answer would cut it in two: none is written.
+            if c.own_off == 0 {
+                let mut bytes = Vec::new();
+                reply::write_answer(503, true, true, self.now_date(), &mut bytes);
+                let _ = c.sock.write(&bytes);
+            }
+        }
+        self.close(c, now);
+    }
+}

@@ -10,6 +10,7 @@ Status: Normative for the reference implementation.
 | Conformance | `tests/conformance/` | One file per spec rule, positive and negative |
 | Snapshot | `crates/*/tests/snapshots/` (insta) | Full JSON diagnostics, Core IR dumps, SMT queries, reports |
 | Property | `crates/una-fmt/tests/` | Formatter idempotence and parse round-trip over every `.una` file in the repository |
+| Serve scripts | `tests/serve/` | Connections, bytes, paced reads and closes at virtual milliseconds through the real server engine, with the bytes each connection received (ADR 0123 rule 21; `crates/una-http/tests/serve_scripts.rs`) |
 | End to end | `crates/una-cli/tests/` | The CLI and the ABI documents, the runtime, verification, determinism, the explain examples, the checkpoint demos, the example packages and the guide |
 
 ## 2. Conformance case format
