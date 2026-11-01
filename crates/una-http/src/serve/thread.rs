@@ -786,7 +786,7 @@ impl Core {
         }
         c.served += 1;
         let close = request.close || c.served >= c.grant.limits.requests;
-        let exch = Arc::new(ExchState::new(c.request_bytes, c.reserved, close));
+        let exch = Arc::new(ExchState::new(request, c.request_bytes, c.reserved, close));
         c.reserved = 0;
         c.exch = Some(Arc::clone(&exch));
         c.phase = Phase::Waiting;
@@ -795,7 +795,7 @@ impl Core {
         self.shared.enqueue(
             self.index,
             c.grant.index,
-            Pending::new(exch, Arc::clone(&c.shared), request),
+            Pending::new(exch, Arc::clone(&c.shared)),
         );
     }
 
@@ -875,6 +875,7 @@ impl Core {
                 if exch.expire_queued() {
                     c.grant.unqueue_waiting();
                     c.grant.release_body(&c.shared.peer, exch.body);
+                    self.shared.queued_died(self.index, c.grant.index);
                 } else if exch.expire_open() {
                     c.grant.end_exchange(exch.bytes);
                     self.shared.notify();
@@ -900,6 +901,7 @@ impl Core {
             if exch.expire_queued() {
                 c.grant.unqueue_waiting();
                 c.grant.release_body(&c.shared.peer, exch.body);
+                self.shared.queued_died(self.index, c.grant.index);
             } else if exch.expire_open() {
                 c.grant.end_exchange(exch.bytes);
             }
@@ -936,6 +938,7 @@ impl Core {
                     if let Some(exch) = c.exch.take() {
                         c.grant.unqueue_waiting();
                         c.grant.release_body(&c.shared.peer, exch.body);
+                        self.shared.queued_died(self.index, c.grant.index);
                     }
                     self.refuse(c, 503, true, now);
                     self.pump(c, now);

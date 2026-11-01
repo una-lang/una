@@ -118,17 +118,27 @@ pub struct ExchState {
     /// The connection closes after the reply: the request said so, the connection reached
     /// `requests`.
     pub close: bool,
+    /// The request, until the winner of the race for it takes it: the program's delivery, or
+    /// the owner, which drops it, so a request that nobody will deliver holds no memory.
+    request: Mutex<Option<Request>>,
 }
 
 impl ExchState {
     /// A request read and queued.
-    pub fn new(bytes: u64, body: u64, close: bool) -> ExchState {
+    pub fn new(request: Request, bytes: u64, body: u64, close: bool) -> ExchState {
         ExchState {
             state: AtomicU8::new(QUEUED),
             bytes,
             body,
             close,
+            request: Mutex::new(Some(request)),
         }
+    }
+
+    /// Takes the request: only the winner of the compare-and-swap that ended the queueing
+    /// calls it, so it finds the request there.
+    fn take_request(&self) -> Option<Request> {
+        lock(&self.request).take()
     }
 
     fn change(&self, from: u8, to: u8) -> bool {
@@ -150,7 +160,11 @@ impl ExchState {
     /// Ends a request that was never delivered: the owner's. `true` for the winner, who gives
     /// back its `waiting` place and its body reservation.
     pub fn expire_queued(&self) -> bool {
-        self.change(QUEUED, DEAD)
+        let won = self.change(QUEUED, DEAD);
+        if won {
+            drop(self.take_request());
+        }
+        won
     }
 
     /// Ends an exchange that was delivered and never answered: the owner's. `true` for the
@@ -164,25 +178,29 @@ impl ExchState {
 pub struct Pending {
     exch: Arc<ExchState>,
     conn: Arc<ConnShared>,
-    request: Request,
 }
 
 impl Pending {
-    /// A request read in full on `conn`, with its exchange's state.
-    pub fn new(exch: Arc<ExchState>, conn: Arc<ConnShared>, request: Request) -> Pending {
-        Pending {
-            exch,
-            conn,
-            request,
-        }
+    /// A request read in full on `conn`, with its exchange's state, which holds the request.
+    pub fn new(exch: Arc<ExchState>, conn: Arc<ConnShared>) -> Pending {
+        Pending { exch, conn }
     }
 }
 
 /// The queue of requests one serve thread read on one grant, first come, first served.
 #[derive(Default)]
 struct Queue {
-    items: Mutex<VecDeque<Pending>>,
+    items: Mutex<Items>,
     ready: AtomicBool,
+}
+
+/// The requests of one queue, and how many of them are known to be dead (ended by their
+/// owner), so that the queue is compacted when most of it is dead: every entry is O(1)
+/// amortized, and the queue holds at most twice its live requests and a constant.
+#[derive(Default)]
+struct Items {
+    queue: VecDeque<Pending>,
+    dead: usize,
 }
 
 /// The result of asking for the next request.
@@ -359,14 +377,26 @@ impl Shared {
         self.queues.get(thread * self.grants.len() + grant)
     }
 
-    /// Queues a request read on `thread` for grant `grant`. O(1).
+    /// Queues a request read on `thread` for grant `grant`. O(1) amortized.
     pub fn enqueue(&self, thread: usize, grant: usize, pending: Pending) {
         if let Some(queue) = self.queue(thread, grant) {
             let mut items = lock(&queue.items);
-            items.push_back(pending);
+            if items.dead > 32 && items.dead * 2 > items.queue.len() {
+                items.queue.retain(|p| p.exch.is_queued());
+                items.dead = 0;
+            }
+            items.queue.push_back(pending);
             queue.ready.store(true, Ordering::Release);
         }
         self.notify();
+    }
+
+    /// A queued request of `thread` and `grant` was ended by its owner: it stays in its queue
+    /// until the queue reaches it or is compacted.
+    pub fn queued_died(&self, thread: usize, grant: usize) {
+        if let Some(queue) = self.queue(thread, grant) {
+            lock(&queue.items).dead += 1;
+        }
     }
 
     /// Delivers the next request: the queues are scanned from a rotating cursor, each in the
@@ -394,12 +424,13 @@ impl Shared {
             };
             let mut items = lock(&queue.items);
             loop {
-                let Some(front) = items.front() else {
+                let Some(front) = items.queue.front() else {
                     queue.ready.store(false, Ordering::Release);
                     break;
                 };
                 if !front.exch.is_queued() {
-                    items.pop_front();
+                    items.queue.pop_front();
+                    items.dead = items.dead.saturating_sub(1);
                     continue;
                 }
                 let bytes = front.exch.bytes;
@@ -412,24 +443,31 @@ impl Shared {
                         break;
                     }
                     Ok(()) => {
-                        let Some(pending) = items.pop_front() else {
+                        let Some(pending) = items.queue.pop_front() else {
                             state.end_exchange(bytes);
                             break;
                         };
                         if !pending.exch.change(QUEUED, TAKEN) {
                             // The owner ended it first: the reservation is given back.
                             state.end_exchange(bytes);
+                            items.dead = items.dead.saturating_sub(1);
                             continue;
                         }
                         state.unqueue_waiting();
                         state.release_body(&pending.conn.peer, pending.exch.body);
                         drop(items);
                         self.cursor.fetch_add(1, Ordering::Relaxed);
+                        let Some(request) = pending.exch.take_request() else {
+                            // Unreachable: the winner of the race alone takes the request.
+                            pending.exch.expire_open();
+                            state.end_exchange(bytes);
+                            return Next::Empty;
+                        };
                         return Next::Exchange(Box::new(Exchange {
                             shared: Arc::clone(self),
                             conn: pending.conn,
                             exch: pending.exch,
-                            request: pending.request,
+                            request,
                             done: false,
                         }));
                     }
