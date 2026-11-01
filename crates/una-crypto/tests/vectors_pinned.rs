@@ -25,7 +25,7 @@ fn every_vendored_file_matches_its_pinned_digest() {
         assert_eq!(hex(digest).len(), 32);
         checked += 1;
     }
-    assert_eq!(checked, 8, "every vendored vector file has a pin");
+    assert_eq!(checked, 10, "every vendored vector file has a pin");
     let on_disk = std::fs::read_dir(vector_path("wycheproof"))
         .unwrap()
         .filter(|e| {
