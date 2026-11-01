@@ -5,6 +5,8 @@ use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 
 use sha2::{Digest, Sha256};
+use una_core::bigint::{BigInt, Sign};
+use una_hash::Encoder;
 
 /// What a file operation of the world can fail with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -363,9 +365,28 @@ pub fn hmac_sha256(key: &[u8], data: &[u8]) -> Vec<u8> {
         .to_vec()
 }
 
-/// The deterministic `Hashed` value of `std.testing.fake_hash(seed)` (`spec/14 §4`).
-pub fn fake_hash(seed: &str) -> Vec<u8> {
-    Sha256::digest(format!("una.testing.fake_hash:{seed}").as_bytes()).to_vec()
+/// The domain of `fake_hash`'s preimages: no other SHA-256 input of the toolchain starts with
+/// it, and its final zero byte ends it before the seed's encoding starts.
+const FAKE_HASH_DOMAIN: &[u8] = b"una.testing.fake_hash.int\0";
+
+/// The deterministic `Hashed` value of `std.testing.fake_hash(seed)` (`spec/14 §4`): SHA-256 of
+/// the seed's preimage (`fake_hash_preimage`). Equal seeds give equal values, and distinct seeds
+/// distinct preimages, so distinct values with the probability of SHA-256. O(d) in the seed's
+/// limbs (#1342): the seed is never written in decimal.
+pub fn fake_hash(seed: &BigInt) -> Vec<u8> {
+    Sha256::digest(fake_hash_preimage(seed)).to_vec()
+}
+
+/// What `fake_hash` hashes: the domain, then the seed's hash encoding (`spec/28 §1` rule 2),
+/// which is self-delimiting and injective on integers: the byte 0 and 8 bytes of two's
+/// complement for a seed in -2^63 to 2^63 - 1, otherwise the byte 1, a sign byte, the length of
+/// the magnitude in bytes and the magnitude, little-endian. O(d).
+pub fn fake_hash_preimage(seed: &BigInt) -> Vec<u8> {
+    let (sign, magnitude) = seed.to_bytes_le();
+    let mut preimage = Vec::with_capacity(FAKE_HASH_DOMAIN.len() + 10 + magnitude.len());
+    preimage.extend_from_slice(FAKE_HASH_DOMAIN);
+    Encoder::new(&mut preimage).big(sign == Sign::Minus, &magnitude);
+    preimage
 }
 
 /// Lowercase hexadecimal.
@@ -420,6 +441,80 @@ mod tests {
             hex(&mac),
             "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54"
         );
+    }
+
+    /// `2^(64 * limbs - 1) + 1`: an `Int` of exactly `limbs` 64-bit limbs.
+    fn int_of_limbs(limbs: usize) -> BigInt {
+        (BigInt::from(1) << (64 * limbs - 1)) + BigInt::from(1)
+    }
+
+    #[test]
+    fn fake_hash_gives_equal_values_for_equal_seeds_only() {
+        let big = int_of_limbs(4);
+        let seeds = [
+            BigInt::from(0),
+            BigInt::from(1),
+            BigInt::from(-1),
+            BigInt::from(255),
+            BigInt::from(256),
+            BigInt::from(-256),
+            BigInt::from(i64::MAX),
+            BigInt::from(i64::MIN),
+            BigInt::from(i64::MAX) + BigInt::from(1),
+            BigInt::from(i64::MIN) - BigInt::from(1),
+            BigInt::from(u64::MAX),
+            -BigInt::from(u64::MAX),
+            BigInt::from(1) << 64,
+            big.clone(),
+            -big.clone(),
+            big.clone() + BigInt::from(1),
+            big.clone() << 8,
+        ];
+        for (i, a) in seeds.iter().enumerate() {
+            // Equal seeds, made separately, give equal values.
+            let again: BigInt = a.to_string().parse().unwrap();
+            assert_eq!(fake_hash(a), fake_hash(&again), "seed {a}");
+            assert_eq!(fake_hash(a).len(), 32);
+            for b in seeds.iter().skip(i + 1) {
+                assert_ne!(fake_hash_preimage(a), fake_hash_preimage(b), "{a} and {b}");
+                assert_ne!(fake_hash(a), fake_hash(b), "{a} and {b}");
+            }
+        }
+        // Zero has no sign: `-0` is `0`.
+        assert_eq!(fake_hash(&-BigInt::from(0)), fake_hash(&BigInt::from(0)));
+        // The preimage is the domain and the seed's hash encoding (`spec/28 §1` rule 2).
+        let mut expected = FAKE_HASH_DOMAIN.to_vec();
+        expected.push(0);
+        expected.extend_from_slice(&(-2i64).to_le_bytes());
+        assert_eq!(fake_hash_preimage(&BigInt::from(-2)), expected);
+    }
+
+    #[test]
+    fn fake_hash_is_linear_in_its_seeds_limbs() {
+        // ADR 0132 rule 16, #1342: seeds of d and 10d limbs. The deterministic check is the
+        // preimage: exactly the domain, 10 bytes of framing and 8 bytes per limb, so linear.
+        let (d, ten_d) = (2_000, 20_000);
+        let small = int_of_limbs(d);
+        let large = int_of_limbs(ten_d);
+        let framing = FAKE_HASH_DOMAIN.len() + 10;
+        assert_eq!(fake_hash_preimage(&small).len(), framing + 8 * d);
+        assert_eq!(fake_hash_preimage(&large).len(), framing + 8 * ten_d);
+        // The secondary check is the time: at most 30 times as long, each size the best of
+        // three batches, so scheduler noise does not fail it (#341).
+        let best = |seed: &BigInt| {
+            (0..3)
+                .map(|_| {
+                    let started = std::time::Instant::now();
+                    for _ in 0..20 {
+                        std::hint::black_box(fake_hash(std::hint::black_box(seed)));
+                    }
+                    started.elapsed().as_secs_f64()
+                })
+                .fold(f64::INFINITY, f64::min)
+        };
+        let floor = 1e-4;
+        let growth = best(&large).max(floor) / best(&small).max(floor);
+        assert!(growth <= 30.0, "10x the limbs took {growth:.1}x as long");
     }
 
     #[test]
