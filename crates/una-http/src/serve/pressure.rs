@@ -356,6 +356,8 @@ impl Ord for PeerEntry {
 pub struct Pressure {
     all: BinaryHeap<Entry>,
     by_peer: HashMap<PeerKey, BinaryHeap<Entry>>,
+    /// The entries of all the heaps of `by_peer`, kept so that compaction does not count them.
+    by_peer_count: usize,
     peers: BinaryHeap<PeerEntry>,
 }
 
@@ -374,6 +376,7 @@ impl Pressure {
         };
         self.all.push(entry());
         self.by_peer.entry(conn.peer.key).or_default().push(entry());
+        self.by_peer_count += 1;
         let share = grant.limits.peer_replies.unwrap_or(u64::MAX);
         self.peers.push(PeerEntry {
             over: over(&conn.peer, share),
@@ -393,11 +396,13 @@ impl Pressure {
     /// with a reply pending, plus a constant: entries of finished replies and of closed
     /// connections sit below the larger keys and would otherwise stay as long as pressure does.
     /// The rebuild is O(c) and follows at least c more pushes, so each push stays O(1)
-    /// amortized besides its O(log c).
+    /// amortized besides its O(log c). It is a latency spike of O(c) for the reservation that
+    /// runs it (under the pressure lock), amortized, not worst case. The three heaps are counted,
+    /// `by_peer` included.
     fn compact(&mut self, grant: &GrantState) {
         let live = grant.registry.len();
         let limit = live.saturating_mul(2).saturating_add(64);
-        if self.all.len() > limit || self.peers.len() > limit {
+        if self.all.len() > limit || self.peers.len() > limit || self.by_peer_count > limit {
             self.build(grant);
         }
     }
@@ -428,6 +433,7 @@ impl Pressure {
                 id: conn.id,
                 conn: Arc::downgrade(&conn),
             });
+            self.by_peer_count += 1;
             if seen.insert(conn.peer.key) {
                 self.peers.push(PeerEntry {
                     over: over(&conn.peer, share),
@@ -453,13 +459,28 @@ impl Pressure {
                 });
                 continue;
             }
-            let victim = self.by_peer.get_mut(&top.peer.key).and_then(valid_top);
+            let victim = self.pop_peer(top.peer.key);
             if let Some(victim) = victim {
                 self.peers.push(top);
                 return Some(victim);
             }
         }
         valid_top(&mut self.all)
+    }
+
+    /// The connection with the most bytes left of one peer; the peer's key goes when its heap
+    /// is empty, so the map holds no key of a peer that left.
+    fn pop_peer(&mut self, key: PeerKey) -> Option<Arc<ConnShared>> {
+        let heap = self.by_peer.get_mut(&key)?;
+        let before = heap.len();
+        let victim = valid_top(heap);
+        let removed = before - heap.len();
+        let empty = heap.is_empty();
+        self.by_peer_count = self.by_peer_count.saturating_sub(removed);
+        if empty {
+            self.by_peer.remove(&key);
+        }
+        victim
     }
 
     fn clear(&mut self) {

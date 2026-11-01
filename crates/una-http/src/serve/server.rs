@@ -335,6 +335,24 @@ impl Server {
     }
 }
 
+/// Passes the turn to accept on when its thread panics.
+struct TurnGuard {
+    shared: Arc<Shared>,
+    acceptor: Arc<Acceptor>,
+    index: usize,
+}
+
+impl Drop for TurnGuard {
+    fn drop(&mut self) {
+        if std::thread::panicking()
+            && self.shared.turn() == self.index
+            && !self.acceptor.closed.load(Ordering::SeqCst)
+        {
+            self.shared.pass_turn(self.index);
+        }
+    }
+}
+
 /// Everything a serve thread owns.
 struct Context {
     index: usize,
@@ -350,7 +368,18 @@ struct Context {
 }
 
 impl Context {
-    fn run(mut self) {
+    fn run(self) {
+        // A thread that dies while it holds the turn to accept passes it on, so the run keeps
+        // listening; the connections it owned are lost with it.
+        let _guard = TurnGuard {
+            shared: Arc::clone(&self.shared),
+            acceptor: Arc::clone(&self.acceptor),
+            index: self.index,
+        };
+        self.serve();
+    }
+
+    fn serve(mut self) {
         let mut thread = Thread::new(
             self.index,
             Arc::clone(&self.shared),
@@ -460,6 +489,7 @@ impl Context {
     }
 
     fn arm_accept(&self) {
+        self.shared.set_turn(self.index);
         let fd = self.acceptor.poller.as_fd();
         let _ = self.poller.delete(fd, Interest::Read);
         let _ = self.poller.add(fd, Interest::Read, ACCEPT);
@@ -500,12 +530,15 @@ impl Context {
                 self.accept_burst(grant as usize);
             }
         }
-        let next = (self.index + 1) % self.shared.threads;
-        if accepted && next != self.index && !self.acceptor.closed.load(Ordering::SeqCst) {
-            self.shared.send(next, Msg::Accept);
-        } else {
-            self.arm_accept();
+        // The turn goes to a sleeping thread first, else to another that is alive; with none,
+        // this thread keeps it.
+        if accepted
+            && !self.acceptor.closed.load(Ordering::SeqCst)
+            && self.shared.pass_turn(self.index)
+        {
+            return;
         }
+        self.arm_accept();
     }
 
     /// Accepts at most [`BURST`] connections from listener `grant`, then registers it again

@@ -80,15 +80,21 @@ impl Port {
     /// then checks its channel once more (`Port::announce_sleep`). Each side orders its store
     /// before its load, so either the sender sees `true` and wakes the thread, or the sleeper
     /// sees the message: no wake is lost, and a busy thread is never woken.
-    pub fn send(&self, msg: Msg) {
+    pub fn send(&self, msg: Msg) -> bool {
         if self.tx.send(msg).is_err() {
-            // The thread ended: the run is over, and nothing is waiting for this message.
-            return;
+            // The thread ended (the run is over, or the thread died): nothing receives it.
+            return false;
         }
         fence(Ordering::SeqCst);
         if self.sleeping.load(Ordering::SeqCst) {
             self.waker.wake();
         }
+        true
+    }
+
+    /// Whether the thread announced that it sleeps.
+    pub fn is_sleeping(&self) -> bool {
+        self.sleeping.load(Ordering::SeqCst)
     }
 
     /// The thread is about to block: it stores `sleeping`, issues the fence, and the caller
@@ -248,6 +254,8 @@ pub struct Shared {
     ports: Vec<Port>,
     queues: Vec<Queue>,
     cursor: AtomicUsize,
+    /// The serve thread that holds the turn to accept, or `usize::MAX` before the first.
+    turn: AtomicUsize,
     /// Set at a host stop.
     pub stopping: AtomicBool,
     /// Set at the hard stop.
@@ -298,6 +306,7 @@ impl Shared {
             ports,
             queues,
             cursor: AtomicUsize::new(0),
+            turn: AtomicUsize::new(usize::MAX),
             stopping: AtomicBool::new(false),
             hard: AtomicBool::new(false),
             clock,
@@ -309,15 +318,22 @@ impl Shared {
 
     /// Sets what runs when a request is queued, an exchange ends or the run stops: the
     /// program's `next` waits on it.
-    pub fn on_ready(&self, f: Ready) {
-        // Set once, before serving starts; read on every event without a lock.
-        let _ = self.notify.set(f);
+    /// Set once, before serving starts; read on every event without a lock. A second call
+    /// changes nothing and returns `false` (it is a bug in the caller, and a debug build
+    /// stops).
+    pub fn on_ready(&self, f: Ready) -> bool {
+        let first = self.notify.set(f).is_ok();
+        debug_assert!(first, "on_ready is set once");
+        first
     }
 
     /// Sets what runs when a connection of grant `index` closes and frees a slot: the acceptor
     /// registers the listener again.
-    pub fn on_slot_freed(&self, f: Freed) {
-        let _ = self.freed.set(f);
+    /// Set once like [`Shared::on_ready`]; a second call changes nothing and returns `false`.
+    pub fn on_slot_freed(&self, f: Freed) -> bool {
+        let first = self.freed.set(f).is_ok();
+        debug_assert!(first, "on_slot_freed is set once");
+        first
     }
 
     pub(crate) fn notify(&self) {
@@ -333,10 +349,39 @@ impl Shared {
     }
 
     /// Sends a message to serve thread `thread`.
-    pub fn send(&self, thread: usize, msg: Msg) {
-        if let Some(port) = self.ports.get(thread) {
-            port.send(msg);
+    pub fn send(&self, thread: usize, msg: Msg) -> bool {
+        self.ports.get(thread).is_some_and(|port| port.send(msg))
+    }
+
+    /// Records that thread `thread` holds the turn to accept.
+    pub fn set_turn(&self, thread: usize) {
+        self.turn.store(thread, Ordering::SeqCst);
+    }
+
+    /// The thread that holds the turn to accept, or `usize::MAX`.
+    pub fn turn(&self) -> usize {
+        self.turn.load(Ordering::SeqCst)
+    }
+
+    /// Passes the turn to accept from thread `from` to another serve thread that can take it:
+    /// one that sleeps first (it is idle), else any other; a thread that ended is skipped.
+    /// `false` when no other thread took it.
+    pub fn pass_turn(&self, from: usize) -> bool {
+        let n = self.threads;
+        for sleeping_first in [true, false] {
+            for step in 1..n {
+                let thread = (from + step) % n;
+                let sleeps = self.ports.get(thread).is_some_and(Port::is_sleeping);
+                if sleeping_first && !sleeps {
+                    continue;
+                }
+                if self.send(thread, Msg::Accept) {
+                    self.turn.store(thread, Ordering::SeqCst);
+                    return true;
+                }
+            }
         }
+        false
     }
 
     /// The port of a thread.
@@ -370,7 +415,23 @@ impl Shared {
             }
         };
         let conn = ConnShared::new(Arc::clone(state), peer, owner, address);
-        self.send(owner, Msg::Adopt(Box::new(Adopt { socket, conn })));
+        let kept = Arc::clone(&conn);
+        if !self.send(owner, Msg::Adopt(Box::new(Adopt { socket, conn }))) {
+            // The owner is gone: the connection closes at once and gives back what it took.
+            kept.close();
+            if let Some(at) = state.peers.close(&kept.peer, now) {
+                self.send(
+                    owner,
+                    Msg::PeerExpiry {
+                        grant,
+                        peer: kept.peer.key,
+                        at,
+                    },
+                );
+            }
+            state.give_slot();
+            self.slot_freed(grant);
+        }
         Ok(())
     }
 

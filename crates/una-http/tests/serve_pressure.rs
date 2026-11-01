@@ -306,3 +306,29 @@ fn heaps_stay_bounded_while_slow_readers_keep_pressure_on() {
     assert_eq!(state.counters().replies, 3 * MIB + MIB / 2);
     assert!(most < 300, "the heaps grew to {most} entries");
 }
+
+#[test]
+fn heaps_stay_bounded_when_every_reply_evicts_a_victim_of_a_peer_under_its_share() {
+    // 200 peers, each far under its share, and a reply of 1 MiB per connection against a
+    // `replies` of 4 MiB: every reservation frees the oldest connection from the heap of all,
+    // and none from the heaps of the peers. Those must not pile up either.
+    let state = state("serve:http://127.0.0.1:8080;replies=4;peer_replies=4;peer=none");
+    let mut live = std::collections::VecDeque::new();
+    let mut most = 0;
+    for n in 0..20_000u64 {
+        let conn = connect(&state, (n % 200) as u32, n);
+        let Reserve::Reserved(_) = state.reserve_reply(&conn.shared, MIB) else {
+            panic!("refused");
+        };
+        assert!(conn.shared.push(vec![0; MIB as usize]));
+        live.push_back(conn);
+        if live.len() > 8 {
+            let old = live.pop_front().unwrap();
+            old.shared.close();
+            state.peers.close(&old.shared.peer, 0);
+        }
+        most = most.max(state.pressure_entries());
+    }
+    assert!(state.under_pressure());
+    assert!(most < 400, "the heaps grew to {most} entries");
+}

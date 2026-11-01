@@ -793,6 +793,10 @@ impl Core {
         c.phase = Phase::Waiting;
         let secs = c.grant.limits.answer;
         self.arm(c, Kind::Answer, now, seconds(secs));
+        if c.closed {
+            // The timer could not be made: the connection is gone, and nothing is queued.
+            return;
+        }
         self.shared.enqueue(
             self.index,
             c.grant.index,
@@ -973,9 +977,12 @@ impl Core {
             if let Some(exch) = c.exch.take() {
                 c.grant.end_exchange(exch.bytes);
             }
-            let mut bytes = Vec::new();
-            reply::write_answer(503, true, true, self.now_date(), &mut bytes);
-            let _ = c.sock.write(&bytes);
+            // After half of an interim response the answer would cut it in two: none is written.
+            if c.own_off == 0 {
+                let mut bytes = Vec::new();
+                reply::write_answer(503, true, true, self.now_date(), &mut bytes);
+                let _ = c.sock.write(&bytes);
+            }
         }
         self.close(c, now);
     }

@@ -286,3 +286,60 @@ fn accept_rate_by_serve_threads() {
         live.server.join();
     }
 }
+
+#[test]
+fn accepting_goes_on_when_serve_threads_die() {
+    // The callback runs on the serve thread that queued a request; it panics there twice, which
+    // kills two of the four threads, one of which may hold the turn to accept.
+    let port = free_port();
+    let grant = ServeGrant::parse(&format!("serve:http://127.0.0.1:{port};peer=none")).unwrap();
+    let prepared = prepare(
+        &[ServeInput {
+            grant: &grant,
+            certificate: None,
+            key: None,
+        }],
+        4,
+        1,
+    )
+    .unwrap();
+    let server = Server::start(prepared, &[grant], 4).unwrap();
+    let panics = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let seen = Arc::clone(&panics);
+    server.shared().on_ready(Arc::new(move || {
+        let on_serve = std::thread::current()
+            .name()
+            .is_some_and(|n| n.starts_with("una-serve-"));
+        if on_serve && seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < 2 {
+            panic!("a serve thread dies");
+        }
+    }));
+    server.begin();
+    let live = Live {
+        server,
+        port,
+        ready: Arc::new((Mutex::new(0), Condvar::new())),
+    };
+    let mut clients = Vec::new();
+    for n in 0..40 {
+        let mut stream = live.client();
+        let _ =
+            stream.write_all(format!("GET /{n} HTTP/1.1\r\nHost: localhost\r\n\r\n").as_bytes());
+        clients.push(stream);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    // Connections owned by live threads are still accepted and delivered.
+    let mut delivered = 0;
+    let end = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < end && delivered < 5 {
+        if let Some(mut exchange) = live.server.take() {
+            let _ = exchange.reply(&ok("alive"));
+            delivered += 1;
+        } else {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    assert!(delivered >= 5, "only {delivered} requests were delivered");
+    assert!(panics.load(std::sync::atomic::Ordering::SeqCst) >= 2);
+    live.server.stop();
+}
