@@ -12,7 +12,7 @@ use una_core::Descriptor;
 use una_core::bigint::BigInt;
 
 use crate::runtime;
-use crate::values::{self, fault, int_value, int_word, retain, tag, text_value};
+use crate::values::{self, fault, int_value, int_word, retain, tag};
 
 /// The composite descriptors of the run (ADR 0068 D6): each entry is a type description that
 /// holds type parameters, with the descriptor of each, by position. One table for the process,
@@ -101,7 +101,7 @@ fn order(desc: i64, a: i64, b: i64) -> Option<Ordering> {
             Some(int_value(a).cmp(&int_value(b)))
         }
         Some(Descriptor::Text) if values::is_text(a) && values::is_text(b) => {
-            Some(text_value(a).cmp(&text_value(b)))
+            Some(values::with_texts(a, b, |x, y| x.cmp(y)))
         }
         Some(Descriptor::Sum(_)) if values::is_data(a) && values::is_data(b) => {
             Some(tag(a).cmp(&tag(b)))

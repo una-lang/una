@@ -1,0 +1,57 @@
+-- test: starts_with, ends_with, == and the order read two texts in place and agree on empty texts, a prefix longer than the text, equal prefixes, a shared first byte and multi-byte scalar values, and contains finds a text among texts, in both engines (ADR 0132 rule 5, spec/22 §2)
+-- spec: spec/22 §2
+-- grant: console
+-- expect: run-output "empty,empty: true true true false"
+-- expect: run-output "abc,empty: true true false false"
+-- expect: run-output "empty,abc: false false false true"
+-- expect: run-output "ab,abc: false false false true"
+-- expect: run-output "abc,ab: true false false false"
+-- expect: run-output "abc,bc: false true false true"
+-- expect: run-output "abc,abd: false false false true"
+-- expect: run-output "abd,abc: false false false false"
+-- expect: run-output "ea,e-acute: true false false false"
+-- expect: run-output "e-acute,e: false false false false"
+-- expect: run-output "e-acute-e,e-grave: false false false false"
+-- expect: run-output "e-grave,e-acute-e: false false false true"
+-- expect: run-output "ja3,ja2: true false false false"
+-- expect: run-output "ja3,ja1: false true false true"
+-- expect: run-output "ja2,ja2: true true true false"
+-- expect: run-output "true false true false"
+module reads
+
+show(name: Text, a: Text, b: Text) -> Text = "{name}: {a.starts_with(prefix: b)} {a.ends_with(suffix: b)} {a == b} {a < b}"
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let empty = ""
+  let abc = "abc"
+  let ab = "ab"
+  let bc = "bc"
+  let abd = "abd"
+  let ea = "éa"
+  let acute = "é"
+  let plain = "e"
+  let acute_e = "ée"
+  let grave = "è"
+  let ja3 = "日本語"
+  let ja2 = "日本"
+  let ja1 = "語"
+  @console.print(show(name: "empty,empty", a: empty, b: empty))
+  @console.print(show(name: "abc,empty", a: abc, b: empty))
+  @console.print(show(name: "empty,abc", a: empty, b: abc))
+  @console.print(show(name: "ab,abc", a: ab, b: abc))
+  @console.print(show(name: "abc,ab", a: abc, b: ab))
+  @console.print(show(name: "abc,bc", a: abc, b: bc))
+  @console.print(show(name: "abc,abd", a: abc, b: abd))
+  @console.print(show(name: "abd,abc", a: abd, b: abc))
+  @console.print(show(name: "ea,e-acute", a: ea, b: acute))
+  @console.print(show(name: "e-acute,e", a: acute, b: plain))
+  @console.print(show(name: "e-acute-e,e-grave", a: acute_e, b: grave))
+  @console.print(show(name: "e-grave,e-acute-e", a: grave, b: acute_e))
+  @console.print(show(name: "ja3,ja2", a: ja3, b: ja2))
+  @console.print(show(name: "ja3,ja1", a: ja3, b: ja1))
+  @console.print(show(name: "ja2,ja2", a: ja2, b: ja2))
+  let items = [empty, acute, ja2]
+  let ja2_again = "日本"
+  @console.print("{items.contains(item: ja2_again)} {items.contains(item: ja1)} {items.contains(item: empty)} {items.contains(item: ea)}")

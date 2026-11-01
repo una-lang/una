@@ -421,6 +421,26 @@ fn with<R>(word: i64, f: impl FnOnce(&Object) -> R) -> Option<R> {
     })
 }
 
+/// `f` of the texts of `a` and `b`, read in place: borrowed from the heap with no copy, so a
+/// read that stops early costs what it reads (ADR 0132 rule 5, #1341). A word that is not a text
+/// reads as the empty text, as in [`text_value`]. `f` runs under the heap's borrow and must not
+/// call back into the heap.
+pub(crate) fn with_texts<R>(a: i64, b: i64, f: impl FnOnce(&str, &str) -> R) -> R {
+    HEAP.with(|heap| {
+        let heap = heap.borrow();
+        let read = |word: i64| -> &str {
+            match slot(word)
+                .and_then(|index| heap.slots.get(index))
+                .and_then(|slot| slot.object.as_ref())
+            {
+                Some(Object::Text(text)) => text.as_str(),
+                _ => "",
+            }
+        };
+        f(read(a), read(b))
+    })
+}
+
 /// Adds a reference to `word`. Immediates have none.
 ///
 /// A count at its limit is never incremented: the retain ends the process instead, after the
@@ -755,13 +775,13 @@ pub fn text_append_owned(t: i64, part: i64) -> i64 {
 
 /// Whether two texts are equal: 1 or 0.
 pub fn text_equal(a: i64, b: i64) -> i64 {
-    i64::from(text_value(a) == text_value(b))
+    i64::from(with_texts(a, b, |x, y| x == y))
 }
 
 /// The order of two texts by Unicode scalar values (ADR 0032): -1, 0 or 1. UTF-8 orders its
 /// bytes as the scalar values they encode.
 pub fn text_compare(a: i64, b: i64) -> i64 {
-    ordering(text_value(a).cmp(&text_value(b)))
+    ordering(with_texts(a, b, |x, y| x.cmp(y)))
 }
 
 /// The length of a text in Unicode scalar values, as an `Int` word (`spec/14 §1`).
@@ -960,7 +980,8 @@ fn leaf_equal(a: i64, b: i64) -> bool {
     #[derive(PartialEq)]
     enum Leaf {
         Int(BigInt),
-        Text(String),
+        /// A text, whose value is not taken: two texts are compared in place before a leaf is.
+        Text,
         Bytes(Vec<u8>),
         Float(u64),
         Variant(i64),
@@ -979,10 +1000,14 @@ fn leaf_equal(a: i64, b: i64) -> bool {
     if !is_handle(a) || !is_handle(b) {
         return false;
     }
+    // Two texts are read in place and stop at the first difference (ADR 0132 rule 5).
+    if is_text(a) && is_text(b) {
+        return with_texts(a, b, |x, y| x == y);
+    }
     let leaf = |word: i64| {
         with(word, |object| match object {
             Object::Int(value) => Leaf::Int(value.clone()),
-            Object::Text(text) => Leaf::Text(text.as_str().to_owned()),
+            Object::Text(_) => Leaf::Text,
             Object::Hashed(bytes) => Leaf::Bytes(bytes.clone()),
             // `==` on `F64` is identity of the canonical bits (ADR 0114 rule 5.1).
             Object::F64(x) => Leaf::Float(una_core::float::to_bits(*x)),
@@ -996,7 +1021,8 @@ fn leaf_equal(a: i64, b: i64) -> bool {
         })
     };
     match (leaf(a), leaf(b)) {
-        (Some(x), Some(y)) => x != Leaf::Other && x == y,
+        // A text and a non-text differ: two texts returned above.
+        (Some(x), Some(y)) => x != Leaf::Other && x != Leaf::Text && x == y,
         _ => false,
     }
 }
@@ -2757,7 +2783,7 @@ pub fn is_digits(t: i64) -> i64 {
 
 /// `starts_with(t, prefix)` of the prelude.
 pub fn starts_with(t: i64, prefix: i64) -> i64 {
-    bool_word(text_value(t).starts_with(&text_value(prefix)))
+    bool_word(with_texts(t, prefix, |x, p| x.starts_with(p)))
 }
 
 /// `trim(t)` of the prelude.
@@ -2796,12 +2822,12 @@ pub fn join(parts: i64, separator: i64) -> i64 {
 
 /// `ends_with(t, suffix)` of the prelude.
 pub fn ends_with(t: i64, suffix: i64) -> i64 {
-    bool_word(text_value(t).ends_with(text_value(suffix).as_str()))
+    bool_word(with_texts(t, suffix, |x, p| x.ends_with(p)))
 }
 
 /// `contains_text(t, part)` of the prelude.
 pub fn contains_text(t: i64, part: i64) -> i64 {
-    bool_word(search(&text_value(t), &text_value(part)).is_some())
+    bool_word(with_texts(t, part, |x, p| search(x, p).is_some()))
 }
 
 /// `find(t, text)` of the prelude: `Some` of the scalar position of the first occurrence.

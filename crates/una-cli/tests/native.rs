@@ -3559,6 +3559,182 @@ fn native_text_len_and_slice_take_constant_time_on_any_text() {
     }
 }
 
+/// A text of 2^`LOG` * 2 scalar values, `ab` repeated, built by doubling, then `K` rounds of
+/// `starts_with`, `ends_with`, `==` and `<` against a prefix, a suffix and a text that differs
+/// at the first scalar value.
+const TEXT_READS_SCALE: &str = "module scale
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let edit t = \"ab\"
+  for i in 0..<LOG
+    t = \"{t}{t}\"
+  let p = \"ab\"
+  let u = \"b{t}\"
+  let edit hits = 0
+  for i in 0..<K
+    if t.starts_with(prefix: p)
+      hits = hits + 1
+    if t.ends_with(suffix: p)
+      hits = hits + 1
+    if t == u
+      hits = hits + 100
+    if t < u
+      hits = hits + 1
+  @console.print(\"{t.len} {hits}\")
+";
+
+/// A list of `N` texts `ab`, and a long item of 2^`LOG` * 2 scalar values, built by doubling.
+const TEXT_CONTAINS_SCALE: &str = "module scale
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let edit xs: List[Text] = []
+  for i in 0..<N
+    xs = xs.append(item: \"ab\")
+  let edit item = \"ab\"
+  for i in 0..<LOG
+    item = \"{item}{item}\"
+  let ab = \"ab\"
+  @console.print(\"{xs.contains(item: item)} {xs.contains(item: ab)}\")
+";
+
+/// Builds `source` with `replacements` applied, once for each of `values`, in edition 0.2, and
+/// returns the packages' directories.
+fn text_scale_packages(
+    name: &str,
+    source: &str,
+    values: &[usize],
+    key: &str,
+    fixed: &[(&str, usize)],
+) -> Vec<PathBuf> {
+    values
+        .iter()
+        .map(|value| {
+            let mut text = source.replace(key, &value.to_string());
+            for (token, number) in fixed {
+                text = text.replace(token, &number.to_string());
+            }
+            let dir = package(
+                &format!("{name}_{value}"),
+                "\n[run]\nentry = \"scale\"\ngrants = [\"console\"]\n",
+                &[("src/scale.una", &text)],
+            );
+            let manifest = std::fs::read_to_string(dir.join("una.toml")).unwrap();
+            std::fs::write(
+                dir.join("una.toml"),
+                manifest.replace("edition = \"0.1\"", "edition = \"0.2\""),
+            )
+            .unwrap();
+            let built = una(&dir, &["build"]);
+            assert_eq!(built.status.code(), Some(0), "{built:?}");
+            dir
+        })
+        .collect()
+}
+
+#[test]
+fn native_text_reads_stop_at_the_first_difference_whatever_the_text_size() {
+    // ADR 0132 rules 5 and 16, `spec/22 §2` (`ends_with`, O(m)): `starts_with`, `ends_with`,
+    // `==` and `<` on a text of b scalar values and a short operand take constant time, so a
+    // text 16 times as long takes under 4 times as long, about 1x in place against about 16x
+    // when each call copies the text (#1341). A miss is measured twice more before it fails
+    // (#341).
+    const ROUNDS: usize = 10_000;
+    let logs = [8, 20];
+    // The sizes are the scalar values of the text or the item: 2 << log.
+    let sizes: Vec<usize> = logs.iter().map(|log| 2usize << log).collect();
+    let dirs = text_scale_packages("reads", TEXT_READS_SCALE, &logs, "LOG", &[("K", ROUNDS)]);
+    // The fixed cost of a run: the same program with no rounds, on the smaller text.
+    let idle = text_scale_packages("reads_idle", TEXT_READS_SCALE, &[8], "LOG", &[("K", 0)]);
+    let run_idle = || {
+        timing::timed(|| {
+            Command::new(idle[0].join("target/una/reads_idle_8"))
+                .current_dir(&idle[0])
+                .output()
+                .unwrap()
+        })
+        .1
+    };
+    let fixed = timing::best_of_three(run_idle);
+    let measure = |size: usize| {
+        let log = size.trailing_zeros() as usize - 1;
+        let dir = &dirs[logs.iter().position(|&s| s == log).unwrap()];
+        let (output, seconds) = timing::timed(|| {
+            Command::new(dir.join(format!("target/una/reads_{log}")))
+                .current_dir(dir)
+                .output()
+                .unwrap()
+        });
+        assert_eq!(output.status.code(), Some(0));
+        // Each round adds 1 for the prefix, 1 for the suffix and 1 for the order; never for `==`.
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            format!("{} {}\n", 2usize << log, 3 * ROUNDS)
+        );
+        seconds
+    };
+    timing::assert_growth("reads", &sizes, fixed, timing::FLOOR, 4.0, measure);
+    for dir in dirs.iter().chain(&idle) {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[test]
+fn native_contains_over_short_texts_does_not_depend_on_the_length_of_the_item() {
+    // ADR 0132 rules 5, 10 and 16: `contains` of a long item over 100 000 short texts compares
+    // each element in O(1) when the lengths differ, so the cost is linear in size(xs) and a
+    // 16 times longer item takes under 4 times as long, about 1x in place against about 16x
+    // when each comparison copies the item (#1341). A miss is measured twice more (#341).
+    let logs = [8, 20];
+    // The sizes are the scalar values of the text or the item: 2 << log.
+    let sizes: Vec<usize> = logs.iter().map(|log| 2usize << log).collect();
+    let dirs = text_scale_packages(
+        "contains",
+        TEXT_CONTAINS_SCALE,
+        &logs,
+        "LOG",
+        &[("N", 100_000)],
+    );
+    // The fixed cost of a run: the same program over an empty list, on the shorter item.
+    let idle = text_scale_packages(
+        "contains_idle",
+        TEXT_CONTAINS_SCALE,
+        &[8],
+        "LOG",
+        &[("N", 0)],
+    );
+    let run_idle = || {
+        timing::timed(|| {
+            Command::new(idle[0].join("target/una/contains_idle_8"))
+                .current_dir(&idle[0])
+                .output()
+                .unwrap()
+        })
+        .1
+    };
+    let fixed = timing::best_of_three(run_idle);
+    let measure = |size: usize| {
+        let log = size.trailing_zeros() as usize - 1;
+        let dir = &dirs[logs.iter().position(|&s| s == log).unwrap()];
+        let (output, seconds) = timing::timed(|| {
+            Command::new(dir.join(format!("target/una/contains_{log}")))
+                .current_dir(dir)
+                .output()
+                .unwrap()
+        });
+        assert_eq!(output.status.code(), Some(0));
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "false true\n");
+        seconds
+    };
+    timing::assert_growth("contains", &sizes, fixed, timing::FLOOR, 4.0, measure);
+    for dir in dirs.iter().chain(&idle) {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
 /// A program that appends `steps` items to a list through a function value, by `shape`: a
 /// named function passed as a value (`named`), a lambda (`lambda`), two layers of lambdas over
 /// a function value (`layers`), or `fold` over a list (`fold`) or into a text (`text`).
