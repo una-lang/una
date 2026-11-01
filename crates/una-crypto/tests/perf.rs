@@ -14,6 +14,7 @@
 mod common;
 
 use std::time::Instant;
+use una_crypto::aes_gcm::AesGcm;
 use una_crypto::chacha20poly1305::seal_in_place;
 use una_crypto::sha2::{Sha256, Sha512};
 use una_crypto::x25519::x25519;
@@ -25,6 +26,15 @@ fn run(name: &str, m: &[u8]) {
         }
         "sha512" => {
             std::hint::black_box(Sha512::digest(m));
+        }
+        "aes128gcm" | "aes256gcm" => {
+            let mut buf = m.to_vec();
+            let tag = if name == "aes128gcm" {
+                AesGcm::new_128(&[1u8; 16]).seal_in_place(&[2u8; 12], b"", &mut buf)
+            } else {
+                AesGcm::new_256(&[1u8; 32]).seal_in_place(&[2u8; 12], b"", &mut buf)
+            };
+            std::hint::black_box(tag.ok());
         }
         _ => {
             let mut buf = m.to_vec();
@@ -52,14 +62,22 @@ fn time_is_linear_in_the_message_size() {
     }
     let small = vec![0u8; 4 << 20];
     let large = vec![0u8; 32 << 20];
-    for name in ["sha256", "sha512", "chacha20poly1305"] {
+    for name in [
+        "sha256",
+        "sha512",
+        "chacha20poly1305",
+        "aes128gcm",
+        "aes256gcm",
+    ] {
         let t_small = seconds(|| run(name, &small));
         let t_large = seconds(|| run(name, &large));
         let ratio = t_large / t_small;
         // 8x the data: linear is 8; allow 4 to 16.
         assert!((4.0..16.0).contains(&ratio), "{name}: ratio {ratio:.2}");
         let mib_s = 32.0 / t_large;
-        assert!(mib_s > 50.0, "{name}: {mib_s:.0} MiB/s");
+        // The bitsliced AES-GCM is slower by design (ADR 0133 rule 14).
+        let floor = if name.starts_with("aes") { 5.0 } else { 50.0 };
+        assert!(mib_s > floor, "{name}: {mib_s:.0} MiB/s");
     }
 }
 
@@ -79,4 +97,34 @@ fn one_scalar_multiplication_is_fast() {
         std::hint::black_box(x);
     }) / 200.0;
     assert!(t < 500e-6, "{:.1} us per X25519", t * 1e6);
+}
+
+#[test]
+fn ed25519_verification_is_fast_and_linear_in_the_message() {
+    use una_crypto::ed25519::verify;
+    if cfg!(debug_assertions) {
+        return;
+    }
+    use ring::signature::{Ed25519KeyPair, KeyPair};
+    let kp = Ed25519KeyPair::from_seed_unchecked(&[4u8; 32]).unwrap();
+    let pk: [u8; 32] = kp.public_key().as_ref().try_into().unwrap();
+    let small = vec![1u8; 1 << 20];
+    let large = vec![1u8; 8 << 20];
+    let sig_small: [u8; 64] = kp.sign(&small).as_ref().try_into().unwrap();
+    let sig_large: [u8; 64] = kp.sign(&large).as_ref().try_into().unwrap();
+    // A fixed-size message: the group work is constant, so one verification is fast.
+    let tiny = b"x";
+    let sig_tiny: [u8; 64] = kp.sign(tiny).as_ref().try_into().unwrap();
+    let t = seconds(|| {
+        for _ in 0..20 {
+            assert!(verify(&pk, tiny, &sig_tiny).is_ok());
+        }
+    }) / 20.0;
+    assert!(t < 5e-3, "{:.2} ms per Ed25519 verification", t * 1e3);
+    // Large messages: the cost is the hash, linear in the size (8x data: 4 to 16x time once the
+    // fixed group work is a small part of it).
+    let t_small = seconds(|| assert!(verify(&pk, &small, &sig_small).is_ok()));
+    let t_large = seconds(|| assert!(verify(&pk, &large, &sig_large).is_ok()));
+    let ratio = t_large / t_small;
+    assert!((3.0..16.0).contains(&ratio), "ratio {ratio:.2}");
 }

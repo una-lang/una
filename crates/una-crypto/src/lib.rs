@@ -1,8 +1,8 @@
 //! Una's own cryptography for TLS (ADR 0133, issue #1100, epic #1097): pure Rust, no C, no
 //! assembly, no foreign function interface, `unsafe` forbidden.
 //!
-//! Slice 1 holds the hash, MAC, key-derivation, AEAD and key-agreement primitives of the
-//! TLS 1.3 suites `TLS_CHACHA20_POLY1305_SHA256` and the SHA-2 transcript hashes:
+//! Slices 1 to 3 hold the hash, MAC, key-derivation, AEAD, key-agreement and Ed25519
+//! verification primitives of the TLS 1.3 suites and their transcript hashes:
 //!
 //! | Module | Specification |
 //! | --- | --- |
@@ -10,6 +10,8 @@
 //! | [`hmac`] | RFC 2104 and FIPS 198-1 |
 //! | [`hkdf`] | RFC 5869 |
 //! | [`chacha20poly1305`] | RFC 8439 |
+//! | [`aes_gcm`] | FIPS 197 and NIST SP 800-38D: AES-128/256-GCM |
+//! | [`ed25519`] | RFC 8032: strict signature verification |
 //! | [`x25519`] | RFC 7748 |
 //!
 //! **Constant time.** No branch and no memory index depends on a secret value; secret
@@ -18,14 +20,19 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod aes_gcm;
 pub mod chacha20poly1305;
 pub mod ct;
+pub mod ed25519;
 pub mod hkdf;
 pub mod hmac;
 pub mod sha2;
 pub mod x25519;
 
+mod aes;
 mod chacha20;
+mod fe25519;
+mod ghash;
 mod poly1305;
 mod sha2_consts;
 
