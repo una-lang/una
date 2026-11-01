@@ -11,3 +11,7 @@
 ## Added 2026-10-31
 8. Una Quality epic (#1292), all in Needs spec: foundation ADR #1296 first (identifiers #1303 `UQ`, configuration #1304, file format #1302), then phases #1297-#1301; guarantee diff #1291; specification mutation #1293; requirement coverage #1289; typestate ADR #1290; Language Pack #1295 (Ready). Metric definitions: ops/coordination/UNA-QUALITY-METRICS-DEFINITIONS.md (comment on #1296).
 9. #1099 needs the dated amendment of ADR 0106 that ADR 0124 question 1 already ruled (the C backend is withdrawn; the release path becomes Una's own code generation).
+
+## Added 2026-11-01
+10. Order now: #1341 (in flight), #1342, #1343 (complexity findings), #1368 (bigint follow-ups), #1376 (S4 follow-ups), then #1209 slices 4a+4b (plan ready), #1007 (S5) only after the L_srv labels and timing oracles exist, #1100 slice 7b/8 after the owner accepts ADR 0133, #1340 (Z3 source address), #991 (simd).
+11. Pacing: one card in flight, about three code cards a day; small cards when the day's budget is spent.
