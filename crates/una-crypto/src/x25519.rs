@@ -139,18 +139,34 @@ impl Fe {
 
     /// `self^(p - 2)`, the inverse of a nonzero element (and 0 for 0), by a fixed chain.
     fn invert(self) -> Self {
-        let z2 = self.square();
-        let z9 = z2.square_times(2).mul(self);
-        let z11 = z9.mul(z2);
-        let z_5_0 = z11.square().mul(z9);
-        let z_10_0 = z_5_0.square_times(5).mul(z_5_0);
-        let z_20_0 = z_10_0.square_times(10).mul(z_10_0);
-        let z_40_0 = z_20_0.square_times(20).mul(z_20_0);
-        let z_50_0 = z_40_0.square_times(10).mul(z_10_0);
-        let z_100_0 = z_50_0.square_times(50).mul(z_50_0);
-        let z_200_0 = z_100_0.square_times(100).mul(z_100_0);
-        let z_250_0 = z_200_0.square_times(50).mul(z_50_0);
-        z_250_0.square_times(5).mul(z11)
+        let mut z2 = self.square();
+        let mut z9 = z2.square_times(2).mul(self);
+        let mut z11 = z9.mul(z2);
+        let mut z_5_0 = z11.square().mul(z9);
+        let mut z_10_0 = z_5_0.square_times(5).mul(z_5_0);
+        let mut z_20_0 = z_10_0.square_times(10).mul(z_10_0);
+        let mut z_40_0 = z_20_0.square_times(20).mul(z_20_0);
+        let mut z_50_0 = z_40_0.square_times(10).mul(z_10_0);
+        let mut z_100_0 = z_50_0.square_times(50).mul(z_50_0);
+        let mut z_200_0 = z_100_0.square_times(100).mul(z_100_0);
+        let mut z_250_0 = z_200_0.square_times(50).mul(z_50_0);
+        let result = z_250_0.square_times(5).mul(z11);
+        for fe in [
+            &mut z2,
+            &mut z9,
+            &mut z11,
+            &mut z_5_0,
+            &mut z_10_0,
+            &mut z_20_0,
+            &mut z_40_0,
+            &mut z_50_0,
+            &mut z_100_0,
+            &mut z_200_0,
+            &mut z_250_0,
+        ] {
+            fe.wipe();
+        }
+        result
     }
 
     /// Swaps `a` and `b` when `mask` is all ones; leaves both when it is zero.
@@ -225,6 +241,9 @@ pub fn x25519(scalar: &[u8; KEY_LEN], u: &[u8; KEY_LEN]) -> [u8; KEY_LEN] {
     let mut x3 = x1;
     let mut z3 = Fe::ONE;
     let mut swap = 0u64;
+    // The ladder's temporaries are declared here so they can be wiped after the loop.
+    let [mut a, mut aa, mut b, mut bb, mut e] = [Fe::ZERO; 5];
+    let [mut c, mut d, mut da, mut cb] = [Fe::ZERO; 4];
     for t in (0..255).rev() {
         let bit = u64::from((k[t / 8] >> (t % 8)) & 1);
         swap ^= bit;
@@ -233,15 +252,15 @@ pub fn x25519(scalar: &[u8; KEY_LEN], u: &[u8; KEY_LEN]) -> [u8; KEY_LEN] {
         Fe::cswap(mask, &mut z2, &mut z3);
         swap = bit;
 
-        let a = x2.add(z2);
-        let aa = a.square();
-        let b = x2.sub(z2);
-        let bb = b.square();
-        let e = aa.sub(bb);
-        let c = x3.add(z3);
-        let d = x3.sub(z3);
-        let da = d.mul(a);
-        let cb = c.mul(b);
+        a = x2.add(z2);
+        aa = a.square();
+        b = x2.sub(z2);
+        bb = b.square();
+        e = aa.sub(bb);
+        c = x3.add(z3);
+        d = x3.sub(z3);
+        da = d.mul(a);
+        cb = c.mul(b);
         x3 = da.add(cb).square();
         z3 = x1.mul(da.sub(cb).square());
         x2 = aa.mul(bb);
@@ -250,10 +269,26 @@ pub fn x25519(scalar: &[u8; KEY_LEN], u: &[u8; KEY_LEN]) -> [u8; KEY_LEN] {
     let mask = mask64(swap);
     Fe::cswap(mask, &mut x2, &mut x3);
     Fe::cswap(mask, &mut z2, &mut z3);
-    let out = x2.mul(z2.invert()).to_bytes();
+    let mut inverse = z2.invert();
+    let out = x2.mul(inverse).to_bytes();
 
     k.zeroize();
-    for fe in [&mut x2, &mut z2, &mut x3, &mut z3] {
+    for fe in [
+        &mut x2,
+        &mut z2,
+        &mut x3,
+        &mut z3,
+        &mut inverse,
+        &mut a,
+        &mut aa,
+        &mut b,
+        &mut bb,
+        &mut e,
+        &mut c,
+        &mut d,
+        &mut da,
+        &mut cb,
+    ] {
         fe.wipe();
     }
     out
@@ -267,7 +302,9 @@ pub fn public_key(scalar: &[u8; KEY_LEN]) -> [u8; KEY_LEN] {
     x25519(scalar, &base)
 }
 
-/// The shared secret of `private` and the peer's `public` value.
+/// The shared secret of `private` and the peer's `public` value. The returned array is secret and
+/// is the caller's to wipe when it is no longer needed: a function that hands an array over
+/// cannot wipe it.
 ///
 /// # Errors
 /// [`LowOrderPoint`] when the result is all zeros (RFC 8446 §7.4.2). The test looks only at the

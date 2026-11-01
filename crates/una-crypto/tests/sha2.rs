@@ -130,10 +130,10 @@ fn incremental_updates_equal_one_shot_for_any_split() {
             at = end;
         }
         let mut o = [0u8; 32];
-        h.finalize_into(&mut o);
+        h.finalize_into(&mut o).unwrap();
         assert_eq!(o, Sha256::digest(&m));
         let mut o5 = [0u8; 64];
-        h5.finalize_into(&mut o5);
+        h5.finalize_into(&mut o5).unwrap();
         assert_eq!(o5, Sha512::digest(&m));
     }
 }

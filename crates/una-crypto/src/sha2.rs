@@ -4,6 +4,11 @@
 //! data (the round constants are indexed by the round number, which is public).
 //!
 //! Cost: `O(n)` time and `O(1)` space for a message of `n` bytes.
+//!
+//! Limit: the bit length of the message is kept modulo `2^64` (SHA-256) or `2^128` (SHA-384,
+//! SHA-512), as the padding of FIPS 180-4 defines it for the lengths it admits (below `2^61` and
+//! `2^125` bytes). A longer message would wrap silently; no machine can hold one in memory, and
+//! a streaming caller would need `2^61` bytes (2 EiB) of input to reach it.
 // Every index below is a loop counter bounded by the length of a fixed array, or a slice
 // bound computed from public lengths; none is derived from a secret (ADR 0133 rule 6).
 #![allow(clippy::indexing_slicing)]
@@ -21,9 +26,21 @@ pub trait Hash: Clone {
     fn new() -> Self;
     /// Absorbs `data`.
     fn update(&mut self, data: &[u8]);
-    /// Ends the hash and writes the digest to `out`, whose length must be [`Hash::OUTPUT_LEN`]
-    /// (a shorter or longer slice receives a prefix or leaves the rest untouched).
-    fn finalize_into(self, out: &mut [u8]);
+    /// Ends the hash and writes the digest to `out`.
+    ///
+    /// # Errors
+    /// [`LengthError`] when `out.len()` is not [`Hash::OUTPUT_LEN`]; nothing is written.
+    fn finalize_into(self, out: &mut [u8]) -> Result<(), LengthError>;
+}
+
+/// An output slice whose length is not the length the function writes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LengthError;
+
+/// Finalizes into a slice whose length is `H::OUTPUT_LEN` by construction of the caller, so the
+/// length check cannot fail.
+pub(crate) fn finish_exact<H: Hash>(hash: H, out: &mut [u8]) {
+    let _ = hash.finalize_into(out);
 }
 
 /// The widest block of the supported hashes, for stack buffers.
@@ -150,7 +167,7 @@ impl Sha256 {
         let mut hasher = Self::new();
         hasher.update(data);
         let mut out = [0u8; 32];
-        hasher.finalize_into(&mut out);
+        finish_exact(hasher, &mut out);
         out
     }
 }
@@ -178,8 +195,7 @@ impl Hash for Sha256 {
             if self.fill < 64 {
                 return;
             }
-            let block = self.buf;
-            compress256(&mut self.h, &block);
+            compress256(&mut self.h, &self.buf);
             self.fill = 0;
         }
         let (blocks, rest) = data.as_chunks::<64>();
@@ -190,24 +206,26 @@ impl Hash for Sha256 {
         self.fill = rest.len();
     }
 
-    fn finalize_into(mut self, out: &mut [u8]) {
+    fn finalize_into(mut self, out: &mut [u8]) -> Result<(), LengthError> {
+        if out.len() != Self::OUTPUT_LEN {
+            return Err(LengthError);
+        }
         let bits = self.total.wrapping_mul(8);
         let fill = self.fill;
         self.buf[fill] = 0x80;
         self.buf[fill + 1..].fill(0);
         if fill + 1 > 56 {
-            let block = self.buf;
-            compress256(&mut self.h, &block);
+            compress256(&mut self.h, &self.buf);
             self.buf.fill(0);
         }
         self.buf[56..].copy_from_slice(&bits.to_be_bytes());
-        let block = self.buf;
-        compress256(&mut self.h, &block);
+        compress256(&mut self.h, &self.buf);
         for (chunk, word) in out.chunks_mut(4).zip(self.h.iter()) {
             let bytes = word.to_be_bytes();
             let n = chunk.len();
             chunk.copy_from_slice(&bytes[..n]);
         }
+        Ok(())
     }
 }
 
@@ -227,7 +245,7 @@ impl Sha512 {
         let mut hasher = Self::new();
         hasher.update(data);
         let mut out = [0u8; 64];
-        hasher.finalize_into(&mut out);
+        finish_exact(hasher, &mut out);
         out
     }
 
@@ -250,8 +268,7 @@ impl Sha512 {
             if self.fill < 128 {
                 return;
             }
-            let block = self.buf;
-            compress512(&mut self.h, &block);
+            compress512(&mut self.h, &self.buf);
             self.fill = 0;
         }
         let (blocks, rest) = data.as_chunks::<128>();
@@ -268,13 +285,11 @@ impl Sha512 {
         self.buf[fill] = 0x80;
         self.buf[fill + 1..].fill(0);
         if fill + 1 > 112 {
-            let block = self.buf;
-            compress512(&mut self.h, &block);
+            compress512(&mut self.h, &self.buf);
             self.buf.fill(0);
         }
         self.buf[112..].copy_from_slice(&bits.to_be_bytes());
-        let block = self.buf;
-        compress512(&mut self.h, &block);
+        compress512(&mut self.h, &self.buf);
     }
 
     fn write_state(&self, out: &mut [u8]) {
@@ -298,9 +313,13 @@ impl Hash for Sha512 {
         self.absorb(data);
     }
 
-    fn finalize_into(mut self, out: &mut [u8]) {
+    fn finalize_into(mut self, out: &mut [u8]) -> Result<(), LengthError> {
+        if out.len() != Self::OUTPUT_LEN {
+            return Err(LengthError);
+        }
         self.pad_and_compress();
         self.write_state(out);
+        Ok(())
     }
 }
 
@@ -320,7 +339,7 @@ impl Sha384 {
         let mut hasher = Self::new();
         hasher.update(data);
         let mut out = [0u8; 48];
-        hasher.finalize_into(&mut out);
+        finish_exact(hasher, &mut out);
         out
     }
 }
@@ -337,9 +356,12 @@ impl Hash for Sha384 {
         self.0.absorb(data);
     }
 
-    fn finalize_into(mut self, out: &mut [u8]) {
+    fn finalize_into(mut self, out: &mut [u8]) -> Result<(), LengthError> {
+        if out.len() != Self::OUTPUT_LEN {
+            return Err(LengthError);
+        }
         self.0.pad_and_compress();
-        let n = out.len().min(48);
-        self.0.write_state(&mut out[..n]);
+        self.0.write_state(out);
+        Ok(())
     }
 }

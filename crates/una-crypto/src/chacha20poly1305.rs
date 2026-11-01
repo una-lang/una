@@ -21,7 +21,9 @@ pub const TAG_LEN: usize = 16;
 /// The longest message one key and nonce may protect: `2^38 - 64` bytes (RFC 8439 §2.8).
 pub const MAX_MESSAGE_LEN: u64 = (1 << 38) - 64;
 
-/// Authentication failed, or the message or the associated data is longer than the limits.
+/// Authentication failed, or the message is longer than [`MAX_MESSAGE_LEN`]. The associated
+/// data has no limit of its own below `2^64` bytes, which the length encoding of RFC 8439
+/// admits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Error;
 

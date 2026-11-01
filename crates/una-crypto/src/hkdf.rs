@@ -17,17 +17,20 @@ pub struct Error;
 /// HKDF-Extract: writes the pseudorandom key to `prk`, whose length must be `H::OUTPUT_LEN`.
 /// An empty `salt` stands for a string of zeros of the hash length, which HMAC's zero padding of
 /// the key makes the same thing.
-pub fn extract<H: Hash>(salt: &[u8], ikm: &[u8], prk: &mut [u8]) {
-    mac_into::<H>(salt, ikm, prk);
+///
+/// # Errors
+/// [`Error`] when `prk.len()` is not `H::OUTPUT_LEN`; nothing is written.
+pub fn extract<H: Hash>(salt: &[u8], ikm: &[u8], prk: &mut [u8]) -> Result<(), Error> {
+    mac_into::<H>(salt, ikm, prk).map_err(|_| Error)
 }
 
 /// HKDF-Expand: fills `okm` from `prk` and `info`.
 ///
 /// # Errors
-/// [`Error`] when `okm` is longer than `255 * H::OUTPUT_LEN` bytes or `prk` is shorter than
-/// `H::OUTPUT_LEN`. Nothing is written then.
+/// [`Error`] when `okm` is longer than `255 * H::OUTPUT_LEN` bytes or `prk` is not exactly
+/// `H::OUTPUT_LEN` bytes. Nothing is written then.
 pub fn expand<H: Hash>(prk: &[u8], info: &[u8], okm: &mut [u8]) -> Result<(), Error> {
-    if prk.len() < H::OUTPUT_LEN || okm.len() > 255 * H::OUTPUT_LEN {
+    if prk.len() != H::OUTPUT_LEN || okm.len() > 255 * H::OUTPUT_LEN {
         return Err(Error);
     }
     let keyed = Hmac::<H>::new(prk);
@@ -40,7 +43,8 @@ pub fn expand<H: Hash>(prk: &[u8], info: &[u8], okm: &mut [u8]) -> Result<(), Er
         mac.update(&block[..previous]);
         mac.update(info);
         mac.update(&[counter]);
-        mac.finalize_into(&mut block[..H::OUTPUT_LEN]);
+        mac.finalize_into(&mut block[..H::OUTPUT_LEN])
+            .map_err(|_| Error)?;
         let n = chunk.len();
         chunk.copy_from_slice(&block[..n]);
         previous = H::OUTPUT_LEN;

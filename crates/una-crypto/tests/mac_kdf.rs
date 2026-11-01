@@ -13,12 +13,12 @@ mod common;
 
 use common::{Rng, hex, tests_of, text, to_hex, wycheproof};
 use una_crypto::hkdf;
-use una_crypto::hmac::{mac_into, verify};
+use una_crypto::hmac::{mac_into, verify, verify_truncated};
 use una_crypto::sha2::{Hash, Sha256, Sha384, Sha512};
 
 fn mac<H: Hash>(key: &[u8], msg: &[u8]) -> Vec<u8> {
     let mut out = vec![0u8; H::OUTPUT_LEN];
-    mac_into::<H>(key, msg, &mut out);
+    mac_into::<H>(key, msg, &mut out).unwrap();
     out
 }
 
@@ -58,7 +58,7 @@ fn rfc5869_case_1_and_3() {
     let salt = hex("000102030405060708090a0b0c");
     let info = hex("f0f1f2f3f4f5f6f7f8f9");
     let mut prk = [0u8; 32];
-    hkdf::extract::<Sha256>(&salt, &ikm, &mut prk);
+    hkdf::extract::<Sha256>(&salt, &ikm, &mut prk).unwrap();
     assert_eq!(
         to_hex(&prk),
         "077709362c2e32df0ddc3f0dc47bba6390b6c73bb50f9c3122ec844ad7c2b3e5"
@@ -71,7 +71,7 @@ fn rfc5869_case_1_and_3() {
     );
     // Case 3: empty salt and info.
     let mut prk3 = [0u8; 32];
-    hkdf::extract::<Sha256>(&[], &ikm, &mut prk3);
+    hkdf::extract::<Sha256>(&[], &ikm, &mut prk3).unwrap();
     let mut okm3 = [0u8; 42];
     hkdf::expand::<Sha256>(&prk3, &[], &mut okm3).unwrap();
     assert_eq!(
@@ -103,9 +103,23 @@ fn wycheproof_hmac<H: Hash>(file: &str) {
             "valid" => {
                 assert_eq!(tag.len() * 8, tag_bits);
                 assert_eq!(full[..tag.len()], tag[..], "{file} tc {}", t["tcId"]);
-                assert!(verify::<H>(&key, &msg, &tag), "{file} tc {}", t["tcId"]);
+                let ok = if tag.len() == H::OUTPUT_LEN {
+                    verify::<H>(&key, &msg, &tag)
+                } else {
+                    // A half-length tag: the plain check refuses it, the opt-in accepts it.
+                    assert!(!verify::<H>(&key, &msg, &tag));
+                    verify_truncated::<H>(&key, &msg, &tag)
+                };
+                assert!(ok, "{file} tc {}", t["tcId"]);
             }
-            "invalid" => assert!(!verify::<H>(&key, &msg, &tag), "{file} tc {}", t["tcId"]),
+            "invalid" => {
+                assert!(!verify::<H>(&key, &msg, &tag), "{file} tc {}", t["tcId"]);
+                assert!(
+                    !verify_truncated::<H>(&key, &msg, &tag),
+                    "{file} tc {}",
+                    t["tcId"]
+                );
+            }
             other => panic!("unexpected result {other}"),
         }
         n += 1;
@@ -129,7 +143,7 @@ fn wycheproof_hkdf<H: Hash>(file: &str) {
         let info = hex(text(t, "info"));
         let size = t["size"].as_u64().unwrap() as usize;
         let mut prk = vec![0u8; H::OUTPUT_LEN];
-        hkdf::extract::<H>(&salt, &ikm, &mut prk);
+        hkdf::extract::<H>(&salt, &ikm, &mut prk).unwrap();
         let mut okm = vec![0u8; size];
         let res = hkdf::expand::<H>(&prk, &info, &mut okm);
         match text(t, "result") {
@@ -188,9 +202,45 @@ fn differential_against_ring() {
             .fill(&mut theirs)
             .unwrap();
         let mut prk = [0u8; 32];
-        hkdf::extract::<Sha256>(&salt_b, &ikm, &mut prk);
+        hkdf::extract::<Sha256>(&salt_b, &ikm, &mut prk).unwrap();
         let mut ours = vec![0u8; len];
         hkdf::expand::<Sha256>(&prk, &info, &mut ours).unwrap();
         assert_eq!(ours, theirs);
     }
+}
+
+#[test]
+fn tag_and_slice_lengths_are_checked() {
+    let key = [7u8; 20];
+    let full = mac::<Sha256>(&key, b"m");
+    assert!(verify::<Sha256>(&key, b"m", &full));
+    for n in [0, 1, 4, 15, 31] {
+        assert!(!verify::<Sha256>(&key, b"m", &full[..n]), "plain {n}");
+    }
+    assert!(verify_truncated::<Sha256>(&key, b"m", &full[..16]));
+    for n in [0, 4, 15] {
+        assert!(
+            !verify_truncated::<Sha256>(&key, b"m", &full[..n]),
+            "truncated {n}"
+        );
+    }
+    let mut longer = full.clone();
+    longer.push(0);
+    assert!(!verify::<Sha256>(&key, b"m", &longer));
+    assert!(!verify_truncated::<Sha256>(&key, b"m", &longer));
+    // Output slices of the wrong length are refused and left untouched.
+    let mut wrong = [0xaau8; 31];
+    assert!(mac_into::<Sha256>(&key, b"m", &mut wrong).is_err());
+    assert_eq!(wrong, [0xaau8; 31]);
+    let mut out = [0u8; 33];
+    assert!(hkdf::extract::<Sha256>(b"s", b"k", &mut out).is_err());
+    assert!(hkdf::extract::<Sha256>(b"s", b"k", &mut out[..31]).is_err());
+    let mut h = Sha256::new();
+    h.update(b"x");
+    assert!(h.finalize_into(&mut out).is_err());
+    // expand rejects a pseudorandom key of the wrong length, shorter or longer.
+    let mut okm = [0u8; 8];
+    assert!(hkdf::expand::<Sha256>(&[1u8; 31], b"", &mut okm).is_err());
+    assert!(hkdf::expand::<Sha256>(&[1u8; 33], b"", &mut okm).is_err());
+    assert!(hkdf::expand::<Sha256>(&[1u8; 32], b"", &mut okm).is_ok());
 }

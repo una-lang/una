@@ -10,7 +10,7 @@ mod common;
 use common::Rng;
 use std::hint::black_box;
 use std::time::Instant;
-use una_crypto::chacha20poly1305::open_in_place;
+use una_crypto::chacha20poly1305::{open_in_place, seal_in_place};
 use una_crypto::{ct, x25519};
 
 const SAMPLES: usize = 20_000;
@@ -69,18 +69,19 @@ fn comparison_time_does_not_depend_on_the_first_difference() {
 fn aead_rejection_time_does_not_depend_on_the_tag_byte_that_differs() {
     let key = [3u8; 32];
     let nonce = [5u8; 12];
-    let mut tag_a = [0u8; 16];
-    let mut tag_b = [0u8; 16];
-    tag_a[0] = 1; // differs from the real tag in the first byte, with overwhelming probability
-    tag_b[15] = 1;
-    let data = vec![9u8; 256];
+    let mut ciphertext = vec![9u8; 256];
+    let real = seal_in_place(&key, &nonce, b"", &mut ciphertext).unwrap();
+    // Both classes are rejected; they differ from the real tag in the first byte or in the
+    // last, so an early-exit comparison would take less time for the first class.
+    let mut flip_first = real;
+    flip_first[0] ^= 1;
+    let mut flip_last = real;
+    flip_last[15] ^= 1;
     let t = measure(|class| {
-        let mut buf = data.clone();
-        let tag = if class { &tag_a } else { &tag_b };
+        let mut buf = ciphertext.clone();
+        let tag = if class { &flip_first } else { &flip_last };
         black_box(open_in_place(&key, &nonce, b"", &mut buf, black_box(tag)).is_err());
     });
-    // Both tags are wrong, the real tag differs from each in about every byte: the check is
-    // that the time of a rejection does not depend on the tag value in a visible way.
     assert!(t.abs() < LIMIT, "aead open t = {t}");
 }
 

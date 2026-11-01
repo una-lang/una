@@ -6,7 +6,7 @@
 #![allow(clippy::indexing_slicing)]
 
 use crate::ct;
-use crate::sha2::{Hash, MAX_BLOCK, MAX_OUTPUT};
+use crate::sha2::{Hash, LengthError, MAX_BLOCK, MAX_OUTPUT, finish_exact};
 use zeroize::Zeroize;
 
 /// An HMAC computation in progress.
@@ -24,7 +24,7 @@ impl<H: Hash> Hmac<H> {
         if key.len() > H::BLOCK_LEN {
             let mut hasher = H::new();
             hasher.update(key);
-            hasher.finalize_into(&mut block[..H::OUTPUT_LEN]);
+            finish_exact(hasher, &mut block[..H::OUTPUT_LEN]);
         } else {
             block[..key.len()].copy_from_slice(key);
         }
@@ -49,36 +49,58 @@ impl<H: Hash> Hmac<H> {
         self.inner.update(data);
     }
 
-    /// Ends the computation and writes the tag to `out` (a prefix when `out` is shorter than
-    /// the hash output, which is how truncated tags are produced).
-    pub fn finalize_into(self, out: &mut [u8]) {
+    /// Ends the computation and writes the tag to `out`.
+    ///
+    /// # Errors
+    /// [`LengthError`] when `out.len()` is not `H::OUTPUT_LEN`; nothing is written. A truncated
+    /// tag is the prefix of the full one, taken by the caller.
+    pub fn finalize_into(self, out: &mut [u8]) -> Result<(), LengthError> {
+        if out.len() != H::OUTPUT_LEN {
+            return Err(LengthError);
+        }
         let Self { inner, mut outer } = self;
         let mut digest = [0u8; MAX_OUTPUT];
-        inner.finalize_into(&mut digest[..H::OUTPUT_LEN]);
+        finish_exact(inner, &mut digest[..H::OUTPUT_LEN]);
         outer.update(&digest[..H::OUTPUT_LEN]);
-        outer.finalize_into(out);
         digest.zeroize();
+        outer.finalize_into(out)
     }
 }
 
 /// The HMAC of `data` under `key`, written to `out`.
-pub fn mac_into<H: Hash>(key: &[u8], data: &[u8], out: &mut [u8]) {
+///
+/// # Errors
+/// [`LengthError`] when `out.len()` is not `H::OUTPUT_LEN`.
+pub fn mac_into<H: Hash>(key: &[u8], data: &[u8], out: &mut [u8]) -> Result<(), LengthError> {
     let mut mac = Hmac::<H>::new(key);
     mac.update(data);
-    mac.finalize_into(out);
+    mac.finalize_into(out)
 }
 
-/// Checks `tag` (full length or truncated to at least 4 bytes, RFC 2104 §5) against the HMAC of
-/// `data` under `key`, in constant time. A tag longer than the hash output or shorter than four
-/// bytes is rejected.
-#[must_use]
-pub fn verify<H: Hash>(key: &[u8], data: &[u8], tag: &[u8]) -> bool {
-    if tag.len() < 4 || tag.len() > H::OUTPUT_LEN {
+fn matches<H: Hash>(key: &[u8], data: &[u8], tag: &[u8]) -> bool {
+    let mut full = [0u8; MAX_OUTPUT];
+    let Some(slot) = full.get_mut(..H::OUTPUT_LEN) else {
+        return false;
+    };
+    if mac_into::<H>(key, data, slot).is_err() {
         return false;
     }
-    let mut full = [0u8; MAX_OUTPUT];
-    mac_into::<H>(key, data, &mut full[..H::OUTPUT_LEN]);
     let ok = ct::eq(&full[..tag.len()], tag);
     full.zeroize();
     ok
+}
+
+/// Checks a full-length `tag` against the HMAC of `data` under `key`, in constant time. A tag of
+/// any other length is rejected.
+#[must_use]
+pub fn verify<H: Hash>(key: &[u8], data: &[u8], tag: &[u8]) -> bool {
+    tag.len() == H::OUTPUT_LEN && matches::<H>(key, data, tag)
+}
+
+/// Like [`verify`], for a protocol that truncates its tags (RFC 2104 §5): the tag must be at
+/// least half the hash output long and at most the full length. This is the only way to accept
+/// a short tag; use [`verify`] unless the protocol says otherwise.
+#[must_use]
+pub fn verify_truncated<H: Hash>(key: &[u8], data: &[u8], tag: &[u8]) -> bool {
+    tag.len() >= H::OUTPUT_LEN / 2 && tag.len() <= H::OUTPUT_LEN && matches::<H>(key, data, tag)
 }
