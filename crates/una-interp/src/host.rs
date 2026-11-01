@@ -365,8 +365,8 @@ pub fn hmac_sha256(key: &[u8], data: &[u8]) -> Vec<u8> {
         .to_vec()
 }
 
-/// The domain of `fake_hash`'s preimages: no other SHA-256 input of the toolchain starts with
-/// it, and its final zero byte ends it before the seed's encoding starts.
+/// The domain of `fake_hash`'s preimages: a fixed prefix whose final zero byte ends it before the
+/// seed's encoding starts, so a seed never shifts into the prefix.
 const FAKE_HASH_DOMAIN: &[u8] = b"una.testing.fake_hash.int\0";
 
 /// The deterministic `Hashed` value of `std.testing.fake_hash(seed)` (`spec/14 §4`): SHA-256 of
@@ -491,7 +491,7 @@ mod tests {
 
     #[test]
     fn fake_hash_is_linear_in_its_seeds_limbs() {
-        // ADR 0132 rule 16, #1342: seeds of d and 10d limbs. The deterministic check is the
+        // `spec/14 §4`, ADR 0132 rule 16, #1342: seeds of d and 10d limbs. The deterministic check is the
         // preimage: exactly the domain, 10 bytes of framing and 8 bytes per limb, so linear.
         let (d, ten_d) = (2_000, 20_000);
         let small = int_of_limbs(d);
