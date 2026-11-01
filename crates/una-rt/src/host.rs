@@ -138,6 +138,11 @@ impl World for Machine {
     fn is_link(&mut self, path: &Path) -> bool {
         std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink())
     }
+
+    /// One `lstat` per component of a confined path (#1343).
+    fn step(&mut self, directory: &Path, name: &std::ffi::OsStr) -> Option<PathBuf> {
+        una_interp::disk_step(directory, name)
+    }
 }
 
 fn file_fault(error: io::Error) -> FileFault {
