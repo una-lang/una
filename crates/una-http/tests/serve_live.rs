@@ -37,7 +37,7 @@ fn start(items: &str, threads: usize) -> Live {
         certificate: None,
         key: None,
     }];
-    let prepared = prepare(&inputs).unwrap();
+    let prepared = prepare(&inputs, threads, 1).unwrap();
     let server = Server::start(prepared, &[grant], threads).unwrap();
     let ready = Arc::new((Mutex::new(0u64), Condvar::new()));
     let signal = Arc::clone(&ready);
@@ -250,11 +250,15 @@ fn an_https_grant_is_not_served_until_the_tls_provider_is_decided() {
         key_path.display()
     ))
     .unwrap();
-    let prepared = prepare(&[ServeInput {
-        grant: &grant,
-        certificate: Some(&cert_path),
-        key: Some(&key_path),
-    }])
+    let prepared = prepare(
+        &[ServeInput {
+            grant: &grant,
+            certificate: Some(&cert_path),
+            key: Some(&key_path),
+        }],
+        1,
+        1,
+    )
     .unwrap();
     let error = Server::start(prepared, &[grant], 1).err().unwrap();
     assert!(error.contains("https"), "{error}");

@@ -1970,7 +1970,11 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
     };
     // Nothing accepts on the listeners until the serve threads of ADR 0123 step 4 take them
     // over; they are held until the run ends.
-    let _listeners = match serve(&grants) {
+    let _listeners = match serve(
+        &grants,
+        options.serve_threads.max(1),
+        options.concurrency.file_threads,
+    ) {
         Ok(prepared) => prepared,
         Err(message) => {
             let _ = writeln!(stderr, "error: {message}");
@@ -2353,7 +2357,11 @@ fn grants(meta: &Meta, options: &Options) -> Result<Vec<Grant>, String> {
 /// The `serve:` grants of the run, before `main` (`spec/31 §2` rule 7), as `una run` prepares
 /// them: the descriptor limit, the TLS files checked on their open descriptors, and one
 /// listener per grant, held until the run ends.
-fn serve(grants: &[Grant]) -> Result<una_http::serve::Prepared, String> {
+fn serve(
+    grants: &[Grant],
+    serve_threads: usize,
+    file_threads: usize,
+) -> Result<una_http::serve::Prepared, String> {
     let inputs: Vec<una_http::serve::ServeInput<'_>> = grants
         .iter()
         .filter_map(|grant| match grant {
@@ -2369,7 +2377,7 @@ fn serve(grants: &[Grant]) -> Result<una_http::serve::Prepared, String> {
             _ => None,
         })
         .collect();
-    una_http::serve::prepare(&inputs)
+    una_http::serve::prepare(&inputs, serve_threads, file_threads)
 }
 
 /// The `Http` grants among `grants`, in order: what the run's governor of limits holds (ADR 0117

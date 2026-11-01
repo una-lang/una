@@ -504,7 +504,10 @@ pub(crate) fn run_command(
     // The `serve:` grants, before `main` (`spec/31 §2` rule 7): the descriptor limit, the TLS
     // files checked on their open descriptors, and the listeners, held until the run ends.
     // Nothing accepts on them until the serve threads of ADR 0123 step 4 take them over.
-    let _listeners = match una_http::serve::prepare(&serve_inputs(&grants)) {
+    // A `--serve-threads` out of range is refused below; here it only sizes the descriptors.
+    let serve_threads =
+        una_interp::concurrency::serve_threads(options.tasks.serve_threads).unwrap_or(1);
+    let _listeners = match una_http::serve::prepare(&serve_inputs(&grants), serve_threads, 1) {
         Ok(prepared) => prepared,
         Err(message) => {
             writeln!(stderr, "error: {message}")?;

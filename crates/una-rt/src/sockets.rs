@@ -59,9 +59,17 @@ pub(crate) struct Gate {
 
 /// The places for request sockets out of a soft limit of `soft` descriptors: all but a reserve
 /// of a quarter of them, and at least 64, and at least 1 place. A limit that cannot be read
-/// counts as 256, the smallest common default.
-pub(crate) fn cap_for(soft: Option<u64>) -> usize {
+/// counts as 256, the smallest common default. In a run that serves, `reserved` is what the
+/// serve grants and the runtime hold (`una_http::serve::reserved_descriptors`), and the places
+/// are the soft limit less that: the descriptor target of `spec/31 §2` rule 7 keeps at least 256
+/// of them, so a server whose connections are all open still leaves its program's requests a
+/// socket each.
+pub(crate) fn cap_for(soft: Option<u64>, reserved: u64) -> usize {
     let soft = usize::try_from(soft.unwrap_or(256).min(1 << 20)).unwrap_or(256);
+    if reserved > 0 {
+        let held = usize::try_from(reserved).unwrap_or(usize::MAX);
+        return soft.saturating_sub(held).max(1);
+    }
     soft.saturating_sub((soft / 4).max(64)).max(1)
 }
 
@@ -69,7 +77,12 @@ pub(crate) fn cap_for(soft: Option<u64>) -> usize {
 /// by `una_sys::io::descriptor_limit`, until the binding of #1005 serves both.
 pub(crate) fn gate() -> &'static Arc<Gate> {
     static GATE: OnceLock<Arc<Gate>> = OnceLock::new();
-    GATE.get_or_init(|| Gate::new(cap_for(una_sys::io::descriptor_limit())))
+    GATE.get_or_init(|| {
+        Gate::new(cap_for(
+            una_sys::io::descriptor_limit(),
+            una_http::serve::reserved_descriptors(),
+        ))
+    })
 }
 
 /// A place held: given back when dropped.
@@ -200,12 +213,17 @@ mod tests {
 
     #[test]
     fn the_cap_keeps_a_reserve_of_descriptors() {
-        assert_eq!(cap_for(Some(256)), 192);
-        assert_eq!(cap_for(Some(1024)), 768);
-        assert_eq!(cap_for(Some(100)), 36);
-        assert_eq!(cap_for(Some(10)), 1);
-        assert_eq!(cap_for(None), 192);
-        assert_eq!(cap_for(Some(u64::MAX)), (1 << 20) - (1 << 18));
+        assert_eq!(cap_for(Some(256), 0), 192);
+        assert_eq!(cap_for(Some(1024), 0), 768);
+        assert_eq!(cap_for(Some(100), 0), 36);
+        assert_eq!(cap_for(Some(10), 0), 1);
+        assert_eq!(cap_for(None, 0), 192);
+        assert_eq!(cap_for(Some(u64::MAX), 0), (1 << 20) - (1 << 18));
+        // A serving run keeps what its server holds: the rest is the program's `Http` sockets,
+        // which the target of `spec/31 §2` rule 7 makes at least 256.
+        assert_eq!(cap_for(Some(1324), 1068), 256);
+        assert_eq!(cap_for(Some(5000), 1068), 3932);
+        assert_eq!(cap_for(Some(100), 4000), 1);
     }
 
     #[test]

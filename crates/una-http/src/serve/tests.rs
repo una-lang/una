@@ -133,14 +133,14 @@ fn key_files_are_checked_by_owner_group_and_mode() {
 
 #[test]
 fn no_grant_needs_no_work() {
-    assert!(prepare(&[]).unwrap().listeners.is_empty());
+    assert!(prepare(&[], 1, 1).unwrap().listeners.is_empty());
 }
 
 #[test]
 fn each_grant_binds_its_listener_before_main() {
     let port = free_port();
     let g = grant(&format!("serve:http://127.0.0.1:{port};connections=8"));
-    let prepared = prepare(&[plain(&g)]).unwrap();
+    let prepared = prepare(&[plain(&g)], 1, 1).unwrap();
     let [listener] = prepared.listeners.as_slice() else {
         panic!("one listener")
     };
@@ -149,7 +149,7 @@ fn each_grant_binds_its_listener_before_main() {
     // A peer's connection waits in the backlog until the serve threads accept it.
     assert!(TcpStream::connect(("127.0.0.1", port)).is_ok());
     // The address stays the run's: a second run cannot bind it.
-    let error = prepare(&[plain(&g)]).unwrap_err();
+    let error = prepare(&[plain(&g)], 1, 1).unwrap_err();
     assert!(
         error.starts_with(&format!(
             "cannot listen on `127.0.0.1:{port}` for its serve grant: "
@@ -164,7 +164,7 @@ fn overlapping_grants_of_a_run_are_refused() {
     let a = grant(&format!("serve:http://127.0.0.1:{port}"));
     let b = grant(&format!("serve:http://0.0.0.0:{port}"));
     assert_eq!(
-        prepare(&[plain(&a), plain(&b)]).unwrap_err(),
+        prepare(&[plain(&a), plain(&b)], 1, 1).unwrap_err(),
         format!(
             "the serve grant on `0.0.0.0:{port}` overlaps another serve grant of the run: each address and port is granted once, and a wildcard shares its port with no grant of its family"
         )
@@ -181,9 +181,9 @@ fn a_descriptor_limit_the_run_cannot_reach_is_refused() {
         "serve:http://127.0.0.1:{};connections=1048576",
         free_port()
     ));
-    let error = prepare(&[plain(&a), plain(&b)]).unwrap_err();
+    let error = prepare(&[plain(&a), plain(&b)], 1, 1).unwrap_err();
     assert!(
-        error.starts_with("the serve grants need 2097216 open descriptors"),
+        error.starts_with("the serve grants need 2097479 open descriptors"),
         "{error}"
     );
 }
@@ -201,11 +201,15 @@ fn tls_files_are_read_from_checked_descriptors() {
         free_port()
     ));
     let input = |certificate: &Path, key: &Path| -> Result<Prepared, String> {
-        prepare(&[ServeInput {
-            grant: &g,
-            certificate: Some(certificate),
-            key: Some(key),
-        }])
+        prepare(
+            &[ServeInput {
+                grant: &g,
+                certificate: Some(certificate),
+                key: Some(key),
+            }],
+            1,
+            1,
+        )
     };
     let prepared = input(&chain, &key_file).unwrap();
     let tls = prepared.listeners[0].tls.as_ref().unwrap();
@@ -285,4 +289,42 @@ fn the_runs_identity_owns_the_files_it_writes() {
         None
     );
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn the_descriptor_target_counts_everything_the_server_holds() {
+    // connections + listeners + the accept poller + 3 per serve thread + 256 for `Http`
+    // + the `Files` helpers + 64 for the runtime (`spec/31 §2` rule 7).
+    let a = grant("serve:http://127.0.0.1:1;connections=8");
+    let b = grant("serve:http://127.0.0.1:2;connections=16");
+    let inputs = [plain(&a), plain(&b)];
+    assert_eq!(
+        descriptor_target(&inputs, 4, 3),
+        24 + 2 + 1 + 12 + 256 + 3 + 64
+    );
+    assert_eq!(descriptor_target(&[], 1, 1), 1 + 3 + 256 + 1 + 64);
+    // The sum saturates.
+    let c = grant("serve:http://127.0.0.1:3;connections=1048576");
+    let many = vec![plain(&c); 4096];
+    assert!(descriptor_target(&many, 256, 256) > 4_000_000_000);
+}
+
+#[test]
+fn a_target_above_the_hard_limit_names_the_target() {
+    let a = grant(&format!(
+        "serve:http://127.0.0.1:{};connections=1048576",
+        free_port()
+    ));
+    let b = grant(&format!(
+        "serve:http://127.0.0.1:{};connections=1048576",
+        free_port()
+    ));
+    let inputs = [plain(&a), plain(&b)];
+    let target = descriptor_target(&inputs, 8, 4);
+    let error = prepare(&inputs, 8, 4).unwrap_err();
+    assert!(
+        error.starts_with(&format!("the serve grants need {target} open descriptors")),
+        "{error}"
+    );
+    assert!(error.contains("cannot raise its limit above"), "{error}");
 }

@@ -36,8 +36,48 @@ use una_sys::server::Identity;
 /// The largest TLS file the host reads, certificate chain or key.
 pub const MAX_TLS_FILE: u64 = 1 << 20;
 
-/// The descriptors a run keeps beside those of its connections (`spec/31 §2` rule 7).
+/// The descriptors a run keeps for `Console`, the reactor and its pair, the wake pipe and the
+/// runtime (`spec/31 §2` rule 7).
 pub const SPARE_DESCRIPTORS: u64 = 64;
+
+/// The sockets a serving run keeps for its own `Http` requests (`spec/31 §2` rule 7).
+pub const HTTP_DESCRIPTORS: u64 = 256;
+
+/// The descriptors a run takes besides its connections and its `Http` sockets, set by
+/// [`prepare`]: what the server and the runtime hold, so the cap on the sockets of `Http`
+/// requests leaves them (ADR 0117 slice S7). 0 in a run that serves nothing.
+static RESERVED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The descriptors the serve grants and the runtime hold of the process, besides the
+/// [`HTTP_DESCRIPTORS`] kept for `Http` requests; 0 before [`prepare`] and in a run with no
+/// `serve:` grant.
+pub fn reserved_descriptors() -> u64 {
+    RESERVED.load(std::sync::atomic::Ordering::Acquire)
+}
+
+/// The descriptors a run with these `serve:` grants needs open at once (`spec/31 §2` rule 7):
+/// the `connections` of every grant, one listener per grant, the accept poller, a poller and a
+/// wake pair for each of the `serve_threads`, [`HTTP_DESCRIPTORS`] for `Http` requests, the
+/// `file_threads` that `Files` helpers may hold open, and [`SPARE_DESCRIPTORS`]. Saturating:
+/// the sum never wraps.
+pub fn descriptor_target(
+    grants: &[ServeInput<'_>],
+    serve_threads: usize,
+    file_threads: usize,
+) -> u64 {
+    let connections = grants.iter().fold(0u64, |sum, g| {
+        sum.saturating_add(g.grant.limits.connections)
+    });
+    let listeners = grants.len() as u64;
+    let threads = (serve_threads as u64).saturating_mul(3);
+    connections
+        .saturating_add(listeners)
+        .saturating_add(1)
+        .saturating_add(threads)
+        .saturating_add(HTTP_DESCRIPTORS)
+        .saturating_add(file_threads as u64)
+        .saturating_add(SPARE_DESCRIPTORS)
+}
 
 /// The largest backlog asked of the kernel, which caps it lower on most systems.
 const MAX_BACKLOG: u64 = 65_535;
@@ -92,10 +132,15 @@ pub struct Prepared {
     pub listeners: Vec<Listener>,
 }
 
-/// Prepares the `serve:` grants of a run before `main`, in the order of `spec/31 §2` rule 7.
+/// Prepares the `serve:` grants of a run before `main`, in the order of `spec/31 §2` rule 7,
+/// for `serve_threads` serve threads and `file_threads` helpers of `Files`.
 /// Every failure is a usage error, its message one sentence. A run without `serve:` grants
 /// makes no system call here.
-pub fn prepare(grants: &[ServeInput<'_>]) -> Result<Prepared, String> {
+pub fn prepare(
+    grants: &[ServeInput<'_>],
+    serve_threads: usize,
+    file_threads: usize,
+) -> Result<Prepared, String> {
     if grants.is_empty() {
         return Ok(Prepared::default());
     }
@@ -108,19 +153,19 @@ pub fn prepare(grants: &[ServeInput<'_>]) -> Result<Prepared, String> {
             input.grant.listener()
         ));
     }
-    let wanted = grants
-        .iter()
-        .try_fold(SPARE_DESCRIPTORS, |sum, g| {
-            sum.checked_add(g.grant.limits.connections)
-        })
-        .unwrap_or(u64::MAX);
+    let wanted = descriptor_target(grants, serve_threads, file_threads);
     let limit = una_sys::server::raise_descriptor_limit(wanted)
         .map_err(|error| format!("cannot read the limit of open descriptors: {error}"))?;
     if limit < wanted {
         return Err(format!(
-            "the serve grants need {wanted} open descriptors, their `connections` and {SPARE_DESCRIPTORS} more, and the run cannot raise its limit above {limit}"
+            "the serve grants need {wanted} open descriptors, their `connections`, the listeners, the serve threads, `Http` requests, `Files` and the runtime together, and the run cannot raise its limit above {limit}"
         ));
     }
+    // What the cap on `Http` sockets leaves for the server and the runtime.
+    RESERVED.store(
+        wanted.saturating_sub(HTTP_DESCRIPTORS),
+        std::sync::atomic::Ordering::Release,
+    );
     // The run's user and groups, read once when a key file is to be checked.
     let identity = if grants.iter().any(|input| input.grant.tls) {
         Some(
