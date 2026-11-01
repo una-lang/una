@@ -23,6 +23,7 @@ mod resolve;
 mod sections;
 mod signature;
 mod unwind;
+mod verify;
 
 pub use problem::{Code, Problem, Result};
 
@@ -61,7 +62,20 @@ pub fn link(program: &[u8], runtime: &[u8], options: &Options<'_>) -> Result<Vec
     let target = commands::Target13 {
         libsystem_version: libsystem::current_version(),
     };
-    commands::write(&image, &target, &signed)
+    let bytes = commands::write(&image, &target, &signed)?;
+    verify::verify(&bytes, &|name| exports.contains(name))?;
+    Ok(bytes)
+}
+
+/// Reads an executable back and refuses it unless it holds the hardening of ADR 0124 rule 34:
+/// what [`link`] runs on every output, for the tests and the canaries of the gate.
+///
+/// # Errors
+///
+/// U8001 naming the first check that fails.
+pub fn verify(executable: &[u8]) -> Result<()> {
+    let exports = libsystem::exports();
+    verify::verify(executable, &|name| exports.contains(name))
 }
 
 /// The entry point: the `main` that the program's object defines (`spec/16 §3`).

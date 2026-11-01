@@ -30,6 +30,8 @@ const RUNTIME: &str = "libuna_rt.a";
 pub(crate) struct BuildOptions<'a> {
     /// `--out <file>`.
     pub(crate) out: Option<PathBuf>,
+    /// `--debuggable` (ADR 0124 rule 27, Question 7): the signature lets a debugger attach.
+    pub(crate) debuggable: bool,
     /// `--json`.
     pub(crate) json: bool,
     /// Whether human diagnostics use color.
@@ -340,7 +342,9 @@ pub(crate) fn build_command(
         }
     };
     let linked = match linker {
-        Linker::Internal => link_internal(&placed, &object, options.environment),
+        Linker::Internal => {
+            link_internal(&placed, &object, options.debuggable, options.environment)
+        }
         Linker::SystemCc => link(&placed, options.environment),
     };
     if let Err(failure) = linked {
@@ -618,6 +622,7 @@ fn linker(environment: crate::Environment<'_>) -> Result<Linker, String> {
 fn link_internal(
     placed: &Placed,
     object: &[u8],
+    debuggable: bool,
     environment: crate::Environment<'_>,
 ) -> Result<(), LinkFailure> {
     let embedded = crate::runtime_archive::embedded(environment).map_err(LinkFailure::Usage)?;
@@ -642,7 +647,7 @@ fn link_internal(
         .unwrap_or_default();
     let options = una_link::Options {
         identifier: &identifier,
-        debuggable: false,
+        debuggable,
     };
     let bytes =
         una_link::link(object, runtime, &options).map_err(|problem| match problem.code {

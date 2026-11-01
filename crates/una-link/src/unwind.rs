@@ -7,8 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::bytes::{self, Writer};
-use crate::gc::{Graph, Target, eh_target, relocs_in};
-use crate::input;
+use crate::gc::{Graph, Target};
 use crate::problem::{Problem, Result};
 use crate::sections::Out;
 
@@ -243,17 +242,16 @@ pub(crate) fn write_eh_frame<'a>(
                 .ok_or_else(|| Problem::internal("an FDE placed before its CIE"))?;
             bytes::put_u32(&mut out, offset + 4, pointer)?;
         }
-        for reloc in relocs_in(&section.relocs, record.start, record.end) {
-            let at = offset + (reloc.offset - record.start);
+        for field in &record.fields {
+            let at = offset + (field.offset - record.start);
             let place = base.saturating_add(at);
-            let target = eh_target(graph, record.object, record.section, section, reloc)?;
-            let to = if reloc.kind == input::POINTER_TO_GOT {
-                addresses.got(target)?
+            let to = if field.got {
+                addresses.got(field.target)?
             } else {
-                addresses.address(target)?
+                addresses.address(field.target)?
             };
             let value = i128::from(to) - i128::from(place);
-            write_signed(&mut out, at, reloc.width, value)?;
+            write_signed(&mut out, at, field.width, value)?;
         }
     }
     Ok(out)

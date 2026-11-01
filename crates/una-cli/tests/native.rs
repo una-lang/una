@@ -347,6 +347,127 @@ fn every_runnable_program_runs_natively_as_in_the_interpreter() {
 }
 
 /// Whether a trace has events of tasks (`spec/19 §7` rule 1).
+/// The internal linker against the system `cc` (ADR 0124 rule 33, "Per program"): every
+/// runnable program that compiles is built by both, from the same `una`, and the two executables
+/// run with the same grants give the same output, failure, exit status and trace. A program that
+/// starts tasks is compared by its exit status alone (see below).
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+fn every_runnable_program_runs_alike_linked_by_una_link_and_by_cc() {
+    runtime();
+    let root = root();
+    let scratch = std::env::temp_dir().join(format!("una-linkers-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).unwrap();
+    let mut failures = Vec::new();
+    let mut compared = 0usize;
+    for (index, program) in candidates().into_iter().enumerate() {
+        let name = program
+            .path
+            .strip_prefix(&root)
+            .unwrap()
+            .display()
+            .to_string();
+        let dir = scratch.join(index.to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        let copied = copy(&program.path, &dir);
+        let (work, target) = if copied.is_file() {
+            (
+                dir.clone(),
+                copied.file_name().unwrap().to_string_lossy().into_owned(),
+            )
+        } else {
+            (copied.clone(), ".".to_owned())
+        };
+        let mut outcomes = Vec::new();
+        for linker in ["cc", "internal"] {
+            let exe = dir.join(format!("exe-{linker}"));
+            let built = Command::new(env!("CARGO_BIN_EXE_una"))
+                .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+                .env_remove("UNA_PROOF_KEY")
+                .env("NO_COLOR", "1")
+                .env("UNA_LINKER", linker)
+                .args(["build", target.as_str(), "--out", exe.to_str().unwrap()])
+                .current_dir(&work)
+                .output()
+                .unwrap();
+            if !built.status.success() {
+                outcomes.push(None);
+                continue;
+            }
+            let trace = dir.join(format!("trace-{linker}.json"));
+            let mut run = Command::new(&exe);
+            run.current_dir(&work).arg("--trace").arg(&trace);
+            for grant in &program.grants {
+                run.arg("--grant").arg(grant);
+            }
+            let output = run.output().unwrap();
+            let trace: Value = std::fs::read(&trace)
+                .ok()
+                .and_then(|t| serde_json::from_slice(&t).ok())
+                .unwrap_or(Value::Null);
+            outcomes.push(Some((output, trace)));
+        }
+        match (&outcomes[0], &outcomes[1]) {
+            (None, None) => continue,
+            (Some(_), None) => {
+                failures.push(format!(
+                    "{name}: cc links it and the internal linker does not"
+                ));
+                continue;
+            }
+            (None, Some(_)) => {
+                failures.push(format!(
+                    "{name}: the internal linker links it and cc does not"
+                ));
+                continue;
+            }
+            (Some((cc, cc_trace)), Some((internal, internal_trace))) => {
+                compared += 1;
+                if cc.status.code() != internal.status.code() {
+                    failures.push(format!(
+                        "{name}: exit status differs: cc {:?}, internal {:?}",
+                        cc.status.code(),
+                        internal.status.code()
+                    ));
+                }
+                // Two native runs that start tasks may interleave and cancel differently by
+                // design (`spec/19 §8`): each is held to the interpreter's run by
+                // `every_runnable_program_runs_natively_as_in_the_interpreter`, and only their
+                // exit status is compared here.
+                if starts_tasks(cc_trace) || starts_tasks(internal_trace) {
+                    continue;
+                }
+                if cc.stdout != internal.stdout {
+                    failures.push(format!(
+                        "{name}: stdout differs: cc {:?}, internal {:?}",
+                        String::from_utf8_lossy(&cc.stdout),
+                        String::from_utf8_lossy(&internal.stdout)
+                    ));
+                }
+                if cc.stderr != internal.stderr {
+                    failures.push(format!(
+                        "{name}: stderr differs: cc {:?}, internal {:?}",
+                        String::from_utf8_lossy(&cc.stderr),
+                        String::from_utf8_lossy(&internal.stderr)
+                    ));
+                }
+                if timeless(cc_trace.clone()) != timeless(internal_trace.clone()) {
+                    failures.push(format!(
+                        "{name}: trace differs: cc {cc_trace}, internal {internal_trace}"
+                    ));
+                }
+            }
+        }
+    }
+    let _ = std::fs::remove_dir_all(&scratch);
+    assert!(
+        compared > 100,
+        "only {compared} programs were compared: {failures:#?}"
+    );
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
 fn starts_tasks(trace: &Value) -> bool {
     trace
         .as_array()

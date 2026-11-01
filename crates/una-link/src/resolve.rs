@@ -4,7 +4,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 
-use crate::input::{Archive, Object, read_object};
+use crate::input::{Archive, Object, nlist, read_object};
 use crate::problem::{Problem, Result, shown};
 
 /// The one symbol the linker defines on Mach-O.
@@ -55,7 +55,7 @@ pub(crate) fn resolve<'a>(program: Object<'a>, archive: &Archive<'a>) -> Result<
     let mut pending: VecDeque<&'a [u8]> = VecDeque::new();
     let mut keys: Vec<u64> = vec![0];
     resolved.objects.push(program);
-    add_symbols(&mut resolved, 0, &mut pending)?;
+    add_symbols(&mut resolved, 0, &keys, &mut pending)?;
     let mut loaded: BTreeMap<u64, usize> = BTreeMap::new();
     while let Some(name) = pending.pop_front() {
         if resolved.globals.get(name) != Some(&Global::Undefined) {
@@ -77,7 +77,7 @@ pub(crate) fn resolve<'a>(program: Object<'a>, archive: &Archive<'a>) -> Result<
         resolved.objects.push(object);
         keys.push(offset.saturating_add(1));
         loaded.insert(offset, index);
-        add_symbols(&mut resolved, index, &mut pending)?;
+        add_symbols(&mut resolved, index, &keys, &mut pending)?;
         if resolved.globals.get(name) == Some(&Global::Undefined) {
             return Err(Problem::internal(format!(
                 "the symbol table of `{}` names a member for `{}` that does not define it",
@@ -100,6 +100,7 @@ pub(crate) fn resolve<'a>(program: Object<'a>, archive: &Archive<'a>) -> Result<
 fn add_symbols<'a>(
     resolved: &mut Resolved<'a>,
     index: usize,
+    keys: &[u64],
     pending: &mut VecDeque<&'a [u8]>,
 ) -> Result<()> {
     let Some(object) = resolved.objects.get(index) else {
@@ -139,9 +140,24 @@ fn add_symbols<'a>(
                 }
                 Some(Global::Defined {
                     object: other,
+                    symbol: other_symbol,
                     weak: other_weak,
-                    ..
                 }) => {
+                    let other_private = resolved
+                        .objects
+                        .get(other)
+                        .and_then(|o| o.symbols.get(other_symbol))
+                        .is_some_and(|s| s.n_type & nlist::N_PEXT != 0);
+                    let private = symbol.n_type & nlist::N_PEXT != 0;
+                    if !other_weak && !weak && other_private && private {
+                        // Two private-extern copies of one name: a generic instance that two
+                        // codegen units of one crate both emit, identical by its mangled name.
+                        // The first in input order is kept, as ld64 keeps it.
+                        if keys.get(index) < keys.get(other) {
+                            updates.insert(symbol.name, new);
+                        }
+                        continue;
+                    }
                     if !other_weak && !weak {
                         return Err(Problem::internal(format!(
                             "the symbol `{}` is defined twice, in `{}` and in `{}`",

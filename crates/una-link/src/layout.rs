@@ -197,14 +197,11 @@ pub(crate) fn lay_out<'a>(
         }
     }
     for record in graph.eh_records.iter().filter(|r| r.live) {
-        let section = graph.section(record.object, record.section)?;
-        for reloc in relocs_in(&section.relocs, record.start, record.end) {
-            let target =
-                crate::gc::eh_target(graph, record.object, record.section, section, reloc)?;
-            if reloc.kind == input::POINTER_TO_GOT {
-                need_import(target, &mut imports);
-                got.insert(target);
-            } else if let Target::Import(name) = target {
+        for field in &record.fields {
+            if field.got {
+                need_import(field.target, &mut imports);
+                got.insert(field.target);
+            } else if let Target::Import(name) = field.target {
                 return Err(Problem::internal(format!(
                     "an __eh_frame record points at `{}`, which no input defines",
                     shown(name)

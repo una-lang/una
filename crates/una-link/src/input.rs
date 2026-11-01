@@ -474,6 +474,25 @@ fn check_object(object: &Object<'_>) -> Result<()> {
             }
         }
     }
+    // Input sections never overlap in the object's addresses (rule 24): a target found by its
+    // address must belong to one section.
+    let mut spans: Vec<(u64, u64, &InSection<'_>)> = object
+        .sections
+        .iter()
+        .filter(|s| s.size > 0)
+        .map(|s| (s.addr, s.addr.saturating_add(s.size), s))
+        .collect();
+    spans.sort_by_key(|span| span.0);
+    for pair in spans.windows(2) {
+        if let [(_, end, first), (start, _, second)] = pair
+            && start < end
+        {
+            return Err(Problem::internal(format!(
+                "`{}`: the sections {},{} and {},{} overlap",
+                object.name, first.segment, first.name, second.segment, second.name
+            )));
+        }
+    }
     for symbol in &object.symbols {
         if !symbol.in_section() {
             continue;

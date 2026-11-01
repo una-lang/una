@@ -76,10 +76,24 @@ pub(crate) struct EhRecord<'a> {
     pub(crate) cie: Option<usize>,
     /// For an FDE, the function it describes.
     pub(crate) function: Option<Target<'a>>,
-    /// Every other target of the record's relocations (LSDA, personality).
-    pub(crate) others: Vec<Target<'a>>,
+    /// The pointers the record holds (`pc_begin`, the LSDA, the personality), each rewritten
+    /// for the output.
+    pub(crate) fields: Vec<EhField<'a>>,
     /// Whether the record is kept.
     pub(crate) live: bool,
+}
+
+/// A place-relative pointer of an `__eh_frame` record.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct EhField<'a> {
+    /// Its offset in the input section.
+    pub(crate) offset: u64,
+    /// Its width in bytes.
+    pub(crate) width: u64,
+    /// Whether it points at the GOT slot of its target (an indirect personality).
+    pub(crate) got: bool,
+    /// What it reaches.
+    pub(crate) target: Target<'a>,
 }
 
 /// The atoms of every loaded object, with the tables that find them.
@@ -156,6 +170,27 @@ impl<'a> Graph<'a> {
             atom,
             offset: signed(offset.saturating_sub(start))?,
         })
+    }
+
+    /// The atom that holds `address`, an address in the object `object`.
+    pub(crate) fn address_target(&self, object: usize, address: u64) -> Result<Target<'a>> {
+        let input = self.object(object)?;
+        for (index, section) in input.sections.iter().enumerate() {
+            let placed = matches!(
+                self.classes.get(object).and_then(|c| c.get(index)),
+                Some(Class::Out(_))
+            );
+            if placed
+                && address >= section.addr
+                && address < section.addr.saturating_add(section.size)
+            {
+                return self.atom_at(object, index, address - section.addr);
+            }
+        }
+        Err(Problem::internal(format!(
+            "`{}`: an address {address:#x} that lies in no section of the output",
+            input.name
+        )))
     }
 
     /// What the symbol `symbol` of `object` reaches.
@@ -445,14 +480,18 @@ fn read_compact<'a>(graph: &mut Graph<'a>, object: usize, index: usize) -> Resul
     Ok(())
 }
 
-/// Reads the CIEs and FDEs of an `__eh_frame` section. The address an FDE describes is the
-/// target of the pair of relocations at its `pc_begin`, read as the place-relative pointer it
-/// encodes (`docs/plan/0124-step3-design.md` §8).
+/// Reads the CIEs and FDEs of an `__eh_frame` section (`docs/plan/0124-step3-design.md` §8).
+/// Each pointer field that the augmentation of a CIE declares (`pc_begin`, the LSDA, the
+/// personality) is read either from its relocation (a pair, read as the place-relative pointer it
+/// encodes, or an `ARM64_RELOC_POINTER_TO_GOT`), or, where the assembler resolved it inside the
+/// object, from its encoded value; so a record may be dropped or moved. A relocation that is not
+/// at a pointer field, and a pointer encoding that is not place-relative, are U8001.
 fn read_eh_frame<'a>(graph: &mut Graph<'a>, object: usize, index: usize) -> Result<()> {
     let section = graph.section(object, index)?.clone();
     let name = graph.object(object)?.name.clone();
     let bad = |what: String| Problem::internal(format!("`{name}`, __TEXT,__eh_frame: {what}"));
-    let mut cies: BTreeMap<u64, usize> = BTreeMap::new();
+    // Each CIE's pointer encodings: (record index, FDE encoding, LSDA encoding, has `z`).
+    let mut cies: BTreeMap<u64, (usize, u8, u8, bool)> = BTreeMap::new();
     let mut at = 0u64;
     while at < section.size {
         let length = u64::from(bytes::u32_at(section.data, at)?);
@@ -470,12 +509,119 @@ fn read_eh_frame<'a>(graph: &mut Graph<'a>, object: usize, index: usize) -> Resu
         let id = u64::from(bytes::u32_at(section.data, at + 4)?);
         let relocs = relocs_in(&section.relocs, at, end).to_vec();
         let record = graph.eh_records.len();
+        let mut fields: Vec<EhField<'a>> = Vec::new();
+        let mut cursor = Cursor {
+            data: section.data,
+            at: at + 8,
+            end,
+        };
+        let take = |graph: &Graph<'a>,
+                    cursor: &mut Cursor<'_>,
+                    encoding: u8,
+                    fields: &mut Vec<EhField<'a>>|
+         -> Result<()> {
+            let offset = cursor.at;
+            let width = pointer_width(encoding).ok_or_else(|| {
+                bad(format!("a pointer encoding {encoding:#x} at {offset:#x} that the linker does not support"))
+            })?;
+            let value = cursor.signed(width)?;
+            let reloc = relocs.iter().find(|r| r.offset == offset);
+            let field = if let Some(reloc) = reloc {
+                if reloc.width != width {
+                    return Err(bad(format!(
+                        "a relocation at {offset:#x} whose width is not its pointer's"
+                    )));
+                }
+                EhField {
+                    offset,
+                    width,
+                    got: reloc.kind == input::POINTER_TO_GOT,
+                    target: eh_target(graph, object, index, &section, reloc)?,
+                }
+            } else {
+                if encoding & 0x70 != 0x10 || encoding & 0x80 != 0 {
+                    return Err(bad(format!(
+                        "a pointer at {offset:#x} with encoding {encoding:#x} and no relocation, which is not place-relative"
+                    )));
+                }
+                let address = i128::from(section.addr) + i128::from(offset) + i128::from(value);
+                let address = u64::try_from(address).map_err(|_| {
+                    bad(format!(
+                        "a pointer at {offset:#x} that leads outside the object"
+                    ))
+                })?;
+                EhField {
+                    offset,
+                    width,
+                    got: false,
+                    target: graph.address_target(object, address)?,
+                }
+            };
+            fields.push(field);
+            Ok(())
+        };
         if id == 0 {
-            let mut others = Vec::new();
-            for reloc in &relocs {
-                others.push(eh_target(graph, object, index, &section, reloc)?);
+            let version = cursor.u8()?;
+            let augmentation = cursor.string()?;
+            cursor.uleb()?;
+            cursor.sleb()?;
+            if version == 1 {
+                cursor.u8()?;
+            } else {
+                cursor.uleb()?;
             }
-            cies.insert(at, record);
+            let (mut fde_encoding, mut lsda_encoding) = (0u8, 0xffu8);
+            let z = augmentation.first() == Some(&b'z');
+            if z {
+                let length = cursor.uleb()?;
+                let data_end = cursor.at.saturating_add(length);
+                for letter in augmentation.iter().skip(1) {
+                    match letter {
+                        b'P' => {
+                            let encoding = cursor.u8()?;
+                            if encoding & 0x80 != 0 {
+                                // An indirect personality: a pointer to its GOT slot.
+                                let offset = cursor.at;
+                                let width = pointer_width(encoding).unwrap_or(0);
+                                let reloc = relocs.iter().find(|r| r.offset == offset).ok_or_else(|| {
+                                    bad(format!("an indirect personality at {offset:#x} with no relocation"))
+                                })?;
+                                if reloc.kind != input::POINTER_TO_GOT || reloc.width != width {
+                                    return Err(bad(format!(
+                                        "an indirect personality at {offset:#x} that is not ARM64_RELOC_POINTER_TO_GOT"
+                                    )));
+                                }
+                                cursor.signed(width)?;
+                                fields.push(EhField {
+                                    offset,
+                                    width,
+                                    got: true,
+                                    target: graph.reloc_target(object, index, reloc)?,
+                                });
+                            } else {
+                                take(graph, &mut cursor, encoding, &mut fields)?;
+                            }
+                        }
+                        b'L' => lsda_encoding = cursor.u8()?,
+                        b'R' => fde_encoding = cursor.u8()?,
+                        b'S' | b'B' => {}
+                        other => {
+                            return Err(bad(format!(
+                                "a CIE at {at:#x} with the augmentation `{}` the linker does not know",
+                                char::from(*other)
+                            )));
+                        }
+                    }
+                }
+                if cursor.at > data_end {
+                    return Err(bad(format!(
+                        "a CIE at {at:#x} whose augmentation overruns its data"
+                    )));
+                }
+            }
+            check_fields(&relocs, &fields)
+                .map_err(|what| bad(format!("{what} in the CIE at {at:#x}")))?;
+            cies.insert(at, (record, fde_encoding, lsda_encoding, z));
             graph.eh_records.push(EhRecord {
                 object,
                 section: index,
@@ -483,31 +629,41 @@ fn read_eh_frame<'a>(graph: &mut Graph<'a>, object: usize, index: usize) -> Resu
                 end,
                 cie: None,
                 function: None,
-                others,
+                fields,
                 live: false,
             });
         } else {
             let cie_at = (at + 4)
                 .checked_sub(id)
                 .ok_or_else(|| bad(format!("an FDE at {at:#x} points before the section")))?;
-            let cie = *cies
+            let (cie, fde_encoding, lsda_encoding, z) = *cies
                 .get(&cie_at)
                 .ok_or_else(|| bad(format!("an FDE at {at:#x} names no CIE before it")))?;
-            let mut function = None;
-            let mut others = Vec::new();
-            for reloc in &relocs {
-                let target = eh_target(graph, object, index, &section, reloc)?;
-                if reloc.offset == at + 8 {
-                    function = Some(target);
-                } else {
-                    others.push(target);
+            take(graph, &mut cursor, fde_encoding, &mut fields)?;
+            let function = fields.first().map(|f| f.target);
+            // pc_range: a length, not a pointer.
+            cursor.signed(pointer_width(fde_encoding & 0x0f).unwrap_or(8))?;
+            if z {
+                cursor.uleb()?;
+                if lsda_encoding != 0xff {
+                    let offset = cursor.at;
+                    let width = pointer_width(lsda_encoding).unwrap_or(8);
+                    let has_reloc = relocs.iter().any(|r| r.offset == offset);
+                    let value = Cursor {
+                        data: section.data,
+                        at: offset,
+                        end,
+                    }
+                    .signed(width)?;
+                    if has_reloc || value != 0 {
+                        take(graph, &mut cursor, lsda_encoding, &mut fields)?;
+                    }
                 }
             }
-            let function = function.ok_or_else(|| {
-                bad(format!(
-                    "an FDE at {at:#x} has no relocation at its pc_begin"
-                ))
-            })?;
+            check_fields(&relocs, &fields)
+                .map_err(|what| bad(format!("{what} in the FDE at {at:#x}")))?;
+            let function =
+                function.ok_or_else(|| bad(format!("an FDE at {at:#x} names no function")))?;
             if !matches!(function, Target::Atom { .. }) {
                 return Err(bad(format!(
                     "an FDE at {at:#x} describes no function of the inputs"
@@ -520,13 +676,115 @@ fn read_eh_frame<'a>(graph: &mut Graph<'a>, object: usize, index: usize) -> Resu
                 end,
                 cie: Some(cie),
                 function: Some(function),
-                others,
+                fields,
                 live: false,
             });
         }
         at = end;
     }
     Ok(())
+}
+
+/// Every relocation of a record must be at one of its pointer fields.
+fn check_fields(relocs: &[Reloc], fields: &[EhField<'_>]) -> std::result::Result<(), String> {
+    for reloc in relocs {
+        if !fields.iter().any(|f| f.offset == reloc.offset) {
+            return Err(format!(
+                "{} at {:#x}, which is not at a pointer field",
+                input::reloc_name(reloc.kind),
+                reloc.offset
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The width of a DWARF pointer encoding's format, for the formats the linker supports.
+fn pointer_width(encoding: u8) -> Option<u64> {
+    match encoding & 0x0f {
+        0x00 | 0x04 | 0x0c => Some(8),
+        0x03 | 0x0b => Some(4),
+        _ => None,
+    }
+}
+
+/// A reader over a record's bytes.
+struct Cursor<'d> {
+    data: &'d [u8],
+    at: u64,
+    end: u64,
+}
+
+impl Cursor<'_> {
+    fn u8(&mut self) -> Result<u8> {
+        if self.at >= self.end {
+            return Err(Problem::internal("an __eh_frame record ends early"));
+        }
+        let [byte] = bytes::array::<1>(self.data, self.at)?;
+        self.at += 1;
+        Ok(byte)
+    }
+
+    fn string(&mut self) -> Result<Vec<u8>> {
+        let mut out = Vec::new();
+        loop {
+            let byte = self.u8()?;
+            if byte == 0 {
+                return Ok(out);
+            }
+            out.push(byte);
+        }
+    }
+
+    fn uleb(&mut self) -> Result<u64> {
+        let mut value = 0u64;
+        let mut shift = 0u32;
+        loop {
+            let byte = self.u8()?;
+            if shift < 64 {
+                value |= u64::from(byte & 0x7f) << shift;
+            }
+            shift += 7;
+            if byte & 0x80 == 0 {
+                return Ok(value);
+            }
+        }
+    }
+
+    fn sleb(&mut self) -> Result<i64> {
+        let mut value = 0i64;
+        let mut shift = 0u32;
+        loop {
+            let byte = self.u8()?;
+            if shift < 64 {
+                value |= i64::from(byte & 0x7f) << shift;
+            }
+            shift += 7;
+            if byte & 0x80 == 0 {
+                if shift < 64 && byte & 0x40 != 0 {
+                    value |= -1i64 << shift;
+                }
+                return Ok(value);
+            }
+        }
+    }
+
+    fn signed(&mut self, width: u64) -> Result<i64> {
+        if self.at.saturating_add(width) > self.end {
+            return Err(Problem::internal("an __eh_frame record ends early"));
+        }
+        let value = match width {
+            4 => i64::from(i32::from_le_bytes(bytes::array::<4>(self.data, self.at)?)),
+            8 => i64::from_le_bytes(bytes::array::<8>(self.data, self.at)?),
+            _ => {
+                return Err(Problem::internal(
+                    "a pointer width the linker does not support",
+                ));
+            }
+        };
+        self.at += width;
+        Ok(value)
+    }
 }
 
 /// What a relocation of `__eh_frame` reaches. A pair is a place-relative pointer: its target is
@@ -663,7 +921,7 @@ fn mark<'a>(graph: &mut Graph<'a>, entry: &[u8]) -> Result<()> {
             for position in chain {
                 if let Some(record) = graph.eh_records.get_mut(position) {
                     record.live = true;
-                    targets.extend(record.others.iter().copied());
+                    targets.extend(record.fields.iter().map(|f| f.target));
                 }
             }
         }
