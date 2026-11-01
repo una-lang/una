@@ -417,6 +417,87 @@ fn the_certificate_authority_may_sign_with_every_chain_algorithm() {
     }
 }
 
+// Negotiation failures -----------------------------------------------------------------------------
+
+/// A `ring` server with the given suites and key exchange groups, for the version of the first
+/// suite, against the own client offering `client_suite`.
+fn negotiate(
+    client_suite: SupportedCipherSuite,
+    server_suites: Vec<SupportedCipherSuite>,
+    groups: Vec<&'static dyn rustls::crypto::SupportedKxGroup>,
+) -> Result<(), Error> {
+    let pki = issue(Kind::P256, Kind::P256);
+    let version = version_of(server_suites[0]);
+    let provider = Arc::new(CryptoProvider {
+        cipher_suites: server_suites,
+        kx_groups: groups,
+        ..reference()
+    });
+    let config = ServerConfig::builder_with_provider(provider)
+        .with_protocol_versions(&[version])
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![pki.leaf.clone()],
+            PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(pki.leaf_key.clone())),
+        )
+        .unwrap();
+    let mut s = Connection::Server(ServerConnection::new(Arc::new(config)).unwrap());
+    let mut c = client(Side::Own, client_suite, &pki);
+    handshake(&mut c, &mut s, &mut no_tamper)
+}
+
+#[test]
+fn no_common_group_or_suite_fails_the_handshake_with_the_named_error() {
+    use rustls::PeerIncompatible;
+    let ring_suites = reference().cipher_suites;
+    let ring = |id| *ring_suites.iter().find(|s| s.suite() == id).unwrap();
+    let own_suite = |id| *suites().iter().find(|s| s.suite() == id).unwrap();
+    let x25519 = rustls::crypto::ring::kx_group::X25519;
+    let p256 = rustls::crypto::ring::kx_group::SECP256R1;
+    let p384 = rustls::crypto::ring::kx_group::SECP384R1;
+    use rustls::CipherSuite as Id;
+    // (client suite, a different suite of the same version for the server)
+    let pairs = [
+        (
+            Id::TLS13_CHACHA20_POLY1305_SHA256,
+            Id::TLS13_AES_128_GCM_SHA256,
+        ),
+        (
+            Id::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+            Id::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+        ),
+    ];
+    for (client_id, other_id) in pairs {
+        let client_suite = own_suite(client_id);
+        let same = ring(client_id);
+        let other = ring(other_id);
+        // Control: the same suite and X25519 succeed.
+        negotiate(client_suite, vec![same], vec![x25519])
+            .unwrap_or_else(|e| panic!("{client_id:?} control: {e:?}"));
+        // A server limited to P-256 only, or P-384 only: the own client offers X25519 only.
+        for groups in [vec![p256], vec![p384], vec![p256, p384]] {
+            let err = negotiate(client_suite, vec![same], groups).unwrap_err();
+            assert!(
+                matches!(
+                    err,
+                    Error::PeerIncompatible(PeerIncompatible::NoKxGroupsInCommon)
+                ),
+                "{client_id:?}: {err:?}"
+            );
+        }
+        // A server limited to a suite the client does not offer.
+        let err = negotiate(client_suite, vec![other], vec![x25519]).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                Error::PeerIncompatible(PeerIncompatible::NoCipherSuitesInCommon)
+            ),
+            "{client_id:?}: {err:?}"
+        );
+    }
+}
+
 // Tampered records -----------------------------------------------------------------------------
 
 #[test]

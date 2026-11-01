@@ -11,7 +11,7 @@ use rustls::{
 use super::aead::{Kind, Tls12, Tls13};
 use super::hash::{HMAC_SHA256, HMAC_SHA384, SHA256, SHA384};
 
-/// The confidentiality limit of AES-GCM records under one key (RFC 8446 §5.5: `2^24.5` records).
+/// The confidentiality limit of AES-GCM records under one key (RFC 8446 §5.5 allows `2^24.5` full-size records; the value here is `1 << 24`, below it).
 const AES_LIMIT: u64 = 1 << 24;
 
 pub(crate) static TLS13_CHACHA20_POLY1305_SHA256: SupportedCipherSuite =

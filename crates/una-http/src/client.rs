@@ -678,8 +678,18 @@ pub fn prepare() {
     drop(tls_config());
 }
 
-/// Whether the TLS settings of the process are built ([`prepare`]).
+/// Whether the TLS settings of the process were initialised ([`prepare`]), usable or not. The
+/// engines ask this to know whether the start-up work ran (the state-leak rule of the P8 and
+/// P9 amendment), which is true as soon as the attempt was made. Whether the attempt left a
+/// usable configuration is [`tls_usable`]; an unusable one fails closed, every `https` request
+/// ending in `Error::Tls`.
 pub fn tls_ready() -> bool {
+    TLS_CONFIG.get().is_some()
+}
+
+/// Whether the TLS settings were initialised and are usable. `false` before [`prepare`] and
+/// when the provider cannot serve the default protocol versions (then `https` fails closed).
+pub fn tls_usable() -> bool {
     TLS_CONFIG.get().is_some_and(Option::is_some)
 }
 
