@@ -116,6 +116,11 @@ impl World for HostWorld<'_> {
     fn is_link(&mut self, path: &Path) -> bool {
         std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink())
     }
+
+    /// Only a component that does not exist leaves a path to the operation (#1380).
+    fn absent(&mut self, path: &Path) -> bool {
+        una_interp::disk_absent(path)
+    }
 }
 
 fn file_fault(error: io::Error) -> FileFault {

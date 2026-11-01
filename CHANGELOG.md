@@ -2,6 +2,12 @@
 
 All notable changes to Una are recorded here. Versions follow the milestones and gates of `docs/plan/roadmap.md`.
 
+## Unreleased
+
+### Security
+
+- **`Files` confinement denies a directory that exists but does not resolve** (#1380, `spec/14 §3` rule 2, ADR 0038 D9). When an intermediate directory of a path did not resolve and was not a symbolic link, confinement took it for a directory that does not exist and left the lexical path to the operation. A directory can also fail to resolve for another reason, such as a canonical path longer than the host's limit, and the operation then opened the lexical path without its directories having been checked against the prefix, in every release up to v0.1.13. The lexical path is now left to the operation only when a component does not exist or is not a directory, with the outcomes as before (`NotFound`, or `Io`); any other failure to resolve is `Denied` in `una run`. A new `World::absent` tells the cases apart, and its default denies. Tests reproduce the case on an in-memory model with a path limit and on the disk, and check that the outcomes for directories that do not exist are unchanged.
+
 ## v0.1.13
 
 v0.1.12 with three security fixes: records and function values release what they hold by a worklist (#1071), `una fmt` and the proof cache never write through a symbolic link planted at a temporary file (#1160), and the proof cache authenticates its entries (#1164).
