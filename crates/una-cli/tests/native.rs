@@ -2126,6 +2126,91 @@ fn the_limits_hold_inside_an_operation_in_progress() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn the_executable_denies_a_directory_past_the_host_path_limit_as_una_run_does_1380() {
+    // `spec/14 §3` rule 2, #1380: a directory that exists but whose canonical path is longer
+    // than the host takes does not resolve; it is denied in both engines, not opened through
+    // the link below it, while a directory that does not exist still fails with `NotFound`.
+    // Each hop `h` is a link to the four directories below it, so the lexical paths stay
+    // short while the canonical paths grow.
+    use std::os::unix::fs::symlink;
+    runtime();
+    let dir = package(
+        "deep",
+        "\n[run]\nentry = \"files\"\ngrants = [\"console\", \"files:box:read,write\"]\n",
+        &[],
+    );
+    let name = "X".repeat(100);
+    let deep = |levels: usize| vec![name.as_str(); levels].join("/");
+    let boxed = dir.join("box");
+    std::fs::create_dir_all(dir.join("outside")).unwrap();
+    std::fs::write(dir.join("outside/secret.txt"), "secret\n").unwrap();
+    std::fs::create_dir(&boxed).unwrap();
+    let mut hops = String::new();
+    let mut at = boxed.clone();
+    let mut past = None;
+    for _ in 0..64 {
+        let mut directory = at.clone();
+        for _ in 0..4 {
+            directory.push(&name);
+            std::fs::create_dir(&directory).unwrap();
+        }
+        symlink(deep(4), at.join("h")).unwrap();
+        past = (1..=4).find(|&levels| std::fs::canonicalize(at.join(deep(levels))).is_err());
+        if past.is_some() {
+            break;
+        }
+        at.push("h");
+        hops.push_str("h/");
+    }
+    let levels = past.unwrap_or(1);
+    symlink(dir.join("outside"), at.join(deep(levels)).join("esc")).unwrap();
+    let escape = format!("{hops}{}/esc", deep(levels));
+    let cases: Vec<(&str, String)> = vec![
+        ("read", format!("{escape}/secret.txt")),
+        ("write", format!("{escape}/new.txt")),
+        ("read", format!("{hops}{}/missing.txt", deep(levels))),
+        ("read", "h/missing/new.txt".to_owned()),
+        ("write", "h/missing/new.txt".to_owned()),
+    ];
+    let mut program = String::from(
+        "module files\n\ndescribe(failure: FileError) -> Text\n=\n  when failure\n    is NotFound -> \"not found\"\n    is Denied -> \"denied\"\n    is Io -> \"io\"\n\nshow(path: Text) -> Text\n  uses @files: Files[read]\n=\n  let content = attempt @files.read(path)\n  when content\n    is Ok -> \"read\"\n    is Err(failure) -> describe(failure)\n\nsave(path: Text) -> Text\n  uses @files: Files[write]\n=\n  let saved = attempt @files.write(path, content: \"entry\")\n  when saved\n    is Ok -> \"written\"\n    is Err(failure) -> describe(failure)\n\npub main() -> Unit\n  uses @console: Console[print]\n  uses @files: Files[read, write]\n=\n",
+    );
+    for (index, (operation, path)) in cases.iter().enumerate() {
+        let call = if *operation == "read" { "show" } else { "save" };
+        program.push_str(&format!(
+            "  let r{index} = {call}(\"{path}\")\n  @console.print(\"{index} {operation}: {{r{index}}}\")\n"
+        ));
+    }
+    std::fs::write(dir.join("src/files.una"), program).unwrap();
+    let built = una(&dir, &["build"]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    let native = Command::new(dir.join("target/una/deep"))
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert_eq!(native.status.code(), Some(0), "{native:?}");
+    let interpreted = una(&dir, &["run"]);
+    assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
+    let stdout = String::from_utf8_lossy(&native.stdout);
+    assert_eq!(stdout, String::from_utf8_lossy(&interpreted.stdout));
+    let mut expected = vec!["0 read: denied", "1 write: denied"];
+    // The directory past the limit is denied on a host that has one, and otherwise opened.
+    expected.push(if past.is_some() {
+        "2 read: denied"
+    } else {
+        "2 read: not found"
+    });
+    expected.extend(["3 read: not found", "4 write: not found"]);
+    assert_eq!(stdout.lines().collect::<Vec<_>>(), expected, "{past:?}");
+    if cfg!(target_os = "macos") {
+        assert!(past.is_some());
+    }
+    assert!(!dir.join("outside/new.txt").exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn the_executable_checks_each_operation_against_the_files_modes() {
     // #183: a `files` grant gives the operations of its modes, so `uses Files[read, write]`

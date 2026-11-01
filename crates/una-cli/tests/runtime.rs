@@ -1021,6 +1021,87 @@ fn files_grants_never_follow_a_final_link_and_keep_directories_inside_r011() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn files_grants_deny_a_directory_past_the_host_path_limit_1380() {
+    // `spec/14 §3` rule 2, #1380: a directory that exists but whose canonical path is longer
+    // than the host takes does not resolve. It is denied, not opened through the link below
+    // it, while a directory that does not exist still fails with `NotFound`. Each hop `h` is
+    // a link to the four directories below it, so the lexical paths stay short while the
+    // canonical paths grow.
+    use std::os::unix::fs::symlink;
+    let root = package(
+        "files-path-limit",
+        "\n[run]\nentry = \"files\"\ngrants = [\"console\", \"files:box:read,write\"]\n",
+        &[
+            ("src/files.una", ""),
+            ("box/note.txt", "inside\n"),
+            ("outside/secret.txt", "secret\n"),
+        ],
+    );
+    let name = "X".repeat(100);
+    let deep = |levels: usize| vec![name.as_str(); levels].join("/");
+    let mut hops = String::new();
+    let mut at = root.join("box");
+    let mut past = None;
+    for _ in 0..64 {
+        let mut directory = at.clone();
+        for _ in 0..4 {
+            directory.push(&name);
+            std::fs::create_dir(&directory).unwrap();
+        }
+        symlink(deep(4), at.join("h")).unwrap();
+        past = (1..=4).find(|&levels| std::fs::canonicalize(at.join(deep(levels))).is_err());
+        if past.is_some() {
+            break;
+        }
+        at.push("h");
+        hops.push_str("h/");
+    }
+    let levels = past.unwrap_or(1);
+    symlink(root.join("outside"), at.join(deep(levels)).join("esc")).unwrap();
+    let escape = format!("{hops}{}/esc", deep(levels));
+    let read_escape = format!("{escape}/secret.txt");
+    let write_escape = format!("{escape}/new.txt");
+    let below = format!("{hops}{}/missing.txt", deep(levels));
+    let cases = [
+        ("read", read_escape.as_str()),
+        ("write", write_escape.as_str()),
+        ("read", below.as_str()),
+        ("read", "h/missing/new.txt"),
+        ("write", "h/missing/new.txt"),
+        ("read", "note.txt"),
+    ];
+    std::fs::write(root.join("src/files.una"), files_program(&cases)).unwrap();
+    let output = una_in(&root, &["run"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    // The directory past the limit is denied on a host that has one; on a host that
+    // resolves it, the link below it is resolved and denied, and the missing file is not
+    // found.
+    let below_outcome = if past.is_some() {
+        "denied"
+    } else {
+        "not found"
+    };
+    assert_eq!(
+        stdout(&output),
+        format!(
+            "read {read_escape}: denied\n\
+             write {write_escape}: denied\n\
+             read {below}: {below_outcome}\n\
+             read h/missing/new.txt: not found\n\
+             write h/missing/new.txt: not found\n\
+             read note.txt: read\n"
+        ),
+        "{past:?}"
+    );
+    if cfg!(target_os = "macos") {
+        assert!(past.is_some());
+    }
+    assert!(!root.join("outside/new.txt").exists());
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 const KEYS: &str = "module keys
 
 pub known(name: Text) -> Text
