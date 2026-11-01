@@ -375,6 +375,15 @@ impl Pressure {
         });
     }
 
+    /// A reservation raised the peer's excess over its share: the peer enters the heap again
+    /// with its new key, and the older entry is dropped when it reaches the top. O(log c).
+    fn raise(&mut self, peer: &Arc<Peer>, share: u64) {
+        self.peers.push(PeerEntry {
+            over: over(peer, share),
+            peer: Arc::clone(peer),
+        });
+    }
+
     /// Builds the heaps from every connection with a reply pending. O(c).
     fn build(&mut self, grant: &GrantState) {
         *self = Pressure::default();
@@ -495,10 +504,13 @@ impl GrantState {
             return Reserve::Reserved(Vec::new());
         }
         let mut victims = Vec::new();
-        if self.replies.load(Ordering::Acquire) > cap {
+        if self.replies.load(Ordering::Acquire) > cap || self.pressure_on.load(Ordering::Acquire) {
             let share = self.limits.peer_replies.unwrap_or(u64::MAX);
             let mut pressure = lock(&self.pressure);
-            if !self.pressure_on.load(Ordering::Acquire) {
+            if self.pressure_on.load(Ordering::Acquire) {
+                // Every reservation made while the heaps exist updates its peer's key.
+                pressure.raise(&conn.peer, share);
+            } else if self.replies.load(Ordering::Acquire) > cap {
                 pressure.build(self);
                 self.pressure_on.store(true, Ordering::Release);
             }

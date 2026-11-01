@@ -221,3 +221,326 @@ fn the_timers_idle_read_answer_and_write() {
     sim.run_to_ms(sim.now() / 1_000_000 + 10_000);
     quiet(&sim);
 }
+
+fn post(path: &str, length: usize) -> Vec<u8> {
+    format!("POST {path} HTTP/1.1\r\nHost: localhost\r\nContent-Length: {length}\r\n\r\n")
+        .into_bytes()
+}
+
+#[test]
+fn a_body_is_admitted_before_it_is_read_and_released_at_delivery() {
+    let mut sim = Sim::new(&["serve:http://127.0.0.1:8080;buffers=1"], 1);
+    let mib = 1024 * 1024;
+    sim.connect(1, 0, &addr(1), Reads::Eager);
+    let mut head = post("/up", mib);
+    head.truncate(head.len() - 2);
+    head.extend_from_slice(b"Expect: 100-continue\r\n\r\n");
+    sim.send(1, &head);
+    assert_eq!(text(&sim.received(1)), "HTTP/1.1 100 Continue\r\n\r\n");
+    assert_eq!(sim.shared.grants[0].counters().buffers, mib as u64);
+    // The budget is spent: another body gets 503 at once, and nothing stalls.
+    sim.connect(2, 0, &addr(2), Reads::Eager);
+    sim.send(2, &post("/up", 10));
+    let out = text(&sim.received(2));
+    assert!(out.starts_with("HTTP/1.1 503 "), "{out}");
+    assert!(out.contains("Retry-After: 1"));
+    assert!(out.contains("Connection: close"));
+    // A head is still read while the budget is spent.
+    sim.connect(3, 0, &addr(3), Reads::Eager);
+    sim.send(3, &get("/head"));
+    // The head was read first and is delivered first (first come, first served).
+    let mut head_only = sim.next().unwrap();
+    assert_eq!(head_only.request.target, "/head");
+    // The first body arrives; delivery releases its reservation.
+    sim.send(1, &vec![b'a'; mib]);
+    assert_eq!(sim.shared.grants[0].counters().buffers, mib as u64);
+    let mut first = sim.next().unwrap();
+    assert_eq!(first.request.target, "/up");
+    assert_eq!(first.request.body.len(), mib);
+    assert_eq!(sim.shared.grants[0].counters().buffers, 0);
+    first.reply(&ok("1")).unwrap();
+    head_only.reply(&ok("2")).unwrap();
+    sim.flush();
+    for k in 1..=3 {
+        sim.close_peer(k);
+    }
+    sim.run_to_ms(3_000);
+    quiet(&sim);
+}
+
+#[test]
+fn a_peer_cannot_hold_more_than_its_share_of_buffers() {
+    let mut sim = Sim::new(
+        &["serve:http://127.0.0.1:8080;buffers=64;peer_buffers=1"],
+        1,
+    );
+    let half = 600 * 1024;
+    sim.connect(1, 0, "192.0.2.7:1001", Reads::Eager);
+    sim.send(1, &post("/", half));
+    sim.connect(2, 0, "192.0.2.7:1002", Reads::Eager);
+    sim.send(2, &post("/", half));
+    // Same peer, over its 1 MiB share.
+    assert_eq!(status_of(&sim.received(2)), 503);
+    // Another peer is not affected.
+    sim.connect(3, 0, "192.0.2.8:1003", Reads::Eager);
+    sim.send(3, &post("/", half));
+    assert_eq!(status_of(&sim.received(3)), 0);
+    assert_eq!(sim.shared.grants[0].counters().buffers, 2 * half as u64);
+    for k in 1..=3 {
+        sim.close_peer(k);
+    }
+    sim.run_to_ms(3_000);
+    quiet(&sim);
+}
+
+#[test]
+fn a_chunked_body_reserves_64_kib_at_a_time() {
+    let mut sim = Sim::new(&["serve:http://127.0.0.1:8080;buffers=1"], 1);
+    sim.connect(1, 0, &addr(1), Reads::Eager);
+    sim.send(
+        1,
+        b"POST / HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n",
+    );
+    assert_eq!(sim.shared.grants[0].counters().buffers, 64 * 1024);
+    sim.send(1, b"10000\r\n");
+    sim.send(1, &vec![b'a'; 0x10000]);
+    sim.send(1, b"\r\n1\r\nb");
+    // The next step was reserved before more data was read.
+    assert_eq!(sim.shared.grants[0].counters().buffers, 128 * 1024);
+    sim.send(1, b"\r\n0\r\n\r\n");
+    let exchange = sim.next().unwrap();
+    assert_eq!(exchange.request.body.len(), 0x10001);
+    assert_eq!(sim.shared.grants[0].counters().buffers, 0);
+}
+
+#[test]
+fn waiting_is_bounded_and_a_full_queue_answers_503() {
+    let mut sim = Sim::new(&["serve:http://127.0.0.1:8080;waiting=1"], 1);
+    sim.connect(1, 0, &addr(1), Reads::Eager);
+    sim.send(1, &get("/1"));
+    sim.connect(2, 0, &addr(2), Reads::Eager);
+    sim.send(2, &get("/2"));
+    let out = text(&sim.received(2));
+    assert!(out.starts_with("HTTP/1.1 503 "), "{out}");
+    assert!(out.contains("Retry-After: 1"));
+    // Delivery frees a place.
+    let mut first = sim.next().unwrap();
+    sim.connect(3, 0, &addr(3), Reads::Eager);
+    sim.send(3, &get("/3"));
+    assert_eq!(status_of(&sim.received(3)), 0);
+    first.reply(&ok("a")).unwrap();
+    sim.next().unwrap().reply(&ok("b")).unwrap();
+    sim.flush();
+    for k in 1..=3 {
+        sim.close_peer(k);
+    }
+    sim.run_to_ms(3_000);
+    quiet(&sim);
+}
+
+#[test]
+fn once_the_rate_and_delivered_delay_delivery() {
+    use una_http::serve::run::Next;
+    // One exchange at once.
+    let mut sim = Sim::new(&["serve:http://127.0.0.1:8080;1/once"], 1);
+    sim.connect(1, 0, &addr(1), Reads::Eager);
+    sim.send(1, &get("/1"));
+    sim.connect(2, 0, &addr(2), Reads::Eager);
+    sim.send(2, &get("/2"));
+    let mut first = sim.next().unwrap();
+    assert!(matches!(sim.shared.next(sim.now()), Next::Blocked(None)));
+    first.reply(&ok("a")).unwrap();
+    assert_eq!(sim.next().unwrap().request.target, "/2");
+    drop(first);
+    // A rate of 2 per second: two at once, the third at 500 ms.
+    let mut sim = Sim::new(&["serve:http://127.0.0.1:8080;2/second"], 1);
+    for k in 1..=3u64 {
+        sim.connect(k, 0, &addr(k as u32), Reads::Eager);
+        sim.send(k, &get(&format!("/{k}")));
+    }
+    let mut got = vec![sim.next().unwrap(), sim.next().unwrap()];
+    match sim.shared.next(sim.now()) {
+        Next::Blocked(Some(at)) => assert_eq!(at, 500_000_000),
+        _ => panic!("the third request waits for a token"),
+    }
+    sim.run_to_ms(499);
+    assert!(sim.next().is_none());
+    sim.run_to_ms(500);
+    got.push(sim.next().unwrap());
+    // delivered=1 MiB: a second 600 KiB request waits for the first to be answered.
+    let mut sim = Sim::new(&["serve:http://127.0.0.1:8080;delivered=1"], 1);
+    let big = vec![b'x'; 600 * 1024];
+    for k in 1..=2u64 {
+        sim.connect(k, 0, &addr(k as u32), Reads::Eager);
+        sim.send(k, &post("/", big.len()));
+        sim.send(k, &big);
+    }
+    let mut first = sim.next().unwrap();
+    assert!(matches!(sim.shared.next(sim.now()), Next::Blocked(None)));
+    first.reply(&ok("a")).unwrap();
+    assert!(sim.next().is_some());
+    drop(got);
+}
+
+#[test]
+fn a_request_that_waits_past_answer_for_delivery_gets_503() {
+    let mut sim = Sim::new(&["serve:http://127.0.0.1:8080;1/once;answer=2"], 1);
+    sim.connect(1, 0, &addr(1), Reads::Eager);
+    sim.send(1, &get("/1"));
+    sim.connect(2, 0, &addr(2), Reads::Eager);
+    sim.send(2, &get("/2"));
+    let first = sim.next().unwrap();
+    sim.run_to_ms(2_001);
+    // The one that was never delivered is refused; the one in the program's hands too.
+    assert_eq!(status_of(&sim.received(2)), 503);
+    assert_eq!(status_of(&sim.received(1)), 503);
+    drop(first);
+    assert!(sim.next().is_none());
+    sim.run_to_ms(10_000);
+    quiet(&sim);
+}
+
+#[test]
+fn peers_and_connections_are_bounded() {
+    let mut sim = Sim::new(&["serve:http://127.0.0.1:8080;peer=2;connections=4"], 1);
+    assert!(sim.connect(1, 0, "192.0.2.1:2001", Reads::Eager));
+    assert!(sim.connect(2, 0, "192.0.2.1:2002", Reads::Eager));
+    // A third from the same peer is closed at once.
+    assert!(!sim.connect(3, 0, "192.0.2.1:2003", Reads::Eager));
+    assert!(sim.closed(3));
+    assert!(sim.connect(4, 0, "192.0.2.2:2004", Reads::Eager));
+    assert!(sim.connect(5, 0, "192.0.2.3:2005", Reads::Eager));
+    // The grant is at `connections`.
+    assert!(!sim.connect(6, 0, "192.0.2.4:2006", Reads::Eager));
+    assert_eq!(sim.shared.grants[0].counters().connections, 4);
+    sim.close_peer(1);
+    assert!(sim.connect(7, 0, "192.0.2.1:2007", Reads::Eager));
+    for k in [2, 4, 5, 7] {
+        sim.close_peer(k);
+    }
+    sim.run_to_ms(3_000);
+    quiet(&sim);
+}
+
+#[test]
+fn ipv6_peers_in_one_slash_64_count_as_one() {
+    let mut sim = Sim::new(&["serve:http://[::1]:8080;peer=1"], 1);
+    assert!(sim.connect(1, 0, "[2001:db8:0:1::1]:3001", Reads::Eager));
+    assert!(!sim.connect(2, 0, "[2001:db8:0:1:ffff::2]:3002", Reads::Eager));
+    assert!(sim.connect(3, 0, "[2001:db8:0:2::1]:3003", Reads::Eager));
+    // An IPv4-mapped address is its IPv4 address.
+    assert!(sim.connect(4, 0, "[::ffff:192.0.2.9]:3004", Reads::Eager));
+    assert!(!sim.connect(5, 0, "192.0.2.9:3005", Reads::Eager));
+}
+
+#[test]
+fn requests_per_connection_are_bounded() {
+    let mut sim = Sim::new(&["serve:http://127.0.0.1:8080;requests=2"], 1);
+    sim.connect(1, 0, &addr(1), Reads::Eager);
+    sim.send(1, &get("/1"));
+    sim.next().unwrap().reply(&ok("a")).unwrap();
+    sim.flush();
+    assert!(!sim.closed(1));
+    sim.send(1, &get("/2"));
+    sim.next().unwrap().reply(&ok("b")).unwrap();
+    sim.flush();
+    assert!(text(&sim.received(1)).ends_with("Connection: close\r\n\r\nb"));
+    assert!(sim.closed(1));
+}
+
+#[test]
+fn a_peer_that_leaves_has_its_reply_discarded() {
+    use una_http::serve::run::Sent;
+    let mut sim = Sim::new(&[GRANT], 1);
+    sim.connect(1, 0, &addr(1), Reads::Eager);
+    sim.send(1, &get("/"));
+    let mut exchange = sim.next().unwrap();
+    sim.close_peer(1);
+    assert!(sim.closed(1));
+    assert_eq!(exchange.reply(&ok("x")).unwrap(), Sent::Discarded);
+    // The outcome is the same as for a reply sent in time.
+    assert_eq!(exchange.reply(&ok("y")).unwrap(), Sent::NotHeld);
+    sim.flush();
+    quiet(&sim);
+    // A request that leaves before delivery is dropped from the queue without a trace.
+    sim.connect(2, 0, &addr(2), Reads::Eager);
+    sim.send(2, &get("/"));
+    sim.close_peer(2);
+    assert!(sim.next().is_none());
+    quiet(&sim);
+}
+
+#[test]
+fn a_bad_reply_keeps_the_right_and_a_forgotten_one_is_500() {
+    let mut sim = Sim::new(&[GRANT], 1);
+    sim.connect(1, 0, &addr(1), Reads::Eager);
+    sim.send(1, &get("/"));
+    let mut exchange = sim.next().unwrap();
+    let bad = Reply {
+        status: 700,
+        headers: Vec::new(),
+        body: String::new(),
+    };
+    assert!(exchange.reply(&bad).is_err());
+    assert!(sim.received(1).is_empty());
+    drop(exchange);
+    sim.flush();
+    let out = text(&sim.received(1));
+    assert!(out.starts_with("HTTP/1.1 500 "), "{out}");
+    assert!(out.contains("Connection: close"));
+    assert!(sim.closed(1));
+}
+
+#[test]
+fn a_stop_refuses_what_is_not_delivered_and_drains_the_rest() {
+    let mut sim = Sim::new(&["serve:http://127.0.0.1:8080;1/once"], 1);
+    sim.connect(1, 0, &addr(1), Reads::Eager); // idle keep-alive
+    sim.send(1, &get("/k"));
+    sim.next().unwrap().reply(&ok("k")).unwrap();
+    sim.flush();
+    sim.connect(2, 0, &addr(2), Reads::Eager); // delivered, in the program's hands
+    sim.send(2, &get("/d"));
+    let mut delivered = sim.next().unwrap();
+    sim.connect(3, 0, &addr(3), Reads::Eager); // read and queued
+    sim.send(3, &get("/q"));
+    sim.connect(4, 0, &addr(4), Reads::Eager); // being read
+    sim.send(4, b"GET /p HTTP/1.1\r\nHost: loc");
+    sim.connect(5, 0, &addr(5), Reads::Eager); // fresh, sent nothing
+    sim.shared.stop();
+    sim.flush();
+    assert!(sim.closed(1) && sim.closed(5));
+    assert_eq!(status_of(&sim.received(3)), 503);
+    assert_eq!(status_of(&sim.received(4)), 503);
+    assert!(text(&sim.received(3)).contains("Retry-After: 1"));
+    assert!(!sim.closed(2));
+    // The open exchange drains: its reply carries Connection: close.
+    delivered.reply(&ok("done")).unwrap();
+    sim.flush();
+    let out = text(&sim.received(2));
+    assert!(out.starts_with("HTTP/1.1 200 "), "{out}");
+    assert!(out.contains("Connection: close"));
+    assert!(sim.closed(2));
+    sim.run_to_ms(5_000);
+    quiet(&sim);
+}
+
+#[test]
+fn the_hard_stop_answers_open_exchanges_without_waiting() {
+    let mut sim = Sim::new(&[GRANT], 1);
+    sim.connect(1, 0, &addr(1), Reads::Paced);
+    sim.allow(1, 1000);
+    sim.send(1, &get("/"));
+    let mut held = sim.next().unwrap();
+    sim.connect(2, 0, &addr(2), Reads::Paced);
+    sim.send(2, &get("/"));
+    sim.shared.hard_stop();
+    sim.flush();
+    assert_eq!(status_of(&sim.received(1)), 503);
+    assert!(sim.closed(1) && sim.closed(2));
+    assert_eq!(
+        held.reply(&ok("late")).unwrap(),
+        una_http::serve::run::Sent::Discarded
+    );
+    sim.run_to_ms(1_000);
+    quiet(&sim);
+}
