@@ -21,7 +21,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
 
-use una_interp::{FileFault, NotText, World, confine, disk_step};
+use una_interp::{FileFault, NotText, World, confine, disk_absent, disk_step};
 
 /// The `World` methods confinement never calls.
 macro_rules! no_io {
@@ -80,7 +80,8 @@ fn quadratic_missing(
     prefix: &Path,
     parts: &[&OsStr],
 ) -> Option<PathBuf> {
-    if world.is_link(lexical) {
+    // #1380: only a directory that does not exist leaves the path to the operation.
+    if world.is_link(lexical) || !world.absent(lexical) {
         return None;
     }
     let mut out = prefix.to_path_buf();
@@ -220,6 +221,9 @@ impl World for Disk {
     fn step(&mut self, directory: &Path, name: &OsStr) -> Option<PathBuf> {
         disk_step(directory, name)
     }
+    fn absent(&mut self, path: &Path) -> bool {
+        disk_absent(path)
+    }
 }
 
 /// The machine's file system with the default step of `World`.
@@ -233,6 +237,29 @@ impl World for DiskDefault {
     fn is_link(&mut self, path: &Path) -> bool {
         std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink())
     }
+    fn absent(&mut self, path: &Path) -> bool {
+        disk_absent(path)
+    }
+}
+
+/// `world` with the rule before #1380: every directory that does not resolve and is not a
+/// link counts as absent, so its lexical path is returned whatever stopped the resolution.
+struct Before<'a>(&'a mut dyn World);
+
+impl World for Before<'_> {
+    no_io!();
+    fn canonical(&mut self, path: &Path) -> Option<PathBuf> {
+        self.0.canonical(path)
+    }
+    fn is_link(&mut self, path: &Path) -> bool {
+        self.0.is_link(path)
+    }
+    fn step(&mut self, directory: &Path, name: &OsStr) -> Option<PathBuf> {
+        self.0.step(directory, name)
+    }
+    fn absent(&mut self, _path: &Path) -> bool {
+        true
+    }
 }
 
 enum Node {
@@ -244,10 +271,25 @@ enum Node {
 /// An in-memory file system with the semantics of `realpath` and `lstat`, counting each
 /// lookup of a name in a directory. Its step looks up only the new name in the directory
 /// already resolved (as an `openat` from a held directory would), and resolves a link's
-/// target from there.
+/// target from there. Its canonicalization fails, as `realpath` does, when a path it
+/// resolves grows longer than `max_path` bytes (#1380); its step and `lstat` count no length.
 struct Model {
     nodes: Vec<Node>,
     lookups: u64,
+    max_path: usize,
+}
+
+/// Why a walk of the model stops.
+#[derive(Debug, PartialEq, Eq)]
+enum Fault {
+    /// A name is missing (`ENOENT`).
+    Missing,
+    /// A name is looked up in a file (`ENOTDIR`).
+    NotDir,
+    /// More than 40 links (`ELOOP`).
+    Loop,
+    /// A resolved path longer than `max_path` (`ENAMETOOLONG`).
+    TooLong,
 }
 
 /// A directory being walked: the names and nodes from the root, the root first.
@@ -258,6 +300,7 @@ impl Model {
         Model {
             nodes: vec![Node::Dir(BTreeMap::new())],
             lookups: 0,
+            max_path: usize::MAX,
         }
     }
 
@@ -303,14 +346,16 @@ impl Model {
     }
 
     /// Walks `pending` from `walk`, following links (the last one only when `follow_last`),
-    /// with at most 40 links followed, as the hosts do.
+    /// with at most 40 links followed, as the hosts do, and resolved paths of at most `limit`
+    /// bytes.
     fn walk(
         &mut self,
         mut walk: Walk,
         mut pending: VecDeque<String>,
         follow_last: bool,
         counted: bool,
-    ) -> Option<Walk> {
+        limit: usize,
+    ) -> Result<Walk, Fault> {
         let mut hops = 0;
         while let Some(name) = pending.pop_front() {
             match name.as_str() {
@@ -324,12 +369,15 @@ impl Model {
                 _ => {}
             }
             let at = walk.last().unwrap().1;
-            let child = self.entry(at, &name, counted).ok()??;
+            let child = self
+                .entry(at, &name, counted)
+                .map_err(|()| Fault::NotDir)?
+                .ok_or(Fault::Missing)?;
             match &self.nodes[child] {
                 Node::Link(target) if follow_last || !pending.is_empty() => {
                     hops += 1;
                     if hops > 40 {
-                        return None;
+                        return Err(Fault::Loop);
                     }
                     if target.starts_with('/') {
                         walk.truncate(1);
@@ -338,10 +386,21 @@ impl Model {
                         pending.push_front(part.to_owned());
                     }
                 }
-                _ => walk.push((name, child)),
+                _ => {
+                    walk.push((name, child));
+                    if Model::path_of(&walk).as_os_str().len() > limit {
+                        return Err(Fault::TooLong);
+                    }
+                }
             }
         }
-        Some(walk)
+        Ok(walk)
+    }
+
+    /// `realpath`: the walk of `path` with its links followed and its length limited.
+    fn resolve(&mut self, path: &Path) -> Result<Walk, Fault> {
+        let limit = self.max_path;
+        self.walk(Model::root(), Model::parts(path), true, true, limit)
     }
 
     fn root() -> Walk {
@@ -366,17 +425,26 @@ impl Model {
 impl World for Model {
     no_io!();
     fn canonical(&mut self, path: &Path) -> Option<PathBuf> {
-        let walk = self.walk(Model::root(), Model::parts(path), true, true)?;
+        let walk = self.resolve(path).ok()?;
         Some(Model::path_of(&walk))
     }
     fn is_link(&mut self, path: &Path) -> bool {
-        self.walk(Model::root(), Model::parts(path), false, true)
-            .is_some_and(|walk| matches!(self.nodes[walk.last().unwrap().1], Node::Link(_)))
+        self.walk(Model::root(), Model::parts(path), false, true, usize::MAX)
+            .is_ok_and(|walk| matches!(self.nodes[walk.last().unwrap().1], Node::Link(_)))
+    }
+    fn absent(&mut self, path: &Path) -> bool {
+        matches!(self.resolve(path), Err(Fault::Missing | Fault::NotDir))
     }
     fn step(&mut self, directory: &Path, name: &OsStr) -> Option<PathBuf> {
         // The directory is held already: walking to it again is not a lookup.
         let held = self
-            .walk(Model::root(), Model::parts(directory), true, false)
+            .walk(
+                Model::root(),
+                Model::parts(directory),
+                true,
+                false,
+                usize::MAX,
+            )
             .unwrap();
         assert_eq!(
             Model::path_of(&held),
@@ -392,7 +460,7 @@ impl World for Model {
                     walk.truncate(1);
                 }
                 let pending = target.split('/').map(str::to_owned).collect();
-                let walk = self.walk(walk, pending, true, true)?;
+                let walk = self.walk(walk, pending, true, true, usize::MAX).ok()?;
                 Some(Model::path_of(&walk))
             }
             _ => Some(directory.join(name)),
@@ -410,6 +478,9 @@ impl World for ModelDefault<'_> {
     }
     fn is_link(&mut self, path: &Path) -> bool {
         self.0.is_link(path)
+    }
+    fn absent(&mut self, path: &Path) -> bool {
+        self.0.absent(path)
     }
 }
 
@@ -492,9 +563,21 @@ fn confinement_keeps_the_outcomes_of_resolving_every_prefix_1343() {
                 "model with the default step, prefix {prefix}, path {relative:?}"
             );
             assert_eq!(
-                on_disk(modeled, &root),
+                on_disk(modeled.clone(), &root),
                 expected,
                 "model against the disk, prefix {prefix}, path {relative:?}"
+            );
+            // #1380: no host limit is reached here, so every directory that does not resolve
+            // and is not a link is absent, and the outcomes are those of the rule before.
+            assert_eq!(
+                confine(&mut Before(&mut Disk), &on, relative),
+                expected,
+                "rule before #1380 on the disk, prefix {prefix}, path {relative:?}"
+            );
+            assert_eq!(
+                confine(&mut Before(&mut model), &model_prefix, relative),
+                modeled,
+                "rule before #1380 in the model, prefix {prefix}, path {relative:?}"
             );
             checked += 1;
             match expected {
@@ -516,6 +599,15 @@ fn confinement_keeps_the_outcomes_of_resolving_every_prefix_1343() {
         ("back/note.txt", Some(box_.join("note.txt"))),
         ("sub/up2/note.txt", Some(box_.join("note.txt"))),
         ("missing/new.txt", Some(on.join("missing/new.txt"))),
+        (
+            "missing/deeper/new.txt",
+            Some(on.join("missing/deeper/new.txt")),
+        ),
+        ("note.txt/x/new.txt", Some(on.join("note.txt/x/new.txt"))),
+        (
+            "in_dir/missing/new.txt",
+            Some(on.join("in_dir/missing/new.txt")),
+        ),
         ("in_link", None),
         ("dangling", None),
         ("dangling_dir/new.txt", None),
@@ -628,9 +720,16 @@ fn host_limits_keep_the_outcomes_of_resolving_every_prefix_1343() {
         cases.push(format!("{}l/d/f", "self/".repeat(repeat)));
     }
     let mut denied = 0;
+    let mut newly_denied = 0;
     for relative in &cases {
         let expected = confine_quadratic(&mut Disk, &on, relative);
         denied += usize::from(expected.is_none());
+        // #1380: a host limit no longer yields the lexical path; nothing else changes.
+        let before = confine_quadratic(&mut Before(&mut Disk), &on, relative);
+        if before != expected {
+            assert_eq!(expected, None, "only denials are new: {relative}");
+            newly_denied += 1;
+        }
         assert_eq!(
             confine(&mut Disk, &on, relative),
             expected,
@@ -648,8 +747,10 @@ fn host_limits_keep_the_outcomes_of_resolving_every_prefix_1343() {
             "model: {relative}"
         );
     }
-    // The host's link limit denies the longest chains.
+    // The host's link limit denies the longest chains, and the host's path limit now denies
+    // the lexical paths longer than it takes (1024 bytes on macOS, 4096 on Linux).
     assert!(denied > 0, "{denied}");
+    assert!(newly_denied > 0, "{newly_denied}");
 }
 
 /// The disk, counting the canonicalizations of one path.
@@ -669,6 +770,9 @@ impl World for Counting<'_> {
     }
     fn step(&mut self, directory: &Path, name: &OsStr) -> Option<PathBuf> {
         disk_step(directory, name)
+    }
+    fn absent(&mut self, path: &Path) -> bool {
+        disk_absent(path)
     }
 }
 
@@ -745,5 +849,147 @@ fn case_variant_spellings_keep_the_outcomes_of_resolving_every_prefix_1343() {
         assert!(fell_back > 100, "{fell_back}");
         // Out of the prefix and back into it, respelled: denied.
         assert_eq!(confine(&mut Disk, &on, "out/BACK/inner.txt"), None);
+    }
+}
+
+#[test]
+fn a_directory_past_the_host_path_limit_is_denied_1380() {
+    // A link inside the prefix resolves to a deep directory, and the canonical path of the
+    // directory below it is longer than the host takes (1024 bytes, as on macOS), so it does
+    // not resolve though it exists. Below it a link leads outside the prefix. The rule before
+    // #1380 returned the lexical path, which the operation then opened through that link.
+    let name = "X".repeat(200);
+    let deep = |levels: usize| vec![name.as_str(); levels].join("/");
+    let mut model = Model::new();
+    model.max_path = 1024;
+    model.add("/r/outside/secret.txt", Node::File);
+    model.add(
+        &format!("/r/box/{}/esc", deep(6)),
+        Node::Link("/r/outside".to_owned()),
+    );
+    model.add("/r/box/q", Node::Link(deep(4)));
+    let prefix = Path::new("/r/box");
+    let relative = format!("q/{}/esc/secret.txt", deep(2));
+    // `q/X` resolves (1011 bytes), `q/X/X` does not (1212 bytes) and is not a link.
+    assert!(model.canonical(&prefix.join(format!("q/{name}"))).is_some());
+    let past = prefix.join(format!("q/{}", deep(2)));
+    assert_eq!(model.resolve(&past).err(), Some(Fault::TooLong));
+    assert!(!model.is_link(&past));
+    let before = confine(&mut Before(&mut model), prefix, &relative);
+    assert_eq!(
+        before,
+        Some(prefix.join(&relative)),
+        "the rule before #1380"
+    );
+    model.max_path = usize::MAX;
+    assert_eq!(
+        model.canonical(&before.unwrap()),
+        Some(PathBuf::from("/r/outside/secret.txt")),
+        "the lexical path leads outside the prefix"
+    );
+    model.max_path = 1024;
+    // Denied, in both routines and with either step.
+    assert_eq!(confine(&mut model, prefix, &relative), None);
+    assert_eq!(confine_quadratic(&mut model, prefix, &relative), None);
+    assert_eq!(
+        confine(&mut ModelDefault(&mut model), prefix, &relative),
+        None
+    );
+    // A directory past the limit is denied even with nothing below it.
+    let new = format!("q/{}/new.txt", deep(2));
+    assert_eq!(confine(&mut model, prefix, &new), None);
+    // Directories that do not exist, or are not directories, still leave the path to the
+    // operation, under the deep link too.
+    model.add(&format!("/r/box/{}/file.txt", deep(5)), Node::File);
+    for relative in [
+        "missing/new.txt".to_owned(),
+        "q/missing/new.txt".to_owned(),
+        format!("q/{name}/missing/new.txt"),
+        format!("q/{name}/file.txt/x/new.txt"),
+    ] {
+        assert_eq!(
+            confine(&mut model, prefix, &relative),
+            Some(prefix.join(&relative)),
+            "{relative}"
+        );
+        assert_eq!(
+            confine(&mut ModelDefault(&mut model), prefix, &relative),
+            Some(prefix.join(&relative)),
+            "default step: {relative}"
+        );
+    }
+    // A world that does not tell absence denies every directory that does not resolve.
+    struct Silent<'a>(&'a mut Model);
+    impl World for Silent<'_> {
+        no_io!();
+        fn canonical(&mut self, path: &Path) -> Option<PathBuf> {
+            self.0.canonical(path)
+        }
+        fn is_link(&mut self, path: &Path) -> bool {
+            self.0.is_link(path)
+        }
+    }
+    assert_eq!(
+        confine(&mut Silent(&mut model), prefix, "missing/new.txt"),
+        None
+    );
+    assert_eq!(
+        confine(&mut Silent(&mut model), prefix, "note.txt"),
+        Some(prefix.join("note.txt"))
+    );
+}
+
+#[test]
+fn a_directory_past_the_host_path_limit_is_denied_on_the_disk_1380() {
+    // The same layout on the disk. Each hop `h` is a link to the four directories below it,
+    // so every lexical path stays short while the canonical paths grow; on a host whose
+    // canonicalization has a length limit (1024 bytes on macOS) one of them does not resolve.
+    let root = fresh("path_limit");
+    let name = "X".repeat(100);
+    let deep = |levels: usize| vec![name.as_str(); levels].join("/");
+    let on = root.join("box");
+    std::fs::create_dir_all(root.join("outside")).unwrap();
+    std::fs::write(root.join("outside/secret.txt"), "secret\n").unwrap();
+    std::fs::create_dir(&on).unwrap();
+    let mut hops = String::new();
+    let mut at = on.clone();
+    let mut past = None;
+    for _ in 0..64 {
+        let mut directory = at.clone();
+        for _ in 0..4 {
+            directory.push(&name);
+            std::fs::create_dir(&directory).unwrap();
+        }
+        std::os::unix::fs::symlink(deep(4), at.join("h")).unwrap();
+        past = (1..=4).find(|&levels| std::fs::canonicalize(at.join(deep(levels))).is_err());
+        if past.is_some() {
+            break;
+        }
+        at.push("h");
+        hops.push_str("h/");
+    }
+    let limited = past.is_some();
+    let levels = past.unwrap_or(1);
+    std::os::unix::fs::symlink(root.join("outside"), at.join(deep(levels)).join("esc")).unwrap();
+    let relative = format!("{hops}{}/esc/secret.txt", deep(levels));
+    if limited {
+        // The rule before #1380 opened the file outside the prefix.
+        let before = confine(&mut Before(&mut Disk), &on, &relative).unwrap();
+        assert_eq!(std::fs::read_to_string(before).unwrap(), "secret\n");
+    }
+    assert_eq!(confine(&mut Disk, &on, &relative), None, "{limited}");
+    assert_eq!(confine(&mut DiskDefault, &on, &relative), None, "{limited}");
+    assert_eq!(
+        confine_quadratic(&mut Disk, &on, &relative),
+        None,
+        "{limited}"
+    );
+    // A missing directory under a hop still leaves the path to the operation.
+    let missing = "h/missing/new.txt";
+    assert_eq!(confine(&mut Disk, &on, missing), Some(on.join(missing)));
+    // On macOS the limit is reached; other hosts may canonicalize longer paths, and then the
+    // link below is resolved and denied.
+    if cfg!(target_os = "macos") {
+        assert!(limited);
     }
 }
