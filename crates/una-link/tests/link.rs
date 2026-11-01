@@ -221,6 +221,28 @@ fn imports_are_bound_through_stubs_and_the_got_and_pointers_rebased() {
         let listing = String::from_utf8_lossy(&fixups.stdout);
         assert!(listing.contains("bind  libSystem/_write"), "{listing}");
         assert!(listing.contains("rebase"), "{listing}");
+        let otool = std::process::Command::new("otool")
+            .arg("-l")
+            .arg(&path)
+            .output()
+            .unwrap();
+        assert!(
+            otool.status.success(),
+            "{}",
+            String::from_utf8_lossy(&otool.stderr)
+        );
+        let commands = String::from_utf8_lossy(&otool.stdout);
+        for kind in [
+            "LC_DYLD_CHAINED_FIXUPS",
+            "LC_MAIN",
+            "LC_UUID",
+            "LC_BUILD_VERSION",
+            "LC_CODE_SIGNATURE",
+        ] {
+            assert!(commands.contains(kind), "{kind}: {commands}");
+        }
+        assert!(commands.contains("minos 13.0"), "{commands}");
+        assert!(!commands.contains("LC_RPATH") && !commands.contains("LC_SOURCE_VERSION"));
     }
     let _ = bytes;
 }

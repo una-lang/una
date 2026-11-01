@@ -30,7 +30,16 @@ const RAW_WRITES: [&str; 10] = [
 const CRATES: [&str; 4] = ["una-cli", "una-verify", "una-codegen", "una-project"];
 
 /// The raw writes that remain, by file and call, with how many there are and why each is safe.
-const ALLOWED: [(&str, &str, usize, &str); 15] = [
+const ALLOWED: [(&str, &str, usize, &str); 16] = [
+    (
+        "crates/una-cli/src/build.rs",
+        "OpenOptions::new(",
+        1,
+        "the executable that the internal linker wrote (ADR 0124 step 3), only inside the link's \
+         private directory that `una_diag::safe_write::private_dir` made (mode 0700, fresh for \
+         the build), as a new file (`create_new`) of mode 0755, installed from there by \
+         `una_diag::safe_write::install`",
+    ),
     (
         "crates/una-cli/src/runtime_archive.rs",
         "OpenOptions::new(",

@@ -650,6 +650,7 @@ fn link_internal(
             &from_file
         }
     };
+    let from_embedded = embedded.is_some();
     let identifier = placed
         .output
         .file_name()
@@ -661,8 +662,16 @@ fn link_internal(
     };
     let bytes =
         una_link::link(object, runtime, &options).map_err(|problem| match problem.code {
-            una_link::Code::U8001 => LinkFailure::Internal(problem.message),
             una_link::Code::U7015 => LinkFailure::Layout(problem.message),
+            // A runtime built into `una` is Una's own input, so a refusal is U8001. A
+            // development build links the file that `UNA_RT_LIB` or its search names, which
+            // the developer supplied: a refusal is then a usage error, as a failure of the
+            // system linker is (`spec/16 §2` rule 3).
+            una_link::Code::U8001 if from_embedded => LinkFailure::Internal(problem.message),
+            una_link::Code::U8001 => LinkFailure::Usage(format!(
+                "the internal linker refuses the native runtime of this development build: {}",
+                problem.message
+            )),
         })?;
     let mut open = std::fs::OpenOptions::new();
     open.write(true).create_new(true);

@@ -469,8 +469,8 @@ fn every_runnable_program_runs_alike_linked_by_una_link_and_by_cc() {
 }
 
 /// The internal linker through `una build` (ADR 0124 rules 27 and 29, step 3): the same package
-/// built from two directories gives the same bytes; a runtime the linker refuses is U8001 with
-/// exit code 3 and leaves no executable and no private directory; `--debuggable` adds the
+/// built from two directories gives the same bytes; a runtime file the linker refuses is a usage
+/// error and leaves no executable and no private directory; `--debuggable` adds the
 /// entitlement and nothing else of the program changes.
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[test]
@@ -516,7 +516,8 @@ fn una_build_links_by_itself_deterministically_and_fails_closed() {
             .unwrap();
         assert_eq!(String::from_utf8_lossy(&run.stdout), "Hello, Una\n");
     }
-    // A runtime the linker refuses: U8001, exit code 3, nothing written.
+    // A runtime file the linker refuses, in this development build: a usage error, exit code
+    // 2, nothing written (a runtime built into `una` would be U8001).
     let broken = scratch.join("broken.a");
     std::fs::write(&broken, b"!<arch>\nnot an archive member").unwrap();
     let refused = Command::new(env!("CARGO_BIN_EXE_una"))
@@ -527,9 +528,9 @@ fn una_build_links_by_itself_deterministically_and_fails_closed() {
         .current_dir(&package)
         .output()
         .unwrap();
-    assert_eq!(refused.status.code(), Some(3), "{refused:?}");
+    assert_eq!(refused.status.code(), Some(2), "{refused:?}");
     assert!(
-        String::from_utf8_lossy(&refused.stderr).contains("U8001"),
+        String::from_utf8_lossy(&refused.stderr).contains("the internal linker refuses"),
         "{refused:?}"
     );
     assert!(!package.join("target/una/hello").exists());
