@@ -2371,6 +2371,11 @@ impl<'p, 'w> Machine<'p, 'w> {
         match acquired {
             Ok(()) => Ok(Value::Unit),
             Err(Error::TimedOut) => {
+                // Only a covering deadline ends the wait with a time-out, and the call returns
+                // once the run's clock has reached it, as natively (`spec/27 §5` rule 6, #1355).
+                if left.is_some() && !self.run.clock.is_virtual() {
+                    self.run.clock.wait_until(until);
+                }
                 // A `for ever within` iteration observes its deadline at the operation.
                 if by_ever {
                     self.timeout_event();
@@ -3557,6 +3562,15 @@ impl<'p, 'w> Machine<'p, 'w> {
             && cover.is_some_and(|at| self.run.clock.now() >= at)
         {
             cut = true;
+        }
+        // A request that a covering deadline cut returns once the run's clock has reached that
+        // deadline, never before, as natively, so the `within` it covers sees its deadline
+        // passed (`spec/27 §5` rule 6, #1355). Under virtual time the clock is there already.
+        if cut
+            && sent == Err(Error::TimedOut)
+            && let Some(at) = cover
+        {
+            self.run.clock.wait_until(at);
         }
         if cut && by_ever && sent == Err(Error::TimedOut) {
             self.timeout_event();

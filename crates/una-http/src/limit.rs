@@ -55,6 +55,12 @@ pub trait RunClock: Send + Sync {
     /// The milliseconds since the run started.
     fn now_millis(&self) -> u64;
 
+    /// The nanoseconds since the run started, at the clock's full resolution: by default its
+    /// milliseconds, as a virtual clock moves (ADR 0116 amendment, P13).
+    fn now_nanos(&self) -> u128 {
+        u128::from(self.now_millis()).saturating_mul(1_000_000)
+    }
+
     /// Whether the clock is virtual: only the run's own waits move it.
     fn is_virtual(&self) -> bool;
 
@@ -87,6 +93,10 @@ impl Default for Monotonic {
 impl RunClock for Monotonic {
     fn now_millis(&self) -> u64 {
         u64::try_from(self.start.elapsed().as_millis()).unwrap_or(u64::MAX)
+    }
+
+    fn now_nanos(&self) -> u128 {
+        self.start.elapsed().as_nanos()
     }
 
     fn is_virtual(&self) -> bool {
@@ -421,6 +431,15 @@ impl Governor {
     /// The milliseconds since the run started, on its clock.
     pub fn now_millis(&self) -> u64 {
         self.clock.now_millis()
+    }
+
+    /// The moment `after` from now on its clock, in its first whole millisecond: never one
+    /// before it, so a wait that ends when [`Governor::now_millis`] reaches it has waited the
+    /// whole of `after` (#1355). Rounding the reading and `after` down each, as before, put it
+    /// up to 2 ms early. O(1).
+    pub fn millis_after(&self, after: Duration) -> u64 {
+        let at = self.clock.now_nanos().saturating_add(after.as_nanos());
+        u64::try_from(at.div_ceil(1_000_000)).unwrap_or(u64::MAX)
     }
 
     /// Nanoseconds since the run started, on its clock.
@@ -910,6 +929,51 @@ mod tests {
         fn advance_to(&self, at: u64) {
             self.0.fetch_max(at, Ordering::SeqCst);
         }
+    }
+
+    /// A real clock that stays at `.0` nanoseconds since its run started, read at full
+    /// resolution.
+    struct Still(u128);
+
+    impl RunClock for Still {
+        fn now_millis(&self) -> u64 {
+            u64::try_from(self.0 / 1_000_000).unwrap()
+        }
+        fn now_nanos(&self) -> u128 {
+            self.0
+        }
+        fn is_virtual(&self) -> bool {
+            false
+        }
+        fn advance_to(&self, _at: u64) {}
+    }
+
+    #[test]
+    fn a_deadline_on_the_run_s_clock_is_never_a_millisecond_before_its_moment() {
+        // #1355: a request's deadline on the run's clock, which ends a wait at a limit, was the
+        // reading in whole milliseconds plus the time-out in whole milliseconds, each rounded
+        // down, so at 5.7 ms a wait of 100 ms ended at 105 ms, 0.7 ms before its moment, and a
+        // `within` of that moment saw its deadline not yet passed. It is now the first whole
+        // millisecond at or after the moment, whatever the phase within the millisecond.
+        let at_5_7 = Governor::with_clock(Vec::new(), Arc::new(Still(5_700_000)));
+        assert_eq!(at_5_7.millis_after(Duration::from_millis(100)), 106);
+        for now in [0u128, 1, 5_700_000, 999_999, 1_000_000, 86_400_000_123_456] {
+            let governor = Governor::with_clock(Vec::new(), Arc::new(Still(now)));
+            for after in [0u64, 1, 999_999, 1_000_000, 100_000_000, 100_300_001] {
+                let moment = now + u128::from(after);
+                let until = u128::from(governor.millis_after(Duration::from_nanos(after)));
+                assert!(until * 1_000_000 >= moment, "{now} + {after}: {until} ms");
+                assert!(
+                    until * 1_000_000 < moment + 1_000_000,
+                    "{now} + {after}: {until} ms"
+                );
+            }
+        }
+        // Under virtual time, whole milliseconds, as before.
+        let clock = Arc::new(Virtual::default());
+        clock.advance_to(7);
+        let governor = Governor::with_clock(Vec::new(), clock);
+        assert_eq!(governor.millis_after(Duration::from_millis(30)), 37);
     }
 
     #[test]

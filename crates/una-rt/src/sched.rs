@@ -1810,10 +1810,53 @@ mod tests {
         helpers.close();
     }
 
-    /// The length of the first turn of a task that shares one worker with another, after
-    /// `earlier` ran on the scheduler for `offset`: what a check point loop measures from the
-    /// task's start to the end of its turn, or `None` when the turn never ended.
-    fn first_turn(earlier: bool, offset: std::time::Duration) -> Option<std::time::Duration> {
+    /// What a turn that comes to share its worker records, every moment in nanoseconds of the
+    /// scheduler's clock ([`nanos`]).
+    #[derive(Debug)]
+    struct Turn {
+        /// Readings just before and just after a second task was queued on the worker.
+        arrival: (u64, u64),
+        /// A reading at the start of the task's own code, after its turn began.
+        began: u64,
+        /// The worker's turn end when the turn was found over.
+        ends: u64,
+        /// A reading at that moment.
+        due: u64,
+    }
+
+    impl Turn {
+        /// Checks the rule of ADR 0117 rule 2 and #1146: the turn's end is [`SLICE`] after the
+        /// later of the turn's start and the arrival of the second task, which this run brackets
+        /// between `arrival.0` and the later of `arrival.1` and `began`, and the turn is never
+        /// found over before that end. Exact, whatever the load: the end is a value the
+        /// scheduler wrote, not a length measured across preemptions. How long the task ran
+        /// alone, and what ran before it, cannot move the end, since the bracket holds them
+        /// apart.
+        fn check(&self, what: &str) {
+            let earliest = self.arrival.0.saturating_add(SLICE_NANOS);
+            let latest = self.arrival.1.max(self.began).saturating_add(SLICE_NANOS);
+            assert!(
+                earliest <= self.ends && self.ends <= latest,
+                "{what}: the turn ends at {} ns, outside {earliest}..={latest} ({self:?})",
+                self.ends
+            );
+            assert!(
+                self.due >= self.ends,
+                "{what}: the turn was over {} ns before its end ({self:?})",
+                self.ends - self.due
+            );
+        }
+    }
+
+    /// The turn of a task that shares one worker with another: on a fresh scheduler of one
+    /// worker, after `earlier` ran a task on it and `offset` passed, a task loops on check
+    /// points as compiled code makes them, and a second task is queued behind it after `alone`.
+    /// `None` when the turn never ended within 300 ms.
+    fn shared_turn(
+        earlier: bool,
+        offset: std::time::Duration,
+        alone: std::time::Duration,
+    ) -> Option<Turn> {
         use std::time::{Duration, Instant};
         let sched = Scheduler::new(settings(1, 1, 1));
         if earlier {
@@ -1824,19 +1867,27 @@ mod tests {
             assert_eq!(ended.recv(), Some(()));
         }
         std::thread::sleep(offset);
-        let (measured, length) = std::sync::mpsc::channel();
+        let (measured, recorded) = std::sync::mpsc::channel();
         let looping = start(&sched, 1, move || {
+            let began = nanos();
             // A check point as compiled code makes one: the slow path when the word changed.
             let word = crate::runtime::attention_word();
-            let mut seen = word.load();
-            let began = Instant::now();
+            let mut last = word.load();
+            let looped = Instant::now();
             let mut turn = None;
-            while began.elapsed() < Duration::from_millis(200) {
-                std::hint::black_box(seen);
-                if let Some(now) = word.changed_since(seen) {
-                    seen = now;
+            while looped.elapsed() < Duration::from_millis(300) {
+                std::hint::black_box(last);
+                if let Some(now) = word.changed_since(last) {
+                    last = now;
                     if turn_due() {
-                        turn = Some(began.elapsed());
+                        let due = nanos();
+                        let ends = RUNNING.with(|running| {
+                            running
+                                .borrow()
+                                .as_ref()
+                                .map(|(worker, _, _)| worker.turn_ends.load(Ordering::SeqCst))
+                        });
+                        turn = ends.map(|ends| (began, ends, due));
                         yield_due();
                         break;
                     }
@@ -1844,10 +1895,18 @@ mod tests {
             }
             measured.send(turn).unwrap();
         });
+        std::thread::sleep(alone);
+        let before = nanos();
         let waiting = start(&sched, 2, || {});
+        let after = nanos();
         assert_eq!(looping.recv(), Some(()));
         assert_eq!(waiting.recv(), Some(()));
-        length.recv().unwrap()
+        recorded.recv().unwrap().map(|(began, ends, due)| Turn {
+            arrival: (before, after),
+            began,
+            ends,
+            due,
+        })
     }
 
     #[test]
@@ -1857,59 +1916,18 @@ mod tests {
         // and ticked on its own 10 ms phase, so a task that shared a worker never yielded
         // before any `start`, and after one its turn lasted 10 to 20 ms, by how long earlier
         // code ran. Now the slicer starts with the scheduler and each turn ends `SLICE` after
-        // its own start. The shortest of a few tries is taken, since load only lengthens a
-        // turn; the old phase gave 20 ms less the offset, at least 14 ms here.
-        let slice = std::time::Duration::from_millis(SLICE);
-        let most = slice + std::time::Duration::from_nanos(3_500_000);
+        // the later of its own start and the second task's arrival, whatever ran before.
+        // #1268: the end the scheduler set is checked, not a length measured on the wall clock,
+        // which load stretched past any bound, or shrank when the task was preempted before its
+        // first reading.
         for earlier in [false, true] {
             for offset in [2, 4, 6] {
-                let shortest = (0..5)
-                    .map(|_| first_turn(earlier, std::time::Duration::from_millis(offset)))
-                    .map(|turn| turn.expect("a turn that shares its worker ends"))
-                    .min()
-                    .unwrap();
-                assert!(
-                    shortest + std::time::Duration::from_millis(1) >= slice && shortest <= most,
-                    "earlier start {earlier}, offset {offset} ms: turn of {shortest:?}"
-                );
+                let offset = std::time::Duration::from_millis(offset);
+                shared_turn(earlier, offset, std::time::Duration::ZERO)
+                    .expect("a turn that shares its worker ends")
+                    .check(&format!("earlier start {earlier}, offset {offset:?}"));
             }
         }
-    }
-
-    /// How long the turn of a task that ran alone for `alone` lasts once a second task is
-    /// queued behind it, measured from that queuing to the end of the turn, or `None` when the
-    /// turn never ended.
-    fn turn_after_arrival(alone: std::time::Duration) -> Option<std::time::Duration> {
-        use std::time::{Duration, Instant};
-        let sched = Scheduler::new(settings(1, 1, 1));
-        let queued: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
-        let (measured, length) = std::sync::mpsc::channel();
-        let seen = Arc::clone(&queued);
-        let looping = start(&sched, 1, move || {
-            let word = crate::runtime::attention_word();
-            let mut last = word.load();
-            let began = Instant::now();
-            let mut turn = None;
-            while began.elapsed() < Duration::from_millis(300) {
-                std::hint::black_box(last);
-                if let Some(now) = word.changed_since(last) {
-                    last = now;
-                    if turn_due() {
-                        let at: Option<Instant> = *lock(&seen);
-                        turn = at.map(|at| at.elapsed());
-                        yield_due();
-                        break;
-                    }
-                }
-            }
-            measured.send(turn).unwrap();
-        });
-        std::thread::sleep(alone);
-        *lock(&queued) = Some(Instant::now());
-        let waiting = start(&sched, 2, || {});
-        assert_eq!(looping.recv(), Some(()));
-        assert_eq!(waiting.recv(), Some(()));
-        length.recv().unwrap()
     }
 
     #[test]
@@ -1919,20 +1937,12 @@ mod tests {
         // ran alone for 9 ms, as `main` does before its first `start`, yielded 1 ms after a
         // second task was queued, and how long it had run alone, `secret` code included,
         // decided whether a later deadline passed. Its turn now ends `SLICE` after the second
-        // task became ready. The shortest of a few tries is taken, since load only lengthens a
-        // turn.
-        let slice = std::time::Duration::from_millis(SLICE);
-        let most = slice + std::time::Duration::from_nanos(3_500_000);
+        // task became ready. #1268: checked on the end the scheduler set, exact under any load.
         for alone in [0, 9, 25] {
-            let shortest = (0..5)
-                .map(|_| turn_after_arrival(std::time::Duration::from_millis(alone)))
-                .map(|turn| turn.expect("a turn that shares its worker ends"))
-                .min()
-                .unwrap();
-            assert!(
-                shortest >= slice && shortest <= most,
-                "alone for {alone} ms: turn of {shortest:?} after the arrival"
-            );
+            let alone = std::time::Duration::from_millis(alone);
+            shared_turn(false, std::time::Duration::ZERO, alone)
+                .expect("a turn that shares its worker ends")
+                .check(&format!("alone for {alone:?}"));
         }
     }
 

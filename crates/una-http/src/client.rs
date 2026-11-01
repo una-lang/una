@@ -209,7 +209,9 @@ impl Interrupt for Cut<'_> {
 /// at the covering deadline itself, at its next I/O step (#1148).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Cover {
-    /// The moment on the run's clock, in milliseconds, which a wait at a limit reaches at most.
+    /// The moment on the run's clock, in milliseconds, which a wait at a limit reaches at most:
+    /// the first whole millisecond at or after the deadline, never one before it, so a wait that
+    /// ends there has met the deadline (#1355).
     pub at: Option<u64>,
     /// The same moment on the monotonic clock: the exchange's deadline is never later.
     pub instant: Option<Instant>,
@@ -340,12 +342,10 @@ pub fn send_covered(
     let own = started.checked_add(timeout).ok_or(Error::TimedOut)?;
     // The covering deadline itself, never later than the time-out from now (#1148).
     let deadline = cover.instant.map_or(own, |covering| own.min(covering));
-    // The same deadline on the run's clock, for the waits at limits (ADR 0116 rule 19).
-    let millis =
-        u64::try_from(deadline.saturating_duration_since(started).as_millis()).unwrap_or(u64::MAX);
+    // The same deadline on the run's clock, for the waits at limits (ADR 0116 rule 19), in its
+    // first whole millisecond, never one before it (#1355); `cover.at` is rounded so too.
     let until = governor
-        .now_millis()
-        .saturating_add(millis)
+        .millis_after(deadline.saturating_duration_since(started))
         .min(cover.at.unwrap_or(u64::MAX));
     // First, so that the abort it leads to depends on the header values alone.
     if request
