@@ -616,6 +616,12 @@ mod tests {
                 "unsat\n(error \"line 9 column 10: model is not available\")\n",
                 "warning\n",
             ),
+            // #1360: the line `sandbox_init` writes when an outer sandbox refuses it is
+            // output on stderr like any other; the child keeps it off stderr instead.
+            (
+                "unsat\n(error \"line 9 column 10: model is not available\")\n",
+                "sandbox initialization failed: Operation not permitted\n",
+            ),
             ("unsat\nunsat\n", ""),
         ] {
             let not_proven = answer(&raw(stdout, stderr, Ended::Exited(1)), 2).unwrap();

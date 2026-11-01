@@ -59,7 +59,10 @@ fn run(scenario: &str, test: &str) -> (Ended, String) {
 /// The scenario this process was started with, when it is a child: the marker is its name,
 /// and the scenario is on its stdin. The parent run reads nothing.
 fn scenario() -> Option<String> {
-    if std::env::args().next().as_deref() != Some(CHILD) {
+    // The marker is the whole name, or, for a child started through `sandbox-exec`, which
+    // passes the program's path as its name, the last component of that path.
+    let name = std::env::args().next()?;
+    if name != CHILD && std::path::Path::new(&name).file_name() != Some(CHILD.as_ref()) {
         return None;
     }
     let mut text = String::new();
@@ -315,6 +318,170 @@ fn under_the_sandbox_files_and_the_network_are_denied() {
         assert!(text.contains("outcome=Outer"), "{text}");
         assert!(text.contains("\"network-outbound\""), "{text}");
         assert!(text.contains("\"file-write-create\""), "{text}");
+    }
+}
+
+/// Runs this test binary again as a child under `sandbox-exec` with `profile`, as the
+/// toolchain-free gate runs `una` (#1360), with `scenario` on its stdin, and gives how it
+/// ended with what it wrote on stdout and on stderr, apart. The child is started by a link
+/// named after the marker, since `sandbox-exec` passes the program's path as its name. `None`
+/// when this process is itself under a sandbox that refuses a nested one, where the outer
+/// sandbox of the test is not the one under test.
+#[cfg(target_os = "macos")]
+fn run_sandboxed(profile: &str, scenario: &str, test: &str) -> Option<(Ended, String, String)> {
+    let exe = std::env::current_exe().unwrap().canonicalize().unwrap();
+    let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("solver-outer-{}-{test}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let dir = dir.canonicalize().unwrap();
+    let link = dir.join(CHILD);
+    std::os::unix::fs::symlink(&exe, &link).unwrap();
+    let profile = format!(
+        "{profile}(deny process-exec*)(allow process-exec* (literal \"{}\") (literal \"{}\"))",
+        link.display(),
+        exe.display()
+    );
+    let program = c"/usr/bin/sandbox-exec";
+    let args: Vec<CString> = [
+        "/usr/bin/sandbox-exec",
+        "-p",
+        &profile,
+        link.to_str().unwrap(),
+        "--exact",
+        test,
+        "--nocapture",
+        "--test-threads",
+        "1",
+    ]
+    .iter()
+    .map(|a| CString::new(*a).unwrap())
+    .collect();
+    let args: Vec<&std::ffi::CStr> = args.iter().map(CString::as_c_str).collect();
+    let (stdin_reader, mut stdin_writer) = std::io::pipe().unwrap();
+    let (mut stdout_reader, stdout_writer) = std::io::pipe().unwrap();
+    let (mut stderr_reader, stderr_writer) = std::io::pipe().unwrap();
+    stdin_writer.write_all(scenario.as_bytes()).unwrap();
+    drop(stdin_writer);
+    let pid = spawn(
+        program,
+        &args,
+        stdin_reader.as_fd(),
+        stdout_writer.as_fd(),
+        stderr_writer.as_fd(),
+    )
+    .unwrap();
+    drop(stdin_reader);
+    drop(stdout_writer);
+    drop(stderr_writer);
+    let errors = std::thread::spawn(move || {
+        let mut err = String::new();
+        let _ = stderr_reader.read_to_string(&mut err);
+        err
+    });
+    let mut out = String::new();
+    let _ = stdout_reader.read_to_string(&mut out);
+    let ended = wait(pid).unwrap();
+    let err = errors.join().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    if err.starts_with("sandbox-exec: sandbox_apply") {
+        let _ = writeln!(
+            std::io::stderr(),
+            "this test runs under a sandbox that refuses a nested one: {err}"
+        );
+        return None;
+    }
+    Some((ended, out, err))
+}
+
+/// The scenario of the outer-sandbox tests: the whole confinement of rule 7, then what it
+/// gave, and whether a descriptor above the three standard ones is open.
+#[cfg(target_os = "macos")]
+fn confine_and_tell() -> ! {
+    let outcome = confine(&limits(), c"/private/etc/hosts");
+    let open: Vec<i32> = (3..64).filter(|fd| is_open(*fd)).collect();
+    let _ = match outcome {
+        Ok(confinement) => writeln!(std::io::stdout(), "outcome={confinement:?} open={open:?}"),
+        Err(error) => writeln!(std::io::stdout(), "refused={error} open={open:?}"),
+    };
+    std::process::exit(0);
+}
+
+/// The minimum of Question 6, as the toolchain-free gate's profile has it: the network and
+/// every write denied, the rest allowed.
+#[cfg(target_os = "macos")]
+const COMPLIANT: &str = "(version 1)(allow default)(deny network*)(deny file-write*)\
+     (allow file-write* (literal \"/dev/null\"))";
+
+#[cfg(target_os = "macos")]
+#[test]
+fn under_a_compliant_outer_sandbox_the_child_takes_it_and_writes_nothing_on_stderr() {
+    if let Some(scenario) = scenario() {
+        if scenario == "outer" {
+            confine_and_tell();
+        }
+        return;
+    }
+    let test = "under_a_compliant_outer_sandbox_the_child_takes_it_and_writes_nothing_on_stderr";
+    let Some((ended, out, err)) = run_sandboxed(COMPLIANT, "outer", test) else {
+        return;
+    };
+    assert_eq!(ended, Ended::Exited(0), "{out}{err}");
+    assert!(out.contains("outcome=Outer"), "{out}{err}");
+    assert!(out.contains("\"network-outbound\""), "{out}");
+    assert!(out.contains("\"network-inbound\""), "{out}");
+    assert!(
+        out.contains("\"file-write-data (outside the temporary directory)\""),
+        "{out}"
+    );
+    assert!(out.contains("\"file-write-unlink\""), "{out}");
+    assert!(out.contains("\"process-exec*\""), "{out}");
+    // #1360: `sandbox_init`, refused under the outer sandbox, writes its own line on stderr,
+    // and a proof that ends with exit status 1 requires nothing there; and the descriptors
+    // the line was caught with are closed again.
+    assert_eq!(err, "", "{out}");
+    assert!(out.contains("open=[]"), "{out}");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn an_outer_sandbox_short_of_the_minimum_is_not_the_confinement() {
+    if let Some(scenario) = scenario() {
+        if scenario == "outer" {
+            confine_and_tell();
+        }
+        return;
+    }
+    let test = "an_outer_sandbox_short_of_the_minimum_is_not_the_confinement";
+    for (profile, allowed) in [
+        // Writes allowed: the first write of the list is the first refused.
+        (
+            "(version 1)(allow default)(deny network*)",
+            "file-write-data",
+        ),
+        // The network allowed.
+        (
+            "(version 1)(allow default)(deny file-write*)(allow file-write* (literal \"/dev/null\"))",
+            "network-outbound",
+        ),
+        // Writes denied at `/` but allowed outside the temporary directory.
+        (
+            "(version 1)(allow default)(deny network*)(deny file-write* (literal \"/\"))",
+            "file-write-data (outside the temporary directory)",
+        ),
+    ] {
+        let Some((ended, out, err)) = run_sandboxed(profile, "outer", test) else {
+            return;
+        };
+        assert_eq!(ended, Ended::Exited(0), "{profile}: {out}{err}");
+        assert!(
+            out.contains(&format!(
+                "refused=the outer sandbox is too permissive for the solver: {allowed} is allowed"
+            )),
+            "{profile}: {out}{err}"
+        );
+        assert!(!out.contains("outcome="), "{profile}: {out}");
+        assert_eq!(err, "", "{profile}: {out}");
     }
 }
 

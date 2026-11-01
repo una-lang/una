@@ -47,6 +47,8 @@ pub enum SandboxError {
     Check(&'static str),
     /// The outer sandbox allows an operation that rule 7's minimum requires it to deny.
     TooPermissive(&'static str),
+    /// Stderr could not be set aside around `sandbox_init`, or put back after it.
+    Stderr(String),
 }
 
 impl fmt::Display for SandboxError {
@@ -54,6 +56,7 @@ impl fmt::Display for SandboxError {
         match self {
             Self::Init(text) => write!(f, "the sandbox profile was refused: {text}"),
             Self::Check(op) => write!(f, "cannot ask the outer sandbox about {op}"),
+            Self::Stderr(e) => write!(f, "cannot set stderr aside around the sandbox: {e}"),
             Self::TooPermissive(op) => {
                 write!(
                     f,
@@ -169,14 +172,28 @@ const PROBES: [Probe; 12] = [
 /// outer sandbox that allows a required operation.
 pub fn confine(outside_temp: &CStr) -> Result<Confinement, SandboxError> {
     let mut error: *mut c_char = std::ptr::null_mut();
-    // SAFETY: `PROFILE` is a NUL-terminated text, and `error` a valid place for the pointer
-    // the call writes on failure, which is freed below.
-    let applied = unsafe { sandbox_init(PROFILE.as_ptr(), 0, &raw mut error) };
+    // The library writes its own line on the process's stderr when the profile is refused
+    // ("sandbox initialization failed: Operation not permitted", under any outer sandbox):
+    // the child's stderr must stay empty, since a proof that ends with exit status 1 requires
+    // nothing on it (rule 8, #1360), so the call runs with stderr on a pipe of its own and
+    // what the library wrote there is dropped; the reason travels in `error`.
+    let apply = || {
+        // SAFETY: `PROFILE` is a NUL-terminated text, and `error` a valid place for the
+        // pointer the call writes on failure, which is freed below.
+        unsafe { sandbox_init(PROFILE.as_ptr(), 0, &raw mut error) }
+    };
+    let (applied, written) =
+        with_stderr_aside(apply).map_err(|e| SandboxError::Stderr(e.to_string()))?;
     if applied == 0 {
         return Ok(Confinement::Own);
     }
     let text = if error.is_null() {
-        String::from("no reason given")
+        let written = String::from_utf8_lossy(&written).trim().to_owned();
+        if written.is_empty() {
+            String::from("no reason given")
+        } else {
+            written
+        }
     } else {
         // SAFETY: on failure `error` points at a NUL-terminated text the library allocated,
         // read once here and freed once below.
@@ -228,4 +245,67 @@ pub fn confine(outside_temp: &CStr) -> Result<Confinement, SandboxError> {
         }
     }
     Ok(Confinement::Outer { denied })
+}
+
+/// The most bytes kept of what `f` writes on stderr.
+const STDERR_ASIDE_BYTES: usize = 4096;
+
+/// Runs `f` with descriptor 2 on a pipe of its own, then puts the process's stderr back and
+/// gives `f`'s result with what it wrote there, at most [`STDERR_ASIDE_BYTES`]. The pipe's
+/// write end does not block, so a writer past its capacity loses the rest instead of hanging
+/// the child; no descriptor above 2 is left open, whatever fails.
+///
+/// # Errors
+///
+/// The error of the first call that fails. One that fails after `f` ran leaves the result
+/// unused: the caller fails closed.
+fn with_stderr_aside<T>(f: impl FnOnce() -> T) -> std::io::Result<(T, Vec<u8>)> {
+    use std::io::{Error, Read};
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+
+    let (mut reader, writer) = std::io::pipe()?;
+    for fd in [reader.as_raw_fd(), writer.as_raw_fd()] {
+        // SAFETY: `fcntl` on a descriptor this function owns, with integer arguments.
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        // SAFETY: as above.
+        if flags == -1 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } == -1
+        {
+            return Err(Error::last_os_error());
+        }
+    }
+    // SAFETY: `dup` of the standard error descriptor; the new one is owned below.
+    let saved = unsafe { libc::dup(libc::STDERR_FILENO) };
+    if saved == -1 {
+        return Err(Error::last_os_error());
+    }
+    // SAFETY: `saved` is a fresh descriptor that nothing else owns.
+    let saved = unsafe { OwnedFd::from_raw_fd(saved) };
+    // SAFETY: `dup2` between two open descriptors; it touches no memory.
+    if unsafe { libc::dup2(writer.as_raw_fd(), libc::STDERR_FILENO) } == -1 {
+        return Err(Error::last_os_error());
+    }
+    drop(writer);
+    let result = f();
+    // SAFETY: as above; descriptor 2 is the process's stderr again.
+    if unsafe { libc::dup2(saved.as_raw_fd(), libc::STDERR_FILENO) } == -1 {
+        return Err(Error::last_os_error());
+    }
+    drop(saved);
+    // Descriptor 2 was the pipe's last write end besides the one dropped above, so the reads
+    // end at the end of the pipe, or at `EAGAIN` if nothing was written.
+    let mut written = Vec::new();
+    let mut chunk = [0_u8; 512];
+    loop {
+        match reader.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(read) => {
+                let room = STDERR_ASIDE_BYTES.saturating_sub(written.len());
+                written.extend_from_slice(chunk.get(..read.min(room)).unwrap_or(&[]));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok((result, written))
 }
