@@ -442,29 +442,37 @@ pub fn limit_acquire(_site: i64, instance: i64) -> i64 {
     };
     let covering = crate::deadline::left();
     let clock = crate::runtime::clock();
-    // The covering deadline on the run's clock, which the wait reaches at most; on the wall
-    // clock the same time, unless time is virtual, where only the run's clock bounds it.
-    let until = covering.map_or(u64::MAX, |(left, _)| {
-        clock
-            .now()
-            .saturating_add(u64::try_from(left.as_millis()).unwrap_or(u64::MAX))
-    });
+    // The covering deadline on the run's clock, which the wait reaches at most, in its first
+    // whole millisecond (#1355); on the wall clock the same time, unless time is virtual, where
+    // only the run's clock bounds it.
+    let until = covering.map_or(u64::MAX, |covering| covering.at_millis());
     let wall = Instant::now();
     let deadline = match covering {
-        Some((left, _)) if !clock.is_virtual() => wall.checked_add(left),
+        Some(covering) if !clock.is_virtual() => wall.checked_add(covering.left),
         _ => wall.checked_add(Duration::from_secs(365 * 24 * 3600)),
     }
     .unwrap_or(wall);
     let stop = crate::runtime::op_interrupt();
     let abandon = una_http::limit::Abandon::new();
     let waiting = abandon.clone();
-    let job = move || match stop {
-        Some(stop) => limiter.acquire((deadline, until), &stop.interrupt(), &waiting),
-        None => limiter.acquire(
-            (deadline, until),
-            &una_http::client::Uninterrupted,
-            &waiting,
-        ),
+    let job = move || {
+        let acquired = match stop {
+            Some(stop) => limiter.acquire((deadline, until), &stop.interrupt(), &waiting),
+            None => limiter.acquire(
+                (deadline, until),
+                &una_http::client::Uninterrupted,
+                &waiting,
+            ),
+        };
+        // Only a covering deadline ends the wait with a time-out, and the call returns once the
+        // run's clock has reached it, on the helper, never on a worker (`spec/27 §5` rule 6,
+        // #1355).
+        if acquired == Err(Error::TimedOut)
+            && let Some(covering) = covering
+        {
+            covering.reach();
+        }
+        acquired
     };
     let entries = crate::runtime::interruptible_entries();
     let abandoned: crate::interrupt::Wake = Arc::new(move || abandon.abandon());
@@ -479,7 +487,7 @@ pub fn limit_acquire(_site: i64, instance: i64) -> i64 {
         Ok(()) => 0,
         Err(Error::TimedOut) => {
             // A `for ever within` iteration observes its deadline at the operation.
-            if covering.map(|(_, bound)| bound) == Some(crate::deadline::Bound::Ever) {
+            if covering.map(|covering| covering.bound) == Some(crate::deadline::Bound::Ever) {
                 crate::deadline::timed_out();
             }
             failed(RATE_LIMITED)
@@ -762,12 +770,8 @@ fn http(
     let covering = crate::deadline::left();
     // The covering deadline on the run's clock, which a wait at a limit reaches at most: under
     // virtual time, a wait for a refill moves the clock to it (ADR 0116 rule 19).
-    let cover = covering.map(|(left, bound)| {
-        let at = crate::runtime::clock()
-            .now()
-            .saturating_add(u64::try_from(left.as_millis()).unwrap_or(u64::MAX));
-        (at, bound)
-    });
+    // Its first whole millisecond, never one before the deadline itself (#1355).
+    let cover = covering.map(|covering| (covering.at_millis(), covering.bound));
     let cover_at = cover.map(|(at, _)| at);
     // The covering deadline itself, as an instant of the monotonic clock, under the real clock
     // (#1148): the helper's exchange never runs past it, however long the request waited for a
@@ -775,19 +779,23 @@ fn http(
     // network wait takes no virtual time, so only the run's clock bounds it.
     let cover_instant = covering
         .filter(|_| !crate::runtime::clock().is_virtual())
-        .and_then(|(left, _)| std::time::Instant::now().checked_add(left));
+        .and_then(|covering| std::time::Instant::now().checked_add(covering.left));
     let covered = Cover {
         at: cover_at,
         instant: cover_instant,
     };
-    if let Some((left, bound)) = covering
-        && left < settings.timeout
-        && (left.is_zero() || !crate::runtime::clock().is_virtual())
+    if let Some(covering) = covering
+        && covering.left < settings.timeout
+        && (covering.left.is_zero() || !crate::runtime::clock().is_virtual())
     {
-        settings.timeout = left;
-        cut = Some(bound);
+        settings.timeout = covering.left;
+        cut = Some(covering.bound);
     }
     let stop = crate::runtime::op_interrupt();
+    // The deadline that cut the request, if one did: a request it cut returns once the run's
+    // clock has reached it, never before, so the `within` it covers sees its deadline passed
+    // (`spec/27 §5` rule 6, #1355). The reactor's waits end no earlier than their time-outs.
+    let reach = covering.filter(|_| cut.is_some());
     let sent = if cut.is_some() && settings.timeout.is_zero() {
         Err(Error::TimedOut)
     } else if let Some(reactor) = crate::reactor::parks().filter(|_| !governor.limited()) {
@@ -843,9 +851,16 @@ fn http(
                 stop,
                 stale: std::cell::Cell::new(false),
             };
-            send_covered(
+            let sent = send_covered(
                 &request, &governor, &settings, &interrupt, &waiting, covered,
-            )
+            );
+            // On the helper, never on a worker.
+            if sent == Err(Error::TimedOut)
+                && let Some(covering) = reach
+            {
+                covering.reach();
+            }
+            sent
         };
         // A request is interruptible (ADR 0117 rule 4): a cancellation that comes while it
         // waits ends it `interrupted`, and the task stops. The cancellation reaches the client
@@ -867,10 +882,10 @@ fn http(
     // it, even when its time-out was the shorter at the start (#1148).
     if cut.is_none()
         && sent == Err(Error::TimedOut)
-        && let (Some((_, bound)), Some(at)) = (covering, cover_instant)
+        && let (Some(covering), Some(at)) = (covering, cover_instant)
         && std::time::Instant::now() >= at
     {
-        cut = Some(bound);
+        cut = Some(covering.bound);
     }
     // Under virtual time, a wait at a limit that moved the clock to the covering deadline was cut
     // by it, as a request is under the real clock.

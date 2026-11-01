@@ -190,6 +190,10 @@ impl una_http::limit::RunClock for Clock {
         self.now()
     }
 
+    fn now_nanos(&self) -> u128 {
+        Clock::now_nanos(self)
+    }
+
     fn is_virtual(&self) -> bool {
         Clock::is_virtual(self)
     }

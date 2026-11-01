@@ -300,10 +300,50 @@ pub(crate) enum Bound {
     Within,
 }
 
-/// The time left before the earliest deadline that covers the task's code on the run's clock,
-/// zero once it has passed, and which deadline it is; `None` without a deadline, or with ones
-/// that never pass.
-pub(crate) fn left() -> Option<(Duration, Bound)> {
+/// The earliest deadline that covers the task's code: the time left before it on the run's
+/// clock, which deadline it is, and its moment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Covering {
+    /// The time left, zero once it has passed.
+    pub(crate) left: Duration,
+    /// Which deadline it is.
+    pub(crate) bound: Bound,
+    /// Its moment, in nanoseconds of the run's clock.
+    pub(crate) at: u128,
+}
+
+impl Covering {
+    /// The moment in whole milliseconds of the run's clock, as a wait at a limit reads it: the
+    /// first millisecond at or after the deadline, never one before it (#1355). A reading of
+    /// [`crate::runtime::clock`]'s `now` that reaches it is at or past the deadline in
+    /// nanoseconds, so a wait that ends there has met it, and the `within` it covers sees its
+    /// deadline passed. Under virtual time the moment is a whole millisecond already. O(1).
+    pub(crate) fn at_millis(&self) -> u64 {
+        u64::try_from(self.at.div_ceil(NANOS_PER_MILLI)).unwrap_or(u64::MAX)
+    }
+
+    /// Returns once the run's clock has reached the deadline, at once under virtual time and
+    /// when it has passed already: an interruptible operation that the deadline cut ends at the
+    /// deadline or after it, never before, whatever the waits inside it rounded (`spec/27 §5`
+    /// rule 6, #1355). Each sleep is the exact time left, so it takes one in the usual case.
+    pub(crate) fn reach(&self) {
+        let clock = crate::runtime::clock();
+        if clock.is_virtual() {
+            return;
+        }
+        loop {
+            let now = clock.now_nanos();
+            if now >= self.at {
+                return;
+            }
+            std::thread::sleep(duration(self.at - now));
+        }
+    }
+}
+
+/// The earliest deadline that covers the task's code on the run's clock; `None` without a
+/// deadline, or with ones that never pass.
+pub(crate) fn left() -> Option<Covering> {
     if !USED.with(Cell::get) {
         return None;
     }
@@ -327,7 +367,11 @@ pub(crate) fn left() -> Option<(Duration, Bound)> {
         };
         // The exact time left, in nanoseconds (P13).
         let now = crate::runtime::clock().now_nanos();
-        Some((duration(at.saturating_sub(now)), bound))
+        Some(Covering {
+            left: duration(at.saturating_sub(now)),
+            bound,
+            at,
+        })
     })
 }
 
@@ -618,5 +662,75 @@ mod tests {
         assert_eq!(duration(1), Duration::from_nanos(1));
         assert_eq!(duration(2_500_000_001), Duration::new(2, 500_000_001));
         assert_eq!(duration(u128::MAX), Duration::MAX);
+    }
+
+    #[test]
+    fn a_covering_deadline_in_milliseconds_is_never_before_the_deadline_itself() {
+        // #1355: a wait at a limit reads a covering deadline in whole milliseconds of the run's
+        // clock. It was the reading in whole milliseconds plus the time left in whole
+        // milliseconds, each rounded down, so up to 2 ms before the deadline in nanoseconds: the
+        // wait ended `TimedOut`, and the `within` it covered then saw its own deadline not yet
+        // passed, so the native trace lacked the `timeout` event the interpreter's had. It is
+        // now the first whole millisecond at or after the deadline.
+        let covering = |at| Covering {
+            left: Duration::ZERO,
+            bound: Bound::Within,
+            at,
+        };
+        assert_eq!(covering(105_700_000).at_millis(), 106);
+        assert_eq!(covering(105_000_000).at_millis(), 105);
+        assert_eq!(covering(0).at_millis(), 0);
+        assert_eq!(covering(u128::MAX).at_millis(), u64::MAX);
+        for millis in [0u128, 1, 17, 86_400_000] {
+            for offset in (0..1_000_000u128).step_by(7_717).chain([1, 999_999]) {
+                let at = millis * 1_000_000 + offset;
+                let read = u128::from(covering(at).at_millis()) * 1_000_000;
+                assert!(read >= at && read < at + 1_000_000, "{at}: {read}");
+            }
+        }
+        // Through `within_enter` and `left`, on the run's clock, at phases late in the
+        // millisecond, where rounding down put the old reading a whole millisecond early.
+        std::thread::spawn(|| {
+            let clock = crate::runtime::clock();
+            for phase in [0u128, 250_000, 500_000, 900_000, 999_000] {
+                while clock.now_nanos() % 1_000_000 < phase {
+                    std::hint::spin_loop();
+                }
+                let id = within_enter(values::int_word(&num_bigint::BigInt::from(100)));
+                let at = LOCAL.with(|cell| cell.borrow().withins.last().and_then(|f| f.at));
+                let covering = left().unwrap();
+                assert_eq!(Some(covering.at), at);
+                assert_eq!(covering.bound, Bound::Within);
+                let read = u128::from(covering.at_millis()) * 1_000_000;
+                assert!(read >= covering.at, "phase {phase}: {read} {}", covering.at);
+                within_end(id, 0);
+            }
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[test]
+    fn reaching_a_deadline_returns_only_once_the_clock_has_passed_it() {
+        // #1355, `spec/27 §5` rule 6: an operation that a covering deadline cut returns once the
+        // run's clock has reached that deadline, so the `within` sees it passed.
+        let clock = crate::runtime::clock();
+        for ahead in [0u128, 1, 300_000, 2_500_000] {
+            let at = clock.now_nanos() + ahead;
+            Covering {
+                left: duration(ahead),
+                bound: Bound::Within,
+                at,
+            }
+            .reach();
+            assert!(clock.now_nanos() >= at, "{ahead}");
+        }
+        // A deadline already passed returns at once.
+        Covering {
+            left: Duration::ZERO,
+            bound: Bound::Ever,
+            at: 0,
+        }
+        .reach();
     }
 }
