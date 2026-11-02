@@ -151,7 +151,8 @@ fn platform_confine() -> Result<Confinement, ConfineError> {
     if current & exec_bit != 0 {
         let cleared = libc::c_ulong::from((current & !exec_bit).cast_unsigned());
         // SAFETY: as above: `personality` with a value other than the query value sets the
-        // execution domain of this process to it and touches no memory.
+        // execution domain of the calling thread to it (the solver child is still
+        // single-threaded here) and touches no memory.
         if unsafe { libc::personality(cleared) } == -1 {
             return Err(ConfineError::Personality(io::Error::last_os_error()));
         }
