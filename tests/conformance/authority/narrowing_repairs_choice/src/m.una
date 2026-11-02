@@ -1,0 +1,33 @@
+-- test: ADR 0093 rule 6, edition 0.3: a rebinding of U3001 or U3002 carries an edit only when one binding the caller holds permits what the callee needs; when several do, the repair is advice that lists them, and the widening still ranks last
+-- spec: spec/13 §3
+-- expect: error U3001 at src/m.una:21:3
+-- expect: error U3002 at src/m.una:28:3
+-- expect: error U3001 at src/m.una:33:3
+module m
+
+capability Files
+  op read(path: Text) -> Text
+  op write(path: Text, data: Text) -> Unit
+
+load(path: Text) -> Text
+  uses @files: Files[read]
+=
+  @files.read(path)
+
+pub missing(path: Text) -> Text
+  uses @backup: Files[read, write]
+  uses @prod: Files[read, write]
+=
+  load(path)
+
+pub more(path: Text) -> Text
+  uses @files: Files[write]
+  uses @backup: Files[read]
+  uses @prod: Files[read]
+=
+  load(path)
+
+pub single(path: Text) -> Text
+  uses @prod: Files[read, write]
+=
+  load(path)

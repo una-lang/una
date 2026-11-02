@@ -262,9 +262,10 @@ fn una_fix_applies_nothing_beyond_the_ceiling() {
     assert_eq!(files_of(&copy), before, "every byte, `una.toml` included");
 }
 
-/// Every conformance case whose `una.toml` declares `[boundaries]`, by its path under
-/// `tests/conformance`.
-fn boundary_cases() -> Vec<String> {
+/// Every conformance case whose manifest declares ceilings: `una.toml` with `[boundaries]`, or
+/// `ita.una` with `boundaries` or `needs` (a dependency is a boundary too, ADR 0122), by its path
+/// under `tests/conformance`, with the manifest's file name.
+fn boundary_cases_with_manifest() -> Vec<(String, &'static str)> {
     let root = conformance("");
     let mut cases = Vec::new();
     for area in std::fs::read_dir(&root).unwrap() {
@@ -274,33 +275,105 @@ fn boundary_cases() -> Vec<String> {
         }
         for case in std::fs::read_dir(area.path()).unwrap() {
             let case = case.unwrap().path();
-            let manifest = case.join("una.toml");
-            if std::fs::read_to_string(&manifest).is_ok_and(|text| text.contains("[boundaries]")) {
-                cases.push(
-                    case.strip_prefix(&root)
-                        .unwrap()
-                        .to_string_lossy()
-                        .into_owned(),
-                );
-            }
+            let toml = std::fs::read_to_string(case.join("una.toml"))
+                .is_ok_and(|text| text.contains("[boundaries]"));
+            let ita = std::fs::read_to_string(case.join("ita.una")).is_ok_and(|text| {
+                text.lines()
+                    .any(|line| matches!(line.trim_end(), "boundaries" | "needs"))
+            });
+            let manifest = match (toml, ita) {
+                (true, _) => "una.toml",
+                (false, true) => "ita.una",
+                (false, false) => continue,
+            };
+            cases.push((
+                case.strip_prefix(&root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned(),
+                manifest,
+            ));
         }
     }
     cases.sort();
     cases
 }
 
+/// [`boundary_cases_with_manifest`], by path alone.
+fn boundary_cases() -> Vec<String> {
+    boundary_cases_with_manifest()
+        .into_iter()
+        .map(|(case, _)| case)
+        .collect()
+}
+
+/// Whether `text` is exactly one narrowed grant added to a statement, ` with @x = @y[ops]` or
+/// `, @x = @y[ops]`, with one or more operations: what the checker writes for a U3020 within
+/// the ceiling (ADR 0093 rule 6).
+fn narrowed_grant(text: &str) -> bool {
+    let name = |part: &str| {
+        part.strip_prefix('@').is_some_and(|rest| {
+            !rest.is_empty() && rest.chars().all(|c| c.is_alphanumeric() || c == '_')
+        })
+    };
+    text.strip_prefix(" with ")
+        .or_else(|| text.strip_prefix(", "))
+        .and_then(|binding| binding.split_once(" = "))
+        .and_then(|(target, source)| {
+            let (held, ops) = source.strip_suffix(']')?.split_once('[')?;
+            Some(
+                name(target)
+                    && name(held)
+                    && ops.split(", ").all(|op| {
+                        !op.is_empty() && op.chars().all(|c| c.is_alphanumeric() || c == '_')
+                    }),
+            )
+        })
+        .unwrap_or(false)
+}
+
+#[test]
+fn the_sweep_reads_a_grant_of_several_operations_and_refuses_anything_else() {
+    assert!(narrowed_grant(" with @files = @files[read]"));
+    assert!(narrowed_grant(" with @files = @store[read, write]"));
+    assert!(narrowed_grant(", @net = @user_net[post, get]"));
+    for text in [
+        " with @files = @files",
+        " with @files = read_only()",
+        " with @files = @files[read], @net = @net[post]",
+        " with @files = @files[]",
+        " with @files = @files[read,write]",
+        "uses @files: Files[read, write]",
+    ] {
+        assert!(!narrowed_grant(text), "{text}");
+    }
+}
+
+/// The number of U3021 diagnostics among `diagnostics`.
+fn u3021s(diagnostics: &[Value]) -> usize {
+    diagnostics.iter().filter(|d| d["code"] == "U3021").count()
+}
+
 #[test]
 fn una_fix_never_writes_a_ceiling_nor_applies_a_boundary_edit_beyond_the_narrowed_grant() {
-    let cases = boundary_cases();
+    let cases = boundary_cases_with_manifest();
     assert!(cases.len() >= 30, "{cases:?}");
-    for case in cases {
+    assert!(
+        cases.iter().any(|(_, manifest)| *manifest == "ita.una"),
+        "{cases:?}"
+    );
+    let mut grants = 0;
+    for (case, manifest_file) in cases {
         let copy = copy_of(&case);
-        let manifest = std::fs::read(copy.join("una.toml")).unwrap();
+        let manifest = std::fs::read(copy.join(manifest_file)).unwrap();
+        let before = una(&copy, &["--json", "check", "--tier", "0", "."]);
+        let before: Value = serde_json::from_slice(&before.stdout).unwrap();
+        let over_before = u3021s(before["diagnostics"].as_array().unwrap());
         let document = fix(&copy);
         assert_eq!(
-            std::fs::read(copy.join("una.toml")).unwrap(),
+            std::fs::read(copy.join(manifest_file)).unwrap(),
             manifest,
-            "{case}: `una fix` wrote the ceiling"
+            "{case}: `una fix` wrote the ceiling in `{manifest_file}`"
         );
         for applied in document["applied"].as_array().unwrap() {
             let code = applied["code"].as_str().unwrap();
@@ -310,32 +383,108 @@ fn una_fix_never_writes_a_ceiling_nor_applies_a_boundary_edit_beyond_the_narrowe
             );
             if code == "U3020" {
                 let text = applied["replacement"].as_str().unwrap();
-                let binding = text
-                    .strip_prefix(" with ")
-                    .or_else(|| text.strip_prefix(", "))
-                    .unwrap_or_else(|| panic!("{case}: {text}"));
                 assert!(
-                    binding.ends_with(']') && binding.contains(" = @") && !binding.contains(','),
+                    narrowed_grant(text),
                     "{case}: a U3020 edit that is not one narrowed grant: {text}"
                 );
+                grants += 1;
             }
         }
-        // The grant the check offers lies within the ceiling: after `una fix`, no U3021 is
-        // reported where a grant was applied.
-        for applied in document["applied"].as_array().unwrap() {
-            let file = applied["file"].as_str().unwrap();
-            let line = applied["start"]["line"].as_u64().unwrap();
-            let over = document["diagnostics"].as_array().unwrap().iter().any(|d| {
-                d["code"] == "U3021"
-                    && d["primary"]["file"] == file
-                    && d["primary"]["start"]["line"] == line
-            });
-            assert!(
-                !over,
-                "{case}: a grant `una fix` applied is over the ceiling"
-            );
-        }
+        // The grant the check offers lies within the ceiling: `una fix` leaves no more U3021
+        // than it found, so a round whose grant goes over the ceiling fails here.
+        let over_after = u3021s(document["diagnostics"].as_array().unwrap());
+        assert!(
+            over_after <= over_before,
+            "{case}: a grant `una fix` applied is over the ceiling: {document}"
+        );
     }
+    // The sweep exercises applied grants: those of `boundary_repair_within_ceiling` (3),
+    // `boundary_repair_two_needs` (2) and `boundary_repair_choice` (1) at least.
+    assert!(grants >= 6, "{grants} grants applied");
+}
+
+/// The repairs of the diagnostic with `code` at `line`:`col` of `diagnostics`.
+fn rows_at(diagnostics: &[Value], code: &str, line: u64, col: u64) -> Vec<Row> {
+    let found = at(diagnostics, code, line, col);
+    assert_eq!(found.len(), 1, "{code} at {line}:{col}: {diagnostics:#?}");
+    rows(&found[0])
+}
+
+#[test]
+fn u3020_with_several_qualifying_bindings_is_advice_that_lists_them() {
+    let diagnostics = check_json("authority/boundary_repair_choice");
+    // Two bindings permit `read` and neither is `@files`: which one the third-party library
+    // reads is the consumer's decision, so no edit names one.
+    assert_eq!(
+        rows_at(&diagnostics, "U3020", 18, 3),
+        [row(
+            "",
+            "grant `@files` with `with @files = @y[read]`, narrowed to the operations the callee declares, which lie within the ceiling of `media.resize`, where `@y` is one of `@secrets` and `@user`, which each permit `read`; which binding the boundary receives is a decision about trust, so no edit is offered",
+            ""
+        )]
+    );
+    // `@files` itself permits `read`: the grant names it, with its edit.
+    assert_eq!(
+        rows_at(&diagnostics, "U3020", 24, 3),
+        [row(
+            "",
+            &grant("@files = @files[read]", "media.resize"),
+            " with @files = @files[read]"
+        )]
+    );
+    // A function value: advice, never an edit.
+    assert_eq!(
+        rows_at(&diagnostics, "U3020", 29, 11),
+        [row(
+            "",
+            &format!(
+                "{}, written on the statement that holds this call or reference, where it binds `@files` for the whole statement",
+                grant("@files = @files[read]", "media.resize")
+            ),
+            ""
+        )]
+    );
+    // An installation: the grant resolves below the installing `with`, so it names the
+    // header's `@user_net`, never `@n`, which the same `with` binds.
+    assert_eq!(
+        rows_at(&diagnostics, "U3020", 40, 44),
+        [row(
+            "",
+            &format!(
+                "{}, as another binding of the `with` that installs the handler",
+                grant("@net = @user_net[post]", "media.cache")
+            ),
+            ""
+        )]
+    );
+}
+
+#[test]
+fn una_fix_applies_only_the_grant_that_names_one_binding() {
+    let copy = copy_of("authority/boundary_repair_choice");
+    let manifest = std::fs::read(copy.join("una.toml")).unwrap();
+    let document = fix(&copy);
+    let applied: Vec<(&str, &str)> = document["applied"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| {
+            (
+                a["code"].as_str().unwrap(),
+                a["replacement"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        applied,
+        [("U3020", " with @files = @files[read]")],
+        "{document}"
+    );
+    assert_eq!(std::fs::read(copy.join("una.toml")).unwrap(), manifest);
+    let text = std::fs::read_to_string(copy.join("src/media/app.una")).unwrap();
+    assert!(!text.contains("@secrets[read]"), "{text}");
+    assert!(!text.contains("@user[read]"), "{text}");
+    assert!(!text.contains("@n[post]"), "{text}");
 }
 
 #[test]
@@ -459,6 +608,43 @@ fn edition_0_3_ranks_a_narrowed_rebinding_first_and_a_public_widening_last() {
             ),
         ]
     );
+}
+
+#[test]
+fn edition_0_3_rebinds_with_an_edit_only_when_one_binding_qualifies() {
+    let diagnostics = check_json("authority/narrowing_repairs_choice");
+    let several = row(
+        "",
+        "add `with @files = @y[read]` to this statement, where `@y` is one of `@backup` and `@prod`, which each permit `read`; which binding `@files` receives is a decision about trust, so no edit is offered",
+        "",
+    );
+    let missing = rows_at(&diagnostics, "U3001", 21, 3);
+    assert_eq!(missing[0], several);
+    assert_eq!(missing.len(), 2, "{missing:?}");
+    assert!(missing[1].1.contains(PUBLIC), "{missing:?}");
+    let more = rows_at(&diagnostics, "U3002", 28, 3);
+    assert_eq!(more[0], several);
+    assert_eq!(more.len(), 2, "{more:?}");
+    assert_eq!(more[1].0, "authority");
+    // One binding qualifies: the narrowed rebinding with its edit.
+    let single = rows_at(&diagnostics, "U3001", 33, 3);
+    assert_eq!(
+        single[0],
+        row(
+            "",
+            "add `with @files = @prod[read]` to this statement, since `@prod` permits `read`",
+            " with @files = @prod[read]"
+        )
+    );
+    let copy = copy_of("authority/narrowing_repairs_choice");
+    let document = fix(&copy);
+    let applied: Vec<&str> = document["applied"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["replacement"].as_str().unwrap())
+        .collect();
+    assert_eq!(applied, [" with @files = @prod[read]"], "{document}");
 }
 
 #[test]

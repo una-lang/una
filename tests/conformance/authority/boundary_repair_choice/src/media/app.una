@@ -1,0 +1,40 @@
+-- test: ADR 0093 rule 6, ADR 0084: the grant of a U3020 carries an edit only when it names `@x` itself or the only binding that permits the requirement; when several do, which one the boundary receives is a decision about trust, so the repair is advice that lists them; at a function value the grant is advice; at an installation the grant is resolved below the installing `with`, so it never names a binding of that `with`
+-- spec: spec/13 §3
+-- expect: error U3020 at src/media/app.una:18:3
+-- expect: error U3020 at src/media/app.una:24:3
+-- expect: error U3006 at src/media/app.una:29:11
+-- expect: error U3020 at src/media/app.una:29:11
+-- expect: error U3020 at src/media/app.una:40:44
+module media.app
+
+import media.cache (mirrored)
+import media.resize (shrink)
+import media.store (Files, Net)
+
+pub two(path: Text) -> Text
+  uses @secrets: Files[read, write]
+  uses @user: Files[read, write]
+=
+  shrink(path)
+
+pub own(path: Text) -> Text
+  uses @files: Files[read, write]
+  uses @secrets: Files[read, write]
+=
+  shrink(path)
+
+pub value(path: Text) -> Text
+  uses @files: Files[read]
+=
+  let f = shrink
+  f(path)
+
+save(path: Text) -> Unit
+  uses @files: Files[write]
+=
+  @files.write(path, data: path)
+
+pub install(path: Text) -> Unit
+  uses @user_net: Net[post]
+=
+  save(path) with @n = @user_net, @files = mirrored()

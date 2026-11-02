@@ -136,7 +136,7 @@ pub preview(path: Text) -> Text
   shrink(path)
 ```
 
-The first repair of that U3020 is the grant `with @files = @files[read]`, narrowed to what `shrink` declares, since it lies within the ceiling, and `una fix` applies it. When the callee needs an operation the ceiling withholds, the repair offers no grant: it suggests a handler whose own `uses` lie within the ceiling, and names the operations the ceiling withholds. No repair raises a ceiling.
+The first repair of that U3020 is the grant `with @files = @files[read]`, narrowed to what `shrink` declares, since it lies within the ceiling, and `una fix` applies it. When the caller holds several bindings that permit `read` and none is named `@files`, the repair lists them and `una fix` applies nothing: which store the library reads is yours to decide. When the callee needs an operation the ceiling withholds, the repair offers no grant: it suggests a handler whose own `uses` lie within the ceiling, and names the operations the ceiling withholds. No repair raises a ceiling.
 
 A grant counts at every operation its binding permits, not only those the callee needs. Rebinding a read-write binding into a boundary whose ceiling is `Files[read]` is U3021:
 

@@ -574,7 +574,14 @@ impl<'a> Checker<'_, 'a, '_> {
                 if let Some(boundary) = self.crossing(module) {
                     let in_package = self.env.in_package(module);
                     let granted = self.crossing_needs(
-                        boundary, &callee, &needs, &declared, in_package, ident.span, level,
+                        boundary,
+                        &callee,
+                        &needs,
+                        &declared,
+                        in_package,
+                        ident.span,
+                        level,
+                        super::crossing::GrantSite::Value,
                     );
                     self.needs_site(&callee, &granted, ident.span, level);
                     self.cross(

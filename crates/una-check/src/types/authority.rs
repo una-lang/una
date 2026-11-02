@@ -319,7 +319,25 @@ impl<'a> Checker<'_, 'a, '_> {
         ops: &[String],
         reads: &[(String, Label)],
     ) -> Option<String> {
-        let frames = self.frames.get(..level.min(self.frames.len()))?;
+        let names = self.holders(level, exclude, capability, ops, reads);
+        match prefer {
+            Some(prefer) if names.iter().any(|name| name == prefer) => Some(prefer.to_owned()),
+            _ => names.into_iter().next(),
+        }
+    }
+
+    /// Every binding that [`Self::binding_holding`] could choose, in name order.
+    fn holders(
+        &self,
+        level: usize,
+        exclude: Option<&str>,
+        capability: CapId,
+        ops: &[String],
+        reads: &[(String, Label)],
+    ) -> Vec<String> {
+        let Some(frames) = self.frames.get(..level.min(self.frames.len())) else {
+            return Vec::new();
+        };
         let mut names: Vec<&str> = frames
             .iter()
             .flat_map(|frame| frame.bindings.iter().map(|(name, _)| name.as_str()))
@@ -327,32 +345,57 @@ impl<'a> Checker<'_, 'a, '_> {
             .collect();
         names.sort_unstable();
         names.dedup();
-        if let Some(prefer) = prefer
-            && let Some(at) = names.iter().position(|name| *name == prefer)
-        {
-            let preferred = names.remove(at);
-            names.insert(0, preferred);
-        }
         names
             .into_iter()
-            .find_map(|name| match resolve_in(&self.frames, level, name) {
+            .filter(|name| match resolve_in(&self.frames, level, name) {
                 Resolved::Cap {
                     name: resolved,
                     capability: Some(other),
                     ops: Some(permitted),
                     gives,
                     ..
-                } if other == capability
-                    && Some(resolved.as_str()) != exclude
-                    && ops.iter().all(|op| permitted.contains(op))
-                    && ops
-                        .iter()
-                        .all(|op| given(&gives, op).flows_to(&given(reads, op))) =>
-                {
-                    Some(name.to_owned())
+                } => {
+                    other == capability
+                        && Some(resolved.as_str()) != exclude
+                        && ops.iter().all(|op| permitted.contains(op))
+                        && ops
+                            .iter()
+                            .all(|op| given(&gives, op).flows_to(&given(reads, op)))
                 }
-                _ => None,
+                _ => false,
             })
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// The binding a repair that `una fix` may apply grants (ADR 0093 rule 6, ADR 0084): of
+    /// the bindings [`Self::binding_holding`] could choose, leaving out those named in `skip`,
+    /// `@prefer` when it qualifies, otherwise the only one. When several qualify, which one
+    /// receives the callee's requirement is a decision about trust, never a mechanical one, so
+    /// they are all returned for advice. Linear in the bindings in scope.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn sole_holder(
+        &self,
+        level: usize,
+        exclude: Option<&str>,
+        prefer: Option<&str>,
+        skip: &[String],
+        capability: CapId,
+        ops: &[String],
+        reads: &[(String, Label)],
+    ) -> Holder {
+        let mut names = self.holders(level, exclude, capability, ops, reads);
+        names.retain(|name| !skip.contains(name));
+        if let Some(prefer) = prefer
+            && names.iter().any(|name| name == prefer)
+        {
+            return Holder::One(prefer.to_owned());
+        }
+        match names.len() {
+            0 => Holder::None,
+            1 => Holder::One(names.remove(0)),
+            _ => Holder::Several(names),
+        }
     }
 
     /// The operations that `@name` permits below frame `level`, when it is a binding whose
@@ -893,7 +936,35 @@ impl<'a> Checker<'_, 'a, '_> {
         if statement.expr != span || statement.bound.contains(&need.name) {
             return None;
         }
-        let other = self.binding_permitting(declared, capability, &need.ops, &need.gives)?;
+        // ADR 0093 rule 6, edition 0.3: an edit names the only binding that qualifies, never
+        // one chosen by name among several, and never one the statement's own `with` binds,
+        // since a right-hand side of that `with` resolves outside it.
+        let narrow = narrow && self.env.edition >= una_project::Edition::V0_3;
+        let other = if narrow {
+            match self.sole_holder(
+                self.frames.len(),
+                Some(declared),
+                None,
+                &statement.bound,
+                capability?,
+                &need.ops,
+                &need.gives,
+            ) {
+                Holder::None => return None,
+                Holder::One(other) => other,
+                Holder::Several(names) => {
+                    return Some(Report::advice(format!(
+                        "add `with @{x} = @y[{ops}]` to this statement, where `@y` is one of {}, which each permit {}; which binding `@{x}` receives is a decision about trust, so no edit is offered",
+                        names_list(&names),
+                        ops_list(&need.ops),
+                        x = need.name,
+                        ops = need.ops.join(", "),
+                    )));
+                }
+            }
+        } else {
+            self.binding_permitting(declared, capability, &need.ops, &need.gives)?
+        };
         // ADR 0093 rule 6: in edition 0.3 the rebinding passes only what the callee needs.
         let target = if narrow {
             self.granted_text(self.frames.len(), &other, &need.ops)
@@ -2950,6 +3021,29 @@ fn inferred_route(name: &str, ops: &std::collections::BTreeSet<String>) -> Strin
 /// other rank a checker gives, so output, which sorts by escape cost, then widening, then rank,
 /// prints it last among the repairs that take no escape, and renumbers the ranks without gaps.
 const PUBLIC_WIDENING_RANK: u32 = 1_000;
+
+/// The bindings a repair can grant (ADR 0093 rule 6): none, exactly one, or several, among
+/// which no repair chooses.
+pub(crate) enum Holder {
+    None,
+    One(String),
+    Several(Vec<String>),
+}
+
+/// `` `@a`, `@b` and `@c` ``, for a message.
+pub(crate) fn names_list(names: &[String]) -> String {
+    let quoted: Vec<String> = names.iter().map(|name| format!("`@{name}`")).collect();
+    match quoted.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
+        _ => quoted.join(""),
+    }
+}
+
+/// `` `read`, `write` ``, for a message.
+pub(crate) fn ops_list(ops: &[String]) -> String {
+    let quoted: Vec<String> = ops.iter().map(|op| format!("`{op}`")).collect();
+    quoted.join(", ")
+}
 
 /// `repair`, marked as widening authority: `una fix` never applies it (ADR 0084).
 fn widening(mut repair: Repair) -> Repair {

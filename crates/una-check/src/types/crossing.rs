@@ -25,7 +25,7 @@ use una_diag::{Code, Repair};
 use una_syntax::Span;
 use una_syntax::ast::{Expr, ExprKind};
 
-use super::authority::{Pass, Resolved, resolve_in};
+use super::authority::{Holder, Pass, Resolved, names_list, resolve_in};
 use super::check::Checker;
 use super::env::{Entity, Env, Need};
 use super::ty::{CapId, FnUse, Ty};
@@ -580,6 +580,7 @@ impl Checker<'_, '_, '_> {
         in_package: bool,
         span: Span,
         level: usize,
+        site: GrantSite,
     ) -> Vec<FnUse> {
         let mut granted = Vec::with_capacity(needs.len());
         for (index, need) in needs.iter().enumerate() {
@@ -610,7 +611,7 @@ impl Checker<'_, '_, '_> {
             }
             diagnostic
                 .repairs
-                .extend(self.grant_repair(boundary, need, span, level, false));
+                .extend(self.grant_repair(boundary, need, span, level, site));
             self.report.push(diagnostic);
         }
         granted
@@ -622,12 +623,16 @@ impl Checker<'_, '_, '_> {
     /// outside the boundary's ceiling, and never widens a header or the ceiling:
     ///
     /// - when the ceiling allows every operation of `need` and the caller holds a binding `@y`
-    ///   of its capability that permits them, the grant `with @x = @y[ops]`, narrowed to the
-    ///   operations the callee declares. It carries an edit only at a call that is the whole
+    ///   of its capability that permits them, which is `@x` itself or the only one that does,
+    ///   the grant `with @x = @y[ops]`, narrowed to the operations the callee declares. It
+    ///   carries an edit only at a call (`site` is [`GrantSite::Call`]) that is the whole
     ///   expression of its statement, when the statement does not bind `@x`: the cases where
     ///   adding the binding changes nothing else (`spec/05 §3` rule 3). That edit is the one
-    ///   `una fix` may apply (ADR 0084). At an installation the grant is advice, another
-    ///   binding of the installing `with`;
+    ///   `una fix` may apply (ADR 0084). At a function value and at an installation the grant
+    ///   is advice, at an installation another binding of the installing `with`, its `@y`
+    ///   resolved below that `with`;
+    /// - when several bindings other than `@x` qualify, advice that lists them: which one the
+    ///   boundary receives is a decision about trust, never a mechanical one;
     /// - when the ceiling allows them and no binding qualifies, advice to grant one, or a
     ///   handler whose own `uses` lie within the ceiling;
     /// - when the ceiling withholds one of them, advice to install a handler whose own `uses`
@@ -641,7 +646,7 @@ impl Checker<'_, '_, '_> {
         need: &FnUse,
         span: Span,
         level: usize,
-        install: bool,
+        site: GrantSite,
     ) -> Option<Repair> {
         let capability = need.capability?;
         let resolved = self.env.boundaries.list.get(boundary)?;
@@ -682,30 +687,55 @@ impl Checker<'_, '_, '_> {
                 "install a handler for `{name}` whose own `uses` lie within the ceiling of `{key}`, which allows {within}: `with @{x} = <handler>(...)`, where `handler <handler>(...) for {name}` is written outside the boundary{withholds}"
             )));
         }
-        // The right-hand sides of a statement's `with` resolve outside it, so a binding of
-        // the statement itself is never the one granted.
+        // The right-hand sides of a `with` resolve outside it. At a call, a binding of the
+        // statement's own `with` is never the one granted; at an installation, the holder is
+        // resolved below the installing clause, where the grant written in it resolves.
         let statement = self.statement.as_ref();
-        let bound: &[String] = statement.map_or(&[], |s| s.bound.as_slice());
+        let (holder_level, bound): (usize, &[String]) = match site {
+            GrantSite::Install => (level.saturating_sub(1), &[]),
+            GrantSite::Call | GrantSite::Value => {
+                (level, statement.map_or(&[], |s| s.bound.as_slice()))
+            }
+        };
         let ops = need.ops.join(", ");
         let listed: Vec<String> = need.ops.iter().map(|op| format!("`{op}`")).collect();
-        let holder = self
-            .binding_holding(level, None, Some(x), capability, &need.ops, &need.gives)
-            .filter(|holder| !bound.contains(holder));
-        let Some(holder) = holder else {
-            return Some(Report::advice(format!(
-                "grant `@{x}` with `with`: a binding of `{name}` that permits {}, narrowed as `@{x} = @y[{ops}]`, or a handler whose own `uses` lie within the ceiling of `{key}`, which allows {within}",
-                listed.join(", ")
-            )));
+        // ADR 0093 rule 6, ADR 0084: an edit names `@x` itself or the only binding that
+        // qualifies; which of several the boundary receives is the consumer's decision.
+        let holder = match self.sole_holder(
+            holder_level,
+            None,
+            Some(x),
+            bound,
+            capability,
+            &need.ops,
+            &need.gives,
+        ) {
+            Holder::One(holder) => holder,
+            Holder::Several(names) => {
+                return Some(Report::advice(format!(
+                    "grant `@{x}` with `with @{x} = @y[{ops}]`, narrowed to the operations the callee declares, which lie within the ceiling of `{key}`, where `@y` is one of {}, which each permit {}; which binding the boundary receives is a decision about trust, so no edit is offered",
+                    names_list(&names),
+                    listed.join(", ")
+                )));
+            }
+            Holder::None => {
+                return Some(Report::advice(format!(
+                    "grant `@{x}` with `with`: a binding of `{name}` that permits {}, narrowed as `@{x} = @y[{ops}]`, or a handler whose own `uses` lie within the ceiling of `{key}`, which allows {within}",
+                    listed.join(", ")
+                )));
+            }
         };
         let binding = format!("@{x} = @{holder}[{ops}]");
         let description = format!(
             "grant `with {binding}`, narrowed to the operations the callee declares, which lie within the ceiling of `{key}`"
         );
-        match statement {
-            _ if install => Some(Report::advice(format!(
+        match (site, statement) {
+            (GrantSite::Install, _) => Some(Report::advice(format!(
                 "{description}, as another binding of the `with` that installs the handler"
             ))),
-            Some(statement) if statement.expr == span && !statement.bound.contains(x) => {
+            (GrantSite::Call, Some(statement))
+                if statement.expr == span && !statement.bound.contains(x) =>
+            {
                 let text = if statement.with {
                     format!(", {binding}")
                 } else {
@@ -953,7 +983,7 @@ impl Checker<'_, '_, '_> {
                     need,
                     install.span,
                     level,
-                    true,
+                    GrantSite::Install,
                 ));
                 self.report.push(diagnostic);
             }
@@ -1447,6 +1477,18 @@ fn ceiling_repair(
         )
     };
     Some(Report::advice(description))
+}
+
+/// Where a U3020's grant would be written (ADR 0093 rule 6, [`Checker::grant_repair`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GrantSite {
+    /// A call into the boundary: the grant is an edit when the call is its statement's whole
+    /// expression.
+    Call,
+    /// A function of the boundary used as a value: advice only.
+    Value,
+    /// The installation of a handler of the boundary: advice, another binding of its `with`.
+    Install,
 }
 
 /// `ops` in the order capability `capability` declares them, then any others.
