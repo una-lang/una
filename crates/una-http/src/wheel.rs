@@ -174,6 +174,15 @@ impl<T> Wheel<T> {
         Ok(TimerId { index, generation })
     }
 
+    /// Every timer still armed, with its deadline, in no particular order: what a serve thread
+    /// that ends hands on to another. O(slab size).
+    pub fn into_armed(self) -> Vec<(u64, T)> {
+        self.entries
+            .into_iter()
+            .filter_map(|entry| entry.value.map(|value| (entry.deadline, value)))
+            .collect()
+    }
+
     /// Cancels the timer `id` and gives its value back, or `None` when it already fired or was
     /// cancelled. O(1).
     pub fn cancel(&mut self, id: TimerId) -> Option<T> {

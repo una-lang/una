@@ -41,11 +41,14 @@ fn start(items: &str, threads: usize) -> Live {
     let server = Server::start(prepared, &[grant], threads).unwrap();
     let ready = Arc::new((Mutex::new(0u64), Condvar::new()));
     let signal = Arc::clone(&ready);
-    server.shared().on_ready(Arc::new(move || {
-        let (count, condvar) = &*signal;
-        *count.lock().unwrap() += 1;
-        condvar.notify_all();
-    }));
+    server
+        .shared()
+        .on_ready(Arc::new(move || {
+            let (count, condvar) = &*signal;
+            *count.lock().unwrap() += 1;
+            condvar.notify_all();
+        }))
+        .unwrap();
     Live {
         server,
         port,
@@ -287,11 +290,7 @@ fn accept_rate_by_serve_threads() {
     }
 }
 
-#[test]
-fn accepting_goes_on_when_serve_threads_die() {
-    // The callback runs on the serve thread that queued a request; it panics there twice, which
-    // kills two of the four threads, one of which may hold the turn to accept.
-    let port = free_port();
+fn prepared(port: u16, threads: usize) -> (Server, ServeGrant) {
     let grant = ServeGrant::parse(&format!("serve:http://127.0.0.1:{port};peer=none")).unwrap();
     let prepared = prepare(
         &[ServeInput {
@@ -299,21 +298,49 @@ fn accepting_goes_on_when_serve_threads_die() {
             certificate: None,
             key: None,
         }],
-        4,
+        threads,
         1,
     )
     .unwrap();
-    let server = Server::start(prepared, &[grant], 4).unwrap();
+    let server = Server::start(prepared, std::slice::from_ref(&grant), threads).unwrap();
+    (server, grant)
+}
+
+/// Answers every exchange delivered within `limit` until `want` were answered.
+fn answer_all(live: &Live, want: usize, limit: Duration) -> usize {
+    let mut delivered = 0;
+    let end = Instant::now() + limit;
+    while Instant::now() < end && delivered < want {
+        if let Some(mut exchange) = live.server.take() {
+            let _ = exchange.reply(&ok("alive"));
+            delivered += 1;
+        } else {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+    delivered
+}
+
+#[test]
+fn a_panicking_callback_costs_no_serve_thread_and_no_connection() {
+    // The program's callback runs on the serve thread that queued a request; it panics there
+    // twice. The panics are contained: no thread ends, every request is delivered and answered,
+    // and nothing is held after the stop.
+    let port = free_port();
+    let (server, _grant) = prepared(port, 4);
     let panics = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let seen = Arc::clone(&panics);
-    server.shared().on_ready(Arc::new(move || {
-        let on_serve = std::thread::current()
-            .name()
-            .is_some_and(|n| n.starts_with("una-serve-"));
-        if on_serve && seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < 2 {
-            panic!("a serve thread dies");
-        }
-    }));
+    server
+        .shared()
+        .on_ready(Arc::new(move || {
+            let on_serve = std::thread::current()
+                .name()
+                .is_some_and(|n| n.starts_with("una-serve-"));
+            if on_serve && seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < 2 {
+                panic!("a program callback panics");
+            }
+        }))
+        .unwrap();
     server.begin();
     let live = Live {
         server,
@@ -323,23 +350,85 @@ fn accepting_goes_on_when_serve_threads_die() {
     let mut clients = Vec::new();
     for n in 0..40 {
         let mut stream = live.client();
-        let _ =
-            stream.write_all(format!("GET /{n} HTTP/1.1\r\nHost: localhost\r\n\r\n").as_bytes());
+        stream
+            .write_all(format!("GET /{n} HTTP/1.1\r\nHost: localhost\r\n\r\n").as_bytes())
+            .unwrap();
         clients.push(stream);
+    }
+    assert_eq!(answer_all(&live, 40, Duration::from_secs(10)), 40);
+    for client in &mut clients {
+        assert!(response(client).ends_with("alive"));
+    }
+    let shared = live.server.shared();
+    assert!(panics.load(std::sync::atomic::Ordering::SeqCst) >= 2);
+    assert!(shared.faults() >= 2, "{} faults", shared.faults());
+    assert!((0..shared.threads).all(|t| !shared.is_ended(t)));
+    drop(clients);
+    live.server.stop();
+    live.server.join();
+    assert!(live.server.shared().is_quiet());
+}
+
+#[test]
+fn a_serve_thread_that_ends_gives_back_its_connections_and_accepting_goes_on() {
+    // Thread 0 holds the turn to accept first. It ends by a panic outside any connection's step
+    // while it owns some of the open connections: their slots come back at once, the turn passes
+    // on, and every later connection is accepted and answered by the live threads, including
+    // those whose keyed owner was thread 0.
+    let port = free_port();
+    let (server, _grant) = prepared(port, 2);
+    server.shared().on_ready(Arc::new(|| {})).unwrap();
+    server.begin();
+    let live = Live {
+        server,
+        port,
+        ready: Arc::new((Mutex::new(0), Condvar::new())),
+    };
+    let shared = Arc::clone(live.server.shared());
+    let mut idle = Vec::new();
+    for _ in 0..16 {
+        idle.push(live.client());
+    }
+    let end = Instant::now() + Duration::from_secs(5);
+    while shared.grants[0].counters().connections < 16 && Instant::now() < end {
         std::thread::sleep(Duration::from_millis(5));
     }
-    // Connections owned by live threads are still accepted and delivered.
-    let mut delivered = 0;
+    assert_eq!(shared.grants[0].counters().connections, 16);
+    shared.kill_for_test(0);
     let end = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < end && delivered < 5 {
-        if let Some(mut exchange) = live.server.take() {
-            let _ = exchange.reply(&ok("alive"));
-            delivered += 1;
-        } else {
-            std::thread::sleep(Duration::from_millis(10));
+    while !shared.is_ended(0) && Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(shared.is_ended(0));
+    // The connections thread 0 owned are closed: their peers read the end of the stream.
+    let mut closed = 0;
+    for client in &mut idle {
+        client
+            .set_read_timeout(Some(Duration::from_millis(200)))
+            .unwrap();
+        let mut byte = [0u8; 1];
+        if matches!(client.read(&mut byte), Ok(0)) {
+            closed += 1;
         }
     }
-    assert!(delivered >= 5, "only {delivered} requests were delivered");
-    assert!(panics.load(std::sync::atomic::Ordering::SeqCst) >= 2);
+    assert!(closed > 0, "thread 0 owned none of the connections");
+    let open = shared.grants[0].counters().connections;
+    assert_eq!(open, 16 - closed, "slots of the ended thread were kept");
+    let mut clients = Vec::new();
+    for n in 0..24 {
+        let mut stream = live.client();
+        stream
+            .write_all(format!("GET /{n} HTTP/1.1\r\nHost: localhost\r\n\r\n").as_bytes())
+            .unwrap();
+        clients.push(stream);
+    }
+    assert_eq!(answer_all(&live, 24, Duration::from_secs(10)), 24);
+    for client in &mut clients {
+        assert!(response(client).ends_with("alive"));
+    }
+    drop(clients);
+    drop(idle);
     live.server.stop();
+    live.server.join();
+    assert!(shared.is_quiet(), "{:?}", shared.grants[0].counters());
 }

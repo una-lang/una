@@ -17,6 +17,7 @@
 
 use std::collections::VecDeque;
 use std::io;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 
 use super::grant::GrantState;
@@ -131,6 +132,9 @@ struct Core {
     wheel: Wheel<Timer>,
     scratch: Vec<u8>,
     live: usize,
+    /// The next timer of a connection fails to be armed, as with a full wheel, in tests.
+    #[cfg(feature = "test-hooks")]
+    fail_next_arm: bool,
 }
 
 /// One serve thread's connections and timers.
@@ -166,6 +170,8 @@ impl Thread {
                 wheel: Wheel::new(now),
                 scratch: vec![0; 16 * 1024],
                 live: 0,
+                #[cfg(feature = "test-hooks")]
+                fail_next_arm: false,
             },
             slots: Vec::new(),
             free: Vec::new(),
@@ -270,6 +276,9 @@ impl Thread {
     }
 
     /// Takes a connection out of its slot, runs `f` on it, and puts it back or frees the slot.
+    /// A panic in `f` (a fault of the engine on this connection's bytes) is contained: the
+    /// connection closes, giving back what it holds as far as its state says, and the thread
+    /// goes on with its other connections. So no input can end a serve thread.
     fn run(&mut self, slot: u32, now: u64, f: impl FnOnce(&mut Core, &mut Conn, u64)) {
         let Some(entry) = self.slots.get_mut(slot as usize) else {
             return;
@@ -277,7 +286,16 @@ impl Thread {
         let Some(mut conn) = entry.conn.take() else {
             return;
         };
-        f(&mut self.core, &mut conn, now);
+        let core = &mut self.core;
+        if catch_unwind(AssertUnwindSafe(|| f(core, &mut conn, now))).is_err() {
+            core.shared.fault();
+            if !conn.closed
+                && catch_unwind(AssertUnwindSafe(|| core.close(&mut conn, now))).is_err()
+            {
+                core.shared.fault();
+            }
+            conn.closed = true;
+        }
         if conn.closed {
             entry.generation = entry.generation.wrapping_add(1);
             self.free.push(slot);
@@ -312,6 +330,33 @@ impl Thread {
         for slot in 0..self.slots.len() {
             self.run(slot as u32, now, &f);
         }
+    }
+
+    /// The thread ended (`Shared::end_thread` ran first): every connection it owns closes and
+    /// gives back its slot, its peer's place, its request, its exchange and its reply, and the
+    /// peers' expiries it was timing go to a live thread. O(connections + timers).
+    pub fn abandon(&mut self, now: u64) {
+        let index = self.core.index;
+        for slot in 0..self.slots.len() {
+            self.run(slot as u32, now, |core, c, now| core.close(c, now));
+        }
+        // After the closes, which may have armed more peers' expiries.
+        let wheel = std::mem::replace(&mut self.core.wheel, Wheel::new(now));
+        let armed = wheel.into_armed().into_iter();
+        let fired = self.backlog.drain(..).map(|timer| (now, timer));
+        for (at, timer) in armed.chain(fired) {
+            if let Timer::Peer { grant, key } = timer {
+                self.core
+                    .shared
+                    .expire_peer_at(index.wrapping_add(1), grant, key, at);
+            }
+        }
+    }
+
+    /// The next timer a connection arms fails, as when the wheel is full, in tests.
+    #[cfg(feature = "test-hooks")]
+    pub fn fail_next_arm(&mut self) {
+        self.core.fail_next_arm = true;
     }
 
     fn adopt(&mut self, adopt: Adopt, now: u64) {
@@ -430,6 +475,11 @@ impl Core {
             sequence: c.sequence,
             kind,
         };
+        #[cfg(feature = "test-hooks")]
+        if std::mem::take(&mut self.fail_next_arm) {
+            self.close(c, now);
+            return;
+        }
         match self.wheel.arm(now.saturating_add(after), timer) {
             Ok(id) => c.timer = Some((id, kind, c.sequence)),
             // More timers than the wheel can hold: the connection cannot be timed, so it goes.
@@ -443,6 +493,8 @@ impl Core {
         }
     }
 
+    /// Times the expiry of a peer's entry. When the thread ends, `Thread::abandon` hands the
+    /// timers still armed to a live thread.
     fn arm_peer(&mut self, grant: usize, key: PeerKey, at: u64) {
         let _ = self.wheel.arm(at, Timer::Peer { grant, key });
     }
@@ -787,16 +839,19 @@ impl Core {
         }
         c.served += 1;
         let close = request.close || c.served >= c.grant.limits.requests;
+        c.phase = Phase::Waiting;
+        let secs = c.grant.limits.answer;
+        // The timer first: when it cannot be made the connection closes before any exchange
+        // exists, so nothing is queued and no queue counts a dead request for it. The close
+        // gave back the body reservation; the `waiting` place taken above is given back here.
+        self.arm(c, Kind::Answer, now, seconds(secs));
+        if c.closed {
+            c.grant.unqueue_waiting();
+            return;
+        }
         let exch = Arc::new(ExchState::new(request, c.request_bytes, c.reserved, close));
         c.reserved = 0;
         c.exch = Some(Arc::clone(&exch));
-        c.phase = Phase::Waiting;
-        let secs = c.grant.limits.answer;
-        self.arm(c, Kind::Answer, now, seconds(secs));
-        if c.closed {
-            // The timer could not be made: the connection is gone, and nothing is queued.
-            return;
-        }
         self.shared.enqueue(
             self.index,
             c.grant.index,

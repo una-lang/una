@@ -4,12 +4,17 @@
 //!
 //! **Accepting.** Each grant keeps the one listening socket that [`super::prepare`] bound,
 //! without `SO_REUSEPORT`, so no other process shares its connections. Every listener is
-//! registered one-shot in one accept poller, which is itself registered one-shot in each
-//! thread's poller. When a listener is ready, the threads whose registration is armed wake; the
-//! first to wait on the accept poller with a zero timeout receives the listener's event,
-//! accepts at most 16 connections and registers the listener again; the others find no event
-//! and register the accept poller again. Exactly one thread accepts from a listener at a time,
-//! through the bytes of a flag that only the thread holding the event may set. A slot of
+//! registered one-shot in one accept poller, which is itself registered one-shot in the poller
+//! of the one serve thread that holds the turn to accept. When a listener is ready, that thread
+//! wakes, accepts at most 16 connections of each listener that fired, registers the listener
+//! again and passes the turn on (`Context::accept_ready`). Exactly one thread accepts from a
+//! listener at a time, through the bytes of a flag that only the thread holding the event may
+//! set.
+//!
+//! **A thread that ends.** A panic in a connection's step or in a callback is contained and
+//! costs at most that connection. A panic elsewhere ends the thread: it gives up its inbox,
+//! closes every connection it owns and gives back what they held, and hands on the turn; new
+//! connections whose keyed owner it was go to the next live thread. A slot of
 //! `connections` is taken before each `accept`, so every descriptor the server accepts holds
 //! one; at the cap the listener is not registered again until a connection closes, and the
 //! kernel's backlog holds the rest. Each connection goes to the thread its keyed hash names.
@@ -28,6 +33,7 @@ use std::io::{self, Read, Write};
 use std::net::TcpListener;
 use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
@@ -235,13 +241,15 @@ impl Server {
         let (shared, inboxes) = Shared::new(grants, threads, key, clock.clone(), wakers);
         {
             let acceptor = Arc::clone(&acceptor);
-            shared.on_slot_freed(Arc::new(move |grant| {
-                if let Some(listening) = acceptor.listeners.get(grant)
-                    && listening.blocked.swap(false, Ordering::SeqCst)
-                {
-                    acceptor.arm(grant);
-                }
-            }));
+            shared
+                .on_slot_freed(Arc::new(move |grant| {
+                    if let Some(listening) = acceptor.listeners.get(grant)
+                        && listening.blocked.swap(false, Ordering::SeqCst)
+                    {
+                        acceptor.arm(grant);
+                    }
+                }))
+                .map_err(|e| e.to_string())?;
         }
         let mut handles = Vec::new();
         for (index, (inbox, wake_rx)) in inboxes.into_iter().zip(pairs).enumerate() {
@@ -335,24 +343,6 @@ impl Server {
     }
 }
 
-/// Passes the turn to accept on when its thread panics.
-struct TurnGuard {
-    shared: Arc<Shared>,
-    acceptor: Arc<Acceptor>,
-    index: usize,
-}
-
-impl Drop for TurnGuard {
-    fn drop(&mut self) {
-        if std::thread::panicking()
-            && self.shared.turn() == self.index
-            && !self.acceptor.closed.load(Ordering::SeqCst)
-        {
-            self.shared.pass_turn(self.index);
-        }
-    }
-}
-
 /// Everything a serve thread owns.
 struct Context {
     index: usize,
@@ -368,18 +358,14 @@ struct Context {
 }
 
 impl Context {
-    fn run(self) {
-        // A thread that dies while it holds the turn to accept passes it on, so the run keeps
-        // listening; the connections it owned are lost with it.
-        let _guard = TurnGuard {
-            shared: Arc::clone(&self.shared),
-            acceptor: Arc::clone(&self.acceptor),
-            index: self.index,
-        };
-        self.serve();
-    }
-
-    fn serve(mut self) {
+    /// The thread's life. It ends when the run stopped and its connections closed, or by a
+    /// panic outside a connection's step (those are contained in `Thread::run`, and callbacks
+    /// in `Shared::notify`). Either way it then gives up its inbox, so that later messages are
+    /// handled by their senders, closes every connection it still owns, giving back their
+    /// slots and their peers' places, hands its peers' expiries to a live thread, and, after a
+    /// panic, hands on the turn to accept, so the run keeps listening and new connections go
+    /// to the live threads.
+    fn run(mut self) {
         let mut thread = Thread::new(
             self.index,
             Arc::clone(&self.shared),
@@ -389,6 +375,28 @@ impl Context {
             }),
             self.clock.now(),
         );
+        let outcome = catch_unwind(AssertUnwindSafe(|| self.serve(&mut thread)));
+        let Context {
+            index,
+            shared,
+            acceptor,
+            clock,
+            inbox,
+            ..
+        } = self;
+        shared.end_thread(index, inbox);
+        if catch_unwind(AssertUnwindSafe(|| thread.abandon(clock.now()))).is_err() {
+            shared.fault();
+        }
+        if outcome.is_err() {
+            shared.fault();
+            if !acceptor.closed.load(Ordering::SeqCst) {
+                shared.hand_on_turn(index);
+            }
+        }
+    }
+
+    fn serve(&mut self, thread: &mut Thread) {
         let mut events = Events::with_capacity(EVENTS);
         self.arm_wake();
         // The turn to accept starts with thread 0 and passes round (see `accept_ready`).
@@ -396,6 +404,11 @@ impl Context {
             self.arm_accept();
         }
         loop {
+            #[cfg(feature = "test-hooks")]
+            #[allow(clippy::panic)]
+            if self.shared.take_kill(self.index) {
+                panic!("a serve thread ends by a fault, for a test");
+            }
             let now = self.clock.now();
             let mut busy = false;
             while let Ok(msg) = self.inbox.try_recv() {
@@ -427,7 +440,7 @@ impl Context {
             let timeout = if busy {
                 Some(Duration::ZERO)
             } else {
-                self.sleep_timeout(&thread)
+                self.sleep_timeout(thread)
             };
             if !busy {
                 let port = self.shared.port(self.index);

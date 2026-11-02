@@ -67,6 +67,8 @@ pub enum AcceptRefusal {
     Handshakes,
     /// The peer's share of the handshake rate is spent this second.
     PeerHandshakes,
+    /// Every serve thread ended: none is left to own the connection.
+    NoThread,
 }
 
 /// A connection refused at accept: why, and when its peer's entry may be forgotten if it is
