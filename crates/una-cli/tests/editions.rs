@@ -76,6 +76,15 @@ enum Difference {
         /// The diagnostics of edition `0.2` that edition `0.3` does not report.
         edition_0_2: &'static [(&'static str, &'static str)],
     },
+    /// Only the repairs differ (ADR 0093 rule 6): edition `0.3` reports the same diagnostics,
+    /// messages and positions as edition `0.2`, and ranks a narrowed rebinding first and a
+    /// widening of a public header last, marked. Each diagnostic keeps at least its repairs'
+    /// count, since edition `0.3` only adds routes that keep authority and changes texts, and
+    /// `fixable` may grow with them.
+    Repairs {
+        /// The package, relative to `tests/conformance`.
+        case: &'static str,
+    },
 }
 
 impl Difference {
@@ -85,7 +94,8 @@ impl Difference {
             Difference::Syntax { case, .. }
             | Difference::Stricter { case, .. }
             | Difference::Renamed { case, .. }
-            | Difference::Looser { case, .. } => case,
+            | Difference::Looser { case, .. }
+            | Difference::Repairs { case } => case,
         }
     }
 
@@ -95,7 +105,8 @@ impl Difference {
             Difference::Syntax { case, twin, .. } => vec![*case, *twin],
             Difference::Stricter { case, .. }
             | Difference::Renamed { case, .. }
-            | Difference::Looser { case, .. } => vec![*case],
+            | Difference::Looser { case, .. }
+            | Difference::Repairs { case } => vec![*case],
         }
     }
 }
@@ -103,6 +114,14 @@ impl Difference {
 /// The edition `0.2` packages whose output in edition `0.3` differs by design, with the exact
 /// result of each edition.
 const EXPECTED_DIFFERENCES: &[Difference] = &[
+    // ADR 0093 rule 6: U3001 and U3002 rank a narrowed rebinding first and mark a widening of a
+    // public header as an authority change, last; nothing else differs.
+    Difference::Repairs {
+        case: "authority/narrowing_repairs_edition_0_2",
+    },
+    Difference::Repairs {
+        case: "authority/value_uses_at_reference_0_2",
+    },
     // ADR 0105 rule 3: an `example` declaration is U0103 in edition 0.3, where the test
     // declaration is written `test`, with the exact rewrite that `una fix` applies.
     Difference::Stricter {
@@ -1013,6 +1032,7 @@ fn every_expected_difference_is_exact() {
             Difference::Looser { case, edition_0_2 } => {
                 looser(&root, &scratch, case, edition_0_2);
             }
+            Difference::Repairs { case } => repairs_only(&root, &scratch, case),
         }
     }
 }
@@ -1119,6 +1139,48 @@ fn stricter(root: &Path, scratch: &Path, name: &str, added: &[(&str, &str)]) {
     assert!(!added.is_empty(), "{name}: a stricter entry adds nothing");
     assert_eq!(status, Some(1), "{name} as edition 0.3");
     differs_by(name, "edition 0.3", "edition 0.2", after, &before, added);
+}
+
+/// A [`Difference::Repairs`]: the two documents are the same once each diagnostic's repairs
+/// and the `fixable` count are set aside, they differ, no diagnostic of edition `0.3` has fewer
+/// repairs than in edition `0.2`, and `fixable` never falls.
+fn repairs_only(root: &Path, scratch: &Path, name: &str) {
+    let case = root.join(name);
+    let (before_status, before, _) = check_as(&case, scratch, EDITION_0_2);
+    let (after_status, after, _) = check_as(&case, scratch, EDITION_0_3);
+    let before: Value = serde_json::from_slice(&before).unwrap();
+    let after: Value = serde_json::from_slice(&after).unwrap();
+    assert_eq!(before_status, after_status, "{name}");
+    assert_ne!(before, after, "{name}: a repairs entry differs in nothing");
+    // A narrowing route with an edit makes a diagnostic fixable (ADR 0096 rule 6), never less.
+    assert!(
+        after["fixable"].as_u64() >= before["fixable"].as_u64(),
+        "{name}: edition 0.3 is less fixable"
+    );
+    let without = |document: &Value| {
+        let mut document = document.clone();
+        document.as_object_mut().unwrap().remove("fixable");
+        for diagnostic in document["diagnostics"].as_array_mut().unwrap() {
+            diagnostic.as_object_mut().unwrap().remove("repairs");
+        }
+        document
+    };
+    assert_eq!(
+        without(&before),
+        without(&after),
+        "{name}: more than repairs differ"
+    );
+    let counts = |document: &Value| -> Vec<usize> {
+        document["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["repairs"].as_array().map_or(0, Vec::len))
+            .collect()
+    };
+    for (old, new) in counts(&before).into_iter().zip(counts(&after)) {
+        assert!(new >= old, "{name}: edition 0.3 drops a repair");
+    }
 }
 
 /// A [`Difference::Renamed`]: edition `0.3` reports what edition `0.2` does, with the test

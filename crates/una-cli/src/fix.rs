@@ -394,7 +394,7 @@ fn ineligible(
     if repair.escape.is_some() {
         return Some("escape cost");
     }
-    if repair.widens() {
+    if repair.widens() || !keeps_ceiling(diagnostic.code, &edit.replacement) {
         return Some("widens authority");
     }
     match modules.get(&edit.location.file) {
@@ -404,6 +404,50 @@ fn ineligible(
         Some(_) if diagnostic.code == Code::U7001 => Some("formatting"),
         Some(_) => None,
     }
+}
+
+/// Whether an edit of a diagnostic of `code` that writes `replacement` grants a boundary
+/// nothing beyond what the checker bounded (ADR 0093 rule 6, ADR 0084). The checker gives a
+/// boundary diagnostic an edit only for a U3020 whose grant lies within the ceiling, and that
+/// edit is one narrowed rebinding, ` with @x = @y[ops]` or `, @x = @y[ops]`. Any other edit of
+/// U3020, U3021 or U3024 would grant a whole binding, a handler or an escape to code the
+/// consumer does not trust, so it is never applied, whatever a later checker offers. The
+/// ceiling itself is in `una.toml`, which `una fix` never writes. Linear in the replacement.
+fn keeps_ceiling(code: Code, replacement: &str) -> bool {
+    if !matches!(code, Code::U3020 | Code::U3021 | Code::U3024) {
+        return true;
+    }
+    code == Code::U3020 && narrowed_grant(replacement)
+}
+
+/// Whether `text` is exactly one narrowed rebinding added to a statement: ` with @x = @y[ops]`
+/// or `, @x = @y[ops]`, with names and at least one operation, and nothing else.
+fn narrowed_grant(text: &str) -> bool {
+    let Some(binding) = text
+        .strip_prefix(" with ")
+        .or_else(|| text.strip_prefix(", "))
+    else {
+        return false;
+    };
+    let name = |part: &str| {
+        part.strip_prefix('@').is_some_and(|rest| {
+            !rest.is_empty() && rest.chars().all(|c| c.is_alphanumeric() || c == '_')
+        })
+    };
+    let Some((target, source)) = binding.split_once(" = ") else {
+        return false;
+    };
+    let Some((held, ops)) = source
+        .strip_suffix(']')
+        .and_then(|rest| rest.split_once('['))
+    else {
+        return false;
+    };
+    name(target)
+        && name(held)
+        && ops
+            .split(", ")
+            .all(|op| !op.is_empty() && op.chars().all(|c| c.is_alphanumeric() || c == '_'))
 }
 
 /// One candidate edit of a round: its byte range in the current text, the edit, the code of
@@ -585,7 +629,7 @@ fn status(diagnostics: &[Diagnostic]) -> ExitStatus {
 
 #[cfg(test)]
 mod tests {
-    use super::{Files, reused};
+    use super::{Files, keeps_ceiling, reused};
     use una_diag::{Code, Diagnostic, Location, Position};
 
     fn files(lock: &str) -> Files {
@@ -625,5 +669,29 @@ mod tests {
             None
         );
         assert_eq!(reused(None, &files("step_budget = 1\n")), None);
+    }
+
+    #[test]
+    fn a_boundary_edit_is_applied_only_as_one_narrowed_grant_of_u3020() {
+        // ADR 0093 rule 6: the edit the checker writes within the ceiling.
+        assert!(keeps_ceiling(Code::U3020, " with @files = @files[read]"));
+        assert!(keeps_ceiling(Code::U3020, ", @net = @user_net[post, get]"));
+        // A whole binding, a handler, a second binding, or no operation is never applied.
+        for text in [
+            " with @files = @files",
+            " with @files = read_only()",
+            " with @files = @files[read], @net = @net[post]",
+            " with @files = @files[]",
+            " with @files = @files[read] ",
+            "with @files = @files[read]",
+            "uses @files: Files[read, write]",
+        ] {
+            assert!(!keeps_ceiling(Code::U3020, text), "{text}");
+        }
+        // U3021 and U3024 never carry an applicable edit, whatever its text.
+        assert!(!keeps_ceiling(Code::U3021, " with @files = @files[read]"));
+        assert!(!keeps_ceiling(Code::U3024, " with @files = @files[read]"));
+        // Other codes are not this rule's.
+        assert!(keeps_ceiling(Code::U3002, " with @files = @store"));
     }
 }

@@ -1,0 +1,18 @@
+-- test: ADR 0093 rule 6: a U3020 whose requirement exceeds the ceiling offers no grant, only advice for a handler within the ceiling, naming what the ceiling withholds; `una fix` changes nothing
+-- spec: spec/13 §3
+-- expect: error U3020 at src/media/app.una:13:3
+-- expect: error U3020 at src/media/app.una:18:3
+module media.app
+
+import media.resize (announce, resize)
+import media.store (Files, Net)
+
+pub rewrite(path: Text) -> Unit
+  uses @files: Files[read, write]
+=
+  resize(path)
+
+pub publish(path: Text) -> Unit
+  uses @net: Net[post]
+=
+  announce(path)

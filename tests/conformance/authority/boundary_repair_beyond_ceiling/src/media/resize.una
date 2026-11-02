@@ -1,0 +1,14 @@
+module media.resize
+
+import media.store (Files, Net)
+
+pub resize(path: Text) -> Unit
+  uses @files: Files[read, write]
+=
+  let data = @files.read(path)
+  @files.write(path, data: data)
+
+pub announce(path: Text) -> Unit
+  uses @net: Net[post]
+=
+  @net.post(path)
