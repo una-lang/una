@@ -19,20 +19,22 @@ Status: Normative, v0.2 (ADR 0069).
 
 The operations are a prelude function and built-in methods resolved by the receiver, as the conversions of `spec/18 §4` are. They are not user overloading (charter §6). Every argument after the receiver is labeled.
 
-| Operation | Type | Contract |
-| --- | --- | --- |
-| `empty_map()` | `Map[K, V]`, from the expected type | `ensures result.len == 0` |
-| `m.len` | `Int` | `m.len >= 0` holds of every map |
-| `m.has(key: k)` | `Bool` | none beyond §5 |
-| `m.get(key: k)` | `Option[V]` | `result` is `Some` exactly when `m.has(key: k)` |
-| `edit m.set(key: k, value: v)` | `Unit` | `ensures m.has(key: k) and m.get(key: k) == Some(v)`; `m.len == old(m).len` when `old(m).has(key: k)`, else `old(m).len + 1` |
-| `edit m.remove(key: k)` | `Unit` | `ensures not m.has(key: k)`; `m.len == old(m).len - 1` when `old(m).has(key: k)`, else `old(m).len` |
-| `m.with(key: k, value: v)` | `Map[K, V]` | the contract of `set`, for the result |
-| `m.without(key: k)` | `Map[K, V]` | the contract of `remove`, for the result |
-| `m.keys()` | `List[K]` | `ensures result.len == m.len` |
-| `m.values()` | `List[V]` | `ensures result.len == m.len` |
-| `m.entries()` | `List[Entry[K, V]]` | `ensures result.len == m.len` |
-| `edit m.update(key: k, initial: i, change: f)` | `Unit` | edition `0.4` (rule 5): sets `k` to `f(v)`, where `v` is the value of `k`, or `i` when `m` has no `k`; the contract of `set` at `k` |
+| Operation | Type | Contract | Cost |
+| --- | --- | --- | --- |
+| `empty_map()` | `Map[K, V]`, from the expected type | `ensures result.len == 0` | O(1) |
+| `m.len` | `Int` | `m.len >= 0` holds of every map | O(1) |
+| `m.has(key: k)` | `Bool` | none beyond §5 | O(log n) comparisons |
+| `m.get(key: k)` | `Option[V]` | `result` is `Some` exactly when `m.has(key: k)` | O(log n) comparisons |
+| `edit m.set(key: k, value: v)` | `Unit` | `ensures m.has(key: k) and m.get(key: k) == Some(v)`; `m.len == old(m).len` when `old(m).has(key: k)`, else `old(m).len + 1` | O(log n) comparisons when `m` is held once; O(n) for a copy first otherwise |
+| `edit m.remove(key: k)` | `Unit` | `ensures not m.has(key: k)`; `m.len == old(m).len - 1` when `old(m).has(key: k)`, else `old(m).len` | O(log n) comparisons when `m` is held once; O(n) for a copy first otherwise |
+| `m.with(key: k, value: v)` | `Map[K, V]` | the contract of `set`, for the result | O(log n) comparisons when `m` is given up at the call; O(n) for a copy first otherwise |
+| `m.without(key: k)` | `Map[K, V]` | the contract of `remove`, for the result | O(log n) comparisons when `m` is given up at the call; O(n) for a copy first otherwise |
+| `m.keys()` | `List[K]` | `ensures result.len == m.len` | O(n) |
+| `m.values()` | `List[V]` | `ensures result.len == m.len` | O(n) |
+| `m.entries()` | `List[Entry[K, V]]` | `ensures result.len == m.len` | O(n) |
+| `edit m.update(key: k, initial: i, change: f)` | `Unit` | edition `0.4` (rule 5): sets `k` to `f(v)`, where `v` is the value of `k`, or `i` when `m` has no `k`; the contract of `set` at `k` | as `set`, and one call of `change` |
+
+(ADR 0132.) The costs are those of `spec/14 §5`, which come from ADR 0069 and ADR 0072: n is the number of entries of `m`, a comparison of keys costs what `spec/14 §5` rule 4 states, and a map is held once or given up as `spec/14 §5` rule 6 states. Each cost is a worst case; space is O(log n) for an update in place, O(n) for a copy and for a list of `keys`, `values` or `entries`, and O(1) otherwise.
 
 1. **Updates.** `set` and `remove` take the receiver as `edit`, and follow `spec/17 §3`: the receiver is a place, the call is the whole expression of its statement, and `old(m)` in the table is the receiver's value before the call.
    - (v0.3, ADR 0103.) With a refined key or value type, `with` and `set` store their `key` and `value` at those types, with an obligation each (`spec/12 §3`). `has`, `get`, `remove` and `without` take the key at the base of the key type: a lookup stores nothing, so a key outside the refinement finds no entry.

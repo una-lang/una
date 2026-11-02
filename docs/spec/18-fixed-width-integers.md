@@ -70,6 +70,7 @@ Conversions are built-in methods resolved by the type of the receiver, like `.le
 2. **Text keeps its meaning.** `t.to_int()` on a `Text` keeps its meaning (`spec/14 §1`), as a prelude function returning `Option[Int]`.
 3. **Widening** is a conversion where every value of the source type fits the target type, such as `U8` to `I16`, `I32` to `I64`, or any fixed-width type to `Int`. It always succeeds and carries no obligation.
 4. **Narrowing** is every other conversion, such as `I32` to `U8`, `I8` to `U16`, or `Int` to any fixed-width type. It carries an `overflow` obligation that the value fits the target, or the program narrows through `checked`, which counts against the escape budget (`spec/06`).
+5. **Cost** (ADR 0132). Every conversion takes O(1) time and space (`spec/14 §5`).
 
 ## 5. Wrapping, saturating and bit operations (FW-4)
 
@@ -86,6 +87,7 @@ These are built-in methods on the eight types, resolved by the receiver as in §
 1. **Not escapes.** These methods are total and specified, so they are not escapes and do not count against any budget.
 2. **The encoding** stays QF_UFLIA (§6). The bit operations have no bit-precise proof, so a property that needs bit-level facts beyond these contracts is `unknown`.
 3. **No checked left shift.** There is no checked `shift_left` in v0.2. A left shift is either `wrapping_shift_left`, or a multiplication by a power of two, with its `overflow` obligation. This is a known limit of v0.2.
+4. **Cost** (ADR 0132). Each of these methods takes O(1) time and space (`spec/14 §5`).
 
 **Arguments and shifts.** Like every call (charter P5, `spec/04 §3`), a binary method labels its argument:
 - `by` for the wrapping and saturating methods and the shifts, as in `a.wrapping_add(by: b)`, `h.wrapping_mul(by: 31)` and `a.shift_right(by: n)`;

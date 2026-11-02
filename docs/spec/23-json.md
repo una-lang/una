@@ -91,7 +91,8 @@ They are prelude functions, called with method syntax as those of `spec/22 §2` 
 1. **Complexity.** For an input of n scalar values, with an object of k keys counted once for each object:
    - parsing takes O(n + Σ k log k) time, which is O(n) when every object's keys arrive in order, as `to_json` writes them;
    - writing takes O(n) time for an output of n scalar values, except that writing a `Number` of d digits takes O(d²) for d at most 4300: an `Int` of more digits is never written, the run aborting with U6003 at the call of `to_json` (`spec/11 §7`, #923), so no write exceeds that cost;
-   - both take O(n) space.
+   - both take O(n) space;
+   - (ADR 0132.) `quote_json(t)` takes O(b) time and O(b) space for a text of b bytes, its result at most 6b + 2 bytes, and `is_json_number(t)` O(b) time and O(1) space (`spec/14 §5`).
 2. **No native recursion.** Parsing and writing keep their own stack on the heap, and never recurse on the native stack over a value's depth (ADR 0060).
 3. **Equivalence.** Both engines use one implementation, and give the same value, text or failure for every input (`spec/16 §5`).
 4. **Purity.** The functions of §2 perform no operation and record no trace event.

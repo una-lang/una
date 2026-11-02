@@ -13,7 +13,7 @@ These prelude functions take a text apart, search it, change it and parse it. Te
 
 ## 2. Functions
 
-They are prelude functions, called with method syntax, as `line.split(on: ",")` is `split(line, on: ",")` (`spec/04 §3`). In the table, n is the length of `t` in scalar values, b its length in UTF-8 bytes, and m the length in bytes of the other text argument.
+They are prelude functions, called with method syntax, as `line.split(on: ",")` is `split(line, on: ",")` (`spec/04 §3`). In the table, n is the length of `t` in scalar values, b its length in UTF-8 bytes, and m the length in bytes of the other text argument. The times are those of ADR 0070, in the model of `spec/14 §5` (ADR 0132); each function takes O(result) space, its result's scalar count and ASCII flag computed as it is built (ADR 0070).
 
 | Function | Contract | Time |
 | --- | --- | --- |
