@@ -1,6 +1,6 @@
 # 32. Quality
 
-Status: Draft (ADR 0127, Proposed). Nothing in this chapter is normative until ADR 0127 is accepted; after that, each section becomes normative with the phase that implements it (ADR 0127 rule 34), with its fixtures.
+Status: Draft (ADR 0127, accepted on 2026-11-02 with ADRs 0128, 0129 and 0131, whose decisions of acceptance this text follows). Each section becomes normative with the phase that implements it (ADR 0127 rule 34), with its fixtures; until then nothing in this chapter is normative.
 
 Una Quality measures a package and reports the values, the findings of the rules a project configures, and the state of three gates. It is a tool of the toolchain, `una quality`; it adds no syntax, no construct and no `U` diagnostic code, and it never changes what `una check` accepts.
 
@@ -16,7 +16,7 @@ Una Quality measures a package and reports the values, the findings of the rules
 6. **Evidence** is a fact a metric reads beyond the source: obligation statuses, test outcomes, coverage counts, mutation outcomes. Evidence carries the digest of the inputs it was computed from.
 7. A **gate** is a set of rules: `assurance`, `structural` or `evolution` (§15).
 8. A **snapshot** is the record of every observation of a run (§17.2). A **baseline** is the snapshot a run is compared with.
-9. A **waiver** is a recorded, expiring exception for one rule on one symbol (§14.4).
+9. A **waiver** is a recorded, expiring exception for one rule on one symbol (§14.4). An **approval** is a recorded, expiring acceptance of one guarantee change, an entry of the guarantee diff's approvals file (§14.4 rule 4, ADR 0128 rule 22); a waiver is never an approval.
 10. A **preset** is a named, versioned set of default severities and limits (§14.3).
 11. A **mode** is `fast`, `verified` or `full` (§2 rule 7).
 
@@ -45,7 +45,7 @@ Una Quality measures a package and reports the values, the findings of the rules
 3. **Spans.** Every observation and contributor maps to a source span, `file`, `start` and `end` as `[line, column]`, 1-based. A Core node without a span takes the span of the innermost enclosing node with one, and the contributor records `"span": "enclosing"`.
 4. **Symbol identity.** A symbol is its qualified name; a lambda is `m.f#k`. Matching against a baseline:
    1. equal qualified names match;
-   2. among unmatched symbols, a pair whose body fingerprints are equal, and unique on each side, match as `renamed`. The fingerprint is the SHA-256 of the declaration's Core IR in the encoding of `una.core/1`, with every binder name replaced by its first-occurrence ordinal and every span removed;
+   2. among unmatched symbols, a pair whose body fingerprints are equal, and unique on each side, match as `renamed`. The fingerprint is the SHA-256 of the declaration's body in Core IR, in the encoding of `una.core/1`, with every binder name replaced by its first-occurrence ordinal and every span removed. The header, its contract included, is outside the hash (ADR 0127 rule 5): a function renamed with a changed contract still matches as `renamed`, and the guarantee diff compares its contract (ADR 0128 rule 7);
    3. among the rest, a new function whose fingerprint equals that of a contiguous run of `let`s removed from a matched function is `extracted_from` it, labeled `heuristic`;
    4. the rest are `new` or `removed`. Equal fingerprints shared by more than one symbol on a side match none of them.
 
@@ -192,7 +192,7 @@ Mode: `full`. Coverage comes from the reference interpreter's runs of `una test`
    - `coverage.function`: functions evaluated at least once over functions.
    - `coverage.branch`: decision outcomes taken over decision outcomes, with the decisions of §5.1: an `if`, a `handle`, a `within` and a loop have 2 outcomes each, and a `case` or `first_of` with k branches has k.
    - `coverage.condition`: condition atoms evaluated both true and false over atoms.
-   - `coverage.mcdc`: modified condition/decision coverage as LLVM's source-based coverage defines it, with masking for short-circuit evaluation; decisions with one condition are excluded. `off` except in `high-assurance`.
+   - `coverage.mcdc`: modified condition/decision coverage as LLVM's source-based coverage defines it, with masking for short-circuit evaluation; decisions with one condition are excluded. `off` except in `high_assurance`.
    - `coverage.failure_paths`: declared `fails` variants that some test both produces and handles or passes on, over declared variants.
    - `coverage.boundary`: refinement and contract limits exercised at, below and above the limit, over limits.
    - Native backends: later, through the same span map; disagreement with the interpreter's coverage of the same tests is `inconclusive` with reason `disagreement`. Coverage of Core temporaries, the standard library and the runtime is never reported as the package's.
@@ -200,8 +200,9 @@ Mode: `full`. Coverage comes from the reference interpreter's runs of `una test`
 3. **Tests.** `tests.success_density`: (tests − errors − failures) / tests.
 4. **Mutation.** A mutant is a copy of the package in memory with one change; the sources on disk are never written. Outcomes: `killed_by_tests`, `rejected_by_verifier`, `survived`, `no_coverage`, `timeout`, `invalid`.
    - `mutation.test_score` = detected / (detected + undetected), with detected = `killed_by_tests` + `timeout`, undetected = `survived` + `no_coverage`. `invalid` mutants are excluded and counted.
-   - `mutation.verifier_rejection_rate` = `rejected_by_verifier` / valid mutants. It MUST NOT be added to the test score.
+   - `mutation.verifier_rejection_rate` = `rejected_by_verifier` / valid mutants. It MUST NOT be added to the test score. The report gives `rejected_by_verifier` as two counts, the mutants rejected by a `refuted` obligation and those rejected only by an `unknown` one, never as one (ADR 0129 rules 7 and 8).
    - `mutation.equivalent_suspects`: survivors the tool flags as possibly equivalent; reviewed by a person, never scored.
+   - Reviewed equivalent mutants are entries of the guarantee diff's approvals file at its fixed path (§14.4 rule 4), never of the configuration (ADR 0129 rule 12). Each leaves both denominators and is counted; a new one against the baseline is UQ9302 "a new reviewed equivalence"; UQ9301 keeps its meaning, a new waiver.
    - Every report prints the raw count of each outcome next to each ratio.
 5. **Reference values** (`standard`, `warn` only): line 85%, branch 80%, function 95%, test mutation score 80%. Coverage is never shown without the mutation score and failure-path coverage beside it.
 
@@ -219,6 +220,8 @@ Mode: `verified`. Read from the facts of `una check`; no proof is redone.
 | `requirement.traceability` | Requirements with at least one derived function or test over requirements (needs #1289). |
 | `escape.checked`, `escape.trusted`, `escape.declassify` | Counts, and densities per 1,000 `size.sloc`, against `[escape_budget]` where it applies. |
 | `runtime.residual_checks` | Run-time checks that remain after elision (ADR 0112). Counted, never recommended for removal. |
+
+A public contract weaker than the baseline's (UQ9104) is the guarantee diff's verdict, not a metric of this section: a stronger `requires`, a relaxed `requires` of a public function, a weaker `ensures`, or an incomparable one (ADR 0128 rule 8, ADR 0127 rule 16).
 
 ## 10. Authority
 
@@ -257,8 +260,8 @@ Mode: `verified`. Review signals: a finding here says "review", never "leak". Ti
 ## 12. Evolution
 
 1. Every metric has a delta against the baseline: absolute, relative, and status change. A delta between different metric versions is `not_comparable`.
-2. Evolution rules: `no_increase` (a ratchet on changed symbols), `no_new` (no new finding at or above a severity), `no_drop` (a coverage or ratio on new code does not fall), and the assurance items of the guarantee diff (#1291): authority expansion, new `trusted`, new declassification, public-contract weakening.
-3. A policy weaker than the baseline's, rule by rule (a lower severity, a looser limit, a new waiver), is reported (UQ9201, UQ9301).
+2. Evolution rules: `no_increase` (a ratchet on changed symbols), `no_new` (no new finding at or above a severity), `no_drop` (a coverage or ratio on new code does not fall), and the assurance items of the guarantee diff (#1291, ADR 0128 rule 25): authority expansion, new `trusted`, new declassification, public-contract weakening (a relaxed `requires` of a public function included), and escapes, obligation regressions, toolchain, requirements and assumptions.
+3. A policy weaker than the baseline's, rule by rule (a lower severity, a looser limit, a new waiver), is reported (UQ9201, UQ9301). A new reviewed equivalent mutant is UQ9302 (ADR 0129 rule 12).
 
 ## 13. Scores
 
@@ -268,9 +271,9 @@ A dimension's score is `Q_d = 100 × (1 − Σ wᵢ pᵢ / Σ wᵢ)`, with versi
 
 ### 14.1. The file
 
-1. The configuration is one file, named by `--config <path>`, by default `quality.toml` at the package root. Without either, the preset `standard` applies with no override. One file is read: no include, no inheritance, no environment variables, no conditions.
-2. The format is TOML, interim (ADR 0127 rule 20). The schema below is a data model; a later format carries the same model.
-3. An unknown key, a value of the wrong type or range, an unknown metric id, preset or code, and a file that is not valid UTF-8 are UQ0001: the run measures nothing and exits with code 1.
+1. The configuration is one file, named by `--config <path>`, by default `quality.toml` at the package root (`quality.una` once ADR 0131's slice lands, #1335). Without either, the preset `standard` applies with no override. One file is read: no include, no inheritance, no environment variables, no conditions.
+2. The format is TOML, interim only (ADR 0127 rule 20). The schema below is a data model; its final form is `quality.una`, in Una's own data syntax, which carries the same model and replaces `quality.toml` when its slice lands, converted by `una migrate` (ADR 0131 rules 9 to 13).
+3. An unknown key, a value of the wrong type or range, an unknown metric id, preset or code, and a file that is not valid UTF-8 are UQ0001: the run measures nothing and exits with code 1. So are a waiver of UQ9101 to UQ9109 (§14.4 rule 3), a severity below `block` for UQ9101 to UQ9109 or any severity for a code that has none (§15 rule 5), and an entry of reviewed equivalence (§8 rule 4) (ADR 0127 rules 21 and 28, ADR 0128 rule 24, ADR 0129 rule 12).
 4. The file is data. Nothing in it is executed, evaluated or passed to a program.
 
 ### 14.2. The data model
@@ -323,10 +326,11 @@ max_recommendations = 5
 1. Each metric's direction (`above` or `below`) is fixed by its definition. A threshold `info`, `warn` or `block` applies when the value is past it in that direction. A finding's severity is the highest threshold crossed, capped by `severity`. `off` measures nothing for that rule.
 2. Every metric of §4 to §11 and every rule of §12 is a valid key, with no exception.
 3. Keys absent from the file take the preset's value.
+4. **Open in this Draft** (ADR 0131, Decisions of acceptance 4; decided by #1333 before the grammar of `quality.una` lands): how a percentage limit (§14.3 writes `3%` and `85%`) is written, and whether a key carries the metric's version (`complexity.cyclomatic@1`). The example above writes keys without a version.
 
 ### 14.3. Presets
 
-| Metric | `standard` | `library` | `server` | `high-assurance` | `numerical` |
+| Metric | `standard` | `library` | `server` | `high_assurance` | `numerical` |
 | --- | --- | --- | --- | --- | --- |
 | `complexity.cyclomatic` | warn 10, block 15 | warn 10, block 15 | warn 10, block 15 | warn 8, block 10 | warn 15, block 25 |
 | `complexity.cognitive` | warn 15, block 25 | warn 15, block 25 | warn 15, block 25 | warn 10, block 15 | warn 25, block 40 |
@@ -344,17 +348,19 @@ max_recommendations = 5
 | `contract.coverage` | warn 80% | block 100% | warn 90% | block 100% | warn 60% |
 | `authority.utilization` | warn below 1 | warn below 1 | warn below 1 | block below 1 | warn below 1 |
 | Assurance rules (§15) | block | block | block | block | block |
+| UQ9101 to UQ9109 (guarantee diff) | block | block | block | block | block |
 | UQ9201 policy weaker than baseline | block | block | block | block | block |
 | UQ9301 new waiver | warn | warn | warn | block | warn |
-| `waivers.max_days` | 90 | 90 | 90 | 30 | 90 |
+| `waivers.max_days` (waivers and approvals) | 90 | 90 | 90 | 30 | 90 |
 
-A metric the table does not name is `info` with no threshold in every preset. These are reference values to calibrate on Una's corpus, not findings of the literature; a change is a new preset version. No preset switches off a language guarantee. `numerical` does not block dense loops and assumes no proofs about `F64` beyond `spec/29`.
+UQ9101 to UQ9109 take no severity below `block` and UQ9201 has none (§15 rule 5): their rows are fixed, not defaults. The preset's `max_days` also bounds approvals (§14.4 rule 4). A metric the table does not name is `info` with no threshold in every preset. These are reference values to calibrate on Una's corpus, not findings of the literature; a change is a new preset version. No preset switches off a language guarantee. `numerical` does not block dense loops and assumes no proofs about `F64` beyond `spec/29`.
 
 ### 14.4. Waivers
 
 1. A waiver has `rule`, `symbol`, `reason`, `approver`, `expires` and `fingerprint`, all required. It suppresses the findings of that rule on that symbol, which the report still lists as waived.
 2. It lapses on the day after `expires`, by the run's date (`--date`, else the system date in UTC), or when the symbol's fingerprint (§3 rule 4) differs from the waiver's. `expires` MUST be at most `max_days` after the run's date when the waiver is new against the baseline.
-3. A malformed waiver is UQ0001. A lapsed waiver is UQ0003, and the findings it suppressed are reported again. A waiver of an assurance rule is the approval that §15 rule 1 names.
+3. A malformed waiver is UQ0001. A lapsed waiver is UQ0003, and the findings it suppressed are reported again. A waiver never approves UQ9101 to UQ9109, and a waiver of one of them is UQ0001 (ADR 0127 rule 28).
+4. **Approvals.** The approvals that §15 rule 1 names are entries of the guarantee diff's approvals file, `guarantees.toml` at the package root (interim; `guarantees.una` in its final form, ADR 0131), read from that fixed path only, never from a path a flag or the configuration names, and each bound to one change by its change id (ADR 0128 rules 22 and 23). An approval new against the baseline expires within the preset's `max_days`, and never more than 90 days after the run's date (ADR 0128 rule 22). The same file holds the reviewed equivalent mutants of §8 rule 4 (ADR 0129 rule 12), which approve nothing.
 
 ### 14.5. Safety visibility
 
@@ -362,11 +368,15 @@ The report header MUST show the configuration's path and SHA-256 digest, the pre
 
 ## 15. Gates and exit codes
 
-1. **Assurance gate:** UQ0102 (the package does not pass `una check`), UQ0101 (a required analysis is not complete), UQ5001 (a required obligation `unknown` or `refuted`), UQ9101 to UQ9104 (authority expansion, new `trusted`, new declassification, public-contract weakening, each unless waived). UQ0102 has no severity: it always blocks.
+1. **Assurance gate:** UQ0102 (the package does not pass `una check`), UQ0101 (a required analysis is not complete), UQ5001 (a required obligation `unknown` or `refuted`), UQ9101 to UQ9109 (authority expansion, new `trusted`, new declassification, public-contract weakening, escapes, obligation regressions, toolchain, requirements and assumptions, ADR 0128 rule 25), each unless an active approval covers that exact change (§14.4 rule 4), never by a waiver (ADR 0127 rule 28). UQ0102 has no severity: it always blocks. A UQ0101 for a value that comes from the guarantee diff always blocks, under either `incomplete` setting (ADR 0127 rule 12, ADR 0128 rule 24).
 2. **Structural gate:** the rules of §4 to §11 other than UQ5001.
-3. **Evolution gate:** the rules of §12 other than UQ9101 to UQ9104.
+3. **Evolution gate:** the rules of §12 other than UQ9101 to UQ9109.
 4. **Non-compensation.** The outcome is `pass` only when no gate has a blocking finding. No score, waiver of another rule or other gate's result offsets a blocking finding.
-5. **Gate of a code** is fixed by §18 and is not configurable. Its severity is configurable, except UQ0001, UQ0002, UQ0003 and UQ0102, which have none.
+5. **Gate of a code** is fixed by §18 and is not configurable. Its severity is configurable, except:
+   - UQ0001, UQ0002, UQ0003, UQ0102 and UQ9201 have none. UQ9201 always blocks, so a configuration injected by path cannot lower the alarm that shows its own lowering (ADR 0127 rule 21);
+   - UQ9101 to UQ9109 take no severity below `block`, so `una quality --gate` never passes what `una diff --gate` blocks (ADR 0128 rule 24, ADR 0127 rule 21).
+
+   A configuration that sets a severity for a code of the first kind, or lowers one of the second, is UQ0001.
 6. **Exit codes.** Without `--gate`, the run exits 0, or 1 for UQ0001, 2 for a usage error, 3 for an internal error. With `--gate`:
 
 | Code | Meaning |
@@ -375,7 +385,7 @@ The report header MUST show the configuration's path and SHA-256 digest, the pre
 | `1` | At least one blocking finding, or a warning with `--fail-on-warn`, or UQ0001 |
 | `2` | Usage error (`spec/13 §5`) |
 | `3` | Internal error (U8001) |
-| `4` | No blocking finding, but a required analysis incomplete under `incomplete = "report"` |
+| `4` | No blocking finding, but a required analysis incomplete under `incomplete = "report"`, never one that comes from the guarantee diff (rule 1) |
 
 7. Under `--mode fast`, assurance values are `not_measured` with reason `mode`, so the assurance gate cannot pass.
 
@@ -401,7 +411,7 @@ The report header MUST show the configuration's path and SHA-256 digest, the pre
 }
 ```
 
-Keys appear in this order. `delta` is `null` without a baseline. `match` is `same`, `renamed`, `extracted_from` or `new`. `revalidate` holds fixed command templates, never text from the input. A suggestion never widens authority, adds `trusted` or `checked`, weakens a contract or edits `quality.toml`.
+Keys appear in this order. `delta` is `null` without a baseline. `match` is `same`, `renamed`, `extracted_from` or `new`. `revalidate` holds fixed command templates, never text from the input. A suggestion never widens authority, adds `trusted` or `checked`, weakens a contract, or edits `quality.toml` or the approvals file.
 
 ## 17. Documents
 
@@ -440,7 +450,7 @@ Written by `una quality snapshot --out <file>`: `schema`, `tool`, `package`, `co
 
 ## 18. Code registry
 
-Codes are never reused. Retired codes stay in this table marked retired. Gaps are unassigned numbers (ADR 0012). The thousands digit is the dimension. `una check` never reports a `UQ` code.
+Codes are never reused. Retired codes stay in this table marked retired. Gaps are unassigned numbers (ADR 0012). The thousands digit is the dimension. `una check` never reports a `UQ` code. A row marked *Draft* is assigned by an accepted record and becomes normative with the slice it names.
 
 | Code | Gate | Meaning |
 | --- | --- | --- |
@@ -461,11 +471,13 @@ Codes are never reused. Retired codes stay in this table marked retired. Gaps ar
 | UQ3101 | structural | A cycle between modules |
 | UQ4001 | structural | Coverage below its limit |
 | UQ4101 | structural | Test mutation score below its limit |
+| UQ4102 | structural | Verifier rejection rate below its limit (*Draft*: ADR 0129 rule 19, with #1323) |
 | UQ4201 | structural | A declared failure that no test produces and handles |
 | UQ5001 | assurance | A required obligation is `unknown` or `refuted` |
 | UQ5101 | structural | Contract coverage below its limit |
 | UQ5201 | structural | A contract that says less than it seems to |
 | UQ5301 | structural | Escape density past its limit |
+| UQ5401 | structural | Specification sensitivity below its limit (*Draft*: ADR 0129 rule 19, with #1323) |
 | UQ6001 | structural | A declared operation that the function never needs |
 | UQ6101 | structural | Authority breadth or concentration past its limit |
 | UQ6201 | structural | An operation granted to `main` and never used |
@@ -478,8 +490,14 @@ Codes are never reused. Retired codes stay in this table marked retired. Gaps ar
 | UQ9102 | assurance | A new `trusted` module or trusted surface |
 | UQ9103 | assurance | A new declassification |
 | UQ9104 | assurance | A public contract weaker than the baseline's |
+| UQ9105 | assurance | A new `checked` site or a raised escape budget (*Draft*: ADR 0128 rule 25, with #1319) |
+| UQ9106 | assurance | An obligation regressed from `proven` (*Draft*: ADR 0128 rule 25, with #1319) |
+| UQ9107 | assurance | A changed verifier lock or edition (*Draft*: ADR 0128 rule 25, with #1319) |
+| UQ9108 | assurance | A requirement removed, changed, activated or left without its derivation (*Draft*: ADR 0128 rule 25, with #1319) |
+| UQ9109 | assurance | An assumption stronger than the baseline's (*Draft*: ADR 0128 rule 25, with #1319) |
 | UQ9201 | evolution | A quality policy weaker than the baseline's |
 | UQ9301 | evolution | A new waiver |
+| UQ9302 | evolution | A new reviewed equivalence (*Draft*: ADR 0129 rule 12, with #1323) |
 
 ## 19. Explain texts
 
@@ -502,11 +520,13 @@ Drafts of `una explain` for each code. Each final text also holds a minimal exam
 - **UQ3101.** Modules import or call each other in a cycle. Move the shared declarations into a module both use.
 - **UQ4001.** Tests cover fewer lines, branches, conditions or functions than the limit. Coverage is shown with the mutation score, since covered code can still be untested. Add tests that exercise and check the uncovered outcomes the finding lists.
 - **UQ4101.** Too many mutants of the code survive the tests: the tests run the code but do not check what changed. Add expectations that tell the mutant from the original. Mutants the verifier rejects are counted apart and never as test kills.
+- **UQ4102** (*Draft*). The verifier rejects fewer mutants of the code than the limit the project set. Rejections by a `refuted` obligation and by an `unknown` one are counted apart, and a verifier timeout never counts as a rejection. Strengthen the contracts the surviving mutants pass through.
 - **UQ4201.** A variant of the function's error kind is declared but no test produces it and handles it. Add a test that produces the failure and checks its handling, or remove the variant if it cannot happen.
 - **UQ5001.** An obligation the project requires is `unknown` or `refuted`. Strengthen a precondition, add a refinement, or fix the code; never remove a check to make the number pass.
 - **UQ5101.** Fewer public functions have the contract clauses the project requires than its limit. Add `ensures` clauses that state what the function guarantees.
 - **UQ5201.** A contract clause says less than it seems to: an `ensures` that holds with no hypothesis, a `requires` no call can satisfy, a result no `ensures` constrains, or a raw `Int` or `Text` where a refined kind of the package fits. Where the solver cannot decide, the finding is marked for review.
 - **UQ5301.** `checked`, `trusted` or declassification is denser than the limit. Each is an escape from proof; prove the property instead where the fragment allows.
+- **UQ5401** (*Draft*). Fewer weakened versions of the package's contracts are noticed by independent evidence (a caller, a test, a lock or a requirement) than the limit. A clause nothing outside the function relies on is unobserved; add a test or a caller's obligation that depends on it.
 - **UQ6001.** The function declares an operation in `uses` that nothing it calls can perform. Remove the operation from `uses`: least privilege makes the function's authority say what it does.
 - **UQ6101.** The authority of a module or package is broader, or more concentrated in one place, than the limit. Split the work so that each function holds only the operations it needs.
 - **UQ6201.** A grant to `main` allows an operation that no reachable function uses. Remove it from the grants.
@@ -515,12 +535,18 @@ Drafts of `una explain` for each code. Each final text also holds a minimal exam
 - **UQ8001.** A failure-discipline measure is past its limit: variants never produced, long chains of `if error pass`, or complex recovery code. Narrow the error kind, or handle failures closer to where they occur.
 - **UQ8101.** Operations that can wait run without a deadline, or tasks without handled cancellation, above the limit. Bound waits with `within` where the program must answer in time.
 - **UQ9001.** A measure of a changed function is worse than in the baseline, under a rule that forbids worsening. Bring it back to the baseline's value, or change the rule in a reviewed change.
-- **UQ9101.** The package can perform operations the baseline could not. Authority growth needs a recorded approval (a waiver with an approver).
+- **UQ9101.** The package can perform operations the baseline could not. Authority growth needs a recorded approval in the guarantee diff's approvals file, bound to this change; a waiver cannot approve it.
 - **UQ9102.** A `trusted` module or trusted surface was added. Trusted code is outside proof; it needs a recorded approval.
 - **UQ9103.** A new declassification was added. It lowers a label; it needs a recorded approval.
-- **UQ9104.** A public contract is weaker than in the baseline: a stronger `requires` or a weaker `ensures`, which breaks callers or promises less. A simpler implementation never offsets it. Restore the contract, or record an approval.
-- **UQ9201.** The quality policy is weaker than the baseline's: a rule was lowered, a limit loosened or a rule switched off. Review the change of `quality.toml` as you would a change of code.
+- **UQ9104.** A public contract is weaker than in the baseline: a stronger `requires`, which breaks callers, a relaxed `requires`, which lets callers through that it kept out, or a weaker `ensures`, which promises less. A simpler implementation never offsets it. Restore the contract, or record an approval.
+- **UQ9105** (*Draft*). A `checked` site was added or the escape budget raised. Each escapes proof; it needs a recorded approval.
+- **UQ9106** (*Draft*). An obligation that the baseline proved is now `unknown` or `refuted`. Restore the proof, or record an approval.
+- **UQ9107** (*Draft*). The verifier's lock or the edition changed, so every proof rests on a different verifier or different rules. It needs a recorded approval.
+- **UQ9108** (*Draft*). A requirement was removed, its text or source changed, it became active, or it lost a derived function or its last test. Activation is a person's decision; it needs a recorded approval.
+- **UQ9109** (*Draft*). An operation of a capability now promises more about the environment than in the baseline, so every caller assumes more. It needs a recorded approval.
+- **UQ9201.** The quality policy is weaker than the baseline's: a rule was lowered, a limit loosened or a rule switched off. It has no severity and always blocks. Review the change of `quality.toml` as you would a change of code.
 - **UQ9301.** A waiver was added. Waivers are reviewed exceptions with an expiry; check its reason and approver.
+- **UQ9302** (*Draft*). A mutant was recorded as equivalent by review, which removes it from the mutation denominators. Check that the mutant cannot change any behavior the contract admits.
 
 ## 20. Limits
 
