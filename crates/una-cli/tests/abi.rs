@@ -121,8 +121,9 @@ fn the_report_of_the_events_example() {
         .map(String::as_str)
         .collect();
     // ADR 0067 added `generic_results`, after `native`; ADR 0081 `handler_authority`, after
-    // `authority`; ADR 0122 `dependencies`, after `handler_authority`, always present.
-    assert_eq!(keys.len(), 17);
+    // `authority`; ADR 0122 `dependencies`, after `handler_authority`, always present; ADR 0094
+    // `premises`, after `assumptions`.
+    assert_eq!(keys.len(), 18);
     assert_eq!(report["generic_results"], json!([]));
     assert_eq!(report["dependencies"], json!([]));
     assert_eq!(report["tcb"]["registries"], json!([]));
@@ -615,4 +616,183 @@ fn a_cold_and_a_warm_report_differ_only_by_the_cache() {
         tcb.remove("solver_outer_denied");
     }
     assert_eq!(cold, warm);
+}
+
+/// The `premises` of a report, by id: what each premise is used for.
+fn premises_used_for(report: &Value) -> Vec<(String, Vec<String>)> {
+    report["premises"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|premise| {
+            (
+                premise["id"].as_str().unwrap().to_owned(),
+                premise["used_for"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|used| used.as_str().unwrap().to_owned())
+                    .collect(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn the_report_lists_the_host_premises_with_what_they_are_used_for() {
+    // ADR 0094 rule 5 and `docs/plan/0094-operation-labels-design.md` §7: `premises`, after
+    // `assumptions`, holds H1 to H4, the `Env` note and H5, each assumed of the host (never
+    // proven), with the host operations and the labeled operations it is used for.
+    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("abi-premises");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("una.toml"),
+        "[package]\nname = \"premises\"\nversion = \"0.1.0\"\nedition = \"0.3\"\n\n[labels]\ncategories = [\"Service\"]\n",
+    )
+    .unwrap();
+    std::fs::copy(
+        repository().join("verification.lock"),
+        root.join("verification.lock"),
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/m.una"),
+        "module m
+
+import std.host (Env, FileError, Files, Header, Http, HttpError)
+
+pub capability Store
+  op owner(file: Text) -> Text
+  op role(file: Text) -> Text
+
+pub capability Front
+  op ask(file: Text) -> internal[Service] Text
+
+handler front_store() for Front
+  uses @inner: Store[owner gives internal[Service]]
+  op ask(file) = @inner.owner(file)
+
+--- The owner of a file, as the service sees it.
+pub refusal(file: Text) -> internal[Service] Text
+  uses @service_store: Store[owner gives internal[Service], role]
+=
+  @service_store.owner(file)
+
+--- The role of a file, as the service sees it.
+pub role_of(file: Text) -> internal[Service] Text
+  uses @service_store: Store[role gives internal[Service]]
+=
+  @service_store.role(file)
+
+--- Reads a file and passes its failure on.
+pub load(path: Text) -> internal Text
+  uses @files: Files[read]
+  fails FileError
+=
+  @files.read(path)
+    if error pass
+
+--- The status of a page, or the failure of its request.
+pub status(url: Text) -> internal Result[internal Int, internal HttpError]
+  uses @http: Http[get]
+=
+  let headers: List[Header] = []
+  let r = attempt @http.get(url, headers: headers, key_name: None)
+  when r
+    is Ok(response) -> Ok(response.status)
+    is Err(e) -> Err(e)
+
+configured() -> Bool
+  uses @env: Env[get]
+=
+  let x = @env.get(\"X\")
+  when x
+    is Some(v) -> true
+    is None -> false
+",
+    )
+    .unwrap();
+    let output = una(&["--json", "report", root.to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let report = json(&output);
+    // The printed order is the one of `spec/13 §6`.
+    let printed = stdout(&output);
+    let at = printed.find("],\"premises\":[").unwrap();
+    assert!(
+        printed.find(",\"assumptions\":[").unwrap() < at,
+        "{printed}"
+    );
+    assert!(at < printed.find("],\"tcb\":{").unwrap(), "{printed}");
+    assert_eq!(
+        premises_used_for(&report),
+        [
+            ("H1".to_owned(), vec!["Files.read".to_owned()]),
+            ("H2".to_owned(), vec![]),
+            ("H3".to_owned(), vec!["Http.get".to_owned()]),
+            ("H4".to_owned(), vec!["Http.get".to_owned()]),
+            ("Env".to_owned(), vec!["Env.get".to_owned()]),
+            (
+                "H5".to_owned(),
+                vec![
+                    "m.refusal: @service_store.owner gives internal[Service]".to_owned(),
+                    "m.role_of: @service_store.role gives internal[Service]".to_owned(),
+                    "m.front_store: @inner.owner gives internal[Service]".to_owned(),
+                ]
+            ),
+        ]
+    );
+    let output = una(&["report", root.to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let text = stdout(&output);
+    let section = text.find("\nassumed of the host:\n").expect(text);
+    assert!(section > text.find("\nassumptions:\n").unwrap(), "{text}");
+    assert!(section < text.find("\ntcb:\n").unwrap(), "{text}");
+    assert!(text.contains("\n  H1: used for Files.read\n"), "{text}");
+    assert!(text.contains("\n  H2: used for nothing\n"), "{text}");
+    assert!(
+        text.contains("\n  H5: used for m.refusal: @service_store.owner gives internal[Service], m.role_of: @service_store.role gives internal[Service], m.front_store: @inner.owner gives internal[Service]\n"),
+        "{text}"
+    );
+}
+
+#[test]
+fn every_premise_is_listed_when_the_package_uses_none() {
+    // The premise set is the model's, not the package's: a package with no host operation and
+    // no labeled operation lists every premise, each used for nothing.
+    let output = una(&["--json", "report", "examples/events"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let report = json(&output);
+    let empty: Vec<(String, Vec<String>)> = ["H1", "H2", "H3", "H4", "Env", "H5"]
+        .iter()
+        .map(|id| ((*id).to_owned(), Vec::new()))
+        .collect();
+    assert_eq!(premises_used_for(&report), empty);
+}
+
+#[test]
+fn the_premises_are_the_ones_of_the_spec() {
+    // `spec/13 §6` states each premise as the report does, H5 included (ADR 0094 rule 5), and
+    // calls them assumed; `docs/plan/formal-track-status.md` lists H5 after H4.
+    let output = una(&["--json", "report", "examples/events"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let report = json(&output);
+    let spec13 =
+        std::fs::read_to_string(repository().join("docs/spec/13-diagnostics-and-abi.md")).unwrap();
+    let section =
+        &spec13[spec13.find("## 6. Build report").unwrap()..spec13.find("## 7.").unwrap()];
+    for premise in report["premises"].as_array().unwrap() {
+        let id = premise["id"].as_str().unwrap();
+        let statement = premise["statement"].as_str().unwrap();
+        assert!(
+            section.contains(&format!("**{id}:** {statement}")),
+            "spec/13 §6 lacks the premise {id}: {statement}"
+        );
+    }
+    assert!(section.contains("`premises`"), "spec/13 §6 lacks the key");
+    let status =
+        std::fs::read_to_string(repository().join("docs/plan/formal-track-status.md")).unwrap();
+    let h4 = status.find("- **H4:**").unwrap();
+    let h5 = status.find("- **H5:**").expect("the status page lacks H5");
+    assert!(h4 < h5);
 }

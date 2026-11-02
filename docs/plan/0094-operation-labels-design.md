@@ -140,3 +140,4 @@ At a call of a named function `f` whose header lists `uses @x: C[op gives l′, 
 - D6 The report lists H5 beside H1 to H4 under a top-level `premises` key, additive, each with what it is used for.
 - D7 A locked label is a floor: the header must read the operation at `l_lock` or above (`l_lock ⊑ l_src`); the restore edit writes the join.
 - D8 Inferred labels are the join over the callers' bindings, in the `uses` fixpoint; a private function with a declared header without `gives` stays refused (D4), since a header is a promise to the reader.
+- D9 (S3) H5's `used_for` also lists the labeled operations of handlers' `uses`, after the functions', as `module.handler: @binding.op gives label`: a handler may write `gives` (rule 1), and a premise the package relies on must not be left out of the report. The checker's outcome gains the handlers' `uses` with their labels for it.
