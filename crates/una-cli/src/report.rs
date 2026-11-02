@@ -49,8 +49,8 @@ const OUT_OF_MODEL: [&str; 13] = [
 /// The capabilities of the prelude, whose implementations the host provides (`spec/14 §3`).
 const HOST_CAPABILITIES: [&str; 6] = ["Console", "Clock", "Env", "Files", "Keys", "Http"];
 
-/// The premises on the host that acceptance rests on (`spec/13 §6`, ADR 0094 rule 5), in the
-/// order of `docs/plan/formal-track-status.md`: an id and its statement. They are assumed of
+/// The premises on the host that acceptance rests on (ADR 0094 rule 5), in the order of
+/// `spec/13 §6`: an id and its statement, as `spec/13 §6` writes it. They are assumed of
 /// the deployment, never proven: the report lists each with what the package uses it for.
 const PREMISES: [(&str, &str); 6] = [
     (
@@ -75,7 +75,7 @@ const PREMISES: [(&str, &str); 6] = [
     ),
     (
         "H5",
-        "an answer through a binding labeled l′, and whether it fails, is a function only of the arguments and of the host state at or below l′",
+        "what an operation answers through a binding where it is labeled l′, and whether it fails, is a function only of the arguments and of the part of the host state at or below l′",
     ),
 ];
 
@@ -574,16 +574,6 @@ fn build(
             })
         })
         .collect();
-    let declared_capabilities: BTreeSet<&str> = program
-        .modules
-        .iter()
-        .flat_map(|module| {
-            module.decls.iter().filter_map(|decl| match decl {
-                Decl::Cap { name, .. } => Some(name.as_str()),
-                _ => None,
-            })
-        })
-        .collect();
     // ADR 0067: the result summaries of the public generic functions.
     let generic_results: Vec<GenericResultDoc> = analysis
         .headers
@@ -622,9 +612,8 @@ fn build(
         }
         let function = format!("{}.{}", header.module, header.name);
         for used in &header.uses {
-            if HOST_CAPABILITIES.contains(&used.capability.as_str())
-                && !declared_capabilities.contains(used.capability.as_str())
-            {
+            // The host's own capability, not a package capability of the same name.
+            if used.host && HOST_CAPABILITIES.contains(&used.capability.as_str()) {
                 host.insert(used.capability.clone());
                 host_ops.extend(
                     used.ops
@@ -653,10 +642,19 @@ fn build(
         });
     }
     authority.sort_by(|a, b| a.function.cmp(&b.function));
-    // A handler's labeled operations rely on H5 too, after the functions'.
+    // A handler's host operations count as a function's do, and its labeled operations rely on
+    // H5 too, after the functions'.
     for handler in &analysis.handler_headers {
         let name = format!("{}.{}", handler.module, handler.name);
         for used in &handler.uses {
+            if used.host && HOST_CAPABILITIES.contains(&used.capability.as_str()) {
+                host.insert(used.capability.clone());
+                host_ops.extend(
+                    used.ops
+                        .iter()
+                        .map(|op| (used.capability.clone(), op.clone())),
+                );
+            }
             labeled.extend(
                 used.gives
                     .iter()
@@ -681,18 +679,8 @@ fn build(
             if uses.is_empty() {
                 continue;
             }
-            for used in uses {
-                if HOST_CAPABILITIES.contains(&used.capability.as_str())
-                    && !declared_capabilities.contains(used.capability.as_str())
-                {
-                    host.insert(used.capability.clone());
-                    host_ops.extend(
-                        used.ops
-                            .iter()
-                            .map(|op| (used.capability.clone(), op.clone())),
-                    );
-                }
-            }
+            // Its host capabilities were counted from `handler_headers`, which tell the host's
+            // from a package capability of the same name.
             let handler = format!("{}.{name}", module.path);
             handler_authority.push(HandlerAuthorityDoc {
                 public: public_handlers.contains(&handler),

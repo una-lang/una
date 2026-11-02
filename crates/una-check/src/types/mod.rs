@@ -331,6 +331,9 @@ pub struct HeaderUse {
     pub cap: String,
     /// The capability's name.
     pub capability: String,
+    /// Whether the capability is the host's, declared by the prelude (`spec/14 §3`), not one
+    /// of the package's of the same name.
+    pub host: bool,
     /// The operations, in the capability's declaration order.
     pub ops: Vec<String>,
     /// The label each operation gives through the binding, in the order of `ops`, as written
@@ -949,13 +952,11 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
 /// The headers of the functions of the modules that report, after inference.
 /// A `uses` clause of a header as the outcome lists it, with the labels its operations give.
 fn header_use(env: &Env<'_>, need: &env::Need) -> HeaderUse {
+    let capability = need.usage.capability.and_then(|c| env.capabilities.get(c));
     HeaderUse {
         cap: need.usage.name.clone(),
-        capability: need
-            .usage
-            .capability
-            .and_then(|c| env.capabilities.get(c))
-            .map_or_else(String::new, |c| c.name.to_owned()),
+        capability: capability.map_or_else(String::new, |c| c.name.to_owned()),
+        host: capability.is_some_and(|c| c.module == env.prelude),
         ops: need.usage.ops.clone(),
         gives: need
             .usage

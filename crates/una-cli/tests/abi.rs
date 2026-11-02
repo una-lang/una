@@ -796,3 +796,60 @@ fn the_premises_are_the_ones_of_the_spec() {
     let h5 = status.find("- **H5:**").expect("the status page lacks H5");
     assert!(h4 < h5);
 }
+
+#[test]
+fn a_package_capability_with_a_host_name_does_not_hide_the_host_one() {
+    // A package may declare its own `Files` (B09's scaffold does) and still use the host's
+    // `Files` in another module: the host's read relies on H1 and is in the TCB.
+    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("abi-premises-shadow");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("una.toml"),
+        "[package]\nname = \"shadow\"\nversion = \"0.1.0\"\nedition = \"0.3\"\n",
+    )
+    .unwrap();
+    std::fs::copy(
+        repository().join("verification.lock"),
+        root.join("verification.lock"),
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/a.una"),
+        "module a
+
+pub capability Files
+  op owner(file: Text) -> Text
+
+--- The owner of a file, through the package's own `Files`.
+pub owner_of(file: Text) -> Text
+  uses @files: Files[owner]
+=
+  @files.owner(file)
+",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/b.una"),
+        "module b
+
+import std.host (FileError, Files)
+
+--- Reads a file and passes its failure on.
+pub load(path: Text) -> internal Text
+  uses @files: Files[read]
+  fails FileError
+=
+  @files.read(path)
+    if error pass
+",
+    )
+    .unwrap();
+    let output = una(&["--json", "report", root.to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let report = json(&output);
+    let used = premises_used_for(&report);
+    assert_eq!(used[0], ("H1".to_owned(), vec!["Files.read".to_owned()]));
+    assert_eq!(used[1], ("H2".to_owned(), vec![]));
+    assert_eq!(report["tcb"]["host_capabilities"], json!(["Files"]));
+}
