@@ -1,0 +1,36 @@
+-- test: the body of a `for ever within` that installs a handler whose parameter is a kind with a field of function type has the timing label `⊤` (ADR 0116 IF5 item 3, IF8, issue #1436), here a field that runs a loop of `secret` length, so `Http`'s `internal` failure is too low (U4001 at the loop)
+-- spec: spec/26 §7
+-- expect: error U4001 at src/poll.una:32:3
+module poll
+
+import std.time (millisecond)
+
+kind Holder
+  run: fn(Int) -> Int
+
+capability Store
+  op get(key: Int) -> Int
+
+handler held(h: Holder) for Store
+  op get(key) = h.run(key)
+
+burn(k: secret Int) -> Unit
+=
+  for i in 0..k
+    unit
+
+wait(x: Int, k: secret Int) -> Int
+=
+  burn(k)
+  x
+
+pub polled(count: Int, key: secret Int, url: Text) -> Unit
+  uses @http: Http[get]
+  diverges
+=
+  let h = Holder(run: fn(x: Int) -> wait(x, k: key))
+  for ever within 100 * millisecond
+    let got = @s.get(count) with @s = held(h: h)
+    let reading = attempt @http.get(url, headers: [], key_name: None)
+    stop
+  unit

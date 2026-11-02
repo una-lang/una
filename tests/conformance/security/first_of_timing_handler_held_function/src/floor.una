@@ -1,0 +1,39 @@
+-- test: the `t` of a `first of` joins what the handlers its branches install can run (ADR 0117 IF3, ADR 0116 IF5 item 3, issue #1436): a handler whose parameter is a kind with a field of function type, which runs a loop of `secret` length, makes `t` `⊤`, so the branch that installs it is U4002 and a `public` print in a sibling U4003
+-- spec: spec/27 §6
+-- expect: error U4002 at src/floor.una:37:5
+-- expect: error U4003 at src/floor.una:38:5
+module floor
+
+kind Holder
+  run: fn(Int) -> Int
+
+capability Store
+  op get(key: Int) -> Int
+
+handler held(h: Holder) for Store
+  op get(key) = h.run(key)
+
+burn(k: secret Int) -> Unit
+=
+  for i in 0..k
+    unit
+
+wait(x: Int, k: secret Int) -> Int
+=
+  burn(k)
+  x
+
+fetch(n: Int) -> Unit
+  uses @s: Store[get]
+=
+  let a = @s.get(n)
+  unit
+
+pub floor(n: Int, key: secret Int) -> Unit
+  uses @console: Console[print]
+=
+  let h = Holder(run: fn(x: Int) -> wait(x, k: key))
+  let leaky = first of
+    fetch(n) with @s = held(h: h)
+    @console.print("b")
+  unit
