@@ -3234,7 +3234,8 @@ fn the_executable_denies_a_directory_past_the_host_path_limit_as_una_run_does_13
     });
     expected.extend(["3 read: not found", "4 write: not found"]);
     assert_eq!(stdout.lines().collect::<Vec<_>>(), expected, "{past:?}");
-    if cfg!(target_os = "macos") {
+    // The limit is 1024 bytes on macOS and `PATH_MAX`, 4096 bytes, on Linux (#1456).
+    if cfg!(any(target_os = "macos", target_os = "linux")) {
         assert!(past.is_some());
     }
     assert!(!dir.join("outside/new.txt").exists());

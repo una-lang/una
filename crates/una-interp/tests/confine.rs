@@ -693,18 +693,62 @@ fn confinement_makes_linear_lookups_adr_0132_rule_16() {
     }
 }
 
+/// A name of 100 bytes, repeated `levels` times as a relative path.
+fn deep(levels: usize) -> String {
+    vec!["X".repeat(100); levels].join("/")
+}
+
+/// Builds under the directory `on` a chain of hops: each `h` is a link to the four
+/// directories [`deep`]`(4)` below it, so every lexical path stays short while the canonical
+/// paths grow by about 400 bytes a hop. Returns the hops `h/../h/` up to the last one built,
+/// and the number of directories below it whose canonical path is longer than the host's
+/// canonicalization takes (`ENAMETOOLONG`: 1024 bytes on macOS, `PATH_MAX` = 4096 on Linux),
+/// or `None` when 64 hops reach no limit.
+fn disk_hops(on: &Path) -> (String, Option<usize>) {
+    let mut hops = String::new();
+    let mut at = on.to_path_buf();
+    for _ in 0..64 {
+        std::fs::create_dir_all(at.join(deep(4))).unwrap();
+        std::os::unix::fs::symlink(deep(4), at.join("h")).unwrap();
+        let past = (1..=4).find(|&levels| std::fs::canonicalize(at.join(deep(levels))).is_err());
+        if past.is_some() {
+            return (hops, past);
+        }
+        at.push("h");
+        hops.push_str("h/");
+    }
+    (hops, None)
+}
+
 #[test]
 fn host_limits_keep_the_outcomes_of_resolving_every_prefix_1343() {
     // Where resolving each component from the one before it and canonicalizing the lexical
     // path disagree, the earlier algorithm decides: more links in one path than the host
-    // follows (32 on macOS, 40 on Linux, 40 in the model), and lexical paths longer than the
-    // host takes (1024 bytes on macOS, 4096 on Linux), though each resolved path is short.
+    // follows, and canonical paths longer than the host's canonicalization takes.
+    //
+    // #1456: the links alone show a new denial only where the kernel follows fewer links in
+    // one lookup than the canonicalization does. On macOS `realpath` fails at the 34th link
+    // of a path and `lstat` already at its 33rd, so the prefix ending at the link where
+    // `realpath` stops cannot be examined: not a link, not absent, now Denied (before #1380
+    // its lexical path was opened, and failed with `ELOOP`). On Linux glibc's `realpath`
+    // and the kernel both follow at most 40: the prefix ending at the 41st link is seen as a
+    // link and Denied under both rules, and glibc's `realpath` takes lexical paths of any
+    // length. So the hops below, whose canonical paths pass the host's limit (1024 bytes on
+    // macOS, 4096 on Linux) while their lexical paths stay short, give the new denials on
+    // both hosts, and they are the paths of S-33: before #1380 the operation opened the
+    // lexical path, through a link to a directory outside the prefix.
     let depth = 70;
     let root = fresh("limits");
     disk_chain(&root, depth);
     std::fs::write(root.join("box/note.txt"), "content\n").unwrap();
     std::os::unix::fs::symlink(".", root.join("box/self")).unwrap();
+    std::fs::create_dir(root.join("outside")).unwrap();
+    std::fs::write(root.join("outside/secret.txt"), "secret\n").unwrap();
     let on = root.join("box");
+    let (hops, past) = disk_hops(&on);
+    let levels = past.unwrap_or(1);
+    let below = format!("{hops}{}", deep(levels));
+    std::os::unix::fs::symlink(root.join("outside"), on.join(&below).join("esc")).unwrap();
     let mut model = chain(depth);
     model.add("/r/box/note.txt", Node::File);
     model.add("/r/box/self", Node::Link(".".to_owned()));
@@ -719,6 +763,10 @@ fn host_limits_keep_the_outcomes_of_resolving_every_prefix_1343() {
         cases.push(format!("{}missing/note.txt", "self/".repeat(repeat)));
         cases.push(format!("{}l/d/f", "self/".repeat(repeat)));
     }
+    for tail in ["f", "esc/secret.txt", "esc/new.txt", "missing/f", "esc"] {
+        cases.push(format!("{below}/{tail}"));
+    }
+    cases.push("h/missing/new.txt".to_owned());
     let mut denied = 0;
     let mut newly_denied = 0;
     for relative in &cases {
@@ -748,9 +796,28 @@ fn host_limits_keep_the_outcomes_of_resolving_every_prefix_1343() {
         );
     }
     // The host's link limit denies the longest chains, and the host's path limit now denies
-    // the lexical paths longer than it takes (1024 bytes on macOS, 4096 on Linux).
+    // the directories whose canonical path is longer than it takes.
     assert!(denied > 0, "{denied}");
-    assert!(newly_denied > 0, "{newly_denied}");
+    if past.is_some() {
+        assert!(newly_denied > 0, "{newly_denied}");
+        // S-33: the rule before #1380 opened the file outside the prefix.
+        let escape = format!("{below}/esc/secret.txt");
+        let before = confine_quadratic(&mut Before(&mut Disk), &on, &escape).unwrap();
+        assert_eq!(std::fs::read_to_string(before).unwrap(), "secret\n");
+        assert_eq!(confine(&mut Disk, &on, &escape), None);
+    }
+    if cfg!(any(target_os = "macos", target_os = "linux")) {
+        assert!(past.is_some(), "{hops}");
+    }
+    if cfg!(target_os = "linux") {
+        // Past 40 links the prefix ending at the 41st is a link: Denied by both rules.
+        for links in 41..=depth {
+            let relative = chain_path(depth, links);
+            assert_eq!(confine(&mut Disk, &on, &relative), None, "{relative}");
+            let before = confine_quadratic(&mut Before(&mut Disk), &on, &relative);
+            assert_eq!(before, None, "{relative}");
+        }
+    }
 }
 
 /// The disk, counting the canonicalizations of one path.
@@ -945,32 +1012,15 @@ fn a_directory_past_the_host_path_limit_is_denied_on_the_disk_1380() {
     // so every lexical path stays short while the canonical paths grow; on a host whose
     // canonicalization has a length limit (1024 bytes on macOS) one of them does not resolve.
     let root = fresh("path_limit");
-    let name = "X".repeat(100);
-    let deep = |levels: usize| vec![name.as_str(); levels].join("/");
     let on = root.join("box");
     std::fs::create_dir_all(root.join("outside")).unwrap();
     std::fs::write(root.join("outside/secret.txt"), "secret\n").unwrap();
     std::fs::create_dir(&on).unwrap();
-    let mut hops = String::new();
-    let mut at = on.clone();
-    let mut past = None;
-    for _ in 0..64 {
-        let mut directory = at.clone();
-        for _ in 0..4 {
-            directory.push(&name);
-            std::fs::create_dir(&directory).unwrap();
-        }
-        std::os::unix::fs::symlink(deep(4), at.join("h")).unwrap();
-        past = (1..=4).find(|&levels| std::fs::canonicalize(at.join(deep(levels))).is_err());
-        if past.is_some() {
-            break;
-        }
-        at.push("h");
-        hops.push_str("h/");
-    }
+    let (hops, past) = disk_hops(&on);
     let limited = past.is_some();
     let levels = past.unwrap_or(1);
-    std::os::unix::fs::symlink(root.join("outside"), at.join(deep(levels)).join("esc")).unwrap();
+    let below = on.join(format!("{hops}{}", deep(levels)));
+    std::os::unix::fs::symlink(root.join("outside"), below.join("esc")).unwrap();
     let relative = format!("{hops}{}/esc/secret.txt", deep(levels));
     if limited {
         // The rule before #1380 opened the file outside the prefix.
@@ -987,9 +1037,10 @@ fn a_directory_past_the_host_path_limit_is_denied_on_the_disk_1380() {
     // A missing directory under a hop still leaves the path to the operation.
     let missing = "h/missing/new.txt";
     assert_eq!(confine(&mut Disk, &on, missing), Some(on.join(missing)));
-    // On macOS the limit is reached; other hosts may canonicalize longer paths, and then the
-    // link below is resolved and denied.
-    if cfg!(target_os = "macos") {
+    // On macOS (1024 bytes) and Linux (`PATH_MAX`, 4096 bytes, #1456) the limit is reached;
+    // other hosts may canonicalize longer paths, and then the link below is resolved and
+    // denied.
+    if cfg!(any(target_os = "macos", target_os = "linux")) {
         assert!(limited);
     }
 }
