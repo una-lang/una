@@ -244,35 +244,60 @@ impl Checker<'_, '_, '_> {
         }
     }
 
-    /// Records a call of, or a reference to, the function `callee` in every open site.
+    /// The seed of the handler whose operation bodies are being checked, lambdas and tasks
+    /// written in them included, which [`timing`] takes for every handler a site reaches (ADR
+    /// 0116 IF5 item 3, #1436); `None` outside a handler.
+    fn handler_seed(&mut self) -> Option<&mut TimingSeed> {
+        let handler = self.handler?;
+        Some(self.findings.handler_seeds.entry(handler).or_default())
+    }
+
+    /// Records a call of, or a reference to, the function `callee` in every open site, and in
+    /// the seed of the handler being checked.
     pub(crate) fn timing_callee(&mut self, callee: usize) {
         for frame in &mut self.timing {
             frame.seed.callees.insert(callee);
         }
+        if let Some(seed) = self.handler_seed() {
+            seed.callees.insert(callee);
+        }
     }
 
-    /// Records the operation `op` of `capability` in every open site.
+    /// Records the operation `op` of `capability` in every open site, and in the seed of the
+    /// handler being checked.
     pub(crate) fn timing_op(&mut self, capability: CapId, op: &str) {
         for frame in &mut self.timing {
             frame.seed.ops.insert((capability, op.to_owned()));
         }
+        if let Some(seed) = self.handler_seed() {
+            seed.ops.insert((capability, op.to_owned()));
+        }
     }
 
-    /// Records the installation of the handler `handler` in every open site.
+    /// Records the installation of the handler `handler` in every open site, and in the seed
+    /// of the handler being checked.
     pub(crate) fn timing_install(&mut self, handler: usize) {
         for frame in &mut self.timing {
             frame.seed.handlers.insert(handler);
         }
+        if let Some(seed) = self.handler_seed() {
+            seed.handlers.insert(handler);
+        }
     }
 
-    /// Records a call of a function value in every open site (IF5 item 4).
+    /// Records a call of a function value in every open site (IF5 item 4), and in the seed of
+    /// the handler being checked (#1436).
     pub(crate) fn timing_value_call(&mut self) {
         for frame in &mut self.timing {
             frame.seed.value_call = true;
         }
+        if let Some(seed) = self.handler_seed() {
+            seed.value_call = true;
+        }
     }
 
-    /// Records, in every open site and for the function being checked, a call of the prelude
+    /// Records, in every open site, for the function being checked and in the seed of the
+    /// handler being checked, a call of the prelude
     /// function `callee`, one that applies a function argument ([`applies_function`]), whose
     /// code is not known at the call, or a use of `callee` as a value (IF5 item 4, #1023).
     pub(crate) fn timing_opaque_apply(&mut self, callee: usize) {
@@ -281,6 +306,9 @@ impl Checker<'_, '_, '_> {
         }
         for frame in &mut self.timing {
             frame.seed.opaque_applies.insert(callee);
+        }
+        if let Some(seed) = self.handler_seed() {
+            seed.opaque_applies.insert(callee);
         }
     }
 
@@ -569,7 +597,6 @@ pub(crate) fn graph(env: &Env<'_>, findings: &Findings) -> Graph {
         }
         out
     }
-    let kinds = env.kind_labels.as_ref();
     let top = Label::top(&env.categories);
     let functions = env.functions.len();
     let handlers = env.handlers.len();
@@ -632,13 +659,9 @@ pub(crate) fn graph(env: &Env<'_>, findings: &Findings) -> Graph {
     }
     for (h, handler) in env.handlers.iter().enumerate() {
         let mut own = Label::public();
+        // `⊤` for a parameter whose type may hold a function (#1436).
         for param in &handler.params {
-            let label = if matches!(param.ty.base.unlabeled(), Ty::Fn(_)) {
-                top.clone()
-            } else {
-                param.ty.base.deep_label(kinds)
-            };
-            own = own.join(&label);
+            own = own.join(&handler_param_label(env, &param.ty.base));
         }
         let node = graph.handler_node(h);
         if let Some(slot) = graph.local.get_mut(node) {
@@ -1312,6 +1335,188 @@ pub(crate) fn concurrent_functions(findings: &Findings) -> BTreeSet<usize> {
     reach(&callees, roots)
 }
 
+/// Whether a value of `ty` may hold a function value: a function type, or one inside a list, a
+/// map, a collection, an `Option`, a `Result` or a kind's fields, at any depth (#1436). A type
+/// parameter, a unification variable and a kind the table does not know count as holding one,
+/// failing closed. The one rule for the timing label, the known arguments of #1023 and the
+/// function values that cross a boundary (ADR 0093 rule 8).
+pub(crate) fn holds_function(env: &Env<'_>, ty: &Ty) -> bool {
+    holds_function_by(env, ty, &|ty: &Ty| ty.clone())
+}
+
+/// [`holds_function`] with `resolve` applied to each type first, as a checker resolves the
+/// unification variables it has solved (review R2 of #1440).
+pub(crate) fn holds_function_by(env: &Env<'_>, ty: &Ty, resolve: &dyn Fn(&Ty) -> Ty) -> bool {
+    match resolve(ty) {
+        Ty::Fn(_) | Ty::Param(_) | Ty::Var(_) => true,
+        Ty::List(inner)
+        | Ty::Dense(_, inner)
+        | Ty::Labeled(_, inner)
+        | Ty::Refined(_, inner)
+        | Ty::Measured(_, inner) => holds_function_by(env, &inner, resolve),
+        Ty::Map(key, value) => {
+            holds_function_by(env, &key, resolve) || holds_function_by(env, &value, resolve)
+        }
+        Ty::Coll(_, args) => args.iter().any(|arg| holds_function_by(env, arg, resolve)),
+        Ty::Kind(id, args) => {
+            env.holds_function_kinds.get(id).copied().unwrap_or(true)
+                || args.iter().any(|arg| holds_function_by(env, arg, resolve))
+        }
+        _ => false,
+    }
+}
+
+/// The label a handler's parameter adds to a timing label (ADR 0116 IF5 item 3): `⊤` when its
+/// type may hold a function, whose running time its type does not bound, as for a parameter
+/// of function type, and its deep label otherwise (#1436).
+fn handler_param_label(env: &Env<'_>, ty: &Ty) -> Label {
+    if holds_function(env, ty) {
+        Label::top(&env.categories)
+    } else {
+        ty.deep_label(env.kind_labels.as_ref())
+    }
+}
+
+/// What [`timing`] has gathered of a site: the functions it reaches, the prelude functions
+/// applied to arguments whose code is not known at the call, the handlers and operations still
+/// to take, and the sources so far, in the order a message names them.
+struct Gather<'f> {
+    /// The callees of each function, from the package's call edges.
+    callees: &'f BTreeMap<usize, Vec<usize>>,
+    /// The functions reached so far.
+    reached: BTreeSet<usize>,
+    /// The prelude functions applied, in the site or in what it reaches, to an argument whose
+    /// code is not known at the call (#1023).
+    opaque: BTreeSet<usize>,
+    /// The functions of `opaque` already counted as a source.
+    flagged: BTreeSet<usize>,
+    /// The functions added to `opaque` since [`Gather::flag_opaque`] last ran.
+    late: Vec<usize>,
+    /// The handlers that can serve the operations reached.
+    handlers: BTreeSet<usize>,
+    /// The handlers of `handlers` not taken yet.
+    queue: Vec<usize>,
+    /// The operations still to take.
+    needs: Vec<(CapId, String)>,
+    /// The sources so far.
+    sources: Vec<(Label, String)>,
+}
+
+impl Gather<'_> {
+    /// Adds the handler `h`, to be taken once.
+    fn add_handler(&mut self, h: usize) {
+        if self.handlers.insert(h) {
+            self.queue.push(h);
+        }
+    }
+
+    /// Adds the prelude function `f` to those applied to an argument whose code is not known.
+    fn add_opaque(&mut self, f: usize) {
+        if self.opaque.insert(f) {
+            self.late.push(f);
+        }
+    }
+
+    /// Reaches the functions `roots` and what they call, and takes each function newly reached,
+    /// in ascending order: a call of a function value in it, an application of it to an
+    /// argument whose code is not known, the handlers it installs and the operations its `uses`
+    /// names. Each function is taken once, and its installs and opaque applications are looked
+    /// up by a range of the sets ordered by caller, so all the calls over one site take
+    /// O((F + E + I + A) log n) in all, for `F` functions reached, `E` their call edges, `I`
+    /// their installs and `A` their opaque applications (review R1 of #1440).
+    fn visit(
+        &mut self,
+        env: &Env<'_>,
+        findings: &Findings,
+        roots: impl IntoIterator<Item = usize>,
+    ) {
+        let top = Label::top(&env.categories);
+        let mut fresh: BTreeSet<usize> = BTreeSet::new();
+        let mut pending: Vec<usize> = roots.into_iter().collect();
+        while let Some(f) = pending.pop() {
+            una_core::label_counters::timing_step();
+            if !self.reached.contains(&f) && fresh.insert(f) {
+                pending.extend(self.callees.get(&f).into_iter().flatten().copied());
+            }
+        }
+        self.reached.extend(fresh.iter().copied());
+        for &f in &fresh {
+            let own: Vec<usize> = findings
+                .opaque_applies
+                .range((f, 0)..=(f, usize::MAX))
+                .map(|&(_, callee)| callee)
+                .collect();
+            for callee in own {
+                una_core::label_counters::timing_step();
+                self.add_opaque(callee);
+            }
+            let installs: Vec<usize> = findings
+                .installs
+                .range((f, 0)..=(f, usize::MAX))
+                .map(|&(_, h)| h)
+                .collect();
+            for h in installs {
+                una_core::label_counters::timing_step();
+                self.add_handler(h);
+            }
+        }
+        for &f in &fresh {
+            let Some(def) = env.functions.get(f) else {
+                continue;
+            };
+            if findings.value_callers.contains(&f) {
+                self.sources.push((
+                    top.clone(),
+                    format!("a call of a function value in `{}`", def.name),
+                ));
+            }
+            // A prelude function that applies a function argument, such as `map`, when the
+            // site or a function it reaches calls it with an argument whose code is not known
+            // at the call, or names it as a value (#1023). Called only with lambdas written at
+            // the call, it runs nothing the seed and the reached functions do not already
+            // count: the lambdas' captures are the site's free variables (IF5 item 2) or locals
+            // of a reached function, and what their bodies call and perform is recorded where
+            // they are written.
+            if applies_function(env, def) && self.opaque.contains(&f) && self.flagged.insert(f) {
+                self.sources.push((
+                    top.clone(),
+                    format!("the function argument of `{}`", def.name),
+                ));
+            }
+            for need in &def.uses {
+                if let Some(cap) = need.usage.capability {
+                    self.needs
+                        .extend(need.usage.ops.iter().map(|op| (cap, op.clone())));
+                }
+            }
+        }
+        self.flag_opaque(env);
+    }
+
+    /// Counts each prelude function reached earlier that a later part of the site applies to an
+    /// argument whose code is not known, as a handler's operation body may (#1436). Only the
+    /// functions added since the last call are looked at: one not reached yet is counted when it
+    /// is reached, by [`Gather::visit`].
+    fn flag_opaque(&mut self, env: &Env<'_>) {
+        let top = Label::top(&env.categories);
+        let mut late = std::mem::take(&mut self.late);
+        late.sort_unstable();
+        late.dedup();
+        late.retain(|f| self.reached.contains(f) && !self.flagged.contains(f));
+        for f in late {
+            let Some(def) = env.functions.get(f) else {
+                continue;
+            };
+            if applies_function(env, def) && self.flagged.insert(f) {
+                self.sources.push((
+                    top.clone(),
+                    format!("the function argument of `{}`", def.name),
+                ));
+            }
+        }
+    }
+}
+
 /// `τ(e)` of a site whose checking recorded `seed`, in the function `function` (ADR 0116 IF5,
 /// IF6), with the handlers of host capabilities that `host` counts. `concurrent` is
 /// [`concurrent_functions`] of the package.
@@ -1324,7 +1529,19 @@ pub(crate) fn concurrent_functions(findings: &Findings) -> BTreeSet<usize> {
 /// reached functions already count (#1023); so does concurrent work, where `τ_conc` is `⊤`
 /// rather than the join of the siblings' `τ⁰`.
 ///
-/// O(functions + call edges + operations + handlers).
+/// **Handlers** (ADR 0116 IF5 item 3, #1436). Each handler that can serve an operation the site
+/// reaches counts by its parameters, `⊤` for one whose type may hold a function
+/// ([`holds_function`]), and by what its operation bodies run, their lambdas and tasks
+/// included, taken as the site's own code is: the functions they call, with what those reach,
+/// the operations they perform, the handlers they install, a call of a function value (`⊤`)
+/// and a prelude function applied to an argument whose code is not known (`⊤`).
+///
+/// **Complexity** (review R1 of #1440): each function, handler and operation is taken once per
+/// site, and each lookup is in an ordered map or set, so a site costs
+/// O((F + E + H + O + S) log n), for `F` functions, `E` call edges, `H` handlers, `O`
+/// operations and `S` the size of the seeds of the handlers it reaches; the call edges are
+/// indexed once per site. `tests/handler_timing_scaling.rs` keeps it linear in a chain of
+/// handlers.
 pub(crate) fn timing(
     env: &Env<'_>,
     findings: &Findings,
@@ -1335,65 +1552,40 @@ pub(crate) fn timing(
 ) -> Timing {
     let kinds = env.kind_labels.as_ref();
     let top = Label::top(&env.categories);
-    let mut sources = seed.sources.clone();
-    if seed.value_call {
-        sources.push((top.clone(), "a call of a function value".to_owned()));
-    }
     let callees = callees_of(findings);
-    let reached = reach(&callees, seed.callees.iter().copied());
-    // The prelude functions that apply a function argument whose code is not known at the
-    // call, in the site or in a function it reaches (IF5 item 4, #1023).
-    let mut opaque: BTreeSet<usize> = seed.opaque_applies.clone();
-    opaque.extend(
-        findings
-            .opaque_applies
-            .iter()
-            .filter(|(caller, _)| reached.contains(caller))
-            .map(|&(_, callee)| callee),
-    );
-    let mut handlers: BTreeSet<usize> = seed.handlers.clone();
-    handlers.extend(
-        findings
-            .installs
-            .iter()
-            .filter(|(f, _)| reached.contains(f))
-            .map(|&(_, h)| h),
-    );
-    let mut needs: Vec<(CapId, String)> = seed.ops.iter().cloned().collect();
-    for &f in &reached {
-        let Some(def) = env.functions.get(f) else {
-            continue;
-        };
-        if findings.value_callers.contains(&f) {
-            sources.push((
-                top.clone(),
-                format!("a call of a function value in `{}`", def.name),
-            ));
-        }
-        // A prelude function that applies a function argument, such as `map`, when the site
-        // or a function it reaches calls it with an argument whose code is not known at the
-        // call, or names it as a value (#1023). Called only with lambdas written at the call,
-        // it runs nothing the seed and the reached functions do not already count: the
-        // lambdas' captures are the site's free variables (IF5 item 2) or locals of a reached
-        // function, and what their bodies call and perform is recorded where they are written.
-        if applies_function(env, def) && opaque.contains(&f) {
-            sources.push((
-                top.clone(),
-                format!("the function argument of `{}`", def.name),
-            ));
-        }
-        for need in &def.uses {
-            if let Some(cap) = need.usage.capability {
-                needs.extend(need.usage.ops.iter().map(|op| (cap, op.clone())));
-            }
+    // The handlers of each capability, so that an operation finds its handlers without a scan
+    // of every handler of the package.
+    let mut of_capability: BTreeMap<CapId, Vec<usize>> = BTreeMap::new();
+    for (id, handler) in env.handlers.iter().enumerate() {
+        una_core::label_counters::timing_step();
+        if let Some(cap) = handler.capability {
+            of_capability.entry(cap).or_default().push(id);
         }
     }
+    let mut gather = Gather {
+        callees: &callees,
+        reached: BTreeSet::new(),
+        opaque: seed.opaque_applies.clone(),
+        flagged: BTreeSet::new(),
+        late: Vec::new(),
+        handlers: seed.handlers.clone(),
+        queue: seed.handlers.iter().copied().collect(),
+        needs: seed.ops.iter().cloned().collect(),
+        sources: seed.sources.clone(),
+    };
+    if seed.value_call {
+        gather
+            .sources
+            .push((top.clone(), "a call of a function value".to_owned()));
+    }
+    gather.visit(env, findings, seed.callees.iter().copied());
     // The operations, and the handlers that can serve them, with the operations those
-    // handlers need, to a fixpoint over capabilities.
+    // handlers need and what their operation bodies run, to a fixpoint over capabilities.
     let mut seen: BTreeSet<(CapId, String)> = BTreeSet::new();
     let mut handled: BTreeSet<usize> = BTreeSet::new();
-    while !needs.is_empty() || handlers.iter().any(|h| !handled.contains(h)) {
-        while let Some((cap, op)) = needs.pop() {
+    while !gather.needs.is_empty() || !gather.queue.is_empty() {
+        while let Some((cap, op)) = gather.needs.pop() {
+            una_core::label_counters::timing_step();
             if !seen.insert((cap, op.clone())) {
                 continue;
             }
@@ -1408,42 +1600,68 @@ pub(crate) fn timing(
                 if let Some(fails) = &def.fails {
                     rho = rho.join(&fails.deep_label(kinds));
                 }
-                sources.push((rho, format!("the operation `{}.{op}`", capability.name)));
+                gather
+                    .sources
+                    .push((rho, format!("the operation `{}.{op}`", capability.name)));
             }
             if capability.module != env.prelude || host == HostHandlers::All {
-                handlers.extend(
-                    env.handlers
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, h)| h.capability == Some(cap))
-                        .map(|(id, _)| id),
-                );
+                for &id in of_capability.get(&cap).map_or(&[][..], Vec::as_slice) {
+                    una_core::label_counters::timing_step();
+                    gather.add_handler(id);
+                }
             }
         }
-        let next: Vec<usize> = handlers.difference(&handled).copied().collect();
+        // The handlers added since the last round, in ascending order.
+        let mut next = std::mem::take(&mut gather.queue);
+        next.sort_unstable();
         for id in next {
-            handled.insert(id);
+            una_core::label_counters::timing_step();
+            if !handled.insert(id) {
+                continue;
+            }
             let Some(handler) = env.handlers.get(id) else {
                 continue;
             };
             for param in &handler.params {
-                let label = if matches!(param.ty.base.unlabeled(), Ty::Fn(_)) {
-                    top.clone()
-                } else {
-                    param.ty.base.deep_label(kinds)
-                };
-                sources.push((
-                    label,
+                gather.sources.push((
+                    handler_param_label(env, &param.ty.base),
                     format!("the parameter `{}` of a handler", param.name),
                 ));
             }
             for need in &handler.uses {
                 if let Some(cap) = need.usage.capability {
-                    needs.extend(need.usage.ops.iter().map(|op| (cap, op.clone())));
+                    gather
+                        .needs
+                        .extend(need.usage.ops.iter().map(|op| (cap, op.clone())));
                 }
+            }
+            // What its operation bodies run, taken as the site's own code is (#1436).
+            if let Some(body) = findings.handler_seeds.get(&id) {
+                if body.value_call {
+                    gather.sources.push((
+                        top.clone(),
+                        format!(
+                            "a call of a function value in the handler `{}`",
+                            env.text(handler.module, handler.ast.name.name)
+                        ),
+                    ));
+                }
+                for &h in &body.handlers {
+                    gather.add_handler(h);
+                }
+                gather.needs.extend(body.ops.iter().cloned());
+                for &f in &body.opaque_applies {
+                    gather.add_opaque(f);
+                }
+                gather.visit(
+                    env,
+                    findings,
+                    body.callees.iter().chain(&body.opaque_applies).copied(),
+                );
             }
         }
     }
+    let mut sources = gather.sources;
     // `τ_conc` (IF6): `⊤` when a part of a task construct can run beside the site.
     if seed.unplaced || function.is_some_and(|f| concurrent.contains(&f)) {
         sources.push((top, "tasks that can run beside it".to_owned()));
