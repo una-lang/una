@@ -408,13 +408,15 @@ impl Checker<'_, '_, '_> {
             | Ty::Refined(_, inner) => self.holds_function(&inner),
             Ty::Map(key, value) => self.holds_function(&key) || self.holds_function(&value),
             Ty::Coll(_, args) => args.iter().any(|arg| self.holds_function(arg)),
+            // The table of every package, with or without boundaries, so that the known-argument
+            // check of #1023 sees a kind's function fields too; a kind it does not know holds one,
+            // failing closed (#1436, review L1).
             Ty::Kind(id, args) => {
                 self.env
-                    .boundaries
-                    .function_kinds
+                    .holds_function_kinds
                     .get(id)
                     .copied()
-                    .unwrap_or(false)
+                    .unwrap_or(true)
                     || args.iter().any(|arg| self.holds_function(arg))
             }
             _ => false,
