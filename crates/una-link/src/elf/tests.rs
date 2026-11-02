@@ -368,6 +368,20 @@ fn a_guarded_call_to_an_undefined_weak_function_resolves_as_ld_lld_does() {
         Code::U8001,
         "not a call",
     );
+    // The byte of a call in a section that is not executable is data, not a call.
+    for flags in [0, WRITE] {
+        refused(
+            one(
+                X86_64,
+                flags,
+                vec![0xe8, 0, 0, 0, 0],
+                (1, x64::R_PLT32, -4),
+                Referent::UndefinedWeak,
+            ),
+            Code::U8001,
+            "not a call",
+        );
+    }
     // arm64: a branch to the next instruction.
     assert_eq!(
         one(

@@ -191,9 +191,13 @@ pub(crate) fn decide(site: &Site<'_, '_>, referent: Referent) -> Result<Decision
             // with a test of the function's address (crtbeginS.o's `__cxa_finalize`): resolved
             // as `ld.lld` does, with the symbol's value 0, so the call, if it ever ran, would
             // reach the image's first byte, the headers, which are not executable. Only a
-            // `call rel32` or `jmp rel32`: anything else is a PC-relative reference.
+            // `call rel32` or `jmp rel32` in an executable section: anything else is a
+            // PC-relative reference.
             let range = site.range(0, 4)?;
-            if rela.offset == 0 || !matches!(site.byte(-1)?, 0xe8 | 0xe9) {
+            let code = site
+                .section()
+                .is_some_and(|s| s.flags & crate::elf::SHF_EXECINSTR != 0);
+            if !code || rela.offset == 0 || !matches!(site.byte(-1)?, 0xe8 | 0xe9) {
                 return Err(site.refused(
                     "a PC-relative type against an undefined weak symbol that is not a call",
                 ));
