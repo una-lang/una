@@ -1,0 +1,89 @@
+-- test: a lambda written at the call of a prelude function that applies it, such as `map`, `filter` or `fold`, adds its captures and what its body runs to the timing label of a `within` (ADR 0116 IF5 items 2 and 4), not `⊤`: on `public` captures, directly, nested or in a function the `within` calls, `if error pass` is accepted; a capture of a `secret` binding, at any depth, is U4002; a function value whose code is not known at the call, a local bound to a lambda, a field of a kind, a parameter, or a named function passed as the argument, keeps `⊤` (spec/26 §2 rule 5, spec/27 §5)
+-- spec: spec/26 §2
+-- expect: error U4002 at src/lambdas.una:44:5
+-- expect: error U4002 at src/lambdas.una:51:5
+-- expect: error U4002 at src/lambdas.una:59:5
+-- expect: error U4002 at src/lambdas.una:67:5
+-- expect: error U4002 at src/lambdas.una:74:5
+-- expect: error U4002 at src/lambdas.una:81:5
+-- expect: error U4002 at src/lambdas.una:88:5
+module lambdas
+
+import std.time (millisecond)
+
+pub kind PollError = | TimedOut
+
+kind Holder
+  run: fn(Int) -> Int
+
+inc(x: Int) -> Int = x + 1
+
+apply(f: fn(Int) -> Int, x: Int) -> Int = f(x)
+
+counted(n: Int) -> Int = [n, n].map(each: fn(x: Int) -> x + n).len
+
+pub direct(n: Int) -> Int
+  fails PollError
+=
+  let a = [n].map(each: fn(x: Int) -> x + n).len within 10 * millisecond
+    if error pass
+  let b = [n].filter(keep: fn(x: Int) -> x > n).len within 10 * millisecond
+    if error pass
+  let c = [n].fold(initial: 0, step: fn(acc: Int, x: Int) -> acc + x) within 10 * millisecond
+    if error pass
+  let d = [n].map(each: fn(x: Int) -> [x].map(each: fn(y: Int) -> y + n).len).len within 10 * millisecond
+    if error pass
+  let e = counted(n) within 10 * millisecond
+    if error pass
+  a + b + c + d + e
+
+pub captured(n: Int, key: secret Int) -> Int
+  fails PollError
+=
+  let a = [n].map(each: fn(x: Int) -> if x > key then 1 else 2).len within 10 * millisecond
+    if error pass
+  a
+
+pub nested(n: Int, key: secret Int) -> Int
+  fails PollError
+=
+  let a = [n].map(each: fn(x: Int) -> [x].filter(keep: fn(y: Int) -> y > key).len).len within 10 * millisecond
+    if error pass
+  a
+
+pub local(n: Int) -> Int
+  fails PollError
+=
+  let f = fn(x: Int) -> x + 1
+  let a = [n].map(each: fn(x: Int) -> f(x)).len within 10 * millisecond
+    if error pass
+  a
+
+pub field(n: Int) -> Int
+  fails PollError
+=
+  let h = Holder(run: fn(x: Int) -> x + 1)
+  let a = [n].map(each: h.run).len within 10 * millisecond
+    if error pass
+  a
+
+pub parameter(n: Int) -> Int
+  fails PollError
+=
+  let a = apply(fn(x: Int) -> x + 1, x: n) within 10 * millisecond
+    if error pass
+  a
+
+pub named(n: Int) -> Int
+  fails PollError
+=
+  let a = [n].map(each: inc).len within 10 * millisecond
+    if error pass
+  a
+
+pub passed(n: Int, g: fn(Int) -> Int) -> Int
+  fails PollError
+=
+  let a = [n].map(each: g).len within 10 * millisecond
+    if error pass
+  a

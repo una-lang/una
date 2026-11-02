@@ -1039,6 +1039,12 @@ pub(crate) struct Findings {
     /// a local or a field of function type. Their running time depends on code the timing label
     /// cannot see (ADR 0116 IF5 item 4).
     pub(crate) value_callers: std::collections::BTreeSet<usize>,
+    /// Each function, with each prelude function that applies a function argument
+    /// (`timing::applies_function`) that its body, its lambdas' included, calls with an
+    /// argument whose code is not known at the call, or names as a value (ADR 0116 IF5 item 4,
+    /// #1023). A call whose every function argument is a lambda written at the call is not
+    /// one.
+    pub(crate) opaque_applies: std::collections::BTreeSet<(usize, usize)>,
     /// The handlers each function installs with `with` or `given` (ADR 0116 IF5 item 3).
     pub(crate) installs: std::collections::BTreeSet<(usize, usize)>,
     /// The functions whose bodies hold a task construct, `together` or `together for` (ADR 0116

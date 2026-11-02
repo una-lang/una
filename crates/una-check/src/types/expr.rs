@@ -779,6 +779,13 @@ impl<'a> Checker<'_, 'a, '_> {
             self.instantiation(def.name, &def.type_params, args.clone(), Vec::new(), span);
         }
         self.edge(id, span);
+        // A prelude function that applies a function argument, named as a value, applies
+        // arguments whose code is not known where it is named (ADR 0116 IF5 item 4, #1023).
+        if let Some(def) = self.env.functions.get(id)
+            && super::timing::applies_function(self.env, def)
+        {
+            self.timing_opaque_apply(id);
+        }
         // A function used as a value may be called anywhere under its effect bound (S-14).
         if self.labels() {
             self.env.file_escaped.insert(id);

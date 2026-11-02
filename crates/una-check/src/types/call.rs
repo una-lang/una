@@ -175,6 +175,24 @@ impl<'a> Checker<'_, 'a, '_> {
         self.report.push(diagnostic);
     }
 
+    /// Whether every argument of a call that may hold a function, by its parameter's type or
+    /// its own, is a lambda written at the call, and every argument was typed against a
+    /// parameter (ADR 0116 IF5 item 4, #1023). The receiver is never one, as it is no lambda.
+    fn known_function_arguments(
+        &self,
+        args: &[Arg],
+        has_receiver: bool,
+        checked: &[Checked<'_>],
+    ) -> bool {
+        checked.len() == args.len() + usize::from(has_receiver)
+            && checked.iter().all(|(at, found, expected, _)| {
+                !(self.holds_function(expected) || self.holds_function(found))
+                    || args.iter().any(|arg| {
+                        arg.value.span == *at && matches!(arg.value.kind, ExprKind::Lambda { .. })
+                    })
+            })
+    }
+
     /// `e.f(args)`: a call of field `f` when it has a function type, otherwise `f(e, args)` with
     /// `f` declared in scope (`spec/04 §3`).
     // The expected type reaches the built-in unit methods (ADR 0104 rule 4).
@@ -985,6 +1003,15 @@ impl<'a> Checker<'_, 'a, '_> {
             span,
             def.module,
         );
+        // ADR 0116 IF5 item 4 (#1023): a prelude function that applies a function argument
+        // runs code known at the call only when every argument that may hold a function is a
+        // lambda written at the call, which the timing label of a site counts by its captures
+        // and its body. Any other one, the receiver included, keeps `⊤`.
+        if super::timing::applies_function(self.env, &def)
+            && !self.known_function_arguments(args, has_receiver, &checked)
+        {
+            self.timing_opaque_apply(id);
+        }
         // ADR 0092 rule 3: the function values the callee may run through the caller's
         // bindings, charged once the arguments are typed (#615).
         self.passed_conditions(id, has_receiver, args, span, level);

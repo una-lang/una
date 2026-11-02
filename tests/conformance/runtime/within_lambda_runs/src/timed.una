@@ -1,0 +1,41 @@
+-- test: a `within` over `map`, `filter` and `fold` with lambdas written at the call, whose captures are `public`, has a `public` timing label (ADR 0116 IF5 item 4), so a print inside it and `if error pass` are accepted, and both engines give the same outcomes (spec/26 §2 rule 5, spec/27 §5)
+-- spec: spec/27 §5
+-- grant: console
+-- expect: run-output "doubled 3 6"
+-- expect: run-output "kept 2"
+-- expect: run-output "total 12"
+-- expect: run-output "nested 3"
+module timed
+
+import std.time (second)
+
+pub kind CalcError = | TimedOut
+
+summed(xs: List[Int], by: Int) -> Int
+  fails CalcError
+=
+  let total = xs.fold(initial: 0, step: fn(acc: Int, x: Int) -> acc + x * by) within 60 * second
+    if error pass
+  total
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let by = 2
+  let doubled = [1, 2, 3].map(each: fn(x: Int) -> x * by) within 60 * second
+    if error use []
+  let last = doubled.fold(initial: 0, step: fn(acc: Int, x: Int) -> x)
+  @console.print("doubled {doubled.len} {last}") within 60 * second
+    if error use unit
+  let kept = doubled.filter(keep: fn(x: Int) -> x > by) within 60 * second
+    if error use []
+  @console.print("kept {kept.len}")
+  let total = attempt summed([1, 2, 3], by: by)
+  let shown = when total
+    is Ok(value) -> "{value}"
+    is Err(failure) -> "timed out"
+  @console.print("total {shown}")
+  let ones = [1, 2, 3]
+  let nested = ones.map(each: fn(x: Int) -> [x].map(each: fn(y: Int) -> y + by).len) within 60 * second
+    if error use []
+  @console.print("nested {nested.len}")

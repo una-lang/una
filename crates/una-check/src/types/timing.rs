@@ -36,6 +36,11 @@ pub(crate) struct TimingSeed {
     pub(crate) handlers: BTreeSet<usize>,
     /// Whether it calls a function value whose code is not known at the site (IF5 item 4).
     pub(crate) value_call: bool,
+    /// The prelude functions that apply a function argument ([`applies_function`]) which it
+    /// calls with an argument whose code is not known at the call, or names as values (IF5
+    /// item 4, #1023). A call whose every function argument is a lambda written at the call
+    /// is not one: what the lambda runs and captures is in the seed already.
+    pub(crate) opaque_applies: BTreeSet<usize>,
     /// Whether it lies inside a lambda, a `together` task or a handler's operation, whose
     /// concurrent work the structure of its function does not show: `τ_conc` is then `⊤`.
     pub(crate) unplaced: bool,
@@ -267,6 +272,18 @@ impl Checker<'_, '_, '_> {
         }
     }
 
+    /// Records, in every open site and for the function being checked, a call of the prelude
+    /// function `callee`, one that applies a function argument ([`applies_function`]), whose
+    /// code is not known at the call, or a use of `callee` as a value (IF5 item 4, #1023).
+    pub(crate) fn timing_opaque_apply(&mut self, callee: usize) {
+        if let Some(current) = self.current {
+            self.findings.opaque_applies.insert((current, callee));
+        }
+        for frame in &mut self.timing {
+            frame.seed.opaque_applies.insert(callee);
+        }
+    }
+
     /// The clause that names the residue label `L_res` (ADR 0116 P9) in a message about a
     /// timing label above `bound`, when `L_res` alone is above it, and nothing otherwise: one
     /// clause after a semicolon, so the message stays one sentence.
@@ -491,6 +508,18 @@ impl Graph {
     }
 }
 
+/// Whether `def` is a function of the prelude, or of another standard module, with a parameter
+/// of function type, such as `map`, `filter` or `fold`: one that applies a function argument
+/// during the call. No such function keeps its function argument after the call: its result
+/// holds no copy of it (IF5 item 4, #1023).
+pub(crate) fn applies_function(env: &Env<'_>, def: &super::env::FnDef<'_>) -> bool {
+    def.module >= env.prelude
+        && def
+            .params
+            .iter()
+            .any(|p| matches!(p.ty.base.unlabeled(), Ty::Fn(_)))
+}
+
 /// `ρ` of the operation `op` of `cap` (IF5 item 3): `ℓ*` of its result, its `accepts` label and
 /// `ℓ*` of its failure kind; `None` for an operation the capability does not declare.
 fn rho(env: &Env<'_>, cap: CapId, op: &str) -> Option<Label> {
@@ -588,12 +617,9 @@ pub(crate) fn graph(env: &Env<'_>, findings: &Findings) -> Graph {
             *slot = top.clone();
         }
         // A prelude function that applies a function argument, such as `map`, runs lambdas.
-        if def.module >= env.prelude
-            && def
-                .params
-                .iter()
-                .any(|p| matches!(p.ty.base.unlabeled(), Ty::Fn(_)))
-        {
+        // The graph keeps `⊤` for it whatever its arguments: all lambdas are one node `Λ`
+        // here, so a lambda's captures are not told apart (#1023 refines only `timing`).
+        if applies_function(env, def) {
             if let Some(slot) = graph.local.get_mut(f) {
                 *slot = top.clone();
             }
@@ -1290,9 +1316,11 @@ pub(crate) fn concurrent_functions(findings: &Findings) -> BTreeSet<usize> {
 /// [`concurrent_functions`] of the package.
 ///
 /// The preview over-approximations of `spec/26 §2` rule 5 apply, and may only get less strict:
-/// a function value called anywhere the site reaches, or a prelude function with a function
-/// parameter it reaches, makes it `⊤`; so does concurrent work, where `τ_conc` is `⊤` rather
-/// than the join of the siblings' `τ⁰`.
+/// a function value called anywhere the site reaches makes it `⊤`, and so does a call of a
+/// prelude function with a function parameter there, unless every argument of that call that may
+/// hold a function is a lambda written at the call, whose captures and body the seed and the
+/// reached functions already count (#1023); so does concurrent work, where `τ_conc` is `⊤`
+/// rather than the join of the siblings' `τ⁰`.
 ///
 /// O(functions + call edges + operations + handlers).
 pub(crate) fn timing(
@@ -1311,6 +1339,16 @@ pub(crate) fn timing(
     }
     let callees = callees_of(findings);
     let reached = reach(&callees, seed.callees.iter().copied());
+    // The prelude functions that apply a function argument whose code is not known at the
+    // call, in the site or in a function it reaches (IF5 item 4, #1023).
+    let mut opaque: BTreeSet<usize> = seed.opaque_applies.clone();
+    opaque.extend(
+        findings
+            .opaque_applies
+            .iter()
+            .filter(|(caller, _)| reached.contains(caller))
+            .map(|&(_, callee)| callee),
+    );
     let mut handlers: BTreeSet<usize> = seed.handlers.clone();
     handlers.extend(
         findings
@@ -1330,13 +1368,13 @@ pub(crate) fn timing(
                 format!("a call of a function value in `{}`", def.name),
             ));
         }
-        // A prelude function that applies a function argument, such as `map`.
-        if def.module >= env.prelude
-            && def
-                .params
-                .iter()
-                .any(|p| matches!(p.ty.base.unlabeled(), Ty::Fn(_)))
-        {
+        // A prelude function that applies a function argument, such as `map`, when the site
+        // or a function it reaches calls it with an argument whose code is not known at the
+        // call, or names it as a value (#1023). Called only with lambdas written at the call,
+        // it runs nothing the seed and the reached functions do not already count: the
+        // lambdas' captures are the site's free variables (IF5 item 2) or locals of a reached
+        // function, and what their bodies call and perform is recorded where they are written.
+        if applies_function(env, def) && opaque.contains(&f) {
             sources.push((
                 top.clone(),
                 format!("the function argument of `{}`", def.name),
