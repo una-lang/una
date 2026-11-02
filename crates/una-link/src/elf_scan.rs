@@ -9,7 +9,7 @@
 //! - an `R_*_IRELATIVE` relocation or an indirect function (`STT_GNU_IFUNC`) anywhere (rule 24,
 //!   "never supported"; design decision D2);
 //! - in a section the executable loads (`SHF_ALLOC`), a relocation type outside rule 24's list
-//!   for the object's architecture, a narrow absolute relocation against a symbol that is not
+//!   for the object's architecture (the list of the relocation engine, [`crate::elf::reloc`]), a narrow absolute relocation against a symbol that is not
 //!   absolute, and a 64-bit absolute one in a section that is neither writable nor thread-local
 //!   data (a text relocation). Relocations in sections that are not loaded (`.debug_*`,
 //!   `.comment`) are counted and never refused.
@@ -26,6 +26,8 @@ use object::{
     SymbolSection,
 };
 
+use crate::elf::Arch;
+use crate::elf::reloc::{self, Class};
 use crate::input::Archive;
 use crate::problem::{Problem, Result, shown};
 
@@ -136,130 +138,26 @@ fn check_index(archive: &Archive<'_>) -> Result<u64> {
     u64::try_from(entries.len()).map_err(|_| Problem::internal("too many symbols"))
 }
 
-/// The architectures of the musl targets.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Arch {
-    X86_64,
-    Aarch64,
-}
-
-/// What a relocation type is, for the rules of rule 24.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Class {
-    /// Supported, with no restriction of its own.
-    Plain,
-    /// A narrow absolute type: only against an absolute symbol or outside loaded sections.
-    Narrow,
-    /// A 64-bit absolute type: only in a writable section, where it becomes a relative fixup.
-    Wide,
-}
-
-/// Rule 24's list for x86-64: (type, name, class).
-const X86_64: &[(u32, &str, Class)] = &[
-    (1, "R_X86_64_64", Class::Wide),
-    (2, "R_X86_64_PC32", Class::Plain),
-    (4, "R_X86_64_PLT32", Class::Plain),
-    (9, "R_X86_64_GOTPCREL", Class::Plain),
-    (10, "R_X86_64_32", Class::Narrow),
-    (11, "R_X86_64_32S", Class::Narrow),
-    (19, "R_X86_64_TLSGD", Class::Plain),
-    (20, "R_X86_64_TLSLD", Class::Plain),
-    (21, "R_X86_64_DTPOFF32", Class::Plain),
-    (22, "R_X86_64_GOTTPOFF", Class::Plain),
-    (23, "R_X86_64_TPOFF32", Class::Plain),
-    (24, "R_X86_64_PC64", Class::Plain),
-    (41, "R_X86_64_GOTPCRELX", Class::Plain),
-    (42, "R_X86_64_REX_GOTPCRELX", Class::Plain),
-];
-
-/// Rule 24's list for arm64: (type, name, class). `TLSLE_*`, `TLSIE_*` and `TLSDESC_*` are the
-/// types of those families that the ABI defines for the local-exec model and its relaxations.
-const AARCH64: &[(u32, &str, Class)] = &[
-    (257, "R_AARCH64_ABS64", Class::Wide),
-    (258, "R_AARCH64_ABS32", Class::Narrow),
-    (260, "R_AARCH64_PREL64", Class::Plain),
-    (261, "R_AARCH64_PREL32", Class::Plain),
-    (263, "R_AARCH64_MOVW_UABS_G0", Class::Narrow),
-    (264, "R_AARCH64_MOVW_UABS_G0_NC", Class::Narrow),
-    (265, "R_AARCH64_MOVW_UABS_G1", Class::Narrow),
-    (266, "R_AARCH64_MOVW_UABS_G1_NC", Class::Narrow),
-    (267, "R_AARCH64_MOVW_UABS_G2", Class::Narrow),
-    (268, "R_AARCH64_MOVW_UABS_G2_NC", Class::Narrow),
-    (269, "R_AARCH64_MOVW_UABS_G3", Class::Narrow),
-    (274, "R_AARCH64_ADR_PREL_LO21", Class::Plain),
-    (275, "R_AARCH64_ADR_PREL_PG_HI21", Class::Plain),
-    (277, "R_AARCH64_ADD_ABS_LO12_NC", Class::Plain),
-    (278, "R_AARCH64_LDST8_ABS_LO12_NC", Class::Plain),
-    (279, "R_AARCH64_TSTBR14", Class::Plain),
-    (280, "R_AARCH64_CONDBR19", Class::Plain),
-    (282, "R_AARCH64_JUMP26", Class::Plain),
-    (283, "R_AARCH64_CALL26", Class::Plain),
-    (284, "R_AARCH64_LDST16_ABS_LO12_NC", Class::Plain),
-    (285, "R_AARCH64_LDST32_ABS_LO12_NC", Class::Plain),
-    (286, "R_AARCH64_LDST64_ABS_LO12_NC", Class::Plain),
-    (299, "R_AARCH64_LDST128_ABS_LO12_NC", Class::Plain),
-    (311, "R_AARCH64_ADR_GOT_PAGE", Class::Plain),
-    (312, "R_AARCH64_LD64_GOT_LO12_NC", Class::Plain),
-    (541, "R_AARCH64_TLSIE_ADR_GOTTPREL_PAGE21", Class::Plain),
-    (542, "R_AARCH64_TLSIE_LD64_GOTTPREL_LO12_NC", Class::Plain),
-    (544, "R_AARCH64_TLSLE_MOVW_TPREL_G2", Class::Plain),
-    (545, "R_AARCH64_TLSLE_MOVW_TPREL_G1", Class::Plain),
-    (546, "R_AARCH64_TLSLE_MOVW_TPREL_G1_NC", Class::Plain),
-    (547, "R_AARCH64_TLSLE_MOVW_TPREL_G0", Class::Plain),
-    (548, "R_AARCH64_TLSLE_MOVW_TPREL_G0_NC", Class::Plain),
-    (549, "R_AARCH64_TLSLE_ADD_TPREL_HI12", Class::Plain),
-    (550, "R_AARCH64_TLSLE_ADD_TPREL_LO12", Class::Plain),
-    (551, "R_AARCH64_TLSLE_ADD_TPREL_LO12_NC", Class::Plain),
-    (552, "R_AARCH64_TLSLE_LDST8_TPREL_LO12", Class::Plain),
-    (553, "R_AARCH64_TLSLE_LDST8_TPREL_LO12_NC", Class::Plain),
-    (554, "R_AARCH64_TLSLE_LDST16_TPREL_LO12", Class::Plain),
-    (555, "R_AARCH64_TLSLE_LDST16_TPREL_LO12_NC", Class::Plain),
-    (556, "R_AARCH64_TLSLE_LDST32_TPREL_LO12", Class::Plain),
-    (557, "R_AARCH64_TLSLE_LDST32_TPREL_LO12_NC", Class::Plain),
-    (558, "R_AARCH64_TLSLE_LDST64_TPREL_LO12", Class::Plain),
-    (559, "R_AARCH64_TLSLE_LDST64_TPREL_LO12_NC", Class::Plain),
-    (560, "R_AARCH64_TLSDESC_LD_PREL19", Class::Plain),
-    (561, "R_AARCH64_TLSDESC_ADR_PREL21", Class::Plain),
-    (562, "R_AARCH64_TLSDESC_ADR_PAGE21", Class::Plain),
-    (563, "R_AARCH64_TLSDESC_LD64_LO12", Class::Plain),
-    (564, "R_AARCH64_TLSDESC_ADD_LO12", Class::Plain),
-    (569, "R_AARCH64_TLSDESC_CALL", Class::Plain),
-    (570, "R_AARCH64_TLSLE_LDST128_TPREL_LO12", Class::Plain),
-    (571, "R_AARCH64_TLSLE_LDST128_TPREL_LO12_NC", Class::Plain),
-];
-
-/// `R_X86_64_IRELATIVE`.
-const X86_64_IRELATIVE: u32 = 37;
-/// `R_AARCH64_IRELATIVE`.
-const AARCH64_IRELATIVE: u32 = 1032;
+/// `R_X86_64_IRELATIVE` and `R_AARCH64_IRELATIVE`.
+const X86_64_IRELATIVE: u32 = crate::elf::x86_64::R_IRELATIVE;
+const AARCH64_IRELATIVE: u32 = crate::elf::aarch64::R_IRELATIVE;
 /// `STT_GNU_IFUNC`.
-const STT_GNU_IFUNC: u8 = 10;
+const STT_GNU_IFUNC: u8 = crate::elf::STT_GNU_IFUNC;
 /// `SHF_WRITE`, `SHF_ALLOC`, `SHF_EXECINSTR` and `SHF_TLS`.
-const SHF_WRITE: u64 = 0x1;
-const SHF_ALLOC: u64 = 0x2;
-const SHF_EXECINSTR: u64 = 0x4;
-const SHF_TLS: u64 = 0x400;
+const SHF_WRITE: u64 = crate::elf::SHF_WRITE;
+const SHF_ALLOC: u64 = crate::elf::SHF_ALLOC;
+const SHF_EXECINSTR: u64 = crate::elf::SHF_EXECINSTR;
+const SHF_TLS: u64 = crate::elf::SHF_TLS;
 
-/// The entry of `r_type` in `arch`'s list.
+/// The entry of `r_type` in `arch`'s list: the relocation engine's list (rule 24), so that the
+/// scan accepts exactly what the linker applies.
 fn entry(arch: Arch, r_type: u32) -> Option<(&'static str, Class)> {
-    let list = match arch {
-        Arch::X86_64 => X86_64,
-        Arch::Aarch64 => AARCH64,
-    };
-    list.iter()
-        .find(|(value, _, _)| *value == r_type)
-        .map(|(_, name, class)| (*name, *class))
+    reloc::find(arch, r_type).map(|t| (t.name, t.class))
 }
 
 /// The name of `r_type` for messages and counts.
 fn type_name(arch: Arch, r_type: u32) -> String {
-    match (entry(arch, r_type), arch) {
-        (Some((name, _)), _) => name.to_owned(),
-        (None, Arch::X86_64) if r_type == X86_64_IRELATIVE => "R_X86_64_IRELATIVE".to_owned(),
-        (None, Arch::Aarch64) if r_type == AARCH64_IRELATIVE => "R_AARCH64_IRELATIVE".to_owned(),
-        (None, Arch::X86_64) => format!("x86-64 relocation type {r_type}"),
-        (None, Arch::Aarch64) => format!("arm64 relocation type {r_type}"),
-    }
+    reloc::type_name(arch, r_type)
 }
 
 /// Scans one ELF relocatable object.
@@ -395,7 +293,7 @@ const SHT_CREL: u32 = 0x4000_0014;
 /// one whose `sh_link` is not the object's symbol table, or whose `sh_info` names no section
 /// (0, itself, or past the table). Its relocations would be neither scanned nor, by a linker on
 /// the same reader, applied. O(sections).
-fn check_relocation_sections(name: &str, data: &[u8]) -> Result<()> {
+pub(crate) fn check_relocation_sections(name: &str, data: &[u8]) -> Result<()> {
     use object::read::elf::{ElfFile64, SectionHeader};
     let bad = |what: String| Problem::internal(format!("cannot read `{name}`: {what}"));
     let file = ElfFile64::<object::LittleEndian>::parse(data).map_err(|e| bad(e.to_string()))?;

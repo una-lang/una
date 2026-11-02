@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
-description = "The internal linker of `una build` (ADR 0124 rules 22 to 29): Mach-O for aarch64-apple-darwin, and the scan of the ELF inputs for Linux"
+description = "The internal linker of `una build` (ADR 0124 rules 22 to 29): Mach-O for aarch64-apple-darwin, and, for Linux, the scan of the ELF inputs and the relocation engine"
 
 [dependencies]
 # Allowed by ADR 0124 rule 22 for una-link only: the readers of `ar`, Mach-O and ELF, already in

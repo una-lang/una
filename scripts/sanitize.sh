@@ -219,6 +219,10 @@ FUZZ_TARGETS="$FUZZ_TARGETS provenance:1280000 archive:1280000 ita_lock:300000"
 # The parsers and verifiers of the documents a package registry serves (ADR 0122). Their counts
 # and floors are placeholders until a run on the release machine measures them.
 FUZZ_TARGETS="$FUZZ_TARGETS registry_note:350000 registry_root:350000 registry_statement:350000 registry_owner:350000 registry_map_tile:350000 registry_mirrors:350000 registry_tile:350000 registry_provenance:350000 registry_archive:350000 registry_proofs:350000 registry_map_walk:350000 registry_owner_replay:350000 registry_location:350000 registry_archive_check:350000 registry_root_chain:350000 registry_yank:350000 registry_advisory:350000 registry_entry:350000 registry_keyfile:350000 registry_bundle:350000 registry_watch:350000 registry_promise:350000"
+# The internal linker's ELF reader and relocation engine (ADR 0124 step 4b), seeded with the
+# per-type fixtures of crates/una-link/tests/elf-oracle as clang assembles them. Its count and
+# floor are placeholders until a run on the release machine measures them.
+FUZZ_TARGETS="$FUZZ_TARGETS elf_link:350000"
 FUZZ_CEILING=600
 # The coverage each target must reach, so that a target that returns early on every input, or a
 # runtime built without libFuzzer's counters, fails rather than running its count for nothing:
@@ -228,6 +232,7 @@ FUZZ_CEILING=600
 FUZZ_FLOORS="literal:244243:499:759 words:244798:4473:16955 json:244454:2124:7364"
 FUZZ_FLOORS="$FUZZ_FLOORS provenance:143114:340:758 archive:143109:617:1593 ita_lock:144242:2848:9344"
 FUZZ_FLOORS="$FUZZ_FLOORS registry_note:1:1:1 registry_root:1:1:1 registry_statement:1:1:1 registry_owner:1:1:1 registry_map_tile:1:1:1 registry_mirrors:1:1:1 registry_tile:1:1:1 registry_provenance:1:1:1 registry_archive:1:1:1 registry_proofs:1:1:1 registry_map_walk:1:1:1 registry_owner_replay:1:1:1 registry_location:1:1:1 registry_archive_check:1:1:1 registry_root_chain:1:1:1 registry_yank:1:1:1 registry_advisory:1:1:1 registry_entry:1:1:1 registry_keyfile:1:1:1 registry_bundle:1:1:1 registry_watch:1:1:1 registry_promise:1:1:1"
+FUZZ_FLOORS="$FUZZ_FLOORS elf_link:1:1:1"
 
 # The fuzz targets are exactly the canary and FUZZ_TARGETS: a target added to fuzz/Cargo.toml
 # and left out here, or the reverse, fails.
