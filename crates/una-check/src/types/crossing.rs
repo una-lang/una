@@ -671,15 +671,14 @@ impl Checker<'_, '_, '_> {
                 "install a handler for `{name}` whose own `uses` lie within the ceiling of `{key}`, which allows {within}: `with @{x} = <handler>(...)`, where `handler <handler>(...) for {name}` is written outside the boundary{withholds}"
             )));
         }
-        // The right-hand sides of a `with` resolve outside it. At a call, a binding of the
-        // statement's own `with` is never the one granted; at an installation, the holder is
-        // resolved below the installing clause, where the grant written in it resolves.
+        // The right-hand sides of a `with` resolve outside it, so the holder is resolved where
+        // the grant written there resolves: at a call, below the statement's own `with` frame,
+        // where a binding that `with` rebinds is still the header's and still qualifies; at an
+        // installation, below the installing clause.
         let statement = self.statement.as_ref();
-        let (holder_level, bound): (usize, &[String]) = match site {
-            GrantSite::Install => (level.saturating_sub(1), &[]),
-            GrantSite::Call | GrantSite::Value => {
-                (level, statement.map_or(&[], |s| s.bound.as_slice()))
-            }
+        let holder_level = match site {
+            GrantSite::Install => level.saturating_sub(1),
+            GrantSite::Call | GrantSite::Value => statement.map_or(level, |s| s.outer.min(level)),
         };
         let ops = need.ops.join(", ");
         let listed: Vec<String> = need.ops.iter().map(|op| format!("`{op}`")).collect();
@@ -689,7 +688,6 @@ impl Checker<'_, '_, '_> {
             holder_level,
             None,
             Some(x),
-            bound,
             capability,
             &need.ops,
             &need.gives,

@@ -416,7 +416,7 @@ fn u3020_with_several_qualifying_bindings_is_advice_that_lists_them() {
     // Two bindings permit `read` and neither is `@files`: which one the third-party library
     // reads is the consumer's decision, so no edit names one.
     assert_eq!(
-        rows_at(&diagnostics, "U3020", 18, 3),
+        rows_at(&diagnostics, "U3020", 21, 3),
         [row(
             "",
             "grant `@files` with `with @files = @y[read]`, narrowed to the operations the callee declares, which lie within the ceiling of `media.resize`, where `@y` is one of `@secrets` and `@user`, which each permit `read`; which binding the boundary receives is a decision about trust, so no edit is offered",
@@ -425,7 +425,7 @@ fn u3020_with_several_qualifying_bindings_is_advice_that_lists_them() {
     );
     // `@files` itself permits `read`: the grant names it, with its edit.
     assert_eq!(
-        rows_at(&diagnostics, "U3020", 24, 3),
+        rows_at(&diagnostics, "U3020", 27, 3),
         [row(
             "",
             &grant("@files = @files[read]", "media.resize"),
@@ -434,7 +434,7 @@ fn u3020_with_several_qualifying_bindings_is_advice_that_lists_them() {
     );
     // A function value: advice, never an edit.
     assert_eq!(
-        rows_at(&diagnostics, "U3020", 29, 11),
+        rows_at(&diagnostics, "U3020", 32, 11),
         [row(
             "",
             &format!(
@@ -447,7 +447,7 @@ fn u3020_with_several_qualifying_bindings_is_advice_that_lists_them() {
     // An installation: the grant resolves below the installing `with`, so it names the
     // header's `@user_net`, never `@n`, which the same `with` binds.
     assert_eq!(
-        rows_at(&diagnostics, "U3020", 40, 44),
+        rows_at(&diagnostics, "U3020", 43, 44),
         [row(
             "",
             &format!(
@@ -455,6 +455,22 @@ fn u3020_with_several_qualifying_bindings_is_advice_that_lists_them() {
                 grant("@net = @user_net[post]", "media.cache")
             ),
             ""
+        )]
+    );
+    // The statement has a `with` already: the grant added to it resolves outside that
+    // `with`, where the header's `@secrets` and `@user` both still qualify, whichever of them
+    // the `with` rebinds. Advice, never an edit.
+    let several = rows_at(&diagnostics, "U3020", 21, 3);
+    assert_eq!(rows_at(&diagnostics, "U3020", 49, 3), several);
+    assert_eq!(rows_at(&diagnostics, "U3020", 55, 3), several);
+    // `with @secrets = @secrets[write]` narrows `@secrets` inside the statement, but the
+    // grant resolves outside it, where `@secrets` is the only binding and permits `read`.
+    assert_eq!(
+        rows_at(&diagnostics, "U3020", 60, 3),
+        [row(
+            "",
+            &grant("@files = @secrets[read]", "media.resize"),
+            ", @files = @secrets[read]"
         )]
     );
 }
@@ -477,14 +493,30 @@ fn una_fix_applies_only_the_grant_that_names_one_binding() {
         .collect();
     assert_eq!(
         applied,
-        [("U3020", " with @files = @files[read]")],
+        [
+            ("U3020", " with @files = @files[read]"),
+            ("U3020", ", @files = @secrets[read]")
+        ],
         "{document}"
     );
     assert_eq!(std::fs::read(copy.join("una.toml")).unwrap(), manifest);
     let text = std::fs::read_to_string(copy.join("src/media/app.una")).unwrap();
-    assert!(!text.contains("@secrets[read]"), "{text}");
+    // The only `@secrets[read]` is the grant of `narrowed`, the only binding there.
+    assert_eq!(text.matches("@secrets[read]").count(), 1, "{text}");
+    assert!(
+        text.contains("shrink(path) with @secrets = @secrets[write], @files = @secrets[read]"),
+        "{text}"
+    );
     assert!(!text.contains("@user[read]"), "{text}");
     assert!(!text.contains("@n[post]"), "{text}");
+    assert!(
+        text.contains("  shrink(path) with @user = @secrets\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("  shrink(path) with @secrets = @user[write]\n"),
+        "{text}"
+    );
 }
 
 #[test]
@@ -618,22 +650,42 @@ fn edition_0_3_rebinds_with_an_edit_only_when_one_binding_qualifies() {
         "add `with @files = @y[read]` to this statement, where `@y` is one of `@backup` and `@prod`, which each permit `read`; which binding `@files` receives is a decision about trust, so no edit is offered",
         "",
     );
-    let missing = rows_at(&diagnostics, "U3001", 21, 3);
+    let missing = rows_at(&diagnostics, "U3001", 24, 3);
     assert_eq!(missing[0], several);
     assert_eq!(missing.len(), 2, "{missing:?}");
     assert!(missing[1].1.contains(PUBLIC), "{missing:?}");
-    let more = rows_at(&diagnostics, "U3002", 28, 3);
+    let more = rows_at(&diagnostics, "U3002", 31, 3);
     assert_eq!(more[0], several);
     assert_eq!(more.len(), 2, "{more:?}");
     assert_eq!(more[1].0, "authority");
     // One binding qualifies: the narrowed rebinding with its edit.
-    let single = rows_at(&diagnostics, "U3001", 33, 3);
+    let single = rows_at(&diagnostics, "U3001", 36, 3);
     assert_eq!(
         single[0],
         row(
             "",
             "add `with @files = @prod[read]` to this statement, since `@prod` permits `read`",
             " with @files = @prod[read]"
+        )
+    );
+    // The statement has a `with` already: the rebinding added to it resolves outside that
+    // `with`, where the header's `@backup` and `@prod` both still qualify, so it stays advice
+    // although the `with` rebinds `@prod` to `@backup`.
+    let missing_with = rows_at(&diagnostics, "U3001", 42, 3);
+    assert_eq!(missing_with[0], several);
+    assert_eq!(missing_with.len(), 2, "{missing_with:?}");
+    let more_with = rows_at(&diagnostics, "U3002", 49, 3);
+    assert_eq!(more_with[0], several);
+    assert_eq!(more_with.len(), 2, "{more_with:?}");
+    // `with @prod = @prod[write]` narrows `@prod` inside the statement only; outside it,
+    // `@prod` is the one binding and permits `read`.
+    let single_with = rows_at(&diagnostics, "U3001", 54, 3);
+    assert_eq!(
+        single_with[0],
+        row(
+            "",
+            "add `with @files = @prod[read]` to this statement, since `@prod` permits `read`",
+            ", @files = @prod[read]"
         )
     );
     let copy = copy_of("authority/narrowing_repairs_choice");
@@ -644,7 +696,11 @@ fn edition_0_3_rebinds_with_an_edit_only_when_one_binding_qualifies() {
         .iter()
         .map(|a| a["replacement"].as_str().unwrap())
         .collect();
-    assert_eq!(applied, [" with @files = @prod[read]"], "{document}");
+    assert_eq!(
+        applied,
+        [" with @files = @prod[read]", ", @files = @prod[read]"],
+        "{document}"
+    );
 }
 
 #[test]

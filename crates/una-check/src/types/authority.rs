@@ -369,8 +369,10 @@ impl<'a> Checker<'_, 'a, '_> {
     }
 
     /// The binding a repair that `una fix` may apply grants (ADR 0093 rule 6, ADR 0084): of
-    /// the bindings [`Self::binding_holding`] could choose, leaving out those named in `skip`,
-    /// `@prefer` when it qualifies, otherwise the only one. When several qualify, which one
+    /// the bindings [`Self::binding_holding`] could choose below frame `level`, `@prefer` when
+    /// it qualifies, otherwise the only one. A repair that adds to a statement's `with` passes
+    /// the level below that `with`'s own frame, where the right-hand side it writes resolves,
+    /// so a binding the `with` rebinds still counts as the header binding it is there. When several qualify, which one
     /// receives the callee's requirement is a decision about trust, never a mechanical one, so
     /// they are all returned for advice. Linear in the bindings in scope.
     #[allow(clippy::too_many_arguments)]
@@ -379,13 +381,11 @@ impl<'a> Checker<'_, 'a, '_> {
         level: usize,
         exclude: Option<&str>,
         prefer: Option<&str>,
-        skip: &[String],
         capability: CapId,
         ops: &[String],
         reads: &[(String, Label)],
     ) -> Holder {
         let mut names = self.holders(level, exclude, capability, ops, reads);
-        names.retain(|name| !skip.contains(name));
         if let Some(prefer) = prefer
             && names.iter().any(|name| name == prefer)
         {
@@ -937,15 +937,16 @@ impl<'a> Checker<'_, 'a, '_> {
             return None;
         }
         // ADR 0093 rule 6, edition 0.3: an edit names the only binding that qualifies, never
-        // one chosen by name among several, and never one the statement's own `with` binds,
-        // since a right-hand side of that `with` resolves outside it.
+        // one chosen by name among several. The right-hand side it adds to the statement's
+        // `with` resolves outside that `with`, so the candidates are counted there, below the
+        // statement's own frame.
         let narrow = narrow && self.env.edition >= una_project::Edition::V0_3;
+        let outer = statement.outer.min(self.frames.len());
         let other = if narrow {
             match self.sole_holder(
-                self.frames.len(),
+                outer,
                 Some(declared),
                 None,
-                &statement.bound,
                 capability?,
                 &need.ops,
                 &need.gives,
@@ -967,7 +968,7 @@ impl<'a> Checker<'_, 'a, '_> {
         };
         // ADR 0093 rule 6: in edition 0.3 the rebinding passes only what the callee needs.
         let target = if narrow {
-            self.granted_text(self.frames.len(), &other, &need.ops)
+            self.granted_text(outer, &other, &need.ops)
         } else {
             format!("@{other}")
         };

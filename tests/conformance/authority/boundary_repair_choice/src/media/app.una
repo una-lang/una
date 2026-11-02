@@ -1,10 +1,13 @@
--- test: ADR 0093 rule 6, ADR 0084: the grant of a U3020 carries an edit only when it names `@x` itself or the only binding that permits the requirement; when several do, which one the boundary receives is a decision about trust, so the repair is advice that lists them; at a function value the grant is advice; at an installation the grant is resolved below the installing `with`, so it never names a binding of that `with`
+-- test: ADR 0093 rule 6, ADR 0084: the grant of a U3020 carries an edit only when it names `@x` itself or the only binding that permits the requirement; when several do, which one the boundary receives is a decision about trust, so the repair is advice that lists them; at a function value the grant is advice; at an installation the grant is resolved below the installing `with`, so it never names a binding of that `with`; at a call whose statement has a `with` already, the candidates are counted below that `with`, where the added grant resolves, so a header binding that `with` rebinds still counts
 -- spec: spec/13 §3
--- expect: error U3020 at src/media/app.una:18:3
--- expect: error U3020 at src/media/app.una:24:3
--- expect: error U3006 at src/media/app.una:29:11
--- expect: error U3020 at src/media/app.una:29:11
--- expect: error U3020 at src/media/app.una:40:44
+-- expect: error U3020 at src/media/app.una:21:3
+-- expect: error U3020 at src/media/app.una:27:3
+-- expect: error U3006 at src/media/app.una:32:11
+-- expect: error U3020 at src/media/app.una:32:11
+-- expect: error U3020 at src/media/app.una:43:44
+-- expect: error U3020 at src/media/app.una:49:3
+-- expect: error U3020 at src/media/app.una:55:3
+-- expect: error U3020 at src/media/app.una:60:3
 module media.app
 
 import media.cache (mirrored)
@@ -38,3 +41,20 @@ pub install(path: Text) -> Unit
   uses @user_net: Net[post]
 =
   save(path) with @n = @user_net, @files = mirrored()
+
+pub shadow(path: Text) -> Text
+  uses @secrets: Files[read, write]
+  uses @user: Files[read, write]
+=
+  shrink(path) with @user = @secrets
+
+pub shadow2(path: Text) -> Text
+  uses @secrets: Files[read, write]
+  uses @user: Files[read, write]
+=
+  shrink(path) with @secrets = @user[write]
+
+pub narrowed(path: Text) -> Text
+  uses @secrets: Files[read, write]
+=
+  shrink(path) with @secrets = @secrets[write]
