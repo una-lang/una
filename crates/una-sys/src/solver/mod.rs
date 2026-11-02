@@ -149,8 +149,9 @@ fn platform_confine() -> Result<Confinement, ConfineError> {
     }
     let exec_bit = libc::READ_IMPLIES_EXEC as libc::c_int;
     if current & exec_bit != 0 {
-        // SAFETY: as above.
         let cleared = libc::c_ulong::from((current & !exec_bit).cast_unsigned());
+        // SAFETY: as above: `personality` with a value other than the query value sets the
+        // execution domain of this process to it and touches no memory.
         if unsafe { libc::personality(cleared) } == -1 {
             return Err(ConfineError::Personality(io::Error::last_os_error()));
         }
