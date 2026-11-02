@@ -314,8 +314,8 @@ impl FromIterator<String> for Names {
     }
 }
 
-/// Counts allocations for the scaling tests of ADR 0077: the sets and names of [`Names`], and
-/// the type nodes of the checker. Only with the feature `counters`, which tests enable; a release build counts
+/// Counts allocations for the scaling tests of ADR 0077: the sets and names of [`Names`], the
+/// type nodes of the checker and the steps of its timing labels. Only with the feature `counters`, which tests enable; a release build counts
 /// nothing. The counts never reach any output.
 pub mod counters {
     #[cfg(feature = "counters")]
@@ -327,6 +327,8 @@ pub mod counters {
     static STRINGS: AtomicUsize = AtomicUsize::new(0);
     #[cfg(feature = "counters")]
     static NODES: AtomicUsize = AtomicUsize::new(0);
+    #[cfg(feature = "counters")]
+    static TIMING: AtomicUsize = AtomicUsize::new(0);
 
     /// A set was made.
     #[inline]
@@ -355,6 +357,27 @@ pub mod counters {
         #[cfg(feature = "counters")]
         {
             NODES.load(Ordering::Relaxed)
+        }
+        #[cfg(not(feature = "counters"))]
+        {
+            0
+        }
+    }
+
+    /// A step of the timing label of a site in the checker: a function, an edge, an install, an
+    /// opaque application, an operation or a handler taken (issue #1436).
+    #[inline]
+    pub fn timing_step() {
+        #[cfg(feature = "counters")]
+        TIMING.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// The timing steps the checker took so far in this process; always 0 without the feature
+    /// `counters`.
+    pub fn timing_steps() -> usize {
+        #[cfg(feature = "counters")]
+        {
+            TIMING.load(Ordering::Relaxed)
         }
         #[cfg(not(feature = "counters"))]
         {

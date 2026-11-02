@@ -565,6 +565,9 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
             .any(|f| matches!(f.ast, env::FnAst::Policy(_)));
         env.boundaries.function_kinds = crossing::function_kinds(&env);
     }
+    // Every package, for the timing label of a handler's parameters (#1436): a parameter that
+    // holds a function runs code its type does not bound.
+    env.holds_function_kinds = crossing::function_kinds(&env);
     let vias = via::plain_vias(&env, &report);
     env.plain_vias = vias.plain;
     env.blocked_vias = vias.blocked;
@@ -1104,6 +1107,13 @@ pub(crate) struct Findings {
     /// The functions called or named inside a handler's operations, which run wherever the
     /// handler serves an operation (ADR 0116 IF6).
     pub(crate) handler_edges: std::collections::BTreeSet<usize>,
+    /// What each handler's operation bodies run, their lambdas and tasks included, as a site's
+    /// seed records it (ADR 0116 IF5 item 3, "the effect set of its operation bodies taken in
+    /// the same way"): the functions they call or name, the operations they perform, the
+    /// handlers they install, whether they call a function value, and the prelude functions
+    /// they apply to arguments whose code is not known at the call (#1436). Its `sources` and
+    /// `unplaced` are not used.
+    pub(crate) handler_seeds: std::collections::BTreeMap<usize, timing::TimingSeed>,
     /// The `for ever within` loops checked (ADR 0116 rule 11, IF8): each loop's span, its
     /// function, and the seed of its body's timing label.
     pub(crate) deadline_loops: Vec<DeadlineLoop>,
