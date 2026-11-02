@@ -3,8 +3,11 @@
 //! hand-made objects for each case it must refuse.
 #![allow(clippy::unwrap_used, clippy::indexing_slicing, clippy::expect_used)]
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::Command;
+
+use sha2::{Digest, Sha256};
 
 use una_link::{Code, scan_elf};
 
@@ -264,6 +267,15 @@ fn archive(members: &[(&str, Vec<u8>)], table: &[(&str, usize)]) -> Vec<u8> {
     out
 }
 
+/// `bytes` with the `sh_link` and `sh_info` of its section header `index` replaced.
+fn relinked(mut bytes: Vec<u8>, index: usize, link: u32, info: u32) -> Vec<u8> {
+    let shoff = usize::try_from(u64::from_le_bytes(bytes[40..48].try_into().unwrap())).unwrap();
+    let at = shoff + index * 64;
+    bytes[at + 40..at + 44].copy_from_slice(&link.to_le_bytes());
+    bytes[at + 44..at + 48].copy_from_slice(&info.to_le_bytes());
+    bytes
+}
+
 fn refused(bytes: &[u8]) -> String {
     let problem = scan_elf("fixture.o", bytes).unwrap_err();
     assert_eq!(problem.code, Code::U8001, "{problem}");
@@ -286,6 +298,29 @@ fn an_irelative_relocation_is_refused_on_both_targets_even_where_not_loaded() {
             assert!(message.contains(name), "{message}");
             assert!(message.contains("indirect functions"), "{message}");
         }
+    }
+}
+
+#[test]
+fn a_relocation_section_the_reader_would_skip_is_refused() {
+    // One section, so its `.rela` is header 2 and `.symtab` header 3. The reader of the `object`
+    // crate skips a relocation section whose `sh_link` is not the symbol table or whose
+    // `sh_info` is 0; the scan refuses it, so its relocations cannot escape the scan.
+    let good = object(
+        X86_64,
+        &[section(".text", ALLOC | EXEC, vec![(0, 1, 37)])],
+        &[symbol("f", GLOBAL_FUNC, 1)],
+    );
+    assert!(refused(&good).contains("IRELATIVE"));
+    for (link, info, why) in [
+        (1, 1, "not linked to the symbol table"),
+        (3, 0, "applies to no section"),
+        // The reader itself refuses a section that relocates itself or one past the table.
+        (3, 2, "relocation section"),
+        (3, 99, "relocation section"),
+    ] {
+        let message = refused(&relinked(good.clone(), 2, link, info));
+        assert!(message.contains(why), "{link} {info}: {message}");
     }
 }
 
@@ -412,17 +447,55 @@ fn an_archive_symbol_table_must_name_the_member_that_defines_the_symbol() {
     );
     assert_eq!(scan_elf("libc.a", &good).unwrap().indexed, 2);
     let wrong = archive(
-        &[("memcpy.lo", defines), ("memset.lo", other)],
+        &[("memcpy.lo", defines.clone()), ("memset.lo", other.clone())],
         &[("memcpy", 1), ("memset", 1)],
     );
     let problem = scan_elf("libc.a", &wrong).unwrap_err();
     assert_eq!(problem.code, Code::U8001);
     assert!(problem.message.contains("memcpy"), "{}", problem.message);
+    // The member that defines `memcpy` has no entry for it: the first failure found.
     assert!(
-        problem.message.contains("does not define"),
+        problem.message.contains("does not list"),
         "{}",
         problem.message
     );
+    // An entry for a member that does not define the symbol, beside the right one.
+    let extra = archive(
+        &[("memcpy.lo", defines.clone()), ("memset.lo", other.clone())],
+        &[("memcpy", 0), ("memset", 1), ("memcpy", 1)],
+    );
+    let message = scan_elf("libc.a", &extra).unwrap_err().message;
+    assert!(message.contains("does not define"), "{message}");
+    // A global definition that the table omits altogether.
+    let omitted = archive(
+        &[("memcpy.lo", defines), ("memset.lo", other)],
+        &[("memcpy", 0)],
+    );
+    let message = scan_elf("libc.a", &omitted).unwrap_err().message;
+    assert!(message.contains("memset"), "{message}");
+    assert!(message.contains("does not list"), "{message}");
+}
+
+/// The digests that `supply-chain/musl.lock` pins for `target`, by file name.
+fn pinned(target: &str) -> BTreeMap<String, String> {
+    let lock = std::fs::read_to_string(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../supply-chain/musl.lock"),
+    )
+    .unwrap();
+    let header = format!("[{target}]");
+    let mut inside = false;
+    let mut pinned = BTreeMap::new();
+    for line in lock.lines() {
+        if line.starts_with('[') {
+            inside = line == header;
+        } else if inside && let Some((key, value)) = line.split_once(" = ") {
+            pinned.insert(
+                key.trim_matches('"').to_owned(),
+                value.trim_matches('"').to_owned(),
+            );
+        }
+    }
+    pinned
 }
 
 /// The pinned toolchain's library directory for `target`, which rust-toolchain.toml installs.
@@ -451,6 +524,8 @@ fn toolchain_lib(target: &str) -> PathBuf {
 fn the_toolchain_s_musl_inputs_and_standard_library_pass_the_scan() {
     for target in ["x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl"] {
         let lib = toolchain_lib(target);
+        let pinned = pinned(target);
+        assert_eq!(pinned.len(), 7, "{target}: supply-chain/musl.lock");
         let mut musl = una_link::ElfScan::default();
         for file in [
             "libc.a",
@@ -463,6 +538,12 @@ fn the_toolchain_s_musl_inputs_and_standard_library_pass_the_scan() {
         ] {
             let path = lib.join("self-contained").join(file);
             let bytes = std::fs::read(&path).unwrap();
+            let digest = format!("{:x}", Sha256::digest(&bytes));
+            assert_eq!(
+                pinned.get(file),
+                Some(&digest),
+                "{target} {file}: the installed toolchain's file differs from supply-chain/musl.lock"
+            );
             let scan = scan_elf(file, &bytes).unwrap_or_else(|p| panic!("{target} {file}: {p}"));
             musl.merge(scan);
         }

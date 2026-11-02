@@ -24,9 +24,11 @@
 //! §2). For a Linux target, `scripts/release.sh` also passes the pinned toolchain's
 //! `self-contained` directory of the musl target of the same architecture in
 //! `UNA_EMBED_MUSL_DIR`, and in `UNA_EMBED_MUSL_SHA256S` the digest of each of its inputs, as
-//! `file=sha256` separated by spaces, in the order of [`MUSL_INPUTS`]. This script checks each
-//! file against its digest, checks that the archives carry their symbol table (the index by
-//! which the linker finds a member, rule 12) and that the objects are ELF, copies them into
+//! `file=sha256` separated by spaces, in the order of [`MUSL_INPUTS`]. This script checks that
+//! the directory is the one of the target's own architecture, that each digest is the one
+//! `supply-chain/musl.lock` pins for that target and each file has it, that each object (an
+//! archive's first member) is ELF for the target's machine, and that the archives carry their
+//! symbol table (the index by which the linker finds a member, rule 12); it copies them into
 //! `OUT_DIR/musl/`, which `src/musl_inputs.rs` embeds, and sets the cfg `una_musl_embedded` and
 //! one variable per digest. A release build for Linux (one with the runtime embedded) needs
 //! them; any other build is refused them, so they are carried for the target of the `una`
@@ -36,9 +38,10 @@
 // output; the library crates' rules (compiler/conventions.md §1) do not apply to it.
 #![allow(clippy::disallowed_methods, clippy::print_stdout)]
 
+use std::collections::BTreeMap;
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
@@ -93,6 +96,24 @@ fn embed_musl() -> Result<(), String> {
     if !linux || !release {
         return Err("the musl inputs are embedded only into a release build for Linux, with the runtime (ADR 0124 rule 12)".into());
     }
+    // The target's architecture: the build script runs on the host, which builds for itself.
+    let arch = env::var("CARGO_CFG_TARGET_ARCH").map_err(|e| e.to_string())?;
+    let (machine, musl_target) = match arch.as_str() {
+        "x86_64" => (62u16, "x86_64-unknown-linux-musl"),
+        "aarch64" => (183u16, "aarch64-unknown-linux-musl"),
+        other => return Err(format!("no musl target for the architecture {other}")),
+    };
+    let suffix = Path::new("lib/rustlib")
+        .join(musl_target)
+        .join("lib/self-contained");
+    if !dir.ends_with(&suffix) {
+        return Err(format!(
+            "UNA_EMBED_MUSL_DIR is {}, not the toolchain's {} directory of this target",
+            dir.display(),
+            suffix.display()
+        ));
+    }
+    let pinned = pinned_musl(musl_target)?;
     let entries: Vec<&str> = list.split(' ').collect();
     if entries.len() != MUSL_INPUTS.len() {
         return Err(format!(
@@ -115,6 +136,14 @@ fn embed_musl() -> Result<(), String> {
                 "the digest of {file} in UNA_EMBED_MUSL_SHA256S must be 64 lowercase hexadecimal digits, not {want:?}"
             ));
         }
+        let lock = pinned.get(file).ok_or_else(|| {
+            format!("supply-chain/musl.lock records no digest of {file} for {musl_target}")
+        })?;
+        if want != lock {
+            return Err(format!(
+                "UNA_EMBED_MUSL_SHA256S gives {want} for {file}, but supply-chain/musl.lock pins {lock} for {musl_target}"
+            ));
+        }
         let path = dir.join(file);
         println!("cargo:rerun-if-changed={}", path.display());
         let bytes = fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -125,7 +154,7 @@ fn embed_musl() -> Result<(), String> {
                 path.display()
             ));
         }
-        if file.ends_with(".a") {
+        let object = if file.ends_with(".a") {
             // A GNU archive whose first member is its symbol table, named `/`.
             if !bytes.starts_with(b"!<arch>\n/ ") {
                 return Err(format!(
@@ -133,9 +162,23 @@ fn embed_musl() -> Result<(), String> {
                     path.display()
                 ));
             }
-        } else if !bytes.starts_with(b"\x7fELF\x02\x01") {
+            first_object(&bytes).ok_or_else(|| format!("{} holds no ELF object", path.display()))?
+        } else {
+            bytes.as_slice()
+        };
+        if !object.starts_with(b"\x7fELF\x02\x01") {
             return Err(format!(
                 "{} is not a 64-bit little-endian ELF object",
+                path.display()
+            ));
+        }
+        let found_machine = object
+            .get(18..20)
+            .and_then(|field| <[u8; 2]>::try_from(field).ok())
+            .map(u16::from_le_bytes);
+        if found_machine != Some(machine) {
+            return Err(format!(
+                "{} is for ELF machine {found_machine:?}, not {arch} ({machine})",
                 path.display()
             ));
         }
@@ -145,6 +188,57 @@ fn embed_musl() -> Result<(), String> {
     }
     println!("cargo:rustc-cfg=una_musl_embedded");
     Ok(())
+}
+
+/// The digests that `supply-chain/musl.lock` pins for `musl_target`, by file name.
+fn pinned_musl(musl_target: &str) -> Result<BTreeMap<String, String>, String> {
+    let lock = PathBuf::from(env::var("CARGO_MANIFEST_DIR").map_err(|e| e.to_string())?)
+        .join("../../supply-chain/musl.lock");
+    println!("cargo:rerun-if-changed={}", lock.display());
+    let text = fs::read_to_string(&lock).map_err(|e| format!("{}: {e}", lock.display()))?;
+    let header = format!("[{musl_target}]");
+    let mut inside = false;
+    let mut pinned = BTreeMap::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            inside = line == header;
+            continue;
+        }
+        if !inside || line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let parsed = line.split_once('=').and_then(|(key, value)| {
+            let key = key.trim().strip_prefix('"')?.strip_suffix('"')?;
+            let value = value.trim().strip_prefix('"')?.strip_suffix('"')?;
+            hex_digest(value).then(|| (key.to_owned(), value.to_owned()))
+        });
+        let (key, value) =
+            parsed.ok_or_else(|| format!("{}: cannot read the line {line:?}", lock.display()))?;
+        pinned.insert(key, value);
+    }
+    Ok(pinned)
+}
+
+/// The data of the first member of the GNU archive `bytes` that is not its symbol table or its
+/// name table: the object whose machine stands for the archive's.
+fn first_object(bytes: &[u8]) -> Option<&[u8]> {
+    let mut at = 8usize;
+    while let Some(header) = bytes.get(at..at.checked_add(60)?) {
+        let name = header.get(..16)?;
+        let size: usize = std::str::from_utf8(header.get(48..58)?)
+            .ok()?
+            .trim()
+            .parse()
+            .ok()?;
+        let start = at + 60;
+        let data = bytes.get(start..start.checked_add(size)?)?;
+        if !name.starts_with(b"/ ") && !name.starts_with(b"// ") {
+            return Some(data);
+        }
+        at = start + size + size % 2;
+    }
+    None
 }
 
 /// Whether `text` is a SHA-256 digest in lowercase hexadecimal.

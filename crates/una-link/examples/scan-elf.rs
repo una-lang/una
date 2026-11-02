@@ -3,17 +3,32 @@
 //! (type, section kind, referent) with its count, then each common symbol, the number of
 //! archive symbol-table entries checked against their members, and musl's version.
 //! Files after `--std` are the Rust standard library's, which must define no common symbol.
+//! `--root DIR`, first, names the inputs by their path under DIR, so that the output holds no
+//! path of the machine (such as its home directory).
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
 fn main() -> std::process::ExitCode {
     let mut total = una_link::ElfScan::default();
     let mut std_common = Vec::new();
     let mut std_files = false;
-    for path in std::env::args().skip(1) {
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    let root = if args.first().map(String::as_str) == Some("--root") && args.len() >= 2 {
+        let root = args.remove(1);
+        args.remove(0);
+        Some(format!("{}/", root.trim_end_matches('/')))
+    } else {
+        None
+    };
+    for path in args {
         if path == "--std" {
             std_files = true;
             continue;
         }
+        let shown = root
+            .as_deref()
+            .and_then(|root| path.strip_prefix(root))
+            .unwrap_or(&path)
+            .to_owned();
         let bytes = match std::fs::read(&path) {
             Ok(bytes) => bytes,
             Err(error) => {
@@ -21,7 +36,7 @@ fn main() -> std::process::ExitCode {
                 return std::process::ExitCode::FAILURE;
             }
         };
-        match una_link::scan_elf(&path, &bytes) {
+        match una_link::scan_elf(&shown, &bytes) {
             Ok(scan) => {
                 if std_files {
                     std_common.extend(scan.common.iter().cloned());

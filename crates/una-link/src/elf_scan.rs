@@ -81,38 +81,59 @@ pub fn scan_elf(name: &str, bytes: &[u8]) -> Result<ElfScan> {
 }
 
 /// Checks the archive's symbol table, the index by which the linker finds the member that
-/// defines a symbol without reading the others (rule 12): every entry must name a member that
-/// defines that symbol (as a global, weak or common symbol), and returns how many entries there
-/// are. Each member named is parsed once. O(entries × log + size of the members named).
+/// defines a symbol without reading the others (rule 12), both ways and over every entry,
+/// duplicates included: each entry must name the header of a member that defines that symbol
+/// (as a global, weak or common symbol), and each such definition of each member must have its
+/// entry, so the resolver can neither be sent to the wrong member nor miss a definition.
+/// Returns how many entries there are. O((entries + symbols) × log).
 fn check_index(archive: &Archive<'_>) -> Result<u64> {
+    let entries = archive.table()?;
+    let listed: BTreeSet<(&[u8], u64)> = entries.iter().copied().collect();
     let mut defined: BTreeMap<u64, (String, BTreeSet<Vec<u8>>)> = BTreeMap::new();
-    let mut count = 0u64;
-    for (symbol, offset) in archive.index() {
-        let (member, names) = match defined.entry(offset) {
-            std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
-            std::collections::btree_map::Entry::Vacant(entry) => {
-                let (member, data) = archive.member(offset)?;
-                let file = object::File::parse(data).map_err(|error| {
-                    Problem::internal(format!("cannot read `{member}`: {error}"))
-                })?;
-                let names = file
-                    .symbols()
-                    .filter(|symbol| !symbol.is_undefined() && !symbol.is_local())
-                    .filter_map(|symbol| symbol.name_bytes().ok().map(<[u8]>::to_vec))
-                    .collect();
-                entry.insert((member, names))
+    for (start, member, data) in archive.members()? {
+        if member.ends_with("(lib.rmeta)") {
+            continue;
+        }
+        // A GNU archive's member header is the 60 bytes before its data.
+        let header = start.checked_sub(60).ok_or_else(|| {
+            Problem::internal(format!("cannot read `{member}`: a member without a header"))
+        })?;
+        let file = object::File::parse(data)
+            .map_err(|error| Problem::internal(format!("cannot read `{member}`: {error}")))?;
+        let mut names = BTreeSet::new();
+        for symbol in file.symbols() {
+            if symbol.is_undefined() || symbol.is_local() {
+                continue;
             }
+            let name = symbol.name_bytes().unwrap_or_default();
+            if !listed.contains(&(name, header)) {
+                return Err(Problem::internal(format!(
+                    "`{member}` defines `{}`, which the symbol table of `{}` does not list for it",
+                    shown(name),
+                    archive.name
+                )));
+            }
+            names.insert(name.to_vec());
+        }
+        defined.insert(header, (member, names));
+    }
+    for (symbol, offset) in &entries {
+        let Some((member, names)) = defined.get(offset) else {
+            return Err(Problem::internal(format!(
+                "the symbol table of `{}` names no member for `{}`",
+                archive.name,
+                shown(symbol)
+            )));
         };
-        if !names.contains(symbol) {
+        if !names.contains(*symbol) {
             return Err(Problem::internal(format!(
                 "the symbol table of `{}` names `{member}` for `{}`, which that member does not define",
                 archive.name,
                 shown(symbol)
             )));
         }
-        count += 1;
     }
-    Ok(count)
+    u64::try_from(entries.len()).map_err(|_| Problem::internal("too many symbols"))
 }
 
 /// The architectures of the musl targets.
@@ -256,6 +277,7 @@ fn scan_object(name: &str, data: &[u8]) -> Result<ElfScan> {
         Architecture::Aarch64 => Arch::Aarch64,
         other => return Err(bad(format!("an object for {other:?}"))),
     };
+    check_relocation_sections(name, data)?;
     let mut scan = ElfScan::default();
     for symbol in file.symbols() {
         let symbol_name = shown(symbol.name_bytes().unwrap_or_default());
@@ -361,6 +383,50 @@ fn scan_object(name: &str, data: &[u8]) -> Result<ElfScan> {
         }
     }
     Ok(scan)
+}
+
+/// `SHT_SYMTAB`, `SHT_RELA`, `SHT_REL` and `SHT_CREL`.
+const SHT_SYMTAB: u32 = 2;
+const SHT_RELA: u32 = 4;
+const SHT_REL: u32 = 9;
+const SHT_CREL: u32 = 0x4000_0014;
+
+/// Refuses a relocation section that the `object` crate's reader would pass over without a word:
+/// one whose `sh_link` is not the object's symbol table, or whose `sh_info` names no section
+/// (0, itself, or past the table). Its relocations would be neither scanned nor, by a linker on
+/// the same reader, applied. O(sections).
+fn check_relocation_sections(name: &str, data: &[u8]) -> Result<()> {
+    use object::read::elf::{ElfFile64, SectionHeader};
+    let bad = |what: String| Problem::internal(format!("cannot read `{name}`: {what}"));
+    let file = ElfFile64::<object::LittleEndian>::parse(data).map_err(|e| bad(e.to_string()))?;
+    let endian = file.endian();
+    let sections = file.elf_section_table();
+    let count = sections.len();
+    let symtab = sections
+        .iter()
+        .position(|section| section.sh_type(endian).0 == SHT_SYMTAB);
+    for (index, section) in sections.iter().enumerate() {
+        let kind = section.sh_type(endian).0;
+        if kind != SHT_RELA && kind != SHT_REL && kind != SHT_CREL {
+            continue;
+        }
+        let section_name = sections
+            .section_name(endian, section)
+            .map_or_else(|_| "?".to_owned(), shown);
+        let link = usize::try_from(section.sh_link(endian)).unwrap_or(usize::MAX);
+        if Some(link) != symtab {
+            return Err(bad(format!(
+                "the relocation section `{section_name}` is not linked to the symbol table"
+            )));
+        }
+        let info = usize::try_from(section.sh_info(endian)).unwrap_or(usize::MAX);
+        if info == 0 || info == index || info >= count {
+            return Err(bad(format!(
+                "the relocation section `{section_name}` applies to no section"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// musl's version: the text that `__libc_version` holds, `MAJOR.MINOR.PATCH`.

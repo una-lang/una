@@ -592,10 +592,31 @@ impl<'a> Archive<'a> {
         })
     }
 
-    /// Each symbol of the archive's symbol table and the member offset of its first definition,
-    /// in the symbols' byte order.
-    pub(crate) fn index(&self) -> impl Iterator<Item = (&'a [u8], u64)> + '_ {
-        self.index.iter().map(|(name, offset)| (*name, *offset))
+    /// Every entry of the archive's symbol table, duplicates included, in table order: each
+    /// symbol and the offset of the member's header.
+    ///
+    /// # Errors
+    ///
+    /// U8001 when the table cannot be read.
+    pub(crate) fn table(&self) -> Result<Vec<(&'a [u8], u64)>> {
+        let bad = |error: object::Error| {
+            Problem::internal(format!(
+                "cannot read the symbol table of `{}`: {error}",
+                self.name
+            ))
+        };
+        let symbols = self
+            .file
+            .symbols()
+            .map_err(bad)?
+            .ok_or_else(|| Problem::internal(format!("`{}` has no symbol table", self.name)))?;
+        symbols
+            .map(|symbol| {
+                symbol
+                    .map(|symbol| (symbol.name(), symbol.offset().0))
+                    .map_err(bad)
+            })
+            .collect()
     }
 
     /// The member offset that the symbol table names for `symbol`.
