@@ -70,6 +70,10 @@ jobs=$(scripts/container-jobs.sh "$memory" "$cpus" "${CARGO_BUILD_JOBS:-}" | sed
 checkout=$(printf '%s' "$root" | (shasum -a 256 2>/dev/null || sha256sum) | cut -c1-12)
 volume="una-local-ci-target-$checkout$suffix"
 
+# The image runs as an unprivileged user, uid 1000 (#1394); the volumes are handed to it first.
+scripts/container-volumes.sh "linux/$arch" "$image" "$volume:/work/target" \
+    una-local-ci-registry:/opt/cargo/registry "una-local-ci-z3$suffix:/opt/z3" \
+    "una-local-ci-lean$suffix:/opt/lean" || fail "handing the container's volumes to its user"
 echo "== building the release una and the re-check in $image, with the target directory in $volume"
 docker run --rm --platform "linux/$arch" \
     --volume "$root:/work" \

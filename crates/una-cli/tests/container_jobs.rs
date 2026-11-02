@@ -1,6 +1,8 @@
 //! `scripts/container-jobs.sh` (#701, `docs/release-gates.md`): the job count of the build
 //! inside a Linux container of `scripts/local-ci.sh`. It is one job per 2 GiB of the Docker VM's
 //! memory, at most one per CPU and at least one, and a host value can lower it but never raise it.
+//! Also the user those containers run as (#1394): never root, since the solver child refuses root
+//! (ADR 0124 rule 7), with `scripts/container-volumes.sh` handing the volumes to it first.
 
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
@@ -60,5 +62,54 @@ fn a_host_value_or_a_vm_size_that_is_not_a_positive_number_is_an_error() {
         vec![MEMORY, ""],
     ] {
         assert_eq!(jobs(&args).0, Some(2), "{args:?}");
+    }
+}
+
+/// A file of the repository, by its path from the root.
+fn repository_file(path: &str) -> String {
+    std::fs::read_to_string(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../")
+            .join(path),
+    )
+    .unwrap()
+}
+
+#[test]
+fn the_linux_image_runs_as_an_unprivileged_user() {
+    let dockerfile = repository_file("scripts/local-ci/Dockerfile");
+    let users: Vec<&str> = dockerfile
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("USER "))
+        .collect();
+    assert_eq!(users.last().copied(), Some("1000:1000"), "{users:?}");
+    // The unprivileged run of scripts/local-ci.sh names the user itself too.
+    let local_ci = repository_file("scripts/local-ci.sh");
+    let run = local_ci.find("\"$image\" scripts/local-ci.sh").unwrap();
+    let start = local_ci[..run].rfind("docker run").unwrap();
+    assert!(local_ci[start..run].contains("--user 1000:1000"));
+    for script in [
+        "scripts/local-ci.sh",
+        "scripts/hunt-linux.sh",
+        "scripts/local-release.sh",
+    ] {
+        assert!(
+            repository_file(script).contains("container-volumes.sh"),
+            "{script}"
+        );
+    }
+}
+
+#[test]
+fn the_volume_handover_refuses_a_pair_without_a_mount_point() {
+    let script =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../scripts/container-volumes.sh");
+    for args in [
+        &["linux/arm64", "image"][..],
+        &["linux/arm64", "image", "volume"],
+        &["p", "i", "v:"],
+    ] {
+        let output = Command::new("sh").arg(&script).args(args).output().unwrap();
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
     }
 }
