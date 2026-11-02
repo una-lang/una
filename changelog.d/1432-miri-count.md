@@ -1,0 +1,1 @@
+- **The `sanitize` gate's Miri count** (#1432): `scripts/sanitize.sh` states the 19 mentions of `miri` that `una-rt` holds since the timing wheel moved to `una-http` (#1006), not 24, and its prose names the eighteen tests that run smaller under Miri; the gate would otherwise fail at that check.
