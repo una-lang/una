@@ -1299,7 +1299,9 @@ Rule 12's grants gain `serve "<scheme>://<address>:<port>"`, the `ita.una` form 
 
 ## Amendment of 2026-10-31: `una migrate` converts `quality.toml` (ADR 0131)
 
-Proposed together with ADR 0131 (issue #1302). It takes effect when ADR 0131 is accepted and its migration slice lands; until then rule 64 reads as written.
+- Status: Proposed with ADR 0131 on 2026-10-31; accepted with it on 2026-11-02. It is withdrawn if ADR 0131 is withdrawn or superseded before its migration slice lands, and rule 64 then reads as written.
+
+Proposed together with ADR 0131 (issue #1302). It takes effect when ADR 0131 is accepted and its migration slice lands; until then rule 64 reads as written. On acceptance, ADR 0131 adds the guarantee diff's approvals file to its family (its Decisions of acceptance 2): items 1 and 2 apply to `guarantees.toml`, converted to `guarantees.una`, as to `quality.toml`.
 
 1. **Rule 64, a package that already has `ita.una`.** Rule 64 makes `una migrate` on such a package a usage error. With this amendment, when the package root holds `quality.toml`, `una migrate` converts it to `quality.una` (ADR 0131 rule 12) and does nothing else; it stays a usage error only when there is nothing to convert.
 2. **Rule 64, a package of edition `0.1` to `0.3`.** `una migrate` also converts `quality.toml` when the package root holds one, in the same run as the edition move. `una migrate --only quality` converts the quality file alone and leaves the manifest, the lock and the edition unchanged.
