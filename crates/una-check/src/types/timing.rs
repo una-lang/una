@@ -1338,20 +1338,29 @@ pub(crate) fn concurrent_functions(findings: &Findings) -> BTreeSet<usize> {
 /// Whether a value of `ty` may hold a function value: a function type, or one inside a list, a
 /// map, a collection, an `Option`, a `Result` or a kind's fields, at any depth (#1436). A type
 /// parameter, a unification variable and a kind the table does not know count as holding one,
-/// failing closed.
+/// failing closed. The one rule for the timing label, the known arguments of #1023 and the
+/// function values that cross a boundary (ADR 0093 rule 8).
 pub(crate) fn holds_function(env: &Env<'_>, ty: &Ty) -> bool {
-    match ty {
+    holds_function_by(env, ty, &|ty: &Ty| ty.clone())
+}
+
+/// [`holds_function`] with `resolve` applied to each type first, as a checker resolves the
+/// unification variables it has solved (review R2 of #1440).
+pub(crate) fn holds_function_by(env: &Env<'_>, ty: &Ty, resolve: &dyn Fn(&Ty) -> Ty) -> bool {
+    match resolve(ty) {
         Ty::Fn(_) | Ty::Param(_) | Ty::Var(_) => true,
         Ty::List(inner)
         | Ty::Dense(_, inner)
         | Ty::Labeled(_, inner)
         | Ty::Refined(_, inner)
-        | Ty::Measured(_, inner) => holds_function(env, inner),
-        Ty::Map(key, value) => holds_function(env, key) || holds_function(env, value),
-        Ty::Coll(_, args) => args.iter().any(|arg| holds_function(env, arg)),
+        | Ty::Measured(_, inner) => holds_function_by(env, &inner, resolve),
+        Ty::Map(key, value) => {
+            holds_function_by(env, &key, resolve) || holds_function_by(env, &value, resolve)
+        }
+        Ty::Coll(_, args) => args.iter().any(|arg| holds_function_by(env, arg, resolve)),
         Ty::Kind(id, args) => {
-            env.holds_function_kinds.get(*id).copied().unwrap_or(true)
-                || args.iter().any(|arg| holds_function(env, arg))
+            env.holds_function_kinds.get(id).copied().unwrap_or(true)
+                || args.iter().any(|arg| holds_function_by(env, arg, resolve))
         }
         _ => false,
     }
@@ -1381,8 +1390,12 @@ struct Gather<'f> {
     opaque: BTreeSet<usize>,
     /// The functions of `opaque` already counted as a source.
     flagged: BTreeSet<usize>,
+    /// The functions added to `opaque` since [`Gather::flag_opaque`] last ran.
+    late: Vec<usize>,
     /// The handlers that can serve the operations reached.
     handlers: BTreeSet<usize>,
+    /// The handlers of `handlers` not taken yet.
+    queue: Vec<usize>,
     /// The operations still to take.
     needs: Vec<(CapId, String)>,
     /// The sources so far.
@@ -1390,10 +1403,27 @@ struct Gather<'f> {
 }
 
 impl Gather<'_> {
+    /// Adds the handler `h`, to be taken once.
+    fn add_handler(&mut self, h: usize) {
+        if self.handlers.insert(h) {
+            self.queue.push(h);
+        }
+    }
+
+    /// Adds the prelude function `f` to those applied to an argument whose code is not known.
+    fn add_opaque(&mut self, f: usize) {
+        if self.opaque.insert(f) {
+            self.late.push(f);
+        }
+    }
+
     /// Reaches the functions `roots` and what they call, and takes each function newly reached,
     /// in ascending order: a call of a function value in it, an application of it to an
     /// argument whose code is not known, the handlers it installs and the operations its `uses`
-    /// names. Each function is taken once, so every call over a site is linear in all.
+    /// names. Each function is taken once, and its installs and opaque applications are looked
+    /// up by a range of the sets ordered by caller, so all the calls over one site take
+    /// O((F + E + I + A) log n) in all, for `F` functions reached, `E` their call edges, `I`
+    /// their installs and `A` their opaque applications (review R1 of #1440).
     fn visit(
         &mut self,
         env: &Env<'_>,
@@ -1409,20 +1439,24 @@ impl Gather<'_> {
             }
         }
         self.reached.extend(fresh.iter().copied());
-        self.opaque.extend(
-            findings
+        for &f in &fresh {
+            let own: Vec<usize> = findings
                 .opaque_applies
-                .iter()
-                .filter(|(caller, _)| fresh.contains(caller))
-                .map(|&(_, callee)| callee),
-        );
-        self.handlers.extend(
-            findings
+                .range((f, 0)..=(f, usize::MAX))
+                .map(|&(_, callee)| callee)
+                .collect();
+            for callee in own {
+                self.add_opaque(callee);
+            }
+            let installs: Vec<usize> = findings
                 .installs
-                .iter()
-                .filter(|(f, _)| fresh.contains(f))
-                .map(|&(_, h)| h),
-        );
+                .range((f, 0)..=(f, usize::MAX))
+                .map(|&(_, h)| h)
+                .collect();
+            for h in installs {
+                self.add_handler(h);
+            }
+        }
         for &f in &fresh {
             let Some(def) = env.functions.get(f) else {
                 continue;
@@ -1457,15 +1491,15 @@ impl Gather<'_> {
     }
 
     /// Counts each prelude function reached earlier that a later part of the site applies to an
-    /// argument whose code is not known, as a handler's operation body may (#1436).
+    /// argument whose code is not known, as a handler's operation body may (#1436). Only the
+    /// functions added since the last call are looked at: one not reached yet is counted when it
+    /// is reached, by [`Gather::visit`].
     fn flag_opaque(&mut self, env: &Env<'_>) {
         let top = Label::top(&env.categories);
-        let late: Vec<usize> = self
-            .opaque
-            .iter()
-            .filter(|f| self.reached.contains(f) && !self.flagged.contains(f))
-            .copied()
-            .collect();
+        let mut late = std::mem::take(&mut self.late);
+        late.sort_unstable();
+        late.dedup();
+        late.retain(|f| self.reached.contains(f) && !self.flagged.contains(f));
         for f in late {
             let Some(def) = env.functions.get(f) else {
                 continue;
@@ -1499,7 +1533,12 @@ impl Gather<'_> {
 /// the operations they perform, the handlers they install, a call of a function value (`⊤`)
 /// and a prelude function applied to an argument whose code is not known (`⊤`).
 ///
-/// O(functions + call edges + operations + handlers + the size of the handlers' seeds).
+/// **Complexity** (review R1 of #1440): each function, handler and operation is taken once per
+/// site, and each lookup is in an ordered map or set, so a site costs
+/// O((F + E + H + O + S) log n), for `F` functions, `E` call edges, `H` handlers, `O`
+/// operations and `S` the size of the seeds of the handlers it reaches; the call edges are
+/// indexed once per site. `tests/handler_timing_scaling.rs` keeps it linear in a chain of
+/// handlers.
 pub(crate) fn timing(
     env: &Env<'_>,
     findings: &Findings,
@@ -1511,12 +1550,22 @@ pub(crate) fn timing(
     let kinds = env.kind_labels.as_ref();
     let top = Label::top(&env.categories);
     let callees = callees_of(findings);
+    // The handlers of each capability, so that an operation finds its handlers without a scan
+    // of every handler of the package.
+    let mut of_capability: BTreeMap<CapId, Vec<usize>> = BTreeMap::new();
+    for (id, handler) in env.handlers.iter().enumerate() {
+        if let Some(cap) = handler.capability {
+            of_capability.entry(cap).or_default().push(id);
+        }
+    }
     let mut gather = Gather {
         callees: &callees,
         reached: BTreeSet::new(),
         opaque: seed.opaque_applies.clone(),
         flagged: BTreeSet::new(),
+        late: Vec::new(),
         handlers: seed.handlers.clone(),
+        queue: seed.handlers.iter().copied().collect(),
         needs: seed.ops.iter().cloned().collect(),
         sources: seed.sources.clone(),
     };
@@ -1530,7 +1579,7 @@ pub(crate) fn timing(
     // handlers need and what their operation bodies run, to a fixpoint over capabilities.
     let mut seen: BTreeSet<(CapId, String)> = BTreeSet::new();
     let mut handled: BTreeSet<usize> = BTreeSet::new();
-    while !gather.needs.is_empty() || gather.handlers.iter().any(|h| !handled.contains(h)) {
+    while !gather.needs.is_empty() || !gather.queue.is_empty() {
         while let Some((cap, op)) = gather.needs.pop() {
             if !seen.insert((cap, op.clone())) {
                 continue;
@@ -1551,18 +1600,18 @@ pub(crate) fn timing(
                     .push((rho, format!("the operation `{}.{op}`", capability.name)));
             }
             if capability.module != env.prelude || host == HostHandlers::All {
-                gather.handlers.extend(
-                    env.handlers
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, h)| h.capability == Some(cap))
-                        .map(|(id, _)| id),
-                );
+                for &id in of_capability.get(&cap).map_or(&[][..], Vec::as_slice) {
+                    gather.add_handler(id);
+                }
             }
         }
-        let next: Vec<usize> = gather.handlers.difference(&handled).copied().collect();
+        // The handlers added since the last round, in ascending order.
+        let mut next = std::mem::take(&mut gather.queue);
+        next.sort_unstable();
         for id in next {
-            handled.insert(id);
+            if !handled.insert(id) {
+                continue;
+            }
             let Some(handler) = env.handlers.get(id) else {
                 continue;
             };
@@ -1590,9 +1639,13 @@ pub(crate) fn timing(
                         ),
                     ));
                 }
-                gather.handlers.extend(body.handlers.iter().copied());
+                for &h in &body.handlers {
+                    gather.add_handler(h);
+                }
                 gather.needs.extend(body.ops.iter().cloned());
-                gather.opaque.extend(body.opaque_applies.iter().copied());
+                for &f in &body.opaque_applies {
+                    gather.add_opaque(f);
+                }
                 gather.visit(
                     env,
                     findings,
