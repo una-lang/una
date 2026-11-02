@@ -164,8 +164,8 @@ fn u3020_within_the_ceiling_grants_the_narrowed_requirement_first() {
 #[test]
 fn u3020_beyond_the_ceiling_offers_only_a_handler_and_names_what_it_withholds() {
     let diagnostics = check_json("authority/boundary_repair_beyond_ceiling");
-    let files = &at(&diagnostics, "U3020", 13, 3)[0];
-    let net = &at(&diagnostics, "U3020", 18, 3)[0];
+    let files = &at(&diagnostics, "U3020", 14, 3)[0];
+    let net = &at(&diagnostics, "U3020", 19, 3)[0];
     for (diagnostic, withheld) in [(files, "`write`"), (net, "`post`")] {
         let rows = rows(diagnostic);
         assert_eq!(rows.len(), 1, "{rows:?}");
@@ -191,6 +191,16 @@ fn u3020_beyond_the_ceiling_offers_only_a_handler_and_names_what_it_withholds() 
         rows(net)[0]
             .1
             .contains("which allows no operation of `Net`")
+    );
+    // The same requirement in the body of a lambda: no `with` can be written there, so the
+    // advice points to a named function that installs the handler, never to a grant.
+    assert_eq!(
+        rows_at(&diagnostics, "U3020", 29, 25),
+        [row(
+            "",
+            "this call is in the body of a lambda, which is one line and cannot carry `with`, so no handler for `@files` can be installed for it here: make the call from a named function, where the statement that holds it installs a handler for `media.store.Files` whose own `uses` lie within the ceiling of `media.resize`, which allows `media.store.Files[read]`: `with @files = <handler>(...)`, where `handler <handler>(...) for media.store.Files` is written outside the boundary; the ceiling in `una.toml` withholds `write`, so no binding that permits it can be granted",
+            ""
+        )]
     );
 }
 
@@ -258,7 +268,7 @@ fn una_fix_applies_nothing_beyond_the_ceiling() {
         .iter()
         .map(|d| d["code"].as_str().unwrap())
         .collect();
-    assert_eq!(codes, ["U3020", "U3020"]);
+    assert_eq!(codes, ["U3020", "U3020", "U3020"]);
     assert_eq!(files_of(&copy), before, "every byte, `una.toml` included");
 }
 
@@ -416,7 +426,7 @@ fn u3020_with_several_qualifying_bindings_is_advice_that_lists_them() {
     // Two bindings permit `read` and neither is `@files`: which one the third-party library
     // reads is the consumer's decision, so no edit names one.
     assert_eq!(
-        rows_at(&diagnostics, "U3020", 24, 3),
+        rows_at(&diagnostics, "U3020", 25, 3),
         [row(
             "",
             "grant `@files` with `with @files = @y[read]`, narrowed to the operations the callee declares, which lie within the ceiling of `media.resize`, where `@y` is one of `@secrets` and `@user`, which each permit `read`; which binding the boundary receives is a decision about trust, so no edit is offered",
@@ -425,7 +435,7 @@ fn u3020_with_several_qualifying_bindings_is_advice_that_lists_them() {
     );
     // `@files` itself permits `read`: the grant names it, with its edit.
     assert_eq!(
-        rows_at(&diagnostics, "U3020", 30, 3),
+        rows_at(&diagnostics, "U3020", 31, 3),
         [row(
             "",
             &grant("@files = @files[read]", "media.resize"),
@@ -434,7 +444,7 @@ fn u3020_with_several_qualifying_bindings_is_advice_that_lists_them() {
     );
     // A function value: advice, never an edit.
     assert_eq!(
-        rows_at(&diagnostics, "U3020", 35, 11),
+        rows_at(&diagnostics, "U3020", 36, 11),
         [row(
             "",
             &format!(
@@ -447,7 +457,7 @@ fn u3020_with_several_qualifying_bindings_is_advice_that_lists_them() {
     // An installation: the grant resolves below the installing `with`, so it names the
     // header's `@user_net`, never `@n`, which the same `with` binds.
     assert_eq!(
-        rows_at(&diagnostics, "U3020", 46, 44),
+        rows_at(&diagnostics, "U3020", 47, 44),
         [row(
             "",
             &format!(
@@ -460,13 +470,13 @@ fn u3020_with_several_qualifying_bindings_is_advice_that_lists_them() {
     // The statement has a `with` already: the grant added to it resolves outside that
     // `with`, where the header's `@secrets` and `@user` both still qualify, whichever of them
     // the `with` rebinds. Advice, never an edit.
-    let several = rows_at(&diagnostics, "U3020", 24, 3);
-    assert_eq!(rows_at(&diagnostics, "U3020", 52, 3), several);
-    assert_eq!(rows_at(&diagnostics, "U3020", 58, 3), several);
+    let several = rows_at(&diagnostics, "U3020", 25, 3);
+    assert_eq!(rows_at(&diagnostics, "U3020", 53, 3), several);
+    assert_eq!(rows_at(&diagnostics, "U3020", 59, 3), several);
     // `with @secrets = @secrets[write]` narrows `@secrets` inside the statement, but the
     // grant resolves outside it, where `@secrets` is the only binding and permits `read`.
     assert_eq!(
-        rows_at(&diagnostics, "U3020", 63, 3),
+        rows_at(&diagnostics, "U3020", 64, 3),
         [row(
             "",
             &grant("@files = @secrets[read]", "media.resize"),
@@ -477,7 +487,7 @@ fn u3020_with_several_qualifying_bindings_is_advice_that_lists_them() {
     // is one line, so no grant can be written there, and the frames are the lambda's own. The
     // advice names no binding: neither the lambda's own `@files`, which the caller does not
     // hold, nor `@secrets` or `@user`, the statement's own choice (its U3001 lists them).
-    let lambda = rows_at(&diagnostics, "U3020", 74, 27);
+    let lambda = rows_at(&diagnostics, "U3020", 75, 27);
     assert_eq!(
         lambda,
         [row(
@@ -489,7 +499,7 @@ fn u3020_with_several_qualifying_bindings_is_advice_that_lists_them() {
     for name in ["@files =", "@files[", "@secrets", "@user"] {
         assert!(!lambda[0].1.contains(name), "{name}: {lambda:?}");
     }
-    let statement = at(&diagnostics, "U3001", 74, 3);
+    let statement = at(&diagnostics, "U3001", 75, 3);
     assert_eq!(statement.len(), 1, "{diagnostics:#?}");
     assert!(
         statement[0]["repairs"][0]["description"]
@@ -499,13 +509,27 @@ fn u3020_with_several_qualifying_bindings_is_advice_that_lists_them() {
         "{statement:#?}"
     );
     // The named function the advice describes: the lambda calls `via`, whose statement grants
-    // `@files`, and nothing is reported there.
+    // `@files`, and nothing is reported in `via` or `lam_via`.
     assert!(
         diagnostics
             .iter()
-            .all(|d| d["primary"]["start"]["line"].as_u64().unwrap() < 76),
+            .all(|d| !(77..=85).contains(&d["primary"]["start"]["line"].as_u64().unwrap())),
         "{diagnostics:#?}"
     );
+    // A function value referenced in the body of a lambda: the same advice, worded for the
+    // reference, naming no binding either.
+    let value = rows_at(&diagnostics, "U3020", 90, 39);
+    assert_eq!(
+        value,
+        [row(
+            "",
+            "this reference is in the body of a lambda, which is one line and cannot carry `with`, so no grant of `@files` can be written for it here: make the reference from a named function, where the statement that holds it grants `@files` with `with`, within the ceiling of `media.resize`, which allows `media.store.Files[read]`",
+            ""
+        )]
+    );
+    for name in ["@files =", "@files[", "@secrets"] {
+        assert!(!value[0].1.contains(name), "{name}: {value:?}");
+    }
 }
 
 #[test]

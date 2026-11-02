@@ -617,7 +617,9 @@ impl Checker<'_, '_, '_> {
     ///   resolved below that `with`;
     /// - in the body of a lambda whose frames are its own, advice that names no binding: the
     ///   body is one line, so no `with` can be written there, and a binding of those frames is
-    ///   none of the statement that holds the lambda;
+    ///   none of the statement that holds the lambda; it points to a named function whose
+    ///   statement grants `@x` or, when the ceiling withholds one of the operations, installs a
+    ///   handler within the ceiling, naming what the ceiling withholds;
     /// - when several bindings other than `@x` qualify, advice that lists them: which one the
     ///   boundary receives is a decision about trust, never a mechanical one;
     /// - when the ceiling allows them and no binding qualifies, advice to grant one, or a
@@ -660,33 +662,47 @@ impl Checker<'_, '_, '_> {
             )
         };
         let x = &need.name;
+        // The ceiling withholds an operation of `need`, or `need` names none: a grant of it is
+        // U3021, so only a handler within the ceiling is offered, wherever the call is.
+        let handler_only = !withheld.is_empty() || need.ops.is_empty();
+        let withholds = if withheld.is_empty() {
+            String::new()
+        } else {
+            let listed: Vec<String> = withheld.iter().map(|op| format!("`{op}`")).collect();
+            format!(
+                "; the ceiling in `{manifest}` withholds {}, so no binding that permits it can be granted",
+                listed.join(", ")
+            )
+        };
+        let handler = format!(
+            "a handler for `{name}` whose own `uses` lie within the ceiling of `{key}`, which allows {within}: `with @{x} = <handler>(...)`, where `handler <handler>(...) for {name}` is written outside the boundary{withholds}"
+        );
         // A lambda's body is one line (`line_expr`), so no `with` can be written for a call in
         // it, and the frames here are the lambda's own: a binding of them is no binding of the
         // statement that holds the lambda, whose `with` grants nothing to this call either.
-        // Advice that names no binding, never an edit.
+        // Advice that names no binding, never an edit; when the ceiling withholds an operation,
+        // the named function installs a handler instead, as outside a lambda.
         if self.frames_lambda.is_some() && site != GrantSite::Install {
             let what = if site == GrantSite::Value {
                 "reference"
             } else {
                 "call"
             };
-            return Some(Report::advice(format!(
-                "this {what} is in the body of a lambda, which is one line and cannot carry `with`, so no grant of `@{x}` can be written for it here: make the {what} from a named function, where the statement that holds it grants `@{x}` with `with`, within the ceiling of `{key}`, which allows {within}"
-            )));
-        }
-        if !withheld.is_empty() || need.ops.is_empty() {
-            let listed: Vec<String> = withheld.iter().map(|op| format!("`{op}`")).collect();
-            let withholds = if listed.is_empty() {
-                String::new()
+            let lead = format!(
+                "this {what} is in the body of a lambda, which is one line and cannot carry `with`, so"
+            );
+            return Some(Report::advice(if handler_only {
+                format!(
+                    "{lead} no handler for `@{x}` can be installed for it here: make the {what} from a named function, where the statement that holds it installs {handler}"
+                )
             } else {
                 format!(
-                    "; the ceiling in `{manifest}` withholds {}, so no binding that permits it can be granted",
-                    listed.join(", ")
+                    "{lead} no grant of `@{x}` can be written for it here: make the {what} from a named function, where the statement that holds it grants `@{x}` with `with`, within the ceiling of `{key}`, which allows {within}"
                 )
-            };
-            return Some(Report::advice(format!(
-                "install a handler for `{name}` whose own `uses` lie within the ceiling of `{key}`, which allows {within}: `with @{x} = <handler>(...)`, where `handler <handler>(...) for {name}` is written outside the boundary{withholds}"
-            )));
+            }));
+        }
+        if handler_only {
+            return Some(Report::advice(format!("install {handler}")));
         }
         // The right-hand sides of a `with` resolve outside it, so the holder is resolved where
         // the grant written there resolves: at a call, below the statement's own `with` frame,
