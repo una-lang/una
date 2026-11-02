@@ -176,20 +176,31 @@ impl<'a> Checker<'_, 'a, '_> {
     }
 
     /// Whether every argument of a call that may hold a function, by its parameter's type or
-    /// its own, is a lambda written at the call, and every argument was typed against a
-    /// parameter (ADR 0116 IF5 item 4, #1023). The receiver is never one, as it is no lambda.
+    /// its own, is a lambda written at the call for a parameter whose declared type is a
+    /// function type, and every argument was typed against a parameter (ADR 0116 IF5 item 4,
+    /// #1023). A lambda at a parameter of another type, such as `fold`'s `initial: U`, is not
+    /// known: the callee may return it, so it can run after the call. The receiver is never
+    /// one, as it is no lambda.
     fn known_function_arguments(
         &self,
+        params: &[ParamDef<'_>],
         args: &[Arg],
         has_receiver: bool,
         checked: &[Checked<'_>],
     ) -> bool {
+        let applied = |name: &str| {
+            params
+                .iter()
+                .any(|p| p.name == name && matches!(p.ty.base.unlabeled(), Ty::Fn(_)))
+        };
         checked.len() == args.len() + usize::from(has_receiver)
-            && checked.iter().all(|(at, found, expected, _)| {
+            && checked.iter().all(|(at, found, expected, name)| {
                 !(self.holds_function(expected) || self.holds_function(found))
-                    || args.iter().any(|arg| {
-                        arg.value.span == *at && matches!(arg.value.kind, ExprKind::Lambda { .. })
-                    })
+                    || (applied(name)
+                        && args.iter().any(|arg| {
+                            arg.value.span == *at
+                                && matches!(arg.value.kind, ExprKind::Lambda { .. })
+                        }))
             })
     }
 
@@ -1005,10 +1016,11 @@ impl<'a> Checker<'_, 'a, '_> {
         );
         // ADR 0116 IF5 item 4 (#1023): a prelude function that applies a function argument
         // runs code known at the call only when every argument that may hold a function is a
-        // lambda written at the call, which the timing label of a site counts by its captures
-        // and its body. Any other one, the receiver included, keeps `⊤`.
+        // lambda written at the call for a parameter of function type, which the timing label
+        // of a site counts by its captures and its body. Any other one, the receiver and a
+        // lambda given to a parameter such as `fold`'s `initial` included, keeps `⊤`.
         if super::timing::applies_function(self.env, &def)
-            && !self.known_function_arguments(args, has_receiver, &checked)
+            && !self.known_function_arguments(&def.params, args, has_receiver, &checked)
         {
             self.timing_opaque_apply(id);
         }

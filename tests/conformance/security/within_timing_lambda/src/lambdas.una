@@ -1,12 +1,14 @@
--- test: a lambda written at the call of a prelude function that applies it, such as `map`, `filter` or `fold`, adds its captures and what its body runs to the timing label of a `within` (ADR 0116 IF5 items 2 and 4), not `⊤`: on `public` captures, directly, nested or in a function the `within` calls, `if error pass` is accepted; a capture of a `secret` binding, at any depth, is U4002; a function value whose code is not known at the call, a local bound to a lambda, a field of a kind, a parameter, or a named function passed as the argument, keeps `⊤` (spec/26 §2 rule 5, spec/27 §5)
+-- test: a lambda written at the call of a prelude function that applies it, such as `map`, `filter` or `fold`, adds its captures and what its body runs to the timing label of a `within` (ADR 0116 IF5 items 2 and 4), not `⊤`: on `public` captures, directly, nested or in a function the `within` calls, `if error pass` is accepted; a capture of a `secret` binding, at any depth, is U4002; a function value whose code is not known at the call, a local bound to a lambda, a field of a kind, a parameter, a named function passed as the argument, a receiver that holds functions, or a lambda given to a parameter that is not of function type, such as `fold`'s `initial`, which the call may return, keeps `⊤` (spec/26 §2 rule 5, spec/27 §5)
 -- spec: spec/26 §2
--- expect: error U4002 at src/lambdas.una:44:5
--- expect: error U4002 at src/lambdas.una:51:5
--- expect: error U4002 at src/lambdas.una:59:5
--- expect: error U4002 at src/lambdas.una:67:5
--- expect: error U4002 at src/lambdas.una:74:5
--- expect: error U4002 at src/lambdas.una:81:5
--- expect: error U4002 at src/lambdas.una:88:5
+-- expect: error U4002 at src/lambdas.una:46:5
+-- expect: error U4002 at src/lambdas.una:53:5
+-- expect: error U4002 at src/lambdas.una:61:5
+-- expect: error U4002 at src/lambdas.una:69:5
+-- expect: error U4002 at src/lambdas.una:76:5
+-- expect: error U4002 at src/lambdas.una:83:5
+-- expect: error U4002 at src/lambdas.una:90:5
+-- expect: error U4002 at src/lambdas.una:98:5
+-- expect: error U4002 at src/lambdas.una:107:5
 module lambdas
 
 import std.time (millisecond)
@@ -87,3 +89,20 @@ pub passed(n: Int, g: fn(Int) -> Int) -> Int
   let a = [n].map(each: g).len within 10 * millisecond
     if error pass
   a
+
+pub received(n: Int) -> Int
+  fails PollError
+=
+  let fs = [fn(x: Int) -> x + 1]
+  let a = fs.map(each: fn(f: fn(Int) -> Int) -> n).len within 10 * millisecond
+    if error pass
+  a
+
+pub initial(n: Int) -> Int
+  fails PollError
+=
+  let f = [n].fold(initial: fn(y: Int) -> y + n,
+    step: fn(acc: fn(Int) -> Int, x: Int) -> acc
+  ) within 10 * millisecond
+    if error pass
+  n

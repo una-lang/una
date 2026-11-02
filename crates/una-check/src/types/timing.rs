@@ -510,8 +510,9 @@ impl Graph {
 
 /// Whether `def` is a function of the prelude, or of another standard module, with a parameter
 /// of function type, such as `map`, `filter` or `fold`: one that applies a function argument
-/// during the call. No such function keeps its function argument after the call: its result
-/// holds no copy of it (IF5 item 4, #1023).
+/// during the call. No such function keeps the argument of a function-typed parameter after
+/// the call: its result holds no copy of it. An argument of another parameter may be returned,
+/// as `fold` returns `initial`, so only the former can be known code (IF5 item 4, #1023).
 pub(crate) fn applies_function(env: &Env<'_>, def: &super::env::FnDef<'_>) -> bool {
     def.module >= env.prelude
         && def
@@ -1318,7 +1319,8 @@ pub(crate) fn concurrent_functions(findings: &Findings) -> BTreeSet<usize> {
 /// The preview over-approximations of `spec/26 §2` rule 5 apply, and may only get less strict:
 /// a function value called anywhere the site reaches makes it `⊤`, and so does a call of a
 /// prelude function with a function parameter there, unless every argument of that call that may
-/// hold a function is a lambda written at the call, whose captures and body the seed and the
+/// hold a function is a lambda written at the call for a parameter of function type, whose
+/// captures and body the seed and the
 /// reached functions already count (#1023); so does concurrent work, where `τ_conc` is `⊤`
 /// rather than the join of the siblings' `τ⁰`.
 ///

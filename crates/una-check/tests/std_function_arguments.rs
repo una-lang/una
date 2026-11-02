@@ -1,11 +1,15 @@
-//! The standard functions with a function parameter keep no copy of their function argument
-//! (#1023, ADR 0116 IF5 item 4, `spec/26 §2` rule 5).
+//! The standard functions with a function parameter keep no copy of what that parameter is
+//! given (#1023, ADR 0116 IF5 item 4, `spec/26 §2` rule 5).
 //!
-//! The timing label counts a lambda written at the call of such a function by its captures and
-//! its body, not as `⊤`, because the function applies it only while the call runs: its result
-//! holds no function from its parameters. This test keeps that premise: a standard function
-//! with a function parameter that is not in the list below, or whose declared result names a
-//! function type, fails it, and the change then needs a review of the rule.
+//! The timing label counts a lambda written at the call of such a function, as the argument of
+//! a parameter whose declared type is a function type, by its captures and its body, not as `⊤`,
+//! because the function applies it only while the call runs. This test keeps that premise as far
+//! as signatures show it: a standard function with a function parameter that is not in the
+//! reviewed list below, or whose declared result names a function type, fails it, and the change
+//! then needs a review of the rule. A lambda given to a parameter of another type, such as
+//! `fold`'s `initial: U`, may be returned, and the checker keeps `⊤` for it
+//! (`Checker::known_function_arguments`); the list's review covers that each function returns no
+//! value of a function-typed parameter.
 
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(clippy::unwrap_used)]
@@ -13,8 +17,8 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-/// The standard functions with a function parameter, each reviewed for #1023: each applies its
-/// function argument during the call and returns no function value of its own.
+/// The standard functions with a function parameter, each reviewed for #1023: each applies the
+/// argument of its function-typed parameters during the call and returns no copy of it.
 const REVIEWED: &[&str] = &[
     "dense_array_fold",
     "dense_array_map",
