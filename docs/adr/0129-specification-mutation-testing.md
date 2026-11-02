@@ -1,8 +1,8 @@
 # 0129. Specification mutation testing and trivial-contract detection
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-31
-- Deciders:
+- Deciders: Una project (accepted on 2026-11-02, with the changes of "Decisions of acceptance")
 - Resolves: issue #1293
 - Related:
   - ADR 0127 (Una Quality foundation) and `spec/32` (Draft): §8 (mutation outcomes and the two indicators), §9 (`contract.signals`), §14 (configuration), §18 (codes); this record defines the engine phase 3 (#1299) shares and the checks behind UQ5201;
@@ -14,7 +14,7 @@
   - ADR 0112 (check elision), for the run-time checks a specification can still cause;
   - ADR 0092 (conditions on operations and `[contracts]` locks).
 - Target: the toolchain. No construct of the language changes, no diagnostic code `U....` is added, and no edition changes.
-- Amends, on acceptance and with the slices that implement it (section H): `spec/32 §8` (the engine, the operators, the outcomes, `spec.sensitivity`), `§9` (the trivial-contract checks of `contract.signals`), `§14.2` (the `[mutation]` table and reviewed equivalent mutants), `§18` and `§19` (codes UQ4102 and UQ5401, rule 19).
+- Amends, on acceptance and with the slices that implement it (section H): `spec/32 §8` (the engine, the operators, the outcomes, `spec.sensitivity`), `§9` (the trivial-contract checks of `contract.signals`), `§14.2` (the `[mutation]` table), `§14.4` (reviewed equivalent mutants in the guarantee diff's approvals file, rule 12), `§18` and `§19` (codes UQ4102, UQ5401 and UQ9302, rules 12 and 19).
 
 > **In plain words.**
 > - **What it asks.** Is the specification strong enough? A proof only says that the code meets its contract; a contract that says little is easy to meet.
@@ -24,12 +24,25 @@
 
 ## Questions for acceptance
 
-Four points rest on assumptions that acceptance confirms or changes:
+Four points rest on assumptions that acceptance confirms or changes; the answers are under "Decisions of acceptance":
 
 1. **Operators apply to the surface tree (rule 3).** Mutants are edits of the source as written, so each one prints as a one-line source change and goes through the whole pipeline, desugaring included. The alternative, mutating Core IR, is cheaper per mutant but gives mutants no source text shows; recorded under Alternatives.
 2. **Specification mutants are judged by the verifier, and run tests only where the specification has a run-time effect (rule 9).** The code of a specification mutant is unchanged, so a test run can differ only through a run-time check that remains after elision (ADR 0112). The independent evidence is therefore static: callers' obligations, tests' verified `expect` lines, locks and requirement-linked contracts.
-3. **`no_coverage` stays (rule 6).** The issue lists five outcomes; `spec/32 §8` also has `no_coverage`. This record keeps it as a refinement of `survived` (a survivor no test evaluates), counted as undetected, so the formula of `spec/32 §8` is unchanged.
+3. **`no_coverage` stays (rule 7).** The issue lists five outcomes; `spec/32 §8` also has `no_coverage`. This record keeps it as a refinement of `survived` (a survivor no test evaluates), counted as undetected, so the formula of `spec/32 §8` is unchanged.
 4. **Reviewed equivalent mutants are recorded in `quality.toml` (rule 12).** A person's judgment that a mutant is equivalent must be stored somewhere reviewed and bound to the code it judged. This record puts it beside waivers, with the same binding to the declaration's fingerprint.
+
+## Decisions of acceptance (2026-11-02)
+
+The project accepted this record on 2026-11-02 with the changes below, which the rules carry:
+
+1. **Question 1: accepted.** Operators apply to the surface tree (rule 3).
+2. **Question 2: accepted.** Specification mutants are judged by the verifier, and run tests only where a run-time check remains (rule 9).
+3. **Question 3: accepted.** `no_coverage` stays as a refinement of `survived`. The question pointed to rule 6; the outcomes are rule 7.
+4. **Question 4: changed.** Reviewed equivalent mutants are not recorded in `quality.toml`, which a pipeline can swap by path: they live in the guarantee diff's approvals file, at its fixed path (ADR 0128 rule 22), with a code of their own for a new entry, **UQ9302** "a new reviewed equivalence". UQ9301 keeps its meaning, a new waiver (rule 12). An entry of reviewed equivalence in `quality.toml` is UQ0001.
+5. **`refuted` and `unknown` are counted apart.** Within `rejected_by_verifier`, the report gives the mutants rejected by a `refuted` obligation and those rejected only by an `unknown` one as separate counts (rules 7 and 8).
+6. **Order of work.** Slice 1 (#1320, the trivial-contract checks) may start once phase 2 of ADR 0127 (#1298) has landed; slices 2 to 4 follow phase 3 (#1299).
+
+Open item: the preset values of UQ9302, set with slice 4 (#1323).
 
 ## Glossary
 
@@ -71,7 +84,7 @@ The forces:
 1. **One engine, two families.** The mutation engine of Una Quality phase 3 (#1299) makes both code mutants and specification mutants, with one mutant record, one outcome set, one budget and one seed. `una quality --mode full` runs code mutants as part of the quality report (`spec/32 §8`); `una quality mutants` runs either family on request (rule 15).
 2. **Mutants live in memory.** A mutant is the package's sources with one edit, held in memory; the sources on disk are never written (ADR 0127 rule 31). Each mutant is checked and tested as `una check` and `una test` would, without host grants and with the virtual time of `una test`.
 3. **Operators apply to the surface tree** (Question 1). Each operator is a rewrite of one node of the surface syntax tree into another that parses; the mutant then goes through formatting-independent elaboration, desugaring, checking and tests. Each mutant prints as its source span and a one-line replacement.
-4. **The mutant id.** `mu-` and the first 12 hex digits of SHA-256 over the operator id and version, the declaration's qualified name, the ordinal of the site in the declaration's surface tree in source order, and the replacement text. The id survives edits of other declarations, and a reviewed decision (rule 12) is bound to it and to the declaration's fingerprint.
+4. **The mutant id.** `mu-` and the first 12 hex digits of SHA-256 over the operator id and version, the declaration's qualified name, the ordinal of the site in the declaration's surface tree in source order, and the replacement text. The id survives edits of other declarations, and a reviewed decision (rule 12) is bound to it and to the declaration's body fingerprint (`spec/32 §3` rule 4).
 
 ### B. Operators
 
@@ -110,14 +123,14 @@ The forces:
 
 7. **Order of evaluation.** For each mutant, in order, stopping at the first that applies:
    1. tier 0 rejects it (it does not type, a name is missing): `invalid`;
-   2. tier 1 reports an obligation `refuted` or `unknown` with a reason other than a budget, or U3023 for a lock: `rejected_by_verifier`, with the obligations named and the declaration that holds each (rule 10);
+   2. tier 1 reports an obligation `refuted` or `unknown` with a reason other than a budget, or U3023 for a lock: `rejected_by_verifier`, with the obligations named and the declaration that holds each (rule 10), and recorded as rejected by a `refuted` obligation, or only by an `unknown` one (rule 8);
    3. the verifier reached its step budget or wall-clock guard: `timeout`, phase `verifier`;
    4. a code mutant whose site no test evaluates: `survived` with the refinement `no_coverage` (Question 3), without running the tests;
    5. the tests run: a test fails or aborts, `killed_by_tests`; a test exceeds its budget (rule 17), `timeout`, phase `tests`; every test passes, `survived`.
 8. **Two indicators, never merged.** For code mutants:
    - **test mutation score** `mutation.test_score` = detected / (detected + undetected), with detected = `killed_by_tests` + `timeout` (phase `tests`), and undetected = `survived` (`no_coverage` included). Its denominator holds only the mutants the verifier let through to the tests;
    - **verifier rejection rate** `mutation.verifier_rejection_rate` = `rejected_by_verifier` / valid, with valid = every mutant that is not `invalid`. A `timeout` of phase `verifier` stays in the denominator and not in the numerator, so the solver's limits never raise the rate;
-   - neither is ever added to the other or shown as one number. Every report prints, next to each ratio, its numerator, its denominator and the raw count of every outcome, `invalid`, `timeout` by phase, proven-equivalent and reviewed-equivalent included, so a change of denominator is visible;
+   - neither is ever added to the other or shown as one number. Every report prints, next to each ratio, its numerator, its denominator and the raw count of every outcome, `invalid`, `timeout` by phase, proven-equivalent and reviewed-equivalent included, so a change of denominator is visible. Within `rejected_by_verifier`, the mutants rejected by a `refuted` obligation and those rejected only by an `unknown` one are two counts, never one: an `unknown` says that the verifier did not decide, not that the mutant is wrong;
    - an empty denominator gives `not_applicable` (`spec/32 §2`).
 9. **Specification mutants and `spec.sensitivity`** (Question 2). A specification mutant's code is unchanged, so:
    - the tests are run only for a mutant that changes a run-time check remaining after elision (ADR 0112); otherwise steps 4 and 5 of rule 7 are skipped and the outcome is decided by the verifier;
@@ -130,7 +143,7 @@ The forces:
 ### D. Equivalent mutants
 
 11. **Proven equivalence.** For a code mutant whose changed expression and its original are both in the refinement language, the engine asks the solver whether they can differ under the site's path context: `Π ∧ e ≠ e′` (`spec/12 §3`). `unsat` proves the mutant equivalent: it is `equivalent` (label `exact`), excluded from both denominators, and listed with its count. `sat` or `unknown` proves nothing, and the mutant is evaluated as rule 7 says. One query per such mutant, cached like obligations.
-12. **Reviewed equivalence** (Question 4). A survivor that a person judges equivalent is recorded in `quality.toml`:
+12. **Reviewed equivalence** (Question 4, changed on acceptance). A survivor that a person judges equivalent is recorded in the guarantee diff's approvals file, `guarantees.toml` at the package root, read from that fixed path only (ADR 0128 rule 22; its final form is `guarantees.una`, ADR 0131), never in `quality.toml`:
 
     ```toml
     [[mutation.equivalent]]
@@ -141,7 +154,7 @@ The forces:
     reviewer = "inventory maintainers"
     ```
 
-    It is excluded from the denominators and listed with its reason, as a waiver is (`spec/32 §14.4`): it lapses when the declaration's fingerprint changes, a malformed entry is UQ0001, and a new entry against the baseline is reported by the evolution gate (UQ9301). Until a person records it, a survivor counts as `survived`.
+    It is excluded from the denominators and listed with its reason: it lapses when the declaration's body fingerprint changes, a malformed entry is UQ0001, and a new entry against the baseline is reported by the evolution gate with its own code, UQ9302 "a new reviewed equivalence" (UQ9301 keeps its meaning, a new waiver). An entry of reviewed equivalence in `quality.toml` is UQ0001. It never approves a guarantee change. Until a person records it, a survivor counts as `survived`.
 13. **Suspected equivalence.** The engine flags survivors it suspects (for example a `const.shift` on a value used only in a comparison that the shift does not cross) as `mutation.equivalent_suspects`, label `heuristic`, for review. A suspect is never excluded and never scored.
 
 ### E. Trivial-contract checks
@@ -167,7 +180,7 @@ The forces:
 ### F. Commands, configuration and reporting
 
 15. **The command.** `una quality mutants [path]` runs the engine on request: `--family code|spec|both` (default `both`), `--seed <n>` (default 0), `--max-mutants <n>`, `--symbol <qualified.name>` (one declaration and the declarations that call it), and `--json`. It prints the outcomes, the indicators of rules 8 and 9, the survivors grouped by contract and requirement, the equivalent mutants, and the seed and budget used. Its exit code is 0 unless a usage, configuration or internal error occurs: it is an evaluation, not a gate. Within `una quality --gate`, mutation results gate only as the project's `quality.toml` sets UQ4101, UQ4102 and UQ5401 (rule 19).
-16. **Configuration.** `quality.toml` gains a `[mutation]` table: `operators` (the ids of rules 5 and 6 to use, all by default), `families`, `seed`, `max_mutants`, `test_budget_factor` (rule 17), and the `[[mutation.equivalent]]` entries of rule 12. `[limits] mutants` of `spec/32 §14.2` remains the hard cap.
+16. **Configuration.** `quality.toml` gains a `[mutation]` table: `operators` (the ids of rules 5 and 6 to use, all by default), `families`, `seed`, `max_mutants`, and `test_budget_factor` (rule 17). The reviewed equivalences of rule 12 are not part of it. `[limits] mutants` of `spec/32 §14.2` remains the hard cap.
 17. **Cost and determinism.**
     - **Selection.** When a run's mutants exceed `max_mutants`, the engine orders them by SHA-256 of the seed and the mutant id and takes the first ones: a deterministic, seeded sample that does not change when unrelated declarations change. The report states the sample's size, the population's size and the seed.
     - **Budgets in steps, not seconds.** The tests of a mutant run with a budget of interpreter steps, `test_budget_factor` (default 10) times the steps the original suite took; the verifier uses the lock's step budget (`spec/12 §9`). Both are deterministic. The wall-clock guard of `spec/12 §5` stays as a backstop; a result it ends is `timeout` and marked non-deterministic.
@@ -175,7 +188,7 @@ The forces:
     - **Order.** Mutants MAY be evaluated in parallel; results are reported in the order of the mutant ids' declarations and sites, so output bytes are the same.
     - **Complexity.** Generating mutants is O(n) in the package's surface nodes; each mutant costs at most one incremental check and the tests that reach it; a run is bounded by `max_mutants` and the step budgets.
 18. **Where results go.** The code family feeds `mutation.*` of `spec/32 §8`; the specification family feeds `spec.sensitivity`; the trivial-contract checks feed `contract.signals` (`spec/32 §9`). The guarantee diff (ADR 0128 rule 20) reports their changes against the baseline, never as a gate. All of it is data in `una.quality/1`, with statuses of `spec/32 §2`.
-19. **Codes.** Added to `spec/32 §18` on acceptance, structural gate: **UQ4102** "verifier rejection rate below its limit" and **UQ5401** "specification sensitivity below its limit". UQ4101 (test mutation score) and UQ5201 (a contract that says less than it seems to) keep their meaning; UQ5201's finding names the check of rule 14 as its metric (`contract.signals.unsatisfiable_requires`, `contract.signals.vacuous_ensures`, and so on). No preset sets UQ4102 or UQ5401 above `info` until calibration on Una's own corpus gives reference values.
+19. **Codes.** Added to `spec/32 §18` on acceptance, structural gate: **UQ4102** "verifier rejection rate below its limit" and **UQ5401** "specification sensitivity below its limit". UQ4101 (test mutation score) and UQ5201 (a contract that says less than it seems to) keep their meaning; UQ5201's finding names the check of rule 14 as its metric (`contract.signals.unsatisfiable_requires`, `contract.signals.vacuous_ensures`, and so on). No preset sets UQ4102 or UQ5401 above `info` until calibration on Una's own corpus gives reference values. Added to the evolution gate: **UQ9302** "a new reviewed equivalence" (rule 12), with preset values set by slice 4.
 
 ### G. Out of scope
 
@@ -187,7 +200,7 @@ Stated in rule 17: O(n) generation; per mutant, one incremental check and the te
 
 ## Security
 
-Mutants are made and evaluated in memory, with no host grant and no file write (ADR 0127 rule 31). No operator adds authority, `trusted`, `checked` or a policy call (rule 5). Reviewed equivalences are bound to a fingerprint and listed in every report, so they cannot silently shrink a denominator. A mutation run never changes what `una check` accepts.
+Mutants are made and evaluated in memory, with no host grant and no file write (ADR 0127 rule 31). No operator adds authority, `trusted`, `checked` or a policy call (rule 5). Reviewed equivalences live at the approvals file's fixed path, which no pipeline injects, are bound to a fingerprint and listed in every report, so they cannot silently shrink a denominator. A mutation run never changes what `una check` accepts.
 
 ## Verification
 
@@ -225,10 +238,10 @@ No `U` code is added. UQ4102 and UQ5401 join the `UQ` registry with explain text
 
 Each slice is its own card and pull request; each amends `spec/32` with fixtures of known values.
 
-1. **Trivial-contract checks** (#1320). Rule 14 in `una quality --mode verified`, feeding UQ5201; the false-positive rate measured on the example packages and recorded.
+1. **Trivial-contract checks** (#1320). Rule 14 in `una quality --mode verified`, feeding UQ5201; the false-positive rate measured on the example packages and recorded. It may start once phase 2 of ADR 0127 (#1298) has landed.
 2. **The mutation engine and code operators** (#1321). Rules 2 to 5, 7, 8, 10, 11 and 17: in-memory mutants, ids, the outcome order, the two indicators, proven equivalence, seeded sampling and step budgets. Shared with phase 3 (#1299).
 3. **Specification mutants and sensitivity** (#1322). Rules 6 and 9: specification operators, evidence sources, `spec.sensitivity` per contract and requirement, unobserved clauses.
-4. **Command, configuration and review** (#1323). Rules 12, 13, 15, 16 and 19: `una quality mutants`, the `[mutation]` table, reviewed and suspected equivalence, codes UQ4102 and UQ5401 with explain texts.
+4. **Command, configuration and review** (#1323). Rules 12, 13, 15, 16 and 19: `una quality mutants`, the `[mutation]` table, reviewed and suspected equivalence, codes UQ4102, UQ5401 and UQ9302 with explain texts.
 
 ## Conformance
 
