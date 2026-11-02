@@ -2129,6 +2129,10 @@ impl<'a> Checker<'_, 'a, '_> {
         // The frames where the lambda is written, which its frame's bindings resolve to
         // (ADR 0092 rule 3, #615).
         self.outer_frames.push(frames);
+        // The enclosing statement's `with` and its `outer` level belong to the frames where
+        // the lambda is written, not to the lambda's own: a repair inside the body never
+        // resolves against them (ADR 0093 rule 6).
+        let statement = self.statement.take();
         // A lambda's body starts at a `public` program counter (ADR 0031 rule 4).
         let ctx = Ctx {
             fails: fails.clone(),
@@ -2146,6 +2150,7 @@ impl<'a> Checker<'_, 'a, '_> {
             found
         });
         self.lambda_depth -= 1;
+        self.statement = statement;
         self.frames_depth = frames_depth;
         self.frames_lambda = frames_lambda;
         self.prelude_lambda = prelude_lambda;

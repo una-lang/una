@@ -416,7 +416,7 @@ fn u3020_with_several_qualifying_bindings_is_advice_that_lists_them() {
     // Two bindings permit `read` and neither is `@files`: which one the third-party library
     // reads is the consumer's decision, so no edit names one.
     assert_eq!(
-        rows_at(&diagnostics, "U3020", 21, 3),
+        rows_at(&diagnostics, "U3020", 24, 3),
         [row(
             "",
             "grant `@files` with `with @files = @y[read]`, narrowed to the operations the callee declares, which lie within the ceiling of `media.resize`, where `@y` is one of `@secrets` and `@user`, which each permit `read`; which binding the boundary receives is a decision about trust, so no edit is offered",
@@ -425,7 +425,7 @@ fn u3020_with_several_qualifying_bindings_is_advice_that_lists_them() {
     );
     // `@files` itself permits `read`: the grant names it, with its edit.
     assert_eq!(
-        rows_at(&diagnostics, "U3020", 27, 3),
+        rows_at(&diagnostics, "U3020", 30, 3),
         [row(
             "",
             &grant("@files = @files[read]", "media.resize"),
@@ -434,7 +434,7 @@ fn u3020_with_several_qualifying_bindings_is_advice_that_lists_them() {
     );
     // A function value: advice, never an edit.
     assert_eq!(
-        rows_at(&diagnostics, "U3020", 32, 11),
+        rows_at(&diagnostics, "U3020", 35, 11),
         [row(
             "",
             &format!(
@@ -447,7 +447,7 @@ fn u3020_with_several_qualifying_bindings_is_advice_that_lists_them() {
     // An installation: the grant resolves below the installing `with`, so it names the
     // header's `@user_net`, never `@n`, which the same `with` binds.
     assert_eq!(
-        rows_at(&diagnostics, "U3020", 43, 44),
+        rows_at(&diagnostics, "U3020", 46, 44),
         [row(
             "",
             &format!(
@@ -460,18 +460,51 @@ fn u3020_with_several_qualifying_bindings_is_advice_that_lists_them() {
     // The statement has a `with` already: the grant added to it resolves outside that
     // `with`, where the header's `@secrets` and `@user` both still qualify, whichever of them
     // the `with` rebinds. Advice, never an edit.
-    let several = rows_at(&diagnostics, "U3020", 21, 3);
-    assert_eq!(rows_at(&diagnostics, "U3020", 49, 3), several);
-    assert_eq!(rows_at(&diagnostics, "U3020", 55, 3), several);
+    let several = rows_at(&diagnostics, "U3020", 24, 3);
+    assert_eq!(rows_at(&diagnostics, "U3020", 52, 3), several);
+    assert_eq!(rows_at(&diagnostics, "U3020", 58, 3), several);
     // `with @secrets = @secrets[write]` narrows `@secrets` inside the statement, but the
     // grant resolves outside it, where `@secrets` is the only binding and permits `read`.
     assert_eq!(
-        rows_at(&diagnostics, "U3020", 60, 3),
+        rows_at(&diagnostics, "U3020", 63, 3),
         [row(
             "",
             &grant("@files = @secrets[read]", "media.resize"),
             ", @files = @secrets[read]"
         )]
+    );
+    // A call in the body of a lambda given to `apply`, on a statement with a `with`: the body
+    // is one line, so no grant can be written there, and the frames are the lambda's own. The
+    // advice names no binding: neither the lambda's own `@files`, which the caller does not
+    // hold, nor `@secrets` or `@user`, the statement's own choice (its U3001 lists them).
+    let lambda = rows_at(&diagnostics, "U3020", 74, 27);
+    assert_eq!(
+        lambda,
+        [row(
+            "",
+            "this call is in the body of a lambda, which is one line and cannot carry `with`, so no grant of `@files` can be written for it here: make the call from a named function, where the statement that holds it grants `@files` with `with`, within the ceiling of `media.resize`, which allows `media.store.Files[read]`",
+            ""
+        )]
+    );
+    for name in ["@files =", "@files[", "@secrets", "@user"] {
+        assert!(!lambda[0].1.contains(name), "{name}: {lambda:?}");
+    }
+    let statement = at(&diagnostics, "U3001", 74, 3);
+    assert_eq!(statement.len(), 1, "{diagnostics:#?}");
+    assert!(
+        statement[0]["repairs"][0]["description"]
+            .as_str()
+            .unwrap()
+            .contains("one of `@secrets` and `@user`"),
+        "{statement:#?}"
+    );
+    // The named function the advice describes: the lambda calls `via`, whose statement grants
+    // `@files`, and nothing is reported there.
+    assert!(
+        diagnostics
+            .iter()
+            .all(|d| d["primary"]["start"]["line"].as_u64().unwrap() < 76),
+        "{diagnostics:#?}"
     );
 }
 

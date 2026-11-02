@@ -1,13 +1,16 @@
--- test: ADR 0093 rule 6, ADR 0084: the grant of a U3020 carries an edit only when it names `@x` itself or the only binding that permits the requirement; when several do, which one the boundary receives is a decision about trust, so the repair is advice that lists them; at a function value the grant is advice; at an installation the grant is resolved below the installing `with`, so it never names a binding of that `with`; at a call whose statement has a `with` already, the candidates are counted below that `with`, where the added grant resolves, so a header binding that `with` rebinds still counts
+-- test: ADR 0093 rule 6, ADR 0084: the grant of a U3020 carries an edit only when it names `@x` itself or the only binding that permits the requirement; when several do, which one the boundary receives is a decision about trust, so the repair is advice that lists them; at a function value the grant is advice; at an installation the grant is resolved below the installing `with`, so it never names a binding of that `with`; at a call whose statement has a `with` already, the candidates are counted below that `with`, where the added grant resolves, so a header binding that `with` rebinds still counts; in the body of a lambda, which is one line and cannot carry `with`, the grant is advice that names no binding, neither the lambda's own nor one of the statement that holds the lambda, and a named function that the lambda calls grants it
 -- spec: spec/13 §3
--- expect: error U3020 at src/media/app.una:21:3
--- expect: error U3020 at src/media/app.una:27:3
--- expect: error U3006 at src/media/app.una:32:11
--- expect: error U3020 at src/media/app.una:32:11
--- expect: error U3020 at src/media/app.una:43:44
--- expect: error U3020 at src/media/app.una:49:3
--- expect: error U3020 at src/media/app.una:55:3
--- expect: error U3020 at src/media/app.una:60:3
+-- expect: error U3020 at src/media/app.una:24:3
+-- expect: error U3020 at src/media/app.una:30:3
+-- expect: error U3006 at src/media/app.una:35:11
+-- expect: error U3020 at src/media/app.una:35:11
+-- expect: error U3020 at src/media/app.una:46:44
+-- expect: error U3020 at src/media/app.una:52:3
+-- expect: error U3020 at src/media/app.una:58:3
+-- expect: error U3020 at src/media/app.una:63:3
+-- expect: error U3001 at src/media/app.una:74:3
+-- expect: error U3001 at src/media/app.una:74:18
+-- expect: error U3020 at src/media/app.una:74:27
 module media.app
 
 import media.cache (mirrored)
@@ -58,3 +61,24 @@ pub narrowed(path: Text) -> Text
   uses @secrets: Files[read, write]
 =
   shrink(path) with @secrets = @secrets[write]
+
+apply(p: Text, f: fn(Text) -> Text uses @files: Files[read]) -> Text
+  uses @files: Files[read]
+=
+  f(p)
+
+pub lam_arg(path: Text) -> Text
+  uses @secrets: Files[read, write]
+  uses @user: Files[read, write]
+=
+  apply(path, f: fn(p) -> shrink(p)) with @user = @secrets
+
+via(p: Text) -> Text
+  uses @files: Files[read]
+=
+  shrink(p) with @files = @files[read]
+
+pub lam_via(path: Text) -> Text
+  uses @secrets: Files[read, write]
+=
+  apply(path, f: fn(p) -> via(p)) with @files = @secrets

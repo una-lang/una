@@ -615,6 +615,9 @@ impl Checker<'_, '_, '_> {
     ///   `una fix` may apply (ADR 0084). At a function value and at an installation the grant
     ///   is advice, at an installation another binding of the installing `with`, its `@y`
     ///   resolved below that `with`;
+    /// - in the body of a lambda whose frames are its own, advice that names no binding: the
+    ///   body is one line, so no `with` can be written there, and a binding of those frames is
+    ///   none of the statement that holds the lambda;
     /// - when several bindings other than `@x` qualify, advice that lists them: which one the
     ///   boundary receives is a decision about trust, never a mechanical one;
     /// - when the ceiling allows them and no binding qualifies, advice to grant one, or a
@@ -657,6 +660,20 @@ impl Checker<'_, '_, '_> {
             )
         };
         let x = &need.name;
+        // A lambda's body is one line (`line_expr`), so no `with` can be written for a call in
+        // it, and the frames here are the lambda's own: a binding of them is no binding of the
+        // statement that holds the lambda, whose `with` grants nothing to this call either.
+        // Advice that names no binding, never an edit.
+        if self.frames_lambda.is_some() && site != GrantSite::Install {
+            let what = if site == GrantSite::Value {
+                "reference"
+            } else {
+                "call"
+            };
+            return Some(Report::advice(format!(
+                "this {what} is in the body of a lambda, which is one line and cannot carry `with`, so no grant of `@{x}` can be written for it here: make the {what} from a named function, where the statement that holds it grants `@{x}` with `with`, within the ceiling of `{key}`, which allows {within}"
+            )));
+        }
         if !withheld.is_empty() || need.ops.is_empty() {
             let listed: Vec<String> = withheld.iter().map(|op| format!("`{op}`")).collect();
             let withholds = if listed.is_empty() {
