@@ -40,20 +40,21 @@ n is the number of limbs of the larger operand, m that of the smaller or of the 
 
 The thresholds were chosen by measuring against `num-bigint` 0.4.8 on an aarch64 macOS machine, release build. #1093 measured single-limb operations two to three times faster (no allocation) and division of larger operands 2% to 18% faster; #1368 measured parsing 1.27 times as fast at 1,536 and 2,048 limbs, where `num-bigint` stays quadratic. Karatsuba writes its outer products straight into the result, and the schoolbook rows run over exact windows of it.
 
-Not every operation is within 5% of `num-bigint` or faster. The review of #1367 measured exceptions; #1368 measured them again with a harness outside the repository (`una_core::bigint` against `num-bigint` 0.4.8, median of 9 to 15 timed runs per case after a warm-up, the results compared for equality first, and a differential run of 3,000 rounds up to 2,400 limbs and 200,000 rounds of one and two limbs with no difference), tuned three of them and left the others as stated here. Ratios are our time over `num-bigint`'s.
+Not every operation is within 5% of `num-bigint` or faster. The review of #1367 measured exceptions; #1368 measured them again with a harness outside the repository (every range below is the lowest and highest ratio over the saved runs of that case) (`una_core::bigint` against `num-bigint` 0.4.8, median of 9 to 15 timed runs per case after a warm-up, the results compared for equality first, and a differential run of 3,000 rounds up to 2,400 limbs and 200,000 rounds of one and two limbs with no difference), tuned three of them and left the others as stated here. Ratios are our time over `num-bigint`'s.
 
 | Case | Before #1368 | After #1368 |
 | --- | --- | --- |
-| Products, shorter operand 9/16 to 2/3 of the longer, from 256 limbs (Karatsuba just below Toom-3's old condition m > 2⌈n/3⌉) | 0.85x to 1.15x | 0.87x to 1.03x: Toom-3 takes these products |
-| Every product measured, 40 to 6,000 limbs, the shorter operand from 1/2 to all of the longer | 0.67x to 1.15x (a first, cold case excluded) | 0.65x to 1.04x |
-| 2 limbs by 1 limb, `/` and `%` | 1.44x to 1.47x | 0.35x to 0.77x: 128-bit arithmetic, no limb vector for the part not returned |
-| Parsing decimal text of 384 to 640 limbs (7,399 to 12,330 digits) | up to 1.16x at 512 limbs | 0.99x to 1.00x (1.03x at 1,024 limbs): Horner's rule up to 768 chunks |
-| Writing a power of ten as decimal text, 32 to 128 limbs (617 to 2,467 digits, inside the 4,300-digit bound) | 1.20x to 1.73x | 1.05x to 1.40x |
-| Writing a power of ten as decimal text, 256 to 16,384 limbs | 1.96x to 2.85x | 1.68x to 2.50x |
-| Writing a random value as decimal text, 32 to 128 limbs | 0.98x to 1.13x (1.13x at 48 limbs) | 0.92x to 1.13x (1.13x at 48 limbs, otherwise within 5%) |
-| Writing a random value as decimal text, 256 to 16,384 limbs | 0.95x to 1.01x | 0.89x to 0.91x |
+| Products, shorter operand of 256 limbs or more and 9/16 to 2/3 of the longer (Karatsuba just below Toom-3's old condition m > 2⌈n/3⌉) | 0.846x to 1.145x | 0.865x to 1.030x: Toom-3 takes these products |
+| Every product measured, 40 to 6,000 limbs, the shorter operand from 1/2 to all of the longer | 0.671x to 1.145x (a first, cold case of 1.439x excluded) | 0.648x to 1.041x |
+| 2 limbs by 1 limb, `/` and `%` | 1.438x to 1.470x | 0.355x to 0.665x (`Int` with signs: 0.593x to 0.650x): 128-bit arithmetic, no limb vector for the part not returned |
+| Parsing decimal text of 384 to 640 limbs (7,399 to 12,330 digits) | 1.009x to 1.157x (1.157x at 512 limbs) | 0.992x to 1.002x: Horner's rule up to 768 chunks |
+| Parsing decimal text of 1,024 limbs (19,729 digits) | 0.947x to 0.955x | 1.028x to 1.031x: slower, the cost of the higher threshold; only internal callers parse beyond the 4,300-digit bound |
+| Writing a power of ten as decimal text inside the 4,300-digit bound: 32, 48, 64, 96 and 128 limbs before; also 160, 192 and 223 limbs after | 1.200x to 1.729x | 1.013x to 1.400x |
+| Writing a power of ten as decimal text, 256 to 16,384 limbs | 1.956x to 2.847x | 1.680x to 2.501x |
+| Writing a random value as decimal text, 32 to 128 limbs (to 223 limbs after) | 0.944x to 1.131x (1.131x at 48 limbs) | 0.914x to 1.140x (1.125x to 1.140x at 48 limbs, otherwise at most 1.051x) |
+| Writing a random value as decimal text, 256 to 16,384 limbs | 0.945x to 1.013x | 0.877x to 0.924x |
 
-A power of ten is the remaining large gap, not investigated further: a likely cause, not verified, is that `num-bigint`'s writer does little work for a zero remainder, which a power of ten gives at every step, while the divide-and-conquer writer here still divides at each level. Writing such a value inside the bound costs at most 1.4 times `num-bigint`, and on random values the writer here is faster from 128 limbs. Random values of 48 limbs stay 1.13x.
+A power of ten is the remaining large gap, not investigated further: a likely cause, not verified, is that `num-bigint`'s writer does little work for a zero remainder, which a power of ten gives at every step, while the divide-and-conquer writer here still divides at each level. At the sizes measured inside the bound (32 to 223 limbs) writing a power of ten cost 1.01 to 1.40 times `num-bigint`; at 256 limbs it already costs 1.68 times. On random values the writer here is faster from 128 limbs, and skipping the zero low limbs made it 5% to 10% faster there. Random values of 48 limbs stay about 1.13x.
 
 ### Semantics kept exactly
 

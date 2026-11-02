@@ -399,24 +399,37 @@ fn division_agrees_with_the_slow_reference() {
 
 #[test]
 fn division_identity_with_the_signs_of_una() {
+    // The top limb of each operand is forced nonzero, so every length is exactly the one
+    // named, whatever shape the generator draws; all-ones operands are checked too.
     let mut rng = Rng(0xD1B5_4A32_D192_ED03);
-    for _ in 0..300 {
-        let (n, m) = (rng.size(400), rng.size(200));
-        let (a, b) = (rng.int(n), rng.int(m));
-        if b.is_zero() {
-            assert_eq!(&a / &b, BigInt::ZERO);
-            assert_eq!(&a % &b, a);
-            continue;
+    let exact = |rng: &mut Rng, n: usize| {
+        let mut limbs = rng.limbs(n);
+        if let Some(top) = limbs.last_mut() {
+            *top |= 1 << 63;
         }
-        // Truncation: |r| < |b|, r has the sign of a or is zero.
-        let (q, r) = (&a / &b, &a % &b);
-        assert_eq!(&q * &b + &r, a);
-        assert!(r.magnitude() < b.magnitude());
-        assert!(r.is_zero() || r.sign() == a.sign());
-        // Euclid, Una's `div` and `mod`: 0 <= r < |b|.
-        let (q, r) = euclid(&a, &b);
-        assert_eq!(&q * &b + &r, a);
-        assert!(r.sign() != Sign::Minus && r.magnitude() < b.magnitude());
+        limbs
+    };
+    for &b in &[TOOM3 * 3 / 2, TOOM3 * 3 / 2 + 1, 500, 640] {
+        let k = b.div_ceil(3);
+        for a in [
+            9 * b / 16,
+            9 * b / 16 + 1,
+            2 * k - 1,
+            2 * k,
+            2 * k + 1,
+            b / 2 + 1,
+        ] {
+            let ones = (vec![u64::MAX; a], vec![u64::MAX; b]);
+            for (x, y) in [(exact(&mut rng, a), exact(&mut rng, b)), ones] {
+                assert_eq!((x.len(), y.len()), (a, b));
+                let (p, q) = (
+                    BigUint::from_limbs(x.clone()),
+                    BigUint::from_limbs(y.clone()),
+                );
+                assert_eq!((&p * &q).limbs(), ref_mul(&x, &y), "{a} by {b} limbs");
+                assert_eq!((&q * &p).limbs(), ref_mul(&x, &y), "{b} by {a} limbs");
+            }
+        }
     }
 }
 
