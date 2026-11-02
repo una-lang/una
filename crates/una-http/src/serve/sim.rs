@@ -456,6 +456,20 @@ impl Sim {
             .map(|peer| peer.thread)
     }
 
+    /// The next timer a connection of serve thread `thread` arms panics inside the wheel.
+    pub fn fault_in_wheel(&mut self, thread: usize) {
+        if let Some(serve) = self.threads.get_mut(thread) {
+            serve.fault_in_wheel();
+        }
+    }
+
+    /// The next step of a connection of serve thread `thread` panics.
+    pub fn fault_in_step(&mut self, thread: usize) {
+        if let Some(serve) = self.threads.get_mut(thread) {
+            serve.fault_in_step();
+        }
+    }
+
     /// The next timer a connection of serve thread `thread` arms fails, as with a full wheel.
     pub fn fail_next_arm(&mut self, thread: usize) {
         if let Some(serve) = self.threads.get_mut(thread) {

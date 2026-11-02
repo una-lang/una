@@ -339,3 +339,141 @@ fn a_thread_that_ends_holding_the_turn_hands_it_to_a_live_thread() {
     assert_eq!(shared.turn(), 2);
     assert!(third.try_recv().is_err());
 }
+
+#[test]
+fn a_fault_in_a_connections_step_closes_only_that_connection() {
+    let mut sim = Sim::new(&[GRANT], 1);
+    assert!(sim.connect(1, 0, &addr(1), Reads::Eager));
+    assert!(sim.connect(2, 0, &addr(2), Reads::Eager));
+    sim.fault_in_step(0);
+    sim.send(1, &get("/a"));
+    assert!(sim.closed(1));
+    assert_eq!(sim.shared.faults(), 1);
+    assert_eq!(sim.shared.grants[0].counters().connections, 1);
+    // The thread goes on with its other connection.
+    sim.send(2, &get("/b"));
+    let mut exchange = sim.deliver().unwrap();
+    exchange.reply(&ok("on")).unwrap();
+    sim.flush();
+    assert!(String::from_utf8_lossy(&sim.received(2)).ends_with("on"));
+    sim.close_peer(2);
+    assert!(sim.shared.is_quiet());
+}
+
+#[test]
+fn a_fault_inside_the_wheel_is_not_contained_and_the_end_gives_everything_back() {
+    // The wheel is shared by every connection of the thread and may be half-updated: the panic
+    // goes on to the thread's loop, which ends the thread (here, `kill` does what the loop does).
+    let mut sim = Sim::new(&[GRANT], 2);
+    let on_zero = owned_by(&mut sim, 0, 20, 0);
+    assert!(on_zero.len() >= 2);
+    sim.fault_in_wheel(0);
+    let k = on_zero[0];
+    let fault = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        sim.send(k, &get("/a"));
+    }));
+    assert!(fault.is_err(), "a fault inside the wheel was contained");
+    assert_eq!(sim.shared.faults(), 0);
+    sim.kill(0);
+    for &k in &on_zero {
+        assert!(sim.closed(k));
+    }
+    let counters = sim.shared.grants[0].counters();
+    assert_eq!(counters.connections, 20 - on_zero.len() as u64);
+    assert_eq!((counters.waiting, counters.buffers), (0, 0));
+}
+
+#[test]
+fn a_fault_in_the_hand_off_at_accept_gives_back_the_slot_and_the_peers_place() {
+    let mut sim = Sim::new(&[HTTPS], 1);
+    sim.shared.fail_next_accepts(1);
+    assert!(!sim.connect(1, 0, &addr(1), Reads::Eager));
+    assert_eq!(sim.refused.last().map(|r| r.1), Some(AcceptRefusal::Fault));
+    assert!(sim.closed(1));
+    assert_eq!(sim.shared.faults(), 1);
+    assert_eq!(sim.shared.grants[0].counters().connections, 0);
+    // The peer's entry waits for its bucket, then expires on the live thread.
+    sim.run_to(60 * SECOND);
+    assert!(sim.shared.grants[0].peers.is_empty());
+    assert!(sim.connect(2, 0, &addr(1), Reads::Eager));
+}
+
+/// A receiver that ends while it holds the turn, from inside the wake of the message that gave
+/// it the turn: the window between the record of the turn and the end of the pass.
+struct EndsOnWake {
+    shared: OnceLock<Weak<Shared>>,
+    inbox: std::sync::Mutex<Option<std::sync::mpsc::Receiver<Msg>>>,
+    thread: usize,
+}
+
+impl Waker for EndsOnWake {
+    fn wake(&self) {
+        let inbox = self.inbox.lock().unwrap().take();
+        if let (Some(shared), Some(inbox)) = (self.shared.get().and_then(Weak::upgrade), inbox) {
+            shared.end_thread(self.thread, inbox);
+            shared.hand_on_turn(self.thread);
+        }
+    }
+}
+
+#[test]
+fn a_receiver_that_ends_during_the_pass_hands_the_turn_on_once() {
+    let receiver = Arc::new(EndsOnWake {
+        shared: OnceLock::new(),
+        inbox: std::sync::Mutex::new(None),
+        thread: 1,
+    });
+    struct Shim(Arc<EndsOnWake>);
+    impl Waker for Shim {
+        fn wake(&self) {
+            self.0.wake();
+        }
+    }
+    let clock: Arc<dyn Clock> = Arc::new(SimClock::default());
+    let wakers: Vec<Box<dyn Waker>> = vec![
+        Box::new(NoWake),
+        Box::new(Shim(Arc::clone(&receiver))),
+        Box::new(NoWake),
+    ];
+    let (shared, mut inboxes) = Shared::new(&[], 3, SipKey::from_bytes([7; 16]), clock, wakers);
+    let third = inboxes.pop().unwrap();
+    let second = inboxes.pop().unwrap();
+    let first = inboxes.pop().unwrap();
+    *receiver.inbox.lock().unwrap() = Some(second);
+    receiver.shared.set(Arc::downgrade(&shared)).unwrap();
+    shared.set_turn(0);
+    shared.port(1).unwrap().announce_sleep();
+    shared.pass_turn(0);
+    // Exactly one live thread got the turn, and the record names it.
+    let accepts = |inbox: &std::sync::mpsc::Receiver<Msg>| {
+        inbox
+            .try_iter()
+            .filter(|msg| matches!(msg, Msg::Accept))
+            .count()
+    };
+    let (to_first, to_third) = (accepts(&first), accepts(&third));
+    assert_eq!(to_first + to_third, 1, "{to_first} + {to_third} turns");
+    let holder = if to_third == 1 { 2 } else { 0 };
+    assert_eq!(shared.turn(), holder);
+    assert!(shared.is_ended(1));
+}
+
+#[test]
+fn a_fault_while_a_connection_is_adopted_leaves_it_where_the_end_finds_it() {
+    let mut sim = Sim::new(&[GRANT], 2);
+    sim.fault_in_wheel(0);
+    // The first connection thread 0 adopts arms its `read` timer and faults there.
+    let fault = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        for k in 0..20 {
+            sim.connect(k, 0, &addr(k as u32), Reads::Eager);
+        }
+    }));
+    assert!(fault.is_err());
+    sim.kill(0);
+    let open: u64 = sim
+        .connections()
+        .into_iter()
+        .filter(|&k| !sim.closed(k))
+        .count() as u64;
+    assert_eq!(sim.shared.grants[0].counters().connections, open);
+}

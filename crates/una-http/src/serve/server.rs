@@ -11,9 +11,11 @@
 //! listener at a time, through the bytes of a flag that only the thread holding the event may
 //! set.
 //!
-//! **A thread that ends.** A panic in a connection's step or in a callback is contained and
-//! costs at most that connection. A panic elsewhere ends the thread: it gives up its inbox,
-//! closes every connection it owns and gives back what they held, and hands on the turn; new
+//! **A thread that ends.** A panic in a connection's step, in the hand-off at accept, in a
+//! peer's expiry or in a callback is contained and costs at most that connection. A panic inside
+//! the thread's wheel or readiness, or elsewhere in its loop, ends the thread: it gives up its
+//! inbox, closes every connection it owns and gives back what they held as far as their state
+//! records it, registers again the listener of a burst it was in, and hands on the turn; new
 //! connections whose keyed owner it was go to the next live thread. A slot of
 //! `connections` is taken before each `accept`, so every descriptor the server accepts holds
 //! one; at the cap the listener is not registered again until a connection closes, and the
@@ -117,6 +119,20 @@ impl Acceptor {
             if let Some(socket) = socket.take() {
                 let _ = self.poller.delete(socket.as_fd(), Interest::Read);
             }
+        }
+    }
+}
+
+/// Registers a listener again when the burst that took its event ends by a panic.
+struct RearmOnPanic<'a> {
+    acceptor: &'a Acceptor,
+    grant: usize,
+}
+
+impl Drop for RearmOnPanic<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.acceptor.arm(self.grant);
         }
     }
 }
@@ -359,8 +375,7 @@ struct Context {
 
 impl Context {
     /// The thread's life. It ends when the run stopped and its connections closed, or by a
-    /// panic outside a connection's step (those are contained in `Thread::run`, and callbacks
-    /// in `Shared::notify`). Either way it then gives up its inbox, so that later messages are
+    /// panic that is not contained (see the module documentation). Either way it then gives up its inbox, so that later messages are
     /// handled by their senders, closes every connection it still owns, giving back their
     /// slots and their peers' places, hands its peers' expiries to a live thread, and, after a
     /// panic, hands on the turn to accept, so the run keeps listening and new connections go
@@ -565,6 +580,13 @@ impl Context {
         };
         // This thread took the listener's event, so it alone registers it again.
         listening.armed.store(false, Ordering::SeqCst);
+        // Declared before the listener's lock, so it runs after the lock is released: a burst
+        // that ends by a panic still registers its listener again, and the thread that takes
+        // the turn next accepts from it.
+        let _rearm = RearmOnPanic {
+            acceptor: &self.acceptor,
+            grant,
+        };
         let mut at_cap = false;
         let mut failed = false;
         {
@@ -573,6 +595,11 @@ impl Context {
                 return;
             };
             for _ in 0..BURST {
+                #[cfg(feature = "test-hooks")]
+                #[allow(clippy::panic)]
+                if self.shared.take_burst_fault() {
+                    panic!("a burst of accepting fails by a fault, for a test");
+                }
                 if !state.take_slot() {
                     at_cap = true;
                     break;

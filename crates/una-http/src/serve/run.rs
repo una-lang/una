@@ -264,6 +264,24 @@ impl std::fmt::Display for AlreadyRegistered {
     }
 }
 
+/// What a connection on its way through [`Shared::accept`] holds.
+enum Taken {
+    /// Its slot of `connections`.
+    Slot,
+    /// Its slot and its place in its peer's entry.
+    Peer(Arc<super::peer::Peer>),
+    /// Everything, now owned by the message that hands it to its owner.
+    Handed,
+}
+
+/// Takes one from a counter of faults a test asked for; `true` when there was one.
+#[cfg(feature = "test-hooks")]
+fn take_one(counter: &AtomicUsize) -> bool {
+    counter
+        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+        .is_ok()
+}
+
 /// The value of `Shared::turn` while an ended thread hands the turn on, so that no other
 /// thread takes it back from the ended one at the same time.
 const HANDING: usize = usize::MAX - 1;
@@ -289,6 +307,10 @@ pub struct Shared {
     /// Serve threads a test asked to panic (`Shared::kill_for_test`).
     #[cfg(feature = "test-hooks")]
     kill: Vec<AtomicBool>,
+    #[cfg(feature = "test-hooks")]
+    accept_faults: AtomicUsize,
+    #[cfg(feature = "test-hooks")]
+    burst_faults: AtomicUsize,
     /// Set at a host stop.
     pub stopping: AtomicBool,
     /// Set at the hard stop.
@@ -345,6 +367,10 @@ impl Shared {
             faults: AtomicUsize::new(0),
             #[cfg(feature = "test-hooks")]
             kill: (0..threads).map(|_| AtomicBool::new(false)).collect(),
+            #[cfg(feature = "test-hooks")]
+            accept_faults: AtomicUsize::new(0),
+            #[cfg(feature = "test-hooks")]
+            burst_faults: AtomicUsize::new(0),
             stopping: AtomicBool::new(false),
             hard: AtomicBool::new(false),
             clock,
@@ -614,9 +640,45 @@ impl Shared {
         let Some(state) = self.grants.get(grant) else {
             return Ok(());
         };
+        // The peer's address is input: a panic on the way to the hand-off is contained, and
+        // what was taken so far, as recorded in `taken`, is given back.
+        let mut taken = Taken::Slot;
+        let outcome = catch_unwind(AssertUnwindSafe(|| {
+            self.accept_steps(state, socket, address, now, &mut taken)
+        }));
+        if let Ok(result) = outcome {
+            return result;
+        }
+        self.fault();
+        match taken {
+            // From the hand-off on, the message owns what the connection holds.
+            Taken::Handed => return Err(AcceptRefusal::Fault),
+            Taken::Peer(peer) => {
+                if let Some(at) = state.peers.close(&peer, now) {
+                    self.expire_peer_at(0, grant, peer.key, at);
+                }
+            }
+            Taken::Slot => {}
+        }
+        state.give_slot();
+        self.slot_freed(grant);
+        Err(AcceptRefusal::Fault)
+    }
+
+    /// The steps of [`Shared::accept`], recording in `taken` what the connection holds.
+    fn accept_steps(
+        &self,
+        state: &Arc<GrantState>,
+        socket: Box<dyn Socket>,
+        address: SocketAddr,
+        now: u64,
+        taken: &mut Taken,
+    ) -> Result<(), AcceptRefusal> {
+        let grant = state.index;
         // The keyed owner, or the next live thread in the ring when it ended (a thread that
         // panicked): placement stays a function of the connection's addresses and of which
-        // threads ended.
+        // threads ended. `None` only when the caller is not a serve thread (the simulator): a
+        // serve thread that accepts is itself live.
         let placed = place::owner(self.key, self.threads, grant, address);
         let Some(owner) = self.live_from(placed) else {
             state.give_slot();
@@ -634,11 +696,44 @@ impl Shared {
                 return Err(refused.reason);
             }
         };
+        *taken = Taken::Peer(Arc::clone(&peer));
+        #[cfg(feature = "test-hooks")]
+        #[allow(clippy::panic)]
+        if take_one(&self.accept_faults) {
+            panic!("an accept fails by a fault, for a test");
+        }
         let conn = ConnShared::new(Arc::clone(state), peer, owner, address);
+        *taken = Taken::Handed;
         // An owner that ends meanwhile: `send` closes the connection, gives back what it took
         // and sends the peer's expiry to a live thread (`Shared::bury`).
         self.send(owner, Msg::Adopt(Box::new(Adopt { socket, conn })));
         Ok(())
+    }
+
+    /// The next `n` calls of [`Shared::accept`] panic after the peer is admitted, in tests.
+    #[cfg(feature = "test-hooks")]
+    pub fn fail_next_accepts(&self, n: usize) {
+        self.accept_faults.store(n, Ordering::SeqCst);
+    }
+
+    /// The next `n` bursts of accepting panic before they take a slot, which ends the serve
+    /// thread that accepts, in tests.
+    #[cfg(feature = "test-hooks")]
+    pub fn fail_next_bursts(&self, n: usize) {
+        self.burst_faults.store(n, Ordering::SeqCst);
+    }
+
+    /// Whether a burst should panic now (see [`Shared::fail_next_bursts`]).
+    #[cfg(feature = "test-hooks")]
+    pub fn take_burst_fault(&self) -> bool {
+        take_one(&self.burst_faults)
+    }
+
+    /// The serve thread the keyed hash names for a connection from `address` on `grant`, in
+    /// tests.
+    #[cfg(feature = "test-hooks")]
+    pub fn placed_owner(&self, grant: usize, address: SocketAddr) -> usize {
+        place::owner(self.key, self.threads, grant, address)
     }
 
     /// Whether `grant` has a queue that holds a request now.

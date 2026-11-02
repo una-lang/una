@@ -385,15 +385,22 @@ fn a_serve_thread_that_ends_gives_back_its_connections_and_accepting_goes_on() {
         ready: Arc::new((Mutex::new(0), Condvar::new())),
     };
     let shared = Arc::clone(live.server.shared());
+    // Connections are opened until each thread owns at least one, by the keyed hash of each
+    // connection's addresses, so the test does not depend on the run's random key.
     let mut idle = Vec::new();
-    for _ in 0..16 {
-        idle.push(live.client());
+    let mut on_zero = Vec::new();
+    while !(on_zero.contains(&true) && on_zero.contains(&false)) {
+        assert!(idle.len() < 200, "placement never used both threads");
+        let client = live.client();
+        on_zero.push(shared.placed_owner(0, client.local_addr().unwrap()) == 0);
+        idle.push(client);
     }
+    let opened = idle.len() as u64;
     let end = Instant::now() + Duration::from_secs(5);
-    while shared.grants[0].counters().connections < 16 && Instant::now() < end {
+    while shared.grants[0].counters().connections < opened && Instant::now() < end {
         std::thread::sleep(Duration::from_millis(5));
     }
-    assert_eq!(shared.grants[0].counters().connections, 16);
+    assert_eq!(shared.grants[0].counters().connections, opened);
     shared.kill_for_test(0);
     let end = Instant::now() + Duration::from_secs(5);
     while !shared.is_ended(0) && Instant::now() < end {
@@ -402,18 +409,17 @@ fn a_serve_thread_that_ends_gives_back_its_connections_and_accepting_goes_on() {
     assert!(shared.is_ended(0));
     // The connections thread 0 owned are closed: their peers read the end of the stream.
     let mut closed = 0;
-    for client in &mut idle {
+    for (client, &mine) in idle.iter_mut().zip(&on_zero) {
         client
             .set_read_timeout(Some(Duration::from_millis(200)))
             .unwrap();
         let mut byte = [0u8; 1];
-        if matches!(client.read(&mut byte), Ok(0)) {
-            closed += 1;
-        }
+        let ended = matches!(client.read(&mut byte), Ok(0));
+        assert_eq!(ended, mine, "a connection closed iff thread 0 owned it");
+        closed += u64::from(ended);
     }
-    assert!(closed > 0, "thread 0 owned none of the connections");
     let open = shared.grants[0].counters().connections;
-    assert_eq!(open, 16 - closed, "slots of the ended thread were kept");
+    assert_eq!(open, opened - closed, "slots of the ended thread were kept");
     let mut clients = Vec::new();
     for n in 0..24 {
         let mut stream = live.client();
@@ -428,6 +434,61 @@ fn a_serve_thread_that_ends_gives_back_its_connections_and_accepting_goes_on() {
     }
     drop(clients);
     drop(idle);
+    live.server.stop();
+    live.server.join();
+    assert!(shared.is_quiet(), "{:?}", shared.grants[0].counters());
+}
+
+#[test]
+fn a_fault_while_accepting_gives_back_the_slot_and_accepting_goes_on() {
+    // A panic inside the hand-off of an accepted connection is contained: that connection is
+    // closed and its slot and its peer's place come back. A panic elsewhere in a burst ends the
+    // accepting thread, but the listener is registered again, so the next holder of the turn
+    // accepts. In both cases every later connection is answered.
+    let port = free_port();
+    let (server, _grant) = prepared(port, 2);
+    server.shared().on_ready(Arc::new(|| {})).unwrap();
+    server.begin();
+    let live = Live {
+        server,
+        port,
+        ready: Arc::new((Mutex::new(0), Condvar::new())),
+    };
+    let shared = Arc::clone(live.server.shared());
+    let ask = |n: usize| {
+        let mut clients = Vec::new();
+        for i in 0..n {
+            let mut stream = live.client();
+            stream
+                .write_all(format!("GET /{i} HTTP/1.1\r\nHost: localhost\r\n\r\n").as_bytes())
+                .unwrap();
+            clients.push(stream);
+        }
+        assert_eq!(answer_all(&live, n, Duration::from_secs(10)), n);
+        for client in &mut clients {
+            assert!(response(client).ends_with("alive"));
+        }
+    };
+    shared.fail_next_accepts(1);
+    let mut first = live.client();
+    let mut byte = [0u8; 1];
+    assert!(
+        matches!(first.read(&mut byte), Ok(0)),
+        "the faulted connection is closed"
+    );
+    assert_eq!(shared.faults(), 1);
+    ask(8);
+    assert!((0..shared.threads).all(|t| !shared.is_ended(t)));
+    shared.fail_next_bursts(1);
+    let waiting = live.client();
+    let end = Instant::now() + Duration::from_secs(5);
+    while !(0..shared.threads).any(|t| shared.is_ended(t)) && Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!((0..shared.threads).any(|t| shared.is_ended(t)));
+    ask(8);
+    drop(waiting);
+    drop(first);
     live.server.stop();
     live.server.join();
     assert!(shared.is_quiet(), "{:?}", shared.grants[0].counters());
