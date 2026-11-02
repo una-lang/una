@@ -210,7 +210,7 @@ pub two() -> Int = 2
 - **Only direct dependencies are importable.** A dependency's modules import their own modules and the standard ones, never a module of the package that needs them.
 - **Nothing runs.** Reading a dependency runs no code of it: there are no install scripts or build steps of any kind.
 - **No links.** A dependency is read with no symbolic link followed, in its directory or below it.
-- **What this release loads.** Path dependencies only, each without needs, labels, boundaries or contracts of its own. A need of a registry or a workspace member is refused (U7008).
+- **What a path dependency may hold.** In this release, a path dependency has no needs, labels, trusted modules, boundaries or contracts of its own (U7008 at the need). A need of a workspace member is refused (U7008); packages of a registry are needed through `sources`, as [registry dependencies](registry.md) shows.
 - **Its own files.** `una fix` never edits a dependency's file, `una fmt` formats the package's own modules, and `una test` runs the package's own examples.
 
 ## Diagnostics

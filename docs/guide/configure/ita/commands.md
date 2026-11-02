@@ -86,7 +86,7 @@ una ita bundle <file> [path]
 una ita unbundle <file> [path]
 ```
 
-- **`lock`** resolves the package by minimal version selection and writes `ita.lock`: the solver section, kept from the lock it replaces, and each path dependency with its version, directory, digest, ceiling and consents. `--check` writes nothing and reports where the lock is not the one it would write (U7009), and fails on a registry package whose owner's chain froze since the lock (U7010), as far as the newest checkpoint a place serves shows, which a note states; `--check --fresh` requires that checkpoint to be less than 24 hours old, and fails without one (U7013). CI runs `--check --fresh` (see [the lock](lock.md#in-ci)).
+- **`lock`** resolves the package by minimal version selection and writes `ita.lock`: the solver section, kept from the lock it replaces, each path dependency with its version, directory, digest, ceiling and consents, and each registry release with its source, digest, signer and log index, under a `registry` section that records the checkpoint it was resolved at. `--check` writes nothing and reports where the lock is not the one it would write (U7009), and fails on a registry package whose owner's chain froze since the lock (U7010), as far as the newest checkpoint a place serves shows, which a note states; `--check --fresh` requires that checkpoint to be less than 24 hours old, and fails without one (U7013). CI runs `--check --fresh` (see [the lock](lock.md#in-ci)).
 - **`update`** raises the named needs, or all, and writes the lock; a need it is not asked to raise keeps what the lock records. A path dependency is always locked as its directory holds it, so `update` locks it again. `--cooldown` and `--now` set how long a release must have been logged before it is taken: 72 hours by default.
 - **`add`** adds a need to `ita.una` and locks; both files are written only when the resolution succeeds, the lock first, put back if `ita.una` cannot be written. It writes no `may` and no `trust` line.
 - **`remove`** takes a need out of `ita.una`, then writes the lock.
@@ -101,7 +101,8 @@ una ita unbundle <file> [path]
 - **The review.** Before it writes a changed lock, a command prints one line per package added, changed or dropped: its origin, its versions and digests, the ceiling granted, what its code uses, and its consented trust. `--dry-run` prints it and writes nothing.
 - **Consent.** Each flag names what it accepts. A wider ceiling needs `--accept-authority <package>`, and a dependency's trusted modules need `--accept-trust <package>@<digest>` for the content digest of the package as it is now; both repeat, one per package. Without consent the review is printed all the same, with `to accept, after reviewing: una ita lock ...` and the exact flags to copy, and nothing is written. `add` and `remove` take neither flag: `una ita lock` with it is the repair.
 - **`add` and `update`** work on the package in the current directory; the other commands take its directory, `.` by default.
-- **`--json`** prints one `una.ita/1` document; a command that writes the lock gives the review as `changes`.
+- **`--json`** prints one `una.ita/1` document; a command that writes the lock gives the review as `changes`, and `error`, why it failed outside its diagnostics, or `null`.
+- **More.** [Registry dependencies](registry.md) shows `sources`, `mirrors.una` and `fetch`; [offline builds](offline.md) shows `vendor`, `verify`, `bundle` and `unbundle`; [publishing](publishing.md) shows `publish`, `yank`, `audit` and `watch`.
 
 ## Examples
 
