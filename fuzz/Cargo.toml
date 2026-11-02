@@ -1,6 +1,7 @@
 # The fuzz targets of the native runtime (#766, the `sanitize` release gate), of the readers of
-# the package manager's documents (#997): the provenance, the archive and `ita.lock`, and of the
-# parsers of the documents a package registry serves (ADR 0122). Outside the
+# the package manager's documents (#997): the provenance, the archive and `ita.lock`, of the
+# parsers of the documents a package registry serves (ADR 0122), and of the internal linker's
+# ELF reader and relocation engine (ADR 0124 rules 24 and 33, step 4b). Outside the
 # workspace: its own `[workspace]` and Cargo.lock, so the workspace's stable builds never see
 # it. scripts/sanitize.sh and scripts/fuzz-smoke.sh build it with the checking toolchain of
 # scripts/check-toolchain.toml and the flags of scripts/fuzz-targets.sh (libFuzzer's coverage,
@@ -24,6 +25,8 @@ una-project = { path = "../crates/una-project" }
 # Signs fuzzed documents with fixed test keys, so the targets reach past the signatures.
 ed25519-dalek = { version = "2.1", default-features = false, features = ["std", "fast"] }
 una-rt = { path = "../crates/una-rt" }
+# The internal linker: its ELF reader and relocation engine, in safe Rust, on any bytes.
+una-link = { path = "../crates/una-link" }
 
 [[bin]]
 name = "literal"
@@ -224,6 +227,13 @@ bench = false
 [[bin]]
 name = "registry_promise"
 path = "fuzz_targets/registry_promise.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "elf_link"
+path = "fuzz_targets/elf_link.rs"
 test = false
 doc = false
 bench = false

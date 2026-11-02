@@ -11,7 +11,8 @@
 # -C profile-generate link, is not scanned: no build of the runtime links it.
 # Relocation sections that the `object` reader would skip (an sh_link that is not the symbol
 # table, an sh_info of 0) are refused rather than passed over, so no relocation escapes the
-# count; slice 4b's linker must refuse them the same way. Each archive's symbol table is checked
+# count; the linker's ELF reader (step 4b) refuses them the same way, and the relocation types
+# the scan accepts are the engine's list. Each archive's symbol table is checked
 # both ways: every entry names a member that defines the symbol, and every global definition of
 # every member has its entry.
 # Run it at every bump of the Rust toolchain, before the bump merges, and update

@@ -115,7 +115,7 @@ The host operations (`Clock`, `Env`, `Files`, `Keys`, `Http`) have two implement
   - A program outside the runnable corpus is compared with nothing.
   - On Linux, the system `cc` and linker are trusted, their version is neither pinned nor recorded in the build report. They stay so until the internal linker of ADR 0124 step 4. Between the write of the runtime into the private directory and the link, a process of the same user could replace it there, as it could replace `cc` itself. On macOS this gap is closed by step 3.
   - libSystem's export list comes from the macOS 12.1 SDK; that the libSystem of macOS 13, the oldest system the executables name, exports each of its symbols is assumed, not yet checked: the `macos-oldest` gate (ADR 0124 rule 31), which runs the executables on macOS 13, does not exist yet.
-  - `una-link` has no fuzzing yet and no oracle test per relocation type against Apple's `ld` (ADR 0124 rule 33, #1208); a relocation of a supported type that it applies wrongly in a way neither comparison exercises is not caught.
+  - `una-link`'s Mach-O link has no fuzzing yet and no oracle test per relocation type against Apple's `ld` (ADR 0124 rule 33, #1208); a relocation of a supported type that it applies wrongly in a way neither comparison exercises is not caught. Its ELF reader and relocation engine for Linux (step 4b, #1209), which no `una build` reaches yet, have the `elf_link` fuzz target and an oracle per relocation type against `ld.lld` (every `cargo test` on macOS) and GNU `ld` (`scripts/link-oracle-elf.sh`, release-time).
 
 ### 3.6 The reference interpreter
 

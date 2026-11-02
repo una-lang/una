@@ -410,11 +410,10 @@ fn common_symbols_are_listed_and_musl_s_version_is_read() {
     rodata.data = b"1.2.5\0".to_vec();
     let mut version = symbol("__libc_version", GLOBAL_OBJECT, 1);
     version.size = 6;
-    let bytes = object(
-        AARCH64,
-        &[rodata],
-        &[version, symbol("h_errno", GLOBAL_OBJECT, COMMON)],
-    );
+    // A common symbol's value is its alignment, a power of two (the linker's reader checks it).
+    let mut h_errno = symbol("h_errno", GLOBAL_OBJECT, COMMON);
+    h_errno.value = 4;
+    let bytes = object(AARCH64, &[rodata], &[version, h_errno]);
     let scan = scan_elf("version.lo", &bytes).unwrap();
     assert_eq!(scan.musl_version.as_deref(), Some("1.2.5"));
     assert_eq!(
