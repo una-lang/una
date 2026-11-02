@@ -35,8 +35,8 @@ use std::time::Duration;
 
 use clap::Parser;
 use una_check::{
-    Header, ModuleInput, PackageInput, PendingObligation, Rejected, RunInput, check_types,
-    check_types_with_rejected,
+    HandlerHeader, Header, ModuleInput, PackageInput, PendingObligation, Rejected, RunInput,
+    check_types, check_types_with_rejected,
 };
 use una_diag::{Code, Diagnostic, render_human, render_json};
 use una_syntax::ast::File;
@@ -143,6 +143,8 @@ struct Analysis {
     trees: Vec<(FileId, File)>,
     interner: Interner,
     headers: Vec<Header>,
+    /// The `uses` of the package's handlers, with their operations' labels (ADR 0094).
+    handler_headers: Vec<HandlerHeader>,
     program: una_core::Program,
     entry: Option<String>,
     pending: Vec<PendingObligation>,
@@ -307,6 +309,7 @@ fn analyze_and(
         trees: trees.into_iter().map(|(id, tree, _)| (id, tree)).collect(),
         interner,
         headers: types.headers,
+        handler_headers: types.handler_headers,
         program: types.program,
         entry,
         pending: types.obligations,
@@ -340,6 +343,7 @@ fn environment_failure(probe: &str) -> Analysis {
         trees: Vec::new(),
         interner: Interner::new(),
         headers: Vec::new(),
+        handler_headers: Vec::new(),
         program: una_core::Program::default(),
         entry: None,
         pending: Vec::new(),

@@ -72,12 +72,26 @@ if [ "${1:-}" = --linux ] || [ "${1:-}" = --linux-arm64 ]; then
     # architecture, and the cargo registry, which holds sources, one for both.
     checkout=$(printf '%s' "$root" | (shasum -a 256 2>/dev/null || sha256sum) | cut -c1-12)
     volume="una-local-ci-target-$checkout$suffix"
+    # The container runs as the image's unprivileged user, uid 1000, never as root: the solver
+    # child refuses root (ADR 0124 rule 7, #1394). Its volumes are handed to that user first, by a
+    # step that runs as root and changes only the owner of entries another owner holds (a volume
+    # made by a root container before). The checkout's bind mount needs no such step: Docker
+    # Desktop lets the container's user write it.
+    echo "== handing the volumes to the container's user (uid 1000)"
+    scripts/container-volumes.sh "linux/$arch" "$image" \
+        "$volume:/work/target" \
+        una-local-ci-registry:/opt/cargo/registry \
+        "una-local-ci-z3$suffix:/opt/z3" \
+        "una-local-ci-z3-cache$suffix:/opt/z3-cache" \
+        "una-local-ci-lean$suffix:/opt/lean" \
+        || fail "handing the container's volumes to its user"
     echo "== running scripts/local-ci.sh in $image, with the target directory in $volume"
     # The checkout is mounted read-write, as CI checks it out; the target directory, the cargo
     # registry and Z3 are volumes, which keep the container's builds apart from the host's. The
     # release archive's entries take the commit's time (#679), which the container cannot read
     # when the checkout is a worktree, whose .git links outside the mount.
     docker run --rm --platform "linux/$arch" \
+        --user 1000:1000 \
         --volume "$root:/work" \
         --volume "$volume:/work/target" \
         --volume una-local-ci-registry:/opt/cargo/registry \
