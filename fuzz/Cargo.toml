@@ -3,8 +3,9 @@
 # parsers of the documents a package registry serves (ADR 0122), and of the internal linker's
 # ELF reader and relocation engine (ADR 0124 rules 24 and 33, step 4b). Outside the
 # workspace: its own `[workspace]` and Cargo.lock, so the workspace's stable builds never see
-# it. scripts/sanitize.sh builds it with the checking toolchain of scripts/check-toolchain.toml,
-# with libFuzzer's coverage, AddressSanitizer and `--cfg una_fuzz`, and runs each target.
+# it. scripts/sanitize.sh and scripts/fuzz-smoke.sh build it with the checking toolchain of
+# scripts/check-toolchain.toml and the flags of scripts/fuzz-targets.sh (libFuzzer's coverage,
+# AddressSanitizer and `--cfg una_fuzz`), and run each target.
 [package]
 name = "una-rt-fuzz"
 version = "0.0.0"

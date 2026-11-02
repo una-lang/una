@@ -1,22 +1,34 @@
 # 0131. The format and extension of Una's own configuration files
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-31
-- Deciders:
+- Deciders: Una project (accepted on 2026-11-02, with the changes of "Decisions of acceptance")
 - Resolves: issue #1302
 - Related:
   - ADR 0021 (packages and project files: `una.toml`, `verification.lock`), the TOML files of editions `0.1` to `0.3`;
   - ADR 0122 (Itá: `ita.una`, `ita.lock`, `itaty.una`, `mirrors.una`), whose rule 3 reads its files "by Una's lexer and by the grammar of rules 5, 16 and 19, which is part of the syntax crate", and whose Question 8.1 gives edition `0.4` "one manifest format and one parser"; issue #893;
-  - ADR 0127 (Una Quality, Proposed) rule 20 and `spec/32 §14`: `quality.toml` is interim, and its schema is a data model independent of the file format;
+  - ADR 0127 (Una Quality, accepted on 2026-11-02) rule 20 and `spec/32 §14`: `quality.toml` is interim, and its schema is a data model independent of the file format;
+  - ADR 0128 (the guarantee diff, accepted on 2026-11-02) rule 22: the approvals file `guarantees.toml`, interim, which joins this family (Decisions of acceptance 2);
   - ADR 0063 (`una lsp`); issue #1295 (the Language Pack); epic #1292 and issue #1304 (the quality configuration).
 - Target: the files of edition `0.4` and later, and the configuration of tools that serve every edition (`una quality`). Editions `0.1` to `0.3` keep `una.toml` and `verification.lock` as ADR 0021 states.
 - Amends, on acceptance and with the implementation: `spec/30 §1` (the lexical rules, as the shared layer of every configuration file), `§8` (`una migrate`), `spec/32 §14` (the file), `spec/13 §5` (commands given a configuration file). ADR 0122 by the dated amendment appended to it in this change.
 
 > **In plain words.**
-> - **One family.** Every configuration file a person writes for Una is written in Una's own lexical syntax, with a closed grammar, and ends in `.una`: `ita.una`, `itaty.una`, `mirrors.una`, and `quality.una`, which replaces `quality.toml`. A file that only the tool writes keeps its own extension (`ita.lock`). Machine documents (reports, caches, SARIF) stay JSON.
+> - **One family.** Every configuration file a person writes for Una is written in Una's own lexical syntax, with a closed grammar, and ends in `.una`: `ita.una`, `itaty.una`, `mirrors.una`, `quality.una`, which replaces `quality.toml`, and `guarantees.una`, which replaces `guarantees.toml`. A file that only the tool writes keeps its own extension (`ita.lock`). Machine documents (reports, caches, SARIF) stay JSON.
 > - **Telling them apart.** A module lives under `src/` and starts with `module`. A configuration file lives at a fixed name outside `src/` and starts with its own word (`ita`, `quality`), which is also its name.
 > - **Nothing runs.** Configuration files have no expressions, no calls, no capabilities and no includes.
-> - **Until then.** `quality.toml` stays the format while this record is Proposed and until its slice lands; `una migrate` then rewrites it mechanically.
+> - **Until then.** `quality.toml` and `guarantees.toml` stay the format until their slice lands; `una migrate` then rewrites them mechanically.
+
+## Decisions of acceptance (2026-11-02)
+
+The project accepted this record on 2026-11-02 with the changes below, which the rules carry:
+
+1. **The extension.** Configuration files end in `.una` and locks in `.lock`, as proposed (rules 1 and 5). The final form of every configuration or approvals file a person writes is Una's own data syntax; TOML is interim only, where this record names an interim (rules 10 and 17).
+2. **The guarantee diff's approvals file joins the family** (rule 9). `guarantees.toml` (ADR 0128 rule 22) becomes `guarantees.una`, head word `guarantees`, read from its fixed path only; `una migrate` converts it as it converts `quality.toml` (rule 12), and the amendment of ADR 0122 covers both files.
+3. **Key files stay outside `.una`** (rule 2). A key file of a `keys:` grant never takes the extension `.una`, so that no tool treats a secret as a package file; its own name, extension and syntax are decided by #1337, which does not block the other slices.
+4. **The quality grammar.** The direction of rule 9 is accepted. The preset `high-assurance` is spelled `high_assurance` in `spec/32` (there is no compatibility promise before v1.0), since `-` is not part of Una data syntax. Two points are left to slice 1, #1333, and are decided before its grammar lands: the form of percentages (`spec/32 §14.3` writes limits such as `3%` and `85%`, and Una data syntax has no `%`), and whether a configuration key carries a metric's version (`complexity.cyclomatic@1`, ADR 0127 rule 24), since `@` is not part of Una data syntax either. Proposed default, pending owner confirmation, owned by #1333: a percentage is written as a whole number of points (`85` for 85%), and a configuration key carries the metric id without its `@N` version, since the version is a property of the tool, reported in the output.
+5. **The interim TOML reader is confirmed** (rule 17).
+6. **The amendment of ADR 0122** appended with this record gains a Status line and a sentence that withdraws it if this record is withdrawn.
 
 ## Context
 
@@ -31,6 +43,7 @@
 | `itaty.una` | people | Una lexical syntax, closed grammar | ADR 0122 rule 19 |
 | `~/.una/itaoca/mirrors.una` | people | Una lexical syntax, closed grammar | ADR 0122 rule 40 |
 | `quality.toml` | people | TOML, interim | ADR 0127 rule 20, `spec/32 §14` |
+| `guarantees.toml` | people | TOML, interim | ADR 0128 rule 22 |
 | the key file of a `keys:` grant | the operator | TOML table | `spec/13 §5` |
 | `.una/cache/proofs/*` | the tool | JSON | `spec/12 §9` |
 | reports, snapshots, SARIF | the tool | JSON with a `schema` key, SARIF 2.1.0 | `spec/13 §6`, `spec/32 §17` |
@@ -51,13 +64,13 @@ ADR 0122 already chose Una's own syntax for edition `0.4`'s project files, for t
 ### A. The family
 
 1. **Three kinds of files.**
-   - **Configuration** is what people write and review to configure the language or a tool: today `ita.una`, `itaty.una`, `mirrors.una`, and `quality.una` (rule 9). It is written in **Una data syntax** (rule 3) and ends in `.una`.
+   - **Configuration** is what people write and review to configure the language or a tool: today `ita.una`, `itaty.una`, `mirrors.una`, `quality.una` and `guarantees.una` (rule 9). It is written in **Una data syntax** (rule 3) and ends in `.una`.
    - **Locks** are what only a tool writes and people review in diffs: today `ita.lock`. A lock is written in Una data syntax too, and keeps an extension of its own, `.lock`, which says "do not edit by hand". A lock has a head with its format version (`lock 1`).
    - **Machine documents** are what a tool writes for another program: reports, snapshots, caches, SARIF, the `--json` output of every command. They stay JSON, each with its `schema` key (or SARIF's own), since their readers are other programs and other languages. They are not configuration, and nothing reads them as such.
 2. **New files join the family by a record.** A future policy, preset or other configuration file is configuration: its record names its head word (rule 5), its place, its closed schema and its diagnostic code. No configuration file in another format is added. In particular:
    - **Presets** are built into `una quality` (`spec/32 §14.3`); a user preset, if one is ever added, is a configuration file of this family.
    - **CI files.** Una adds none. A pipeline passes a file by path (`--config`), as ADR 0127 rule 20 states; the tool knows no environments.
-   - **Key files** of `keys:` grants hold secrets the operator supplies at run time; they are inputs of a run, not configuration of a package, and a package never holds one (ADR 0122 rule 27). Their format is left as `spec/13 §5` states, and a separate card decides it (Open items), so that a secret never gets an extension that the tools treat as a package file.
+   - **Key files** of `keys:` grants hold secrets the operator supplies at run time; they are inputs of a run, not configuration of a package, and a package never holds one (ADR 0122 rule 27). Their format is left as `spec/13 §5` states, and a separate card decides it (Open items, #1337), so that a secret never gets an extension that the tools treat as a package file: a key file never takes the extension `.una` (Decisions of acceptance 3).
 
 ### B. One syntax, one parser
 
@@ -72,9 +85,9 @@ ADR 0122 already chose Una's own syntax for edition `0.4`'s project files, for t
    - **Embedded forms are shared, not copied.** Where a line holds a form of the language, such as an operation's condition in a `contracts` line (`cap_type_with_conditions`, `spec/05 §3` rule 4), the grammar calls the same production a header uses. No configuration grammar has a second parser for any part of the language.
    - **No expression production is reachable** from a configuration grammar except through such a named form, so "no calls" holds by construction, not by a later check.
 5. **What tells a file's kind.**
-   - **Place decides discovery.** A package's modules are exactly `src/**/*.una` (`spec/13 §7`, `spec/30 §2`). A configuration file is found at a fixed name outside `src/`: `ita.una` and `quality.una` at a package root, `itaty.una` at a workspace root, `mirrors.una` in Itaoca, or a path that a flag names (`--config`). A file under `src/` is always a module: `src/ita.una` is the module `ita`.
-   - **The head word decides the kind.** A module's first token, after comments and blank lines, is `module` or `trusted` (`spec/02`, `module_header`). A configuration file's first token is its kind's **head word**, which is also the stem of its fixed name: `ita`, `itaty`, `mirrors`, `quality`; a lock's is `lock`. The head words are words of the configuration grammars, never keywords of a module (`spec/30 §1` rule 2).
-   - **Agreement.** A file found at a configuration name whose head word is another kind's, or a module's, is that kind's error at its first line: U7008 for Itá's files, UQ0001 for `quality.una`. A file named to a command by path is classified by its head word alone.
+   - **Place decides discovery.** A package's modules are exactly `src/**/*.una` (`spec/13 §7`, `spec/30 §2`). A configuration file is found at a fixed name outside `src/`: `ita.una`, `quality.una` and `guarantees.una` at a package root, `itaty.una` at a workspace root, `mirrors.una` in Itaoca, or a path that a flag names (`--config`). A file under `src/` is always a module: `src/ita.una` is the module `ita`.
+   - **The head word decides the kind.** A module's first token, after comments and blank lines, is `module` or `trusted` (`spec/02`, `module_header`). A configuration file's first token is its kind's **head word**, which is also the stem of its fixed name: `ita`, `itaty`, `mirrors`, `quality`, `guarantees`; a lock's is `lock`. The head words are words of the configuration grammars, never keywords of a module (`spec/30 §1` rule 2).
+   - **Agreement.** A file found at a configuration name whose head word is another kind's, or a module's, is that kind's error at its first line: U7008 for Itá's files, UQ0001 for `quality.una` and `guarantees.una`. A file named to a command by path is classified by its head word alone.
    - **Cost.** Classifying a file reads its first token: O(1) after the lexer's start, with no second pass.
 6. **What a closed grammar forbids.** Every configuration grammar, now and later:
    - **no expressions** outside a named embedded form: no operators, no conditions on values, no arithmetic, no interpolation;
@@ -135,9 +148,12 @@ ADR 0122 already chose Una's own syntax for edition `0.4`'s project files, for t
    - The head `quality 1` carries the schema version that TOML's `schema = "una.quality-config/1"` carried.
    - A metric id is a dotted name of lower words, which the lexer reads as words and dots.
    - A date is a text literal in the form `YYYY-MM-DD`, checked by the schema, since the lexer has no date token and this record adds none.
+   - A preset name is a word: the preset `high-assurance` is spelled `high_assurance` (`spec/32 §14.3`).
+   - Percentages and metric versions have no form yet: `%` and `@` are not part of Una data syntax. Slice 1 (#1333) decides how a percentage is written and whether a configuration key carries a metric's version, before the grammar lands (Decisions of acceptance 4). Proposed default, pending owner confirmation, owned by #1333: a percentage is written as a whole number of points (`85` for 85%), and a configuration key carries the metric id without its `@N` version, since the version is a property of the tool, reported in the output.
    - Every error that `spec/32 §14.1` rule 3 makes UQ0001 stays UQ0001, at the line.
+   - **`guarantees.una`** is the guarantee diff's approvals file (ADR 0128 rule 22) in this family: head word `guarantees`, at the package root, read from that fixed path only, never named by `--config` or any other flag. It carries the data model of ADR 0128 rule 22 and the reviewed equivalences of ADR 0129 rule 12 unchanged, and its grammar is fixed with the quality grammar (slice 1). Rules 10 to 13 apply to it as to the quality file: `guarantees.toml` is its interim format, a root that holds `guarantees.toml` after the slice is UQ0001, and `una migrate` converts it.
    - `quality.una` serves packages of every edition, since `una quality` does: the format of a tool's configuration follows the tool, not the package's edition. A package of edition `0.1` to `0.3` therefore has `una.toml` and `quality.una` side by side, which is the expected state until it migrates.
-10. **The interim policy.** While this record is Proposed, and after its acceptance until its slice lands, `quality.toml` is the format, exactly as ADR 0127 rule 20 and `spec/32 §14` state. Nothing changes for the quality epic's phases meanwhile; they implement the data model, which both formats carry.
+10. **The interim policy.** Until its slice lands, `quality.toml` is the format, exactly as ADR 0127 rule 20 and `spec/32 §14` state. Nothing changes for the quality epic's phases meanwhile; they implement the data model, which both formats carry.
 11. **After the slice lands.**
     - `una quality` reads `quality.una` by default, and a `--config` path by its head word.
     - A package root that holds `quality.toml` without `quality.una` is UQ0001, "`quality.toml` is no longer read; run `una migrate`", with the repair `una migrate`. A root with both is UQ0001 at `quality.toml`, so a package never has two quality configurations that could disagree. No compatibility period is kept: there is no compatibility promise before v1.0.
@@ -145,13 +161,13 @@ ADR 0122 already chose Una's own syntax for edition `0.4`'s project files, for t
 
 ### D. Migration
 
-12. **`una migrate` converts `quality.toml`.** Besides its edition move (ADR 0122 rule 64, `spec/30 §8`), `una migrate [path]` converts `quality.toml` at the package root to `quality.una`, whatever the package's edition:
-    - on a package of edition `0.1` to `0.3`, `una migrate` does both, the edition move and the quality file; `una migrate --only quality` converts the quality file alone and leaves `una.toml`, `verification.lock` and the edition as they are;
+12. **`una migrate` converts `quality.toml`.** Besides its edition move (ADR 0122 rule 64, `spec/30 §8`), `una migrate [path]` converts `quality.toml` at the package root to `quality.una`, and `guarantees.toml` to `guarantees.una` in the same way, whatever the package's edition:
+    - on a package of edition `0.1` to `0.3`, `una migrate` does both, the edition move and the quality file; `una migrate --only quality` converts the quality file alone and leaves `una.toml`, `verification.lock`, the edition and `guarantees.toml` as they are; `una migrate --only guarantees` converts the approvals file alone, in the same way;
     - on a package that already has `ita.una`, which ADR 0122 rule 64 makes a usage error today, `una migrate` converts `quality.toml` when there is one, and is a usage error only when there is nothing to convert (the amendment of ADR 0122 appended in this change);
     - the conversion is mechanical: it reads the TOML file against the schema, refuses with UQ0001 and writes nothing if the file is invalid, and writes `quality.una` in canonical form through a temporary file and a rename, then removes `quality.toml`. TOML comments before a key or table are carried above the line it becomes; others are listed in the output, as ADR 0122 rule 64 does for `una.toml`;
     - `--dry-run` and `--json` (`una.migrate/1`, with the converted file in `written`) behave as ADR 0122 rule 64 states;
     - **cost:** linear in the file's size.
-13. **Round trip.** The slice includes a test that, for every key of `spec/32 §14.2` and every preset, converting a `quality.toml` and reading the resulting `quality.una` gives the same data model, and the same report, as reading the TOML file.
+13. **Round trip.** The slice includes a test that, for every key of `spec/32 §14.2` and every preset, converting a `quality.toml` and reading the resulting `quality.una` gives the same data model, and the same report, as reading the TOML file; and the same for every key of the approvals file of ADR 0128 rule 22, converting a `guarantees.toml` to `guarantees.una`, with the same approval states and report.
 
 ### E. Editors, the language server and the Language Pack
 
@@ -164,7 +180,7 @@ ADR 0122 already chose Una's own syntax for edition `0.4`'s project files, for t
     - **no code runs**, as for modules: the server reads, checks and formats.
 
     Cost: one classification per document open, O(1) (rule 5); a configuration file's check is linear in its size.
-16. **The Language Pack** (#1295) gains one entry per configuration kind: its head word, place, grammar, an example, and rule 5's way to tell it from a module, so an agent never edits a configuration file as code, or the reverse. The entry for `quality.una` replaces the one for `quality.toml` when the slice lands.
+16. **The Language Pack** (#1295) gains one entry per configuration kind: its head word, place, grammar, an example, and rule 5's way to tell it from a module, so an agent never edits a configuration file as code, or the reverse. The entries for `quality.una` and `guarantees.una` replace those for `quality.toml` and `guarantees.toml` when the slice lands.
 
 ### F. The TOML reader
 
@@ -196,13 +212,15 @@ ADR 0122 already chose Una's own syntax for edition `0.4`'s project files, for t
 
 Each slice is a card in Needs spec, to start after this record is accepted:
 
-1. **Spec:** (#1333) `spec/30 §1` names Una data syntax and rules 3 to 8 as the family's shared rules; `spec/32 §14` gives the grammar of `quality.una`; `spec/13 §5` states rule 8. Conformance cases first.
-2. **Parser:** (#1334) the grammar of `quality.una` in the syntax crate, sharing the lexer and the classifier of rule 5; the size and depth bounds; a fuzz target.
-3. **`una migrate` and the quality reader:** (#1335) the conversion of rule 12 with its round-trip test (rule 13); `una quality` reading `quality.una`; UQ0001 for `quality.toml`.
+1. **Spec:** (#1333) `spec/30 §1` names Una data syntax and rules 3 to 8 as the family's shared rules; `spec/32 §14` gives the grammar of `quality.una`, after deciding the form of percentages and of metric versions (Open items), and the guarantee diff's chapter gives that of `guarantees.una`; `spec/13 §5` states rule 8. Conformance cases first.
+2. **Parser:** (#1334) the grammars of `quality.una` and `guarantees.una` in the syntax crate, sharing the lexer and the classifier of rule 5; the size and depth bounds; a fuzz target.
+3. **`una migrate` and the quality reader:** (#1335) the conversion of rule 12 with its round-trip test (rule 13); `una quality` reading `quality.una` and the guarantee diff reading `guarantees.una`; UQ0001 for `quality.toml` and `guarantees.toml`.
 4. **Editor support:** (#1336) `una lsp` classification, diagnostics, formatting, completion and hover for configuration files (rule 15); the Language Pack entries (rule 16).
 5. **Record: the key file's format** (#1337) (Open items).
 
 ## Open items
 
-- **Key files.** Whether the key file of a `keys:` grant moves to Una data syntax, and under which name and extension, so that a secret file is never taken for a package file. Until it is decided, it stays a TOML table (`spec/13 §5`).
-- **The quality grammar's exact words** (rule 9 shows a proposal of the mapping).
+- **Key files** (#1337). Whether the key file of a `keys:` grant moves to Una data syntax, and under which name and extension, so that a secret file is never taken for a package file; decided on acceptance: never the extension `.una`. Until it is decided, it stays a TOML table (`spec/13 §5`).
+- **The quality grammar's exact words** (rule 9 shows a proposal of the mapping), owned by slice 1 (#1333).
+- **Percentages** (#1333, before slice 1's grammar). How a limit such as `3%` or `85%` of `spec/32 §14.3` is written in Una data syntax, which has no `%`. Proposed default, pending owner confirmation: a whole number of points (`85` for 85%).
+- **Metric versions in keys** (#1333, before slice 1's grammar). Whether a configuration key carries a metric's version (`@1`, ADR 0127 rule 24), which Una data syntax cannot write as `@`. Proposed default, pending owner confirmation: the key is the metric id without `@N`; the version is a property of the tool, reported in the output.

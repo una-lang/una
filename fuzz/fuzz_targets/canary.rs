@@ -1,5 +1,6 @@
 //! The `canary` fuzz target (#766): a crash planted behind an input the fuzzer must find,
-//! `una!` at the start. scripts/sanitize.sh runs it first, as its self-check, and fails unless
+//! `una!` at the start. scripts/sanitize.sh and scripts/fuzz-smoke.sh run it first
+//! (`fuzz_canary` of scripts/fuzz-targets.sh), as their self-check, and fail unless
 //! the crash is reported, a reproducer kept and a minimized input made: otherwise a crash in
 //! the other targets could pass unseen. It is never one of the targets the gate checks. Its
 //! crash happens on a thread of its own, as the targets run each input, so the check covers a

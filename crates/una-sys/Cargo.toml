@@ -26,8 +26,9 @@ solver = []
 unsafe_code = "deny"
 unsafe_op_in_unsafe_fn = "deny"
 missing_docs = "deny"
-# `una_asan`: set only by scripts/sanitize.sh for its AddressSanitizer builds, where the
-# coroutine switch is announced through the sanitizer's fiber interface (#1145).
+# `una_asan`: set only by scripts/sanitize.sh for its AddressSanitizer builds, and by the fuzz
+# flags of scripts/fuzz-targets.sh that scripts/fuzz-smoke.sh uses too, where the coroutine
+# switch is announced through the sanitizer's fiber interface (#1145).
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(una_asan)"] }
 
 [lints.clippy]

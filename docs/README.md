@@ -55,7 +55,7 @@
 | `spec/29-numerics.md` | Numerics: `F64` in edition `0.3`, the numeric foundation in edition `0.4` |
 | `spec/30-packages.md` | Packages and dependencies: `ita.una` and `ita.lock`, edition `0.4` |
 | `spec/31-http-servers.md` | HTTP servers, edition `0.4` |
-| `spec/32-quality.md` | Una Quality: metrics, configuration, gates and the `UQ` registry (Draft, ADR 0127 Proposed) |
+| `spec/32-quality.md` | Una Quality: metrics, configuration, gates and the `UQ` registry (Draft, ADR 0127 accepted) |
 
 ## Starting a contribution
 
