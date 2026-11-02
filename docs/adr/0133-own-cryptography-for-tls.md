@@ -5,7 +5,7 @@
 - Deciders: Una project (accepted on 2026-11-02, with the changes of "Decisions of acceptance")
 - Resolves: issue #1100 (part of epic #1097); slices 1 to 3 and 5 to 7 are implemented with this record and its follow-ups; the switch of the default provider (slice 7b) waits for the review of slice 8
 - Related:
-  - ADR 0074 (the HTTP client), which chose `rustls` with the `ring` provider and records that `ring` "holds assembly and C" (its Decision and Consequences), and its residual on macOS (item 7);
+  - ADR 0074 (the HTTP client), which chose `rustls` with the `ring` provider and records that `ring` "holds assembly and C" (its Decision and Consequences), and its residual on macOS (item 7 of the N-30 amendment of ADR 0074);
   - ADR 0124 (one binary), whose embedded Z3 is the one foreign-code exception of epic #1097;
   - ADR 0122 rule 38 and `docs/security/tcb.md` (Ed25519 for the registry client is already pure Rust);
   - ADR 0119 (`una-hash`, `getrandom` as the operating system's random source);
@@ -51,7 +51,7 @@ The other policy choices of rules 14 to 18 are accepted as written: Ed25519 veri
 
 1. This record accepted (done) and slice 8 complete.
 2. An interop gate against the pinned public roots, not only the ignored manual test.
-3. The size and symbol checks of #1092 on the shipped artifacts, showing no `ring` symbol and no `ring` assembly object, the macOS residual of ADR 0074 item 7 included.
+3. The size and symbol checks of #1092 on the shipped artifacts, showing no `ring` symbol and no `ring` assembly object, the macOS residual of item 7 of the N-30 amendment of ADR 0074 included.
 4. The switch ships in a minor release, never a patch, with release notes on what differs: X25519 only, the stricter RSA and Ed25519 policies.
 5. A rollback plan: while the `ring` feature exists, a revert of the one line of rule 17 rolls the switch back. So the `ring` feature is removed one release after the switch, in its own change (slice 7c), not with the switch.
 

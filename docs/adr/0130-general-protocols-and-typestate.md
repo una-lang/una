@@ -121,7 +121,7 @@ Suite B shows the cost of the gap. Its Q1 analysis and full run (una-bench `find
    - **The caller assumes the frame.** After a call, the caller knows: the callee's `ensures`, instantiated; every fact term outside the callee's frame, unchanged; every term inside it, unknown except what the `ensures` say. After a call that fails, as for an operation: the terms of the frame are unknown, since `x is Err` carries nothing (`spec/12 §3`).
    - **No inference.** A private function with inferred `uses` (`spec/05 §9` rule 2) has the default frame and no fact in its `requires` or `ensures`, as ADR 0092 rule 4 decides for conditions. What a function needs and does is written in its header.
 
-8. **Whole-fact clauses.** A `requires` or `ensures` of a function MAY state that a `Bool` fact is false at every argument: `requires no @payments.in_doubt`. (Proposal: `no f` reads "no term of `f` holds".)
+8. **Whole-fact clauses.** A `requires` or `ensures` of a function MAY state that a `Bool` fact is false at every argument: `requires no @payments.in_doubt`, where `no f` reads "no term of `f` holds".
    - **As a hypothesis** (a `requires` in the callee, an `ensures` in the caller, a start value of `false`), it is instantiated, as `spec/12 §2` already does for axioms, at every argument tuple of that fact that occurs in the query.
    - **As a goal** (a `requires` at a call, an `ensures` at a return), its negation is "some term holds", which takes one fresh constant per parameter: `@payments.in_doubt(k)` with `k` fresh. The query stays quantifier free.
    - **Why it is complete for these forms.** Every other assertion of a query constrains a fact only at the argument tuples that occur in it, so a model that satisfies the instances can be extended to every other argument with the value `false` without changing any assertion. A model the solver returns is therefore a real counterexample of the stated contracts. The formal track proves this lemma (rule 17).
@@ -154,7 +154,7 @@ Suite B shows the cost of the gap. Its Q1 analysis and full run (una-bench `find
 
 ### F. Diagnostics and repairs
 
-13. **Codes.** Proposed numbers, assigned by the registry on acceptance (`spec/13 §4`):
+13. **Codes.** Two new codes, free in the registry; following the repository's rule that the specification changes with the implementation, slice 1 (#1325) enters them in `spec/13 §4`:
     - **U2042** (types): a fact in an expression that runs (rule 2).
     - **U2043** (types): a fact's parameter or result type that is not allowed, `starts true`, or `no` over a fact that is not `Bool` (rules 1, 6, 8).
     - Every proof diagnostic stays U5001 (refuted) or U5002 (unknown). The obligation kind `fact_frame` joins `spec/12 §3`. A fact precondition of an operation is a `precondition` obligation, and a fact in a condition an `effect_condition`, as today.

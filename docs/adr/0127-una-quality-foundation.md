@@ -41,7 +41,7 @@ The decisions below answer the twenty questions of issue #1296 (section B). Thre
 The project accepted this record on 2026-11-02 with the changes below. The rules of the Decision carry them; the questions above are kept as they were asked.
 
 1. **Question 1, safety visibility: accepted, with the alarms fixed.** Every rule stays the project's to lower, visibly (#1304, rule 21), except where a configuration swapped by path could hide its own lowering:
-   - UQ9201 (a policy weaker than the baseline's) has no severity and always blocks, as UQ0102 (rule 21);
+   - UQ9201 (a policy weaker than the baseline's) has no severity and always blocks, as UQ0102 (rule 21), and a waiver of it, as of any code without a severity, is UQ0001 (rule 28);
    - UQ9101 to UQ9109, the guarantee diff's codes, take no severity below `block` (rule 21, ADR 0128 rule 24);
    - a UQ0101 for a value that comes from the guarantee diff always blocks, also under `[analysis] incomplete = "report"` (rules 12 and 27).
 
@@ -55,7 +55,7 @@ The project accepted this record on 2026-11-02 with the changes below. The rules
 
 Open items, each owned by the card named:
 - Whether an active approval of `policy.quality.weakened` (ADR 0128 rule 21) clears UQ9201 for that same change, so that a reviewed, intended lowering of the policy can pass the evolution gate: phase 4, #1300.
-- How percentages are written in the configuration, and whether a configuration key carries a metric's version (`@1`): ADR 0131's first slice, #1333.
+- How percentages are written in the configuration, and whether a configuration key carries a metric's version (`@1`): ADR 0131's first slice, #1333. Proposed default, pending owner confirmation, owned by #1333: a percentage is written as a whole number of points (`85` for 85%), and a configuration key carries the metric id without its `@N` version, since the version is a property of the tool, reported in the output.
 
 ## Glossary
 
@@ -232,7 +232,7 @@ The forces:
     - its lifetime is at most `[waivers] max_days` (90 in `standard`, 30 in `high_assurance`);
     - every report lists every waiver, active or lapsed (UQ0003 for a lapsed one; a malformed one is UQ0001);
     - a new waiver against the baseline is UQ9301 (`warn` in `standard`, `block` in `high_assurance`);
-    - a waiver never approves UQ9101 to UQ9109, and a waiver of one of those codes is UQ0001. The approval rule 18 names ("unapproved") is an entry of the guarantee diff's approvals file, at its fixed path and bound to exactly one change (ADR 0128 rule 22), so a configuration that a pipeline swaps by path can never carry one.
+    - a waiver never approves UQ9101 to UQ9109, and a waiver of one of those codes is UQ0001, as is a waiver of a code that has no severity (UQ0001, UQ0002, UQ0003, UQ0102, UQ9201), which no configuration can lower. The approval rule 18 names ("unapproved") is an entry of the guarantee diff's approvals file, at its fixed path and bound to exactly one change (ADR 0128 rule 22), so a configuration that a pipeline swaps by path can never carry one.
     The approval itself, of a waiver or of a guarantee change, is the review of the change that adds the entry: the tool records the approver's text and cannot verify it (Questions for acceptance 2).
     - Rejected: approvals recorded by a script or a hook. Arbitrary scripts are code the tool would run (rule 31). Rejected: waivers in a second file. A pipeline would have to inject two files, and their combination would be a merge. Approvals of guarantee changes are not waivers: the approvals file is read from its fixed path only, never injected, so this rejection does not apply to it.
 

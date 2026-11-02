@@ -273,7 +273,7 @@ A dimension's score is `Q_d = 100 × (1 − Σ wᵢ pᵢ / Σ wᵢ)`, with versi
 
 1. The configuration is one file, named by `--config <path>`, by default `quality.toml` at the package root (`quality.una` once ADR 0131's slice lands, #1335). Without either, the preset `standard` applies with no override. One file is read: no include, no inheritance, no environment variables, no conditions.
 2. The format is TOML, interim only (ADR 0127 rule 20). The schema below is a data model; its final form is `quality.una`, in Una's own data syntax, which carries the same model and replaces `quality.toml` when its slice lands, converted by `una migrate` (ADR 0131 rules 9 to 13).
-3. An unknown key, a value of the wrong type or range, an unknown metric id, preset or code, and a file that is not valid UTF-8 are UQ0001: the run measures nothing and exits with code 1. So are a waiver of UQ9101 to UQ9109 (§14.4 rule 3), a severity below `block` for UQ9101 to UQ9109 or any severity for a code that has none (§15 rule 5), and an entry of reviewed equivalence (§8 rule 4) (ADR 0127 rules 21 and 28, ADR 0128 rule 24, ADR 0129 rule 12).
+3. An unknown key, a value of the wrong type or range, an unknown metric id, preset or code, and a file that is not valid UTF-8 are UQ0001: the run measures nothing and exits with code 1. So are a waiver of UQ9101 to UQ9109 or of a code without severity (§14.4 rule 3), a severity below `block` for UQ9101 to UQ9109 or any severity for a code that has none (§15 rule 5), and an entry of reviewed equivalence (§8 rule 4) (ADR 0127 rules 21 and 28, ADR 0128 rule 24, ADR 0129 rule 12).
 4. The file is data. Nothing in it is executed, evaluated or passed to a program.
 
 ### 14.2. The data model
@@ -326,7 +326,7 @@ max_recommendations = 5
 1. Each metric's direction (`above` or `below`) is fixed by its definition. A threshold `info`, `warn` or `block` applies when the value is past it in that direction. A finding's severity is the highest threshold crossed, capped by `severity`. `off` measures nothing for that rule.
 2. Every metric of §4 to §11 and every rule of §12 is a valid key, with no exception.
 3. Keys absent from the file take the preset's value.
-4. **Open in this Draft** (ADR 0131, Decisions of acceptance 4; decided by #1333 before the grammar of `quality.una` lands): how a percentage limit (§14.3 writes `3%` and `85%`) is written, and whether a key carries the metric's version (`complexity.cyclomatic@1`). The example above writes keys without a version.
+4. **Open in this Draft** (ADR 0131, Decisions of acceptance 4; decided by #1333 before the grammar of `quality.una` lands): how a percentage limit (§14.3 writes `3%` and `85%`) is written, and whether a key carries the metric's version (`complexity.cyclomatic@1`). Proposed default, pending owner confirmation, owned by #1333: a percentage is written as a whole number of points (`85` for 85%), and a configuration key carries the metric id without its `@N` version, since the version is a property of the tool, reported in the output. The example above writes keys that way.
 
 ### 14.3. Presets
 
@@ -359,7 +359,7 @@ UQ9101 to UQ9109 take no severity below `block` and UQ9201 has none (§15 rule 5
 
 1. A waiver has `rule`, `symbol`, `reason`, `approver`, `expires` and `fingerprint`, all required. It suppresses the findings of that rule on that symbol, which the report still lists as waived.
 2. It lapses on the day after `expires`, by the run's date (`--date`, else the system date in UTC), or when the symbol's fingerprint (§3 rule 4) differs from the waiver's. `expires` MUST be at most `max_days` after the run's date when the waiver is new against the baseline.
-3. A malformed waiver is UQ0001. A lapsed waiver is UQ0003, and the findings it suppressed are reported again. A waiver never approves UQ9101 to UQ9109, and a waiver of one of them is UQ0001 (ADR 0127 rule 28).
+3. A malformed waiver is UQ0001. A lapsed waiver is UQ0003, and the findings it suppressed are reported again. A waiver never approves UQ9101 to UQ9109, and a waiver of one of them is UQ0001; so is a waiver of a code without severity (UQ0001, UQ0002, UQ0003, UQ0102, UQ9201, §15 rule 5) (ADR 0127 rule 28).
 4. **Approvals.** The approvals that §15 rule 1 names are entries of the guarantee diff's approvals file, `guarantees.toml` at the package root (interim; `guarantees.una` in its final form, ADR 0131), read from that fixed path only, never from a path a flag or the configuration names, and each bound to one change by its change id (ADR 0128 rules 22 and 23). An approval new against the baseline expires within the preset's `max_days`, and never more than 90 days after the run's date (ADR 0128 rule 22). The same file holds the reviewed equivalent mutants of §8 rule 4 (ADR 0129 rule 12), which approve nothing.
 
 ### 14.5. Safety visibility

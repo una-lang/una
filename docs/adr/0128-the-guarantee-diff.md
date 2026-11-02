@@ -44,7 +44,7 @@ The project accepted this record on 2026-11-02 with the changes below, which the
 2. **Question 2: accepted.** Approvals of guarantee changes live in the approvals file at its fixed path (rule 22), and ADR 0127 rule 28 is aligned: a `quality.toml` waiver of UQ9101 to UQ9109 is UQ0001. The file's TOML form is interim only: its final form is `guarantees.una`, in Una's own data syntax, a member of ADR 0131's family. The question and Question 3 pointed to rule 20; they name rule 22.
 3. **Question 3: accepted.** The tool records the approver's text and cannot verify it; signed approvals stay deferred.
 4. **Question 4: accepted.** The command is `una diff`.
-5. **The quality configuration cannot lower these codes** (rule 24). UQ9101 to UQ9109 take no severity below `block` in `quality.toml`; a configuration that sets one lower is UQ0001 (ADR 0127 rule 21). So `una quality --gate` never passes a change that `una diff --gate` blocks.
+5. **The quality configuration cannot lower these codes** (rule 24). UQ9101 to UQ9109 take no severity below `block` in `quality.toml`; a configuration that sets one lower, or waives one of them or UQ9201, is UQ0001 (ADR 0127 rules 21 and 28). So `una quality --gate` never passes a change that `una diff --gate` blocks.
 6. **Expiry follows the preset** (rule 22): an approval new against the baseline expires within the preset's `max_days` (ADR 0127 rule 28: 30 days in `high_assurance`, 90 in the others), never more than 90 days.
 7. **Reviewed equivalent mutants join the approvals file** (rule 22, ADR 0129 rule 12), with a code of their own, UQ9302: what shrinks a denominator lives at a fixed path, as an approval does.
 
