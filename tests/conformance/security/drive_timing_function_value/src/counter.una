@@ -1,13 +1,14 @@
--- test: in the preview, a driven step that calls a function value, here through `map`, has the top timing label, since what the function captured is not in any type on the way (spec/26 §2, ADR 0116 IF7)
+-- test: in the preview, a driven step that reaches a call of a function value whose code is not known at the call, here a parameter of the function it calls, has the top timing label, since what the function captured is not in any type on the way (spec/26 §2, ADR 0116 IF7)
 -- spec: spec/26 §2
--- expect: error U4001 at src/counter.una:10:34
+-- expect: error U4001 at src/counter.una:12:34
 module counter
 
 import std.drive (Tick)
 
 pub init() -> Int = 0
 
+apply(f: fn(Int) -> Int, x: Int) -> Int = f(x)
+
 pub step(edit count: Int, input: Tick) -> Unit
 =
-  let next = [count].map(each: fn(x: Int) -> x + 1)
-  count = count + next.len
+  count = apply(fn(x: Int) -> x + 1, x: count)
