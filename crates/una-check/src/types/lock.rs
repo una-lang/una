@@ -4,19 +4,22 @@
 //! of its `uses` clauses the binding, the capability by the declaration its name resolves to,
 //! and the operations. A lock that does not resolve is U7002, never a lock that checks
 //! nothing. [`drift`] then reports each binding and operation of a locked header that its lock
-//! does not grant (U3023). The conditions are checked with the function's header, and their
-//! implications are `contract_lock` obligations. One pass over the locks and one over the
-//! locked headers, with maps keyed by function: linear in their size.
+//! does not grant (U3023), and each locked operation that the header reads below the lock's
+//! label (ADR 0094 with ADR 0092 rule 8, U3023). The conditions are checked with the function's
+//! header, and their implications are `contract_lock` obligations. One pass over the locks and
+//! one over the locked headers, with maps keyed by function, and one label comparison per
+//! locked operation: linear in their size.
 
 use std::collections::BTreeMap;
 
+use una_core::Label;
 use una_diag::{Code, Related};
 use una_syntax::Span;
 use una_syntax::ast::{ClauseKind, UsesClause};
 
 use super::Report;
 use super::env::{Entity, Env, FnAst, FnKind};
-use super::ty::CapId;
+use super::ty::{CapId, given};
 use crate::names::{Lock, LockClause};
 
 /// A well-formed locked clause of a function.
@@ -30,6 +33,10 @@ pub(crate) struct Entry<'a> {
     pub(crate) capability: CapId,
     /// The operations it lists.
     pub(crate) ops: Vec<&'a str>,
+    /// The label the lock gives each operation it labels (ADR 0094 with ADR 0092 rule 8): the
+    /// least label the header must read the operation at; an operation absent here is locked
+    /// at `public`. An operation listed twice gives the join of its labels.
+    pub(crate) gives: Vec<(String, Label)>,
     /// Where its string is written in `una.toml`.
     pub(crate) span: Span,
     /// The locked clause, for the text of its parts as its string reads (#727).
@@ -137,15 +144,42 @@ pub(crate) fn resolve<'a>(env: &mut Env<'a>, locks: &'a [Lock], report: &mut Rep
                 );
                 continue;
             }
-            // A lock that labels an operation (ADR 0094 with ADR 0092 rule 8) is refused
-            // rather than read as a lock that checks nothing: locked labels land with the
-            // second part of #566.
-            if parsed.cap_type.gives.iter().any(Option::is_some) {
+            // ADR 0094 with ADR 0092 rule 8: the labels a lock writes after `gives`. A lock
+            // cannot name a category that the package does not declare: such an entry is
+            // refused whole, never read as a lock with a lower label.
+            let mut gives: Vec<(String, Label)> = Vec::new();
+            let mut undeclared: Option<(&str, &str)> = None;
+            for (op, label) in ops.iter().zip(&parsed.cap_type.gives) {
+                let Some(label) = label else {
+                    continue;
+                };
+                let mut lowered = Label {
+                    level: label.level,
+                    categories: una_core::Names::new(),
+                    symbols: una_core::Names::new(),
+                };
+                for category in &label.categories {
+                    let category = env.text(module, category.name);
+                    if env.categories.iter().any(|declared| declared == category) {
+                        lowered.categories.insert(category);
+                    } else if undeclared.is_none() {
+                        undeclared = Some((op, category));
+                    }
+                }
+                if lowered.is_public() {
+                    continue;
+                }
+                match gives.iter_mut().find(|(known, _)| known == op) {
+                    Some((_, known)) => *known = known.join(&lowered),
+                    None => gives.push(((*op).to_owned(), lowered)),
+                }
+            }
+            if let Some((op, category)) = undeclared {
                 report.error(
                     code,
                     clause.span,
                     format!(
-                        "the lock of `{name}` writes `gives` on an operation, which a lock cannot carry in this version"
+                        "the lock of `{name}` labels `{op}` with the category `{category}`, which `[labels] categories` of `una.toml` does not declare"
                     ),
                 );
                 continue;
@@ -155,6 +189,7 @@ pub(crate) fn resolve<'a>(env: &mut Env<'a>, locks: &'a [Lock], report: &mut Rep
                 binding,
                 capability,
                 ops,
+                gives,
                 span: clause.span,
                 source: clause,
             });
@@ -214,7 +249,10 @@ pub(crate) fn header_site<'a>(
 
 /// U3023 for each binding and operation of a locked header that its lock does not grant: a
 /// binding that no entry names with its capability, and an operation that its entry does not
-/// list. Bindings and operations that the header leaves out are stronger, and pass.
+/// list. Bindings and operations that the header leaves out are stronger, and pass. Then, for
+/// each operation the entry lists, U3023 when the header reads it below the lock's label (ADR
+/// 0094 with ADR 0092 rule 8): the lock is a floor, `l_lock ⊑ l_src`, and a header that reads
+/// higher passes, since it grants its callers' flows less.
 pub(crate) fn drift(env: &Env<'_>, report: &mut Report<'_>) {
     for (&id, entries) in &env.locks {
         let Some(def) = env.functions.get(id) else {
@@ -282,6 +320,55 @@ pub(crate) fn drift(env: &Env<'_>, report: &mut Report<'_>) {
                 diagnostic.repairs.push(Report::advice(format!(
                     "list only the operations of the lock in the header's `@{binding}`"
                 )));
+                report.push(diagnostic);
+            }
+            for op in &need.usage.ops {
+                if !entry.ops.contains(&op.as_str()) {
+                    continue;
+                }
+                let locked = given(&entry.gives, op);
+                let read = given(&need.usage.gives, op);
+                if locked.flows_to(&read) {
+                    continue;
+                }
+                let restored = locked.join(&read);
+                // The operation as the header writes it, first occurrence, with its label.
+                let written = clause
+                    .cap_type
+                    .ops
+                    .iter()
+                    .zip(&clause.cap_type.gives)
+                    .find(|(ident, _)| env.text(def.module, ident.name) == op);
+                let span = written.map_or(clause.span, |(ident, _)| ident.span);
+                let mut diagnostic = report.make(
+                    Code::U3023,
+                    span,
+                    format!(
+                        "the header of `{name}` reads `@{binding}.{op}` at `{read}`, which `una.toml` locks at `{locked}`"
+                    ),
+                );
+                diagnostic.related.push(Related {
+                    location: report.location(entry.span),
+                    message: "the lock".to_owned(),
+                });
+                // The edit raises the header's label to the join, so that an incomparable
+                // label is never dropped, and keeps a condition after it. It changes the module
+                // only, never `una.toml`.
+                match written {
+                    Some((ident, None)) => diagnostic.repairs.push(report.edit(
+                        format!("restore the locked label: read `@{binding}.{op}` at `{restored}`"),
+                        Span::at(ident.span.file, ident.span.end),
+                        format!(" gives {restored}"),
+                    )),
+                    Some((_, Some(label))) => diagnostic.repairs.push(report.edit(
+                        format!("restore the locked label: read `@{binding}.{op}` at `{restored}`"),
+                        label.span,
+                        restored.to_string(),
+                    )),
+                    None => diagnostic.repairs.push(Report::advice(format!(
+                        "list `{op} gives {restored}` in the brackets of the header's `@{binding}`"
+                    ))),
+                }
                 report.push(diagnostic);
             }
         }

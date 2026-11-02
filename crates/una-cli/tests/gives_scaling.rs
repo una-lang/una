@@ -77,3 +77,61 @@ fn passing_a_labeled_binding_along_a_chain_costs_one_comparison_per_call() {
     });
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// An entry point and a chain of `n` private helpers without `uses` clauses, the last of which
+/// reads `owner`. With `labeled`, the entry point labels `owner` and each helper's labels are
+/// inferred from the one before (ADR 0094 rule 3, #566 part 2); without, the same chain
+/// infers only its `uses`. `reversed` writes the helpers last to first, so that the inference
+/// cannot ride on source order.
+fn inferred_chain(n: usize, labeled: bool, reversed: bool) -> String {
+    let label = if labeled { "internal[Service] " } else { "" };
+    let mut helpers: Vec<String> = (0..n)
+        .map(|i| {
+            let body = if i + 1 == n {
+                "@files.owner(file)".to_owned()
+            } else {
+                format!("g{}(file)", i + 1)
+            };
+            format!("g{i}(file: Text) -> {label}Text = {body}\n")
+        })
+        .collect();
+    if reversed {
+        helpers.reverse();
+    }
+    let gives = if labeled {
+        " gives internal[Service]"
+    } else {
+        ""
+    };
+    let mut source =
+        String::from("module m\n\npub capability Files\n  op owner(file: Text) -> Text\n\n");
+    source.push_str(&format!(
+        "pub entry(file: Text) -> {label}Text\n  uses @files: Files[owner{gives}]\n=\n  g0(file)\n"
+    ));
+    for helper in helpers {
+        source.push('\n');
+        source.push_str(&helper);
+    }
+    source
+}
+
+#[test]
+fn inferring_labels_along_a_chain_of_helpers_adds_a_bounded_share() {
+    // The labels flow from the entry point down the chain over a worklist of calls, linear in
+    // the calls. The `uses` inference they ride on has its own cost on such a chain, so the
+    // test compares the labeled chain with the same chain unlabeled, at each size and in
+    // either source order: the labels add at most a constant factor. A label pass per helper
+    // over every call would add about 1,600 times the calls at the larger size.
+    let dir = std::env::temp_dir().join(format!("una-gives-inferred-{}", std::process::id()));
+    for reversed in [false, true] {
+        for n in [200, 1_600] {
+            let plain = check_seconds(&dir, &inferred_chain(n, false, reversed));
+            let labeled = check_seconds(&dir, &inferred_chain(n, true, reversed));
+            assert!(
+                labeled <= 2.0 * plain + 0.05,
+                "{n} helpers (reversed: {reversed}): labeled {labeled:.3}s against {plain:.3}s unlabeled"
+            );
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
