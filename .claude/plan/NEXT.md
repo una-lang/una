@@ -13,5 +13,5 @@
 9. #1099 needs the dated amendment of ADR 0106 that ADR 0124 question 1 already ruled (the C backend is withdrawn; the release path becomes Una's own code generation).
 
 ## Added 2026-11-01
-10. Order now: #1209 slice 4b (4a done, PR #1387), then  #1209 slices 4a+4b (plan ready), #1007 (S5) only after the L_srv labels and timing oracles exist, #1100 slice 7b/8 after the owner accepts ADR 0133, #1340 (Z3 source address), #991 (simd).
+10. Order now: #1389 (Linux clippy safety comment, P1, small), then #1209 slice 4b (4a done, PR #1387), then  #1209 slices 4a+4b (plan ready), #1007 (S5) only after the L_srv labels and timing oracles exist, #1100 slice 7b/8 after the owner accepts ADR 0133, #1340 (Z3 source address), #991 (simd).
 11. Pacing: one card in flight, about three code cards a day; small cards when the day's budget is spent.
