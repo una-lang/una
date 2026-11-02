@@ -702,8 +702,9 @@ fn deep(levels: usize) -> String {
 /// directories [`deep`]`(4)` below it, so every lexical path stays short while the canonical
 /// paths grow by about 400 bytes a hop. Returns the hops `h/../h/` up to the last one built,
 /// and the number of directories below it whose canonical path is longer than the host's
-/// canonicalization takes (`ENAMETOOLONG`: 1024 bytes on macOS, `PATH_MAX` = 4096 on Linux),
-/// or `None` when 64 hops reach no limit.
+/// canonicalization takes (`ENAMETOOLONG`: 1024 bytes on macOS; on Linux the limit of the
+/// host's C library, 4096 bytes with glibc and lower with musl), or `None` when 64 hops reach
+/// no limit.
 fn disk_hops(on: &Path) -> (String, Option<usize>) {
     let mut hops = String::new();
     let mut at = on.to_path_buf();
@@ -734,7 +735,7 @@ fn host_limits_keep_the_outcomes_of_resolving_every_prefix_1343() {
     // and the kernel both follow at most 40: the prefix ending at the 41st link is seen as a
     // link and Denied under both rules, and glibc's `realpath` takes lexical paths of any
     // length. So the hops below, whose canonical paths pass the host's limit (1024 bytes on
-    // macOS, 4096 on Linux) while their lexical paths stay short, give the new denials on
+    // macOS; on Linux the C library's, 4096 bytes with glibc, lower with musl) while their lexical paths stay short, give the new denials on
     // both hosts, and they are the paths of S-33: before #1380 the operation opened the
     // lexical path, through a link to a directory outside the prefix.
     let depth = 70;
@@ -1037,7 +1038,8 @@ fn a_directory_past_the_host_path_limit_is_denied_on_the_disk_1380() {
     // A missing directory under a hop still leaves the path to the operation.
     let missing = "h/missing/new.txt";
     assert_eq!(confine(&mut Disk, &on, missing), Some(on.join(missing)));
-    // On macOS (1024 bytes) and Linux (`PATH_MAX`, 4096 bytes, #1456) the limit is reached;
+    // On macOS (1024 bytes) and Linux (the C library's limit: 4096 bytes with glibc, lower
+    // with musl, #1456) the limit is reached;
     // other hosts may canonicalize longer paths, and then the link below is resolved and
     // denied.
     if cfg!(any(target_os = "macos", target_os = "linux")) {
