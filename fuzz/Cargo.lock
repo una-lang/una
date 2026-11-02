@@ -560,6 +560,7 @@ version = "0.3.16"
 dependencies = [
  "rustls",
  "una-core",
+ "una-hash",
  "una-sys",
  "webpki-roots",
 ]
