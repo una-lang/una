@@ -1,15 +1,15 @@
 # 0127. Una Quality: a measured, configurable quality report and three gates
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-31
-- Deciders:
+- Deciders: Una project (accepted on 2026-11-02, with the changes of "Decisions of acceptance")
 - Resolves: issue #1296 (the foundation record of epic #1292)
 - Related:
-  - issue #1302 (Una's own format for configuration files), whose interim answer this record takes for `quality.toml`;
+  - issue #1302 and ADR 0131 (Una's own configuration files), whose interim answer this record takes for `quality.toml`, and whose `quality.una` is the configuration's final form;
   - issue #1303 (identifiers), whose scheme this record adopts: codes `UQ` plus four digits, dotted metric ids;
   - issue #1304 (the configuration file, a severity per metric, presets), whose decisions this record states as rules;
   - issues #1297 to #1301 (phases 1 to 5), which implement this record in slices (section L);
-  - issue #1291 (the guarantee diff), which shares baselines and the output model with this record and owns the comparison of contracts;
+  - issue #1291 and ADR 0128 (the guarantee diff), which share baselines and the output model with this record, own the comparison of contracts, and hold the approvals of UQ9101 to UQ9109 (rule 28);
   - issue #1293 (specification mutation testing), which shares the mutation engine of phase 3;
   - ADR 0083 (`una.core/1`, Core IR with source spans), the representation most metrics are computed on;
   - ADR 0012 and `spec/13 §4` (the code registry: codes never reused, gaps unassigned), whose rules the `UQ` registry follows;
@@ -24,17 +24,38 @@
 
 > **In plain words.**
 > - **What it is.** `una quality` measures a package: size, complexity, duplication, coupling, tests, proofs, authority, information flow and failure handling. It prints a report for a person, a JSON document for an agent, and SARIF for CI tools. With `--gate`, it exits non-zero when a rule the project set to `block` is crossed.
-> - **What decides.** A file the project owns, `quality.toml`, sets for every metric whether it is `off`, `info`, `warn` or `block`, and its limit. Presets give starting values. A pipeline can pass a different file by path.
+> - **What decides.** A file the project owns, `quality.toml` (interim; `quality.una`, in Una's own syntax, once ADR 0131's slice lands), sets for every metric whether it is `off`, `info`, `warn` or `block`, and its limit. Presets give starting values. A pipeline can pass a different file by path.
 > - **What it never does.** It never compensates: a good complexity score never offsets a weakened contract. It never reports a value it did not measure as 0 or as passing. It runs no model, edits no file, and treats every input as data.
 > - **What it is not.** A proof. A passing gate means the configured checks passed, and the report says what was not measured.
 
 ## Questions for acceptance
 
-The decisions below answer the twenty questions of issue #1296 (section B). Three points rest on assumptions that acceptance confirms or changes:
+The decisions below answer the twenty questions of issue #1296 (section B). Three points rest on assumptions that acceptance confirms or changes; the answers are under "Decisions of acceptance":
 
 1. **The safety-visibility rule (rule 21).** Every rule may be lowered by the project, assurance rules included, as issue #1304 decided. This record assumes that the most secure option compatible with that choice is: shipped presets set every assurance rule to `block`; lowering one is always listed in the report header, never silent; and the evolution gate reports a policy weaker than the baseline's (UQ9201, `block` in every preset). The alternative, assurance rules that cannot be lowered at all, is recorded under Alternatives.
-2. **Waiver approval (rule 31).** The tool records and displays who approved a waiver, but cannot verify an identity. This record assumes that the repository's own review (the review of the change that adds the waiver) is the approval, and that the tool's job is to make every waiver visible, bounded in time and bound to the code it covers. Signed waivers are deferred.
-3. **A new crate (rule 46).** The epic names the crate `una-report` for reuse. That crate is a five-line stub meant for the build report (`spec/13 §6`). This record places the engine in a new library crate, `una-quality`, so that the build report, a tier-1 assurance document, never depends on a policy file the project edits. `una-report` stays as it is.
+2. **Waiver approval (rule 28).** The tool records and displays who approved a waiver, but cannot verify an identity. This record assumes that the repository's own review (the review of the change that adds the waiver) is the approval, and that the tool's job is to make every waiver visible, bounded in time and bound to the code it covers. Signed waivers are deferred.
+3. **A new crate (rule 34).** The epic names the crate `una-report` for reuse. That crate is a five-line stub meant for the build report (`spec/13 §6`). This record places the engine in a new library crate, `una-quality`, so that the build report, a tier-1 assurance document, never depends on a policy file the project edits. `una-report` stays as it is.
+
+## Decisions of acceptance (2026-11-02)
+
+The project accepted this record on 2026-11-02 with the changes below. The rules of the Decision carry them; the questions above are kept as they were asked.
+
+1. **Question 1, safety visibility: accepted, with the alarms fixed.** Every rule stays the project's to lower, visibly (#1304, rule 21), except where a configuration swapped by path could hide its own lowering:
+   - UQ9201 (a policy weaker than the baseline's) has no severity and always blocks, as UQ0102 (rule 21), and a waiver of it, as of any code without a severity, is UQ0001 (rule 28);
+   - UQ9101 to UQ9109, the guarantee diff's codes, take no severity below `block` (rule 21, ADR 0128 rule 24);
+   - a UQ0101 for a value that comes from the guarantee diff always blocks, also under `[analysis] incomplete = "report"` (rules 12 and 27).
+
+   The recommended pipeline runs `una diff --gate` (ADR 0128) as the strict gate beside `una quality --gate`.
+2. **Question 2, approvals: accepted, and approvals of guarantee changes leave the waiver mechanism.** The review of the change that adds an entry is the approval; signed entries stay deferred. The approvals of UQ9101 to UQ9109 live in the guarantee diff's approvals file, at its fixed path and bound to one change (ADR 0128 rule 22), never in `quality.toml`; a `quality.toml` waiver of one of those codes is UQ0001 (rule 28).
+3. **Question 3, the crate: accepted.** The engine is the new crate `una-quality` (rule 34, phase 1a). The question pointed to a rule 46, which does not exist; it now names rule 34, and Question 2 names rule 28 instead of rule 31.
+4. **A relaxed precondition of a public function is a weakening** (rule 16), as ADR 0128 rule 8 decides (its Question 1).
+5. **The fingerprint covers the body only** (rule 5). The function's header, its contract included, is outside the hash, so a renamed function whose contract changed still matches as `renamed`, and the guarantee diff compares its contract (ADR 0128 rule 7).
+6. **The configuration's final form is Una's own syntax** (rule 20). ADR 0131 decides it: `quality.una`, in Una data syntax, replaces `quality.toml` when its slice lands; TOML is interim only. The preset `high-assurance` is spelled `high_assurance`, a word that Una data syntax can carry.
+7. **References corrected.** Rule 1's `una explain` item pointed to a rule 40, which does not exist; it names rule 23 and `spec/13 §5`.
+
+Open items, each owned by the card named:
+- Whether an active approval of `policy.quality.weakened` (ADR 0128 rule 21) clears UQ9201 for that same change, so that a reviewed, intended lowering of the policy can pass the evolution gate: phase 4, #1300.
+- How percentages are written in the configuration, and whether a configuration key carries a metric's version (`@1`): ADR 0131's first slice, #1333. Proposed default, pending owner confirmation, owned by #1333: a percentage is written as a whole number of points (`85` for 85%), and a configuration key carries the metric id without its `@N` version, since the version is a property of the tool, reported in the output.
 
 ## Glossary
 
@@ -85,7 +106,7 @@ The forces:
    - `una quality snapshot [path] --out <file>`: writes the run's `una.quality-snapshot/1`.
    - `una quality policy check [path]`: validates the configuration and prints the effective policy (preset values with the file's overrides, and the list of rules set below their preset default), with no measurement.
    - `una quality inspect <qualified.name>` (phase 5): one function's observations, contributors, preservation constraints and revalidation commands.
-   - `una explain <UQ code>`: the explain text of a quality code, through the existing command (rule 40).
+   - `una explain <UQ code>`: the explain text of a quality code, through the existing command (rule 23, `spec/13 §5`).
    - Rejected: a `--quality` flag of `una report`. The build report is a tier-1 assurance document whose content depends only on the package; quality findings depend on a policy file. Mixing them would make `una.report/2` vary with a file the project edits.
 2. **Relation to `[escape_budget]` and the build report.** `[escape_budget]` stays in `una.toml` and `ita.una`, enforced by `una check` (U7003). `quality.toml` cannot change it. The quality metrics `escape.*` read the same counts and report densities against the budget (rule 15). Quality reads the facts of the build report from the compiler's own data in the same process, never by parsing `una report` output, and adds no key to `una.report/2`.
    - Rejected: moving `[escape_budget]` into `quality.toml`. The budget is a compiler rule with a code; a policy file the pipeline can swap must not loosen it.
@@ -102,7 +123,7 @@ The forces:
    - Rejected: Core IR only. Nesting and lines are properties of the text; Core's A-normal temporaries would add depth no reader sees. Rejected: surface only. Each metric would need its own reading of `and`, `in lo..hi` and `if error`, and the coverage of branches would disagree with the complexity that counts them.
 5. **Symbol identity (Question 3).** A function, kind, handler, predicate, policy or capability is identified by its qualified name; a lambda by its enclosing function's name and its ordinal in source order (`m.f#2`). A baseline is matched in three steps, each deterministic:
    1. equal qualified names match;
-   2. among the rest, a pair whose **body fingerprint** is equal and unique on both sides matches as `renamed`. The fingerprint is the SHA-256 of the function's Core IR with binder names replaced by their first-occurrence ordinal and spans removed;
+   2. among the rest, a pair whose **body fingerprint** is equal and unique on both sides matches as `renamed`. The fingerprint is the SHA-256 of the function's body in Core IR, with binder names replaced by their first-occurrence ordinal and spans removed. The header, its contract included (parameters, result, `uses`, `fails`, `requires`, `ensures` and refinements), is outside the hash, so a function renamed with a changed contract still matches, and the guarantee diff compares its contract (ADR 0128 rule 7);
    3. among the rest, a new function whose fingerprint equals that of a contiguous run of `let`s removed from a matched function is reported as `extracted_from` that function, labeled `heuristic`.
    - Unmatched symbols are `new` or `removed`. Ties are never broken by guessing: equal fingerprints shared by several symbols match none of them, and each is `new`. A new symbol falls under the rules for new code, so a rename can only make a rule stricter, never escape it.
    - Cost: O(n log n) in the number of symbols, with sorted maps.
@@ -141,7 +162,7 @@ The forces:
 ### D. Analysis status, evidence and cost
 
 12. **Status on every value (Question 8).** Each observation has a status, `complete`, `partial`, `not_measured`, `not_applicable`, `inconclusive` or `timeout`, and when not `complete`, a reason (`off`, `mode`, `stale`, `budget`, `unknown_construct`, `check_failed`, `edition`, `solver`). A value that was not measured is never 0, never 100%, and never passing. A ratio with an empty denominator is `not_applicable`.
-    - **Incomplete analysis.** The configuration's `[analysis] required` lists the statuses a required rule fails on; `[analysis] incomplete` chooses `block` (every preset) or `report`. Under `block`, a required value that is not `complete` is the finding UQ0101 at `block` in the gate of its rule. Under `report`, it is UQ0101 at `warn`, and a run with `--gate` and no blocking finding exits with code 4 (rule 27), so a pipeline can tell "passed" from "not fully measured".
+    - **Incomplete analysis.** The configuration's `[analysis] required` lists the statuses a required rule fails on; `[analysis] incomplete` chooses `block` (every preset) or `report`. Under `block`, a required value that is not `complete` is the finding UQ0101 at `block` in the gate of its rule. Under `report`, it is UQ0101 at `warn`, and a run with `--gate` and no blocking finding exits with code 4 (rule 27), so a pipeline can tell "passed" from "not fully measured". A UQ0101 for a value that comes from the guarantee diff (UQ9101 to UQ9109) is at `block` under either setting, as the guarantee diff's own gate always blocks on an incomplete analysis (ADR 0128 rule 24).
     - Rejected: treating an incomplete value as passing, or as failing with no distinction. The first lets a timeout pass a gate; the second hides why the gate failed.
 13. **Cost modes (Question 14).**
     - `fast`: the surface tree and Core IR at tier 0; size, complexity, Halstead, duplication, coupling, dead code. O(n log n) in the package's size. For editors and save hooks.
@@ -154,13 +175,13 @@ The forces:
 ### E. Assurance facts
 
 15. **Verification, authority and flow metrics** (`spec/32 §9` to `§11`) are review signals, never vulnerability claims: a finding says "review", never "leak", unless `una check` established a violation, which is then a compiler error and not a metric. Authority utilization (operations declared in `uses` against those reachable through the static call graph) is a new finding: no `U` code reports an unused capability today.
-16. **Comparing contracts (Question 12).** Where both contracts are in the decidable fragment of `spec/12`, comparison is by implication in the context of the declaration: a precondition that became stronger, or a postcondition that became weaker, is a weakening for callers. Each comparison is one solver query, cached as obligations are. Outside the fragment (opaque predicates, a solver `unknown`, a timeout), the result is `review_required`, never "compatible". The comparison is owned by the guarantee diff (#1291); Una Quality reads its verdicts.
-17. **Sharing with the guarantee diff (Question 15).** One snapshot family, one output model and one set of baseline rules serve both. The guarantee diff owns contracts, assumptions, obligations, `trusted`, capabilities and declassifications; Una Quality owns structure, tests and coverage. The assurance gate reads the guarantee diff's verdicts for authority expansion, new `trusted`, new declassification and contract weakening (codes UQ9101 to UQ9104). Until #1291 lands, those values are `not_measured`, so the assurance gate under `--gate` with a baseline fails closed. No verification is computed twice.
+16. **Comparing contracts (Question 12).** Where both contracts are in the decidable fragment of `spec/12`, comparison is by implication in the context of the declaration: a precondition that became stronger (it breaks callers), a precondition of a public function that became weaker (it lets every caller reach what it restricted, such as a removed `requires is_admin(user)`), and a postcondition that became weaker (it promises less) are each a weakening, with the incomparable cases, as ADR 0128 rule 8 states. Each comparison is one solver query, cached as obligations are. Outside the fragment (opaque predicates, a solver `unknown`, a timeout), the result is `review_required`, never "compatible". The comparison is owned by the guarantee diff (#1291); Una Quality reads its verdicts.
+17. **Sharing with the guarantee diff (Question 15).** One snapshot family, one output model and one set of baseline rules serve both. The guarantee diff owns contracts, assumptions, obligations, `trusted`, capabilities and declassifications; Una Quality owns structure, tests and coverage. The assurance gate reads the guarantee diff's verdicts for authority expansion, new `trusted`, new declassification and contract weakening (codes UQ9101 to UQ9104), and the further guarantee changes of ADR 0128 rule 25 (UQ9105 to UQ9109). Until #1291 lands, those values are `not_measured`, so the assurance gate under `--gate` with a baseline fails closed. No verification is computed twice.
 
 ### F. Gates and scores
 
 18. **Three gates, never compensating (Question 11).**
-    - **Assurance:** the package passes `una check` (UQ0102); no required obligation `unknown` or `refuted` (UQ5001); no unapproved authority expansion, new `trusted`, new declassification or public-contract weakening against the baseline (UQ9101 to UQ9104); every required analysis complete and current (UQ0101).
+    - **Assurance:** the package passes `una check` (UQ0102); no required obligation `unknown` or `refuted` (UQ5001); no unapproved authority expansion, new `trusted`, new declassification, public-contract weakening or other guarantee regression against the baseline (UQ9101 to UQ9109, approved only by the approvals file of rule 28); every required analysis complete and current (UQ0101).
     - **Structural:** the thresholds of size, complexity, duplication, coupling, coverage, mutation and the Una-specific metrics.
     - **Evolution:** the comparison with the baseline (ratchets, deltas, new waivers, policy weakening).
     - The outcome is `pass` only when no gate has a blocking finding. The gate of each rule is fixed by the registry (`spec/32 §18`) and is not configurable; its severity is.
@@ -174,14 +195,14 @@ The forces:
 20. **`quality.toml`** (#1304). A separate file, owned by the project, not a table of `una.toml` or `ita.una`.
     - **By path.** `--config <path>` names it; by default `quality.toml` at the package root. A pipeline injects another file by path (one per environment is an example of use, not a feature). The tool knows no environments.
     - **No merging.** One file is read. It has no include, no inheritance between files, no environment variables and no conditions. The only composition is a preset's values overridden by the file's.
-    - **Interim format.** TOML, read by the `toml` crate that `una` already holds for `una.toml` (editions `0.1` to `0.3`), so no dependency is added. The schema (`spec/32 §14`) is a data model independent of syntax: when #1302 decides Una's own format, `una migrate` rewrites the file mechanically. This keeps a TOML reader in `una` past edition `0.4`'s single manifest format (ADR 0122 Question 8.1), accepted for the interim.
+    - **Interim format.** TOML, read by the `toml` crate that `una` already holds for `una.toml` (editions `0.1` to `0.3`), so no dependency is added. The schema (`spec/32 §14`) is a data model independent of syntax. ADR 0131 decides the final form: `quality.una`, in Una's own data syntax, which replaces `quality.toml` when its slice lands, and `una migrate` rewrites the file mechanically (ADR 0131 rule 12). This keeps a TOML reader in `una` past edition `0.4`'s single manifest format (ADR 0122 Question 8.1), accepted for the interim.
     - **Severity for every metric.** Each metric and rule takes `severity`, one of `off`, `info`, `warn`, `block`, and its limits where it has one (`info`, `warn`, `block`, each a threshold, with the metric's direction). This holds for every metric, Halstead, the maintainability index and the legacy measures included: set to `block`, any of them blocks. The finding's severity is the highest whose limit the value crosses, capped by `severity`. `off` measures nothing for that rule and lists it in the header.
-    - **Presets.** `standard` (the default), `library`, `server`, `high-assurance` and `numerical`, each versioned (`server@1`), with the values of `spec/32 §14.3`. A preset never switches off a language guarantee, and `numerical` does not block dense loops or assume unrestricted proofs about `F64`.
+    - **Presets.** `standard` (the default), `library`, `server`, `high_assurance` and `numerical`, each versioned (`server@1`), with the values of `spec/32 §14.3`. A preset never switches off a language guarantee, and `numerical` does not block dense loops or assume unrestricted proofs about `F64`.
     - **Validation.** An unknown key, a wrong type or an unknown metric id is UQ0001, which is always blocking and stops the measurement: an invalid policy is never replaced by defaults.
     - Rejected: a `[quality]` table in `una.toml` (the first sketch). The pipeline could not swap it without editing the manifest, and the manifest's format is changing (ADR 0122). Rejected: layered files merged in order. The effective policy would depend on an order the report cannot show in one digest.
-21. **Safety visibility for assurance rules** (#1304 rule 7; an assumption, Questions for acceptance 1). Every preset sets the assurance rules to `block`. The project may lower them. Then:
+21. **Safety visibility for assurance rules** (#1304 rule 7; decided on acceptance, Decisions of acceptance 1). Every preset sets the assurance rules to `block`. The project may lower them, except UQ9101 to UQ9109, which take no severity below `block`: a configuration that sets one lower is UQ0001 (ADR 0128 rule 24). Then:
     - the report header always shows the configuration's path and SHA-256 digest, and lists every rule set below its preset default (UQ0002, always printed, not configurable);
-    - the evolution gate reports a policy weaker than the baseline's, by rule (UQ9201, `block` in every preset);
+    - the evolution gate reports a policy weaker than the baseline's, by rule (UQ9201). UQ9201 has no severity and always blocks, as UQ0102, so a configuration injected by path cannot lower the alarm that would show its own lowering;
     - the guarantee diff reports the change of `quality.toml` itself (#1291).
     So the choice stays the project's, and a silent weakening by an agent or a pipeline edit is visible in three places.
 22. **Who edits the policy.** `una fix` and every repair or recommendation of Una Quality never edit `quality.toml`, never add `trusted` or `checked`, and never widen authority (`spec/13 §3`, §5).
@@ -191,7 +212,7 @@ The forces:
 23. **Codes** (#1303). A quality finding has a code `UQ` plus four digits. The thousands digit is the dimension: 0 tool, configuration and analysis status; 1 complexity; 2 size, maintainability and duplication; 3 architecture and coupling; 4 tests, coverage and mutation; 5 verification and specification; 6 authority; 7 information flow; 8 failure, resources and concurrency; 9 evolution and baselines. Codes are never reused, retired codes stay listed as retired, and gaps are unassigned numbers (ADR 0012). The registry is the table of `spec/32 §18`; a test fails on a duplicate or reused code. A code names a rule family; the finding's metric id says which metric crossed it.
     - A `UQ` code is never a compiler diagnostic: `una check` never reports one, and no `UQ` code appears in `una.diagnostics/1`.
     - Rejected: a `U9xxx` range in the compiler's registry. Quality findings are a project's policy, not rejections by the language; one registry for both would let a policy look like a language error.
-24. **Metric ids** are lowercase dotted names, `family.measure` (`complexity.cyclomatic`, `authority.utilization`), independent of codes, with an algorithm version (`@1`). They are the keys of `quality.toml`. **Preset names** are lowercase words with a version.
+24. **Metric ids** are lowercase dotted names, `family.measure` (`complexity.cyclomatic`, `authority.utilization`), independent of codes, with an algorithm version (`@1`). They are the keys of `quality.toml`; whether a key carries the version is decided with ADR 0131's first slice (#1333). **Preset names** are lowercase words with a version.
 
 ### I. Baselines, evolution and waivers
 
@@ -204,16 +225,16 @@ The forces:
     - `1`: at least one blocking finding (or a warning, with `--fail-on-warn`);
     - `2`: a usage error;
     - `3`: an internal error (U8001);
-    - `4`: no blocking finding, but a required analysis incomplete under `[analysis] incomplete = "report"`.
+    - `4`: no blocking finding, but a required analysis incomplete under `[analysis] incomplete = "report"`, never one that comes from the guarantee diff (rule 12).
     The codes `0` to `3` mean what they mean for every command (`spec/13 §5`); `4` is new and used only by `una quality --gate`.
 28. **Waivers (Question 10).** A waiver lives in `quality.toml` as an entry with `rule` (a code), `symbol` (a qualified name), `reason`, `approver`, `expires` (a date) and `fingerprint` (the body fingerprint of rule 5 when it was approved). It suppresses findings of that rule on that symbol only:
     - it lapses when it expires or when the symbol's fingerprint changes, so changed code is measured again;
-    - its lifetime is at most `[waivers] max_days` (90 in `standard`, 30 in `high-assurance`);
+    - its lifetime is at most `[waivers] max_days` (90 in `standard`, 30 in `high_assurance`);
     - every report lists every waiver, active or lapsed (UQ0003 for a lapsed one; a malformed one is UQ0001);
-    - a new waiver against the baseline is UQ9301 (`warn` in `standard`, `block` in `high-assurance`);
-    - the waiver of an assurance rule is the approval rule 18 names ("unapproved").
-    The approval itself is the review of the change that adds the entry: the tool records the approver's text and cannot verify it (Questions for acceptance 2).
-    - Rejected: approvals recorded by a script or a hook. Arbitrary scripts are code the tool would run (rule 31). Rejected: waivers in a second file. A pipeline would have to inject two files, and their combination would be a merge.
+    - a new waiver against the baseline is UQ9301 (`warn` in `standard`, `block` in `high_assurance`);
+    - a waiver never approves UQ9101 to UQ9109, and a waiver of one of those codes is UQ0001, as is a waiver of a code that has no severity (UQ0001, UQ0002, UQ0003, UQ0102, UQ9201), which no configuration can lower. The approval rule 18 names ("unapproved") is an entry of the guarantee diff's approvals file, at its fixed path and bound to exactly one change (ADR 0128 rule 22), so a configuration that a pipeline swaps by path can never carry one.
+    The approval itself, of a waiver or of a guarantee change, is the review of the change that adds the entry: the tool records the approver's text and cannot verify it (Questions for acceptance 2).
+    - Rejected: approvals recorded by a script or a hook. Arbitrary scripts are code the tool would run (rule 31). Rejected: waivers in a second file. A pipeline would have to inject two files, and their combination would be a merge. Approvals of guarantee changes are not waivers: the approvals file is read from its fixed path only, never injected, so this rejection does not apply to it.
 
 ### J. Determinism and agents
 
@@ -295,7 +316,7 @@ No `U` code is added. The `UQ` registry starts with the codes of `spec/32 §18`,
 - Agents and people get exact, versioned measurements with locations and contributors, and a gate whose policy the project owns.
 - Una's own facts (authority, labels, obligations, escapes) become review signals that classical tools cannot give.
 - A project can block on any metric, Halstead included, and the report always shows what it lowered.
-- The quality tool keeps a TOML reader until #1302 decides Una's own format.
+- The quality tool keeps a TOML reader until ADR 0131's slice for `quality.una` lands.
 - Phase 4's assurance items depend on the guarantee diff (#1291); until it lands they fail closed under `--gate` with a baseline.
 - Reference limits are starting points to calibrate on Una's corpus, not findings of the literature; calibration may change preset values, which is a new preset version.
 - Deferred: Type-3 clones, CI coverage formats, native coverage, signed waivers, abstractness over capabilities and handlers, a static cost metric (`costs` is undecided).
@@ -305,7 +326,7 @@ No `U` code is added. The `UQ` registry starts with the codes of `spec/32 §18`,
 - **No tool; leave quality to review.** Rejected: agents improve what they can measure, and review does not scale with generated code.
 - **Wrap an existing analyzer.** Rejected: no existing tool reads Una, and a foreign analyzer would be foreign code in the toolchain.
 - **Thresholds hard-wired as non-blocking for weak metrics.** Rejected by #1304: which metrics block is the project's policy.
-- **Assurance rules that can never be lowered.** The most restrictive option. Rejected in favor of rule 21, because #1304 made every rule the project's choice; kept here for acceptance to reconsider (Questions for acceptance 1).
+- **Assurance rules that can never be lowered.** The most restrictive option. Rejected on acceptance in favor of rule 21, because #1304 made every rule the project's choice, with UQ9201 and UQ9101 to UQ9109 fixed (Decisions of acceptance 1).
 - **A single overall score as the gate.** Rejected: rule 18.
 - **Model-based findings (summaries, "smell" detection).** Rejected: non-deterministic, and a gate must give the same answer on every machine.
 

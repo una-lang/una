@@ -1,9 +1,9 @@
 # 0130. General protocols and typestate: facts about the resources behind a capability
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-31
-- Deciders:
-- Resolves: issue #1290, and the design asked by issue #558 (state about the external system in operation contracts, Suite B's B04 and B05)
+- Deciders: Una project (accepted on 2026-11-02, with the changes of "Decisions of acceptance")
+- Resolves: issue #1290, and in part issue #558 (state about the external system in operation contracts): the design for Suite B's B04. B05's batch form stays with #1332 (example 6).
 - Related:
   - ADR 0092 (conditions on allowed effects), whose "Alternatives considered" defers "state on capability declarations" to #558 and says "a condition may later name such facts";
   - ADR 0123 rule 4 (reply rights, held by one task at a time, with one atomic state per exchange), the internal precedent for a protocol state that the language tracks, there at run time;
@@ -12,12 +12,22 @@
 - Target: the first edition after `0.4` (expected `0.5`), as a preview under the terms of ADR 0121. Editions `0.1` to `0.4` do not change. The benchmark baseline does not move.
 - Amends, on acceptance and with the implementation: `spec/02 §3` (capability and header grammar), `spec/05 §2`, `§3`, `§5`, `§9`, `spec/12 §3`, `§4`, `§6`, `spec/13 §3`, `§4`, `§6`, `spec/17 §5` rule 3, `spec/19 §4`.
 
-Every form of Una syntax in this record is a **proposal**: the words `fact`, `changes`, `keeps`, `on` (in an operation's clauses) and `no` (in a clause) are chosen here for review, and the project may rename any of them on acceptance without changing the rules.
+Every form of Una syntax in this record was a **proposal**: the words `fact`, `starts`, `changes`, `keeps`, `on` (in an operation's clauses) and `no` (in a clause) were chosen for review. On acceptance the project kept them, all contextual, none reserved (Decisions of acceptance 1).
 
 > **In plain words.**
 > - **What it adds.** A capability may declare **facts**: named yes-or-no (or small-valued) properties of the resources behind it, such as "this connection is open", "this lock is held" or "this payment is authorized". Its operations say which facts they need (`requires`), which they make true or false (`ensures`), and what a failure does to them.
 > - **What the verifier does.** It tracks each fact through the body of every function, step by step, as part of the proof it already does. An operation whose needed fact is not known to hold is a build error, with a counterexample and ranked repairs.
 > - **What it does not add.** No new kind of type, no run-time cost, no domain words. Facts exist only in the proofs. Nothing about payments, accounts or agents is built in: a payment is one test case among others.
+
+## Decisions of acceptance (2026-11-02)
+
+The project accepted this record on 2026-11-02 with the changes below, which the rules and slices carry:
+
+1. **The words are kept, and all are contextual.** `fact`, `starts`, `changes`, `keeps`, `on` and `no` keep the forms proposed here (`starts` was missing from the list of proposed words and joins it). None is a reserved keyword: each is a word only in the place where this record gives it a meaning (a capability's body, an operation's clauses, a header's clauses), and an ordinary identifier everywhere else, as `gives`, `first`, `tasks` and `start` are (`spec/01`). Slice 1 (#1325) states the places in `spec/01` and `spec/02`.
+2. **`Resolves` is partial.** This record resolves #1290 and, of #558, the design for B04. B05's batch form is not covered (example 6) and stays with the record on facts over list elements (slice 8, #1332).
+3. **Slice 7 is a new, pre-registered version of B04.** B04's `task.json` lists `scaffold/src/orders/types.una` as protected, and the task is frozen: slice 7 never edits it. It registers a new version of the task (a variant, with its own id) before any run, and runs it against the implementation with the hidden oracle. A paper check made for acceptance found no functional effect of the extra query of example 5: the reference ends on `is_ok(second)`, the hidden fake's `is_refunded` is stateless (`settled.contains(charge)`), so a second question returns the same `false`, and `predicates.json` holds only `op_count` and `arg_contains` predicates, none on `is_refunded`. That check is on paper and replaces no run: slice 7 runs the variant, its hidden tests h06 and h09 included.
+4. **No interference is an assumption, and it is written** (rules 6, 12 and 17). Facts describe the outside system as the program's own operations leave it: they assume that no other actor changes the resources behind a binding between two steps beyond what the operations' clauses state, `fails` and its `on V` lines included. The build report lists that assumption in the Assumed zone with every capability that declares facts.
+5. **Target and status confirmed.** The record targets the first edition after `0.4` (expected `0.5`), as a preview under ADR 0121, with no port to `0.4`. Until the protocol-safety theorem lands it is "accepted, not proved" (rule 17).
 
 ## Context
 
@@ -100,6 +110,7 @@ Suite B shows the cost of the gap. Its Q1 analysis and full run (una-bench `find
 5. **What "unknown" means.** An unknown term is a fresh symbol of the query with no constraint: no fact is assumed, either way. An operation that requires it is U5002 (unknown) or U5001 (refuted) at its site, as for every precondition, with the reason "`@payments.refund` timed out at line 12, so `in_doubt(charge.id)` is unknown". The repair is to ask (rule 12), never to assume.
 
 6. **Start values.** A fact MAY declare the value it has where a binding begins: `fact in_doubt(charge: Text) starts false`. A binding begins where the program first receives it: at `main` and the entry of `[run]` or `[serve]`, from the host's grants; at a `with @x = h(args)` and a `given @x = h(args)`. There, every term of the fact has the start value, for every argument. A function that receives a binding from its caller has no start value: it knows only what its `requires` say. A fact without `starts` is unknown at a binding's beginning. A start value is an assumption about the outside system, listed in the Assumed zone with the capability.
+   - **No interference by other actors.** Every fact, with or without a start value, assumes that no other actor (another process, another client of the same service, an operator) changes the resources behind a binding between two steps of the program beyond what the operations' clauses state: their `ensures`, their `fails` and the `on V` lines. A connection that another party closes, or a lock that another process releases, between two steps is outside the model. The build report lists this assumption in the Assumed zone with every capability that declares facts (Decisions of acceptance 4).
 
 ### C. Across calls: modular frames
 
@@ -110,7 +121,7 @@ Suite B shows the cost of the gap. Its Q1 analysis and full run (una-bench `find
    - **The caller assumes the frame.** After a call, the caller knows: the callee's `ensures`, instantiated; every fact term outside the callee's frame, unchanged; every term inside it, unknown except what the `ensures` say. After a call that fails, as for an operation: the terms of the frame are unknown, since `x is Err` carries nothing (`spec/12 §3`).
    - **No inference.** A private function with inferred `uses` (`spec/05 §9` rule 2) has the default frame and no fact in its `requires` or `ensures`, as ADR 0092 rule 4 decides for conditions. What a function needs and does is written in its header.
 
-8. **Whole-fact clauses.** A `requires` or `ensures` of a function MAY state that a `Bool` fact is false at every argument: `requires no @payments.in_doubt`. (Proposal: `no f` reads "no term of `f` holds".)
+8. **Whole-fact clauses.** A `requires` or `ensures` of a function MAY state that a `Bool` fact is false at every argument: `requires no @payments.in_doubt`, where `no f` reads "no term of `f` holds".
    - **As a hypothesis** (a `requires` in the callee, an `ensures` in the caller, a start value of `false`), it is instantiated, as `spec/12 §2` already does for axioms, at every argument tuple of that fact that occurs in the query.
    - **As a goal** (a `requires` at a call, an `ensures` at a return), its negation is "some term holds", which takes one fresh constant per parameter: `@payments.in_doubt(k)` with `k` fresh. The query stays quantifier free.
    - **Why it is complete for these forms.** Every other assertion of a query constrains a fact only at the argument tuples that occur in it, so a model that satisfies the instances can be extended to every other argument with the value `false` without changing any assertion. A model the solver returns is therefore a real counterexample of the stated contracts. The formal track proves this lemma (rule 17).
@@ -138,12 +149,12 @@ Suite B shows the cost of the gap. Its Q1 analysis and full run (una-bench `find
     - **`fails`.** A failure of a call or an operation is a step (rules 4 and 7). A function's `ensures` speaks of normal returns only, as today; a caller that handles a failure with `attempt` or `if error` knows only the frame's unknowns on that path.
 
 12. **Handlers.** A handler implements the capability's operations, and its bodies are verified against their contracts (`spec/05 §5`). A handler has no access to the facts, which describe the outside system the handler stands for.
-    - In this record, the fact clauses of an operation are not verified against a handler's body: like a host capability's, they are assumptions, and the build report lists each handler of a capability with facts in the Assumed zone with "fact clauses assumed".
+    - In this record, the fact clauses of an operation are not verified against a handler's body: like a host capability's, they are assumptions, and the build report lists each handler of a capability with facts in the Assumed zone with "fact clauses assumed". The assumption of no interference of rule 6 holds for a handler's outside system as for a host's.
     - A later record MAY let a handler define a fact over its own parameters and bindings, so that its fact clauses become obligations. It is deferred, with its own card.
 
 ### F. Diagnostics and repairs
 
-13. **Codes.** Proposed numbers, assigned by the registry on acceptance (`spec/13 §4`):
+13. **Codes.** Two new codes, free in the registry; following the repository's rule that the specification changes with the implementation, slice 1 (#1325) enters them in `spec/13 §4`:
     - **U2042** (types): a fact in an expression that runs (rule 2).
     - **U2043** (types): a fact's parameter or result type that is not allowed, `starts true`, or `no` over a fact that is not `Bool` (rules 1, 6, 8).
     - Every proof diagnostic stays U5001 (refuted) or U5002 (unknown). The obligation kind `fact_frame` joins `spec/12 §3`. A fact precondition of an operation is a `precondition` obligation, and a fact in a condition an `effect_condition`, as today.
@@ -180,7 +191,7 @@ Suite B shows the cost of the gap. Its Q1 analysis and full run (una-bench `find
     - **Queries:** per query, let `V_f` be the number of versions of fact `f` on the paths the query covers and `T_f` the number of distinct argument tuples of `f` in it. Expanded, the `ite` chains and the instances of rule 8 cost O(Σ_f V_f · T_f) terms. Both factors are bounded by the size of the function under check, never by the program, since checking is modular (rule 7). The product is quadratic in the size of one function in the worst case, a function that changes and reads one fact at many distinct keys. The reason this is accepted: the alternative encodings either leave the fragment (the theory of arrays, `QF_AUFLIA`, whose `store` chains cost the same in the solver) or need quantifiers. A package that declares no fact pays nothing. The implementation states the achieved bound and adds a scaling test at growing chain lengths that fails on worse than O(V · T).
     - **Obligations:** one `fact_frame` per step that may reach outside a narrowed frame; preconditions and conditions are the obligations that exist today. All are cached like every obligation (`spec/12 §9`).
 
-17. **The formal model.** The theorem this record needs, *protocol safety*, is a milestone of the formal track: in every run of a checked program whose host honors its capabilities' fact clauses and start values, every operation runs in a state where its `requires` holds, every performance of a conditioned operation in a state where its condition holds, and every call changes only the facts of its frame. It rests on two lemmas: the frame lemma (a version outside a step's change set equals the previous one) and the completeness of the instantiation of rule 8. Until the theorem lands, this record is "accepted, not proved", as ADR 0092 rule 7 states for trace safety.
+17. **The formal model.** The theorem this record needs, *protocol safety*, is a milestone of the formal track: in every run of a checked program whose host honors its capabilities' fact clauses and start values, and in which no other actor changes the resources behind a binding beyond what those clauses state (rule 6), every operation runs in a state where its `requires` holds, every performance of a conditioned operation in a state where its condition holds, and every call changes only the facts of its frame. It rests on two lemmas: the frame lemma (a version outside a step's change set equals the previous one) and the completeness of the instantiation of rule 8. Until the theorem lands, this record is "accepted, not proved", as ADR 0092 rule 7 states for trace safety.
 
 ## Worked examples
 
@@ -334,6 +345,7 @@ The reference's helper and its callers (una-bench `tasks/B04-order-cancellation/
 - **Across charges.** After the retry also times out, the reference reports the charge as failed and goes on, leaving `in_doubt(charge.id)` true. The recursive call in `refund_from` then needs `no in_doubt`, which no longer holds: the verifier **refutes** it with the counterexample of two timeouts on one charge. The contract is stronger than the task needs; the harm it guards against is real only when a later charge of the order has the same id, which the reference would then refund while the first refund may have been made. Two repairs build it:
   - ask once more after the second timeout (`is_refunded`), which settles the doubt and also makes the report exact; then `refund_charge` can add `ensures not @payments.in_doubt(charge.id)`, and the frame keeps `no in_doubt` for the recursion (rule 8: the term at `charge.id` is false, every other term unchanged);
   - or state that the charge ids of an order are distinct, a property of every element of a list, which this record does not give (Consequences).
+- **What `is_refunded` assumes.** Its `ensures not in_doubt(charge)` says that asking settles the doubt: the answer is final for this run. A refund still in flight at the provider that lands after the question would break it; that is the assumption of no interference of rule 6, stated for this capability, and the Assumed zone lists it.
 - **What the fact does not say.** `in_doubt` tracks the doubt a timeout leaves, which is B04's violation. A second refund of a charge whose first refund succeeded is not refused by it: the whole rule "never refund a charge twice" over an order's charges needs their ids to be distinct, an element fact (slice 8).
 - `cancel_order` is called by the scaffold's tests with a `given` handler and by a program's `main` with a granted binding: at both, `in_doubt` starts false, so `no @payments.in_doubt` is proven at the call.
 
@@ -352,10 +364,10 @@ So **B05 is not covered**, and this record says so instead of stretching rule 8 
 - **Protocols become contracts.** Order and state rules of a capability are written once, in its declaration, and every function that uses it is checked against them, with counterexamples and ranked repairs.
 - **B04's violation fails at build**, and its secure reference builds with header lines and one more query after a second timeout (example 5). The full rule over an order's charges, with repeated charge ids, needs element facts.
 - **B05 is not covered** (example 6). Its batch form needs facts over the elements of a list.
-- **Agent cost.** New words in clauses only: `fact`, `starts`, `on V keeps`, `on V ensures`, `changes`, `no`, all proposals. Diagnostics stay U5001 and U5002 for proofs, with two new type codes.
+- **Agent cost.** New words in clauses only: `fact`, `starts`, `on V keeps`, `on V ensures`, `changes`, `no`, all contextual. Diagnostics stay U5001 and U5002 for proofs, with two new type codes.
 - **Cost for existing code: none.** A capability without facts means what it means today.
 - **What becomes harder.** A helper that changes a fact must say what it does in its header, or its callers lose the fact (rule 7). That is the price of modular checking, as for `ensures` today. Loops that change a fact need a helper (rule 9).
-- **Assumptions grow.** Fact clauses and start values are assumptions about the outside system, like `ensures` today, and the Assumed zone lists them.
+- **Assumptions grow.** Fact clauses, start values and the absence of interference by other actors (rule 6) are assumptions about the outside system, like `ensures` today, and the Assumed zone lists them.
 - **Deferred:** facts over list elements (B05), fact definitions in handlers (rule 12), facts in function types, and the protocol-safety theorem (rule 17).
 
 ## Alternatives considered
@@ -382,7 +394,7 @@ Each slice is a card in Needs spec, to start after this record is accepted:
 4. **Verifier, calls and loops:** (#1328) function frames, `changes` and `fact_frame`, whole-fact clauses, start values at bindings' beginnings, loops, `together` and `start`.
 5. **Diagnostics and repairs:** (#1329) the messages of rule 14, the ranked repairs of rule 15, the `unknown` reasons of rule 9, the Assumed zone entries.
 6. **Formal model:** (#1330) the protocol-safety theorem and its two lemmas (rule 17).
-7. **Benchmark argument:** (#1331) B04's scaffold and reference under this record, run against the implementation, in the benchmark repository.
+7. **Benchmark argument:** (#1331) a new, pre-registered version of B04 (a variant with its own id, never an edit of the frozen task, whose `task.json` protects `scaffold/src/orders/types.una`), with its scaffold and reference under this record, run against the implementation with the hidden oracle (h06 and h09 included), in the benchmark repository (Decisions of acceptance 3).
 8. **Record: facts over list elements** (#1332) (B05's batch form), a separate Proposed ADR.
 
 ## Open obligations
@@ -390,4 +402,4 @@ Each slice is a card in Needs spec, to start after this record is accepted:
 - The protocol-safety theorem (rule 17).
 - B05 (example 6) and element facts (slice 8).
 - Fact definitions in handlers (rule 12).
-- The final words of the syntax, which this record proposes.
+- The places where each contextual word is a word, in `spec/01` and `spec/02` (slice 1, #1325); the words themselves were decided on acceptance.
