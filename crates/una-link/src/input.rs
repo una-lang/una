@@ -592,6 +592,12 @@ impl<'a> Archive<'a> {
         })
     }
 
+    /// Each symbol of the archive's symbol table and the member offset of its first definition,
+    /// in the symbols' byte order.
+    pub(crate) fn index(&self) -> impl Iterator<Item = (&'a [u8], u64)> + '_ {
+        self.index.iter().map(|(name, offset)| (*name, *offset))
+    }
+
     /// The member offset that the symbol table names for `symbol`.
     pub(crate) fn member_of(&self, symbol: &[u8]) -> Option<u64> {
         self.index.get(symbol).copied()

@@ -319,13 +319,40 @@ fn internal(error: impl fmt::Display) -> CodegenError {
 
 /// The host's instruction set, position independent, as executables on both targets need.
 fn isa() -> Result<OwnedTargetIsa, CodegenError> {
+    isa_for(code_triple())
+}
+
+/// The instruction set of `triple`, position independent and optimized for speed.
+fn isa_for(triple: Triple) -> Result<OwnedTargetIsa, CodegenError> {
     let mut flags = settings::builder();
     flags.set("is_pic", "true").map_err(internal)?;
     flags.set("opt_level", "speed").map_err(internal)?;
-    isa::lookup(Triple::host())
+    isa::lookup(triple)
         .map_err(internal)?
         .finish(settings::Flags::new(flags))
         .map_err(internal)
+}
+
+/// The triple Cranelift compiles for (ADR 0124 rule 16): the host's, with the musl environment
+/// on Linux, the runtime's target from step 4 on. On macOS it is the host's, unchanged. The
+/// environment changes no byte of the object Cranelift writes (a test pins it), so the
+/// executables that the system `cc` links on Linux until the internal linker does are the
+/// same; `host_target` and `una.build/1`'s `target` keep naming the host until then.
+fn code_triple() -> Triple {
+    let host = Triple::host();
+    if cfg!(target_os = "linux") {
+        musl(host)
+    } else {
+        host
+    }
+}
+
+/// `triple` with the musl environment when it is a Linux triple, else `triple` itself.
+fn musl(mut triple: Triple) -> Triple {
+    if triple.operating_system == target_lexicon::OperatingSystem::Linux {
+        triple.environment = target_lexicon::Environment::Musl;
+    }
+    triple
 }
 
 /// The runtime functions the generated code calls, with their arities: every parameter and
@@ -1316,6 +1343,100 @@ impl<'p> Emitter<'p> {
 #[cfg(test)]
 mod tests {
     use super::RUNTIME;
+    use super::{isa_for, musl};
+    use cranelift_codegen::Context;
+    use cranelift_codegen::ir::{AbiParam, InstBuilder, UserFuncName, types};
+    use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
+    use cranelift_module::{DataDescription, Linkage, Module, default_libcall_names};
+    use cranelift_object::{ObjectBuilder, ObjectModule};
+    use target_lexicon::Triple;
+
+    /// An object with each form the generated code takes (`Emitter`): an exported `main` that
+    /// calls an imported runtime function, takes a local function's address and a local data
+    /// object's address, and a data object holding a function pointer, compiled for `triple`
+    /// with the flags of `isa`.
+    fn object_for(triple: &str) -> Vec<u8> {
+        let triple: Triple = triple.parse().unwrap();
+        let builder =
+            ObjectBuilder::new(isa_for(triple).unwrap(), "una", default_libcall_names()).unwrap();
+        let mut module = ObjectModule::new(builder);
+        let mut word = module.make_signature();
+        word.params.push(AbiParam::new(types::I64));
+        word.returns.push(AbiParam::new(types::I64));
+        let import = module
+            .declare_function("una_rt_retain", Linkage::Import, &word)
+            .unwrap();
+        let local = module
+            .declare_function("una_local", Linkage::Local, &word)
+            .unwrap();
+        let main = module
+            .declare_function("main", Linkage::Export, &word)
+            .unwrap();
+        let data = module
+            .declare_data("una_meta", Linkage::Local, false, false)
+            .unwrap();
+        let mut description = DataDescription::new();
+        description.define_zeroinit(16);
+        let reference = module.declare_func_in_data(local, &mut description);
+        description.write_function_addr(8, reference);
+        module.define_data(data, &description).unwrap();
+        let mut context = Context::new();
+        let mut functions = FunctionBuilderContext::new();
+        for (id, calls) in [(local, false), (main, true)] {
+            context.func.signature = word.clone();
+            context.func.name = UserFuncName::user(0, id.as_u32());
+            {
+                let mut builder = FunctionBuilder::new(&mut context.func, &mut functions);
+                let block = builder.create_block();
+                builder.append_block_params_for_function_params(block);
+                builder.switch_to_block(block);
+                builder.seal_block(block);
+                let argument = builder.block_params(block)[0];
+                let result = if calls {
+                    let callee = module.declare_func_in_func(import, builder.func);
+                    let call = builder.ins().call(callee, &[argument]);
+                    let value = builder.inst_results(call)[0];
+                    let global = module.declare_data_in_func(data, builder.func);
+                    let address = builder.ins().symbol_value(types::I64, global);
+                    let code = module.declare_func_in_func(local, builder.func);
+                    let function = builder.ins().func_addr(types::I64, code);
+                    let sum = builder.ins().iadd(value, address);
+                    builder.ins().iadd(sum, function)
+                } else {
+                    builder.ins().iadd_imm_s(argument, 1)
+                };
+                builder.ins().return_(&[result]);
+                builder.finalize(module.target_config());
+            }
+            module.define_function(id, &mut context).unwrap();
+            module.clear_context(&mut context);
+        }
+        module.finish().emit().unwrap()
+    }
+
+    /// ADR 0124 rule 16: on Linux Cranelift compiles for the musl triple, and that changes no
+    /// byte of the object it writes, so the executables the system `cc` links until the
+    /// internal linker does stay the same; on macOS the triple stays the host's. The build has
+    /// Cranelift's backend for the host's architecture only, so the pair compared is the host's.
+    #[test]
+    fn the_musl_triple_changes_no_byte_of_the_object() {
+        {
+            let arch = Triple::host().architecture;
+            let gnu = object_for(&format!("{arch}-unknown-linux-gnu"));
+            let musl_object = object_for(&format!("{arch}-unknown-linux-musl"));
+            assert!(gnu.starts_with(b"\x7fELF"), "{arch}");
+            assert_eq!(gnu, musl_object, "{arch}");
+        }
+        let linux: Triple = "x86_64-unknown-linux-gnu".parse().unwrap();
+        assert_eq!(musl(linux).to_string(), "x86_64-unknown-linux-musl");
+        let linux: Triple = "aarch64-unknown-linux-gnu".parse().unwrap();
+        assert_eq!(musl(linux).to_string(), "aarch64-unknown-linux-musl");
+        let mac: Triple = "aarch64-apple-darwin".parse().unwrap();
+        assert_eq!(musl(mac).to_string(), "aarch64-apple-darwin");
+        if cfg!(not(target_os = "linux")) {
+            assert_eq!(super::code_triple(), Triple::host());
+        }
+    }
 
     /// Each runtime function that the generated code imports is defined in the runtime's FFI
     /// module (`crates/una-rt/src/ffi.rs`), in its table of entry points (`exported!`) or as a

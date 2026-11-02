@@ -277,6 +277,8 @@ built target/una/wordfreq
 
 The executable prints what `una run` prints, and traces the same events: the interpreter is the reference, and the test suite runs every example program in both.
 
+On Linux, `una build` still links the executable against the system's C library, through `cc`. A Linux release of `una` already carries musl, the C library it will link instead (ADR 0124): once it does, an executable runs on any Linux of its architecture with no shared library, and it resolves host names through `/etc/hosts` and the DNS servers that `/etc/resolv.conf` names only, without the system's name-service modules, such as LDAP or mDNS.
+
 ## 7. An editor
 
 `una lsp` is a language server (LSP 3.17 over stdin and stdout) for any editor that speaks the protocol: it checks, formats and solves as you type, and never runs programs.

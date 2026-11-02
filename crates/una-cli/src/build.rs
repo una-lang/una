@@ -726,6 +726,10 @@ fn runtime(
             .map_err(LinkFailure::Usage);
     };
     let bytes = embedded.verified().map_err(LinkFailure::Internal)?;
+    // The musl inputs a Linux release carries (ADR 0124 step 4a), which the internal linker of
+    // Linux will link, are checked like the runtime, so a damaged `una` fails closed; until
+    // then the system `cc` links against the system's C library as before.
+    crate::musl_inputs::verify_all().map_err(LinkFailure::Internal)?;
     let taken = [placed.object.as_path(), placed.produced.as_path()];
     crate::runtime_archive::write_into(bytes, placed.private.path(), &taken)
         .map(|path| (path, true))

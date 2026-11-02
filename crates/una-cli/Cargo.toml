@@ -35,7 +35,7 @@ serde_json.workspace = true
 sha2.workspace = true
 
 [build-dependencies]
-# The digest check of the embedded runtime (ADR 0124 rule 18).
+# The digest check of the embedded runtime and musl inputs (ADR 0124 rules 12 and 18).
 sha2.workspace = true
 
 [features]
@@ -61,10 +61,11 @@ una-hash = { workspace = true, features = ["test-hooks"] }
 # The workspace lints, written out because a crate cannot both inherit them and declare a
 # cfg: `una_asan` is set only by scripts/sanitize.sh for its AddressSanitizer builds, where the
 # solver child sets no address-space backstop (ADR 0124 rule 6); `una_runtime_embedded` by the
-# build script when a release build embeds the runtime (ADR 0124 rule 18).
+# build script when a release build embeds the runtime (ADR 0124 rule 18); `una_musl_embedded`
+# when a release build for Linux embeds the musl inputs (ADR 0124 rule 12, step 4a).
 [lints.rust]
 unsafe_code = "forbid"
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(una_asan)", "cfg(una_runtime_embedded)"] }
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(una_asan)", "cfg(una_runtime_embedded)", "cfg(una_musl_embedded)"] }
 
 [lints.clippy]
 dbg_macro = "deny"

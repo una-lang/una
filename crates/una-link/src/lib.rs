@@ -6,12 +6,16 @@
 //! Mach-O executable for macOS 13 and later that links `/usr/lib/libSystem.B.dylib` alone, with
 //! chained fixups, `__unwind_info`, and an ad-hoc signature with the hardened runtime.
 //!
+//! For Linux (ADR 0124 step 4), it so far scans the ELF inputs that `una` carries for its musl
+//! target ([`scan_elf`]); it does not link them yet.
+//!
 //! Inputs are read through the `object` crate; everything written is this crate's own. The
 //! output is a function of the inputs' bytes and the [`Options`]: no path, user name, time or
 //! random value is written (rules 26 and 29).
 
 mod bytes;
 mod commands;
+mod elf_scan;
 mod fixups;
 mod gc;
 mod input;
@@ -25,6 +29,7 @@ mod signature;
 mod unwind;
 mod verify;
 
+pub use elf_scan::{ElfScan, scan_elf};
 pub use problem::{Code, Problem, Result};
 
 use std::collections::BTreeMap;
