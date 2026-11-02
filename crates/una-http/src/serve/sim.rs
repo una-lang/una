@@ -463,6 +463,13 @@ impl Sim {
         }
     }
 
+    /// The next `n` closes of connections of serve thread `thread` panic inside the readiness.
+    pub fn fault_in_forget(&mut self, thread: usize, n: usize) {
+        if let Some(serve) = self.threads.get_mut(thread) {
+            serve.fault_in_forget(n);
+        }
+    }
+
     /// The next step of a connection of serve thread `thread` panics.
     pub fn fault_in_step(&mut self, thread: usize) {
         if let Some(serve) = self.threads.get_mut(thread) {

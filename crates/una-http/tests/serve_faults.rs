@@ -477,3 +477,55 @@ fn a_fault_while_a_connection_is_adopted_leaves_it_where_the_end_finds_it() {
         .count() as u64;
     assert_eq!(sim.shared.grants[0].counters().connections, open);
 }
+
+#[test]
+fn a_fault_in_the_close_after_a_contained_fault_ends_the_thread() {
+    // A step faults (contained), then the close that follows faults inside the readiness, which
+    // may now be half-updated: that is not contained, and the thread ends.
+    let mut sim = Sim::new(&[GRANT], 2);
+    let on_zero = owned_by(&mut sim, 0, 20, 0);
+    assert!(on_zero.len() >= 2);
+    sim.fault_in_step(0);
+    sim.fault_in_forget(0, 1);
+    let k = on_zero[0];
+    let fault = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        sim.send(k, &get("/a"));
+    }));
+    assert!(fault.is_err(), "the second fault was contained");
+    sim.kill(0);
+    for &k in &on_zero {
+        assert!(sim.closed(k));
+    }
+    assert_eq!(
+        sim.shared.grants[0].counters().connections,
+        20 - on_zero.len() as u64
+    );
+}
+
+#[test]
+fn a_readiness_fault_while_a_thread_ends_does_not_stop_the_others_closing() {
+    let mut sim = Sim::new(&[GRANT], 2);
+    let on_zero = owned_by(&mut sim, 0, 20, 0);
+    assert!(on_zero.len() >= 2);
+    sim.fault_in_forget(0, 1);
+    sim.kill(0);
+    for &k in &on_zero {
+        assert!(sim.closed(k));
+    }
+    // The readiness is forgotten last, after everything is given back.
+    assert_eq!(
+        sim.shared.grants[0].counters().connections,
+        20 - on_zero.len() as u64
+    );
+}
+
+#[test]
+fn a_fault_after_a_refusal_at_accept_gives_the_slot_back_once() {
+    let mut sim = Sim::new(&[&format!("{GRANT};peer=1")], 1);
+    assert!(sim.connect(1, 0, "192.0.2.9:4001", Reads::Eager));
+    sim.shared.fail_next_refusals(1);
+    assert!(!sim.connect(2, 0, "192.0.2.9:4002", Reads::Eager));
+    assert_eq!(sim.refused.last().map(|r| r.1), Some(AcceptRefusal::Fault));
+    assert_eq!(sim.shared.faults(), 1);
+    assert_eq!(sim.shared.grants[0].counters().connections, 1);
+}

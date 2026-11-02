@@ -135,6 +135,8 @@ struct Core {
     wheel: Wheel<Timer>,
     scratch: Vec<u8>,
     live: usize,
+    /// The thread is ending (`Thread::abandon`): every fault of a connection is contained.
+    abandoning: bool,
     /// Raised while the thread-wide wheel or readiness is being changed. A panic that leaves it
     /// raised may have left them half-updated, so it is not contained: the thread ends and the
     /// connections it owns are closed against a fresh wheel (`Thread::abandon`).
@@ -148,6 +150,9 @@ struct Core {
     /// The next step of a connection panics outside the wheel and the readiness, in tests.
     #[cfg(feature = "test-hooks")]
     fault_in_step: bool,
+    /// The next closes panic inside the readiness, in tests.
+    #[cfg(feature = "test-hooks")]
+    fault_in_forget: usize,
 }
 
 /// One serve thread's connections and timers.
@@ -184,12 +189,15 @@ impl Thread {
                 scratch: vec![0; 16 * 1024],
                 live: 0,
                 critical: 0,
+                abandoning: false,
                 #[cfg(feature = "test-hooks")]
                 fail_next_arm: false,
                 #[cfg(feature = "test-hooks")]
                 fault_in_wheel: false,
                 #[cfg(feature = "test-hooks")]
                 fault_in_step: false,
+                #[cfg(feature = "test-hooks")]
+                fault_in_forget: 0,
             },
             slots: Vec::new(),
             free: Vec::new(),
@@ -317,16 +325,27 @@ impl Thread {
         };
         let core = &mut self.core;
         if let Err(payload) = catch_unwind(AssertUnwindSafe(|| f(core, &mut conn, now))) {
-            if core.critical > 0 {
+            if core.critical > 0 && !core.abandoning {
                 // Inside the wheel or the readiness: not contained. The connection goes back
                 // to its slot, so that `abandon` closes it with the others.
                 entry.conn = Some(conn);
                 std::panic::resume_unwind(payload);
             }
+            // Reached with `critical` raised only while the thread ends, when nothing of it is
+            // used again: the fault is contained, so it does not stop the closing of the others.
+            core.critical = 0;
             core.shared.fault();
             if !conn.closed
-                && catch_unwind(AssertUnwindSafe(|| core.close(&mut conn, now))).is_err()
+                && let Err(payload) = catch_unwind(AssertUnwindSafe(|| core.close(&mut conn, now)))
             {
+                if core.critical > 0 && !core.abandoning {
+                    // The close after a contained fault faulted inside the wheel or the
+                    // readiness: the thread ends, as for any such fault.
+                    conn.closed = true;
+                    entry.conn = Some(conn);
+                    std::panic::resume_unwind(payload);
+                }
+                core.critical = 0;
                 core.shared.fault();
             }
             conn.closed = true;
@@ -375,6 +394,7 @@ impl Thread {
         // A fault may have left the wheel half-updated: the connections close against a fresh
         // one, whose cancels of the old timers find nothing, and the old one is only read.
         self.core.critical = 0;
+        self.core.abandoning = true;
         let old = std::mem::replace(&mut self.core.wheel, Wheel::new(now));
         for slot in 0..self.slots.len() {
             self.run(slot as u32, now, |core, c, now| {
@@ -417,6 +437,12 @@ impl Thread {
     #[cfg(feature = "test-hooks")]
     pub fn fault_in_step(&mut self) {
         self.core.fault_in_step = true;
+    }
+
+    /// The next `n` closes of a connection panic inside the readiness, in tests.
+    #[cfg(feature = "test-hooks")]
+    pub fn fault_in_forget(&mut self, n: usize) {
+        self.core.fault_in_forget = n;
     }
 
     fn adopt(&mut self, adopt: Adopt, now: u64) {
@@ -1070,15 +1096,22 @@ impl Core {
             c.grant.unqueue_waiting();
         }
         c.shared.close();
-        self.critical += 1;
-        self.readiness.forget(token(c.slot, c.generation), &*c.sock);
-        self.critical -= 1;
         if let Some(at) = c.grant.peers.close(&c.shared.peer, now) {
             self.arm_peer(c.grant.index, c.shared.peer.key, at);
         }
         c.grant.give_slot();
         self.shared.slot_freed(c.grant.index);
         self.shared.notify();
+        // Last, after everything is given back: a fault in the readiness leaves nothing held.
+        self.critical += 1;
+        #[cfg(feature = "test-hooks")]
+        #[allow(clippy::panic)]
+        if self.fault_in_forget > 0 {
+            self.fault_in_forget -= 1;
+            panic!("the readiness fails by a fault, for a test");
+        }
+        self.readiness.forget(token(c.slot, c.generation), &*c.sock);
+        self.critical -= 1;
     }
 
     /// A host stop (rule 18): idle connections close, requests not delivered or still being

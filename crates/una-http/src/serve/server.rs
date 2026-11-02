@@ -137,6 +137,29 @@ impl Drop for RearmOnPanic<'_> {
     }
 }
 
+/// Registers again, when a burst ends by a panic, the listeners whose events the same wait
+/// returned and whose bursts did not run: their one-shot registrations fired, so nothing else
+/// would register them.
+struct RearmRest<'a> {
+    acceptor: Arc<Acceptor>,
+    grants: &'a [u64],
+    next: std::cell::Cell<usize>,
+}
+
+impl Drop for RearmRest<'_> {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            return;
+        }
+        for &grant in self.grants.iter().skip(self.next.get()) {
+            if let Some(listening) = self.acceptor.listeners.get(grant as usize) {
+                listening.armed.store(false, Ordering::SeqCst);
+                self.acceptor.arm(grant as usize);
+            }
+        }
+    }
+}
+
 /// Wakes a serve thread through its wake pair.
 struct PairWaker(UnixStream);
 
@@ -554,7 +577,15 @@ impl Context {
         {
             let grants: Vec<u64> = found.tokens().collect();
             accepted = !grants.is_empty();
-            for grant in grants {
+            // Every listener that fired is registered again if a burst ends by a panic: the
+            // one in hand by its own guard, the ones after it by this one.
+            let rest = RearmRest {
+                acceptor: Arc::clone(&self.acceptor),
+                grants: &grants,
+                next: std::cell::Cell::new(0),
+            };
+            for (at, &grant) in grants.iter().enumerate() {
+                rest.next.set(at + 1);
                 self.accept_burst(grant as usize);
             }
         }

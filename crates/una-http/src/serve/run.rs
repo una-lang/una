@@ -272,6 +272,8 @@ enum Taken {
     Peer(Arc<super::peer::Peer>),
     /// Everything, now owned by the message that hands it to its owner.
     Handed,
+    /// Nothing: a refusal gave the slot back.
+    Released,
 }
 
 /// Takes one from a counter of faults a test asked for; `true` when there was one.
@@ -311,6 +313,8 @@ pub struct Shared {
     accept_faults: AtomicUsize,
     #[cfg(feature = "test-hooks")]
     burst_faults: AtomicUsize,
+    #[cfg(feature = "test-hooks")]
+    refusal_faults: AtomicUsize,
     /// Set at a host stop.
     pub stopping: AtomicBool,
     /// Set at the hard stop.
@@ -371,6 +375,8 @@ impl Shared {
             accept_faults: AtomicUsize::new(0),
             #[cfg(feature = "test-hooks")]
             burst_faults: AtomicUsize::new(0),
+            #[cfg(feature = "test-hooks")]
+            refusal_faults: AtomicUsize::new(0),
             stopping: AtomicBool::new(false),
             hard: AtomicBool::new(false),
             clock,
@@ -651,8 +657,9 @@ impl Shared {
         }
         self.fault();
         match taken {
-            // From the hand-off on, the message owns what the connection holds.
-            Taken::Handed => return Err(AcceptRefusal::Fault),
+            // From the hand-off on, the message owns what the connection holds (once pushed;
+            // a fault before the push leaves the slot and the peer's place held).
+            Taken::Handed | Taken::Released => return Err(AcceptRefusal::Fault),
             Taken::Peer(peer) => {
                 if let Some(at) = state.peers.close(&peer, now) {
                     self.expire_peer_at(0, grant, peer.key, at);
@@ -681,6 +688,7 @@ impl Shared {
         // serve thread that accepts is itself live.
         let placed = place::owner(self.key, self.threads, grant, address);
         let Some(owner) = self.live_from(placed) else {
+            *taken = Taken::Released;
             state.give_slot();
             self.slot_freed(grant);
             return Err(AcceptRefusal::NoThread);
@@ -688,8 +696,14 @@ impl Shared {
         let peer = match state.admit(address.ip(), now) {
             Ok(peer) => peer,
             Err(refused) => {
+                *taken = Taken::Released;
                 state.give_slot();
                 self.slot_freed(grant);
+                #[cfg(feature = "test-hooks")]
+                #[allow(clippy::panic)]
+                if take_one(&self.refusal_faults) {
+                    panic!("a refusal at accept fails by a fault, for a test");
+                }
                 if let Some((peer, at)) = refused.expiry {
                     self.send(owner, Msg::PeerExpiry { grant, peer, at });
                 }
@@ -714,6 +728,12 @@ impl Shared {
     #[cfg(feature = "test-hooks")]
     pub fn fail_next_accepts(&self, n: usize) {
         self.accept_faults.store(n, Ordering::SeqCst);
+    }
+
+    /// The next `n` refusals at accept panic after they gave the slot back, in tests.
+    #[cfg(feature = "test-hooks")]
+    pub fn fail_next_refusals(&self, n: usize) {
+        self.refusal_faults.store(n, Ordering::SeqCst);
     }
 
     /// The next `n` bursts of accepting panic before they take a slot, which ends the serve
