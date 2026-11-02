@@ -7,7 +7,9 @@
 //! chained fixups, `__unwind_info`, and an ad-hoc signature with the hardened runtime.
 //!
 //! For Linux (ADR 0124 step 4), it so far scans the ELF inputs that `una` carries for its musl
-//! target ([`scan_elf`]); it does not link them yet.
+//! target ([`scan_elf`]), and reads ELF objects and applies their relocations by rule 24 (the
+//! engine of step 4b, which [`check_elf`] runs over real inputs and [`elf_oracle`] compares
+//! with a system linker); it does not link them yet.
 //!
 //! Inputs are read through the `object` crate; everything written is this crate's own. The
 //! output is a function of the inputs' bytes and the [`Options`]: no path, user name, time or
@@ -15,6 +17,7 @@
 
 mod bytes;
 mod commands;
+mod elf;
 mod elf_scan;
 mod fixups;
 mod gc;
@@ -29,6 +32,8 @@ mod signature;
 mod unwind;
 mod verify;
 
+pub use elf::check::{ElfCheck, check_elf};
+pub use elf::oracle::{ElfOracle, elf_oracle};
 pub use elf_scan::{ElfScan, scan_elf};
 pub use problem::{Code, Problem, Result};
 
@@ -83,6 +88,24 @@ pub fn link(program: &[u8], runtime: &[u8], options: &Options<'_>) -> Result<Vec
 pub fn verify(executable: &[u8], debuggable: bool) -> Result<()> {
     let exports = libsystem::exports();
     verify::verify(executable, debuggable, &|name| exports.contains(name))
+}
+
+/// The relocation types the ELF linker applies, by musl target (ADR 0124 rule 24, the lists of
+/// `spec/16` "Linking"), in the ABI's numbering order.
+#[must_use]
+pub fn elf_relocation_types() -> BTreeMap<&'static str, Vec<&'static str>> {
+    [
+        ("x86_64-unknown-linux-musl", elf::Arch::X86_64),
+        ("aarch64-unknown-linux-musl", elf::Arch::Aarch64),
+    ]
+    .into_iter()
+    .map(|(target, arch)| {
+        (
+            target,
+            elf::reloc::types(arch).iter().map(|t| t.name).collect(),
+        )
+    })
+    .collect()
 }
 
 /// The entry point: the `main` that the program's object defines (`spec/16 §3`).

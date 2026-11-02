@@ -258,6 +258,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
+name = "object"
+version = "0.40.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dd229a0361b9d0d4396176e02d65897f487eebeab7caa6d443855ee152ca0b9c"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -582,6 +591,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "una-link"
+version = "0.3.16"
+dependencies = [
+ "object",
+ "sha2",
+]
+
+[[package]]
 name = "una-project"
 version = "0.3.16"
 dependencies = [
@@ -614,6 +631,7 @@ dependencies = [
  "ed25519-dalek",
  "libfuzzer-sys",
  "una-core",
+ "una-link",
  "una-project",
  "una-rt",
 ]

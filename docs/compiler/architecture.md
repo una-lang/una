@@ -33,7 +33,7 @@ crates/
   una-lsp/                the language server of `una lsp`: LSP over stdio, the server's state (v0.2, ADR 0063)
   una-itaty/              the Itaty registry service: log, tiles, name map, checks of submissions, HTTP endpoints (ADR 0122 S8)
   una-z3/                 the call into the Z3 front end built into `una`: its entry, arguments and the solver's build; the third place with `unsafe` (v0.4, ADR 0124)
-  una-link/               the internal linker of `una build`: Mach-O for aarch64-apple-darwin, chained fixups, unwind information, the ad-hoc signature, the verifier (v0.4, ADR 0124 step 3)
+  una-link/               the internal linker of `una build`: Mach-O for aarch64-apple-darwin, chained fixups, unwind information, the ad-hoc signature, the verifier (v0.4, ADR 0124 step 3); for the musl targets, the scan of the ELF inputs (step 4a) and the ELF reader and relocation engine of rule 24, tested against `ld.lld` and GNU `ld` but not yet linking (step 4b)
   una-cli/                the `una` binary (the only compiler crate that does I/O to the terminal; una-rt is the I/O of native executables)
 tests/conformance/         language conformance suite (`testing.md`)
 examples/                  reference programs
@@ -106,7 +106,7 @@ Allowed by ADR 0133 (accepted on 2026-11-02), for `una-crypto` only: `zeroize`, 
 
 `una-lsp` (ADR 0063) adds no dependency: its JSON-RPC transport and its LSP types are written on `serde_json`.
 
-Allowed by ADR 0124 rule 22, for `una-link` only: `object`, already in `Cargo.lock` through `cranelift-object`, with its features `std`, `read_core`, `archive` and `macho` (readers only), for the inputs of the link; the writer is `una-link`'s own. `una-link` also uses `sha2`, for the signature's hashes and the UUID.
+Allowed by ADR 0124 rule 22, for `una-link` only: `object`, already in `Cargo.lock` through `cranelift-object`, with its features `std`, `read_core`, `archive`, `macho` and `elf` (readers only), for the inputs of the link; the writer is `una-link`'s own. `una-link` also uses `sha2`, for the signature's hashes and the UUID.
 
 Allowed by ADR 0124, for `una-z3` only: a build script, which links the Z3 front-end library that `scripts/build-z3.sh` built from the pinned source (named by `UNA_Z3_LIB` in a development build, by `UNA_EMBED_Z3` with its digest in a release build), checks the digest with `sha2` and records the pin; it runs no program, downloads nothing and compiles nothing. The library is C++ built outside Cargo, the one foreign-code exception of #1097.
 
