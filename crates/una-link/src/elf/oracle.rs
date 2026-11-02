@@ -15,9 +15,8 @@
 //! own past the linker's image, and the two must load the same address. And GNU `ld` turns a
 //! call to an undefined weak function on arm64 into a `nop`, where the engine (as `ld.lld`)
 //! writes a branch to the next instruction, and on x86-64 into a call through a `.plt.got` stub
-//! of a null GOT slot, where the engine (as `ld.lld`) calls the image's first byte (neither is
-//! ever reached: the caller tests the function's address first). Any other difference is a
-//! mismatch.
+//! that jumps through the null GOT entry (0, fixed by no dynamic relocation), where the engine (as `ld.lld`) calls the image's first byte (neither is ever
+//! reached: the caller tests the function's address first). Any other difference is a mismatch.
 //!
 //! The fixture's discipline: one input section per output section name (`.text`, `.data`,
 //! `.rodata`, `.data.rel.ro`, `.tdata`, `.tbss`), no `.eh_frame`, and every defined symbol named,
@@ -441,7 +440,7 @@ fn equivalent(
                     })
             });
             (rela.kind == crate::elf::x86_64::R_PLT32 && stub).then_some(
-                "GNU ld called the undefined weak function through a `.plt.got` stub whose GOT slot holds 0",
+                "GNU ld called the undefined weak function through a `.plt.got` stub of its null GOT entry",
             )
         }
         (Arch::Aarch64, Action::Direct, Referent::UndefinedWeak) => {
@@ -454,9 +453,12 @@ fn equivalent(
     }
 }
 
-/// Whether the stub at `address` (at `file` in the linker's output) jumps through a GOT slot that
-/// holds 0 and has no dynamic relocation: `jmp *slot(%rip)` (`ff 25`), possibly after an
-/// `endbr64` and a `bnd` prefix, within the stub's first 8 bytes.
+/// Whether the stub at `address` (at `file` in the linker's output) jumps through the GOT entry
+/// of a null pointer: `jmp *slot(%rip)` (`ff 25`), possibly after an `endbr64` and a `bnd`
+/// prefix, within the stub's first 8 bytes, where the 8-byte GOT entry holding `slot` holds 0 and
+/// no dynamic relocation fixes it. (GNU ld 2.42's stub for the fixture's undefined weak call
+/// reads one byte into that entry, an unaligned address, so the jump goes to a non-canonical
+/// address and faults; the check is that it names the null entry, not what it then reads.)
 fn null_slot(out: &Linked<'_>, file: u64, address: u64) -> bool {
     let Ok(file) = usize::try_from(file) else {
         return false;
@@ -476,6 +478,7 @@ fn null_slot(out: &Linked<'_>, file: u64, address: u64) -> bool {
         let slot = address
             .wrapping_add(u64::try_from(at + 6).unwrap_or(0))
             .wrapping_add_signed(i64::from(disp));
-        out.got.get(&slot) == Some(&0) && !out.dynamic.contains_key(&slot)
+        let entry = slot & !7;
+        out.got.get(&entry) == Some(&0) && !out.dynamic.contains_key(&entry)
     })
 }
