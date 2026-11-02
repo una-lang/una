@@ -696,6 +696,16 @@ fn div_rem_int(a: &BigInt, b: &BigInt) -> (BigInt, BigInt) {
             BigInt::with_sign(a.negative(), BigUint::from(u128::from(x % y))),
         );
     }
+    // Operands of at most two limbs divide in 128-bit arithmetic, without allocating a limb
+    // vector for the remainder or the quotient beyond the result itself.
+    if let (Some(x), Some(y)) = (to_u128(a.magnitude.limbs()), to_u128(b.magnitude.limbs()))
+        && y != 0
+    {
+        return (
+            BigInt::with_sign(a.negative() != b.negative(), BigUint::from(x / y)),
+            BigInt::with_sign(a.negative(), BigUint::from(x % y)),
+        );
+    }
     match nat::divrem(a.magnitude.limbs(), b.magnitude.limbs()) {
         None => (BigInt::ZERO, a.clone()),
         Some((q, r)) => (
@@ -740,11 +750,21 @@ fn mul_nat(a: &BigUint, b: &BigUint) -> BigUint {
 
 /// The quotient, 0 for a zero divisor.
 fn div_nat(a: &BigUint, b: &BigUint) -> BigUint {
+    if let (Some(x), Some(y)) = (to_u128(a.limbs()), to_u128(b.limbs()))
+        && y != 0
+    {
+        return BigUint::from(x / y);
+    }
     nat::divrem(a.limbs(), b.limbs()).map_or(BigUint::ZERO, |(q, _)| BigUint::from_limbs(q))
 }
 
 /// The remainder, `a` for a zero divisor.
 fn rem_nat(a: &BigUint, b: &BigUint) -> BigUint {
+    if let (Some(x), Some(y)) = (to_u128(a.limbs()), to_u128(b.limbs()))
+        && y != 0
+    {
+        return BigUint::from(x % y);
+    }
     nat::divrem(a.limbs(), b.limbs()).map_or_else(|| a.clone(), |(_, r)| BigUint::from_limbs(r))
 }
 
