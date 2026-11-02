@@ -1,11 +1,11 @@
 # 0128. The guarantee diff
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-31
-- Deciders:
+- Deciders: Una project (accepted on 2026-11-02, with the changes of "Decisions of acceptance")
 - Resolves: issue #1291 (the guarantee diff)
 - Related:
-  - ADR 0127 (Una Quality foundation) and `spec/32` (Draft), with which this record shares symbol identity (`spec/32 §3` rule 4), the snapshot header, the output model, the analysis statuses and the exit codes; Una Quality reads this record's verdicts as UQ9101 to UQ9104;
+  - ADR 0127 (Una Quality foundation) and `spec/32` (Draft), with which this record shares symbol identity (`spec/32 §3` rule 4), the snapshot header, the output model, the analysis statuses and the exit codes; Una Quality reads this record's verdicts as UQ9101 to UQ9109;
   - issue #1293 and ADR 0129 (specification mutation testing and trivial-contract detection), whose results this record reports as deltas;
   - issue #1289 (requirement coverage), whose traceability this record compares;
   - issue #52 (the semantic diff, `una diff`, of `plan/backlog.md`), which this record realizes for requirements, contracts, capabilities, information, escapes and the trusted base;
@@ -19,7 +19,7 @@
 - Amends, on acceptance and with the slices that implement it (section J):
   - **Specification:** a new chapter, `spec/33-guarantee-diff.md`, with the categories, the comparison rules, the documents, the approvals file and the exit codes;
   - **Diagnostics and ABI:** `spec/13 §5` (the command `una diff`);
-  - **Quality:** `spec/32 §18` (the codes UQ9105 to UQ9109, rule 25) and `§14.4` (approvals of UQ9101 to UQ9109, rule 20).
+  - **Quality:** `spec/32 §18` (the codes UQ9105 to UQ9109, rule 25) and `§14.4` (approvals of UQ9101 to UQ9109, rule 22).
 
 > **In plain words.**
 > - **What it is.** `una diff` compares a package with a baseline and lists what changed in what a reader can trust: contracts, authority, `trusted` code, `checked` escapes, declassifications, obligations, the solver pin and requirements.
@@ -29,12 +29,28 @@
 
 ## Questions for acceptance
 
-Four points rest on assumptions that acceptance confirms or changes:
+Four points rest on assumptions that acceptance confirms or changes; the answers are under "Decisions of acceptance":
 
 1. **A relaxed precondition blocks (rule 8).** A weaker `requires` breaks no caller, so classical compatibility rules accept it. But a precondition is also a restriction the program enforces: removing `requires is_admin(user)` lets every caller reach the function. This record assumes the most secure reading: a relaxed precondition of a public function is a regression that needs an approval. The alternative, reporting it without blocking, is recorded under Alternatives.
-2. **Approvals live in their own file (rule 20).** ADR 0127 rule 28 makes a waiver in `quality.toml` the approval of UQ9101 to UQ9104. That file can be replaced by a pipeline by path (ADR 0127 rule 20), and the issue asks for an approval recorded in the repository. This record assumes that approvals of guarantee changes live in `guarantees.toml` at the package root, read from that fixed path only, and that, on acceptance of both records, ADR 0127 rule 28 is aligned: a `quality.toml` waiver of UQ9101 to UQ9109 is UQ0001. Both records are Proposed, so the alignment is a decision for acceptance, not an edit made here.
-3. **The approver cannot be verified (rule 20).** As in ADR 0127 Question 2: the tool records the approver's text and binds the approval to one change; the review of the change that adds the entry is the approval. Signed approvals are deferred.
+2. **Approvals live in their own file (rule 22).** ADR 0127 rule 28 makes a waiver in `quality.toml` the approval of UQ9101 to UQ9104. That file can be replaced by a pipeline by path (ADR 0127 rule 20), and the issue asks for an approval recorded in the repository. This record assumes that approvals of guarantee changes live in `guarantees.toml` at the package root, read from that fixed path only, and that, on acceptance of both records, ADR 0127 rule 28 is aligned: a `quality.toml` waiver of UQ9101 to UQ9109 is UQ0001. Both records are Proposed, so the alignment is a decision for acceptance, not an edit made here.
+3. **The approver cannot be verified (rule 22).** As in ADR 0127 Question 2: the tool records the approver's text and binds the approval to one change; the review of the change that adds the entry is the approval. Signed approvals are deferred.
 4. **The command is `una diff` (rule 1).** The name comes from the backlog row of issue #52. The issue calls the report the guarantee diff; the schema names say so (`una.guarantee-diff/1`).
+
+## Decisions of acceptance (2026-11-02)
+
+The project accepted this record on 2026-11-02 with the changes below, which the rules carry:
+
+1. **Question 1: accepted.** A relaxed precondition of a public function is a regression that needs an approval (rule 8). The witness of the refuted implication, an input the new precondition accepts and the old one refused, is shown with the change, so the reviewer sees what is now let in.
+2. **Question 2: accepted.** Approvals of guarantee changes live in the approvals file at its fixed path (rule 22), and ADR 0127 rule 28 is aligned: a `quality.toml` waiver of UQ9101 to UQ9109 is UQ0001. The file's TOML form is interim only: its final form is `guarantees.una`, in Una's own data syntax, a member of ADR 0131's family. The question and Question 3 pointed to rule 20; they name rule 22.
+3. **Question 3: accepted.** The tool records the approver's text and cannot verify it; signed approvals stay deferred.
+4. **Question 4: accepted.** The command is `una diff`.
+5. **The quality configuration cannot lower these codes** (rule 24). UQ9101 to UQ9109 take no severity below `block` in `quality.toml`; a configuration that sets one lower is UQ0001 (ADR 0127 rule 21). So `una quality --gate` never passes a change that `una diff --gate` blocks.
+6. **Expiry follows the preset** (rule 22): an approval new against the baseline expires within the preset's `max_days` (ADR 0127 rule 28: 30 days in `high_assurance`, 90 in the others), never more than 90 days.
+7. **Reviewed equivalent mutants join the approvals file** (rule 22, ADR 0129 rule 12), with a code of their own, UQ9302: what shrinks a denominator lives at a fixed path, as an approval does.
+
+Open items, each owned by the card named:
+- How `una diff`, which takes no configuration by flag, learns the preset in effect for the bound of decision 6, from a fixed path only: slice 4, #1319.
+- The grammar of `guarantees.una` (its head word `guarantees`, by ADR 0131 rule 5) and its conversion by `una migrate`: ADR 0131's slices, from #1333.
 
 ## Glossary
 
@@ -79,7 +95,7 @@ The forces:
    - Flags: `--json` (one `una.guarantee-diff/1` document), `--sarif` (one SARIF 2.1.0 log; with `--json`, a usage error), `--gate` (rule 21), `--date <YYYY-MM-DD>` (the date approvals expire against, as ADR 0127 rule 30), and the solver flags of `una check`.
    - Rejected: `--baseline <git ref>`. As ADR 0127 rule 25: the tool reads files only and never runs or emulates a version-control system.
 2. **The baseline artifact.** `una.guarantee-snapshot/1` shares the header of `una.quality-snapshot/1` (`spec/32 §17.2`): `schema`, `tool` (version and the digest of the built-in solver), `package` (name, version, edition), `source_digest`, `date`, and `symbols`, each with its kind, qualified name and body fingerprint (`spec/32 §3` rule 4). It adds:
-   - `project`: the SHA-256 of each project file (`una.toml` or `ita.una`, `verification.lock` or `ita.lock`, `quality.toml`, `guarantees.toml`), and the parsed values the diff compares: grants, `[boundaries]`, `[contracts]`, `[trusted]`, `[escape_budget]`, `[labels]`, the lock's fields, and the dependencies with their sources, digests and ceilings;
+   - `project`: the SHA-256 of each project file (`una.toml` or `ita.una`, `verification.lock` or `ita.lock`, `quality.toml`, `guarantees.toml`, or `quality.una` and `guarantees.una` once ADR 0131's slices land), and the parsed values the diff compares: grants, `[boundaries]`, `[contracts]`, `[trusted]`, `[escape_budget]`, `[labels]`, the lock's fields, and the dependencies with their sources, digests and ceilings;
    - per function and handler operation: `public`, the parameters with their types, the result type, `fails`, `uses` with operations, conditions and labels, and the contract: every `requires` and `ensures` clause and every refinement the parameters and result carry, as `una.core/1` terms;
    - `context`: every kind, predicate and capability the contracts name, with its definition as `una.core/1` and its fingerprint, so a comparison can be made from two snapshots without sources;
    - per symbol: its obligations, each with id, kind, normalized goal, status, reason and the digest of its query;
@@ -173,7 +189,7 @@ The forces:
 
 ### G. Approvals and the gate
 
-22. **The approvals file.** Approvals live in `guarantees.toml` at the package root, read from that path only: no flag, environment variable or configuration names another. It is TOML, interim, as ADR 0127 rule 20 (#1302 decides Una's own format):
+22. **The approvals file.** Approvals live in `guarantees.toml` at the package root, read from that path only: no flag, environment variable or configuration names another. Its TOML form is interim only, as ADR 0127 rule 20: the final form is `guarantees.una`, in Una's own data syntax (ADR 0131), and `una migrate` converts the file as it converts `quality.toml`. The same file holds the reviewed equivalent mutants of ADR 0129 rule 12, as entries of their own that never approve a change. The interim form:
 
     ```toml
     schema = "una.guarantee-approvals/1"
@@ -189,7 +205,7 @@ The forces:
 
     - `change` is the change's id: `gd-` and the first 12 hex digits of SHA-256 over the category, the symbol's baseline and current names, and the SHA-256 of the before and after values (for a contract, the Core terms of both sides and their context fingerprints). An approval therefore covers exactly one change; any further edit of either side gives another id, and the approval no longer applies;
     - every key is required; an unknown key, a wrong type or an entry whose `category` or `symbol` disagrees with its `change` is invalid;
-    - `expires` is at most 90 days after the run's date for an approval new against the baseline;
+    - `expires`, for an approval new against the baseline, is at most the preset's `max_days` after the run's date (ADR 0127 rule 28: 30 days in `high_assurance`, 90 in the other presets), and never more than 90 days;
     - the file is data: nothing in it is executed.
     - Rejected: approvals as waivers in `quality.toml` (Question 2), and a command-line flag (the issue: "not a flag an agent can pass").
 23. **What every report shows.** Every approval, with its state: `active` (it covered a change in this run), `unused` (no change has its id), `lapsed` (expired) or `invalid`. An approval new against the baseline's `approvals` is marked `added_in_this_change`, so a reviewer sees that the change approves itself. `una fix`, Una Quality's recommendations and every repair never add, edit or suggest an approval.
@@ -202,7 +218,7 @@ The forces:
     | `2` | Usage error (`spec/13 §5`) |
     | `3` | Internal error (U8001) |
 
-    The diff has no configuration of severities: under `--gate`, every guarantee regression blocks. A project that wants a different severity for one category sets it for the corresponding code in `quality.toml`, where ADR 0127 rule 21 makes the lowering visible; `una diff --gate` itself stays strict. Code `4` of ADR 0127 rule 27 is not used: an incomplete analysis always blocks the guarantee gate.
+    The diff has no configuration of severities: under `--gate`, every guarantee regression blocks. Una Quality cannot lower them either: UQ9101 to UQ9109 take no severity below `block` in `quality.toml`, and a configuration that sets one lower is UQ0001 (ADR 0127 rule 21), so `una quality --gate` never passes a change that `una diff --gate` blocks. The recommended pipeline runs `una diff --gate`. Code `4` of ADR 0127 rule 27 is not used: an incomplete analysis always blocks the guarantee gate.
 25. **Codes.** Each category maps to a code of the `UQ` registry, assurance gate, for SARIF and for `una quality`: UQ9101 authority, UQ9102 trust, UQ9103 information, UQ9104 contracts and public signatures, and, added to `spec/32 §18` on acceptance, **UQ9105** escapes, **UQ9106** obligation regressions, **UQ9107** toolchain, **UQ9108** requirements, **UQ9109** assumptions. A `review_required` or `inconclusive` change takes the code of its category, with its verdict in the record. An incomplete analysis is UQ0101; a package `una check` rejects is UQ0102.
 
 ### H. Output, determinism and security
@@ -262,7 +278,7 @@ No `U` code is added. UQ9105 to UQ9109 join the `UQ` registry of `spec/32 §18`,
 - **Diff the text of headers.** Rejected: equivalent rewrites show as changes and changes hidden in a refined kind show as nothing.
 - **Diff two build reports only.** Rejected: rule 2; no implication and no rename can be decided from them.
 - **Treat an undecided comparison as compatible.** Rejected: it lets every weakening outside the fragment pass silently; the issue forbids it.
-- **Report a relaxed precondition without blocking** (classical compatibility). The less restrictive option; rejected in favor of rule 8 because it lets an authorization condition disappear unapproved; kept for acceptance to reconsider (Question 1).
+- **Report a relaxed precondition without blocking** (classical compatibility). The less restrictive option; rejected in favor of rule 8 because it lets an authorization condition disappear unapproved, and rejected again on acceptance (Decisions of acceptance 1).
 - **Approvals as waivers in `quality.toml`, or as a flag.** Rejected: rule 22.
 - **Approval by symbol and category, not by change.** Rejected: one approval would cover every later weakening of the same function.
 - **Count proven obligations as progress.** Rejected: rule 17.
