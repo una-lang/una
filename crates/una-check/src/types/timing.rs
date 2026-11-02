@@ -1434,6 +1434,7 @@ impl Gather<'_> {
         let mut fresh: BTreeSet<usize> = BTreeSet::new();
         let mut pending: Vec<usize> = roots.into_iter().collect();
         while let Some(f) = pending.pop() {
+            una_core::label_counters::timing_step();
             if !self.reached.contains(&f) && fresh.insert(f) {
                 pending.extend(self.callees.get(&f).into_iter().flatten().copied());
             }
@@ -1446,6 +1447,7 @@ impl Gather<'_> {
                 .map(|&(_, callee)| callee)
                 .collect();
             for callee in own {
+                una_core::label_counters::timing_step();
                 self.add_opaque(callee);
             }
             let installs: Vec<usize> = findings
@@ -1454,6 +1456,7 @@ impl Gather<'_> {
                 .map(|&(_, h)| h)
                 .collect();
             for h in installs {
+                una_core::label_counters::timing_step();
                 self.add_handler(h);
             }
         }
@@ -1554,6 +1557,7 @@ pub(crate) fn timing(
     // of every handler of the package.
     let mut of_capability: BTreeMap<CapId, Vec<usize>> = BTreeMap::new();
     for (id, handler) in env.handlers.iter().enumerate() {
+        una_core::label_counters::timing_step();
         if let Some(cap) = handler.capability {
             of_capability.entry(cap).or_default().push(id);
         }
@@ -1581,6 +1585,7 @@ pub(crate) fn timing(
     let mut handled: BTreeSet<usize> = BTreeSet::new();
     while !gather.needs.is_empty() || !gather.queue.is_empty() {
         while let Some((cap, op)) = gather.needs.pop() {
+            una_core::label_counters::timing_step();
             if !seen.insert((cap, op.clone())) {
                 continue;
             }
@@ -1601,6 +1606,7 @@ pub(crate) fn timing(
             }
             if capability.module != env.prelude || host == HostHandlers::All {
                 for &id in of_capability.get(&cap).map_or(&[][..], Vec::as_slice) {
+                    una_core::label_counters::timing_step();
                     gather.add_handler(id);
                 }
             }
@@ -1609,6 +1615,7 @@ pub(crate) fn timing(
         let mut next = std::mem::take(&mut gather.queue);
         next.sort_unstable();
         for id in next {
+            una_core::label_counters::timing_step();
             if !handled.insert(id) {
                 continue;
             }
