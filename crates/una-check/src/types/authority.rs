@@ -2474,8 +2474,8 @@ pub(crate) fn drive_failures(env: &Env<'_>, settings: &Manifest, report: &mut Re
 /// - every operation of the step and of every function it reaches counts, by `ℓ*` of its result,
 ///   its `accepts` label and `ℓ*` of its failure kind;
 /// - every handler such a function installs, and every handler of a capability the step needs
-///   that is not the host's, counts by `ℓ*` of its parameters, the top label for one of function
-///   type, and by the operations it needs;
+///   that is not the host's, counts by `ℓ*` of its parameters, the top label for one whose type
+///   holds a function, by what its operation bodies run and by the operations it needs (#1436);
 /// - a call of a function value anywhere the step reaches makes it the top label (#1023);
 /// - concurrent tasks: the top label when a part of a task construct can reach the step;
 /// - the residue label `L_res` (ADR 0116 P9), the work that cancelled requests leave running.

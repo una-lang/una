@@ -458,6 +458,11 @@ pub(crate) struct Env<'a> {
     /// The boundaries of `una.toml`, and the boundary whose extent holds each package module
     /// (ADR 0093 rules 1 and 9); empty before edition 0.3.
     pub(crate) boundaries: super::boundary::Boundaries,
+    /// For each kind, whether a value of it may hold a function value, through a field of a
+    /// function type or of a type that holds one, at any depth: computed for every package,
+    /// with or without boundaries, for the timing label of a handler's parameters (ADR 0116
+    /// IF5 item 3, issue #1436).
+    pub(crate) holds_function_kinds: Vec<bool>,
     /// The `via` functions whose failure reveals nothing, by function id (ADR 0098): a call of
     /// their policy fails at the program counter, not at `pc ⊔ ℓ(to)`.
     pub(crate) plain_vias: BTreeSet<usize>,
@@ -600,6 +605,7 @@ impl<'a> Env<'a> {
             project_code: Code::U7002,
             manifest_file: "una.toml",
             boundaries: super::boundary::Boundaries::default(),
+            holds_function_kinds: Vec::new(),
             plain_vias: BTreeSet::new(),
             blocked_vias: BTreeMap::new(),
             map_module: None,

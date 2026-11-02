@@ -398,27 +398,11 @@ impl Checker<'_, '_, '_> {
     }
 
     /// Whether a value of type `ty` may hold a function value: a function type, or one inside
-    /// a list, a map, an `Option`, a `Result` or a kind's fields (rule 8).
+    /// a list, a map, an `Option`, a `Result` or a kind's fields (rule 8), by the one rule of
+    /// [`super::timing::holds_function_by`], with the solved unification variables resolved;
+    /// a type parameter or an unsolved variable holds one, failing closed (review R2 of #1440).
     pub(crate) fn holds_function(&self, ty: &Ty) -> bool {
-        match self.resolve(ty) {
-            Ty::Fn(_) => true,
-            Ty::List(inner)
-            | Ty::Dense(_, inner)
-            | Ty::Labeled(_, inner)
-            | Ty::Refined(_, inner) => self.holds_function(&inner),
-            Ty::Map(key, value) => self.holds_function(&key) || self.holds_function(&value),
-            Ty::Coll(_, args) => args.iter().any(|arg| self.holds_function(arg)),
-            Ty::Kind(id, args) => {
-                self.env
-                    .boundaries
-                    .function_kinds
-                    .get(id)
-                    .copied()
-                    .unwrap_or(false)
-                    || args.iter().any(|arg| self.holds_function(arg))
-            }
-            _ => false,
-        }
+        super::timing::holds_function_by(self.env, ty, &|ty: &Ty| self.resolve(ty))
     }
 
     /// The collector of the innermost call into a boundary whose arguments enclose a lambda
