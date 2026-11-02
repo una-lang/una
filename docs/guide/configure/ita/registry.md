@@ -11,7 +11,7 @@ codes: [U7008, U7010, U7011, U7013]
 
 A registry is a place that publishes packages for others to use. A package that needs a package from a registry names the registry in its `sources` section and the package in its `needs` section, with `from` and the registry's name. `una ita lock` then reads the registry, checks every byte it reads against the keys the package pins, and writes the release it chose into `ita.lock`. `una ita fetch` downloads that release into Itaoca, the local store of packages on the machine, and checks it again. From then on, `una check`, `una run` and `una build` read the package from Itaoca, with no network.
 
-Why it works this way: a dependency is code that runs inside your program, so where it comes from is part of the program's meaning. Una never takes a registry's word for anything. The `root` line pins the digest of the registry's root metadata, the document that names the registry's keys; every release, checkpoint and proof the registry serves must be signed by those keys, or the command fails. A mirror that serves a changed file, or a registry that changes a release it already published, is caught, never trusted.
+Why it works this way: a dependency is code that runs inside your program, so where it comes from is part of the program's meaning. Una never takes a registry's word for anything. The `root` line pins the digest of the registry's root metadata, the document that names the registry's keys: the log key that signs every checkpoint, and the witnesses that cosign it. Every entry the registry serves must be proven included in a checkpoint signed that way, and each release must be signed by its owner's keys, which the client replays from the owner's chain in the log, or the command fails. A mirror that serves a changed file, or a registry that changes a release it already published, is caught, never trusted.
 
 `ita.una`
 
@@ -104,7 +104,7 @@ una ita update [<name>...]   raise needs to newer releases, and lock
 una ita fetch                download the locked releases into Itaoca
 ```
 
-`lock`, `add`, `update` and `fetch` are the only commands that read a registry. Every other command reads Itaoca or the vendor directory, never the network.
+Of the `una ita` commands, `lock` (with `--check`, for the newest checkpoint), `add`, `update`, `fetch`, `bundle`, `audit` and `watch` read a registry, from a mirror directory in this release; `publish` and `yank` stop before they read one (see [publishing](publishing.md)). The commands that check, run, build and test a package (`una check`, `una run`, `una build`, `una test`, `una report`, `una fmt`, `una fix` and the language server) never read a registry: they read Itaoca or the vendor directory, never the network.
 
 ## Examples
 
@@ -140,7 +140,7 @@ $ una ita fetch
 acme/ledger 0.3.1 is in Itaoca
 ```
 
-Once fetched, the package's module is imported like a path dependency's, and `una ita tree` names where each package comes from and who signed it:
+Once fetched, the package's module is imported like a path dependency's, and `una check`, `una run` and `una build` find it in Itaoca. `una ita tree` looks in `vendor/ita/` only, so once the package is vendored it names where each package comes from and who signed it:
 
 ```text
 module shop
@@ -151,6 +151,8 @@ pub sum() -> Int = total() + 1
 ```
 
 ```text
+$ una ita vendor
+vendored acme/ledger 0.3.1
 $ una ita tree
 shop 0.1.0
   acme/ledger 0.3.1 (acme, signed acme): may nothing (by shop); uses nothing; trust none

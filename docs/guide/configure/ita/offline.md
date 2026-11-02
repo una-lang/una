@@ -15,7 +15,7 @@ A package of edition `0.4` builds with no network once its registry packages are
 - **The vendor directory**, `vendor/ita/` in the package, filled by `una ita vendor` and committed with the package, so that a fresh checkout builds with `una` alone.
 - **A bundle**, one file written by `una ita bundle` on a connected machine and read by `una ita unbundle` on an air-gapped one, a machine with no network at all, which it fills Itaoca from.
 
-Why it works this way: a build that reaches the network can give a different result on a different day, or fail when a registry is down. `una check`, `una run`, `una build`, `una test`, `una report`, `una fmt`, `una fix` and the language server never open a connection for a package. They read the locked packages from the vendor directory or Itaoca and check each against the lock's digest, its signature and the registry's proofs, all offline. So the same package gives the same result with or without a network, and a vendored copy that someone edited does not load.
+Why it works this way: a build that reaches the network can give a different result on a different day, or fail when a registry is down. `una check`, `una run`, `una build`, `una test`, `una report`, `una fmt`, `una fix` and the language server never open a connection for a package. They read the locked packages from the vendor directory or Itaoca and check each against the lock's digest, its signature by the key the lock names and its inclusion in the logged checkpoint, all offline. That the key was the owner's, valid at its log position, is checked by the registry client when the lock is resolved and when the package is fetched, bundled or unbundled, not again when it is loaded. So the same package gives the same result with or without a network, and a vendored copy that someone edited does not load.
 
 `ita.una`
 
@@ -152,7 +152,7 @@ $ una ita verify
 - **Only what a package holds.** A file a package may not hold, such as a `.DS_Store` left by a file browser inside `vendor/ita/`, makes it U7010, naming the file.
 - **A changed bundle.** One changed byte refuses the whole bundle (U7010), and nothing is stored. A bundle that does not hold a locked package is U7011 when it is unbundled. Writing a bundle reads the registry at the lock's resolution point, so it needs a place to read it from (U7013 otherwise), and nothing is written without one.
 - **Path dependencies** are never vendored or bundled: they are read from their own directory, part of your own repository.
-- **Not every command.** `una ita lock`, `update`, `add` and `fetch` read a registry, from a mirror directory in this release. `una ita lock --check` needs no network for the lock itself, and reads the newest checkpoint a place serves when it can, to see whether an owner's chain froze since the lock was written.
+- **Not every command.** `una ita lock`, `update`, `add`, `fetch`, `bundle`, `audit` and `watch` read a registry, from a mirror directory in this release. `una ita lock --check` needs no network for the lock itself, and reads the newest checkpoint a place serves when it can, to see whether an owner's chain froze since the lock was written.
 
 ## Diagnostics
 

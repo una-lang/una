@@ -32,10 +32,11 @@
 //!   digest; it is signed by the key stored, whose fingerprint is the one the lock's `signed`
 //!   names; and its leaf is included in the checkpoint at the lock's `logged` index.
 //!
-//! **Not verified yet:** the owner's key chain and its name map proof, which show that the key
+//! **Not verified here:** the owner's key chain and its name map proof, which show that the key
 //! was valid at the statement's position (rules 36.1 and 36.3), and the per-name state at the
-//! resolution point. They join with the registry client, and MUST be verified before a registry
-//! package is mounted in a program; this release mounts none.
+//! resolution point. The registry client verifies them when the release is resolved, fetched,
+//! bundled or unbundled (`spec/30 §9` rule 7, §14); they are not stored beside the package, so
+//! loading a registry package, which mounts it in the program, verifies this document only.
 //!
 //! Costs: one pass to read, O(n); O(log L) hashes for an inclusion proof in a log of L leaves,
 //! and one signature verification per key tried.
