@@ -1202,7 +1202,7 @@ Every command takes `--json` and prints one document whose `schema` names its sh
 | `una build` | `una.build/1`, the native executable's path, or the diagnostics that rejected the package (v0.2, `spec/16`) |
 | `una contract <module.function>` | `una.contract/1`, the header, declared or inferred |
 | `una trace <REQUIREMENT_ID>` | `una.trace/1`, derived functions and their obligations |
-| `una report` | `una.report/2`, proofs, authority, policy calls, escapes, assumptions, trusted code, requirements, coverage, native target |
+| `una report` | `una.report/2`, proofs, authority, policy calls, escapes, assumptions, host premises, trusted code, requirements, coverage, native target |
 | `una explain <code>` | `una.explain/1` |
 
 When the checks reject a package, `contract`, `trace`, `obligations` and `report` print the `una.diagnostics/1` of `una check`. Diagnostics are sorted by file, position and code; outputs are identical from run to run.
