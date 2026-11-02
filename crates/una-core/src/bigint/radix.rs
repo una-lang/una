@@ -17,8 +17,9 @@ pub(super) const TO_TEXT_DIVIDE: usize = 32;
 /// Below this many limbs, a part of a divided value is written by repeated division.
 const TO_TEXT_BASE: usize = 8;
 
-/// From this many chunks of a limb's worth of digits, reading divides and conquers.
-pub(super) const FROM_TEXT_DIVIDE: usize = 384;
+/// From this many chunks of a limb's worth of digits, reading divides and conquers. Measured
+/// (#1368): from 384 to 640 chunks, dividing was up to 16% slower than Horner's rule.
+pub(super) const FROM_TEXT_DIVIDE: usize = 768;
 
 /// The digits per chunk and the chunk `radix^d`, the largest power of `radix` in a limb.
 fn chunk(radix: u32) -> (usize, u64) {
@@ -140,7 +141,13 @@ fn emit(
         return;
     };
     let low = d << level;
-    let (q, r) = nat::divrem(a, power).unwrap_or_default();
+    // `radix^(d·2^level)` ends in zero limbs when the radix is even: with z of them,
+    // a = h·2^(64z) + l and power = p·2^(64z) give q = h / p and r = (h % p)·2^(64z) + l,
+    // a division smaller by z limbs on both sides.
+    let z = power.iter().take_while(|&&limb| limb == 0).count();
+    let (q, r) = nat::divrem(nat::part(a, z, a.len()), nat::part(power, z, power.len()))
+        .map(|(q, r)| (q, nat::join(nat::part(a, 0, z), &r, z)))
+        .unwrap_or_default();
     emit(
         &q,
         width.map(|w| w.saturating_sub(low)),

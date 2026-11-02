@@ -507,6 +507,114 @@ fn large_operands() {
 }
 
 #[test]
+fn products_at_the_toom3_ratio_agree_with_the_slow_reference() {
+    // #1368: Toom-3 takes balanced products from 9/16 of the longer operand's limbs, so the
+    // shorter operand's top third can be empty. Every ratio near the switch and near 2/3.
+    let mut rng = Rng(0xD1B5_4A32_D192_ED03);
+    for &b in &[TOOM3 * 3 / 2, TOOM3 * 3 / 2 + 1, 500, 640] {
+        let k = b.div_ceil(3);
+        for a in [
+            9 * b / 16,
+            9 * b / 16 + 1,
+            2 * k - 1,
+            2 * k,
+            2 * k + 1,
+            b / 2 + 1,
+        ] {
+            let (x, y) = (rng.limbs(a), rng.limbs(b));
+            let (p, q) = (
+                BigUint::from_limbs(x.clone()),
+                BigUint::from_limbs(y.clone()),
+            );
+            assert_eq!((&p * &q).limbs(), ref_mul(&x, &y), "{a} by {b} limbs");
+            assert_eq!((&q * &p).limbs(), ref_mul(&x, &y), "{b} by {a} limbs");
+        }
+    }
+}
+
+#[test]
+fn two_limb_division_agrees_with_the_slow_reference() {
+    // #1368: operands of at most two limbs divide in 128-bit arithmetic.
+    let mut rng = Rng(0x94D0_49BB_1331_11EB);
+    let edge = [0, 1, 2, u64::MAX - 1, u64::MAX];
+    for round in 0..2_000 {
+        let pick = |rng: &mut Rng| {
+            if rng.below(3) == 0 {
+                edge[rng.below(5) as usize]
+            } else {
+                rng.next()
+            }
+        };
+        let a = ref_trim(vec![pick(&mut rng), pick(&mut rng)]);
+        let b = ref_trim(match round % 3 {
+            0 => vec![pick(&mut rng)],
+            _ => vec![pick(&mut rng), pick(&mut rng)],
+        });
+        if b.is_empty() {
+            continue;
+        }
+        let (q, r) = ref_divrem(&a, &b);
+        let (x, y) = (
+            BigUint::from_limbs(a.clone()),
+            BigUint::from_limbs(b.clone()),
+        );
+        assert_eq!((&x / &y).limbs(), q, "{a:?} / {b:?}");
+        assert_eq!((&x % &y).limbs(), r, "{a:?} % {b:?}");
+        for (sa, sb) in [(false, false), (false, true), (true, false), (true, true)] {
+            let (i, j) = (BigInt::signed(sa, a.clone()), BigInt::signed(sb, b.clone()));
+            assert_eq!(&i / &j, BigInt::signed(sa != sb, q.clone()));
+            assert_eq!(&i % &j, BigInt::signed(sa, r.clone()));
+        }
+    }
+}
+
+#[test]
+fn text_of_values_with_zero_low_limbs_agrees_with_the_slow_reference() {
+    // #1368: writing divides by radix powers without their zero low limbs; powers of ten and
+    // values with zero low limbs, written divided and conquered.
+    let mut rng = Rng(0xBF58_476D_1CE4_E5B9);
+    for digits in [600u32, 617, 618, 1_234, 2_500, 5_000, 9_999] {
+        let text = BigUint::from(10u8).pow(digits).to_string();
+        assert_eq!(text.len(), digits as usize + 1);
+        assert!(text.starts_with('1') && text.bytes().skip(1).all(|c| c == b'0'));
+        let below = (BigUint::from(10u8).pow(digits) - BigUint::from(1u8)).to_string();
+        assert!(below.len() == digits as usize && below.bytes().all(|c| c == b'9'));
+    }
+    for round in 0..24 {
+        let n = 32 + rng.below(200) as usize;
+        let mut limbs = rng.limbs(n);
+        for limb in limbs.iter_mut().take(rng.below(n as u64 / 2) as usize) {
+            *limb = 0;
+        }
+        let x = BigUint::from_limbs(limbs.clone());
+        assert_eq!(x.to_string(), ref_decimal(&limbs), "round {round}");
+        for radix in [6, 12, 36] {
+            let text = x.to_str_radix(radix);
+            assert_eq!(BigUint::from_str_radix(&text, radix), Ok(x.clone()));
+        }
+    }
+}
+
+#[test]
+fn text_reads_agree_at_the_divide_threshold() {
+    // #1368: reading divides and conquers from 768 chunks of 19 digits (14,592 digits).
+    let mut rng = Rng(0x2545_F491_4F6C_DD1D);
+    for digits in [14_591usize, 14_592, 14_593, 14_611, 20_000] {
+        let text: String = (0..digits)
+            .map(|i| char::from(b'0' + (rng.below(10) as u8).max(u8::from(i == 0))))
+            .collect();
+        let x: BigUint = text.parse().unwrap();
+        assert_eq!(x.to_string(), text);
+        // Horner's rule one digit at a time, the reference.
+        let mut reference = BigUint::ZERO;
+        for c in text.bytes() {
+            reference = reference * BigUint::from(10u8) + BigUint::from(c - b'0');
+        }
+        assert_eq!(x, reference);
+    }
+}
+
+#[test]
 fn no_operation_panics_at_its_edges() {
     let a = int(12345);
     assert_eq!(&a / 0, BigInt::ZERO);

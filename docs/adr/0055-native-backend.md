@@ -68,7 +68,7 @@ The memory model of v0.2 (mutable value semantics, no mutable aliasing) and fixe
 - **Compiling through LLVM first.** Not chosen for v0.2: Cranelift is a Rust library with fast compilation and no system dependency beyond the linker. LLVM stays for optimized release builds later.
 - **The differential test on a sample of programs.** Not chosen: the UAM is the reference semantics, so every runnable program is a test of the refinement.
 
-## Note (2026-11-01, #1093): Una's own big integer
+## Amendment (2026-11-01, #1093): Una's own big integer
 
 Rule 5's arbitrary-precision integers are Una's own big integer, `una_core::bigint`, the type the interpreter uses, in place of `num-bigint`. No rule of this record changes.
 

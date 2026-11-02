@@ -7,7 +7,8 @@
 //! Complexity, with n the limbs of the larger operand and M(n) the cost of a multiplication:
 //! - addition, subtraction, comparison and shifts: O(n);
 //! - multiplication: schoolbook O(n²) below [`KARATSUBA`] limbs, Karatsuba O(n^1.585) up to
-//!   [`TOOM3`], Toom-3 O(n^1.465) above; an unbalanced product of m < n limbs is split into
+//!   [`TOOM3`] (and above it while the shorter operand has at most 9/16 of the longer one's
+//!   limbs), Toom-3 O(n^1.465) above; an unbalanced product of m < n limbs is split into
 //!   blocks of m limbs, O((n/m)·M(m));
 //! - division: Knuth's algorithm D, O(m·n) for an m-limb quotient, when the divisor or the
 //!   quotient has fewer than [`BURNIKEL_ZIEGLER`] limbs, else Burnikel and Ziegler's
@@ -18,7 +19,9 @@ use std::cmp::Ordering;
 /// Below this many limbs in the shorter operand, a product is schoolbook.
 pub(super) const KARATSUBA: usize = 40;
 
-/// From this many limbs in the shorter operand of a balanced product, it is Toom-3.
+/// From this many limbs in the shorter operand of a balanced product, it is Toom-3, when the
+/// shorter operand also has more than 9/16 of the longer one's limbs (measured against
+/// Karatsuba, #1368: below that ratio Karatsuba's halves are the cheaper split).
 pub(super) const TOOM3: usize = 256;
 
 /// Below this many limbs in the divisor or in the quotient, a division is Knuth's algorithm D;
@@ -51,9 +54,19 @@ pub(super) fn take_steps() -> u64 {
 /// allocation does (ADR 0061 rule 3), never with a panic.
 pub(super) fn zeros(n: usize) -> Vec<u64> {
     if n > isize::MAX as usize / 8 {
-        std::alloc::handle_alloc_error(std::alloc::Layout::new::<u64>());
+        out_of_memory(n);
     }
     vec![0; n]
+}
+
+/// Stops the process for a vector of `limbs` limbs that cannot be allocated, through the
+/// allocation error handler, with that vector's layout. A size beyond what a layout can
+/// describe (more than `isize::MAX` bytes) reports the largest one, never a panic.
+fn out_of_memory(limbs: usize) -> ! {
+    let layout = std::alloc::Layout::array::<u64>(limbs)
+        .or_else(|_| std::alloc::Layout::array::<u64>(isize::MAX as usize / 8))
+        .unwrap_or(std::alloc::Layout::new::<u64>());
+    std::alloc::handle_alloc_error(layout)
 }
 
 /// `a` without its high zero limbs.
@@ -191,7 +204,7 @@ pub(super) fn shl(a: &[u64], bits: u64) -> Vec<u64> {
     let s = (bits % 64) as u32;
     let mut out = zeros(limbs);
     if out.try_reserve_exact(a.len() + 1).is_err() {
-        std::alloc::handle_alloc_error(std::alloc::Layout::new::<u64>());
+        out_of_memory(limbs.saturating_add(a.len() + 1));
     }
     count(a.len());
     if s == 0 {
@@ -258,7 +271,7 @@ fn product_into(out: &mut [u64], a: &[u64], b: &[u64], square: bool) {
         }
     } else if 2 * a.len() <= b.len() {
         unbalanced(out, a, b);
-    } else if a.len() >= TOOM3 && a.len() > 2 * b.len().div_ceil(3) {
+    } else if a.len() >= TOOM3 && 16 * a.len() > 9 * b.len() {
         let p = toom3(a, b, square);
         for (slot, &limb) in out.iter_mut().zip(&p) {
             *slot = limb;
@@ -428,8 +441,9 @@ impl Signed {
     }
 }
 
-/// Toom-3 for `|a| > 2⌈|b|/3⌉`: five products of a third of the size, evaluated at 0, 1, -1,
-/// -2 and infinity and interpolated with Bodrato's sequence. O(n^log3(5)) = O(n^1.465).
+/// Toom-3 for `|b|/2 < |a| <= |b|`: five products of a third of the size, evaluated at 0, 1,
+/// -1, -2 and infinity and interpolated with Bodrato's sequence. O(n^log3(5)) = O(n^1.465).
+/// When `|a| <= 2⌈|b|/3⌉` the top third of `a` is zero, and so is the product at infinity.
 fn toom3(a: &[u64], b: &[u64], square: bool) -> Vec<u64> {
     let k = b.len().div_ceil(3);
     let pieces = |x: &[u64]| {
@@ -601,7 +615,7 @@ fn sub_mul(acc: &mut [u64], v: &[u64], q: u64) -> bool {
 }
 
 /// `lo + hi × 2^(64·at)`, trimmed, for `lo < 2^(64·at)`.
-fn join(lo: &[u64], hi: &[u64], at: usize) -> Vec<u64> {
+pub(super) fn join(lo: &[u64], hi: &[u64], at: usize) -> Vec<u64> {
     let hi = trim(hi);
     let mut out = trim(lo).to_vec();
     if hi.is_empty() {
