@@ -67,6 +67,12 @@ pub enum AcceptRefusal {
     Handshakes,
     /// The peer's share of the handshake rate is spent this second.
     PeerHandshakes,
+    /// Every serve thread ended: none is left to own the connection. Reachable only when the
+    /// caller is not itself a serve thread (the simulator): a serve thread that accepts lives.
+    NoThread,
+    /// A fault of the host while the connection was accepted: contained, and what it took was
+    /// given back.
+    Fault,
 }
 
 /// A connection refused at accept: why, and when its peer's entry may be forgotten if it is

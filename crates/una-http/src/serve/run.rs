@@ -11,6 +11,7 @@
 
 use std::collections::VecDeque;
 use std::net::SocketAddr;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering, fence};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -67,29 +68,39 @@ pub struct Adopt {
     pub conn: Arc<ConnShared>,
 }
 
-/// The way to a serve thread: its channel and the flag that says whether it sleeps.
+/// The way to a serve thread: its channel, the flag that says whether it sleeps, and, once the
+/// thread ended, its inbox, which whoever sends to it afterwards drains (`Shared::send`).
 pub struct Port {
     tx: Sender<Msg>,
     sleeping: AtomicBool,
     waker: Box<dyn Waker>,
+    /// The thread ended, normally or by a panic: nothing it owned is open any more, and what
+    /// reaches its inbox is handled by the sender (`Shared::bury`).
+    ended: AtomicBool,
+    /// The inbox of an ended thread. Set before `ended`; locked only after a thread ended.
+    orphan: Mutex<Option<Receiver<Msg>>>,
 }
 
 impl Port {
-    /// Sends a message and wakes the thread only when it sleeps. The sender pushes, issues a
-    /// full fence, then loads `sleeping`; the sleeper stores `sleeping`, issues a full fence,
-    /// then checks its channel once more (`Port::announce_sleep`). Each side orders its store
-    /// before its load, so either the sender sees `true` and wakes the thread, or the sleeper
-    /// sees the message: no wake is lost, and a busy thread is never woken.
-    pub fn send(&self, msg: Msg) -> bool {
-        if self.tx.send(msg).is_err() {
-            // The thread ended (the run is over, or the thread died): nothing receives it.
-            return false;
-        }
-        fence(Ordering::SeqCst);
+    /// Pushes a message, or gives it back when nothing can receive it.
+    fn push(&self, msg: Msg) -> Result<(), Msg> {
+        self.tx.send(msg).map_err(|failed| failed.0)
+    }
+
+    /// Wakes the thread only when it sleeps. The sender pushes, issues a full fence, then loads
+    /// `sleeping`; the sleeper stores `sleeping`, issues a full fence, then checks its channel
+    /// once more (`Port::announce_sleep`). Each side orders its store before its load, so
+    /// either the sender sees `true` and wakes the thread, or the sleeper sees the message: no
+    /// wake is lost, and a busy thread is never woken. The caller issued the fence.
+    fn wake_if_sleeping(&self) {
         if self.sleeping.load(Ordering::SeqCst) {
             self.waker.wake();
         }
-        true
+    }
+
+    /// Whether the thread ended.
+    pub fn is_ended(&self) -> bool {
+        self.ended.load(Ordering::SeqCst)
     }
 
     /// Whether the thread announced that it sleeps.
@@ -205,7 +216,8 @@ struct Queue {
 
 /// The requests of one queue, and how many of them are known to be dead (ended by their
 /// owner), so that the queue is compacted when most of it is dead: every entry is O(1)
-/// amortized, and the queue holds at most twice its live requests and a constant.
+/// amortized, and the queue holds about twice its live requests and a constant at most. The
+/// count is approximate only in that `next` may pop a dead request before its owner counts it.
 #[derive(Default)]
 struct Items {
     queue: VecDeque<Pending>,
@@ -241,6 +253,41 @@ pub type Ready = Arc<dyn Fn() + Send + Sync>;
 /// What runs when a connection of a grant closes: the grant's number.
 pub type Freed = Arc<dyn Fn(usize) + Send + Sync>;
 
+/// A second registration of [`Shared::on_ready`] or [`Shared::on_slot_freed`]: the first stays,
+/// the second is not kept.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AlreadyRegistered;
+
+impl std::fmt::Display for AlreadyRegistered {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("a serve callback is registered once per run")
+    }
+}
+
+/// What a connection on its way through [`Shared::accept`] holds.
+enum Taken {
+    /// Its slot of `connections`.
+    Slot,
+    /// Its slot and its place in its peer's entry.
+    Peer(Arc<super::peer::Peer>),
+    /// Everything, now owned by the message that hands it to its owner.
+    Handed,
+    /// Nothing: a refusal gave the slot back.
+    Released,
+}
+
+/// Takes one from a counter of faults a test asked for; `true` when there was one.
+#[cfg(feature = "test-hooks")]
+fn take_one(counter: &AtomicUsize) -> bool {
+    counter
+        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+        .is_ok()
+}
+
+/// The value of `Shared::turn` while an ended thread hands the turn on, so that no other
+/// thread takes it back from the ended one at the same time.
+const HANDING: usize = usize::MAX - 1;
+
 /// What the serve threads of a run share.
 pub struct Shared {
     /// The grants, in the order of the run's `serve:` grants.
@@ -256,6 +303,18 @@ pub struct Shared {
     cursor: AtomicUsize,
     /// The serve thread that holds the turn to accept, or `usize::MAX` before the first.
     turn: AtomicUsize,
+    /// Panics caught in a callback or in a connection's step: each is contained, so it costs at
+    /// most the connection it happened on, never a serve thread.
+    faults: AtomicUsize,
+    /// Serve threads a test asked to panic (`Shared::kill_for_test`).
+    #[cfg(feature = "test-hooks")]
+    kill: Vec<AtomicBool>,
+    #[cfg(feature = "test-hooks")]
+    accept_faults: AtomicUsize,
+    #[cfg(feature = "test-hooks")]
+    burst_faults: AtomicUsize,
+    #[cfg(feature = "test-hooks")]
+    refusal_faults: AtomicUsize,
     /// Set at a host stop.
     pub stopping: AtomicBool,
     /// Set at the hard stop.
@@ -287,6 +346,8 @@ impl Shared {
                 tx,
                 sleeping: AtomicBool::new(false),
                 waker,
+                ended: AtomicBool::new(false),
+                orphan: Mutex::new(None),
             });
             receivers.push(rx);
         }
@@ -307,6 +368,15 @@ impl Shared {
             queues,
             cursor: AtomicUsize::new(0),
             turn: AtomicUsize::new(usize::MAX),
+            faults: AtomicUsize::new(0),
+            #[cfg(feature = "test-hooks")]
+            kill: (0..threads).map(|_| AtomicBool::new(false)).collect(),
+            #[cfg(feature = "test-hooks")]
+            accept_faults: AtomicUsize::new(0),
+            #[cfg(feature = "test-hooks")]
+            burst_faults: AtomicUsize::new(0),
+            #[cfg(feature = "test-hooks")]
+            refusal_faults: AtomicUsize::new(0),
             stopping: AtomicBool::new(false),
             hard: AtomicBool::new(false),
             clock,
@@ -317,40 +387,160 @@ impl Shared {
     }
 
     /// Sets what runs when a request is queued, an exchange ends or the run stops: the
-    /// program's `next` waits on it.
-    /// Set once, before serving starts; read on every event without a lock. A second call
-    /// changes nothing and returns `false` (it is a bug in the caller, and a debug build
-    /// stops).
-    pub fn on_ready(&self, f: Ready) -> bool {
-        let first = self.notify.set(f).is_ok();
-        debug_assert!(first, "on_ready is set once");
-        first
+    /// program's `next` waits on it. Set once, before serving starts; read on every event
+    /// without a lock. A second call is a defined error: it changes nothing and returns
+    /// [`AlreadyRegistered`], in every build.
+    pub fn on_ready(&self, f: Ready) -> Result<(), AlreadyRegistered> {
+        self.notify.set(f).map_err(|_| AlreadyRegistered)
     }
 
     /// Sets what runs when a connection of grant `index` closes and frees a slot: the acceptor
-    /// registers the listener again.
-    /// Set once like [`Shared::on_ready`]; a second call changes nothing and returns `false`.
-    pub fn on_slot_freed(&self, f: Freed) -> bool {
-        let first = self.freed.set(f).is_ok();
-        debug_assert!(first, "on_slot_freed is set once");
-        first
+    /// registers the listener again. Set once like [`Shared::on_ready`], with the same error.
+    pub fn on_slot_freed(&self, f: Freed) -> Result<(), AlreadyRegistered> {
+        self.freed.set(f).map_err(|_| AlreadyRegistered)
     }
 
+    /// Runs the program's callback. A panic in it is caught and counted: it must not end the
+    /// serve thread it runs on, which would take that thread's connections with it.
     pub(crate) fn notify(&self) {
-        if let Some(f) = self.notify.get() {
-            f();
+        if let Some(f) = self.notify.get()
+            && catch_unwind(AssertUnwindSafe(|| f())).is_err()
+        {
+            self.fault();
         }
     }
 
     pub(crate) fn slot_freed(&self, grant: usize) {
-        if let Some(f) = self.freed.get() {
-            f(grant);
+        if let Some(f) = self.freed.get()
+            && catch_unwind(AssertUnwindSafe(|| f(grant))).is_err()
+        {
+            self.fault();
         }
     }
 
-    /// Sends a message to serve thread `thread`.
+    /// Counts a panic that was contained.
+    pub(crate) fn fault(&self) {
+        self.faults.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Panics contained so far, in callbacks and connections' steps.
+    pub fn faults(&self) -> usize {
+        self.faults.load(Ordering::Relaxed)
+    }
+
+    /// Sends a message to serve thread `thread`; `true` when it went to a thread that had not
+    /// ended. A message for a thread that ended is handled here instead ([`Shared::bury`]): its
+    /// connection closes and gives back what it took, a peer's expiry goes to a live thread.
+    /// The sender pushes, issues a full fence, then loads `ended`; the ending thread sets its
+    /// inbox aside, stores `ended`, issues a full fence, then drains the inbox: so either the
+    /// sender sees `ended` and drains, or the ending thread's drain finds the message, and no
+    /// message is lost.
     pub fn send(&self, thread: usize, msg: Msg) -> bool {
-        self.ports.get(thread).is_some_and(|port| port.send(msg))
+        let Some(port) = self.ports.get(thread) else {
+            return false;
+        };
+        if port.is_ended() {
+            self.bury(thread, msg);
+            return false;
+        }
+        if let Err(msg) = port.push(msg) {
+            self.bury(thread, msg);
+            return false;
+        }
+        fence(Ordering::SeqCst);
+        if port.is_ended() {
+            // The message may have reached the thread before it ended, or be in its inbox.
+            self.drain_ended(thread);
+            return false;
+        }
+        port.wake_if_sleeping();
+        true
+    }
+
+    /// Whether serve thread `thread` ended (or does not exist).
+    pub fn is_ended(&self, thread: usize) -> bool {
+        self.ports.get(thread).is_none_or(Port::is_ended)
+    }
+
+    /// The first serve thread from `start` on, in a ring, that has not ended. O(1) while every
+    /// thread lives, O(threads) at worst.
+    pub fn live_from(&self, start: usize) -> Option<usize> {
+        let n = self.threads;
+        (0..n)
+            .map(|step| (start % n.max(1) + step) % n)
+            .find(|&thread| !self.is_ended(thread))
+    }
+
+    /// Serve thread `thread` ended, normally or by a panic, and gives up `inbox`: from here no
+    /// message waits for it. The caller then closes the connections it owned
+    /// (`Thread::abandon`).
+    pub fn end_thread(&self, thread: usize, inbox: Receiver<Msg>) {
+        let Some(port) = self.ports.get(thread) else {
+            return;
+        };
+        *lock(&port.orphan) = Some(inbox);
+        port.ended.store(true, Ordering::SeqCst);
+        fence(Ordering::SeqCst);
+        self.drain_ended(thread);
+    }
+
+    /// Handles what waits in the inbox of an ended thread. The messages are taken under the
+    /// inbox's lock and handled after it, so two drains never wait on each other.
+    fn drain_ended(&self, thread: usize) {
+        let Some(port) = self.ports.get(thread) else {
+            return;
+        };
+        let waiting: Vec<Msg> = lock(&port.orphan)
+            .as_ref()
+            .map(|inbox| inbox.try_iter().collect())
+            .unwrap_or_default();
+        for msg in waiting {
+            self.bury(thread, msg);
+        }
+    }
+
+    /// What a message for the ended thread `thread` becomes. A connection handed to it closes
+    /// and gives back its slot and its peer's place; a reply or a close is for a connection
+    /// the thread closed when it ended; a peer's expiry goes to a live thread; a turn to accept
+    /// or a stop needs nothing.
+    fn bury(&self, thread: usize, msg: Msg) {
+        match msg {
+            Msg::Adopt(adopt) => {
+                let Adopt { socket, conn } = *adopt;
+                // The socket closes first: the peer sees the close at once.
+                drop(socket);
+                self.reject(&conn);
+            }
+            Msg::Reply { conn, .. } | Msg::Close(conn) => {
+                conn.close();
+            }
+            Msg::PeerExpiry { grant, peer, at } => {
+                self.expire_peer_at(thread.wrapping_add(1), grant, peer, at);
+            }
+            Msg::Accept | Msg::Stop | Msg::HardStop => {}
+        }
+    }
+
+    /// A connection charged at accept that no serve thread will own: it closes, and its slot and
+    /// its place in its peer's entry are given back.
+    fn reject(&self, conn: &Arc<ConnShared>) {
+        conn.close();
+        let state = &conn.grant;
+        let now = self.clock.now();
+        if let Some(at) = state.peers.close(&conn.peer, now) {
+            self.expire_peer_at(conn.owner.wrapping_add(1), state.index, conn.peer.key, at);
+        }
+        state.give_slot();
+        self.slot_freed(state.index);
+    }
+
+    /// Asks a live serve thread, the first from `start` on, to forget the entry of `peer` of
+    /// `grant` at `at`. With no live thread left nothing serves the grant any more, and the
+    /// entry stays until the run ends.
+    pub(crate) fn expire_peer_at(&self, start: usize, grant: usize, peer: PeerKey, at: u64) {
+        if let Some(thread) = self.live_from(start) {
+            self.send(thread, Msg::PeerExpiry { grant, peer, at });
+        }
     }
 
     /// Records that thread `thread` holds the turn to accept.
@@ -365,23 +555,77 @@ impl Shared {
 
     /// Passes the turn to accept from thread `from` to another serve thread that can take it:
     /// one that sleeps first (it is idle), else any other; a thread that ended is skipped.
-    /// `false` when no other thread took it.
+    /// The receiver is recorded before the message is sent, so a receiver that takes the turn
+    /// and passes it on at once is never overwritten by a late record. `false` when no other
+    /// thread took it, and the turn is `from`'s again.
     pub fn pass_turn(&self, from: usize) -> bool {
         let n = self.threads;
         for sleeping_first in [true, false] {
             for step in 1..n {
                 let thread = (from + step) % n;
-                let sleeps = self.ports.get(thread).is_some_and(Port::is_sleeping);
-                if sleeping_first && !sleeps {
+                let Some(port) = self.ports.get(thread) else {
+                    continue;
+                };
+                if port.is_ended() || (sleeping_first && !port.is_sleeping()) {
                     continue;
                 }
+                self.turn.store(thread, Ordering::SeqCst);
                 if self.send(thread, Msg::Accept) {
-                    self.turn.store(thread, Ordering::SeqCst);
+                    return true;
+                }
+                // Not delivered to a live thread. When the record moved on meanwhile, the
+                // receiver took the turn before it ended and its end handed it on: the turn is
+                // not `from`'s any more.
+                if self
+                    .turn
+                    .compare_exchange(thread, from, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_err()
+                {
                     return true;
                 }
             }
         }
         false
+    }
+
+    /// Thread `thread` ended: when it held the turn to accept, the turn goes to a live thread,
+    /// so the run keeps listening. Exactly one of this and a pass that raced the end hands the
+    /// turn on.
+    pub fn hand_on_turn(&self, thread: usize) {
+        if self
+            .turn
+            .compare_exchange(thread, HANDING, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+            && !self.pass_turn(thread)
+        {
+            // No live thread is left to take it.
+            self.turn.store(thread, Ordering::SeqCst);
+        }
+    }
+
+    /// Asks serve thread `thread` to panic at the next pass of its loop, as an engine fault
+    /// would, so a test sees what its end gives back.
+    #[cfg(feature = "test-hooks")]
+    pub fn kill_for_test(&self, thread: usize) {
+        if let (Some(flag), Some(port)) = (self.kill.get(thread), self.ports.get(thread)) {
+            flag.store(true, Ordering::SeqCst);
+            port.waker.wake();
+        }
+    }
+
+    /// Whether a test asked thread `thread` to panic.
+    #[cfg(feature = "test-hooks")]
+    pub fn take_kill(&self, thread: usize) -> bool {
+        self.kill
+            .get(thread)
+            .is_some_and(|flag| flag.swap(false, Ordering::SeqCst))
+    }
+
+    /// The dead requests counted in the queue of `thread` and `grant`, for tests.
+    #[cfg(feature = "test-hooks")]
+    pub fn queued_dead(&self, thread: usize, grant: usize) -> usize {
+        self.queue(thread, grant)
+            .map_or(0, |queue| lock(&queue.items).dead)
     }
 
     /// The port of a thread.
@@ -402,37 +646,114 @@ impl Shared {
         let Some(state) = self.grants.get(grant) else {
             return Ok(());
         };
-        let owner = place::owner(self.key, self.threads, grant, address);
+        // The peer's address is input: a panic on the way to the hand-off is contained, and
+        // what was taken so far, as recorded in `taken`, is given back.
+        let mut taken = Taken::Slot;
+        let outcome = catch_unwind(AssertUnwindSafe(|| {
+            self.accept_steps(state, socket, address, now, &mut taken)
+        }));
+        if let Ok(result) = outcome {
+            return result;
+        }
+        self.fault();
+        match taken {
+            // From the hand-off on, the message owns what the connection holds (once pushed;
+            // a fault before the push leaves the slot and the peer's place held).
+            Taken::Handed | Taken::Released => return Err(AcceptRefusal::Fault),
+            Taken::Peer(peer) => {
+                if let Some(at) = state.peers.close(&peer, now) {
+                    self.expire_peer_at(0, grant, peer.key, at);
+                }
+            }
+            Taken::Slot => {}
+        }
+        state.give_slot();
+        self.slot_freed(grant);
+        Err(AcceptRefusal::Fault)
+    }
+
+    /// The steps of [`Shared::accept`], recording in `taken` what the connection holds.
+    fn accept_steps(
+        &self,
+        state: &Arc<GrantState>,
+        socket: Box<dyn Socket>,
+        address: SocketAddr,
+        now: u64,
+        taken: &mut Taken,
+    ) -> Result<(), AcceptRefusal> {
+        let grant = state.index;
+        // The keyed owner, or the next live thread in the ring when it ended (a thread that
+        // panicked): placement stays a function of the connection's addresses and of which
+        // threads ended. `None` only when the caller is not a serve thread (the simulator): a
+        // serve thread that accepts is itself live.
+        let placed = place::owner(self.key, self.threads, grant, address);
+        let Some(owner) = self.live_from(placed) else {
+            *taken = Taken::Released;
+            state.give_slot();
+            self.slot_freed(grant);
+            return Err(AcceptRefusal::NoThread);
+        };
         let peer = match state.admit(address.ip(), now) {
             Ok(peer) => peer,
             Err(refused) => {
+                *taken = Taken::Released;
                 state.give_slot();
                 self.slot_freed(grant);
+                #[cfg(feature = "test-hooks")]
+                #[allow(clippy::panic)]
+                if take_one(&self.refusal_faults) {
+                    panic!("a refusal at accept fails by a fault, for a test");
+                }
                 if let Some((peer, at)) = refused.expiry {
                     self.send(owner, Msg::PeerExpiry { grant, peer, at });
                 }
                 return Err(refused.reason);
             }
         };
-        let conn = ConnShared::new(Arc::clone(state), peer, owner, address);
-        let kept = Arc::clone(&conn);
-        if !self.send(owner, Msg::Adopt(Box::new(Adopt { socket, conn }))) {
-            // The owner is gone: the connection closes at once and gives back what it took.
-            kept.close();
-            if let Some(at) = state.peers.close(&kept.peer, now) {
-                self.send(
-                    owner,
-                    Msg::PeerExpiry {
-                        grant,
-                        peer: kept.peer.key,
-                        at,
-                    },
-                );
-            }
-            state.give_slot();
-            self.slot_freed(grant);
+        *taken = Taken::Peer(Arc::clone(&peer));
+        #[cfg(feature = "test-hooks")]
+        #[allow(clippy::panic)]
+        if take_one(&self.accept_faults) {
+            panic!("an accept fails by a fault, for a test");
         }
+        let conn = ConnShared::new(Arc::clone(state), peer, owner, address);
+        *taken = Taken::Handed;
+        // An owner that ends meanwhile: `send` closes the connection, gives back what it took
+        // and sends the peer's expiry to a live thread (`Shared::bury`).
+        self.send(owner, Msg::Adopt(Box::new(Adopt { socket, conn })));
         Ok(())
+    }
+
+    /// The next `n` calls of [`Shared::accept`] panic after the peer is admitted, in tests.
+    #[cfg(feature = "test-hooks")]
+    pub fn fail_next_accepts(&self, n: usize) {
+        self.accept_faults.store(n, Ordering::SeqCst);
+    }
+
+    /// The next `n` refusals at accept panic after they gave the slot back, in tests.
+    #[cfg(feature = "test-hooks")]
+    pub fn fail_next_refusals(&self, n: usize) {
+        self.refusal_faults.store(n, Ordering::SeqCst);
+    }
+
+    /// The next `n` bursts of accepting panic before they take a slot, which ends the serve
+    /// thread that accepts, in tests.
+    #[cfg(feature = "test-hooks")]
+    pub fn fail_next_bursts(&self, n: usize) {
+        self.burst_faults.store(n, Ordering::SeqCst);
+    }
+
+    /// Whether a burst should panic now (see [`Shared::fail_next_bursts`]).
+    #[cfg(feature = "test-hooks")]
+    pub fn take_burst_fault(&self) -> bool {
+        take_one(&self.burst_faults)
+    }
+
+    /// The serve thread the keyed hash names for a connection from `address` on `grant`, in
+    /// tests.
+    #[cfg(feature = "test-hooks")]
+    pub fn placed_owner(&self, grant: usize, address: SocketAddr) -> usize {
+        place::owner(self.key, self.threads, grant, address)
     }
 
     /// Whether `grant` has a queue that holds a request now.

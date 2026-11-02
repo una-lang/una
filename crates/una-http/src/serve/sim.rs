@@ -166,7 +166,7 @@ pub struct Sim {
     /// The clock.
     pub clock: Arc<SimClock>,
     threads: Vec<Thread>,
-    inboxes: Vec<Receiver<Msg>>,
+    inboxes: Vec<Option<Receiver<Msg>>>,
     peers: BTreeMap<u64, Peer>,
     by_address: BTreeMap<SocketAddr, u64>,
     /// Connections the server refused at accept, with the reason and the time.
@@ -194,7 +194,7 @@ impl Sim {
             shared,
             clock,
             threads,
-            inboxes,
+            inboxes: inboxes.into_iter().map(Some).collect(),
             peers: BTreeMap::new(),
             by_address: BTreeMap::new(),
             refused: Vec::new(),
@@ -211,6 +211,7 @@ impl Sim {
         loop {
             let mut any = false;
             for (index, inbox) in self.inboxes.iter().enumerate() {
+                let Some(inbox) = inbox else { continue };
                 while let Ok(msg) = inbox.try_recv() {
                     any = true;
                     let now = self.clock.now();
@@ -432,5 +433,54 @@ impl Sim {
     /// Timers armed over all threads.
     pub fn timers(&self) -> usize {
         self.threads.iter().map(Thread::timers).sum()
+    }
+
+    /// Serve thread `thread` ends, as after a panic outside a connection's step: what the real
+    /// serve thread does then (`Shared::end_thread`, then `Thread::abandon`).
+    pub fn kill(&mut self, thread: usize) {
+        let now = self.clock.now();
+        if let Some(inbox) = self.inboxes.get_mut(thread).and_then(Option::take) {
+            self.shared.end_thread(thread, inbox);
+        }
+        if let Some(serve) = self.threads.get_mut(thread) {
+            serve.abandon(now);
+        }
+        self.settle();
+    }
+
+    /// The serve thread that owns connection `k`, once it was adopted.
+    pub fn thread_of(&self, k: u64) -> Option<usize> {
+        self.peers
+            .get(&k)
+            .filter(|peer| peer.token.is_some())
+            .map(|peer| peer.thread)
+    }
+
+    /// The next timer a connection of serve thread `thread` arms panics inside the wheel.
+    pub fn fault_in_wheel(&mut self, thread: usize) {
+        if let Some(serve) = self.threads.get_mut(thread) {
+            serve.fault_in_wheel();
+        }
+    }
+
+    /// The next `n` closes of connections of serve thread `thread` panic inside the readiness.
+    pub fn fault_in_forget(&mut self, thread: usize, n: usize) {
+        if let Some(serve) = self.threads.get_mut(thread) {
+            serve.fault_in_forget(n);
+        }
+    }
+
+    /// The next step of a connection of serve thread `thread` panics.
+    pub fn fault_in_step(&mut self, thread: usize) {
+        if let Some(serve) = self.threads.get_mut(thread) {
+            serve.fault_in_step();
+        }
+    }
+
+    /// The next timer a connection of serve thread `thread` arms fails, as with a full wheel.
+    pub fn fail_next_arm(&mut self, thread: usize) {
+        if let Some(serve) = self.threads.get_mut(thread) {
+            serve.fail_next_arm();
+        }
     }
 }
