@@ -33,7 +33,8 @@ una-http = { workspace = true, features = ["test-hooks"] }
 # every other module keeps the rule of compiler/conventions.md §1.
 [lints.rust]
 unsafe_code = "deny"
-# `una_fuzz`: set only by scripts/sanitize.sh for the fuzz targets of `fuzz/` (#766).
+# `una_fuzz`: set only by scripts/sanitize.sh and scripts/fuzz-smoke.sh, through the flags of
+# scripts/fuzz-targets.sh, for the fuzz targets of `fuzz/` (#766, #1430).
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(una_fuzz)"] }
 
 [lints.clippy]
