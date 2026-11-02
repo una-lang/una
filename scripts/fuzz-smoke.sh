@@ -39,6 +39,8 @@ step() {
 }
 
 FUZZ_SMOKE_DIVISOR=20
+# A floor on the count that never binds today: the smallest gate count, 300000, gives 15000.
+# It keeps a run meaningful if a target's gate count is ever set low.
 FUZZ_SMOKE_MIN=2000
 FUZZ_SMOKE_FLOOR_DIVISOR=4
 
@@ -53,8 +55,12 @@ host=$(rustc +"$channel" -vV | sed -n 's/^host: //p')
 
 . "$root/scripts/fuzz-targets.sh"
 fuzz_out=${CARGO_TARGET_DIR:-$root/target}/fuzz-smoke
-mkdir -p "$fuzz_out"
-fuzz_out=$(CDPATH='' cd -- "$fuzz_out" && pwd)
+mkdir -p "$fuzz_out" || fail "the fuzz output directory $fuzz_out could not be made"
+# An absolute, existing directory, or nothing below may run: every path of a run, the ones
+# `rm -rf` removes included, is under it.
+fuzz_out=$(CDPATH='' cd -- "$fuzz_out" && pwd) && [ -n "$fuzz_out" ] && [ "$fuzz_out" != / ] \
+    || fail "the fuzz output directory is missing or not a directory"
+case $fuzz_out in /*) ;; *) fail "the fuzz output directory $fuzz_out is not absolute" ;; esac
 step "The fuzz targets, with libFuzzer and AddressSanitizer" fuzz_build
 fuzz_bin=$fuzz_out/build/$host/release
 # A ceiling only, as in the gate: each smoke run takes seconds.

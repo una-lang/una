@@ -2,8 +2,9 @@
 # the package manager's documents (#997): the provenance, the archive and `ita.lock`, and of the
 # parsers of the documents a package registry serves (ADR 0122). Outside the
 # workspace: its own `[workspace]` and Cargo.lock, so the workspace's stable builds never see
-# it. scripts/sanitize.sh builds it with the checking toolchain of scripts/check-toolchain.toml,
-# with libFuzzer's coverage, AddressSanitizer and `--cfg una_fuzz`, and runs each target.
+# it. scripts/sanitize.sh and scripts/fuzz-smoke.sh build it with the checking toolchain of
+# scripts/check-toolchain.toml and the flags of scripts/fuzz-targets.sh (libFuzzer's coverage,
+# AddressSanitizer and `--cfg una_fuzz`), and run each target.
 [package]
 name = "una-rt-fuzz"
 version = "0.0.0"

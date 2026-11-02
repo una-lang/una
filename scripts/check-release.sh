@@ -260,7 +260,8 @@ if nm -a "$tmp/$name/una" 2>/dev/null | grep -q "$marker" || LC_ALL=C grep -a -q
     exit 1
 fi
 # AddressSanitizer's fiber interface and its unpoisoning are declared only in builds with
-# `--cfg una_asan`, which scripts/sanitize.sh alone sets (#1145): no shipped `una` or
+# `--cfg una_asan`, which only scripts/sanitize.sh and scripts/fuzz-smoke.sh set, the latter
+# through the fuzz flags of scripts/fuzz-targets.sh (#1145, #1430): no shipped `una` or
 # `libuna_rt.a` may refer to them, by symbol or by bytes.
 asan_symbols="-e __sanitizer_start_switch_fiber -e __sanitizer_finish_switch_fiber -e __asan_unpoison_memory_region"
 for artifact in "$una" "$runtime"; do

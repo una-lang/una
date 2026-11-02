@@ -59,7 +59,7 @@ fuzz_check_listed() {
 # Runs target $1 for $2 inputs; its status is left in $fuzz_rc, and in $fuzz_artifact the
 # input it kept for a crash, a timeout or an out-of-memory, if any.
 fuzz_run() {
-    dir=$fuzz_out/$1
+    dir=${fuzz_out:?}/${1:?}
     # A previous run's reproducers are kept, moved aside under the time they were moved; only
     # the canary's, which are its planted crash, are removed.
     if [ "$1" != canary ] && [ -n "$(find "$dir/artifacts" -type f 2>/dev/null | head -1)" ]; then
