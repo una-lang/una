@@ -1,0 +1,30 @@
+# The musl inputs built into a Linux `una` (ADR 0124 rules 12 and 20, step 4a): musl's C library,
+# the start-up objects of a static-pie executable and LLVM's libunwind.a, from the self-contained
+# directory of each musl target of the Rust toolchain that rust-toolchain.toml pins (the rustup
+# component rust-std of that target). These digests are the reference: scripts/release.sh
+# refuses a toolchain file whose SHA-256 differs, crates/una-cli/build.rs refuses a digest list
+# that differs from this table for the target it builds, scripts/check-release.sh checks that the
+# packed `una` carries exactly these digests, and a test of una-link compares the installed
+# toolchain's files with them. A bump of the Rust toolchain updates this file deliberately, in
+# the same change, after scripts/scan-musl.sh passes on both targets (rule 24).
+#
+# Rust 1.98.1, musl 1.2.5 (read from libc.a's __libc_version), recorded 2026-11-02.
+# Licenses: musl MIT; libunwind Apache-2.0 WITH LLVM-exception.
+
+[x86_64-unknown-linux-musl]
+"libc.a" = "e699c64b0c6b427d89ad5bf767bf78beb30c19930c5dedff635951636e8f9f70"
+"rcrt1.o" = "7998a49f23b463b1bf59aecd8fde59df5d0f0bf819d1272d92c6f00ae81fc429"
+"crti.o" = "5343749d306ea3578a4ae5c796be362100273f3314cec283be621bbe4a8ec720"
+"crtn.o" = "794abd4b28db5de5f993b1445460d90fa3191cc9556a8b8881d5d34a5e8dfa87"
+"crtbeginS.o" = "297960e338581a38bbfcbee45169a847bcdc5527ccaf68abe95b72b3b0856bed"
+"crtendS.o" = "0d11009c048ae289cdf184d726b767debc2972321e143838d28d7b6802b69c7c"
+"libunwind.a" = "eb16569e611a5d6cdda2e7604fd6402a3ad810817dd8d63ed50baa2ce8070aaa"
+
+[aarch64-unknown-linux-musl]
+"libc.a" = "b03473b6f1efb72f700f561b4407a88885b37e0edb5cdb2a64de0df5499e813f"
+"rcrt1.o" = "e65dadc816775ab1d8d915f7f6fc4baa5080c1bea633b4372ff73e3b7b2df81c"
+"crti.o" = "b49a67e2e36eed4836023fc26ff9da617e2020a2317aadfeb7971e4cbe612bf7"
+"crtn.o" = "b2f52a98df83f38814f34f7477aeb629d5e1fb1c1379ef2739cad91ab9ab8734"
+"crtbeginS.o" = "522c4ac7628b80df407f1873be18b6b9b398db5be7f9f5586835cdfd189f6a9e"
+"crtendS.o" = "9fd9518f8a0ba537a77c5d5c638ec30efa388a9458c21ad84f5607c535547adb"
+"libunwind.a" = "06977ce3e033cf2c06fcbac9b25b7c9213c7b4aa09f2a4d4b4427fb809b9f203"

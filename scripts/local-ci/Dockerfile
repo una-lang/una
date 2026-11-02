@@ -17,6 +17,8 @@ RUN apt-get update \
 # cmake, g++, make: the Z3 build of scripts/build-z3.sh (ADR 0124 rule 1), whose Linux toolchain is
 # this image's.
 
+# The musl targets that rust-toolchain.toml lists (ADR 0124 step 4) are installed with the
+# toolchain, so that no container run downloads them.
 # rustup-init for the image's architecture (TARGETARCH, which `docker build --platform` sets),
 # checked against the digest that static.rust-lang.org publishes with it.
 ARG RUSTUP_VERSION=1.29.1
@@ -36,6 +38,7 @@ RUN case "$TARGETARCH" in \
     && chmod +x /tmp/rustup-init \
     && /tmp/rustup-init -y --no-modify-path --profile minimal \
         --default-toolchain "$TOOLCHAIN" --component clippy --component rustfmt \
+        --target x86_64-unknown-linux-musl --target aarch64-unknown-linux-musl \
     && rm /tmp/rustup-init
 
 WORKDIR /work

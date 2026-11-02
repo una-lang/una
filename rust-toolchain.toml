@@ -1,4 +1,9 @@
 [toolchain]
 channel = "1.98.1"
 components = ["clippy", "rustfmt"]
+# The musl targets (ADR 0124 rules 12 and 16, step 4): their `self-contained` directory holds the
+# C library, start-up objects and `libunwind.a` that `scripts/release.sh` embeds into a Linux
+# `una` (pinned by supply-chain/musl.lock), and the runtime will be built for them once the
+# internal linker of Linux links it (slice 4c). The host's own target is always installed.
+targets = ["x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl"]
 profile = "minimal"

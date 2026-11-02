@@ -182,6 +182,22 @@ if [ -z "$reported" ] || [ "$reported" != "$embedded" ]; then
     echo "error: the packed una reports the runtime \"$reported\"; $runtime is $embedded" >&2
     exit 1
 fi
+# A Linux `una` carries the musl inputs of its own architecture (ADR 0124 rules 12 and 20, step
+# 4a), exactly those supply-chain/musl.lock pins: each pinned digest is a string of its build
+# record (`musl_sha256s`, `libunwind_sha256`), and the musl target of the other architecture
+# contributes none. A macOS `una` carries none.
+case $target in
+    *-linux-*)
+        musl_target=${target%%-*}-unknown-linux-musl
+        pins=$(sed -n '/^\['"$musl_target"'\]$/,/^\[/s/^"[^"]*" *= *"\([0-9a-f]*\)"$/\1/p' supply-chain/musl.lock)
+        [ "$(printf '%s\n' "$pins" | grep -c .)" -eq 7 ] \
+            || { echo "error: supply-chain/musl.lock does not pin the 7 musl inputs of $musl_target" >&2; exit 1; }
+        for pin in $pins; do
+            grep -a -q "$pin" "$una" \
+                || { echo "error: the packed una does not record the musl input $pin that supply-chain/musl.lock pins for $musl_target" >&2; exit 1; }
+        done
+        ;;
+esac
 # The runtime lost its debug sections (ADR 0124 rule 12, #1359), so that no line table or path of
 # the machine that built it reaches an executable: no `__DWARF` segment or `__debug_*` section in
 # a Mach-O member (`otool -l`), no `.debug_*` section in an ELF one (`objdump -h`). The runtime

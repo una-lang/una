@@ -15,6 +15,7 @@ mod ita;
 mod ita_registry;
 mod lsp;
 mod migrate;
+mod musl_inputs;
 mod package;
 mod proof_key;
 mod recovery;
@@ -1428,6 +1429,8 @@ fn development_build() -> bool {
 /// The build record (ADR 0124 rule 20): what this `una` was built with, as one JSON document
 /// with keys in a fixed order, which the solver child's handshake hashes and the report lists.
 /// `runtime_sha256` is the digest of the embedded runtime (step 2), empty in a development
+/// build. `musl_sha256s` (by file name, in byte order) and `libunwind_sha256` are the digests
+/// of the musl inputs a Linux release carries (step 4a), empty on macOS and in a development
 /// build.
 #[derive(serde::Serialize)]
 struct BuildRecord {
@@ -1439,6 +1442,8 @@ struct BuildRecord {
     z3_source_sha256: &'static str,
     z3_library_sha256: &'static str,
     runtime_sha256: &'static str,
+    musl_sha256s: std::collections::BTreeMap<&'static str, &'static str>,
+    libunwind_sha256: &'static str,
     development: bool,
 }
 
@@ -1454,9 +1459,11 @@ pub fn build_record() -> String {
         z3_source_sha256: z3.source_sha256,
         z3_library_sha256: z3.library_sha256,
         runtime_sha256: runtime_archive::SHA256.unwrap_or_default(),
+        musl_sha256s: musl_inputs::musl_sha256s(),
+        libunwind_sha256: musl_inputs::libunwind_sha256(),
         development: development_build(),
     };
-    // INVARIANT: a struct of strings and a bool always serializes.
+    // INVARIANT: a struct of strings, a map of strings and a bool always serializes.
     serde_json::to_string(&record).unwrap_or_default()
 }
 
@@ -1956,6 +1963,39 @@ fn keyword_set(edition: una_project::Edition) -> KeywordSet {
 mod tests {
     use super::{ExitStatus, Guard, on_large_stack, panic_location};
     use crate::args::Command;
+
+    /// ADR 0124 rule 20: the build record's keys, in their fixed order, with the musl inputs'
+    /// digests after the runtime's (step 4a): an object by file name and libunwind's digest,
+    /// both empty where `una` carries none (macOS, a development build).
+    #[test]
+    fn the_build_record_lists_its_keys_in_order_with_the_musl_inputs() {
+        let record = super::build_record();
+        let keys: Vec<&str> = [
+            "\"schema\"",
+            "\"z3_library_sha256\"",
+            "\"runtime_sha256\"",
+            "\"musl_sha256s\"",
+            "\"libunwind_sha256\"",
+            "\"development\"",
+        ]
+        .into_iter()
+        .collect();
+        let places: Vec<usize> = keys
+            .iter()
+            .map(|key| record.find(key).unwrap_or(usize::MAX))
+            .collect();
+        assert!(places.windows(2).all(|pair| pair[0] < pair[1]), "{record}");
+        let value: serde_json::Value = serde_json::from_str(&record).unwrap();
+        let musl = value["musl_sha256s"].as_object().unwrap();
+        let libunwind = value["libunwind_sha256"].as_str().unwrap();
+        if cfg!(una_musl_embedded) {
+            assert_eq!(musl.len(), 6, "{record}");
+            assert_eq!(libunwind.len(), 64, "{record}");
+        } else {
+            assert!(musl.is_empty(), "{record}");
+            assert_eq!(libunwind, "", "{record}");
+        }
+    }
 
     /// The test-only hook of #376: a command that panics on the checker's own thread, as a bug
     /// in a pass would, joined and handed back as [`on_large_stack`] does.

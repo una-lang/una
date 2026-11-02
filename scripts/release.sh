@@ -6,7 +6,8 @@
 # ADR 0124), and its SHA-256 digest beside it in a .sha256 file (ADR 0035 rule 3). The runtime
 # that `una` embeds stays at target/release-remapped/embed/libuna_rt.a, where
 # scripts/check-release.sh scans it. Each target builds natively on its own
-# runner, so TARGET must be the host's. Two builds of one commit give the same archive (#679):
+# runner, so TARGET must be the host's. On Linux, `una` also embeds the musl inputs of its own
+# architecture from the pinned toolchain (ADR 0124 step 4a). Two builds of one commit give the same archive (#679):
 # its entries take the commit's time, SOURCE_DATE_EPOCH when set, else `git log -1 %ct`.
 #
 # Usage: scripts/release.sh TARGET
@@ -152,6 +153,38 @@ echo "strip: $target: $strip_tool"
 UNA_EMBED_RUNTIME=$embed/libuna_rt.a
 UNA_EMBED_RUNTIME_SHA256=$runtime_digest
 export UNA_EMBED_RUNTIME UNA_EMBED_RUNTIME_SHA256
+# The musl inputs of a Linux `una` (ADR 0124 rules 12 and 20, step 4a): musl's C library, the
+# start-up objects of a static-pie executable and libunwind.a, from the pinned toolchain's
+# self-contained directory of the musl target of this machine's architecture (the rust-std
+# component that rust-toolchain.toml's targets install), never from the building machine's own
+# C library. Each file's digest must be the one supply-chain/musl.lock pins for that musl target;
+# it is printed on a line `musl: <target>: <file> sha256 <digest>`, for the validation record,
+# and passed with the directory to una-cli's build script, which checks each file against the
+# lock again and embeds it. Only this target's inputs are carried (rule 12). The internal linker
+# of Linux links them from slice 4c on; until then `una build` on Linux links through `cc` with
+# the runtime built above, and checks these bytes before each link.
+case $target in
+    *-linux-*)
+        musl_target=${target%%-*}-unknown-linux-musl
+        musl_dir="$sysroot/lib/rustlib/$musl_target/lib/self-contained"
+        musl_digests=
+        for file in libc.a rcrt1.o crti.o crtn.o crtbeginS.o crtendS.o libunwind.a; do
+            [ -f "$musl_dir/$file" ] \
+                || { echo "error: $musl_dir/$file is missing; install the toolchain's $musl_target target (rustup target add $musl_target), which rust-toolchain.toml lists" >&2; exit 2; }
+            digest=$(sha256_of "$musl_dir/$file")
+            pinned=$(sed -n '/^\['"$musl_target"'\]$/,/^\[/s/^"'"$file"'" *= *"\([0-9a-f]*\)"$/\1/p' supply-chain/musl.lock | head -n 1)
+            [ -n "$pinned" ] \
+                || { echo "error: supply-chain/musl.lock records no digest of $file for $musl_target" >&2; exit 2; }
+            [ "$digest" = "$pinned" ] \
+                || { echo "error: $musl_dir/$file has SHA-256 $digest, but supply-chain/musl.lock pins $pinned for $musl_target; a toolchain bump updates the lock after scripts/scan-musl.sh passes" >&2; exit 2; }
+            echo "musl: $target: $file sha256 $digest"
+            musl_digests="$musl_digests${musl_digests:+ }$file=$digest"
+        done
+        UNA_EMBED_MUSL_DIR=$musl_dir
+        UNA_EMBED_MUSL_SHA256S=$musl_digests
+        export UNA_EMBED_MUSL_DIR UNA_EMBED_MUSL_SHA256S
+        ;;
+esac
 cargo build --release --locked --target-dir "$built" --package una-cli
 name="una-$version-$target"
 out="$root/target/release-archives"
