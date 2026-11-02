@@ -5,9 +5,8 @@
 //! at every place, the engine, given the addresses `ld.lld` chose, must write `ld.lld`'s bytes
 //! (`una_link::elf_oracle`). Every type of each target's list must be compared at least once.
 //! Tools of the test, not of `una`: the macOS gate machine has both (Apple's `clang` assembles
-//! ELF for both architectures). GNU `ld` is the second oracle, in the Linux container
+//! ELF for both architectures); on other hosts the test is listed as ignored, with its reason. GNU `ld` is the second oracle, in the Linux container
 //! (scripts/link-oracle-elf.sh).
-#![cfg(target_os = "macos")]
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -16,9 +15,12 @@
     clippy::print_stdout
 )]
 
+#[cfg(target_os = "macos")]
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "macos")]
 use std::process::Command;
 
+#[cfg(target_os = "macos")]
 /// The toolchain's `rust-lld`.
 fn rust_lld() -> PathBuf {
     let sysroot = Command::new("rustc")
@@ -39,6 +41,7 @@ fn rust_lld() -> PathBuf {
     lld
 }
 
+#[cfg(target_os = "macos")]
 fn run(command: &mut Command) {
     let output = command.output().expect("the tool runs");
     assert!(
@@ -48,6 +51,7 @@ fn run(command: &mut Command) {
     );
 }
 
+#[cfg(target_os = "macos")]
 /// Assembles `fixture` and absolute.s for `target` and links them with `ld.lld`, with `extra`
 /// flags; returns the fixture object's and the executable's bytes.
 fn build(dir: &Path, fixture: &str, target: &str, extra: &[&str]) -> (Vec<u8>, Vec<u8>) {
@@ -89,6 +93,7 @@ fn build(dir: &Path, fixture: &str, target: &str, extra: &[&str]) -> (Vec<u8>, V
     )
 }
 
+#[cfg(target_os = "macos")]
 #[test]
 fn every_type_writes_the_bytes_of_ld_lld() {
     let dir = std::env::temp_dir().join(format!("una-link-elf-oracle-{}", std::process::id()));
@@ -133,3 +138,9 @@ fn every_type_writes_the_bytes_of_ld_lld() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Elsewhere the test is listed as ignored, with its reason, rather than absent.
+#[cfg(not(target_os = "macos"))]
+#[test]
+#[ignore = "the ld.lld oracle runs on macOS, where Apple's clang assembles ELF for both targets; on Linux, scripts/link-oracle-elf.sh is the per-type oracle (GNU ld) at release time"]
+fn every_type_writes_the_bytes_of_ld_lld() {}

@@ -221,7 +221,9 @@ pub fn elf_oracle(object: &[u8], linked: &[u8]) -> Result<ElfOracle> {
     }
     let mut referents = Vec::with_capacity(fixture.symbols.len());
     let mut problems = Vec::new();
-    for symbol in &fixture.symbols {
+    // A problem stored per symbol names it by index: a name is copied only into a message that
+    // is reported.
+    for (position, symbol) in fixture.symbols.iter().enumerate() {
         let referent = match symbol.place {
             Place::Absolute => Ok(Referent::Absolute(symbol.value)),
             Place::Common { .. } => Err(Problem::internal("a common symbol in the fixture")),
@@ -231,8 +233,7 @@ pub fn elf_oracle(object: &[u8], linked: &[u8]) -> Result<ElfOracle> {
                 Some(&(value, Kind::Address)) => Ok(Referent::Address(value)),
                 None if symbol.weak() => Ok(Referent::UndefinedWeak),
                 None => Err(Problem::internal(format!(
-                    "the fixture's `{}` is undefined in the oracle's output too",
-                    shown(symbol.name)
+                    "the fixture's symbol {position} is undefined in the oracle's output too"
                 ))),
             },
             Place::Section(index) => {
@@ -255,8 +256,7 @@ pub fn elf_oracle(object: &[u8], linked: &[u8]) -> Result<ElfOracle> {
                         Ok(Referent::Address(value))
                     }
                     None => Err(Problem::internal(format!(
-                        "the fixture's `{}` is in a section the executable does not contain",
-                        shown(symbol.name)
+                        "the fixture's symbol {position} is in a section the executable does not contain"
                     ))),
                 }
             }
@@ -430,12 +430,18 @@ fn equivalent(
             let stub = [".plt", ".plt.got"].iter().any(|name| {
                 out.sections
                     .get(*name)
-                    .is_some_and(|&(address, _, size, _)| {
-                        reached >= address && reached < address.wrapping_add(size)
+                    .is_some_and(|&(address, offset, size, _)| {
+                        reached >= address
+                            && reached < address.wrapping_add(size)
+                            && null_slot(
+                                out,
+                                reached.wrapping_sub(address).wrapping_add(offset),
+                                reached,
+                            )
                     })
             });
             (rela.kind == crate::elf::x86_64::R_PLT32 && stub).then_some(
-                "GNU ld called the undefined weak function through a `.plt.got` stub of a null slot",
+                "GNU ld called the undefined weak function through a `.plt.got` stub whose GOT slot holds 0",
             )
         }
         (Arch::Aarch64, Action::Direct, Referent::UndefinedWeak) => {
@@ -446,4 +452,30 @@ fn equivalent(
         }
         _ => None,
     }
+}
+
+/// Whether the stub at `address` (at `file` in the linker's output) jumps through a GOT slot that
+/// holds 0 and has no dynamic relocation: `jmp *slot(%rip)` (`ff 25`), possibly after an
+/// `endbr64` and a `bnd` prefix, within the stub's first 8 bytes.
+fn null_slot(out: &Linked<'_>, file: u64, address: u64) -> bool {
+    let Ok(file) = usize::try_from(file) else {
+        return false;
+    };
+    let Some(stub) = out.data.get(file..file.saturating_add(16)) else {
+        return false;
+    };
+    (0..=8).any(|at| {
+        let Some(([0xff, 0x25], disp)) = stub
+            .get(at..at + 2)
+            .zip(stub.get(at + 2..at + 6))
+            .map(|(op, disp)| (<[u8; 2]>::try_from(op).unwrap_or_default(), disp))
+        else {
+            return false;
+        };
+        let disp = i32::from_le_bytes(<[u8; 4]>::try_from(disp).unwrap_or_default());
+        let slot = address
+            .wrapping_add(u64::try_from(at + 6).unwrap_or(0))
+            .wrapping_add_signed(i64::from(disp));
+        out.got.get(&slot) == Some(&0) && !out.dynamic.contains_key(&slot)
+    })
 }

@@ -7,8 +7,9 @@
 # which its assembler and linker do not know; `ld.lld` is their oracle), and absolute.s; GNU
 # `ld` links them into a static-pie executable in the bare local-ci container of the
 # architecture (linux/arm64 runs natively on the gate machine, linux/amd64 under emulation,
-# which does not change what a linker writes; no network, read-only, the objects mounted
-# read-only); then, on the host, `una_link::elf_oracle` runs the engine on the fixture's
+# which does not change what a linker writes; no network, a read-only root, all capabilities
+# dropped, and the run's own output directory, which holds the objects and receives the
+# executable, the only mount); then, on the host, `una_link::elf_oracle` runs the engine on the fixture's
 # sections with the addresses `ld` chose and compares the bytes at every place
 # (examples/elf-oracle.rs): equal, or one of the known choices of the same meaning, which it
 # lists (EQUIVALENT). tests/elf_oracle.rs does the same against `ld.lld` in every `cargo test`

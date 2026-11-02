@@ -20,13 +20,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use object::read::{Object, ObjectSection, ObjectSymbol, RelocationTarget};
-use object::{
-    Architecture, BinaryFormat, ObjectKind, RelocationFlags, SectionFlags, SymbolFlags,
-    SymbolSection,
-};
+use object::read::{Object, ObjectSection, RelocationTarget};
+use object::{Architecture, BinaryFormat, ObjectKind, RelocationFlags, SectionFlags};
 
 use crate::elf::Arch;
+use crate::elf::input::{self, ElfObject, Place, Symbol};
 use crate::elf::reloc::{self, Class};
 use crate::input::Archive;
 use crate::problem::{Problem, Result, shown};
@@ -91,7 +89,7 @@ pub fn scan_elf(name: &str, bytes: &[u8]) -> Result<ElfScan> {
 fn check_index(archive: &Archive<'_>) -> Result<u64> {
     let entries = archive.table()?;
     let listed: BTreeSet<(&[u8], u64)> = entries.iter().copied().collect();
-    let mut defined: BTreeMap<u64, (String, BTreeSet<Vec<u8>>)> = BTreeMap::new();
+    let mut defined: BTreeMap<u64, (String, BTreeSet<&[u8]>)> = BTreeMap::new();
     for (start, member, data) in archive.members()? {
         if member.ends_with("(lib.rmeta)") {
             continue;
@@ -100,14 +98,14 @@ fn check_index(archive: &Archive<'_>) -> Result<u64> {
         let header = start.checked_sub(60).ok_or_else(|| {
             Problem::internal(format!("cannot read `{member}`: a member without a header"))
         })?;
-        let file = object::File::parse(data)
-            .map_err(|error| Problem::internal(format!("cannot read `{member}`: {error}")))?;
+        // The linker's reader, whose names are borrowed from the member and bounded in total.
+        let object = input::read(&member, data)?;
         let mut names = BTreeSet::new();
-        for symbol in file.symbols() {
-            if symbol.is_undefined() || symbol.is_local() {
+        for symbol in &object.symbols {
+            if symbol.place == Place::Undefined || symbol.bind == crate::elf::STB_LOCAL {
                 continue;
             }
-            let name = symbol.name_bytes().unwrap_or_default();
+            let name = symbol.name;
             if !listed.contains(&(name, header)) {
                 return Err(Problem::internal(format!(
                     "`{member}` defines `{}`, which the symbol table of `{}` does not list for it",
@@ -115,7 +113,7 @@ fn check_index(archive: &Archive<'_>) -> Result<u64> {
                     archive.name
                 )));
             }
-            names.insert(name.to_vec());
+            names.insert(name);
         }
         defined.insert(header, (member, names));
     }
@@ -141,8 +139,6 @@ fn check_index(archive: &Archive<'_>) -> Result<u64> {
 /// `R_X86_64_IRELATIVE` and `R_AARCH64_IRELATIVE`.
 const X86_64_IRELATIVE: u32 = crate::elf::x86_64::R_IRELATIVE;
 const AARCH64_IRELATIVE: u32 = crate::elf::aarch64::R_IRELATIVE;
-/// `STT_GNU_IFUNC`.
-const STT_GNU_IFUNC: u8 = crate::elf::STT_GNU_IFUNC;
 /// `SHF_WRITE`, `SHF_ALLOC`, `SHF_EXECINSTR` and `SHF_TLS`.
 const SHF_WRITE: u64 = crate::elf::SHF_WRITE;
 const SHF_ALLOC: u64 = crate::elf::SHF_ALLOC;
@@ -176,25 +172,23 @@ fn scan_object(name: &str, data: &[u8]) -> Result<ElfScan> {
         other => return Err(bad(format!("an object for {other:?}"))),
     };
     check_relocation_sections(name, data)?;
+    // The linker's reader (step 4b): it refuses indirect functions and what else the linker
+    // would, and reads every name in O(log) within a budget linear in the input, so that the
+    // scan's work stays linear however the names share the string table (no name is copied
+    // but into a reported message or a listed common symbol, which is cut to 256 bytes).
+    let object = input::read(name, data)?;
     let mut scan = ElfScan::default();
-    for symbol in file.symbols() {
-        let symbol_name = shown(symbol.name_bytes().unwrap_or_default());
-        if let SymbolFlags::Elf { st_info, .. } = symbol.flags()
-            && st_info.st_type().0 == STT_GNU_IFUNC
-        {
-            return Err(Problem::internal(format!(
-                "`{name}` defines `{symbol_name}` as an indirect function (STT_GNU_IFUNC), which a static executable cannot have"
-            )));
+    for symbol in &object.symbols {
+        if let Place::Common { .. } = symbol.place {
+            let cut = symbol.name.get(..256).unwrap_or(symbol.name);
+            scan.common.insert(format!("{name}: {}", shown(cut)));
         }
-        if symbol.section() == SymbolSection::Common {
-            scan.common.insert(format!("{name}: {symbol_name}"));
-        }
-        if symbol_name == "__libc_version" && !symbol.is_undefined() {
-            scan.musl_version = Some(version(name, &file, &symbol)?);
+        if symbol.name == b"__libc_version" && !matches!(symbol.place, Place::Undefined) {
+            scan.musl_version = Some(version(name, &object, symbol)?);
         }
     }
     for section in file.sections() {
-        let section_name = section.name().unwrap_or("?").to_owned();
+        let section_name = || object.section_name(section.index().0);
         let flags = match section.flags() {
             SectionFlags::Elf { sh_flags, .. } => sh_flags.0,
             _ => 0,
@@ -217,34 +211,28 @@ fn scan_object(name: &str, data: &[u8]) -> Result<ElfScan> {
             };
             let r_type = r_type.0;
             let shown_type = type_name(arch, r_type);
-            let (referent, absolute, symbol_name) = match relocation.target() {
-                RelocationTarget::Symbol(index) => match file.symbol_by_index(index) {
-                    Ok(symbol) => {
-                        let symbol_name = shown(symbol.name_bytes().unwrap_or_default());
-                        let referent = if symbol.is_undefined() {
-                            "undefined"
-                        } else if symbol.section() == SymbolSection::Absolute {
-                            "absolute"
-                        } else if symbol.is_local() {
-                            "local"
-                        } else {
-                            "global"
-                        };
-                        (
-                            referent,
-                            symbol.section() == SymbolSection::Absolute,
-                            symbol_name,
-                        )
-                    }
-                    Err(error) => return Err(bad(error.to_string())),
-                },
-                RelocationTarget::Section(_) => ("section", false, String::new()),
-                RelocationTarget::Absolute => ("none", true, String::new()),
-                _ => ("other", false, String::new()),
+            let (referent, absolute, symbol) = match relocation.target() {
+                RelocationTarget::Symbol(index) => {
+                    let position = u32::try_from(index.0).unwrap_or(u32::MAX);
+                    let symbol = object.symbol(position)?;
+                    let referent = match symbol.place {
+                        Place::Undefined => "undefined",
+                        Place::Absolute => "absolute",
+                        _ if symbol.bind == crate::elf::STB_LOCAL => "local",
+                        _ => "global",
+                    };
+                    (referent, symbol.place == Place::Absolute, Some(position))
+                }
+                RelocationTarget::Section(_) => ("section", false, None),
+                RelocationTarget::Absolute => ("none", true, None),
+                _ => ("other", false, None),
             };
+            // Built only on an error path: a message copies the names.
             let refused = |why: &str| {
                 Problem::internal(format!(
-                    "`{name}` has {shown_type} in `{section_name}` against `{symbol_name}`: {why}"
+                    "`{name}` has {shown_type} in `{}` against `{}`: {why}",
+                    section_name(),
+                    symbol.map_or_else(String::new, |index| object.symbol_name(index))
                 ))
             };
             if r_type == X86_64_IRELATIVE && arch == Arch::X86_64
@@ -308,19 +296,24 @@ pub(crate) fn check_relocation_sections(name: &str, data: &[u8]) -> Result<()> {
         if kind != SHT_RELA && kind != SHT_REL && kind != SHT_CREL {
             continue;
         }
-        let section_name = sections
-            .section_name(endian, section)
-            .map_or_else(|_| "?".to_owned(), shown);
+        // Built only on an error path: names may share one long string.
+        let section_name = || {
+            sections
+                .section_name(endian, section)
+                .map_or_else(|_| "?".to_owned(), shown)
+        };
         let link = usize::try_from(section.sh_link(endian)).unwrap_or(usize::MAX);
         if Some(link) != symtab {
             return Err(bad(format!(
-                "the relocation section `{section_name}` is not linked to the symbol table"
+                "the relocation section `{}` is not linked to the symbol table",
+                section_name()
             )));
         }
         let info = usize::try_from(section.sh_info(endian)).unwrap_or(usize::MAX);
         if info == 0 || info == index || info >= count {
             return Err(bad(format!(
-                "the relocation section `{section_name}` applies to no section"
+                "the relocation section `{}` applies to no section",
+                section_name()
             )));
         }
     }
@@ -328,21 +321,18 @@ pub(crate) fn check_relocation_sections(name: &str, data: &[u8]) -> Result<()> {
 }
 
 /// musl's version: the text that `__libc_version` holds, `MAJOR.MINOR.PATCH`.
-fn version<'data>(
-    name: &str,
-    file: &object::File<'data>,
-    symbol: &object::Symbol<'data, '_>,
-) -> Result<String> {
+fn version(name: &str, object: &ElfObject<'_>, symbol: &Symbol<'_>) -> Result<String> {
     let bad = || {
         Problem::internal(format!(
             "`{name}` defines `__libc_version`, but not as a version `MAJOR.MINOR.PATCH`"
         ))
     };
-    let index = symbol.section_index().ok_or_else(bad)?;
-    let section = file.section_by_index(index).map_err(|_| bad())?;
-    let data = section.data().map_err(|_| bad())?;
-    let start = usize::try_from(symbol.address()).map_err(|_| bad())?;
-    let size = usize::try_from(symbol.size()).map_err(|_| bad())?;
+    let Place::Section(index) = symbol.place else {
+        return Err(bad());
+    };
+    let data = object.section(index).map_err(|_| bad())?.data;
+    let start = usize::try_from(symbol.value).map_err(|_| bad())?;
+    let size = usize::try_from(symbol.size).map_err(|_| bad())?;
     let end = start.checked_add(size).ok_or_else(bad)?;
     let bytes = data.get(start..end).ok_or_else(bad)?;
     let text = bytes.strip_suffix(&[0]).unwrap_or(bytes);
@@ -403,7 +393,7 @@ mod tests {
         }
         assert_eq!(elf::R_X86_64_IRELATIVE.0, X86_64_IRELATIVE);
         assert_eq!(elf::R_AARCH64_IRELATIVE.0, AARCH64_IRELATIVE);
-        assert_eq!(elf::STT_GNU_IFUNC.0, STT_GNU_IFUNC);
+        assert_eq!(elf::STT_GNU_IFUNC.0, crate::elf::STT_GNU_IFUNC);
         assert_eq!(elf::SHF_TLS.0, SHF_TLS);
     }
 }

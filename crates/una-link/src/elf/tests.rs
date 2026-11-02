@@ -226,17 +226,17 @@ fn a_64_bit_pointer_to_an_address_is_a_relative_fixup_in_a_writable_section_only
             Code::U8001,
             "text relocation",
         );
-        // An undefined weak symbol is the absolute 0: no fixup, anywhere.
+        // An undefined weak symbol is the absolute 0: no fixup, in a writable section only,
+        // as the scan of 4a decides.
+        let weak = Referent::UndefinedWeak;
         assert_eq!(
-            one(
-                machine,
-                0,
-                vec![0; 8],
-                (0, kind, 0),
-                Referent::UndefinedWeak
-            )
-            .unwrap(),
+            one(machine, WRITE, vec![0; 8], (0, kind, 0), weak).unwrap(),
             [0; 8]
+        );
+        refused(
+            one(machine, 0, vec![0; 8], (0, kind, 0), weak),
+            Code::U8001,
+            "text relocation",
         );
     }
 }
@@ -251,6 +251,18 @@ fn narrow_absolute_and_pc_relative_types_need_their_kind_of_referent() {
     ] {
         refused(
             one(machine, WRITE, vec![0; 4], (0, kind, 0), addr),
+            Code::U8001,
+            "narrow absolute",
+        );
+        // Rule 24: only `SHN_ABS`; an undefined weak symbol is not one.
+        refused(
+            one(
+                machine,
+                WRITE,
+                vec![0; 4],
+                (0, kind, 0),
+                Referent::UndefinedWeak,
+            ),
             Code::U8001,
             "narrow absolute",
         );
@@ -332,6 +344,29 @@ fn a_guarded_call_to_an_undefined_weak_function_resolves_as_ld_lld_does() {
             .copied()
             .chain((-4i32 - 0x1001).to_le_bytes())
             .collect::<Vec<_>>()
+    );
+    // Only a call or a jump: `PLT32` elsewhere against an undefined weak symbol is refused.
+    refused(
+        one(
+            X86_64,
+            WRITE,
+            vec![0; 8],
+            (4, x64::R_PLT32, 0),
+            Referent::UndefinedWeak,
+        ),
+        Code::U8001,
+        "not a call",
+    );
+    refused(
+        one(
+            X86_64,
+            EXEC,
+            vec![0; 4],
+            (0, x64::R_PLT32, -4),
+            Referent::UndefinedWeak,
+        ),
+        Code::U8001,
+        "not a call",
     );
     // arm64: a branch to the next instruction.
     assert_eq!(

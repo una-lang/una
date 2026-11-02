@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::elf::input::{self, ElfObject, Place};
 use crate::elf::reloc::{self, Layout, Referent, Tls};
 use crate::input::Archive;
-use crate::problem::{Problem, Result, shown};
+use crate::problem::{Problem, Result};
 
 /// What [`check_elf`] found.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -67,26 +67,40 @@ pub fn check_elf(name: &str, bytes: &[u8]) -> Result<ElfCheck> {
 }
 
 /// The synthetic layout of one object.
-struct Synthetic {
+struct Synthetic<'o, 'a> {
+    /// The object, for the messages.
+    object: &'o ElfObject<'a>,
     /// The address of each kept section that is not thread-local, by index.
     address: BTreeMap<usize, u64>,
     /// The template offset of each thread-local section, by index.
     tls_offset: BTreeMap<usize, u64>,
     /// The template.
     tls: Tls,
-    /// The referent of each symbol, by index.
-    referents: Vec<Result<Referent>>,
+    /// The referent of each symbol, by index; `None` for a symbol of a section the executable
+    /// does not contain, whose problem is formatted only when a relocation reaches it (a message
+    /// copies the name, and an object may hold many such symbols).
+    referents: Vec<Option<Referent>>,
     /// The GOT slot of each symbol that needs one.
     got: BTreeMap<u32, u64>,
 }
 
-impl Layout for Synthetic {
+impl Layout for Synthetic<'_, '_> {
     fn referent(&self, symbol: u32) -> Result<Referent> {
-        usize::try_from(symbol)
+        let found = usize::try_from(symbol)
             .ok()
             .and_then(|index| self.referents.get(index))
-            .cloned()
-            .unwrap_or_else(|| Err(Problem::internal(format!("no symbol {symbol}"))))
+            .ok_or_else(|| Problem::internal(format!("no symbol {symbol}")))?;
+        found.ok_or_else(|| {
+            let section = match self.object.symbol(symbol).map(|s| s.place) {
+                Ok(Place::Section(index)) => self.object.section_name(index),
+                _ => String::new(),
+            };
+            Problem::internal(format!(
+                "`{}`: `{}` is in `{section}`, a section the executable does not contain",
+                self.object.name,
+                self.object.symbol_name(symbol)
+            ))
+        })
     }
 
     fn got(&self, symbol: u32) -> Result<u64> {
@@ -118,6 +132,7 @@ fn grow(object: &ElfObject<'_>, at: u64, align: u64, size: u64) -> Result<(u64, 
 fn check_object(name: &str, data: &[u8]) -> Result<ElfCheck> {
     let object = input::read(name, data)?;
     let mut layout = Synthetic {
+        object: &object,
         address: BTreeMap::new(),
         tls_offset: BTreeMap::new(),
         tls: Tls { size: 0, align: 1 },
@@ -147,14 +162,15 @@ fn check_object(name: &str, data: &[u8]) -> Result<ElfCheck> {
     }
     // Undefined symbols, each at an address of its own past the sections, then the common
     // symbols, then the GOT.
-    let mut undefined: BTreeMap<&[u8], u64> = BTreeMap::new();
-    for symbol in &object.symbols {
+    // Keyed by the symbol's index, not its name: comparing names would cost their lengths.
+    let mut undefined: BTreeMap<usize, u64> = BTreeMap::new();
+    for (index, symbol) in object.symbols.iter().enumerate() {
         if symbol.place == Place::Undefined
             && (!symbol.weak() || crate::elf::linker_defined(symbol.name))
             && !symbol.tls()
         {
             let next = u64::try_from(undefined.len()).unwrap_or(u64::MAX);
-            undefined.entry(symbol.name).or_insert(next);
+            undefined.insert(index, next);
         }
     }
     let count = u64::try_from(undefined.len()).unwrap_or(u64::MAX);
@@ -162,35 +178,32 @@ fn check_object(name: &str, data: &[u8]) -> Result<ElfCheck> {
     let (mut commons, _) = grow(&object, at, 16, count.saturating_add(1).saturating_mul(16))?;
     commons = commons.saturating_add(count.saturating_add(1).saturating_mul(16));
     let mut referents = Vec::with_capacity(object.symbols.len());
-    for symbol in &object.symbols {
+    for (position, symbol) in object.symbols.iter().enumerate() {
         let referent = match symbol.place {
-            Place::Absolute => Ok(Referent::Absolute(symbol.value)),
+            Place::Absolute => Some(Referent::Absolute(symbol.value)),
             Place::Undefined if symbol.weak() && !crate::elf::linker_defined(symbol.name) => {
-                Ok(Referent::UndefinedWeak)
+                Some(Referent::UndefinedWeak)
             }
-            Place::Undefined if symbol.tls() => Ok(Referent::Tls(0)),
+            Place::Undefined if symbol.tls() => Some(Referent::Tls(0)),
             Place::Undefined => {
-                let slot = undefined.get(symbol.name).copied().unwrap_or(0);
-                Ok(Referent::Address(
+                let slot = undefined.get(&position).copied().unwrap_or(0);
+                Some(Referent::Address(
                     at.saturating_add(slot.saturating_mul(16)),
                 ))
             }
             Place::Common { align } => {
                 let (start, end) = grow(&object, commons, align, symbol.size)?;
                 commons = end;
-                Ok(Referent::Address(start))
+                Some(Referent::Address(start))
             }
             Place::Section(index) => {
                 if let Some(offset) = layout.tls_offset.get(&index) {
-                    Ok(Referent::Tls(offset.saturating_add(symbol.value)))
-                } else if let Some(address) = layout.address.get(&index) {
-                    Ok(Referent::Address(address.saturating_add(symbol.value)))
+                    Some(Referent::Tls(offset.saturating_add(symbol.value)))
                 } else {
-                    Err(Problem::internal(format!(
-                        "`{name}`: `{}` is in `{}`, a section the executable does not contain",
-                        shown(symbol.name),
-                        object.section_name(index)
-                    )))
+                    layout
+                        .address
+                        .get(&index)
+                        .map(|address| Referent::Address(address.saturating_add(symbol.value)))
                 }
             }
         };

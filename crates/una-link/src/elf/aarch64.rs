@@ -292,14 +292,21 @@ pub(crate) fn decide(site: &Site<'_, '_>, referent: Referent) -> Result<Decision
     }
     let class = reloc::find(crate::elf::Arch::Aarch64, kind).map(|t| t.class);
     match (class, referent) {
-        (Some(reloc::Class::Narrow), Referent::Address(_)) => {
+        // Rule 24: a narrow absolute type only against an absolute symbol (`SHN_ABS`), and a
+        // 64-bit one against anything else only in a writable section, as the scan of 4a says.
+        (Some(reloc::Class::Narrow), Referent::Address(_) | Referent::UndefinedWeak) => {
             return Err(site.refused(
                 "a narrow absolute relocation against a symbol that is not absolute, which no load-time fixup can express",
             ));
         }
-        (Some(reloc::Class::Wide), Referent::Address(_)) => {
+        (Some(reloc::Class::Wide), Referent::Address(_) | Referent::UndefinedWeak) => {
             if site.section().is_some_and(|s| s.writable()) {
-                return Ok(decision(Action::Relative));
+                return Ok(decision(if referent == Referent::UndefinedWeak {
+                    // The absolute 0: no fixup.
+                    Action::Direct
+                } else {
+                    Action::Relative
+                }));
             }
             return Err(site.refused(
                 "a 64-bit absolute relocation in a section that is not writable, a text relocation",

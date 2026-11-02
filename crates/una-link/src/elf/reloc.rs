@@ -12,12 +12,14 @@
 //! Rules, the same on both targets:
 //! - a type outside the target's list is U8001, naming the type, the input, the section and the
 //!   symbol;
-//! - a narrow absolute type only against an absolute symbol (or an undefined weak one, the
-//!   absolute 0); a 64-bit absolute type against an address only in a writable section, where
-//!   it becomes a relative fixup (`R_*_RELATIVE`), otherwise U8001 (a text relocation);
+//! - a narrow absolute type only against an absolute symbol (`SHN_ABS`); a 64-bit absolute
+//!   type against an address only in a writable section, where it becomes a relative fixup
+//!   (`R_*_RELATIVE`), and against an undefined weak symbol (the absolute 0) only there too,
+//!   otherwise U8001 (a text relocation), as the scan of 4a decides;
 //! - a PC-relative type only against an address in the image: against an absolute symbol, an
 //!   undefined weak one or a thread-local variable it would be wrong once the executable loads
-//!   at a random address, so it is U8001;
+//!   at a random address, so it is U8001, but for a call (`PLT32` on a `call` or `jmp`,
+//!   `CALL26`, `JUMP26`) to an undefined weak function, resolved as `ld.lld` does;
 //! - thread-local types only against thread-local variables, and the other types never against
 //!   them; every thread-local access is relaxed to the local-exec model (one module, a static
 //!   executable), so no GOT slot ever holds a thread-local offset;
@@ -63,6 +65,11 @@ impl Referent {
 }
 
 /// The TLS template of the executable: `PT_TLS`'s memory size and alignment.
+///
+/// Precondition for the layout (slice 4c): `PT_TLS` is placed at an address that is a multiple
+/// of its alignment. The x86-64 offsets of [`tp_offset`] (variant II, `offset - align_up(size,
+/// align)`) are those musl's start-up and `ld.lld` compute only then; the template's address is
+/// not an input of the engine, so the layout must guarantee it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Tls {
     /// `p_memsz`.

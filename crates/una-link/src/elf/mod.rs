@@ -14,6 +14,7 @@ pub(crate) mod check;
 pub(crate) mod input;
 pub(crate) mod oracle;
 pub(crate) mod reloc;
+pub(crate) mod strings;
 pub(crate) mod x86_64;
 
 #[cfg(test)]

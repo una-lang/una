@@ -5,6 +5,15 @@
 //! grows linearly with its functions, with its relocations per function, and with its sections.
 //! Each size is the median of 9 runs; each doubling must cost at most 2.3 times as much past the
 //! fixed cost (#341's re-measurement on a miss).
+//!
+//! Names (review M1 and M2 of #1435): N symbols whose `st_name` all point at one string of S
+//! bytes. A name is found in O(log) through an index of the string table's NULs, never by a
+//! scan to its NUL, and no name is copied but into a reported message, so the reader, the
+//! engine's check and the scan of 4a take time linear in the input; the names' total length,
+//! counted with their overlaps, is bounded by 4 times the input (U8001 past it), so an input
+//! whose names overlap N x S bytes is refused, in linear time. The same holds for symbols in a
+//! section the executable drops, whose problem is formatted only when a relocation reaches one
+//! (before, each held a copy of its name: memory N x S).
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -227,6 +236,163 @@ fn write(sections: &[Section], symbols: &[(String, u16, u64)]) -> Vec<u8> {
         out.extend_from_slice(&entsize.to_le_bytes());
     }
     out
+}
+
+/// An x86-64 object of `.text` (16 bytes), `.comment` (not loaded, 16 bytes), and `symbols`
+/// local symbols whose names are all the string at offset 1 of a string table of `name`
+/// bytes of `A`, defined in `.comment` when `dropped`, else in `.text`.
+fn shared_names(symbols: usize, name: usize, dropped: bool) -> Vec<u8> {
+    let mut strtab = vec![0u8];
+    strtab.extend(std::iter::repeat_n(b'A', name));
+    strtab.push(0);
+    let mut symtab = vec![0u8; 24];
+    for _ in 0..symbols {
+        symtab.extend_from_slice(&1u32.to_le_bytes());
+        symtab.extend_from_slice(&[0x01, 0]); // local object
+        symtab.extend_from_slice(&(if dropped { 2u16 } else { 1u16 }).to_le_bytes());
+        symtab.extend_from_slice(&[0; 16]);
+    }
+    let shstrtab = b"\0.text\0.comment\0.symtab\0.strtab\0.shstrtab\0".to_vec();
+    let mut body = Vec::new();
+    let mut place = |bytes: &[u8]| {
+        while !body.len().is_multiple_of(8) {
+            body.push(0);
+        }
+        let at = 64 + body.len() as u64;
+        body.extend_from_slice(bytes);
+        at
+    };
+    let text = place(&[0xc3; 16]);
+    let comment = place(&[0; 16]);
+    let sym = place(&symtab);
+    let str_at = place(&strtab);
+    let shstr = place(&shstrtab);
+    while !body.len().is_multiple_of(8) {
+        body.push(0);
+    }
+    let locals = (symbols + 1) as u64;
+    let headers: [[u64; 8]; 6] = [
+        [0; 8],
+        [1 | (1 << 32), 0x6, 0, text, 16, 0, 16, 0],
+        [7 | (1 << 32), 0, 0, comment, 16, 0, 1, 0],
+        [
+            16 | (2 << 32),
+            0,
+            0,
+            sym,
+            symtab.len() as u64,
+            4 | (locals << 32),
+            8,
+            24,
+        ],
+        [24 | (3 << 32), 0, 0, str_at, strtab.len() as u64, 0, 1, 0],
+        [32 | (3 << 32), 0, 0, shstr, shstrtab.len() as u64, 0, 1, 0],
+    ];
+    let mut out = b"\x7fELF\x02\x01\x01\x00".to_vec();
+    out.extend_from_slice(&[0; 8]);
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&62u16.to_le_bytes());
+    out.extend_from_slice(&1u32.to_le_bytes());
+    out.extend_from_slice(&[0; 16]);
+    out.extend_from_slice(&(64 + body.len() as u64).to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    for field in [64u16, 0, 0, 64, 6, 5] {
+        out.extend_from_slice(&field.to_le_bytes());
+    }
+    out.extend_from_slice(&body);
+    for [
+        name_type,
+        flags,
+        addr,
+        offset,
+        size,
+        link_info,
+        align,
+        entsize,
+    ] in headers
+    {
+        out.extend_from_slice(
+            &u32::try_from(name_type & 0xffff_ffff)
+                .unwrap()
+                .to_le_bytes(),
+        );
+        out.extend_from_slice(&u32::try_from(name_type >> 32).unwrap().to_le_bytes());
+        for field in [flags, addr, offset, size] {
+            out.extend_from_slice(&field.to_le_bytes());
+        }
+        out.extend_from_slice(
+            &u32::try_from(link_info & 0xffff_ffff)
+                .unwrap()
+                .to_le_bytes(),
+        );
+        out.extend_from_slice(&u32::try_from(link_info >> 32).unwrap().to_le_bytes());
+        out.extend_from_slice(&align.to_le_bytes());
+        out.extend_from_slice(&entsize.to_le_bytes());
+    }
+    out
+}
+
+/// The median of 9 runs of `run`, in seconds.
+fn median_of_nine_of(run: impl Fn()) -> f64 {
+    let mut times: Vec<f64> = (0..9).map(|_| timing::timed(&run).1).collect();
+    times.sort_by(f64::total_cmp);
+    times[4]
+}
+
+#[test]
+fn names_that_share_one_long_string_cost_linear_time_and_memory() {
+    // Within the budget: 64-byte names shared by many symbols pass, in time linear in N.
+    let ok = shared_names(1_000, 64, false);
+    assert_eq!(una_link::check_elf("names.o", &ok).unwrap().objects, 1);
+    assert!(una_link::scan_elf("names.o", &ok).is_ok());
+    assert_eq!(
+        una_link::check_elf("dropped.o", &shared_names(1_000, 64, true))
+            .unwrap()
+            .objects,
+        1
+    );
+    // Past it: N symbols naming one string of S bytes, N and S doubling with the input, as the
+    // review's reproducer (1.28 MB took 6.3 s); refused, each in time linear in the input.
+    let sizes = [2_500, 5_000, 10_000, 20_000];
+    for dropped in [false, true] {
+        let inputs: BTreeMap<usize, Vec<u8>> = sizes
+            .iter()
+            .map(|&n| (n, shared_names(n, n * 40, dropped)))
+            .collect();
+        for bytes in inputs.values() {
+            let problem = una_link::check_elf("shared.o", bytes).unwrap_err();
+            assert!(problem.message.contains("4 times its size"), "{problem}");
+            assert!(una_link::scan_elf("shared.o", bytes).is_err());
+        }
+        let tiny = shared_names(1, 40, dropped);
+        let fixed = timing::best_of_three(|| {
+            median_of_nine_of(|| {
+                let _ = una_link::check_elf("shared.o", &tiny);
+                let _ = una_link::scan_elf("shared.o", &tiny);
+            })
+        });
+        let what = if dropped {
+            "dropped symbols sharing a long name"
+        } else {
+            "symbols sharing a long name"
+        };
+        timing::assert_growth(what, &sizes, fixed, 1e-4, 2.3, |n| {
+            median_of_nine_of(|| {
+                let _ = una_link::check_elf("shared.o", &inputs[&n]);
+                let _ = una_link::scan_elf("shared.o", &inputs[&n]);
+            })
+        });
+    }
+    // Within the budget, many symbols in a dropped section: linear in N.
+    let inputs: BTreeMap<usize, Vec<u8>> = sizes
+        .iter()
+        .map(|&n| (n, shared_names(n * 4, 16, true)))
+        .collect();
+    timing::assert_growth("dropped symbols", &sizes, 0.0, 1e-4, 2.3, |n| {
+        median_of_nine_of(|| {
+            una_link::check_elf("dropped.o", &inputs[&n]).unwrap();
+        })
+    });
 }
 
 /// The median of 9 checks of `object`, in seconds.

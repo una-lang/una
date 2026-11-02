@@ -180,18 +180,25 @@ pub(crate) fn decide(site: &Site<'_, '_>, referent: Referent) -> Result<Decision
                     action: Action::Relative,
                     ..direct(range)
                 }),
-                Referent::Address(_) => Err(site.refused(
+                Referent::Address(_) | Referent::UndefinedWeak if !writable => Err(site.refused(
                     "a 64-bit absolute relocation in a section that is not writable, a text relocation",
                 )),
                 _ => Ok(direct(range)),
             }
         }
         R_PLT32 if referent == Referent::UndefinedWeak => {
-            // A call to an undefined weak function, which its caller guards with a test of the
-            // function's address (crtbeginS.o's `__cxa_finalize`): resolved as `ld.lld` does,
-            // with the symbol's value 0, so the call, if it ever ran, would reach the image's
-            // first byte, the headers, which are not executable.
-            Ok(direct(site.range(0, 4)?))
+            // A call (or a tail jump) to an undefined weak function, which its caller guards
+            // with a test of the function's address (crtbeginS.o's `__cxa_finalize`): resolved
+            // as `ld.lld` does, with the symbol's value 0, so the call, if it ever ran, would
+            // reach the image's first byte, the headers, which are not executable. Only a
+            // `call rel32` or `jmp rel32`: anything else is a PC-relative reference.
+            let range = site.range(0, 4)?;
+            if rela.offset == 0 || !matches!(site.byte(-1)?, 0xe8 | 0xe9) {
+                return Err(site.refused(
+                    "a PC-relative type against an undefined weak symbol that is not a call",
+                ));
+            }
+            Ok(direct(range))
         }
         R_PC32 | R_PLT32 => {
             let range = site.range(0, 4)?;
@@ -206,7 +213,8 @@ pub(crate) fn decide(site: &Site<'_, '_>, referent: Referent) -> Result<Decision
         R_32 | R_32S => {
             let range = site.range(0, 4)?;
             not_tls()?;
-            if matches!(referent, Referent::Address(_)) {
+            // Rule 24: only against an absolute symbol (`SHN_ABS`), as the scan of 4a says.
+            if !matches!(referent, Referent::Absolute(_)) {
                 return Err(site.refused(
                     "a narrow absolute relocation against a symbol that is not absolute, which no load-time fixup can express",
                 ));

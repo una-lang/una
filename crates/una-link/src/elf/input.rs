@@ -14,6 +14,11 @@
 //! aligned beyond 64 KiB (U7015); a `.note.GNU-stack` that asks for an executable stack; a
 //! COMDAT group that names a section twice or one outside the table.
 //!
+//! Names are found through an index of each string table's NULs ([`crate::elf::strings`]), in
+//! O(log) each, and copied only into a reported message; their total length, counted with
+//! their overlaps in the table, is bounded by 4 times the input's size (U8001 past it), so that
+//! no pass over the names can cost more than linear time.
+//!
 //! Every read is bounded by the input's bytes: the counts of sections, symbols and relocations
 //! are those of tables that lie inside the input, so a forged count cannot make the reader loop
 //! or allocate beyond the input's size. O(size of the input + R log R) for R relocations.
@@ -24,6 +29,7 @@ use object::LittleEndian;
 use object::elf::FileHeader64;
 use object::read::elf::{FileHeader, Rela as _, SectionHeader, SectionTable, Sym as _};
 
+use crate::elf::strings::{Budget, Strings};
 use crate::elf::{
     Arch, MAX_ALIGN, SHF_ALLOC, SHF_COMPRESSED, SHF_EXECINSTR, SHF_TLS, SHF_WRITE, SHT_CREL,
     SHT_FINI_ARRAY, SHT_GROUP, SHT_INIT_ARRAY, SHT_NOBITS, SHT_NOTE, SHT_PREINIT_ARRAY,
@@ -229,15 +235,30 @@ pub(crate) fn read<'a>(name: &str, data: &'a [u8]) -> Result<ElfObject<'a>> {
     let table: SectionTable<'a, Header> = header
         .sections(endian, data)
         .map_err(|e| bad(e.to_string()))?;
+    // Names are read through an index of their table's NULs and charged to a budget, so that
+    // names sharing the bytes of one long string cost O(log) each, not their length.
+    let mut budget = Budget::new(data.len());
+    let shstrndx = header
+        .shstrndx(endian, data)
+        .map_err(|e| bad(e.to_string()))?;
+    let section_names = table
+        .section(object::SectionIndex(
+            usize::try_from(shstrndx).unwrap_or(usize::MAX),
+        ))
+        .ok()
+        .and_then(|raw| raw.data(endian, data).ok())
+        .ok_or_else(|| bad("its table of section names".to_owned()))?;
+    let section_names = Strings::new(section_names)?;
     let mut sections = Vec::with_capacity(table.len());
     for (index, raw) in table.enumerate() {
         let section_name = if index.0 == 0 {
             &[][..]
         } else {
-            table
-                .section_name(endian, raw)
-                .map_err(|e| bad(e.to_string()))?
+            section_names
+                .get(raw.sh_name(endian))
+                .ok_or_else(|| bad(format!("the name of section {}", index.0)))?
         };
+        budget.take(name, section_name)?;
         let kind = raw.sh_type(endian).0;
         let flags = raw.sh_flags(endian).0;
         let size = raw.sh_size(endian);
@@ -258,7 +279,7 @@ pub(crate) fn read<'a>(name: &str, data: &'a [u8]) -> Result<ElfObject<'a>> {
             ));
         }
         if index.0 != 0 && flags & SHF_ALLOC != 0 {
-            check_loaded(name, &section)?;
+            check_loaded(name, arch, &section)?;
             if section.kept() && !section.zerofill() {
                 section.data = raw.data(endian, data).map_err(|_| {
                     bad(format!(
@@ -276,7 +297,7 @@ pub(crate) fn read<'a>(name: &str, data: &'a [u8]) -> Result<ElfObject<'a>> {
         }
         sections.push(section);
     }
-    let symbols = read_symbols(name, data, endian, &table, &sections)?;
+    let symbols = read_symbols(name, data, (endian, &table, &mut budget), &sections)?;
     let count = u32::try_from(symbols.len()).map_err(|_| bad("too many symbols".to_owned()))?;
     let mut relocated: BTreeSet<usize> = BTreeSet::new();
     let mut grouped: BTreeSet<usize> = BTreeSet::new();
@@ -308,24 +329,30 @@ pub(crate) fn read<'a>(name: &str, data: &'a [u8]) -> Result<ElfObject<'a>> {
             // Relocations of sections the executable does not contain are ignored (rule 24).
             continue;
         }
-        let applies_name = shown(applies.name);
+        let applies_name = || shown(applies.name);
         if kind != SHT_RELA {
             return Err(bad(format!(
-                "`{applies_name}` has relocations that are not `SHT_RELA`, which neither target uses"
+                "`{}` has relocations that are not `SHT_RELA`, which neither target uses",
+                applies_name()
             )));
         }
         if !relocated.insert(target) {
-            return Err(bad(format!("`{applies_name}` has two relocation sections")));
-        }
-        if raw.sh_entsize(endian) != 24 {
             return Err(bad(format!(
-                "the relocations of `{applies_name}` do not have the size of `Elf64_Rela`"
+                "`{}` has two relocation sections",
+                applies_name()
+            )));
+        }
+        if raw.sh_entsize(endian) != 24 || raw.sh_size(endian) % 24 != 0 {
+            return Err(bad(format!(
+                "the relocations of `{}` are not a whole number of `Elf64_Rela` entries",
+                applies_name()
             )));
         }
         let entries: &[object::elf::Rela64<LittleEndian>] =
             raw.data_as_array(endian, data).map_err(|_| {
                 bad(format!(
-                    "the relocations of `{applies_name}` lie outside the input"
+                    "the relocations of `{}` lie outside the input",
+                    applies_name()
                 ))
             })?;
         let mut relocs = Vec::with_capacity(entries.len());
@@ -339,7 +366,8 @@ pub(crate) fn read<'a>(name: &str, data: &'a [u8]) -> Result<ElfObject<'a>> {
             };
             if symbol == 0 || symbol >= count {
                 return Err(bad(format!(
-                    "a relocation of `{applies_name}` at {:#x} names symbol {symbol}, which the table does not hold",
+                    "a relocation of `{}` at {:#x} names symbol {symbol}, which the table does not hold",
+                    applies_name(),
                     rela.offset
                 )));
             }
@@ -360,13 +388,18 @@ pub(crate) fn read<'a>(name: &str, data: &'a [u8]) -> Result<ElfObject<'a>> {
 }
 
 /// The checks of a loaded section.
-fn check_loaded(name: &str, section: &Section<'_>) -> Result<()> {
-    let section_name = shown(section.name);
-    let refused =
-        |why: &str| Problem::internal(format!("`{name}` has a section `{section_name}` {why}"));
+fn check_loaded(name: &str, arch: Arch, section: &Section<'_>) -> Result<()> {
+    let refused = |why: &str| {
+        Problem::internal(format!(
+            "`{name}` has a section `{}` {why}",
+            shown(section.name)
+        ))
+    };
     match section.kind {
         SHT_PROGBITS | SHT_NOBITS | SHT_INIT_ARRAY | SHT_FINI_ARRAY | SHT_PREINIT_ARRAY
-        | SHT_NOTE | SHT_X86_64_UNWIND => {}
+        | SHT_NOTE => {}
+        // `.eh_frame` of x86-64; arm64 has no such type.
+        SHT_X86_64_UNWIND if arch == Arch::X86_64 => {}
         SHT_GROUP | SHT_SYMTAB | SHT_RELA | SHT_REL | SHT_CREL => {
             return Err(refused("of a type the executable cannot load"));
         }
@@ -379,6 +412,9 @@ fn check_loaded(name: &str, section: &Section<'_>) -> Result<()> {
     if section.flags & SHF_WRITE != 0 && section.flags & SHF_EXECINSTR != 0 {
         return Err(refused("that is both writable and executable"));
     }
+    if section.flags & SHF_TLS != 0 && section.flags & SHF_EXECINSTR != 0 {
+        return Err(refused("that is both thread-local and executable"));
+    }
     if section.flags & SHF_COMPRESSED != 0 {
         return Err(refused("that is compressed"));
     }
@@ -387,7 +423,8 @@ fn check_loaded(name: &str, section: &Section<'_>) -> Result<()> {
     }
     if section.align > MAX_ALIGN {
         return Err(Problem::layout(format!(
-            "`{name}` has a section `{section_name}` aligned to {:#x}, beyond the 64 KiB of a segment",
+            "`{name}` has a section `{}` aligned to {:#x}, beyond the 64 KiB of a segment",
+            shown(section.name),
             section.align
         )));
     }
@@ -398,8 +435,7 @@ fn check_loaded(name: &str, section: &Section<'_>) -> Result<()> {
 fn read_symbols<'a>(
     name: &str,
     data: &'a [u8],
-    endian: LittleEndian,
-    table: &SectionTable<'a, Header>,
+    (endian, table, budget): (LittleEndian, &SectionTable<'a, Header>, &mut Budget),
     sections: &[Section<'a>],
 ) -> Result<Vec<Symbol<'a>>> {
     let bad = |what: String| Problem::internal(format!("cannot read `{name}`: {what}"));
@@ -411,23 +447,42 @@ fn read_symbols<'a>(
     {
         return Err(bad("two symbol tables".to_owned()));
     }
+    let header = table.iter().find(|s| s.sh_type(endian).0 == SHT_SYMTAB);
+    if let Some(header) = header
+        && (header.sh_entsize(endian) != 24 || header.sh_size(endian) % 24 != 0)
+    {
+        return Err(bad(
+            "its symbol table is not a whole number of `Elf64_Sym` entries".to_owned(),
+        ));
+    }
     let symtab = table
         .symbols(endian, data, object::elf::SHT_SYMTAB)
         .map_err(|e| bad(e.to_string()))?;
-    let first_global = table
-        .iter()
-        .find(|s| s.sh_type(endian).0 == SHT_SYMTAB)
-        .map_or(0, |s| {
-            usize::try_from(s.sh_info(endian)).unwrap_or(usize::MAX)
-        });
+    let strings = table
+        .section(symtab.string_section())
+        .ok()
+        .filter(|_| header.is_some())
+        .map(|raw| raw.data(endian, data))
+        .transpose()
+        .map_err(|_| bad("its string table lies outside the input".to_owned()))?
+        .unwrap_or_default();
+    let strings = Strings::new(strings)?;
+    let first_global = header.map_or(0, |s| {
+        usize::try_from(s.sh_info(endian)).unwrap_or(usize::MAX)
+    });
     let mut symbols = Vec::with_capacity(symtab.len());
     for (index, raw) in symtab.enumerate() {
-        let symbol_name = symtab
-            .symbol_name(endian, raw)
-            .map_err(|e| bad(e.to_string()))?;
-        let shown_name = shown(symbol_name);
-        let refused =
-            |why: &str| Problem::internal(format!("`{name}` has a symbol `{shown_name}` {why}"));
+        let symbol_name = strings
+            .get(raw.st_name(endian))
+            .ok_or_else(|| bad(format!("the name of symbol {}", index.0)))?;
+        budget.take(name, symbol_name)?;
+        // Built only on an error path: a message copies the name.
+        let refused = |why: &str| {
+            Problem::internal(format!(
+                "`{name}` has a symbol `{}` {why}",
+                shown(symbol_name)
+            ))
+        };
         if index.0 == 0 {
             symbols.push(Symbol {
                 name: &[],
