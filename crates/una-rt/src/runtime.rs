@@ -1518,6 +1518,13 @@ struct Hot {
     flags: Cell<usize>,
     /// The thread's attention word, and its value at the last check point (ADR 0116 rule 18,
     /// ADR 0102 amendment of 2026-10-18).
+    ///
+    /// Both are the worker thread's, not a task's: [`swap_slots`] does not swap them, and a
+    /// task's install keeps `seen` (#1533). The slicer raises a worker's word at the end of the
+    /// turn in progress, whichever task it is, so a raise pending when one task parks or ends
+    /// belongs to the next one the worker runs. ADR 0117 rule 2, Pinning, lists a "copy of the
+    /// attention word" among a task's slots; the code keeps the copy per worker (amendment
+    /// draft `docs/plan/0117-seen-value-note-draft.md`).
     word: Cell<Option<una_sys::attention::Word>>,
     seen: Cell<u64>,
     /// Whether every check point of the thread counts toward its task's turn: on a worker,
@@ -1691,6 +1698,7 @@ fn install(state: State, depth: usize) {
             .set(mem_ceiling(state.baseline, state.max_memory));
         hot.shielded.set(state.shielded);
         hot.flags.set(state.cancel.len());
+        // `seen` is the worker thread's, never swapped with a task's slots (see `Hot::word`).
         // A thread that already has its word keeps the value its last check point saw: a raise
         // since then, as the slicer's at the end of a turn that began before this state was
         // installed, stays pending, so the first check point takes the slow path and the task

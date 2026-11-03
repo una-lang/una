@@ -5247,6 +5247,7 @@ fn ten_thousand_races_release_what_their_losers_hold_in_both_engines() {
     // under a 16 MiB budget, which a leak would exceed many times over (U6003). The
     // interpreter runs the first branch, which wins, and never starts the second.
     let dir = within_package("losers", "losers", &races_program(10_000));
+    let _removed = RemovedAtEnd(dir.clone());
     let interpreted = una(&dir, &["run", ".", "--max-memory", "16"]);
     assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
     assert_eq!(String::from_utf8_lossy(&interpreted.stdout), "won 10000\n");
@@ -5266,7 +5267,16 @@ fn ten_thousand_races_release_what_their_losers_hold_in_both_engines() {
         );
         assert_eq!(String::from_utf8_lossy(&native.stdout), "won 10000\n");
     }
-    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Removes a test's package directory when dropped, after a failed assertion too, so a run that
+/// `output_within` killed leaves nothing behind (#1533).
+struct RemovedAtEnd(PathBuf);
+
+impl Drop for RemovedAtEnd {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 
 /// The output of `command`, which must end within `limit`: otherwise it is killed and the test
@@ -5569,6 +5579,7 @@ fn ten_thousand_cancelled_started_tasks_release_what_they_hold_in_both_engines()
     );
     let _ = std::fs::remove_dir_all(&interpreted_dir);
     let dir = within_package("cancelled", "cancelled", &cancelled_program(10_000));
+    let _removed = RemovedAtEnd(dir.clone());
     // One worker is the tight leak guard: it needs 12 MiB. Under load, several workers see an
     // occasional spike of a few MiB in the charged memory, so they run under 24 MiB, which a
     // per-round leak, about 160 MiB over ten thousand rounds, still exceeds many times over.
@@ -5588,5 +5599,4 @@ fn ten_thousand_cancelled_started_tasks_release_what_they_hold_in_both_engines()
         );
         assert_eq!(String::from_utf8_lossy(&native.stdout), "failed 10000\n");
     }
-    let _ = std::fs::remove_dir_all(&dir);
 }
