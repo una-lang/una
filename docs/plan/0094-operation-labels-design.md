@@ -133,7 +133,7 @@ At a call of a named function `f` whose header lists `uses @x: C[op gives l′, 
 ## 10. Decisions
 
 - D1 `gives` before edition `0.3` is U0103 at the word, reported by the parser where `where` is refused, so the two edition `0.3` forms of a `cap_op` are refused alike.
-- D2 Core IR and `una.core/1` do not change in S1 to S3; #563 extends them.
+- D2 Core IR and `una.core/1` do not change in S1 to S3; #563 extends them. (2026-11-03, #1518.) Core's `Use` gains `gives` and `una.core/1` an additive `gives` key on a `uses` entry, so that the re-check can report a labeled operation as not re-checked, as rule 8 requires until #563 lands; without it the re-check could not tell one apart.
 - D3 The answer's label is joined deep, at every position of the result type.
 - D4 A labeled operation passed to a callee that lists it without `gives` is U3022 unless the label is `⊥`; an inferred header reads every operation at `⊥` until S2 infers its labels.
 - D5 The repairs of U3022 never lower a label; passing another binding of the caller ranks first and is the only exact edit.

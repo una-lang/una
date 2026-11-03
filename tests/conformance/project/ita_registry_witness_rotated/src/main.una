@@ -1,0 +1,8 @@
+-- test: after a rotation, a vendored release loads whose point is cosigned by the threshold of witnesses that no root version revokes, one of them retired by the last root
+-- spec: spec/30 §9, §11
+-- expect: ok
+module main
+
+import ledger.ledger (total)
+
+pub one() -> Int = total()

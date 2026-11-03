@@ -1,0 +1,68 @@
+-- The declarations of `formal/UnaFormal/F1/GivesImportTests.lean` (#1518): each labeled
+-- operation (ADR 0094 rule 1) beside its unlabeled twin.
+module m
+
+pub capability Store
+  op note(n: Int) -> Unit
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+-- A user operation the binding labels, declared on the header.
+pub noted(n: Int) -> Unit
+  uses @store: Store[note gives internal[Service]]
+=
+  @store.note(n)
+
+pub noted_plain(n: Int) -> Unit
+  uses @store: Store[note]
+=
+  @store.note(n)
+
+-- A private helper whose label is inferred from its caller (ADR 0094 S2).
+note_of(n: Int) -> Unit = @store.note(n)
+
+pub noted_through(n: Int) -> Unit
+  uses @store: Store[note gives internal[Service]]
+=
+  note_of(n)
+
+-- An unlabeled binding passed to a callee that reads it labeled: the caller labels nothing,
+-- and reaches a declaration that is not re-checked.
+pub passes_on(n: Int) -> Unit
+  uses @store: Store[note]
+=
+  noted(n)
+
+-- Host operations the binding labels.
+pub env_seen(name: Text) -> internal[Service] Option[internal[Service] Text]
+  uses @env: Env[get gives internal[Service]]
+=
+  @env.get(name)
+
+pub env_plain(name: Text) -> Option[internal Text]
+  uses @env: Env[get]
+=
+  @env.get(name)
+
+pub read_seen(path: Text) -> internal[Service] Text
+  uses @files: Files[read gives internal[Service]]
+=
+  @files.read(path)
+    if error use ""
+
+pub read_plain(path: Text) -> internal Text
+  uses @files: Files[read]
+=
+  @files.read(path)
+    if error use ""
+
+-- A handler whose own `uses` label an operation (ADR 0094 rule 1, D9), and what invokes it.
+handler forward() for Log
+  uses @store: Store[note gives internal[Service]]
+  op write(n) = @store.note(n)
+
+pub logs(n: Int) -> Unit
+  uses @log: Log[write]
+=
+  @log.write(n)

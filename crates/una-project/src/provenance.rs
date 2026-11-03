@@ -26,8 +26,11 @@
 //!   own root keys, and each next version the thresholds of rule 35; the last has not expired
 //!   at the checkpoint's witness time;
 //! - **the checkpoint:** it is the lock's resolution point (its size and root hash), its origin
-//!   is the log's key name, it is signed by the log's key, and cosigned by at least the threshold
-//!   of distinct witnesses of the last root;
+//!   is the log's key name of the root version it names, it is signed by that log key, and
+//!   cosigned by at least k distinct witnesses, counted as `spec/30 §11` rule 9 counts them: a
+//!   witness of the last stored root, or a retired witness of the named version, and never one
+//!   that a stored root version revokes; k is the larger of the named version's threshold and
+//!   the last stored version's;
 //! - **the statement:** it names the lock's source, name and version and gives the lock's
 //!   digest; it is signed by the key stored, whose fingerprint is the one the lock's `signed`
 //!   names; and its leaf is included in the checkpoint at the lock's `logged` index.
@@ -304,22 +307,21 @@ pub fn verify(provenance: &Provenance, expected: &Expected) -> Result<Statement,
     if !signed.signed_by(&last.log) {
         return Err("the checkpoint is not signed by the log's key".to_owned());
     }
-    let mut cosigned = Vec::new();
-    let mut seen: Vec<[u8; 32]> = Vec::new();
-    for witness in &last.witnesses.keys {
-        if seen.contains(&witness.public) {
-            continue;
-        }
-        seen.push(witness.public);
-        if let Some(time) = signed.cosignature(witness) {
-            cosigned.push(witness::Cosigned {
-                witness: witness.name.clone(),
-                size: checkpoint.size,
-                time,
-            });
-        }
-    }
-    let time = witness::checkpoint_time(&cosigned, last.witnesses.threshold).map_err(|problem| {
+    // Counted as the client counts them (`spec/30 §11` rules 8 and 9): a witness that any
+    // stored root version revokes never counts, at any version and under any name, and the
+    // threshold is the larger of the named version's and the last stored version's, so a
+    // checkpoint naming an older version never counts by fewer than the current one. A retired
+    // witness of the named version counts: the client that wrote the provenance proved the
+    // point a prefix of a checkpoint under the last root, which an offline load cannot repeat.
+    let (cosigned, _) = crate::client::counted(
+        &signed,
+        checkpoint.size,
+        &last,
+        &chain,
+        crate::client::Retired::Count,
+    );
+    let threshold = crate::client::threshold_of(&last, &chain);
+    let time = witness::checkpoint_time(&cosigned, threshold).map_err(|problem| {
         match problem {
             witness::Problem::TooFew { found, needed } => format!(
                 "the checkpoint is cosigned by {found} witnesses of the root, fewer than its threshold of {needed}"

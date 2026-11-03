@@ -67,10 +67,27 @@ class Program:
     # A residual program the full check must prove (family Q's twins, #813): any rejection of it
     # is an error (`drivers.judge_residual`).
     prove: bool = False
+    # The command whose verdict judges the program (`drivers.COMMANDS`): `check`, `una check
+    # --tier 0`, for every family but the registry's resolution forms, judged by `lock-check`,
+    # `una ita lock --check` (family Y, ADR 0122). The manifest writes it only when it is not
+    # `check`.
+    command: str = "check"
+    # The registries a `lock-check` program reads, {source: its directory in the program}: the
+    # driver lists each in the run's own Itaoca (`mirrors.una`), since a mirror is named by an
+    # absolute `file://` URL (`spec/30 §14` rule 1).
+    mirrors: dict = field(default_factory=dict)
 
     def __post_init__(self):
         if self.cls not in CLASSES:
             raise ValueError(f"unknown class {self.cls}")
+
+    @property
+    def has_dependencies(self):
+        """Whether the program is a package of edition 0.4 or later with needs (family D and Y):
+        its Core export is `una.core/2`, which this release does not write (`spec/30 §12` rule
+        7), so the oracle and the re-check comparison treat it apart."""
+        text = self.files.get("ita.una")
+        return isinstance(text, str) and "\nneeds\n" in text
 
     @property
     def name(self):
@@ -83,8 +100,13 @@ class Program:
         for rel, text in self.files.items():
             path = os.path.join(base, rel)
             os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(text)
+            if isinstance(text, bytes):
+                # A registry's tiles and archives (family Y) are bytes.
+                with open(path, "wb") as f:
+                    f.write(text)
+            else:
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(text)
         return base
 
     def manifest(self):
@@ -102,13 +124,16 @@ class Program:
             "vary": self.vary,
             **({"expect_recheck": self.recheck} if self.recheck else {}),
             **({"prove": True} if self.prove else {}),
+            **({"command": self.command} if self.command != "check" else {}),
         }
 
     def digest(self):
         """A digest of the files, to check that a reproduction is exact."""
         h = hashlib.sha256()
         for rel in sorted(self.files):
-            h.update(rel.encode() + b"\0" + self.files[rel].encode() + b"\0")
+            data = self.files[rel]
+            h.update(rel.encode() + b"\0" + (data if isinstance(data, bytes) else data.encode())
+                     + b"\0")
         return h.hexdigest()
 
 

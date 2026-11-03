@@ -57,6 +57,7 @@ import UnaFormal.F1.ArithExample
 import UnaFormal.F1.SumExample
 import UnaFormal.F1.HandlerExample
 import UnaFormal.F1.HandlerImportTests
+import UnaFormal.F1.GivesImportTests
 import UnaFormal.F1.WithImportTests
 import UnaFormal.F1.WithExample
 import UnaFormal.F1.DecisionExample

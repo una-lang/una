@@ -966,6 +966,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                     .and_then(|c| self.env.capabilities.get(c))
                     .map_or_else(|| "?".to_owned(), |c| c.name.to_owned()),
                 ops: u.ops.clone(),
+                gives: u.gives.clone(),
                 conds: Vec::new(),
             })
             .collect()
@@ -6468,6 +6469,7 @@ mod tests {
                 cap: "log".to_owned(),
                 capability: "Log".to_owned(),
                 ops: vec!["write".to_owned()],
+                gives: Vec::new(),
                 conds: Vec::new(),
             }],
             Some("Boom".to_owned()),
@@ -6481,6 +6483,7 @@ mod tests {
                 cap: "log".to_owned(),
                 capability: "Log".to_owned(),
                 ops: vec!["write".to_owned()],
+                gives: Vec::new(),
                 conds: Vec::new(),
             }],
             None,
