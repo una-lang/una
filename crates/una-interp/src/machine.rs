@@ -1531,8 +1531,12 @@ impl<'p, 'w> Machine<'p, 'w> {
 
     /// The `cancelled` events of the tasks `from..to` of the block in progress, which a cut
     /// stopped or kept from starting (`spec/27 §5`), in task order: each task the cut stops ends
-    /// with one, as natively, whatever had started.
+    /// with one, as natively, whatever had started. None inside a `quiet` expression (S-39,
+    /// `spec/26 §6` rule 4), whose program counter they would reveal.
     fn cut_events(&mut self, from: usize, to: usize) {
+        if self.quiet > 0 {
+            return;
+        }
         for index in from..to {
             let mut path: Vec<String> = self.task.iter().map(ToString::to_string).collect();
             path.push((index + 1).to_string());
@@ -1552,6 +1556,9 @@ impl<'p, 'w> Machine<'p, 'w> {
     /// in progress, which a cut stopped or kept from starting (`spec/27 §5`, `§6`), in index
     /// order, as for the tasks of a block ([`Self::cut_events`]).
     fn race_cut_events(&mut self, race: usize, from: usize, to: usize) {
+        if self.quiet > 0 {
+            return;
+        }
         for index in from..to {
             let mut path: Vec<String> = self.task.iter().map(ToString::to_string).collect();
             path.push(format!("f{race}"));
@@ -1568,8 +1575,12 @@ impl<'p, 'w> Machine<'p, 'w> {
         }
     }
 
-    /// Appends the `timeout` event of a `within` of the task in progress (`spec/27 §5`).
+    /// Appends the `timeout` event of a `within` of the task in progress (`spec/27 §5`); none
+    /// inside a `quiet` expression (S-39, `spec/26 §6` rule 4).
     fn within_timeout_event(&mut self) {
+        if self.quiet > 0 {
+            return;
+        }
         let task = self.task.join(".");
         self.emit(Event {
             seq: 0,
@@ -2852,6 +2863,9 @@ impl<'p, 'w> Machine<'p, 'w> {
                 self.emit(ended(task, EventOutcome::TaskAborted));
             }
             Err(Stop::Abort(abort)) => self.run.abort_run(abort),
+            // None inside a `quiet` expression, which the task started under (S-39, `spec/26 §6`
+            // rule 4).
+            Err(Stop::Cut(_)) if self.quiet > 0 => {}
             Err(Stop::Cut(_)) => self.emit(ended(task, EventOutcome::Cancelled)),
             // A started task cannot fail (U3029), and no exit leaves its expression.
             Err(Stop::Fail(_) | Stop::Exit(..)) => self.run.abort_run(Abort::Fault {
@@ -3415,8 +3429,10 @@ impl<'p, 'w> Machine<'p, 'w> {
 
     /// Appends the iteration's one `timeout` event, with the path of the task that runs the
     /// loop, the first time its control flow observes a failure the deadline caused: a trace
-    /// does not depend on which task met the deadline first (`spec/26 §7`).
+    /// does not depend on which task met the deadline first (`spec/26 §7`). None inside a
+    /// `quiet` expression (S-39, `spec/26 §6` rule 4); the iteration still observes it once.
     fn timeout_observed(&mut self) {
+        let quiet = self.quiet > 0;
         let Some(deadline) = self.deadline.as_mut() else {
             return;
         };
@@ -3424,6 +3440,9 @@ impl<'p, 'w> Machine<'p, 'w> {
             return;
         }
         deadline.reported = true;
+        if quiet {
+            return;
+        }
         let task = deadline.owner.join(".");
         self.emit(Event {
             seq: 0,

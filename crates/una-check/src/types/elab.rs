@@ -2539,14 +2539,15 @@ impl<'e, 'a> Fx<'e, 'a> {
             self.broken.set(true);
             return body;
         };
-        CoreExpr::Within {
+        let within = CoreExpr::Within {
             deadline,
             deadline_span,
             body: Box::new(body),
             timeout: Box::new(timeout),
             wrap: wrap.map(Box::new),
             span,
-        }
+        };
+        self.quiet_construct(deadline_span, within, span)
     }
 
     /// `if none` on the last component of a call's tuple: the places keep their new values,
@@ -3260,6 +3261,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                 body: Box::new(body),
                 span: stmt.span,
             };
+            let expr = self.quiet_construct(stmt.span, expr, stmt.span);
             bind_expr(lets, "_".to_owned(), unit(), expr, stmt.span, false);
             return;
         }
@@ -3273,6 +3275,7 @@ impl<'e, 'a> Fx<'e, 'a> {
             body: Box::new(body),
             span: stmt.span,
         };
+        let expr = self.quiet_construct(stmt.span, expr, stmt.span);
         self.bind_join(lets, &names, unit(), expr, stmt.span);
     }
 
@@ -3363,10 +3366,14 @@ impl<'e, 'a> Fx<'e, 'a> {
             lets,
             t.clone(),
             tuple_type(types.clone()),
-            CoreExpr::Together {
-                tasks,
-                span: stmt.span,
-            },
+            self.quiet_construct(
+                stmt.span,
+                CoreExpr::Together {
+                    tasks,
+                    span: stmt.span,
+                },
+                stmt.span,
+            ),
             stmt.span,
             false,
         );
@@ -3419,12 +3426,16 @@ impl<'e, 'a> Fx<'e, 'a> {
             &mut lets,
             t.clone(),
             ty,
-            CoreExpr::TogetherFor {
-                source: Box::new(source),
-                var: Box::new(var),
-                task: Box::new(task),
-                span: together.span,
-            },
+            self.quiet_construct(
+                together.span,
+                CoreExpr::TogetherFor {
+                    source: Box::new(source),
+                    var: Box::new(var),
+                    task: Box::new(task),
+                    span: together.span,
+                },
+                together.span,
+            ),
             together.span,
             false,
         );
@@ -3476,10 +3487,14 @@ impl<'e, 'a> Fx<'e, 'a> {
             &mut lets,
             t.clone(),
             ty,
-            CoreExpr::FirstOf {
-                tasks,
-                span: first.span,
-            },
+            self.quiet_construct(
+                first.span,
+                CoreExpr::FirstOf {
+                    tasks,
+                    span: first.span,
+                },
+                first.span,
+            ),
             first.span,
             false,
         );
@@ -4507,6 +4522,30 @@ impl<'e, 'a> Fx<'e, 'a> {
         Atom::Var(t)
     }
 
+    /// Binds the call or operation `rhs` at `span` to a fresh temporary of the type recorded
+    /// there, `quiet` when the checker marked it (S-39, `spec/26 §6` rule 4).
+    fn push_call(&mut self, lets: &mut Vec<Let>, span: Span, rhs: Rhs) -> Atom {
+        let t = self.temp();
+        let ty = self.type_at(span);
+        let value = self.quiet_call(rhs, &ty, span);
+        lets.push(Let::inferred(t.clone(), ty, value, span));
+        Atom::Var(t)
+    }
+
+    /// `expr`, `quiet` when the checker marked the construct `key` (S-39, `spec/26 §6` rule 4):
+    /// a `within`, keyed by its deadline, a `first of`, or a `tasks`, `together` or `together
+    /// for` statement, under a raised program counter.
+    fn quiet_construct(&self, key: Span, expr: CoreExpr, span: Span) -> CoreExpr {
+        if self.findings.quiet.contains(&key) {
+            CoreExpr::Quiet {
+                body: Box::new(expr),
+                span,
+            }
+        } else {
+            expr
+        }
+    }
+
     /// Binds an expression to a fresh temporary of the type recorded at `span`.
     fn push_expr(&mut self, lets: &mut Vec<Let>, span: Span, expr: CoreExpr) -> Atom {
         let t = self.temp();
@@ -4924,7 +4963,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                     ));
                     let arg_spans: Vec<Span> = args.iter().map(|a| a.value.span).collect();
                     let args: Vec<Atom> = args.iter().map(|a| self.atom(lets, &a.value)).collect();
-                    self.push(
+                    self.push_call(
                         lets,
                         span,
                         Rhs::Apply {
@@ -4963,7 +5002,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                     let callee = self.atom(lets, callee);
                     let arg_spans: Vec<Span> = args.iter().map(|a| a.value.span).collect();
                     let args: Vec<Atom> = args.iter().map(|a| self.atom(lets, &a.value)).collect();
-                    self.push(
+                    self.push_call(
                         lets,
                         span,
                         Rhs::Apply {
@@ -4997,7 +5036,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                         .get(capability)
                         .map_or("?", |c| c.name)
                         .to_owned();
-                    self.push(
+                    self.push_call(
                         lets,
                         span,
                         Rhs::Op {
@@ -5702,9 +5741,9 @@ impl<'e, 'a> Fx<'e, 'a> {
         }
     }
 
-    /// The value of a `let` of `call`, of type `ty`: the call itself, or, for a call of a
-    /// function that says `diverges` under a raised program counter, `quiet (let t = call in t)`
-    /// (S-39, `spec/26 §6` rule 4).
+    /// The value of a `let` of `call`, of type `ty`: the call itself, or, for a call or an
+    /// operation that the checker marked under a raised program counter, `quiet (let t = call in
+    /// t)` (S-39, `spec/26 §6` rule 4).
     fn quiet_call(&mut self, call: Rhs, ty: &Type, span: Span) -> Bound {
         if !self.findings.quiet.contains(&span) {
             return Bound::Rhs(call);
@@ -5818,17 +5857,18 @@ impl<'e, 'a> Fx<'e, 'a> {
         let before = self.temp();
         bind_expr(lets, before.clone(), value_ty.clone(), current, span, false);
         let after = self.temp();
-        lets.push(Let::inferred(
-            after.clone(),
-            value_ty,
-            Bound::Rhs(Rhs::Apply {
+        // S-39: `change` may run any construct, `quiet` under a raised program counter.
+        let changed = self.quiet_call(
+            Rhs::Apply {
                 callee: change.clone(),
                 args: vec![Atom::Var(before)],
                 arg_spans: vec![*initial_span],
                 span: *change_span,
-            }),
+            },
+            &value_ty,
             span,
-        ));
+        );
+        lets.push(Let::inferred(after.clone(), value_ty, changed, span));
         let updated = self.temp();
         lets.push(Let::inferred(
             updated.clone(),

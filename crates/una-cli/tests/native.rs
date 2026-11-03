@@ -5908,3 +5908,190 @@ fn s39_a_quiet_call_that_a_within_cuts_restores_the_count() {
         assert_eq!(kinds_in_order(&run), (expected, true), "{secret}: {run}");
     }
 }
+
+/// S-39 round 2 (#1507, H1): a `within` with a public deadline, which always cuts its loop, in a
+/// function that says `diverges`, called under a `secret` branch.
+const SECRET_TIMEOUT_QUIET: &str = "module leak
+
+import std.time (millisecond)
+
+spin() -> Unit
+  diverges
+=
+  let edit k = 0
+  for ever
+    k = k + 1
+
+wrapper() -> Unit
+  diverges
+=
+  let r = attempt spin() within 20 * millisecond
+  noop()
+
+noop() -> Unit = unit
+
+pub main() -> Unit
+  uses @console: Console[print]
+  diverges
+=
+  let s: secret Int = SECRET
+  for i in 0..<4
+    if s > i
+      wrapper()
+  @console.print(\"done\")
+";
+
+/// S-39 round 2 (#1507, H1): a `tasks` statement that starts a task and then fails, in a
+/// function that says `diverges`, called under a `secret` branch: no host stop, no deadline.
+const SECRET_CANCEL_QUIET: &str = "module leak
+
+pub kind Bad = Boom | Other
+
+spin() -> Unit
+  diverges
+=
+  let edit k = 0
+  for ever
+    k = k + 1
+
+boom() -> Unit
+  fails Bad
+=
+  fail Boom
+
+run_block() -> Unit
+  fails Bad
+  diverges
+=
+  tasks
+    start spin()
+    boom()
+      if error pass
+
+wrapper() -> Unit
+  diverges
+=
+  let r = attempt run_block()
+  noop()
+
+noop() -> Unit = unit
+
+pub main() -> Unit
+  uses @console: Console[print]
+  diverges
+=
+  let s: secret Int = SECRET
+  for i in 0..<4
+    if s > i
+      wrapper()
+  @console.print(\"done\")
+";
+
+/// S-39 round 2 (#1507): the same events reached under a `secret` branch without a function
+/// that says `diverges`: a `within` written there, a call chain to a `tasks` statement that
+/// fails, the same through a function value, called directly and by `apply`, a `first of` in a
+/// callee, and a `tasks` statement that `skip` leaves.
+const SECRET_EVENTS_QUIET: &str = "module leak
+
+import std.time (millisecond)
+
+pub kind Bad = Boom | Other
+
+spin() -> Unit
+  diverges
+=
+  let edit k = 0
+  for ever
+    k = k + 1
+
+noop() -> Unit = unit
+
+boom() -> Unit
+  fails Bad
+=
+  fail Boom
+
+run_block() -> Unit
+  fails Bad
+=
+  tasks
+    start noop()
+    boom()
+      if error pass
+
+inner() -> Unit
+=
+  let r = attempt run_block()
+  noop()
+
+middle() -> Unit = inner()
+
+apply(f: fn() -> Unit) -> Unit = f()
+
+double(n: Int) -> Int = n * 2
+
+race(i: Int) -> Int
+=
+  first of
+    double(i)
+    double(i)
+
+pub main() -> Unit
+  uses @console: Console[print]
+  diverges
+=
+  let s: secret Int = SECRET
+  let edit n = 0
+  for i in 0..<4
+    n = n + 1
+    if s > i
+      let r = attempt spin() within 20 * millisecond
+      middle()
+    if s > i + 4
+      apply(inner)
+      let g = inner
+      g()
+    if s > i + 8
+      let v = race(i)
+      tasks
+        start noop()
+        if i == 1
+          skip
+  @console.print(\"done {n}\")
+";
+
+#[test]
+fn s39_timeout_and_cancelled_events_under_a_secret_branch_add_nothing_to_the_trace() {
+    // S-39 round 2 (#1507, H1), `spec/26 §6` rule 4: the `timeout` and `cancelled` events that
+    // the runtime appends by itself are sinks that accept `public`, as `stop` is. Code under a
+    // `secret` program counter, or reached from it, appends none and takes no `seq`, so the
+    // traces are the same for every secret, in both engines. Before the fix, `s` gave `s`
+    // events.
+    for secret in [0, 1, 3, 4] {
+        for (name, source) in [
+            ("s39timeoutq", SECRET_TIMEOUT_QUIET),
+            ("s39cancelq", SECRET_CANCEL_QUIET),
+        ] {
+            let (output, run, native) = secret_run(name, source, secret, &[]);
+            assert_eq!(output, serde_json::json!(["done"]), "{name} {secret}");
+            assert_eq!(run, done_only(), "{name} {secret}");
+            assert_eq!(native, done_only(), "{name} {secret}");
+        }
+    }
+}
+
+#[test]
+fn s39_events_reached_under_a_secret_branch_without_diverges_add_nothing_to_the_trace() {
+    // S-39 round 2 (#1507): a `within` written under the branch, a call chain or a function
+    // value that reaches a failing `tasks` statement, a `first of` in a callee, and a `tasks`
+    // statement that `skip` leaves, whose count of `quiet` code is restored on the way out:
+    // the same trace for every secret, in both engines.
+    for secret in [0, 3, 6, 13] {
+        let (output, run, native) = secret_run("s39events", SECRET_EVENTS_QUIET, secret, &[]);
+        assert_eq!(output, serde_json::json!(["done 4"]), "{secret}");
+        let mut expected = done_only();
+        expected[0]["args"]["line"] = Value::from("\"done 4\"");
+        assert_eq!(run, expected, "{secret}");
+        assert_eq!(native, expected, "{secret}");
+    }
+}

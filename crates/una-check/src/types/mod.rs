@@ -848,6 +848,9 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
         .dedup_by(|a, b| a.0 == ObligationKind::EffectCondition && a == b);
     let headers = headers(&env);
     let handler_headers = handler_headers(&env);
+    // S-39: the calls and operations under a raised program counter whose running can append
+    // events of its own are `quiet` too.
+    flow::close_quiet(&env, &mut findings);
     let (program, gaps) = elab::program(&env, &findings, package.sources, &standard.sources);
     // ADR 0103: the pending `refinement` obligations of the flows into refined positions,
     // decided by the rule tier 1 uses (#615).
@@ -1121,6 +1124,12 @@ pub(crate) struct Findings {
     /// program counter above `public`, by their spans: Core IR marks each `quiet`, so a host stop
     /// that ends a loop they run appends no `stop` event to the trace (S-39, `spec/26 §6` rule 4).
     pub(crate) quiet: std::collections::BTreeSet<Span>,
+    /// The calls under a raised program counter, by span, with their callees: [`flow::close_quiet`]
+    /// adds to `quiet` those whose callee can run a construct that appends events of its own.
+    pub(crate) quiet_calls: std::collections::BTreeMap<Span, usize>,
+    /// The operations under a raised program counter, by span: [`flow::close_quiet`] adds them
+    /// to `quiet` when the package declares a handler.
+    pub(crate) quiet_ops: std::collections::BTreeSet<Span>,
     /// The `within`s checked (ADR 0117 rule 5, IF2): each one's deadline, span, function and
     /// the seed of its timing label.
     pub(crate) withins: Vec<within::WithinSite>,

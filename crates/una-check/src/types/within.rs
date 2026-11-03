@@ -92,6 +92,9 @@ impl Checker<'_, '_, '_> {
     /// timing floor of `e` by `τ(e)`. `e` is checked between this and [`Self::within_close`].
     pub(crate) fn within_open(&mut self, deadline: &Expr, span: Span) -> OpenWithin {
         let label = self.deadline(deadline, "`within`");
+        // S-39: under a raised program counter, its `timeout` event and those of what it runs
+        // are left out of the trace; keyed by the deadline, as elaboration finds it.
+        self.quiet_site(deadline.span);
         let tau = self
             .env
             .within_timing
@@ -137,6 +140,9 @@ impl Checker<'_, '_, '_> {
     /// the join of `τ` of every branch, as the probe found it. The branches are checked
     /// between this and [`Self::race_close`].
     pub(crate) fn race_open(&mut self, key: Span, span: Span) -> OpenWithin {
+        // S-39: under a raised program counter, the `cancelled` events of its branches are left
+        // out of the trace.
+        self.quiet_site(span);
         let tau = self
             .env
             .within_timing

@@ -1093,6 +1093,12 @@ impl State {
     /// Appends the event that ends this started task, `cancelled` or `aborted`, which names no
     /// operation (`spec/27 §7`).
     pub(crate) fn ended_event(&mut self, outcome: EventOutcome) {
+        // A task started inside a `quiet` expression ends without its `cancelled` event (S-39,
+        // `spec/26 §6` rule 4); stack exhaustion stays outside the model (`spec/07 §1`).
+        if outcome == EventOutcome::Cancelled && self.quiet > 0 {
+            self.flush();
+            return;
+        }
         let task = self.path.clone();
         if let Some(trace) = self.trace.as_mut() {
             trace.push(Event {
@@ -1258,10 +1264,12 @@ impl State {
         if self.quiet > 0 {
             return;
         }
+        // The `task` field of its task (`spec/26 §8`), as the interpreter writes it.
+        let task = self.path.clone();
         if let Some(trace) = self.trace.as_mut() {
             trace.push(Event {
                 seq: trace.len() + 1,
-                task: String::new(),
+                task,
                 instance: String::new(),
                 capability: String::new(),
                 op: String::new(),
@@ -1273,8 +1281,12 @@ impl State {
     }
 
     /// Appends the event that ends the task `task`, started and then cancelled
-    /// (`spec/19 §7` rule 3).
+    /// (`spec/19 §7` rule 3); none inside a `quiet` expression of the task that runs its block
+    /// (S-39, `spec/26 §6` rule 4).
     pub(crate) fn cancelled_event(&mut self, task: String) {
+        if self.quiet > 0 {
+            return;
+        }
         if let Some(trace) = self.trace.as_mut() {
             trace.push(Event {
                 seq: trace.len() + 1,

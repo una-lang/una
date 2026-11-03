@@ -92,17 +92,13 @@ impl Checker<'_, '_, '_> {
         self.pass == Pass::Check && self.ctx.labels
     }
 
-    /// Records `span`, a `for ever` loop or a call of a function that says `diverges`, as
-    /// `quiet` when it stands under a program counter above `public` (S-39, `spec/26 §6` rule
-    /// 4). The `stop` event that a host stop appends is a sink that accepts `public`, as
-    /// `Console.print` is: the program counter counts with the effect floor of an operation body
-    /// and the timing floor of a `within`, as an effect's does (`spec/07 §3` rule 4, `spec/27
-    /// §5`), and a body that no label rule checks counts as `⊤`. A label of a type parameter is
-    /// not `public` either.
-    pub(crate) fn quiet_site(&mut self, span: Span) {
-        if self.pass != Pass::Check {
-            return;
-        }
+    /// Whether code here stands under a program counter above `public` for the trace (S-39,
+    /// `spec/26 §6` rule 4): the events that the runtime appends by itself, `stop`, `timeout`
+    /// and `cancelled`, are sinks that accept `public`, as `Console.print` is. The program
+    /// counter counts with the effect floor of an operation body and the timing floor of a
+    /// `within`, as an effect's does (`spec/07 §3` rule 4, `spec/27 §5`), and a body that no
+    /// label rule checks counts as `⊤`. A label of a type parameter is not `public` either.
+    fn raised(&self) -> bool {
         let mut pc = self.ctx.pc.clone();
         if let Some(floor) = &self.ctx.floor {
             pc = pc.join(floor);
@@ -110,8 +106,35 @@ impl Checker<'_, '_, '_> {
         if let Some((timing, _, _)) = &self.ctx.timing {
             pc = pc.join(timing);
         }
-        if !self.ctx.labels || !pc.is_public() {
+        !self.ctx.labels || !pc.is_public()
+    }
+
+    /// Records `span`, a construct whose running appends events of its own to the trace, as
+    /// `quiet` when it stands under a raised program counter ([`Self::raised`]): a `for ever`
+    /// loop, a `within`, a `first of`, a `tasks`, `together` or `together for` statement, a call
+    /// of a function value, or an operation, which a handler of the package may serve (S-39,
+    /// `spec/26 §6` rule 4).
+    pub(crate) fn quiet_site(&mut self, span: Span) {
+        if self.pass == Pass::Check && self.raised() {
             self.findings.quiet.insert(span);
+        }
+    }
+
+    /// Records the call at `span` of the function `callee` under a raised program counter
+    /// ([`Self::raised`]): once every body is checked, [`close_quiet`] marks it `quiet` when the
+    /// callee can reach a construct whose running appends events of its own.
+    pub(crate) fn quiet_call_site(&mut self, span: Span, callee: usize) {
+        if self.pass == Pass::Check && self.raised() {
+            self.findings.quiet_calls.insert(span, callee);
+        }
+    }
+
+    /// Records the operation at `span` under a raised program counter ([`Self::raised`]): once
+    /// every body is checked, [`close_quiet`] marks it `quiet` when the package declares a
+    /// handler, whose operation bodies may run such a construct.
+    pub(crate) fn quiet_op_site(&mut self, span: Span) {
+        if self.pass == Pass::Check && self.raised() {
+            self.findings.quiet_ops.insert(span);
         }
     }
 
@@ -652,4 +675,80 @@ pub(crate) fn bound_of(env: &super::env::Env<'_>, uses: &[FnUse]) -> Option<Labe
         }
     }
     bound
+}
+
+/// Closes the `quiet` marks over the call graph, once every body is checked (S-39, `spec/26 §6`
+/// rule 4): a call under a raised program counter is `quiet` when its callee can run a
+/// construct that appends events of its own to the trace, and an operation there when the
+/// package declares a handler.
+///
+/// A function can run one when its body, its lambdas included, holds a `for ever`, a `within`,
+/// a `first of`, a `tasks`, `together` or `together for` statement or a `start`, or says
+/// `diverges`; when it calls a function value, applies a function argument whose code is not
+/// known at the call, installs a handler, or performs an operation while the package declares
+/// a handler; or when it calls or names a function that can. A prelude function that applies a
+/// function argument can too. The standard library's own bodies hold no such construct. The
+/// closure is a least fixed point over the reversed call edges, linear in their number.
+pub(crate) fn close_quiet(env: &super::env::Env<'_>, findings: &mut super::Findings) {
+    use std::collections::{BTreeMap, BTreeSet};
+    if findings.quiet_calls.is_empty() && findings.quiet_ops.is_empty() {
+        return;
+    }
+    let handlers = env.handlers.iter().any(|h| env.in_package(h.module));
+    let mut emitting: BTreeSet<usize> = env
+        .functions
+        .iter()
+        .enumerate()
+        .filter(|(_, def)| def.diverges)
+        .map(|(id, _)| id)
+        .collect();
+    emitting.extend(findings.withins.iter().filter_map(|site| site.function));
+    emitting.extend(
+        findings
+            .deadline_loops
+            .iter()
+            .filter_map(|site| site.function),
+    );
+    emitting.extend(findings.tasks_sites.iter().filter_map(|site| site.function));
+    emitting.extend(findings.task_functions.iter().copied());
+    emitting.extend(findings.value_callers.iter().copied());
+    emitting.extend(findings.opaque_applies.iter().map(|&(f, _)| f));
+    emitting.extend(findings.installs.iter().map(|&(f, _)| f));
+    if handlers {
+        emitting.extend(
+            findings
+                .caller_ops
+                .iter()
+                .filter_map(|(caller, _, _)| match caller {
+                    super::timing::Caller::Function(f) => Some(*f),
+                    _ => None,
+                }),
+        );
+    }
+    let mut callers: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for &(caller, callee, _) in &findings.edges {
+        callers.entry(callee).or_default().push(caller);
+    }
+    let mut pending: Vec<usize> = emitting.iter().copied().collect();
+    while let Some(f) = pending.pop() {
+        for &caller in callers.get(&f).into_iter().flatten() {
+            if emitting.insert(caller) {
+                pending.push(caller);
+            }
+        }
+    }
+    let calls = std::mem::take(&mut findings.quiet_calls);
+    for (span, callee) in calls {
+        let applies = env
+            .functions
+            .get(callee)
+            .is_some_and(|def| super::timing::applies_function(env, def));
+        if emitting.contains(&callee) || applies {
+            findings.quiet.insert(span);
+        }
+    }
+    let ops = std::mem::take(&mut findings.quiet_ops);
+    if handlers {
+        findings.quiet.extend(ops);
+    }
 }

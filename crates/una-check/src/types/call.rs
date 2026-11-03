@@ -255,6 +255,8 @@ impl<'a> Checker<'_, 'a, '_> {
                 }
                 self.graph_value_call();
                 self.timing_value_call();
+                // S-39: a function value may run any construct.
+                self.quiet_site(span);
             }
             return ty;
         }
@@ -566,6 +568,8 @@ impl<'a> Checker<'_, 'a, '_> {
         }
         self.graph_value_call();
         self.timing_value_call();
+        // S-39: a function value may run any construct.
+        self.quiet_site(span);
         self.ordered(span, (0..args.len()).map(Some).collect());
         let mut flows = Vec::new();
         let mut decided = Label::public();
@@ -893,11 +897,10 @@ impl<'a> Checker<'_, 'a, '_> {
         // the bindings its `uses` resolve to here.
         self.summary_needs(Owner::Node(Node::Function(id)), &granted, level);
         self.reach(Node::Function(id));
-        // S-39: the loops such a call runs append no `stop` event under a raised program
-        // counter.
-        if def.diverges {
-            self.quiet_site(span);
-        }
+        // S-39: under a raised program counter, the events that the runtime appends while such
+        // a call runs are left out of the trace when the callee can run a construct that
+        // appends them.
+        self.quiet_call_site(span, id);
         // ADR 0116 rule 8: a call of a function that says `diverges` may run forever.
         if def.diverges
             && let Some(reason) = self.divergence_refused()
@@ -1580,6 +1583,8 @@ impl<'a> Checker<'_, 'a, '_> {
             _ => Label::public(),
         };
         let resolved = self.op_site(cap, op);
+        // S-39: a handler of the package that serves the operation may run any construct.
+        self.quiet_op_site(span);
         if let Some(id) = resolved {
             self.timing_op(id, op_name);
             // The edge of ADR 0116 P1 from the node whose code holds the operation, a lambda's

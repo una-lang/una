@@ -836,8 +836,10 @@ impl<'p> Lowerer<'_, 'p, '_> {
     /// `quiet e` (S-39, `spec/26 §6` rule 4): `e` between the runtime's count of the task's
     /// `quiet` expressions and its restoration, on every way out of `e`. A failure or a stop of
     /// the task leaves `e` through a catch of its own, which restores the count, then goes on to
-    /// `catch`; `e`'s words are released on the way, as `catch` would. No `exit` of an enclosing
-    /// loop crosses it: `e` is a loop of its own or a call.
+    /// `catch`; `e`'s words are released on the way, as `catch` would. An `exit` of an
+    /// enclosing loop, which crosses a `tasks` statement in `e`, leaves through blocks of their
+    /// own, which restore the count and go on to the loop's: the exit has released its words
+    /// already.
     fn quiet(
         &mut self,
         body: &'p Expr,
@@ -847,13 +849,26 @@ impl<'p> Lowerer<'_, 'p, '_> {
     ) -> Result<Option<Value>, CodegenError> {
         self.runtime("una_rt_quiet_enter", &[]);
         let leaving = self.join();
+        let crossing = catch.exit.as_ref().map(|outer| {
+            let next = self.builder.create_block();
+            let stop = self.builder.create_block();
+            for _ in &outer.kinds {
+                self.builder.append_block_param(next, types::I64);
+                self.builder.append_block_param(stop, types::I64);
+            }
+            (outer.clone(), next, stop)
+        });
         // The body's failures release what `catch` would release of `scope`, and the restoring
         // block then what it would release of the enclosing expressions.
         let inner = Catch {
             block: leaving,
             outer: Scope::new(),
             base: catch.base,
-            exit: None,
+            exit: crossing.as_ref().map(|(outer, next, stop)| Exit {
+                next: *next,
+                stop: *stop,
+                ..outer.clone()
+            }),
         };
         let done = self.join();
         let reached = match self.expr(body, env, scope, &inner)? {
@@ -868,6 +883,16 @@ impl<'p> Lowerer<'_, 'p, '_> {
         let failure = self.param(leaving)?;
         self.runtime("una_rt_quiet_leave", &[]);
         self.fail(failure, &Scope::new(), catch);
+        if let Some((outer, next, stop)) = crossing {
+            for (block, target) in [(next, outer.next), (stop, outer.stop)] {
+                self.builder.switch_to_block(block);
+                let state: Vec<Value> = self.builder.block_params(block).to_vec();
+                self.runtime("una_rt_quiet_leave", &[]);
+                let args: Vec<cranelift_codegen::ir::BlockArg> =
+                    state.iter().map(|&value| value.into()).collect();
+                self.builder.ins().jump(target, &args);
+            }
+        }
         self.joined(done, reached)
     }
 
