@@ -5561,8 +5561,19 @@ pub main() -> Unit
 ";
 
 /// S-39 (#1507): loops whose own code runs under a `public` program counter, reached under a
-/// `secret` one: by a call, by a call whose callee starts a task, and by a `start`.
+/// `secret` one: by a call, by a call whose callee starts a task, by a `start`, and by a call in
+/// method form.
 const SECRET_CALLS: &str = "module leak
+
+pub kind Box
+  n: Int
+
+turn(b: Box) -> Unit
+  diverges
+=
+  let edit k = b.n
+  for ever
+    k = k + 1
 
 spin() -> Unit
   diverges
@@ -5590,6 +5601,9 @@ pub main() -> Unit
     if s > i + 8
       tasks
         start spin()
+    if s > i + 12
+      let b = Box(n: i)
+      b.turn()
   @console.print(\"done\")
 ";
 
