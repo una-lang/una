@@ -1283,9 +1283,9 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                 continue;
             }
             if self.pass == Pass::Check
-                && let Some((at, _, _)) = super::lock::header_site(self.env, def, entry, &op_name)
+                && let Some(site) = super::lock::header_site(self.env, def, entry, &op_name)
             {
-                self.obligation(ObligationKind::ContractLock, at, None);
+                self.obligation(ObligationKind::ContractLock, site.at, None);
             }
         }
     }

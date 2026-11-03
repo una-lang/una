@@ -1,0 +1,10 @@
+[package]
+name = "gives_locked_lower"
+version = "0.1.0"
+edition = "0.3"
+
+[labels]
+categories = ["Service"]
+
+[contracts]
+"m.refusal" = ["@service_files: Files[role gives internal[Service], owner gives internal[Service]]"]
