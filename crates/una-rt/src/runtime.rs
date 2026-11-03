@@ -72,7 +72,16 @@ fn stack_step() -> usize {
 
 /// What the run holds against its memory budget: the heap, and the stacks its tasks used.
 fn charged() -> usize {
-    crate::held().saturating_add(STACK_CHARGE.load(Ordering::Relaxed))
+    heap_charged().saturating_add(STACK_CHARGE.load(Ordering::Relaxed))
+}
+
+/// The heap the memory budget charges: what the process holds, less the slots a debug build
+/// holds beyond a release build's because of its quarantine (#1506), so that the budget
+/// charges a debug build close to what a release build holds, never less. Only freed slots,
+/// which hold no object, are credited ([`values::quarantined_bytes`]; 0 in a release build),
+/// and the allocator's hard ceiling of ADR 0061 rule 3 stays on the bytes really held. O(1).
+fn heap_charged() -> usize {
+    crate::held().saturating_sub(values::quarantined_bytes())
 }
 
 /// Charges the stack of the thread's task up to `used` bytes, when that is within its budget:
@@ -2159,20 +2168,23 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
         if warm {
             state.max_memory = usize::MAX;
         }
-        state.baseline = crate::held();
+        // The budget's baseline is measured as the budget charges (`heap_charged`), and the
+        // hard ceiling's on the bytes really held.
+        state.baseline = heap_charged();
+        let mut held_baseline = crate::held();
         install(state, 0);
         if warm {
             crate::tasks::warm_up(workers);
-            let baseline = crate::held();
+            let baseline = heap_charged();
+            held_baseline = crate::held();
             with_state(|state| {
                 state.max_memory = max_memory;
                 state.baseline = baseline;
             });
             HOT.with(|hot| hot.mem_ceiling.set(mem_ceiling(baseline, max_memory)));
         }
-        let baseline = with_state(|state| state.baseline).unwrap_or(0);
         // ADR 0061 rule 3: past twice the budget, allocation fails and the process aborts.
-        crate::ceiling(baseline.saturating_add(budget.saturating_mul(2)));
+        crate::ceiling(held_baseline.saturating_add(budget.saturating_mul(2)));
         DRIVER.with(|cell| *cell.borrow_mut() = drive);
         let status = entry();
         crate::ceiling(usize::MAX);
@@ -2997,8 +3009,9 @@ fn abort_run(state: State, code: Code, location: Location, message: String) {
     if trace {
         let _ = writeln!(
             io::stderr(),
-            "una-rt charge: held {} peak {} baseline {} stack_charge {} reserved {} thread_stacks {} thread_allocated {} ceiling {} budget_mib {} on {}",
+            "una-rt charge: held {} quarantined {} peak {} baseline {} stack_charge {} reserved {} thread_stacks {} thread_allocated {} ceiling {} budget_mib {} on {}",
             crate::held(),
+            values::quarantined_bytes(),
             crate::peak(),
             state.baseline,
             STACK_CHARGE.load(Ordering::Relaxed),

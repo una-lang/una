@@ -5553,6 +5553,34 @@ fn cancelled_program(rounds: u64) -> String {
 }
 
 #[test]
+fn freed_slots_in_quarantine_are_not_charged_to_the_budget_in_both_engines() {
+    // #1506, ADR 0061: a debug runtime reuses a freed slot only after 65,536 others were freed,
+    // so a heap that frees more grows its slot table that much past the most objects it ever
+    // held at once, the length a release runtime's table has. The budget does not charge those
+    // freed slots: a loop that makes and frees 200,000 lists of two items, at most one alive at
+    // a time, runs under 8 MiB in both engines. Without the credit the debug executable needs
+    // 12 MiB and stops here with U6003. The budget cannot be much lower: the spare capacity of
+    // the debug table, about 5 MiB, stays charged, and the allocator's hard ceiling, twice the
+    // budget on the bytes really held, must hold the whole table (ADR 0061 rule 3).
+    let program = "module churn\n\nkeep(items: List[Int], total: Int) -> Int = total + 2\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let edit total = 0\n  for i in 1..200000\n    let items = [i, i]\n    total = keep(items, total: total)\n  @console.print(\"total {total}\")\n";
+    let dir = within_package("churn", "churn", program);
+    let interpreted = una(&dir, &["run", ".", "--max-memory", "8"]);
+    assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&interpreted.stdout),
+        "total 400000\n"
+    );
+    let native = Command::new(dir.join("target/una/churn"))
+        .args(["--max-memory", "8"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert_eq!(native.status.code(), Some(0), "{native:?}");
+    assert_eq!(String::from_utf8_lossy(&native.stdout), "total 400000\n");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn ten_thousand_cancelled_started_tasks_release_what_they_hold_in_both_engines() {
     // `spec/27 §7`, ADR 0117 rule 7 and the amendment of 2026-10-19 on S2: a block that fails
     // cancels the tasks it started, each of which leaves its frames by the failure path and

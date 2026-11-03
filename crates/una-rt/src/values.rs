@@ -25,6 +25,7 @@ use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
 use una_core::Text;
 use una_core::bigint::{BigInt, Sign};
@@ -292,6 +293,35 @@ fn count_limit() -> u32 {
 /// in reasonable time and Miri checks the reuse itself.
 const QUARANTINE: usize = if cfg!(miri) { 64 } else { 1 << 16 };
 
+/// The slots that every heap of the process, a parked task's included, holds beyond those a
+/// release build would hold, in a debug build; always 0 in a release build (#1506). A release
+/// build reuses the newest free slot and grows its slot table only when every slot is live, so
+/// its table has as many slots as the heap ever had live objects at once. A debug build keeps
+/// the quarantine of freed slots unused, so its table can be longer: the slots past that peak,
+/// [`Heap::excess`] each, are freed slots, which hold no object, and [`quarantined_bytes`]
+/// credits their bytes to the memory budget. A live slot is never credited, so a leak is
+/// charged in full. Each heap adds its own here as it changes and takes it back when it is
+/// dropped; swapping heaps between a thread and a parked task moves no count, so the sum stays
+/// exact.
+static EXCESS_SLOTS: AtomicUsize = AtomicUsize::new(0);
+
+/// The bytes of one slot in excess: its entry in the slot table and its index in the free list.
+/// The spare capacity of either is not credited, so the credit never exceeds the bytes the
+/// excess entries occupy, and a debug build is charged at least what a release build is.
+const EXCESS_SLOT_BYTES: usize = std::mem::size_of::<Slot>() + std::mem::size_of::<usize>();
+
+/// The bytes of the slots in excess in every heap, which the memory budget does not charge
+/// (#1506): 0 in a release build. O(1), one relaxed load.
+pub(crate) fn quarantined_bytes() -> usize {
+    if cfg!(debug_assertions) {
+        EXCESS_SLOTS
+            .load(AtomicOrdering::Relaxed)
+            .saturating_mul(EXCESS_SLOT_BYTES)
+    } else {
+        0
+    }
+}
+
 #[derive(Default)]
 struct Heap {
     slots: Vec<Slot>,
@@ -322,6 +352,43 @@ struct Heap {
     /// How many slots hold a mark: 0 outside an export, which a debug build checks at the end
     /// of each export (ADR 0113, I2) in constant time rather than by a scan of the heap.
     marked: usize,
+    /// The most objects the heap held at once, in a debug build: the length of the slot table
+    /// a release build would have (#1506).
+    peak_live: usize,
+    /// `slots.len() - peak_live`, counted in [`EXCESS_SLOTS`], in a debug build; 0 in a release
+    /// build.
+    excess: usize,
+}
+
+impl Drop for Heap {
+    /// Takes the heap's slots in excess out of [`EXCESS_SLOTS`]: a task's heap ends with the
+    /// task, and the thread's with the thread.
+    fn drop(&mut self) {
+        if self.excess > 0 {
+            EXCESS_SLOTS.fetch_sub(self.excess, AtomicOrdering::Relaxed);
+        }
+    }
+}
+
+/// Counts the slots of `heap` in excess of a release build's after an allocation, in a debug
+/// build (#1506): an allocation is the one change of the slot table's length or of the number
+/// of live objects that can raise either. Every slot is live or free, so `slots.len()` is at
+/// least the live objects, and at least their peak, since the table never shrinks. O(1): the
+/// excess moves by at most one, and the counter changes only when it does.
+fn count_excess(heap: &mut Heap) {
+    if !cfg!(debug_assertions) {
+        return;
+    }
+    let len = heap.slots.len();
+    let live = len.saturating_sub(heap.free.len());
+    heap.peak_live = heap.peak_live.max(live);
+    let excess = len.saturating_sub(heap.peak_live);
+    if excess > heap.excess {
+        EXCESS_SLOTS.fetch_add(excess - heap.excess, AtomicOrdering::Relaxed);
+    } else if excess < heap.excess {
+        EXCESS_SLOTS.fetch_sub(heap.excess - excess, AtomicOrdering::Relaxed);
+    }
+    heap.excess = excess;
 }
 
 thread_local! {
@@ -389,6 +456,7 @@ fn alloc(object: Object) -> i64 {
                 heap.slots.len() - 1
             }
         };
+        count_excess(&mut heap);
         let stale = heap.slots.get(index).is_some_and(|slot| slot.mark != 0);
         if stale {
             heap.marked = heap.marked.saturating_sub(1);
@@ -3399,6 +3467,63 @@ mod tests {
         push(word, a);
         push(word, b);
         word
+    }
+
+    /// The thread's heap's slots in excess of a release build's, the most objects it held at
+    /// once, and the length of its slot table.
+    fn excess() -> (usize, usize, usize) {
+        HEAP.with(|heap| {
+            let heap = heap.borrow();
+            (heap.excess, heap.peak_live, heap.slots.len())
+        })
+    }
+
+    #[test]
+    fn only_freed_slots_past_the_peak_of_live_objects_are_credited() {
+        // #1506: the budget credits a debug build the slots its quarantine adds to the slot
+        // table, past the most objects the heap ever held at once, which is the length of a
+        // release build's table; never a live slot, so a leak is charged in full. On a heap of
+        // its own, so that the counts are this test's.
+        if !cfg!(debug_assertions) {
+            return;
+        }
+        let mut parked = Slots::default();
+        swap_slots(&mut parked);
+        let live: Vec<i64> = (0..1_000).map(|_| list()).collect();
+        assert_eq!(excess(), (0, 1_000, 1_000), "live slots are never credited");
+        for &word in &live {
+            release(word);
+        }
+        assert_eq!(
+            excess().0,
+            0,
+            "a release build keeps the freed slots of its peak too"
+        );
+        // One object at a time: the quarantine grows the table past the peak, by at most the
+        // quarantine and one slot, and every slot past the peak is free.
+        for _ in 0..QUARANTINE + 5_000 {
+            release(list());
+        }
+        let (credited, peak, len) = excess();
+        assert_eq!(peak, 1_000);
+        assert_eq!(credited, len - peak);
+        assert!(credited > 0 && credited <= QUARANTINE + 1, "{credited}");
+        assert!(credited <= HEAP.with(|heap| heap.borrow().free.len()));
+        assert!(EXCESS_SLOTS.load(AtomicOrdering::Relaxed) >= credited);
+        assert_eq!(quarantined_bytes() % EXCESS_SLOT_BYTES, 0);
+        // A leak: objects kept alive raise the peak with them, so the slots they hold are
+        // charged in full, and the credit stays the free slots past the peak, at most the
+        // quarantine and one slot.
+        let leaked: Vec<i64> = (0..len + 1_000).map(|_| list()).collect();
+        let (after, peak, len) = excess();
+        assert_eq!(peak, leaked.len());
+        assert_eq!(after, len - peak);
+        assert!(after <= QUARANTINE + 1, "{after}");
+        assert!(after <= HEAP.with(|heap| heap.borrow().free.len()));
+        for &word in &leaked {
+            release(word);
+        }
+        swap_slots(&mut parked);
     }
 
     #[test]
