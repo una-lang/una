@@ -1,4 +1,4 @@
--- test: under the virtual clock of tests, a `tasks` statement waits for its tasks, at most its bound at once; a block that fails cancels the tasks it started, here before they ran; a started task past `--task-depth` ends alone; and a host stop ends the `for ever` of the block, whose `on stop` runs before its tasks drain (spec/27 §7, spec/26 §8, ADR 0117 rules 7 and 11)
+-- test: under the virtual clock of tests, a `tasks` statement waits for its tasks, at most its bound at once; a block that fails cancels the tasks it started, here before they ran; a started task past `--task-depth` ends alone; and the end of the `stop after` budget ends the `for ever` of the block, whose `on stop` runs before its tasks drain (spec/27 §7, spec/26 §8, ADR 0117 rules 7 and 11)
 -- spec: spec/27 §7
 -- expect: test-pass
 module jobs
