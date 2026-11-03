@@ -87,27 +87,31 @@ fn charged() -> usize {
 static CREDIT_LIMIT: AtomicUsize = AtomicUsize::new(0);
 
 /// The heap the memory budget charges: what the process holds, less the slots that a debug
-/// build's quarantine adds to its slot table beyond a release build's (#1506), so that a debug
-/// build is charged about what a release build is, and never less. Only freed slots, past the
-/// peak of live objects and within the capacity grown since it, are credited
-/// ([`values::quarantined_bytes`]; 0 in a release build), at most [`CREDIT_LIMIT`], and the
-/// allocator's hard ceiling stays on the bytes really held. O(1).
+/// build's quarantine adds to its slot table beyond any capacity a release build's table may
+/// hold (#1506), at most [`CREDIT_LIMIT`]. The credited slots are freed slots past the peak of
+/// live objects; a live slot is never credited ([`values::credit_added_bytes`]; 0 in a release
+/// build). The allocator's hard ceiling stays on the bytes really held. O(1).
 ///
-/// Another worker's heap may change between the reads: its credit rises after its table grew
-/// and falls before the table is freed. The credit is read before and after the bytes held, and
-/// the smaller read is subtracted, so a change seen in only one of the reads charges more, never
-/// less, up to the order the allocator's own relaxed counter gives.
+/// The bytes credited ever are read before the bytes held, and the bytes taken back after:
+/// a credit rises after the growth it stands for and falls before the table is freed, so a
+/// credit counted here was grown into `held`, and a table freed in `held` has its credit taken
+/// back here, for any number of heaps changing meanwhile. A change seen in one read and not the
+/// other only charges more.
 fn heap_charged() -> usize {
     if !cfg!(debug_assertions) {
         return crate::held();
     }
-    let before = values::quarantined_bytes();
-    std::sync::atomic::fence(Ordering::SeqCst);
+    let added = values::credit_added_bytes();
     let held = crate::held();
-    std::sync::atomic::fence(Ordering::SeqCst);
-    let after = values::quarantined_bytes();
-    let credit = before.min(after).min(CREDIT_LIMIT.load(Ordering::Relaxed));
-    held.saturating_sub(credit)
+    let removed = values::credit_removed_bytes();
+    held.saturating_sub(capped_credit(added, removed))
+}
+
+/// The credit [`heap_charged`] subtracts, from the bytes credited ever and taken back.
+fn capped_credit(added: usize, removed: usize) -> usize {
+    added
+        .saturating_sub(removed)
+        .min(CREDIT_LIMIT.load(Ordering::Relaxed))
 }
 
 /// Charges the stack of the thread's task up to `used` bytes, when that is within its budget:
@@ -3036,9 +3040,9 @@ fn abort_run(state: State, code: Code, location: Location, message: String) {
     if trace {
         let _ = writeln!(
             io::stderr(),
-            "una-rt charge: held {} quarantined {} peak {} baseline {} stack_charge {} reserved {} thread_stacks {} thread_allocated {} ceiling {} budget_mib {} on {}",
+            "una-rt charge: held {} credited {} peak {} baseline {} stack_charge {} reserved {} thread_stacks {} thread_allocated {} ceiling {} budget_mib {} on {}",
             crate::held(),
-            values::quarantined_bytes(),
+            capped_credit(values::credit_added_bytes(), values::credit_removed_bytes()),
             crate::peak(),
             state.baseline,
             STACK_CHARGE.load(Ordering::Relaxed),
