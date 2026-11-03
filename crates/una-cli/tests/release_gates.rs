@@ -122,8 +122,12 @@ fn the_clone_gate_checks_out_exactly_the_commit_and_records_it() {
     assert_eq!(String::from_utf8_lossy(&cloned.stdout).trim(), sha);
     // The clone gate's marker names the run's OUT, so that the release tag is only ever made
     // and undone in this clone (#1017); it lives in .git, so the clone stays exact.
+    // OUT is named by its physical path, every link resolved.
     let marker = std::fs::read_to_string(out.join("clone/.git/una-release-gates-clone")).unwrap();
-    assert_eq!(marker, format!("{}\n", out.display()));
+    assert_eq!(
+        marker,
+        format!("{}\n", out.canonicalize().unwrap().display())
+    );
     let record = std::fs::read_to_string(out.join("record.md")).unwrap();
     assert!(record.starts_with("# Validation record\n"), "{record}");
     assert!(record.contains(&format!("- Commit: `{sha}`")), "{record}");
@@ -281,9 +285,14 @@ fn a_tag_left_by_a_killed_release_gate_is_undone_before_any_gate() {
     plant_tag(&sha, &out, None);
     assert!(has_tag(&out));
     // An untracked file makes the clone inexact, so the mac gate fails at once without running
-    // anything; the tag is undone before it, as before a linux-arm64 run of a split set.
+    // anything; the tag is undone before it, as before a linux-arm64 run of a split set. The
+    // run spells OUT through a link, which is the same OUT (#1017).
     std::fs::write(out.join("clone/untracked"), "").unwrap();
-    let output = gates_again(&sha, &out, &["mac"]);
+    let link = out.with_extension("link");
+    let _ = std::fs::remove_file(&link);
+    std::os::unix::fs::symlink(&out, &link).unwrap();
+    let output = gates_again(&sha, &link, &["mac"]);
+    std::fs::remove_file(&link).unwrap();
     assert_eq!(output.status.code(), Some(1));
     assert!(
         String::from_utf8_lossy(&output.stdout).contains("removed the clone's tag v9.9.9"),
@@ -292,8 +301,9 @@ fn a_tag_left_by_a_killed_release_gate_is_undone_before_any_gate() {
     );
     assert!(!has_tag(&out));
     assert!(!out.join("clone/.git/una-release-gates-tags").exists());
-    // A list that cannot be undone stops the run before any gate, with exit code 2.
-    std::fs::remove_file(out.join("clone/untracked")).unwrap();
+    // A list that cannot be undone stops the run before any gate, with exit code 2. The
+    // untracked file stays, so that a recovery that did not stop the run would fail the mac
+    // gate at once, with exit code 1, instead of running scripts/local-ci.sh.
     plant_tag(&sha, &out, Some("main none\n"));
     let output = gates_again(&sha, &out, &["mac"]);
     assert_eq!(output.status.code(), Some(2));
@@ -305,6 +315,49 @@ fn a_tag_left_by_a_killed_release_gate_is_undone_before_any_gate() {
     // A run that starts with the clone gate makes the clone again instead.
     assert!(gates_again(&sha, &out, &["clone"]).status.success());
     assert!(!has_tag(&out));
+    let _ = std::fs::remove_dir_all(&out);
+}
+
+#[test]
+fn a_second_run_on_one_out_is_refused() {
+    let Some(sha) = head() else {
+        return;
+    };
+    let out = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("gates-lock");
+    assert!(gates(&sha, &out, &["clone"]).status.success());
+    assert!(
+        !out.join("release-gates.lock").exists(),
+        "a run releases its lock"
+    );
+    // A live run's lock (this test's own process stands for it) refuses the run with exit
+    // code 2, before any gate, and stays.
+    let lock = out.join("release-gates.lock");
+    std::fs::create_dir(&lock).unwrap();
+    std::fs::write(lock.join("pid"), format!("{}\n", std::process::id())).unwrap();
+    let output = gates_again(&sha, &out, &["mac"]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("runs on one OUT must not overlap"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(lock.join("pid").exists());
+    assert!(!out.join("logs/mac.log").exists(), "no gate ran");
+    // A lock whose run is gone is taken over and released at the end. The untracked file makes
+    // the mac gate fail at once, without running anything.
+    let mut gone = Command::new("true").spawn().unwrap();
+    let pid = gone.id();
+    gone.wait().unwrap();
+    std::fs::write(lock.join("pid"), format!("{pid}\n")).unwrap();
+    std::fs::write(out.join("clone/untracked"), "").unwrap();
+    let output = gates_again(&sha, &out, &["mac"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("took over the lock"),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(!lock.exists());
     let _ = std::fs::remove_dir_all(&out);
 }
 
