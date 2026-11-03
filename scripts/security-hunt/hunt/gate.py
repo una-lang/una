@@ -24,6 +24,9 @@ It fails closed. The gate passes only when all of these hold:
   (`MAX_TIMEOUTS_DECIDED`, 0), since each is a comparison not made;
 - the whole gate ends within its platform's time budget (`TIME_BUDGETS`), a guard against a gate
   slowed as a whole;
+- every control of families D and Y (their must-accept programs, the honest twin of each forgery)
+  is accepted, and the accepted programs the re-check comparison cannot export, those of several
+  packages and family Y's resolution forms, are the pinned counts (`PINNED_UNEXPORTED`);
 - every canary is caught (`CANARIES`): a must-reject program that is in fact accepted; a program
   whose printed public literal the manifest marks as secret; an operation planted as accepting
   `internal`, reached under a secret branch, which only the `internal` observer must see; an
@@ -37,7 +40,10 @@ It fails closed. The gate passes only when all of these hold:
   must reject for their reason, with a control it must read clean (`DIFFER_CANARIES`,
   `DIFFER_CONTROL`); a native executable built
   from another variant than the one the interpreter ran, which the native comparison must report
-  as a divergence; and three pairs of a program and a changed copy (an event's argument,
+  as a divergence; family Y's honest resolution and honest vendored release, each labeled
+  must-reject, which `una ita lock --check` and `una check` accept, so the must-reject driver
+  must report them; a program of two packages whose public literal, marked secret, the root passes
+  to its dependency's print, which the oracle must report at `public` with no Core export; and three pairs of a program and a changed copy (an event's argument,
   `together` tasks, an abort at `--max-depth`), each of which must agree with itself and differ
   from its copy (`native_pairs`); and the sandbox's own canary (`sandbox_canary`, #793): a run
   writes in its directory but not in a sibling run's or in `/tmp`, and connects to the mock's
@@ -62,7 +68,7 @@ from concurrent.futures import ThreadPoolExecutor
 from . import drivers, native, oracle, sandbox
 from .families import (DEFAULT_EDITIONS, OPERATOR_EDITIONS, OPERATORS, SAMPLE_COUNT,
                        SAMPLE_EDITION, editions_for, family_of, sample_forms)
-from .families import conditions
+from .families import conditions, dependencies, registry
 from .program import MUST_ACCEPT, MUST_REJECT, OPEN, RESIDUAL, Program, derive_seed, rng_for
 from .program import write_manifest
 from .refactor import REFACTORS
@@ -77,7 +83,7 @@ EDITIONS = DEFAULT_EDITIONS
 REFACTOR_IDS = ("R6", "R9")
 # The fixed run's sizes, pinned: a change of the generators that changes them fails the gate
 # until this table and docs/release-gates.md say so.
-PINNED = {"programs": 6288, "reject": 6288, "keep": 10851, "oracle": 637, "differ": 6288}
+PINNED = {"programs": 6888, "reject": 6888, "keep": 11422, "oracle": 687, "differ": 6888}
 # The re-check comparison's expected `unknown` outcomes, by program, each with its reason: any
 # other `unknown` is an error, and so is a pinned one that is no longer unknown (#791).
 PINNED_UNKNOWN = {
@@ -156,25 +162,37 @@ MIN_LIVE = 105
 # (B, C and Q), about 90% of the measured run's compared programs and comparisons: 36 and 180 of
 # B, 39 and 195 of C, 38 and 190 of Q (#818). Above the global floors, these families could lose
 # most of their comparisons unseen.
-MIN_FAMILY_COMPARED = {"B": (32, 162), "C": (35, 175), "Q": (34, 171)}
+MIN_FAMILY_COMPARED = {"B": (32, 162), "C": (35, 175), "D": (25, 126), "Q": (34, 171)}
 # What the oracle compares and finds live, by operator and form, pinned exactly: losing a whole
 # form, or every live program of one, fails even above the floors; and the programs it sets aside
 # because the checks reject them, among them the closed calls of B2, C6 and Q3 that a correct
 # checker rejects (docs/release-gates.md).
 ORACLE_FORMS = (
     "B2:function-value", "B2:grant-handler", "B2:narrowed", "C6:branch-value", "C6:for-elements",
-    "C6:secret-fan-out", "C6:secret-sink", "C6:under-public-pc", "H3:install-under-pc",
+    "C6:secret-fan-out", "C6:secret-sink", "C6:under-public-pc", "D2:generic-path",
+    "D2:generic-registry", "D2:grant-after-path", "D2:grant-after-registry",
+    "D2:higher-order-path", "D2:higher-order-registry", "D2:keep-path", "D2:keep-registry",
+    "H3:install-under-pc",
     "H3:reach-under-pc", "K4:list", "K4:record", "K4:text", "P1:list", "P1:option", "P1:scalar",
     "Q3:guarded-dry", "Q3:guarded-live", "T8:effect-public", "T8:via-calls-policy",
 )
 LIVE_FORMS = ("C6:secret-fan-out", "H3:install-under-pc", "H3:reach-under-pc")
-PINNED_SET_ASIDE_REJECTED = {"B": 14, "C": 20, "Q": 12, "T": 29}
+PINNED_SET_ASIDE_REJECTED = {"B": 14, "C": 20, "D": 22, "Q": 12, "T": 29}
 # The native sample (#792): its size, pinned, the families it compares, pinned, and a floor on the
 # programs it compares, about 90% of the measured run's (docs/release-gates.md).
-NATIVE_SAMPLE = 45
-NATIVE_FAMILIES = ("B", "C", "H", "K", "P", "Q", "T")
+NATIVE_SAMPLE = 54
+NATIVE_FAMILIES = ("B", "C", "D", "H", "K", "P", "Q", "T")
 MIN_NATIVE_COMPARED = 36
 MIN_NATIVE_VARIANTS = 165
+# The families whose must-accept programs are controls, the honest twin of each of their
+# forgeries (D3, Y1, Y2 and Y3), built by the hunt's own registry and resolver: a control the checks
+# reject would make its forgeries' rejections say nothing, so it is an error, never a note.
+CONTROL_FAMILIES = ("D", "Y")
+# The accepted programs the re-check comparison does not export, pinned per reason: those of
+# several packages, whose Core export is `una.core/2`, which this release does not write
+# (`spec/30 §12` rule 7), the export checked to refuse them so; and family Y's resolution forms,
+# judged by `una ita lock --check`, whose package is not loaded as a program.
+PINNED_UNEXPORTED = {"dependencies": 69, "not loaded": 11}
 CHECK_TIMEOUT = 60
 RUN_TIMEOUT = 20
 WORKERS = 4
@@ -188,13 +206,22 @@ WORKERS = 4
 # measuring again, on a quieter machine, or by raising the budget on a measurement, never by
 # shrinking the run or its sample. With each run in a directory of its own (#793) and the gate's
 # shared proof-cache key, the gate took 252 and 253 seconds at a load of about 5 (2026-10-17).
-TIME_BUDGET_MACOS = 270
+# Families D and Y (#1001) add 500 programs: run alone through the gate's four drivers, as the
+# gate runs them, four workers, they took 80 seconds at a load of about 8 (2026-11-02), so the
+# budget is the earlier 270 plus 80, 350. It is an estimate from that partial run, not a
+# measurement of the whole gate: the first gate run of the release measures it, and the budget is
+# pinned again from that run. Y3 (100 programs, the rotated controls and forgeries of the review of
+# #1001) scales those 80 seconds for 500 programs to 96 for 600: 270 plus 96, rounded up to 5, 370.
+TIME_BUDGET_MACOS = 370
 # The budget of the gate on Linux (#793), in the hardened container of `scripts/hunt-linux.sh`,
 # where every run also starts the Landlock launcher: set from measured quiet runs on that
 # container, not from the macOS number. On Docker Desktop's VM on the same Apple M1 Max, the gate
 # took 362 and 359 seconds at a load of about 4 to 5 (2026-10-17), so 390 seconds is the slower
 # plus 7%, rounded up to 5 seconds.
-TIME_BUDGET_LINUX = 390
+# With families D and Y (#1001), the macOS increase of 96 seconds scaled by the measured ratio
+# of the two platforms' budgets (390 / 270), 139 seconds, rounded up to 5: 530. An estimate, to be
+# measured on the release's first Linux run of the gate and pinned again.
+TIME_BUDGET_LINUX = 530
 # The budget by sandbox backend. A backend with no budget here has none pinned, which is an error
 # of the gate: no platform runs unbudgeted.
 TIME_BUDGETS = {"sandbox-exec": TIME_BUDGET_MACOS, "landlock": TIME_BUDGET_LINUX}
@@ -264,6 +291,44 @@ def canary_oracle_tasks():
     files, vary = v.place(package("canary", "0.2", {MOD: text}, entry=MOD, grants=["console"]))
     return Program(op="canary-oracle-tasks", rule="the gate's own canary", edition="0.2", seed=0,
                    cls=OPEN, files=files, vary=vary)
+
+
+def canary_reject_dependency():
+    """Family Y's honest resolution, labeled must-reject: `una ita lock --check` accepts the lock
+    the hunt resolves, so the must-reject driver must report it, on the path of a program judged
+    by that command, its run's Itaoca listing the registry as a mirror."""
+    prog = registry.y1(derive_seed(SEED, "canary-reject-dependency", 0), "0.4", form="honest")
+    return Program(op="canary-reject-dependency", rule="the gate's own canary", edition="0.4",
+                   seed=prog.seed, cls=MUST_REJECT, files=prog.files, expect=["U7009"],
+                   command=prog.command, mirrors=prog.mirrors)
+
+
+def canary_reject_vendored():
+    """Family Y's honest vendored release, labeled must-reject: the checks mount it, since its
+    provenance verifies, so the must-reject driver must report it: a vendored package can be
+    accepted, so its forgeries' rejections are the forgeries'."""
+    prog = registry.y2(derive_seed(SEED, "canary-reject-vendored", 0), "0.4", form="honest")
+    return Program(op="canary-reject-vendored", rule="the gate's own canary", edition="0.4",
+                   seed=prog.seed, cls=MUST_REJECT, files=prog.files, expect=["U7010"])
+
+
+def canary_oracle_dependency():
+    """A program of two packages whose literal, public in the code and marked secret by its
+    manifest, the root passes to its path dependency's `say`, granted `Console.print` within the
+    ceiling: its variants differ in public output, and the oracle must report a leak at
+    `public` on the path of a program with dependencies, which has no Core export."""
+    v = Varied()
+    lit = v.lit("Int", "secret", "5")
+    dep = dependencies.Dep("path", {"say": dependencies.module("say", dependencies.SAY)}, 0,
+                           may=[dependencies.CONSOLE])
+    main = dependencies.root_main(
+        [("util.say", ["say"])],
+        "pub main() -> Unit\n  uses @console: Console[print]\n=\n"
+        f"  let x: Int = {lit}\n"
+        '  say("{x}") with @console = @console[print]')
+    files, vary = v.place(dependencies.assemble("0.4", dep, main, entry=True))
+    return Program(op="canary-oracle-dependency", rule="the gate's own canary", edition="0.4",
+                   seed=0, cls=OPEN, files=files, vary=vary)
 
 
 def residual_verdicts(r):
@@ -529,7 +594,7 @@ def caught(name, row):
         return (bool(diverged) and not record.get("not_compiled")
                 and not any(v.endswith("-base") for v in diverged))
     leaks = sorted({o for v in row["variants"] for o in v.get("observers", [])})
-    if name in ("oracle", "oracle-tasks", "oracle-condition", "message"):
+    if name in ("oracle", "oracle-tasks", "oracle-condition", "message", "oracle-dependency"):
         return "public" in leaks
     if name == "internal":
         return leaks == ["internal"] and not row["violations"]
@@ -869,7 +934,10 @@ def run(una, out_dir, tip, core_check, z3):
             findings.append(f"reject {r['name']}: " + ("a must-reject program is accepted"
                             if r.get("class") == MUST_REJECT else
                             "a closed call, which a correct checker rejects, is accepted"))
-        if r.get("over_strict"):
+        if r.get("over_strict") and family_of(r["op"]) in CONTROL_FAMILIES:
+            errors.append(f"reject {r['name']}: a control the checks must accept is rejected: "
+                          + ", ".join(sorted({c[0] for c in r.get("codes", [])})))
+        elif r.get("over_strict"):
             notes.append(f"reject {r['name']}: a must-accept program is rejected")
 
     # Must-keep.
@@ -984,6 +1052,11 @@ def run(una, out_dir, tip, core_check, z3):
     for name in sorted(set(PINNED_UNKNOWN) & set(unknown_seen)):
         if unknown_seen[name] != PINNED_UNKNOWN[name]:
             errors.append(f"differ {name}: unknown for another reason: {unknown_seen[name]}")
+    unexported = Counter(r["differ"] for r in differ_rows if r.get("differ") in PINNED_UNEXPORTED)
+    for why in sorted(PINNED_UNEXPORTED):
+        if unexported.get(why, 0) != PINNED_UNEXPORTED[why]:
+            errors.append(f"differ: {unexported.get(why, 0)} accepted programs not exported for "
+                          f"{why!r}, and the gate pins {PINNED_UNEXPORTED[why]}")
     differ_clean = sum(1 for r in differ_rows if r.get("differ") == "clean")
     differ_residual = sum(1 for r in differ_rows if r.get("differ") == "residual")
     # A residual row's own comparison must be clean: an export or re-check failure there is an
@@ -1051,6 +1124,12 @@ def run(una, out_dir, tip, core_check, z3):
     drivers.must_reject([dict(cceil.manifest(), digest=cceil.digest())], una, work,
                         CHECK_TIMEOUT, buf, build=lambda row: cceil)
     canaries["ceiling-control"] = bool(json.loads(buf.getvalue()).get("finding"))
+    for name, prog in (("reject-dependency", canary_reject_dependency()),
+                       ("reject-vendored", canary_reject_vendored())):
+        buf = io.StringIO()
+        drivers.must_reject([dict(prog.manifest(), digest=prog.digest())], una, work,
+                            CHECK_TIMEOUT, buf, build=lambda row, prog=prog: prog)
+        canaries[name] = bool(json.loads(buf.getvalue()).get("finding"))
     csyn = canary_syntax()
     buf = io.StringIO()
     drivers.must_reject([dict(csyn.manifest(), digest=csyn.digest())], una, work, CHECK_TIMEOUT,
@@ -1073,6 +1152,7 @@ def run(una, out_dir, tip, core_check, z3):
         "internal": oracle_canary(canary_internal(), una, work, planted("internal")),
         "redacted": oracle_canary(canary_redacted(), una, work, planted("public")),
         "message": oracle_canary(canary_message(), una, work, doc_plant=message_leak),
+        "oracle-dependency": oracle_canary(canary_oracle_dependency(), una, work),
     }
     for name, row in canary_rows.items():
         canaries[name] = caught(name, row)
@@ -1117,7 +1197,8 @@ def run(una, out_dir, tip, core_check, z3):
                    "compared": compared_rows, "accepted_declarations": accepted_decls,
                    "fallbacks": dict(sorted(fallbacks.items())),
                    "not_rechecked": dict(sorted(not_rechecked.items())),
-                   "unknown": len(unknown_seen), "residual": differ_residual},
+                   "unknown": len(unknown_seen), "residual": differ_residual,
+                   "unexported": dict(sorted(unexported.items()))},
         "native": {"expected": NATIVE_SAMPLE, "sampled": len(native_rows),
                    "programs_compared": native_compared, "variants_compared": native_variants,
                    "families": native_families,
