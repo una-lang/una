@@ -83,7 +83,7 @@ EDITIONS = DEFAULT_EDITIONS
 REFACTOR_IDS = ("R6", "R9")
 # The fixed run's sizes, pinned: a change of the generators that changes them fails the gate
 # until this table and docs/release-gates.md say so.
-PINNED = {"programs": 6788, "reject": 6788, "keep": 11322, "oracle": 687, "differ": 6788}
+PINNED = {"programs": 6888, "reject": 6888, "keep": 11422, "oracle": 687, "differ": 6888}
 # The re-check comparison's expected `unknown` outcomes, by program, each with its reason: any
 # other `unknown` is an error, and so is a pinned one that is no longer unknown (#791).
 PINNED_UNKNOWN = {
@@ -192,7 +192,7 @@ CONTROL_FAMILIES = ("D", "Y")
 # several packages, whose Core export is `una.core/2`, which this release does not write
 # (`spec/30 §12` rule 7), the export checked to refuse them so; and family Y's resolution forms,
 # judged by `una ita lock --check`, whose package is not loaded as a program.
-PINNED_UNEXPORTED = {"dependencies": 35, "not loaded": 11}
+PINNED_UNEXPORTED = {"dependencies": 69, "not loaded": 11}
 CHECK_TIMEOUT = 60
 RUN_TIMEOUT = 20
 WORKERS = 4
@@ -210,17 +210,18 @@ WORKERS = 4
 # gate runs them, four workers, they took 80 seconds at a load of about 8 (2026-11-02), so the
 # budget is the earlier 270 plus 80, 350. It is an estimate from that partial run, not a
 # measurement of the whole gate: the first gate run of the release measures it, and the budget is
-# pinned again from that run.
-TIME_BUDGET_MACOS = 350
+# pinned again from that run. Y3 (100 programs, the rotated controls and forgeries of the review of
+# #1001) scales those 80 seconds for 500 programs to 96 for 600: 270 plus 96, rounded up to 5, 370.
+TIME_BUDGET_MACOS = 370
 # The budget of the gate on Linux (#793), in the hardened container of `scripts/hunt-linux.sh`,
 # where every run also starts the Landlock launcher: set from measured quiet runs on that
 # container, not from the macOS number. On Docker Desktop's VM on the same Apple M1 Max, the gate
 # took 362 and 359 seconds at a load of about 4 to 5 (2026-10-17), so 390 seconds is the slower
 # plus 7%, rounded up to 5 seconds.
-# With families D and Y (#1001), the macOS increase of 80 seconds scaled by the measured ratio
-# of the two platforms' budgets (390 / 270), 116 seconds, rounded up to 5: 505. An estimate, to be
+# With families D and Y (#1001), the macOS increase of 96 seconds scaled by the measured ratio
+# of the two platforms' budgets (390 / 270), 139 seconds, rounded up to 5: 530. An estimate, to be
 # measured on the release's first Linux run of the gate and pinned again.
-TIME_BUDGET_LINUX = 505
+TIME_BUDGET_LINUX = 530
 # The budget by sandbox backend. A backend with no budget here has none pinned, which is an error
 # of the gate: no platform runs unbudgeted.
 TIME_BUDGETS = {"sandbox-exec": TIME_BUDGET_MACOS, "landlock": TIME_BUDGET_LINUX}

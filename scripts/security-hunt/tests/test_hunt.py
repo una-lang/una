@@ -1569,9 +1569,9 @@ class Edition03Guards(unittest.TestCase):
             self.assertIn("not a document", why or "", stdout)
 
     def test_the_gate_has_a_time_budget_per_platform(self):
-        self.assertEqual(gate.TIME_BUDGETS["sandbox-exec"], 350)
+        self.assertEqual(gate.TIME_BUDGETS["sandbox-exec"], 370)
         self.assertIsNone(gate.budget_error(215, "sandbox-exec"))
-        self.assertIn("over its budget of 350", gate.budget_error(351, "sandbox-exec"))
+        self.assertIn("over its budget of 370", gate.budget_error(371, "sandbox-exec"))
         linux = gate.TIME_BUDGETS["landlock"]
         if linux is not None:
             self.assertIsNone(gate.budget_error(linux, "landlock"))

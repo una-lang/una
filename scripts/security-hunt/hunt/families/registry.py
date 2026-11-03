@@ -17,6 +17,11 @@ client refuses, or a forged one it accepts, is a finding either way.
   provenance (`spec/30 §9` rules 7 and 8), and the root imports its module, so the check mounts
   it only when it loads verified. Every forgery of the vendored copy, its provenance or the lock
   must be refused (U7010); the honest copy must be accepted.
+- **Y3, provenance across root rotations**, judged by `una check`: Y2's vendored release, its
+  provenance holding later root versions that retire or revoke witnesses or change the witness
+  threshold (`spec/30 §9` rule 7, §11 rules 8 and 9). The `honest-` forms are must-accept
+  controls, the honest twin of each rotated forgery of Y2 and Y3; the others must be refused
+  (U7010).
 
 `ita.una` is a file of edition 0.4: in edition 0.3, every program is the edition gate's probe
 (U7008), with no registry built.
@@ -386,5 +391,104 @@ def y2(seed, edition, form=None):
                    variant=form)
 
 
-OPERATORS = {"Y1": y1, "Y2": y2}
+# ---------------------------------------------------------------------------------------------
+# Y3: provenance across root rotations, with controls
+# ---------------------------------------------------------------------------------------------
+
+# The forms of Y3: the vendored release of Y2, its point cosigned under the first root version and
+# its provenance holding later versions that rotate witnesses or change the threshold (`spec/30
+# §9` rule 7, §11 rules 8 and 9). The `honest-` forms are must-accept controls, the honest twin
+# of each forgery of Y2 and Y3 across a rotation, so that a defect of the hunt's own rotation
+# (`itaty.Registry.rotate_witness`, `add_root`) cannot make those forgeries reject for a reason
+# of its own unseen: a control the checks refuse is an error of the gate (`CONTROL_FAMILIES`).
+Y3_FORMS = ("honest-retired", "honest-two-retired", "honest-revoked-enough",
+            "honest-raised-enough", "honest-raised-lowered", "honest-new-witness",
+            "revoked-then-retired", "retired-revoked-later", "raised-to-three")
+
+
+def y3(seed, edition, form=None):
+    rng = rng_for(seed)
+    chosen = rng.choice(Y3_FORMS)
+    form = form or chosen
+    if edition != "0.4":
+        return _probe("Y3", seed, edition, form)
+    n = rng.choice([3, 5, 8])
+    version = rng.choice(["0.3.1", "0.3.2"])
+    # Which witnesses the rotations touch, `a` and `b`, and the third, `c`.
+    a, b, c = rng.sample(range(3), 3)
+    reg = itaty.Registry(SOURCE, "hunt-y3", witness_k=1 if form == "honest-raised-enough" else 2)
+    owner = itaty.key_from("hunt-y3:owner", f"{OWNER}.laptop")
+    reg.register(OWNER, [owner])
+    if rng.random() < 0.5:
+        noise = rng.choice(OTHER_NAMES)
+        reg.release(noise, "0.3.9", release_files(noise, "0.3.9", 9), [owner])
+    files = release_files(NAME, version, n)
+    reg.release(NAME, version, files, [owner])
+    first = list(reg.witnesses)
+    if form == "honest-revoked-enough":
+        cosigners = first
+    elif form == "honest-new-witness":
+        cosigners = [first[b]]
+    else:
+        cosigners = [first[a], first[b]]
+    size = reg.checkpoint(itaty.T0, witnesses=cosigners)
+    prov = None
+    if form == "honest-retired":
+        # `a` retired, not revoked: it still counts on its version's point, with `b`: two.
+        reg.rotate_witness(a, "retired", revoke=False)
+    elif form == "honest-two-retired":
+        reg.rotate_witness(a, "retired-a", revoke=False)
+        reg.rotate_witness(b, "retired-b", revoke=False)
+    elif form == "honest-revoked-enough":
+        # `a` revoked: `b` and `c` still count, two at threshold two.
+        reg.rotate_witness(a, "revoked", revoke=True)
+    elif form == "honest-raised-enough":
+        # Threshold one, then two: the point has two cosignatures, the larger of the two.
+        reg.witness_k = 2
+        reg.add_root()
+    elif form == "honest-raised-lowered":
+        # Two, then three, then two: the larger of the named version's and the last one's, two;
+        # a version between them is not read.
+        reg.witness_k = 3
+        reg.add_root()
+        reg.witness_k = 2
+        reg.add_root()
+    elif form == "honest-new-witness":
+        # `a` revoked and replaced: its replacement, a witness of the last root, cosigns the
+        # point of the first version, beside `b`: two that count.
+        reg.rotate_witness(a, "new", revoke=True)
+        prov = reg.provenance(NAME, version, size, checkpoint=_checkpoint_with(
+            reg, size, reg.log, [(first[b], first[b].name),
+                                 (reg.witnesses[a], reg.witnesses[a].name)]))
+    elif form == "revoked-then-retired":
+        # `a` revoked by the second version, `b` retired by the third: `b` counts, `a` never
+        # does, one below two (U7010).
+        reg.rotate_witness(a, "revoked", revoke=True)
+        reg.rotate_witness(b, "retired", revoke=False)
+    elif form == "retired-revoked-later":
+        # `a` retired by the second version, its key revoked by the third: a revocation of any
+        # stored version counts at every version, so one below two (U7010).
+        reg.rotate_witness(a, "retired", revoke=False)
+        reg.add_root(revoked=[first[a].fingerprint()])
+    else:
+        # Raised to three: two cosignatures below the last version's threshold (U7010).
+        reg.witness_k = 3
+        reg.add_root()
+    _, root = reg.resolution_point(size)
+    entry = registry_lock_entry(reg, NAME, version)
+    files_out = vendored(reg, NAME, version, files, size, provenance=prov)
+    root_files = _root(edition, reg, [{"name": NAME, "version": "0.3", "origin": SOURCE}],
+                       module("main", "pub one() -> Int = total()",
+                              imports=[("ledger.ledger", ["total"])]))
+    root_files["ita.lock"] = itaty.lock_text([(SOURCE, reg.pin(), size, root)], [entry])
+    root_files.update(files_out)
+    honest = form.startswith("honest")
+    cls, expect = (MUST_ACCEPT, []) if honest else (MUST_REJECT, ["U7010"])
+    return Program(op="Y3", rule="ADR 0122 rules 16 to 32, spec/30 §9 rule 7, §11 rules 8 and 9",
+                   edition=edition, seed=seed, cls=cls, files=root_files, expect=expect,
+                   variant=form, note=f"{len(reg.roots)} root versions, threshold "
+                   f"{reg.witness_k}, witnesses rotated {a} and {b}")
+
+
+OPERATORS = {"Y1": y1, "Y2": y2, "Y3": y3}
 EDITIONS_BY_OP = {op: EDITIONS for op in OPERATORS}

@@ -4,6 +4,7 @@ compiler.
     cd scripts/security-hunt && python3 -m unittest discover -s tests
 """
 
+import base64
 import hashlib
 import os
 import sys
@@ -20,7 +21,7 @@ from hunt.program import MUST_ACCEPT, MUST_REJECT, OPEN, Program, derive_seed  #
 from hunt.refactor import REFACTORS  # noqa: E402
 
 REPO = os.path.realpath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-FAMILY_OPS = ("D1", "D2", "D3", "Y1", "Y2")
+FAMILY_OPS = ("D1", "D2", "D3", "Y1", "Y2", "Y3")
 
 
 def programs(op, n=60, edition="0.4"):
@@ -206,13 +207,14 @@ class Families(unittest.TestCase):
                 else:
                     self.assertEqual(p.cls, MUST_REJECT)
                     self.assertTrue(p.expect, p.name)
-                if op == "Y2" and p.cls == MUST_REJECT:
+                if op in ("Y2", "Y3") and p.cls == MUST_REJECT:
                     self.assertEqual(p.expect, ["U7010"])
         self.assertEqual({v.split("-path")[0].split("-registry")[0] for v in seen["D1"]},
                          set(dependencies.D1_FORMS))
         self.assertEqual(seen["D3"], set(dependencies.D3_FORMS))
         self.assertEqual(seen["Y1"], set(registry.Y1_FORMS))
         self.assertEqual(seen["Y2"], set(registry.Y2_FORMS))
+        self.assertEqual(seen["Y3"], set(registry.Y3_FORMS))
 
     def test_a_registry_dependency_is_vendored_with_its_provenance(self):
         for p in programs("D2", 40):
@@ -297,6 +299,122 @@ class Drivers(unittest.TestCase):
             self.assertIn("the oracle must read it", oracle.dependency_export("una", "/p", "/r", 1))
         with mock.patch.object(sandbox, "run_fresh", run_fresh(2, "another usage error")):
             self.assertIsNotNone(oracle.dependency_export("una", "/p", "/r", 1))
+
+
+def parse_provenance(text):
+    """(root texts, checkpoint text, its cosignature lines) of a provenance, read apart from the
+    builder: each document is length-prefixed (`spec/30 §9` rule 7)."""
+    data = text.encode()
+    pos = data.index(b"\n") + 1
+    roots, checkpoint = [], None
+    while True:
+        end = data.index(b"\n", pos)
+        kind, length = data[pos:end].decode().split(" ")
+        doc = data[end + 1:end + 1 + int(length)].decode()
+        pos = end + 1 + int(length)
+        if kind == "root":
+            roots.append(doc)
+        elif kind == "checkpoint":
+            checkpoint = doc
+            break
+    body, sigs = checkpoint.split("\n\n", 1)
+    return roots, body + "\n", [line for line in sigs.splitlines() if line]
+
+
+def root_fields(doc):
+    """(version, witness threshold, {public key: name} of its witnesses, revoked fingerprints)."""
+    lines = doc.split("\n\n", 1)[0].splitlines()
+    version = int(lines[2].split()[1])
+    at = next(i for i, l in enumerate(lines) if l.startswith("witnesses "))
+    k = int(lines[at].split()[1])
+    witnesses = {}
+    for line in lines[at + 1:at + 1 + 3]:
+        _, name, b = line.split()
+        witnesses[base64.b64decode(b)] = name
+    revoked = set()
+    for line in lines:
+        if line.startswith("witnesses-revoked "):
+            revoked |= set(line.split()[1:])
+    return version, k, witnesses, revoked
+
+
+def counted_cosigners(text):
+    """The witnesses that count on a provenance's point and the threshold k, by `spec/30 §9` rule
+    7 as the spec states it, written apart from the builder and the client: a witness of the last
+    stored root, or one of the named root that the last one retired, never one whose fingerprint
+    any stored root revokes; k the larger of the named and the last root's threshold."""
+    roots, body, sigs = parse_provenance(text)
+    fields = [root_fields(r) for r in roots]
+    named = int(next(l for l in body.splitlines() if l.startswith("ita-root ")).split()[1])
+    _, named_k, named_w, _ = next(f for f in fields if f[0] == named)
+    _, last_k, last_w, _ = fields[-1]
+    revoked = set().union(*(f[3] for f in fields))
+    by_id = {}
+    for pub, name in {**named_w, **last_w}.items():
+        cid = hashlib.sha256(name.encode() + b"\n" + bytes([4]) + pub).digest()[:4]
+        by_id[(name, cid)] = pub
+    counted = set()
+    for line in sigs[1:]:
+        _, name, blob = line.split()
+        pub = by_id.get((name, base64.b64decode(blob)[:4]))
+        if pub is not None and hashlib.sha256(pub).hexdigest() not in revoked:
+            counted.add(pub)
+    return len(counted), max(named_k, last_k), len(roots)
+
+
+class Rotations(unittest.TestCase):
+    # How many root versions each form of Y3 stores, the first included.
+    ROOTS = {"honest-retired": 2, "honest-two-retired": 3, "honest-revoked-enough": 2,
+             "honest-raised-enough": 2, "honest-raised-lowered": 3, "honest-new-witness": 2,
+             "revoked-then-retired": 3, "retired-revoked-later": 3, "raised-to-three": 2}
+
+    def test_every_y3_form_counts_as_its_class_claims(self):
+        # The hunt's rotation code, checked by an independent count of the provenance it writes:
+        # a control counts at least k witnesses and a forgery fewer, so a forgery's rejection
+        # is for the rule it breaks and not for a defect of `rotate_witness` or `add_root`.
+        seen = set()
+        for p in programs("Y3", 120):
+            prov = next(v for k, v in p.files.items() if k.endswith(".provenance"))
+            count, k, roots = counted_cosigners(prov)
+            self.assertEqual(roots, self.ROOTS[p.variant], p.name)
+            if p.cls == MUST_ACCEPT:
+                self.assertGreaterEqual(count, k, p.name)
+            else:
+                self.assertEqual(p.expect, ["U7010"])
+                self.assertLess(count, k, p.name)
+            seen.add(p.variant)
+        self.assertEqual(seen, set(registry.Y3_FORMS))
+
+    def test_the_y2_rotation_forgeries_count_below_their_threshold(self):
+        for p in programs("Y2", 200):
+            if p.variant not in ("revoked-witness", "threshold-raised"):
+                continue
+            prov = next(v for k, v in p.files.items() if k.endswith(".provenance"))
+            count, k, roots = counted_cosigners(prov)
+            self.assertEqual((roots, count, k), (2, 1, 2), p.name)
+
+    def test_the_rotated_controls_are_in_the_fixed_run(self):
+        # Every form of Y3, and so a rotated control beside each rotated forgery, is judged by
+        # the gate's fixed run, not only by a larger sample of seeds.
+        forms = {p.variant for p in gate.programs() if p.op == "Y3" and p.edition == "0.4"}
+        self.assertEqual(forms, set(registry.Y3_FORMS))
+
+    def test_a_rotated_control_differs_from_its_forgery_only_in_what_counts(self):
+        # The same seed's control and forgery share the release and the vendored files: only
+        # the provenance (its later roots and the point's cosignatures) and the lock's point
+        # change, and the pin too where the first root's threshold differs (one, raised).
+        seed = derive_seed(11, "Y3", 0)
+        for control, forgery, pin in (("honest-retired", "revoked-then-retired", False),
+                                      ("honest-revoked-enough", "retired-revoked-later", False),
+                                      ("honest-raised-lowered", "raised-to-three", False),
+                                      ("honest-raised-enough", "raised-to-three", True)):
+            a = registry.y3(seed, "0.4", form=control).files
+            b = registry.y3(seed, "0.4", form=forgery).files
+            self.assertEqual(sorted(a), sorted(b))
+            changed = {k for k in a if a[k] != b[k]}
+            allowed = (".provenance", "ita.lock") + (("ita.una",) if pin else ())
+            self.assertTrue(changed and all(k.endswith(allowed) for k in changed), changed)
+            self.assertEqual("ita.una" in changed, pin, (control, forgery))
 
 
 class Gate(unittest.TestCase):
