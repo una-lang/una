@@ -339,6 +339,36 @@ def export_core(una, pkg, root, timeout):
     return doc, None
 
 
+# What `una core` says of a program with dependencies (`spec/30 §12` rule 7).
+NO_CORE_2 = "una.core/2"
+
+
+def dependency_export(una, pkg, root, timeout):
+    """None when `una core` refuses the program of several packages at `pkg` as a usage error
+    naming `una.core/2`, as this release does; otherwise why, an error of the gate: an export
+    that starts to be written must be read by the oracle and the re-check, never skipped."""
+    r = sandbox.run_fresh([una, "--json", "core", "."], cwd=pkg, root=root, timeout=timeout)
+    if r.timed_out:
+        return "the Core export of a program with dependencies timed out"
+    if r.code == 2 and NO_CORE_2 in r.stderr + r.stdout:
+        return None
+    return (f"the Core export of a program with dependencies exited {r.code}, not the usage "
+            f"error that names {NO_CORE_2}: the oracle must read it")
+
+
+def checks_accept(una, pkg, root, timeout):
+    """Whether `una check --tier 0` accepts the package at `pkg`: exit 0 and no error."""
+    r = sandbox.run_fresh([una, "--json", "check", "--tier", "0", "."], cwd=pkg, root=root,
+                          timeout=timeout)
+    if r.timed_out or r.code != 0:
+        return False
+    try:
+        doc = json.loads(r.stdout)
+    except ValueError:
+        return False
+    return not any(d.get("severity") == "error" for d in doc.get("diagnostics", []))
+
+
 def raw(run):
     """What two runs of one variant must share: every byte of the run document, its exit code and
     whether it timed out, minus RUN_VARYING_FIELDS (none)."""
@@ -508,7 +538,21 @@ def oracle(rows, una, root, timeout, out, rebuild, plant=None, native_plant=None
             continue
         pkg = Program(op="oracle", rule="", edition="", seed=0, cls="open", files=prog.files,
                       variant=prog.name + "-core").write(root)
-        core, why = export_core(una, pkg, root, timeout)
+        if prog.has_dependencies:
+            # A program of several packages has no Core export in this release (`una.core/2`,
+            # `spec/30 §12` rule 7): the export must refuse it so. A program the checks accept
+            # is judged by the host's `accepts` alone, so an event of any other operation is an
+            # error (`UnknownOperation`); one they reject goes the way of an incomplete export.
+            why = dependency_export(una, pkg, root, timeout)
+            if why is not None:
+                result["error"] = why
+                tally["program error"] += 1
+                out.write(json.dumps(result, sort_keys=True) + "\n")
+                continue
+            accepted = checks_accept(una, pkg, root, timeout)
+            core, why = ({"modules": []}, None) if accepted else (None, "the checks reject it")
+        else:
+            core, why = export_core(una, pkg, root, timeout)
         if core is None:
             # A program the checks reject has no complete export: the base run says so.
             base = run_twice(una, prog.files, prog.name + "-base", root, timeout, observers,
