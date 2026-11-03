@@ -6183,6 +6183,162 @@ fn s39_events_reached_under_a_secret_branch_without_diverges_add_nothing_to_the_
     }
 }
 
+/// The functions of the round-4 reproducers (#1507, review round 3, H1): `blk` runs a `tasks`
+/// statement that fails and cancels its started task, which appends a `cancelled` event.
+const SECRET_BLOCK_FNS: &str = "module leak
+
+pub kind Bad = Boom | Other
+
+pub kind Job
+  run: fn() -> Unit
+
+noop() -> Unit = unit
+
+boom() -> Unit
+  fails Bad
+=
+  fail Boom
+
+run_block() -> Unit
+  fails Bad
+=
+  tasks
+    start noop()
+    boom()
+      if error pass
+
+blk() -> Unit
+=
+  let r = attempt run_block()
+  noop()
+
+nothing() -> Unit = unit
+
+when_true(b: Bool) -> Unit
+=
+  if b
+    blk()
+
+pick[T](a: T, b: T, f: fn(Bool) -> Unit) -> Unit = f(a == b)
+";
+
+/// S-39 round 4 (#1507, review round 3, H1, `f6c.una`): a function value that is itself
+/// `secret`, called at a `public` program counter.
+const SECRET_VALUE_CALL: &str = "
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let s: secret Int = SECRET
+  let f = if s > 0 then blk else nothing
+  f()
+  let g = if s > 1 then blk else nothing
+  g()
+  let h = if s > 2 then blk else nothing
+  h()
+  @console.print(\"done\")
+";
+
+/// S-39 round 4 (#1507, review round 3, H1, `f6k.una`): the same through a kind's field.
+const SECRET_FIELD_CALL: &str = "
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let s: secret Int = SECRET
+  let a = if s > 0 then Job(run: blk) else Job(run: nothing)
+  a.run()
+  let b = if s > 1 then Job(run: blk) else Job(run: nothing)
+  b.run()
+  let c = if s > 2 then Job(run: blk) else Job(run: nothing)
+  c.run()
+  @console.print(\"done\")
+";
+
+/// S-39 round 4 (#1507, review round 3, H1, the decision): a generic function calls a public
+/// function value with an argument decided by values of its type parameter, `ℓ*_T`, which
+/// raises the call to `pc ⊔ ℓ*_T` (ADR 0067 amendment) at a `public` program counter.
+const SECRET_DECIDED_CALL: &str = "
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let s: secret Int = SECRET
+  pick(s, b: 0, f: when_true)
+  pick(s, b: 1, f: when_true)
+  pick(s, b: 2, f: when_true)
+  @console.print(\"done\")
+";
+
+#[test]
+fn s39_calls_of_secret_function_values_add_nothing_to_the_trace() {
+    // S-39 round 4 (#1507, review round 3, H1), `spec/26 §6` rule 4 with `spec/07 §3` rule 4: a
+    // call of a function value labeled `l_f` stands under `pc ⊔ l_f`, with the decisions of its
+    // arguments, so it is quiet at a `public` program counter too, called directly, through a
+    // kind's field, or from a generic function under a decision. Whole events are the same for
+    // every secret, in both engines. Before the fix, `s` gave up to three `cancelled` events.
+    for (name, main) in [
+        ("s39valuecall", SECRET_VALUE_CALL),
+        ("s39fieldcall", SECRET_FIELD_CALL),
+        ("s39decided", SECRET_DECIDED_CALL),
+    ] {
+        let source = format!("{SECRET_BLOCK_FNS}{main}");
+        for secret in [0, 1, 2, 3, 5] {
+            let (output, run, native) = secret_run(name, &source, secret, &[]);
+            assert_eq!(output, serde_json::json!(["done"]), "{name} {secret}");
+            assert_eq!(run, done_only(), "{name} {secret}");
+            assert_eq!(native, done_only(), "{name} {secret}");
+        }
+    }
+}
+
+/// S-39 round 4 (#1507, review round 3, H1, `f6.una`): `tasks` statements behind `secret`
+/// function values, then a public `tasks` statement whose task prints.
+const SECRET_VALUE_PATHS: &str = r#"module leak
+
+pub kind Job
+  run: fn() -> Unit
+
+noop() -> Unit = unit
+
+blk() -> Unit
+=
+  tasks
+    start noop()
+
+nothing() -> Unit = unit
+
+worker(n: Int) -> Unit
+  uses @console: Console[print]
+=
+  @console.print("w {n}")
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let s: secret Int = SECRET
+  let f = if s > 0 then blk else nothing
+  f()
+  let g = if s > 1 then blk else nothing
+  g()
+  let a = if s > 2 then Job(run: blk) else Job(run: nothing)
+  a.run()
+  tasks
+    start worker(1)
+"#;
+
+#[test]
+fn s39_quiet_calls_of_secret_function_values_do_not_move_the_paths_of_later_public_ones() {
+    // S-39 round 4 (#1507, review round 3, H1): the `tasks` statements that a call of a `secret`
+    // function value runs are quiet, so they are numbered `qs<c>`, and the later public task
+    // prints at `s1.1` for every secret, in both engines. Before the fix, it printed at
+    // `s<min(s, 3) + 1>.1`.
+    let expected = Value::from(vec![worker_print(1, "s1.1", 1)]);
+    for secret in [0, 1, 2, 3, 5] {
+        let (output, run, native) = secret_run("s39vpaths", SECRET_VALUE_PATHS, secret, &[]);
+        assert_eq!(output, serde_json::json!(["w 1"]), "{secret}");
+        assert_eq!(run, expected, "{secret}");
+        assert_eq!(native, expected, "{secret}");
+    }
+}
+
 /// S-39 reproducer 1 verbatim (#1507), with S-36's per-loop budget (#1478): a loop under a
 /// `secret` branch that `stop when` or the budget ends, then a public loop whose `on stop`
 /// prints its count.

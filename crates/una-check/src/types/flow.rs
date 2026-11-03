@@ -115,7 +115,16 @@ impl Checker<'_, '_, '_> {
     /// of a function value, or an operation, which a handler of the package may serve (S-39,
     /// `spec/26 §6` rule 4).
     pub(crate) fn quiet_site(&mut self, span: Span) {
-        if self.pass == Pass::Check && self.raised() {
+        self.quiet_site_under(span, &Label::public());
+    }
+
+    /// As [`Self::quiet_site`], for a call that stands under `pc ⊔ raise` rather than `pc`: the
+    /// call of a function value labeled `l_f` stands under `pc ⊔ l_f` (`spec/07 §3` rule 4,
+    /// T-App), and the value's label is joined with the decisions its arguments carry (ADR 0067
+    /// amendment). Such a call is quiet when `raise` is above `public`, a symbolic label
+    /// included, even at a `public` program counter (S-39 round 4, `spec/26 §6` rule 4).
+    pub(crate) fn quiet_site_under(&mut self, span: Span, raise: &Label) {
+        if self.pass == Pass::Check && (self.raised() || !raise.is_public()) {
             self.findings.quiet.insert(span);
         }
     }
@@ -124,7 +133,14 @@ impl Checker<'_, '_, '_> {
     /// ([`Self::raised`]): once every body is checked, [`close_quiet`] marks it `quiet` when the
     /// callee can reach a construct whose running appends events of its own.
     pub(crate) fn quiet_call_site(&mut self, span: Span, callee: usize) {
-        if self.pass == Pass::Check && self.raised() {
+        self.quiet_call_site_under(span, callee, &Label::public());
+    }
+
+    /// As [`Self::quiet_call_site`], for a named call that runs under `pc ⊔ raise`: the
+    /// decision that edition 0.1 raises a call by when its arguments give function values data
+    /// decided by values of a type parameter (`ℓ*_T`, T-Call, #346, #350).
+    pub(crate) fn quiet_call_site_under(&mut self, span: Span, callee: usize, raise: &Label) {
+        if self.pass == Pass::Check && (self.raised() || !raise.is_public()) {
             self.findings.quiet_calls.insert(span, callee);
         }
     }
