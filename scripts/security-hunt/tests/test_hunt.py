@@ -34,10 +34,20 @@ class Generators(unittest.TestCase):
     def test_every_operator_builds_a_package(self):
         for p in every_program():
             self.assertIn(p.cls, CLASSES)
-            self.assertIn("una.toml", p.files)
-            self.assertIn("verification.lock", p.files)
+            if p.op[0] in "DY":
+                # Families D and Y: packages of edition 0.4, described by `ita.una`.
+                self.assertIn("ita.una", p.files)
+                self.assertIn("ita.lock", p.files)
+                self.assertNotIn("una.toml", p.files)
+            else:
+                self.assertIn("una.toml", p.files)
+                self.assertIn("verification.lock", p.files)
             self.assertTrue(any(k.endswith(".una") for k in p.files), p.name)
             for rel, text in p.files.items():
+                if isinstance(text, bytes):
+                    # A registry's tiles, entry bundles and archives (family Y).
+                    self.assertTrue(rel.startswith("mirror/"), f"{p.name}: {rel}")
+                    continue
                 self.assertNotIn("⟦", text, f"{p.name}: a varied marker left in {rel}")
                 self.assertTrue(text.endswith("\n"), f"{p.name}: {rel}")
             if p.cls == MUST_REJECT:
@@ -88,6 +98,8 @@ class Generators(unittest.TestCase):
 
     def test_listing_of_t1_t2_t3(self):
         for p in every_program():
+            if p.op not in ("T1", "T2", "T3"):
+                continue
             toml = p.files["una.toml"]
             keys = p.files.get("src/app/keys.una", "")
             if p.op == "T1" and p.variant == "header-only":
@@ -111,7 +123,10 @@ class Generators(unittest.TestCase):
                 line = lines[pos["line"] - 1]
                 self.assertEqual(line[pos["col"] - 1:pos["col"] - 1 + len(pos["literal"])],
                                  pos["literal"])
-                self.assertIn("[run]", p.files["una.toml"])
+                if "ita.una" in p.files:
+                    self.assertIn("\nrun\n  entry main\n", p.files["ita.una"])
+                else:
+                    self.assertIn("[run]", p.files["una.toml"])
         self.assertGreater(found, 0)
 
     def test_h5_rejects_only_a_failure_passed_under_a_secret_pc(self):
@@ -1386,7 +1401,7 @@ class Edition03Guards(unittest.TestCase):
         # The checks' logic, on rows that meet the pins and floors exactly, built from them: one
         # row fewer, or a family under its floor, is an error. That the pins are the generators'
         # is the next test's, and the measured run's.
-        op_of = {"B": "B2", "C": "C6", "Q": "Q3", "T": "T12"}
+        op_of = {"B": "B2", "C": "C6", "D": "D2", "Q": "Q3", "T": "T12"}
         rows = [{"op": op_of[f], "set_aside": "rejected by the checks: U4003"}
                 for f, n in sorted(gate.PINNED_SET_ASIDE_REJECTED.items()) for _ in range(n)]
         full = rows + [{"op": op_of[f], "compared": -(-variants // programs)}
@@ -1554,9 +1569,9 @@ class Edition03Guards(unittest.TestCase):
             self.assertIn("not a document", why or "", stdout)
 
     def test_the_gate_has_a_time_budget_per_platform(self):
-        self.assertEqual(gate.TIME_BUDGETS["sandbox-exec"], 270)
+        self.assertEqual(gate.TIME_BUDGETS["sandbox-exec"], 350)
         self.assertIsNone(gate.budget_error(215, "sandbox-exec"))
-        self.assertIn("over its budget of 270", gate.budget_error(271, "sandbox-exec"))
+        self.assertIn("over its budget of 350", gate.budget_error(351, "sandbox-exec"))
         linux = gate.TIME_BUDGETS["landlock"]
         if linux is not None:
             self.assertIsNone(gate.budget_error(linux, "landlock"))

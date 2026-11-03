@@ -1,0 +1,69 @@
+ita-provenance/1
+root 860
+ita-root/1
+source acme
+version 1
+expires 4000000000
+root 2
+key acme.root.0 W45grsj5ZMGqJAQ38mfGXWL/5VoTzLE/hED0+YnkYh4=
+key acme.root.1 oKO1WL6MCI5CKcK005x0I6FYXc6T7ylJMITZ8q4wdlI=
+key acme.root.2 r1SKGkMZRHY5L4hsBEn+e6H/9L5WMrwA0U8kHz/UUB4=
+log acme.example/log ohaqwYsnXUrqDW69ZDT0noSRxAlyTmYl0uWae8qBg9I=
+witnesses 2
+key witness.0 LUcWCT/DXqH06sYqI+5we3+4OBqGw02mOdqq2McJTAw=
+key witness.1 Kclft0V5Wgyittrk+zg7Ca95wEvD1PvUCLffFaq5tHg=
+key witness.2 6hjmaedLFgdw0lsLjlrEcJPeE6svu8cb0IIUqTG+KSQ=
+security 1
+key acme.security n+3DP8MFZwpJpXLOpRyLJyzqLjbsECaIHGJ2jvrjX78=
+itauna 1
+key acme.itauna v9H65m7ip/OADZ7NhztIgDHkTZi4dhEZBKEszg1mKiY=
+
+— acme.root.0 Ui8FFb7o9FVUCk7014odmxrzdc80NHMUbeUT28NgzmMN/n05MZtD5+4rG8tmVOm+TExy/qaDKvtjC9ai4L9SFCwFSwo=
+— acme.root.1 nt4ry5DhTmWTuyJkM4tJsY2ijxIPaXQcyB0OAtm4Fh/FCGB5b9aH8/bobCwSTUMTNtASKXF60OmhM9xivl30IoqcRQg=
+root 868
+ita-root/1
+source acme
+version 2
+expires 4000000000
+root 2
+key acme.root.0 W45grsj5ZMGqJAQ38mfGXWL/5VoTzLE/hED0+YnkYh4=
+key acme.root.1 oKO1WL6MCI5CKcK005x0I6FYXc6T7ylJMITZ8q4wdlI=
+key acme.root.2 r1SKGkMZRHY5L4hsBEn+e6H/9L5WMrwA0U8kHz/UUB4=
+log acme.example/log ohaqwYsnXUrqDW69ZDT0noSRxAlyTmYl0uWae8qBg9I=
+witnesses 2
+key witness.rotated.0 GoGG5g3B7R70O4d3QXtER/p8KRuKP86065rSuBJ0vOg=
+key witness.1 Kclft0V5Wgyittrk+zg7Ca95wEvD1PvUCLffFaq5tHg=
+key witness.2 6hjmaedLFgdw0lsLjlrEcJPeE6svu8cb0IIUqTG+KSQ=
+security 1
+key acme.security n+3DP8MFZwpJpXLOpRyLJyzqLjbsECaIHGJ2jvrjX78=
+itauna 1
+key acme.itauna v9H65m7ip/OADZ7NhztIgDHkTZi4dhEZBKEszg1mKiY=
+
+— acme.root.0 Ui8FFQzx0akt8nuUhfDZrduRCMT7k0HuaSqhqnvhvDgY08XbCr7kuyTpF3UkjqGUsfUYLLMK8ONsJ7Pe0xDK7LY61gc=
+— acme.root.1 nt4ry05ThXOVppw8+qTn7xqNTfJ8nT5CPGOeG2wI2plSG+LjLDfHF2e0ggBiXElpEQEJ3HP/IqG8Ia2mbfspGOs/EAE=
+checkpoint 553
+acme.example/log
+2
+nujIB67WCyEWMHTJTe0guL9UI/wEtkUJI6BQE0OCnHI=
+ita-map 09E4K25QBq+dXFMvNVv+FLWjjRjuD6VWDp7EEHAa6cc=
+ita-root 1 sha256:9588528ba6e809b94ce70c00b66df3e2a294775ac79478c2c34b524f85588fc1
+
+— acme.example/log OHY53nV/d93Fkfyu+Pa1qiE08p1mH+POlqfCut89sl9aBuVR0zK+Iqh9M/tLvysjkl8ZMNdjg8jrAhi5saKpHNz72wg=
+— witness.0 ucsujgAAAABlU/EAUywB48aI5f22la/djT7oU7U5f5IeUB7vhenUjEF0ZSNIyL5QfIEohSJiUVS42hAhVeBxC4j4tGhbMpbqkA8qCg==
+— witness.1 0MbrjAAAAABlU/EAQuiPLKp50/U85gkFm54hWlaRaoKvCGQ5dbm0nCSGFzuWWj12etgzQZhig4d2Sz9LluMf8u0OJqyLgBvJ6yq3Cg==
+statement 379
+ita-release/1
+source acme
+name acme/ledger
+version 0.3.1
+previous none
+digest sha256:258dce661d4d09337df7fbb1e8261ebdb3136c5827e755074c1bf5e5b2d85fa3
+manifest sha256:c6b20dc4ddc17cc9025bf0adce6315863488c8cef737f90a26dced951a1d5981
+edition 0.4
+authority none
+trust none
+
+— acme.laptop IT02tXCPg6GRQKWBsCxk7Dr/9J6Sot9HF3gFbZ1KVZFg3NUeRDQ5W0JOcK72J/3Mv3AFOJZitoHbJPo6yNK1XIsdigs=
+index 1
+proof b9AFQJflPTGTk28IiIvtJ/mDdBbiIsBMhYxq3g8nqzs=
+key acme.laptop lPKSfMllBlvIadgFX0j3XvsQEGPtORAqcxbpUfDWKYc=
