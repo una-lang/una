@@ -3742,6 +3742,71 @@ mod tests {
     }
 
     #[test]
+    fn a_reservation_within_the_debug_table_still_lowers_the_credit() {
+        // #1506, review round 3, finding 1: 16,385 live objects, then churn past the quarantine:
+        // the debug table has room for an import of 16,384 objects, so `reserve_slots` returns
+        // early, but a release build's table must double for it, to 65,536 slots. The credit
+        // must follow at once, before any allocation, since the import checks the budget
+        // before it allocates.
+        if !cfg!(debug_assertions) || cfg!(miri) {
+            return;
+        }
+        let mut parked = Slots::default();
+        swap_slots(&mut parked);
+        let mut table = ReleaseTable(Vec::new());
+        let live: Vec<i64> = (0..16_385).map(|_| list()).collect();
+        for _ in 0..QUARANTINE + 10 {
+            release(list());
+        }
+        table.grow_to(16_386);
+        assert!(charged_at_least_release(&table) > 60_000);
+        let (_, _, len, capacity, _, _) = excess();
+        assert!(reserve_slots(16_384).is_ok());
+        assert_eq!(excess().2, len);
+        assert_eq!(excess().3, capacity, "the debug table had room");
+        table.reserve(16_385, 16_384);
+        assert_eq!(table.0.capacity(), 65_536);
+        charged_at_least_release(&table);
+        for &word in &live {
+            release(word);
+        }
+        swap_slots(&mut parked);
+    }
+
+    #[test]
+    fn a_heap_that_ends_takes_its_credit_back() {
+        // #1506, review round 3, finding 2: a heap that ends, parked and dropped or torn down,
+        // takes its whole credit out of the process-wide count before its table is freed, so
+        // the credit of a task that ended is never subtracted from what the run holds. Other
+        // tests only add to `CREDIT_REMOVED`, so it rises by at least this heap's credit.
+        if !cfg!(debug_assertions) {
+            return;
+        }
+        for torn_down in [false, true] {
+            let mut parked = Slots::default();
+            swap_slots(&mut parked);
+            for _ in 0..QUARANTINE + 10 {
+                release(list());
+            }
+            let credited = excess().0;
+            assert!(credited > 0);
+            let before = CREDIT_REMOVED.load(AtomicOrdering::SeqCst);
+            if torn_down {
+                tear_down();
+                swap_slots(&mut parked);
+            } else {
+                swap_slots(&mut parked);
+                drop(parked);
+            }
+            let removed = CREDIT_REMOVED.load(AtomicOrdering::SeqCst) - before;
+            assert!(
+                removed >= credited,
+                "torn down {torn_down}: {removed} < {credited}"
+            );
+        }
+    }
+
+    #[test]
     fn i2_every_mark_is_0_after_each_export() {
         // ADR 0113 rule 5: a reset pass clears the marks the counting pass set, so that no mark
         // outlives its export. A value with sharing at several levels, a map and a text.
