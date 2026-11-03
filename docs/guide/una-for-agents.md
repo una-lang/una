@@ -1202,7 +1202,7 @@ Every command takes `--json` and prints one document whose `schema` names its sh
 | `una build` | `una.build/1`, the native executable's path, or the diagnostics that rejected the package (v0.2, `spec/16`) |
 | `una contract <module.function>` | `una.contract/1`, the header, declared or inferred |
 | `una trace <REQUIREMENT_ID>` | `una.trace/1`, derived functions and their obligations |
-| `una report` | `una.report/2`, proofs, authority, policy calls, escapes, assumptions, trusted code, requirements, coverage, native target |
+| `una report` | `una.report/2`, proofs, authority, policy calls, escapes, assumptions, host premises, trusted code, requirements, coverage, native target |
 | `una explain <code>` | `una.explain/1` |
 
 When the checks reject a package, `contract`, `trace`, `obligations` and `report` print the `una.diagnostics/1` of `una check`. Diagnostics are sorted by file, position and code; outputs are identical from run to run.
@@ -1251,11 +1251,20 @@ pub change(edit: Int) -> Int = edit
 
 ## 22. Migrating to edition 0.4
 
-From edition `0.4`, a package is described by `ita.una` and pinned by `ita.lock`, in Una's own syntax, in place of `una.toml` and `verification.lock` (`spec/30`). Run `una migrate` in the package: it writes both files, removes the old ones, and prints every diagnostic the new edition causes, such as a function named `within`, a word edition `0.4` reserves. Then run `una fix` and `una check`. What changes:
+From edition `0.4`, a package is described by `ita.una` and pinned by `ita.lock`, in Una's own syntax, in place of `una.toml` and `verification.lock` (`spec/30`). Edition `0.4` is a preview. The steps, in the package's directory:
 
-- **The manifest.** `ita <name>` and its `version` and `edition` lines head the file; the tables of `una.toml` become sections with one entry per line, and a grant is a line such as `files "data/" read`.
-- **Dependencies.** A package may need another one from a directory, `util from path "../util"` with `accept name`, and import its modules as `util.text`. A dependency receives a capability only at a call, with `with`, within the `may` lines its need writes, and `una ita lock --accept-authority` records each ceiling.
-- **Never by hand.** `ita.lock` is written by `una ita lock`; `una fix` never edits `ita.una` or `ita.lock`.
+1. `una migrate --dry-run` prints the two files it would write and every diagnostic the new edition causes, and writes nothing.
+2. `una migrate` writes `ita.una` and `ita.lock`, rewrites each module in the canonical form of edition `0.4`, removes `una.toml` and `verification.lock`, and prints the same diagnostics, such as a function named `within`, a word edition `0.4` reserves (U0103). It exits with code 0: the diagnostics are the next steps. A `[package] name` that is not a package name, such as `events-example`, becomes `events_example`; `--name` gives another.
+3. `una fix` applies the mechanical repairs, such as renaming `within`, and `una check` checks the result.
+4. Commit `ita.una`, `ita.lock` and the rewritten modules together.
+
+What changes:
+
+- **The manifest.** `ita <name>` and its `version` and `edition` lines head the file; the tables of `una.toml` become sections with one entry per line, and a grant is a line such as `files "data/" read`. `edition = "0.4"` in `una.toml` is U7002, with `una migrate` as its repair.
+- **Dependencies.** A package may need another one from a directory, `util from path "../util"` with `accept name`, or from a registry its `sources` section declares and pins, `acme/ledger 0.3 from acme`, and import its modules as `util.text` or `ledger.ledger`. `una ita lock` resolves and writes the lock; `una ita add` and `una ita update` change the needs and lock. A need of `itaty`, the default registry, has no resolution in this release (U7013).
+- **Authority.** A dependency receives a capability only at a call, with `with`, within the `may` lines its need writes, and `una ita lock --accept-authority <package>` records each wider ceiling. A dependency's trusted modules count only with a `trust` line and `--accept-trust <package>@<digest>`.
+- **Offline.** `una check`, `una run`, `una build` and `una test` never read a registry: `una ita fetch` fills Itaoca, `una ita vendor` writes `vendor/ita/` to commit, and `una ita bundle` and `una ita unbundle` carry the packages to a machine with no network. A locked package that is not there is U7011; one whose files changed is U7010.
+- **Never by hand.** `ita.lock` is written by `una ita lock`; `una fix` never edits `ita.una` or `ita.lock`. CI runs `una ita lock --check --fresh` and `una ita audit`.
 
 A block of edition `0.4` is checked as a package of `ita.una`:
 

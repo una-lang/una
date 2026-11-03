@@ -331,8 +331,26 @@ pub struct HeaderUse {
     pub cap: String,
     /// The capability's name.
     pub capability: String,
+    /// Whether the capability is the host's, declared by the prelude (`spec/14 §3`), not one
+    /// of the package's of the same name.
+    pub host: bool,
     /// The operations, in the capability's declaration order.
     pub ops: Vec<String>,
+    /// The label each operation gives through the binding, in the order of `ops`, as written
+    /// after `gives` (ADR 0094 rule 1); an operation absent here gives `public`.
+    pub gives: Vec<(String, String)>,
+}
+
+/// The `uses` of a handler of the package, with the labels its operations give (ADR 0094
+/// rule 1), which the build report lists under H5 (ADR 0094 rule 5).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HandlerHeader {
+    /// The module path, for example `events.checkin`.
+    pub module: String,
+    /// The handler's name.
+    pub name: String,
+    /// Its `uses`, in order.
+    pub uses: Vec<HeaderUse>,
 }
 
 /// The authority and failure contract of a function of the package after inference
@@ -390,6 +408,8 @@ pub struct TypeCheck {
     pub file_state: una_core::Label,
     /// The headers of the functions of the modules checked, by module, then declaration.
     pub headers: Vec<Header>,
+    /// The `uses` of the handlers of the modules checked, by module, then declaration.
+    pub handler_headers: Vec<HandlerHeader>,
     /// The Core IR of the declarations without diagnostics (`spec/09`).
     pub program: una_core::Program,
     /// What the checker resolved, by span, for the language server (ADR 0063).
@@ -426,6 +446,7 @@ impl Default for TypeCheck {
             of_lambdas: Vec::new(),
             file_state: una_core::Label::public(),
             headers: Vec::new(),
+            handler_headers: Vec::new(),
             program: una_core::Program::default(),
             index: Index::default(),
             timing: Vec::new(),
@@ -826,6 +847,7 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
         .obligations
         .dedup_by(|a, b| a.0 == ObligationKind::EffectCondition && a == b);
     let headers = headers(&env);
+    let handler_headers = handler_headers(&env);
     let (program, gaps) = elab::program(&env, &findings, package.sources, &standard.sources);
     // ADR 0103: the pending `refinement` obligations of the flows into refined positions,
     // decided by the rule tier 1 uses (#615).
@@ -907,6 +929,7 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
             .collect(),
         index,
         headers,
+        handler_headers,
         program,
         obligations: findings
             .obligations
@@ -930,6 +953,40 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
 }
 
 /// The headers of the functions of the modules that report, after inference.
+/// A `uses` clause of a header as the outcome lists it, with the labels its operations give.
+fn header_use(env: &Env<'_>, need: &env::Need) -> HeaderUse {
+    let capability = need.usage.capability.and_then(|c| env.capabilities.get(c));
+    HeaderUse {
+        cap: need.usage.name.clone(),
+        capability: capability.map_or_else(String::new, |c| c.name.to_owned()),
+        host: capability.is_some_and(|c| c.module == env.prelude),
+        ops: need.usage.ops.clone(),
+        gives: need
+            .usage
+            .gives
+            .iter()
+            .map(|(op, label)| (op.clone(), label.to_string()))
+            .collect(),
+    }
+}
+
+/// The `uses` of the handlers of the modules that report, in declaration order.
+fn handler_headers(env: &Env<'_>) -> Vec<HandlerHeader> {
+    env.handlers
+        .iter()
+        .filter(|h| env.reports(h.module))
+        .map(|h| HandlerHeader {
+            module: env
+                .modules
+                .get(h.module)
+                .map(|m| m.path.clone())
+                .unwrap_or_default(),
+            name: env.text(h.module, h.ast.name.name).to_owned(),
+            uses: h.uses.iter().map(|need| header_use(env, need)).collect(),
+        })
+        .collect()
+}
+
 fn headers(env: &Env<'_>) -> Vec<Header> {
     env.functions
         .iter()
@@ -989,19 +1046,7 @@ fn headers(env: &Env<'_>) -> Vec<Header> {
                     ((*param).to_owned(), constraint.name().to_owned(), !written)
                 })
                 .collect(),
-            uses: f
-                .uses
-                .iter()
-                .map(|need| HeaderUse {
-                    cap: need.usage.name.clone(),
-                    capability: need
-                        .usage
-                        .capability
-                        .and_then(|c| env.capabilities.get(c))
-                        .map_or_else(String::new, |c| c.name.to_owned()),
-                    ops: need.usage.ops.clone(),
-                })
-                .collect(),
+            uses: f.uses.iter().map(|need| header_use(env, need)).collect(),
             uses_inferred: f.infer_uses,
             fails: match &f.fails {
                 Some(ty::Ty::Kind(id, _)) => Some(env.kind_name(*id).to_owned()),

@@ -37,9 +37,9 @@
 //!
 //! **Not verified here:** the owner's key chain and its name map proof, which show that the key
 //! was valid at the statement's position (rules 36.1 and 36.3), and the per-name state at the
-//! resolution point. The registry client verifies them when the release is resolved and when it
-//! is fetched; they are not stored beside the package, so loading does not walk them again
-//! (`spec/30 §9` rule 7).
+//! resolution point. The registry client verifies them when the release is resolved, fetched,
+//! bundled or unbundled (`spec/30 §9` rule 7, §14); they are not stored beside the package, so
+//! loading a registry package, which mounts it in the program, verifies this document only.
 //!
 //! Costs: one pass to read, O(n); O(log L) hashes for an inclusion proof in a log of L leaves,
 //! and one signature verification per key tried.

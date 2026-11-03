@@ -17,6 +17,21 @@ RUN apt-get update \
 # cmake, g++, make: the Z3 build of scripts/build-z3.sh (ADR 0124 rule 1), whose Linux toolchain is
 # this image's.
 
+# The container runs as an unprivileged user, never as root (#1394): the solver child refuses to
+# run as root (ADR 0124 rule 7), so a root container fails every test that verifies. The user has
+# a fixed uid and gid, 1000 (the image's own `ubuntu` user, which holds them, is replaced), and
+# owns the toolchain's directories and the mount points of the volumes that scripts/local-ci.sh,
+# scripts/hunt-linux.sh and scripts/local-release.sh mount, so that a new volume starts owned by
+# it; a volume that a root container made before is handed over once by
+# scripts/container-volumes.sh, which those scripts run first.
+RUN userdel --remove ubuntu \
+    && groupadd --gid 1000 una \
+    && useradd --uid 1000 --gid 1000 --create-home --home-dir /home/una --shell /bin/sh una \
+    && mkdir -p /opt/cargo/registry /opt/rustup /opt/z3 /opt/z3-cache /opt/lean /work/target \
+    && chown -R 1000:1000 /opt/cargo /opt/rustup /opt/z3 /opt/z3-cache /opt/lean /work
+USER 1000:1000
+ENV HOME=/home/una
+
 # The musl targets that rust-toolchain.toml lists (ADR 0124 step 4) are installed with the
 # toolchain, so that no container run downloads them.
 # rustup-init for the image's architecture (TARGETARCH, which `docker build --platform` sets),
