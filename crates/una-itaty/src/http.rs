@@ -17,10 +17,19 @@
 //! **Limits, before allocation.** A request's head is at most 16 KiB and 64 header lines, read
 //! within 30 seconds; a body needs `Content-Length`, at most the endpoint's bound (64 KiB for a
 //! note, the archive's bound for a publication), and is read with no more than 60 seconds
-//! without progress and at least 64 KiB per second on average past its first minute. Chunked
-//! bodies, percent-encoding, queries, repeated `Content-Length` and folded headers are refused.
+//! without progress and at least 64 KiB per second on average past its first minute (the
+//! idle timeout), counted on the bytes that arrived, within a total of the idle timeout and a
+//! second per 64 KiB declared. Chunked bodies, percent-encoding, queries, repeated
+//! `Content-Length` and folded headers are refused. A body's buffer grows with the bytes that
+//! arrive, doubling from 64 KiB, and takes its whole declared length at once only after its
+//! first MiB arrived, so a reallocation never holds more than the length and that MiB; the
+//! search for a head's end resumes where it stopped, so its work is linear in the head. A
+//! request refused before its body was read gets its answer, then the service stops writing
+//! and discards at most 64 KiB of the body for at most a second before it closes, so a client
+//! that sent a small body reads the refusal rather than a reset.
 //! Each connection serves one request. At most `max_connections` are served at once, and at
-//! most two publications are checked at once, since each holds its archive in memory.
+//! most two publications are read and checked at once, since each holds its archive in memory:
+//! a publication takes its slot once its head is checked, before its body is read.
 //!
 //! TLS is not here: the service is meant to sit behind a terminator that serves HTTPS
 //! (rule 39: TLS keeps a private registry's credentials confidential; integrity rests on
@@ -50,6 +59,12 @@ pub const MAX_COSIGN_BODY: usize = 2 << 10;
 const MAX_SERVED: usize = MAX_ARCHIVE;
 /// How many publications are checked at once.
 const MAX_PUBLISHING: usize = 2;
+/// The least average rate of a body past its first idle timeout, in bytes per second.
+const MIN_BODY_RATE: u128 = 64 << 10;
+/// The most bytes of an unread body discarded after a refusal, before the connection closes.
+const DRAIN_MAX: usize = 64 << 10;
+/// The longest wait for those bytes.
+const DRAIN_TIME: Duration = Duration::from_secs(1);
 
 /// How the endpoints run.
 #[derive(Clone, Debug)]
@@ -218,6 +233,11 @@ impl Service {
         &self.registry
     }
 
+    /// How many publications hold a publishing slot now, for an operator's tools and tests.
+    pub fn publications_in_progress(&self) -> usize {
+        self.publishing.load(Ordering::SeqCst)
+    }
+
     /// The bound of a request's body, by its method and path, `None` for a request that has
     /// no body.
     fn body_limit(method: &str, path: &str) -> Option<usize> {
@@ -233,7 +253,7 @@ impl Service {
     pub fn route(&self, request: Request) -> Response {
         match request.method.as_str() {
             "GET" => self.read(&request.path),
-            "POST" => self.write(request),
+            "POST" => self.write(request, None),
             _ => text(405, "only GET and POST are served"),
         }
     }
@@ -275,11 +295,22 @@ impl Service {
             .map_err(|_| text(503, "the registry stopped after an internal error"))
     }
 
-    fn write(&self, request: Request) -> Response {
+    /// The publishing slot, or the response that refuses a publication for the lack of one.
+    fn publishing_slot(&self) -> Result<Slot<'_>, Response> {
+        take(&self.publishing, MAX_PUBLISHING)
+            .ok_or_else(|| text(503, "too many publications are being checked; try again"))
+    }
+
+    /// Answers a `POST`; a publication uses `slot` when its reader took one already.
+    fn write(&self, request: Request, slot: Option<Slot<'_>>) -> Response {
         match request.path.as_str() {
             "publish" => {
-                let Some(_slot) = take(&self.publishing, MAX_PUBLISHING) else {
-                    return text(503, "too many publications are being checked; try again");
+                let _slot = match slot {
+                    Some(slot) => slot,
+                    None => match self.publishing_slot() {
+                        Ok(slot) => slot,
+                        Err(response) => return response,
+                    },
                 };
                 let mut body = request.body;
                 let (note, offset) = match publication(&body) {
@@ -359,13 +390,78 @@ impl Service {
     pub fn handle(&self, mut stream: TcpStream) {
         let response = match take(&self.connections, self.config.max_connections) {
             None => text(503, "too many connections; try again"),
-            Some(_slot) => match read_request(&mut stream, &self.config) {
-                Ok(request) => self.route(request),
-                Err(response) => response,
+            Some(_slot) => match self.serve_one(&mut stream) {
+                Served::Read(response) => response,
+                Served::Refused(response) => {
+                    // The body may still be on its way: answer, stop writing, and discard a
+                    // bounded part of it within the connection's slot, so a client that sent
+                    // a small body reads the refusal rather than a reset. A peer that timed
+                    // out sends nothing worth waiting for.
+                    let _ = write_response(&mut stream, &response);
+                    if response.status != 408 {
+                        let _ = stream.shutdown(std::net::Shutdown::Write);
+                        drain(&mut stream);
+                    }
+                    let _ = stream.shutdown(std::net::Shutdown::Both);
+                    return;
+                }
             },
         };
         let _ = write_response(&mut stream, &response);
         let _ = stream.shutdown(std::net::Shutdown::Both);
+    }
+}
+
+impl Service {
+    /// Reads and answers one request. A publication takes its publishing slot once its head
+    /// is checked and before its body is read, so at most two bodies of publications are held
+    /// at once, however many connections declare one.
+    fn serve_one(&self, stream: &mut TcpStream) -> Served {
+        let head = match read_head(stream, &self.config) {
+            Ok(head) => head,
+            Err(response) => return Served::Refused(response),
+        };
+        let slot = if head.publishes() {
+            match self.publishing_slot() {
+                Ok(slot) => Some(slot),
+                Err(response) => return Served::Refused(response),
+            }
+        } else {
+            None
+        };
+        match head.read_body(stream, &self.config) {
+            Ok(request) if slot.is_some() => Served::Read(self.write(request, slot)),
+            Ok(request) => Served::Read(self.route(request)),
+            Err(response) => Served::Refused(response),
+        }
+    }
+}
+
+/// The answer to a connection's request, and whether its request was read whole.
+enum Served {
+    /// The request was read whole.
+    Read(Response),
+    /// The request was refused before its body was read whole.
+    Refused(Response),
+}
+
+/// Discards at most `DRAIN_MAX` bytes of `stream` within `DRAIN_TIME`, until it closes.
+fn drain(stream: &mut impl Conn) {
+    let started = stream.now();
+    let mut left = DRAIN_MAX;
+    let mut chunk = [0u8; 4096];
+    while left > 0 {
+        let Some(wait) = DRAIN_TIME
+            .checked_sub(stream.now().saturating_duration_since(started))
+            .filter(|d| !d.is_zero())
+        else {
+            return;
+        };
+        stream.wait_at_most(wait);
+        match stream.read(chunk.get_mut(..left.min(4096)).unwrap_or_default()) {
+            Ok(0) | Err(_) => return,
+            Ok(n) => left = left.saturating_sub(n),
+        }
     }
 }
 
@@ -394,25 +490,78 @@ fn publication(body: &[u8]) -> Result<(&[u8], usize), String> {
     Ok((body.get(start..end).unwrap_or_default(), end))
 }
 
+/// A connection the requests are read from: bytes, a bound on the wait for each read, and the
+/// clock its limits are measured with.
+trait Conn: Read {
+    fn wait_at_most(&mut self, wait: Duration);
+
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
+}
+
+impl Conn for TcpStream {
+    fn wait_at_most(&mut self, wait: Duration) {
+        let _ = self.set_read_timeout(Some(wait));
+    }
+}
+
+/// A request's head, read and checked, with the bytes of its body that came with it.
+struct Head {
+    method: String,
+    path: String,
+    headers: Vec<(String, String)>,
+    already: Vec<u8>,
+    /// The body's declared length, within the endpoint's bound; `None` for no body.
+    length: Option<usize>,
+}
+
 /// Reads a request from `stream` within the limits of the module, or the response that
 /// refuses it.
 pub fn read_request(stream: &mut TcpStream, config: &ServerConfig) -> Result<Request, Response> {
-    let started = Instant::now();
+    read_head(stream, config)?.read_body(stream, config)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The bytes the head's search looked at, for the tests of its linear work.
+    static HEAD_SCANNED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// The largest capacity a body's buffer had, for the tests of its reservation.
+    static BODY_RESERVED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// The most a reallocation of a body's buffer could hold at once, old and new.
+    static BODY_PEAK: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Reads a request's head from `stream` and checks it: every refusal of the head and of the
+/// body's framing comes before any byte of the body past the head's reads.
+fn read_head(stream: &mut impl Conn, config: &ServerConfig) -> Result<Head, Response> {
+    let started = stream.now();
     let mut head = Vec::with_capacity(1024);
     let mut chunk = [0u8; 1024];
+    // Where the search resumes: the bytes before it were searched already, and a delimiter
+    // that ends in the new bytes starts at most three bytes before them, so each byte of the
+    // head is searched a bounded number of times however the peer splits its writes.
+    let mut from = 0usize;
     let end = loop {
-        if let Some(at) = find(&head, b"\r\n\r\n") {
-            break at;
+        let searched = head.get(from..).unwrap_or_default();
+        #[cfg(test)]
+        HEAD_SCANNED.with(|c| c.set(c.get() + searched.len()));
+        if let Some(at) = find(searched, b"\r\n\r\n") {
+            break from + at;
         }
-        if head.len() > MAX_HEAD {
+        from = head.len().saturating_sub(3);
+        // A delimiter that ends a head of at most `MAX_HEAD` bytes ends within its first
+        // `MAX_HEAD + 4`: only past them is the head too large whatever comes next, so the
+        // answer does not depend on how the peer split its writes.
+        if head.len() > MAX_HEAD + 3 {
             return Err(text(431, "the request's head is too large"));
         }
         let left = config
             .head_timeout
-            .checked_sub(started.elapsed())
+            .checked_sub(stream.now().saturating_duration_since(started))
             .filter(|d| !d.is_zero())
             .ok_or_else(|| text(408, "the request's head took too long"))?;
-        let _ = stream.set_read_timeout(Some(left));
+        stream.wait_at_most(left);
         match stream.read(&mut chunk) {
             Ok(0) => return Err(text(400, "the connection closed inside the request's head")),
             Ok(n) => head.extend_from_slice(chunk.get(..n).unwrap_or_default()),
@@ -442,8 +591,8 @@ pub fn read_request(stream: &mut TcpStream, config: &ServerConfig) -> Result<Req
         ),
         _ => return Err(text(400, "`Content-Length` is repeated")),
     };
-    let body = match (limit, length) {
-        (None, None | Some(0)) if already.is_empty() => Vec::new(),
+    let length = match (limit, length) {
+        (None, None | Some(0)) if already.is_empty() => None,
         (None, _) => return Err(text(400, "this request has no body")),
         (Some(_), None) => return Err(text(411, "a body needs `Content-Length`")),
         (Some(limit), Some(length)) if length > limit => {
@@ -452,14 +601,37 @@ pub fn read_request(stream: &mut TcpStream, config: &ServerConfig) -> Result<Req
                 format!("the body is larger than the {limit} bytes this endpoint takes"),
             ));
         }
-        (Some(_), Some(length)) => read_body(stream, already, length, config)?,
+        (Some(_), Some(length)) => Some(length),
     };
-    Ok(Request {
+    Ok(Head {
         method,
         path,
         headers,
-        body,
+        already,
+        length,
     })
+}
+
+impl Head {
+    /// Whether the request is a publication, which needs a publishing slot before its body
+    /// is read.
+    fn publishes(&self) -> bool {
+        self.method == "POST" && self.path == "publish"
+    }
+
+    /// Reads the body the head declared, and gives the request.
+    fn read_body(self, stream: &mut impl Conn, config: &ServerConfig) -> Result<Request, Response> {
+        let body = match self.length {
+            None => Vec::new(),
+            Some(length) => read_body(stream, self.already, length, config)?,
+        };
+        Ok(Request {
+            method: self.method,
+            path: self.path,
+            headers: self.headers,
+            body,
+        })
+    }
 }
 
 fn is_timeout(e: &io::Error) -> bool {
@@ -470,7 +642,7 @@ fn is_timeout(e: &io::Error) -> bool {
 }
 
 fn read_body(
-    stream: &mut TcpStream,
+    stream: &mut impl Conn,
     already: Vec<u8>,
     length: usize,
     config: &ServerConfig,
@@ -478,25 +650,75 @@ fn read_body(
     if already.len() > length {
         return Err(text(400, "the body is longer than `Content-Length`"));
     }
-    let started = Instant::now();
+    let started = stream.now();
     let deadline = config.idle_timeout + Duration::from_secs((length / (64 << 10)) as u64);
-    let mut body = Vec::with_capacity(length);
-    body.extend_from_slice(&already);
+    // The buffer grows with the bytes that arrived, never by the declared length alone, so a
+    // peer that declares a large body and sends little holds little memory.
+    let before = already.len();
+    let mut body = already;
     let mut chunk = vec![0u8; 64 << 10];
-    let _ = stream.set_read_timeout(Some(config.idle_timeout));
+    stream.wait_at_most(config.idle_timeout);
     while body.len() < length {
-        if started.elapsed() > deadline {
+        #[cfg(test)]
+        BODY_RESERVED.with(|c| c.set(c.get().max(body.capacity())));
+        let elapsed = stream.now().saturating_duration_since(started);
+        if elapsed > deadline {
             return Err(text(408, "the body took too long"));
+        }
+        // Past the first idle timeout the body keeps the least average rate on the bytes
+        // that arrived, so a peer that sends a byte now and then loses its slot, however
+        // large the length it declared.
+        if let Some(past) = elapsed.checked_sub(config.idle_timeout) {
+            let owed = past.as_nanos().saturating_mul(MIN_BODY_RATE) / 1_000_000_000;
+            let received = body.len().saturating_sub(before) as u128;
+            if received < owed {
+                return Err(text(
+                    408,
+                    "the body arrived slower than 64 KiB per second on average",
+                ));
+            }
         }
         let want = (length - body.len()).min(chunk.len());
         match stream.read(chunk.get_mut(..want).unwrap_or_default()) {
             Ok(0) => return Err(text(400, "the connection closed inside the body")),
-            Ok(n) => body.extend_from_slice(chunk.get(..n).unwrap_or_default()),
+            Ok(n) => {
+                grow(&mut body, n, length)?;
+                body.extend_from_slice(chunk.get(..n).unwrap_or_default());
+            }
             Err(e) if is_timeout(&e) => return Err(text(408, "the body made no progress")),
             Err(_) => return Err(text(400, "the body could not be read")),
         }
     }
+    #[cfg(test)]
+    BODY_RESERVED.with(|c| c.set(c.get().max(body.capacity())));
     Ok(body)
+}
+
+/// The first reservation of a body's buffer.
+const FIRST_BODY_RESERVE: usize = 64 << 10;
+/// The capacity past which a body's buffer takes its whole declared length at once.
+const FULL_BODY_RESERVE_AFTER: usize = 1 << 20;
+
+/// Makes room in `body` for `extra` more bytes of a body of `length`: the capacity doubles
+/// from 64 KiB up to 1 MiB, so it stays within twice the bytes received, then takes `length`
+/// at once, so the copies stay linear and a reallocation holds at most `length` and 1 MiB;
+/// it never passes `length`. A reservation the allocator refuses refuses the request.
+fn grow(body: &mut Vec<u8>, extra: usize, length: usize) -> Result<(), Response> {
+    let needed = body.len().saturating_add(extra);
+    if needed <= body.capacity() {
+        return Ok(());
+    }
+    let doubled = body.capacity().saturating_mul(2).max(FIRST_BODY_RESERVE);
+    let target = if doubled > FULL_BODY_RESERVE_AFTER {
+        length
+    } else {
+        doubled.min(length)
+    }
+    .max(needed);
+    #[cfg(test)]
+    BODY_PEAK.with(|c| c.set(c.get().max(body.capacity().saturating_add(target))));
+    body.try_reserve_exact(target - body.len())
+        .map_err(|_| text(503, "the service cannot hold this body now; try again"))
 }
 
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -650,6 +872,343 @@ mod tests {
         assert!(publication(b"ita-publish/1\n03\nabc").is_err());
         assert!(publication(b"ita-publish/1\n9\nabc").is_err());
         assert!(publication(b"ita-publish/2\n3\nabc").is_err());
+    }
+
+    /// A connection that hands out `step` bytes per read, then stalls.
+    struct Trickle {
+        data: Vec<u8>,
+        at: usize,
+        step: usize,
+    }
+
+    impl Read for Trickle {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            let n = self.step.min(buf.len()).min(self.data.len() - self.at);
+            if n == 0 {
+                return Err(io::ErrorKind::WouldBlock.into());
+            }
+            buf[..n].copy_from_slice(&self.data[self.at..self.at + n]);
+            self.at += n;
+            Ok(n)
+        }
+    }
+
+    impl Conn for Trickle {
+        fn wait_at_most(&mut self, _: Duration) {}
+    }
+
+    fn trickle(data: &[u8], step: usize) -> Trickle {
+        Trickle {
+            data: data.to_vec(),
+            at: 0,
+            step,
+        }
+    }
+
+    fn head_of(size: usize) -> Vec<u8> {
+        let mut head = b"GET /checkpoint HTTP/1.1\r\nX-Pad: ".to_vec();
+        head.resize(size - 4, b'a');
+        head.extend_from_slice(b"\r\n\r\n");
+        head
+    }
+
+    #[test]
+    fn a_head_sent_a_byte_at_a_time_is_searched_in_linear_work() {
+        for size in [2 << 10, 4 << 10, 8 << 10, MAX_HEAD] {
+            HEAD_SCANNED.with(|c| c.set(0));
+            let head =
+                read_head(&mut trickle(&head_of(size), 1), &ServerConfig::default()).unwrap();
+            assert_eq!((head.path.as_str(), head.length), ("checkpoint", None));
+            let scanned = HEAD_SCANNED.with(std::cell::Cell::get);
+            assert!(
+                scanned <= 8 * size,
+                "{scanned} bytes searched for a head of {size} bytes"
+            );
+        }
+    }
+
+    #[test]
+    fn the_end_of_a_head_is_found_across_reads_at_every_offset() {
+        let config = ServerConfig::default();
+        for pad in 0..4 {
+            let mut data = b"POST /submit HTTP/1.1\r\nContent-Length: 4\r\nX-Pad: ".to_vec();
+            data.resize(data.len() + pad, b'a');
+            data.extend_from_slice(b"\r\n\r\nrest");
+            let end = data.len() - 4;
+            // Every read size puts the delimiter's bytes at every offset of a read.
+            for step in 1..=9 {
+                let head = read_head(&mut trickle(&data, step), &config).unwrap();
+                let read = end.div_ceil(step) * step;
+                assert_eq!(head.length, Some(4), "pad {pad} step {step}");
+                assert_eq!(
+                    head.already,
+                    data[end..read.min(data.len())],
+                    "pad {pad} step {step}"
+                );
+            }
+        }
+        // The earliest delimiter ends the head; what follows is the body's.
+        let data = b"POST /submit HTTP/1.1\r\nContent-Length: 4\r\n\r\n\r\n\r\n";
+        let head = read_head(&mut trickle(data, 1024), &config).unwrap();
+        assert_eq!(head.already, b"\r\n\r\n");
+        // A head past the bound is still refused.
+        let mut long = b"GET /checkpoint HTTP/1.1\r\nX-Pad: ".to_vec();
+        long.resize(MAX_HEAD + 2048, b'a');
+        let refused = read_head(&mut trickle(&long, 1), &config).err().unwrap();
+        assert_eq!(refused.status, 431);
+    }
+
+    #[test]
+    fn a_body_reserves_only_what_arrived_not_what_it_declared() {
+        let config = ServerConfig {
+            idle_timeout: Duration::from_secs(1),
+            ..ServerConfig::default()
+        };
+        // A huge declared length with a few bytes sent reserves about what was sent.
+        BODY_RESERVED.with(|c| c.set(0));
+        let refused = read_body(
+            &mut trickle(&[7u8; 100], 100),
+            vec![1; 10],
+            MAX_PUBLISH_BODY,
+            &config,
+        )
+        .err()
+        .unwrap();
+        assert_eq!(refused.status, 408);
+        let reserved = BODY_RESERVED.with(std::cell::Cell::get);
+        assert!(
+            reserved <= 128 << 10,
+            "{reserved} bytes reserved for 110 received"
+        );
+        // A whole body is read, its buffer growing with the bytes and never past the length.
+        let length = (1 << 20) + 17;
+        let data: Vec<u8> = (0..length).map(|i| (i % 251) as u8).collect();
+        BODY_RESERVED.with(|c| c.set(0));
+        let body = read_body(
+            &mut trickle(&data[3..], 4096),
+            data[..3].to_vec(),
+            length,
+            &config,
+        )
+        .unwrap();
+        assert_eq!(body, data);
+        let reserved = BODY_RESERVED.with(std::cell::Cell::get);
+        assert!(reserved <= length, "{reserved} bytes reserved for {length}");
+        // Bytes past the declared length are refused, as before.
+        let refused = read_body(&mut trickle(b"", 1), vec![0; 5], 4, &config)
+            .err()
+            .unwrap();
+        assert_eq!(refused.status, 400);
+    }
+
+    /// A connection that hands out `step` bytes per read, each read taking `tick` on a clock
+    /// of its own, then closes or stalls: the limits on time, with no wall clock.
+    struct Paced {
+        data: Vec<u8>,
+        at: usize,
+        step: usize,
+        start: Instant,
+        tick: Duration,
+        reads: u32,
+        closes: bool,
+    }
+
+    impl Read for Paced {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            self.reads += 1;
+            let n = self.step.min(buf.len()).min(self.data.len() - self.at);
+            if n == 0 {
+                return if self.closes {
+                    Ok(0)
+                } else {
+                    Err(io::ErrorKind::WouldBlock.into())
+                };
+            }
+            buf[..n].copy_from_slice(&self.data[self.at..self.at + n]);
+            self.at += n;
+            Ok(n)
+        }
+    }
+
+    impl Conn for Paced {
+        fn wait_at_most(&mut self, _: Duration) {}
+
+        fn now(&self) -> Instant {
+            self.start + self.tick * self.reads
+        }
+    }
+
+    fn paced(data: Vec<u8>, step: usize, tick: Duration) -> Paced {
+        Paced {
+            data,
+            at: 0,
+            step,
+            start: Instant::now(),
+            tick,
+            reads: 0,
+            closes: false,
+        }
+    }
+
+    #[test]
+    fn a_trickling_body_loses_its_slot_after_the_idle_timeout() {
+        // The review's case: the largest body declared, a byte every 59 seconds, which never
+        // trips the idle timeout of 60 seconds. It is refused once the first minute is past,
+        // not after the 70 minutes the declared length alone would give it.
+        let config = ServerConfig::default();
+        let mut conn = paced(vec![b'x'; 4096], 1, Duration::from_secs(59));
+        let refused = read_body(&mut conn, Vec::new(), MAX_PUBLISH_BODY, &config)
+            .err()
+            .unwrap();
+        assert_eq!(refused.status, 408);
+        assert!(String::from_utf8_lossy(&refused.body).contains("slower"));
+        let held = conn.now().saturating_duration_since(conn.start);
+        assert!(
+            held <= config.idle_timeout + Duration::from_secs(2 * 59),
+            "held for {held:?}"
+        );
+        // A short idle timeout and a byte every 0.7 seconds: refused within a few ticks.
+        let config = ServerConfig {
+            idle_timeout: Duration::from_secs(1),
+            ..ServerConfig::default()
+        };
+        let mut conn = paced(vec![b'x'; 4096], 1, Duration::from_millis(700));
+        let refused = read_body(&mut conn, Vec::new(), MAX_PUBLISH_BODY, &config)
+            .err()
+            .unwrap();
+        assert_eq!(refused.status, 408);
+        assert!(conn.reads <= 3, "{} reads before the refusal", conn.reads);
+        // Bytes that came with the head do not count toward the rate.
+        let mut conn = paced(vec![b'x'; 4096], 1, Duration::from_secs(59));
+        let refused = read_body(
+            &mut conn,
+            vec![b'y'; MAX_HEAD],
+            MAX_PUBLISH_BODY,
+            &ServerConfig::default(),
+        )
+        .err()
+        .unwrap();
+        assert_eq!(refused.status, 408);
+        assert!(conn.reads <= 3, "{} reads before the refusal", conn.reads);
+        // A body at half the rate is refused by the rate, before the total deadline.
+        let mut conn = paced(vec![b'x'; 8 << 20], 32 << 10, Duration::from_secs(1));
+        let refused = read_body(&mut conn, Vec::new(), 8 << 20, &ServerConfig::default())
+            .err()
+            .unwrap();
+        assert_eq!(refused.status, 408);
+        assert!(String::from_utf8_lossy(&refused.body).contains("slower"));
+        let held = conn.now().saturating_duration_since(conn.start);
+        assert!(held <= Duration::from_secs(122), "held for {held:?}");
+    }
+
+    #[test]
+    fn an_honest_body_keeps_its_slot() {
+        let config = ServerConfig::default();
+        let length = (8 << 20) + 17;
+        let data: Vec<u8> = (0..length).map(|i| (i % 251) as u8).collect();
+        // Fast: 64 KiB every half second.
+        let mut conn = paced(data[5..].to_vec(), 64 << 10, Duration::from_millis(500));
+        let body = read_body(&mut conn, data[..5].to_vec(), length, &config).unwrap();
+        assert_eq!(body, data);
+        // Slow but above the rate: 65 KiB a second.
+        let mut conn = paced(data.clone(), 65 << 10, Duration::from_secs(1));
+        assert_eq!(
+            read_body(&mut conn, Vec::new(), length, &config).unwrap(),
+            data
+        );
+        // A note sent a few bytes a second within its first minute is read.
+        let note = vec![b'n'; 1000];
+        let mut conn = paced(note.clone(), 20, Duration::from_secs(1));
+        assert_eq!(
+            read_body(&mut conn, Vec::new(), 1000, &config).unwrap(),
+            note
+        );
+    }
+
+    #[test]
+    fn a_head_at_the_bound_is_answered_however_it_arrives() {
+        let config = ServerConfig::default();
+        for end in MAX_HEAD - 4..=MAX_HEAD + 4 {
+            let mut data = b"GET /checkpoint HTTP/1.1\r\nX-Pad: ".to_vec();
+            data.resize(end, b'a');
+            data.extend_from_slice(b"\r\n\r\n");
+            let answers: Vec<Option<u16>> = [1, 2, 3, 1024, data.len()]
+                .into_iter()
+                .map(|step| {
+                    read_head(&mut trickle(&data, step), &config)
+                        .err()
+                        .map(|e| e.status)
+                })
+                .collect();
+            let expected = if end <= MAX_HEAD { None } else { Some(431) };
+            assert!(
+                answers.iter().all(|a| *a == expected),
+                "end {end}: {answers:?}"
+            );
+        }
+        // No delimiter at all: refused once nothing within the bound can end the head.
+        let long = vec![b'a'; MAX_HEAD + 4];
+        for step in [1, 4096, MAX_HEAD + 4] {
+            let refused = read_head(&mut trickle(&long, step), &config).err().unwrap();
+            assert_eq!(refused.status, 431, "step {step}");
+        }
+    }
+
+    #[test]
+    fn a_body_reallocation_holds_at_most_its_length_and_a_mib() {
+        let config = ServerConfig::default();
+        for length in [
+            (1 << 20) - 1,
+            1 << 20,
+            (1 << 20) + 1,
+            (3 << 20) + 5,
+            (16 << 20) + 17,
+        ] {
+            let data = vec![3u8; length];
+            for step in [4096, 64 << 10] {
+                BODY_RESERVED.with(|c| c.set(0));
+                BODY_PEAK.with(|c| c.set(0));
+                let mut conn = paced(data.clone(), step, Duration::from_millis(1));
+                let body = read_body(&mut conn, Vec::new(), length, &config).unwrap();
+                assert_eq!(body.len(), length);
+                let reserved = BODY_RESERVED.with(std::cell::Cell::get);
+                let peak = BODY_PEAK.with(std::cell::Cell::get);
+                assert!(reserved <= length, "{reserved} reserved for {length}");
+                assert!(
+                    peak <= length + FULL_BODY_RESERVE_AFTER,
+                    "{peak} held at once for {length}"
+                );
+            }
+        }
+        // Below 1 MiB received, the buffer stays within twice what arrived.
+        BODY_RESERVED.with(|c| c.set(0));
+        let mut conn = paced(vec![1u8; 300 << 10], 4096, Duration::from_millis(1));
+        let refused = read_body(&mut conn, Vec::new(), MAX_PUBLISH_BODY, &config)
+            .err()
+            .unwrap();
+        assert_eq!(refused.status, 408);
+        let reserved = BODY_RESERVED.with(std::cell::Cell::get);
+        assert!(
+            reserved <= 2 * (300 << 10),
+            "{reserved} reserved for 300 KiB"
+        );
+    }
+
+    #[test]
+    fn a_refused_body_is_drained_within_its_bounds() {
+        // At most `DRAIN_MAX` bytes, however much the peer sends.
+        let mut conn = paced(vec![0u8; 1 << 20], 4096, Duration::from_millis(1));
+        drain(&mut conn);
+        assert_eq!(conn.at, DRAIN_MAX);
+        // At most `DRAIN_TIME`, however slowly it sends.
+        let mut conn = paced(vec![0u8; 1 << 20], 1, Duration::from_millis(100));
+        drain(&mut conn);
+        assert!(conn.at <= 10, "{} bytes drained", conn.at);
+        // Not past a close.
+        let mut conn = paced(vec![0u8; 100], 4096, Duration::from_millis(1));
+        conn.closes = true;
+        drain(&mut conn);
+        assert_eq!(conn.at, 100);
     }
 
     #[test]

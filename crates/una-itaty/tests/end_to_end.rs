@@ -581,6 +581,68 @@ fn a_client_publishes_and_verifies_every_proof() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A publication takes its publishing slot before its body is read, so a third one, while
+/// two are being read, is refused before any byte of its body arrives.
+#[test]
+fn publications_take_their_slot_before_their_body_is_read() {
+    let keys = keys();
+    let root_doc = root_document(&keys);
+    let dir = temp_dir("slots");
+    let store: Arc<dyn Store> = Arc::new(FileStore::open(&dir).unwrap());
+    store.put("root/1", root_doc.as_bytes()).unwrap();
+    let clock = Arc::new(TestClock(AtomicU64::new(1_900_000_000)));
+    let config = Config {
+        pin: root_digest(&root_doc),
+        log_seed: [20; 32],
+    };
+    let registry = Registry::open(Arc::clone(&store), &config, clock).unwrap();
+    let service = Arc::new(Service::new(
+        Arc::clone(&store),
+        registry,
+        ServerConfig::default(),
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    {
+        let service = Arc::clone(&service);
+        std::thread::spawn(move || serve(&listener, &service));
+    }
+    let head = format!(
+        "POST /publish HTTP/1.1\r\nContent-Length: {}\r\n\r\nita-publish/1\n",
+        una_itaty::http::MAX_PUBLISH_BODY
+    );
+    // Two publications declare the largest body and send only its first bytes.
+    let stalled: Vec<TcpStream> = (0..2)
+        .map(|_| {
+            let mut stream = TcpStream::connect(addr).unwrap();
+            stream.write_all(head.as_bytes()).unwrap();
+            stream
+        })
+        .collect();
+    // Both hold a slot while their bodies are read; the wait is bounded, not timed.
+    let mut polls = 0;
+    while service.publications_in_progress() < 2 {
+        polls += 1;
+        assert!(polls < 2000, "the stalled publications took no slot");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    // A third gets 503 from its head alone.
+    let mut stream = TcpStream::connect(addr).unwrap();
+    stream.write_all(head.as_bytes()).unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    assert!(response.starts_with("HTTP/1.1 503"), "{response}");
+    drop(stalled);
+    // The slots are given back once the stalled connections end.
+    let mut polls = 0;
+    while service.publications_in_progress() > 0 {
+        polls += 1;
+        assert!(polls < 2000, "the slots were not given back");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn bodies_past_their_bound_are_refused_before_they_are_read() {
     let keys = keys();
@@ -641,5 +703,123 @@ fn bodies_past_their_bound_are_refused_before_they_are_read() {
         log_seed: [21; 32],
     };
     assert!(Registry::open(store, &wrong, clock).is_err());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A registry served over HTTP in this process with `server`, on a fresh file-backed store.
+fn served(name: &str, server: ServerConfig) -> (Arc<Service>, SocketAddr, std::path::PathBuf) {
+    let keys = keys();
+    let root_doc = root_document(&keys);
+    let dir = temp_dir(name);
+    let store: Arc<dyn Store> = Arc::new(FileStore::open(&dir).unwrap());
+    store.put("root/1", root_doc.as_bytes()).unwrap();
+    let clock = Arc::new(TestClock(AtomicU64::new(1_900_000_000)));
+    let config = Config {
+        pin: root_digest(&root_doc),
+        log_seed: [20; 32],
+    };
+    let registry = Registry::open(Arc::clone(&store), &config, clock).unwrap();
+    let service = Arc::new(Service::new(Arc::clone(&store), registry, server));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    {
+        let service = Arc::clone(&service);
+        std::thread::spawn(move || serve(&listener, &service));
+    }
+    (service, addr, dir)
+}
+
+/// Two publications that declare the largest body and send a byte now and then lose their
+/// slots once their first idle timeout is past, and a third publication is then served.
+#[test]
+fn trickling_publications_lose_their_slots_after_the_idle_timeout() {
+    let idle = std::time::Duration::from_secs(1);
+    let (service, addr, dir) = served(
+        "trickle",
+        ServerConfig {
+            idle_timeout: idle,
+            ..ServerConfig::default()
+        },
+    );
+    let head = format!(
+        "POST /publish HTTP/1.1\r\nContent-Length: {}\r\n\r\n",
+        una_itaty::http::MAX_PUBLISH_BODY
+    );
+    let mut streams: Vec<TcpStream> = (0..2)
+        .map(|_| {
+            let mut stream = TcpStream::connect(addr).unwrap();
+            stream.write_all(head.as_bytes()).unwrap();
+            stream
+        })
+        .collect();
+    let mut polls = 0;
+    while service.publications_in_progress() < 2 {
+        polls += 1;
+        assert!(polls < 2000, "the trickling publications took no slot");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    // A byte every 0.3 seconds never trips the idle timeout; the rate does.
+    let started = std::time::Instant::now();
+    while service.publications_in_progress() > 0 {
+        assert!(
+            started.elapsed() < 4 * idle,
+            "the slots were held for {:?}",
+            started.elapsed()
+        );
+        for stream in &mut streams {
+            let _ = stream.write_all(b"x");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    }
+    // Each was answered 408; a byte written after the close may turn the answer into a
+    // reset, so only an answer that arrived is checked.
+    for stream in &mut streams {
+        let mut response = Vec::new();
+        let _ = stream.read_to_end(&mut response);
+        let response = String::from_utf8_lossy(&response);
+        assert!(
+            response.is_empty() || response.starts_with("HTTP/1.1 408"),
+            "{response}"
+        );
+    }
+    // The slot is free again: a third publication is read, and refused for its content.
+    let (status, _) = request(addr, "POST", "publish", &[], b"not a publication");
+    assert_eq!(status, 400);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A publication refused for the lack of a slot, which sent a small body with its head,
+/// reads the 503 rather than a reset.
+#[test]
+fn a_publication_refused_before_its_body_reads_its_refusal() {
+    let (service, addr, dir) = served("refused", ServerConfig::default());
+    let head = format!(
+        "POST /publish HTTP/1.1\r\nContent-Length: {}\r\n\r\n",
+        una_itaty::http::MAX_PUBLISH_BODY
+    );
+    let _stalled: Vec<TcpStream> = (0..2)
+        .map(|_| {
+            let mut stream = TcpStream::connect(addr).unwrap();
+            stream.write_all(head.as_bytes()).unwrap();
+            stream
+        })
+        .collect();
+    let mut polls = 0;
+    while service.publications_in_progress() < 2 {
+        polls += 1;
+        assert!(polls < 2000, "the stalled publications took no slot");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    for _ in 0..3 {
+        let len = 32 << 10;
+        let mut stream = TcpStream::connect(addr).unwrap();
+        let mut sent =
+            format!("POST /publish HTTP/1.1\r\nContent-Length: {len}\r\n\r\n").into_bytes();
+        sent.resize(sent.len() + len, b'a');
+        stream.write_all(&sent).unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 503"), "{response}");
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
