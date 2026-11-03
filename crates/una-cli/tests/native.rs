@@ -5563,6 +5563,53 @@ fn cancelled_program(rounds: u64) -> String {
 }
 
 #[test]
+fn freed_slots_in_quarantine_are_not_charged_to_the_budget_in_both_engines() {
+    // #1506, ADR 0061: a debug runtime reuses a freed slot only after 65,536 others were freed,
+    // so a heap that frees more grows its slot table that much past the most objects it ever
+    // held at once, the length of a release runtime's table. The budget does not charge those
+    // freed slots beyond the capacity a release table would have: a loop that makes and frees
+    // 200,000 lists of two items, at most one alive at a time, runs under 10 MiB in both
+    // engines. Without the credit the debug executable needs 12 MiB and stops here with U6003.
+    // The table's spare capacity stays charged, and the credit is at most a quarter of the
+    // budget.
+    let program = "module churn\n\nkeep(items: List[Int], total: Int) -> Int = total + 2\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let edit total = 0\n  for i in 1..200000\n    let items = [i, i]\n    total = keep(items, total: total)\n  @console.print(\"total {total}\")\n";
+    let dir = within_package("churn", "churn", program);
+    let interpreted = una(&dir, &["run", ".", "--max-memory", "10"]);
+    assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&interpreted.stdout),
+        "total 400000\n"
+    );
+    let native = Command::new(dir.join("target/una/churn"))
+        .args(["--max-memory", "10"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert_eq!(native.status.code(), Some(0), "{native:?}");
+    assert_eq!(String::from_utf8_lossy(&native.stdout), "total 400000\n");
+    // Review finding 2: under a budget the debug table does not fit, the run stops with U6003,
+    // not in the allocator at its hard ceiling: the credit, at most a quarter of the budget,
+    // keeps the charge within a quarter budget of the bytes held.
+    for budget in ["1", "2", "3", "4"] {
+        let small = Command::new(dir.join("target/una/churn"))
+            .args(["--max-memory", budget])
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        assert_eq!(
+            small.status.code(),
+            Some(1),
+            "--max-memory {budget}: {small:?}"
+        );
+        assert!(
+            String::from_utf8_lossy(&small.stderr).contains("[U6003]"),
+            "--max-memory {budget}: {small:?}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn ten_thousand_cancelled_started_tasks_release_what_they_hold_in_both_engines() {
     // `spec/27 §7`, ADR 0117 rule 7 and the amendment of 2026-10-19 on S2: a block that fails
     // cancels the tasks it started, each of which leaves its frames by the failure path and
