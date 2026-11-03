@@ -5630,7 +5630,7 @@ fn ten_thousand_cancelled_started_tasks_release_what_they_hold_in_both_engines()
     // One worker is the tight leak guard: it needs 12 MiB. Under load, several workers see an
     // occasional spike of a few MiB in the charged memory, so they run under 24 MiB, which a
     // per-round leak, about 160 MiB over ten thousand rounds, still exceeds many times over.
-    // A started task that misses its cancellation computes for minutes: each run has a time
+    // A started task that keeps its worker, so the task that cancels it never runs, computes for minutes: each run has a time
     // limit, so a hang fails here instead of holding the test run (#1533, as #1188 for races).
     for (workers, budget) in [("1", "16"), ("2", "24"), ("4", "24")] {
         let native = output_within(
