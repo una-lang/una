@@ -133,3 +133,17 @@ Conformance cases:
 - `--tier 0`, which applies no restoration;
 - an obligation made unknown by `step_budget = 1`, with no applied edit, no skipped entry, `stopped` `done` and the source unchanged;
 - the `fixable` count of a package with one restorable lock.
+
+## Note (2026-11-03): the locked-label restore is a tier-0 candidate (ADR 0094)
+
+- Status: Accepted (2026-11-03), by the project's decision. This note records behavior already implemented (#1396, PR #1464); it changes no rule, and the accepted text above is unchanged.
+
+The amendment of 2026-10-15 says that "a U3023 of tier 0, for a binding or an operation that the lock does not grant, has no obligation and no edit, so it is never one either". That sentence describes the U3023s of tier 0 of that date, which carry advice only, and it still holds for them. Edition `0.3`'s operation labels (ADR 0094, with ADR 0092 rule 8) added another U3023 of tier 0, with no obligation: a locked header that reads a locked operation below the lock's label (`spec/05 §3` rule 6, "Locks"). Its first repair can carry an edit, and `una fix` applies it under rule 2's general criteria, as `spec/13 §5` states:
+
+1. **When it carries an edit.** When the header writes the operation in the brackets of the binding, the edit raises the header's label on that operation to the join of the header's label and the lock's: ` gives <join>` after the operation's name when the header writes no label, or the join in place of the header's label when it writes one. Taking the join means an incomparable label is never dropped. When the header does not write the operation in the brackets, the repair is advice only ("list `op gives l` in the brackets of the header's `@b`") and carries no edit.
+2. **Why it is a candidate.** The repair has no escape cost and does not widen (`Repair::widens` is false): it adds no binding and no operation, so it widens no authority, and it changes the module only, never `una.toml`. `una fix` filters it as every first repair of tier 0 (`ineligible` in `crates/una-cli/src/fix.rs`); no code excludes a U3023 of tier 0 from that filter.
+3. **Its effect.** The body then reads the operation at the higher label, so its flows are checked against more, and the header's callers may pass a binding labeled up to it, so fewer of their calls are U3022. A header that already reads at or above the lock's label gets no diagnostic and no edit.
+4. **Rounds and tiers.** It is a tier-0 edit, taken in a round's tier-0 check, so `una fix --tier 0` applies it too; that claim is by code reading (every round checks tier 0 and filters with `ineligible`, whatever the requested tier), and no test runs a label restore under `--tier 0`. A locked condition on the same operation (the tier-1 restore of the amendment of 2026-10-15, ADR 0092's amendment of 2026-10-15) is written after the label (`op gives l where C`), so a module that receives both edits still parses.
+5. **Tests.** `crates/una-cli/tests/lock_edits.rs`: `a_dropped_locked_label_is_written_back`, `a_lower_label_is_raised_to_the_join_and_its_condition_kept`, `a_header_that_reads_above_its_lock_is_left_alone`, `a_header_with_the_locked_label_gets_the_condition_after_it`, and `a_dropped_label_and_condition_are_restored_in_two_rounds`, the label at tier 0 in one round and the condition at tier 1 in the next. The design reasoning is D13 of `docs/plan/0094-operation-labels-design.md`.
+
+No `reason` of `skipped` and no value of `stopped` is added (ADR 0076 rule 3).
