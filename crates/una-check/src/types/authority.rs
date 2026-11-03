@@ -1665,6 +1665,7 @@ fn infer_gives(
         if !infers(call.callee) {
             continue;
         }
+        una_core::label_counters::gives_step();
         let Some(needs) = req.get(call.callee) else {
             continue;
         };

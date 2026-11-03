@@ -679,3 +679,101 @@ fn a_header_that_reads_above_its_lock_is_left_alone() {
     let document = fix(&root);
     assert_eq!(applied(&document), Vec::new(), "{document:#?}");
 }
+
+/// A body that performs `price` only where `dry_run` is false.
+const PRICED: &str = "=
+  if dry_run
+    0
+  else
+    @catalog.price(sku)
+";
+
+/// The lock that writes a label and a condition on `price`.
+const LABELED_LOCK: &str =
+    r#""shop.update" = ["@catalog: Catalog[price gives internal[Service] where not dry_run]"]"#;
+
+#[test]
+fn a_header_with_the_locked_label_gets_the_condition_after_it() {
+    // The condition goes after the header's `gives` label, never between the operation and
+    // its label (`op gives l where C`, `spec/05 §3`).
+    let root = labeled_package(
+        "label-then-condition",
+        LABELED_LOCK,
+        &format!(
+            "pub update(sku: Int, dry_run: Bool) -> internal[Service] Int
+  uses @catalog: Catalog[price gives internal[Service]]
+{PRICED}"
+        ),
+    );
+    let document = fix(&root);
+    assert_eq!(
+        applied(&document),
+        vec![(1, "U3023".to_owned())],
+        "{document:#?}"
+    );
+    assert_eq!(document["stopped"], "done");
+    assert_eq!(
+        uses_of_update(&read(&root, "src/shop.una")),
+        "uses @catalog: Catalog[price gives internal[Service] where not dry_run]"
+    );
+    assert_eq!(check(&root), Vec::<Value>::new());
+}
+
+#[test]
+fn a_dropped_label_and_condition_are_restored_in_two_rounds() {
+    // Round 1, tier 0: the label after the operation. Round 2, tier 1: the condition after
+    // the label just written.
+    let root = labeled_package(
+        "label-and-condition",
+        LABELED_LOCK,
+        &format!(
+            "pub update(sku: Int, dry_run: Bool) -> internal[Service] Int
+  uses @catalog: Catalog[price]
+{PRICED}"
+        ),
+    );
+    let toml = read(&root, "una.toml");
+    let document = fix(&root);
+    assert_eq!(
+        applied(&document),
+        vec![(1, "U3023".to_owned()), (2, "U3023".to_owned())],
+        "{document:#?}"
+    );
+    assert_eq!(document["stopped"], "done");
+    assert_eq!(
+        uses_of_update(&read(&root, "src/shop.una")),
+        "uses @catalog: Catalog[price gives internal[Service] where not dry_run]"
+    );
+    assert_eq!(read(&root, "una.toml"), toml);
+    assert_eq!(check(&root), Vec::<Value>::new());
+}
+
+#[test]
+fn the_conformance_program_with_a_locked_label_and_condition_is_fixed() {
+    // `tests/conformance/project/gives_locked_with_condition`, which expects U3023, parses
+    // and checks once `una fix` restores its condition.
+    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/conformance/project/gives_locked_with_condition");
+    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join("lock-edits")
+        .join("conformance-gives-locked-with-condition");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    for file in ["una.toml", "verification.lock", "src/m.una"] {
+        std::fs::copy(source.join(file), root.join(file)).unwrap();
+    }
+    let document = fix(&root);
+    assert_eq!(
+        applied(&document),
+        vec![(1, "U3023".to_owned())],
+        "{document:#?}"
+    );
+    let text = read(&root, "src/m.una");
+    assert!(
+        text.contains(
+            "uses @service_files: Files[owner gives internal[Service] where not dry_run]"
+        ),
+        "{text}"
+    );
+    assert_eq!(check(&root), Vec::<Value>::new());
+}

@@ -212,14 +212,16 @@ fn function(env: &Env<'_>, modules: &BTreeMap<String, usize>, qualified: &str) -
 
 /// Where the header of the function `def` grants `op` of the binding that `entry` locks: the
 /// operation as it is written, or the whole clause when it lists no operations; the condition
-/// the header writes on it; and whether the header lists it by name. `None` when the header
-/// leaves the operation out.
+/// the header writes on it; whether the header lists it by name; and where a condition the
+/// header does not write goes, the end of the operation's `gives` label when it has one, or of
+/// its name (`op gives l where C`, `spec/05 §3`). `None` when the header leaves the operation
+/// out.
 pub(crate) fn header_site<'a>(
     env: &Env<'a>,
     def: &super::env::FnDef<'a>,
     entry: &Entry<'a>,
     op: &str,
-) -> Option<(Span, Option<&'a una_syntax::ast::Expr>, bool)> {
+) -> Option<Site<'a>> {
     let FnAst::Function(decl) = def.ast else {
         return None;
     };
@@ -240,11 +242,38 @@ pub(crate) fn header_site<'a>(
         .ops
         .iter()
         .zip(&clause.cap_type.conditions)
-        .find(|(ident, _)| env.text(def.module, ident.name) == op);
+        .zip(&clause.cap_type.gives)
+        .find(|((ident, _), _)| env.text(def.module, ident.name) == op);
     Some(match written {
-        Some((ident, condition)) => (ident.span, condition.as_ref(), true),
-        None => (clause.span, None, false),
+        Some(((ident, condition), label)) => {
+            let after = label.as_ref().map_or(ident.span, |label| label.span);
+            Site {
+                at: ident.span,
+                header: condition.as_ref(),
+                listed: true,
+                insert: Span::at(after.file, after.end),
+            }
+        }
+        None => Site {
+            at: clause.span,
+            header: None,
+            listed: false,
+            insert: Span::at(clause.span.file, clause.span.end),
+        },
     })
+}
+
+/// What [`header_site`] finds of a locked operation in a header.
+pub(crate) struct Site<'a> {
+    /// The operation as the header writes it, or the whole clause when it lists none.
+    pub(crate) at: Span,
+    /// The condition the header writes on it.
+    pub(crate) header: Option<&'a una_syntax::ast::Expr>,
+    /// Whether the header lists it by name.
+    pub(crate) listed: bool,
+    /// Where ` where C_lock` goes when the header writes no condition: after the operation's
+    /// label when it has one, else after its name. Meaningful only when `listed`.
+    pub(crate) insert: Span,
 }
 
 /// U3023 for each binding and operation of a locked header that its lock does not grant: a
@@ -252,7 +281,7 @@ pub(crate) fn header_site<'a>(
 /// list. Bindings and operations that the header leaves out are stronger, and pass. Then, for
 /// each operation the entry lists, U3023 when the header reads it below the lock's label (ADR
 /// 0094 with ADR 0092 rule 8): the lock is a floor, `l_lock ⊑ l_src`, and a header that reads
-/// higher passes, since it grants its callers' flows less.
+/// higher passes, since its body is then checked at the higher label.
 pub(crate) fn drift(env: &Env<'_>, report: &mut Report<'_>) {
     for (&id, entries) in &env.locks {
         let Some(def) = env.functions.get(id) else {
