@@ -1,0 +1,15 @@
+-- test: a private function with inferred `uses` reads a labeled operation at the label its callers pass, so a labeled binding passes to it and its answer keeps the label (ADR 0094 rule 3)
+-- spec: spec/05 §9
+-- expect: ok
+module m
+
+pub capability Files
+  op owner(file: Text) -> Text
+  op role(file: Text) -> Text
+
+owner_of(file: Text) -> internal[Service] Text = @files.owner(file)
+
+pub refusal(file: Text) -> internal[Service] Text
+  uses @files: Files[owner gives internal[Service]]
+=
+  owner_of(file)

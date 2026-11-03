@@ -1,0 +1,7 @@
+[package]
+name = "gives_inferred_passed_on_lower"
+version = "0.1.0"
+edition = "0.3"
+
+[labels]
+categories = ["Service"]

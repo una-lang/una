@@ -138,10 +138,14 @@ pub(crate) struct CallFact {
     pub(crate) callee: usize,
     /// The `with` bindings around the call, one frame per statement, innermost last.
     pub(crate) with: Vec<Vec<(String, With)>>,
-    /// The capabilities of the caller's own context, when it is declared.
-    pub(crate) context: Vec<(String, Option<CapId>)>,
+    /// The capabilities of the caller's own context, when it is declared, with the label each
+    /// of its operations gives through the binding (ADR 0094 rule 1), `public` for a handler.
+    pub(crate) context: Vec<(String, Option<CapId>, Gives)>,
     pub(crate) span: Span,
 }
+
+/// The label each operation gives through a binding (ADR 0094 rule 1), `public` left out.
+pub(crate) type Gives = Vec<(String, Label)>;
 
 /// A `with` binding, as inference sees it.
 #[derive(Clone, Debug)]
@@ -1146,7 +1150,7 @@ impl<'a> Checker<'_, 'a, '_> {
                         .collect()
                 })
                 .collect();
-        let context: Vec<(String, Option<CapId>)> = self
+        let context: Vec<(String, Option<CapId>, Gives)> = self
             .frames
             .first()
             .map(|frame| {
@@ -1154,8 +1158,13 @@ impl<'a> Checker<'_, 'a, '_> {
                     .bindings
                     .iter()
                     .filter_map(|(name, bound)| match bound {
-                        Bound::Cap { capability, .. } | Bound::Handler { capability, .. } => {
-                            Some((name.clone(), *capability))
+                        Bound::Cap {
+                            capability, gives, ..
+                        } => Some((name.clone(), *capability, gives.clone())),
+                        // A handler answers at `public` in the body that installs it (ADR
+                        // 0094 rule 4).
+                        Bound::Handler { capability, .. } => {
+                            Some((name.clone(), *capability, Vec::new()))
                         }
                         Bound::Rebound { .. } => None,
                     })
@@ -1478,6 +1487,7 @@ pub(crate) fn infer(env: &mut Env<'_>, collected: &Collected, report: &mut Repor
             break;
         }
     }
+    let gives = infer_gives(env, collected, &req);
     let mut caps = declared.clone();
     let decided = |caps: &[Inferred]| -> Vec<BTreeSet<String>> {
         caps.iter()
@@ -1564,14 +1574,28 @@ pub(crate) fn infer(env: &mut Env<'_>, collected: &Collected, report: &mut Repor
             let Some(span) = span.or_else(|| env.functions.get(id).map(|f| f.result_span)) else {
                 continue;
             };
-            // ADR 0094 rule 3: an inferred header reads every operation at `public` until
-            // its labels are inferred (#566, part 2).
+            // ADR 0094 rule 3: an inferred header reads each operation at the join of the
+            // labels its callers pass for it, in the order of `ops`, `public` left out.
+            let labels: Vec<(String, Label)> = gives
+                .get(id)
+                .and_then(|known| known.get(&name))
+                .map(|known| {
+                    ops.iter()
+                        .filter_map(|op| {
+                            known
+                                .get(op)
+                                .filter(|label| !label.is_public())
+                                .map(|label| (op.clone(), label.clone()))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
             uses.push(super::env::Need {
                 usage: FnUse {
                     name,
                     capability,
                     ops,
-                    gives: Vec::new(),
+                    gives: labels,
                 },
                 span,
             });
@@ -1600,6 +1624,96 @@ pub(crate) fn infer(env: &mut Env<'_>, collected: &Collected, report: &mut Repor
             }
         }
     }
+}
+
+/// The labels that the inferred references of each function give their operations: for each
+/// reference and operation, the join of the labels that the function's callers pass for it
+/// (ADR 0094 rule 3, `spec/05 §9` rule 2). A caller passes the label its own binding gives the
+/// operation: its declared header's, or its own inferred one when its `uses` are inferred too,
+/// through `with @x = @y` and `with @x = @y[ops]`, which keep `@y`'s labels. A handler installed
+/// around the call answers at `public` there and contributes nothing. A call this misses, in a
+/// lambda or through a function value, is still compared against the inferred labels at its
+/// site in pass 2, so a label the join lacks is U3022 there, never a read below the label.
+///
+/// A least fixed point over a worklist of calls: the join is monotone in a finite lattice, five
+/// levels and the declared categories, so each label of a reference changes at most
+/// `4 + |categories|` times, and a change reprocesses only the calls the changed function makes.
+/// The cost is linear in call edges times operations, times at most the lattice height.
+fn infer_gives(
+    env: &Env<'_>,
+    collected: &Collected,
+    req: &[BTreeMap<String, BTreeSet<String>>],
+) -> Vec<BTreeMap<String, BTreeMap<String, Label>>> {
+    let count = env.functions.len();
+    let infers = |id: usize| env.functions.get(id).is_some_and(|f| f.infer_uses);
+    let mut gives: Vec<BTreeMap<String, BTreeMap<String, Label>>> = vec![BTreeMap::new(); count];
+    // The calls each inferring function makes in its own frames, whose contribution changes
+    // when its own labels do.
+    let mut by_caller: Vec<Vec<usize>> = vec![Vec::new(); count];
+    for (index, call) in collected.calls.iter().enumerate() {
+        if let Some(caller) = call.caller.filter(|caller| infers(*caller))
+            && let Some(calls) = by_caller.get_mut(caller)
+        {
+            calls.push(index);
+        }
+    }
+    let mut work: Vec<usize> = (0..collected.calls.len()).rev().collect();
+    while let Some(index) = work.pop() {
+        let Some(call) = collected.calls.get(index) else {
+            continue;
+        };
+        if !infers(call.callee) {
+            continue;
+        }
+        una_core::label_counters::gives_step();
+        let Some(needs) = req.get(call.callee) else {
+            continue;
+        };
+        let mut changed = false;
+        for (name, ops) in needs {
+            let Source::Context(outer) = source(&call.with, name) else {
+                continue;
+            };
+            for op in ops {
+                let passed = match call.caller {
+                    Some(caller) if infers(caller) => gives
+                        .get(caller)
+                        .and_then(|known| known.get(&outer))
+                        .and_then(|known| known.get(op))
+                        .cloned(),
+                    _ => call
+                        .context
+                        .iter()
+                        .find(|(n, _, _)| *n == outer)
+                        .map(|(_, _, labels)| given(labels, op)),
+                };
+                let Some(passed) = passed.filter(|label| !label.is_public()) else {
+                    continue;
+                };
+                let Some(known) = gives.get_mut(call.callee) else {
+                    continue;
+                };
+                let entry = known.entry(name.clone()).or_default();
+                match entry.get_mut(op) {
+                    Some(label) => {
+                        let joined = label.join(&passed);
+                        if joined != *label {
+                            *label = joined;
+                            changed = true;
+                        }
+                    }
+                    None => {
+                        entry.insert(op.clone(), passed);
+                        changed = true;
+                    }
+                }
+            }
+        }
+        if changed && let Some(calls) = by_caller.get(call.callee) {
+            work.extend(calls.iter().copied());
+        }
+    }
+    gives
 }
 
 /// Lets capabilities flow from callers to the inferred references of their callees until
@@ -1660,8 +1774,8 @@ fn caller_capability(
         _ => call
             .context
             .iter()
-            .find(|(n, _)| n == name)
-            .and_then(|(_, capability)| *capability),
+            .find(|(n, _, _)| n == name)
+            .and_then(|(_, capability, _)| *capability),
     }
 }
 
