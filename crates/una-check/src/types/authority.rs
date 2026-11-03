@@ -297,35 +297,156 @@ impl<'a> Checker<'_, 'a, '_> {
         ops: &[String],
         reads: &[(String, Label)],
     ) -> Option<String> {
-        let capability = capability?;
-        let mut names: Vec<&str> = self
-            .frames
+        self.binding_holding(
+            self.frames.len(),
+            Some(declared),
+            None,
+            capability?,
+            ops,
+            reads,
+        )
+    }
+
+    /// A capability binding in scope below frame `level`, of capability `capability`, that
+    /// permits every operation of `ops` and gives each at most the label `reads` lists for it
+    /// (ADR 0094 rule 3), and neither is nor leads to `@exclude`: `@prefer` when it qualifies,
+    /// otherwise the first in name order, so the repair is deterministic. A handler never
+    /// qualifies, nor does a binding whose operations are not known: only a binding whose
+    /// capability and operations are written where it is declared. Linear in the bindings in
+    /// scope, each resolved through its rebindings.
+    pub(crate) fn binding_holding(
+        &self,
+        level: usize,
+        exclude: Option<&str>,
+        prefer: Option<&str>,
+        capability: CapId,
+        ops: &[String],
+        reads: &[(String, Label)],
+    ) -> Option<String> {
+        let names = self.holders(level, exclude, capability, ops, reads);
+        match prefer {
+            Some(prefer) if names.iter().any(|name| name == prefer) => Some(prefer.to_owned()),
+            _ => names.into_iter().next(),
+        }
+    }
+
+    /// Every binding that [`Self::binding_holding`] could choose, in name order.
+    fn holders(
+        &self,
+        level: usize,
+        exclude: Option<&str>,
+        capability: CapId,
+        ops: &[String],
+        reads: &[(String, Label)],
+    ) -> Vec<String> {
+        let Some(frames) = self.frames.get(..level.min(self.frames.len())) else {
+            return Vec::new();
+        };
+        let mut names: Vec<&str> = frames
             .iter()
             .flat_map(|frame| frame.bindings.iter().map(|(name, _)| name.as_str()))
-            .filter(|name| *name != declared)
+            .filter(|name| Some(*name) != exclude)
             .collect();
         names.sort_unstable();
         names.dedup();
         names
             .into_iter()
-            .find_map(|name| match self.resolve_cap(name) {
+            .filter(|name| match resolve_in(&self.frames, level, name) {
                 Resolved::Cap {
                     name: resolved,
                     capability: Some(other),
                     ops: Some(permitted),
                     gives,
                     ..
-                } if other == capability
-                    && resolved != declared
-                    && ops.iter().all(|op| permitted.contains(op))
-                    && ops
-                        .iter()
-                        .all(|op| given(&gives, op).flows_to(&given(reads, op))) =>
-                {
-                    Some(name.to_owned())
+                } => {
+                    other == capability
+                        && Some(resolved.as_str()) != exclude
+                        && ops.iter().all(|op| permitted.contains(op))
+                        && ops
+                            .iter()
+                            .all(|op| given(&gives, op).flows_to(&given(reads, op)))
                 }
-                _ => None,
+                _ => false,
             })
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// The binding a repair that `una fix` may apply grants (ADR 0093 rule 6, ADR 0084): of
+    /// the bindings [`Self::binding_holding`] could choose below frame `level`, `@prefer` when
+    /// it qualifies, otherwise the only one. A repair that adds to a statement's `with` passes
+    /// the level below that `with`'s own frame, where the right-hand side it writes resolves,
+    /// so a binding the `with` rebinds still counts as the header binding it is there. When several qualify, which one
+    /// receives the callee's requirement is a decision about trust, never a mechanical one, so
+    /// they are all returned for advice. Linear in the bindings in scope.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn sole_holder(
+        &self,
+        level: usize,
+        exclude: Option<&str>,
+        prefer: Option<&str>,
+        capability: CapId,
+        ops: &[String],
+        reads: &[(String, Label)],
+    ) -> Holder {
+        let mut names = self.holders(level, exclude, capability, ops, reads);
+        if let Some(prefer) = prefer
+            && names.iter().any(|name| name == prefer)
+        {
+            return Holder::One(prefer.to_owned());
+        }
+        match names.len() {
+            0 => Holder::None,
+            1 => Holder::One(names.remove(0)),
+            _ => Holder::Several(names),
+        }
+    }
+
+    /// The operations that `@name` permits below frame `level`, when it is a binding whose
+    /// operations are known.
+    pub(crate) fn permitted_ops(&self, level: usize, name: &str) -> Option<Vec<String>> {
+        match resolve_in(&self.frames, level, name) {
+            Resolved::Cap { ops, .. } => ops,
+            _ => None,
+        }
+    }
+
+    /// `@target` as the right-hand side of a rebinding that grants `ops` (ADR 0093 rules 4
+    /// and 6): in edition 0.3 and later, narrowed to `@target[ops]` when `@target` permits more
+    /// than `ops`, so the rebinding passes no operation the callee does not declare; `@target`
+    /// otherwise, and in editions 0.1 and 0.2, which have no narrowed rebinding.
+    pub(crate) fn granted_text(&self, level: usize, target: &str, ops: &[String]) -> String {
+        let wider = self
+            .permitted_ops(level, target)
+            .is_some_and(|permitted| permitted.iter().any(|op| !ops.contains(op)));
+        if self.env.edition >= una_project::Edition::V0_3 && wider && !ops.is_empty() {
+            format!("@{target}[{}]", ops.join(", "))
+        } else {
+            format!("@{target}")
+        }
+    }
+
+    /// ADR 0093 rule 6, edition 0.3: a widening of a public header comes last among the
+    /// repairs of a U3001 or a U3002, after the narrowing routes and a widening of a private
+    /// header, and its text says that it changes the authority of a public header. An entry
+    /// point is public (`spec/04 §8`), so it is one of them. Editions 0.1 and 0.2 keep their
+    /// repairs as they are.
+    fn header_change(&self, mut repair: Repair) -> Repair {
+        if self.env.edition < una_project::Edition::V0_3 {
+            return repair;
+        }
+        let Some(def) = self.current.and_then(|id| self.env.functions.get(id)) else {
+            return repair;
+        };
+        if !def.public {
+            return repair;
+        }
+        repair.rank = PUBLIC_WIDENING_RANK;
+        repair.description = format!(
+            "{}; this is an authority change of the public header of `{}`, which every caller in every module must then hold",
+            repair.description, def.name
+        );
+        repair
     }
 
     /// ADR 0094 rule 3: the callee `callee` reads each operation of `need` at the label its
@@ -369,7 +490,7 @@ impl<'a> Checker<'_, 'a, '_> {
         let mut diagnostic = self.report.make(Code::U3022, span, above.join("; "));
         diagnostic
             .repairs
-            .extend(self.rebinding(span, need, declared, capability));
+            .extend(self.rebinding(span, need, declared, capability, false));
         let headed = !callee.starts_with("this ") && !callee.contains("used as a value");
         if headed {
             diagnostic.repairs.push(Report::advice(format!(
@@ -460,9 +581,10 @@ impl<'a> Checker<'_, 'a, '_> {
                     // ADR 0097 rule 4: the widening, marked, follows the route that keeps
                     // authority.
                     let extra = [op_name.to_owned()];
-                    diagnostic
-                        .repairs
-                        .extend(self.widen(clause, &declared, capability, &ops, &extra));
+                    diagnostic.repairs.extend(
+                        self.widen(clause, &declared, capability, &ops, &extra)
+                            .map(|repair| self.header_change(repair)),
+                    );
                     self.report.push(diagnostic);
                 }
                 capability
@@ -605,7 +727,7 @@ impl<'a> Checker<'_, 'a, '_> {
                         && capability.is_some()
                         && capability != need.capability
                     {
-                        self.report.error(
+                        let mut diagnostic = self.report.make(
                             Code::U3001,
                             span,
                             format!(
@@ -615,6 +737,18 @@ impl<'a> Checker<'_, 'a, '_> {
                                 self.cap_name(capability)
                             ),
                         );
+                        // ADR 0093 rule 6, edition 0.3: rebinding the callee's reference to a
+                        // binding of the capability it needs is a narrowing route.
+                        if self.env.edition >= una_project::Edition::V0_3 {
+                            diagnostic.repairs.extend(self.rebinding(
+                                span,
+                                need,
+                                &declared,
+                                need.capability,
+                                true,
+                            ));
+                        }
+                        self.report.push(diagnostic);
                     } else if let Some(ops) = ops {
                         let missing: Vec<String> = need
                             .ops
@@ -640,9 +774,10 @@ impl<'a> Checker<'_, 'a, '_> {
                             // ADR 0097 rule 4: output ranks the widening after it.
                             diagnostic
                                 .repairs
-                                .extend(self.rebinding(span, need, &declared, capability));
+                                .extend(self.rebinding(span, need, &declared, capability, true));
                             diagnostic.repairs.extend(
-                                self.widen(clause, &declared, capability, &ops, &missing),
+                                self.widen(clause, &declared, capability, &ops, &missing)
+                                    .map(|repair| self.header_change(repair)),
                             );
                             self.report.push(diagnostic);
                         } else {
@@ -762,8 +897,23 @@ impl<'a> Checker<'_, 'a, '_> {
                                 self.show_need(need)
                             ),
                         );
+                        // ADR 0093 rule 6, edition 0.3: rebinding the callee's reference to a
+                        // binding the caller holds ranks before declaring a new one, which
+                        // widens the header, a public one last.
+                        if self.env.edition >= una_project::Edition::V0_3 {
+                            diagnostic.repairs.extend(self.rebinding(
+                                span,
+                                need,
+                                &need.name,
+                                need.capability,
+                                true,
+                            ));
+                        }
                         let clause = [self.uses_text(&need.name, need.capability, &need.ops)];
-                        diagnostic.repairs.extend(self.add_clause(&clause, before_uses).map(widening));
+                        diagnostic.repairs.extend(
+                            self.add_clause(&clause, before_uses)
+                                .map(|repair| self.header_change(widening(repair))),
+                        );
                         self.report.push(diagnostic);
                     }
                 },
@@ -775,20 +925,58 @@ impl<'a> Checker<'_, 'a, '_> {
     /// `span` that is the whole expression of its statement, where `@other` is another binding
     /// in scope, of the same capability, that permits every operation the callee needs there.
     /// The `with` binding scopes over the whole statement (`spec/05 §3` rule 3), so it is
-    /// offered only there, and only when the statement does not bind `@need` already.
+    /// offered only there, and only when the statement does not bind `@need` already. With
+    /// `narrow`, edition 0.3 writes `@other[ops]` when `@other` permits more than the callee
+    /// needs (ADR 0093 rule 6, [`Self::granted_text`]).
     fn rebinding(
         &self,
         span: Span,
         need: &FnUse,
         declared: &str,
         capability: Option<CapId>,
+        narrow: bool,
     ) -> Option<Repair> {
         let statement = self.statement.as_ref()?;
         if statement.expr != span || statement.bound.contains(&need.name) {
             return None;
         }
-        let other = self.binding_permitting(declared, capability, &need.ops, &need.gives)?;
-        let binding = format!("@{} = @{other}", need.name);
+        // ADR 0093 rule 6, edition 0.3: an edit names the only binding that qualifies, never
+        // one chosen by name among several. The right-hand side it adds to the statement's
+        // `with` resolves outside that `with`, so the candidates are counted there, below the
+        // statement's own frame.
+        let narrow = narrow && self.env.edition >= una_project::Edition::V0_3;
+        let outer = statement.outer.min(self.frames.len());
+        let other = if narrow {
+            match self.sole_holder(
+                outer,
+                Some(declared),
+                None,
+                capability?,
+                &need.ops,
+                &need.gives,
+            ) {
+                Holder::None => return None,
+                Holder::One(other) => other,
+                Holder::Several(names) => {
+                    return Some(Report::advice(format!(
+                        "add `with @{x} = @y[{ops}]` to this statement, where `@y` is one of {}, which each permit {}; which binding `@{x}` receives is a decision about trust, so no edit is offered",
+                        names_list(&names),
+                        ops_list(&need.ops),
+                        x = need.name,
+                        ops = need.ops.join(", "),
+                    )));
+                }
+            }
+        } else {
+            self.binding_permitting(declared, capability, &need.ops, &need.gives)?
+        };
+        // ADR 0093 rule 6: in edition 0.3 the rebinding passes only what the callee needs.
+        let target = if narrow {
+            self.granted_text(outer, &other, &need.ops)
+        } else {
+            format!("@{other}")
+        };
+        let binding = format!("@{} = {target}", need.name);
         let text = if statement.with {
             format!(", {binding}")
         } else {
@@ -1037,9 +1225,16 @@ impl<'a> Checker<'_, 'a, '_> {
     /// is declaring the binding, which widens the header (ADR 0097 rules 6 and 7).
     fn undeclared(&mut self, code: Code, span: Span, name: &str, message: String) {
         let mut diagnostic = self.report.make(code, span, message);
-        diagnostic.repairs.push(widening(Report::advice(format!(
+        let repair = widening(Report::advice(format!(
             "declare `uses @{name}: ...` in the header, with the capability and the operations used"
-        ))));
+        )));
+        // ADR 0093 rule 6 reorders U3001 only; U3004 is code declared pure.
+        let repair = if code == Code::U3001 {
+            self.header_change(repair)
+        } else {
+            repair
+        };
+        diagnostic.repairs.push(repair);
         self.report.push(diagnostic);
     }
 
@@ -2935,6 +3130,34 @@ fn inferred_route(name: &str, ops: &std::collections::BTreeSet<String>) -> Strin
         "declare `uses @{name}: <capability>[{}]` in the header; this states authority its callers are already charged for",
         ops.join(", ")
     )
+}
+
+/// The rank of a widening of a public header in edition 0.3 (ADR 0093 rule 6): above every
+/// other rank a checker gives, so output, which sorts by escape cost, then widening, then rank,
+/// prints it last among the repairs that take no escape, and renumbers the ranks without gaps.
+const PUBLIC_WIDENING_RANK: u32 = 1_000;
+
+/// The bindings a repair can grant (ADR 0093 rule 6): none, exactly one, or several, among
+/// which no repair chooses.
+pub(crate) enum Holder {
+    None,
+    One(String),
+    Several(Vec<String>),
+}
+
+/// `` `@a`, `@b` and `@c` ``, for a message.
+pub(crate) fn names_list(names: &[String]) -> String {
+    let quoted: Vec<String> = names.iter().map(|name| format!("`@{name}`")).collect();
+    match quoted.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
+        _ => quoted.join(""),
+    }
+}
+
+/// `` `read`, `write` ``, for a message.
+pub(crate) fn ops_list(ops: &[String]) -> String {
+    let quoted: Vec<String> = ops.iter().map(|op| format!("`{op}`")).collect();
+    quoted.join(", ")
 }
 
 /// `repair`, marked as widening authority: `una fix` never applies it (ADR 0084).

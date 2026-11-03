@@ -1,0 +1,29 @@
+-- test: ADR 0093 rule 6: a U3020 whose requirement exceeds the ceiling offers no grant, only advice for a handler within the ceiling, naming what the ceiling withholds; in the body of a lambda, which is one line and cannot carry `with`, the advice points to a named function that installs such a handler, never to a grant; `una fix` changes nothing
+-- spec: spec/13 §3
+-- expect: error U3020 at src/media/app.una:14:3
+-- expect: error U3020 at src/media/app.una:19:3
+-- expect: error U3020 at src/media/app.una:29:25
+module media.app
+
+import media.resize (announce, resize)
+import media.store (Files, Net)
+
+pub rewrite(path: Text) -> Unit
+  uses @files: Files[read, write]
+=
+  resize(path)
+
+pub publish(path: Text) -> Unit
+  uses @net: Net[post]
+=
+  announce(path)
+
+run(p: Text, f: fn(Text) -> Unit uses @files: Files[read, write]) -> Unit
+  uses @files: Files[read, write]
+=
+  f(p)
+
+pub lam_rewrite(path: Text) -> Unit
+  uses @files: Files[read, write]
+=
+  run(path, f: fn(p) -> resize(p))
