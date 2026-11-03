@@ -1,8 +1,8 @@
 """Operator families (docs/plan/security-hunt-generators.md §4). Each operator is a
 function `(seed, edition) -> Program`, registered in `OPERATORS` by its id."""
 
-from . import (boundaries, composed, composed2, concurrency, conditions, fragment, generics,
-               handlers, keys, ordering, payloads, sums, trusted)
+from . import (boundaries, composed, composed2, concurrency, conditions, dependencies, fragment,
+               generics, handlers, keys, ordering, payloads, registry, sums, trusted)
 
 OPERATORS = {}
 OPERATORS.update(trusted.OPERATORS)
@@ -18,11 +18,15 @@ OPERATORS.update(composed.OPERATORS)
 OPERATORS.update(composed2.OPERATORS)
 OPERATORS.update(boundaries.OPERATORS)
 OPERATORS.update(conditions.OPERATORS)
+OPERATORS.update(dependencies.OPERATORS)
+OPERATORS.update(registry.OPERATORS)
 
 # The editions of the fixed run, by operator: 0.1 and 0.2 unless the operator's family says
-# otherwise. An operator of an edition 0.3 rule runs 0.2, as the edition gate's probe, and 0.3.
+# otherwise. An operator of an edition 0.3 rule runs 0.2, as the edition gate's probe, and 0.3;
+# one of edition 0.4's packages (families D and Y) runs 0.3, as the probe, and 0.4.
 DEFAULT_EDITIONS = ("0.1", "0.2")
-OPERATOR_EDITIONS = {**boundaries.EDITIONS, **conditions.EDITIONS}
+OPERATOR_EDITIONS = {**boundaries.EDITIONS, **conditions.EDITIONS, **dependencies.EDITIONS_BY_OP,
+                     **registry.EDITIONS_BY_OP}
 
 
 def editions_of(op):
