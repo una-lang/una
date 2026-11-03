@@ -578,6 +578,11 @@ mod tests {
             timers.arm(start + MS, &a).unwrap();
             timers.arm(start + 2 * MS + 7, &b).unwrap();
             let long = timers.arm(start + 3_600_000 * MS, &c).unwrap();
+            // An arm that wakes the thread returns before the thread's pass, which reads the
+            // clock: settled at the same moment, the pass reads `start`, as the arms did, rather
+            // than a later step's moment, past a slot boundary that the pass would then cross
+            // for free, one wake fewer (#1386).
+            timers.settle(start);
             for step in [
                 start + MS - 1,
                 start + MS,
