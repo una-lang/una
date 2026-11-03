@@ -6167,3 +6167,56 @@ fn s39_events_reached_under_a_secret_branch_without_diverges_add_nothing_to_the_
         assert_eq!(native, expected, "{secret}");
     }
 }
+
+/// S-39 reproducer 1 verbatim (#1507), with S-36's per-loop budget (#1478): a loop under a
+/// `secret` branch that `stop when` or the budget ends, then a public loop whose `on stop`
+/// prints its count.
+const SECRET_BUDGET_THEN_PUBLIC: &str = "module leak
+
+spin(s: secret Int) -> Unit
+  diverges
+=
+  if s > 0
+    let edit k: secret Int = 0
+    for ever
+      stop when k >= s
+      k = k + 1
+
+pub main() -> Unit
+  uses @console: Console[print]
+  diverges
+=
+  let s: secret Int = SECRET
+  spin(s)
+  let edit n = 0
+  for ever
+    n = n + 1
+  on stop
+    @console.print(\"public loop ran {n}\")
+";
+
+#[test]
+fn s39_a_budget_ended_secret_loop_then_a_public_loop_show_the_same_output_and_trace() {
+    // S-39 with S-36 (#1507, #1478): each loop instance has its own budget, so the public loop
+    // runs its 10 iterations whatever the secret loop took, and only the public loop appends a
+    // `stop` event: the output and the trace are the same for every secret, in both engines.
+    for secret in [0, 3, 7, 20] {
+        let (output, run, native) = secret_run(
+            "s39budgetpublic",
+            SECRET_BUDGET_THEN_PUBLIC,
+            secret,
+            &["--stop-after-iterations", "10"],
+        );
+        assert_eq!(
+            output,
+            serde_json::json!(["public loop ran 10"]),
+            "{secret}"
+        );
+        assert_eq!(run, native, "{secret}");
+        assert_eq!(
+            kinds_in_order(&run),
+            (vec!["stop".to_owned(), "ok".to_owned()], true),
+            "{secret}: {run}"
+        );
+    }
+}
