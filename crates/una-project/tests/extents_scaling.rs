@@ -47,14 +47,18 @@ fn timed(n: usize) -> Duration {
 }
 
 /// A doubling of the modules and the boundaries together takes less than 2.5 times as long: a
-/// scan of the boundaries per module would take four.
+/// scan of the boundaries per module would take four. The parse has no fixed cost to speak of
+/// and its time is pure work, stable to a few percent at 13 ms, so the floor is 10 ms rather
+/// than the helper's `FLOOR` of 20 ms, and the smallest size (about 13 ms at 2,000 in a debug
+/// build) is above it: every doubling is judged, not only the last (#1197). The largest size
+/// stays near 0.1 s, short enough that a loaded machine does not inflate its shortest run.
 #[test]
 fn extents_scale_with_modules_not_modules_times_boundaries() {
     timing::assert_growth(
         "extents",
-        &[1_000, 2_000, 4_000, 8_000],
+        &[2_000, 4_000, 8_000, 16_000],
         0.0,
-        timing::FLOOR,
+        0.01,
         2.5,
         |n| timed(n).as_secs_f64(),
     );

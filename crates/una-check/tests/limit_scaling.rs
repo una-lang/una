@@ -5,9 +5,12 @@
 //! per request would take quadratic time. Counted first (issue #1197): the successors the closures
 //! follow, the edges of the search for the nearest raising ancestor and the requests labeled, which
 //! the process-wide counter `pass_steps` counts, must grow linearly; timed as a fallback, by the
-//! shared helper of `una-cli/tests/common/timing.rs`, over a span of 8 times the size, which
-//! separates linear (about 8 to 12 times) from quadratic (about 64 times) on a shared machine. This
-//! file holds one test, so no other test of its binary moves the counter while it reads it.
+//! shared helper of `una-cli/tests/common/timing.rs`, over a span of 16 times the size against a
+//! bound of 32 times, which separates linear (about 16 times) from quadratic (about 256 times) on a
+//! shared machine: with a time a·n + b·n², it tolerates a quadratic share r = b·n0/a at the
+//! smallest size n0 of at most (32 - 16)/(256 - 32) = 1/14, as tight as the old bound of 2.5 times
+//! per doubling over 8 times the size (1/12). This file holds one test, so no other test of its
+//! binary moves the counter while it reads it.
 
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
@@ -94,11 +97,11 @@ fn checked(n: usize) -> (bool, Vec<String>, usize, Duration) {
 }
 
 /// A doubling of the chain at most doubles the pass steps, with a margin of 10 % for the steps that
-/// do not grow, and 8 times the size takes less than 24 times as long; the `secret` work of `top`,
+/// do not grow, and 16 times the size takes less than 32 times as long; the `secret` work of `top`,
 /// an ancestor of every request, raises `L_lim` above `internal`.
 #[test]
 fn the_history_of_a_limit_scales_linearly() {
-    let sizes = [250, 500, 1_000, 2_000];
+    let sizes = [250, 500, 1_000, 2_000, 4_000];
     let judged = |n: usize, raised: bool, codes: &[String]| {
         assert!(raised, "`L_lim` of {n} functions stays at most `internal`");
         assert_eq!(codes, Vec::<String>::new());
@@ -112,19 +115,21 @@ fn the_history_of_a_limit_scales_linearly() {
         })
         .collect();
     timing::assert_count_growth("the history of a limit", &sizes, &counts, 1.1);
-    let span = [sizes[0], sizes[3]];
+    // The fallback spans 16 times the smallest size against a bound of 32 (see the module
+    // documentation).
+    let span = [sizes[0], sizes[4]];
     timing::assert_growth(
         "the history of a limit",
         &span,
         0.0,
         timing::FLOOR,
-        24.0,
+        32.0,
         |n| {
             let (raised, codes, steps, took) = checked(n);
             judged(n, raised, &codes);
             // The count is deterministic: the same in every run.
-            let at = sizes.iter().position(|&size| size == n).unwrap();
-            assert_eq!(steps, counts[at], "{n}: the steps of a second run");
+            let expected = counts[sizes.iter().position(|&size| size == n).unwrap()];
+            assert_eq!(steps, expected, "{n}: the steps of a second run");
             took.as_secs_f64()
         },
     );
