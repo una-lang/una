@@ -1,0 +1,17 @@
+-- test: a header that reads a locked operation at the lock's label, or above it, passes its lock (ADR 0094 with ADR 0092 rule 8)
+-- spec: spec/05 §3
+-- expect: ok
+module m
+
+pub capability Files
+  op owner(file: Text) -> Text
+  op role(file: Text) -> Text
+  op create_link(file: Text) -> Text
+
+pub refusal(file: Text) -> secret[Service] Text
+  uses @service_files: Files[create_link, role gives internal[Service], owner gives secret[Service]]
+=
+  let owner = @service_files.owner(file)
+  let role = @service_files.role(file)
+  let link = @service_files.create_link(file)
+  "{owner} {role} {link}"

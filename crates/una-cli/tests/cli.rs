@@ -692,6 +692,56 @@ fn contract_marks_inferred_clauses() {
 }
 
 #[test]
+fn contract_prints_declared_and_inferred_operation_labels() {
+    // ADR 0094 rule 3 (#566 part 2): a declared header prints its `gives` as written, an
+    // inferred one prints the labels its callers pass, and `--json` lists both under `gives`.
+    let root = scratch("contract-gives");
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("una.toml"),
+        "[package]\nname = \"gives\"\nversion = \"0.1.0\"\nedition = \"0.3\"\n\n[labels]\ncategories = [\"Service\"]\n",
+    )
+    .unwrap();
+    std::fs::copy(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../verification.lock"),
+        root.join("verification.lock"),
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/m.una"),
+        "module m\n\npub capability Files\n  op owner(file: Text) -> Text\n  op create_link(file: Text) -> Text\n\nshare(file: Text) -> internal[Service] Text\n=\n  let owner = @files.owner(file)\n  let link = @files.create_link(file)\n  \"{owner} {link}\"\n\npub create(file: Text) -> internal[Service] Text\n  uses @files: Files[create_link, owner gives internal[Service]]\n=\n  share(file)\n",
+    )
+    .unwrap();
+    let output = una_in(&root, &["contract", "m.share"]);
+    assert_eq!(stderr(&output), "");
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(
+        stdout(&output),
+        "share(file: Text) -> internal[Service] Text\n  uses @files: Files[owner gives internal[Service], create_link] -- inferred\n"
+    );
+    let output = una_in(&root, &["contract", "--json", "m.share"]);
+    assert_eq!(output.status.code(), Some(0));
+    assert!(
+        stdout(&output).contains("\"uses\":[{\"cap\":\"files\",\"capability\":\"Files\",\"ops\":[\"owner\",\"create_link\"],\"gives\":[{\"op\":\"owner\",\"label\":\"internal[Service]\"}],\"inferred\":true}]"),
+        "{}",
+        stdout(&output)
+    );
+    let output = una_in(&root, &["contract", "m.create"]);
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(
+        stdout(&output),
+        "pub create(file: Text) -> internal[Service] Text\n  uses @files: Files[create_link, owner gives internal[Service]]\n"
+    );
+    let output = una_in(&root, &["contract", "--json", "m.create"]);
+    assert!(
+        stdout(&output).contains("\"ops\":[\"owner\",\"create_link\"],\"gives\":[{\"op\":\"owner\",\"label\":\"internal[Service]\"}],\"inferred\":false}"),
+        "{}",
+        stdout(&output)
+    );
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
 fn contract_reports_unknown_names_and_diagnostics() {
     let events = std::path::Path::new("examples/events");
     for name in [

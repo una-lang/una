@@ -1,4 +1,4 @@
--- test: each lock that does not resolve against today's code is U7002 at its entry: no public function, a private one, an entry that does not parse or lists no operations, an unknown capability or operation, a condition over a name that is no parameter, `gives`, and a binding locked twice (ADR 0092 rule 8, as amended)
+-- test: each lock that does not resolve against today's code is U7002 at its entry: no public function, a private one, an entry that does not parse or lists no operations, an unknown capability or operation, a condition over a name that is no parameter, a label with a category the package does not declare, and a binding locked twice (ADR 0092 rule 8, as amended)
 -- spec: spec/05 §3
 -- expect: error U7002 at una.toml:7:1
 -- expect: error U7002 at una.toml:8:1

@@ -66,7 +66,33 @@ struct Uses {
     cap: String,
     capability: String,
     ops: Vec<String>,
+    /// The operations that give a label through the binding, declared or inferred, in the
+    /// order of `ops` (ADR 0094 rule 1); an operation absent here gives `public`. Additive
+    /// (ADR 0076), and left out when empty, so that a document of a package that labels no
+    /// operation, every package of editions 0.1 and 0.2 among them, stays byte for byte.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    gives: Vec<Gives>,
     inferred: bool,
+}
+
+/// `op gives label` in a `uses` clause (ADR 0094 rule 1).
+#[derive(Debug, Serialize)]
+struct Gives {
+    op: String,
+    label: String,
+}
+
+impl Uses {
+    /// The operations as a header writes them in brackets: `op`, or `op gives label`.
+    fn written_ops(&self) -> Vec<String> {
+        self.ops
+            .iter()
+            .map(|op| match self.gives.iter().find(|gives| gives.op == *op) {
+                Some(gives) => format!("{op} gives {}", gives.label),
+                None => op.clone(),
+            })
+            .collect()
+    }
 }
 
 /// A constrained type parameter (`spec/20 §8`).
@@ -288,6 +314,14 @@ pub(crate) fn contract(
                     cap: u.cap.clone(),
                     capability: u.capability.clone(),
                     ops: u.ops.clone(),
+                    gives: u
+                        .gives
+                        .iter()
+                        .map(|(op, label)| Gives {
+                            op: op.clone(),
+                            label: label.clone(),
+                        })
+                        .collect(),
                     inferred: uses_inferred,
                 })
                 .collect()
@@ -299,7 +333,7 @@ pub(crate) fn contract(
                 "  uses @{}: {}[{}] -- inferred",
                 u.cap,
                 u.capability,
-                u.ops.join(", ")
+                u.written_ops().join(", ")
             ));
         }
     } else {

@@ -1,0 +1,17 @@
+-- test: two inferred functions in a row read the labeled operation at the outer caller's label, and return the answer at it (ADR 0094 rule 3)
+-- spec: spec/05 §9
+-- expect: ok
+module m
+
+pub capability Files
+  op owner(file: Text) -> Text
+  op role(file: Text) -> Text
+
+inner(file: Text) -> internal[Service] Text = @files.owner(file)
+
+middle(file: Text) -> internal[Service] Text = inner(file)
+
+pub refusal(file: Text) -> internal[Service] Text
+  uses @files: Files[owner gives internal[Service]]
+=
+  middle(file)

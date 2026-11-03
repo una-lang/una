@@ -1006,14 +1006,14 @@ impl<'e, 'a> Fx<'e, 'a> {
                     continue;
                 };
                 let op = self.name(op).to_owned();
-                let Some((at, header, listed)) =
-                    super::lock::header_site(self.env, def, entry, &op)
-                else {
+                let Some(site) = super::lock::header_site(self.env, def, entry, &op) else {
                     continue;
                 };
+                let (at, header) = (site.at, site.header);
                 // (a): only an operation that the header lists by name gets the edit.
-                let edit = listed
-                    .then(|| self.lock_edit(at, header, condition, entry))
+                let edit = site
+                    .listed
+                    .then(|| self.lock_edit(site.insert, header, condition, entry))
                     .flatten();
                 // The condition as its string reads, its escapes decoded (#727).
                 let mut lock = self.clause(condition);
@@ -1035,14 +1035,15 @@ impl<'e, 'a> Fx<'e, 'a> {
     }
 
     /// ADR 0092, amendment of 2026-10-15: the edit that writes the condition `condition` of
-    /// the lock `entry` back on the header's operation at `op`: ` where C_lock` after it, or
-    /// `(C_src) and (C_lock)` in place of its condition `header`. `C_lock` is the text of the
+    /// the lock `entry` back on the header's operation: ` where C_lock` at `insert`, the end of
+    /// the operation's `gives` label or, without one, of its name, or `(C_src) and (C_lock)` in
+    /// place of its condition `header`. `C_lock` is the text of the
     /// condition's span as the lock's string reads, escapes decoded (#727). `None` under (b),
     /// a condition on two lines, and (d), every conjunct already written; the verifier applies
     /// (c), and the report (e).
     fn lock_edit(
         &self,
-        op: Span,
+        insert: Span,
         header: Option<&Expr>,
         condition: &Expr,
         entry: &super::lock::Entry<'a>,
@@ -1054,7 +1055,7 @@ impl<'e, 'a> Fx<'e, 'a> {
             .collect::<Option<_>>()?;
         let Some(header) = header else {
             let replacement = super::lock::restoration(locked, &wanted, None)?;
-            return Some((Span::at(op.file, op.end), replacement));
+            return Some((insert, replacement));
         };
         let written = self.text(header.span);
         let have: Vec<String> = super::conditions::conjuncts(header)
