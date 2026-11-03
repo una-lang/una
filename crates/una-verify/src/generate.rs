@@ -1264,7 +1264,8 @@ fn stops(expr: &Expr) -> bool {
         | Expr::With { body, .. }
         | Expr::Attempt { body, .. }
         | Expr::Within { body, .. }
-        | Expr::Tasks { body, .. } => stops(body),
+        | Expr::Tasks { body, .. }
+        | Expr::Quiet { body, .. } => stops(body),
         Expr::If {
             then, otherwise, ..
         } => stops(then) || stops(otherwise),
@@ -2150,6 +2151,8 @@ impl<'p, 'i> Walker<'p, 'i> {
                 }
                 // `start e`: `e` is verified alone, in the context of the `start`, as a
                 // `together` task is; its value is `unit`, and it gives no fact.
+                // `quiet e` is `e` for verification (S-39): only the trace differs.
+                Expr::Quiet { body, .. } => expr = body,
                 Expr::Start { task, span } => {
                     let mut task_leaves = Vec::new();
                     self.walk(task, &ctx, &mut task_leaves);
@@ -2240,13 +2243,25 @@ impl<'p, 'i> Walker<'p, 'i> {
                     written,
                 } => {
                     self.taint(name, value);
-                    match value.as_ref() {
-                        Bound::Rhs(rhs) => self.rhs(name, ty, rhs, *span, &mut ctx),
+                    // A `quiet` expression is its body to the verifier (S-39): the facts of a
+                    // task construct it marks are those of the construct.
+                    let bound = match value.as_ref() {
+                        Bound::Rhs(rhs) => Err(rhs),
+                        Bound::Expr(inner) => {
+                            let mut inner = inner;
+                            while let Expr::Quiet { body, .. } = inner {
+                                inner = body;
+                            }
+                            Ok(inner)
+                        }
+                    };
+                    match bound {
+                        Err(rhs) => self.rhs(name, ty, rhs, *span, &mut ctx),
                         // The tuple of a `together` block (`spec/19 §4`): each task is checked
                         // in the context before the block, with none of its siblings' facts,
                         // and each component of the tuple is the value of one of its task's
                         // paths, so each branch's binding carries its facts after the join.
-                        Bound::Expr(Expr::Together { tasks, .. }) => {
+                        Ok(Expr::Together { tasks, .. }) => {
                             std::rc::Rc::make_mut(&mut ctx.types).insert(name.clone(), ty.clone());
                             let x = own(&ctx, name);
                             let base = ctx.hyps.len();
@@ -2275,7 +2290,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                                 ctx.define(path);
                             }
                         }
-                        Bound::Expr(inner) => {
+                        Ok(inner) => {
                             if let Expr::TogetherFor { .. } = inner
                                 && let Type::Base {
                                     base: Base::Named { args, .. },

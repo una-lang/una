@@ -250,6 +250,9 @@ impl<'a> Checker<'_, 'a, '_> {
     /// (IF4); `on stop` runs once the loop has ended, must not fail (U3029), and may not end
     /// the loop with `stop` or `skip` (U2034).
     fn ever_stmt(&mut self, stmt: &EverStmt) {
+        // S-39: under a raised program counter, a host stop that ends the loop appends no
+        // `stop` event.
+        self.quiet_site(stmt.span);
         if let Some(reason) = self.divergence_refused() {
             self.report.error(
                 Code::U3027,
@@ -797,6 +800,9 @@ impl<'a> Checker<'_, 'a, '_> {
         if let Some(current) = self.current {
             self.findings.task_functions.insert(current);
         }
+        // S-39: under a raised program counter, the `cancelled` events of its tasks are left out
+        // of the trace.
+        self.quiet_site(stmt.span);
         // Started before the block's frame, so that the seed's own `τ_conc` is that of the
         // statement, not of its parts.
         self.timing_start();
@@ -900,6 +906,8 @@ impl<'a> Checker<'_, 'a, '_> {
         if let Some(current) = self.current {
             self.findings.task_functions.insert(current);
         }
+        // S-39: as for `tasks`.
+        self.quiet_site(stmt.span);
         let branches = stmt
             .body
             .iter()
@@ -1061,6 +1069,8 @@ impl<'a> Checker<'_, 'a, '_> {
         if let Some(current) = self.current {
             self.findings.task_functions.insert(current);
         }
+        // S-39: as for `tasks`.
+        self.quiet_site(together.span);
         let (var_ty, label, from) = self.loop_source(&together.source);
         let var_ty = var_ty.with_label(&label);
         self.typed(together.var.span, &var_ty);

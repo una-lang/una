@@ -861,6 +861,10 @@ impl Writer<'_> {
                 "task" => self.expr(task),
                 "span" => self.span(*span),
             ),
+            Expr::Quiet { body, span } => node!(Quiet,
+                "body" => self.expr(body),
+                "span" => self.span(*span),
+            ),
             Expr::TogetherFor {
                 source,
                 var,
