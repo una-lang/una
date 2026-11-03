@@ -118,6 +118,39 @@ pub fn default_bound(max_memory: usize, cap: Option<usize>) -> usize {
     cap.map_or(bound, |cap| bound.min(cap))
 }
 
+/// How many `tasks` statements, or `first of` blocks, a task has run, for the paths of the
+/// tasks they start (`spec/27 §6` rule 5, `§7` rule 5): those of public code and those of quiet
+/// code apart, so that whether quiet code ran a block, which may depend on data above `public`,
+/// never moves the number of a later public one (S-39, `spec/26 §6` rule 4).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BlockCounts {
+    public: usize,
+    quiet: usize,
+}
+
+impl BlockCounts {
+    /// Counts one more block, in quiet code or not, and returns its number there, from 1.
+    pub fn next(&mut self, quiet: bool) -> usize {
+        let count = if quiet {
+            &mut self.quiet
+        } else {
+            &mut self.public
+        };
+        *count = count.saturating_add(1);
+        *count
+    }
+}
+
+/// The part of a task path that names the `count`-th block of kind `kind` (`s` for `tasks`,
+/// `f` for `first of`) of its task: `<kind><count>`, or `q<kind><count>` in quiet code.
+pub fn block_name(kind: char, quiet: bool, count: usize) -> String {
+    if quiet {
+        format!("q{kind}{count}")
+    } else {
+        format!("{kind}{count}")
+    }
+}
+
 /// The one line on stderr of a started task that ran too deep and ended alone (`spec/27 §7`,
 /// ADR 0117 rule 7), as both engines write it: U6003, the task's path, why, and the position
 /// `file:line:column` of the call, when it is known.
@@ -151,6 +184,18 @@ pub fn number(flag: &str, text: &str) -> Result<usize, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quiet_blocks_are_counted_apart_from_public_ones() {
+        // S-39: quiet code never moves the number of a later public block.
+        let mut counts = BlockCounts::default();
+        assert_eq!(counts.next(false), 1);
+        assert_eq!(counts.next(true), 1);
+        assert_eq!(counts.next(true), 2);
+        assert_eq!(counts.next(false), 2);
+        assert_eq!(block_name('s', false, 2), "s2");
+        assert_eq!(block_name('f', true, 2), "qf2");
+    }
 
     #[test]
     fn flags_take_their_ranges_and_defaults() {

@@ -809,9 +809,11 @@ pub(crate) struct State {
     /// while one is open, so the slots they hold stay in place.
     pub(crate) open_events: usize,
     /// The `tasks` statements in progress in this task, innermost last, and how many it ran,
-    /// for the paths of their tasks (`spec/27 §7`).
+    /// for the paths of their tasks (`spec/27 §7`): outside `quiet` code, then inside it, which
+    /// counts apart so that quiet code never moves the paths of later public statements (S-39,
+    /// `spec/26 §6` rule 4).
     pub(crate) scopes: Vec<Arc<crate::started::StartScope>>,
-    pub(crate) tasks_runs: usize,
+    pub(crate) tasks_runs: una_interp::concurrency::BlockCounts,
     /// What the run's tasks share: the trace's sink, the installations counted run-wide, the
     /// started tasks alive.
     pub(crate) shared: Arc<crate::started::RunShared>,
@@ -836,8 +838,8 @@ pub(crate) struct State {
     /// (ADR 0117 rule 4): its event ends `interrupted`, and the task stops.
     pub(crate) interrupted: bool,
     /// How many `first of` blocks the task has run, for the paths of their branches (`spec/27
-    /// §6`).
-    pub(crate) races: usize,
+    /// §6`), outside `quiet` code and inside it, as `tasks_runs`.
+    pub(crate) races: una_interp::concurrency::BlockCounts,
     /// The number of instances of each handler that `with` installed so far: in the run, or
     /// in a task, since it started (`tasks`).
     pub(crate) installs: BTreeMap<String, usize>,
@@ -921,9 +923,10 @@ pub(crate) struct TaskTemplate {
     /// The settings of the run's tasks, and its scheduler.
     concurrency: una_interp::Concurrency,
     pub(crate) sched: Arc<crate::sched::Scheduler>,
-    /// For the branches of a `first of`, the count of the block among those its task ran: their
-    /// paths are `p.f<c>.<i>` (`spec/27 §6`).
-    pub(crate) race: Option<usize>,
+    /// For the branches of a `first of`, whether it stands in `quiet` code, and the count of the
+    /// block among those its task ran there: their paths are `p.f<c>.<i>`, or `p.qf<c>.<i>` in
+    /// quiet code (`spec/27 §6`, S-39).
+    pub(crate) race: Option<(bool, usize)>,
     /// What the run's tasks share, and whether the task writes its events as they happen: a
     /// started task does (ADR 0117 rule 10).
     pub(crate) shared: Arc<crate::started::RunShared>,
@@ -947,7 +950,9 @@ impl TaskTemplate {
         } else {
             self.path.len() + 1
         };
-        own + self.race.map_or(0, |race| 2 + digits(race))
+        own + self
+            .race
+            .map_or(0, |(quiet, race)| 2 + usize::from(quiet) + digits(race))
     }
 
     /// The bytes the template owns: its path, its cancellation entries, its location's file and
@@ -1022,8 +1027,9 @@ impl State {
     /// rule 2).
     pub(crate) fn for_race(&mut self, site: usize) -> TaskTemplate {
         let mut template = self.for_tasks(site);
-        self.races = self.races.saturating_add(1);
-        template.race = Some(self.races);
+        // Quiet code counts its races apart (S-39, `spec/26 §6` rule 4).
+        let quiet = self.quiet > 0;
+        template.race = Some((quiet, self.races.next(quiet)));
         let left = template
             .max_depth
             .saturating_sub(template.depth)
@@ -1052,11 +1058,15 @@ impl State {
     /// Opens a `tasks` statement in this task, at most `bound` tasks at once, or the default
     /// bound: `max(64, M)` for the budget `M` in MiB, within the system's cap (ADR 0117 rule 7).
     pub(crate) fn open_tasks(&mut self, bound: Option<usize>) {
-        self.tasks_runs = self.tasks_runs.saturating_add(1);
+        // Quiet code counts its statements apart, `qs<c>`, so that whether it ran, which may
+        // depend on data above `public`, never moves the paths of later public ones (S-39,
+        // `spec/26 §6` rule 4).
+        let quiet = self.quiet > 0;
+        let name = una_interp::concurrency::block_name('s', quiet, self.tasks_runs.next(quiet));
         let path = if self.path.is_empty() {
-            format!("s{}", self.tasks_runs)
+            name
         } else {
-            format!("{}.s{}", self.path, self.tasks_runs)
+            format!("{}.{name}", self.path)
         };
         let bound = bound.unwrap_or_else(|| {
             una_interp::concurrency::default_bound(self.max_memory, self.shared.cap)
@@ -2037,7 +2047,7 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
         streaming: true,
         open_events: 0,
         scopes: Vec::new(),
-        tasks_runs: 0,
+        tasks_runs: una_interp::concurrency::BlockCounts::default(),
         shared,
         failed_write: None,
         max_depth: options.max_depth,
@@ -2055,7 +2065,7 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
         ops: Arc::new(meta.ops),
         host_failed: false,
         interrupted: false,
-        races: 0,
+        races: una_interp::concurrency::BlockCounts::default(),
         installs: BTreeMap::new(),
         stack_base: 0,
         stack_budget: stack.saturating_sub(STACK_RESERVE),
@@ -2801,7 +2811,7 @@ pub(crate) fn enter_task(template: &TaskTemplate, path: String, entry: Cancel) {
         streaming: template.streaming,
         open_events: 0,
         scopes: Vec::new(),
-        tasks_runs: 0,
+        tasks_runs: una_interp::concurrency::BlockCounts::default(),
         shared: Arc::clone(&template.shared),
         failed_write: None,
         max_depth: template.max_depth,
@@ -2815,7 +2825,7 @@ pub(crate) fn enter_task(template: &TaskTemplate, path: String, entry: Cancel) {
         ops: Arc::clone(&template.ops),
         host_failed: false,
         interrupted: false,
-        races: 0,
+        races: una_interp::concurrency::BlockCounts::default(),
         installs: BTreeMap::new(),
         stack_base: 0,
         stack_budget: template.stack.saturating_sub(STACK_RESERVE),
@@ -2876,7 +2886,7 @@ pub(crate) fn install_test_state_as(path: String, tracing: bool, file: String) {
         streaming: false,
         open_events: 0,
         scopes: Vec::new(),
-        tasks_runs: 0,
+        tasks_runs: una_interp::concurrency::BlockCounts::default(),
         shared: crate::started::RunShared::new(),
         failed_write: None,
         max_depth: options.max_depth,
@@ -2905,7 +2915,7 @@ pub(crate) fn install_test_state_as(path: String, tracing: bool, file: String) {
         }]),
         host_failed: false,
         interrupted: false,
-        races: 0,
+        races: una_interp::concurrency::BlockCounts::default(),
         installs: BTreeMap::new(),
         stack_base: 0,
         stack_budget: usize::MAX,

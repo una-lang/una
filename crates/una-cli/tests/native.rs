@@ -632,12 +632,14 @@ fn task_differences(stdout: &str, interpreted: &Value, native: &Value) -> Vec<St
     differences
 }
 
-/// Whether a trace has events of started tasks, whose paths have a part `s<c>` (`spec/27 §7`).
+/// Whether a trace has events of started tasks, whose paths have a part `s<c>`, or `qs<c>` in
+/// quiet code (`spec/27 §7`).
 fn has_started(trace: &Value) -> bool {
     trace.as_array().is_some_and(|events| {
         events.iter().any(|event| {
             event["task"].as_str().is_some_and(|path| {
                 path.split('.').any(|part| {
+                    let part = part.strip_prefix('q').unwrap_or(part);
                     part.strip_prefix('s')
                         .is_some_and(|count| count.parse::<usize>().is_ok())
                 })
@@ -5708,6 +5710,19 @@ pub main() -> Unit
 /// The trace of `una --json run` and of the executable, and the output of both, for the
 /// program `source` with `SECRET` replaced by `secret`, run with `args`.
 fn secret_run(name: &str, source: &str, secret: i64, args: &[&str]) -> (Value, Value, Value) {
+    let (output, run, native_output, native) = secret_runs(name, source, secret, args);
+    assert_eq!(native_output, output, "{name} {secret}");
+    (output, run, native)
+}
+
+/// As [`secret_run`], the executable's output apart: that of `una --json run`, its trace,
+/// and the executable's output and trace.
+fn secret_runs(
+    name: &str,
+    source: &str,
+    secret: i64,
+    args: &[&str],
+) -> (Value, Value, Value, Value) {
     let package = format!("{name}{secret}");
     let program = source.replace("SECRET", &secret.to_string());
     let dir = ita_package(&package, &ever_run("leak"), &[("src/leak.una", &program)]);
@@ -5746,12 +5761,12 @@ fn secret_run(name: &str, source: &str, secret: i64, args: &[&str]) -> (Value, V
         .lines()
         .map(Value::from)
         .collect();
-    assert_eq!(Value::from(lines), document["output"], "{name} {secret}");
     let native_trace: Value = serde_json::from_slice(&std::fs::read(&trace).unwrap()).unwrap();
     let _ = std::fs::remove_dir_all(&dir);
     (
         document["output"].clone(),
         document["trace"].clone(),
+        Value::from(lines),
         native_trace,
     )
 }
@@ -6218,5 +6233,230 @@ fn s39_a_budget_ended_secret_loop_then_a_public_loop_show_the_same_output_and_tr
             (vec!["stop".to_owned(), "ok".to_owned()], true),
             "{secret}: {run}"
         );
+    }
+}
+
+/// S-39 round 3 (#1507), review H1 (`path1.una`, extended): quiet `tasks` statements under a
+/// `secret` branch, in the root task and in a task started at a `public` program counter,
+/// then a public `tasks` statement in each, whose task prints.
+const SECRET_TASKS_PATHS: &str = r#"module leak
+
+noop() -> Unit = unit
+
+worker(n: Int) -> Unit
+  uses @console: Console[print]
+=
+  @console.print("w {n}")
+
+inner(s: secret Int) -> Unit
+  uses @console: Console[print]
+=
+  for i in 0..<3
+    if s > i
+      tasks
+        start noop()
+  tasks
+    start worker(2)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let s: secret Int = SECRET
+  for i in 0..<3
+    if s > i
+      tasks
+        start noop()
+  tasks
+    start worker(1)
+  tasks
+    start inner(s)
+"#;
+
+/// The event of `print("w <n>")` with the path `task` and the number `seq`.
+fn worker_print(seq: u64, task: &str, n: u64) -> Value {
+    serde_json::json!({
+        "seq": seq,
+        "task": task,
+        "instance": "host:Console",
+        "capability": "Console",
+        "op": "print",
+        "args": {"line": format!("\"w {n}\"")},
+        "outcome": {"kind": "ok", "value": "unit"}
+    })
+}
+
+#[test]
+fn s39_quiet_tasks_statements_do_not_move_the_paths_of_later_public_ones() {
+    // S-39 round 3 (#1507, review H1): quiet code counts its `tasks` statements apart, so the
+    // `task` path of a later public event, `s<c>.<k>`, does not depend on how many statements
+    // quiet code ran, in the root task or in a started one. Whole events, the path included,
+    // are the same for every secret, in both engines.
+    let expected = Value::from(vec![
+        worker_print(1, "s1.1", 1),
+        worker_print(2, "s2.1.s1.1", 2),
+    ]);
+    for secret in [0, 1, 2, 3, 7] {
+        let (output, run, native) = secret_run("s39tpaths", SECRET_TASKS_PATHS, secret, &[]);
+        assert_eq!(output, serde_json::json!(["w 1", "w 2"]), "{secret}");
+        assert_eq!(run, expected, "{secret}");
+        assert_eq!(native, expected, "{secret}");
+    }
+}
+
+/// S-39 round 3 (#1507), review H1 (`path3.una` verbatim): a `first of` in a callee called
+/// under a `secret` branch, then a public `first of` whose branches print.
+const SECRET_RACE_PATHS: &str = r#"module leak
+
+double(n: Int) -> Int = n * 2
+
+noop(n: Int) -> Unit = unit
+
+race(i: Int) -> Int
+=
+  first of
+    double(i)
+    double(i)
+
+show(n: Int) -> Int
+  uses @console: Console[print]
+=
+  @console.print("w {n}")
+  n
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let s: secret Int = SECRET
+  for i in 0..<3
+    if s > i
+      let v = race(i)
+      noop(v)
+  let r = first of
+    show(1)
+    show(1)
+  noop(r)
+"#;
+
+#[test]
+fn s39_quiet_first_of_blocks_do_not_move_the_paths_of_later_public_ones() {
+    // S-39 round 3 (#1507, review H1): quiet code counts its `first of` blocks apart, so the
+    // branches of the public race are `f1.<i>` for every secret. The interpreter's trace is
+    // the same whole for every secret. Native code runs the losing branch on to its output
+    // (review M1, #1516, an engine difference at a `public` program counter that does not
+    // depend on the secret), and the order of its branches is the schedule's, so its
+    // events are compared by path: each is a branch of the first race, `f1.1` or `f1.2`.
+    for secret in [0, 1, 2, 3, 6] {
+        let (output, run, _, native) = secret_runs("s39fpaths", SECRET_RACE_PATHS, secret, &[]);
+        assert_eq!(output, serde_json::json!(["w 1"]), "{secret}");
+        assert_eq!(
+            run,
+            Value::from(vec![worker_print(1, "f1.1", 1)]),
+            "{secret}"
+        );
+        let events = native.as_array().unwrap();
+        assert!(!events.is_empty(), "{secret}: {native}");
+        for event in events {
+            let task = event["task"].as_str().unwrap_or_default();
+            assert!(
+                task == "f1.1" || task == "f1.2",
+                "{secret}: a public branch at {task}: {native}"
+            );
+        }
+        assert!(kinds_in_order(&native).1, "{secret}: {native}");
+    }
+}
+
+/// S-39 round 3 (#1507), review H1 (`exits.una` verbatim): a quiet loop that `skip` and `stop`
+/// leave across quiet `tasks` statements, a `within` that cuts a quiet `tasks` statement, and a
+/// quiet failing block, then the same constructs in public code.
+const SECRET_EXIT_PATHS: &str = r#"module leak
+
+import std.time (millisecond)
+
+pub kind Bad = Boom | Other
+
+noop() -> Unit = unit
+
+spin() -> Unit
+  diverges
+=
+  let edit k = 0
+  for ever
+    k = k + 1
+
+boom() -> Unit
+  fails Bad
+=
+  fail Boom
+
+run_block() -> Unit
+  fails Bad
+=
+  tasks
+    start noop()
+    boom()
+      if error pass
+
+blocked() -> Unit
+  diverges
+=
+  tasks
+    start spin()
+    spin()
+
+rb() -> Unit
+=
+  let q = attempt run_block()
+  noop()
+
+loops(s: secret Int) -> Unit
+  diverges
+=
+  for j in 0..<4
+    if s > j
+      for m in 0..<3
+        tasks
+          start noop()
+          if m == 1
+            skip
+          if m == 2
+            stop
+      let r = attempt blocked() within 5 * millisecond
+      rb()
+
+pub main() -> Unit
+  uses @console: Console[print]
+  diverges
+=
+  let s: secret Int = SECRET
+  loops(s)
+  let p = attempt run_block()
+  let r = attempt blocked() within 5 * millisecond
+  spin()
+  @console.print("done")
+"#;
+
+#[test]
+fn s39_quiet_blocks_left_by_exits_do_not_move_the_paths_of_later_public_ones() {
+    // S-39 round 3 (#1507, review H1): whatever way quiet `tasks` statements end, by `skip`,
+    // `stop`, a `within`'s cut or a failure, the public statements after them are `s1` and
+    // `s2`: the whole trace, paths included, is the same for every secret, in both engines.
+    let mut first: Option<Value> = None;
+    for secret in [0, 1, 2, 4] {
+        let (output, run, native) = secret_run(
+            "s39xpaths",
+            SECRET_EXIT_PATHS,
+            secret,
+            &["--stop-after-iterations", "3"],
+        );
+        assert_eq!(output, serde_json::json!(["done"]), "{secret}");
+        assert_eq!(run, native, "{secret}");
+        assert_eq!(run[0]["task"], "s1.1", "{secret}: {run}");
+        assert_eq!(run[0]["outcome"]["kind"], "cancelled", "{secret}: {run}");
+        assert!(kinds_in_order(&run).1, "{secret}: {run}");
+        match &first {
+            None => first = Some(run),
+            Some(first) => assert_eq!(&run, first, "{secret}"),
+        }
     }
 }
