@@ -121,3 +121,9 @@ A capability says which operations, not on whose behalf they answer. Una already
 - H5 in the status page's list of host premises and in the build report's Assumed zone.
 - Assigned on acceptance: U3022. It joins `spec/13 §4`'s registry with the implementation (#566).
 - B07: #560.
+
+## Note (2026-11-03): `una fix` restores a locked label at tier 0
+
+- Status: Accepted (2026-11-03), by the project's decision. This note records behavior already implemented (#1396, PR #1464); it changes no rule, and the accepted text above is unchanged.
+
+When a header locked in `una.toml` (Consequences, "Locked labels") reads a locked operation below the lock's `gives` label, the checker reports U3023 at tier 0. Its first repair, when the header writes the operation in the binding's brackets, raises the header's label on that operation to the join of the header's label and the lock's, and `una fix` applies it as a tier-0 candidate. The edit adds no binding and no operation and never writes `una.toml`, so it widens no authority; the body is then checked at the higher label. ADR 0084's note of 2026-11-03 states the rule for `una fix`, and `spec/13 §5` states it as normative text.
