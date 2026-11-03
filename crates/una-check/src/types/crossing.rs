@@ -1094,6 +1094,7 @@ pub(crate) fn releases(env: &Env<'_>, findings: &Findings, report: &mut Report<'
                 continue;
             };
             for &caller in callers.get(node).map_or(&[][..], Vec::as_slice) {
+                una_core::label_counters::pass_step();
                 if let Some(slot) = witness.get_mut(caller)
                     && slot.is_none()
                 {
@@ -1111,9 +1112,10 @@ pub(crate) fn releases(env: &Env<'_>, findings: &Findings, report: &mut Report<'
         Vec::new()
     };
     let first = |witness: &[Option<Span>], targets: &[Node]| {
-        targets
-            .iter()
-            .find_map(|&target| witness.get(index(target)).copied().flatten())
+        targets.iter().find_map(|&target| {
+            una_core::label_counters::pass_step();
+            witness.get(index(target)).copied().flatten()
+        })
     };
     for crossing in crossings {
         let key = env
@@ -1255,6 +1257,7 @@ fn installations(
             continue;
         };
         for &to in out.get(id).map_or(&[][..], Vec::as_slice) {
+            una_core::label_counters::pass_step();
             if let Some(entry) = reached.get_mut(to * boundaries + boundary)
                 && entry.is_none()
             {

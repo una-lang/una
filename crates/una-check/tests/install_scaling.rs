@@ -1,13 +1,20 @@
-//! Scaling of the charge of a handler at its installation (ADR 0093 rule 15): the summary of
-//! what each binding leads to is closed by a worklist in which each pair of a binding and a
-//! boundary follows each edge once, so a chain of `n` functions that grant a binding on by name
-//! down to one call into a boundary is checked in linear time (#669). Timed, so this file holds
-//! one test.
+//! Scaling of the charge of a handler at its installation (ADR 0093 rule 15): the summary of what
+//! each binding leads to is closed by a worklist in which each pair of a binding and a boundary
+//! follows each edge once, so a chain of `n` functions that grant a binding on by name down to one
+//! call into a boundary is checked in linear time (#669). Counted first (issue #1197): the edges
+//! the summary's worklist follows and the steps of the reverse search, which the process-wide
+//! counter `pass_steps` counts, must grow linearly; timed as a fallback, by the shared helper of
+//! `una-cli/tests/common/timing.rs`, over a span of 8 times the size, which separates linear (about
+//! 8 to 12 times) from quadratic (about 64 times) on a shared machine. This file holds one test, so
+//! no other test of its binary moves the counter while it reads it.
 
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
 
 use std::time::{Duration, Instant};
+
+#[path = "../../una-cli/tests/common/timing.rs"]
+mod timing;
 
 use una_check::{ModuleInput, PackageInput, check_names, check_types};
 use una_project::parse_manifest;
@@ -41,8 +48,9 @@ fn app(n: usize) -> String {
     text
 }
 
-/// The codes `check_types` reports for the package of size `n`, and the time it took.
-fn checked(n: usize) -> (Vec<String>, Duration) {
+/// The codes `check_types` reports for the package of size `n`, the pass steps it took, and its
+/// time.
+fn checked(n: usize) -> (Vec<String>, usize, Duration) {
     let texts = [
         ("src/caps.una", CAPS.to_owned()),
         ("src/vendor.una", VENDOR.to_owned()),
@@ -86,43 +94,53 @@ fn checked(n: usize) -> (Vec<String>, Duration) {
         locks: &[],
     };
     assert!(check_names(&input).is_empty());
+    let steps = una_core::label_counters::pass_steps();
     let started = Instant::now();
     let diagnostics = check_types(&input).diagnostics;
     let took = started.elapsed();
+    let steps = una_core::label_counters::pass_steps() - steps;
     (
         diagnostics
             .iter()
             .map(|d| d.code.as_str().to_owned())
             .collect(),
+        steps,
         took,
     )
 }
 
-/// A doubling of the chain may not take more than 2.5 times as long, and the installation at its
-/// top is charged once: one U3021.
+/// A doubling of the chain at most doubles the pass steps, with a margin of 10 % for the steps that
+/// do not grow, and 8 times the size takes less than 24 times as long; the installation at its top
+/// is charged once: one U3021.
 #[test]
 fn installation_charge_scales_linearly() {
     let sizes = [250, 500, 1_000, 2_000];
-    let times: Vec<Duration> = sizes
+    let codes_of = |_n: usize, codes: &[String]| {
+        assert_eq!(codes, vec!["U3021".to_owned()]);
+    };
+    let counts: Vec<usize> = sizes
         .iter()
         .map(|&n| {
-            (0..3)
-                .map(|_| {
-                    let (codes, took) = checked(n);
-                    assert_eq!(codes, vec!["U3021".to_owned()]);
-                    took
-                })
-                .min()
-                .unwrap()
+            let (codes, steps, _) = checked(n);
+            codes_of(n, &codes);
+            steps
         })
         .collect();
-    for (pair, sizes_pair) in times.windows(2).zip(sizes.windows(2)) {
-        let (small, large) = (pair[0], pair[1]);
-        assert!(
-            large.as_secs_f64() <= 2.5 * small.as_secs_f64() + 0.02,
-            "{} functions took {large:?}, {} took {small:?}",
-            sizes_pair[1],
-            sizes_pair[0]
-        );
-    }
+    timing::assert_count_growth("installation charge", &sizes, &counts, 1.1);
+    let span = [sizes[0], sizes[3]];
+    timing::assert_growth(
+        "installation charge",
+        &span,
+        0.0,
+        timing::FLOOR,
+        24.0,
+        |n| {
+            let (codes, steps, took) = checked(n);
+            codes_of(n, &codes);
+            // The count is deterministic: the same in every run.
+            let at = sizes.iter().position(|&size| size == n).unwrap();
+            assert_eq!(steps, counts[at], "{n}: the steps of a second run");
+            took.as_secs_f64()
+        },
+    );
 }
