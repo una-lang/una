@@ -1947,6 +1947,73 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "times turns on the real clock, which Miri simulates")]
+    fn a_turn_end_raised_before_the_task_installs_its_state_still_yields() {
+        // #1533: a worker sets a turn's end when it takes the job, and the task installs its
+        // state after. Installing read the attention word anew, so when the thread was held up
+        // in between, as under load, past the turn's end with another task waiting, the
+        // slicer's one raise for that end was lost, and the task kept its worker: a started
+        // task ran on for an hour while `main`, queued behind it on the same worker, never ran
+        // to cancel it.
+        //
+        // The worker first runs a task that passes check points, so its seen value is the
+        // word's, as on a worker that ran `main` and earlier tasks; a worker's first task
+        // starts from a value no word holds and would pass on that alone. The next task is held
+        // up before its install until the slicer has raised the word for its turn, with the
+        // other task waiting: waiting on the raise itself, not on a sleep, so a slicer held off
+        // by load cannot make the test pass without the fix. It must then give its worker to
+        // the waiting task at its first check points.
+        use std::time::{Duration, Instant};
+        let sched = Scheduler::new(settings(1, 1, 1));
+        let (last, warm_seen) = std::sync::mpsc::channel();
+        let warm = start(&sched, 1, move || {
+            crate::runtime::install_test_state_as("0".to_owned(), false, String::new());
+            for _ in 0..4 {
+                std::hint::black_box(crate::runtime::poll());
+            }
+            drop(crate::runtime::leave_task());
+            // What its check points saw: no task waited, so the slicer raised nothing since.
+            last.send(crate::runtime::attention_word().load()).unwrap();
+        });
+        assert_eq!(warm.recv(), Some(()));
+        let before = warm_seen.recv().unwrap();
+        let other_ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (queued, wait_queued) = std::sync::mpsc::channel::<()>();
+        let (heard, was_heard) = std::sync::mpsc::channel();
+        let seen = Arc::clone(&other_ran);
+        let holding = start(&sched, 1, move || {
+            let word = crate::runtime::attention_word();
+            wait_queued.recv().unwrap();
+            // Held up past the turn's end until the slicer raised the word: the other task
+            // waits, so the raise is this turn's, and the slicer makes no other for it.
+            let bound = Instant::now() + Duration::from_secs(10);
+            while word.load() == before && Instant::now() < bound {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            let raised = word.load() != before;
+            crate::runtime::install_test_state_as("1".to_owned(), false, String::new());
+            let bound = Instant::now() + Duration::from_secs(5);
+            while !seen.load(Ordering::SeqCst) && Instant::now() < bound {
+                std::hint::black_box(crate::runtime::poll());
+            }
+            let ran = seen.load(Ordering::SeqCst);
+            drop(crate::runtime::leave_task());
+            heard.send((raised, ran)).unwrap();
+        });
+        let flag = Arc::clone(&other_ran);
+        let waiting = start(&sched, 2, move || flag.store(true, Ordering::SeqCst));
+        queued.send(()).unwrap();
+        assert_eq!(holding.recv(), Some(()));
+        assert_eq!(waiting.recv(), Some(()));
+        let (raised, ran) = was_heard.recv().unwrap();
+        assert!(raised, "the slicer never raised the word for the turn");
+        assert!(
+            ran,
+            "the task kept its worker past its turn's end while another waited"
+        );
+    }
+
+    #[test]
     fn outside_a_task_a_blocking_operation_runs_inline() {
         assert!(!in_task());
         let here = std::thread::current().id();
