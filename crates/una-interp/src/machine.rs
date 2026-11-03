@@ -763,8 +763,9 @@ pub struct Limits<'a> {
     pub held: &'a (dyn Fn() -> usize + Sync),
     /// The limits and deadline of each HTTP request (`spec/24 §4`).
     pub http: una_http::client::Settings,
-    /// `--stop-after-iterations`: the run's own host stop request, once this many iterations
-    /// of `for ever` loops, the driver's included, have started (ADR 0116 rule 19).
+    /// `--stop-after-iterations`: the budget of each loop instance, a `for ever` entered or the
+    /// driver's loop, which stops at the start of its iteration `n + 1` (ADR 0116 rule 19,
+    /// `spec/26 §6`, #1472).
     pub stop_after: Option<u64>,
     /// `--task-depth`: the calls a branch of `first of` may make below its block, within
     /// `max_depth` (`spec/27 §3`, ADR 0117 rule 2).
@@ -1104,9 +1105,8 @@ impl<'p, 'w> Machine<'p, 'w> {
     /// Runs the host-driven step (ADR 0116 rule 3): `init` once, then `step` once per tick of
     /// `drive.ticks` milliseconds on the run's clock (real or virtual), delivering the latest due tick with the
     /// count of the due ticks skipped before it, then `on_stop` when one is declared. The loop
-    /// stops at the start of an iteration once `drive.stop_after` iterations have started (the
-    /// stop of `--stop-after-iterations`, rule 19); until host stops land, that is its only
-    /// stop. A failure of `init` ends the run as one of `main` does; `step` and `on_stop`
+    /// stops at the start of an iteration once `drive.stop_after` of its own iterations have
+    /// started (the budget of `--stop-after-iterations`, rule 19), or after a host stop. A failure of `init` ends the run as one of `main` does; `step` and `on_stop`
     /// cannot fail (U3029).
     pub(crate) fn drive(
         &mut self,
@@ -1121,8 +1121,10 @@ impl<'p, 'w> Machine<'p, 'w> {
         let origin = self.run.clock.now();
         let period = drive.ticks.max(1);
         let mut next: u64 = 0;
+        // The iterations the driver's loop has started: its own budget (rule 19, #1472).
+        let mut started: u64 = 0;
         let ended = loop {
-            if self.ever_start() {
+            if self.ever_start(&mut started) {
                 self.emit(Event {
                     seq: 0,
                     task: String::new(),
@@ -2466,8 +2468,10 @@ impl<'p, 'w> Machine<'p, 'w> {
                     None => None,
                 };
                 let outer = self.deadline.take();
+                // The iterations this instance of the loop has started (rule 19, #1472).
+                let mut started: u64 = 0;
                 let ended = loop {
-                    if self.ever_start() {
+                    if self.ever_start(&mut started) {
                         self.stop_event();
                         break Ok(());
                     }
@@ -2572,24 +2576,30 @@ impl<'p, 'w> Machine<'p, 'w> {
     }
 
     /// Whether the loop of the host, or a `for ever`, stops at the iteration that starts now
-    /// (ADR 0116 rules 13, 14 and 19): a host stop request has reached the run, which is
-    /// sticky; or `--stop-after-iterations` iterations have started, which makes the run's own
-    /// request now. Otherwise the iteration counts as started.
-    pub(crate) fn ever_start(&mut self) -> bool {
+    /// (ADR 0116 rules 13, 14 and 19, `spec/26 §6`): a host stop request has reached the run,
+    /// which is sticky; or this loop instance, which has started `started` iterations, has
+    /// used up the budget of `--stop-after-iterations` or of a test's `stop after N`.
+    /// Otherwise the iteration counts as started, on `started`.
+    ///
+    /// The budget is per loop instance (#1472, S-36): each entry into a `for ever`, and the
+    /// driver's loop, counts its own iterations from 0, and the end of one instance's budget
+    /// stops that instance only. It is not a host stop request: it interrupts no operation,
+    /// stays with no later loop and starts no grace period. A count shared across loops, or a
+    /// sticky stop it made, would let the iterations of a loop under a secret branch move where
+    /// a later public loop stops.
+    pub(crate) fn ever_start(&mut self, started: &mut u64) -> bool {
         if self.stop.stopped() {
             return true;
         }
-        let iterations = self.run.iterations.get();
         if self
             .run
             .stop_after
             .get()
-            .is_some_and(|limit| iterations >= limit)
+            .is_some_and(|limit| *started >= limit)
         {
-            self.stop.request_local();
             return true;
         }
-        self.run.iterations.set(iterations.saturating_add(1));
+        *started = started.saturating_add(1);
         false
     }
 

@@ -4389,7 +4389,7 @@ fn ever_run(name: &str) -> String {
     format!("\nrun\n  entry {name}\n  grants\n    console\n")
 }
 
-/// Two `for ever` loops in a row: a stop that reaches the first stays for the second.
+/// Two `for ever` loops in a row, each with its own budget of `--stop-after-iterations`.
 const TWICE: &str = "module twice
 
 pub main() -> Unit
@@ -4518,10 +4518,11 @@ fn engines(dir: &Path, name: &str, args: &[&str]) -> [Command; 2] {
 }
 
 #[test]
-fn a_sticky_stop_after_iterations_runs_alike_in_both_engines() {
-    // ADR 0116 rules 14 and 19, `spec/26 §6`: the run's own stop arrives once two iterations
-    // have started, ends the first loop at the third iteration start, and stays for the second
-    // loop, which stops at its first; same output and trace in both engines.
+fn stop_after_iterations_is_a_budget_of_each_loop_instance_in_both_engines() {
+    // ADR 0116 rule 19, `spec/26 §6` rule 1, #1472: each `for ever` counts its own iterations
+    // from 0, so the first loop stops at its third iteration start and the second, entered
+    // after it, runs its own two iterations; the budget is no sticky host stop. Same output
+    // and trace in both engines.
     runtime();
     let dir = ita_package("twice", &ever_run("twice"), &[("src/twice.una", TWICE)]);
     let run = una(&dir, &["--json", "run", "--stop-after-iterations", "2"]);
@@ -4538,11 +4539,13 @@ fn a_sticky_stop_after_iterations_runs_alike_in_both_engines() {
             "first 0",
             "first 1",
             "first stopped at 2",
-            "second stopped at 2"
+            "second 2",
+            "second 3",
+            "second stopped at 4"
         ])
     );
     assert_eq!(document["trace"][2]["outcome"]["kind"], "stop");
-    assert_eq!(document["trace"][4]["outcome"]["kind"], "stop");
+    assert_eq!(document["trace"][6]["outcome"]["kind"], "stop");
     let built = una(&dir, &["build"]);
     assert_eq!(built.status.code(), Some(0));
     let trace = dir.join("trace.json");
@@ -4560,11 +4563,80 @@ fn a_sticky_stop_after_iterations_runs_alike_in_both_engines() {
     );
     assert_eq!(
         String::from_utf8_lossy(&native.stdout),
-        "first 0\nfirst 1\nfirst stopped at 2\nsecond stopped at 2\n"
+        "first 0\nfirst 1\nfirst stopped at 2\nsecond 2\nsecond 3\nsecond stopped at 4\n"
     );
     let native_trace: Value = serde_json::from_slice(&std::fs::read(&trace).unwrap()).unwrap();
     assert_eq!(native_trace, document["trace"]);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The reproducer of #1472 (S-36): a `for ever` under a `secret` branch runs `s + 1`
+/// iterations, then a public loop counts and prints its own; `SECRET` stands for `s`.
+const SECRET_SPIN: &str = "module leak
+
+spin(s: secret Int) -> Unit
+  diverges
+=
+  if s > 0
+    let edit k: secret Int = 0
+    for ever
+      stop when k >= s
+      k = k + 1
+
+pub main() -> Unit
+  uses @console: Console[print]
+  diverges
+=
+  let s: secret Int = SECRET
+  spin(s)
+  let edit n = 0
+  for ever
+    @console.print(\"tick {n}\")
+    n = n + 1
+  on stop
+    @console.print(\"public loop ran {n} iterations\")
+";
+
+#[test]
+fn a_loop_under_a_secret_branch_does_not_move_where_a_public_loop_stops() {
+    // #1472 (S-36), ADR 0116 rule 19 and IF2: with a budget per loop instance, the public
+    // loop runs its 8 iterations whatever the secret, in `una run` and in the executable: 0
+    // and 2 and 5 within the budget, 12 past it, which stops the secret loop by its own
+    // budget and no later loop. A run-wide count printed `8 - (s + 1)` iterations.
+    runtime();
+    let mut expected: Vec<String> = (0..8).map(|n| format!("tick {n}")).collect();
+    expected.push("public loop ran 8 iterations".to_owned());
+    let expected = format!("{}\n", expected.join("\n"));
+    for secret in ["0", "2", "5", "12"] {
+        let name = format!("leak{secret}");
+        let program = SECRET_SPIN.replace("SECRET", secret);
+        let dir = ita_package(
+            &name,
+            "\nrun\n  entry leak\n  grants\n    console\n",
+            &[("src/leak.una", &program)],
+        );
+        let [mut run, native] = engines(&dir, &name, &["--stop-after-iterations", "8"]);
+        let interpreted = run.output().unwrap();
+        assert_eq!(
+            interpreted.status.code(),
+            Some(0),
+            "{secret}: {interpreted:?}"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&interpreted.stdout),
+            expected,
+            "{secret}"
+        );
+        let mut native = native;
+        let compiled = native.output().unwrap();
+        assert_eq!(compiled.status.code(), Some(0), "{secret}: {compiled:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&compiled.stdout),
+            expected,
+            "{secret}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 #[test]

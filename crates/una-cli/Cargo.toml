@@ -57,6 +57,9 @@ pretty_assertions.workspace = true
 # constant-hash mode and a missing random source, for in-process tests only. A dev-dependency
 # never reaches a shipped `una`.
 una-hash = { workspace = true, features = ["test-hooks"] }
+# The label counters of ADR 0077, for the scaling test of label inference
+# (`tests/gives_scaling.rs`). The counts never reach any output.
+una-core = { workspace = true, features = ["counters"] }
 
 # The workspace lints, written out because a crate cannot both inherit them and declare a
 # cfg: `una_asan` is set only by scripts/sanitize.sh for its AddressSanitizer builds, and by its

@@ -1,0 +1,17 @@
+-- test: inferred labels propagate along a chain of inferred functions, so the innermost reads the answer at the outermost caller's label and returning it as `public` is U4001 there (ADR 0094 rule 3)
+-- spec: spec/05 §9
+-- expect: error U4001 at src/m.una:10:29
+module m
+
+pub capability Files
+  op owner(file: Text) -> Text
+  op role(file: Text) -> Text
+
+inner(file: Text) -> Text = @files.owner(file)
+
+middle(file: Text) -> Text = inner(file)
+
+pub refusal(file: Text) -> internal[Service] Text
+  uses @files: Files[owner gives internal[Service]]
+=
+  middle(file)

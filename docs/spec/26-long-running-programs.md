@@ -146,17 +146,17 @@ A program that runs until it is told to stop, such as a game loop, a server or a
 
 5. **Verification** (ADR 0116 V3, V4). After a `for ever`, the bindings it updates are fresh at their declared types, and `on stop` is verified with them fresh. A function that says `diverges` keeps partial correctness: its `ensures` holds whenever it returns.
 6. **Core** (ADR 0116 rule 20). The loop is a Core `loop` whose source is `ever`, with its `on stop` block, which binds the state afresh and returns it as the loop's value.
-7. **Host stops.** A `for ever` without `stop` ends by a failure of its body, or at the first iteration start after a host stop request (§6), a test's `stop after` line included (§8).
+7. **Host stops.** A `for ever` without `stop` ends by a failure of its body, at the first iteration start after a host stop request (§6), or at the iteration start where its own budget of `--stop-after-iterations` or of a test's `stop after` line ends (§6 rule 1, §8 rule 1).
 
 ## 6. Host stops
 
 1. **Requests** (ADR 0116 rule 14). These are host stop requests of a run of `una run` or of an executable:
    - SIGINT or SIGTERM, delivered to the process;
-   - the end of `--deadline <seconds>`, counted from the start of the run, and local to the run;
-   - in a test, its `stop after N` line (§8 rule 1);
-   - the run's own stop, once `--stop-after-iterations <n>` iterations of `for ever` loops, the driver's included, have started, counted in the order the run starts them (ADR 0116 rule 19). It arrives at the start of iteration `n + 1`, and it is local to the run.
+   - the end of `--deadline <seconds>`, counted from the start of the run, and local to the run.
 
-   A request is **sticky**: once one has arrived, it stays for the rest of the run. Each of the run's own requests, the deadline's and the stop of `--stop-after-iterations`, counts once, however many tasks reach it together.
+   A request is **sticky**: once one has arrived, it stays for the rest of the run. The run's own request, the deadline's, counts once, however many tasks reach it together.
+
+   **The iteration budget** (ADR 0116 rule 19, #1472). `--stop-after-iterations <n>`, and a test's `stop after N` line (§8 rule 1), are not host stop requests. They give **each loop instance** a budget of `n` iterations: each entry into a `for ever`, and the driver's loop (§2), counts its own iteration starts from 0, and that instance ends at the start of its iteration `n + 1`, as at a stop point after a request (rule 4 item 2): it appends the `stop` event, and then its `on stop` runs. Nothing else changes: the end of one instance's budget interrupts no operation, does not reach any other loop, a loop entered later included, and starts no grace period (rule 6). How many iterations one loop ran, under any branch, therefore never changes where another loop stops. A count shared across loops would: a `for ever` under a `secret` branch would move where a later `public` loop stops, and the output would reveal the secret.
 2. **Flags** (`spec/13 §5`, `spec/16 §3`). `--deadline` takes whole seconds from 1 to 31,536,000; `--stop-grace` takes whole seconds from 1 to 86,400, and is 10 when not given; `--stop-after-iterations` takes an integer from 1 to 2^63 − 1. Any other value, or one that is not a number, is a usage error, exit code 2.
 3. **Signal handlers** (ADR 0116 rule 18). A run installs handlers of SIGINT and SIGTERM only when it runs a driver or its `main` says `diverges`, the only ways a run reaches a `for ever` (§5 rule 2). Any other run keeps their default actions, so a signal ends it as before. A handler only records the request and wakes the waiting operations.
 4. **After a request** (ADR 0116 rules 12 to 14):
@@ -172,7 +172,7 @@ A program that runs until it is told to stop, such as a game loop, a server or a
    - A run that ends before the hard stop ends normally: exit code 0 when `main`, or the driver, returns.
    - A run that the hard stop cancels ends with **U6007**, "the host stopped the run before it finished", exit code 1, at the check point, with the trace of an abort (`spec/11 §7`). The message says why: "the host stopped the run before it finished, after the grace period of 10 seconds", or "..., at a second host stop request".
 7. **Out of reach** (ADR 0116 rule 17). A third request, or the end of a second grace period after the hard stop, restores the default actions of SIGINT and SIGTERM and ends the process with the signal SIGTERM, so a run stuck in an operation that is not interruptible still ends. A run that has ended by then, its output and trace written or being written, is never ended this way. SIGKILL, the end of the machine and the kernel's out-of-memory killer end a process without any check point, and no program can clean up after them.
-8. **Both engines.** `una run` and executables follow this section alike; for a fixed stop schedule, such as `--stop-after-iterations`, their outputs and traces compare under `spec/16 §5`.
+8. **Both engines.** `una run` and executables follow this section alike. Under the iteration budget of `--stop-after-iterations` (rule 1), every loop instance stops at the start of its iteration `n + 1` unless it ended before, whatever the run did elsewhere: a schedule fixed per loop instance and the same for every entry, so their outputs and traces compare under `spec/16 §5`. The budget is not a stop schedule of the run's own behaviour: no instance's stop point depends on how many iterations any other loop ran.
 
    ```una
    serve() -> Unit
@@ -243,7 +243,7 @@ A program that runs until it is told to stop, such as a game loop, a server or a
    ```
 
    - `N` is an integer literal from 1 to 2^63 − 1. Another value is U0101, and so is a line after it. `stop` and `after` are words, not keywords. Before edition `0.4` the line does not parse (U0101).
-   - **The stop schedule.** A host stop request (§6) arrives once `N` iterations of `for ever` loops have started in the test's run, counted across all of its loops in the order the interpreter starts them, as `--stop-after-iterations <n>` does for a run. The request is sticky, and §6 rule 4 applies: from then on, every `for ever` that reaches the start of an iteration ends there, a loop entered later included. Each such loop appends the event `{"seq": n, "outcome": {"kind": "stop"}}`, with the `task` field of its task, and then its `on stop` runs (§5 rule 4). With `stop after 2`, the stop comes at the start of the third iteration.
+   - **The stop schedule.** `N` is the iteration budget of §6 rule 1, as `--stop-after-iterations <n>` is for a run: each loop instance of the test's run, each entry into a `for ever`, counts its own iteration starts from 0 and ends at the start of its iteration `N + 1`, appending the event `{"seq": n, "outcome": {"kind": "stop"}}`, with the `task` field of its task, and then its `on stop` runs (§5 rule 4). It is not a host stop request: it interrupts no operation, and a loop entered later starts with its own budget of `N`. With `stop after 2`, each loop stops at the start of its third iteration.
    - **Divergence.** Only under this line may the `do` line call a function that says `diverges` (U3027 otherwise, §5 rule 2). The `expect` lines never may (U3027).
 
    ```una

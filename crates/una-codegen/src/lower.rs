@@ -1008,13 +1008,20 @@ impl<'p> Lowerer<'_, 'p, '_> {
             self.builder.append_block_param(following, types::I64);
             self.builder.append_block_param(exit, types::I64);
         }
+        // The iterations this instance of the loop has started, from 0 at each entry: the
+        // budget of `--stop-after-iterations` is per loop instance (ADR 0116 rule 19, #1472).
+        let count = self.builder.declare_var(types::I64);
+        let none_started = self.builder.ins().iconst(types::I64, 0);
+        self.builder.def_var(count, none_started);
         self.builder.ins().jump(head, &initial);
 
-        // An iteration starts: a host stop ends the loop there (ADR 0116 rule 14), then its
-        // budget, then the body, which owns the state, with its exits.
+        // An iteration starts: a host stop, or the end of this instance's budget, ends the
+        // loop there (ADR 0116 rules 14 and 19), then the deadline's budget, then the body,
+        // which owns the state, with its exits.
         self.builder.switch_to_block(head);
         let current = self.builder.block_params(head).to_vec();
-        let host_stop = self.call("una_rt_ever_start", &[])?;
+        let so_far = self.builder.use_var(count);
+        let host_stop = self.call("una_rt_ever_start", &[so_far])?;
         let started = self.builder.create_block();
         let current_arguments: Vec<cranelift_codegen::ir::BlockArg> =
             current.iter().map(|&v| v.into()).collect();
@@ -1022,6 +1029,8 @@ impl<'p> Lowerer<'_, 'p, '_> {
             .ins()
             .brif(host_stop, exit, &current_arguments, started, &[]);
         self.builder.switch_to_block(started);
+        let one_more = self.builder.ins().iadd_imm_s(so_far, 1);
+        self.builder.def_var(count, one_more);
         if within.is_some() {
             self.runtime("una_rt_deadline_iteration", &[]);
         }

@@ -550,14 +550,18 @@ impl<'a> Checker<'_, 'a, '_> {
                 // callee that would call it could not prove the condition (ADR 0092 rule 1).
                 // Nor is one whose `uses` label an operation: a function type carries no
                 // `gives`, so the callee would read the answers below the label (ADR 0094
-                // rule 1).
-                let conditioned = self.env.functions.get(id).is_some_and(|f| match f.ast {
-                    super::env::FnAst::Function(decl) => decl.clauses.iter().any(|clause| {
-                        matches!(&clause.kind, ClauseKind::Uses(uses)
-                            if uses.cap_type.conditions.iter().any(Option::is_some)
-                                || uses.cap_type.gives.iter().any(Option::is_some))
-                    }),
-                    _ => false,
+                // rule 1), written or inferred from its callers (rule 3), which only pass 2
+                // knows.
+                let conditioned = self.env.functions.get(id).is_some_and(|f| {
+                    let written = match f.ast {
+                        super::env::FnAst::Function(decl) => decl.clauses.iter().any(|clause| {
+                            matches!(&clause.kind, ClauseKind::Uses(uses)
+                                if uses.cap_type.conditions.iter().any(Option::is_some)
+                                    || uses.cap_type.gives.iter().any(Option::is_some))
+                        }),
+                        _ => false,
+                    };
+                    written || f.uses.iter().any(|need| !need.usage.gives.is_empty())
                 });
                 let declared = self
                     .env

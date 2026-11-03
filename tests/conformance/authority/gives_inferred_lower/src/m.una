@@ -1,0 +1,15 @@
+-- test: an inferred function reads a labeled operation at the label its callers pass, so returning the answer as `public` is U4001 in its body (ADR 0094 rule 3)
+-- spec: spec/05 §9
+-- expect: error U4001 at src/m.una:10:32
+module m
+
+pub capability Files
+  op owner(file: Text) -> Text
+  op role(file: Text) -> Text
+
+owner_of(file: Text) -> Text = @files.owner(file)
+
+pub refusal(file: Text) -> internal[Service] Text
+  uses @files: Files[owner gives internal[Service]]
+=
+  owner_of(file)

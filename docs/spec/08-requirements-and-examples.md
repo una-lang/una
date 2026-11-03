@@ -52,7 +52,7 @@ test "an unknown attendee fails and is not audited"
 | `expect fails V` | `do` failed with variant `V` |
 | `expect performed @x.op` | The trace contains at least one completed or failed `op` on binding `@x` |
 | `expect not performed @x.op` | The trace contains no `op` on binding `@x` |
-| `stop after N` | (Edition 0.4, ADR 0116 rule 19.) The last line, optional: a host stop arrives once `N` iterations of `for ever` loops have started, so `do` may run forever (`spec/26 §8`) |
+| `stop after N` | (Edition 0.4, ADR 0116 rule 19.) The last line, optional: each `for ever` instance ends at the start of its own iteration `N + 1`, so `do` may run forever (`spec/26 §8`) |
 
 Rules:
 

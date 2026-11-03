@@ -3,8 +3,10 @@
 //! and the end of a run that does not stop.
 //!
 //! A request is SIGINT or SIGTERM, which `una-sys` counts for the process; or one of the run's
-//! own, local to it: the end of `--deadline`, which the watcher sends, and the stop of
-//! `--stop-after-iterations`. Each own request counts once, however many threads make it.
+//! own, local to it: the end of `--deadline`, which the watcher sends, and a local request
+//! ([`RunStop::request_local`]). Each own request counts once, however many threads make it.
+//! The budget of `--stop-after-iterations` and of a test's `stop after N` is no request: each
+//! loop instance counts its own iterations and stops by itself (ADR 0116 rule 19, #1472).
 //! Requests are sticky. The first one starts the grace period; the hard stop comes at its end,
 //! or at a second request; a third request, or the end of a second grace period after the hard
 //! stop, ends the process with SIGTERM's default action, unless the run has ended first.
@@ -35,9 +37,8 @@ pub const MAX_GRACE_SECS: u64 = 86_400;
 /// The longest slice of an interruptible wait: the operations' waits, the driver's wait for a
 /// tick, and the watcher's wait for a first request. Between slices, each looks at the run's
 /// requests, and the watcher at the run's end. A signal or the deadline wakes a wait at once,
-/// through the wake pipe; but the stop of `--stop-after-iterations` does not write the pipe, the
-/// pipe stays readable after a request of another run of the process, and the end of a run
-/// writes nothing. So a stop is seen within one slice at worst, at the cost of an O(1) look ten
+/// through the wake pipe; but the pipe stays readable after a request of another run of the
+/// process, and the end of a run writes nothing. So a stop is seen within one slice at worst, at the cost of an O(1) look ten
 /// times a second while a wait lasts.
 pub const SLICE: Duration = Duration::from_millis(100);
 
@@ -83,8 +84,8 @@ pub struct RunStop {
     /// The state is made before the signal handlers are installed, so a signal that comes while
     /// they are installed is counted, never absorbed.
     baseline: u32,
-    /// The run's own requests: the stop of `--stop-after-iterations`, and the deadline's. Each
-    /// is set once, so racing threads make one request.
+    /// The run's own requests: a local one, and the deadline's. Each is set once, so racing
+    /// threads make one request.
     own: AtomicBool,
     deadline: AtomicBool,
     /// 0 before the hard stop; 1 when the grace period ended; 2 at a second request.
@@ -124,9 +125,12 @@ impl RunStop {
         self.requests() > 0
     }
 
-    /// The run's own stop request, by `--stop-after-iterations` (rule 19): one request, however
-    /// many threads make it. It wakes the waits on the pipe, as the deadline's request does, so
-    /// a request parked on the native reactor in another `for ever` sees it at once.
+    /// A stop request local to the run, besides the deadline's: one request, however many
+    /// threads make it. It wakes the waits on the pipe, as the deadline's request does, so a
+    /// request parked on the native reactor in another `for ever` sees it at once. The budget
+    /// of `--stop-after-iterations` no longer makes it (rule 19, #1472): that budget stops one
+    /// loop instance, and a sticky request it made would carry the stop of a loop under a
+    /// secret branch to every later loop.
     pub fn request_local(&self) {
         if self
             .own
