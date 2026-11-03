@@ -1117,6 +1117,10 @@ pub(crate) struct Findings {
     /// The `for ever within` loops checked (ADR 0116 rule 11, IF8): each loop's span, its
     /// function, and the seed of its body's timing label.
     pub(crate) deadline_loops: Vec<DeadlineLoop>,
+    /// The `for ever` loops, and the calls of functions that say `diverges`, that stand under a
+    /// program counter above `public`, by their spans: Core IR marks each `quiet`, so a host stop
+    /// that ends a loop they run appends no `stop` event to the trace (S-39, `spec/26 §6` rule 4).
+    pub(crate) quiet: std::collections::BTreeSet<Span>,
     /// The `within`s checked (ADR 0117 rule 5, IF2): each one's deadline, span, function and
     /// the seed of its timing label.
     pub(crate) withins: Vec<within::WithinSite>,

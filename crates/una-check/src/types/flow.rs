@@ -92,6 +92,29 @@ impl Checker<'_, '_, '_> {
         self.pass == Pass::Check && self.ctx.labels
     }
 
+    /// Records `span`, a `for ever` loop or a call of a function that says `diverges`, as
+    /// `quiet` when it stands under a program counter above `public` (S-39, `spec/26 §6` rule
+    /// 4). The `stop` event that a host stop appends is a sink that accepts `public`, as
+    /// `Console.print` is: the program counter counts with the effect floor of an operation body
+    /// and the timing floor of a `within`, as an effect's does (`spec/07 §3` rule 4, `spec/27
+    /// §5`), and a body that no label rule checks counts as `⊤`. A label of a type parameter is
+    /// not `public` either.
+    pub(crate) fn quiet_site(&mut self, span: Span) {
+        if self.pass != Pass::Check {
+            return;
+        }
+        let mut pc = self.ctx.pc.clone();
+        if let Some(floor) = &self.ctx.floor {
+            pc = pc.join(floor);
+        }
+        if let Some((timing, _, _)) = &self.ctx.timing {
+            pc = pc.join(timing);
+        }
+        if !self.ctx.labels || !pc.is_public() {
+            self.findings.quiet.insert(span);
+        }
+    }
+
     /// `ty` with its solved variables replaced, labels included.
     pub(crate) fn labeled(&self, ty: &Ty) -> Ty {
         self.vars.resolve_labeled(ty)

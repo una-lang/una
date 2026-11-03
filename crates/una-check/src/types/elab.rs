@@ -3213,6 +3213,15 @@ impl<'e, 'a> Fx<'e, 'a> {
             on_stop,
             span: stmt.span,
         };
+        // S-39: under a raised program counter, the loop is `quiet`.
+        let looped = if self.findings.quiet.contains(&stmt.span) {
+            CoreExpr::Quiet {
+                body: Box::new(looped),
+                span: stmt.span,
+            }
+        } else {
+            looped
+        };
         let t = self.temp();
         bind_expr(
             lets,
@@ -5671,7 +5680,8 @@ impl<'e, 'a> Fx<'e, 'a> {
         match self.call_tuple.take() {
             Some((at, ty)) if at == span => {
                 let t = self.temp();
-                lets.push(Let::inferred(t.clone(), ty, Bound::Rhs(call), span));
+                let value = self.quiet_call(call, &ty, span);
+                lets.push(Let::inferred(t.clone(), ty, value, span));
                 Atom::Var(t)
             }
             other => {
@@ -5683,9 +5693,37 @@ impl<'e, 'a> Fx<'e, 'a> {
                     );
                     self.broken.set(true);
                 }
-                self.push(lets, span, call)
+                let t = self.temp();
+                let ty = self.type_at(span);
+                let value = self.quiet_call(call, &ty, span);
+                lets.push(Let::inferred(t.clone(), ty, value, span));
+                Atom::Var(t)
             }
         }
+    }
+
+    /// The value of a `let` of `call`, of type `ty`: the call itself, or, for a call of a
+    /// function that says `diverges` under a raised program counter, `quiet (let t = call in t)`
+    /// (S-39, `spec/26 §6` rule 4).
+    fn quiet_call(&mut self, call: Rhs, ty: &Type, span: Span) -> Bound {
+        if !self.findings.quiet.contains(&span) {
+            return Bound::Rhs(call);
+        }
+        let t = self.temp();
+        Bound::Expr(CoreExpr::Quiet {
+            body: Box::new(CoreExpr::Let {
+                name: t.clone(),
+                ty: ty.clone(),
+                value: Box::new(Bound::Rhs(call)),
+                body: Box::new(CoreExpr::Atom {
+                    atom: Atom::Var(t),
+                    span,
+                }),
+                span,
+                written: false,
+            }),
+            span,
+        })
     }
 
     /// `edit m.update(key: k, initial: i, change: f)` on a map, edition 0.4 (ADR 0119 rule

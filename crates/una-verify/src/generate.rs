@@ -1264,7 +1264,8 @@ fn stops(expr: &Expr) -> bool {
         | Expr::With { body, .. }
         | Expr::Attempt { body, .. }
         | Expr::Within { body, .. }
-        | Expr::Tasks { body, .. } => stops(body),
+        | Expr::Tasks { body, .. }
+        | Expr::Quiet { body, .. } => stops(body),
         Expr::If {
             then, otherwise, ..
         } => stops(then) || stops(otherwise),
@@ -2150,6 +2151,8 @@ impl<'p, 'i> Walker<'p, 'i> {
                 }
                 // `start e`: `e` is verified alone, in the context of the `start`, as a
                 // `together` task is; its value is `unit`, and it gives no fact.
+                // `quiet e` is `e` for verification (S-39): only the trace differs.
+                Expr::Quiet { body, .. } => expr = body,
                 Expr::Start { task, span } => {
                     let mut task_leaves = Vec::new();
                     self.walk(task, &ctx, &mut task_leaves);

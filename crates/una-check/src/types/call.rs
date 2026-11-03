@@ -893,6 +893,11 @@ impl<'a> Checker<'_, 'a, '_> {
         // the bindings its `uses` resolve to here.
         self.summary_needs(Owner::Node(Node::Function(id)), &granted, level);
         self.reach(Node::Function(id));
+        // S-39: the loops such a call runs append no `stop` event under a raised program
+        // counter.
+        if def.diverges {
+            self.quiet_site(span);
+        }
         // ADR 0116 rule 8: a call of a function that says `diverges` may run forever.
         if def.diverges
             && let Some(reason) = self.divergence_refused()

@@ -847,6 +847,10 @@ pub(crate) struct Machine<'p, 'w> {
     /// included: its `Http` operations are interruptible there (rule 14). No `for ever` holds
     /// another one, so a flag suffices.
     in_ever: bool,
+    /// How many `quiet` expressions the task is in, those of the task that started it at its
+    /// `start` included: while one is, a `for ever` that a host stop ends appends no `stop`
+    /// event (S-39, `spec/26 §6` rule 4).
+    quiet: u32,
     /// The thread's attention word, and its value at the last check point (rule 18).
     word: una_sys::attention::Word,
     seen: Cell<u64>,
@@ -956,6 +960,7 @@ impl<'p, 'w> Machine<'p, 'w> {
             max_depth,
             stop,
             in_ever: false,
+            quiet: 0,
             word,
             seen: Cell::new(seen),
             max_memory: limits.max_memory,
@@ -1014,6 +1019,8 @@ impl<'p, 'w> Machine<'p, 'w> {
                 .min(self.depth.saturating_add(self.task_depth)),
             stop: Arc::clone(&self.stop),
             in_ever: false,
+            // A task started under a raised program counter runs under it (`spec/27 §7` rule 3).
+            quiet: self.quiet,
             word: self.word,
             seen: Cell::new(self.seen.get()),
             max_memory: self.max_memory,
@@ -2132,6 +2139,14 @@ impl<'p, 'w> Machine<'p, 'w> {
                     self.start(env, &caps, task, *span)?;
                     return Ok(Value::Unit);
                 }
+                // `quiet e` (S-39, `spec/26 §6` rule 4): `e`, then the count as before, on every
+                // way out of it.
+                Expr::Quiet { body, .. } => {
+                    self.quiet = self.quiet.saturating_add(1);
+                    let result = self.eval(env, &caps, body);
+                    self.quiet = self.quiet.saturating_sub(1);
+                    return result;
+                }
                 // `let (x, ...) = a in e` (`spec/17 §4`).
                 Expr::LetTuple {
                     names, value, body, ..
@@ -2568,8 +2583,12 @@ impl<'p, 'w> Machine<'p, 'w> {
     }
 
     /// Appends the `stop` event of a loop that stops at the start of an iteration (ADR 0116
-    /// rule 14), in the current task.
+    /// rule 14), in the current task; none inside a `quiet` expression, whose program counter
+    /// the event would reveal (S-39, `spec/26 §6` rule 4). It then takes no `seq` either.
     pub(crate) fn stop_event(&mut self) {
+        if self.quiet > 0 {
+            return;
+        }
         let task = self.task.join(".");
         self.emit(Event {
             seq: 0,

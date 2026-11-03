@@ -466,6 +466,8 @@ const RUNTIME: &[(&str, usize, bool)] = &[
     ("una_rt_drive_tick", 0, true),
     ("una_rt_ever_start", 0, true),
     ("una_rt_ever_end", 0, false),
+    ("una_rt_quiet_enter", 0, false),
+    ("una_rt_quiet_leave", 0, false),
     ("una_rt_op_code", 2, true),
     ("una_rt_fixed", 4, true),
     ("una_rt_decimal", 5, true),

@@ -250,6 +250,9 @@ impl<'a> Checker<'_, 'a, '_> {
     /// (IF4); `on stop` runs once the loop has ended, must not fail (U3029), and may not end
     /// the loop with `stop` or `skip` (U2034).
     fn ever_stmt(&mut self, stmt: &EverStmt) {
+        // S-39: under a raised program counter, a host stop that ends the loop appends no
+        // `stop` event.
+        self.quiet_site(stmt.span);
         if let Some(reason) = self.divergence_refused() {
             self.report.error(
                 Code::U3027,

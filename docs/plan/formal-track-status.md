@@ -103,7 +103,8 @@ A declaration whose program uses no host operation, and whose parameters cannot 
 - **Small items:**
   - #475, an accurate note when only a function parameter blocks the any-host claim (cosmetic);
   - #453, the widening of `checked`;
-  - the append-only correction of `spec/10`.
+  - the append-only correction of `spec/10`;
+  - the trace's `stop` event of a host stop (ADR 0116 rule 14) and Core's `quiet` (S-39, #1507, `spec/26 §6` rule 4): the model has neither, so a declaration that runs a `for ever`, or holds `quiet`, is not re-checked. The theorem to state is that the event is a sink that accepts `public`, so a loop under a raised program counter appends none.
 - **Later, by priority:** T5 relative to the solver, T6 with `together`, and edition 0.1's own rules.
 
 ## Theorem names

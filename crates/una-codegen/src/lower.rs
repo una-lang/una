@@ -605,6 +605,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 Expr::Start { task, span } => {
                     return self.start(task, *span, env, scope, catch);
                 }
+                Expr::Quiet { body, .. } => return self.quiet(body, env, scope, catch),
                 Expr::Atom { atom, .. } => {
                     let (value, kind) = self.atom(atom, env)?;
                     // A binding the scope owns moves out as the result; another word is
@@ -830,6 +831,44 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 }
             }
         }
+    }
+
+    /// `quiet e` (S-39, `spec/26 §6` rule 4): `e` between the runtime's count of the task's
+    /// `quiet` expressions and its restoration, on every way out of `e`. A failure or a stop of
+    /// the task leaves `e` through a catch of its own, which restores the count, then goes on to
+    /// `catch`; `e`'s words are released on the way, as `catch` would. No `exit` of an enclosing
+    /// loop crosses it: `e` is a loop of its own or a call.
+    fn quiet(
+        &mut self,
+        body: &'p Expr,
+        env: &mut Env,
+        scope: &mut Scope,
+        catch: &Catch,
+    ) -> Result<Option<Value>, CodegenError> {
+        self.runtime("una_rt_quiet_enter", &[]);
+        let leaving = self.join();
+        // The body's failures release what `catch` would release of `scope`, and the restoring
+        // block then what it would release of the enclosing expressions.
+        let inner = Catch {
+            block: leaving,
+            outer: Scope::new(),
+            base: catch.base,
+            exit: None,
+        };
+        let done = self.join();
+        let reached = match self.expr(body, env, scope, &inner)? {
+            Some(value) => {
+                self.runtime("una_rt_quiet_leave", &[]);
+                self.builder.ins().jump(done, &[value.into()]);
+                true
+            }
+            None => false,
+        };
+        self.builder.switch_to_block(leaving);
+        let failure = self.param(leaving)?;
+        self.runtime("una_rt_quiet_leave", &[]);
+        self.fail(failure, &Scope::new(), catch);
+        self.joined(done, reached)
     }
 
     /// A join block with one parameter, the value of the construct.
@@ -4474,7 +4513,8 @@ fn borrowed_from(expr: &Expr, out: &mut BTreeSet<String>) {
         Expr::Attempt { body, .. }
         | Expr::With { body, .. }
         | Expr::Within { body, .. }
-        | Expr::Tasks { body, .. } => {
+        | Expr::Tasks { body, .. }
+        | Expr::Quiet { body, .. } => {
             borrowed_from(body, out);
         }
         Expr::Together { .. }

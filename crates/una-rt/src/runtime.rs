@@ -863,6 +863,10 @@ pub(crate) struct State {
     /// Whether the thread's task runs the body of a `for ever`, callees included: its `Http`
     /// operations are interruptible there (ADR 0116 rule 14). A task starts outside one.
     pub(crate) in_ever: bool,
+    /// How many `quiet` expressions the task is in, those of the task that started it at its
+    /// `start` included: while one is, a `for ever` that a host stop ends appends no `stop`
+    /// event (S-39, `spec/26 §6` rule 4).
+    pub(crate) quiet: u32,
     /// The settings of the run's tasks (ADR 0117 rules 2 and 3).
     concurrency: una_interp::Concurrency,
     /// The run's scheduler, made at its first block: none in a run without tasks.
@@ -924,6 +928,9 @@ pub(crate) struct TaskTemplate {
     /// started task does (ADR 0117 rule 10).
     pub(crate) shared: Arc<crate::started::RunShared>,
     pub(crate) streaming: bool,
+    /// The `quiet` count of the task that runs the block or starts the task (S-39): a task
+    /// runs under the program counter of its `start` (`spec/27 §7` rule 3).
+    quiet: u32,
 }
 
 impl TaskTemplate {
@@ -1005,6 +1012,7 @@ impl State {
             race: None,
             shared: Arc::clone(&self.shared),
             streaming: false,
+            quiet: self.quiet,
         }
     }
 
@@ -1243,8 +1251,13 @@ impl State {
         self.installs.contains_key(name)
     }
 
-    /// Appends the event of a loop that stops at the start of an iteration (ADR 0116 rule 14).
+    /// Appends the event of a loop that stops at the start of an iteration (ADR 0116 rule 14);
+    /// none inside a `quiet` expression, whose program counter the event would reveal (S-39,
+    /// `spec/26 §6` rule 4). It then takes no `seq` either.
     pub(crate) fn stop_event(&mut self) {
+        if self.quiet > 0 {
+            return;
+        }
         if let Some(trace) = self.trace.as_mut() {
             trace.push(Event {
                 seq: trace.len() + 1,
@@ -1839,6 +1852,18 @@ pub fn ever_end() {
     set_in_ever(false);
 }
 
+/// Enters a `quiet` expression: a `for ever` loop, or a call of a function that says
+/// `diverges`, under a program counter above `public` (S-39, `spec/26 §6` rule 4).
+pub fn quiet_enter() {
+    with_state(|state| state.quiet = state.quiet.saturating_add(1));
+}
+
+/// Leaves a `quiet` expression, on every way out of it: its value, or a failure or a stop of
+/// the task that leaves it.
+pub fn quiet_leave() {
+    with_state(|state| state.quiet = state.quiet.saturating_sub(1));
+}
+
 /// Runs the executable: parses the command line, checks `main`'s capabilities against the
 /// grants, calls `entry`, the compiled `main`, on a thread with the stack that `--max-depth`
 /// needs, and writes the trace. Returns the exit code.
@@ -2034,6 +2059,7 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
         operations: Vec::new(),
         stopped: None,
         in_ever: false,
+        quiet: 0,
         concurrency: options.concurrency,
         sched: None,
     };
@@ -2793,6 +2819,7 @@ pub(crate) fn enter_task(template: &TaskTemplate, path: String, entry: Cancel) {
         operations: Vec::new(),
         stopped: None,
         in_ever: false,
+        quiet: template.quiet,
         concurrency: template.concurrency,
         sched: Some(Arc::clone(&template.sched)),
     };
@@ -2882,6 +2909,7 @@ pub(crate) fn install_test_state_as(path: String, tracing: bool, file: String) {
         operations: Vec::new(),
         stopped: None,
         in_ever: false,
+        quiet: 0,
         concurrency: options.concurrency,
         sched: None,
     };

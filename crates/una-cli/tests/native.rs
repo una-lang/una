@@ -5515,3 +5515,382 @@ fn ten_thousand_cancelled_started_tasks_release_what_they_hold_in_both_engines()
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// S-39 reproducer 2 (#1507): sixteen public iterations, each calling a function whose loop runs
+/// only under a `secret` branch, which only a host stop ends.
+const SECRET_COUNT: &str = "module leak
+
+spin(go: secret Bool) -> Unit
+  diverges
+=
+  if go
+    let edit k: secret Int = 0
+    for ever
+      k = k + 1
+
+pub main() -> Unit
+  uses @console: Console[print]
+  diverges
+=
+  let s: secret Int = SECRET
+  for i in 0..<16
+    spin(s > i)
+  @console.print(\"done\")
+";
+
+/// S-39 reproducer 1 (#1507), without a public loop after it: a loop under a `secret` branch
+/// that `stop when` ends before the budget or the budget ends, depending on the secret.
+const SECRET_BUDGET: &str = "module leak
+
+spin(s: secret Int) -> Unit
+  diverges
+=
+  if s > 0
+    let edit k: secret Int = 0
+    for ever
+      stop when k >= s
+      k = k + 1
+
+pub main() -> Unit
+  uses @console: Console[print]
+  diverges
+=
+  let s: secret Int = SECRET
+  spin(s)
+  @console.print(\"done\")
+";
+
+/// S-39 (#1507): loops whose own code runs under a `public` program counter, reached under a
+/// `secret` one: by a call, by a call whose callee starts a task, and by a `start`.
+const SECRET_CALLS: &str = "module leak
+
+spin() -> Unit
+  diverges
+=
+  let edit k = 0
+  for ever
+    k = k + 1
+
+spawn() -> Unit
+  diverges
+=
+  tasks
+    start spin()
+
+pub main() -> Unit
+  uses @console: Console[print]
+  diverges
+=
+  let s: secret Int = SECRET
+  for i in 0..<4
+    if s > i
+      spin()
+    if s > i + 4
+      spawn()
+    if s > i + 8
+      tasks
+        start spin()
+  @console.print(\"done\")
+";
+
+/// S-39 (#1507): the loops under a `secret` branch are entered after a host stop, which is
+/// sticky, so each ends at its first iteration start.
+const SECRET_LATE: &str = "module leak
+
+spin(go: secret Bool) -> Unit
+  diverges
+=
+  if go
+    let edit k: secret Int = 0
+    for ever
+      k = k + 1
+
+pub main() -> Unit
+  uses @console: Console[print]
+  diverges
+=
+  let s: secret Int = SECRET
+  @console.print(\"started\")
+  let edit n = 0
+  for ever
+    n = n + 1
+  for i in 0..<16
+    spin(s > i)
+  @console.print(\"done\")
+";
+
+/// The trace of `una --json run` and of the executable, and the output of both, for the
+/// program `source` with `SECRET` replaced by `secret`, run with `args`.
+fn secret_run(name: &str, source: &str, secret: i64, args: &[&str]) -> (Value, Value, Value) {
+    let package = format!("{name}{secret}");
+    let program = source.replace("SECRET", &secret.to_string());
+    let dir = ita_package(&package, &ever_run("leak"), &[("src/leak.una", &program)]);
+    let mut run_args = vec!["--json", "run"];
+    run_args.extend_from_slice(args);
+    let run = una(&dir, &run_args);
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "{name} {secret}: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let document: Value = serde_json::from_slice(&run.stdout).unwrap();
+    let built = una(&dir, &["build"]);
+    assert_eq!(
+        built.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let trace = dir.join("trace.json");
+    let native = Command::new(dir.join("target/una").join(&package))
+        .current_dir(&dir)
+        .args(args)
+        .arg("--trace")
+        .arg(&trace)
+        .output()
+        .unwrap();
+    assert_eq!(
+        native.status.code(),
+        Some(0),
+        "{name} {secret}: {}",
+        String::from_utf8_lossy(&native.stderr)
+    );
+    let lines: Vec<Value> = String::from_utf8_lossy(&native.stdout)
+        .lines()
+        .map(Value::from)
+        .collect();
+    assert_eq!(Value::from(lines), document["output"], "{name} {secret}");
+    let native_trace: Value = serde_json::from_slice(&std::fs::read(&trace).unwrap()).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    (
+        document["output"].clone(),
+        document["trace"].clone(),
+        native_trace,
+    )
+}
+
+/// The trace of a run that prints `done` and nothing else.
+fn done_only() -> Value {
+    serde_json::json!([{
+        "seq": 1,
+        "instance": "host:Console",
+        "capability": "Console",
+        "op": "print",
+        "args": {"line": "\"done\""},
+        "outcome": {"kind": "ok", "value": "unit"}
+    }])
+}
+
+#[test]
+fn s39_a_loop_under_a_secret_branch_that_a_budget_ends_adds_no_event_to_the_trace() {
+    // S-39 (#1507), `spec/26 §6` rule 4: the `stop` event is a sink that accepts `public`, so a
+    // `for ever` under a `secret` program counter that a host stop ends appends none, and the
+    // `seq` of later events does not move. With 16 loops, one stop event per loop entered would
+    // spell out the secret in one run; the traces are the same for every secret, in both
+    // engines.
+    for secret in [0, 3, 9, 16] {
+        let (output, run, native) = secret_run(
+            "s39count",
+            SECRET_COUNT,
+            secret,
+            &["--stop-after-iterations", "1"],
+        );
+        assert_eq!(output, serde_json::json!(["done"]), "{secret}");
+        assert_eq!(run, done_only(), "{secret}");
+        assert_eq!(native, done_only(), "{secret}");
+    }
+    // A loop that `stop when` ends before the budget appends nothing either, so whether the
+    // secret is below the budget does not show.
+    for secret in [0, 2, 5, 12] {
+        let (output, run, native) = secret_run(
+            "s39budget",
+            SECRET_BUDGET,
+            secret,
+            &["--stop-after-iterations", "8"],
+        );
+        assert_eq!(output, serde_json::json!(["done"]), "{secret}");
+        assert_eq!(run, done_only(), "{secret}");
+        assert_eq!(native, done_only(), "{secret}");
+    }
+}
+
+#[test]
+fn s39_a_public_loop_reached_under_a_secret_branch_adds_no_event_to_the_trace() {
+    // S-39 (#1507): a loop whose own code runs under a `public` program counter, reached from a
+    // `secret` one by a call, by the task a callee starts, or by a `start`, appends no `stop`
+    // event either, in both engines.
+    for secret in [0, 1, 5, 9, 12] {
+        let (output, run, native) = secret_run(
+            "s39calls",
+            SECRET_CALLS,
+            secret,
+            &["--stop-after-iterations", "1"],
+        );
+        assert_eq!(output, serde_json::json!(["done"]), "{secret}");
+        assert_eq!(run, done_only(), "{secret}");
+        assert_eq!(native, done_only(), "{secret}");
+    }
+}
+
+#[test]
+fn s39_loops_under_a_secret_branch_entered_after_a_host_stop_add_no_event_to_the_trace() {
+    // S-39 (#1507): after SIGTERM, or the end of `--deadline`, the request is sticky, and each
+    // loop under a `secret` branch entered after it ends at its first iteration start, without a
+    // `stop` event; the public loop's own event stays. The same trace for every secret, in both
+    // engines.
+    let expected = |kinds: &Value| {
+        let events = kinds.as_array().unwrap();
+        let kinds: Vec<&str> = events
+            .iter()
+            .map(|event| event["outcome"]["kind"].as_str().unwrap())
+            .collect();
+        assert_eq!(kinds, ["ok", "stop", "ok"], "{events:?}");
+        let seqs: Vec<u64> = events
+            .iter()
+            .map(|event| event["seq"].as_u64().unwrap())
+            .collect();
+        assert_eq!(seqs, [1, 2, 3], "{events:?}");
+    };
+    for secret in [0, 3, 9] {
+        let program = SECRET_LATE.replace("SECRET", &secret.to_string());
+        let package = format!("s39late{secret}");
+        let dir = ita_package(&package, &ever_run("leak"), &[("src/leak.una", &program)]);
+        let trace = dir.join("trace.json");
+        let trace_arg = trace.to_str().unwrap().to_owned();
+        for mut command in engines(&dir, &package, &[]) {
+            command.args(["--trace", &trace_arg]);
+            let (status, stdout, stderr) = signalled(command, 1, std::time::Duration::ZERO);
+            assert_eq!(status.code(), Some(0), "{secret}: {stderr}");
+            assert_eq!(stdout, "started\ndone\n", "{secret}");
+            expected(&serde_json::from_slice(&std::fs::read(&trace).unwrap()).unwrap());
+        }
+        for mut command in engines(&dir, &package, &["--deadline", "1"]) {
+            command.args(["--trace", &trace_arg]);
+            let output = command.output().unwrap();
+            assert_eq!(
+                output.status.code(),
+                Some(0),
+                "{secret}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                String::from_utf8_lossy(&output.stdout),
+                "started\ndone\n",
+                "{secret}"
+            );
+            expected(&serde_json::from_slice(&std::fs::read(&trace).unwrap()).unwrap());
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// S-39 (#1507): a call with an `edit` argument under a `secret` branch and loops under an
+/// `internal` one, then a public loop, whose `stop` event stays.
+const SECRET_MIXED: &str = "module leak
+
+bump(edit n: secret Int) -> Unit
+  diverges
+=
+  for ever
+    n = n + 1
+
+pub main() -> Unit
+  uses @console: Console[print]
+  diverges
+=
+  let s: secret Int = SECRET
+  let t: internal Int = SECRET
+  let edit k: secret Int = 0
+  for i in 0..<4
+    if s > i
+      bump(edit k)
+    if t > i
+      let edit m: internal Int = 0
+      for ever
+        m = m + 1
+  let edit n = 0
+  for ever
+    n = n + 1
+  @console.print(\"done\")
+";
+
+/// S-39 (#1507): a call under a `secret` branch that a `within` cuts, then a public loop.
+const SECRET_CUT: &str = "module leak
+
+import std.time (millisecond)
+
+spin(go: secret Bool) -> Unit
+  diverges
+=
+  if go
+    let edit k: secret Int = 0
+    for ever
+      k = k + 1
+
+pub main() -> Unit
+  uses @console: Console[print]
+  diverges
+=
+  let s: secret Int = SECRET
+  let r = attempt spin(s > 0) within 50 * millisecond
+  let edit n = 0
+  for ever
+    n = n + 1
+  @console.print(\"done\")
+";
+
+/// The kinds of the events of `trace`, and whether their `seq` numbers run from 1 without a gap.
+fn kinds_in_order(trace: &Value) -> (Vec<String>, bool) {
+    let events = trace.as_array().unwrap();
+    let kinds = events
+        .iter()
+        .map(|event| event["outcome"]["kind"].as_str().unwrap().to_owned())
+        .collect();
+    let gapless = events
+        .iter()
+        .enumerate()
+        .all(|(n, event)| event["seq"].as_u64() == Some(n as u64 + 1));
+    (kinds, gapless)
+}
+
+#[test]
+fn s39_a_public_loop_after_quiet_code_keeps_its_stop_event() {
+    // S-39 (#1507): under an `internal` program counter too, and through an `edit` argument, a
+    // loop appends no `stop` event; the count of `quiet` code is restored after it, so the
+    // public loop after it keeps its own event, in both engines.
+    for secret in [0, 2, 4] {
+        let (output, run, native) = secret_run(
+            "s39mixed",
+            SECRET_MIXED,
+            secret,
+            &["--stop-after-iterations", "1"],
+        );
+        assert_eq!(output, serde_json::json!(["done"]), "{secret}");
+        assert_eq!(run, native, "{secret}");
+        assert_eq!(
+            kinds_in_order(&run),
+            (vec!["stop".to_owned(), "ok".to_owned()], true),
+            "{secret}: {run}"
+        );
+    }
+}
+
+#[test]
+fn s39_a_quiet_call_that_a_within_cuts_restores_the_count() {
+    // S-39 (#1507): a `within` that cuts a call under a `secret` branch leaves it by the path of a
+    // failure, which restores the count of `quiet` code, so the public loop after it keeps its
+    // `stop` event, in both engines. The `timeout` event of the cut is the reported timing
+    // channel of `spec/27 §5`: the report's `timing` list names the `within`.
+    for secret in [0, 3] {
+        let (output, run, native) = secret_run("s39cut", SECRET_CUT, secret, &["--deadline", "1"]);
+        assert_eq!(output, serde_json::json!(["done"]), "{secret}");
+        assert_eq!(run, native, "{secret}");
+        let expected: Vec<String> = if secret == 0 {
+            vec!["stop".to_owned(), "ok".to_owned()]
+        } else {
+            vec!["timeout".to_owned(), "stop".to_owned(), "ok".to_owned()]
+        };
+        assert_eq!(kinds_in_order(&run), (expected, true), "{secret}: {run}");
+    }
+}

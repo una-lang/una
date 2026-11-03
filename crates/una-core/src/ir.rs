@@ -2186,6 +2186,17 @@ pub enum Expr {
         /// The statement in the source.
         span: Span,
     },
+    /// `quiet e` (S-39, `spec/26 §6` rule 4): `e`, a `for ever` loop or a call of a function that
+    /// says `diverges`, stands under a program counter above `public`. A host stop that ends a
+    /// `for ever` loop that `e` runs, in its callees and in the tasks it starts included, appends
+    /// no `stop` event to the trace, so the event, and the `seq` of the events after it, never
+    /// reveal the data the program counter depends on. Its value is `e`'s.
+    Quiet {
+        /// The loop, or the `let` of the call that ends in its result.
+        body: Box<Expr>,
+        /// The loop or the call in the source.
+        span: Span,
+    },
     /// `if a then e else e`.
     If {
         /// The condition.
