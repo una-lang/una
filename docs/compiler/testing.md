@@ -141,6 +141,8 @@ A test harness that calls `una_cli` in its own process starts its solver childre
 
 Native tests link the debug build of `una-rt`. In debug builds only, the runtime reuses a freed slot only after 65,536 newer ones have been freed, so that a use after free is a fault and not a read of another object (#201). A program that frees many values therefore holds a fixed extra amount once about 65,000 values have been freed. One example is a `for` loop, which frees its state tuple at each iteration.
 
+The debug memory budget credits part of that amount back (#1506). A heap's credit is the freed slots of its slot table past the most objects it ever held at once, which is the length of a release build's table. Only the capacity the table grew by since that peak counts, so capacity a release build's table would also hold is never credited. The free list and the table's spare capacity stay charged. The credit of all heaps together is at most a quarter of the budget. So a debug run is charged about what a release run is, never less, and its check reports U6003 before the allocator's hard ceiling of twice the budget, except after one allocation of more than three quarters of the budget between two checks. The equivalence is approximate: a debug run can still need a somewhat larger budget than the same run in a release build.
+
 Measured on a `List[Int]` built by `append` in a `for` loop (#878):
 
 - **Debug builds:** a plateau of about 14 MB above the list itself. The smallest budgets were 2 MiB at 10,000 elements, 16 MiB at 100,000 and 24 MiB at 1,000,000.

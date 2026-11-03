@@ -75,13 +75,39 @@ fn charged() -> usize {
     heap_charged().saturating_add(STACK_CHARGE.load(Ordering::Relaxed))
 }
 
-/// The heap the memory budget charges: what the process holds, less the slots a debug build
-/// holds beyond a release build's because of its quarantine (#1506), so that the budget
-/// charges a debug build close to what a release build holds, never less. Only freed slots,
-/// which hold no object, are credited ([`values::quarantined_bytes`]; 0 in a release build),
-/// and the allocator's hard ceiling of ADR 0061 rule 3 stays on the bytes really held. O(1).
+/// The most bytes [`heap_charged`] credits a debug build: a quarter of the run's budget, set
+/// as `main` starts, 0 before (#1506). A run is so charged at least what it holds less a
+/// quarter of its budget, so a check reports it with U6003 once it holds more than 1.25 times
+/// its budget, well before the allocator's hard ceiling, twice the budget on the bytes really
+/// held (ADR 0061 rule 3), fails an allocation and aborts. Only one allocation of more than
+/// three quarters of the budget between two checks can still meet the ceiling first, where a
+/// release build's margin is the whole budget: a churning debug heap under a budget of 5 MiB,
+/// whose slot table doubles from 5 to 10 MiB, still does. Half the budget was not enough: the
+/// same heap met the ceiling first under budgets of 1, 2, 4 and 5 MiB.
+static CREDIT_LIMIT: AtomicUsize = AtomicUsize::new(0);
+
+/// The heap the memory budget charges: what the process holds, less the slots that a debug
+/// build's quarantine adds to its slot table beyond a release build's (#1506), so that a debug
+/// build is charged about what a release build is, and never less. Only freed slots, past the
+/// peak of live objects and within the capacity grown since it, are credited
+/// ([`values::quarantined_bytes`]; 0 in a release build), at most [`CREDIT_LIMIT`], and the
+/// allocator's hard ceiling stays on the bytes really held. O(1).
+///
+/// Another worker's heap may change between the reads: its credit rises after its table grew
+/// and falls before the table is freed. The credit is read before and after the bytes held, and
+/// the smaller read is subtracted, so a change seen in only one of the reads charges more, never
+/// less, up to the order the allocator's own relaxed counter gives.
 fn heap_charged() -> usize {
-    crate::held().saturating_sub(values::quarantined_bytes())
+    if !cfg!(debug_assertions) {
+        return crate::held();
+    }
+    let before = values::quarantined_bytes();
+    std::sync::atomic::fence(Ordering::SeqCst);
+    let held = crate::held();
+    std::sync::atomic::fence(Ordering::SeqCst);
+    let after = values::quarantined_bytes();
+    let credit = before.min(after).min(CREDIT_LIMIT.load(Ordering::Relaxed));
+    held.saturating_sub(credit)
 }
 
 /// Charges the stack of the thread's task up to `used` bytes, when that is within its budget:
@@ -2170,6 +2196,7 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
         }
         // The budget's baseline is measured as the budget charges (`heap_charged`), and the
         // hard ceiling's on the bytes really held.
+        CREDIT_LIMIT.store(budget / 4, Ordering::Relaxed);
         state.baseline = heap_charged();
         let mut held_baseline = crate::held();
         install(state, 0);

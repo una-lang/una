@@ -293,29 +293,34 @@ fn count_limit() -> u32 {
 /// in reasonable time and Miri checks the reuse itself.
 const QUARANTINE: usize = if cfg!(miri) { 64 } else { 1 << 16 };
 
-/// The slots that every heap of the process, a parked task's included, holds beyond those a
-/// release build would hold, in a debug build; always 0 in a release build (#1506). A release
-/// build reuses the newest free slot and grows its slot table only when every slot is live, so
-/// its table has as many slots as the heap ever had live objects at once. A debug build keeps
-/// the quarantine of freed slots unused, so its table can be longer: the slots past that peak,
-/// [`Heap::excess`] each, are freed slots, which hold no object, and [`quarantined_bytes`]
-/// credits their bytes to the memory budget. A live slot is never credited, so a leak is
-/// charged in full. Each heap adds its own here as it changes and takes it back when it is
-/// dropped; swapping heaps between a thread and a parked task moves no count, so the sum stays
-/// exact.
+/// The slots of every heap of the process, a parked task's included, that the memory budget
+/// does not charge a debug build, its quarantine's own; always 0 in a release build (#1506).
+///
+/// A release build reuses the newest free slot and pushes a slot only when every slot is live,
+/// so its table is as long as the most objects the heap ever held at once, and its capacity is
+/// what the pushes and the imports' reservations to that length grew it to. A debug build keeps
+/// a quarantine of freed slots unused, so its table can grow past that. A heap credits a slot
+/// only when it is past the peak of live objects, so free, and only within the capacity the
+/// table grew by since the peak last rose or an import last grew it ([`Heap::cap_at_peak`]):
+/// at those moments the debug table is at least as long, and as large, as a release build's
+/// at the same point, and between them a release build's table does not grow. So the debug
+/// build is never charged less than a release build: a live slot is never credited, and
+/// neither is capacity a release build would hold too. The free list is not credited at all.
+///
+/// Each heap adds its own count here as it changes and takes it back when it is dropped;
+/// swapping heaps between a thread and a parked task moves no count, so the sum stays exact.
+/// Its updates follow the bytes they stand for: a credit rises after the table grew and falls
+/// before it is freed. [`crate::runtime`] caps what it subtracts at a quarter of the budget.
 static EXCESS_SLOTS: AtomicUsize = AtomicUsize::new(0);
 
-/// The bytes of one slot in excess: its entry in the slot table and its index in the free list.
-/// The spare capacity of either is not credited, so the credit never exceeds the bytes the
-/// excess entries occupy, and a debug build is charged at least what a release build is.
-const EXCESS_SLOT_BYTES: usize = std::mem::size_of::<Slot>() + std::mem::size_of::<usize>();
+/// The bytes of one credited slot: its entry in the slot table, nothing of the free list.
+const EXCESS_SLOT_BYTES: usize = std::mem::size_of::<Slot>();
 
-/// The bytes of the slots in excess in every heap, which the memory budget does not charge
-/// (#1506): 0 in a release build. O(1), one relaxed load.
+/// The bytes of the credited slots of every heap (#1506): 0 in a release build. O(1), one load.
 pub(crate) fn quarantined_bytes() -> usize {
     if cfg!(debug_assertions) {
         EXCESS_SLOTS
-            .load(AtomicOrdering::Relaxed)
+            .load(AtomicOrdering::SeqCst)
             .saturating_mul(EXCESS_SLOT_BYTES)
     } else {
         0
@@ -355,38 +360,47 @@ struct Heap {
     /// The most objects the heap held at once, in a debug build: the length of the slot table
     /// a release build would have (#1506).
     peak_live: usize,
-    /// `slots.len() - peak_live`, counted in [`EXCESS_SLOTS`], in a debug build; 0 in a release
-    /// build.
+    /// The capacity of the slot table when `peak_live` last rose or an import last grew the
+    /// table, in a debug build: at least a release build's capacity from then on (#1506).
+    cap_at_peak: usize,
+    /// The slots the heap credits, counted in [`EXCESS_SLOTS`]: `min(slots.len() - peak_live,
+    /// slots.capacity() - cap_at_peak)` in a debug build, 0 in a release build.
     excess: usize,
 }
 
 impl Drop for Heap {
-    /// Takes the heap's slots in excess out of [`EXCESS_SLOTS`]: a task's heap ends with the
-    /// task, and the thread's with the thread.
+    /// Takes the heap's credited slots out of [`EXCESS_SLOTS`] before its table is freed: a
+    /// task's heap ends with the task, and the thread's with the thread.
     fn drop(&mut self) {
         if self.excess > 0 {
-            EXCESS_SLOTS.fetch_sub(self.excess, AtomicOrdering::Relaxed);
+            EXCESS_SLOTS.fetch_sub(self.excess, AtomicOrdering::SeqCst);
         }
     }
 }
 
-/// Counts the slots of `heap` in excess of a release build's after an allocation, in a debug
-/// build (#1506): an allocation is the one change of the slot table's length or of the number
-/// of live objects that can raise either. Every slot is live or free, so `slots.len()` is at
-/// least the live objects, and at least their peak, since the table never shrinks. O(1): the
-/// excess moves by at most one, and the counter changes only when it does.
+/// Counts the slots `heap` credits, after an allocation or an import's growth of its table, in
+/// a debug build (#1506); the two are the only changes of the table's length, its capacity or
+/// the number of live objects that can raise one. Every slot is live or free, and the table
+/// never shrinks, so `slots.len() >= peak_live` and `slots.capacity() >= cap_at_peak`. O(1):
+/// a few comparisons, and the counter changes only when the credit does.
 fn count_excess(heap: &mut Heap) {
     if !cfg!(debug_assertions) {
         return;
     }
     let len = heap.slots.len();
+    let capacity = heap.slots.capacity();
     let live = len.saturating_sub(heap.free.len());
-    heap.peak_live = heap.peak_live.max(live);
-    let excess = len.saturating_sub(heap.peak_live);
+    if live > heap.peak_live {
+        heap.peak_live = live;
+        heap.cap_at_peak = capacity;
+    }
+    let excess = len
+        .saturating_sub(heap.peak_live)
+        .min(capacity.saturating_sub(heap.cap_at_peak));
     if excess > heap.excess {
-        EXCESS_SLOTS.fetch_add(excess - heap.excess, AtomicOrdering::Relaxed);
+        EXCESS_SLOTS.fetch_add(excess - heap.excess, AtomicOrdering::SeqCst);
     } else if excess < heap.excess {
-        EXCESS_SLOTS.fetch_sub(heap.excess - excess, AtomicOrdering::Relaxed);
+        EXCESS_SLOTS.fetch_sub(heap.excess - excess, AtomicOrdering::SeqCst);
     }
     heap.excess = excess;
 }
@@ -1982,6 +1996,10 @@ fn reserve_slots(objects: usize) -> Result<(), Refused> {
             let mut heap = heap.borrow_mut();
             heap.slots.reserve_exact(target - len);
             heap.slot_growths += 1;
+            // A release build's import may grow its table as much, so the growth is not
+            // credited (#1506).
+            heap.cap_at_peak = heap.slots.capacity();
+            count_excess(&mut heap);
         });
         drop(step);
     };
@@ -3469,13 +3487,30 @@ mod tests {
         word
     }
 
-    /// The thread's heap's slots in excess of a release build's, the most objects it held at
-    /// once, and the length of its slot table.
-    fn excess() -> (usize, usize, usize) {
+    /// The thread's heap's credited slots, the most objects it held at once, the length and
+    /// capacity of its slot table, its capacity when the peak last rose, and its free slots.
+    fn excess() -> (usize, usize, usize, usize, usize, usize) {
         HEAP.with(|heap| {
             let heap = heap.borrow();
-            (heap.excess, heap.peak_live, heap.slots.len())
+            (
+                heap.excess,
+                heap.peak_live,
+                heap.slots.len(),
+                heap.slots.capacity(),
+                heap.cap_at_peak,
+                heap.free.len(),
+            )
         })
+    }
+
+    /// The capacity of a release build's slot table after pushes to `len`: a table grown as
+    /// its pushes grow it, by the same `Vec`.
+    fn release_capacity(len: usize) -> usize {
+        let mut table: Vec<Slot> = Vec::new();
+        for _ in 0..len {
+            table.push(Slot::default());
+        }
+        table.capacity()
     }
 
     #[test]
@@ -3490,7 +3525,8 @@ mod tests {
         let mut parked = Slots::default();
         swap_slots(&mut parked);
         let live: Vec<i64> = (0..1_000).map(|_| list()).collect();
-        assert_eq!(excess(), (0, 1_000, 1_000), "live slots are never credited");
+        assert_eq!(excess().0, 0, "live slots are never credited");
+        assert_eq!(excess().1, 1_000);
         for &word in &live {
             release(word);
         }
@@ -3499,28 +3535,75 @@ mod tests {
             0,
             "a release build keeps the freed slots of its peak too"
         );
-        // One object at a time: the quarantine grows the table past the peak, by at most the
-        // quarantine and one slot, and every slot past the peak is free.
+        // One object at a time: the quarantine grows the table past the peak, and its capacity
+        // past a release build's, and every slot credited is free.
         for _ in 0..QUARANTINE + 5_000 {
             release(list());
         }
-        let (credited, peak, len) = excess();
+        let (credited, peak, len, capacity, at_peak, free) = excess();
         assert_eq!(peak, 1_000);
-        assert_eq!(credited, len - peak);
         assert!(credited > 0 && credited <= QUARANTINE + 1, "{credited}");
-        assert!(credited <= HEAP.with(|heap| heap.borrow().free.len()));
-        assert!(EXCESS_SLOTS.load(AtomicOrdering::Relaxed) >= credited);
+        assert!(credited <= len - peak && credited <= free);
+        assert!(credited <= capacity - at_peak);
+        assert!(credited <= capacity - release_capacity(peak));
+        assert!(EXCESS_SLOTS.load(AtomicOrdering::SeqCst) >= credited);
         assert_eq!(quarantined_bytes() % EXCESS_SLOT_BYTES, 0);
-        // A leak: objects kept alive raise the peak with them, so the slots they hold are
-        // charged in full, and the credit stays the free slots past the peak, at most the
-        // quarantine and one slot.
+        // A leak: objects kept alive raise the peak with them, and the capacity at the peak,
+        // so the slots they hold are charged in full.
         let leaked: Vec<i64> = (0..len + 1_000).map(|_| list()).collect();
-        let (after, peak, len) = excess();
+        let (after, peak, len, capacity, at_peak, free) = excess();
         assert_eq!(peak, leaked.len());
-        assert_eq!(after, len - peak);
-        assert!(after <= QUARANTINE + 1, "{after}");
-        assert!(after <= HEAP.with(|heap| heap.borrow().free.len()));
+        assert!(after <= len - peak && after <= free && after <= capacity - at_peak);
         for &word in &leaked {
+            release(word);
+        }
+        swap_slots(&mut parked);
+    }
+
+    #[test]
+    fn the_credit_never_covers_capacity_a_release_build_holds_too() {
+        // #1506, review finding 1: 70,000 live objects, then 60,000 made and freed one at a
+        // time. The debug table grows to 130,000 slots within the 131,072 a release build's
+        // table of 70,000 has, so nothing is credited: both builds hold the same table. Then
+        // more churn grows the debug table past it, and only that growth is credited, at most.
+        if !cfg!(debug_assertions) {
+            return;
+        }
+        let (peak, churn) = if cfg!(miri) {
+            (70, 60)
+        } else {
+            (70_000, 60_000)
+        };
+        let mut parked = Slots::default();
+        swap_slots(&mut parked);
+        let live: Vec<i64> = (0..peak).map(|_| list()).collect();
+        for _ in 0..churn {
+            release(list());
+        }
+        // The churn's one object alive at a time is on top of the live ones.
+        let top = peak + 1;
+        let release_cap = release_capacity(top);
+        let (credited, at, len, capacity, _, _) = excess();
+        assert_eq!(at, top);
+        assert!(
+            credited <= capacity.saturating_sub(release_cap),
+            "{credited}"
+        );
+        if !cfg!(miri) {
+            assert_eq!((len, capacity, release_cap), (130_000, 131_072, 131_072));
+            assert_eq!(
+                credited, 0,
+                "the same table in both builds is charged in both"
+            );
+        }
+        for _ in 0..QUARANTINE + churn {
+            release(list());
+        }
+        let (credited, at, _, capacity, _, _) = excess();
+        assert_eq!(at, top);
+        assert!(credited > 0, "the table grew past a release build's");
+        assert!(credited <= capacity - release_cap, "{credited}");
+        for &word in &live {
             release(word);
         }
         swap_slots(&mut parked);
