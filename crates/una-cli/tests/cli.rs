@@ -1257,6 +1257,90 @@ fn core_exports_the_file_state_label() {
 }
 
 #[test]
+fn core_exports_the_labels_operations_give() {
+    // ADR 0094 rule 8, #1518: a `uses` entry holds `gives`, after `ops`, for each operation
+    // the binding labels, declared or inferred, in the order of `ops`, so that the formal
+    // track's re-check can tell a labeled operation from an unlabeled one. A package that labels
+    // none, every package of editions 0.1 and 0.2 among them, has no such key.
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let document = |path: &std::path::Path| {
+        let output = una(&["--json", "core", path.to_str().unwrap()]);
+        assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+        let text = stdout(&output).to_owned();
+        serde_json::from_str::<Value>(&text).unwrap()
+    };
+    let decl = |document: &Value, kind: &str, name: &str| {
+        document["modules"][0]["decls"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["kind"] == kind && (d["value"]["name"] == name || d["name"] == name))
+            .map(|d| d.get("value").cloned().unwrap_or_else(|| d.clone()))
+            .unwrap_or_else(|| panic!("no {kind} {name}"))
+    };
+    let service = json!({ "level": "internal", "categories": ["Service"], "symbols": [] });
+    let inferred = document(&root.join("tests/conformance/authority/gives_inferred"));
+    // Declared on the public header, and inferred on the private helper (ADR 0094 S2).
+    for name in ["refusal", "owner_of"] {
+        assert_eq!(
+            decl(&inferred, "fun", name)["uses"],
+            json!([{
+                "cap": "files",
+                "capability": "Files",
+                "ops": ["owner"],
+                "gives": [{ "op": "owner", "label": service }],
+            }]),
+            "{name}"
+        );
+    }
+
+    // A handler's own `uses` (ADR 0094 rule 1, D9), and an unlabeled operation beside a
+    // labeled one: only the labeled one is listed.
+    let scratch_root = scratch("core-gives");
+    std::fs::write(
+        scratch_root.join("una.toml"),
+        "[package]\nname = \"g\"\nversion = \"0.1.0\"\nedition = \"0.3\"\n\n\
+         [labels]\ncategories = [\"Service\"]\n",
+    )
+    .unwrap();
+    std::fs::copy(
+        root.join("verification.lock"),
+        scratch_root.join("verification.lock"),
+    )
+    .unwrap();
+    std::fs::create_dir_all(scratch_root.join("src")).unwrap();
+    std::fs::write(
+        scratch_root.join("src/g.una"),
+        "module g\n\npub capability Store\n  op note(n: Int) -> Unit\n  op mark(n: Int) -> Unit\n\n\
+         pub capability Log\n  op write(n: Int) -> Unit\n\n\
+         handler forward() for Log\n  uses @store: Store[note gives internal[Service], mark]\n\
+         \x20 op write(n) = @store.note(n)\n",
+    )
+    .unwrap();
+    let handled = document(&scratch_root);
+    assert_eq!(
+        decl(&handled, "handler", "forward")["uses"],
+        json!([{
+            "cap": "store",
+            "capability": "Store",
+            "ops": ["note", "mark"],
+            "gives": [{ "op": "note", "label": service }],
+        }])
+    );
+
+    // No label, no key: the document of a package without `gives` does not change.
+    for path in [
+        "examples/hello",
+        "examples/journal",
+        "tests/conformance/authority/gives_inferred_handler",
+    ] {
+        let output = una(&["--json", "core", root.join(path).to_str().unwrap()]);
+        assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+        assert!(!stdout(&output).contains("\"gives\""), "{path}");
+    }
+}
+
+#[test]
 fn core_of_a_package_with_errors_is_incomplete_and_still_one_document() {
     // ADR 0083: Core holds the declarations without diagnostics; `complete` says so, the
     // diagnostics go to stderr, and the exit code follows them.

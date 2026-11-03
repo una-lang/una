@@ -229,6 +229,12 @@ pub struct Use {
     pub capability: String,
     /// The operations.
     pub ops: Vec<String>,
+    /// The label each operation gives through the binding, `op gives l` (ADR 0094 rule 1),
+    /// declared or inferred, in the order of `ops`; an operation absent here gives `public`,
+    /// so the list is empty when none is labeled, as always before edition 0.3. The formal
+    /// track's re-check reads a declaration with a labeled operation as not re-checked until
+    /// F1 models the labels (ADR 0094 rule 8, #563).
+    pub gives: Vec<(String, Label)>,
     /// The conditions written on its operations (ADR 0092), each with its operation, in the
     /// order written; empty when none is written, as always before edition 0.3.
     pub conds: Vec<(String, Clause)>,
