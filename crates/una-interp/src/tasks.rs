@@ -40,10 +40,9 @@ pub(crate) struct Run<'p, 'w> {
     pub(crate) world: RefCell<&'w mut dyn World>,
     /// The run's clock, real or virtual (ADR 0116 rule 19, `spec/26 §8`).
     pub(crate) clock: Clock,
-    /// `--stop-after-iterations`, and the iterations of `for ever` loops started so far, the
-    /// driver's included (ADR 0116 rule 19).
+    /// `--stop-after-iterations`, or a test's `stop after N`: the budget of each loop instance,
+    /// whose own iterations each loop counts (ADR 0116 rule 19, #1472).
     pub(crate) stop_after: Cell<Option<u64>>,
-    pub(crate) iterations: Cell<u64>,
     /// How many instances of each handler streaming tasks installed so far, run-wide: their ids
     /// `with:<handler>#<n>` count in the order the installations happen (`spec/27 §7`).
     pub(crate) installs: RefCell<BTreeMap<String, usize>>,
@@ -91,7 +90,6 @@ impl<'p, 'w> Run<'p, 'w> {
             world: RefCell::new(world),
             clock,
             stop_after: Cell::new(None),
-            iterations: Cell::new(0),
             installs: RefCell::new(BTreeMap::new()),
             next_within: Cell::new(0),
             reads: RefCell::new(HashMap::new()),

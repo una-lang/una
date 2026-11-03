@@ -1279,10 +1279,9 @@ impl State {
 /// The run's host stop state, set once at start (ADR 0116 rules 14 and 16).
 static RUN_STOP: OnceLock<Arc<RunStop>> = OnceLock::new();
 
-/// `--stop-after-iterations`, 0 when it is not given, and the iterations of `for ever` loops
-/// and of the host's loop started so far (rule 19).
+/// `--stop-after-iterations`, 0 when it is not given: the budget of each loop instance, a
+/// `for ever` entered or the host's loop, which counts its own iterations (rule 19, #1472).
 static STOP_AFTER: AtomicU64 = AtomicU64::new(0);
-static ITERATIONS: AtomicU64 = AtomicU64::new(0);
 
 /// The hard stop, once it has come (rule 16).
 fn hard_stop() -> Option<HardStop> {
@@ -1290,37 +1289,26 @@ fn hard_stop() -> Option<HardStop> {
 }
 
 /// Whether the loop of the host, or a `for ever`, stops at the iteration that starts now
-/// (rules 13, 14 and 19): a host stop request has reached the run, which is sticky; or
-/// `--stop-after-iterations` iterations have started, which makes the run's own request now.
-/// Otherwise the iteration counts as started.
-fn iteration_stops() -> bool {
+/// (rules 13, 14 and 19, `spec/26 §6`): a host stop request has reached the run, which is
+/// sticky; or this loop instance, which has started `started` iterations, has used up the
+/// budget of `--stop-after-iterations`. The budget is per loop instance (#1472, S-36): it
+/// stops this instance only, makes no host stop request, interrupts no operation and stays
+/// with no later loop, so a loop under a secret branch cannot move where a later public loop
+/// stops. The caller counts the iteration as started when this is false.
+fn iteration_stops(started: u64) -> bool {
     let Some(stop) = RUN_STOP.get() else {
         return false;
     };
     if stop.stopped() {
         return true;
     }
-    if claim_iteration(&ITERATIONS, STOP_AFTER.load(Ordering::SeqCst)) {
-        return false;
-    }
-    stop.request_local();
-    true
+    budget_spent(started, STOP_AFTER.load(Ordering::SeqCst))
 }
 
-/// Claims the start of one iteration on `count`, in one atomic step: true when it starts.
-/// With no limit (0), one `fetch_add`. With a limit, a compare-exchange loop that increments
-/// only while the count is below it, so threads that start iterations at once never start more
-/// than `limit` of them together.
-fn claim_iteration(count: &AtomicU64, limit: u64) -> bool {
-    if limit == 0 {
-        count.fetch_add(1, Ordering::SeqCst);
-        return true;
-    }
-    count
-        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |started| {
-            (started < limit).then(|| started + 1)
-        })
-        .is_ok()
+/// Whether a loop instance that has started `started` iterations has used up a budget of
+/// `limit` (0: no budget), so that it stops at the start of iteration `limit + 1`.
+fn budget_spent(started: u64, limit: u64) -> bool {
+    limit != 0 && started >= limit
 }
 
 /// Marks whether the thread's task runs the body of a `for ever` ([`State::in_ever`]).
@@ -1352,6 +1340,8 @@ struct Driver {
     /// every tick.
     origin: Option<u128>,
     next: u64,
+    /// The iterations the host's loop has started: its own budget (rule 19, #1472).
+    started: u64,
 }
 
 /// The nanoseconds of a millisecond.
@@ -1430,9 +1420,10 @@ pub fn drive_tick() -> i64 {
     let tick = DRIVER.with(|cell| {
         let mut driver = cell.borrow_mut();
         let driver = driver.as_mut()?;
-        if iteration_stops() {
+        if iteration_stops(driver.started) {
             return None;
         }
+        driver.started = driver.started.saturating_add(1);
         // On the run's clock, real or virtual, in nanoseconds (P13, #1151): under virtual time
         // the wait moves the clock to the tick at once (ADR 0116 rule 19), in whole
         // milliseconds. On the real clock the wait ends at the tick's exact instant, to the
@@ -1818,10 +1809,14 @@ pub(crate) fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> Option<R> {
     STATE.with(|cell| cell.borrow_mut().as_mut().map(f))
 }
 
-/// Whether a `for ever` stops at the iteration that starts now (ADR 0116 rules 13 and 14): a
-/// host stop request has come, which is sticky; its `stop` event is then traced. 1 to stop.
-pub fn ever_start() -> i64 {
-    if iteration_stops() {
+/// Whether a `for ever` stops at the iteration that starts now (ADR 0116 rules 13, 14 and 19):
+/// a host stop request has come, which is sticky, or the loop instance, which has started
+/// `started` iterations by the compiled code's own count, has used up its budget; its `stop`
+/// event is then traced. 1 to stop. The compiled code counts the iteration when this is 0.
+pub fn ever_start(started: i64) -> i64 {
+    // A count is never negative; one that wrapped past 2^63 - 1 is past every budget.
+    let started = u64::try_from(started).unwrap_or(u64::MAX);
+    if iteration_stops(started) {
         with_state(|state| {
             state.in_ever = false;
             state.stop_event();
@@ -1985,6 +1980,7 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
         ticks: drive.ticks,
         origin: None,
         next: 0,
+        started: 0,
     });
     if !set_clock(options.virtual_time) {
         let _ = writeln!(
@@ -3095,28 +3091,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn threads_racing_on_a_stop_count_start_exactly_that_many_iterations() {
-        // ADR 0116 rule 19: the claim is one atomic step, so eight threads that try 1,000
-        // claims each start exactly 1,000 iterations under a limit of 1,000.
-        let count = AtomicU64::new(0);
-        let started = AtomicU64::new(0);
-        std::thread::scope(|scope| {
-            for _ in 0..8 {
-                scope.spawn(|| {
-                    for _ in 0..1_000 {
-                        if claim_iteration(&count, 1_000) {
-                            started.fetch_add(1, Ordering::SeqCst);
-                        }
-                    }
-                });
-            }
-        });
-        assert_eq!(started.load(Ordering::SeqCst), 1_000);
-        assert_eq!(count.load(Ordering::SeqCst), 1_000);
-        // Without a limit, every claim starts an iteration.
-        let free = AtomicU64::new(0);
-        assert!((0..10).all(|_| claim_iteration(&free, 0)));
-        assert_eq!(free.load(Ordering::SeqCst), 10);
+    fn a_budget_stops_a_loop_instance_at_the_start_of_iteration_n_plus_1() {
+        // ADR 0116 rule 19, #1472: a loop instance with a budget of 3 starts iterations 1 to
+        // 3 and stops at the start of the fourth; without a budget (0) it never stops; a
+        // count past 2^63 - 1, as a wrapped one reads, is past every budget.
+        assert!((0..3).all(|started| !budget_spent(started, 3)));
+        assert!(budget_spent(3, 3));
+        assert!(budget_spent(4, 3));
+        assert!(!budget_spent(u64::MAX, 0));
+        assert!(budget_spent(u64::MAX, (1 << 63) - 1));
     }
 
     fn strings(args: &[&str]) -> Vec<String> {
