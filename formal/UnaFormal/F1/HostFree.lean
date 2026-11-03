@@ -43,6 +43,11 @@ mutual
     | .attempt b | .attemptK _ b => b.hostFree
     | .handle b _ h | .handleK _ b _ h => b.hostFree && h.hostFree
     | .letTuple _ _ b | .loop _ _ _ _ _ b => b.hostFree
+    | .exit _ _ => true
+    | .loopUntil c _ _ b => c.hostFree && b.hostFree
+    -- ADR 0116's `ever` (#946): not counted host-free, since it reads the host's stop schedule,
+    -- which differs from host to host.
+    | .loopEver _ _ _ _ _ _ => false
 end
 
 mutual
@@ -164,21 +169,23 @@ whose closures perform no host operation. -/
 def SameOn (S : String → Prop) (w : World H) (r : Run H) (r' : Run Host.unit) : Prop :=
   r = (r'.1, r'.2.1, w) ∧ (∀ v, r'.2.1 = .ok v → Val.HostFreeIn S v) ∧
     -- A failure's payload too (#512): a handler of its kind binds it.
-    ∀ k c ps, r'.2.1 = .raised k c ps → Val.HostFreeAllIn S ps
+    (∀ k c ps, r'.2.1 = .raised k c ps → Val.HostFreeAllIn S ps) ∧
+    -- An exit's state too (ADR 0116 rule 20): its loop goes on with it.
+    ∀ b vs, r'.2.1 = .exit b vs → Val.HostFreeAllIn S vs
 
 /-- The same ghost in front of two runs that agree keeps them agreeing (#561). -/
 theorem SameOn.ghost {w : World H} {r : Run H} {r' : Run Host.unit} (ev : Event) (h : SameOn S w r r') :
     SameOn S w (Run.ghost ev r) (Run.ghost ev r') := by
-  obtain ⟨h1, h2, h3⟩ := h
-  refine ⟨?_, h2, h3⟩
+  obtain ⟨h1, h2, h3, h4⟩ := h
+  refine ⟨?_, h2, h3, h4⟩
   rw [h1]; rfl
 
 theorem SameOn.stuck (w : World H) (u : World Host.unit) : SameOn S w (stuck w) (stuck u) :=
-  ⟨rfl, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h)⟩
+  ⟨rfl, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
 
 theorem SameOn.done (w : World H) (u : World Host.unit) {v : Val} (hv : Val.HostFreeIn S v) :
     SameOn S w (done w v) (done u v) :=
-  ⟨rfl, (fun _ h => by cases h; exact hv), (fun _ _ _ h => nomatch h)⟩
+  ⟨rfl, (fun _ h => by cases h; exact hv), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
 
 theorem SameOn.ret (w : World H) (u : World Host.unit) {r : Res}
     (hr : ∀ v, r = .ok v → Val.HostFreeIn S v)
@@ -187,15 +194,21 @@ theorem SameOn.ret (w : World H) (u : World Host.unit) {r : Res}
       first
       | (simp at h; done)
       | (simp only [Option.elim] at h; split at h <;> simp_all)
+      | (split at h <;> simp_all))
+    (hx : ∀ b vs, r = .exit b vs → Val.HostFreeAllIn S vs := by
+      intro _ _ h
+      first
+      | (simp at h; done)
+      | (simp only [Option.elim] at h; split at h <;> simp_all)
       | (split at h <;> simp_all)) :
     SameOn S w ([], r, w) ([], r, u) :=
-  ⟨rfl, hr, hr'⟩
+  ⟨rfl, hr, hr', hx⟩
 
 theorem andThen_same {w : World H} {r : Run H} {r' : Run Host.unit} {k : World H → Val → Run H}
     {k' : World Host.unit → Val → Run Host.unit} (h : SameOn S w r r')
     (hk : ∀ u v, r'.2.1 = .ok v → Val.HostFreeIn S v → SameOn S w (k w v) (k' u v)) :
     SameOn S w (andThen r k) (andThen r' k') := by
-  obtain ⟨rfl, hv, hr⟩ := h
+  obtain ⟨rfl, hv, hr, hx⟩ := h
   obtain ⟨t, res, u⟩ := r'
   cases res with
   | ok v =>
@@ -205,8 +218,9 @@ theorem andThen_same {w : World H} {r : Run H} {r' : Run Host.unit} {k : World H
     generalize k' u v = kr at h₂
     obtain ⟨t', r'', u'⟩ := kr
     exact ⟨rfl, h₂⟩
-  | raised k c ps => exact ⟨rfl, (fun _ h => nomatch h), hr⟩
-  | failed _ | stuck | outOfFuel | aborted => exact ⟨rfl, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h)⟩
+  | raised k c ps => exact ⟨rfl, (fun _ h => nomatch h), hr, (fun _ _ h => nomatch h)⟩
+  | exit b vs => exact ⟨rfl, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), hx⟩
+  | failed _ | stuck | outOfFuel | aborted => exact ⟨rfl, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
 
 theorem applyWith_same {run : World H → Env → Expr → Run H}
     {run' : World Host.unit → Env → Expr → Run Host.unit} {w : World H}
@@ -295,7 +309,34 @@ theorem walkFold_same {w : World H} {app : World H → Val → Val → Run H}
       walkFold_same happ u' acc' vs hacc' hvs.2
 
 theorem SameOn.abort (w : World H) (u : World Host.unit) : SameOn S w (abort w) (abort u) :=
-  ⟨rfl, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h)⟩
+  ⟨rfl, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
+
+theorem iter_same {w : World H} {r : Run H} {r' : Run Host.unit} (h : SameOn S w r r') :
+    SameOn S w (Run.iter r) (Run.iter r') := by
+  obtain ⟨rfl, hv, hr, hx⟩ := h
+  obtain ⟨t, res, u⟩ := r'
+  cases res with
+  | exit b vs =>
+    cases b
+    · exact ⟨rfl, (fun _ h => by cases h; simp only [Val.HostFreeIn]; exact hx false vs rfl),
+        (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
+    · exact ⟨rfl, hv, hr, hx⟩
+  | _ => exact ⟨rfl, hv, hr, hx⟩
+
+theorem endLoop_same {w : World H} {n : Nat} {r : Run H} {r' : Run Host.unit} (h : SameOn S w r r') :
+    SameOn S w (Run.endLoop n r) (Run.endLoop n r') := by
+  obtain ⟨rfl, hv, hr, hx⟩ := h
+  obtain ⟨t, res, u⟩ := r'
+  cases res with
+  | exit b vs =>
+    cases b
+    · exact ⟨rfl, hv, hr, hx⟩
+    · simp only [Run.endLoop]
+      split
+      · exact ⟨rfl, (fun _ h => by cases h; simp only [Val.HostFreeIn]; exact hx true vs rfl),
+          (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
+      · exact ⟨rfl, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
+  | _ => exact ⟨rfl, hv, hr, hx⟩
 
 theorem walkLoop_same {w : World H} {body : World H → Val → List Val → Run H}
     {body' : World Host.unit → Val → List Val → Run Host.unit}
@@ -306,7 +347,7 @@ theorem walkLoop_same {w : World H} {body : World H → Val → List Val → Run
   | u, st, v :: vs, hst, hvs => by
     simp only [Val.HostFreeAllIn] at hvs
     simp only [walkLoop]
-    refine andThen_same (hb u v st hvs.1 hst) fun u' r _ hr => ?_
+    refine andThen_same (iter_same (hb u v st hvs.1 hst)) fun u' r _ hr => ?_
     cases r with
     | tuple st' =>
       simp only [Val.HostFreeIn] at hr
@@ -316,12 +357,38 @@ theorem walkLoop_same {w : World H} {body : World H → Val → List Val → Run
       · exact SameOn.stuck w u'
     | _ => exact SameOn.stuck w u'
 
+theorem walkUntil_same {w : World H} {cond body : World H → List Val → Run H}
+    {cond' body' : World Host.unit → List Val → Run Host.unit}
+    (hc : ∀ u st, Val.HostFreeAllIn S st → SameOn S w (cond w st) (cond' u st))
+    (hb : ∀ u st, Val.HostFreeAllIn S st → SameOn S w (body w st) (body' u st)) :
+    ∀ (k : Nat) (u : World Host.unit) (st : List Val), Val.HostFreeAllIn S st →
+      SameOn S w (walkUntil cond body k w st) (walkUntil cond' body' k u st)
+  | 0, u, _, _ => ⟨rfl, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
+  | k + 1, u, st, hst => by
+    simp only [walkUntil]
+    refine andThen_same (hc u st hst) fun u' c _ _ => ?_
+    cases c with
+    | bool b =>
+      cases b with
+      | true => exact SameOn.done w u' (by simp only [Val.HostFreeIn]; exact hst)
+      | false =>
+        refine andThen_same (iter_same (hb u' st hst)) fun u'' r _ hr => ?_
+        cases r with
+        | tuple st' =>
+          simp only [Val.HostFreeIn] at hr
+          simp only
+          split
+          · exact walkUntil_same hc hb k u'' st' hr
+          · exact SameOn.stuck w u''
+        | _ => exact SameOn.stuck w u''
+    | _ => exact SameOn.stuck w u'
+
 theorem parseInt_same (w : World H) (u : World Host.unit) (t : String) :
     SameOn S w (parseInt w t) (parseInt u t) := by
   unfold parseInt
   cases t.toInt? with
   | some n => exact SameOn.done w u (by simp [Val.HostFreeIn])
-  | none => exact ⟨rfl, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h)⟩
+  | none => exact ⟨rfl, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
 
 /-- `checked` (#453) performs no host operation: its run is the same on any host. -/
 theorem checkRun_same {p : Program} (w : World H) (u : World Host.unit) {v : Val} {pred : String}
@@ -331,7 +398,7 @@ theorem checkRun_same {p : Program} (w : World H) (u : World Host.unit) {v : Val
   split
   · split
     · exact SameOn.done w u hv
-    · exact ⟨rfl, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h)⟩
+    · exact ⟨rfl, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
   · exact SameOn.stuck w u
 
 variable {p : Program}
@@ -349,8 +416,8 @@ theorem eval_hostFreeIn
     (∀ (w : World H) (u : World Host.unit) env e, Val.HostFreeEnvIn S env → e.hostFree = true →
       (∀ g ∈ e.callees, S g) →
       SameOn S w (eval H n p w env e) (eval Host.unit n p u env e))
-  | 0 => ⟨fun _ _ _ _ _ _ _ => ⟨rfl, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h)⟩,
-      fun _ _ _ _ _ _ _ => ⟨rfl, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h)⟩⟩
+  | 0 => ⟨fun _ _ _ _ _ _ _ => ⟨rfl, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩,
+      fun _ _ _ _ _ _ _ => ⟨rfl, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩⟩
   | n + 1 => by
     obtain ⟨ihR, ihE⟩ := eval_hostFreeIn hp hv n
     constructor
@@ -423,7 +490,7 @@ theorem eval_hostFreeIn
           dsimp only
           cases v.line with
           | none => exact SameOn.stuck w u
-          | some s => exact ⟨rfl, (fun _ h => by cases h; simp [Val.HostFreeIn]), (fun _ _ _ h => nomatch h)⟩
+          | some s => exact ⟨rfl, (fun _ h => by cases h; simp [Val.HostFreeIn]), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
       | read _ | write _ _ | hmac _ _ | req _ _ => simp [Rhs.hostFree] at hr
       | construct record fields =>
         refine SameOn.ret w u fun v hv => ?_
@@ -568,9 +635,10 @@ theorem eval_hostFreeIn
                 generalize eval Host.unit n p u (bindParams fn.params [v] []) fn.body = res at h₂
                 obtain ⟨t, r, u'⟩ := res
                 cases r with
-                | ok x => exact ⟨rfl, (fun _ h => by cases h; exact h₂.1 x rfl), (fun _ _ _ h => nomatch h)⟩
-                | raised k c ps => exact ⟨rfl, (fun _ h => nomatch h), h₂.2⟩
-                | failed _ | stuck | outOfFuel | aborted => exact ⟨rfl, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h)⟩
+                | ok x => exact ⟨rfl, (fun _ h => by cases h; exact h₂.1 x rfl), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
+                | raised k c ps => exact ⟨rfl, (fun _ h => nomatch h), h₂.2.1, (fun _ _ h => nomatch h)⟩
+                | failed _ | stuck | outOfFuel | aborted => exact ⟨rfl, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
+                | exit _ _ => exact ⟨rfl, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), h₂.2.2⟩
               · exact SameOn.stuck w u
       | map xs f =>
         simp only [evalRhs]
@@ -777,14 +845,14 @@ theorem eval_hostFreeIn
             exact ihE w u _ ee (by simp only [Val.HostFreeEnvIn]; exact ⟨hz, hf⟩)
               he.2 (fun g hg => hc g (by simp [Expr.callees, hg]))
           | _ => exact SameOn.stuck w u
-      | fail c => exact ⟨rfl, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h)⟩
+      | fail c => exact ⟨rfl, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
       | raise kind code args =>
         simp only [eval]
         cases ha : evalAtoms env args with
         | none => exact SameOn.stuck w u
         | some vs =>
-          exact ⟨rfl, (fun _ h => nomatch h), (fun _ _ _ h => by cases h; exact evalAtoms_hostFree hf ha)⟩
-      | unreachable => exact ⟨rfl, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h)⟩
+          exact ⟨rfl, (fun _ h => nomatch h), (fun _ _ _ h => by cases h; exact evalAtoms_hostFree hf ha), (fun _ _ h => nomatch h)⟩
+      | unreachable => exact ⟨rfl, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
       | withH o f b =>
         simp only [Expr.hostFree] at he
         simp only [eval]
@@ -818,15 +886,16 @@ theorem eval_hostFreeIn
         cases r with
         | ok x =>
           exact ⟨rfl, (fun _ h => by cases h; simp only [Val.HostFreeIn]; exact h₂.1 x rfl),
-            (fun _ _ _ h => nomatch h)⟩
+            (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
         | raised k c ps =>
           dsimp only
           split
-          · exact ⟨rfl, (fun _ h => by cases h; simp only [Val.HostFreeIn]; exact h₂.2 k c ps rfl),
-              (fun _ _ _ h => nomatch h)⟩
-          · exact ⟨rfl, (fun _ h => nomatch h), h₂.2⟩
-        | failed c => exact ⟨rfl, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h)⟩
-        | stuck | outOfFuel | aborted => exact ⟨rfl, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h)⟩
+          · exact ⟨rfl, (fun _ h => by cases h; simp only [Val.HostFreeIn]; exact h₂.2.1 k c ps rfl),
+              (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
+          · exact ⟨rfl, (fun _ h => nomatch h), h₂.2.1, (fun _ _ h => nomatch h)⟩
+        | failed c => exact ⟨rfl, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
+        | stuck | outOfFuel | aborted => exact ⟨rfl, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
+        | exit _ _ => exact ⟨rfl, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), h₂.2.2⟩
       | handleK kind b x h =>
         simp only [Expr.hostFree, Bool.and_eq_true] at he
         simp only [eval]
@@ -839,16 +908,17 @@ theorem eval_hostFreeIn
           dsimp only
           split
           · obtain ⟨g₁, g₂⟩ := ihE w u' ((x, .variant k c ps) :: env) h
-              (by simp only [Val.HostFreeEnvIn, Val.HostFreeIn]; exact ⟨h₂.2 k c ps rfl, hf⟩) he.2
+              (by simp only [Val.HostFreeEnvIn, Val.HostFreeIn]; exact ⟨h₂.2.1 k c ps rfl, hf⟩) he.2
               (fun g hg => hc g (by simp [Expr.callees, hg]))
             rw [g₁]
             generalize eval Host.unit n p u' ((x, .variant k c ps) :: env) h = res' at g₂
             obtain ⟨t', r', u''⟩ := res'
             exact ⟨rfl, g₂⟩
-          · exact ⟨rfl, (fun _ h => nomatch h), h₂.2⟩
-        | ok v => exact ⟨rfl, (fun _ h' => by cases h'; exact h₂.1 v rfl), (fun _ _ _ h' => nomatch h')⟩
-        | failed c => exact ⟨rfl, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h)⟩
-        | stuck | outOfFuel | aborted => exact ⟨rfl, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h)⟩
+          · exact ⟨rfl, (fun _ h => nomatch h), h₂.2.1, (fun _ _ h => nomatch h)⟩
+        | ok v => exact ⟨rfl, (fun _ h' => by cases h'; exact h₂.1 v rfl), (fun _ _ _ h' => nomatch h'), (fun _ _ h' => nomatch h')⟩
+        | failed c => exact ⟨rfl, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
+        | stuck | outOfFuel | aborted => exact ⟨rfl, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
+        | exit _ _ => exact ⟨rfl, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), h₂.2.2⟩
       | attempt b =>
         simp only [Expr.hostFree] at he
         simp only [eval]
@@ -859,10 +929,11 @@ theorem eval_hostFreeIn
         cases r with
         | ok x =>
           exact ⟨rfl, (fun _ h => by cases h; simp only [Val.HostFreeIn]; exact h₂.1 x rfl),
-            (fun _ _ _ h => nomatch h)⟩
-        | failed c => exact ⟨rfl, (fun _ h => by cases h; simp [Val.HostFreeIn]), (fun _ _ _ h => nomatch h)⟩
-        | raised k c ps => exact ⟨rfl, (fun _ h => nomatch h), h₂.2⟩
-        | stuck | outOfFuel | aborted => exact ⟨rfl, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h)⟩
+            (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
+        | failed c => exact ⟨rfl, (fun _ h => by cases h; simp [Val.HostFreeIn]), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
+        | raised k c ps => exact ⟨rfl, (fun _ h => nomatch h), h₂.2.1, (fun _ _ h => nomatch h)⟩
+        | stuck | outOfFuel | aborted => exact ⟨rfl, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
+        | exit _ _ => exact ⟨rfl, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), h₂.2.2⟩
       | handle b x h =>
         simp only [Expr.hostFree, Bool.and_eq_true] at he
         simp only [eval]
@@ -882,12 +953,16 @@ theorem eval_hostFreeIn
           exact ⟨rfl, g₂⟩
         | ok v =>
           have := (ihE w u env b hf he.1 (fun g hg => hc g (by simp [Expr.callees, hg]))).2.1 v (by rw [hres])
-          exact ⟨rfl, (fun _ h => by cases h; exact this), (fun _ _ _ h => nomatch h)⟩
+          exact ⟨rfl, (fun _ h => by cases h; exact this), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
         | raised k c ps =>
-          have := (ihE w u env b hf he.1 (fun g hg => hc g (by simp [Expr.callees, hg]))).2.2 k c ps
+          have := (ihE w u env b hf he.1 (fun g hg => hc g (by simp [Expr.callees, hg]))).2.2.1 k c ps
             (by rw [hres])
-          exact ⟨rfl, (fun _ h => nomatch h), (fun _ _ _ h => by cases h; exact this)⟩
-        | stuck | outOfFuel | aborted => exact ⟨rfl, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h)⟩
+          exact ⟨rfl, (fun _ h => nomatch h), (fun _ _ _ h => by cases h; exact this), (fun _ _ h => nomatch h)⟩
+        | stuck | outOfFuel | aborted => exact ⟨rfl, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
+        | exit b' vs =>
+          have := (ihE w u env b hf he.1 (fun g hg => hc g (by simp [Expr.callees, hg]))).2.2.2 b' vs
+            (by rw [hres])
+          exact ⟨rfl, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), (fun _ _ h => by cases h; exact this)⟩
       | letTuple bs v b =>
         simp only [Expr.hostFree] at he
         simp only [eval]
@@ -935,11 +1010,34 @@ theorem eval_hostFreeIn
                     obtain ⟨_, _, rfl⟩ := hv
                     simp [Val.HostFreeIn]
                   · cases hs
-              exact walkLoop_same (fun u' v st' hv hst => ihE w u' _ b
+              exact endLoop_same (walkLoop_same (fun u' v st' hv hst => ihE w u' _ b
                   (by simp only [Val.HostFreeEnvIn]; exact ⟨hv, bindParams_hostFree st hst hf⟩) he
                   (fun g hg => hc g (by simpa [Expr.callees] using hg)))
-                u stv items (evalAtoms_hostFree hf hi) hitems
+                u stv items (evalAtoms_hostFree hf hi) hitems)
             · exact SameOn.stuck w u
+      | exit stop state =>
+        simp only [eval]
+        cases ha : evalAtoms env state with
+        | none => exact SameOn.stuck w u
+        | some vs =>
+          exact ⟨rfl, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h),
+            (fun _ _ h => by cases h; exact evalAtoms_hostFree hf ha)⟩
+      | loopUntil c st init b =>
+        simp only [Expr.hostFree, Bool.and_eq_true] at he
+        simp only [eval]
+        cases hi : evalAtoms env init with
+        | none => exact SameOn.stuck w u
+        | some stv =>
+          simp only
+          split
+          · exact endLoop_same (walkUntil_same
+              (fun u' st' hst => ihE w u' _ c (bindParams_hostFree st hst hf) he.1
+                (fun g hg => hc g (by simp [Expr.callees, hg])))
+              (fun u' st' hst => ihE w u' _ b (bindParams_hostFree st hst hf) he.2
+                (fun g hg => hc g (by simp [Expr.callees, hg])))
+              n u stv (evalAtoms_hostFree hf hi))
+          · exact SameOn.stuck w u
+      | loopEver _ _ _ _ _ _ => simp [Expr.hostFree] at he
 
 /-- **A program without host operations runs the same on every host**: `eval_hostFreeIn` with
 every function in the set. -/

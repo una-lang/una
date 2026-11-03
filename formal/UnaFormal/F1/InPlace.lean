@@ -420,7 +420,7 @@ mutual
         rcases List.mem_append.mp hq with hq | hq
         · exact hps q hq
         · exact hΓ q hq
-      refine ⟨⟨inPlaceAll_of_mem (fun t ht => ?_), (LExprTy.inPlace hwf hΓ' rfl hb).1, rfl⟩,
+      refine ⟨⟨inPlaceAll_of_mem (fun t ht => ?_), (LExprTyX.inPlace hwf hΓ' rfl hb).1, rfl⟩,
         Eff.plainFree_none⟩
       obtain ⟨q, hq, rfl⟩ := List.mem_map.mp ht
       exact hps q hq
@@ -495,33 +495,33 @@ mutual
     | _, _, _, _, _, _, hΓ, _, .set hxs _ _ _ _ =>
       ⟨⟨⟨latom_inPlace hΓ hxs, rfl, trivial⟩, rfl⟩, Eff.plainFree_none⟩
 
-  theorem LExprTy.inPlace (hwf : p.LWellFormed) :
-      ∀ {E : List String} {Γ : LCtx} {pc : LExpr} {e : Expr} {t : LTy} {ε : Eff},
-        Γ.InPlace → pc.PlainFree → LExprTy p E Γ pc e t ε → t.InPlace ∧ ε.PlainFree
-    | _, _, _, _, _, _, hΓ, _, .atom h => ⟨latom_inPlace hΓ h, Eff.plainFree_none⟩
-    | _, _, _, _, _, _, hΓ, hpc, .letR hr _ hb hann => by
+  theorem LExprTyX.inPlace (hwf : p.LWellFormed) :
+      ∀ {E : List String} {X : Option (List LTy)} {Γ : LCtx} {pc : LExpr} {e : Expr} {t : LTy} {ε : Eff},
+        Γ.InPlace → pc.PlainFree → LExprTyX p E X Γ pc e t ε → t.InPlace ∧ ε.PlainFree
+    | _, _, _, _, _, _, _, hΓ, _, .atom h => ⟨latom_inPlace hΓ h, Eff.plainFree_none⟩
+    | _, _, _, _, _, _, _, hΓ, hpc, .letR hr _ hb hann => by
       have h₁ := LRhsTy.inPlace hwf hΓ hpc hr
-      have h₂ := LExprTy.inPlace hwf (Γ := (_, _) :: _) (fun q hq => by
+      have h₂ := LExprTyX.inPlace hwf (Γ := (_, _) :: _) (fun q hq => by
           rcases List.mem_cons.mp hq with rfl | hq
           · exact hann
           · exact hΓ q hq)
         (LExpr.plainFree_join hpc (Eff.failLabel_plainFree h₁.2)) hb
       exact ⟨h₂.1, Eff.plainFree_union h₁.2 h₂.2⟩
-    | _, _, _, _, _, _, hΓ, hpc, .letE hv _ hb hann => by
-      have h₁ := LExprTy.inPlace hwf hΓ hpc hv
-      have h₂ := LExprTy.inPlace hwf (Γ := (_, _) :: _) (fun q hq => by
+    | _, _, _, _, _, _, _, hΓ, hpc, .letE hv _ hb hann => by
+      have h₁ := LExprTyX.inPlace hwf hΓ hpc hv
+      have h₂ := LExprTyX.inPlace hwf (Γ := (_, _) :: _) (fun q hq => by
           rcases List.mem_cons.mp hq with rfl | hq
           · exact hann
           · exact hΓ q hq)
         (LExpr.plainFree_join hpc (Eff.failLabel_plainFree h₁.2)) hb
       exact ⟨h₂.1, Eff.plainFree_union h₁.2 h₂.2⟩
-    | _, _, _, _, _, _, hΓ, hpc, .ite hc ht he _ _ hs => by
+    | _, _, _, _, _, _, _, hΓ, hpc, .ite hc ht he _ _ hs => by
       have hl : _ := latom_inPlace hΓ hc
       simp only [LTy.InPlace] at hl
       exact ⟨LTy.raise_inPlace hl hs, Eff.plainFree_union_decide hl
-        (LExprTy.inPlace hwf hΓ (LExpr.plainFree_join hpc hl) ht).2
-        (LExprTy.inPlace hwf hΓ (LExpr.plainFree_join hpc hl) he).2⟩
-    | _, Γ, _, _, _, _, hΓ, hpc, .caseOption (x := x) (te := te) (ls := ls) hsc hn hsome _ _ hs => by
+        (LExprTyX.inPlace hwf hΓ (LExpr.plainFree_join hpc hl) ht).2
+        (LExprTyX.inPlace hwf hΓ (LExpr.plainFree_join hpc hl) he).2⟩
+    | _, _, Γ, _, _, _, _, hΓ, hpc, .caseOption (x := x) (te := te) (ls := ls) hsc hn hsome _ _ hs => by
       have hl := latom_inPlace hΓ hsc
       simp only [LTy.InPlace] at hl
       have hΓ' : LCtx.InPlace ((x, te.raise ls) :: Γ) := fun q hq => by
@@ -529,9 +529,9 @@ mutual
         · exact LTy.raise_inPlace hl.2 hl.1
         · exact hΓ q hq
       exact ⟨LTy.raise_inPlace hl.2 hs, Eff.plainFree_union_decide hl.2
-        (LExprTy.inPlace hwf hΓ (LExpr.plainFree_join hpc hl.2) hn).2
-        (LExprTy.inPlace hwf hΓ' (LExpr.plainFree_join hpc hl.2) hsome).2⟩
-    | _, Γ, _, _, _, _, hΓ, hpc, .caseResult (x := x) (y := y) (te := te) (ee := ee) (ls := ls) hsc hok herr _ _ hs => by
+        (LExprTyX.inPlace hwf hΓ (LExpr.plainFree_join hpc hl.2) hn).2
+        (LExprTyX.inPlace hwf hΓ' (LExpr.plainFree_join hpc hl.2) hsome).2⟩
+    | _, _, Γ, _, _, _, _, hΓ, hpc, .caseResult (x := x) (y := y) (te := te) (ee := ee) (ls := ls) hsc hok herr _ _ hs => by
       have hl := latom_inPlace hΓ hsc
       simp only [LTy.InPlace] at hl
       have hΓ₁ : LCtx.InPlace ((x, te.raise ls) :: Γ) := fun q hq => by
@@ -543,71 +543,71 @@ mutual
         · exact LTy.raise_inPlace hl.2.2 hl.2.1
         · exact hΓ q hq
       exact ⟨LTy.raise_inPlace hl.2.2 hs, Eff.plainFree_union_decide hl.2.2
-        (LExprTy.inPlace hwf hΓ₁ (LExpr.plainFree_join hpc hl.2.2) hok).2
-        (LExprTy.inPlace hwf hΓ₂ (LExpr.plainFree_join hpc hl.2.2) herr).2⟩
-    | _, _, _, _, _, _, _, _, .fail _ _ hs => ⟨hs, fun _ h => by simp at h; subst h; rfl, LExpr.plainFree_bot⟩
-    | _, _, _, _, _, _, _, _, .raise _ _ _ _ _ _ hs => ⟨hs, fun _ h => by simp at h; subst h; rfl, LExpr.plainFree_bot⟩
-    | _, _, _, _, _, _, _, _, .unreachable hs => ⟨hs, Eff.plainFree_none⟩
-    | _, Γ, _, _, _, _, hΓ, hpc, .withH (o := o) _ _ hb => by
-      have h := LExprTy.inPlace hwf (Γ := (markerName o, .text .bot) :: Γ) (fun q hq => by
+        (LExprTyX.inPlace hwf hΓ₁ (LExpr.plainFree_join hpc hl.2.2) hok).2
+        (LExprTyX.inPlace hwf hΓ₂ (LExpr.plainFree_join hpc hl.2.2) herr).2⟩
+    | _, _, _, _, _, _, _, _, _, .fail _ _ hs => ⟨hs, fun _ h => by simp at h; subst h; rfl, LExpr.plainFree_bot⟩
+    | _, _, _, _, _, _, _, _, _, .raise _ _ _ _ _ _ hs => ⟨hs, fun _ h => by simp at h; subst h; rfl, LExpr.plainFree_bot⟩
+    | _, _, _, _, _, _, _, _, _, .unreachable hs => ⟨hs, Eff.plainFree_none⟩
+    | _, _, Γ, _, _, _, _, hΓ, hpc, .withH (o := o) _ _ hb => by
+      have h := LExprTyX.inPlace hwf (Γ := (markerName o, .text .bot) :: Γ) (fun q hq => by
           rcases List.mem_cons.mp hq with rfl | hq
           · rfl
           · exact hΓ q hq) hpc hb
       exact ⟨h.1, h.2.1, h.2.2⟩
-    | _, Γ, _, _, _, _, hΓ, hpc, .caseSum (binders := xs) (fs := fs) (ls := ls) hsc hsm hf _ hth hel _ _ hs => by
+    | _, _, Γ, _, _, _, _, hΓ, hpc, .caseSum (binders := xs) (fs := fs) (ls := ls) hsc hsm hf _ hth hel _ _ hs => by
       have hl := latom_inPlace hΓ hsc
       simp only [LTy.InPlace] at hl
       have hΓ' := caseSum_ctx_inPlace hwf hΓ hl hsm hf (xs := xs)
       exact ⟨LTy.raise_inPlace hl hs, Eff.plainFree_union_decide hl
-        (LExprTy.inPlace hwf hΓ' (LExpr.plainFree_join hpc hl) hth).2
-        (LExprTy.inPlace hwf hΓ (LExpr.plainFree_join hpc hl) hel).2⟩
-    | _, Γ, _, _, _, _, hΓ, hpc, .caseSumT (binders := xs) (fs := fs) (ls := ls) hsc hsm hf _ hth hel _ _ hts _ => by
+        (LExprTyX.inPlace hwf hΓ' (LExpr.plainFree_join hpc hl) hth).2
+        (LExprTyX.inPlace hwf hΓ (LExpr.plainFree_join hpc hl) hel).2⟩
+    | _, _, Γ, _, _, _, _, hΓ, hpc, .caseSumT (binders := xs) (fs := fs) (ls := ls) hsc hsm hf _ hth hel _ _ hts _ => by
       have hl := latom_inPlace hΓ hsc
       simp only [LTy.InPlace] at hl
       have hΓ' := caseSum_ctx_inPlace hwf hΓ hl hsm hf (xs := xs)
       exact ⟨⟨hts, rfl⟩, Eff.plainFree_union_decide hl
-        (LExprTy.inPlace hwf hΓ' (LExpr.plainFree_join hpc hl) hth).2
-        (LExprTy.inPlace hwf hΓ (LExpr.plainFree_join hpc hl) hel).2⟩
-    | _, _, _, _, _, _, hΓ, hpc, .attempt hb _ => by
-      have h := LExprTy.inPlace hwf hΓ hpc hb
+        (LExprTyX.inPlace hwf hΓ' (LExpr.plainFree_join hpc hl) hth).2
+        (LExprTyX.inPlace hwf hΓ (LExpr.plainFree_join hpc hl) hel).2⟩
+    | _, _, _, _, _, _, _, hΓ, hpc, .attempt hb _ => by
+      have h := LExprTyX.inPlace hwf hΓ hpc hb
       exact ⟨⟨h.1, rfl, h.2.2⟩, Eff.plainFree_attemptOf _⟩
-    | _, _, _, _, _, _, hΓ, hpc, .attemptK hb _ _ => by
-      have h := LExprTy.inPlace hwf hΓ hpc hb
+    | _, _, _, _, _, _, _, hΓ, hpc, .attemptK hb _ _ => by
+      have h := LExprTyX.inPlace hwf hΓ hpc hb
       exact ⟨⟨h.1, rfl, h.2.2⟩, Eff.plainFree_attemptOf _⟩
-    | _, Γ, _, _, _, _, hΓ, hpc, .handleK (kind := kd) (x := x) (ε₁ := ε₁) hb _ _ hh _ _ hs => by
-      have h₁ := LExprTy.inPlace hwf hΓ hpc hb
+    | _, _, Γ, _, _, _, _, hΓ, hpc, .handleK (kind := kd) (x := x) (ε₁ := ε₁) hb _ _ hh _ _ hs => by
+      have h₁ := LExprTyX.inPlace hwf hΓ hpc hb
       have hl := Eff.failLabel_plainFree h₁.2
       have hΓ' : LCtx.InPlace ((x, .record kd ε₁.dl) :: Γ) := fun q hq => by
         rcases List.mem_cons.mp hq with rfl | hq
         · exact h₁.2.2
         · exact hΓ q hq
       exact ⟨LTy.raise_inPlace h₁.2.2 hs,
-        Eff.plainFree_handleOf h₁.2 (LExprTy.inPlace hwf hΓ' (LExpr.plainFree_join hpc hl) hh).2⟩
-    | _, Γ, _, _, _, _, hΓ, hpc, .handleKT (kind := kd) (x := x) (ε₁ := ε₁) hb _ _ hh _ _ hts _ => by
-      have h₁ := LExprTy.inPlace hwf hΓ hpc hb
+        Eff.plainFree_handleOf h₁.2 (LExprTyX.inPlace hwf hΓ' (LExpr.plainFree_join hpc hl) hh).2⟩
+    | _, _, Γ, _, _, _, _, hΓ, hpc, .handleKT (kind := kd) (x := x) (ε₁ := ε₁) hb _ _ hh _ _ hts _ => by
+      have h₁ := LExprTyX.inPlace hwf hΓ hpc hb
       have hl := Eff.failLabel_plainFree h₁.2
       have hΓ' : LCtx.InPlace ((x, .record kd ε₁.dl) :: Γ) := fun q hq => by
         rcases List.mem_cons.mp hq with rfl | hq
         · exact h₁.2.2
         · exact hΓ q hq
       exact ⟨⟨hts, rfl⟩,
-        Eff.plainFree_handleOf h₁.2 (LExprTy.inPlace hwf hΓ' (LExpr.plainFree_join hpc hl) hh).2⟩
-    | _, Γ, _, _, _, _, hΓ, hpc, .handle (x := x) (ε₁ := ε₁) hb _ hh _ _ hs => by
-      have h₁ := LExprTy.inPlace hwf hΓ hpc hb
+        Eff.plainFree_handleOf h₁.2 (LExprTyX.inPlace hwf hΓ' (LExpr.plainFree_join hpc hl) hh).2⟩
+    | _, _, Γ, _, _, _, _, hΓ, hpc, .handle (x := x) (ε₁ := ε₁) hb _ hh _ _ hs => by
+      have h₁ := LExprTyX.inPlace hwf hΓ hpc hb
       have hl := Eff.failLabel_plainFree h₁.2
       have hΓ' : LCtx.InPlace ((x, .int ε₁.dl) :: Γ) := fun q hq => by
         rcases List.mem_cons.mp hq with rfl | hq
         · exact h₁.2.2
         · exact hΓ q hq
       exact ⟨LTy.raise_inPlace h₁.2.2 hs,
-        Eff.plainFree_handleOf h₁.2 (LExprTy.inPlace hwf hΓ' (LExpr.plainFree_join hpc hl) hh).2⟩
-    | _, _, _, _, _, _, hΓ, hpc, .iteT hc ht he _ _ hts _ => by
+        Eff.plainFree_handleOf h₁.2 (LExprTyX.inPlace hwf hΓ' (LExpr.plainFree_join hpc hl) hh).2⟩
+    | _, _, _, _, _, _, _, hΓ, hpc, .iteT hc ht he _ _ hts _ => by
       have hl : _ := latom_inPlace hΓ hc
       simp only [LTy.InPlace] at hl
       exact ⟨⟨hts, rfl⟩, Eff.plainFree_union_decide hl
-        (LExprTy.inPlace hwf hΓ (LExpr.plainFree_join hpc hl) ht).2
-        (LExprTy.inPlace hwf hΓ (LExpr.plainFree_join hpc hl) he).2⟩
-    | _, Γ, _, _, _, _, hΓ, hpc, .caseOptionT (x := x) (te := te) (ls := ls) hsc hn hsome _ _ hts _ => by
+        (LExprTyX.inPlace hwf hΓ (LExpr.plainFree_join hpc hl) ht).2
+        (LExprTyX.inPlace hwf hΓ (LExpr.plainFree_join hpc hl) he).2⟩
+    | _, _, Γ, _, _, _, _, hΓ, hpc, .caseOptionT (x := x) (te := te) (ls := ls) hsc hn hsome _ _ hts _ => by
       have hl := latom_inPlace hΓ hsc
       simp only [LTy.InPlace] at hl
       have hΓ' : LCtx.InPlace ((x, te.raise ls) :: Γ) := fun q hq => by
@@ -615,9 +615,9 @@ mutual
         · exact LTy.raise_inPlace hl.2 hl.1
         · exact hΓ q hq
       exact ⟨⟨hts, rfl⟩, Eff.plainFree_union_decide hl.2
-        (LExprTy.inPlace hwf hΓ (LExpr.plainFree_join hpc hl.2) hn).2
-        (LExprTy.inPlace hwf hΓ' (LExpr.plainFree_join hpc hl.2) hsome).2⟩
-    | _, Γ, _, _, _, _, hΓ, hpc, .caseResultT (x := x) (y := y) (te := te) (ee := ee) (ls := ls) hsc hok herr _ _ hts _ => by
+        (LExprTyX.inPlace hwf hΓ (LExpr.plainFree_join hpc hl.2) hn).2
+        (LExprTyX.inPlace hwf hΓ' (LExpr.plainFree_join hpc hl.2) hsome).2⟩
+    | _, _, Γ, _, _, _, _, hΓ, hpc, .caseResultT (x := x) (y := y) (te := te) (ee := ee) (ls := ls) hsc hok herr _ _ hts _ => by
       have hl := latom_inPlace hΓ hsc
       simp only [LTy.InPlace] at hl
       have hΓ₁ : LCtx.InPlace ((x, te.raise ls) :: Γ) := fun q hq => by
@@ -629,24 +629,24 @@ mutual
         · exact LTy.raise_inPlace hl.2.2 hl.2.1
         · exact hΓ q hq
       exact ⟨⟨hts, rfl⟩, Eff.plainFree_union_decide hl.2.2
-        (LExprTy.inPlace hwf hΓ₁ (LExpr.plainFree_join hpc hl.2.2) hok).2
-        (LExprTy.inPlace hwf hΓ₂ (LExpr.plainFree_join hpc hl.2.2) herr).2⟩
-    | _, Γ, _, _, _, _, hΓ, hpc, .handleT (x := x) (ε₁ := ε₁) hb _ hh _ _ hts _ => by
-      have h₁ := LExprTy.inPlace hwf hΓ hpc hb
+        (LExprTyX.inPlace hwf hΓ₁ (LExpr.plainFree_join hpc hl.2.2) hok).2
+        (LExprTyX.inPlace hwf hΓ₂ (LExpr.plainFree_join hpc hl.2.2) herr).2⟩
+    | _, _, Γ, _, _, _, _, hΓ, hpc, .handleT (x := x) (ε₁ := ε₁) hb _ hh _ _ hts _ => by
+      have h₁ := LExprTyX.inPlace hwf hΓ hpc hb
       have hl := Eff.failLabel_plainFree h₁.2
       have hΓ' : LCtx.InPlace ((x, .int ε₁.dl) :: Γ) := fun q hq => by
         rcases List.mem_cons.mp hq with rfl | hq
         · exact h₁.2.2
         · exact hΓ q hq
       exact ⟨⟨hts, rfl⟩,
-        Eff.plainFree_handleOf h₁.2 (LExprTy.inPlace hwf hΓ' (LExpr.plainFree_join hpc hl) hh).2⟩
-    | _, Γ, _, _, _, _, hΓ, hpc, .letTuple (binders := bs) _ _ hbs hb => by
+        Eff.plainFree_handleOf h₁.2 (LExprTyX.inPlace hwf hΓ' (LExpr.plainFree_join hpc hl) hh).2⟩
+    | _, _, Γ, _, _, _, _, hΓ, hpc, .letTuple (binders := bs) _ _ hbs hb => by
       have hΓ' : LCtx.InPlace (bs ++ Γ) := fun q hq => by
         rcases List.mem_append.mp hq with hq | hq
         · exact hbs q hq
         · exact hΓ q hq
-      exact LExprTy.inPlace hwf hΓ' hpc hb
-    | _, Γ, _, _, _, _, hΓ, hpc, .loopList (x := x) (xty := xty) (state := st) hxs _ hx _ _ hst hb _ _ _ => by
+      exact LExprTyX.inPlace hwf hΓ' hpc hb
+    | _, _, Γ, _, _, _, _, hΓ, hpc, .loopList (x := x) (xty := xty) (state := st) hxs _ hx _ _ hst hb _ _ _ => by
       have hl := latom_inPlace hΓ hxs
       simp only [LTy.InPlace] at hl
       have hΓ' : LCtx.InPlace ((x, xty) :: (st ++ Γ)) := fun q hq => by
@@ -656,10 +656,10 @@ mutual
           · exact hst q hq
           · exact hΓ q hq
       refine ⟨⟨inPlaceAll_of_mem (fun t ht => ?_), rfl⟩,
-        Eff.plainFree_decide (LExprTy.inPlace hwf hΓ' (LExpr.plainFree_join hpc hl.2) hb).2 hl.2⟩
+        Eff.plainFree_decide (LExprTyX.inPlace hwf hΓ' (LExpr.plainFree_join hpc hl.2) hb).2 hl.2⟩
       obtain ⟨q, hq, rfl⟩ := List.mem_map.mp ht
       exact hst q hq
-    | _, Γ, _, _, _, _, hΓ, hpc, .loopRange (x := x) (xty := xty) (state := st) hlo hhi _ hx _ _ hst hb _ _ _ => by
+    | _, _, Γ, _, _, _, _, hΓ, hpc, .loopRange (x := x) (xty := xty) (state := st) hlo hhi _ hx _ _ hst hb _ _ _ => by
       have h₁ := latom_inPlace hΓ hlo
       have h₂ := latom_inPlace hΓ hhi
       simp only [LTy.InPlace] at h₁ h₂
@@ -671,9 +671,42 @@ mutual
           · exact hst q hq
           · exact hΓ q hq
       refine ⟨⟨inPlaceAll_of_mem (fun t ht => ?_), rfl⟩,
-        Eff.plainFree_decide (LExprTy.inPlace hwf hΓ' (LExpr.plainFree_join hpc hl) hb).2 hl⟩
+        Eff.plainFree_decide (LExprTyX.inPlace hwf hΓ' (LExpr.plainFree_join hpc hl) hb).2 hl⟩
+      obtain ⟨q, hq, rfl⟩ := List.mem_map.mp ht
+      exact hst q hq
+    | _, _, _, _, _, _, _, _, _, .exit _ _ _ hs => ⟨hs, Eff.plainFree_none⟩
+    | _, _, Γ, _, _, _, _, hΓ, hpc, .loopUntil (state := st) _ _ hst hld hc _ hb _ _ _ _ => by
+      have hΓ' : LCtx.InPlace (st ++ Γ) := fun q hq => by
+        rcases List.mem_append.mp hq with hq | hq
+        · exact hst q hq
+        · exact hΓ q hq
+      have hpc' := LExpr.plainFree_join hpc hld
+      refine ⟨⟨inPlaceAll_of_mem (fun t ht => ?_), rfl⟩,
+        Eff.plainFree_decide (Eff.plainFree_union (LExprTyX.inPlace hwf hΓ' hpc' hc).2
+          (LExprTyX.inPlace hwf hΓ' hpc' hb).2) hld⟩
+      obtain ⟨q, hq, rfl⟩ := List.mem_map.mp ht
+      exact hst q hq
+    | _, _, Γ, _, _, _, _, hΓ, hpc, .loopEver (state := st) (os := os) _ _ hst hb _ _ hos ho _ _ => by
+      have hΓ' : LCtx.InPlace (st ++ Γ) := fun q hq => by
+        rcases List.mem_append.mp hq with hq | hq
+        · exact hst q hq
+        · exact hΓ q hq
+      have hΓo : LCtx.InPlace (os ++ Γ) := fun q hq => by
+        rcases List.mem_append.mp hq with hq | hq
+        · have : q.2 ∈ st.map Prod.snd := hos ▸ List.mem_map_of_mem (f := Prod.snd) hq
+          obtain ⟨q', hq', he⟩ := List.mem_map.mp this
+          exact he ▸ hst q' hq'
+        · exact hΓ q hq
+      refine ⟨⟨inPlaceAll_of_mem (fun t ht => ?_), rfl⟩,
+        Eff.plainFree_union (LExprTyX.inPlace hwf hΓ' hpc hb).2 (LExprTyX.inPlace hwf hΓo hpc ho).2⟩
       obtain ⟨q, hq, rfl⟩ := List.mem_map.mp ht
       exact hst q hq
 end
+
+/-- `LExprTyX.inPlace` outside a loop's body. -/
+theorem LExprTy.inPlace (hwf : p.LWellFormed) {E : List String} {Γ : LCtx} {pc : LExpr} {e : Expr}
+    {t : LTy} {ε : Eff} (hΓ : Γ.InPlace) (hpc : pc.PlainFree) (h : LExprTy p E Γ pc e t ε) :
+    t.InPlace ∧ ε.PlainFree :=
+  LExprTyX.inPlace hwf hΓ hpc h
 
 end Una.F1

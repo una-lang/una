@@ -196,58 +196,68 @@ mutual
     | _, _, _, _, _, _, .append _ _ _ => Eff.dlOk_none
     | _, _, _, _, _, _, .set _ _ _ _ _ => Eff.dlOk_none
 
-  theorem LExprTy.dlOk :
-      ∀ {E : List String} {Γ : LCtx} {pc : LExpr} {e : Expr} {t : LTy} {ε : Eff},
-        LExprTy p E Γ pc e t ε → ε.DlOk p pc
-    | _, _, _, _, _, _, .atom _ => Eff.dlOk_none
-    | _, _, _, _, _, _, .letR hr _ hb _ =>
-      Eff.DlOk.union (LRhsTy.dlOk hr) (LExprTy.dlOk hb) (LExpr.le_join_left _ _)
-    | _, _, _, _, _, _, .letE hv _ hb _ =>
-      Eff.DlOk.union (LExprTy.dlOk hv) (LExprTy.dlOk hb) (LExpr.le_join_left _ _)
-    | _, _, _, _, _, _, .ite _ ht he _ _ _ =>
-      (Eff.DlOk.decide (Eff.DlOk.union (LExprTy.dlOk ht) (LExprTy.dlOk he) (LExpr.le_refl _))
+  theorem LExprTyX.dlOk :
+      ∀ {E : List String} {X : Option (List LTy)} {Γ : LCtx} {pc : LExpr} {e : Expr} {t : LTy} {ε : Eff},
+        LExprTyX p E X Γ pc e t ε → ε.DlOk p pc
+    | _, _, _, _, _, _, _, .atom _ => Eff.dlOk_none
+    | _, _, _, _, _, _, _, .letR hr _ hb _ =>
+      Eff.DlOk.union (LRhsTy.dlOk hr) (LExprTyX.dlOk hb) (LExpr.le_join_left _ _)
+    | _, _, _, _, _, _, _, .letE hv _ hb _ =>
+      Eff.DlOk.union (LExprTyX.dlOk hv) (LExprTyX.dlOk hb) (LExpr.le_join_left _ _)
+    | _, _, _, _, _, _, _, .ite _ ht he _ _ _ =>
+      (Eff.DlOk.decide (Eff.DlOk.union (LExprTyX.dlOk ht) (LExprTyX.dlOk he) (LExpr.le_refl _))
         (LExpr.le_join_right _ _)).mono (LExpr.le_join_left _ _)
-    | _, _, _, _, _, _, .iteT _ ht he _ _ _ _ =>
-      (Eff.DlOk.decide (Eff.DlOk.union (LExprTy.dlOk ht) (LExprTy.dlOk he) (LExpr.le_refl _))
+    | _, _, _, _, _, _, _, .iteT _ ht he _ _ _ _ =>
+      (Eff.DlOk.decide (Eff.DlOk.union (LExprTyX.dlOk ht) (LExprTyX.dlOk he) (LExpr.le_refl _))
         (LExpr.le_join_right _ _)).mono (LExpr.le_join_left _ _)
-    | _, _, _, _, _, _, .caseOption _ hn hs _ _ _ =>
-      (Eff.DlOk.decide (Eff.DlOk.union (LExprTy.dlOk hn) (LExprTy.dlOk hs) (LExpr.le_refl _))
+    | _, _, _, _, _, _, _, .caseOption _ hn hs _ _ _ =>
+      (Eff.DlOk.decide (Eff.DlOk.union (LExprTyX.dlOk hn) (LExprTyX.dlOk hs) (LExpr.le_refl _))
         (LExpr.le_join_right _ _)).mono (LExpr.le_join_left _ _)
-    | _, _, _, _, _, _, .caseOptionT _ hn hs _ _ _ _ =>
-      (Eff.DlOk.decide (Eff.DlOk.union (LExprTy.dlOk hn) (LExprTy.dlOk hs) (LExpr.le_refl _))
+    | _, _, _, _, _, _, _, .caseOptionT _ hn hs _ _ _ _ =>
+      (Eff.DlOk.decide (Eff.DlOk.union (LExprTyX.dlOk hn) (LExprTyX.dlOk hs) (LExpr.le_refl _))
         (LExpr.le_join_right _ _)).mono (LExpr.le_join_left _ _)
-    | _, _, _, _, _, _, .caseResult _ ho he _ _ _ =>
-      (Eff.DlOk.decide (Eff.DlOk.union (LExprTy.dlOk ho) (LExprTy.dlOk he) (LExpr.le_refl _))
+    | _, _, _, _, _, _, _, .caseResult _ ho he _ _ _ =>
+      (Eff.DlOk.decide (Eff.DlOk.union (LExprTyX.dlOk ho) (LExprTyX.dlOk he) (LExpr.le_refl _))
         (LExpr.le_join_right _ _)).mono (LExpr.le_join_left _ _)
-    | _, _, _, _, _, _, .caseResultT _ ho he _ _ _ _ =>
-      (Eff.DlOk.decide (Eff.DlOk.union (LExprTy.dlOk ho) (LExprTy.dlOk he) (LExpr.le_refl _))
+    | _, _, _, _, _, _, _, .caseResultT _ ho he _ _ _ _ =>
+      (Eff.DlOk.decide (Eff.DlOk.union (LExprTyX.dlOk ho) (LExprTyX.dlOk he) (LExpr.le_refl _))
         (LExpr.le_join_right _ _)).mono (LExpr.le_join_left _ _)
-    | _, _, _, _, _, _, .fail hle _ _ => Eff.dlOk_leaf hle (LExpr.bot_le _)
-    | _, _, _, _, _, _, .raise _ _ _ _ hle _ _ => Eff.dlOk_leaf hle (LExpr.bot_le _)
-    | _, _, _, _, _, _, .unreachable _ => Eff.dlOk_none
-    | _, _, _, _, _, _, .withH _ _ hb => ⟨(LExprTy.dlOk hb).1, (LExprTy.dlOk hb).2⟩
-    | _, _, _, _, _, _, .caseSum _ _ _ _ ht he _ _ _ =>
-      (Eff.DlOk.decide (Eff.DlOk.union (LExprTy.dlOk ht) (LExprTy.dlOk he) (LExpr.le_refl _))
+    | _, _, _, _, _, _, _, .fail hle _ _ => Eff.dlOk_leaf hle (LExpr.bot_le _)
+    | _, _, _, _, _, _, _, .raise _ _ _ _ hle _ _ => Eff.dlOk_leaf hle (LExpr.bot_le _)
+    | _, _, _, _, _, _, _, .unreachable _ => Eff.dlOk_none
+    | _, _, _, _, _, _, _, .withH _ _ hb => ⟨(LExprTyX.dlOk hb).1, (LExprTyX.dlOk hb).2⟩
+    | _, _, _, _, _, _, _, .caseSum _ _ _ _ ht he _ _ _ =>
+      (Eff.DlOk.decide (Eff.DlOk.union (LExprTyX.dlOk ht) (LExprTyX.dlOk he) (LExpr.le_refl _))
         (LExpr.le_join_right _ _)).mono (LExpr.le_join_left _ _)
-    | _, _, _, _, _, _, .caseSumT _ _ _ _ ht he _ _ _ _ =>
-      (Eff.DlOk.decide (Eff.DlOk.union (LExprTy.dlOk ht) (LExprTy.dlOk he) (LExpr.le_refl _))
+    | _, _, _, _, _, _, _, .caseSumT _ _ _ _ ht he _ _ _ _ =>
+      (Eff.DlOk.decide (Eff.DlOk.union (LExprTyX.dlOk ht) (LExprTyX.dlOk he) (LExpr.le_refl _))
         (LExpr.le_join_right _ _)).mono (LExpr.le_join_left _ _)
-    | _, _, _, _, _, _, .attempt _ _ => Eff.dlOk_attemptOf _
-    | _, _, _, _, _, _, .attemptK _ _ _ => Eff.dlOk_attemptOf _
-    | _, _, _, _, _, _, .handle hb _ hh _ _ _ => Eff.DlOk.handleOf (LExprTy.dlOk hb) (LExprTy.dlOk hh)
-    | _, _, _, _, _, _, .handleK hb _ _ hh _ _ _ => Eff.DlOk.handleOf (LExprTy.dlOk hb) (LExprTy.dlOk hh)
-    | _, _, _, _, _, _, .handleT hb _ hh _ _ _ _ => Eff.DlOk.handleOf (LExprTy.dlOk hb) (LExprTy.dlOk hh)
-    | _, _, _, _, _, _, .handleKT hb _ _ hh _ _ _ _ => Eff.DlOk.handleOf (LExprTy.dlOk hb) (LExprTy.dlOk hh)
-    | _, _, _, _, _, _, .letTuple _ _ _ hb => LExprTy.dlOk hb
-    | _, _, _, _, _, _, .loopList _ _ _ _ _ _ hb _ _ _ =>
-      (Eff.DlOk.decide (LExprTy.dlOk hb) (LExpr.le_join_right _ _)).mono (LExpr.le_join_left _ _)
-    | _, _, _, _, _, _, .loopRange _ _ _ _ _ _ _ hb _ _ _ =>
-      (Eff.DlOk.decide (LExprTy.dlOk hb) (LExpr.le_join_right _ _)).mono (LExpr.le_join_left _ _)
+    | _, _, _, _, _, _, _, .attempt _ _ => Eff.dlOk_attemptOf _
+    | _, _, _, _, _, _, _, .attemptK _ _ _ => Eff.dlOk_attemptOf _
+    | _, _, _, _, _, _, _, .handle hb _ hh _ _ _ => Eff.DlOk.handleOf (LExprTyX.dlOk hb) (LExprTyX.dlOk hh)
+    | _, _, _, _, _, _, _, .handleK hb _ _ hh _ _ _ => Eff.DlOk.handleOf (LExprTyX.dlOk hb) (LExprTyX.dlOk hh)
+    | _, _, _, _, _, _, _, .handleT hb _ hh _ _ _ _ => Eff.DlOk.handleOf (LExprTyX.dlOk hb) (LExprTyX.dlOk hh)
+    | _, _, _, _, _, _, _, .handleKT hb _ _ hh _ _ _ _ => Eff.DlOk.handleOf (LExprTyX.dlOk hb) (LExprTyX.dlOk hh)
+    | _, _, _, _, _, _, _, .letTuple _ _ _ hb => LExprTyX.dlOk hb
+    | _, _, _, _, _, _, _, .loopList _ _ _ _ _ _ hb _ _ _ =>
+      (Eff.DlOk.decide (LExprTyX.dlOk hb) (LExpr.le_join_right _ _)).mono (LExpr.le_join_left _ _)
+    | _, _, _, _, _, _, _, .loopRange _ _ _ _ _ _ _ hb _ _ _ =>
+      (Eff.DlOk.decide (LExprTyX.dlOk hb) (LExpr.le_join_right _ _)).mono (LExpr.le_join_left _ _)
+    | _, _, _, _, _, _, _, .exit _ _ _ _ => Eff.dlOk_none
+    | _, _, _, _, _, _, _, .loopUntil _ _ _ _ hc _ hb _ _ _ _ =>
+      (Eff.DlOk.decide (Eff.DlOk.union (LExprTyX.dlOk hc) (LExprTyX.dlOk hb) (LExpr.le_refl _))
+        (LExpr.le_join_right _ _)).mono (LExpr.le_join_left _ _)
+    | _, _, _, _, _, _, _, .loopEver _ _ _ hb _ _ _ ho _ _ =>
+      Eff.DlOk.union (LExprTyX.dlOk hb) (LExprTyX.dlOk ho) (LExpr.le_refl _)
 end
 
 /-- **`dl ⊑ failLabel`** for every typing (#524). -/
+theorem LExprTyX.dl_le_failLabel {E : List String} {X : Option (List LTy)} {Γ : LCtx}
+    {pc : LExpr} {e : Expr} {t : LTy} {ε : Eff} (h : LExprTyX p E X Γ pc e t ε) :
+    p.le ε.dl ε.failLabel := (LExprTyX.dlOk h).2
+
 theorem LExprTy.dl_le_failLabel {E : List String} {Γ : LCtx} {pc : LExpr} {e : Expr} {t : LTy}
-    {ε : Eff} (h : LExprTy p E Γ pc e t ε) : p.le ε.dl ε.failLabel := (LExprTy.dlOk h).2
+    {ε : Eff} (h : LExprTy p E Γ pc e t ε) : p.le ε.dl ε.failLabel := (LExprTyX.dlOk h).2
 
 theorem LRhsTy.dl_le_failLabel {E : List String} {Γ : LCtx} {pc : LExpr} {r : Rhs} {t : LTy}
     {ε : Eff} (h : LRhsTy p E Γ pc r t ε) : p.le ε.dl ε.failLabel := (LRhsTy.dlOk h).2

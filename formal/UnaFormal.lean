@@ -66,6 +66,9 @@ import UnaFormal.F1.AtExample
 import UnaFormal.F1.FixedExample
 import UnaFormal.F1.LoopLeak
 import UnaFormal.F1.LoopExample
+import UnaFormal.F1.Until
+import UnaFormal.F1.LoopImportTests
+import UnaFormal.F1.LongRunExample
 import UnaFormal.F1.Confine
 import UnaFormal.F1.BoundaryExample
 import UnaFormal.F1.BoundaryImportTests

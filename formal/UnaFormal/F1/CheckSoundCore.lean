@@ -179,7 +179,7 @@ mutual
         simp only [bind_ok, pure_ok, need_ok, List.all_eq_true, List.isEmpty_iff, Bool.and_eq_true]
           at h
         obtain ⟨_, hip, εb, hb, _, hfail, _, hrl, _, hrs, _, hfl, _, ⟨⟨ho, hg⟩, hfs⟩, rfl⟩ := h
-        obtain ⟨tb, htb, hflow⟩ := checkExpr_sound hb
+        obtain ⟨tb, htb, hflow⟩ := checkExprX_sound hb
         exact ⟨_, .lambda htb (le_ok hfail) hrl hrs (fun q hq => inPlace_sound (hip q hq)),
           .fn (flowsB_sound _ _ hfl) hflow (flags_of ho) (hostLeB_sound hg) (flags_of hfs)
             (LExpr.bot_le l)⟩
@@ -283,27 +283,27 @@ mutual
       exact ⟨_, .set (atomTy_sound hxt) (atomTy_sound hit) (le_ok hle) (atomTy_sound hvt)
         (flowTo_ok hfl), flowTo_ok hf⟩
 
-  theorem checkExpr_sound {Γ : LCtx} {pc : LExpr} {s : LTy} :
-      ∀ {e : Expr} {ε : Eff}, checkExpr p E Γ pc s e = .ok ε →
-        ∃ t, LExprTy p E Γ pc e t ε ∧ Flow p.top t s
+  theorem checkExprX_sound {X : Option (List LTy × LExpr)} {Γ : LCtx} {pc : LExpr} {s : LTy} :
+      ∀ {e : Expr} {ε : Eff}, checkExprX p E X Γ pc s e = .ok ε →
+        ∃ t, LExprTyX p E (X.map Prod.fst) Γ pc e t ε ∧ Flow p.top t s
     | .atom a, ε, h => by
-      simp only [checkExpr, bind_ok, pure_ok] at h
+      simp only [checkExprX, bind_ok, pure_ok] at h
       obtain ⟨t, ht, _, hf, rfl⟩ := h
       exact ⟨t, .atom (atomTy_sound ht), flowTo_ok hf⟩
     | .letR x ann value body, ε, h => by
-      simp only [checkExpr, bind_ok, pure_ok, need_ok] at h
+      simp only [checkExprX, bind_ok, pure_ok, need_ok] at h
       obtain ⟨_, hip, ε₁, h₁, ε₂, h₂, rfl⟩ := h
       obtain ⟨t, ht, hflow⟩ := checkRhs_sound h₁
-      obtain ⟨s', hs', hfs⟩ := checkExpr_sound h₂
+      obtain ⟨s', hs', hfs⟩ := checkExprX_sound h₂
       exact ⟨_, .letR ht hflow hs' (inPlace_sound hip), hfs⟩
     | .letE x ann value body, ε, h => by
-      simp only [checkExpr, bind_ok, pure_ok, need_ok] at h
+      simp only [checkExprX, bind_ok, pure_ok, need_ok] at h
       obtain ⟨_, hip, ε₁, h₁, ε₂, h₂, rfl⟩ := h
-      obtain ⟨t, ht, hflow⟩ := checkExpr_sound h₁
-      obtain ⟨s', hs', hfs⟩ := checkExpr_sound h₂
+      obtain ⟨t, ht, hflow⟩ := checkExprX_sound h₁
+      obtain ⟨s', hs', hfs⟩ := checkExprX_sound h₂
       exact ⟨_, .letE ht hflow hs' (inPlace_sound hip), hfs⟩
     | .ite cond thenE elseE, ε, h => by
-      simp only [checkExpr, bind_ok] at h
+      simp only [checkExprX, bind_ok] at h
       obtain ⟨ct, hct, h⟩ := h
       cases ct with
       | bool lc =>
@@ -311,19 +311,19 @@ mutual
         case tuple ts l =>
           simp only [bind_ok, pure_ok, need_ok] at h
           obtain ⟨_, hip, ε₁, h₁, ε₂, h₂, _, hcov, rfl⟩ := h
-          obtain ⟨t₁, ht₁, f₁⟩ := checkExpr_sound h₁
-          obtain ⟨t₂, ht₂, f₂⟩ := checkExpr_sound h₂
+          obtain ⟨t₁, ht₁, f₁⟩ := checkExprX_sound h₁
+          obtain ⟨t₂, ht₂, f₂⟩ := checkExprX_sound h₂
           exact ⟨_, .iteT (atomTy_sound hct) ht₁ ht₂ f₁ f₂ (inPlaceAll_sound hip) (flowsB_sound _ _ hcov),
             .tuple (Flows.refl _) (LExpr.bot_le _)⟩
         all_goals
           simp only [bind_ok, pure_ok, need_ok] at h
           obtain ⟨_, hip, ε₁, h₁, ε₂, h₂, _, hf, rfl⟩ := h
-          obtain ⟨t₁, ht₁, f₁⟩ := checkExpr_sound h₁
-          obtain ⟨t₂, ht₂, f₂⟩ := checkExpr_sound h₂
+          obtain ⟨t₁, ht₁, f₁⟩ := checkExprX_sound h₁
+          obtain ⟨t₂, ht₂, f₂⟩ := checkExprX_sound h₂
           exact ⟨_, .ite (atomTy_sound hct) ht₁ ht₂ f₁ f₂ (inPlace_sound hip), flowTo_ok hf⟩
       | _ => simp at h
     | .caseOption scrutinee noneE x someE, ε, h => by
-      simp only [checkExpr, bind_ok] at h
+      simp only [checkExprX, bind_ok] at h
       obtain ⟨st, hst, h⟩ := h
       cases st with
       | option te ls =>
@@ -331,19 +331,19 @@ mutual
         case tuple ts l =>
           simp only [bind_ok, pure_ok, need_ok] at h
           obtain ⟨_, hip, ε₁, h₁, ε₂, h₂, _, hcov, rfl⟩ := h
-          obtain ⟨t₁, ht₁, f₁⟩ := checkExpr_sound h₁
-          obtain ⟨t₂, ht₂, f₂⟩ := checkExpr_sound h₂
+          obtain ⟨t₁, ht₁, f₁⟩ := checkExprX_sound h₁
+          obtain ⟨t₂, ht₂, f₂⟩ := checkExprX_sound h₂
           exact ⟨_, .caseOptionT (atomTy_sound hst) ht₁ ht₂ f₁ f₂ (inPlaceAll_sound hip)
             (flowsB_sound _ _ hcov), .tuple (Flows.refl _) (LExpr.bot_le _)⟩
         all_goals
           simp only [bind_ok, pure_ok, need_ok] at h
           obtain ⟨_, hip, ε₁, h₁, ε₂, h₂, _, hf, rfl⟩ := h
-          obtain ⟨t₁, ht₁, f₁⟩ := checkExpr_sound h₁
-          obtain ⟨t₂, ht₂, f₂⟩ := checkExpr_sound h₂
+          obtain ⟨t₁, ht₁, f₁⟩ := checkExprX_sound h₁
+          obtain ⟨t₂, ht₂, f₂⟩ := checkExprX_sound h₂
           exact ⟨_, .caseOption (atomTy_sound hst) ht₁ ht₂ f₁ f₂ (inPlace_sound hip), flowTo_ok hf⟩
       | _ => simp at h
     | .caseResult scrutinee x okE y errE, ε, h => by
-      simp only [checkExpr, bind_ok] at h
+      simp only [checkExprX, bind_ok] at h
       obtain ⟨st, hst, h⟩ := h
       cases st with
       | result te ls =>
@@ -351,42 +351,42 @@ mutual
         case tuple ts l =>
           simp only [bind_ok, pure_ok, need_ok] at h
           obtain ⟨_, hip, ε₁, h₁, ε₂, h₂, _, hcov, rfl⟩ := h
-          obtain ⟨t₁, ht₁, f₁⟩ := checkExpr_sound h₁
-          obtain ⟨t₂, ht₂, f₂⟩ := checkExpr_sound h₂
+          obtain ⟨t₁, ht₁, f₁⟩ := checkExprX_sound h₁
+          obtain ⟨t₂, ht₂, f₂⟩ := checkExprX_sound h₂
           exact ⟨_, .caseResultT (atomTy_sound hst) ht₁ ht₂ f₁ f₂ (inPlaceAll_sound hip)
             (flowsB_sound _ _ hcov), .tuple (Flows.refl _) (LExpr.bot_le _)⟩
         all_goals
           simp only [bind_ok, pure_ok, need_ok] at h
           obtain ⟨_, hip, ε₁, h₁, ε₂, h₂, _, hf, rfl⟩ := h
-          obtain ⟨t₁, ht₁, f₁⟩ := checkExpr_sound h₁
-          obtain ⟨t₂, ht₂, f₂⟩ := checkExpr_sound h₂
+          obtain ⟨t₁, ht₁, f₁⟩ := checkExprX_sound h₁
+          obtain ⟨t₂, ht₂, f₂⟩ := checkExprX_sound h₂
           exact ⟨_, .caseResult (atomTy_sound hst) ht₁ ht₂ f₁ f₂ (inPlace_sound hip), flowTo_ok hf⟩
       | _ => simp at h
     | .fail code, ε, h => by
-      simp only [checkExpr, bind_ok, pure_ok, need_ok] at h
+      simp only [checkExprX, bind_ok, pure_ok, need_ok] at h
       obtain ⟨_, hle, _, hsf, _, hip, rfl⟩ := h
       exact ⟨s, .fail (le_ok hle) (symFree_sound hsf) (inPlace_sound hip), Flow.refl s⟩
     | .raise kind code args, ε, h => by
-      simp only [checkExpr, bind_ok, pure_ok, need_ok, some_ok] at h
+      simp only [checkExprX, bind_ok, pure_ok, need_ok, some_ok] at h
       obtain ⟨sm, hsm, fs, hfs, ts, hts, _, hfl, _, hle, _, hsf, _, hip, rfl⟩ := h
       exact ⟨s, .raise hsm hfs (atomsTy_sound hts) (flowsB_sound _ _ hfl) (le_ok hle)
         (symFree_sound hsf) (inPlace_sound hip), Flow.refl s⟩
     | .unreachable, ε, h => by
-      simp only [checkExpr, bind_ok, pure_ok, need_ok] at h
+      simp only [checkExprX, bind_ok, pure_ok, need_ok] at h
       obtain ⟨_, hip, rfl⟩ := h
       exact ⟨s, .unreachable (inPlace_sound hip), Flow.refl s⟩
     | .withH o f body, ε, h => by
-      simp only [checkExpr] at h
+      simp only [checkExprX] at h
       split at h
       · rename_i o' hl
         simp only [bind_ok, need_ok, beq_iff_eq, some_ok, pure_ok] at h
         obtain ⟨_, heq, fn, hfn, ε', h, rfl⟩ := h
         subst heq
-        obtain ⟨t, ht, hft⟩ := checkExpr_sound h
+        obtain ⟨t, ht, hft⟩ := checkExprX_sound h
         exact ⟨t, .withH hl hfn ht, hft⟩
       · simp at h
     | .caseSum scrutinee ctor binders thenE elseE, ε, h => by
-      simp only [checkExpr, bind_ok] at h
+      simp only [checkExprX, bind_ok] at h
       obtain ⟨st, hst, h⟩ := h
       cases st with
       | record kind ls =>
@@ -397,85 +397,85 @@ mutual
         case tuple ts l =>
           simp only [bind_ok, pure_ok, need_ok] at h
           obtain ⟨_, hip, ε₁, h₁, ε₂, h₂, _, hcov, rfl⟩ := h
-          obtain ⟨t₁, ht₁, f₁⟩ := checkExpr_sound h₁
-          obtain ⟨t₂, ht₂, f₂⟩ := checkExpr_sound h₂
+          obtain ⟨t₁, ht₁, f₁⟩ := checkExprX_sound h₁
+          obtain ⟨t₂, ht₂, f₂⟩ := checkExprX_sound h₂
           exact ⟨_, .caseSumT (atomTy_sound hst) hsm hfs hlen' ht₁ ht₂ f₁ f₂ (inPlaceAll_sound hip)
             (flowsB_sound _ _ hcov), .tuple (Flows.refl _) (LExpr.bot_le _)⟩
         all_goals
           simp only [bind_ok, pure_ok, need_ok] at h
           obtain ⟨_, hip, ε₁, h₁, ε₂, h₂, _, hf, rfl⟩ := h
-          obtain ⟨t₁, ht₁, f₁⟩ := checkExpr_sound h₁
-          obtain ⟨t₂, ht₂, f₂⟩ := checkExpr_sound h₂
+          obtain ⟨t₁, ht₁, f₁⟩ := checkExprX_sound h₁
+          obtain ⟨t₂, ht₂, f₂⟩ := checkExprX_sound h₂
           exact ⟨_, .caseSum (atomTy_sound hst) hsm hfs hlen' ht₁ ht₂ f₁ f₂ (inPlace_sound hip),
             flowTo_ok hf⟩
       | _ => simp at h
     | .attempt body, ε, h => by
-      simp only [checkExpr] at h
+      simp only [checkExprX] at h
       cases s with
       | result t e l =>
         simp only [bind_ok, pure_ok, need_ok, List.isEmpty_iff] at h
         obtain ⟨εb, hb, _, hra, _, hle, _, he, rfl⟩ := h
-        obtain ⟨tb, htb, hflow⟩ := checkExpr_sound hb
+        obtain ⟨tb, htb, hflow⟩ := checkExprX_sound hb
         exact ⟨_, .attempt htb hra, .result hflow (flowB_sound _ _ he) (le_ok hle)⟩
       | _ => simp at h
     | .attemptK kind body, ε, h => by
-      simp only [checkExpr] at h
+      simp only [checkExprX] at h
       cases s with
       | result t e l =>
         simp only [bind_ok, pure_ok, need_ok, List.all_eq_true] at h
         obtain ⟨εb, hb, _, hcd, _, hra, _, hle, _, he, rfl⟩ := h
-        obtain ⟨tb, htb, hflow⟩ := checkExpr_sound hb
+        obtain ⟨tb, htb, hflow⟩ := checkExprX_sound hb
         exact ⟨_, .attemptK htb (by simpa using hcd) (fun k hk => by simpa using hra k hk),
           .result hflow (flowB_sound _ _ he) (le_ok hle)⟩
       | _ => simp at h
     | .handle body x handler, ε, h => by
       cases s
       case tuple ts l =>
-        simp only [checkExpr, bind_ok, pure_ok, need_ok, List.isEmpty_iff] at h
+        simp only [checkExprX, bind_ok, pure_ok, need_ok, List.isEmpty_iff] at h
         obtain ⟨_, hip, ε₁, h₁, _, hra, ε₂, h₂, _, hcov, rfl⟩ := h
-        obtain ⟨t₁, ht₁, f₁⟩ := checkExpr_sound h₁
-        obtain ⟨t₂, ht₂, f₂⟩ := checkExpr_sound h₂
+        obtain ⟨t₁, ht₁, f₁⟩ := checkExprX_sound h₁
+        obtain ⟨t₂, ht₂, f₂⟩ := checkExprX_sound h₂
         exact ⟨_, .handleT ht₁ hra ht₂ f₁ f₂ (inPlaceAll_sound hip) (flowsB_sound _ _ hcov),
           .tuple (Flows.refl _) (LExpr.bot_le _)⟩
       all_goals
-        simp only [checkExpr, bind_ok, pure_ok, need_ok, List.isEmpty_iff] at h
+        simp only [checkExprX, bind_ok, pure_ok, need_ok, List.isEmpty_iff] at h
         obtain ⟨_, hip, ε₁, h₁, _, hra, ε₂, h₂, _, hf, rfl⟩ := h
-        obtain ⟨t₁, ht₁, f₁⟩ := checkExpr_sound h₁
-        obtain ⟨t₂, ht₂, f₂⟩ := checkExpr_sound h₂
+        obtain ⟨t₁, ht₁, f₁⟩ := checkExprX_sound h₁
+        obtain ⟨t₂, ht₂, f₂⟩ := checkExprX_sound h₂
         exact ⟨_, .handle ht₁ hra ht₂ f₁ f₂ (inPlace_sound hip), flowTo_ok hf⟩
     | .handleK kind body x handler, ε, h => by
       cases s
       case tuple ts l =>
-        simp only [checkExpr, bind_ok, pure_ok, need_ok, List.all_eq_true] at h
+        simp only [checkExprX, bind_ok, pure_ok, need_ok, List.all_eq_true] at h
         obtain ⟨_, hip, ε₁, h₁, _, hcd, _, hra, ε₂, h₂, _, hcov, rfl⟩ := h
-        obtain ⟨t₁, ht₁, f₁⟩ := checkExpr_sound h₁
-        obtain ⟨t₂, ht₂, f₂⟩ := checkExpr_sound h₂
+        obtain ⟨t₁, ht₁, f₁⟩ := checkExprX_sound h₁
+        obtain ⟨t₂, ht₂, f₂⟩ := checkExprX_sound h₂
         exact ⟨_, .handleKT ht₁ (by simpa using hcd) (fun k hk => by simpa using hra k hk) ht₂ f₁ f₂
           (inPlaceAll_sound hip) (flowsB_sound _ _ hcov), .tuple (Flows.refl _) (LExpr.bot_le _)⟩
       all_goals
-        simp only [checkExpr, bind_ok, pure_ok, need_ok, List.all_eq_true] at h
+        simp only [checkExprX, bind_ok, pure_ok, need_ok, List.all_eq_true] at h
         obtain ⟨_, hip, ε₁, h₁, _, hcd, _, hra, ε₂, h₂, _, hf, rfl⟩ := h
-        obtain ⟨t₁, ht₁, f₁⟩ := checkExpr_sound h₁
-        obtain ⟨t₂, ht₂, f₂⟩ := checkExpr_sound h₂
+        obtain ⟨t₁, ht₁, f₁⟩ := checkExprX_sound h₁
+        obtain ⟨t₂, ht₂, f₂⟩ := checkExprX_sound h₂
         exact ⟨_, .handleK ht₁ (by simpa using hcd) (fun k hk => by simpa using hra k hk) ht₂ f₁ f₂
           (inPlace_sound hip), flowTo_ok hf⟩
     | .letTuple bs value body, ε, h => by
-      simp only [checkExpr, bind_ok] at h
+      simp only [checkExprX, bind_ok] at h
       obtain ⟨vt, hvt, h⟩ := h
       cases vt <;> try (simp at h; done)
       simp only [bind_ok, need_ok] at h
       obtain ⟨_, hfl, _, hip, hb⟩ := h
-      obtain ⟨t, ht, hft⟩ := checkExpr_sound hb
+      obtain ⟨t, ht, hft⟩ := checkExprX_sound hb
       simp only [List.all_eq_true] at hip
       exact ⟨t, .letTuple (atomTy_sound hvt) (flowsB_sound _ _ hfl)
         (fun q hq => inPlace_sound (hip q hq)) ht, hft⟩
     | .loop (.list xs) x xty st init body, ε, h => by
-      simp only [checkExpr, bind_ok] at h
+      simp only [checkExprX, bind_ok] at h
       obtain ⟨xt, hxt, h⟩ := h
       cases xt <;> try (simp at h; done)
       simp only [bind_ok, pure_ok, need_ok] at h
       obtain ⟨_, hfx, _, hipx, ts, hts, _, hfl, _, hips, εb, hb, _, hfe, _, hcov, _, hf, rfl⟩ := h
-      obtain ⟨tb, htb, hftb⟩ := checkExpr_sound hb
+      obtain ⟨tb, htb, hftb⟩ := checkExprX_sound hb
       simp only [List.all_eq_true] at hips
       exact ⟨_, .loopList (atomTy_sound hxt) (flowTo_ok hfx) (inPlace_sound hipx)
         (atomsTy_sound hts) (flowsB_sound _ _ hfl) (fun q hq => inPlace_sound (hips q hq)) htb hftb
@@ -483,20 +483,59 @@ mutual
         (flowsB_sound _ _ hcov),
         flowTo_ok hf⟩
     | .loop (.range low high inc) x xty st init body, ε, h => by
-      simp only [checkExpr, bind_ok] at h
+      simp only [checkExprX, bind_ok] at h
       obtain ⟨lt, hlt, ht, hht, h⟩ := h
       cases lt <;> try (simp at h; done)
       cases ht <;> try (simp at h; done)
       simp only [bind_ok, pure_ok, need_ok] at h
       obtain ⟨_, hfx, _, hipx, ts, hts, _, hfl, _, hips, εb, hb, _, hfe, _, hcov, _, hf, rfl⟩ := h
-      obtain ⟨tb, htb, hftb⟩ := checkExpr_sound hb
+      obtain ⟨tb, htb, hftb⟩ := checkExprX_sound hb
       simp only [List.all_eq_true] at hips
       exact ⟨_, .loopRange (atomTy_sound hlt) (atomTy_sound hht) (flowTo_ok hfx) (inPlace_sound hipx)
         (atomsTy_sound hts) (flowsB_sound _ _ hfl) (fun q hq => inPlace_sound (hips q hq)) htb hftb
         (fun ho => by simp only [ho, Bool.false_or] at hfe; exact leB_sound hfe)
         (flowsB_sound _ _ hcov),
         flowTo_ok hf⟩
+    | .exit _ state, ε, h => by
+      cases X with
+      | none => simp [checkExprX] at h
+      | some q =>
+        obtain ⟨S, lb⟩ := q
+        simp only [checkExprX, bind_ok, pure_ok, need_ok] at h
+        obtain ⟨ts, hts, _, hfl, _, _, _, hle, _, hip, rfl⟩ := h
+        exact ⟨s, .exit (atomsTy_sound hts) (flowsB_sound _ _ hfl) (leB_sound hle) (inPlace_sound hip),
+          Flow.refl _⟩
+    | .loopUntil cond st init body, ε, h => by
+      simp only [checkExprX, bind_ok, pure_ok, need_ok] at h
+      obtain ⟨ts, hts, _, hfl, _, hips, _, hpl, εc, hc, _, hcf, εb, hb, _, hfe, _, hcov, _, hf, rfl⟩ := h
+      obtain ⟨tc, htc, hftc⟩ := checkExprX_sound hc
+      obtain ⟨tb, htb, hftb⟩ := checkExprX_sound hb
+      cases hftc with
+      | bool hlc =>
+        simp only [List.all_eq_true] at hips
+        exact ⟨_, .loopUntil (atomsTy_sound hts) (flowsB_sound _ _ hfl)
+          (fun q hq => inPlace_sound (hips q hq)) (by simpa using hpl) htc hlc htb hftb
+          (by simpa using hcf)
+          (fun ho => by simp only [ho, Bool.false_or] at hfe; exact leB_sound hfe)
+          (flowsB_sound _ _ hcov),
+          flowTo_ok hf⟩
+    | .loopEver site st init body os o, ε, h => by
+      simp only [checkExprX, bind_ok, pure_ok, need_ok] at h
+      obtain ⟨ts, hts, _, hfl, _, hips, εb, hb, _, hfe, _, hos, εo, ho, _, hof, _, hf, rfl⟩ := h
+      obtain ⟨tb, htb, hftb⟩ := checkExprX_sound hb
+      obtain ⟨to, hto, hfto⟩ := checkExprX_sound ho
+      simp only [List.all_eq_true] at hips
+      exact ⟨_, .loopEver (atomsTy_sound hts) (flowsB_sound _ _ hfl)
+        (fun q hq => inPlace_sound (hips q hq)) htb hftb
+        (fun hold => by simp only [hold, Bool.false_or] at hfe; exact leB_sound hfe)
+        (LTy.eqsB_sound _ _ hos) hto (by simpa using hof) hfto,
+        flowTo_ok hf⟩
 end
+
+/-- `checkExprX_sound` outside a loop's body. -/
+theorem checkExpr_sound {Γ : LCtx} {pc : LExpr} {s : LTy} {e : Expr} {ε : Eff}
+    (h : checkExpr p E Γ pc s e = .ok ε) : ∃ t, LExprTy p E Γ pc e t ε ∧ Flow p.top t s :=
+  checkExprX_sound h
 
 /-- **A function the checker accepts passes T-Fun.** -/
 theorem checkFun_sound {fn : Fun} (h : checkFun p fn = .ok ()) : p.FunOk fn := by
@@ -533,7 +572,8 @@ theorem exprPure_sound (e : Expr) (h : exprPure e = true) : e.Pure := by
   | .attempt b, h | .attemptK _ b, h =>
     have hb : exprPure b = true := by simpa [exprPure] using h
     exact exprPure_sound b hb
-  | .fail _, h | .raise _ _ _, h | .unreachable, h | .letTuple _ _ _, h | .loop _ _ _ _ _ _, h =>
+  | .fail _, h | .raise _ _ _, h | .unreachable, h | .letTuple _ _ _, h | .loop _ _ _ _ _ _, h | .exit _ _, h | .loopUntil _ _ _ _, h
+    | .loopEver _ _ _ _ _ _, h =>
     simp [exprPure] at h
 termination_by sizeOf e
 
@@ -564,7 +604,8 @@ theorem exprPureOrFails_sound (e : Expr) (h : exprPureOrFails e = true) : e.Pure
     have hb : exprPureOrFails b = true := by simpa [exprPureOrFails] using h
     exact exprPureOrFails_sound b hb
   | .fail _, _ => trivial
-  | .raise _ _ _, h | .unreachable, h | .letTuple _ _ _, h | .loop _ _ _ _ _ _, h =>
+  | .raise _ _ _, h | .unreachable, h | .letTuple _ _ _, h | .loop _ _ _ _ _ _, h | .exit _ _, h | .loopUntil _ _ _ _, h
+    | .loopEver _ _ _ _ _ _, h =>
     simp [exprPureOrFails] at h
 termination_by sizeOf e
 

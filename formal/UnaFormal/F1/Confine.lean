@@ -83,6 +83,11 @@ mutual
     | .attempt b | .attemptK _ b => b.within a
     | .handle b _ h | .handleK _ b _ h => b.within a && h.within a
     | .letTuple _ _ b | .loop _ _ _ _ _ b => b.within a
+    | .exit _ _ => true
+    -- ADR 0116's `until` and `ever` (#946): their condition, body and `on stop` block. The host's
+    -- stop schedule decides only when `ever` ends, which performs no event.
+    | .loopUntil c _ _ b => c.within a && b.within a
+    | .loopEver _ _ _ b _ o => b.within a && o.within a
 end
 
 mutual
@@ -204,7 +209,9 @@ variable {H : Host} {S : String → Prop} {a : Auth}
 are values within `a`. -/
 def Conf (S : String → Prop) (a : Auth) (r : Run H) : Prop :=
   (∀ ev ∈ r.1, a.allows ev) ∧ (∀ v, r.2.1 = .ok v → Val.WithinIn S a v) ∧
-    ∀ k c ps, r.2.1 = .raised k c ps → Val.WithinAllIn S a ps
+    (∀ k c ps, r.2.1 = .raised k c ps → Val.WithinAllIn S a ps) ∧
+    -- An exit's state too (ADR 0116 rule 20): its loop goes on with it.
+    ∀ b vs, r.2.1 = .exit b vs → Val.WithinAllIn S a vs
 
 /-- A ghost the ceiling allows, in front of a confined run (#561). -/
 theorem Conf.ghost {r : Run H} {ev : Event} (hev : a.allows ev) (h : Conf S a r) :
@@ -217,13 +224,13 @@ theorem Conf.ghost {r : Run H} {ev : Event} (hev : a.allows ev) (h : Conf S a r)
   · exact h.1 e he
 
 theorem Conf.stuck (w : World H) : Conf S a (stuck w) :=
-  ⟨by simp [Una.F1.stuck], (fun _ h => nomatch h), (fun _ _ _ h => nomatch h)⟩
+  ⟨by simp [Una.F1.stuck], (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
 
 theorem Conf.abort (w : World H) : Conf S a (Una.F1.abort w) :=
-  ⟨by simp [Una.F1.abort], (fun _ h => nomatch h), (fun _ _ _ h => nomatch h)⟩
+  ⟨by simp [Una.F1.abort], (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
 
 theorem Conf.done (w : World H) {v : Val} (hv : Val.WithinIn S a v) : Conf S a (done w v) :=
-  ⟨by simp [Una.F1.done], (fun _ h => by cases h; exact hv), (fun _ _ _ h => nomatch h)⟩
+  ⟨by simp [Una.F1.done], (fun _ h => by cases h; exact hv), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
 
 /-- A run without events, whose result's values are within `a`. -/
 theorem Conf.ret (w : World H) {r : Res}
@@ -233,33 +240,42 @@ theorem Conf.ret (w : World H) {r : Res}
       first
       | (simp at h; done)
       | (simp only [Option.elim] at h; split at h <;> simp_all)
+      | (split at h <;> simp_all))
+    (hx : ∀ b vs, r = .exit b vs → Val.WithinAllIn S a vs := by
+      intro _ _ h
+      first
+      | (simp at h; done)
+      | (simp only [Option.elim] at h; split at h <;> simp_all)
       | (split at h <;> simp_all)) :
     Conf S a (([], r, w) : Run H) :=
-  ⟨by simp, hr, hr'⟩
+  ⟨by simp, hr, hr', hx⟩
 
 /-- A run that ends with a failure or out of fuel, without events. -/
-theorem Conf.halt (w : World H) {r : Res} (h₁ : ∀ v, r ≠ .ok v) (h₂ : ∀ k c ps, r ≠ .raised k c ps) :
+theorem Conf.halt (w : World H) {r : Res} (h₁ : ∀ v, r ≠ .ok v) (h₂ : ∀ k c ps, r ≠ .raised k c ps)
+    (h₃ : ∀ b vs, r ≠ .exit b vs := by intro _ _ h; cases h) :
     Conf S a (([], r, w) : Run H) :=
-  ⟨by simp, (fun v h => absurd h (h₁ v)), (fun k c ps h => absurd h (h₂ k c ps))⟩
+  ⟨by simp, (fun v h => absurd h (h₁ v)), (fun k c ps h => absurd h (h₂ k c ps)),
+    (fun b vs h => absurd h (h₃ b vs))⟩
 
 theorem andThen_conf {r : Run H} {k : World H → Val → Run H} (h : Conf S a r)
     (hk : ∀ w v, r.2.1 = .ok v → Val.WithinIn S a v → Conf S a (k w v)) :
     Conf S a (andThen r k) := by
   obtain ⟨t, res, w⟩ := r
-  obtain ⟨ht, hv, hr⟩ := h
+  obtain ⟨ht, hv, hr, hx⟩ := h
   cases res with
   | ok v =>
-    obtain ⟨ht', hv', hr'⟩ := hk w v rfl (hv v rfl)
+    obtain ⟨ht', hv', hr', hx'⟩ := hk w v rfl (hv v rfl)
     simp only [andThen]
-    generalize k w v = kr at ht' hv' hr' ⊢
+    generalize k w v = kr at ht' hv' hr' hx' ⊢
     obtain ⟨t', r', w'⟩ := kr
-    refine ⟨?_, hv', hr'⟩
+    refine ⟨?_, hv', hr', hx'⟩
     intro ev hev
     rcases List.mem_append.mp hev with h | h
     · exact ht ev h
     · exact ht' ev h
-  | raised k c ps => exact ⟨ht, (fun _ h => nomatch h), hr⟩
-  | failed _ | stuck | outOfFuel | aborted => exact ⟨ht, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h)⟩
+  | raised k c ps => exact ⟨ht, (fun _ h => nomatch h), hr, (fun _ _ h => nomatch h)⟩
+  | exit b vs => exact ⟨ht, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), hx⟩
+  | failed _ | stuck | outOfFuel | aborted => exact ⟨ht, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
 
 theorem applyWith_conf {run : World H → Env → Expr → Run H} {w : World H}
     (hrun : ∀ env e, Val.WithinEnvIn S a env → e.within a = true → (∀ g ∈ e.callees, S g) →
@@ -339,6 +355,31 @@ theorem walkFold_conf {app : World H → Val → Val → Run H}
     exact andThen_conf (happ w acc v hacc hvs.1) fun w' acc' _ hacc' =>
       walkFold_conf happ w' acc' vs hacc' hvs.2
 
+theorem iter_conf {r : Run H} (h : Conf S a r) : Conf S a (Run.iter r) := by
+  obtain ⟨t, res, w⟩ := r
+  obtain ⟨ht, hv, hr, hx⟩ := h
+  cases res with
+  | exit b vs =>
+    cases b
+    · exact ⟨ht, (fun _ h => by cases h; simp only [Val.WithinIn]; exact hx false vs rfl),
+        (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
+    · exact ⟨ht, hv, hr, hx⟩
+  | _ => exact ⟨ht, hv, hr, hx⟩
+
+theorem endLoop_conf {n : Nat} {r : Run H} (h : Conf S a r) : Conf S a (Run.endLoop n r) := by
+  obtain ⟨t, res, w⟩ := r
+  obtain ⟨ht, hv, hr, hx⟩ := h
+  cases res with
+  | exit b vs =>
+    cases b
+    · exact ⟨ht, hv, hr, hx⟩
+    · simp only [Run.endLoop]
+      split
+      · exact ⟨ht, (fun _ h => by cases h; simp only [Val.WithinIn]; exact hx true vs rfl),
+          (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
+      · exact ⟨ht, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
+  | _ => exact ⟨ht, hv, hr, hx⟩
+
 theorem walkLoop_conf {body : World H → Val → List Val → Run H}
     (hb : ∀ w v st, Val.WithinIn S a v → Val.WithinAllIn S a st → Conf S a (body w v st)) :
     ∀ (w : World H) (st vs : List Val), Val.WithinAllIn S a st → Val.WithinAllIn S a vs →
@@ -347,7 +388,7 @@ theorem walkLoop_conf {body : World H → Val → List Val → Run H}
   | w, st, v :: vs, hst, hvs => by
     simp only [Val.WithinAllIn] at hvs
     simp only [walkLoop]
-    refine andThen_conf (hb w v st hvs.1 hst) fun w' r _ hr => ?_
+    refine andThen_conf (iter_conf (hb w v st hvs.1 hst)) fun w' r _ hr => ?_
     cases r with
     | tuple st' =>
       simp only [Val.WithinIn] at hr
@@ -356,6 +397,101 @@ theorem walkLoop_conf {body : World H → Val → List Val → Run H}
       · exact walkLoop_conf hb w' st' vs hr hvs.2
       · exact Conf.stuck w'
     | _ => exact Conf.stuck w'
+
+theorem walkUntil_conf {cond body : World H → List Val → Run H}
+    (hc : ∀ w st, Val.WithinAllIn S a st → Conf S a (cond w st))
+    (hb : ∀ w st, Val.WithinAllIn S a st → Conf S a (body w st)) :
+    ∀ (k : Nat) (w : World H) (st : List Val), Val.WithinAllIn S a st →
+      Conf S a (walkUntil cond body k w st)
+  | 0, w, _, _ => Conf.halt w (fun _ h => nomatch h) (fun _ _ _ h => nomatch h)
+  | k + 1, w, st, hst => by
+    simp only [walkUntil]
+    refine andThen_conf (hc w st hst) fun w' c _ _ => ?_
+    cases c with
+    | bool b =>
+      cases b with
+      | true => exact Conf.done w' (by simp only [Val.WithinIn]; exact hst)
+      | false =>
+        refine andThen_conf (iter_conf (hb w' st hst)) fun w'' r _ hr => ?_
+        cases r with
+        | tuple st' =>
+          simp only [Val.WithinIn] at hr
+          simp only
+          split
+          · exact walkUntil_conf hc hb k w'' st' hr
+          · exact Conf.stuck w''
+        | _ => exact Conf.stuck w''
+    | _ => exact Conf.stuck w'
+
+theorem walkEver_conf {stops : Nat → Bool} {body : World H → List Val → Run H}
+    (hb : ∀ w st, Val.WithinAllIn S a st → Conf S a (body w st)) :
+    ∀ (k i : Nat) (w : World H) (st : List Val), Val.WithinAllIn S a st →
+      Conf S a (walkEver stops body k i w st)
+  | 0, _, w, _, _ => Conf.halt w (fun _ h => nomatch h) (fun _ _ _ h => nomatch h)
+  | k + 1, i, w, st, hst => by
+    simp only [walkEver]
+    split
+    · exact Conf.done w (by simp only [Val.WithinIn]; exact hst)
+    · refine andThen_conf (iter_conf (hb w st hst)) fun w' r _ hr => ?_
+      cases r with
+      | tuple st' =>
+        simp only [Val.WithinIn] at hr
+        simp only
+        split
+        · exact walkEver_conf hb k (i + 1) w' st' hr
+        · exact Conf.stuck w'
+      | _ => exact Conf.stuck w'
+
+theorem finishEver_conf {k : World H → List Val → Run H} {st₀ : List Val} {r : Run H}
+    (hk : ∀ w st, Val.WithinAllIn S a st → Conf S a (k w st)) (h₀ : Val.WithinAllIn S a st₀)
+    (hr : Conf S a r) : Conf S a (finishEver k st₀ r) := by
+  obtain ⟨t, res, w⟩ := r
+  obtain ⟨ht, hv, hr', hx⟩ := hr
+  -- The block's run after the loop's: the events of both, and the block's outcome.
+  have hseq : ∀ {st : List Val}, Val.WithinAllIn S a st → ∀ {t' : Trace} {r' : Res} {w' : World H},
+      k w st = (t', r', w') → ∀ ev ∈ t ++ t', a.allows ev := by
+    intro st hst t' r' w' he ev hev
+    have hk' := (hk w st hst).1
+    rw [he] at hk'
+    rcases List.mem_append.mp hev with h | h
+    · exact ht ev h
+    · exact hk' ev h
+  cases res with
+  | ok v =>
+    cases v with
+    | tuple st =>
+      have hst : Val.WithinAllIn S a st := by have := hv _ rfl; simpa [Val.WithinIn] using this
+      simp only [finishEver]
+      have hkc := hk w st hst
+      revert hkc
+      generalize hkr : k w st = kr
+      obtain ⟨t', r', w'⟩ := kr
+      intro hkc
+      exact ⟨hseq hst hkr, hkc.2.1, hkc.2.2.1, hkc.2.2.2⟩
+    | _ => exact ⟨by simpa [finishEver] using ht, (fun _ h => by simp [finishEver] at h),
+        (fun _ _ _ h => by simp [finishEver] at h), (fun _ _ h => by simp [finishEver] at h)⟩
+  | failed c =>
+    simp only [finishEver]
+    have hkc := hk w st₀ h₀
+    revert hkc
+    generalize hkr : k w st₀ = kr
+    obtain ⟨t', r', w'⟩ := kr
+    intro hkc
+    cases r' with
+    | ok _ => exact ⟨hseq h₀ hkr, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
+    | _ => exact ⟨hseq h₀ hkr, hkc.2.1, hkc.2.2.1, hkc.2.2.2⟩
+  | raised kd c ps =>
+    simp only [finishEver]
+    have hkc := hk w st₀ h₀
+    revert hkc
+    generalize hkr : k w st₀ = kr
+    obtain ⟨t', r', w'⟩ := kr
+    intro hkc
+    cases r' with
+    | ok _ => exact ⟨hseq h₀ hkr, (fun _ h => nomatch h), hr', (fun _ _ h => nomatch h)⟩
+    | _ => exact ⟨hseq h₀ hkr, hkc.2.1, hkc.2.2.1, hkc.2.2.2⟩
+  | exit b vs => exact ⟨ht, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), hx⟩
+  | stuck | outOfFuel | aborted => exact ⟨ht, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
 
 theorem parseInt_conf (w : World H) (t : String) : Conf S a (parseInt w t) := by
   unfold parseInt
@@ -483,7 +619,7 @@ theorem eval_confined (hH : H.RespTyped) (hp : p.ConfinedAt S a) : ∀ n : Nat,
           cases v.line with
           | none => exact Conf.stuck w
           | some s =>
-            refine ⟨?_, (fun _ h => by cases h; simp [Val.WithinIn]), (fun _ _ _ h => nomatch h)⟩
+            refine ⟨?_, (fun _ h => by cases h; simp [Val.WithinIn]), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
             intro ev hev
             simp only [List.mem_singleton] at hev
             subst hev
@@ -503,8 +639,8 @@ theorem eval_confined (hH : H.RespTyped) (hp : p.ConfinedAt S a) : ∀ n : Nat,
               subst hev
               exact hr
             cases H.read s w.fs with
-            | some c => exact ⟨hev, (fun _ h => by cases h; simp [Val.WithinIn]), (fun _ _ _ h => nomatch h)⟩
-            | none => exact ⟨hev, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h)⟩
+            | some c => exact ⟨hev, (fun _ h => by cases h; simp [Val.WithinIn]), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
+            | none => exact ⟨hev, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
           | _ => exact Conf.stuck w
       | hmac key data =>
         simp only [Rhs.within] at hr
@@ -528,8 +664,8 @@ theorem eval_confined (hH : H.RespTyped) (hp : p.ConfinedAt S a) : ∀ n : Nat,
               | some s =>
                 dsimp only
                 cases H.key k with
-                | some m => exact ⟨hev, (fun _ h => by cases h; simp [Val.WithinIn]), (fun _ _ _ h => nomatch h)⟩
-                | none => exact ⟨hev, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h)⟩
+                | some m => exact ⟨hev, (fun _ h => by cases h; simp [Val.WithinIn]), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
+                | none => exact ⟨hev, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
             | _ => exact Conf.stuck w
       | write path content =>
         simp only [Rhs.within] at hr
@@ -551,8 +687,8 @@ theorem eval_confined (hH : H.RespTyped) (hp : p.ConfinedAt S a) : ∀ n : Nat,
                   subst hev
                   exact hr
                 cases H.write s c' w.fs with
-                | some fs' => exact ⟨hev, (fun _ h => by cases h; simp [Val.WithinIn]), (fun _ _ _ h => nomatch h)⟩
-                | none => exact ⟨hev, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h)⟩
+                | some fs' => exact ⟨hev, (fun _ h => by cases h; simp [Val.WithinIn]), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
+                | none => exact ⟨hev, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
               | _ => exact Conf.stuck w
             | _ => cases c <;> exact Conf.stuck w
       | req m args =>
@@ -572,8 +708,8 @@ theorem eval_confined (hH : H.RespTyped) (hp : p.ConfinedAt S a) : ∀ n : Nat,
           | mk res srv' =>
             cases res with
             | ok v => exact ⟨hev, (fun _ h => by cases h; exact isResponse_within (hH m vs _ _ v hq)),
-                (fun _ _ _ h => nomatch h)⟩
-            | error c => exact ⟨hev, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h)⟩
+                (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
+            | error c => exact ⟨hev, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
       | construct record fields =>
         refine Conf.ret w fun v hv => ?_
         cases ha : evalAtoms env fields <;> simp [ha, Option.elim] at hv
@@ -916,7 +1052,7 @@ theorem eval_confined (hH : H.RespTyped) (hp : p.ConfinedAt S a) : ∀ n : Nat,
         cases ha : evalAtoms env args with
         | none => exact Conf.stuck w
         | some vs =>
-          exact ⟨by simp, (fun _ h => nomatch h), (fun _ _ _ h => by cases h; exact evalAtoms_within hf ha)⟩
+          exact ⟨by simp, (fun _ h => nomatch h), (fun _ _ _ h => by cases h; exact evalAtoms_within hf ha), (fun _ _ h => nomatch h)⟩
       | unreachable => exact Conf.halt w (fun _ h => nomatch h) (fun _ _ _ h => nomatch h)
       | withH o f b =>
         simp only [Expr.within] at he
@@ -947,25 +1083,26 @@ theorem eval_confined (hH : H.RespTyped) (hp : p.ConfinedAt S a) : ∀ n : Nat,
         have h₂ := ihE w env b hf he hc
         generalize eval H n p w env b = res at h₂ ⊢
         obtain ⟨t, r, w'⟩ := res
-        obtain ⟨ht, hv, hr⟩ := h₂
+        obtain ⟨ht, hv, hr, hx⟩ := h₂
         cases r with
         | ok x => exact ⟨ht, (fun _ h => by cases h; simp only [Val.WithinIn]; exact hv x rfl),
-            (fun _ _ _ h => nomatch h)⟩
+            (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
         | raised k c ps =>
           dsimp only
           split
           · exact ⟨ht, (fun _ h => by cases h; simp only [Val.WithinIn]; exact hr k c ps rfl),
-              (fun _ _ _ h => nomatch h)⟩
-          · exact ⟨ht, (fun _ h => nomatch h), hr⟩
-        | failed c => exact ⟨ht, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h)⟩
-        | stuck | outOfFuel | aborted => exact ⟨ht, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h)⟩
+              (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
+          · exact ⟨ht, (fun _ h => nomatch h), hr, (fun _ _ h => nomatch h)⟩
+        | failed c => exact ⟨ht, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
+        | stuck | outOfFuel | aborted => exact ⟨ht, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
+        | exit _ _ => exact ⟨ht, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), hx⟩
       | handleK kind b x h =>
         simp only [Expr.within, Bool.and_eq_true] at he
         simp only [eval]
         have h₂ := ihE w env b hf he.1 (fun g hg => hc g (by simp [Expr.callees, hg]))
         generalize eval H n p w env b = res at h₂ ⊢
         obtain ⟨t, r, w'⟩ := res
-        obtain ⟨ht, hv, hr⟩ := h₂
+        obtain ⟨ht, hv, hr, hx⟩ := h₂
         cases r with
         | raised k c ps =>
           dsimp only
@@ -975,36 +1112,38 @@ theorem eval_confined (hH : H.RespTyped) (hp : p.ConfinedAt S a) : ∀ n : Nat,
               (fun g hg => hc g (by simp [Expr.callees, hg]))
             generalize eval H n p w' ((x, .variant k c ps) :: env) h = res' at g₂ ⊢
             obtain ⟨t', r', w''⟩ := res'
-            obtain ⟨ht', hv', hr'⟩ := g₂
-            refine ⟨?_, hv', hr'⟩
+            obtain ⟨ht', hv', hr', hx'⟩ := g₂
+            refine ⟨?_, hv', hr', hx'⟩
             intro ev hev
             rcases List.mem_append.mp hev with h | h
             · exact ht ev h
             · exact ht' ev h
-          · exact ⟨ht, (fun _ h => nomatch h), hr⟩
-        | ok v => exact ⟨ht, (fun _ h' => by cases h'; exact hv v rfl), (fun _ _ _ h' => nomatch h')⟩
-        | failed c => exact ⟨ht, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h)⟩
-        | stuck | outOfFuel | aborted => exact ⟨ht, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h)⟩
+          · exact ⟨ht, (fun _ h => nomatch h), hr, (fun _ _ h => nomatch h)⟩
+        | ok v => exact ⟨ht, (fun _ h' => by cases h'; exact hv v rfl), (fun _ _ _ h' => nomatch h'), (fun _ _ h' => nomatch h')⟩
+        | failed c => exact ⟨ht, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
+        | stuck | outOfFuel | aborted => exact ⟨ht, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
+        | exit _ _ => exact ⟨ht, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), hx⟩
       | attempt b =>
         simp only [Expr.within] at he
         simp only [eval]
         have h₂ := ihE w env b hf he hc
         generalize eval H n p w env b = res at h₂ ⊢
         obtain ⟨t, r, w'⟩ := res
-        obtain ⟨ht, hv, hr⟩ := h₂
+        obtain ⟨ht, hv, hr, hx⟩ := h₂
         cases r with
         | ok x => exact ⟨ht, (fun _ h => by cases h; simp only [Val.WithinIn]; exact hv x rfl),
-            (fun _ _ _ h => nomatch h)⟩
-        | failed c => exact ⟨ht, (fun _ h => by cases h; simp [Val.WithinIn]), (fun _ _ _ h => nomatch h)⟩
-        | raised k c ps => exact ⟨ht, (fun _ h => nomatch h), hr⟩
-        | stuck | outOfFuel | aborted => exact ⟨ht, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h)⟩
+            (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
+        | failed c => exact ⟨ht, (fun _ h => by cases h; simp [Val.WithinIn]), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
+        | raised k c ps => exact ⟨ht, (fun _ h => nomatch h), hr, (fun _ _ h => nomatch h)⟩
+        | stuck | outOfFuel | aborted => exact ⟨ht, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
+        | exit _ _ => exact ⟨ht, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), hx⟩
       | handle b x h =>
         simp only [Expr.within, Bool.and_eq_true] at he
         simp only [eval]
         have h₂ := ihE w env b hf he.1 (fun g hg => hc g (by simp [Expr.callees, hg]))
         generalize eval H n p w env b = res at h₂ ⊢
         obtain ⟨t, r, w'⟩ := res
-        obtain ⟨ht, hv, hr⟩ := h₂
+        obtain ⟨ht, hv, hr, hx⟩ := h₂
         cases r with
         | failed c =>
           have g₂ := ihE w' ((x, .int c) :: env) h
@@ -1013,15 +1152,16 @@ theorem eval_confined (hH : H.RespTyped) (hp : p.ConfinedAt S a) : ∀ n : Nat,
           simp only []
           generalize eval H n p w' ((x, .int c) :: env) h = res' at g₂ ⊢
           obtain ⟨t', r', w''⟩ := res'
-          obtain ⟨ht', hv', hr'⟩ := g₂
-          refine ⟨?_, hv', hr'⟩
+          obtain ⟨ht', hv', hr', hx'⟩ := g₂
+          refine ⟨?_, hv', hr', hx'⟩
           intro ev hev
           rcases List.mem_append.mp hev with h | h
           · exact ht ev h
           · exact ht' ev h
-        | ok v => exact ⟨ht, (fun _ h => by cases h; exact hv v rfl), (fun _ _ _ h => nomatch h)⟩
-        | raised k c ps => exact ⟨ht, (fun _ h => nomatch h), (fun _ _ _ h => by cases h; exact hr k c ps rfl)⟩
-        | stuck | outOfFuel | aborted => exact ⟨ht, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h)⟩
+        | ok v => exact ⟨ht, (fun _ h => by cases h; exact hv v rfl), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
+        | raised k c ps => exact ⟨ht, (fun _ h => nomatch h), (fun _ _ _ h => by cases h; exact hr k c ps rfl), (fun _ _ h => nomatch h)⟩
+        | stuck | outOfFuel | aborted => exact ⟨ht, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
+        | exit _ _ => exact ⟨ht, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), hx⟩
       | letTuple bs v b =>
         simp only [Expr.within] at he
         simp only [eval]
@@ -1069,11 +1209,53 @@ theorem eval_confined (hH : H.RespTyped) (hp : p.ConfinedAt S a) : ∀ n : Nat,
                     obtain ⟨_, _, rfl⟩ := hv
                     simp [Val.WithinIn]
                   · cases hs
-              exact walkLoop_conf (fun w' v st' hv hst => ihE w' _ b
+              exact endLoop_conf (walkLoop_conf (fun w' v st' hv hst => ihE w' _ b
                   (by simp only [Val.WithinEnvIn]; exact ⟨hv, bindParams_within st hst hf⟩) he
                   (fun g hg => hc g (by simpa [Expr.callees] using hg)))
-                w stv items (evalAtoms_within hf hi) hitems
+                w stv items (evalAtoms_within hf hi) hitems)
             · exact Conf.stuck w
+      | exit stop state =>
+        simp only [eval]
+        cases ha : evalAtoms env state with
+        | none => exact Conf.stuck w
+        | some vs =>
+          exact ⟨by simp, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h),
+            (fun _ _ h => by cases h; exact evalAtoms_within hf ha)⟩
+      | loopUntil c st init b =>
+        simp only [Expr.within, Bool.and_eq_true] at he
+        simp only [eval]
+        cases hi : evalAtoms env init with
+        | none => exact Conf.stuck w
+        | some stv =>
+          simp only
+          split
+          · exact endLoop_conf (walkUntil_conf
+              (fun w' st' hst => ihE w' _ c (bindParams_within st hst hf) he.1
+                (fun g hg => hc g (by simp [Expr.callees, hg])))
+              (fun w' st' hst => ihE w' _ b (bindParams_within st hst hf) he.2
+                (fun g hg => hc g (by simp [Expr.callees, hg])))
+              n w stv (evalAtoms_within hf hi))
+          · exact Conf.stuck w
+      | loopEver site st init b os o =>
+        simp only [Expr.within, Bool.and_eq_true] at he
+        simp only [eval]
+        cases hi : evalAtoms env init with
+        | none => exact Conf.stuck w
+        | some stv =>
+          simp only
+          split
+          · exact finishEver_conf
+              (fun w' st' hst => by
+                split
+                · exact ihE w' _ o (bindParams_within os hst hf) he.2
+                    (fun g hg => hc g (by simp [Expr.callees, hg]))
+                · exact Conf.stuck w')
+              (evalAtoms_within hf hi)
+              (endLoop_conf (walkEver_conf
+                (fun w' st' hst => ihE w' _ b (bindParams_within st hst hf) he.1
+                  (fun g hg => hc g (by simp [Expr.callees, hg])))
+                n 0 w stv (evalAtoms_within hf hi)))
+          · exact Conf.stuck w
 
 /-- **The four forms of ADR 0093's rule 3.** Each is a run of a function of `S`, or of a value
 within `a`, so each is confined:

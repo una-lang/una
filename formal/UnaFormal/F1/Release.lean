@@ -42,7 +42,7 @@ def T6ReleaseHost : Prop :=
 theorem t6_release_host : T6ReleaseHost p L H :=
   fun hwf hb1 hh hlaw _ _ _ _ _ _ _ _ _ _ _ hσ hE hΓ hpc hw h₁ h₂ hrel he n =>
     BRelR.mono (fun _ _ h => h) (Vis.dl_of_failLabel (LExprTy.dl_le_failLabel he))
-      ((t6_soundR hwf hb1 hh hlaw n).2 hσ hE hΓ hpc hw h₁ h₂ hrel he)
+      ((t6_soundR hwf hb1 hh hlaw n).2 hσ hE hΓ hpc hw h₁ h₂ hrel he).toR
 
 /-- **Its corollary, runs whose releases agree**: when the releases the observer sees are the
 same in both runs, the runs are related as `t6_host` says. -/

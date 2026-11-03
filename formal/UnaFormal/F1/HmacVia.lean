@@ -51,6 +51,7 @@ theorem ghostly_andThen {w : World H} {first : Run H} {rest : World H → Val �
     · exact this.1 ev h
   | failed c => exact ⟨ht, rfl⟩
   | stuck => exact ⟨ht, rfl⟩
+  | exit _ _ => exact ⟨ht, rfl⟩
   | raised _ _ _ => exact ⟨ht, rfl⟩
   | outOfFuel | aborted => exact ⟨ht, rfl⟩
 
@@ -135,7 +136,8 @@ theorem Expr.Pure.pureOrFails : ∀ (e : Expr), e.Pure → e.PureOrFails
   | .caseSum _ _ _ t e, h | .handleK _ t _ e, h =>
     ⟨Expr.Pure.pureOrFails t h.1, Expr.Pure.pureOrFails e h.2⟩
   | .attempt b, h | .attemptK _ b, h => Expr.Pure.pureOrFails b h
-  | .fail _, h | .raise _ _ _, h | .unreachable, h | .letTuple _ _ _, h | .loop _ _ _ _ _ _, h
+  | .fail _, h | .raise _ _ _, h | .unreachable, h | .letTuple _ _ _, h | .loop _ _ _ _ _ _, h | .exit _ _, h | .loopUntil _ _ _ _, h
+    | .loopEver _ _ _ _ _ _, h
   | .withH _ _ _, h => (show False from h).elim
 
 /-- A pure run that ends gives a value. -/
@@ -294,7 +296,8 @@ mutual
     | .attempt b, h | .attemptK _ b, h => by
       simp only [Expr.pureB] at h
       exact Expr.pureB_sound b h
-    | .fail _, h | .raise _ _ _, h | .unreachable, h | .letTuple _ _ _, h | .loop _ _ _ _ _ _, h
+    | .fail _, h | .raise _ _ _, h | .unreachable, h | .letTuple _ _ _, h | .loop _ _ _ _ _ _, h | .exit _ _, h | .loopUntil _ _ _ _, h
+    | .loopEver _ _ _ _ _ _, h
     | .withH _ _ _, h => by simp [Expr.pureB] at h
 end
 
@@ -318,7 +321,8 @@ theorem Expr.hmacOnlyB_sound : ∀ (e : Expr), e.hmacOnlyB = true → e.HmacOnly
   | .attempt b, h => by
     simp only [Expr.hmacOnlyB] at h
     exact Expr.pureB_sound b h
-  | .fail _, h | .raise _ _ _, h | .unreachable, h | .letTuple _ _ _, h | .loop _ _ _ _ _ _, h
+  | .fail _, h | .raise _ _ _, h | .unreachable, h | .letTuple _ _ _, h | .loop _ _ _ _ _ _, h | .exit _ _, h | .loopUntil _ _ _ _, h
+    | .loopEver _ _ _ _ _ _, h
   | .withH _ _ _, h | .handle _ _ _, h | .handleK _ _ _ _, h | .attemptK _ _, h => by
     simp [Expr.hmacOnlyB] at h
 

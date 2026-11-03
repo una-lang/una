@@ -36,8 +36,9 @@ see, from worlds it cannot tell apart, are related. -/
 theorem brel_confined {H : Host} {R : Val → Val → Prop} {vf : Prop} {pc : LExpr} {ε₁ ε₂ : Eff}
     {P₁ P₂ : Val → Prop} {w₁ w₂ : World H} {r₁ r₂ : Run H} (hwf : p.HostWF)
     (hw : WorldRel p L w₁ w₂)
-    (h₁ : UOk (Allowed p pc ε₁) P₁ (FailsAs p pc ε₁) w₁ r₁)
-    (h₂ : UOk (Allowed p pc ε₂) P₂ (FailsAs p pc ε₂) w₂ r₂)
+    {X₁ X₂ : ExitCtx}
+    (h₁ : UOk (Allowed p pc ε₁) P₁ (FailsAsX p pc ε₁ X₁) w₁ r₁)
+    (h₂ : UOk (Allowed p pc ε₂) P₂ (FailsAsX p pc ε₂ X₂) w₂ r₂)
     (hpc : ¬ Vis p L pc) (hR : ∀ a b, R a b) (hvf₁ : vf → Vis p L ε₁.failLabel)
     (hvf₂ : vf → Vis p L ε₂.failLabel) : BRel p L R vf r₁ r₂ := by
   intro ht₁ ht₂

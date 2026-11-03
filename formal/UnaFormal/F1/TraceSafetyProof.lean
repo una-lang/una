@@ -264,21 +264,25 @@ variable {H : Host} {p : Program} {o : String} {S : String → Prop} {Q : Prop}
 free of `o`. -/
 abbrev RunOk (p : Program) (o : String) (S : String → Prop) (Q : Prop) (r : Run H) : Prop :=
   (∀ ev ∈ r.1, PerfEv o ev → Q) ∧ (∀ v, r.2.1 = .ok v → Val.OFree p o S v) ∧
-    ∀ k c ps, r.2.1 = .raised k c ps → Val.OFreeAll p o S ps
+    (∀ k c ps, r.2.1 = .raised k c ps → Val.OFreeAll p o S ps) ∧
+    -- An exit's state too (ADR 0116 rule 20): its loop goes on with it.
+    ∀ b vs, r.2.1 = .exit b vs → Val.OFreeAll p o S vs
 
 theorem RunOk.quiet {t : Trace} {r : Res} {w : World H} (ht : ∀ ev ∈ t, PerfEv o ev → Q)
     (hv : ∀ v, r = .ok v → Val.OFree p o S v)
-    (hr : ∀ k c ps, r = .raised k c ps → Val.OFreeAll p o S ps) : RunOk p o S Q ((t, r, w) : Run H) :=
-  ⟨ht, hv, hr⟩
+    (hr : ∀ k c ps, r = .raised k c ps → Val.OFreeAll p o S ps)
+    (hx : ∀ b vs, r = .exit b vs → Val.OFreeAll p o S vs := by intro _ _ h; cases h) :
+    RunOk p o S Q ((t, r, w) : Run H) :=
+  ⟨ht, hv, hr, hx⟩
 
 theorem RunOk.stuck (w : World H) : RunOk p o S Q (stuck w) :=
-  ⟨(fun _ h => nomatch h), (fun _ h => nomatch h), (fun _ _ _ h => nomatch h)⟩
+  ⟨(fun _ h => nomatch h), (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
 
 theorem RunOk.abort (w : World H) : RunOk p o S Q (abort w) :=
-  ⟨(fun _ h => nomatch h), (fun _ h => nomatch h), (fun _ _ _ h => nomatch h)⟩
+  ⟨(fun _ h => nomatch h), (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
 
 theorem RunOk.done (w : World H) {v : Val} (hv : Val.OFree p o S v) : RunOk p o S Q (done w v) :=
-  ⟨(fun _ h => nomatch h), fun _ h => by cases h; exact hv, (fun _ _ _ h => nomatch h)⟩
+  ⟨(fun _ h => nomatch h), fun _ h => by cases h; exact hv, (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
 
 /-- A run with no events, whose value is free of `o`. -/
 theorem RunOk.ret (w : World H) {r : Res} (hr : ∀ v, r = .ok v → Val.OFree p o S v)
@@ -287,9 +291,15 @@ theorem RunOk.ret (w : World H) {r : Res} (hr : ∀ v, r = .ok v → Val.OFree p
       first
       | (simp at h; done)
       | (simp only [Option.elim] at h; split at h <;> simp_all)
+      | (split at h <;> simp_all))
+    (hx : ∀ b vs, r = .exit b vs → Val.OFreeAll p o S vs := by
+      intro _ _ h
+      first
+      | (simp at h; done)
+      | (simp only [Option.elim] at h; split at h <;> simp_all)
       | (split at h <;> simp_all)) :
     RunOk p o S Q (([], r, w) : Run H) :=
-  ⟨(fun _ h => nomatch h), hr, hr'⟩
+  ⟨(fun _ h => nomatch h), hr, hr', hx⟩
 
 theorem RunOk.mono {Q' : Prop} {r : Run H} (hq : Q → Q') (h : RunOk p o S Q r) : RunOk p o S Q' r :=
   ⟨fun ev hev hp => hq (h.1 ev hev hp), h.2⟩
@@ -317,8 +327,9 @@ theorem andThen_ok {r : Run H} {k : World H → Val → Run H} (h : RunOk p o S 
     rcases List.mem_append.mp hev with hev | hev
     · exact h.1 ev hev hp
     · exact h2.1 ev hev hp
-  | raised k c ps => exact ⟨h.1, (fun _ h' => nomatch h'), h.2.2⟩
-  | failed _ | stuck | outOfFuel | aborted => exact ⟨h.1, (fun _ h' => nomatch h'), (fun _ _ _ h' => nomatch h')⟩
+  | raised k c ps => exact ⟨h.1, (fun _ h' => nomatch h'), h.2.2.1, (fun _ _ h' => nomatch h')⟩
+  | exit b vs => exact ⟨h.1, (fun _ h' => nomatch h'), (fun _ _ _ h' => nomatch h'), h.2.2.2⟩
+  | failed _ | stuck | outOfFuel | aborted => exact ⟨h.1, (fun _ h' => nomatch h'), (fun _ _ _ h' => nomatch h'), (fun _ _ h' => nomatch h')⟩
 
 theorem walkMap_ok {app : World H → Val → Run H}
     (happ : ∀ w v, Val.OFree p o S v → RunOk p o S Q (app w v)) :
@@ -384,6 +395,31 @@ theorem walkFold_ok {app : World H → Val → Val → Run H}
     exact andThen_ok (happ w acc v hacc hvs.1) fun w' acc' _ hacc' =>
       walkFold_ok happ w' acc' vs hacc' hvs.2
 
+theorem iter_ok {r : Run H} (h : RunOk p o S Q r) : RunOk p o S Q (Run.iter r) := by
+  obtain ⟨t, res, w⟩ := r
+  obtain ⟨ht, hv, hr, hx⟩ := h
+  cases res with
+  | exit b vs =>
+    cases b
+    · exact ⟨ht, (fun _ h => by cases h; simp only [Val.OFree]; exact hx false vs rfl),
+        (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
+    · exact ⟨ht, hv, hr, hx⟩
+  | _ => exact ⟨ht, hv, hr, hx⟩
+
+theorem endLoop_ok {n : Nat} {r : Run H} (h : RunOk p o S Q r) : RunOk p o S Q (Run.endLoop n r) := by
+  obtain ⟨t, res, w⟩ := r
+  obtain ⟨ht, hv, hr, hx⟩ := h
+  cases res with
+  | exit b vs =>
+    cases b
+    · exact ⟨ht, hv, hr, hx⟩
+    · simp only [Run.endLoop]
+      split
+      · exact ⟨ht, (fun _ h => by cases h; simp only [Val.OFree]; exact hx true vs rfl),
+          (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
+      · exact ⟨ht, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
+  | _ => exact ⟨ht, hv, hr, hx⟩
+
 theorem walkLoop_ok {body : World H → Val → List Val → Run H}
     (hb : ∀ w v st, Val.OFree p o S v → Val.OFreeAll p o S st → RunOk p o S Q (body w v st)) :
     ∀ (w : World H) (st vs : List Val), Val.OFreeAll p o S st → Val.OFreeAll p o S vs →
@@ -392,7 +428,7 @@ theorem walkLoop_ok {body : World H → Val → List Val → Run H}
   | w, st, v :: vs, hst, hvs => by
     simp only [Val.OFreeAll] at hvs
     simp only [walkLoop]
-    refine andThen_ok (hb w v st hvs.1 hst) fun w' r _ hr => ?_
+    refine andThen_ok (iter_ok (hb w v st hvs.1 hst)) fun w' r _ hr => ?_
     cases r with
     | tuple st' =>
       simp only [Val.OFree] at hr
@@ -402,11 +438,108 @@ theorem walkLoop_ok {body : World H → Val → List Val → Run H}
       · exact RunOk.stuck w'
     | _ => exact RunOk.stuck w'
 
+theorem walkUntil_ok {cond body : World H → List Val → Run H}
+    (hc : ∀ w st, Val.OFreeAll p o S st → RunOk p o S Q (cond w st))
+    (hb : ∀ w st, Val.OFreeAll p o S st → RunOk p o S Q (body w st)) :
+    ∀ (k : Nat) (w : World H) (st : List Val), Val.OFreeAll p o S st →
+      RunOk p o S Q (walkUntil cond body k w st)
+  | 0, w, _, _ => ⟨(fun _ h => nomatch h), (fun _ h => nomatch h), (fun _ _ _ h => nomatch h),
+      (fun _ _ h => nomatch h)⟩
+  | k + 1, w, st, hst => by
+    simp only [walkUntil]
+    refine andThen_ok (hc w st hst) fun w' c _ _ => ?_
+    cases c with
+    | bool b =>
+      cases b with
+      | true => exact RunOk.done w' (by simp only [Val.OFree]; exact hst)
+      | false =>
+        refine andThen_ok (iter_ok (hb w' st hst)) fun w'' r _ hr => ?_
+        cases r with
+        | tuple st' =>
+          simp only [Val.OFree] at hr
+          simp only
+          split
+          · exact walkUntil_ok hc hb k w'' st' hr
+          · exact RunOk.stuck w''
+        | _ => exact RunOk.stuck w''
+    | _ => exact RunOk.stuck w'
+
+theorem walkEver_ok {stops : Nat → Bool} {body : World H → List Val → Run H}
+    (hb : ∀ w st, Val.OFreeAll p o S st → RunOk p o S Q (body w st)) :
+    ∀ (k i : Nat) (w : World H) (st : List Val), Val.OFreeAll p o S st →
+      RunOk p o S Q (walkEver stops body k i w st)
+  | 0, _, w, _, _ => ⟨(fun _ h => nomatch h), (fun _ h => nomatch h), (fun _ _ _ h => nomatch h),
+      (fun _ _ h => nomatch h)⟩
+  | k + 1, i, w, st, hst => by
+    simp only [walkEver]
+    split
+    · exact RunOk.done w (by simp only [Val.OFree]; exact hst)
+    · refine andThen_ok (iter_ok (hb w st hst)) fun w' r _ hr => ?_
+      cases r with
+      | tuple st' =>
+        simp only [Val.OFree] at hr
+        simp only
+        split
+        · exact walkEver_ok hb k (i + 1) w' st' hr
+        · exact RunOk.stuck w'
+      | _ => exact RunOk.stuck w'
+
+theorem finishEver_ok {k : World H → List Val → Run H} {st₀ : List Val} {r : Run H}
+    (hk : ∀ w st, Val.OFreeAll p o S st → RunOk p o S Q (k w st)) (h₀ : Val.OFreeAll p o S st₀)
+    (hr : RunOk p o S Q r) : RunOk p o S Q (finishEver k st₀ r) := by
+  obtain ⟨t, res, w⟩ := r
+  obtain ⟨ht, hv, hr', hx⟩ := hr
+  have hseq : ∀ {st : List Val}, Val.OFreeAll p o S st → ∀ {t' : Trace} {r' : Res} {w' : World H},
+      k w st = (t', r', w') → ∀ ev ∈ t ++ t', PerfEv o ev → Q := by
+    intro st hst t' r' w' he ev hev hp
+    have hk' := (hk w st hst).1
+    rw [he] at hk'
+    rcases List.mem_append.mp hev with h | h
+    · exact ht ev h hp
+    · exact hk' ev h hp
+  cases res with
+  | ok v =>
+    cases v with
+    | tuple st =>
+      have hst : Val.OFreeAll p o S st := by have := hv _ rfl; simpa [Val.OFree] using this
+      simp only [finishEver]
+      have hkc := hk w st hst
+      revert hkc
+      generalize hkr : k w st = kr
+      obtain ⟨t', r', w'⟩ := kr
+      intro hkc
+      exact ⟨hseq hst hkr, hkc.2.1, hkc.2.2.1, hkc.2.2.2⟩
+    | _ => exact ⟨by simpa [finishEver] using ht, (fun _ h => by simp [finishEver] at h),
+        (fun _ _ _ h => by simp [finishEver] at h), (fun _ _ h => by simp [finishEver] at h)⟩
+  | failed c =>
+    simp only [finishEver]
+    have hkc := hk w st₀ h₀
+    revert hkc
+    generalize hkr : k w st₀ = kr
+    obtain ⟨t', r', w'⟩ := kr
+    intro hkc
+    cases r' with
+    | ok _ => exact ⟨hseq h₀ hkr, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
+    | _ => exact ⟨hseq h₀ hkr, hkc.2.1, hkc.2.2.1, hkc.2.2.2⟩
+  | raised kd c ps =>
+    simp only [finishEver]
+    have hkc := hk w st₀ h₀
+    revert hkc
+    generalize hkr : k w st₀ = kr
+    obtain ⟨t', r', w'⟩ := kr
+    intro hkc
+    cases r' with
+    | ok _ => exact ⟨hseq h₀ hkr, (fun _ h => nomatch h), hr', (fun _ _ h => nomatch h)⟩
+    | _ => exact ⟨hseq h₀ hkr, hkc.2.1, hkc.2.2.1, hkc.2.2.2⟩
+  | exit b vs => exact ⟨ht, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), hx⟩
+  | stuck | outOfFuel | aborted =>
+    exact ⟨ht, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
+
 theorem parseInt_ok (w : World H) (t : String) : RunOk p o S Q (parseInt w t) := by
   unfold parseInt
   cases t.toInt? with
   | some n => exact RunOk.done w (by simp [Val.OFree])
-  | none => exact ⟨(fun _ h => nomatch h), (fun _ h => nomatch h), (fun _ _ _ h => nomatch h)⟩
+  | none => exact ⟨(fun _ h => nomatch h), (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
 
 theorem checkRun_ok (w : World H) {v : Val} {pred : String} {code : Nat} (hv : Val.OFree p o S v) :
     RunOk p o S Q (checkRun p w v pred code) := by
@@ -414,7 +547,7 @@ theorem checkRun_ok (w : World H) {v : Val} {pred : String} {code : Nat} (hv : V
   split
   · split
     · exact RunOk.done w hv
-    · exact ⟨(fun _ h => nomatch h), (fun _ h => nomatch h), (fun _ _ _ h => nomatch h)⟩
+    · exact ⟨(fun _ h => nomatch h), (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
   · exact RunOk.stuck w
 
 /-- A call of a closure free of `o`: its body runs free of `o`. -/
@@ -848,6 +981,23 @@ theorem zip_fst_mem {xs : List String} {vs : List Val} {y : String}
   obtain ⟨⟨a, b⟩, hab, rfl⟩ := h
   exact (List.of_mem_zip hab).1
 
+/-- A body run with a loop's state bound afresh in front of the environment (ADR 0116): the
+state's names fresh in the conditions, and forgotten from the knowledge. -/
+theorem GoodE.bindState {cs : List (String × Cond)} {K : Know} {env : Env} {b : Expr}
+    {st : List (String × LTy)} (hfr : ∀ q ∈ st, freshFor cs q.1 = true)
+    (hok : b.condOk p cs (st.foldl (forget · ·.1) K) = true) (hK : KHolds K env)
+    (hl : Link p o Q cs env) (vs : List Val) :
+    GoodE p o S Q cs (st.foldl (forget · ·.1) K) (bindParams st vs env) b := by
+  refine GoodE.bind _ hok hK hl (fun y hy => ?_) (fun y c hyc => ?_) (fun y c hyc => ?_)
+  · obtain ⟨q, hq, rfl⟩ := List.mem_map.mp (zip_fst_mem hy)
+    exact hfr q hq
+  · rw [← List.foldl_map (f := Prod.fst) (g := forget)] at hyc
+    obtain ⟨h3, h4⟩ := forgetAll_mem _ hyc
+    exact ⟨h3, fun hm => h4 (zip_fst_mem hm)⟩
+  · rw [← List.foldl_map (f := Prod.fst) (g := forget)] at hyc
+    obtain ⟨h3, h4, h5⟩ := forgetAll_defs_mem _ hyc
+    exact ⟨h3, fun hm => h4 (zip_fst_mem hm), fun z hz hm => h5 z hz (zip_fst_mem hm)⟩
+
 /-- The expression half of the invariant, one step of fuel up. -/
 theorem eval_good_expr
     (hS : ∀ g fn, p.find g = some fn → S g →
@@ -959,14 +1109,15 @@ theorem eval_good_expr
         obtain ⟨K', hb⟩ := hb
         exact ihE w _ cs K' ee (by simp only [Val.OFreeEnv]; exact ⟨hz, hf⟩) hb
       | _ => exact RunOk.stuck w
-  | fail c => exact ⟨(fun _ h => nomatch h), (fun _ h => nomatch h), (fun _ _ _ h => nomatch h)⟩
+  | fail c => exact ⟨(fun _ h => nomatch h), (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
   | raise kind code args =>
     simp only [eval]
     cases ha : evalAtoms env args with
     | none => exact RunOk.stuck w
     | some vs =>
-      exact ⟨(fun _ h => nomatch h), (fun _ h => nomatch h), fun _ _ _ h => by cases h; exact evalAtoms_oFree hf ha⟩
-  | unreachable => exact ⟨(fun _ h => nomatch h), (fun _ h => nomatch h), (fun _ _ _ h => nomatch h)⟩
+      exact ⟨(fun _ h => nomatch h), (fun _ h => nomatch h), (fun _ _ _ h => by cases h; exact evalAtoms_oFree hf ha),
+        (fun _ _ h => nomatch h)⟩
+  | unreachable => exact ⟨(fun _ h => nomatch h), (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
   | withH o' f b =>
     simp only [eval]
     have hb : ∃ K', GoodE p o S Q cs K' ((markerName o', .text f) :: env) b := by
@@ -1019,14 +1170,15 @@ theorem eval_good_expr
     generalize eval H n p w env b = res at h₂ ⊢
     obtain ⟨t, r, w'⟩ := res
     cases r with
-    | ok x => exact ⟨h₂.1, fun _ h => by cases h; simp only [Val.OFree]; exact h₂.2.1 x rfl, (fun _ _ _ h => nomatch h)⟩
+    | ok x => exact ⟨h₂.1, fun _ h => by cases h; simp only [Val.OFree]; exact h₂.2.1 x rfl, (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
     | raised k c ps =>
       dsimp only
       split
-      · exact ⟨h₂.1, fun _ h => by cases h; simp only [Val.OFree]; exact h₂.2.2 k c ps rfl, (fun _ _ _ h => nomatch h)⟩
+      · exact ⟨h₂.1, fun _ h => by cases h; simp only [Val.OFree]; exact h₂.2.2.1 k c ps rfl, (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
       · exact ⟨h₂.1, (fun _ h => nomatch h), h₂.2.2⟩
-    | failed c => exact ⟨h₂.1, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h)⟩
-    | stuck | outOfFuel | aborted => exact ⟨h₂.1, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h)⟩
+    | failed c => exact ⟨h₂.1, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
+    | exit _ _ => exact ⟨h₂.1, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), h₂.2.2.2⟩
+    | stuck | outOfFuel | aborted => exact ⟨h₂.1, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
   | handleK kind b x h =>
     simp only [eval]
     have hb : GoodE p o S Q cs K env b ∧ ∀ val, ∃ K', GoodE p o S Q cs K' ((x, val) :: env) h := by
@@ -1044,7 +1196,7 @@ theorem eval_good_expr
       split
       · obtain ⟨K', hh⟩ := hb.2 (.variant k c ps)
         have g₂ := ihE w' ((x, .variant k c ps) :: env) cs K' h
-          (by simp only [Val.OFreeEnv, Val.OFree]; exact ⟨h₂.2.2 k c ps rfl, hf⟩) hh
+          (by simp only [Val.OFreeEnv, Val.OFree]; exact ⟨h₂.2.2.1 k c ps rfl, hf⟩) hh
         generalize eval H n p w' ((x, .variant k c ps) :: env) h = res' at g₂ ⊢
         obtain ⟨t', r', w''⟩ := res'
         refine ⟨fun ev hev hp => ?_, g₂.2⟩
@@ -1052,9 +1204,10 @@ theorem eval_good_expr
         · exact h₂.1 ev hev hp
         · exact g₂.1 ev hev hp
       · exact ⟨h₂.1, (fun _ h => nomatch h), h₂.2.2⟩
-    | ok v => exact ⟨h₂.1, fun _ h' => by cases h'; exact h₂.2.1 v rfl, (fun _ _ _ h' => nomatch h')⟩
-    | failed c => exact ⟨h₂.1, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h)⟩
-    | stuck | outOfFuel | aborted => exact ⟨h₂.1, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h)⟩
+    | ok v => exact ⟨h₂.1, fun _ h' => by cases h'; exact h₂.2.1 v rfl, (fun _ _ _ h' => nomatch h'), (fun _ _ h' => nomatch h')⟩
+    | failed c => exact ⟨h₂.1, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
+    | exit _ _ => exact ⟨h₂.1, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), h₂.2.2.2⟩
+    | stuck | outOfFuel | aborted => exact ⟨h₂.1, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
   | attempt b =>
     simp only [eval]
     have hb : GoodE p o S Q cs K env b := by
@@ -1065,10 +1218,11 @@ theorem eval_good_expr
     generalize eval H n p w env b = res at h₂ ⊢
     obtain ⟨t, r, w'⟩ := res
     cases r with
-    | ok x => exact ⟨h₂.1, fun _ h => by cases h; simp only [Val.OFree]; exact h₂.2.1 x rfl, (fun _ _ _ h => nomatch h)⟩
-    | failed c => exact ⟨h₂.1, fun _ h => by cases h; simp [Val.OFree], (fun _ _ _ h => nomatch h)⟩
+    | ok x => exact ⟨h₂.1, fun _ h => by cases h; simp only [Val.OFree]; exact h₂.2.1 x rfl, (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
+    | failed c => exact ⟨h₂.1, fun _ h => by cases h; simp [Val.OFree], (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
     | raised k c ps => exact ⟨h₂.1, (fun _ h => nomatch h), h₂.2.2⟩
-    | stuck | outOfFuel | aborted => exact ⟨h₂.1, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h)⟩
+    | exit _ _ => exact ⟨h₂.1, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), h₂.2.2.2⟩
+    | stuck | outOfFuel | aborted => exact ⟨h₂.1, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
   | handle b x h =>
     simp only [eval]
     have hb : GoodE p o S Q cs K env b ∧ ∀ val, ∃ K', GoodE p o S Q cs K' ((x, val) :: env) h := by
@@ -1092,9 +1246,10 @@ theorem eval_good_expr
       rcases List.mem_append.mp hev with hev | hev
       · exact h₂.1 ev hev hp
       · exact g₂.1 ev hev hp
-    | ok v => exact ⟨h₂.1, fun _ h' => by cases h'; exact h₂.2.1 v rfl, (fun _ _ _ h' => nomatch h')⟩
+    | ok v => exact ⟨h₂.1, fun _ h' => by cases h'; exact h₂.2.1 v rfl, (fun _ _ _ h' => nomatch h'), (fun _ _ h' => nomatch h')⟩
     | raised k c ps => exact ⟨h₂.1, (fun _ h' => nomatch h'), h₂.2.2⟩
-    | stuck | outOfFuel | aborted => exact ⟨h₂.1, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h)⟩
+    | exit _ _ => exact ⟨h₂.1, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), h₂.2.2.2⟩
+    | stuck | outOfFuel | aborted => exact ⟨h₂.1, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
   | letTuple bs v b =>
     simp only [eval]
     cases hv : evalAtom env v with
@@ -1180,11 +1335,72 @@ theorem eval_good_expr
                   exact ⟨h8, fun hm => h4 (zip_fst_mem hm)⟩
                 · simp only [List.map_cons, List.mem_cons, not_or]
                   exact ⟨fun hzx => h9 (hzx ▸ hz), fun hm => h5 z hz (zip_fst_mem hm)⟩
-          exact walkLoop_ok (fun w' v st' hv hst => by
+          exact endLoop_ok (walkLoop_ok (fun w' v st' hv hst => by
               obtain ⟨K', hb'⟩ := hb v st'
               exact ihE w' _ cs K' b (by simp only [Val.OFreeEnv]; exact ⟨hv, bindParams_oFree st hst hf⟩) hb')
-            w stv items (evalAtoms_oFree hf hi) hitems
+            w stv items (evalAtoms_oFree hf hi) hitems)
         · exact RunOk.stuck w
+  | exit stop state =>
+    simp only [eval]
+    cases ha : evalAtoms env state with
+    | none => exact RunOk.stuck w
+    | some vs =>
+      exact ⟨(fun _ h => nomatch h), (fun _ h => nomatch h), (fun _ _ _ h => nomatch h),
+        (fun _ _ h => by cases h; exact evalAtoms_oFree hf ha)⟩
+  | loopUntil c st init b =>
+    simp only [eval]
+    cases hi : evalAtoms env init with
+    | none => exact RunOk.stuck w
+    | some stv =>
+      simp only
+      split
+      · have hcb : ∀ st', (∃ K', GoodE p o S Q cs K' (bindParams st st' env) c) ∧
+            ∃ K', GoodE p o S Q cs K' (bindParams st st' env) b := by
+          intro st'
+          rcases hg with ⟨h1, h2⟩ | ⟨hok, hK, hl⟩
+          · obtain ⟨hc', hb'⟩ := split2 (by simpa [Expr.reach] using h1) (by simpa [Expr.reach] using h2)
+            exact ⟨⟨K, .inl hc'⟩, ⟨K, .inl hb'⟩⟩
+          · simp only [Expr.condOk, Bool.and_eq_true, List.all_eq_true] at hok
+            exact ⟨⟨_, GoodE.bindState hok.1.1 hok.1.2 hK hl st'⟩,
+              ⟨_, GoodE.bindState hok.1.1 hok.2 hK hl st'⟩⟩
+        exact endLoop_ok (walkUntil_ok
+          (fun w' st' hst => by
+            obtain ⟨K', hc'⟩ := (hcb st').1
+            exact ihE w' _ cs K' c (bindParams_oFree st hst hf) hc')
+          (fun w' st' hst => by
+            obtain ⟨K', hb'⟩ := (hcb st').2
+            exact ihE w' _ cs K' b (bindParams_oFree st hst hf) hb')
+          n w stv (evalAtoms_oFree hf hi))
+      · exact RunOk.stuck w
+  | loopEver site st init b os oe =>
+    simp only [eval]
+    cases hi : evalAtoms env init with
+    | none => exact RunOk.stuck w
+    | some stv =>
+      simp only
+      split
+      · have hbo : ∀ st', (∃ K', GoodE p o S Q cs K' (bindParams st st' env) b) ∧
+            ∃ K', GoodE p o S Q cs K' (bindParams os st' env) oe := by
+          intro st'
+          rcases hg with ⟨h1, h2⟩ | ⟨hok, hK, hl⟩
+          · obtain ⟨hb', ho'⟩ := split2 (by simpa [Expr.reach] using h1) (by simpa [Expr.reach] using h2)
+            exact ⟨⟨K, .inl hb'⟩, ⟨K, .inl ho'⟩⟩
+          · simp only [Expr.condOk, Bool.and_eq_true, List.all_eq_true] at hok
+            exact ⟨⟨_, GoodE.bindState hok.1.1.1 hok.1.2 hK hl st'⟩,
+              ⟨_, GoodE.bindState hok.1.1.2 hok.2 hK hl st'⟩⟩
+        exact finishEver_ok
+          (fun w' st' hst => by
+            split
+            · obtain ⟨K', ho'⟩ := (hbo st').2
+              exact ihE w' _ cs K' oe (bindParams_oFree os hst hf) ho'
+            · exact RunOk.stuck w')
+          (evalAtoms_oFree hf hi)
+          (endLoop_ok (walkEver_ok
+            (fun w' st' hst => by
+              obtain ⟨K', hb'⟩ := (hbo st').1
+              exact ihE w' _ cs K' b (bindParams_oFree st hst hf) hb')
+            n 0 w stv (evalAtoms_oFree hf hi)))
+      · exact RunOk.stuck w
 
 /-- **The invariant holds along every run.** A good frame from values free of `o` performs `o`
 only where `Q` holds, and gives values free of `o`. -/
@@ -1199,8 +1415,8 @@ theorem eval_good
       RunOk p o S Q (evalRhs H n p w env r)) ∧
     (∀ (w : World H) env cs K e, Val.OFreeEnv p o S env → GoodE p o S Q cs K env e →
       RunOk p o S Q (eval H n p w env e))
-  | 0 => ⟨fun _ _ _ _ _ _ _ => ⟨(fun _ h => nomatch h), (fun _ h => nomatch h), (fun _ _ _ h => nomatch h)⟩,
-      fun _ _ _ _ _ _ _ => ⟨(fun _ h => nomatch h), (fun _ h => nomatch h), (fun _ _ _ h => nomatch h)⟩⟩
+  | 0 => ⟨fun _ _ _ _ _ _ _ => ⟨(fun _ h => nomatch h), (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩,
+      fun _ _ _ _ _ _ _ => ⟨(fun _ h => nomatch h), (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩⟩
   | n + 1 => by
     obtain ⟨ihR, ihE⟩ := eval_good hS hSmay hok hvia ho hresp n
     have hfree : ∀ (w : World H) env e, Val.OFreeEnv p o S env → (e.reach p).1.contains o = false →
@@ -1314,7 +1530,7 @@ theorem eval_good
           cases v.line with
           | none => exact RunOk.stuck w
           | some s =>
-            refine ⟨fun ev hev hp => ?_, fun _ h => by cases h; simp [Val.OFree], (fun _ _ _ h => nomatch h)⟩
+            refine ⟨fun ev hev hp => ?_, fun _ h => by cases h; simp [Val.OFree], (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
             simp only [List.mem_singleton] at hev
             subst hev
             simp only [PerfEv] at hp
@@ -1334,8 +1550,8 @@ theorem eval_good
               exact site_good hg (by simp [Rhs.reach]) (fun hc => by simpa [Rhs.condOk] using hc) hp.symm
             dsimp only
             cases H.read s w.fs with
-            | some c => exact ⟨hev, fun _ h => by cases h; simp [Val.OFree], (fun _ _ _ h => nomatch h)⟩
-            | none => exact ⟨hev, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h)⟩
+            | some c => exact ⟨hev, fun _ h => by cases h; simp [Val.OFree], (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
+            | none => exact ⟨hev, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
           | _ => exact RunOk.stuck w
       | hmac key data =>
         simp only [evalRhs]
@@ -1359,8 +1575,8 @@ theorem eval_good
               | some s =>
                 dsimp only
                 cases H.key k with
-                | some m => exact ⟨hev, fun _ h => by cases h; simp [Val.OFree], (fun _ _ _ h => nomatch h)⟩
-                | none => exact ⟨hev, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h)⟩
+                | some m => exact ⟨hev, fun _ h => by cases h; simp [Val.OFree], (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
+                | none => exact ⟨hev, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
             | _ => exact RunOk.stuck w
       | write path content =>
         simp only [evalRhs]
@@ -1382,8 +1598,8 @@ theorem eval_good
                   exact site_good hg (by simp [Rhs.reach]) (fun hc => by simpa [Rhs.condOk] using hc) hp.symm
                 dsimp only
                 cases H.write s t w.fs with
-                | some fs' => exact ⟨hev, fun _ h => by cases h; simp [Val.OFree], (fun _ _ _ h => nomatch h)⟩
-                | none => exact ⟨hev, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h)⟩
+                | some fs' => exact ⟨hev, fun _ h => by cases h; simp [Val.OFree], (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
+                | none => exact ⟨hev, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
               | _ => exact RunOk.stuck w
             | _ => cases c <;> exact RunOk.stuck w
       | req m args =>
@@ -1401,8 +1617,8 @@ theorem eval_good
           cases hrq : H.request m vs w.srv with
           | mk res srv' =>
             cases res with
-            | ok v => exact ⟨hev, fun _ h => by cases h; exact hresp m vs w.srv v srv' hrq, (fun _ _ _ h => nomatch h)⟩
-            | error c => exact ⟨hev, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h)⟩
+            | ok v => exact ⟨hev, fun _ h => by cases h; exact hresp m vs w.srv v srv' hrq, (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
+            | error c => exact ⟨hev, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
       | construct record fields =>
         refine RunOk.ret w fun v hv => ?_
         cases ha : evalAtoms env fields <;> simp [ha, Option.elim] at hv
@@ -1558,10 +1774,11 @@ theorem eval_good
                   · exact h₂.1 ev hev hp
                   · simp only [List.mem_singleton] at hev; subst hev; exact hp.elim
                 cases r with
-                | ok x => exact ⟨hrel x, fun _ h => by cases h; exact h₂.2.1 x rfl, (fun _ _ _ h => nomatch h)⟩
-                | failed c => exact ⟨hrel _, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h)⟩
+                | ok x => exact ⟨hrel x, fun _ h => by cases h; exact h₂.2.1 x rfl, (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
+                | failed c => exact ⟨hrel _, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
                 | raised k c ps => exact ⟨h₂.1, (fun _ h => nomatch h), h₂.2.2⟩
-                | stuck | outOfFuel | aborted => exact ⟨h₂.1, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h)⟩
+                | exit _ _ => exact ⟨h₂.1, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), h₂.2.2.2⟩
+                | stuck | outOfFuel | aborted => exact ⟨h₂.1, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
               · exact RunOk.stuck w
       | map xs f =>
         simp only [evalRhs]

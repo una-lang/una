@@ -14,6 +14,34 @@ theorem labelLe_sound {a b : Label} (h : labelLe a b = true) : a.le b := by
     List.contains_iff_mem] at h
   exact ⟨h.1, h.2⟩
 
+-- `LTy.eqB` and `LTy.eqsB` decide equality.
+mutual
+  theorem LTy.eqB_sound : ∀ (a b : LTy), LTy.eqB a b = true → a = b
+    | .int _, b, h | .bool _, b, h | .text _, b, h | .unit _, b, h => by
+      cases b <;> simp_all [LTy.eqB]
+    | .list t _, b, h | .option t _, b, h => by
+      cases b <;> simp only [LTy.eqB, Bool.and_eq_true, decide_eq_true_eq, reduceCtorEq] at h
+      all_goals first | exact absurd h id | (obtain ⟨h₁, rfl⟩ := h; rw [LTy.eqB_sound t _ h₁])
+    | .result t e _, b, h => by
+      cases b <;> simp only [LTy.eqB, Bool.and_eq_true, decide_eq_true_eq, reduceCtorEq] at h
+      all_goals first | exact absurd h id | (obtain ⟨⟨h₁, h₂⟩, rfl⟩ := h; rw [LTy.eqB_sound t _ h₁, LTy.eqB_sound e _ h₂])
+    | .record _ _, b, h | .var _ _, b, h => by
+      cases b <;> simp_all [LTy.eqB]
+    | .fn ps r _ _ _ _, b, h => by
+      cases b <;> simp only [LTy.eqB, Bool.and_eq_true, decide_eq_true_eq, reduceCtorEq] at h
+      all_goals first | exact absurd h id |
+        (obtain ⟨⟨⟨⟨⟨h₁, h₂⟩, rfl⟩, rfl⟩, rfl⟩, rfl⟩ := h; rw [LTy.eqsB_sound ps _ h₁, LTy.eqB_sound r _ h₂])
+    | .tuple ts _, b, h => by
+      cases b <;> simp only [LTy.eqB, Bool.and_eq_true, decide_eq_true_eq, reduceCtorEq] at h
+      all_goals first | exact absurd h id | (obtain ⟨h₁, rfl⟩ := h; rw [LTy.eqsB_sound ts _ h₁])
+  theorem LTy.eqsB_sound : ∀ (as bs : List LTy), LTy.eqsB as bs = true → as = bs
+    | [], [], _ => rfl
+    | t :: ts, u :: us, h => by
+      simp only [LTy.eqsB, Bool.and_eq_true] at h
+      rw [LTy.eqB_sound t u h.1, LTy.eqsB_sound ts us h.2]
+    | [], _ :: _, h | _ :: _, [], h => by simp [LTy.eqsB] at h
+end
+
 theorem leB_sound {top : Label} {a b : LExpr} (h : leB top a b = true) : LExpr.le top a b := by
   simp only [leB, Bool.or_eq_true, Bool.and_eq_true, List.all_eq_true, List.contains_iff_mem]
     at h

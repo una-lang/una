@@ -188,7 +188,7 @@ mutual
     | _, _, _, .mkOk h => .mkOk (atom_subst τ h)
     | _, _, _, .mkErr h => .mkErr (atom_subst τ h)
     | _, _, _, .lambda (ts := ts) hlen hb => by
-      have h := ExprTy.subst hwf τ hb
+      have h := ExprTyX.subst hwf τ hb
       rw [bindTys_subst] at h
       simp only [Ty.subst, Ty.substs_eq]
       exact .lambda (by simp [hlen]) h
@@ -245,46 +245,69 @@ mutual
       simp only [Ty.subst, Ty.substs] at h1 ⊢
       exact .set h1 (atom_subst τ hi) (atom_subst τ hv)
 
-  /-- A typing of a body is closed under substitution. -/
-  theorem ExprTy.subst (hwf : p.WellFormed) (τ : List (String × Ty)) :
-      ∀ {ctx : Ctx} {e : Expr} {t : Ty}, ExprTy p ctx e t → ExprTy p (ctx.subst τ) e (t.subst τ)
-    | _, _, _, .atom h => .atom (atom_subst τ h)
-    | _, _, _, .letR hr hb => .letR (RhsTy.subst hwf τ hr) (ExprTy.subst hwf τ hb)
-    | _, _, _, .letE hv hb => .letE (ExprTy.subst hwf τ hv) (ExprTy.subst hwf τ hb)
-    | _, _, _, .ite hc ht he =>
-      .ite (atom_subst τ hc) (ExprTy.subst hwf τ ht) (ExprTy.subst hwf τ he)
-    | _, _, _, .caseOption hs hn hsome =>
-      .caseOption (atom_subst τ hs) (ExprTy.subst hwf τ hn) (ExprTy.subst hwf τ hsome)
-    | _, _, _, .caseResult hs hok herr =>
-      .caseResult (atom_subst τ hs) (ExprTy.subst hwf τ hok) (ExprTy.subst hwf τ herr)
-    | _, _, _, .fail => .fail
-    | _, _, _, .raise hs hf has => by
+  /-- A typing of a body is closed under substitution, with the types its exits carry. -/
+  theorem ExprTyX.subst (hwf : p.WellFormed) (τ : List (String × Ty)) :
+      ∀ {X : Option (List Ty)} {ctx : Ctx} {e : Expr} {t : Ty}, ExprTyX p X ctx e t →
+        ExprTyX p (X.map (·.map (Ty.subst τ))) (ctx.subst τ) e (t.subst τ)
+    | _, _, _, _, .atom h => .atom (atom_subst τ h)
+    | _, _, _, _, .letR hr hb => .letR (RhsTy.subst hwf τ hr) (ExprTyX.subst hwf τ hb)
+    | _, _, _, _, .letE hv hb => .letE (ExprTyX.subst hwf τ hv) (ExprTyX.subst hwf τ hb)
+    | _, _, _, _, .ite hc ht he =>
+      .ite (atom_subst τ hc) (ExprTyX.subst hwf τ ht) (ExprTyX.subst hwf τ he)
+    | _, _, _, _, .caseOption hs hn hsome =>
+      .caseOption (atom_subst τ hs) (ExprTyX.subst hwf τ hn) (ExprTyX.subst hwf τ hsome)
+    | _, _, _, _, .caseResult hs hok herr =>
+      .caseResult (atom_subst τ hs) (ExprTyX.subst hwf τ hok) (ExprTyX.subst hwf τ herr)
+    | _, _, _, _, .fail => .fail
+    | _, _, _, _, .raise hs hf has => by
       have h := atoms_subst τ has
       rw [map_subst_closed τ (sum_fieldTys_closed hwf hs hf)] at h
       exact .raise hs hf h
-    | _, _, _, .caseSum hsc hs hf hlen hth hel => by
-      have h := ExprTy.subst hwf τ hth
+    | _, _, _, _, .caseSum hsc hs hf hlen hth hel => by
+      have h := ExprTyX.subst hwf τ hth
       rw [zip_subst, map_subst_closed τ (sum_fieldTys_closed hwf hs hf)] at h
-      exact .caseSum (atom_subst τ hsc) hs hf hlen h (ExprTy.subst hwf τ hel)
-    | _, _, _, .unreachable => .unreachable
-    | _, _, _, .withH hb => .withH (ExprTy.subst hwf τ hb)
-    | _, _, _, .attempt hb => .attempt (ExprTy.subst hwf τ hb)
-    | _, _, _, .attemptK hb => .attemptK (ExprTy.subst hwf τ hb)
-    | _, _, _, .handle hb hh => .handle (ExprTy.subst hwf τ hb) (ExprTy.subst hwf τ hh)
-    | _, _, _, .handleK hb hh => .handleK (ExprTy.subst hwf τ hb) (ExprTy.subst hwf τ hh)
-    | _, _, _, .letTuple hv hlen hb => by
+      exact .caseSum (atom_subst τ hsc) hs hf hlen h (ExprTyX.subst hwf τ hel)
+    | _, _, _, _, .unreachable => .unreachable
+    | _, _, _, _, .withH hb => .withH (ExprTyX.subst hwf τ hb)
+    | _, _, _, _, .attempt hb => .attempt (ExprTyX.subst hwf τ hb)
+    | _, _, _, _, .attemptK hb => .attemptK (ExprTyX.subst hwf τ hb)
+    | _, _, _, _, .handle hb hh => .handle (ExprTyX.subst hwf τ hb) (ExprTyX.subst hwf τ hh)
+    | _, _, _, _, .handleK hb hh => .handleK (ExprTyX.subst hwf τ hb) (ExprTyX.subst hwf τ hh)
+    | _, _, _, _, .letTuple hv hlen hb => by
       have h1 := atom_subst τ hv
-      have h2 := ExprTy.subst hwf τ hb
+      have h2 := ExprTyX.subst hwf τ hb
       rw [bindTys_subst] at h2
       simp only [Ty.subst, Ty.substs_eq] at h1
       exact .letTuple h1 (by simp [hlen]) h2
-    | _, _, _, .loop (x := x) (t := t) (ts := ts) hs hi hlen hb => by
-      have h2 : ExprTy p ((x, t.subst τ) :: Ctx.subst τ (bindTys _ ts ++ _)) _
-          ((Ty.tuple ts).subst τ) := ExprTy.subst hwf τ hb
+    | _, _, _, _, .loop (x := x) (t := t) (ts := ts) hs hi hlen hb => by
+      have h2 : ExprTyX p (some (ts.map (Ty.subst τ))) ((x, t.subst τ) :: Ctx.subst τ (bindTys _ ts ++ _)) _
+          ((Ty.tuple ts).subst τ) := ExprTyX.subst hwf τ hb
       rw [bindTys_subst] at h2
       simp only [Ty.subst, Ty.substs_eq] at h2 ⊢
       exact .loop (source_subst τ hs) (atoms_subst τ hi) (by simp [hlen]) h2
+    | _, _, _, _, .exit has => .exit (atoms_subst τ has)
+    | _, _, _, _, .loopUntil (ts := ts) hi hlen hc hb => by
+      have h1 : ExprTyX p none (Ctx.subst τ (bindTys _ ts ++ _)) _ (Ty.bool.subst τ) :=
+        ExprTyX.subst hwf τ hc
+      have h2 : ExprTyX p (some (ts.map (Ty.subst τ))) (Ctx.subst τ (bindTys _ ts ++ _)) _
+          ((Ty.tuple ts).subst τ) := ExprTyX.subst hwf τ hb
+      rw [bindTys_subst] at h1 h2
+      simp only [Ty.subst, Ty.substs_eq] at h1 h2 ⊢
+      exact .loopUntil (atoms_subst τ hi) (by simp [hlen]) h1 h2
+    | _, _, _, _, .loopEver (ts := ts) hi hlen hb hlo ho => by
+      have h2 : ExprTyX p (some (ts.map (Ty.subst τ))) (Ctx.subst τ (bindTys _ ts ++ _)) _
+          ((Ty.tuple ts).subst τ) := ExprTyX.subst hwf τ hb
+      have h3 : ExprTyX p none (Ctx.subst τ (bindTys _ ts ++ _)) _ ((Ty.tuple ts).subst τ) :=
+        ExprTyX.subst hwf τ ho
+      rw [bindTys_subst] at h2 h3
+      simp only [Ty.subst, Ty.substs_eq] at h2 h3 ⊢
+      exact .loopEver (atoms_subst τ hi) (by simp [hlen]) h2 (by simp [hlo]) h3
 end
+
+/-- A typing of a body outside a loop's body is closed under substitution. -/
+theorem ExprTy.subst (hwf : p.WellFormed) (τ : List (String × Ty)) {ctx : Ctx} {e : Expr} {t : Ty}
+    (h : ExprTy p ctx e t) : ExprTy p (ctx.subst τ) e (t.subst τ) :=
+  ExprTyX.subst hwf τ h
 
 /-! ### Values -/
 

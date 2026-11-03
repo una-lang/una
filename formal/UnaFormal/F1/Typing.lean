@@ -134,7 +134,7 @@ mutual
     | mkOk {ctx a t e} : AtomTy ctx a t → RhsTy p ctx (.mkOk a) (.result t e)
     | mkErr {ctx a t e} : AtomTy ctx a e → RhsTy p ctx (.mkErr a) (.result t e)
     | lambda {ctx params body ts r} :
-        ts.length = params.length → ExprTy p (bindTys params ts ++ ctx) body r →
+        ts.length = params.length → ExprTyX p none (bindTys params ts ++ ctx) body r →
         RhsTy p ctx (.lambda params body) (.fn ts r)
     | funRef {ctx f targs fn σ} :
         p.find f = some fn →
@@ -165,54 +165,80 @@ mutual
         AtomTy ctx xs (.list t) → AtomTy ctx index .int → AtomTy ctx item t →
         RhsTy p ctx (.set xs index item) (.tuple [.list t, .unit])
 
-  inductive ExprTy (p : Program) : Ctx → Expr → Ty → Prop where
-    | atom {ctx a t} : AtomTy ctx a t → ExprTy p ctx (.atom a) t
-    | letR {ctx x ann value body t s} :
-        RhsTy p ctx value t → ExprTy p ((x, t) :: ctx) body s →
-        ExprTy p ctx (.letR x ann value body) s
-    | letE {ctx x ann value body t s} :
-        ExprTy p ctx value t → ExprTy p ((x, t) :: ctx) body s →
-        ExprTy p ctx (.letE x ann value body) s
-    | ite {ctx cond thenE elseE s} :
-        AtomTy ctx cond .bool → ExprTy p ctx thenE s → ExprTy p ctx elseE s →
-        ExprTy p ctx (.ite cond thenE elseE) s
-    | caseOption {ctx scrutinee noneE x someE t s} :
-        AtomTy ctx scrutinee (.option t) → ExprTy p ctx noneE s →
-        ExprTy p ((x, t) :: ctx) someE s →
-        ExprTy p ctx (.caseOption scrutinee noneE x someE) s
-    | caseResult {ctx scrutinee x okE y errE t e s} :
-        AtomTy ctx scrutinee (.result t e) → ExprTy p ((x, t) :: ctx) okE s →
-        ExprTy p ((y, e) :: ctx) errE s →
-        ExprTy p ctx (.caseResult scrutinee x okE y errE) s
-    | fail {ctx code s} : ExprTy p ctx (.fail code) s
-    | raise {ctx kind code args sm ts s} :
+  /-- The typing of bodies, with `X` the types of the state of the innermost loop whose body this
+  is, which its exits carry (ADR 0116 rule 20), or `none` outside a loop's body: a function's or a
+  lambda's body, a condition of `until`, an `on stop` block, and the body of `attempt` and both
+  parts of a handled expression, which an exit never crosses. `ExprTy` is the judgment at
+  `none`. -/
+  inductive ExprTyX (p : Program) : Option (List Ty) → Ctx → Expr → Ty → Prop where
+    | atom {X ctx a t} : AtomTy ctx a t → ExprTyX p X ctx (.atom a) t
+    | letR {X ctx x ann value body t s} :
+        RhsTy p ctx value t → ExprTyX p X ((x, t) :: ctx) body s →
+        ExprTyX p X ctx (.letR x ann value body) s
+    | letE {X ctx x ann value body t s} :
+        ExprTyX p X ctx value t → ExprTyX p X ((x, t) :: ctx) body s →
+        ExprTyX p X ctx (.letE x ann value body) s
+    | ite {X ctx cond thenE elseE s} :
+        AtomTy ctx cond .bool → ExprTyX p X ctx thenE s → ExprTyX p X ctx elseE s →
+        ExprTyX p X ctx (.ite cond thenE elseE) s
+    | caseOption {X ctx scrutinee noneE x someE t s} :
+        AtomTy ctx scrutinee (.option t) → ExprTyX p X ctx noneE s →
+        ExprTyX p X ((x, t) :: ctx) someE s →
+        ExprTyX p X ctx (.caseOption scrutinee noneE x someE) s
+    | caseResult {X ctx scrutinee x okE y errE t e s} :
+        AtomTy ctx scrutinee (.result t e) → ExprTyX p X ((x, t) :: ctx) okE s →
+        ExprTyX p X ((y, e) :: ctx) errE s →
+        ExprTyX p X ctx (.caseResult scrutinee x okE y errE) s
+    | fail {X ctx code s} : ExprTyX p X ctx (.fail code) s
+    | raise {X ctx kind code args sm ts s} :
         p.sum kind = some sm → sm.fieldTys code = some ts → AtomsTy ctx args ts →
-        ExprTy p ctx (.raise kind code args) s
-    | caseSum {ctx scrutinee kind ctor binders thenE elseE sm ts s} :
+        ExprTyX p X ctx (.raise kind code args) s
+    | caseSum {X ctx scrutinee kind ctor binders thenE elseE sm ts s} :
         AtomTy ctx scrutinee (.record kind) → p.sum kind = some sm → sm.fieldTys ctor = some ts →
-        ts.length = binders.length → ExprTy p (binders.zip ts ++ ctx) thenE s →
-        ExprTy p ctx elseE s → ExprTy p ctx (.caseSum scrutinee ctor binders thenE elseE) s
-    | unreachable {ctx s} : ExprTy p ctx .unreachable s
-    | withH {ctx o f body t} :
-        ExprTy p ((markerName o, .text) :: ctx) body t → ExprTy p ctx (.withH o f body) t
-    | attempt {ctx body t} : ExprTy p ctx body t → ExprTy p ctx (.attempt body) (.result t .int)
-    | attemptK {ctx kind body t} :
-        ExprTy p ctx body t → ExprTy p ctx (.attemptK kind body) (.result t (.record kind))
-    | handle {ctx body x handler s} :
-        ExprTy p ctx body s → ExprTy p ((x, .int) :: ctx) handler s →
-        ExprTy p ctx (.handle body x handler) s
-    | handleK {ctx kind body x handler s} :
-        ExprTy p ctx body s → ExprTy p ((x, .record kind) :: ctx) handler s →
-        ExprTy p ctx (.handleK kind body x handler) s
-    | letTuple {ctx binders value body ts s} :
+        ts.length = binders.length → ExprTyX p X (binders.zip ts ++ ctx) thenE s →
+        ExprTyX p X ctx elseE s → ExprTyX p X ctx (.caseSum scrutinee ctor binders thenE elseE) s
+    | unreachable {X ctx s} : ExprTyX p X ctx .unreachable s
+    | withH {X ctx o f body t} :
+        ExprTyX p X ((markerName o, .text) :: ctx) body t → ExprTyX p X ctx (.withH o f body) t
+    | attempt {X ctx body t} : ExprTyX p none ctx body t → ExprTyX p X ctx (.attempt body) (.result t .int)
+    | attemptK {X ctx kind body t} :
+        ExprTyX p none ctx body t → ExprTyX p X ctx (.attemptK kind body) (.result t (.record kind))
+    | handle {X ctx body x handler s} :
+        ExprTyX p none ctx body s → ExprTyX p none ((x, .int) :: ctx) handler s →
+        ExprTyX p X ctx (.handle body x handler) s
+    | handleK {X ctx kind body x handler s} :
+        ExprTyX p none ctx body s → ExprTyX p none ((x, .record kind) :: ctx) handler s →
+        ExprTyX p X ctx (.handleK kind body x handler) s
+    | letTuple {X ctx binders value body ts s} :
         AtomTy ctx value (.tuple ts) → ts.length = binders.length →
-        ExprTy p (bindTys binders ts ++ ctx) body s →
-        ExprTy p ctx (.letTuple binders value body) s
-    | loop {ctx source x xty state init body t ts} :
+        ExprTyX p X (bindTys binders ts ++ ctx) body s →
+        ExprTyX p X ctx (.letTuple binders value body) s
+    /-- A loop: its body is typed with the state's types, which its exits carry. -/
+    | loop {X ctx source x xty state init body t ts} :
         SourceTy ctx source t → AtomsTy ctx init ts → ts.length = state.length →
-        ExprTy p ((x, t) :: (bindTys state ts ++ ctx)) body (.tuple ts) →
-        ExprTy p ctx (.loop source x xty state init body) (.tuple ts)
+        ExprTyX p (some ts) ((x, t) :: (bindTys state ts ++ ctx)) body (.tuple ts) →
+        ExprTyX p X ctx (.loop source x xty state init body) (.tuple ts)
+    /-- `exit_k(b̄)` (ADR 0116 rule 20): the state of the innermost loop, at its types; the exit
+    ends the code around it, so it has any type. -/
+    | exit {ctx stop state ts s} :
+        AtomsTy ctx state ts → ExprTyX p (some ts) ctx (.exit stop state) s
+    /-- `for until c` (ADR 0116 rule 7): the condition is a `Bool` with the state bound. -/
+    | loopUntil {X ctx cond state init body ts} :
+        AtomsTy ctx init ts → ts.length = state.length →
+        ExprTyX p none (bindTys state ts ++ ctx) cond .bool →
+        ExprTyX p (some ts) (bindTys state ts ++ ctx) body (.tuple ts) →
+        ExprTyX p X ctx (.loopUntil cond state init body) (.tuple ts)
+    /-- `for ever` with its `on stop` block (ADR 0116 rule 10), which gives the state at its
+    types. -/
+    | loopEver {X ctx site state init body os o ts} :
+        AtomsTy ctx init ts → ts.length = state.length →
+        ExprTyX p (some ts) (bindTys state ts ++ ctx) body (.tuple ts) → ts.length = os.length →
+        ExprTyX p none (bindTys os ts ++ ctx) o (.tuple ts) →
+        ExprTyX p X ctx (.loopEver site state init body os o) (.tuple ts)
 end
+
+/-- The typing of bodies outside a loop's body (`ExprTyX` at `none`). -/
+abbrev ExprTy (p : Program) (ctx : Ctx) (e : Expr) (t : Ty) : Prop := ExprTyX p none ctx e t
 
 /-- A program is well formed when each function's body has its declared result type under its
 parameters, with its type parameters abstract; the fields of records and the types of

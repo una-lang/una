@@ -1,0 +1,160 @@
+module m
+
+pub capability Log
+  op write(line: Text) -> Unit
+
+pub kind Order
+  amount: Int
+  cancelled: Bool
+
+--- `skip` and `stop` over a list, from an `if` and a `stop when` (spec/26 §3).
+pub total(orders: List[Order], limit: Int) -> Int
+=
+  let edit total = 0
+  for order in orders
+    if order.cancelled
+      skip
+    stop when total > limit
+    total = total + order.amount
+  total
+
+--- `stop` over a range, from an `if` that also updates the state.
+pub first_square() -> Int
+=
+  let edit found = 0
+  for i in 1..100
+    if i * i > 20
+      found = i
+      stop
+  found
+
+--- An inner loop that stops alone.
+pub pairs() -> Int
+=
+  let edit count = 0
+  for i in 0..<4
+    for j in 0..<4
+      stop when j >= i
+      count = count + 1
+  count
+
+--- `skip` from a nested block.
+pub kinds(xs: List[Int]) -> Int
+=
+  let edit even = 0
+  let edit odd = 0
+  for x in xs
+    if x mod 2 == 0
+      if x == 0
+        skip
+      even = even + 1
+      skip
+    odd = odd + 1
+  even + odd
+
+--- `stop when` on a secret element: U4002 (IF2).
+pub when_secret(xs: List[secret Int]) -> Int
+=
+  let edit n = 0
+  for x in xs
+    stop when x > 3
+    n = n + 1
+  n
+
+--- `stop` under a secret branch: U4002 (IF2).
+pub under_secret(xs: List[secret Int]) -> Int
+=
+  let edit n = 0
+  for x in xs
+    if x > 3
+      stop
+    n = n + 1
+  n
+
+--- A public binding updated after a `skip` under a secret branch: U4001 (IF3).
+pub after_skip(xs: List[secret Int]) -> Int
+=
+  let edit n = 0
+  for x in xs
+    if x > 3
+      skip
+    n = n + 1
+  n
+
+--- Exits decided by public data, in a loop that updates a secret binding: accepted.
+pub public_exits(xs: List[Int], s: secret Int) -> secret Int
+=
+  let edit n: secret Int = 0
+  for x in xs
+    if x > 3
+      skip
+    stop when x > 9
+    n = n + s
+  n
+
+--- `for until` with a measure (spec/26 §4).
+pub halves(n: Int) -> Int
+  requires n >= 0
+=
+  let edit left: Nat = n
+  let edit count = 0
+  for until left == 0 decreases left
+    left = left / 2
+    count = count + 1
+  count
+
+--- `for ever` with `stop` and `on stop` (spec/26 §5).
+pub alive() -> Int
+  uses @log: Log[write]
+  diverges
+=
+  let edit n = 0
+  for ever
+    stop when n == 3
+    @log.write("alive {n}")
+    n = n + 1
+  on stop
+    @log.write("stopped at {n}")
+  n
+
+--- `for until` on a public condition, updating a secret binding under a secret branch: accepted.
+pub secret_hits(n: Int, s: secret Bool) -> secret Int
+  requires n >= 0
+=
+  let edit left: Nat = n
+  let edit hits: secret Int = 0
+  for until left == 0 decreases left
+    left = left - 1
+    if s
+      hits = hits + 1
+  hits
+
+--- `for until` on a secret condition, whose state is secret: accepted (IF1).
+pub secret_until(s: secret Int) -> secret Int
+=
+  let edit x: secret Int = s
+  for until x <= 0 decreases x
+    x = x - 1
+  x
+
+--- `for until` on a secret condition, whose body writes a public line: U4003 (IF1).
+pub loud_until(s: secret Int) -> Int
+  uses @log: Log[write]
+=
+  let edit x: secret Int = s
+  let edit n = 0
+  for until x <= 0 decreases x
+    @log.write("tick")
+    x = x - 1
+  n
+
+--- `stop` in a `for ever` under a secret branch: U4002 (IF2).
+pub ever_secret(s: secret Int) -> Int
+  diverges
+=
+  let edit n = 0
+  for ever
+    if s > n
+      stop
+    n = n + 1
+  n

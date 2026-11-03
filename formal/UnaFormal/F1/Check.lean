@@ -303,6 +303,42 @@ def flowTo (p : Program) (t ann : LTy) (what : String) : Result Unit :=
 def le (p : Program) (a b : LExpr) (what : String) : Result Unit :=
   need (leB p.top a b) what
 
+-- Equality of labeled types, which `on stop`'s binders are checked by (ADR 0116 rule 20).
+deriving instance DecidableEq for Label
+deriving instance DecidableEq for LExpr
+deriving instance DecidableEq for HostFx
+
+mutual
+  /-- Equality of labeled types, as a Boolean. -/
+  def LTy.eqB : LTy → LTy → Bool
+    | .int a, .int b | .bool a, .bool b | .text a, .text b | .unit a, .unit b => decide (a = b)
+    | .list t a, .list u b | .option t a, .option u b => LTy.eqB t u && decide (a = b)
+    | .result t e a, .result u f b => LTy.eqB t u && LTy.eqB e f && decide (a = b)
+    | .record n a, .record m b | .var n a, .var m b => decide (n = m) && decide (a = b)
+    | .fn ps r o g f a, .fn qs s o' g' f' b =>
+      LTy.eqsB ps qs && LTy.eqB r s && decide (o = o') && decide (g = g') && decide (f = f') &&
+        decide (a = b)
+    | .tuple ts a, .tuple us b => LTy.eqsB ts us && decide (a = b)
+    | _, _ => false
+  /-- Equality of lists of labeled types, as a Boolean. -/
+  def LTy.eqsB : List LTy → List LTy → Bool
+    | [], [] => true
+    | t :: ts, u :: us => LTy.eqB t u && LTy.eqsB ts us
+    | _, _ => false
+end
+
+/-- The label a `for until` loop's condition gives its value (ADR 0116 IF1), read off the condition
+as Core writes it: its `let`s, annotated, to the atom it returns, of type `Bool`. The checker then
+checks the condition against `Bool` at that label, which is what the soundness proof needs, so the
+reading is only a choice of label: a condition it misreads is checked against a wrong label and
+fails, never passes wrongly. -/
+def untilLabel (Γ : LCtx) : Expr → LExpr
+  | .atom a => match atomTy Γ a with
+    | .ok (.bool l) => l
+    | _ => .bot
+  | .letR x ann _ b | .letE x ann _ b => untilLabel ((x, ann) :: Γ) b
+  | _ => .bot
+
 mutual
   /-- `LRhsTy`, checked against the type `ann` of the `let` that binds it. -/
   def checkRhs (p : Program) (E : List String) (Γ : LCtx) (pc : LExpr) (ann : LTy) :
@@ -511,7 +547,7 @@ mutual
       match ann with
       | .fn ps r o g fl _ =>
         need (params.all (fun q => inPlace q.2)) "`ℓ_T` off a position of type `T`"
-        let ε ← checkExpr p E (params ++ Γ) .bot r body
+        let ε ← checkExprX p E none (params ++ Γ) .bot r body
         le p ε.failLabel .bot "a lambda's failure is decided above `public`"
         need ε.rels.isEmpty (.restriction "B1 restriction (declassification in a lambda)")
         need ε.raises.isEmpty
@@ -637,7 +673,8 @@ mutual
       | _, _ => throw (.reject "`set` on values of the wrong types")
 
   /-- `LExprTy`, checked against the type `s` its value must flow into. -/
-  def checkExpr (p : Program) (E : List String) (Γ : LCtx) (pc : LExpr) (s : LTy) :
+  def checkExprX (p : Program) (E : List String) (X : Option (List LTy × LExpr)) (Γ : LCtx)
+      (pc : LExpr) (s : LTy) :
       Expr → Result Eff
     | .atom a => do
       flowTo p (← atomTy Γ a) s "the value"
@@ -645,12 +682,12 @@ mutual
     | .letR x ann value body => do
       need (inPlace ann) s!"`ℓ_T` off a position of type `T` in the type of `{x}`"
       let ε₁ ← checkRhs p E Γ pc ann value
-      let ε₂ ← checkExpr p E ((x, ann) :: Γ) (pc.join ε₁.failLabel) s body
+      let ε₂ ← checkExprX p E X ((x, ann) :: Γ) (pc.join ε₁.failLabel) s body
       pure (ε₁.union ε₂)
     | .letE x ann value body => do
       need (inPlace ann) s!"`ℓ_T` off a position of type `T` in the type of `{x}`"
-      let ε₁ ← checkExpr p E Γ pc ann value
-      let ε₂ ← checkExpr p E ((x, ann) :: Γ) (pc.join ε₁.failLabel) s body
+      let ε₁ ← checkExprX p E X Γ pc ann value
+      let ε₂ ← checkExprX p E X ((x, ann) :: Γ) (pc.join ε₁.failLabel) s body
       pure (ε₁.union ε₂)
     | .ite cond thenE elseE => do
       match ← atomTy Γ cond with
@@ -659,15 +696,15 @@ mutual
         | .tuple ts _ =>
           -- Core's join of updated bindings (M6b): the condition's label goes into each component.
           need (inPlaceAll ts) "`ℓ_T` off a position of type `T`"
-          let ε₁ ← checkExpr p E Γ (pc.join lc) (.tuple ts .bot) thenE
-          let ε₂ ← checkExpr p E Γ (pc.join lc) (.tuple ts .bot) elseE
+          let ε₁ ← checkExprX p E X Γ (pc.join lc) (.tuple ts .bot) thenE
+          let ε₂ ← checkExprX p E X Γ (pc.join lc) (.tuple ts .bot) elseE
           need (flowsB p.top (ts.map (LTy.raise lc)) ts)
             "a component of the joined state is below the condition's label (U4001)"
           pure ((ε₁.union ε₂).decide lc)
         | _ =>
         need (inPlace s) "`ℓ_T` off a position of type `T`"
-        let ε₁ ← checkExpr p E Γ (pc.join lc) s thenE
-        let ε₂ ← checkExpr p E Γ (pc.join lc) s elseE
+        let ε₁ ← checkExprX p E X Γ (pc.join lc) s thenE
+        let ε₂ ← checkExprX p E X Γ (pc.join lc) s elseE
         flowTo p (s.raise lc) s "the value of an `if`, raised by its condition,"
         pure ((ε₁.union ε₂).decide lc)
       | _ => throw (.reject "a condition that is not a `Bool`")
@@ -677,15 +714,15 @@ mutual
         match s with
         | .tuple ts _ =>
           need (inPlaceAll ts) "`ℓ_T` off a position of type `T`"
-          let ε₁ ← checkExpr p E Γ (pc.join ls) (.tuple ts .bot) noneE
-          let ε₂ ← checkExpr p E ((x, te.raise ls) :: Γ) (pc.join ls) (.tuple ts .bot) someE
+          let ε₁ ← checkExprX p E X Γ (pc.join ls) (.tuple ts .bot) noneE
+          let ε₂ ← checkExprX p E X ((x, te.raise ls) :: Γ) (pc.join ls) (.tuple ts .bot) someE
           need (flowsB p.top (ts.map (LTy.raise ls)) ts)
             "a component of the joined state is below the scrutinee's label (U4001)"
           pure ((ε₁.union ε₂).decide ls)
         | _ =>
         need (inPlace s) "`ℓ_T` off a position of type `T`"
-        let ε₁ ← checkExpr p E Γ (pc.join ls) s noneE
-        let ε₂ ← checkExpr p E ((x, te.raise ls) :: Γ) (pc.join ls) s someE
+        let ε₁ ← checkExprX p E X Γ (pc.join ls) s noneE
+        let ε₂ ← checkExprX p E X ((x, te.raise ls) :: Γ) (pc.join ls) s someE
         flowTo p (s.raise ls) s "the value of a `case`, raised by its scrutinee,"
         pure ((ε₁.union ε₂).decide ls)
       | _ => throw (.reject "a `case` on options of a value that is not an option")
@@ -695,15 +732,15 @@ mutual
         match s with
         | .tuple ts _ =>
           need (inPlaceAll ts) "`ℓ_T` off a position of type `T`"
-          let ε₁ ← checkExpr p E ((x, te.raise ls) :: Γ) (pc.join ls) (.tuple ts .bot) okE
-          let ε₂ ← checkExpr p E ((y, ee.raise ls) :: Γ) (pc.join ls) (.tuple ts .bot) errE
+          let ε₁ ← checkExprX p E X ((x, te.raise ls) :: Γ) (pc.join ls) (.tuple ts .bot) okE
+          let ε₂ ← checkExprX p E X ((y, ee.raise ls) :: Γ) (pc.join ls) (.tuple ts .bot) errE
           need (flowsB p.top (ts.map (LTy.raise ls)) ts)
             "a component of the joined state is below the scrutinee's label (U4001)"
           pure ((ε₁.union ε₂).decide ls)
         | _ =>
         need (inPlace s) "`ℓ_T` off a position of type `T`"
-        let ε₁ ← checkExpr p E ((x, te.raise ls) :: Γ) (pc.join ls) s okE
-        let ε₂ ← checkExpr p E ((y, ee.raise ls) :: Γ) (pc.join ls) s errE
+        let ε₁ ← checkExprX p E X ((x, te.raise ls) :: Γ) (pc.join ls) s okE
+        let ε₂ ← checkExprX p E X ((y, ee.raise ls) :: Γ) (pc.join ls) s errE
         flowTo p (s.raise ls) s "the value of a `case`, raised by its scrutinee,"
         pure ((ε₁.union ε₂).decide ls)
       | _ => throw (.reject "a `case` on results of a value that is not a result")
@@ -735,22 +772,22 @@ mutual
         match s with
         | .tuple ts _ =>
           need (inPlaceAll ts) "`ℓ_T` off a position of type `T`"
-          let ε₁ ← checkExpr p E Γ' (pc.join ls) (.tuple ts .bot) thenE
-          let ε₂ ← checkExpr p E Γ (pc.join ls) (.tuple ts .bot) elseE
+          let ε₁ ← checkExprX p E X Γ' (pc.join ls) (.tuple ts .bot) thenE
+          let ε₂ ← checkExprX p E X Γ (pc.join ls) (.tuple ts .bot) elseE
           need (flowsB p.top (ts.map (LTy.raise ls)) ts)
             "a component of the joined state is below the scrutinee's label (U4001)"
           pure ((ε₁.union ε₂).decide ls)
         | _ =>
         need (inPlace s) "`ℓ_T` off a position of type `T`"
-        let ε₁ ← checkExpr p E Γ' (pc.join ls) s thenE
-        let ε₂ ← checkExpr p E Γ (pc.join ls) s elseE
+        let ε₁ ← checkExprX p E X Γ' (pc.join ls) s thenE
+        let ε₂ ← checkExprX p E X Γ (pc.join ls) s elseE
         flowTo p (s.raise ls) s "the value of a `case`, raised by its scrutinee,"
         pure ((ε₁.union ε₂).decide ls)
       | _ => throw (.reject "a `case` on variants of a value that is not of a sum")
     | .attempt body => do
       match s with
       | .result t e l =>
-        let ε ← checkExpr p E Γ pc t body
+        let ε ← checkExprX p E none Γ pc t body
         need ε.raises.isEmpty "an `attempt` of a code over a failure with a payload"
         le p ε.dl l "the result of `attempt` is below what decides the failure"
         need (flowB p.top (.int .bot) e) "the error of `attempt` is not a failure's code"
@@ -759,7 +796,7 @@ mutual
     | .attemptK kind body => do
       match s with
       | .result t e l =>
-        let ε ← checkExpr p E Γ pc t body
+        let ε ← checkExprX p E none Γ pc t body
         need (!ε.codes) s!"an `attempt` of `{kind}` over a failure with a code"
         need (ε.raises.all (· == kind)) s!"an `attempt` of `{kind}` over a failure of another kind"
         le p ε.dl l "the result of `attempt` is below what decides the failure"
@@ -770,37 +807,37 @@ mutual
       match s with
       | .tuple ts _ =>
         need (inPlaceAll ts) "`ℓ_T` off a position of type `T`"
-        let ε₁ ← checkExpr p E Γ pc (.tuple ts .bot) body
+        let ε₁ ← checkExprX p E none Γ pc (.tuple ts .bot) body
         need ε₁.raises.isEmpty "a handler of a code over a failure with a payload"
-        let ε₂ ← checkExpr p E ((x, .int ε₁.dl) :: Γ) (pc.join ε₁.failLabel) (.tuple ts .bot) handler
+        let ε₂ ← checkExprX p E none ((x, .int ε₁.dl) :: Γ) (pc.join ε₁.failLabel) (.tuple ts .bot) handler
         need (flowsB p.top (ts.map (LTy.raise ε₁.dl)) ts)
           "a component of the joined state is below what decides the failure (U4001)"
         pure (Eff.handleOf ε₁ ε₂)
       | _ =>
       need (inPlace s) "`ℓ_T` off a position of type `T`"
-      let ε₁ ← checkExpr p E Γ pc s body
+      let ε₁ ← checkExprX p E none Γ pc s body
       need ε₁.raises.isEmpty "a handler of a code over a failure with a payload"
-      let ε₂ ← checkExpr p E ((x, .int ε₁.dl) :: Γ) (pc.join ε₁.failLabel) s handler
+      let ε₂ ← checkExprX p E none ((x, .int ε₁.dl) :: Γ) (pc.join ε₁.failLabel) s handler
       flowTo p (s.raise ε₁.dl) s "the value of a handled expression, raised by its failure,"
       pure (Eff.handleOf ε₁ ε₂)
     | .handleK kind body x handler => do
       match s with
       | .tuple ts _ =>
         need (inPlaceAll ts) "`ℓ_T` off a position of type `T`"
-        let ε₁ ← checkExpr p E Γ pc (.tuple ts .bot) body
+        let ε₁ ← checkExprX p E none Γ pc (.tuple ts .bot) body
         need (!ε₁.codes) s!"a handler of `{kind}` over a failure with a code"
         need (ε₁.raises.all (· == kind)) s!"a handler of `{kind}` over a failure of another kind"
-        let ε₂ ← checkExpr p E ((x, .record kind ε₁.dl) :: Γ) (pc.join ε₁.failLabel)
+        let ε₂ ← checkExprX p E none ((x, .record kind ε₁.dl) :: Γ) (pc.join ε₁.failLabel)
           (.tuple ts .bot) handler
         need (flowsB p.top (ts.map (LTy.raise ε₁.dl)) ts)
           "a component of the joined state is below what decides the failure (U4001)"
         pure (Eff.handleOf ε₁ ε₂)
       | _ =>
       need (inPlace s) "`ℓ_T` off a position of type `T`"
-      let ε₁ ← checkExpr p E Γ pc s body
+      let ε₁ ← checkExprX p E none Γ pc s body
       need (!ε₁.codes) s!"a handler of `{kind}` over a failure with a code"
       need (ε₁.raises.all (· == kind)) s!"a handler of `{kind}` over a failure of another kind"
-      let ε₂ ← checkExpr p E ((x, .record kind ε₁.dl) :: Γ) (pc.join ε₁.failLabel) s handler
+      let ε₂ ← checkExprX p E none ((x, .record kind ε₁.dl) :: Γ) (pc.join ε₁.failLabel) s handler
       flowTo p (s.raise ε₁.dl) s "the value of a handled expression, raised by its failure,"
       pure (Eff.handleOf ε₁ ε₂)
     | .withH o f body => do
@@ -809,7 +846,7 @@ mutual
         need (o' == o) s!"`{f}` is not a handler of `{o}`"
         let fn ← some! (p.find f)
           (.restriction s!"F1 restriction (no handler `{f}`, a lookup miss)")
-        pure (Eff.withOf o fn (← checkExpr p E ((markerName o, .text .bot) :: Γ) pc s body))
+        pure (Eff.withOf o fn (← checkExprX p E X ((markerName o, .text .bot) :: Γ) pc s body))
       | none => throw (.restriction s!"F1 restriction (`{f}` is not a handler)")
     | .letTuple binders value body => do
       match ← atomTy Γ value with
@@ -817,7 +854,7 @@ mutual
         need (flowsB p.top (ts.map (LTy.raise l)) (binders.map Prod.snd))
           "a component of a tuple does not flow into its binder's type"
         need (binders.all (fun q => inPlace q.2)) "`ℓ_T` off a position of type `T`"
-        checkExpr p E (binders ++ Γ) pc s body
+        checkExprX p E X (binders ++ Γ) pc s body
       | _ => throw (.reject "the components of a value that is not a tuple")
     -- T-Loop: the declared state types are an invariant (ADR 0075), checked once.
     | .loop (.list xs) x xty state init body => do
@@ -828,7 +865,7 @@ mutual
         need (flowsB p.top (← atomsTy Γ init) (state.map Prod.snd))
           "a loop's initial value does not flow into its state's type"
         need (state.all (fun q => inPlace q.2)) "`ℓ_T` off a position of type `T`"
-        let ε ← checkExpr p E ((x, xty) :: (state ++ Γ)) (pc.join ls)
+        let ε ← checkExprX p E (some (state.map Prod.snd, pc.join ls)) ((x, xty) :: (state ++ Γ)) (pc.join ls)
           (.tuple (state.map Prod.snd) .bot) body
         need (p.oldLoop || leB p.top ε.failLabel (pc.join ls))
           "an iteration's failure is decided above what decides whether it runs (U4002)"
@@ -845,7 +882,7 @@ mutual
         need (flowsB p.top (← atomsTy Γ init) (state.map Prod.snd))
           "a loop's initial value does not flow into its state's type"
         need (state.all (fun q => inPlace q.2)) "`ℓ_T` off a position of type `T`"
-        let ε ← checkExpr p E ((x, xty) :: (state ++ Γ)) (pc.join (l₁.join l₂))
+        let ε ← checkExprX p E (some (state.map Prod.snd, pc.join (l₁.join l₂))) ((x, xty) :: (state ++ Γ)) (pc.join (l₁.join l₂))
           (.tuple (state.map Prod.snd) .bot) body
         need (p.oldLoop || leB p.top ε.failLabel (pc.join (l₁.join l₂)))
           "an iteration's failure is decided above what decides whether it runs (U4002)"
@@ -854,7 +891,64 @@ mutual
         flowTo p (.tuple (state.map Prod.snd) .bot) s "the value of a loop"
         pure (ε.decide (l₁.join l₂))
       | _, _ => throw (.reject "a range whose bounds are not integers")
+    -- ADR 0116's exits and loops (#946), typed by `LExprTyX`, which T1 and T6 cover.
+    -- T-Exit (ADR 0116 rule 20): at the public program counter, F1's rule. IF2 rejects a `stop`
+    -- above the program counter its iteration started at (`lb`, U4002); the other cases IF2 and
+    -- IF3 allow above the public program counter are not re-checked.
+    | .exit stop state => do
+      match X with
+      | some (S, lb) =>
+        need (flowsB p.top (← atomsTy Γ state) S)
+          "the state of a `stop` or `skip` does not flow into the loop's state types"
+        need (!stop || leB p.top pc lb)
+          "a `stop` decided above what decides whether its iteration runs (U4002)"
+        need (leB p.top pc .bot)
+          (.restriction "F1 restriction (`stop` or `skip` above the public program counter)")
+        need (inPlace s) "`ℓ_T` off a position of type `T`"
+        pure .none
+      | none => throw (.restriction "F1 restriction (`stop` or `skip` outside a loop's body in F1)")
+    -- T-Until (ADR 0116 rule 7, IF1): the condition and the body run under the label `ld` that
+    -- decides how many iterations run, the condition's own; the state is an invariant at least it.
+    | .loopUntil cond state init body => do
+      need (flowsB p.top (← atomsTy Γ init) (state.map Prod.snd))
+        "a loop's initial value does not flow into its state's type"
+      need (state.all (fun q => inPlace q.2)) "`ℓ_T` off a position of type `T`"
+      let ld := untilLabel (state ++ Γ) cond
+      need ld.plain.isEmpty
+        (.restriction "F1 restriction (`ℓ_T` in the label of a `for until` condition)")
+      let εc ← checkExprX p E none (state ++ Γ) (pc.join ld) (.bool ld) cond
+      need εc.fails.isNone (.restriction "F1 restriction (a `for until` condition that may fail)")
+      let ε ← checkExprX p E (some (state.map Prod.snd, pc.join ld)) (state ++ Γ) (pc.join ld)
+        (.tuple (state.map Prod.snd) .bot) body
+      need (p.oldLoop || leB p.top ε.failLabel (pc.join ld))
+        "an iteration's failure is decided above what decides whether it runs (U4002)"
+      need (flowsB p.top ((state.map Prod.snd).map (LTy.raise ld)) (state.map Prod.snd))
+        "a component of a loop's state is below what decides its iterations (U4001)"
+      flowTo p (.tuple (state.map Prod.snd) .bot) s "the value of a loop"
+      pure ((εc.union ε).decide ld)
+    -- T-Ever (ADR 0116 rules 10 and 13, IF4): the body and `on stop` run under the enclosing
+    -- program counter; `on stop` does not fail (U3029).
+    | .loopEver _ state init body os o => do
+      need (flowsB p.top (← atomsTy Γ init) (state.map Prod.snd))
+        "a loop's initial value does not flow into its state's type"
+      need (state.all (fun q => inPlace q.2)) "`ℓ_T` off a position of type `T`"
+      let ε ← checkExprX p E (some (state.map Prod.snd, pc)) (state ++ Γ) pc
+        (.tuple (state.map Prod.snd) .bot) body
+      need (p.oldLoop || leB p.top ε.failLabel pc)
+        "an iteration's failure is decided above the loop's program counter (U4002)"
+      need (LTy.eqsB (os.map Prod.snd) (state.map Prod.snd))
+        "an `on stop` block whose state is not the loop's"
+      let εo ← checkExprX p E none (os ++ Γ) pc (.tuple (state.map Prod.snd) .bot) o
+      need εo.fails.isNone "an `on stop` block that may fail (U3029)"
+      flowTo p (.tuple (state.map Prod.snd) .bot) s "the value of a loop"
+      pure (ε.union εo)
 end
+
+/-- `LExprTy`, checked against the type `s` its value must flow into: `checkExprX` outside a
+loop's body. -/
+abbrev checkExpr (p : Program) (E : List String) (Γ : LCtx) (pc : LExpr) (s : LTy) (e : Expr) :
+    Result Eff :=
+  checkExprX p E none Γ pc s e
 
 /-- T-Fun (`Program.FunOk`). -/
 def checkFun (p : Program) (fn : Fun) : Result Unit := do
@@ -893,7 +987,8 @@ mutual
     | .caseSum _ _ _ t e | .handleK _ t _ e =>
       exprPure t && exprPure e
     | .attempt b | .attemptK _ b => exprPure b
-    | .fail _ | .raise _ _ _ | .unreachable | .letTuple _ _ _ | .loop _ _ _ _ _ _ | .withH _ _ _ => false
+    | .fail _ | .raise _ _ _ | .unreachable | .letTuple _ _ _ | .loop _ _ _ _ _ _ | .withH _ _ _
+    | .exit _ _ | .loopUntil _ _ _ _ | .loopEver _ _ _ _ _ _ => false
 end
 
 /-- `Rhs.PureOrFails`. -/
@@ -911,7 +1006,8 @@ def exprPureOrFails : Expr → Bool
     exprPureOrFails t && exprPureOrFails e
   | .attempt b | .attemptK _ b => exprPureOrFails b
   | .fail _ => true
-  | .raise _ _ _ | .unreachable | .letTuple _ _ _ | .loop _ _ _ _ _ _ | .withH _ _ _ => false
+  | .raise _ _ _ | .unreachable | .letTuple _ _ _ | .loop _ _ _ _ _ _ | .withH _ _ _
+  | .exit _ _ | .loopUntil _ _ _ _ | .loopEver _ _ _ _ _ _ => false
 
 /-- The restrictions of option B1 on the policies, as one Boolean. -/
 def b1Ok (p : Program) : Bool :=
@@ -992,6 +1088,12 @@ mutual
     | .letTuple bs v b => .letTuple (bs.map fun q => (q.1, f q.2)) v (Expr.mapTypes f b)
     | .loop src x xt st init b =>
       .loop src x (f xt) (st.map fun q => (q.1, f q.2)) init (Expr.mapTypes f b)
+    | .exit k st => .exit k st
+    | .loopUntil c st init b =>
+      .loopUntil (Expr.mapTypes f c) (st.map fun q => (q.1, f q.2)) init (Expr.mapTypes f b)
+    | .loopEver site st init b os o =>
+      .loopEver site (st.map fun q => (q.1, f q.2)) init (Expr.mapTypes f b)
+        (os.map fun q => (q.1, f q.2)) (Expr.mapTypes f o)
 end
 
 mutual
@@ -1009,7 +1111,8 @@ mutual
     | .caseSum _ _ _ t e | .handleK _ t _ e =>
       Expr.genericCalls t ++ Expr.genericCalls e
     | .attempt b | .attemptK _ b | .letTuple _ _ b | .loop _ _ _ _ _ b | .withH _ _ b => Expr.genericCalls b
-    | .atom _ | .fail _ | .raise _ _ _ | .unreachable => []
+    | .loopUntil c _ _ b | .loopEver _ _ _ c _ b => Expr.genericCalls c ++ Expr.genericCalls b
+    | .atom _ | .fail _ | .raise _ _ _ | .unreachable | .exit _ _ => []
 end
 
 /-- The instance of a generic function at ground type arguments: its signature and body with
