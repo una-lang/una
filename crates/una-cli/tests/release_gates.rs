@@ -18,6 +18,11 @@ fn root() -> PathBuf {
 /// machine's own items are never read.
 fn gates(sha: &str, out: &Path, gates: &[&str]) -> Output {
     let _ = std::fs::remove_dir_all(out);
+    gates_again(sha, out, gates)
+}
+
+/// `gates`, on an `out` that an earlier run may have written, which is kept.
+fn gates_again(sha: &str, out: &Path, gates: &[&str]) -> Output {
     let bin = out.with_extension("nokeychain");
     let _ = std::fs::remove_dir_all(&bin);
     std::fs::create_dir_all(&bin).unwrap();
@@ -115,6 +120,10 @@ fn the_clone_gate_checks_out_exactly_the_commit_and_records_it() {
         .output()
         .unwrap();
     assert_eq!(String::from_utf8_lossy(&cloned.stdout).trim(), sha);
+    // The clone gate's marker names the run's OUT, so that the release tag is only ever made
+    // and undone in this clone (#1017); it lives in .git, so the clone stays exact.
+    let marker = std::fs::read_to_string(out.join("clone/.git/una-release-gates-clone")).unwrap();
+    assert_eq!(marker, format!("{}\n", out.display()));
     let record = std::fs::read_to_string(out.join("record.md")).unwrap();
     assert!(record.starts_with("# Validation record\n"), "{record}");
     assert!(record.contains(&format!("- Commit: `{sha}`")), "{record}");
@@ -195,6 +204,108 @@ fn every_timing_oracle_is_ignored_with_the_reason_that_names_its_steps() {
             at + 1
         );
     }
+}
+
+/// Runs `scripts/release-gates-tag-test.sh` (#1017), which needs git alone and makes every
+/// repository it uses in a temporary directory.
+#[test]
+#[allow(clippy::print_stderr)]
+fn the_clone_release_tag_is_undone_and_only_in_the_clone() {
+    if Command::new("git").arg("--version").output().is_err() {
+        eprintln!("skipped: git does not run here, and scripts/release-gates-tag-test.sh needs it");
+        return;
+    }
+    let output = Command::new("bash")
+        .arg(root().join("scripts/release-gates-tag-test.sh"))
+        .env("TMPDIR", env!("CARGO_TARGET_TMPDIR"))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // The release and reproducible gates make the tag through the helper only, never with a
+    // bare `git tag`, which no gate could undo (#1017). Read as text.
+    let script = std::fs::read_to_string(root().join("scripts/release-gates.sh")).unwrap();
+    assert!(
+        !script.contains("git tag"),
+        "a bare git tag in scripts/release-gates.sh"
+    );
+    assert_eq!(
+        script.matches("with_clone_tag \"$CLONE\" \"$OUT\"").count(),
+        2
+    );
+}
+
+/// Plants the release tag `v9.9.9` in the clone of `out` as a killed release gate leaves it,
+/// listed to be undone, with `pending` appended to that list when given.
+fn plant_tag(sha: &str, out: &Path, pending: Option<&str>) {
+    let status = Command::new("bash")
+        .arg("-c")
+        .arg(r#". "$1/scripts/release-gates-tag.sh" && clone_tag "$2/clone" "$2" v9.9.9 "$3""#)
+        .arg("bash")
+        .arg(root())
+        .arg(out)
+        .arg(sha)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    if let Some(line) = pending {
+        let list = out.join("clone/.git/una-release-gates-tags");
+        let mut text = std::fs::read_to_string(&list).unwrap();
+        text.push_str(line);
+        std::fs::write(&list, text).unwrap();
+    }
+}
+
+/// Whether the clone of `out` has the tag `v9.9.9`.
+fn has_tag(out: &Path) -> bool {
+    Command::new("git")
+        .args(["rev-parse", "--quiet", "--verify", "refs/tags/v9.9.9"])
+        .current_dir(out.join("clone"))
+        .output()
+        .unwrap()
+        .status
+        .success()
+}
+
+#[test]
+fn a_tag_left_by_a_killed_release_gate_is_undone_before_any_gate() {
+    let Some(sha) = head() else {
+        return;
+    };
+    let out = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("gates-tag-left");
+    assert!(gates(&sha, &out, &["clone"]).status.success());
+    plant_tag(&sha, &out, None);
+    assert!(has_tag(&out));
+    // An untracked file makes the clone inexact, so the mac gate fails at once without running
+    // anything; the tag is undone before it, as before a linux-arm64 run of a split set.
+    std::fs::write(out.join("clone/untracked"), "").unwrap();
+    let output = gates_again(&sha, &out, &["mac"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("removed the clone's tag v9.9.9"),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(!has_tag(&out));
+    assert!(!out.join("clone/.git/una-release-gates-tags").exists());
+    // A list that cannot be undone stops the run before any gate, with exit code 2.
+    std::fs::remove_file(out.join("clone/untracked")).unwrap();
+    plant_tag(&sha, &out, Some("main none\n"));
+    let output = gates_again(&sha, &out, &["mac"]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("run the clone gate first"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // A run that starts with the clone gate makes the clone again instead.
+    assert!(gates_again(&sha, &out, &["clone"]).status.success());
+    assert!(!has_tag(&out));
+    let _ = std::fs::remove_dir_all(&out);
 }
 
 #[test]

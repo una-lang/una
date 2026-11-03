@@ -79,8 +79,8 @@
 # UNA_GATES_Z3 where the pinned solver is (default: target/z3 of this checkout or of the clone).
 # The Docker gates run on Docker Desktop's context only: run them with
 # DOCKER_CONTEXT=desktop-linux (#1082, below).
-# Exit code: 0 when no gate failed, 1 when one did, 2 for a usage error or a refused Docker
-# context.
+# Exit code: 0 when no gate failed, 1 when one did, 2 for a usage error, a refused Docker
+# context, or a release tag of an earlier run that cannot be undone in the clone (#1017).
 #
 # Usage: scripts/release-gates.sh SHA OUT [GATE...]
 set -u
@@ -96,6 +96,10 @@ case $- in
 esac
 unset BASH_ENV ENV
 ulimit -c 0
+# Git reads the repository it is run in, never one an exported variable names: every git step
+# below, the clone's tag among them (#1017), acts on the repository its -C or --git-dir says.
+unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY \
+    GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE
 
 ALL=(clone build deps mac linux linux-arm64 release reproducible determinism native timing-channels owner-replay sanitize site formal hunt hunt-linux-arm64 solver-identity limits toolchain-free)
 
@@ -116,6 +120,8 @@ for gate in "${GATES[@]}"; do
 done
 
 REPO=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+# The release tag of the clone, made and undone by the release and reproducible gates (#1017).
+. "$REPO/scripts/release-gates-tag.sh"
 
 # The Docker backend (#1082): the Docker gates run on Docker Desktop's context desktop-linux,
 # never on whichever context happens to be active, since another runtime on the same machine can
@@ -214,6 +220,17 @@ OUT=$(CDPATH='' cd -- "$OUT" && pwd)
 CLONE=$OUT/clone
 RESULTS=$OUT/results.tsv
 printf 'gate\tsha\tresult\tseconds\tlog_sha256\n' > "$RESULTS"
+# A tag that an earlier run made in this clone and could not undo, killed in the middle of the
+# release or reproducible gate, is undone before any gate (#1017): a gate that reads tags would
+# otherwise see the version as released. A run that cannot undo it stops here, unless its first
+# gate is the clone gate, which makes the clone again.
+if [ "${GATES[0]}" != clone ] \
+    && { [ -e "$CLONE/.git/$RELEASE_GATES_PENDING" ] || [ -L "$CLONE/.git/$RELEASE_GATES_PENDING" ]; }; then
+    clone_untag "$CLONE" "$OUT" || {
+        echo "release gates: a release tag of an earlier run is still in $CLONE; run the clone gate first" >&2
+        exit 2
+    }
+fi
 # The pinned solver: UNA_GATES_Z3, else this checkout's target/z3 when it is there, else the
 # clone's target/z3, which the build gate installs with scripts/install-z3.sh, as local-ci does
 # (target/ is ignored, so the clone stays exact).
@@ -281,6 +298,7 @@ gate_clone() {
         echo "source: $SOURCE"
         git clone --quiet --no-checkout "$SOURCE" "$CLONE" \
             && git -C "$CLONE" checkout --quiet --detach "$SHA" \
+            && clone_mark "$CLONE" "$OUT" \
             && git -C "$CLONE" log -1 --format='commit %H%n%s'
     } > "$log" 2>&1
     if exact; then
@@ -382,11 +400,14 @@ gate_linux-arm64() { run linux-arm64 scripts/local-ci.sh --linux-arm64; }
 
 gate_release() {
     # The archives are named after the workspace version, so the run tags it here, in the
-    # clone only; the tag is never pushed.
+    # clone only; the tag is never pushed, and it is undone when the gate ends, however it ends
+    # (#1017): a later gate that reads tags, such as linux-arm64 in a run of its own on the same
+    # OUT, must not see the version as released.
     local version tag
     version=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$CLONE/Cargo.toml" 2>/dev/null | head -1)
     tag=v$version
-    run release sh -c "git tag -f '$tag' '$SHA' >/dev/null && git status --porcelain && scripts/local-release.sh '$tag'"
+    run release with_clone_tag "$CLONE" "$OUT" "$tag" "$SHA" \
+        sh -c "git status --porcelain && scripts/local-release.sh '$tag'"
 }
 
 gate_reproducible() {
@@ -394,11 +415,12 @@ gate_reproducible() {
     # checkout (local-release.sh makes one per run, at a new path) and new Docker volumes for
     # the Linux target directories, so every artifact is built again from cold (#679). Its cost
     # is one more release gate. The release gate's archives are put back at the end, so the
-    # record lists the ones the release gate built.
+    # record lists the ones the release gate built. The tag is made and undone as in the
+    # release gate (#1017).
     local version tag
     version=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$CLONE/Cargo.toml" 2>/dev/null | head -1)
     tag=v$version
-    run reproducible bash -c '
+    run reproducible with_clone_tag "$CLONE" "$OUT" "$tag" "$SHA" bash -c '
         set -u
         tag='"'$tag'"'
         first='"'$OUT'"'/reproducible-first
@@ -408,7 +430,6 @@ gate_reproducible() {
         rm -rf "${first:?}"
         cp -R "$built" "$first" || exit 1
         docker volume rm "$again" "$again-arm64" > /dev/null 2>&1
-        git tag -f "$tag" '"'$SHA'"' > /dev/null || exit 1
         UNA_LOCAL_RELEASE_VOLUME=$again scripts/local-release.sh "$tag"
         status=$?
         for archive in "$first"/*.tar.gz; do
