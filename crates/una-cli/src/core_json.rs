@@ -237,6 +237,18 @@ impl Writer<'_> {
             ("capability", s(&u.capability)),
             ("ops", strings(&u.ops)),
         ];
+        // ADR 0094 rule 8 (#1518): an additive key, present only when an operation of the
+        // binding gives a label, declared or inferred, so a document without one is unchanged.
+        // It may only raise what a consumer reads: a consumer that does not model it reports
+        // the declaration as not re-checked (`spec/13 §8`).
+        if !u.gives.is_empty() {
+            fields.push((
+                "gives",
+                list(&u.gives, |(op, label)| {
+                    J::Obj(vec![("op", s(op)), ("label", self.label(label))])
+                }),
+            ));
+        }
         // ADR 0092: an additive key, present only when a condition is written (ADR 0076
         // rule 1), so a document without one is unchanged.
         if !u.conds.is_empty() {

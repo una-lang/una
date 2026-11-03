@@ -252,6 +252,15 @@ def usesEffects (uses : List J) (invoked : List String := []) (dyn : List String
     match u.getObjValD "conds" with
     | .arr cs => if cs.size > 0 then throw "a conditioned operation (ADR 0092)" else pure ()
     | _ => pure ()
+    -- ADR 0094 rule 8 (#1518): a labeled operation, `op gives l`, is not re-checked until F1
+    -- models operation labels (#563). F1 reads an operation's answer and the decision on its
+    -- failure at the capability's declared labels, below the label the binding gives, which
+    -- H5 contradicts: an acceptance would rest on a premise the program does not grant. Any
+    -- `gives` but an empty list or none fails closed.
+    match u.getObjValD "gives" with
+    | .null => pure ()
+    | .arr gs => if gs.size > 0 then throw "F1 restriction (a labeled operation, ADR 0094 rule 8)" else pure () -- restriction-check: importer refusal
+    | _ => throw "F1 restriction (a malformed `gives`, ADR 0094 rule 8)" -- restriction-check: importer refusal
     let cap ← str (← field u "capability")
     for o in ← arr (← field u "ops") do
       let o ← str o
