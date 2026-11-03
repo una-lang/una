@@ -19,10 +19,10 @@ Learn more: [Locking a contract: contracts](/learn/authority/locking-a-contract-
 
 ```text
 [contracts]
-"<module path>.<function>" = ["@<binding>: <Capability>[<op> [where <condition>], ...]", ...]
+"<module path>.<function>" = ["@<binding>: <Capability>[<op> [gives <label>] [where <condition>], ...]", ...]
 ```
 
-Each key is the qualified name of a public function of the package: its module path, then the function name. Each value is an array of `uses` clauses written as a header writes them, with the operations listed in brackets; an entry must list at least one operation. A condition applies to the operation immediately before its `where`, and is a `Bool` of the refinement language over the function's parameters.
+Each key is the qualified name of a public function of the package: its module path, then the function name. Each value is an array of `uses` clauses written as a header writes them, with the operations listed in brackets; an entry must list at least one operation. A condition applies to the operation immediately before its `where`, and is a `Bool` of the refinement language over the function's parameters. A label after `gives` is the least label the header must read that operation's answers at (ADR 0094): a header that reads it lower is U3023, and `una fix` writes the label back. Its categories must be declared in `[labels] categories`.
 
 ## Examples
 
