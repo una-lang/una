@@ -79,7 +79,8 @@
 # UNA_GATES_Z3 where the pinned solver is (default: target/z3 of this checkout or of the clone).
 # The Docker gates run on Docker Desktop's context only: run them with
 # DOCKER_CONTEXT=desktop-linux (#1082, below).
-# Exit code: 0 when no gate failed, 1 when one did, 2 for a usage error, a refused Docker
+# Exit code: 0 when no gate failed, 1 when one did, 129 or 143 after a HUP or TERM once the
+# gate in progress has ended, 2 for a usage error, a refused Docker
 # context, an OUT that another run holds, or a release tag of an earlier run that cannot be
 # undone in the clone (#1017).
 #
