@@ -229,6 +229,7 @@ pub struct Use {
     pub capability: String,
     /// The operations.
     pub ops: Vec<String>,
+    /// (Never set on a function type: `gives` is U0101 there.)
     /// The label each operation gives through the binding, `op gives l` (ADR 0094 rule 1),
     /// declared or inferred, in the order of `ops`; an operation absent here gives `public`,
     /// so the list is empty when none is labeled, as always before edition 0.3. The formal
