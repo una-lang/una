@@ -119,7 +119,7 @@ pub one() -> Int = 1
 - **Both manifests.** A directory with both `ita.una` and `una.toml` is U7008: a package never has two manifests that could disagree.
 - **An edition before `0.4`.** `ita.una` naming edition `0.3` is U7008; that package keeps `una.toml`.
 - **Profiles.** `profile systems` makes the package a `systems` package; with a `run entry` it declares `max_memory` (see [`[package] profile`](../package/profile.md)).
-- **What this release refuses.** Limit lines under a grant, and the `drive` section, are U7008 in this release, which does not implement them: each would otherwise be read as allowing more than it says.
+- **Limits and drives.** Limit lines under an `http` grant, such as `at most 10 per second`, and the `drive` section are read as the grammar above gives them. A limit line under any other grant is U7008, and so is a grant with a limit line that does not read: without its limit it would allow more than it says.
 - **Formatting.** `una fmt ita.una` writes the canonical form, and `una fmt --check ita.una` reports U7001. `una fmt` of the package does not touch `ita.una`, and `una fix` never edits it.
 - **Bounds.** `ita.una` holds at most 1 MiB.
 
