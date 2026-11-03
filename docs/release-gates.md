@@ -117,7 +117,7 @@ A test added to the file without `#[ignore]` would run in the ordinary test run,
   - when the oracle sets aside, as rejected by the checks, a program without one of its expected codes, or a number of programs of a family other than the pinned one;
   - when the edition 0.3 sample has no seed for a form of the fixed run (`sample_forms`);
   - when any run is killed at its time limit, its full check deciding (`MAX_TIMEOUTS_DECIDED`, 0), since each such kill is a comparison the oracle or the native comparison does not make;
-  - when the whole gate takes more than its platform's budget, 350 seconds on macOS and 505 on Linux (`TIME_BUDGETS`), or no budget is pinned for its platform, a guard against slowness that adds up over the run, never a limit on what it covers;
+  - when the whole gate takes more than its platform's budget, 370 seconds on macOS and 530 on Linux (`TIME_BUDGETS`), or no budget is pinned for its platform, a guard against slowness that adds up over the run, never a limit on what it covers;
   - when the checks reject a control of families D and Y, a must-accept program built as the honest twin of its forgeries (`CONTROL_FAMILIES`), since its forgeries' rejections would then say nothing; and when the accepted programs that the re-check comparison does not export are not the pinned counts (`PINNED_UNEXPORTED`: 69 of several packages, whose `una core` must refuse them as `una.core/2`, and 11 of Y1, judged by `una ita lock --check`);
   - when its output directory is not empty.
 - **Its size.**

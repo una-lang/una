@@ -185,7 +185,7 @@ NATIVE_FAMILIES = ("B", "C", "D", "H", "K", "P", "Q", "T")
 MIN_NATIVE_COMPARED = 36
 MIN_NATIVE_VARIANTS = 165
 # The families whose must-accept programs are controls, the honest twin of each of their
-# forgeries (D3, Y1 and Y2), built by the hunt's own registry and resolver: a control the checks
+# forgeries (D3, Y1, Y2 and Y3), built by the hunt's own registry and resolver: a control the checks
 # reject would make its forgeries' rejections say nothing, so it is an error, never a note.
 CONTROL_FAMILIES = ("D", "Y")
 # The accepted programs the re-check comparison does not export, pinned per reason: those of
