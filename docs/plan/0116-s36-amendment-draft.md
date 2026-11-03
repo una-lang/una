@@ -35,7 +35,7 @@ The review named two fixes. This draft takes the first.
 
 Behaviour that changes, in edition `0.4` only:
 
-- A sequence of loops under `--stop-after-iterations n` runs `n` iterations in each loop, not `n` in all; a loop entered again runs `n` again at each entry. A program that relied on the old count stops later, but still stops: every loop instance stops at its own iteration `n + 1`, and `for ever` loops do not nest (U3027).
+- A sequence of loops under `--stop-after-iterations n` runs `n` iterations in each loop, not `n` in all; a loop entered again runs `n` again at each entry. A program that relied on the old count stops later. The budget bounds each loop instance, not the run: a `for ever` body can start a task that runs another `for ever`, so the number of instances, and with it the work of a run, can grow with the depth of started tasks. `--deadline` and the host's stop requests bound the run. A run-wide cap that stops loops must not return: the program can observe it, which is the leak of S-36. ADR 0117 rule 7, which calls the budget a stop request, is amended in the same way.
 - The end of a budget no longer interrupts a waiting `Http` operation of another task's loop, and no longer starts the grace period, so an `on stop` that waits on such an operation is no longer cut by the hard stop after a budget. SIGINT, SIGTERM and `--deadline` keep rules 14 and 16 unchanged: they stay sticky host stop requests.
 
 ## Open points, outside this amendment
