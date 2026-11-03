@@ -379,6 +379,9 @@ pub(crate) struct Statement {
     pub(crate) with: bool,
     /// The references its `with` clause binds.
     pub(crate) bound: Vec<String>,
+    /// The number of frames below its `with` frame: where the right-hand sides of its `with`
+    /// resolve, and so where a binding added to that `with` resolves (`spec/05 §3`).
+    pub(crate) outer: usize,
 }
 
 impl Names for Checker<'_, '_, '_> {

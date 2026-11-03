@@ -1,0 +1,20 @@
+-- Written by `una ita`; do not edit.
+lock 1
+
+solver
+  encoding "una-smt-1"
+  name "z3"
+  version "5.1.0"
+  logic "QF_UFLIA"
+  steps 5000000
+  seed 0
+
+registry acme
+  root "sha256:9588528ba6e809b94ce70c00b66df3e2a294775ac79478c2c34b524f85588fc1"
+  checkpoint 2 "sha256:9ee8c807aed60b21163074c94ded20b8bf5423fc04b6450923a0501343829c72"
+
+package acme/ledger 0.3.1
+  from acme
+  digest "sha256:258dce661d4d09337df7fbb1e8261ebdb3136c5827e755074c1bf5e5b2d85fa3"
+  signed "ed25519:acme:5fbcf16d6026efd01abeb4b5f9d961d439f966aba8020d07bec0a7fac0422b5a"
+  logged 1

@@ -1271,6 +1271,7 @@ impl<'a> Checker<'_, 'a, '_> {
             self.finish_install(install, clause);
         }
         let framed = !frame.bindings.is_empty();
+        let outer = self.frames.len();
         if framed {
             self.frames.push(frame);
         }
@@ -1304,6 +1305,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 .iter()
                 .map(|binding| self.name(&binding.cap).to_owned())
                 .collect(),
+            outer,
         };
         let saved = self.statement.replace(statement);
         let ty = if tail && handled.handlings.is_empty() {

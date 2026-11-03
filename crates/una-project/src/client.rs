@@ -225,7 +225,7 @@ pub fn accept_checkpoint(
 /// signed under the last root; with [`Retired::Unproven`], a line of one present makes the
 /// flag returned true, and the result that would count it unavailable. A witness that any root
 /// of the chain revokes (`witnesses-revoked`, by key fingerprint) never counts.
-fn counted(
+pub(crate) fn counted(
     signed: &Note,
     size: u64,
     named: &Root,
@@ -272,7 +272,7 @@ fn counted(
 
 /// The threshold that counts the cosignatures of a checkpoint naming `named`: the larger of its
 /// own and the last root's, so it never drops below the current one.
-fn threshold_of(named: &Root, chain: &[(Root, String)]) -> usize {
+pub(crate) fn threshold_of(named: &Root, chain: &[(Root, String)]) -> usize {
     let last = chain.last().map_or(named, |(last, _)| last);
     named.witnesses.threshold.max(last.witnesses.threshold)
 }

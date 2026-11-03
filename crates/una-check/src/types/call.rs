@@ -878,6 +878,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 self.env.in_package(def.module),
                 span,
                 level,
+                super::crossing::GrantSite::Call,
             ),
             None => needs.clone(),
         };
