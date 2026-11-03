@@ -152,7 +152,7 @@ $ una ita verify
 - **Only what a package holds.** A file a package may not hold, such as a `.DS_Store` left by a file browser inside `vendor/ita/`, makes it U7010, naming the file.
 - **A changed bundle.** One changed byte refuses the whole bundle (U7010), and nothing is stored. A bundle that does not hold a locked package is U7011 when it is unbundled. Writing a bundle reads the registry at the lock's resolution point, so it needs a place to read it from (U7013 otherwise), and nothing is written without one.
 - **Path dependencies** are never vendored or bundled: they are read from their own directory, part of your own repository.
-- **Not every command.** `una ita lock`, `update`, `add`, `fetch`, `bundle`, `audit` and `watch` read a registry, from a mirror directory in this release. `una ita lock --check` needs no network for the lock itself, and reads the newest checkpoint a place serves when it can, to see whether an owner's chain froze since the lock was written.
+- **Not every command.** `una ita lock`, `update`, `add`, `fetch`, `bundle`, `audit` and `watch` read a registry, from a mirror directory in this release; `unbundle` reads one too, for a file the bundle lacks. `una ita lock --check` needs no network for the lock itself, and reads the newest checkpoint a place serves when it can, to see whether an owner's chain froze since the lock was written.
 
 ## Diagnostics
 

@@ -235,7 +235,7 @@ For a package of edition `0.4`, the key of a proof cache entry (`spec/12 §9`) i
    A package of `itaty` is not checked in this release: its root is not built in yet, so it cannot verify, and its need is refused (§3 rule 4), so it never loads. The check applies to it once that root lands. A release that loads verified and that a need of the root names is mounted (§14 rule 10).
 
    So a repository with its vendor directory and lock committed builds with `una` alone, and a change that edits a vendored package together with its digest, key and checkpoint does not load: it would need the root's, the log's and the witnesses' keys.
-10. **No connection.** `una check`, `una run`, `una build`, `una test`, `una report`, `una core`, `una lsp`, `una migrate`, `una fmt` and `una fix` never open a connection for a package or read a registry; only `una ita lock`, `update`, `add` and `fetch` read one, from a mirror directory (§14). A program whose locked packages are present gives the same result with or without a network. Only a program that `una run` grants `http` reaches the network, through its `Http` capability (`spec/24`).
+10. **No connection.** `una check`, `una run`, `una build`, `una test`, `una report`, `una core`, `una lsp`, `una migrate`, `una fmt` and `una fix` never open a connection for a package or read a registry; only `una ita lock` (with `--check`), `update`, `add`, `fetch`, `bundle`, `audit`, `watch` and `unbundle` read one, from a mirror directory (§14). A program whose locked packages are present gives the same result with or without a network. Only a program that `una run` grants `http` reaches the network, through its `Http` capability (`spec/24`).
 
 ## 10. Versions and resolution
 

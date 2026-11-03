@@ -104,7 +104,7 @@ una ita update [<name>...]   raise needs to newer releases, and lock
 una ita fetch                download the locked releases into Itaoca
 ```
 
-Of the `una ita` commands, `lock` (with `--check`, for the newest checkpoint), `add`, `update`, `fetch`, `bundle`, `audit` and `watch` read a registry, from a mirror directory in this release; `publish` and `yank` stop before they read one (see [publishing](publishing.md)). The commands that check, run, build and test a package (`una check`, `una run`, `una build`, `una test`, `una report`, `una fmt`, `una fix` and the language server) never read a registry: they read Itaoca or the vendor directory, never the network.
+Of the `una ita` commands, `lock` (with `--check`, for the newest checkpoint), `add`, `update`, `fetch`, `bundle`, `audit` and `watch` read a registry, from a mirror directory in this release (`unbundle` reads one too, for a file the bundle lacks); `publish` and `yank` stop before they read one (see [publishing](publishing.md)). The commands that check, run, build and test a package (`una check`, `una run`, `una build`, `una test`, `una report`, `una fmt`, `una fix` and the language server) never read a registry: they read Itaoca or the vendor directory, never the network.
 
 ## Examples
 
