@@ -1947,6 +1947,46 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "times turns on the real clock, which Miri simulates")]
+    fn a_turn_end_raised_before_the_task_installs_its_state_still_yields() {
+        // #1533: a worker sets a turn's end when it takes the job, and the task installs its
+        // state after. Installing read the attention word anew, so when the thread was held up
+        // in between, as under load, past the turn's end with another task waiting, the
+        // slicer's one raise for that end was lost, and the task kept its worker: in
+        // `ten_thousand_cancelled_started_tasks...` a started task ran on for an hour while
+        // `main`, queued behind it, never ran to cancel it. Here the hold-up is a sleep past the
+        // end, and the task must give its worker to the waiting one at its first check points.
+        use std::time::{Duration, Instant};
+        let sched = Scheduler::new(settings(1, 1, 1));
+        let other_ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (queued, wait_queued) = std::sync::mpsc::channel::<()>();
+        let (heard, was_heard) = std::sync::mpsc::channel();
+        let seen = Arc::clone(&other_ran);
+        let holding = start(&sched, 1, move || {
+            wait_queued.recv().unwrap();
+            // Past the turn's end, by which the slicer raised the word: the other task waits.
+            std::thread::sleep(Duration::from_millis(50));
+            crate::runtime::install_test_state_as("1".to_owned(), false, String::new());
+            let bound = Instant::now() + Duration::from_secs(5);
+            while !seen.load(Ordering::SeqCst) && Instant::now() < bound {
+                std::hint::black_box(crate::runtime::poll());
+            }
+            let ran = seen.load(Ordering::SeqCst);
+            drop(crate::runtime::leave_task());
+            heard.send(ran).unwrap();
+        });
+        let flag = Arc::clone(&other_ran);
+        let waiting = start(&sched, 2, move || flag.store(true, Ordering::SeqCst));
+        queued.send(()).unwrap();
+        assert_eq!(holding.recv(), Some(()));
+        assert_eq!(waiting.recv(), Some(()));
+        assert!(
+            was_heard.recv().unwrap(),
+            "the task kept its worker past its turn's end while another waited"
+        );
+    }
+
+    #[test]
     fn outside_a_task_a_blocking_operation_runs_inline() {
         assert!(!in_task());
         let here = std::thread::current().id();

@@ -1691,12 +1691,24 @@ fn install(state: State, depth: usize) {
             .set(mem_ceiling(state.baseline, state.max_memory));
         hot.shielded.set(state.shielded);
         hot.flags.set(state.cancel.len());
-        let word = hot.word.get().unwrap_or_else(una_sys::attention::register);
+        // A thread that already has its word keeps the value its last check point saw: a raise
+        // since then, as the slicer's at the end of a turn that began before this state was
+        // installed, stays pending, so the first check point takes the slow path and the task
+        // yields there (#1533). Reading the word anew here lost that raise: on a worker, a
+        // turn's end is set when the worker takes the job, before the task installs its state,
+        // so a slicer that raised the word in between, under load, was never heard, and the
+        // task kept its worker while another waited, `main` with its cancellation included.
+        let registered = hot.word.get();
+        let word = registered.unwrap_or_else(una_sys::attention::register);
         hot.word.set(Some(word));
-        // The word as it stands, read before the hard stop is: a hard stop that comes after
+        // A new word as it stands, read before the hard stop is: a hard stop that comes after
         // the read raises the word, and one that came before it is seen here, with a value no
         // word holds, so the first check point takes the slow path.
-        let seen = word.load();
+        let seen = if registered.is_some() {
+            hot.seen.get()
+        } else {
+            word.load()
+        };
         hot.seen.set(if hard_stop().is_some() {
             u64::MAX
         } else {
