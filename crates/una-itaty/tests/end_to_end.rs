@@ -581,6 +581,68 @@ fn a_client_publishes_and_verifies_every_proof() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A publication takes its publishing slot before its body is read, so a third one, while
+/// two are being read, is refused before any byte of its body arrives.
+#[test]
+fn publications_take_their_slot_before_their_body_is_read() {
+    let keys = keys();
+    let root_doc = root_document(&keys);
+    let dir = temp_dir("slots");
+    let store: Arc<dyn Store> = Arc::new(FileStore::open(&dir).unwrap());
+    store.put("root/1", root_doc.as_bytes()).unwrap();
+    let clock = Arc::new(TestClock(AtomicU64::new(1_900_000_000)));
+    let config = Config {
+        pin: root_digest(&root_doc),
+        log_seed: [20; 32],
+    };
+    let registry = Registry::open(Arc::clone(&store), &config, clock).unwrap();
+    let service = Arc::new(Service::new(
+        Arc::clone(&store),
+        registry,
+        ServerConfig::default(),
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    {
+        let service = Arc::clone(&service);
+        std::thread::spawn(move || serve(&listener, &service));
+    }
+    let head = format!(
+        "POST /publish HTTP/1.1\r\nContent-Length: {}\r\n\r\nita-publish/1\n",
+        una_itaty::http::MAX_PUBLISH_BODY
+    );
+    // Two publications declare the largest body and send only its first bytes.
+    let stalled: Vec<TcpStream> = (0..2)
+        .map(|_| {
+            let mut stream = TcpStream::connect(addr).unwrap();
+            stream.write_all(head.as_bytes()).unwrap();
+            stream
+        })
+        .collect();
+    // Both hold a slot while their bodies are read; the wait is bounded, not timed.
+    let mut polls = 0;
+    while service.publications_in_progress() < 2 {
+        polls += 1;
+        assert!(polls < 2000, "the stalled publications took no slot");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    // A third gets 503 from its head alone.
+    let mut stream = TcpStream::connect(addr).unwrap();
+    stream.write_all(head.as_bytes()).unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    assert!(response.starts_with("HTTP/1.1 503"), "{response}");
+    drop(stalled);
+    // The slots are given back once the stalled connections end.
+    let mut polls = 0;
+    while service.publications_in_progress() > 0 {
+        polls += 1;
+        assert!(polls < 2000, "the slots were not given back");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn bodies_past_their_bound_are_refused_before_they_are_read() {
     let keys = keys();
