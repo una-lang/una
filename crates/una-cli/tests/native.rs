@@ -7324,16 +7324,32 @@ pub main() -> Unit
 #[test]
 fn s46_limited_is_internal_so_the_output_is_the_same_for_every_secret() {
     // S-46 (#1563), `spec/27 §10` rule 4: `Limited` is labeled `internal`. The program still
-    // compiles, and its whole output is the same in both engines for every secret, although the
+    // compiles, and its whole output and trace are the same in both engines for every secret, although the
     // hidden `acquire` takes the token only when `s > 0`. `secret_run` checks the executable's
     // output against the interpreter's.
+    // Since S-45 (#1552) the `acquire` outcomes are redacted in the trace, and the hidden
+    // `acquire` is quiet (S-42), so the whole trace is the same for every secret too, and the
+    // executable's equals the interpreter's.
     let mut outputs = Vec::new();
+    let mut traces = Vec::new();
     for secret in [0, 1, 3] {
-        let (output, _, _) = secret_run("s46kept", LIMITED_KEPT, secret, &[]);
+        let (output, run, native) = secret_run("s46kept", LIMITED_KEPT, secret, &[]);
+        assert_eq!(run, native, "{secret}");
         outputs.push(output);
+        traces.push(run);
     }
     assert_eq!(outputs[0], serde_json::json!(["asked", "done"]));
     assert!(outputs.iter().all(|o| *o == outputs[0]), "{outputs:?}");
+    assert!(traces.iter().all(|t| *t == traces[0]), "{traces:?}");
+    // The public `acquire`s are recorded, with their outcomes redacted.
+    let acquires = traces[0]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|event| event["op"] == "acquire")
+        .inspect(|event| assert_eq!(event["outcome"]["kind"], "redacted", "{event}"))
+        .count();
+    assert_eq!(acquires, 2, "{}", traces[0]);
     // The program that prints whether the public `acquire` failed is rejected: its prints run
     // under the `internal` condition (U4003), in `una check` and in `una build`.
     let branch = LIMITED_BRANCH.replace("SECRET", "1");

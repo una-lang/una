@@ -1830,6 +1830,8 @@ impl<'a> Checker<'_, 'a, '_> {
         result: &Ty,
     ) {
         let mut seed = decided.clone();
+        // Since S-46 (#1563) `decided` already holds `internal` for `acquire`; this join stays
+        // as the trace's fail-closed backstop, independent of the program's label rule.
         let limit = self
             .env
             .limiter
