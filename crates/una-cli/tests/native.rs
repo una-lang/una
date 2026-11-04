@@ -7283,14 +7283,17 @@ pub main() -> Unit
   @console.print("done")
 "#;
 
-/// S-40 round 2 (#1512, review H1, `p_floor.una` verbatim): a `tasks` statement in the body of
+/// S-40 round 2 (#1512, review H1, after `p_floor.una`): a `tasks` statement in the body of
 /// an operation of a capability that accepts `secret` is quiet by the effect floor, and its last
 /// task's `put` occurs whatever the secret; before, its path counted the quiet `start`s under
-/// the `secret` branches before it (`qs1.q1` for 0, `qs1.q3` for 2).
+/// the `secret` branches before it (`qs1.q1` for 0, `qs1.q3` for 2). The `put` is served by an
+/// instance that public code installed, so that it keeps its event (#1544), and its capability
+/// accepts `secret`, as an effect under that floor must.
 const SECRET_START_FLOOR: &str = r#"module leak
 
 capability Sink
   op put(x: Int) -> Unit
+    accepts secret
 
 capability Box
   op hold(x: Int) -> Unit
@@ -7306,20 +7309,18 @@ use_it() -> Unit
 =
   @k.put(1)
 
-pinger() -> Unit
-=
-  use_it() with @k = keep()
-
 block(x: secret Int) -> Unit
+  uses @k: Sink[put]
 =
   tasks
     if x > 0
       start noop()
     if x > 1
       start noop()
-    start pinger()
+    start use_it()
 
 handler box() for Box
+  uses @k: Sink[put]
   op hold(x) = block(x)
 
 hold_it(s: secret Int) -> Unit
@@ -7327,11 +7328,16 @@ hold_it(s: secret Int) -> Unit
 =
   @b.hold(s)
 
+boxed(s: secret Int) -> Unit
+  uses @k: Sink[put]
+=
+  hold_it(s) with @b = box()
+
 pub main() -> Unit
   uses @console: Console[print]
 =
   let s: secret Int = SECRET
-  hold_it(s) with @b = box()
+  boxed(s) with @k = keep()
   @console.print("done")
 "#;
 
@@ -7342,6 +7348,7 @@ const SECRET_BLOCKS_FLOOR: &str = r#"module leak
 
 capability Sink
   op put(x: Int) -> Unit
+    accepts secret
 
 capability Box
   op hold(x: Int) -> Unit
@@ -7359,11 +7366,8 @@ use_it() -> Unit
 =
   @k.put(1)
 
-pinger() -> Unit
-=
-  use_it() with @k = keep()
-
 block(x: secret Int) -> Unit
+  uses @k: Sink[put]
 =
   for i in 0..<3
     if x > i
@@ -7377,9 +7381,10 @@ block(x: secret Int) -> Unit
     double(1)
     double(2)
   tasks
-    start pinger()
+    start use_it()
 
 handler box() for Box
+  uses @k: Sink[put]
   op hold(x) = block(x)
 
 hold_it(s: secret Int) -> Unit
@@ -7387,11 +7392,16 @@ hold_it(s: secret Int) -> Unit
 =
   @b.hold(s)
 
+boxed(s: secret Int) -> Unit
+  uses @k: Sink[put]
+=
+  hold_it(s) with @b = box()
+
 pub main() -> Unit
   uses @console: Console[print]
 =
   let s: secret Int = SECRET
-  hold_it(s) with @b = box()
+  boxed(s) with @k = keep()
   @console.print("done")
 "#;
 
@@ -7421,14 +7431,12 @@ fn s40_quiet_tasks_have_no_number_so_quiet_code_without_a_secret_branch_shows_no
     // the secret. Quiet `start`s, statements and races take no number, so those events' paths
     // do not count how many quiet ones ran before under a `secret` branch: whole events are the
     // same for every secret, in both engines.
+    // Since #1544 the `put`s that the generic case's quiet tasks perform, on instances they
+    // install themselves, append no event, and an effect under a decision on values of a type
+    // parameter is U4002: no event of those tasks is left to carry a path. The floor cases
+    // perform their `put` on an instance that public code installed, which keeps its event.
     let generic = same_traces_across("s40generic", SECRET_START_GENERIC, &[0, 1, 2, 3]);
-    let tasks: Vec<&str> = generic
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|event| event["task"].as_str())
-        .collect();
-    assert_eq!(tasks, ["s1.q", "s2.q", "s3.q"], "{generic}");
+    assert_eq!(generic, done_only(), "{generic}");
     for (name, source) in [
         ("s40floor", SECRET_START_FLOOR),
         ("s40blocks", SECRET_BLOCKS_FLOOR),
