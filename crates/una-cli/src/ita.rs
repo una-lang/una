@@ -1541,8 +1541,19 @@ fn resolve_and_lock(
         };
         let accepted = accepted_out.get(source).cloned().unwrap_or_default();
         let effects = effects_out.get(source).cloned().unwrap_or_default();
+        // `--check` reads at the lock's point, after any later root version: the lock's
+        // `last root` stands while the chain served holds it with its digest.
+        let recorded = existing_lock
+            .filter(|_| options.check)
+            .and_then(|lock| {
+                lock.read
+                    .registries
+                    .iter()
+                    .find(|r| r.source.value == *source)
+            })
+            .map(|r| (r.last_root.value, r.last_root_digest.value.as_str()));
         text.push_str(&crate::registry::registry_block(
-            source, pin, &registry, &accepted, &effects,
+            source, pin, &registry, recorded, &accepted, &effects,
         ));
     }
     for entry in &entries {
@@ -2467,6 +2478,7 @@ pub(crate) fn vendor_command(
                 let (code, message) = match problem {
                     una_project::vendor::Problem::Absent(message) => (Code::U7011, message),
                     una_project::vendor::Problem::Refused(message) => (Code::U7010, message),
+                    una_project::vendor::Problem::Unavailable(message) => (Code::U7013, message),
                 };
                 problems.push(ProjectError {
                     code,
@@ -2943,6 +2955,10 @@ pub(crate) fn verify_command(
                 refuse(Code::U7010, message);
                 continue;
             }
+            Err(Problem::Unavailable(message)) => {
+                refuse(Code::U7013, message);
+                continue;
+            }
         }
         let expected = match vendor::expected(&lock.read, manifest.ita.as_deref(), locked) {
             Ok(expected) => expected,
@@ -2953,11 +2969,16 @@ pub(crate) fn verify_command(
         };
         let mut places: Vec<&str> = Vec::new();
         let mut failed = false;
-        match vendor::vendored(path, &expected) {
+        let floor = una_project::provenance::Floor::of(itaoca, &expected.root);
+        match vendor::vendored(path, &expected, &floor) {
             Ok(Some(_)) => places.push("vendor/ita"),
             Ok(None) => {}
             Err(Problem::Refused(message) | Problem::Absent(message)) => {
                 refuse(Code::U7010, message);
+                failed = true;
+            }
+            Err(Problem::Unavailable(message)) => {
+                refuse(Code::U7013, message);
                 failed = true;
             }
         }
@@ -2967,6 +2988,10 @@ pub(crate) fn verify_command(
                 Ok(None) => {}
                 Err(Problem::Refused(message) | Problem::Absent(message)) => {
                     refuse(Code::U7010, message);
+                    failed = true;
+                }
+                Err(Problem::Unavailable(message)) => {
+                    refuse(Code::U7013, message);
                     failed = true;
                 }
             }
@@ -3105,7 +3130,10 @@ pub(crate) fn fetch_command(
                 ));
                 continue;
             }
-            Ok(None) => {}
+            // A stored provenance that cannot be verified offline, one of the earlier format
+            // whose point a retired witness cosigns, is fetched again: the registry's
+            // provenance of the newer format is stored beside it, which is then preferred.
+            Ok(None) | Err(vendor::Problem::Unavailable(_)) => {}
             Err(vendor::Problem::Refused(message) | vendor::Problem::Absent(message)) => {
                 refuse(Code::U7010, message);
                 continue;
@@ -3244,7 +3272,10 @@ fn fetch_one(
     let document = registry
         .provenance(&release, &key)
         .map_err(|message| (crate::registry::code_of(registry), message))?;
-    provenance::verify(&document, expected).map_err(refused)?;
+    // The registry was opened against the floors Itaoca stores; the document is loaded again
+    // below as every command loads it, against the floor read then.
+    provenance::verify(&document, expected, &provenance::Floor::None)
+        .map_err(|problem| refused(problem.into_message()))?;
     let stored = itaoca.store(&bytes).map_err(local)?;
     if stored != expected.digest {
         return Err(refused(format!(
@@ -3268,6 +3299,7 @@ fn fetch_one(
             "{what} is not in Itaoca after it was stored"
         ))),
         Err(una_project::vendor::Problem::Refused(message)) => Err(refused(message)),
+        Err(una_project::vendor::Problem::Unavailable(message)) => Err((Code::U7013, message)),
         Err(una_project::vendor::Problem::Absent(message)) => Err(local(message)),
     }
 }

@@ -500,9 +500,11 @@ fn a_release_signed_by_a_compromised_key_is_not_fetched() {
     std::fs::write(
         dir.join("ita.lock"),
         format!(
-            "lock 1\n\nsolver\n  encoding \"una-smt-1\"\n  name \"z3\"\n  version \"5.1.0\"\n  logic \"QF_UFLIA\"\n  steps 5000000\n  seed 0\n\nregistry acme\n  root \"{}\"\n  checkpoint {} \"sha256:{hex}\"\n\npackage acme/ledger 0.3.1\n  from acme\n  digest \"{digest}\"\n  signed \"{signed}\"\n  logged {index}\n",
+            "lock 1\n\nsolver\n  encoding \"una-smt-1\"\n  name \"z3\"\n  version \"5.1.0\"\n  logic \"QF_UFLIA\"\n  steps 5000000\n  seed 0\n\nregistry acme\n  root \"{}\"\n  checkpoint {} \"sha256:{hex}\"\n  last root {} \"{}\"\n\npackage acme/ledger 0.3.1\n  from acme\n  digest \"{digest}\"\n  signed \"{signed}\"\n  logged {index}\n",
             registry.pin(),
-            leaves.len()
+            leaves.len(),
+            registry.roots.len(),
+            una_project::tlog::root::digest(registry.roots.last().unwrap())
         ),
     )
     .unwrap();
@@ -699,9 +701,11 @@ fn an_archive_that_understates_its_authority_is_not_fetched() {
     std::fs::write(
         dir.join("ita.lock"),
         format!(
-            "lock 1\n\nsolver\n  encoding \"una-smt-1\"\n  name \"z3\"\n  version \"5.1.0\"\n  logic \"QF_UFLIA\"\n  steps 5000000\n  seed 0\n\nregistry acme\n  root \"{}\"\n  checkpoint {} \"sha256:{hex}\"\n\npackage acme/ledger 0.3.1\n  from acme\n  digest \"{digest}\"\n  signed \"{signed}\"\n  logged {index}\n",
+            "lock 1\n\nsolver\n  encoding \"una-smt-1\"\n  name \"z3\"\n  version \"5.1.0\"\n  logic \"QF_UFLIA\"\n  steps 5000000\n  seed 0\n\nregistry acme\n  root \"{}\"\n  checkpoint {} \"sha256:{hex}\"\n  last root {} \"{}\"\n\npackage acme/ledger 0.3.1\n  from acme\n  digest \"{digest}\"\n  signed \"{signed}\"\n  logged {index}\n",
             registry.pin(),
-            leaves.len()
+            leaves.len(),
+            registry.roots.len(),
+            una_project::tlog::root::digest(registry.roots.last().unwrap())
         ),
     )
     .unwrap();
@@ -771,8 +775,10 @@ fn a_consented_dispute_needs_new_consent_when_it_takes_effect() {
     std::fs::write(
         dir.join("ita.lock"),
         format!(
-            "lock 1\n\nsolver\n  encoding \"una-smt-1\"\n  name \"z3\"\n  version \"5.1.0\"\n  logic \"QF_UFLIA\"\n  steps 5000000\n  seed 0\n\nregistry acme\n  root \"{}\"\n  checkpoint {old_size} \"sha256:{hex}\"\n  accepted acme {dispute}\n\npackage acme/ledger 0.3.1\n  from acme\n  digest \"{digest}\"\n  signed \"{signed}\"\n  logged {index}\n",
-            registry.pin()
+            "lock 1\n\nsolver\n  encoding \"una-smt-1\"\n  name \"z3\"\n  version \"5.1.0\"\n  logic \"QF_UFLIA\"\n  steps 5000000\n  seed 0\n\nregistry acme\n  root \"{}\"\n  checkpoint {old_size} \"sha256:{hex}\"\n  last root {} \"{}\"\n  accepted acme {dispute}\n\npackage acme/ledger 0.3.1\n  from acme\n  digest \"{digest}\"\n  signed \"{signed}\"\n  logged {index}\n",
+            registry.pin(),
+            registry.roots.len(),
+            una_project::tlog::root::digest(registry.roots.last().unwrap())
         ),
     )
     .unwrap();
