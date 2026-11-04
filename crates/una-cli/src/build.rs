@@ -132,6 +132,10 @@ pub(crate) fn build_command(
         };
         (entry, main, ["main"].as_slice())
     };
+    if let Some(message) = crate::runtime::server_pending(&analysis, &entry, started) {
+        writeln!(stderr, "error: {message}")?;
+        return Ok(ExitStatus::Usage);
+    }
     // The description the executable reads at start: `[run] grants`, and every `uses` of
     // `main`, or of the driven functions, with where it is written, for U3012 (`spec/16 §3`).
     let modules = Modules {

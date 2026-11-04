@@ -1,0 +1,29 @@
+-- test: installing, in a branch of `together`, a handler whose `uses` hold `HttpServer` is U3033 at the installation, and so is the call it scopes over, which needs the binding (spec/31 §1, ADR 0123 rule 5)
+-- spec: spec/31 §1
+-- expect: error U3033 at src/srv.una:27:13
+-- expect: error U3033 at src/srv.una:27:34
+module srv
+
+import std.host (HttpServer)
+
+pub capability Stop
+  op now() -> Int
+
+pub handler closing() for Stop
+  uses @server: HttpServer[close]
+  op now() =
+    @server.close()
+    1
+
+count() -> Int
+  uses @stop: Stop[now]
+=
+  @stop.now()
+
+both() -> Unit
+  uses @server: HttpServer[close]
+=
+  together
+    let a = count() with @stop = closing()
+    let b = 2
+  unit

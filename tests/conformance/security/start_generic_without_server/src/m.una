@@ -1,0 +1,14 @@
+-- test: in a package of edition 0.4 that imports no name of the server, a value of a type parameter holds no reply right, so a generic `start` under a `secret` program counter is accepted as before (spec/31 §1, ADR 0123 IF6)
+-- spec: spec/31 §1
+-- expect: ok
+module m
+
+crunch[T](x: T) -> Unit = unit
+
+spawn[T](x: T, key: secret Bool) -> Unit
+=
+  tasks
+    if key
+      start crunch(x)
+    else
+      unit

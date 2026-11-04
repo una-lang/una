@@ -1090,7 +1090,82 @@ fn outside_constructs(env: &Env<'_>, graph: &Graph) -> Vec<(Label, String)> {
 pub(crate) fn residue_of(env: &Env<'_>, findings: &Findings) -> Residue {
     let graph = graph(env, findings);
     let concurrent = concurrent_functions(findings);
-    residue(env, findings, &graph, &concurrent)
+    let residue = residue(env, findings, &graph, &concurrent);
+    server_label(env, findings, &graph, &concurrent, residue)
+}
+
+/// `L_res` with `L_srv` joined in (ADR 0123, S4 amendment IF-S1, `spec/31 §1`): in a package
+/// whose code performs an operation of `HttpServer`, the serve threads' work after each
+/// hand-off site can shift every timing site, so
+///
+/// ```text
+/// L_srv = internal ⊔ ⨆ over hand-off sites s of ( sfx(s) ⊔ Suf*(node(s)) ⊔ τ_conc(s) ) ⊔ L_res
+/// ```
+///
+/// joins `τ` of every timing site, as `L_res` does. The hand-off sites are the operations of
+/// `HttpServer` and the `start`s that move reply rights (IF6).
+///
+/// **The preview's terms.** `sfx(s) ⊔ Suf*(node(s))`, the code that can run after `s`, is
+/// over-approximated by `τ⁰` of the bodies of every ancestor of the function that holds `s`, that
+/// function included, the rule of `L_lim` ([`ancestor_labels`]); `τ_conc` is the preview's,
+/// `⊤` for a site in a task, a `tasks` block, a lambda or a handler's operation. Both are sound,
+/// and coarser than the amendment's; they MAY become more precise and MUST NOT become stricter.
+/// `L_srv` is `public` in a package without an operation of `HttpServer`, which starts no serve
+/// thread.
+///
+/// **Linear.** One pass of [`ancestor_labels`] over the graph, O(V + E), and O(sites).
+pub(crate) fn server_label(
+    env: &Env<'_>,
+    findings: &Findings,
+    graph: &Graph,
+    concurrent: &BTreeSet<usize>,
+    mut residue: Residue,
+) -> Residue {
+    if findings.server_sites.is_empty() {
+        return residue;
+    }
+    let internal = Label {
+        level: una_syntax::ast::Level::Internal,
+        ..Label::public()
+    };
+    let mut sites: Vec<HttpSite> = findings.server_sites.clone();
+    sites.extend(
+        findings
+            .server_starts
+            .iter()
+            .filter(|site| super::server::moves_rights(env, site))
+            .map(|site| HttpSite {
+                span: site.keyword,
+                function: site.function,
+                unplaced: site.unplaced,
+            }),
+    );
+    sites.sort_by_key(|site| (site.span.file, site.span.start, site.span.end));
+    let labels = ancestor_labels(env, graph, concurrent, &residue, &sites);
+    let label = internal.join(&labels.label);
+    // The site a message names: the first whose label is the highest, else the first.
+    let named = labels
+        .sites
+        .iter()
+        .zip(&sites)
+        .find(|(limit, _)| label.flows_to(&limit.label))
+        .or_else(|| labels.sites.iter().zip(&sites).next())
+        .map(|(_, site)| site.function);
+    let place = match named.flatten().and_then(|id| env.functions.get(id)) {
+        Some(def) => match env.modules.get(def.module).map(|m| m.path.as_str()) {
+            Some(path) if !path.is_empty() => format!("`{path}.{}`", def.name),
+            _ => format!("`{}`", def.name),
+        },
+        None => "a handler's operation".to_owned(),
+    };
+    residue.label = residue.label.join(&label);
+    residue.sources.push((
+        label,
+        format!(
+            "the requests that the serve threads handle after the server operations in {place}"
+        ),
+    ));
+    residue
 }
 
 /// `L_lim` of the package and the label of each request (ADR 0117 IF4, as ADR 0116 P8 states
@@ -1123,12 +1198,26 @@ pub(crate) fn limit_labels(
     concurrent: &BTreeSet<usize>,
     residue: &Residue,
 ) -> LimitLabels {
+    ancestor_labels(env, graph, concurrent, residue, &findings.http_sites)
+}
+
+/// [`limit_labels`] over `sites`: the label of each site, the join of `τ⁰` of the bodies of
+/// every ancestor of its function, its function included, of `τ_conc` at it, the preview's, and
+/// of `residue`; and their join. The one rule for `L_lim` (ADR 0117 IF4) and for `L_srv` (ADR
+/// 0123, S4 amendment IF-S1), whose sites are the server's hand-off sites.
+pub(crate) fn ancestor_labels(
+    env: &Env<'_>,
+    graph: &Graph,
+    concurrent: &BTreeSet<usize>,
+    residue: &Residue,
+    at: &[HttpSite],
+) -> LimitLabels {
     fn add(succ: &mut [Vec<usize>], from: usize, to: usize) {
         if let Some(edges) = succ.get_mut(from) {
             edges.push(to);
         }
     }
-    if findings.http_sites.is_empty() {
+    if at.is_empty() {
         return LimitLabels {
             label: Label::public(),
             sites: Vec::new(),
@@ -1251,7 +1340,7 @@ pub(crate) fn limit_labels(
         .map(|(label, source)| Raiser::Residue(source.clone(), label.clone()));
     let mut sites = Vec::new();
     let mut label = Label::public();
-    for site in &findings.http_sites {
+    for site in at {
         una_core::label_counters::pass_step();
         let beside = site.unplaced
             || site.function.is_none()

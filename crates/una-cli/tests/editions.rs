@@ -428,6 +428,12 @@ const EXPECTED_DIFFERENCES_0_4: &[Difference04] = &[
         added: &[],
         removed: &[("U0101", "src/m.una:6:22")],
     },
+    // ADR 0123 rule 0 (`spec/31 §1`): `std.host` exports `HttpServer` from edition 0.4.
+    Difference04 {
+        case: "names/host_server_import_0_3",
+        added: &[],
+        removed: &[("U1001", "src/m.una:6:18")],
+    },
     // ADR 0116 rule 12: `HttpError.Interrupted` is a variant from edition 0.4, and so is
     // `RateLimited` (ADR 0117 rule 8), which the `when` then lacks.
     Difference04 {

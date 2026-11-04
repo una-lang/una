@@ -440,6 +440,10 @@ impl<'a> Checker<'_, 'a, '_> {
                     // A parameter that an `of` clause names runs the effects of its argument
                     // (ADR 0062).
                     let own = self.labeled(&ty).top_label();
+                    // ADR 0123 rule 5: a `uses of` parameter called in a branch (U3033).
+                    if self.of_param(name).is_some() {
+                        self.branch_server_of_param(name, ident.span);
+                    }
                     let of = self.of_param(name).map(|index| {
                         self.run_of_param(name, index, ident.span, &Label::public(), &own)
                     });
@@ -1599,6 +1603,10 @@ impl<'a> Checker<'_, 'a, '_> {
             });
         }
         let resolved = self.op_site(cap, op);
+        // ADR 0123: no operation of `HttpServer` in a branch (U3033, rule 5), and each one is a
+        // hand-off site of the serve threads (`L_srv`).
+        self.branch_server_op(resolved, cap_name, op_name, span);
+        self.server_site(resolved, span);
         // S-39, S-42: the operation's event, and those of a handler that serves it, would show
         // that it ran.
         self.quiet_op_site(span);
@@ -1780,6 +1788,15 @@ impl<'a> Checker<'_, 'a, '_> {
                     limited: true,
                 });
             }
+        }
+        // ADR 0123 IF3 (`spec/31 §1`): whether `reply` fails also depends on which reply rights
+        // the task holds, which the program's order of `next`, `start` and `reply` decides, so
+        // its failure is labeled `internal` at least, as `Http`'s are. O(1) per operation site.
+        if host && capability.name == "HttpServer" && op_name == "reply" {
+            decided = decided.join(&Label {
+                level: una_syntax::ast::Level::Internal,
+                ..Label::public()
+            });
         }
         if let Some(fails) = &def.fails {
             // Whether a host operation fails, and how, is labeled like the arguments that
@@ -3050,10 +3067,13 @@ fn structural_inputs(name: &str) -> Option<&'static [(&'static str, bool)]> {
 /// fails, and how (`spec/07 §7`, S-15): every argument of `Http`, since the server
 /// receives them all;
 /// the path of `Files`, not the content, besides the file-state label of every `Files` operation
-/// (ADR 0085); the key name of `Keys`, not the data.
+/// (ADR 0085); the key name of `Keys`, not the data; both arguments of `HttpServer.reply` (ADR
+/// 0123 IF3).
 fn decides_failure(capability: &str, op: &str, param: &str) -> bool {
     match (capability, op) {
         ("Http", _) => true,
+        // ADR 0123 IF3: `NotHeld` and `BadReply` are decided by the reply right and the reply.
+        ("HttpServer", "reply") => true,
         ("Files", _) => param == "path",
         ("Keys", "hmac") => param == "key_name",
         _ => false,

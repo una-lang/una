@@ -1,0 +1,9 @@
+ita server_public_count_printed
+  version 0.1.0
+  edition 0.4
+
+run
+  entry srv
+  grants
+    console
+    serve "http://127.0.0.1:8080"

@@ -704,6 +704,8 @@ impl<'a> Checker<'_, 'a, '_> {
         if !needs.is_empty() {
             self.note_effect();
         }
+        // ADR 0123 rule 5: nothing a branch runs can perform an operation of `HttpServer`.
+        self.branch_server_needs(callee, needs, span);
         let mut pure_reported = false;
         // A requirement whose capability is unknown was reported where it is declared or
         // inferred (U1001, U3001).
@@ -2496,12 +2498,21 @@ fn function_grants(
             );
             // ADR 0097 rule 7: granting is the route, and it widens what the program may do
             // when it runs.
-            let mut grant = Report::advice(format!(
-                "grant {} of `{}` in {section} of `{}`, or with `--grant`",
-                missing.join(", "),
-                capability.name,
-                settings.format.file()
-            ));
+            // ADR 0123 rule 1: a server's grant names the address it listens on, which no repair
+            // can choose for the programmer, so the repair is a description only.
+            let mut grant = if capability.name == super::server::HTTP_SERVER {
+                Report::advice(format!(
+                    "grant the address the server listens on, `serve \"<scheme>://<address>:<port>\"` in {section} of `{}`, or `--grant serve:<scheme>://<address>:<port>`",
+                    settings.format.file()
+                ))
+            } else {
+                Report::advice(format!(
+                    "grant {} of `{}` in {section} of `{}`, or with `--grant`",
+                    missing.join(", "),
+                    capability.name,
+                    settings.format.file()
+                ))
+            };
             grant.widens = Some(Widening::Grant);
             diagnostic.repairs.push(grant);
             report.push(diagnostic);

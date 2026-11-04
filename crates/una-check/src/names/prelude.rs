@@ -92,9 +92,60 @@ const STD_HOST_NAMES_0_2: [&str; 11] = [
     "HttpError",
 ];
 
+/// What `std.host` exports in edition 0.4: also `HttpServer`, its kinds and `ReplyRight` (ADR
+/// 0123 rules 0 and 1, `spec/31 §1`), which the prelude does not put in scope.
+const STD_HOST_NAMES_0_4: [&str; 20] = [
+    "Console",
+    "Clock",
+    "Env",
+    "Files",
+    "Keys",
+    "FileError",
+    "KeyError",
+    "Http",
+    "Header",
+    "Response",
+    "HttpError",
+    "HttpServer",
+    "Method",
+    "Param",
+    "Request",
+    "Exchange",
+    "Status",
+    "Reply",
+    "ServeError",
+    "ReplyRight",
+];
+
+/// The names of `std.host` that only an import brings into scope, in edition 0.4: those of the
+/// server (ADR 0123 rule 0). An import of one is never redundant.
+pub(crate) const SERVER_NAMES: [&str; 9] = [
+    "HttpServer",
+    "Method",
+    "Param",
+    "Request",
+    "Exchange",
+    "Status",
+    "Reply",
+    "ServeError",
+    "ReplyRight",
+];
+
+/// The variants of a sum kind of the server that `std.host` declares (ADR 0123 rule 1), which an
+/// import of the kind brings into scope.
+pub(crate) fn server_variants(kind: &str) -> Option<&'static [&'static str]> {
+    match kind {
+        "Method" => Some(&["Get", "Head", "Post", "Put", "Patch", "Delete", "Options"]),
+        "ServeError" => Some(&["Interrupted", "TimedOut", "Closed", "NotHeld", "BadReply"]),
+        _ => None,
+    }
+}
+
 /// What `std.host` exports to an import in `edition`.
 pub(crate) fn std_host_names(edition: Edition) -> &'static [&'static str] {
-    if edition >= Edition::V0_2 {
+    if edition >= Edition::V0_4 {
+        &STD_HOST_NAMES_0_4
+    } else if edition >= Edition::V0_2 {
         &STD_HOST_NAMES_0_2
     } else {
         &STD_HOST_NAMES
@@ -343,6 +394,45 @@ mod tests {
             upper.remove(parameter);
         }
         (lower, upper)
+    }
+
+    #[test]
+    fn the_names_of_the_server_are_the_declarations_of_std_host_in_0_4() {
+        // ADR 0123 rule 1: every name of the server is declared by `host_0_4.una`, or is the
+        // built-in `ReplyRight`; the variants an import brings are the kinds' own; edition 0.3
+        // exports none of them, and the prelude's scope holds none (rule 0).
+        let source = include_str!("../std/host_0_4.una");
+        let declared: BTreeSet<&str> = source
+            .lines()
+            .filter_map(|line| {
+                let rest = line
+                    .strip_prefix("pub kind ")
+                    .or_else(|| line.strip_prefix("pub capability "))?;
+                rest.split(|c: char| !c.is_ascii_alphanumeric()).next()
+            })
+            .collect();
+        let mut names: BTreeSet<&str> = SERVER_NAMES.iter().copied().collect();
+        assert!(names.remove("ReplyRight"));
+        assert_eq!(names, declared);
+        for kind in ["Method", "ServeError"] {
+            let line = source
+                .lines()
+                .find(|line| line.starts_with(&format!("pub kind {kind} = ")))
+                .unwrap();
+            let variants: Vec<&str> = line
+                .split_once(" = ")
+                .unwrap()
+                .1
+                .split('|')
+                .map(str::trim)
+                .collect();
+            assert_eq!(server_variants(kind).unwrap(), variants.as_slice());
+        }
+        for name in SERVER_NAMES {
+            assert!(std_host_names(Edition::V0_4).contains(&name), "{name}");
+            assert!(!std_host_names(Edition::V0_3).contains(&name), "{name}");
+            assert!(!UPPER.contains(&name), "{name}");
+        }
     }
 
     #[test]

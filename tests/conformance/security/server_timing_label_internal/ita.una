@@ -1,0 +1,8 @@
+ita server_timing_label_internal
+  version 0.1.0
+  edition 0.4
+
+run
+  entry srv
+  grants
+    serve "http://127.0.0.1:8080"

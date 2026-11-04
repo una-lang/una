@@ -77,6 +77,9 @@ pub(crate) enum Builtin {
     Text,
     Unit,
     Hashed,
+    /// `ReplyRight` of `std.host`, edition 0.4 (ADR 0123 rule 1): exported by `std.host` and
+    /// in no scope without an import.
+    ReplyRight,
     List,
     /// `Map[K, V]`, built in from edition 0.2 (`spec/21 §1`).
     Map,
@@ -463,6 +466,19 @@ pub(crate) struct Env<'a> {
     /// with or without boundaries, for the timing label of a handler's parameters (ADR 0116
     /// IF5 item 3, issue #1436).
     pub(crate) holds_function_kinds: Vec<bool>,
+    /// For each kind, whether a value of it may hold a `ReplyRight` of `std.host`, at any
+    /// depth (ADR 0123 IF6): `Exchange`, and every kind with a field that holds one.
+    pub(crate) holds_reply_kinds: Vec<bool>,
+    /// The capabilities whose operations can run an operation of `HttpServer` through a handler
+    /// (ADR 0123 rule 5, U3033).
+    pub(crate) serving_capabilities: BTreeSet<super::ty::CapId>,
+    /// Whether a module of the package imports a name of the server from `std.host` (ADR 0123
+    /// rule 0): only then does Core IR declare the server's kinds, and a value of the package
+    /// can hold a reply right.
+    pub(crate) server_imported: bool,
+    /// Whether a module of the package imports `HttpServer`, `Exchange` or `ReplyRight`, the
+    /// names through which a value of the package can hold a reply right (ADR 0123 IF6).
+    pub(crate) reply_rights: bool,
     /// The `via` functions whose failure reveals nothing, by function id (ADR 0098): a call of
     /// their policy fails at the program counter, not at `pc ⊔ ℓ(to)`.
     pub(crate) plain_vias: BTreeSet<usize>,
@@ -606,6 +622,10 @@ impl<'a> Env<'a> {
             manifest_file: "una.toml",
             boundaries: super::boundary::Boundaries::default(),
             holds_function_kinds: Vec::new(),
+            holds_reply_kinds: Vec::new(),
+            serving_capabilities: BTreeSet::new(),
+            server_imported: false,
+            reply_rights: false,
             plain_vias: BTreeSet::new(),
             blocked_vias: BTreeMap::new(),
             map_module: None,
@@ -694,6 +714,12 @@ impl<'a> Env<'a> {
                     .upper
                     .entry("Complex")
                     .or_insert(Entity::Builtin(Builtin::Complex));
+                // ADR 0123 rule 1: `std.host` exports `ReplyRight`, which only an import brings
+                // into scope (`spec/10 §11` rule 10).
+                module
+                    .upper
+                    .entry("ReplyRight")
+                    .or_insert(Entity::Builtin(Builtin::ReplyRight));
             }
         }
         env.imports(count);
@@ -983,6 +1009,13 @@ impl<'a> Env<'a> {
                     if host && !prelude::std_host_names(self.edition).contains(&name) {
                         continue;
                     }
+                    // ADR 0123 rule 0: a package module that imports a name of the server.
+                    if host && index < count && prelude::SERVER_NAMES.contains(&name) {
+                        self.server_imported = true;
+                        if matches!(name, "HttpServer" | "Exchange" | "ReplyRight") {
+                            self.reply_rights = true;
+                        }
+                    }
                     // `millisecond`, `second` and `minute` are built-in names of `std.time`, of
                     // type `Int of Millisecond` (ADR 0116 rule 0, amended 2026-10-19).
                     if time
@@ -1050,6 +1083,10 @@ impl<'a> Env<'a> {
         }
         if let Some(variants) = scope.imported_variants.get(name) {
             return variants.clone();
+        }
+        // ADR 0123 rule 0: the names of the server are in no scope without an import.
+        if module < self.prelude && prelude::SERVER_NAMES.contains(&name) {
+            return Vec::new();
         }
         match self
             .modules
@@ -2564,6 +2601,7 @@ impl<'a> Env<'a> {
                     Builtin::Text => Ty::Text,
                     Builtin::Unit => Ty::Unit,
                     Builtin::Hashed => Ty::Hashed,
+                    Builtin::ReplyRight => Ty::ReplyRight,
                     Builtin::F64 => Ty::F64,
                     Builtin::F32 => Ty::F32,
                     // Lowered above.

@@ -1848,6 +1848,169 @@
       ]
     },
     {
+      "name": "Method",
+      "module": "std.host",
+      "kind": "kind",
+      "spec": [
+        "spec/31 §1"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "pub kind Method = Get | Head | Post | Put | Patch | Delete | Options",
+          "docs": [
+            "The methods a request may have (`spec/31 §1`, ADR 0123 rule 1). The host answers any other",
+            "with `501`."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Param",
+      "module": "std.host",
+      "kind": "kind",
+      "spec": [
+        "spec/31 §4"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "pub kind Param\n  name: internal Text\n  value: internal Text",
+          "docs": [
+            "One decoded query parameter of a request, as `name=value` (`spec/31 §4` rule 4)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Request",
+      "module": "std.host",
+      "kind": "kind",
+      "spec": [
+        "spec/31 §3"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "pub kind Request\n  method: internal Method\n  target: internal Text\n  segments: internal List[Text]\n  params: internal List[Param]\n  headers: internal List[Header]\n  body: internal Text\n  peer: internal Text\n  listener: internal Text",
+          "docs": [
+            "A request, as the host read it (`spec/31 §3`, `§4`): its target in origin-form as received,",
+            "its path split on `/` and percent-decoded segment by segment, the parameters of its query",
+            "decoded in order, its headers with names in ASCII lower case in the order received, its",
+            "whole body, the peer's IP address without its port, and the grant's address as the grant",
+            "writes it. The parameters are `params`, since `query` is a reserved word (`spec/01`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Exchange",
+      "module": "std.host",
+      "kind": "kind",
+      "spec": [
+        "spec/31 §1"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "pub kind Exchange\n  request: internal Request\n  right: internal ReplyRight",
+          "docs": [
+            "A request and the reply right to answer it once (`spec/31 §1`, ADR 0123 rule 4)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Status",
+      "module": "std.host",
+      "kind": "kind",
+      "spec": [
+        "spec/31 §5"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "pub kind Status = Int where 200 <= it and it <= 599",
+          "docs": [
+            "The status of a reply: a `1xx` status is the host's alone (`spec/31 §5`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Reply",
+      "module": "std.host",
+      "kind": "kind",
+      "spec": [
+        "spec/31 §5"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "pub kind Reply\n  status: internal Status\n  headers: internal List[Header]\n  body: internal Text",
+          "docs": [
+            "A reply to a request (`spec/31 §5`): the host writes its framing headers itself."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "ServeError",
+      "module": "std.host",
+      "kind": "kind",
+      "spec": [
+        "spec/31 §1"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "pub kind ServeError = Interrupted | TimedOut | Closed | NotHeld | BadReply",
+          "docs": [
+            "Why an operation of `HttpServer` fails (`spec/31 §1`): `Interrupted` at a host stop,",
+            "`TimedOut` when a deadline of the program cuts the wait of `next`, `Closed` after `close`,",
+            "`NotHeld` for a reply right the task does not hold or answered already, and `BadReply` for",
+            "a reply the host refuses to send."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "HttpServer",
+      "module": "std.host",
+      "kind": "capability",
+      "spec": [
+        "spec/31 §1"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "pub capability HttpServer\n  op next() -> internal Exchange\n    fails ServeError\n    accepts internal\n  op reply(to: ReplyRight, reply: Reply) -> Unit\n    fails ServeError\n    accepts internal\n  op close() -> Unit\n    accepts public",
+          "docs": [
+            "The server side of HTTP/1.1, on the addresses that `serve` grants allow (`spec/31 §1`, ADR",
+            "0123 rules 1 to 5). `next` waits for a request and gives the calling task its reply right;",
+            "`reply` answers it once and never waits; `close` stops accepting connections, and accepts",
+            "`public` only, so no request decides it."
+          ]
+        }
+      ]
+    },
+    {
       "name": "fake_hash",
       "module": "std.testing",
       "kind": "function",

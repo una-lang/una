@@ -41,6 +41,10 @@ pub(crate) const UNIT: &str = "i!Unit";
 /// The sort of `Hashed`.
 pub(crate) const HASHED: &str = "i!Hashed";
 
+/// The sort of `ReplyRight` of `std.host` (ADR 0123 rule 1): uninterpreted, so only equality
+/// holds of it.
+pub(crate) const REPLY_RIGHT: &str = "i!ReplyRight";
+
 /// The prefix of the sorts of `List[T]`.
 pub(crate) const LIST: &str = "i!List_";
 /// The prefix of the sorts of maps, `i!Map_<K>_<V>` (`spec/21 §4`).

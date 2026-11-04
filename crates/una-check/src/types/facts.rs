@@ -530,6 +530,7 @@ fn written(env: &Env<'_>, kind: &super::env::KindDef<'_>, ty: &Ty) -> String {
         Ty::Text => "Text".to_owned(),
         Ty::Unit => "Unit".to_owned(),
         Ty::Hashed => "Hashed".to_owned(),
+        Ty::ReplyRight => "ReplyRight".to_owned(),
         Ty::F64 => "F64".to_owned(),
         Ty::Decimal(scale) => format!("Decimal[{scale}]"),
         Ty::F32 => "F32".to_owned(),

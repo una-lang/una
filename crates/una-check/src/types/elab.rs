@@ -343,6 +343,18 @@ pub(crate) const PRELUDE_CORE_KINDS: [&str; 8] = [
     una_core::complex::COMPLEX_F32,
 ];
 
+/// The kinds of the server that `std.host` declares in edition 0.4 (ADR 0123 rule 1), which Core
+/// IR declares in the module `prelude` only for a package that imports a name of the server, so
+/// the Core IR of every other package does not change (`spec/31 §1`).
+pub(crate) const SERVER_CORE_KINDS: [&str; 6] = [
+    "Method",
+    "Param",
+    "Request",
+    "Exchange",
+    "Reply",
+    "ServeError",
+];
+
 /// The kinds of JSON and their opaque predicate `is_json_number`, which the prelude declares in
 /// edition 0.2 (`spec/23 §1`), in a module of the prelude's path: so the verifier generates the
 /// obligations of the refinements of their fields, as `Decimal`'s `JsonNumber`, proves them
@@ -358,12 +370,16 @@ fn prelude_kinds(
     dropped: &mut Vec<(Span, &'static str)>,
 ) -> Option<CoreModule> {
     let m = env.modules.get(env.prelude)?;
+    let core_kind = |name: &str| {
+        PRELUDE_CORE_KINDS.contains(&name)
+            || (env.server_imported && SERVER_CORE_KINDS.contains(&name))
+    };
     let mut decls = Vec::new();
     for (decl, entity) in m.tree.decls.iter().zip(m.decls.clone()) {
         let wanted = match &decl.kind {
-            DeclKind::Kind(kind) => PRELUDE_CORE_KINDS
-                .contains(&env.text(env.prelude, kind.name.name))
-                .then_some("prelude kind"),
+            DeclKind::Kind(kind) => {
+                core_kind(env.text(env.prelude, kind.name.name)).then_some("prelude kind")
+            }
             DeclKind::Predicate(predicate) => (env.text(env.prelude, predicate.name.name)
                 == "is_json_number")
                 .then_some("prelude predicate"),
@@ -380,7 +396,7 @@ fn prelude_kinds(
             continue;
         };
         let json = match &core {
-            Decl::Data { name, .. } => PRELUDE_CORE_KINDS.contains(&name.as_str()),
+            Decl::Data { name, .. } => core_kind(name.as_str()),
             Decl::Pred { name, .. } => name == "is_json_number",
             _ => false,
         };
@@ -455,7 +471,15 @@ fn host(
     };
     let mut out = Vec::new();
     for (decl, entity) in m.tree.decls.iter().zip(m.decls.clone()) {
-        if let DeclKind::Capability(_) = &decl.kind {
+        if let DeclKind::Capability(capability) = &decl.kind {
+            // ADR 0123 rule 0: `HttpServer` joins Core IR only for a package that imports a
+            // name of the server, with the kinds its operations name, so the Core IR of every
+            // other package does not change.
+            if !env.server_imported
+                && env.text(env.prelude, capability.name.name) == super::server::HTTP_SERVER
+            {
+                continue;
+            }
             let core = match entity {
                 Some(entity @ Entity::Capability(_)) => {
                     let mut fx = Fx::new(env, findings, dbs, env.prelude);
@@ -761,6 +785,7 @@ impl<'e, 'a> Fx<'e, 'a> {
             Ty::Text => Base::Text,
             Ty::Unit => Base::Unit,
             Ty::Hashed => Base::Hashed,
+            Ty::ReplyRight => Base::ReplyRight,
             Ty::F64 => Base::F64,
             Ty::Decimal(scale) => Base::Decimal(*scale),
             Ty::F32 => Base::F32,
@@ -6751,5 +6776,20 @@ fn aligned(term: Term, k: u8) -> Term {
             una_core::decimal::pow10(u32::from(k)).to_string(),
         )),
         right: Box::new(term),
+    }
+}
+
+#[cfg(test)]
+mod server_kinds {
+    #[test]
+    fn the_server_kinds_of_core_are_the_server_names_with_a_declaration_of_their_own() {
+        // ADR 0123 rule 1: every name of the server but the capability, the refined alias
+        // `Status` and the built-in `ReplyRight` is a kind that Core IR declares.
+        let kinds: Vec<&str> = crate::names::prelude::SERVER_NAMES
+            .iter()
+            .copied()
+            .filter(|name| !matches!(*name, "HttpServer" | "Status" | "ReplyRight"))
+            .collect();
+        assert_eq!(kinds, super::SERVER_CORE_KINDS);
     }
 }
