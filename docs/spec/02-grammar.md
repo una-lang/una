@@ -63,7 +63,7 @@ cap_type_cond   = upper_ident [ "[" cap_op { "," cap_op } "]" ] ;
 cap_op          = lower_ident [ "gives" label ] [ "where" line_expr ] ;    (* "gives": ADR 0094 *)
 ```
 
-(v0.3, ADR 0094 rule 1.) `gives` and a label, the `label` of `spec/07 §2`, come before the condition: `owner gives internal[Service] where not dry_run`. In a function type's `uses`, `gives` is U0101 in every edition; in a header's `uses` before edition `0.3` it is U0103 (`spec/01 §5`).
+(v0.3, ADR 0094 rule 1.) This grammar is the one that ADR 0094's Amends list names `spec/02 §3`; it lives here, in §2. `gives` and a label, the `label` of `spec/07 §2`, come before the condition: `owner gives internal[Service] where not dry_run`. In a function type's `uses`, `gives` is U0101 in every edition; in a header's `uses` before edition `0.3` it is U0103 (`spec/01 §5`).
 
 A `cap_op` ends at the first `,` or `]` at bracket and parenthesis depth 0: every nested `,`, `[ ]` or `( )` belongs to the expression. A function type's `uses` (`fn_type_clause`) keep `cap_type`, so `where` there is U0101 in every edition, as it is in a header's `uses` in editions `0.1` and `0.2`. The condition's meaning is in `spec/05 §3`.
 
@@ -184,6 +184,8 @@ bind            = lower_ident [ ":" lower_ident ] ;       (* field, or field: lo
 if_block        = "if" line_expr NEWLINE INDENT block DEDENT
                   "else" ( NEWLINE INDENT block DEDENT | if_block ) ;
 ```
+
+(v0.3, ADR 0093 rule 4.) The brackets of `cap_binding` narrow a rebinding to the listed operations, `with @x = @y[read]` (`spec/05 §4` rule 4); before edition `0.3` they are U0101. This grammar is the one that ADR 0093's Amends list names `spec/02 §4`; it lives here, in §6, with `with_clause`.
 
 (v0.2, ADR 0065.) In edition `0.2`, a block also takes `together` statements, and a `let` the `together for` form (`spec/19 §1`).
 
