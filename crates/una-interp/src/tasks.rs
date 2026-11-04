@@ -239,9 +239,13 @@ pub(crate) struct TasksScope {
     /// The path parts of the statement's tasks before their index: those of the task that runs
     /// it, then `s<c>`.
     pub(crate) path: Vec<String>,
-    /// How many tasks may run at once.
+    /// How many tasks may run at once, those of quiet code included (ADR 0117 rule 7).
     pub(crate) bound: usize,
-    pub(crate) started: Cell<usize>,
+    /// How many tasks public code started: a `start` in quiet code is not counted (S-40,
+    /// #1512, `spec/27 §7` rule 5).
+    pub(crate) started: Cell<crate::concurrency::BlockCounts>,
+    /// How many of its tasks still run, those of quiet code included: a quiet task holds a slot
+    /// of the one bound, so it can make a later public `start` wait, an open channel (#1545).
     pub(crate) running: Cell<usize>,
     pub(crate) cancelled: Cell<bool>,
     pub(crate) waiter: Cell<Option<usize>>,
@@ -253,7 +257,7 @@ impl TasksScope {
         TasksScope {
             path,
             bound: bound.max(1),
-            started: Cell::new(0),
+            started: Cell::new(crate::concurrency::BlockCounts::default()),
             running: Cell::new(0),
             cancelled: Cell::new(false),
             waiter: Cell::new(None),

@@ -6988,3 +6988,458 @@ fn s41_the_conformance_case_has_one_trace_for_every_secret() {
         "{trace}"
     );
 }
+
+/// S-40 (#1512), review H2 of #1511 (`taskid3.una` verbatim): a finite task started under a
+/// `secret` branch, then a public task that prints, in the same `tasks` statement.
+const SECRET_START_INDEX: &str = r#"module leak
+
+spin() -> Unit
+  diverges
+=
+  let edit k = 0
+  for ever
+    k = k + 1
+
+worker() -> Unit
+  uses @console: Console[print]
+=
+  @console.print("worker")
+
+noop() -> Unit = unit
+
+pub main() -> Unit
+  uses @console: Console[print]
+  diverges
+=
+  let s: secret Int = SECRET
+  for i in 0..<5
+    tasks
+      if s > i
+        start noop()
+      start worker()
+  @console.print("done")
+"#;
+
+/// S-40 (#1512): the conformance case `tests/conformance/runtime/start_paths_under_secret`,
+/// with `SECRET` for its secret: `start`s under a `secret` branch before, between and after
+/// public ones of the same statement, one task at a time so that the order of the prints is
+/// fixed, in the root task and in a task started at a `public` program counter.
+fn secret_start_mixed() -> String {
+    let case = root().join("tests/conformance/runtime/start_paths_under_secret/src/starts.una");
+    let text = std::fs::read_to_string(case).unwrap();
+    let program = text
+        .replace("module starts", "module leak")
+        .replace("let s: secret Int = 2", "let s: secret Int = SECRET");
+    assert!(program.contains("SECRET"), "{program}");
+    program
+}
+
+/// S-40 (#1512), review H2 of #1511 (`cancel.una` verbatim): a task that never ends, started
+/// under a `secret` branch, then a public failure that ends the block and cancels it. With
+/// `LABEL` `secret`; with it empty, the public twin, whose tasks keep their `cancelled` events.
+const SECRET_START_CANCEL: &str = r#"module leak
+
+pub kind Bad = Boom | Other
+
+spin() -> Unit
+  diverges
+=
+  let edit k = 0
+  for ever
+    k = k + 1
+
+boom() -> Unit
+  fails Bad
+=
+  fail Boom
+
+run_block(s: LABEL Int, i: Int) -> Unit
+  fails Bad
+  diverges
+=
+  tasks
+    if s > i
+      start spin()
+    boom()
+      if error pass
+
+noop() -> Unit = unit
+
+pub main() -> Unit
+  uses @console: Console[print]
+  diverges
+=
+  let s: LABEL Int = SECRET
+  for i in 0..<4
+    let r = attempt run_block(s, i: i)
+    noop()
+  @console.print("done")
+"#;
+
+/// The event of `print(line)` with the path `task` and the number `seq`.
+fn print_event(seq: u64, task: &str, line: &str) -> Value {
+    serde_json::json!({
+        "seq": seq,
+        "task": task,
+        "instance": "host:Console",
+        "capability": "Console",
+        "op": "print",
+        "args": {"line": format!("\"{line}\"")},
+        "outcome": {"kind": "ok", "value": "unit"}
+    })
+}
+
+#[test]
+fn s40_a_start_under_a_secret_branch_does_not_move_the_paths_of_later_public_tasks() {
+    // S-40 (#1512), `spec/27 §7` rule 5: a `start` under a raised program counter is quiet, and
+    // its statement counts it apart, `q<k>`, so the public `worker` is `s<c>.1` for every
+    // secret, where it was `s<c>.2` in the first `s` statements, in both engines. The same
+    // index places it (`spec/27 §1` rule 2), so its worker does not depend on the secret either.
+    let mut expected: Vec<Value> = (1..=5)
+        .map(|c| print_event(c, &format!("s{c}.1"), "worker"))
+        .collect();
+    let mut done = done_only()[0].clone();
+    done["seq"] = Value::from(6);
+    expected.push(done);
+    let expected = Value::from(expected);
+    for secret in [0, 1, 3, 5, 9] {
+        let (output, run, native) = secret_run("s40index", SECRET_START_INDEX, secret, &[]);
+        assert_eq!(
+            output,
+            serde_json::json!(["worker", "worker", "worker", "worker", "worker", "done"]),
+            "{secret}"
+        );
+        assert_eq!(run, expected, "{secret}");
+        assert_eq!(native, expected, "{secret}");
+    }
+}
+
+#[test]
+fn s40_starts_under_a_secret_branch_between_public_ones_do_not_move_their_paths() {
+    // S-40 (#1512): quiet `start`s before, between and after the public ones of a statement,
+    // none at all for secret 0, and in a task started at a `public` program counter: whole
+    // events, paths included, are the same for every secret, in both engines.
+    let expected = Value::from(vec![
+        print_event(1, "s1.1", "w 1"),
+        print_event(2, "s1.2", "w 2"),
+        print_event(3, "s2.1.s1.1", "w 3"),
+    ]);
+    for secret in [0, 1, 2, 3, 6] {
+        let (output, run, native) = secret_run("s40mixed", &secret_start_mixed(), secret, &[]);
+        assert_eq!(output, serde_json::json!(["w 1", "w 2", "w 3"]), "{secret}");
+        assert_eq!(run, expected, "{secret}");
+        assert_eq!(native, expected, "{secret}");
+    }
+}
+
+#[test]
+fn s40_tasks_started_under_a_secret_branch_end_without_their_cancelled_events() {
+    // S-40 (#1512), `spec/26 §6` rule 4: a task started under a raised program counter runs
+    // under it, so when a public failure ends its block and cancels it, it appends no
+    // `cancelled` event and takes no `seq`. Before the fix, secret `s` gave `s` events.
+    let program = SECRET_START_CANCEL.replace("LABEL", "secret");
+    for secret in [0, 1, 2, 4, 7] {
+        let (output, run, native) = secret_run("s40cancel", &program, secret, &[]);
+        assert_eq!(output, serde_json::json!(["done"]), "{secret}");
+        assert_eq!(run, done_only(), "{secret}");
+        assert_eq!(native, done_only(), "{secret}");
+    }
+}
+
+#[test]
+fn s40_tasks_started_under_a_public_branch_keep_their_cancelled_events_and_paths() {
+    // S-40 (#1512), the public twin: a `start` under a `public` program counter is not quiet, so
+    // each cancelled task keeps its `cancelled` event and its path `s<c>.<k>`, as before.
+    let program = SECRET_START_CANCEL.replace("LABEL ", "");
+    for count in [0_usize, 2, 4] {
+        let secret = i64::try_from(count).unwrap();
+        let (output, run, native) = secret_run("s40cancelpub", &program, secret, &[]);
+        assert_eq!(output, serde_json::json!(["done"]), "{count}");
+        assert_eq!(run, native, "{count}");
+        let events = run.as_array().unwrap();
+        assert_eq!(events.len(), count + 1, "{count}: {run}");
+        for (c, event) in events.iter().take(count).enumerate() {
+            assert_eq!(event["seq"], Value::from(c + 1), "{count}: {run}");
+            assert_eq!(event["task"], format!("s{}.1", c + 1), "{count}: {run}");
+            assert_eq!(event["outcome"]["kind"], "cancelled", "{count}: {run}");
+        }
+    }
+}
+
+#[test]
+fn s40_a_start_under_a_secret_branch_still_may_not_print() {
+    // S-40 (#1512): marking the `start` quiet weakens no check. Its task runs under the
+    // program counter of the `start` (`spec/27 §7` rule 3), so an operation there is still
+    // refused by the effect bound, U4002.
+    let program = SECRET_START_INDEX
+        .replace("SECRET", "3")
+        .replace("start noop()", "start worker()");
+    let dir = ita_package("s40print", &ever_run("leak"), &[("src/leak.una", &program)]);
+    let output = una(&dir, &["check"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(stderr.contains("U4002"), "{stderr}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// S-40 round 2 (#1512, review H1, `p_generic.una` verbatim): a decision on values of a type
+/// parameter makes the second `start` quiet with no `secret` branch around it, so its task's
+/// `put` occurs whatever the secret; before, its path counted the quiet `start`s that ran before
+/// it under the `secret` branch (`s1.q1` for 0, `s1.q2` for 2).
+const SECRET_START_GENERIC: &str = r#"module leak
+
+capability Sink
+  op put(x: Int) -> Unit
+
+handler keep() for Sink
+  op put(x) = unit
+
+noop() -> Unit = unit
+
+use_it() -> Unit
+  uses @k: Sink[put]
+=
+  @k.put(1)
+
+pinger() -> Unit
+=
+  use_it() with @k = keep()
+
+block[T](a: T, b: T, s: secret Int, i: Int) -> Unit
+  diverges
+=
+  tasks
+    if s > i
+      start noop()
+    if a == b
+      start pinger()
+
+pub main() -> Unit
+  uses @console: Console[print]
+  diverges
+=
+  let s: secret Int = SECRET
+  for i in 0..<3
+    block(1, b: 1, s: s, i: i)
+  @console.print("done")
+"#;
+
+/// S-40 round 2 (#1512, review H1, `p_floor.una` verbatim): a `tasks` statement in the body of
+/// an operation of a capability that accepts `secret` is quiet by the effect floor, and its last
+/// task's `put` occurs whatever the secret; before, its path counted the quiet `start`s under
+/// the `secret` branches before it (`qs1.q1` for 0, `qs1.q3` for 2).
+const SECRET_START_FLOOR: &str = r#"module leak
+
+capability Sink
+  op put(x: Int) -> Unit
+
+capability Box
+  op hold(x: Int) -> Unit
+    accepts secret
+
+handler keep() for Sink
+  op put(x) = unit
+
+noop() -> Unit = unit
+
+use_it() -> Unit
+  uses @k: Sink[put]
+=
+  @k.put(1)
+
+pinger() -> Unit
+=
+  use_it() with @k = keep()
+
+block(x: secret Int) -> Unit
+=
+  tasks
+    if x > 0
+      start noop()
+    if x > 1
+      start noop()
+    start pinger()
+
+handler box() for Box
+  op hold(x) = block(x)
+
+hold_it(s: secret Int) -> Unit
+  uses @b: Box[hold]
+=
+  @b.hold(s)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let s: secret Int = SECRET
+  hold_it(s) with @b = box()
+  @console.print("done")
+"#;
+
+/// S-40 round 2 (#1512): as [`SECRET_START_FLOOR`], with quiet `tasks` statements and `first of`
+/// blocks under `secret` branches before the statement whose task's `put` occurs whatever the
+/// secret: quiet code counts no statement and no race either.
+const SECRET_BLOCKS_FLOOR: &str = r#"module leak
+
+capability Sink
+  op put(x: Int) -> Unit
+
+capability Box
+  op hold(x: Int) -> Unit
+    accepts secret
+
+handler keep() for Sink
+  op put(x) = unit
+
+noop() -> Unit = unit
+
+double(n: Int) -> Int = n * 2
+
+use_it() -> Unit
+  uses @k: Sink[put]
+=
+  @k.put(1)
+
+pinger() -> Unit
+=
+  use_it() with @k = keep()
+
+block(x: secret Int) -> Unit
+=
+  for i in 0..<3
+    if x > i
+      tasks
+        start noop()
+      let r = first of
+        double(i)
+        double(i)
+      noop()
+  let v = first of
+    double(1)
+    double(2)
+  tasks
+    start pinger()
+
+handler box() for Box
+  op hold(x) = block(x)
+
+hold_it(s: secret Int) -> Unit
+  uses @b: Box[hold]
+=
+  @b.hold(s)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let s: secret Int = SECRET
+  hold_it(s) with @b = box()
+  @console.print("done")
+"#;
+
+/// The whole traces of `source` for each secret, both engines, after checking that the
+/// executable's equals the interpreter's and that each is the same for every secret.
+fn same_traces_across(name: &str, source: &str, secrets: &[i64]) -> Value {
+    let mut first: Option<(Value, Value, Value)> = None;
+    for &secret in secrets {
+        let (output, run, native) = secret_run(name, source, secret, &[]);
+        assert_eq!(run, native, "{name} {secret}");
+        match &first {
+            None => first = Some((output, run, native)),
+            Some(seen) => assert_eq!(
+                (&output, &run, &native),
+                (&seen.0, &seen.1, &seen.2),
+                "{name} {secret}"
+            ),
+        }
+    }
+    first.unwrap().1
+}
+
+#[test]
+fn s40_quiet_tasks_have_no_number_so_quiet_code_without_a_secret_branch_shows_nothing() {
+    // S-40 round 2 (#1512, review H1), `spec/27 §7` rule 5: code quiet by a decision on values
+    // of a type parameter, or by the effect floor of an operation body, writes events whatever
+    // the secret. Quiet `start`s, statements and races take no number, so those events' paths
+    // do not count how many quiet ones ran before under a `secret` branch: whole events are the
+    // same for every secret, in both engines.
+    let generic = same_traces_across("s40generic", SECRET_START_GENERIC, &[0, 1, 2, 3]);
+    let tasks: Vec<&str> = generic
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|event| event["task"].as_str())
+        .collect();
+    assert_eq!(tasks, ["s1.q", "s2.q", "s3.q"], "{generic}");
+    for (name, source) in [
+        ("s40floor", SECRET_START_FLOOR),
+        ("s40blocks", SECRET_BLOCKS_FLOOR),
+    ] {
+        let trace = same_traces_across(name, source, &[0, 1, 2, 3]);
+        assert_eq!(trace[0]["task"], "qs.q", "{name}: {trace}");
+        assert_eq!(trace[0]["op"], "put", "{name}: {trace}");
+    }
+}
+
+/// S-40 (#1512, review M1, `p_bound.una` verbatim): a quiet `start` between two public ones of
+/// a statement bounded at 2.
+const SECRET_START_BOUND: &str = r#"module leak
+
+worker(n: Int) -> Unit
+  uses @console: Console[print]
+=
+  @console.print("worker {n}")
+
+noop() -> Unit = unit
+
+pub main() -> Unit
+  uses @console: Console[print]
+  diverges
+=
+  let s: secret Int = SECRET
+  tasks at most 2 at once
+    start worker(1)
+    if s > 0
+      start noop()
+    start worker(2)
+    @console.print("main")
+  @console.print("done")
+"#;
+
+#[test]
+fn s40_open_channel_1545_a_quiet_start_holds_a_slot_of_the_shared_bound() {
+    // OPEN CHANNEL, #1545 (`spec/26 §6` rule 4): this test documents a leak, it does not show
+    // a fix. Quiet and public tasks share the one bound of ADR 0117 rule 7, so the quiet `start`
+    // under `if s > 0` holds one of the two slots, `start worker(2)` waits for it, and the
+    // interpreter runs `worker(1)` before `main` prints: its output and trace depend on the
+    // secret, deterministically. Separate bounds would close it but let a statement run twice
+    // its bound (`docs/plan/0117-quiet-bounds-amendment-draft.md`). When #1545 is fixed, these
+    // expectations become one, the same for every secret. What is already closed is checked
+    // here too: the paths, and the executable's events task by task, equal the interpreter's.
+    let leaked = |secret: i64| {
+        if secret == 0 {
+            serde_json::json!(["main", "worker 1", "worker 2", "done"])
+        } else {
+            serde_json::json!(["worker 1", "main", "worker 2", "done"])
+        }
+    };
+    let mut paths: Option<std::collections::BTreeMap<String, Vec<Value>>> = None;
+    for secret in [0, 1, 2] {
+        let (output, run, native_output, native) =
+            secret_runs("s40bound", SECRET_START_BOUND, secret, &[]);
+        assert_eq!(output, leaked(secret), "{secret}");
+        assert_eq!(by_task(&native), by_task(&run), "{secret}");
+        let mut lines: Vec<String> = serde_json::from_value(native_output).unwrap();
+        lines.sort();
+        assert_eq!(lines, ["done", "main", "worker 1", "worker 2"], "{secret}");
+        let tasks = by_task(&run);
+        assert_eq!(
+            tasks.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["", "s1.1", "s1.2"],
+            "{secret}: {run}"
+        );
+        match &paths {
+            None => paths = Some(tasks),
+            Some(seen) => assert_eq!(&tasks, seen, "{secret}"),
+        }
+    }
+}
