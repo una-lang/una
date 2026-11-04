@@ -19,17 +19,26 @@
 //!   pools (P8), so whether a pool thread exists is never state left by earlier code; their
 //!   stacks are reserved, 256 KiB each, and committed only as they are used. With the helpers,
 //!   the run's `Http` threads are at most `2 × --io-threads + max(2, --io-threads / 4)`.
-//! - **Per name and per zone** (#1265, ADR 0117 S7 review R7-10 and R7-13). One lookup per name
-//!   runs at a time: a request for a name whose lookup is queued or running joins it and waits
-//!   for its answer until its own deadline, so a name whose lookups stall holds at most one
-//!   thread of the lookup pool, whatever the rate of its requests. Each pool admits at most
-//!   [`zone_share`] of its threads, a quarter and at least 1, to the steps of one zone
-//!   ([`zone_of`]: a name's last two labels, an IPv4 literal's `/24`, an IPv6 literal's `/48`).
-//!   A step of a zone at its share waits in the zone's own line, out of the pool's, so it holds
-//!   no one behind it, and joins the end of the pool's line once a step of its zone ends. So a
-//!   zone whose names never resolve, a wildcard zone, or an address that drops every packet
-//!   holds at most a quarter of a pool, and the other zones keep the rest, first come, first
-//!   served.
+//! - **Per name and per zone** (#1265, ADR 0117 S7 review R7-10 and R7-13). A request for a
+//!   name whose lookup is queued or running joins it while another request still waits for it,
+//!   and waits for its answer until its own deadline: requests of one name waiting together share
+//!   one thread of the lookup pool, whatever their rate. A lookup whose requests all gave up takes
+//!   no new one (review M1): a later request of the name starts its own lookup, so residue never
+//!   answers a later request. Each pool admits at most [`zone_share`] of its threads, a quarter
+//!   and at least 1, to the steps of one zone ([`zone_of`]: a name's last two labels, an IPv4
+//!   literal's `/24`, an IPv4-mapped IPv6 literal's included, another IPv6 literal's `/48`); the
+//!   residue of requests that gave up counts in it. A step of a zone at its share waits in the
+//!   zone's own line, out of the pool's, so it holds no one behind it, and joins the end of the
+//!   pool's line once a step of its zone ends. So the names of one zone that never resolve, a
+//!   wildcard zone's, or the requests to the `/24` or `/48` of address literals that drop every
+//!   packet hold at most a quarter of a pool, and the other zones keep the rest, first come,
+//!   first served. A connection's zone is its request host's, so names of distinct zones that
+//!   resolve to one unresponsive network are not bounded together.
+//! - **Residue reaches later requests.** A step left running after its request gave up, its
+//!   deadline's cut included, keeps its zone's place until it returns: at a share of 1 (pools of
+//!   fewer than 8 threads) one such step delays a later request of its zone, possibly past that
+//!   request's deadline. That is residue (`spec/26 §7` rule 5), which `L_res` does not count for
+//!   a deadline's cut (an open channel, `docs/plan/1265-adr0117-amendment-draft.md`).
 //! - **The hand-off.** Each pool job costs, on average, O(1) map operations on the name and the
 //!   zone (linear in the name's length), one push and one pop under the pool's mutex, a wake of
 //!   one pool thread, and a reply on the request's own channel: about two thread wakes per step,
@@ -39,15 +48,15 @@
 //!   job still waiting when its request gives up never runs. Without [`start`], a request fails
 //!   with `Unreachable`: every engine starts the pools.
 //! - **Space.** Jobs whose requests gave up stay in a line until they are reached or the line
-//!   has doubled since it was last pruned, when they are dropped: a pool holds O(requests
-//!   waiting + threads) jobs, names and zones, amortized O(1) per job, however long its steps
-//!   hang.
+//!   has doubled since it was last pruned, when they are dropped: each line holds at most twice
+//!   the jobs it kept at its last prune, or `2 × 16`, so a pool holds O(peak waiting requests +
+//!   threads) jobs, names and zones, at an amortized O(1) per job, however long its steps hang.
 //! - **Residue.** A lookup or a connection whose request gave up keeps its pool thread until it
 //!   returns, beside later code: the residue that `L_res` labels (`spec/26 §7` rule 5), at most
 //!   the pools' sizes. A connection job looks at its request only between two addresses, so an
 //!   attempt in progress runs until it connects or the request's deadline passes. A step that
-//!   panics ends as a failure: its thread and its zone's place are kept, and the callers of a
-//!   lookup get `Unreachable`.
+//!   panics ends as a failure at once: its thread and its zone's place are kept, and its
+//!   requests get `Unreachable`.
 
 use std::collections::{HashMap, VecDeque};
 use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs};
@@ -91,20 +100,20 @@ pub fn thread_bound(io_threads: usize) -> usize {
 
 /// The most threads of a pool of `size` threads that the steps of one zone hold at once: a
 /// quarter, and at least 1 (#1265). A lookup pool of 16 gives 4, one of 2 gives 1.
-pub fn zone_share(size: usize) -> usize {
+pub(crate) fn zone_share(size: usize) -> usize {
     (size.max(1) / 4).max(1)
 }
 
 /// The zone of a host (#1265), whose steps share [`zone_share`] of a pool: the host's last two
 /// labels, in lower case and without a final dot (`a.b.example.net` and `example.net` are in
-/// `example.net`, a name of one label is its own zone), the `/24` of an IPv4 literal and the
-/// `/48` of an IPv6 literal. Two labels, not the name without its first: a wildcard zone answers
+/// `example.net`, a name of one label is its own zone), the `/24` of an IPv4 literal, an IPv4-mapped
+/// IPv6 literal's included, and the `/48` of another IPv6 literal. Two labels, not the name without its first: a wildcard zone answers
 /// for names of any depth, and `x.y.example.net` must not escape `example.net`'s share by its
 /// `y`. The cost is fairness only: the names of a public suffix of two labels, such as
 /// `co.uk`, share one zone. O(the host's length).
-pub fn zone_of(host: &str) -> String {
+pub(crate) fn zone_of(host: &str) -> String {
     let bare = host.trim_start_matches('[').trim_end_matches(']');
-    match bare.parse::<IpAddr>() {
+    match bare.parse::<IpAddr>().map(|ip| ip.to_canonical()) {
         Ok(IpAddr::V4(ip)) => {
             let [a, b, c, _] = ip.octets();
             format!("{a}.{b}.{c}.0/24")
@@ -138,13 +147,15 @@ struct Job {
     gave_up: Arc<AtomicBool>,
     zone: Arc<str>,
     name: Option<Arc<str>>,
+    seq: u64,
 }
 
 /// The fewest jobs a line holds before it is pruned of those whose requests gave up.
 const PRUNE_FLOOR: usize = 16;
 
 /// A line of jobs, pruned of those whose requests gave up when it has doubled since it was last
-/// pruned: amortized O(1) per job, and at most twice the jobs still wanted, or [`PRUNE_FLOOR`].
+/// pruned: amortized O(1) per job, and at most twice the jobs it kept at its last prune, or
+/// `2 × PRUNE_FLOOR`.
 #[derive(Default)]
 struct Line {
     jobs: VecDeque<Job>,
@@ -197,12 +208,15 @@ struct Queues {
     zones: HashMap<Arc<str>, Zone>,
     flights: HashMap<Arc<str>, Flight>,
     next_caller: u64,
+    next_seq: u64,
 }
 
 impl Queues {
     /// Adds `job` to the pool's line when its zone has a place, else to its zone's line; returns
     /// how many jobs joined the pool's line, each of which a pool thread must be woken for.
-    fn submit(&mut self, share: usize, job: Job) -> usize {
+    fn submit(&mut self, share: usize, mut job: Job) -> usize {
+        job.seq = self.next_seq;
+        self.next_seq = self.next_seq.wrapping_add(1);
         let zone = self.zones.entry(Arc::clone(&job.zone)).or_default();
         if zone.admitted < share {
             zone.admitted += 1;
@@ -286,16 +300,22 @@ impl Queues {
         }
     }
 
-    /// Refills every zone with a free place, after a prune of the pool's line; returns how many
-    /// jobs joined. O(zones), which a prune's O(line) pays for.
+    /// Refills every zone with a free place, after a prune of the pool's line, in the order in
+    /// which their first waiting jobs came, never the maps' (first come, first served); returns
+    /// how many jobs joined. O(z log z) for the z zones with a free place, which the prune's
+    /// O(line) pays for, since each of them lost an admitted job in it.
     fn refill_all(&mut self, share: usize) -> usize {
-        let free: Vec<Arc<str>> = self
+        let mut free: Vec<(u64, Arc<str>)> = self
             .zones
             .iter()
             .filter(|(_, zone)| zone.admitted < share)
-            .map(|(name, _)| Arc::clone(name))
+            .map(|(name, zone)| {
+                let first = zone.waiting.jobs.front().map_or(u64::MAX, |job| job.seq);
+                (first, Arc::clone(name))
+            })
             .collect();
-        free.iter().map(|zone| self.refill(share, zone)).sum()
+        free.sort();
+        free.iter().map(|(_, zone)| self.refill(share, zone)).sum()
     }
 }
 
@@ -423,10 +443,27 @@ fn serve(pool: &Pool) {
     }
 }
 
-/// What a waiting request gets: the job's answer, or the wake of its abandon.
+/// What a waiting request gets: the job's answer, the wake of its abandon, or the failure of a
+/// step that panicked.
 enum Answer<T> {
     Done(T),
     Abandoned,
+    Failed,
+}
+
+/// Sends [`Answer::Failed`] to a step's request unless the step answered: dropped by the unwind
+/// of a step that panics, it fails the request at once with `Unreachable` instead of at its
+/// deadline (the abandon's wake keeps the channel open).
+struct Failing<T> {
+    reply: Option<mpsc::Sender<Answer<T>>>,
+}
+
+impl<T> Drop for Failing<T> {
+    fn drop(&mut self) {
+        if let Some(reply) = self.reply.take() {
+            let _ = reply.send(Answer::Failed);
+        }
+    }
 }
 
 /// The time left before `deadline` for a request, or why it stops at once.
@@ -453,6 +490,7 @@ fn wait<T>(
     match answer {
         Ok(Answer::Done(done)) => Ok(done),
         Ok(Answer::Abandoned) => Err(Error::Interrupted),
+        Ok(Answer::Failed) => Err(Error::Unreachable),
         Err(mpsc::RecvTimeoutError::Timeout) => Err(Error::TimedOut),
         Err(mpsc::RecvTimeoutError::Disconnected) => Err(Error::Unreachable),
     }
@@ -478,12 +516,16 @@ fn hand_off<T: Send + 'static>(
     let gave_up = Arc::new(AtomicBool::new(false));
     let job = Job {
         run: Box::new(move |gave_up: &AtomicBool| {
+            let mut failing = Failing { reply: Some(reply) };
             let answer = step(gave_up);
-            let _ = reply.send(Answer::Done(answer));
+            if let Some(reply) = failing.reply.take() {
+                let _ = reply.send(Answer::Done(answer));
+            }
         }),
         gave_up: Arc::clone(&gave_up),
         zone: Arc::from(zone),
         name: None,
+        seq: 0,
     };
     let joined = lock(pool).submit(pool.share, job);
     wake(pool, joined);
@@ -551,9 +593,15 @@ fn look_up(
         let mut queues = lock(pool);
         let caller = queues.next_caller;
         queues.next_caller = caller.wrapping_add(1);
-        if let Some(flight) = queues.flights.get_mut(&key) {
+        // Only a lookup that a caller still waits for takes a new one (#1265, review M1): the
+        // residue of requests that all gave up never changes a later request's outcome by
+        // answering it; a later caller starts a lookup of its own, within its zone's share.
+        if let Some(flight) = queues
+            .flights
+            .get_mut(&key)
+            .filter(|flight| !flight.callers.is_empty())
+        {
             flight.callers.insert(caller, reply);
-            flight.gave_up.store(false, Ordering::SeqCst);
             (caller, Arc::clone(&flight.gave_up), 0)
         } else {
             let gave_up = Arc::new(AtomicBool::new(false));
@@ -575,6 +623,7 @@ fn look_up(
                 gave_up: Arc::clone(&gave_up),
                 zone: Arc::from(zone_of(&key)),
                 name: Some(Arc::clone(&key)),
+                seq: 0,
             };
             let mut callers = HashMap::new();
             callers.insert(caller, reply);
@@ -817,9 +866,10 @@ mod tests {
     }
 
     #[test]
-    fn a_name_whose_lookups_stall_holds_one_thread_whatever_its_requests() {
+    fn a_name_whose_lookups_stall_holds_one_thread_for_its_waiting_requests() {
         // R7-10: before #1265, each request of a stalled name took a thread of the lookup pool
-        // until all were held. Now one lookup of the name runs, and every other caller joins it.
+        // until all were held. Now the requests that wait for a name at once share its lookup,
+        // and its residue stays within its zone's share.
         let pool = make(8, "test-lookup-name");
         let first = Abandon::new();
         let holder = {
@@ -836,8 +886,8 @@ mod tests {
             })
         };
         until(|| NAME_STALLS.load(Ordering::SeqCst) == 1);
-        // Many callers, in both cases of the name: each joins the stalled lookup and gives up
-        // at its own deadline.
+        // Many callers, in both cases of the name, while the first still waits: each joins the
+        // stalled lookup and gives up at its own deadline.
         let callers: Vec<_> = (0..32)
             .map(|i| {
                 let pool = Arc::clone(&pool);
@@ -854,11 +904,30 @@ mod tests {
         for caller in callers {
             assert_eq!(caller.join().unwrap(), Err(Error::TimedOut));
         }
+        assert_eq!(NAME_STALLS.load(Ordering::SeqCst), 1);
         first.abandon();
         assert_eq!(holder.join().unwrap(), Err(Error::Interrupted));
-        // Its callers gone, the lookup keeps its thread until the system answers, and a later
-        // caller joins it rather than start another.
-        let late = look_up(
+        // Its callers gone, the lookup is residue, which a later caller does not join: it starts
+        // a lookup of its own, the zone's second place.
+        let second = Abandon::new();
+        let late = {
+            let (pool, second) = (Arc::clone(&pool), second.clone());
+            std::thread::spawn(move || {
+                look_up(
+                    &pool,
+                    name_stalls,
+                    "stall.a.test",
+                    80,
+                    after(30_000),
+                    &second,
+                )
+            })
+        };
+        until(|| NAME_STALLS.load(Ordering::SeqCst) == 2);
+        second.abandon();
+        assert_eq!(late.join().unwrap(), Err(Error::Interrupted));
+        // The zone is at its share of 2: a third lookup waits in its line and never runs.
+        let third = look_up(
             &pool,
             name_stalls,
             "stall.a.test",
@@ -866,41 +935,343 @@ mod tests {
             after(50),
             &Abandon::new(),
         );
-        assert_eq!(late, Err(Error::TimedOut));
-        assert_eq!(NAME_STALLS.load(Ordering::SeqCst), 1);
-        {
-            let queues = lock(&pool);
-            assert_eq!(queues.flights.len(), 1);
-            assert!(
-                queues
-                    .flights
-                    .values()
-                    .all(|flight| flight.callers.is_empty())
-            );
-            assert_eq!(
-                queues.zones.get("a.test").map(|zone| zone.admitted),
-                Some(1)
-            );
-        }
-        // Other names, of its zone and of others, are looked up, with each caller's port.
+        assert_eq!(third, Err(Error::TimedOut));
+        assert_eq!(NAME_STALLS.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            lock(&pool).zones.get("a.test").map(|zone| zone.admitted),
+            Some(2)
+        );
+        // Other zones are looked up, with each caller's port.
         let other = look_up(
             &pool,
             name_stalls,
-            "ok.a.test",
+            "b.test",
             443,
             after(30_000),
             &Abandon::new(),
         );
         assert_eq!(other, Ok(Ok(vec![SocketAddr::from(([127, 0, 0, 1], 443))])));
+    }
+
+    /// A gate that steps wait at until the test opens it.
+    struct Gate {
+        open: Mutex<bool>,
+        opened: Condvar,
+    }
+
+    impl Gate {
+        const fn new() -> Gate {
+            Gate {
+                open: Mutex::new(false),
+                opened: Condvar::new(),
+            }
+        }
+
+        fn pass(&self) {
+            let mut open = self.open.lock().unwrap();
+            while !*open {
+                open = self.opened.wait(open).unwrap();
+            }
+        }
+
+        fn open(&self) {
+            *self.open.lock().unwrap() = true;
+            self.opened.notify_all();
+        }
+    }
+
+    static JOIN_LOOKUPS: AtomicUsize = AtomicUsize::new(0);
+    static JOIN_GATE: Gate = Gate::new();
+
+    /// Every lookup of `slow.test` waits at [`JOIN_GATE`].
+    fn slow_name(name: &str, _port: u16) -> std::io::Result<Vec<SocketAddr>> {
+        if name == "slow.test" {
+            JOIN_LOOKUPS.fetch_add(1, Ordering::SeqCst);
+            JOIN_GATE.pass();
+        }
+        Ok(loopback())
+    }
+
+    #[test]
+    fn a_lookup_whose_requests_all_gave_up_never_answers_a_later_request() {
+        // Review M1 of #1574: before the fix, a later request joined the residue of a request
+        // that a deadline or a cancellation cut, and could succeed where it alone would time
+        // out. Now it starts a lookup of its own, so the earlier request changes nothing.
+        let pool = make(16, "test-lookup-join");
+        let cut = Abandon::new();
+        let earlier = {
+            let (pool, cut) = (Arc::clone(&pool), cut.clone());
+            std::thread::spawn(move || {
+                look_up(&pool, slow_name, "slow.test", 80, after(30_000), &cut)
+            })
+        };
+        until(|| JOIN_LOOKUPS.load(Ordering::SeqCst) == 1);
+        cut.abandon();
+        assert_eq!(earlier.join().unwrap(), Err(Error::Interrupted));
+        let later = {
+            let pool = Arc::clone(&pool);
+            std::thread::spawn(move || {
+                look_up(
+                    &pool,
+                    slow_name,
+                    "slow.test",
+                    80,
+                    after(30_000),
+                    &Abandon::new(),
+                )
+            })
+        };
+        until(|| JOIN_LOOKUPS.load(Ordering::SeqCst) == 2);
+        JOIN_GATE.open();
+        assert_eq!(
+            later.join().unwrap(),
+            Ok(Ok(vec![SocketAddr::from(([127, 0, 0, 1], 80))]))
+        );
+    }
+
+    static RESIDUE_LOOKUPS: AtomicUsize = AtomicUsize::new(0);
+    static RESIDUE_GATE: Gate = Gate::new();
+
+    /// Every lookup of `a.z.test` waits at [`RESIDUE_GATE`].
+    fn slow_zone(name: &str, _port: u16) -> std::io::Result<Vec<SocketAddr>> {
+        if name == "a.z.test" {
+            RESIDUE_LOOKUPS.fetch_add(1, Ordering::SeqCst);
+            RESIDUE_GATE.pass();
+        }
+        Ok(loopback())
+    }
+
+    #[test]
+    fn a_lookup_left_by_a_cut_request_holds_its_zone_place_until_it_returns() {
+        // Review M1 of #1574, the zone's part, kept on purpose since the bound needs it: on a
+        // pool of 2, whose zone share is 1, the residue of a cut request holds its zone's place,
+        // so a later request of the zone waits in its line while the pool's other thread serves
+        // other zones; it runs once the residue returns. This is residue that `L_res` does not
+        // count for a deadline's cut (`spec/26 §7` rule 5, an open channel).
+        let pool = make(2, "test-lookup-residue");
+        let cut = Abandon::new();
+        let earlier = {
+            let (pool, cut) = (Arc::clone(&pool), cut.clone());
+            std::thread::spawn(move || {
+                look_up(&pool, slow_zone, "a.z.test", 80, after(30_000), &cut)
+            })
+        };
+        until(|| RESIDUE_LOOKUPS.load(Ordering::SeqCst) == 1);
+        cut.abandon();
+        assert_eq!(earlier.join().unwrap(), Err(Error::Interrupted));
+        let later = {
+            let pool = Arc::clone(&pool);
+            std::thread::spawn(move || {
+                look_up(
+                    &pool,
+                    slow_zone,
+                    "b.z.test",
+                    80,
+                    after(30_000),
+                    &Abandon::new(),
+                )
+            })
+        };
+        until(|| {
+            lock(&pool)
+                .zones
+                .get("z.test")
+                .is_some_and(|zone| zone.admitted == 1 && zone.waiting.jobs.len() == 1)
+        });
         let other = look_up(
             &pool,
-            name_stalls,
-            "b.test",
+            slow_zone,
+            "c.y.test",
             80,
             after(30_000),
             &Abandon::new(),
         );
-        assert_eq!(other, Ok(Ok(vec![SocketAddr::from(([127, 0, 0, 1], 80))])));
+        assert!(matches!(other, Ok(Ok(_))));
+        assert!(
+            lock(&pool)
+                .zones
+                .get("z.test")
+                .is_some_and(|zone| zone.waiting.jobs.len() == 1)
+        );
+        RESIDUE_GATE.open();
+        assert!(matches!(later.join().unwrap(), Ok(Ok(_))));
+        until(|| lock(&pool).zones.is_empty());
+    }
+
+    static WAITING_LOOKUPS: AtomicUsize = AtomicUsize::new(0);
+    static WAITING_GATE: Gate = Gate::new();
+
+    /// Counts every lookup; that of `g.w.test` waits at [`WAITING_GATE`].
+    fn counted(name: &str, _port: u16) -> std::io::Result<Vec<SocketAddr>> {
+        WAITING_LOOKUPS.fetch_add(1, Ordering::SeqCst);
+        if name == "g.w.test" {
+            WAITING_GATE.pass();
+        }
+        Ok(loopback())
+    }
+
+    #[test]
+    fn waiting_lookups_whose_requests_gave_up_never_run_and_leave_no_entry() {
+        // Review M2 of #1574 (mutation M4): when the last caller of a lookup leaves, its job is
+        // given up, so once its zone has room again it is dropped unrun, and no name or zone is
+        // left behind.
+        let pool = make(2, "test-lookup-waiting");
+        let held = Abandon::new();
+        let holder = {
+            let (pool, held) = (Arc::clone(&pool), held.clone());
+            std::thread::spawn(move || {
+                look_up(&pool, counted, "g.w.test", 80, after(30_000), &held)
+            })
+        };
+        until(|| WAITING_LOOKUPS.load(Ordering::SeqCst) == 1);
+        let abandons: Vec<Abandon> = (0..5).map(|_| Abandon::new()).collect();
+        let waiting: Vec<_> = abandons
+            .iter()
+            .enumerate()
+            .map(|(i, abandon)| {
+                let (pool, abandon) = (Arc::clone(&pool), abandon.clone());
+                std::thread::spawn(move || {
+                    look_up(
+                        &pool,
+                        counted,
+                        &format!("n{i}.w.test"),
+                        80,
+                        after(30_000),
+                        &abandon,
+                    )
+                })
+            })
+            .collect();
+        until(|| {
+            lock(&pool)
+                .zones
+                .get("w.test")
+                .is_some_and(|zone| zone.waiting.jobs.len() == 5)
+        });
+        for abandon in &abandons {
+            abandon.abandon();
+        }
+        for caller in waiting {
+            assert_eq!(caller.join().unwrap(), Err(Error::Interrupted));
+        }
+        held.abandon();
+        assert_eq!(holder.join().unwrap(), Err(Error::Interrupted));
+        WAITING_GATE.open();
+        until(|| {
+            let queues = lock(&pool);
+            queues.flights.is_empty() && queues.zones.is_empty() && queues.line.jobs.is_empty()
+        });
+        assert_eq!(WAITING_LOOKUPS.load(Ordering::SeqCst), 1);
+    }
+
+    static DROP_RUNS: AtomicUsize = AtomicUsize::new(0);
+    static DROP_GATE: Gate = Gate::new();
+
+    #[test]
+    fn a_pool_thread_that_drops_a_given_up_job_gives_its_zone_place_back() {
+        // Review M2 of #1574 (mutation M5): admitted jobs that gave up while every thread was
+        // busy are dropped when a thread reaches them, and each gives its zone's place back, so
+        // ordinary timeouts never lock a zone out of its pool.
+        let pool = make(1, "test-connect-drop");
+        let holder = {
+            let pool = Arc::clone(&pool);
+            std::thread::spawn(move || {
+                hand_off(&pool, "x.test", after(30_000), &Abandon::new(), |_| {
+                    DROP_RUNS.fetch_add(1, Ordering::SeqCst);
+                    DROP_GATE.pass();
+                })
+            })
+        };
+        until(|| DROP_RUNS.load(Ordering::SeqCst) == 1);
+        let zones: [&'static str; 3] = ["y1.test", "y2.test", "y3.test"];
+        let abandons: Vec<Abandon> = zones.iter().map(|_| Abandon::new()).collect();
+        let queued: Vec<_> = zones
+            .iter()
+            .copied()
+            .zip(&abandons)
+            .map(|(zone, abandon)| {
+                let (pool, abandon) = (Arc::clone(&pool), abandon.clone());
+                std::thread::spawn(move || {
+                    hand_off(&pool, zone, after(30_000), &abandon, |_| {
+                        DROP_RUNS.fetch_add(1, Ordering::SeqCst);
+                    })
+                })
+            })
+            .collect();
+        until(|| lock(&pool).line.jobs.len() == 3);
+        for abandon in &abandons {
+            abandon.abandon();
+        }
+        for caller in queued {
+            assert_eq!(caller.join().unwrap(), Err(Error::Interrupted));
+        }
+        DROP_GATE.open();
+        assert_eq!(holder.join().unwrap(), Ok(()));
+        for (i, zone) in zones.iter().enumerate() {
+            let step = hand_off(&pool, zone, after(5_000), &Abandon::new(), move |_| i);
+            assert_eq!(step, Ok(i));
+        }
+        until(|| lock(&pool).zones.is_empty());
+        assert_eq!(DROP_RUNS.load(Ordering::SeqCst), 1);
+    }
+
+    static NEXT_RUNS: AtomicUsize = AtomicUsize::new(0);
+    static NEXT_GATE: Gate = Gate::new();
+
+    #[test]
+    fn a_step_that_ends_gives_its_place_to_the_next_of_its_zone() {
+        // Standard review L3 of #1574: a zone at its share of 1, whose running step ends
+        // normally, lets its waiting step join the pool's line, while another zone runs beside.
+        let pool = make(2, "test-connect-next");
+        let first = {
+            let pool = Arc::clone(&pool);
+            std::thread::spawn(move || {
+                hand_off(&pool, "z.test", after(30_000), &Abandon::new(), |_| {
+                    NEXT_RUNS.fetch_add(1, Ordering::SeqCst);
+                    NEXT_GATE.pass();
+                    1
+                })
+            })
+        };
+        until(|| NEXT_RUNS.load(Ordering::SeqCst) == 1);
+        let second = {
+            let pool = Arc::clone(&pool);
+            std::thread::spawn(move || {
+                hand_off(&pool, "z.test", after(30_000), &Abandon::new(), |_| 2)
+            })
+        };
+        until(|| {
+            lock(&pool)
+                .zones
+                .get("z.test")
+                .is_some_and(|zone| zone.admitted == 1 && zone.waiting.jobs.len() == 1)
+        });
+        assert_eq!(
+            hand_off(&pool, "y.test", after(30_000), &Abandon::new(), |_| 3),
+            Ok(3)
+        );
+        NEXT_GATE.open();
+        assert_eq!(first.join().unwrap(), Ok(1));
+        assert_eq!(second.join().unwrap(), Ok(2));
+        until(|| lock(&pool).zones.is_empty());
+    }
+
+    #[test]
+    fn a_step_that_panics_fails_its_request_at_once() {
+        // Review L1 of #1574: before, the abandon's wake kept the channel open, and the request
+        // failed only at its deadline, with `TimedOut`.
+        let pool = make(1, "test-connect-panic");
+        let boom: Result<(), Error> =
+            hand_off(&pool, "boom.test", after(30_000), &Abandon::new(), |_| {
+                panic!("a connect step that panics")
+            });
+        assert_eq!(boom, Err(Error::Unreachable));
+        assert_eq!(
+            hand_off(&pool, "boom.test", after(30_000), &Abandon::new(), |_| 1),
+            Ok(1)
+        );
+        until(|| lock(&pool).zones.is_empty());
+        assert_eq!(pool.threads.load(Ordering::SeqCst), 1);
     }
 
     static ZONE_STALLS: AtomicUsize = AtomicUsize::new(0);
@@ -1074,6 +1445,7 @@ mod tests {
             gave_up: Arc::new(AtomicBool::new(dead)),
             zone: Arc::from(zone),
             name: name.map(Arc::from),
+            seq: 0,
         }
     }
 
@@ -1128,6 +1500,8 @@ mod tests {
         assert_eq!(zone_of("192.0.2.77"), "192.0.2.0/24");
         assert_eq!(zone_of("2001:db8:1:2::5"), "2001:db8:1::/48");
         assert_eq!(zone_of("[2001:db8:1:2::5]"), "2001:db8:1::/48");
+        assert_eq!(zone_of("::ffff:192.0.2.1"), "192.0.2.0/24");
+        assert_eq!(zone_of("[::ffff:192.0.2.1]"), "192.0.2.0/24");
         assert_eq!(zone_share(2), 1);
         assert_eq!(zone_share(7), 1);
         assert_eq!(zone_share(16), 4);
