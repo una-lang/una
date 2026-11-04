@@ -8,6 +8,9 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+#[path = "common/timing.rs"]
+mod timing;
+
 use una_cli::Tier;
 use una_diag::Diagnostic;
 use una_syntax::{Declaration, DeclarationKind, declarations};
@@ -213,37 +216,29 @@ fn many(n: usize) -> String {
     text
 }
 
+/// The time to check [`many`]`(n)`, which reports U0101.
 fn timed(n: usize) -> Duration {
     let path = scratch(&format!("many-{n}.una"));
     let text = many(n);
-    // The shortest of five runs: robust to preemption under load, still linear (#1180).
-    (0..5)
-        .map(|_| {
-            let start = Instant::now();
-            let diagnostics = check(&path, &text);
-            let took = start.elapsed();
-            assert!(diagnostics.iter().any(|d| d.code.as_str() == "U0101"));
-            took
-        })
-        .min()
-        .unwrap()
+    let start = Instant::now();
+    let diagnostics = check(&path, &text);
+    let took = start.elapsed();
+    assert!(diagnostics.iter().any(|d| d.code.as_str() == "U0101"));
+    took
 }
 
 /// Rule 12: the check of a file with broken declarations stays linear; a doubling of the file
-/// may not take more than 2.5 times as long.
+/// takes less than 2.5 times as long, measured by the shared helper (#1180, #1197).
 #[test]
 fn checking_past_broken_declarations_scales_linearly() {
-    let sizes = [500, 1_000, 2_000, 4_000];
-    let times: Vec<Duration> = sizes.iter().map(|&n| timed(n)).collect();
-    for (pair, sizes_pair) in times.windows(2).zip(sizes.windows(2)) {
-        let (small, large) = (pair[0], pair[1]);
-        assert!(
-            large.as_secs_f64() <= 2.5 * small.as_secs_f64() + 0.02,
-            "{} declarations took {large:?}, {} took {small:?}",
-            sizes_pair[1],
-            sizes_pair[0]
-        );
-    }
+    timing::assert_growth(
+        "checking past broken declarations",
+        &[500, 1_000, 2_000, 4_000],
+        0.0,
+        timing::FLOOR,
+        2.5,
+        |n| timed(n).as_secs_f64(),
+    );
 }
 
 /// A package of `files`, by path under `src/`, in a fresh directory.

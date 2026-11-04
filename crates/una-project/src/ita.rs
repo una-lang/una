@@ -958,7 +958,18 @@ pub fn parse_ita_lock(text: &str) -> (ItaLock, Vec<ProjectError>) {
                 format!("`{}` is not a registry", registry.source.value),
             ));
         }
-        for digest in [&registry.root, &registry.checkpoint_hash] {
+        if registry.last_root.value == 0 {
+            errors.push(error(
+                code,
+                registry.last_root.range.clone(),
+                "root versions start at 1",
+            ));
+        }
+        for digest in [
+            &registry.root,
+            &registry.checkpoint_hash,
+            &registry.last_root_digest,
+        ] {
             if !is_digest(&digest.value) {
                 errors.push(error(
                     code,

@@ -4,11 +4,13 @@ Both judge with `una check --tier 0` alone: the label rules are tier 0, and the 
 obligations are not what they test. Every run goes through `sandbox.run`.
 """
 
+import functools
+import hashlib
 import json
 import os
 from collections import Counter
 
-from . import sandbox
+from . import oracle, sandbox
 from .families import OPERATORS
 from .program import MUST_ACCEPT, MUST_REJECT, OPEN, RESIDUAL, Program, derive_seed, rng_for
 from .refactor import REFACTORS
@@ -51,16 +53,73 @@ def parse_check(run):
     return Verdict("inconsistent", codes, run.seconds, f"exit {run.code}")
 
 
-def check(una, pkg_dir, root, timeout):
+def check(una, pkg_dir, root, timeout, prog=None):
+    """The verdict of the command that judges `prog` (`Program.command`) on its package at
+    `pkg_dir`: `una check --tier 0`, or for `lock-check`, `una ita lock --check` with the run's
+    own Itaoca listing the program's registries as mirrors. Both print a document with
+    `diagnostics` (`una.diagnostics/1`, `una.ita/1`) and exit 1 on an error."""
+    if prog is not None and prog.command == "lock-check":
+        return parse_check(lock_check(una, prog, pkg_dir, root, timeout))
+    if prog is not None and prog.command != "check":
+        raise ValueError(f"{prog.name}: no driver judges the command {prog.command!r}")
+    if prog is not None and prog.floors:
+        return parse_check(check_with_floors(una, prog, pkg_dir, root, timeout))
     r = sandbox.run_fresh([una, "--json", "check", "--tier", "0", "."], cwd=pkg_dir, root=root,
                           timeout=timeout)
     return parse_check(r)
 
 
+def check_with_floors(una, prog, pkg_dir, root, timeout):
+    """`una --json check --tier 0 .` on `prog`, written at `pkg_dir`, in a sandboxed run whose own
+    directory holds its Itaoca (`UNA_ITAOCA`) with the root-version floors of `prog.floors`, each
+    at `registry/<id>/root-version`, `<id>` the hex SHA-256 of the pin (`spec/30 §14`, Floors),
+    never in a shared place."""
+    writable = sandbox.fresh_dir(root, "run-")
+    try:
+        itaoca = os.path.join(writable, "itaoca")
+        for pin, version in sorted(prog.floors.items()):
+            ident = hashlib.sha256(pin.encode()).hexdigest()
+            directory = os.path.join(itaoca, "registry", ident)
+            os.makedirs(directory)
+            with open(os.path.join(directory, "root-version"), "w", encoding="utf-8") as f:
+                f.write(f"{version}\n")
+        return sandbox.run([una, "--json", "check", "--tier", "0", "."], cwd=pkg_dir,
+                           writable=writable, timeout=timeout, env_extra={"UNA_ITAOCA": itaoca})
+    finally:
+        sandbox.remove_dir(writable, root)
+
+
+def lock_check(una, prog, pkg_dir, root, timeout):
+    """`una --json ita lock --check .` on `prog`, written at `pkg_dir`, in a sandboxed run whose
+    own directory holds its Itaoca (`UNA_ITAOCA`): `mirrors.una` names each registry of
+    `prog.mirrors` by the absolute `file://` URL of its directory in the program (`spec/30 §14`
+    rule 1), and the floors the command stores land there, never in a shared place."""
+    writable = sandbox.fresh_dir(root, "run-")
+    try:
+        itaoca = os.path.join(writable, "itaoca")
+        os.makedirs(itaoca)
+        lines = ["mirrors"]
+        for source, rel in sorted(prog.mirrors.items()):
+            lines += [f"  {source}", f'    "file://{os.path.realpath(os.path.join(pkg_dir, rel))}"']
+        with open(os.path.join(itaoca, "mirrors.una"), "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+        return sandbox.run([una, "--json", "ita", "lock", "--check", "."], cwd=pkg_dir,
+                           writable=writable, timeout=timeout, env_extra={"UNA_ITAOCA": itaoca})
+    finally:
+        sandbox.remove_dir(writable, root)
+
+
+@functools.lru_cache(maxsize=None)
+def _build(op, seed, edition):
+    return OPERATORS[op](seed, edition)
+
+
 def rebuild(row):
     """The program of a manifest row, rebuilt from its operator, seed and edition. A digest
-    that differs means the generator changed since the manifest was written."""
-    prog = OPERATORS[row["op"]](row["seed"], row["edition"])
+    that differs means the generator changed since the manifest was written. Each program is
+    built once per process and shared by the drivers, which never change it: a program of family
+    Y signs its registry's notes, which costs more than its checks' wait for the compiler."""
+    prog = _build(row["op"], row["seed"], row["edition"])
     if row.get("digest") and prog.digest() != row["digest"]:
         raise ValueError(f"{row['name']}: the rebuilt program differs from the manifest")
     return prog
@@ -75,7 +134,7 @@ def must_reject(rows, una, root, timeout, out, build=None):
         if row["class"] not in (MUST_REJECT, MUST_ACCEPT, OPEN, RESIDUAL):
             continue
         prog = (build or rebuild)(row)
-        v = check(una, prog.write(root), root, timeout)
+        v = check(una, prog.write(root), root, timeout, prog)
         result = dict(row, **v.row())
         if row["class"] == MUST_REJECT or (row["class"] == OPEN and row["expect"]):
             # An open program with an expected code is a closed call (#813): a correct checker
@@ -102,7 +161,7 @@ def must_keep(rows, una, root, timeout, out, refactors=("R6", "R9")):
     tally = Counter()
     for row in rows:
         prog = rebuild(row)
-        base = check(una, prog.write(root), root, timeout)
+        base = check(una, prog.write(root), root, timeout, prog)
         for rid in refactors:
             rseed = derive_seed(prog.seed, rid, 0)
             files = REFACTORS[rid](prog.files, rng_for(rseed))
@@ -111,8 +170,9 @@ def must_keep(rows, una, root, timeout, out, refactors=("R6", "R9")):
                 continue
             twin = Program(op=prog.op, rule=prog.rule, edition=prog.edition, seed=prog.seed,
                            cls=prog.cls, files=files, expect=prog.expect,
-                           variant=(prog.variant + "-" if prog.variant else "") + rid)
-            v = check(una, twin.write(root), root, timeout)
+                           variant=(prog.variant + "-" if prog.variant else "") + rid,
+                           command=prog.command, mirrors=prog.mirrors, floors=prog.floors)
+            v = check(una, twin.write(root), root, timeout, twin)
             changed = (base.kind == "accepted") != (v.kind == "accepted")
             result = {
                 "name": prog.name, "op": prog.op, "seed": prog.seed, "edition": prog.edition,
@@ -259,7 +319,7 @@ def differ(rows, una, core_check, root, timeout, out, z3=None):
     for row in rows:
         prog = rebuild(row)
         pkg = prog.write(root)
-        v = check(una, pkg, root, timeout)
+        v = check(una, pkg, root, timeout, prog)
         # The class is the generator's own, so a manifest written before a program was classified
         # is judged by its class today (from the review of #547).
         result = dict(row, **v.row(), **{"class": prog.cls, "expect": prog.expect})
@@ -286,7 +346,23 @@ def differ(rows, una, core_check, root, timeout, out, z3=None):
             r = judge_residual(v.kind, fv, prog.variant, prog.expect, prog.prove)
             result.update(full=None if fv is None else fv.row(), **r)
             tally[(row["op"], RESIDUAL, "tier0 " + v.kind, "full " + r["full_kind"])] += 1
-        if v.kind == "accepted":
+        if v.kind == "accepted" and prog.command != "check":
+            # Judged by another command than `una check` (family Y's resolution, `lock-check`):
+            # its package is not loaded as a program, so there is nothing to export.
+            result.update(differ="not loaded", differ_detail=prog.command, recheck=[])
+            tally[(row["op"], "una-accepted", "not loaded")] += 1
+        elif v.kind == "accepted" and prog.has_dependencies:
+            # A program of several packages has no Core export in this release (`una.core/2`,
+            # `spec/30 §12` rule 7), so there is nothing to re-check: the export must refuse it
+            # so, and any other end is `unknown`, which fails the gate until the re-check reads
+            # `una.core/2`.
+            why = oracle.dependency_export(una, pkg, root, timeout)
+            result.update(differ="dependencies" if why is None else "unknown",
+                          differ_detail=why or "", recheck=[])
+            if why is not None:
+                result["bug"] = why
+            tally[(row["op"], "una-accepted", result["differ"])] += 1
+        elif v.kind == "accepted":
             exp = sandbox.run_fresh([una, "--json", "core", "."], cwd=pkg, root=root,
                                     timeout=timeout)
             core = os.path.join(pkg, "core.json")

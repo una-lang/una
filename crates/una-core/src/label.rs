@@ -315,8 +315,8 @@ impl FromIterator<String> for Names {
 }
 
 /// Counts allocations for the scaling tests of ADR 0077: the sets and names of [`Names`], the
-/// type nodes of the checker, the steps of its timing labels and of its inference of operation
-/// labels. Only with the feature `counters`, which tests enable; a release build counts
+/// type nodes of the checker, the steps of its timing labels, of its inference of operation
+/// labels and of its linear package passes. Only with the feature `counters`, which tests enable; a release build counts
 /// nothing. The counts never reach any output.
 pub mod counters {
     #[cfg(feature = "counters")]
@@ -332,6 +332,8 @@ pub mod counters {
     static TIMING: AtomicUsize = AtomicUsize::new(0);
     #[cfg(feature = "counters")]
     static GIVES: AtomicUsize = AtomicUsize::new(0);
+    #[cfg(feature = "counters")]
+    static PASSES: AtomicUsize = AtomicUsize::new(0);
 
     /// A set was made.
     #[inline]
@@ -402,6 +404,32 @@ pub mod counters {
         #[cfg(feature = "counters")]
         {
             GIVES.load(Ordering::Relaxed)
+        }
+        #[cfg(not(feature = "counters"))]
+        {
+            0
+        }
+    }
+
+    /// A step of a package pass of the checker that is linear in the package (issue #1197): a
+    /// caller followed by the reverse search for releases, a target looked up at a call into a
+    /// boundary, an edge followed by the summary of installations (ADR 0093 rules 8 and 15),
+    /// a site or a resolution examined while judging dead failure handling (ADR 0100), and a
+    /// successor followed by the closure over the strongly connected components of the timing
+    /// graph, an edge of its search for the nearest raising ancestor, and a request labeled for
+    /// `L_lim` (ADR 0117 IF4).
+    #[inline]
+    pub fn pass_step() {
+        #[cfg(feature = "counters")]
+        PASSES.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// The package pass steps the checker took so far in this process; always 0 without the
+    /// feature `counters`.
+    pub fn pass_steps() -> usize {
+        #[cfg(feature = "counters")]
+        {
+            PASSES.load(Ordering::Relaxed)
         }
         #[cfg(not(feature = "counters"))]
         {

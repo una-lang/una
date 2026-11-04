@@ -72,7 +72,46 @@ fn stack_step() -> usize {
 
 /// What the run holds against its memory budget: the heap, and the stacks its tasks used.
 fn charged() -> usize {
-    crate::held().saturating_add(STACK_CHARGE.load(Ordering::Relaxed))
+    heap_charged().saturating_add(STACK_CHARGE.load(Ordering::Relaxed))
+}
+
+/// The most bytes [`heap_charged`] credits a debug build: a quarter of the run's budget, set
+/// as `main` starts, 0 before (#1506). A run is so charged at least what it holds less a
+/// quarter of its budget, so a check reports it with U6003 once it holds more than 1.25 times
+/// its budget, well before the allocator's hard ceiling, twice the budget on the bytes really
+/// held (ADR 0061 rule 3), fails an allocation and aborts. Only one allocation of more than
+/// three quarters of the budget between two checks can still meet the ceiling first, where a
+/// release build's margin is the whole budget: a churning debug heap under a budget of 5 MiB,
+/// whose slot table doubles from 5 to 10 MiB, still does. Half the budget was not enough: the
+/// same heap met the ceiling first under budgets of 1, 2, 4 and 5 MiB.
+static CREDIT_LIMIT: AtomicUsize = AtomicUsize::new(0);
+
+/// The heap the memory budget charges: what the process holds, less the slots that a debug
+/// build's quarantine adds to its slot table beyond any capacity a release build's table may
+/// hold (#1506), at most [`CREDIT_LIMIT`]. The credited slots are freed slots past the peak of
+/// live objects; a live slot is never credited ([`values::credit_added_bytes`]; 0 in a release
+/// build). The allocator's hard ceiling stays on the bytes really held. O(1).
+///
+/// The bytes credited ever are read before the bytes held, and the bytes taken back after:
+/// a credit rises after the growth it stands for and falls before the table is freed, so a
+/// credit counted here was grown into `held`, and a table freed in `held` has its credit taken
+/// back here, for any number of heaps changing meanwhile. A change seen in one read and not the
+/// other only charges more.
+fn heap_charged() -> usize {
+    if !cfg!(debug_assertions) {
+        return crate::held();
+    }
+    let added = values::credit_added_bytes();
+    let held = crate::held();
+    let removed = values::credit_removed_bytes();
+    held.saturating_sub(capped_credit(added, removed))
+}
+
+/// The credit [`heap_charged`] subtracts, from the bytes credited ever and taken back.
+fn capped_credit(added: usize, removed: usize) -> usize {
+    added
+        .saturating_sub(removed)
+        .min(CREDIT_LIMIT.load(Ordering::Relaxed))
 }
 
 /// Charges the stack of the thread's task up to `used` bytes, when that is within its budget:
@@ -809,9 +848,11 @@ pub(crate) struct State {
     /// while one is open, so the slots they hold stay in place.
     pub(crate) open_events: usize,
     /// The `tasks` statements in progress in this task, innermost last, and how many it ran,
-    /// for the paths of their tasks (`spec/27 §7`).
+    /// for the paths of their tasks (`spec/27 §7`): outside `quiet` code, then inside it, which
+    /// counts apart so that quiet code never moves the paths of later public statements (S-39,
+    /// `spec/26 §6` rule 4).
     pub(crate) scopes: Vec<Arc<crate::started::StartScope>>,
-    pub(crate) tasks_runs: usize,
+    pub(crate) tasks_runs: una_interp::concurrency::BlockCounts,
     /// What the run's tasks share: the trace's sink, the installations counted run-wide, the
     /// started tasks alive.
     pub(crate) shared: Arc<crate::started::RunShared>,
@@ -836,8 +877,8 @@ pub(crate) struct State {
     /// (ADR 0117 rule 4): its event ends `interrupted`, and the task stops.
     pub(crate) interrupted: bool,
     /// How many `first of` blocks the task has run, for the paths of their branches (`spec/27
-    /// §6`).
-    pub(crate) races: usize,
+    /// §6`), outside `quiet` code and inside it, as `tasks_runs`.
+    pub(crate) races: una_interp::concurrency::BlockCounts,
     /// The number of instances of each handler that `with` installed so far: in the run, or
     /// in a task, since it started (`tasks`).
     pub(crate) installs: BTreeMap<String, usize>,
@@ -863,6 +904,10 @@ pub(crate) struct State {
     /// Whether the thread's task runs the body of a `for ever`, callees included: its `Http`
     /// operations are interruptible there (ADR 0116 rule 14). A task starts outside one.
     pub(crate) in_ever: bool,
+    /// How many `quiet` expressions the task is in, those of the task that started it at its
+    /// `start` included: while one is, a `for ever` that a host stop ends appends no `stop`
+    /// event (S-39, `spec/26 §6` rule 4).
+    pub(crate) quiet: u32,
     /// The settings of the run's tasks (ADR 0117 rules 2 and 3).
     concurrency: una_interp::Concurrency,
     /// The run's scheduler, made at its first block: none in a run without tasks.
@@ -917,13 +962,17 @@ pub(crate) struct TaskTemplate {
     /// The settings of the run's tasks, and its scheduler.
     concurrency: una_interp::Concurrency,
     pub(crate) sched: Arc<crate::sched::Scheduler>,
-    /// For the branches of a `first of`, the count of the block among those its task ran: their
-    /// paths are `p.f<c>.<i>` (`spec/27 §6`).
-    pub(crate) race: Option<usize>,
+    /// For the branches of a `first of`, whether it stands in `quiet` code, and the count of the
+    /// block among those its task ran there: their paths are `p.f<c>.<i>`, or `p.qf<c>.<i>` in
+    /// quiet code (`spec/27 §6`, S-39).
+    pub(crate) race: Option<(bool, usize)>,
     /// What the run's tasks share, and whether the task writes its events as they happen: a
     /// started task does (ADR 0117 rule 10).
     pub(crate) shared: Arc<crate::started::RunShared>,
     pub(crate) streaming: bool,
+    /// The `quiet` count of the task that runs the block or starts the task (S-39): a task
+    /// runs under the program counter of its `start` (`spec/27 §7` rule 3).
+    quiet: u32,
 }
 
 impl TaskTemplate {
@@ -940,7 +989,9 @@ impl TaskTemplate {
         } else {
             self.path.len() + 1
         };
-        own + self.race.map_or(0, |race| 2 + digits(race))
+        own + self
+            .race
+            .map_or(0, |(quiet, race)| 2 + usize::from(quiet) + digits(race))
     }
 
     /// The bytes the template owns: its path, its cancellation entries, its location's file and
@@ -1005,6 +1056,7 @@ impl State {
             race: None,
             shared: Arc::clone(&self.shared),
             streaming: false,
+            quiet: self.quiet,
         }
     }
 
@@ -1014,8 +1066,9 @@ impl State {
     /// rule 2).
     pub(crate) fn for_race(&mut self, site: usize) -> TaskTemplate {
         let mut template = self.for_tasks(site);
-        self.races = self.races.saturating_add(1);
-        template.race = Some(self.races);
+        // Quiet code counts its races apart (S-39, `spec/26 §6` rule 4).
+        let quiet = self.quiet > 0;
+        template.race = Some((quiet, self.races.next(quiet)));
         let left = template
             .max_depth
             .saturating_sub(template.depth)
@@ -1044,11 +1097,15 @@ impl State {
     /// Opens a `tasks` statement in this task, at most `bound` tasks at once, or the default
     /// bound: `max(64, M)` for the budget `M` in MiB, within the system's cap (ADR 0117 rule 7).
     pub(crate) fn open_tasks(&mut self, bound: Option<usize>) {
-        self.tasks_runs = self.tasks_runs.saturating_add(1);
+        // Quiet code counts its statements apart, `qs<c>`, so that whether it ran, which may
+        // depend on data above `public`, never moves the paths of later public ones (S-39,
+        // `spec/26 §6` rule 4).
+        let quiet = self.quiet > 0;
+        let name = una_interp::concurrency::block_name('s', quiet, self.tasks_runs.next(quiet));
         let path = if self.path.is_empty() {
-            format!("s{}", self.tasks_runs)
+            name
         } else {
-            format!("{}.s{}", self.path, self.tasks_runs)
+            format!("{}.{name}", self.path)
         };
         let bound = bound.unwrap_or_else(|| {
             una_interp::concurrency::default_bound(self.max_memory, self.shared.cap)
@@ -1085,6 +1142,12 @@ impl State {
     /// Appends the event that ends this started task, `cancelled` or `aborted`, which names no
     /// operation (`spec/27 §7`).
     pub(crate) fn ended_event(&mut self, outcome: EventOutcome) {
+        // A task started inside a `quiet` expression ends without its `cancelled` event (S-39,
+        // `spec/26 §6` rule 4); stack exhaustion stays outside the model (`spec/07 §1`).
+        if outcome == EventOutcome::Cancelled && self.quiet > 0 {
+            self.flush();
+            return;
+        }
         let task = self.path.clone();
         if let Some(trace) = self.trace.as_mut() {
             trace.push(Event {
@@ -1243,12 +1306,19 @@ impl State {
         self.installs.contains_key(name)
     }
 
-    /// Appends the event of a loop that stops at the start of an iteration (ADR 0116 rule 14).
+    /// Appends the event of a loop that stops at the start of an iteration (ADR 0116 rule 14);
+    /// none inside a `quiet` expression, whose program counter the event would reveal (S-39,
+    /// `spec/26 §6` rule 4). It then takes no `seq` either.
     pub(crate) fn stop_event(&mut self) {
+        if self.quiet > 0 {
+            return;
+        }
+        // The `task` field of its task (`spec/26 §8`), as the interpreter writes it.
+        let task = self.path.clone();
         if let Some(trace) = self.trace.as_mut() {
             trace.push(Event {
                 seq: trace.len() + 1,
-                task: String::new(),
+                task,
                 instance: String::new(),
                 capability: String::new(),
                 op: String::new(),
@@ -1260,8 +1330,12 @@ impl State {
     }
 
     /// Appends the event that ends the task `task`, started and then cancelled
-    /// (`spec/19 §7` rule 3).
+    /// (`spec/19 §7` rule 3); none inside a `quiet` expression of the task that runs its block
+    /// (S-39, `spec/26 §6` rule 4).
     pub(crate) fn cancelled_event(&mut self, task: String) {
+        if self.quiet > 0 {
+            return;
+        }
         if let Some(trace) = self.trace.as_mut() {
             trace.push(Event {
                 seq: trace.len() + 1,
@@ -1518,6 +1592,13 @@ struct Hot {
     flags: Cell<usize>,
     /// The thread's attention word, and its value at the last check point (ADR 0116 rule 18,
     /// ADR 0102 amendment of 2026-10-18).
+    ///
+    /// Both are the worker thread's, not a task's: [`swap_slots`] does not swap them, and a
+    /// task's install keeps `seen` (#1533). The slicer raises a worker's word at the end of the
+    /// turn in progress, whichever task it is, so a raise pending when one task parks or ends
+    /// belongs to the next one the worker runs. ADR 0117 rule 2, Pinning, lists a "copy of the
+    /// attention word" among a task's slots; the code keeps the copy per worker (amendment
+    /// draft `docs/plan/0117-seen-value-note-draft.md`).
     word: Cell<Option<una_sys::attention::Word>>,
     seen: Cell<u64>,
     /// Whether every check point of the thread counts toward its task's turn: on a worker,
@@ -1691,12 +1772,25 @@ fn install(state: State, depth: usize) {
             .set(mem_ceiling(state.baseline, state.max_memory));
         hot.shielded.set(state.shielded);
         hot.flags.set(state.cancel.len());
-        let word = hot.word.get().unwrap_or_else(una_sys::attention::register);
+        // `seen` is the worker thread's, never swapped with a task's slots (see `Hot::word`).
+        // A thread that already has its word keeps the value its last check point saw: a raise
+        // since then, as the slicer's at the end of a turn that began before this state was
+        // installed, stays pending, so the first check point takes the slow path and the task
+        // yields there (#1533). Reading the word anew here lost that raise: on a worker, a
+        // turn's end is set when the worker takes the job, before the task installs its state,
+        // so a slicer that raised the word in between, under load, was never heard, and the
+        // task kept its worker while another waited, `main` with its cancellation included.
+        let registered = hot.word.get();
+        let word = registered.unwrap_or_else(una_sys::attention::register);
         hot.word.set(Some(word));
-        // The word as it stands, read before the hard stop is: a hard stop that comes after
+        // A new word as it stands, read before the hard stop is: a hard stop that comes after
         // the read raises the word, and one that came before it is seen here, with a value no
         // word holds, so the first check point takes the slow path.
-        let seen = word.load();
+        let seen = if registered.is_some() {
+            hot.seen.get()
+        } else {
+            word.load()
+        };
         hot.seen.set(if hard_stop().is_some() {
             u64::MAX
         } else {
@@ -1832,6 +1926,18 @@ pub fn ever_start(started: i64) -> i64 {
 /// its `on stop` and the code after it are outside the body (rule 14).
 pub fn ever_end() {
     set_in_ever(false);
+}
+
+/// Enters a `quiet` expression: a `for ever` loop, or a call of a function that says
+/// `diverges`, under a program counter above `public` (S-39, `spec/26 §6` rule 4).
+pub fn quiet_enter() {
+    with_state(|state| state.quiet = state.quiet.saturating_add(1));
+}
+
+/// Leaves a `quiet` expression, on every way out of it: its value, or a failure or a stop of
+/// the task that leaves it.
+pub fn quiet_leave() {
+    with_state(|state| state.quiet = state.quiet.saturating_sub(1));
 }
 
 /// Runs the executable: parses the command line, checks `main`'s capabilities against the
@@ -2000,7 +2106,7 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
         streaming: true,
         open_events: 0,
         scopes: Vec::new(),
-        tasks_runs: 0,
+        tasks_runs: una_interp::concurrency::BlockCounts::default(),
         shared,
         failed_write: None,
         max_depth: options.max_depth,
@@ -2018,7 +2124,7 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
         ops: Arc::new(meta.ops),
         host_failed: false,
         interrupted: false,
-        races: 0,
+        races: una_interp::concurrency::BlockCounts::default(),
         installs: BTreeMap::new(),
         stack_base: 0,
         stack_budget: stack.saturating_sub(STACK_RESERVE),
@@ -2030,6 +2136,7 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
         operations: Vec::new(),
         stopped: None,
         in_ever: false,
+        quiet: 0,
         concurrency: options.concurrency,
         sched: None,
     };
@@ -2159,20 +2266,24 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
         if warm {
             state.max_memory = usize::MAX;
         }
-        state.baseline = crate::held();
+        // The budget's baseline is measured as the budget charges (`heap_charged`), and the
+        // hard ceiling's on the bytes really held.
+        CREDIT_LIMIT.store(budget / 4, Ordering::Relaxed);
+        state.baseline = heap_charged();
+        let mut held_baseline = crate::held();
         install(state, 0);
         if warm {
             crate::tasks::warm_up(workers);
-            let baseline = crate::held();
+            let baseline = heap_charged();
+            held_baseline = crate::held();
             with_state(|state| {
                 state.max_memory = max_memory;
                 state.baseline = baseline;
             });
             HOT.with(|hot| hot.mem_ceiling.set(mem_ceiling(baseline, max_memory)));
         }
-        let baseline = with_state(|state| state.baseline).unwrap_or(0);
         // ADR 0061 rule 3: past twice the budget, allocation fails and the process aborts.
-        crate::ceiling(baseline.saturating_add(budget.saturating_mul(2)));
+        crate::ceiling(held_baseline.saturating_add(budget.saturating_mul(2)));
         DRIVER.with(|cell| *cell.borrow_mut() = drive);
         let status = entry();
         crate::ceiling(usize::MAX);
@@ -2763,7 +2874,7 @@ pub(crate) fn enter_task(template: &TaskTemplate, path: String, entry: Cancel) {
         streaming: template.streaming,
         open_events: 0,
         scopes: Vec::new(),
-        tasks_runs: 0,
+        tasks_runs: una_interp::concurrency::BlockCounts::default(),
         shared: Arc::clone(&template.shared),
         failed_write: None,
         max_depth: template.max_depth,
@@ -2777,7 +2888,7 @@ pub(crate) fn enter_task(template: &TaskTemplate, path: String, entry: Cancel) {
         ops: Arc::clone(&template.ops),
         host_failed: false,
         interrupted: false,
-        races: 0,
+        races: una_interp::concurrency::BlockCounts::default(),
         installs: BTreeMap::new(),
         stack_base: 0,
         stack_budget: template.stack.saturating_sub(STACK_RESERVE),
@@ -2789,6 +2900,7 @@ pub(crate) fn enter_task(template: &TaskTemplate, path: String, entry: Cancel) {
         operations: Vec::new(),
         stopped: None,
         in_ever: false,
+        quiet: template.quiet,
         concurrency: template.concurrency,
         sched: Some(Arc::clone(&template.sched)),
     };
@@ -2837,7 +2949,7 @@ pub(crate) fn install_test_state_as(path: String, tracing: bool, file: String) {
         streaming: false,
         open_events: 0,
         scopes: Vec::new(),
-        tasks_runs: 0,
+        tasks_runs: una_interp::concurrency::BlockCounts::default(),
         shared: crate::started::RunShared::new(),
         failed_write: None,
         max_depth: options.max_depth,
@@ -2866,7 +2978,7 @@ pub(crate) fn install_test_state_as(path: String, tracing: bool, file: String) {
         }]),
         host_failed: false,
         interrupted: false,
-        races: 0,
+        races: una_interp::concurrency::BlockCounts::default(),
         installs: BTreeMap::new(),
         stack_base: 0,
         stack_budget: usize::MAX,
@@ -2878,6 +2990,7 @@ pub(crate) fn install_test_state_as(path: String, tracing: bool, file: String) {
         operations: Vec::new(),
         stopped: None,
         in_ever: false,
+        quiet: 0,
         concurrency: options.concurrency,
         sched: None,
     };
@@ -2997,8 +3110,9 @@ fn abort_run(state: State, code: Code, location: Location, message: String) {
     if trace {
         let _ = writeln!(
             io::stderr(),
-            "una-rt charge: held {} peak {} baseline {} stack_charge {} reserved {} thread_stacks {} thread_allocated {} ceiling {} budget_mib {} on {}",
+            "una-rt charge: held {} credited {} peak {} baseline {} stack_charge {} reserved {} thread_stacks {} thread_allocated {} ceiling {} budget_mib {} on {}",
             crate::held(),
+            capped_credit(values::credit_added_bytes(), values::credit_removed_bytes()),
             crate::peak(),
             state.baseline,
             STACK_CHARGE.load(Ordering::Relaxed),

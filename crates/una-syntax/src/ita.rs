@@ -1898,6 +1898,12 @@ pub struct LockRegistry {
     pub checkpoint_size: At<u64>,
     /// The resolution point: the checkpoint's root hash.
     pub checkpoint_hash: At<String>,
+    /// `last root <n> "<digest>"`: the last root version the client verified when it wrote the
+    /// lock, which a vendored provenance's root chain must hold (ADR 0122, amendment of
+    /// 2026-11-03, item 4).
+    pub last_root: At<u64>,
+    /// That version's digest.
+    pub last_root_digest: At<String>,
     /// `accepted <owner> <index> …`: per owner, the recoveries, disputes and co-signer changes
     /// of its chain pending at the resolution point whose pending state the lock was written under
     /// (`spec/30 §14`).
@@ -2189,12 +2195,13 @@ fn registry(line: &Line, errors: &mut Vec<Error>) -> Option<LockRegistry> {
     };
     let mut root = None;
     let mut checkpoint = None;
+    let mut last = None;
     let mut accepted: Vec<LockAccepted> = Vec::new();
     let mut effects: Vec<LockAccepted> = Vec::new();
     for child in &line.children {
         no_children(child, errors);
         let mut cursor = Cursor::new(child);
-        let consent = if checkpoint.is_none() {
+        let consent = if last.is_none() {
             None
         } else if cursor.eat_word("accepted") && effects.is_empty() {
             Some(false)
@@ -2276,26 +2283,49 @@ fn registry(line: &Line, errors: &mut Vec<Error>) -> Option<LockRegistry> {
                 Ok(value) => checkpoint = Some(value),
                 Err(error) => errors.push(error),
             }
+        } else if checkpoint.is_some() && last.is_none() && cursor.eat_word("last") {
+            let read = if cursor.eat_word("root") {
+                cursor.int("the last root version").and_then(|version| {
+                    cursor
+                        .text("the digest of the last root version")
+                        .and_then(|digest| cursor.end().map(|()| (version, digest)))
+                })
+            } else {
+                Err(Error::new(
+                    child.range.clone(),
+                    "expected `last root <version> \"...\"`",
+                ))
+            };
+            match read {
+                Ok(value) => last = Some(value),
+                Err(error) => errors.push(error),
+            }
         } else {
             errors.push(Error::new(
                 child.range.clone(),
-                "a registry's lines are `root \"...\"` then `checkpoint <size> \"...\"`, once each, then its `accepted` and `effect` lines",
+                "a registry's lines are `root \"...\"`, `checkpoint <size> \"...\"` and `last root <version> \"...\"`, once each and in this order, then its `accepted` and `effect` lines",
             ));
         }
     }
-    match (root, checkpoint) {
-        (Some(root), Some((checkpoint_size, checkpoint_hash))) => Some(LockRegistry {
+    match (root, checkpoint, last) {
+        (
+            Some(root),
+            Some((checkpoint_size, checkpoint_hash)),
+            Some((last_root, last_root_digest)),
+        ) => Some(LockRegistry {
             source,
             root,
             checkpoint_size,
             checkpoint_hash,
+            last_root,
+            last_root_digest,
             accepted,
             effects,
         }),
         _ => {
             errors.push(Error::new(
                 line.range.clone(),
-                "a registry section has a `root` and a `checkpoint` line",
+                "a registry section has a `root`, a `checkpoint` and a `last root` line; write the lock again with `una ita lock`",
             ));
             None
         }

@@ -18,7 +18,7 @@ use una_project::client::{
     Failure, Floors, LoggedRelease, Misbehavior, Omission, OpenError, Point, Registry, owner_of,
     shown,
 };
-use una_project::provenance::{Expected, signed_name, verify};
+use una_project::provenance::{Expected, Floor, signed_name, verify};
 use una_project::tlog::merkle::{
     Hash, consistency_proof, inclusion_proof, leaf_hash, node_hash, root as tree_root,
 };
@@ -279,8 +279,10 @@ fn a_release_verifies_from_its_root_to_its_archive() {
         root: registry.pin(),
         checkpoint_size: client.point.checkpoint.size,
         checkpoint_hash: hash_hex(&client.point.checkpoint.root),
+        last_root: client.last_root().unwrap().0,
+        last_root_digest: client.last_root().unwrap().1.to_owned(),
     };
-    verify(&provenance, &expected).unwrap();
+    verify(&provenance, &expected, &Floor::None).unwrap();
     assert_eq!(owner_of("acme/ledger"), "acme");
     assert_eq!(owner_of("json"), owner::ITAUNA);
     let _ = std::fs::remove_dir_all(&dir);
@@ -3775,4 +3777,348 @@ fn a_bad_signature_after_an_omission_is_a_refusal() {
 /// Whether `omission` is of a tile or an entry bundle.
 fn is_tile(omission: &Omission) -> bool {
     matches!(omission, Omission::Document(path) if path.starts_with("tile/"))
+}
+
+/// The provenance a client writes for the release at the point `at` of `registry`, and what a
+/// lock written then says of it.
+fn provenance_at(
+    registry: &TestRegistry,
+    at: &Point,
+) -> (una_project::provenance::Provenance, Expected) {
+    let memory = Memory {
+        files: registry.files.clone(),
+    };
+    let mut client =
+        Registry::open_with("acme", &memory, &registry.pin(), at, &Floors::default()).unwrap();
+    let release = client
+        .release("acme/ledger", &Version::parse_full("0.3.1").unwrap())
+        .unwrap();
+    let key = release.signer().unwrap().clone();
+    let provenance = client.provenance(&release, &key).unwrap();
+    let (last_root, last_root_digest) = client
+        .last_root()
+        .map(|(version, digest)| (version, digest.to_owned()))
+        .unwrap();
+    let expected = Expected {
+        source: "acme".to_owned(),
+        name: "acme/ledger".to_owned(),
+        version: "0.3.1".to_owned(),
+        digest: release.statement.digest.clone(),
+        signed: signed_name("acme/ledger", &key.public),
+        logged: release.index,
+        root: registry.pin(),
+        checkpoint_size: client.point.checkpoint.size,
+        checkpoint_hash: hash_hex(&client.point.checkpoint.root),
+        last_root,
+        last_root_digest,
+    };
+    (provenance, expected)
+}
+
+/// Whether `result` is unavailable (U7013), with a message holding `says`.
+fn unavailable(
+    result: Result<una_project::tlog::release::Statement, una_project::provenance::Problem>,
+    says: &str,
+) -> bool {
+    matches!(result, Err(una_project::provenance::Problem::Unavailable(why)) if why.contains(says))
+}
+
+/// Whether `result` is refused (U7010), with a message holding `says`.
+fn refused(
+    result: Result<una_project::tlog::release::Statement, una_project::provenance::Problem>,
+    says: &str,
+) -> bool {
+    matches!(result, Err(una_project::provenance::Problem::Refused(why)) if why.contains(says))
+}
+
+/// ADR 0122, amendment of 2026-11-03, items 1 and 2: a lock's point under an older root,
+/// cosigned by witnesses a later root retired, has a provenance that carries the latest
+/// checkpoint under the last root and the consistency proof the client read, and it verifies
+/// offline, the retired witnesses counting by that proof, at every load.
+#[test]
+fn a_provenance_carries_the_prefix_proof_of_an_older_point() {
+    let (registry, at) = rotated_with_older_point(2);
+    let (provenance, expected) = provenance_at(&registry, &at);
+    assert_eq!(provenance.format, una_project::provenance::Format::V2);
+    let latest = provenance
+        .latest
+        .as_ref()
+        .expect("the prefix proof is carried");
+    assert!(!latest.consistency.is_empty());
+    let encoded = provenance.encode();
+    assert!(encoded.starts_with(b"ita-provenance/2\n"));
+    assert_eq!(
+        una_project::provenance::parse(&encoded).unwrap(),
+        provenance
+    );
+    for floor in [Floor::None, Floor::At(1), Floor::At(2)] {
+        let verified = verify(&provenance, &expected, &floor);
+        assert!(verified.is_ok(), "{floor:?}: {verified:?}");
+    }
+    // A point that names the last root carries no proof.
+    let mut current = TestRegistry::new("acme");
+    let a = keypair(60, "acme.a");
+    current.register("acme", &a);
+    current.release("acme/ledger", "0.3.1", "none", "none", &[&a]);
+    let size = current.checkpoint(NOW);
+    let leaves: Vec<Hash> = current.entries.iter().map(|e| leaf_hash(e)).collect();
+    let point = Point::At {
+        size,
+        hash: hash_hex(&tree_root(&leaves)),
+    };
+    let (plain, plain_expected) = provenance_at(&current, &point);
+    assert!(plain.latest.is_none());
+    assert!(verify(&plain, &plain_expected, &Floor::None).is_ok());
+    // And a proof added to it is refused: the encoding of a point has one form.
+    let mut added = plain.clone();
+    added.latest = provenance.latest.clone();
+    assert!(refused(
+        verify(&added, &plain_expected, &Floor::None),
+        "names the last root version"
+    ));
+}
+
+/// Item 3: without the proof, a checkpoint that carries a retired witness's cosignature is
+/// unavailable (U7013), never decided on fewer cosignatures, in either format; a checkpoint
+/// with no such cosignature counts on the last root's witnesses alone, as before.
+#[test]
+fn a_retired_witness_without_the_proof_is_unavailable() {
+    let (registry, at) = rotated_with_older_point(2);
+    let (provenance, expected) = provenance_at(&registry, &at);
+    let mut stripped = provenance.clone();
+    stripped.latest = None;
+    assert!(unavailable(
+        verify(&stripped, &expected, &Floor::None),
+        "retired"
+    ));
+    let mut first = stripped.clone();
+    first.format = una_project::provenance::Format::V1;
+    let encoded = first.encode();
+    assert!(encoded.starts_with(b"ita-provenance/1\n"));
+    let read = una_project::provenance::parse(&encoded).unwrap();
+    assert!(unavailable(
+        verify(&read, &expected, &Floor::None),
+        "retired"
+    ));
+    // Format 1 never carries the proof.
+    let mut forged = provenance.clone();
+    forged.format = una_project::provenance::Format::V1;
+    assert!(
+        una_project::provenance::parse(&forged.encode())
+            .unwrap_err()
+            .contains("carries no latest checkpoint")
+    );
+    // Even when the last root's witnesses alone would meet the threshold: one retired, the
+    // threshold one, the point cosigned by all three.
+    let (one, at_one) = rotated_with_older_point(1);
+    let (provenance, expected) = provenance_at(&one, &at_one);
+    let mut stripped = provenance.clone();
+    stripped.latest = None;
+    assert!(unavailable(
+        verify(&stripped, &expected, &Floor::None),
+        "retired"
+    ));
+    // The point cosigned by the witness the rotation kept, alone, at threshold one: no retired
+    // witness's line, so it counts on the last root's witnesses, with no proof.
+    let mut kept = stripped.clone();
+    let text = text_of(kept.checkpoint.as_bytes());
+    kept.checkpoint = String::from_utf8(resigned(
+        &one,
+        &text,
+        &[one.keys.witnesses[0].clone()],
+        NOW - 10 * DAY,
+    ))
+    .unwrap();
+    let verified = verify(&kept, &expected, &Floor::None);
+    assert!(verified.is_ok(), "{verified:?}");
+}
+
+/// A proof carried that does not verify is refused (U7010): an edited consistency hash, one
+/// dropped, a latest checkpoint that names an older version, one short of cosignatures, one
+/// not signed by the log, one of the point's own size, or one below it.
+#[test]
+fn a_carried_proof_that_does_not_verify_is_refused() {
+    let (registry, at) = rotated_with_older_point(2);
+    let (provenance, expected) = provenance_at(&registry, &at);
+    let latest = provenance.latest.clone().unwrap();
+    let with = |change: &dyn Fn(&mut una_project::provenance::Latest)| {
+        let mut changed = provenance.clone();
+        let mut l = latest.clone();
+        change(&mut l);
+        changed.latest = Some(l);
+        verify(&changed, &expected, &Floor::None)
+    };
+    assert!(refused(with(&|l| l.consistency[0][0] ^= 1), "forked"));
+    assert!(refused(
+        with(&|l| {
+            l.consistency.pop();
+        }),
+        "forked"
+    ));
+    assert!(refused(with(&|l| l.consistency.push([7; 32])), "forked"));
+    // The point's checkpoint in place of the latest: it names root version 1.
+    assert!(refused(
+        with(&|l| l.checkpoint = provenance.checkpoint.clone()),
+        "not the last one it stores"
+    ));
+    // Cosigned by one current witness, below the threshold of two.
+    let text = text_of(latest.checkpoint.as_bytes());
+    let one = String::from_utf8(resigned(
+        &registry,
+        &text,
+        &[registry.keys.witnesses[0].clone()],
+        NOW,
+    ))
+    .unwrap();
+    assert!(refused(
+        with(&|l| l.checkpoint = one.clone()),
+        "fewer than its threshold"
+    ));
+    // Not signed by the log's key.
+    let unsigned = latest.checkpoint.replacen(
+        &format!("\u{2014} {} ", registry.keys.log.1.name),
+        "\u{2014} another.log ",
+        1,
+    );
+    assert!(with(&|l| l.checkpoint = unsigned.clone()).is_err());
+    // A checkpoint of the point's size signed under root 2: two checkpoints of one size.
+    let point_text = text_of(provenance.checkpoint.as_bytes());
+    let older_line = format!(
+        "ita-root 1 {}",
+        una_project::tlog::root::digest(&registry.roots[0])
+    );
+    let same_size_text = point_text.replacen(&older_line, &registry.root_line(), 1);
+    let same_size = String::from_utf8(resigned(
+        &registry,
+        &same_size_text,
+        &registry.keys.witnesses,
+        NOW,
+    ))
+    .unwrap();
+    assert!(refused(
+        with(&|l| {
+            l.checkpoint = same_size.clone();
+            l.consistency.clear();
+        }),
+        "two checkpoints of size"
+    ));
+}
+
+/// Item 4: the load is anchored to the root-version floor this machine stores, and to the last
+/// root version the lock records. A chain below the floor is refused (U7010), saying that it is
+/// older than what this machine accepted and never that the log forked; a floor that exists
+/// and cannot be read is unavailable (U7013); a chain without the lock's last root, or with
+/// another digest for it, is refused.
+#[test]
+fn the_offline_load_is_anchored_to_the_floor_and_the_lock() {
+    let (registry, at) = rotated_with_older_point(2);
+    let (provenance, expected) = provenance_at(&registry, &at);
+    assert_eq!(expected.last_root, 2);
+    let below = verify(&provenance, &expected, &Floor::At(3));
+    assert!(
+        refused(below.clone(), "older than root version 3"),
+        "{below:?}"
+    );
+    assert!(!format!("{below:?}").contains("forked"));
+    assert!(unavailable(
+        verify(
+            &provenance,
+            &expected,
+            &Floor::Unreadable("permission denied".to_owned())
+        ),
+        "cannot be read"
+    ));
+    let mut higher = expected.clone();
+    higher.last_root = 3;
+    assert!(refused(
+        verify(&provenance, &higher, &Floor::None),
+        "which the lock records"
+    ));
+    let mut other = expected.clone();
+    other.last_root_digest = format!("sha256:{}", "0".repeat(64));
+    assert!(refused(
+        verify(&provenance, &other, &Floor::None),
+        "which the lock records"
+    ));
+    // The rollback of the amendment's context: the later root versions dropped, and the proof
+    // with them, so that the retired witnesses are witnesses of the last version stored.
+    let mut truncated = provenance.clone();
+    truncated.roots.truncate(1);
+    truncated.latest = None;
+    // The lock left as written: its last root is not in the chain.
+    assert!(refused(
+        verify(&truncated, &expected, &Floor::None),
+        "which the lock records"
+    ));
+    // The lock edited too, a visible change in a reviewed diff: below the floor, refused.
+    let mut edited = expected.clone();
+    edited.last_root = 1;
+    edited.last_root_digest = una_project::tlog::root::digest(&registry.roots[0]);
+    assert!(refused(
+        verify(&truncated, &edited, &Floor::At(2)),
+        "older than root version 2"
+    ));
+    // Item 5, the residual: with no floor stored, the vendored chain past the pin is trusted on
+    // first use, and the truncated chain loads.
+    assert!(verify(&truncated, &edited, &Floor::None).is_ok());
+}
+
+/// Item 2: the last root's expiry is judged at the witness time of the latest checkpoint the
+/// provenance carries, which the current witnesses cosign, never at the older point's.
+#[test]
+fn the_last_root_expires_by_the_latest_checkpoints_time() {
+    let a = keypair(60, "acme.a");
+    let mut registry = TestRegistry::with_witness_threshold("acme", 2);
+    registry.register("acme", &a);
+    registry.release("acme/ledger", "0.3.1", "none", "none", &[&a]);
+    let older = registry.checkpoint(NOW - 10 * DAY);
+    let leaves: Vec<Hash> = registry.entries.iter().map(|e| leaf_hash(e)).collect();
+    let hash = hash_hex(&tree_root(&leaves));
+    registry.rotate_witnesses(2, false);
+    // Root 2 expires between the point's witness time and the latest checkpoint's.
+    let roots: Vec<&una_project::tlog::note::Key> =
+        registry.keys.roots.iter().map(|(_, key)| key).collect();
+    let text = registry::root_text_with("acme", 2, NOW - DAY, &registry.keys, &roots, 2, &[]);
+    let document = registry::signed(&text, &[&registry.keys.roots[0], &registry.keys.roots[1]]);
+    registry
+        .files
+        .insert("root/2".to_owned(), document.clone().into_bytes());
+    registry.roots[1] = document;
+    registry.release("acme/ledger", "0.3.2", "none", "none", &[&a]);
+    registry.checkpoint(NOW);
+    let at = Point::At { size: older, hash };
+    let (provenance, expected) = provenance_at(&registry, &at);
+    assert!(provenance.latest.is_some());
+    assert!(refused(
+        verify(&provenance, &expected, &Floor::None),
+        "expired"
+    ));
+}
+
+/// The client's prefix proof (`spec/30 §11` rule 9): a latest checkpoint of the lock's point's
+/// own size that names the last root while the point names an older one is a second checkpoint
+/// of that size, refused (U7010), never a proof.
+#[test]
+fn a_latest_checkpoint_of_the_points_size_is_no_prefix_proof() {
+    let (registry, at) = rotated_with_older_point(2);
+    let Point::At { size, .. } = &at else {
+        panic!("the rotated registry's point is at a size")
+    };
+    let point_text = text_of(&registry.files[&format!("checkpoint/{size}")]);
+    let older_line = format!(
+        "ita-root 1 {}",
+        una_project::tlog::root::digest(&registry.roots[0])
+    );
+    let same_size_text = point_text.replacen(&older_line, &registry.root_line(), 1);
+    let mut place = Memory {
+        files: registry.files.clone(),
+    };
+    place.files.insert(
+        "checkpoint".to_owned(),
+        resigned(&registry, &same_size_text, &registry.keys.witnesses, NOW),
+    );
+    match Registry::open_with("acme", &place, &registry.pin(), &at, &Floors::default()) {
+        Err(OpenError::Refused(why)) => assert!(why.contains("two checkpoints of size"), "{why}"),
+        other => panic!("{:?}", other.err()),
+    }
 }

@@ -80,7 +80,7 @@ M3 also found that `spec/10`'s formal T-Let and T-Handle lack the rule-4 premise
 - **H2:** whether a write fails, and which files it leaves, does not depend on what it writes.
 - **H3:** a response does not depend on the program's type annotations (the host is given text).
 - **H4:** every successful HTTP response is a `Response` of `spec/24`. The runtime builds it so by construction.
-- **H5:** an answer depends only on the host state at its label (ADR 0094 rule 5). What an operation answers through a binding where it is labeled `l′`, and whether it fails, is a function only of the arguments and of the part of the host state at or below `l′`. It is a premise on how the deployment wires its bindings. F1 does not model operation labels until #563, so a declaration that labels an operation, or that calls an operation through a binding where it is labeled above `public`, is accepted on the checker's rules alone, not re-checked by the formal model; the re-check's note names H5 for such declarations once #563 lands.
+- **H5:** an answer depends only on the host state at its label (ADR 0094 rule 5). What an operation answers through a binding where it is labeled `l′`, and whether it fails, is a function only of the arguments and of the part of the host state at or below `l′`. It is a premise on how the deployment wires its bindings. F1 does not model operation labels until #563, so a declaration that labels an operation, or that calls an operation through a binding where it is labeled above `public`, is accepted on the checker's rules alone, not re-checked by the formal model; the re-check's note names H5 for such declarations once #563 lands. Since #1518 the export lists each `uses` entry's labels under `gives` (`spec/13 §8`), and the re-check reports a declaration whose `uses` hold one, a handler's synthesized operation among them, as not re-checked, "F1 restriction (a labeled operation, ADR 0094 rule 8)", and what reaches it as not re-checked too (`GivesImportTests`). Before it, the export wrote no label, and such a declaration could be reported accepted under H1 to H3 alone.
 - **`Env`:** the environment variables that exist are the same in both runs; their values may differ, and T6 covers them (#487). Whether a variable exists is `public` (`spec/14 §3`): it is public configuration, so an operator must not encode a secret in which variables are set.
 
 A declaration whose program uses no host operation, and whose parameters cannot carry one in, needs none of these: its note is plain, and its theorem holds on any host.
@@ -104,7 +104,8 @@ A declaration whose program uses no host operation, and whose parameters cannot 
 - **Small items:**
   - #475, an accurate note when only a function parameter blocks the any-host claim (cosmetic);
   - #453, the widening of `checked`;
-  - the append-only correction of `spec/10`.
+  - the append-only correction of `spec/10`;
+  - the trace's own events, `stop` of a host stop (ADR 0116 rule 14), `timeout` and `cancelled` (`spec/27 §5`), and Core's `quiet` (S-39, #1507, `spec/26 §6` rule 4): the model has none of them, so a declaration that runs a `for ever`, or holds `quiet`, is not re-checked. The theorem to state is that these events are sinks that accept `public`, so code under a raised program counter appends none.
 - **Later, by priority:** T5 relative to the solver, T6 with `together`, and edition 0.1's own rules.
 
 ## Theorem names

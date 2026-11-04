@@ -1114,7 +1114,7 @@ fn una_in(args: &[&str], itaoca: &Path) -> (u8, String, String) {
 mod registry {
     use ed25519_dalek::{Signer, SigningKey};
     use una_project::content::{File, archive, digest_of};
-    use una_project::provenance::{Provenance, sha256_digest, signed_name};
+    use una_project::provenance::{Format, Provenance, sha256_digest, signed_name};
     use una_project::tlog::merkle::{inclusion_proof, leaf_hash, root as tree_root};
     use una_project::tlog::note::{Key, encode_base64};
 
@@ -1221,15 +1221,17 @@ mod registry {
         );
         let root = una_project::tlog::root::digest(&root_document);
         let provenance = Provenance {
+            format: Format::V2,
             roots: vec![root_document],
             checkpoint,
+            latest: None,
             statement,
             index: 1,
             proof: inclusion_proof(1, &leaves),
             key: publisher.clone(),
         };
         let lock = format!(
-            "registry acme\n  root \"{root}\"\n  checkpoint 2 \"sha256:{}\"\n\npackage acme/ledger 0.3.1\n  from acme\n  digest \"{digest}\"\n  signed \"{}\"\n  logged 1\n",
+            "registry acme\n  root \"{root}\"\n  checkpoint 2 \"sha256:{}\"\n  last root 1 \"{root}\"\n\npackage acme/ledger 0.3.1\n  from acme\n  digest \"{digest}\"\n  signed \"{}\"\n  logged 1\n",
             hex(&top),
             signed_name("acme/ledger", &publisher.public)
         );

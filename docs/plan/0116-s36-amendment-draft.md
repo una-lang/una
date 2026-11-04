@@ -1,6 +1,6 @@
 # Draft: ADR 0116, Amendment: the iteration budget of rule 19 is per loop instance
 
-- Status: Proposed, for the project's decision. This draft does not change `docs/adr/0116-long-running-programs.md`; on acceptance its text becomes a dated amendment at the end of that ADR.
+- Status: Accepted by the project on 2026-11-03; its text is now ADR 0116's amendment of 2026-11-03, at the end of `docs/adr/0116-long-running-programs.md`, which governs. This draft is kept as the record of the proposal.
 - Issue: #1472 (S-36). Found by the review of the formal model of ADR 0116 (#946, PR #1470), question 5.
 - Implementation: the pull request that closes #1472 implements this draft in both engines and in native code, with `spec/26 §5` rule 7, §6 rules 1 and 8, §8 rule 1, `spec/13 §5` and `spec/08 §2`, under the rule that security fixes are made without waiting (the fix never weakens a guarantee). If the project rejects the draft, that pull request is the change to revert.
 
