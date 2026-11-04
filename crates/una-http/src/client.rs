@@ -213,9 +213,12 @@ fn left(deadline: Instant) -> Result<Duration, Error> {
 /// so a lookup runs on a thread of its own, which a request abandons at its deadline and which
 /// lives until the resolver returns. Without a bound, a program that keeps requesting names
 /// whose lookups stall (a slow or unreachable authority) would keep one thread per request it
-/// gave up on. With this bound, the threads of lookups, abandoned or not, are at most 64, about
-/// 128 MiB of reserved and mostly uncommitted stack at the default 2 MiB a thread.
-pub const MAX_RESOLVERS: usize = 64;
+/// gave up on. With this bound, the lookups in flight, abandoned or not, are at most 64, each on
+/// one thread (a thread past its lookup may still be exiting), about 128 MiB of reserved and
+/// mostly uncommitted stack at the default 2 MiB a thread. The bound is shared by every name:
+/// while 64 lookups stall, a request to any name waits for a slot and fails with `TimedOut` at
+/// its deadline. Address literals take no slot.
+const MAX_RESOLVERS: usize = 64;
 
 /// The resolver threads of the process.
 static RESOLVERS: Slots = Slots::new(MAX_RESOLVERS);
@@ -313,6 +316,9 @@ fn resolve_on(
         return Ok(vec![SocketAddr::new(ip, port)]);
     }
     let slot = slots.take(deadline)?;
+    // Again once the slot is taken, since waiting for it may have passed the deadline: on the
+    // error, `slot` drops here and gives the slot back.
+    left(deadline)?;
     let (sender, receiver) = mpsc::channel();
     std::thread::Builder::new()
         .name("una-http-resolve".to_owned())
@@ -671,6 +677,41 @@ mod tests {
         }
         assert_eq!(SLOTS.used(), 0, "every thread gave its slot back");
         assert_eq!(LIVE.load(Ordering::SeqCst), 0);
+    }
+
+    /// #1575 review L1: a request whose deadline passes while it waits for a slot starts no
+    /// lookup, even when a slot is free by the time it wakes, and gives that slot back.
+    #[test]
+    fn a_slot_taken_past_the_deadline_starts_no_lookup() {
+        static SLOTS: Slots = Slots::new(1);
+        static STARTED: AtomicUsize = AtomicUsize::new(0);
+        fn counted(_: &str, port: u16) -> std::io::Result<Vec<SocketAddr>> {
+            STARTED.fetch_add(1, Ordering::SeqCst);
+            Ok(vec![SocketAddr::from(([127, 0, 0, 1], port))])
+        }
+        let held = SLOTS.take(soon(60_000)).unwrap();
+        let start = Instant::now();
+        let deadline = start + Duration::from_millis(200);
+        let waiter =
+            std::thread::spawn(move || resolve_on(&SLOTS, counted, "name.example", 80, deadline));
+        std::thread::sleep(Duration::from_millis(50));
+        // Hold the slots' mutex across the waiter's deadline, then free the slot under it, so
+        // the waiter finds a free slot only after its deadline.
+        let mut used = SLOTS.used.lock().unwrap();
+        while Instant::now() < deadline + Duration::from_millis(100) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        *used -= 1;
+        std::mem::forget(held);
+        drop(used);
+        assert_eq!(waiter.join().unwrap(), Err(Error::TimedOut));
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(
+            STARTED.load(Ordering::SeqCst),
+            0,
+            "lookups started past the deadline"
+        );
+        assert_eq!(SLOTS.used(), 0, "the slot was given back");
     }
 
     /// Address literals take no slot: they resolve when every slot is taken.
