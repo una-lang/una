@@ -223,6 +223,7 @@ Other diagnostics MAY include repairs (for example, a missing label with its mec
 | U3028 | authority | A function that says `diverges`, used as a value |
 | U3029 | authority | A failure that must be handled where it is not |
 | U3032 | authority | A `simd required` clause outside a `systems` package of edition `0.4` |
+| U3033 | authority | An operation of `HttpServer` in the effect set of a `together` branch, a `together for` body or a `first of` branch |
 | U4001 | security | Flow to a lower label |
 | U4002 | security | Implicit flow through control, failure or call under raised pc |
 | U4003 | security | Sink label exceeded |
@@ -482,7 +483,7 @@ Keys are printed in this order, and two runs over the same sources print the sam
 | Enum | Kinds |
 | --- | --- |
 | `Atom` | `var`, `int`, `f64`, `decimal`, `f32`, `bool`, `text`, `unit` |
-| `Base` | `int`, `fixed`, `f64`, `decimal`, `f32`, `bool`, `text`, `unit`, `hashed`, `named`, `param`, `tuple`, `unknown` |
+| `Base` | `int`, `fixed`, `f64`, `decimal`, `f32`, `bool`, `text`, `unit`, `hashed`, `reply_right`, `named`, `param`, `tuple`, `unknown` |
 | `BinOp` | `add`, `sub`, `mul`, `div`, `mod`, `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `and`, `or`, `implies` |
 | `BitSetOp` | `size`, `has`, `with`, `without`, `union`, `intersection`, `difference`, `is_subset`, `first`, `last`, `items` |
 | `Bound` | `rhs`, `expr` |

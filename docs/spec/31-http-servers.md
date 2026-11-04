@@ -2,13 +2,128 @@
 
 Status: Normative, edition 0.4 preview (ADR 0123).
 
-A server answers HTTP/1.1 requests through the host capability `HttpServer`, granted by address with limits. The rules of ADR 0123 join this chapter as they land, each with its tests. Until the capability lands, no program can name it, and the rules below bind the host code that will read, write and serve for it (`crates/una-http`), which its tests check.
+A server answers HTTP/1.1 requests through the host capability `HttpServer`, granted by address with limits. The rules of ADR 0123 join this chapter as they land, each with its tests. A program names the capability and is checked against §1; its operations run in neither engine yet (§1 rule 10), and the rules of §2 to §6 bind the host code that will read, write and serve for it (`crates/una-http`), which its tests check.
 
 **Editions.** The rules of this chapter apply only to packages of edition `0.4` (`spec/13 §7`). Earlier editions do not change, and the client of `spec/24` does not change.
 
 ## 1. The capability
 
-The declarations of `HttpServer`, `Request`, `Reply`, `Exchange` and reply rights (ADR 0123 rules 1 to 5) join this section when the capability lands.
+The declarations of ADR 0123 rules 0 to 5 and the static rules of its Information flow, with the label `L_srv` of its S4 amendment (IF-S1), are in this section. The operations of `HttpServer` do not run yet in either engine (rule 10).
+
+1. **Edition and names.** Every name of this section exists only in packages of edition `0.4`. `std.host` declares them, and the prelude does not put them in scope: a module imports them, as `import std.host (HttpServer, Request, Reply)` (`spec/10 §11` rule 10). An import of one is never redundant, an import of `Method` or `ServeError` brings its variants, and a kind of the package named `Request` or `Reply` stays legal. In earlier editions an import of these names is U1001, as an unknown name is. This section adds no keyword.
+2. **Declarations.** `std.host` declares, in edition `0.4`:
+
+   ```una
+   --- The methods a request may have. The host answers any other with 501.
+   pub kind Method = Get | Head | Post | Put | Patch | Delete | Options
+
+   --- One decoded query parameter, as `name=value`.
+   pub kind Param
+     name: internal Text
+     value: internal Text
+
+   --- A request, as the host read it (§3 and §4).
+   pub kind Request
+     method: internal Method
+     target: internal Text             -- the request target as received, in origin-form
+     segments: internal List[Text]     -- the path, split on "/" and percent-decoded segment by segment
+     params: internal List[Param]      -- the query, decoded, in order
+     headers: internal List[Header]    -- names in ASCII lower case, in the order received
+     body: internal Text
+     peer: internal Text               -- the peer's IP address, without its port
+     listener: internal Text           -- the grant's address, as the grant writes it
+
+   --- A request and the reply right to answer it.
+   pub kind Exchange
+     request: internal Request
+     right: internal ReplyRight
+
+   pub kind Status = Int where 200 <= it and it <= 599
+
+   pub kind Reply
+     status: internal Status
+     headers: internal List[Header]
+     body: internal Text
+
+   pub kind ServeError = Interrupted | TimedOut | Closed | NotHeld | BadReply
+
+   pub capability HttpServer
+     op next() -> internal Exchange
+       fails ServeError
+       accepts internal
+     op reply(to: ReplyRight, reply: Reply) -> Unit
+       fails ServeError
+       accepts internal
+     op close() -> Unit
+       accepts public
+   ```
+
+   - **`params`.** ADR 0123 rule 1 names the field of the decoded query `query`, a word that `spec/01` reserves in every edition, so a field of that name could never be read. The field is `params`, and the draft amendment `docs/plan/0123-s5-amendment-draft.md` records the rename.
+   - **`Header`** is the kind of `spec/24 §1`, whose `value` is `internal Text`.
+   - **Labeled fields.** The fields are `internal`, so a program can build a `Reply` from request data, and a test or a handler can build a `Request` from `internal` data. A constructor field is a flow site (`spec/07 §7` rule 2), so a `secret` value in a field of a `Reply` is U4001 where the reply is made.
+   - **`Status`** is a refinement of `Int`: every `Reply(status: s, ...)` carries the obligation `200 <= s and s <= 599` (`spec/12 §3`), refuted U5001 and unknown U5002.
+   - **`ReplyRight`** is an opaque built-in type of `std.host`: it has no constructor, no literal, no fields and no order. Its values come only from `next` and, once it lands, from `std.testing.test_exchange` (ADR 0123 rule 21). Two reply rights are equal when they name the same exchange, so `==` and `!=` apply to it. Interpolation writes `<reply-right>`.
+   - **Failures.** `next` fails with `Interrupted` at a host stop (`spec/26`), `TimedOut` when a deadline of the program cuts its wait (`spec/27 §5`), and `Closed` after `close`. `reply` fails with `NotHeld` and `BadReply` (rules 4 and 13 of ADR 0123, §5 rule 1). `close` cannot fail, so a handling clause on it is U3025.
+   - **What each accepts.** `reply` accepts `internal` (IF2). `close` accepts `public` only, so a server cannot close itself on the strength of a request's content: under a raised program counter it is U4003 (IF1). `next` accepts `internal`: ADR 0123 writes no `accepts` on it, and whether a task takes a request off the queue, and with it a `/once` slot that other tasks' deliveries wait for, could otherwise depend on `secret` data; under a `secret` program counter it is U4003.
+   - **What parks.** `next` parks its task while no request is ready, and is an interruptible operation (`spec/26`, `spec/27`). `reply` and `close` never wait.
+   - **One instance.** A run has one host instance of `HttpServer`, `host:HttpServer`, which serves every `serve` grant (§2).
+   - **Grants and examples.** A `uses` of an `HttpServer` operation that no `serve` grant allows is U3012 (`spec/05 §7` rule 2); a grant allows all three operations, and the repair is a description only, since no address can be chosen for the programmer. A test whose `do` line needs `HttpServer` without a `given` handler is U3014 (`spec/05 §9` rule 5). A test MAY install a handler of `HttpServer` with `given`, as for every capability; its operations are ordinary handler code.
+3. **Reply rights** (ADR 0123 rule 4). Every exchange comes with a reply right, held by exactly one task at a time:
+   1. `next` gives the reply right of its exchange to the task that called it.
+   2. `start e` moves to the started task every reply right that the calling task holds and that is reachable from the values `e` captures, closures included.
+   3. No other construct moves a reply right: a branch of `together`, the body of a `together for` and a branch of `first of` act for the task that runs the construct (rule 4).
+   4. `reply` succeeds only for a reply right that the calling task holds and has not answered; otherwise it fails with `NotHeld`, and nothing is sent. A successful `reply` releases it.
+   5. When a task ends holding reply rights, the host answers each one, in the order the task received them: `500` when the task returned, failed or ended alone, `503` with `Retry-After: 1` when it was cancelled, cut by `within` or stopped; each appends the event `{"seq": n, "task": "<path>", "outcome": {"kind": "unanswered", "status": s}}`.
+   6. Which task holds a reply right depends only on the order of `next`, `start` and `reply` in each task, never on timing.
+   7. Each exchange ends by one atomic transition, the first of the program's `reply`, the host's `answer` deadline, an auto-answer, its peer leaving or a stop; a `reply` after another transition returns `unit` and sends nothing.
+
+   Items 1, 2 and 4 to 7 are the runtime's, and land with the operations (rule 10). What the checker can see of them is checked now: item 3 through rule 4, and the auto-answers of item 5 through IF6 (rule 5 item 6).
+4. **No server operations in branches** (U3033, ADR 0123 rule 5). The effect set (`spec/05 §3` rule 3) of a branch of `together`, of the body of a `together for` and of a branch of `first of` MUST NOT contain an operation of `HttpServer`. U3033 is reported at each of these, written in the branch, inside a lambda written there too:
+   - an operation of `HttpServer`, "`@server.reply` cannot run in a branch of `together`; answer after the block";
+   - a call of a function, a call of a function value, a function named or passed as a value, and a handler installed with `with`, whose requirements hold `HttpServer`;
+   - an operation of a capability that has a handler in the package whose `uses` hold `HttpServer`, or another such capability, whatever handler serves it, since a handler's parameters may hold a reply right.
+
+   The repair, a description only, moves the operation after the construct. Each check is O(1) per site, beside a fixpoint over the package's handlers computed once.
+5. **Information flow** (ADR 0123 IF1 to IF7).
+   1. **Requests are input** (IF1). `next` returns an `internal Exchange`. Whether `next` succeeds is `public`: no argument decides it, and its failures come from host stops, from `close`, which accepts `public` only, and from deadlines, which `spec/27 §5` labels. So an accept loop stays at a `public` program counter, and it can print.
+   2. **Replies accept `internal`** (IF2). Every argument of `reply` is a sink with `accepts internal`: a `secret` value reaches a reply only through a policy (`spec/07 §5`).
+   3. **Failures of `reply`** (IF3) are labeled `internal` at least: `NotHeld` and `BadReply` are decided by the reply right, the reply and the task's own reply rights, which the program's order decides. `attempt` gives an `internal` `Result`, and `if error pass` and `if error fail` are U4002.
+   4. **No host deadline becomes a value** (IF4): the host's deadlines, a peer that leaves and full queues change only what the network carries (rule 3 item 7).
+   5. **The request stream** is input from outside, and its dependence on the server's timing is out of model (IF5, `spec/07 §1`), as is which request a call of `next` receives when several serve threads hold requests.
+   6. **Auto-answers** (IF6). A `start e` whose captures can hold a `ReplyRight`, by their types, or, in a package that imports `HttpServer`, `Exchange` or `ReplyRight`, include a function value, which may have captured one, moves reply rights, whose auto-answers depend on how its task ends. It is checked as a `reply` at the `start`: its program counter, joined with the effect floor and the timing floor around it, and with `τ(e)` when it has `within`, MUST flow to `internal`, else U4003 at the word `start`. A reply inside `e` meets the same bound already, so this rejects only a `start` whose expression never replies. The capture test is one look at the type of each local `e` reads, O(1) per read with a table of the kinds that can hold a reply right, computed once.
+   7. **The label `L_srv`** (ADR 0123, S4 amendment IF-S1). In a package whose code performs an operation of `HttpServer`, the serve threads' work after each hand-off site, an operation of `HttpServer` or a `start` of item 6, can shift every timing site of the program, so `L_srv = internal ⊔ ⨆ over hand-off sites s of (sfx(s) ⊔ Suf*(node(s)) ⊔ τ_conc(s)) ⊔ L_res` joins `τ` of every timing site, as `L_res` does (`spec/26 §7` rule 5): every `within`, `first of` and `for ever within`, every tick, `L_lim` and the statement a `limiter` scopes over. It is `public` in a package without an operation of `HttpServer`. A message whose label it raises names "the requests that the serve threads handle after the server operations in `m.f`".
+      - **Preview over-approximation.** `sfx(s) ⊔ Suf*(node(s))`, the code that can run after `s`, is taken as `τ⁰` of the bodies of every ancestor of the function that holds `s`, that function included, in the call graph of ADR 0116 P1, the rule of `L_lim` (`spec/27 §9` rule 5); and `τ_conc` is the preview's, `⊤` for a site in a task, a `tasks` block, a lambda or a handler's operation (`spec/26 §7` rule 5 item 5). Both are sound and coarser than the amendment's, so code that runs only before the first server operation still raises the label here; they MAY become more precise, and MUST NOT become stricter. In a server of the language form, whose `next` stands in the block of a `tasks` statement, `L_srv` is `⊤` under the preview, and so is every timing site of the package.
+      - **Cost.** One pass over the call graph, linear in its nodes and edges, and linear in the hand-off sites.
+   8. **In practice** (IF7). A request task branches on `internal` data, so its program counter is `internal`: it can call `Http`, `Files.write`, `limiter` and `reply`, and cannot print. Under the preview's `τ_conc`, a `start ... within` in the block of a `tasks` statement whose expression performs an operation that accepts `internal` is refused already (`spec/27 §5`), so the language form below starts its tasks without `within`, and the host's `answer` deadline bounds what each peer waits.
+6. **The language form** (ADR 0123 rule 15). A server is a `diverges` function with a `for ever` loop that calls `next` and starts a task per request:
+
+   ```una
+   answer(exchange: internal Exchange) -> Unit
+     uses @server: HttpServer[reply]
+   =
+     @server.reply(to: exchange.right, reply: Reply(status: 200, headers: [], body: "ok"))
+       if error use unit
+
+   serve_all() -> Unit
+     uses @server: HttpServer[next, reply, close]
+     diverges
+   =
+     tasks at most 1000 at once
+       for ever
+         let next = attempt @server.next()
+         when next
+           is Ok(exchange) ->
+             start answer(exchange)
+           is Err(failure) -> unit
+       on stop
+         @server.close()
+   ```
+
+   `next` waits, parked, and fails with `Interrupted` at a host stop, which ends the loop at its next iteration start. `tasks at most N at once` bounds the program's tasks, and the grant's `/once` the exchanges open. A server that answers in its loop, with no `tasks`, is legal too.
+7. **Trace events.** `next`, `reply` and `close` are events of `spec/11 §5`, with `instance` `host:HttpServer`, written in the reduced form of ADR 0123 rule 1: the values of the headers `authorization`, `proxy-authorization`, `cookie`, `set-cookie`, `x-api-key` and `x-auth-token` as `<credential>`; the values of query parameters, and bodies, as `{"length": n, "hmac": "<hex>"}`, an HMAC-SHA-256 under a key of the run; a reply right as `<reply-right>`. They land with the operations (rule 10).
+8. **Diagnostics.** U3033 is new (`spec/13 §4`). U1001, U3012, U3014, U3025, U4001, U4002, U4003, U5001 and U5002 cover the rest.
+9. **Costs.** Holding, moving and releasing a reply right are O(1) each, and the move at `start` costs nothing in native code beyond the copy of the captures; the checks of this section are linear in the sites they look at.
+10. **Pending: the operations.** The operations of `HttpServer`, the holding and moving of reply rights at run time, the state machine of rule 3 item 7, the auto-answers and their events, and the reduced trace form, land in both engines with a later slice of ADR 0123, after the timing oracles of `L_srv` (see the end of §6). Until then, `una run` of a program whose entry function, `main` or a driven module's `init`, `step` or `on_stop`, uses `HttpServer`, and `una build` of one, are a usage error, exit code 2, before anything runs: "`srv.main` uses `HttpServer`, whose operations do not run in this release yet". `una check` checks such a program fully, and `una test` runs tests that install a handler of `HttpServer` with `given`.
 
 ## 2. Grants
 
@@ -144,7 +259,7 @@ The host refuses every request that two HTTP implementations might read differen
 
 ## 6. Connections and serve threads
 
-The host code in `crates/una-http/src/serve` is the same in both engines and runs on **serve threads**: threads that never run program code and whose work is bounded and linear in the bytes and events they handle (ADR 0123 rules 12 to 14 and 17 to 20; `docs/plan/0123-s4-design.md`). No program can name `HttpServer` yet, so until it lands (ADR 0123 step 5) a run holds its listeners and accepts nothing; the engine is exercised by its own tests, with a consumer written in Rust in place of the program.
+The host code in `crates/una-http/src/serve` is the same in both engines and runs on **serve threads**: threads that never run program code and whose work is bounded and linear in the bytes and events they handle (ADR 0123 rules 12 to 14 and 17 to 20; `docs/plan/0123-s4-design.md`). No program can perform an operation of `HttpServer` yet (§1 rule 10), so a run holds its listeners and accepts nothing; the engine is exercised by its own tests, with a consumer written in Rust in place of the program.
 
 1. **Serve threads.** `una run` and executables take `--serve-threads <n>`, from 1 to 256, by default the number of the machine's cores (`spec/27 §3`). A value that is not a number, or is out of range, is a usage error, exit code 2, before `main` starts. A run that serves nothing accepts the flag and uses none. Each serve thread owns its connections, its timers and an inbox, and has a readiness queue of its own (`kqueue` or `epoll`) and a pair of sockets that wake it. Only plain owned data crosses between threads: a connection, the bytes of a request, a serialized reply.
 2. **Accepting.**
@@ -178,4 +293,4 @@ The host code in `crates/una-http/src/serve` is the same in both engines and run
 12. **Costs.** Accepting, queueing and delivering a request, reserving and releasing a share, taking a token, arming and cancelling a timer, and closing are O(1) expected; reading b bytes is O(b); a reply of r bytes costs O(r) to check and serialize and O(log c) per connection closed for pressure over c connections with a reply pending; a host stop is O(connections + queued requests).
 13. **Faults.** A panic of the host in a connection's step outside the serve thread's timers and readiness registrations, in the hand-off of an accepted connection, in a peer's expiry, or in a callback the program's side registered, closes that connection at most (at accept, the connection is closed and gives back its slot and its peer's place as far as its state records them: a fault inside the peer's admission after its place was taken, or in the hand-off before the connection reaches its owner's inbox, leaves them held); no serve thread ends by it. A panic inside the thread's timers or readiness registrations, which every connection of the thread shares, including one in the closing after a contained fault, or anywhere else in the thread's loop, ends the thread. A serve thread that ends closes every connection it owned and gives back what they held as far as their state records it (rules 2, 4, 5 and 6; a panic inside the giving back leaves that connection's rest held, and the other connections still close), hands on the turn to accept and the peers' expiries it was timing, and registers again every listener whose event its last wait for connections returned and whose burst did not end; a message for it is handled by its sender; a new connection whose keyed owner ended is placed on the next serve thread in the ring that has not ended. Contained faults are counted but not yet shown to the program (step 5).
 
-**Block for the capability.** The serve threads decide observable timing: `408` against a silent close, `idle` against `read`, the order of delivery, and the placement of connections. ADR 0123 step 5 (#1007) MUST NOT wire these engines to a program before the `L_srv` labels of the S4 design (`docs/plan/0123-s4-design.md` §10) and their timing oracles exist.
+**Block for the capability.** The serve threads decide observable timing: `408` against a silent close, `idle` against `read`, the order of delivery, and the placement of connections. The checker computes the `L_srv` labels of the S4 design (`docs/plan/0123-s4-design.md` §10) with the preview's terms (§1 rule 5 item 7); the engines MUST NOT be wired to a program before their timing oracles exist, which land with the operations (§1 rule 10).

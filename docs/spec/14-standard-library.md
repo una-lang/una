@@ -126,6 +126,8 @@ kind KeyError = | UnknownKey
 
 (v0.2, ADR 0074.) In edition `0.2`, `std.host` also declares the capability `Http` and the kinds `Header`, `Response` and `HttpError` (`spec/24`).
 
+(v0.4, ADR 0123.) In edition `0.4`, `std.host` also declares the capability `HttpServer`, the kinds `Method`, `Param`, `Request`, `Exchange`, `Status`, `Reply` and `ServeError`, and the opaque type `ReplyRight` (`spec/31 §1`). Unlike the other host capabilities, the prelude does not put these names in scope: a module imports them from `std.host`, and an import of one is never redundant (`spec/10 §11` rule 10).
+
 ## 4. `std.testing`
 
 Usable only in test code (ADR 0028, ADR 0043):

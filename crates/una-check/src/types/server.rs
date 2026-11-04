@@ -70,32 +70,38 @@ pub(crate) fn is_server(env: &Env<'_>, id: Option<CapId>) -> bool {
 }
 
 /// The capabilities whose operations can run an operation of `HttpServer`: those with a handler
-/// whose `uses` hold `HttpServer`, or another such capability, to a fixpoint (U3033). The
-/// handlers' `uses` are declared, so the fixpoint is over the handlers once each round, and a
-/// round adds a capability or ends: O(capabilities × handlers × uses).
+/// whose `uses` hold `HttpServer`, or another such capability, to a fixpoint (U3033). A search
+/// over the edges from each capability to the capabilities of the handlers that use it, from
+/// the handlers that use `HttpServer`: O(capabilities + handlers × uses).
 pub(crate) fn serving_capabilities(env: &Env<'_>) -> BTreeSet<CapId> {
+    // `users[c]`: the capabilities of the handlers whose `uses` hold `c`.
+    let mut users: std::collections::BTreeMap<CapId, Vec<CapId>> =
+        std::collections::BTreeMap::new();
     let mut serving: BTreeSet<CapId> = BTreeSet::new();
-    loop {
-        let before = serving.len();
-        for handler in &env.handlers {
-            let Some(capability) = handler.capability else {
-                continue;
-            };
-            if serving.contains(&capability) {
-                continue;
+    let mut pending: Vec<CapId> = Vec::new();
+    for handler in &env.handlers {
+        let Some(capability) = handler.capability else {
+            continue;
+        };
+        for need in &handler.uses {
+            let used = need.usage.capability;
+            if is_server(env, used) {
+                if serving.insert(capability) {
+                    pending.push(capability);
+                }
+            } else if let Some(used) = used {
+                users.entry(used).or_default().push(capability);
             }
-            let reaches = handler.uses.iter().any(|need| {
-                let used = need.usage.capability;
-                is_server(env, used) || used.is_some_and(|id| serving.contains(&id))
-            });
-            if reaches {
-                serving.insert(capability);
-            }
-        }
-        if serving.len() == before {
-            return serving;
         }
     }
+    while let Some(capability) = pending.pop() {
+        for &user in users.get(&capability).map_or(&[][..], Vec::as_slice) {
+            if serving.insert(user) {
+                pending.push(user);
+            }
+        }
+    }
+    serving
 }
 
 /// Whether a value of `ty` may hold a `ReplyRight`: the type itself, or one inside a list, a

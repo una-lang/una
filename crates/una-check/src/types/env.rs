@@ -1084,6 +1084,10 @@ impl<'a> Env<'a> {
         if let Some(variants) = scope.imported_variants.get(name) {
             return variants.clone();
         }
+        // ADR 0123 rule 0: the names of the server are in no scope without an import.
+        if module < self.prelude && prelude::SERVER_NAMES.contains(&name) {
+            return Vec::new();
+        }
         match self
             .modules
             .get(self.prelude)

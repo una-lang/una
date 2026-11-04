@@ -227,6 +227,15 @@ fn probe(dir: &Path, item: &Item, edition: Edition) {
             format!("import std.testing ({name})\n\n"),
             "pub probe() -> Unit = unit\n".to_owned(),
         ),
+        // `spec/31 §1`: only an import of `std.host` brings these names into scope.
+        ("std.host", "kind") => (
+            format!("import std.host ({name})\n\n"),
+            format!("pub probe(x: {name}) -> Unit = unit\n"),
+        ),
+        ("std.host", _) => (
+            format!("import std.host ({name})\n\n"),
+            format!("pub probe() -> Unit\n  uses @c: {name}\n=\n  unit\n"),
+        ),
         (_, "kind") => (
             String::new(),
             format!("pub probe(x: {name}) -> Unit = unit\n"),

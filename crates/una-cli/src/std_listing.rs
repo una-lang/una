@@ -32,7 +32,7 @@ struct Listing {
 pub struct Item {
     /// Its name.
     pub name: String,
-    /// `prelude` or `std.testing`.
+    /// `prelude`, `std.host` or `std.testing`.
     pub module: &'static str,
     /// `function`, `predicate`, `kind` or `capability`.
     pub kind: &'static str,
@@ -54,8 +54,22 @@ pub struct Variant {
     pub docs: Vec<String>,
 }
 
-/// The standard modules of the listing: the prelude and `std.testing`.
-const MODULES: [&str; 2] = ["prelude", "std.testing"];
+/// The standard modules of the listing: the prelude, `std.host` for the names that only an
+/// import of it brings into scope (`spec/31 §1`), and `std.testing`.
+const MODULES: [&str; 3] = ["prelude", "std.host", "std.testing"];
+
+/// The declarations of the prelude's source that belong to `std.host` alone, edition 0.4
+/// (ADR 0123 rule 0): the prelude does not put them in scope.
+const HOST_ONLY: [&str; 8] = [
+    "HttpServer",
+    "Method",
+    "Param",
+    "Request",
+    "Exchange",
+    "Status",
+    "Reply",
+    "ServeError",
+];
 
 /// Every public item of the standard modules, in order of first declaration: the prelude's,
 /// then `std.testing`'s, each in source order, oldest edition first.
@@ -67,7 +81,7 @@ pub fn std_items() -> Vec<Item> {
         let source = una_check::standard_source(edition);
         let texts = [
             (MODULES[0], source.prelude.as_str(), source.keywords),
-            (MODULES[1], source.testing.as_str(), source.keywords),
+            (MODULES[2], source.testing.as_str(), source.keywords),
         ];
         for (module, text, keywords) in texts {
             let mut sources = SourceDb::new();
@@ -85,6 +99,11 @@ pub fn std_items() -> Vec<Item> {
                     continue;
                 }
                 let docs = docs(decl, text);
+                let module = if module == MODULES[0] && HOST_ONLY.contains(&name.as_str()) {
+                    MODULES[1]
+                } else {
+                    module
+                };
                 let at = *index.entry((module, name.clone())).or_insert_with(|| {
                     items.push(Item {
                         name,
@@ -101,8 +120,8 @@ pub fn std_items() -> Vec<Item> {
             }
         }
     }
-    // Keep the order of first declaration, but list the prelude's items before
-    // `std.testing`'s: a stable sort by module.
+    // Keep the order of first declaration, but list the prelude's items, then `std.host`'s,
+    // before `std.testing`'s: a stable sort by module.
     items.sort_by_key(|item| MODULES.iter().position(|m| *m == item.module));
     for item in &mut items {
         item.spec = cited(&item.variants);

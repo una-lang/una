@@ -397,6 +397,45 @@ mod tests {
     }
 
     #[test]
+    fn the_names_of_the_server_are_the_declarations_of_std_host_in_0_4() {
+        // ADR 0123 rule 1: every name of the server is declared by `host_0_4.una`, or is the
+        // built-in `ReplyRight`; the variants an import brings are the kinds' own; edition 0.3
+        // exports none of them, and the prelude's scope holds none (rule 0).
+        let source = include_str!("../std/host_0_4.una");
+        let declared: BTreeSet<&str> = source
+            .lines()
+            .filter_map(|line| {
+                let rest = line
+                    .strip_prefix("pub kind ")
+                    .or_else(|| line.strip_prefix("pub capability "))?;
+                rest.split(|c: char| !c.is_ascii_alphanumeric()).next()
+            })
+            .collect();
+        let mut names: BTreeSet<&str> = SERVER_NAMES.iter().copied().collect();
+        assert!(names.remove("ReplyRight"));
+        assert_eq!(names, declared);
+        for kind in ["Method", "ServeError"] {
+            let line = source
+                .lines()
+                .find(|line| line.starts_with(&format!("pub kind {kind} = ")))
+                .unwrap();
+            let variants: Vec<&str> = line
+                .split_once(" = ")
+                .unwrap()
+                .1
+                .split('|')
+                .map(str::trim)
+                .collect();
+            assert_eq!(server_variants(kind).unwrap(), variants.as_slice());
+        }
+        for name in SERVER_NAMES {
+            assert!(std_host_names(Edition::V0_4).contains(&name), "{name}");
+            assert!(!std_host_names(Edition::V0_3).contains(&name), "{name}");
+            assert!(!UPPER.contains(&name), "{name}");
+        }
+    }
+
+    #[test]
     fn the_prelude_matches_spec_14() {
         let (lower, upper) = specified();
         let ours: BTreeSet<String> = LOWER.iter().map(|name| (*name).to_owned()).collect();
