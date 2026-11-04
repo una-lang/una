@@ -65,6 +65,10 @@ pub(crate) struct Records {
     /// obligations that ADR 0103 adds: where tier 1 generates one, as
     /// `una_core::flow::Kinds::pending` decides over Core IR (#615).
     pub(crate) refined_flows: Vec<RefinedFlow>,
+    /// For each operation call, by its span, the types whose labels, joined, are the label its
+    /// outcome is rendered at in a run's trace (S-45, #1552, `spec/11 §5`): the decision's
+    /// label on `Unit`, the result and the failure type.
+    pub(crate) outcomes: BTreeMap<Span, Vec<Ty>>,
 }
 
 /// A flow of a value at `span` into `target`, in the module `module` and the function
@@ -93,6 +97,12 @@ impl Records {
                 other => other,
             };
             self.res.insert(span, res);
+        }
+        for (span, parts) in other.outcomes {
+            self.outcomes
+                .entry(span)
+                .or_default()
+                .extend(parts.iter().map(&resolve));
         }
         self.args.extend(other.args);
         self.annotations.extend(other.annotations);

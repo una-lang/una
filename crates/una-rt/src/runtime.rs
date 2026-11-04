@@ -1456,6 +1456,7 @@ pub(crate) fn install_test_state_as(path: String, tracing: bool, file: String) {
                 ty: 0,
                 redacted: None,
             },
+            outcome: None,
             error: None,
         }]),
         host_failed: false,

@@ -3355,6 +3355,16 @@ impl<'e, 'a> Fx<'e, 'a> {
                             )
                         })
                         .collect();
+                    // S-45 (#1552): the label of the outcome in a run's trace; an operation
+                    // with no record fails closed at `⊤`, so the trace redacts its outcome.
+                    let outcome = self.records.outcomes.get(&span).map_or_else(
+                        || Label::top(&self.env.categories),
+                        |parts| {
+                            parts.iter().fold(Label::public(), |label, ty| {
+                                label.join(&ty.argument_label())
+                            })
+                        },
+                    );
                     let capability_path = self.capability_path(Some(capability));
                     let capability = self
                         .env
@@ -3373,6 +3383,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                             args: values,
                             arg_spans,
                             labels,
+                            outcome,
                             span,
                         },
                     )

@@ -462,6 +462,7 @@ impl Writer<'_> {
                 args,
                 arg_spans,
                 labels,
+                outcome,
                 span,
             } => node!(Op,
                 "cap" => s(cap),
@@ -471,6 +472,7 @@ impl Writer<'_> {
                 "args" => self.atoms(args),
                 "arg_spans" => self.spans(arg_spans),
                 "labels" => list(labels, |l| self.label(l)),
+                "outcome" => self.label(outcome),
                 "span" => self.span(*span),
             ),
             Rhs::Construct {
