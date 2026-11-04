@@ -1115,12 +1115,15 @@ impl Checker<'_, '_, '_> {
             let top = found.top_label();
             if !top.flows_to(&element_label) {
                 let input = self.report.text(arg.value.span).to_owned();
-                self.report.error(
+                self.flow_error(
                     Code::U4001,
                     arg.value.span,
                     format!(
                         "the shape of `{input}` is labeled `{top}`, and decides the elements of a receiver labeled `{element_label}`; give the receiver's elements a `{top}` label"
                     ),
+                    super::flow::Carrier::Value("this value"),
+                    &top,
+                    &element_label,
                 );
             }
         }
