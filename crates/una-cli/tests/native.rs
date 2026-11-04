@@ -7048,6 +7048,184 @@ fn l1544_the_conformance_case_has_one_trace_for_every_secret() {
     assert_eq!(trace, expected);
 }
 
+/// S-42 (#1515), review H3 of #1511 round 2 (`op1.una`): an operation of a capability that
+/// accepts `secret`, performed under `if COND`, once per `i` the condition holds for.
+const SECRET_OPS: &str = r#"module leak
+
+capability Sink
+  op put(x: Int) -> Unit
+    accepts secret
+
+handler keep() for Sink
+  op put(x) = unit
+
+feed(s: secret Int) -> Unit
+  uses @k: Sink[put]
+=
+  for i in 0..<4
+    if COND
+      @k.put(s)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let s: secret Int = SECRET
+  feed(s) with @k = keep()
+  @console.print("done")
+"#;
+
+#[test]
+fn s42_operations_under_a_secret_branch_append_no_event() {
+    // S-42 (#1515), `spec/26 §6` rule 4, `spec/11 §5`: an operation performed in quiet code
+    // appends no event and takes no `seq`. Before, `s` `put` events (their arguments redacted)
+    // came before `done`, whose `seq` was `s + 1`: the whole secret in one run.
+    let source = SECRET_OPS.replace("COND", "s > i");
+    for secret in [0, 1, 3, 4] {
+        let (output, run, native) = secret_run("s42ops", &source, secret, &[]);
+        assert_eq!(output, serde_json::json!(["done"]), "{secret}");
+        assert_eq!(run, done_only(), "{secret}");
+        assert_eq!(native, done_only(), "{secret}");
+    }
+    // The control: at a `public` program counter the same operations keep their events, their
+    // `secret` argument redacted.
+    let source = SECRET_OPS.replace("COND", "3 > i");
+    let (_, run, native) = secret_run("s42pub", &source, 2, &[]);
+    assert_eq!(run, native);
+    let events = run.as_array().cloned().unwrap_or_default();
+    assert_eq!(events.len(), 4, "{run}");
+    for (index, event) in events.iter().take(3).enumerate() {
+        assert_eq!(event["seq"], index + 1, "{run}");
+        assert_eq!(event["instance"], "with:keep#1", "{run}");
+        assert_eq!(event["args"]["x"], "<redacted:secret>", "{run}");
+    }
+}
+
+#[test]
+fn s42_the_conformance_case_has_one_trace_for_every_secret() {
+    // S-42 (#1515): the conformance case `operations_under_secret` checks its output; here its
+    // whole trace is compared across secrets, in both engines. Only the operations at a
+    // `public` program counter are left: the `hold`, and the last `put`; those of code quiet by
+    // a `secret` branch, by the effect floor of `hold`'s body or by a decision on values of a
+    // type parameter, and those of the started task under its branch, append nothing.
+    let path = root().join("tests/conformance/runtime/operations_under_secret/src/operations.una");
+    let source = std::fs::read_to_string(&path).unwrap();
+    let fixed = "let s: secret Int = 2";
+    assert_eq!(source.matches(fixed).count(), 1, "{}", path.display());
+    let source = source
+        .replace(fixed, "let s: secret Int = SECRET")
+        .replace("module operations", "module leak");
+    let trace = one_trace_for_every_secret("s42conf", &source, &serde_json::json!(["done 2"]));
+    let ops: Vec<(&str, &str)> = trace
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|event| Some((event["instance"].as_str()?, event["op"].as_str()?)))
+        .collect();
+    assert_eq!(
+        ops,
+        [
+            ("with:box#1", "hold"),
+            ("with:keep#3", "put"),
+            ("host:Console", "print")
+        ],
+        "{trace}"
+    );
+}
+
+/// S-42 review of #1551, L2 (`p_l1.una` verbatim): a `for ever within` iteration whose quiet
+/// code, under an `internal` branch, has its `Limit.acquire` cut by the deadline, then performs
+/// a public `acquire`.
+const QUIET_DEADLINE: &str = r#"module leak
+
+import std.limit (Limit, limiter)
+import std.time (millisecond, minute)
+
+maybe(s: internal Int) -> Unit
+  uses @gate: Limit[acquire]
+=
+  if s > 0
+    let a = attempt @gate.acquire()
+    unit
+  else
+    unit
+
+step(s: internal Int) -> Unit
+  uses @gate: Limit[acquire]
+=
+  maybe(s)
+  let b = attempt @gate.acquire()
+  unit
+
+poll(s: internal Int) -> Unit
+  uses @gate: Limit[acquire]
+  diverges
+=
+  for ever within 100 * millisecond
+    step(s)
+  unit
+
+pub main() -> Unit
+  uses @console: Console[print]
+  diverges
+=
+  let s: internal Int = SECRET
+  poll(s) with @gate = limiter(at_most: 1, per: minute, waiting: 1000)
+  @console.print("done")
+"#;
+
+/// The outcome of each event of `trace`: its kind, or `fail:<variant>`.
+fn outcome_kinds(trace: &Value) -> Vec<String> {
+    trace
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|event| {
+            let outcome = &event["outcome"];
+            match outcome["variant"].as_str() {
+                Some(variant) => format!("fail:{variant}"),
+                None => outcome["kind"].as_str().unwrap_or("").to_owned(),
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn s42_quiet_code_does_not_consume_the_iteration_timeout_event() {
+    // S-42 (#1515), review L1 of #1511 round 2 and L2 of #1551, `spec/26 §7` rule 4: a failure
+    // that the iteration's deadline causes in quiet code neither appends the `timeout` event
+    // nor counts as the iteration's first observation of it, so the public `acquire` after it
+    // still appends the event, in every iteration, in both engines. Before, quiet code marked it
+    // reported and no `timeout` event was left for `s > 0`.
+    let args = ["--virtual-time", "--stop-after-iterations", "3"];
+    let source = QUIET_DEADLINE;
+    let iteration = ["fail:RateLimited", "timeout"];
+    let mut expected: Vec<&str> = iteration.repeat(3);
+    expected.extend(["stop", "ok"]);
+    for secret in [1, 3] {
+        let (output, run, native) = secret_run("s42l1", source, secret, &args);
+        assert_eq!(output, serde_json::json!(["done"]), "{secret}");
+        assert_eq!(run, native, "{secret}");
+        assert_eq!(outcome_kinds(&run), expected, "{secret}: {run}");
+    }
+    // `s = 0`: the public `acquire` of the first iteration takes the token. That the outcomes
+    // differ from `s > 0` is the open channel of shared host state (S-45, #1552), not this rule.
+    let (_, run, native) = secret_run("s42l1", source, 0, &args);
+    assert_eq!(run, native);
+    assert_eq!(
+        outcome_kinds(&run),
+        [
+            "ok",
+            "fail:RateLimited",
+            "timeout",
+            "fail:RateLimited",
+            "timeout",
+            "stop",
+            "ok"
+        ],
+        "{run}"
+    );
+}
+
 /// S-40 (#1512), review H2 of #1511 (`taskid3.una` verbatim): a finite task started under a
 /// `secret` branch, then a public task that prints, in the same `tasks` statement.
 const SECRET_START_INDEX: &str = r#"module leak
@@ -7434,7 +7612,9 @@ fn s40_quiet_tasks_have_no_number_so_quiet_code_without_a_secret_branch_shows_no
     // Since #1544 the `put`s that the generic case's quiet tasks perform, on instances they
     // install themselves, append no event, and an effect under a decision on values of a type
     // parameter is U4002: no event of those tasks is left to carry a path. The floor cases
-    // perform their `put` on an instance that public code installed, which keeps its event.
+    // perform their `put` on an instance that public code installed, in quiet code (the effect
+    // floor of `hold`'s body), so since S-42 (#1515) it appends no event either: only the
+    // `hold` and the `print` are left, and no event carries a path.
     let generic = same_traces_across("s40generic", SECRET_START_GENERIC, &[0, 1, 2, 3]);
     assert_eq!(generic, done_only(), "{generic}");
     for (name, source) in [
@@ -7442,8 +7622,21 @@ fn s40_quiet_tasks_have_no_number_so_quiet_code_without_a_secret_branch_shows_no
         ("s40blocks", SECRET_BLOCKS_FLOOR),
     ] {
         let trace = same_traces_across(name, source, &[0, 1, 2, 3]);
-        assert_eq!(trace[0]["task"], "qs.q", "{name}: {trace}");
-        assert_eq!(trace[0]["op"], "put", "{name}: {trace}");
+        let ops: Vec<&Value> = trace
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|event| &event["op"])
+            .collect();
+        assert_eq!(ops, ["hold", "print"], "{name}: {trace}");
+        assert!(
+            trace
+                .as_array()
+                .into_iter()
+                .flatten()
+                .all(|e| e.get("task").is_none()),
+            "{name}: {trace}"
+        );
     }
 }
 

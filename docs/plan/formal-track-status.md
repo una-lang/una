@@ -19,6 +19,8 @@ The track found three real leaks in released versions, S-14 to S-16, all fixed a
 
 ## The corpus today
 
+**Stale since S-39 and S-42 (2026-11-04).** The figures below were measured on #538's branch, before Core's `quiet` existed. The importer reads `quiet` as a form outside F1 (`formal/UnaFormal/F1/Import.lean`, `the form {k}`), so a declaration that holds it is not re-checked. S-39 to S-41 marked the loops, task constructs, installations and calls under a raised program counter, and S-42 (#1515) marks every operation under a raised program counter, and every call there whose callee performs one, in every edition: exactly the declarations where information flow matters, such as an `Http` or `Files` operation under an `internal` branch or an operation of a capability that accepts `secret` under a `secret` one. Those declarations now count as not re-checked, so the accepted count below is an upper bound that has not been measured again: the corpus must be exported and re-checked to give current figures. T6 itself is unaffected: F1's trace keeps every operation event, the runtime's trace holds fewer, and every event it leaves out is one of a sink that accepts above `public`. Reading `quiet e` as `e` in the importer would be sound (the model would over-approximate the runtime trace) and would restore the coverage.
+
 On 1,352 documents (every conformance case and example, exported by #524's tip), source declarations only:
 
 | Outcome | Declarations | In documents `una check` accepts | In documents with errors |
@@ -106,7 +108,7 @@ A declaration whose program uses no host operation, and whose parameters cannot 
   - #475, an accurate note when only a function parameter blocks the any-host claim (cosmetic);
   - #453, the widening of `checked`;
   - the append-only correction of `spec/10`;
-  - the trace's own events, `stop` of a host stop (ADR 0116 rule 14), `timeout` and `cancelled` (`spec/27 §5`), and Core's `quiet` (S-39, #1507, `spec/26 §6` rule 4): the model has none of them, so a declaration that runs a `for ever`, or holds `quiet`, is not re-checked. The theorem to state is that these events are sinks that accept `public`, so code under a raised program counter appends none.
+  - the trace's own events, `stop` of a host stop (ADR 0116 rule 14), `timeout` and `cancelled` (`spec/27 §5`), and Core's `quiet` (S-39, #1507, `spec/26 §6` rule 4): the model has none of them, so a declaration that runs a `for ever`, or holds `quiet`, is not re-checked. Since S-42 (#1515) `quiet` also wraps every operation under a raised program counter, and the calls there that reach one, so this gap now covers most declarations whose flows matter (see "The corpus today"). The theorem to state is that these events, and the operations' events of quiet code, are sinks that accept `public`, so code under a raised program counter appends none; the cheaper step is to import `quiet e` as `e`.
 - **Later, by priority:** T5 relative to the solver, T6 with `together`, and edition 0.1's own rules.
 
 ## Theorem names

@@ -1128,8 +1128,16 @@ pub(crate) struct Findings {
     /// adds to `quiet` those whose callee can run a construct that appends events of its own.
     pub(crate) quiet_calls: std::collections::BTreeMap<Span, usize>,
     /// The operations under a raised program counter, by span: [`flow::close_quiet`] adds them
-    /// to `quiet` when the package declares a handler.
+    /// to `quiet`, since each appends an event of its own (S-42, #1515).
     pub(crate) quiet_ops: std::collections::BTreeSet<Span>,
+    /// The spans of `quiet` that stand under a raised program counter or effect floor, not only
+    /// a timing floor: the operations they run append no event (S-42, #1515). Core marks the
+    /// others `quiet` with `timing`.
+    pub(crate) hushed: std::collections::BTreeSet<Span>,
+    /// The calls and the operations under a timing floor alone, which [`flow::close_quiet`]
+    /// marks `quiet` as S-39 did, and not `hushed`.
+    pub(crate) timing_calls: std::collections::BTreeMap<Span, usize>,
+    pub(crate) timing_ops: std::collections::BTreeSet<Span>,
     /// The `within`s checked (ADR 0117 rule 5, IF2): each one's deadline, span, function and
     /// the seed of its timing label.
     pub(crate) withins: Vec<within::WithinSite>,

@@ -1,0 +1,29 @@
+-- test: in edition 0.1 as in later ones, an example's trace keeps the events of operations performed in quiet code, which a run leaves out, so `expect performed` and `expect not performed` see an operation under a `secret` branch (spec/08 §2 rule 7, spec/26 §6 rule 4, S-42)
+-- spec: spec/26 §6
+-- expect: test-pass
+module example_sees_quiet_operations
+
+pub capability Sink
+  op put(x: Int) -> Unit
+    accepts secret
+
+pub handler keep() for Sink
+  op put(x) = unit
+
+pub feed(s: secret Int) -> Unit
+  uses @k: Sink[put]
+=
+  if s > 0
+    @k.put(s)
+  else
+    unit
+
+example "an operation under a secret branch that runs"
+  given @k = keep()
+  do feed(2)
+  expect performed @k.put
+
+example "an operation under a secret branch that does not run"
+  given @k = keep()
+  do feed(0)
+  expect not performed @k.put

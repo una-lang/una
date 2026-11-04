@@ -1598,7 +1598,8 @@ impl<'a> Checker<'_, 'a, '_> {
             });
         }
         let resolved = self.op_site(cap, op);
-        // S-39: a handler of the package that serves the operation may run any construct.
+        // S-39, S-42: the operation's event, and those of a handler that serves it, would show
+        // that it ran.
         self.quiet_op_site(span);
         if let Some(id) = resolved {
             self.timing_op(id, op_name);

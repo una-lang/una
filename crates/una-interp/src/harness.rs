@@ -267,6 +267,8 @@ fn run_example<'p>(
     );
     machine.keyed(hashing);
     machine.run.stop_after.set(example.stop_after);
+    // An example's operations in quiet code keep their events, for `expect performed` (S-42).
+    machine.run.quiet_events.set(true);
     let result = machine
         .rooted(|machine| machine.eval_closed(&mut Env::new(), &example.body))
         .unwrap_or_else(unrooted);

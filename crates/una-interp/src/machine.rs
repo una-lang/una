@@ -852,6 +852,9 @@ pub(crate) struct Machine<'p, 'w> {
     /// `start` included: while one is, a `for ever` that a host stop ends appends no `stop`
     /// event (S-39, `spec/26 §6` rule 4).
     quiet: u32,
+    /// How many of those are not quiet by a timing floor alone, counted the same way: while
+    /// one is, an operation appends no event (S-42, #1515, `spec/26 §6` rule 4).
+    hushed: u32,
     /// The thread's attention word, and its value at the last check point (rule 18).
     word: una_sys::attention::Word,
     seen: Cell<u64>,
@@ -964,6 +967,7 @@ impl<'p, 'w> Machine<'p, 'w> {
             stop,
             in_ever: false,
             quiet: 0,
+            hushed: 0,
             word,
             seen: Cell::new(seen),
             max_memory: limits.max_memory,
@@ -1024,6 +1028,7 @@ impl<'p, 'w> Machine<'p, 'w> {
             in_ever: false,
             // A task started under a raised program counter runs under it (`spec/27 §7` rule 3).
             quiet: self.quiet,
+            hushed: self.hushed,
             word: self.word,
             seen: Cell::new(self.seen.get()),
             max_memory: self.max_memory,
@@ -2161,9 +2166,12 @@ impl<'p, 'w> Machine<'p, 'w> {
                 }
                 // `quiet e` (S-39, `spec/26 §6` rule 4): `e`, then the count as before, on every
                 // way out of it.
-                Expr::Quiet { body, .. } => {
+                Expr::Quiet { body, timing, .. } => {
+                    let hush = u32::from(!*timing);
                     self.quiet = self.quiet.saturating_add(1);
+                    self.hushed = self.hushed.saturating_add(hush);
                     let result = self.eval(env, &caps, body);
+                    self.hushed = self.hushed.saturating_sub(hush);
                     self.quiet = self.quiet.saturating_sub(1);
                     return result;
                 }
@@ -3308,13 +3316,17 @@ impl<'p, 'w> Machine<'p, 'w> {
             .get(cap)
             .cloned()
             .ok_or_else(|| fault(format!("no capability `@{cap}`")))?;
-        // #1544, `spec/26 §6` rule 4: an instance that quiet code installed, `with:<h>#q`, is
-        // in scope only in quiet code, whose running may depend on data above `public`, as
-        // when a function with no effects installs a handler and is called under a `secret`
-        // branch. Its operations append no event and take no `seq`; the handler's code runs as
-        // before, and the events it writes are its own. Natively the runtime starts no event
-        // for such an instance either (`una_rt::host::event`).
-        if crate::concurrency::is_quiet_install(instance.id()) {
+        // S-42 (#1515, `spec/26 §6` rule 4): an operation performed in quiet code appends no
+        // event and takes no `seq`, so neither the number of events nor the `seq` of a later
+        // one shows whether it ran; the events of a handler's code that serves it are in quiet
+        // code too. Code quiet by a timing floor alone keeps them (`spec/27 §5` rule 7), and
+        // an example's trace keeps them, for `expect performed` (`spec/08`).
+        // #1544: an instance that quiet code installed, `with:<h>#q`, is in scope only in quiet
+        // code, so its operations append no event in any trace; the handler's code runs as
+        // before. Natively the runtime starts no event for either (`una_rt::host::event`).
+        if (self.hushed > 0 && !self.run.quiet_events.get())
+            || crate::concurrency::is_quiet_install(instance.id())
+        {
             return self.serve(&instance, capability, op, args, span);
         }
         let names: Vec<String> = match self.index.capabilities.get(capability) {
@@ -3441,6 +3453,12 @@ impl<'p, 'w> Machine<'p, 'w> {
     /// rule 11). In the task that runs the loop, the iteration observes it here; in a task it
     /// started, at the join of that task's block ([`Self::joined`]).
     fn timeout_event(&mut self) {
+        // Quiet code neither observes the deadline nor tells the join it did, so whether the
+        // iteration's `timeout` event appears never depends on whether quiet code ran (S-39 L1,
+        // S-42, `spec/26 §6` rule 4).
+        if self.quiet > 0 {
+            return;
+        }
         let Some(deadline) = self.deadline.as_mut() else {
             return;
         };
@@ -3466,9 +3484,13 @@ impl<'p, 'w> Machine<'p, 'w> {
     /// Appends the iteration's one `timeout` event, with the path of the task that runs the
     /// loop, the first time its control flow observes a failure the deadline caused: a trace
     /// does not depend on which task met the deadline first (`spec/26 §7`). None inside a
-    /// `quiet` expression (S-39, `spec/26 §6` rule 4); the iteration still observes it once.
+    /// `quiet` expression (S-39, `spec/26 §6` rule 4), which does not mark it as appended either.
     fn timeout_observed(&mut self) {
-        let quiet = self.quiet > 0;
+        // Quiet code does not consume the iteration's one event either: a later observation
+        // in public code still appends it (S-39 L1).
+        if self.quiet > 0 {
+            return;
+        }
         let Some(deadline) = self.deadline.as_mut() else {
             return;
         };
@@ -3476,9 +3498,6 @@ impl<'p, 'w> Machine<'p, 'w> {
             return;
         }
         deadline.reported = true;
-        if quiet {
-            return;
-        }
         let task = deadline.owner.join(".");
         self.emit(Event {
             seq: 0,

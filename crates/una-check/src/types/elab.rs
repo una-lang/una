@@ -2491,6 +2491,10 @@ impl<'e, 'a> Fx<'e, 'a> {
             CapBindingValue::Handler(call) => self.findings.quiet.contains(&call.span),
             _ => false,
         });
+        let hushed = handled.with.iter().any(|binding| match &binding.value {
+            CapBindingValue::Handler(call) => self.findings.hushed.contains(&call.span),
+            _ => false,
+        });
         for (cap, source) in bindings.into_iter().rev() {
             current = CoreExpr::With {
                 cap,
@@ -2501,6 +2505,7 @@ impl<'e, 'a> Fx<'e, 'a> {
         if quiet {
             current = CoreExpr::Quiet {
                 body: Box::new(current),
+                timing: !hushed,
                 span,
             };
         }
@@ -3233,6 +3238,7 @@ impl<'e, 'a> Fx<'e, 'a> {
         let looped = if self.findings.quiet.contains(&stmt.span) {
             CoreExpr::Quiet {
                 body: Box::new(looped),
+                timing: !self.findings.hushed.contains(&stmt.span),
                 span: stmt.span,
             }
         } else {
@@ -4556,6 +4562,7 @@ impl<'e, 'a> Fx<'e, 'a> {
         if self.findings.quiet.contains(&key) {
             CoreExpr::Quiet {
                 body: Box::new(expr),
+                timing: !self.findings.hushed.contains(&key),
                 span,
             }
         } else {
@@ -5766,7 +5773,9 @@ impl<'e, 'a> Fx<'e, 'a> {
             return Bound::Rhs(call);
         }
         let t = self.temp();
+        let timing = !self.findings.hushed.contains(&span);
         Bound::Expr(CoreExpr::Quiet {
+            timing,
             body: Box::new(CoreExpr::Let {
                 name: t.clone(),
                 ty: ty.clone(),

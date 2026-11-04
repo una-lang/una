@@ -2202,6 +2202,11 @@ pub enum Expr {
     Quiet {
         /// The loop, or the `let` of the call that ends in its result.
         body: Box<Expr>,
+        /// Whether `e` is quiet only by the timing floor of a `within` or a `first of`, at a
+        /// program counter and effect floor that are `public`: the operations it performs then
+        /// keep their events, whose occurrence is the reported timing channel (`spec/27 §5`
+        /// rule 7). Otherwise they append none (S-42, #1515).
+        timing: bool,
         /// The loop or the call in the source.
         span: Span,
     },

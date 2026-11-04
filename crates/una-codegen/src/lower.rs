@@ -605,7 +605,9 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 Expr::Start { task, span } => {
                     return self.start(task, *span, env, scope, catch);
                 }
-                Expr::Quiet { body, .. } => return self.quiet(body, env, scope, catch),
+                Expr::Quiet { body, timing, .. } => {
+                    return self.quiet(body, *timing, env, scope, catch);
+                }
                 Expr::Atom { atom, .. } => {
                     let (value, kind) = self.atom(atom, env)?;
                     // A binding the scope owns moves out as the result; another word is
@@ -843,11 +845,14 @@ impl<'p> Lowerer<'_, 'p, '_> {
     fn quiet(
         &mut self,
         body: &'p Expr,
+        timing: bool,
         env: &mut Env,
         scope: &mut Scope,
         catch: &Catch,
     ) -> Result<Option<Value>, CodegenError> {
-        self.runtime("una_rt_quiet_enter", &[]);
+        // A `quiet` that a timing floor alone marked keeps its operations' events (S-42).
+        let hush = self.builder.ins().iconst(types::I64, i64::from(!timing));
+        self.runtime("una_rt_quiet_enter", &[hush]);
         let leaving = self.join();
         let crossing = catch.exit.as_ref().map(|outer| {
             let next = self.builder.create_block();
@@ -873,7 +878,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
         let done = self.join();
         let reached = match self.expr(body, env, scope, &inner)? {
             Some(value) => {
-                self.runtime("una_rt_quiet_leave", &[]);
+                self.runtime("una_rt_quiet_leave", &[hush]);
                 self.builder.ins().jump(done, &[value.into()]);
                 true
             }
@@ -881,13 +886,13 @@ impl<'p> Lowerer<'_, 'p, '_> {
         };
         self.builder.switch_to_block(leaving);
         let failure = self.param(leaving)?;
-        self.runtime("una_rt_quiet_leave", &[]);
+        self.runtime("una_rt_quiet_leave", &[hush]);
         self.fail(failure, &Scope::new(), catch);
         if let Some((outer, next, stop)) = crossing {
             for (block, target) in [(next, outer.next), (stop, outer.stop)] {
                 self.builder.switch_to_block(block);
                 let state: Vec<Value> = self.builder.block_params(block).to_vec();
-                self.runtime("una_rt_quiet_leave", &[]);
+                self.runtime("una_rt_quiet_leave", &[hush]);
                 let args: Vec<cranelift_codegen::ir::BlockArg> =
                     state.iter().map(|&value| value.into()).collect();
                 self.builder.ins().jump(target, &args);
