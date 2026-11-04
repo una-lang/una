@@ -7132,6 +7132,100 @@ fn s42_the_conformance_case_has_one_trace_for_every_secret() {
     );
 }
 
+/// S-42 review of #1551, L2 (`p_l1.una` verbatim): a `for ever within` iteration whose quiet
+/// code, under an `internal` branch, has its `Limit.acquire` cut by the deadline, then performs
+/// a public `acquire`.
+const QUIET_DEADLINE: &str = r#"module leak
+
+import std.limit (Limit, limiter)
+import std.time (millisecond, minute)
+
+maybe(s: internal Int) -> Unit
+  uses @gate: Limit[acquire]
+=
+  if s > 0
+    let a = attempt @gate.acquire()
+    unit
+  else
+    unit
+
+step(s: internal Int) -> Unit
+  uses @gate: Limit[acquire]
+=
+  maybe(s)
+  let b = attempt @gate.acquire()
+  unit
+
+poll(s: internal Int) -> Unit
+  uses @gate: Limit[acquire]
+  diverges
+=
+  for ever within 100 * millisecond
+    step(s)
+  unit
+
+pub main() -> Unit
+  uses @console: Console[print]
+  diverges
+=
+  let s: internal Int = SECRET
+  poll(s) with @gate = limiter(at_most: 1, per: minute, waiting: 1000)
+  @console.print("done")
+"#;
+
+/// The outcome of each event of `trace`: its kind, or `fail:<variant>`.
+fn outcome_kinds(trace: &Value) -> Vec<String> {
+    trace
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|event| {
+            let outcome = &event["outcome"];
+            match outcome["variant"].as_str() {
+                Some(variant) => format!("fail:{variant}"),
+                None => outcome["kind"].as_str().unwrap_or("").to_owned(),
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn s42_quiet_code_does_not_consume_the_iteration_timeout_event() {
+    // S-42 (#1515), review L1 of #1511 round 2 and L2 of #1551, `spec/26 §7` rule 4: a failure
+    // that the iteration's deadline causes in quiet code neither appends the `timeout` event
+    // nor counts as the iteration's first observation of it, so the public `acquire` after it
+    // still appends the event, in every iteration, in both engines. Before, quiet code marked it
+    // reported and no `timeout` event was left for `s > 0`.
+    let args = ["--virtual-time", "--stop-after-iterations", "3"];
+    let source = QUIET_DEADLINE;
+    let iteration = ["fail:RateLimited", "timeout"];
+    let mut expected: Vec<&str> = iteration.repeat(3);
+    expected.extend(["stop", "ok"]);
+    for secret in [1, 3] {
+        let (output, run, native) = secret_run("s42l1", source, secret, &args);
+        assert_eq!(output, serde_json::json!(["done"]), "{secret}");
+        assert_eq!(run, native, "{secret}");
+        assert_eq!(outcome_kinds(&run), expected, "{secret}: {run}");
+    }
+    // `s = 0`: the public `acquire` of the first iteration takes the token. That the outcomes
+    // differ from `s > 0` is the open channel of shared host state (S-45, #1552), not this rule.
+    let (_, run, native) = secret_run("s42l1", source, 0, &args);
+    assert_eq!(run, native);
+    assert_eq!(
+        outcome_kinds(&run),
+        [
+            "ok",
+            "fail:RateLimited",
+            "timeout",
+            "fail:RateLimited",
+            "timeout",
+            "stop",
+            "ok"
+        ],
+        "{run}"
+    );
+}
+
 /// S-40 (#1512), review H2 of #1511 (`taskid3.una` verbatim): a finite task started under a
 /// `secret` branch, then a public task that prints, in the same `tasks` statement.
 const SECRET_START_INDEX: &str = r#"module leak
