@@ -724,9 +724,10 @@ fn a_forged_accepted_index_is_refused() {
     let (code, _, err) = una_in(&["una", "ita", "lock", arg(&dir)], &itaoca);
     assert_eq!(code, 0, "{err}");
     let lock = std::fs::read_to_string(dir.join("ita.lock")).unwrap();
+    // Consent lines follow the registry's `last root` line.
     let checkpoint_line = lock
         .lines()
-        .find(|line| line.starts_with("  checkpoint "))
+        .find(|line| line.starts_with("  last root "))
         .unwrap()
         .to_owned();
     // 999, a future entry; 1, a release, not an entry of the owner's chain.
@@ -823,13 +824,19 @@ fn a_consented_index_past_the_checkpoint_is_refused_when_read() {
         .unwrap()
         .to_owned();
     let size: u64 = checkpoint_line.split(' ').nth(3).unwrap().parse().unwrap();
+    // Consent lines follow the registry's `last root` line.
+    let last_line = lock
+        .lines()
+        .find(|line| line.starts_with("  last root "))
+        .unwrap()
+        .to_owned();
     for line in [
         format!("accepted acme {size}"),
         format!("effect acme {}", size + 5),
     ] {
         std::fs::write(
             dir.join("ita.lock"),
-            lock.replacen(&checkpoint_line, &format!("{checkpoint_line}\n  {line}"), 1),
+            lock.replacen(&last_line, &format!("{last_line}\n  {line}"), 1),
         )
         .unwrap();
         let (_, out, _) = una_in(&["una", "--json", "check", arg(&dir)], &itaoca);
