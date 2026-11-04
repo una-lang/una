@@ -755,6 +755,10 @@ impl Printer {
                 self.line(indent, "start");
                 self.expr(indent + 1, task);
             }
+            Expr::Quiet { body, .. } => {
+                self.line(indent, "quiet");
+                self.expr(indent + 1, body);
+            }
             Expr::TogetherFor {
                 source, var, task, ..
             } => {

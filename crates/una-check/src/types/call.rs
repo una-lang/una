@@ -255,6 +255,8 @@ impl<'a> Checker<'_, 'a, '_> {
                 }
                 self.graph_value_call();
                 self.timing_value_call();
+                // S-39: a function value may run any construct.
+                self.quiet_site(span);
             }
             return ty;
         }
@@ -611,6 +613,10 @@ impl<'a> Checker<'_, 'a, '_> {
             self.raise_of(index, &decided);
         }
         let value_label = value_label.join(&decided);
+        // S-39: a function value may run any construct. Which one runs depends on the value, so
+        // the call stands under `pc ⊔ l_f` with the decisions of its arguments (T-App below),
+        // and is quiet when that is above `public`, at a `public` program counter too (round 4).
+        self.quiet_site_under(span, &value_label);
         // Calling a function value needs the capabilities of its type (`spec/10 §2`, S-Fun).
         let level = self.frames.len();
         self.needs_site(what, &function.uses, span, level);
@@ -894,6 +900,10 @@ impl<'a> Checker<'_, 'a, '_> {
         // the bindings its `uses` resolve to here.
         self.summary_needs(Owner::Node(Node::Function(id)), &granted, level);
         self.reach(Node::Function(id));
+        // S-39: under a raised program counter, the events that the runtime appends while such
+        // a call runs are left out of the trace when the callee can run a construct that
+        // appends them.
+        self.quiet_call_site(span, id);
         // ADR 0116 rule 8: a call of a function that says `diverges` may run forever.
         if def.diverges
             && let Some(reason) = self.divergence_refused()
@@ -1076,6 +1086,10 @@ impl<'a> Checker<'_, 'a, '_> {
             self.refined_vars_at_base(&result)
         };
         let decided = self.decided_callbacks(&callee, span, &needs, call_fails.is_some(), &checked);
+        // S-39: the callee runs under the decision (T-Call), so the call is quiet under it, as
+        // under a raised program counter. Only edition 0.1 raises a call so, and no construct
+        // that appends events of its own exists there, so this is defensive (round 4).
+        self.quiet_call_site_under(span, id, &decided);
         let result = if prelude_labeled(self.env.prelude, &def)
             || collections_labeled(self.env.collections, &def)
         {
@@ -1576,6 +1590,8 @@ impl<'a> Checker<'_, 'a, '_> {
             _ => Label::public(),
         };
         let resolved = self.op_site(cap, op);
+        // S-39: a handler of the package that serves the operation may run any construct.
+        self.quiet_op_site(span);
         if let Some(id) = resolved {
             self.timing_op(id, op_name);
             // The edge of ADR 0116 P1 from the node whose code holds the operation, a lambda's
