@@ -730,13 +730,15 @@ fn keys_grants_load_their_key_file() {
         document["output"],
         json!(["pepper: hashed", "salt: unknown key"])
     );
+    // S-45 (#1552, `spec/11 §5`): `hmac`'s result is `internal`, so its outcomes are redacted,
+    // its failure `UnknownKey` too; the program's output shows it.
     assert_eq!(
         document["trace"][0]["outcome"],
-        json!({"kind": "ok", "value": "<redacted:internal>"})
+        json!({"kind": "redacted", "level": "internal"})
     );
     assert_eq!(
         document["trace"][2]["outcome"],
-        json!({"kind": "fail", "variant": "UnknownKey", "value": "UnknownKey"})
+        json!({"kind": "redacted", "level": "internal"})
     );
     assert!(!stdout(&output).contains("c2VjcmV0"));
     std::fs::write(root.join("keys.toml"), "pepper = 3\n").unwrap();
@@ -1168,7 +1170,8 @@ fn host_values_stay_redacted_through_files_and_the_failure_of_main() {
             )
         })
         .collect();
-    let redacted = json!({"kind": "ok", "value": "<redacted:internal>"});
+    // S-45 (#1552, `spec/11 §5`): an outcome whose result is `internal` is redacted whole.
+    let redacted = json!({"kind": "redacted", "level": "internal"});
     let unit = json!({"kind": "ok", "value": "unit"});
     assert_eq!(
         events,

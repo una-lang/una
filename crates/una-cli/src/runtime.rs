@@ -700,6 +700,7 @@ impl<'a> From<&'a Event> for EventDoc<'a> {
             outcome: match &event.outcome {
                 EventOutcome::Ok(value) => OutcomeDoc::Ok { value },
                 EventOutcome::Fail { variant, value } => OutcomeDoc::Fail { variant, value },
+                EventOutcome::Redacted(level) => OutcomeDoc::Redacted { level },
                 EventOutcome::Aborted => OutcomeDoc::Aborted,
             },
         }
@@ -710,8 +711,18 @@ impl<'a> From<&'a Event> for EventDoc<'a> {
 #[derive(Serialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 enum OutcomeDoc<'a> {
-    Ok { value: &'a str },
-    Fail { variant: &'a str, value: &'a str },
+    Ok {
+        value: &'a str,
+    },
+    Fail {
+        variant: &'a str,
+        value: &'a str,
+    },
+    /// It returned or failed at an outcome label above `public` (S-45, #1552): only the
+    /// label's level is shown.
+    Redacted {
+        level: &'a str,
+    },
     Aborted,
 }
 

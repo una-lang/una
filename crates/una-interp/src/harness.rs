@@ -129,6 +129,8 @@ fn run_example<'p>(
     let grants: Vec<Grant> = Vec::new();
     let keys = BTreeMap::new();
     let mut machine = Machine::new(index, &mut world, &grants, &keys, max_depth);
+    // An example's outcomes are written in clear, its data from its source (S-45).
+    machine.clear_outcomes = true;
     let result = machine.eval_closed(&mut Env::new(), &example.body);
     let failure = match &result {
         Err(Stop::Abort(_)) => Some(ExampleFailure {

@@ -532,7 +532,7 @@ source files
 - **Tier 0** covers everything but proofs. **Tier 1**, the default, adds every proof obligation and runs once tier 0 is clean.
 - **Core IR** (`docs/spec/09-core-ir.md`) is the small language every surface construct desugars into. The checker elaborates to it, the verifier generates obligations from it, and the interpreter runs it, all against the same spans.
 - **Verification** encodes each obligation as its own query in QF_UFLIA, runs the Z3 version the lock pins as a subprocess with the lock's step budget and seed, and reads `proven`, `refuted` with a model, or `unknown` with its reason. Queries are byte-identical across runs, results are cached, and anything the solver cannot decide is an error.
-- **The Una Abstract Machine** (`docs/spec/11-dynamic-semantics.md`) evaluates Core IR with unbounded integers and records every effect in a trace; host capabilities are confined to their grants, and traces never show labeled data.
+- **The Una Abstract Machine** (`docs/spec/11-dynamic-semantics.md`) evaluates Core IR with unbounded integers and records every effect in a trace; host capabilities are confined to their grants, and a trace never shows an argument or an operation's outcome above its label (S-45), though which events appear, and how many, can still depend on a labeled value when an operation runs under a branch on it.
 
 ## Repository layout
 
