@@ -1605,7 +1605,14 @@ fn bundle_source(
             let provenance = registry
                 .provenance(&release, &key)
                 .map_err(|why| coded(&mut registry, at, why))?;
-            una_project::provenance::verify(&provenance, one).map_err(|why| fail(shown(&why)))?;
+            // The registry was opened against the floors Itaoca stores, so the chain it writes
+            // is not below them; unbundling verifies it again against the floor of its machine.
+            una_project::provenance::verify(
+                &provenance,
+                one,
+                &una_project::provenance::Floor::None,
+            )
+            .map_err(|problem| fail(shown(problem.message())))?;
             let archive = registry
                 .archive(&one.digest)
                 .map_err(|why| coded(&mut registry, at, why))?;

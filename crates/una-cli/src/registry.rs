@@ -313,7 +313,9 @@ pub(crate) fn open<'t>(
     Ok((registry, notes))
 }
 
-/// The lines of `ita.lock` for a registry's resolution point (rule 16).
+/// The lines of `ita.lock` for a registry's resolution point (rule 16), with the last root
+/// version the client verified and its digest (`last root`): `recorded`, the one a lock
+/// records already, when the chain walked holds it with that digest, else the last walked.
 /// With `accepted`, per owner, the recoveries and disputes pending at the point whose pending
 /// state the lock records as consented to, `accepted <owner> <index> …`; then with `effects`,
 /// those in effect at the point whose taking effect it records as consented to,
@@ -322,11 +324,16 @@ pub(crate) fn registry_block(
     source: &str,
     pin: &str,
     registry: &Registry<'_>,
+    recorded: Option<(u64, &str)>,
     accepted: &BTreeMap<String, BTreeSet<u64>>,
     effects: &BTreeMap<String, BTreeSet<u64>>,
 ) -> String {
+    let (last, last_digest) = recorded
+        .filter(|(version, digest)| registry.root_at(*version, digest).is_some())
+        .or_else(|| registry.last_root())
+        .unwrap_or((0, ""));
     let mut block = format!(
-        "\nregistry {source}\n  root \"{pin}\"\n  checkpoint {} \"{}\"\n",
+        "\nregistry {source}\n  root \"{pin}\"\n  checkpoint {} \"{}\"\n  last root {last} \"{last_digest}\"\n",
         registry.point.checkpoint.size,
         una_project::client::hash_text(&registry.point.checkpoint.root)
     );

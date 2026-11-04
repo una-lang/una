@@ -500,9 +500,11 @@ fn a_release_signed_by_a_compromised_key_is_not_fetched() {
     std::fs::write(
         dir.join("ita.lock"),
         format!(
-            "lock 1\n\nsolver\n  encoding \"una-smt-1\"\n  name \"z3\"\n  version \"5.1.0\"\n  logic \"QF_UFLIA\"\n  steps 5000000\n  seed 0\n\nregistry acme\n  root \"{}\"\n  checkpoint {} \"sha256:{hex}\"\n\npackage acme/ledger 0.3.1\n  from acme\n  digest \"{digest}\"\n  signed \"{signed}\"\n  logged {index}\n",
+            "lock 1\n\nsolver\n  encoding \"una-smt-1\"\n  name \"z3\"\n  version \"5.1.0\"\n  logic \"QF_UFLIA\"\n  steps 5000000\n  seed 0\n\nregistry acme\n  root \"{}\"\n  checkpoint {} \"sha256:{hex}\"\n  last root {} \"{}\"\n\npackage acme/ledger 0.3.1\n  from acme\n  digest \"{digest}\"\n  signed \"{signed}\"\n  logged {index}\n",
             registry.pin(),
-            leaves.len()
+            leaves.len(),
+            registry.roots.len(),
+            una_project::tlog::root::digest(registry.roots.last().unwrap())
         ),
     )
     .unwrap();
@@ -699,9 +701,11 @@ fn an_archive_that_understates_its_authority_is_not_fetched() {
     std::fs::write(
         dir.join("ita.lock"),
         format!(
-            "lock 1\n\nsolver\n  encoding \"una-smt-1\"\n  name \"z3\"\n  version \"5.1.0\"\n  logic \"QF_UFLIA\"\n  steps 5000000\n  seed 0\n\nregistry acme\n  root \"{}\"\n  checkpoint {} \"sha256:{hex}\"\n\npackage acme/ledger 0.3.1\n  from acme\n  digest \"{digest}\"\n  signed \"{signed}\"\n  logged {index}\n",
+            "lock 1\n\nsolver\n  encoding \"una-smt-1\"\n  name \"z3\"\n  version \"5.1.0\"\n  logic \"QF_UFLIA\"\n  steps 5000000\n  seed 0\n\nregistry acme\n  root \"{}\"\n  checkpoint {} \"sha256:{hex}\"\n  last root {} \"{}\"\n\npackage acme/ledger 0.3.1\n  from acme\n  digest \"{digest}\"\n  signed \"{signed}\"\n  logged {index}\n",
             registry.pin(),
-            leaves.len()
+            leaves.len(),
+            registry.roots.len(),
+            una_project::tlog::root::digest(registry.roots.last().unwrap())
         ),
     )
     .unwrap();
@@ -720,9 +724,10 @@ fn a_forged_accepted_index_is_refused() {
     let (code, _, err) = una_in(&["una", "ita", "lock", arg(&dir)], &itaoca);
     assert_eq!(code, 0, "{err}");
     let lock = std::fs::read_to_string(dir.join("ita.lock")).unwrap();
+    // Consent lines follow the registry's `last root` line.
     let checkpoint_line = lock
         .lines()
-        .find(|line| line.starts_with("  checkpoint "))
+        .find(|line| line.starts_with("  last root "))
         .unwrap()
         .to_owned();
     // 999, a future entry; 1, a release, not an entry of the owner's chain.
@@ -771,8 +776,10 @@ fn a_consented_dispute_needs_new_consent_when_it_takes_effect() {
     std::fs::write(
         dir.join("ita.lock"),
         format!(
-            "lock 1\n\nsolver\n  encoding \"una-smt-1\"\n  name \"z3\"\n  version \"5.1.0\"\n  logic \"QF_UFLIA\"\n  steps 5000000\n  seed 0\n\nregistry acme\n  root \"{}\"\n  checkpoint {old_size} \"sha256:{hex}\"\n  accepted acme {dispute}\n\npackage acme/ledger 0.3.1\n  from acme\n  digest \"{digest}\"\n  signed \"{signed}\"\n  logged {index}\n",
-            registry.pin()
+            "lock 1\n\nsolver\n  encoding \"una-smt-1\"\n  name \"z3\"\n  version \"5.1.0\"\n  logic \"QF_UFLIA\"\n  steps 5000000\n  seed 0\n\nregistry acme\n  root \"{}\"\n  checkpoint {old_size} \"sha256:{hex}\"\n  last root {} \"{}\"\n  accepted acme {dispute}\n\npackage acme/ledger 0.3.1\n  from acme\n  digest \"{digest}\"\n  signed \"{signed}\"\n  logged {index}\n",
+            registry.pin(),
+            registry.roots.len(),
+            una_project::tlog::root::digest(registry.roots.last().unwrap())
         ),
     )
     .unwrap();
@@ -817,13 +824,19 @@ fn a_consented_index_past_the_checkpoint_is_refused_when_read() {
         .unwrap()
         .to_owned();
     let size: u64 = checkpoint_line.split(' ').nth(3).unwrap().parse().unwrap();
+    // Consent lines follow the registry's `last root` line.
+    let last_line = lock
+        .lines()
+        .find(|line| line.starts_with("  last root "))
+        .unwrap()
+        .to_owned();
     for line in [
         format!("accepted acme {size}"),
         format!("effect acme {}", size + 5),
     ] {
         std::fs::write(
             dir.join("ita.lock"),
-            lock.replacen(&checkpoint_line, &format!("{checkpoint_line}\n  {line}"), 1),
+            lock.replacen(&last_line, &format!("{last_line}\n  {line}"), 1),
         )
         .unwrap();
         let (_, out, _) = una_in(&["una", "--json", "check", arg(&dir)], &itaoca);
@@ -1072,4 +1085,106 @@ fn a_resolution_takes_the_code_of_its_registrys_failure() {
         assert!(!err.contains(other), "{name}: {err}");
         assert!(!dir.join("ita.lock").exists());
     }
+}
+
+/// ADR 0122, amendment of 2026-11-03, end to end: a lock's point signed under root 1, whose
+/// witnesses root 2 then retires, is fetched with the consistency proof and loads offline; a
+/// provenance of the earlier format, with no proof, is unavailable (U7013, exit code 1) until
+/// `una ita fetch` stores the newer format beside it; `una ita lock --check` keeps the lock's
+/// `last root`; and the root-version floor this machine stores refuses a chain below it
+/// (U7010) and, unreadable, makes the load unavailable (U7013).
+#[test]
+fn a_retired_witness_counts_offline_only_with_the_proof() {
+    let (mut registry, _) = acme();
+    let (dir, mirror, itaoca) = project("retired-proof", &registry);
+    let (code, _, err) = una_in(&["una", "ita", "lock", arg(&dir)], &itaoca);
+    assert_eq!(code, 0, "{err}");
+    let lock = std::fs::read_to_string(dir.join("ita.lock")).unwrap();
+    let first_root = una_project::tlog::root::digest(&registry.roots[0]);
+    assert!(
+        lock.contains(&format!("\n  last root 1 \"{first_root}\"\n")),
+        "{lock}"
+    );
+    // Two of the three witnesses retired by root 2, and a later checkpoint signed under it.
+    registry.rotate_witnesses(2, false);
+    registry.append("other", "after the rotation");
+    registry.checkpoint(now() - 30);
+    registry.write(&mirror);
+    let (code, out, err) = una_in(&["una", "ita", "fetch", arg(&dir)], &itaoca);
+    assert_eq!(
+        (code, out.as_str()),
+        (0, "fetched acme/ledger 0.3.1\n"),
+        "{err}"
+    );
+    assert_eq!(codes(&dir, &itaoca), Vec::<String>::new());
+    let (code, _, err) = una_in(&["una", "ita", "lock", "--check", arg(&dir)], &itaoca);
+    assert_eq!(code, 0, "{err}");
+    let release = itaoca.join("registry/acme/releases/acme+ledger-0.3.1");
+    let size = lock
+        .lines()
+        .find_map(|line| line.strip_prefix("  checkpoint "))
+        .and_then(|rest| rest.split(' ').next())
+        .unwrap()
+        .to_owned();
+    let second = std::fs::read(release.join(format!("checkpoint-{size}-2.provenance"))).unwrap();
+    let mut document = una_project::provenance::parse(&second).unwrap();
+    assert!(document.latest.is_some());
+    // The earlier format, alone in another machine's Itaoca: unavailable, exit code 1.
+    document.latest = None;
+    document.format = una_project::provenance::Format::V1;
+    let other = scratch("retired-proof-format-1").join("itaoca");
+    std::fs::create_dir_all(&other).unwrap();
+    list_mirrors(&other, &[&mirror]);
+    let store = una_project::itaoca::Itaoca {
+        root: other.clone(),
+    };
+    let digest = lock
+        .lines()
+        .find_map(|line| line.strip_prefix("  digest \"sha256:"))
+        .and_then(|rest| rest.strip_suffix('"'))
+        .unwrap();
+    let archive = registry.files[&format!("blobs/sha256/{digest}")].clone();
+    store.store(&archive).unwrap();
+    store
+        .store_provenance(
+            "acme",
+            "acme/ledger",
+            "0.3.1",
+            size.parse().unwrap(),
+            &document.encode(),
+        )
+        .unwrap();
+    let found = codes(&dir, &other);
+    assert!(
+        found.contains(&"U7013".to_owned()) && !found.contains(&"U7010".to_owned()),
+        "{found:?}"
+    );
+    let (code, _, err) = una_in(&["una", "check", arg(&dir)], &other);
+    assert_eq!(code, 1, "{err}");
+    assert!(err.contains("retired"), "{err}");
+    // Fetched again: the newer format is stored beside it, and preferred.
+    let (code, out, err) = una_in(&["una", "ita", "fetch", arg(&dir)], &other);
+    assert_eq!(
+        (code, out.as_str()),
+        (0, "fetched acme/ledger 0.3.1\n"),
+        "{err}"
+    );
+    assert_eq!(codes(&dir, &other), Vec::<String>::new());
+    // The root-version floor: below it, refused; unreadable, unavailable.
+    let floor = floor_dir(&itaoca, &registry).join("root-version");
+    std::fs::remove_file(&floor).unwrap();
+    std::fs::write(&floor, "3\n").unwrap();
+    assert!(codes(&dir, &itaoca).contains(&"U7010".to_owned()));
+    let (_, _, err) = una_in(&["una", "check", arg(&dir)], &itaoca);
+    assert!(
+        err.contains("older than root version 3") && !err.contains("forked"),
+        "{err}"
+    );
+    std::fs::remove_file(&floor).unwrap();
+    std::fs::create_dir(&floor).unwrap();
+    let found = codes(&dir, &itaoca);
+    assert!(
+        found.contains(&"U7013".to_owned()) && !found.contains(&"U7010".to_owned()),
+        "{found:?}"
+    );
 }

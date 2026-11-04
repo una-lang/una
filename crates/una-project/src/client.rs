@@ -288,8 +288,10 @@ fn bracket_low(end: u64) -> u64 {
 /// The prefix proof of a lock's point that names an older root version: what [`prefix_proof`]
 /// found.
 enum Proof {
-    /// The latest checkpoint names the last root version and extends the point.
-    Proven,
+    /// The latest checkpoint names the last root version and extends the point: it, with its
+    /// cosignatures, and the consistency proof, which a provenance carries
+    /// ([`crate::provenance::Latest`]).
+    Proven(crate::provenance::Latest),
     /// No place serves a document the proof needs: the documents unserved, the tiles' paths,
     /// and why, one sentence.
     Missing(Vec<String>, String),
@@ -333,6 +335,13 @@ fn prefix_proof(
             "its latest checkpoint, of size {to}, is below the lock's point of size {size}"
         ));
     }
+    if to == size {
+        // Every copy of one size's checkpoint names one root version (`spec/30 §11` rule 9):
+        // the latest names the last version, the point an older one.
+        return Err(format!(
+            "its latest checkpoint and the lock's point are two checkpoints of size {size} that name different root versions"
+        ));
+    }
     let mut tiles = Tiles::new(transport, to);
     let proof = match tiles.consistency(size) {
         Ok(proof) => proof,
@@ -349,7 +358,10 @@ fn prefix_proof(
             "its latest checkpoint does not extend the lock's point of size {size}, so the log forked"
         ));
     }
-    Ok(Proof::Proven)
+    Ok(Proof::Proven(crate::provenance::Latest {
+        checkpoint: latest.document,
+        consistency: proof,
+    }))
 }
 
 /// Whether a retired witness's cosignatures count on the checkpoints a client reads
@@ -838,6 +850,9 @@ pub struct Registry<'t> {
     /// Whether the point is signed under the last root or proven a prefix of a checkpoint that
     /// is: then the retired witnesses of an earlier version count on the checkpoints below it.
     retired: Retired,
+    /// When the point names an older root version, the latest checkpoint that proved it a
+    /// prefix and the consistency proof, which the provenance carries (`spec/30 §9` rule 7).
+    prefix: Option<crate::provenance::Latest>,
     /// When the prefix proof could not be completed, its omissions, recorded again by each
     /// result that would count a retired witness, and why, one sentence.
     unproven: (Vec<Omission>, String),
@@ -977,6 +992,7 @@ impl<'t> Registry<'t> {
         let last_version = chain.last().map_or(0, |(root, _)| root.version);
         let mut unproven: Vec<Omission> = Vec::new();
         let mut unproven_why = String::new();
+        let mut prefix: Option<crate::provenance::Latest> = None;
         if let Point::At { size, hash } = point {
             let named = note::parse_note(&document)
                 .ok()
@@ -985,7 +1001,7 @@ impl<'t> Registry<'t> {
                 .map_or(last_version, |(version, _)| version);
             if named != last_version {
                 match prefix_proof(transport, &chain, *size, hash) {
-                    Ok(Proof::Proven) => {}
+                    Ok(Proof::Proven(latest)) => prefix = Some(latest),
                     Ok(Proof::Missing(documents, why)) => {
                         unproven.push(Omission::PrefixProof(*size));
                         unproven.extend(documents.into_iter().map(Omission::Document));
@@ -1060,6 +1076,7 @@ impl<'t> Registry<'t> {
             root: last,
             named: BTreeMap::from([(accepted.checkpoint.size, accepted.version)]),
             retired,
+            prefix,
             unproven: (unproven, unproven_why),
             deadlines: BTreeMap::new(),
             scan_cap: MAX_DEADLINE_SPAN,
@@ -2452,15 +2469,19 @@ impl<'t> Registry<'t> {
     }
 
     /// The provenance of `release` at the point, as Itaoca and the vendor directory store it
-    /// ([`crate::provenance`]), with `key` as the publisher key the lock names.
+    /// ([`crate::provenance`]), with `key` as the publisher key the lock names. When the point
+    /// names an older root version and its prefix proof was completed, it carries the latest
+    /// checkpoint and the consistency proof, so a retired witness counts at every offline load.
     pub fn provenance(
         &mut self,
         release: &LoggedRelease,
         key: &Key,
     ) -> Result<crate::provenance::Provenance, Refusal> {
         Ok(crate::provenance::Provenance {
+            format: crate::provenance::Format::V2,
             roots: self.roots.clone(),
             checkpoint: self.point.document.clone(),
+            latest: self.prefix.clone(),
             statement: release.document.clone(),
             index: release.index,
             proof: self.inclusion(release.index)?,

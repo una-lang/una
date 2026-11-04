@@ -88,6 +88,7 @@ solver
 registry itaty
   root "sha256:9f2c"
   checkpoint 48211 "sha256:0b7e"
+  last root 3 "sha256:a1d4"
 
 package http 1.4.2
   from itaty
@@ -327,6 +328,8 @@ fn the_example_lock_reads() {
     assert_eq!(solver.version.value, "5.1.0");
     assert_eq!(solver.steps.value, 5_000_000);
     assert_eq!(lock.registries[0].checkpoint_size.value, 48211);
+    assert_eq!(lock.registries[0].last_root.value, 3);
+    assert_eq!(lock.registries[0].last_root_digest.value, "sha256:a1d4");
     assert_eq!(lock.packages.len(), 3);
     assert_eq!(lock.packages[0].needs[0].name.value.to_string(), "json");
     assert_eq!(lock.packages[1].granted[0].may.len(), 2);
@@ -360,6 +363,28 @@ fn the_lock_grammar_is_closed() {
         (
             "lock 1\n\nsolver\n  encoding \"e\"\n  name \"z3\"\n  version \"5\"\n  logic \"l\"\n  steps 1\n  seed 0\n\npackage a 1.0.0\n  from itaty\n  digest \"d\"\n  signed \"k\"\n",
             "both `signed` and `logged`",
+        ),
+        // A registry section records the last root version the client verified (ADR 0122,
+        // amendment of 2026-11-03, item 4): it is required, after `checkpoint`, once.
+        (
+            "lock 1\n\nsolver\n  encoding \"e\"\n  name \"z3\"\n  version \"5\"\n  logic \"l\"\n  steps 1\n  seed 0\n\nregistry acme\n  root \"r\"\n  checkpoint 2 \"c\"\n",
+            "a `last root` line",
+        ),
+        (
+            "lock 1\n\nsolver\n  encoding \"e\"\n  name \"z3\"\n  version \"5\"\n  logic \"l\"\n  steps 1\n  seed 0\n\nregistry acme\n  root \"r\"\n  last root 1 \"d\"\n  checkpoint 2 \"c\"\n",
+            "in this order",
+        ),
+        (
+            "lock 1\n\nsolver\n  encoding \"e\"\n  name \"z3\"\n  version \"5\"\n  logic \"l\"\n  steps 1\n  seed 0\n\nregistry acme\n  root \"r\"\n  checkpoint 2 \"c\"\n  last root 1 \"d\"\n  last root 2 \"e\"\n",
+            "once each",
+        ),
+        (
+            "lock 1\n\nsolver\n  encoding \"e\"\n  name \"z3\"\n  version \"5\"\n  logic \"l\"\n  steps 1\n  seed 0\n\nregistry acme\n  root \"r\"\n  checkpoint 2 \"c\"\n  last 1 \"d\"\n",
+            "expected `last root",
+        ),
+        (
+            "lock 1\n\nsolver\n  encoding \"e\"\n  name \"z3\"\n  version \"5\"\n  logic \"l\"\n  steps 1\n  seed 0\n\nregistry acme\n  root \"r\"\n  checkpoint 2 \"c\"\n  accepted acme 1\n  last root 1 \"d\"\n",
+            "in this order",
         ),
     ];
     for (text, expected) in cases {

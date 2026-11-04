@@ -76,6 +76,11 @@ class Program:
     # driver lists each in the run's own Itaoca (`mirrors.una`), since a mirror is named by an
     # absolute `file://` URL (`spec/30 §14` rule 1).
     mirrors: dict = field(default_factory=dict)
+    # The root-version floors the run's own Itaoca stores for a `check` program, {pin: version}
+    # (`spec/30 §14`, Floors): the driver writes each as `registry/<id>/root-version`, so that
+    # the offline load reads it (ADR 0122, amendment of 2026-11-03, item 4). The manifest writes
+    # it only when it is not empty.
+    floors: dict = field(default_factory=dict)
 
     def __post_init__(self):
         if self.cls not in CLASSES:
@@ -125,6 +130,7 @@ class Program:
             **({"expect_recheck": self.recheck} if self.recheck else {}),
             **({"prove": True} if self.prove else {}),
             **({"command": self.command} if self.command != "check" else {}),
+            **({"floors": self.floors} if self.floors else {}),
         }
 
     def digest(self):

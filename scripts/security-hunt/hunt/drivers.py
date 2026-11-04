@@ -5,6 +5,7 @@ obligations are not what they test. Every run goes through `sandbox.run`.
 """
 
 import functools
+import hashlib
 import json
 import os
 from collections import Counter
@@ -61,9 +62,31 @@ def check(una, pkg_dir, root, timeout, prog=None):
         return parse_check(lock_check(una, prog, pkg_dir, root, timeout))
     if prog is not None and prog.command != "check":
         raise ValueError(f"{prog.name}: no driver judges the command {prog.command!r}")
+    if prog is not None and prog.floors:
+        return parse_check(check_with_floors(una, prog, pkg_dir, root, timeout))
     r = sandbox.run_fresh([una, "--json", "check", "--tier", "0", "."], cwd=pkg_dir, root=root,
                           timeout=timeout)
     return parse_check(r)
+
+
+def check_with_floors(una, prog, pkg_dir, root, timeout):
+    """`una --json check --tier 0 .` on `prog`, written at `pkg_dir`, in a sandboxed run whose own
+    directory holds its Itaoca (`UNA_ITAOCA`) with the root-version floors of `prog.floors`, each
+    at `registry/<id>/root-version`, `<id>` the hex SHA-256 of the pin (`spec/30 §14`, Floors),
+    never in a shared place."""
+    writable = sandbox.fresh_dir(root, "run-")
+    try:
+        itaoca = os.path.join(writable, "itaoca")
+        for pin, version in sorted(prog.floors.items()):
+            ident = hashlib.sha256(pin.encode()).hexdigest()
+            directory = os.path.join(itaoca, "registry", ident)
+            os.makedirs(directory)
+            with open(os.path.join(directory, "root-version"), "w", encoding="utf-8") as f:
+                f.write(f"{version}\n")
+        return sandbox.run([una, "--json", "check", "--tier", "0", "."], cwd=pkg_dir,
+                           writable=writable, timeout=timeout, env_extra={"UNA_ITAOCA": itaoca})
+    finally:
+        sandbox.remove_dir(writable, root)
 
 
 def lock_check(una, prog, pkg_dir, root, timeout):
@@ -148,7 +171,7 @@ def must_keep(rows, una, root, timeout, out, refactors=("R6", "R9")):
             twin = Program(op=prog.op, rule=prog.rule, edition=prog.edition, seed=prog.seed,
                            cls=prog.cls, files=files, expect=prog.expect,
                            variant=(prog.variant + "-" if prog.variant else "") + rid,
-                           command=prog.command, mirrors=prog.mirrors)
+                           command=prog.command, mirrors=prog.mirrors, floors=prog.floors)
             v = check(una, twin.write(root), root, timeout, twin)
             changed = (base.kind == "accepted") != (v.kind == "accepted")
             result = {

@@ -192,7 +192,9 @@ CONTROL_FAMILIES = ("D", "Y")
 # several packages, whose Core export is `una.core/2`, which this release does not write
 # (`spec/30 §12` rule 7), the export checked to refuse them so; and family Y's resolution forms,
 # judged by `una ita lock --check`, whose package is not loaded as a program.
-PINNED_UNEXPORTED = {"dependencies": 69, "not loaded": 11}
+# Y3's forgeries of the prefix proof and of the root chain (ADR 0122, amendment of 2026-11-03,
+# #1529) took 13 of its controls' seeds: 69 became 56.
+PINNED_UNEXPORTED = {"dependencies": 56, "not loaded": 11}
 CHECK_TIMEOUT = 60
 RUN_TIMEOUT = 20
 WORKERS = 4
@@ -300,7 +302,7 @@ def canary_reject_dependency():
     prog = registry.y1(derive_seed(SEED, "canary-reject-dependency", 0), "0.4", form="honest")
     return Program(op="canary-reject-dependency", rule="the gate's own canary", edition="0.4",
                    seed=prog.seed, cls=MUST_REJECT, files=prog.files, expect=["U7009"],
-                   command=prog.command, mirrors=prog.mirrors)
+                   command=prog.command, mirrors=prog.mirrors, floors=prog.floors)
 
 
 def canary_reject_vendored():

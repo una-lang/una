@@ -989,6 +989,10 @@ fn bundled_with(rotation: Rotation) -> Bundled {
     let release = client.release("acme/ledger", &v("0.3.1")).unwrap();
     client.marks("acme/ledger").unwrap();
     let provenance = client.provenance(&release, &owner.1).unwrap().encode();
+    let (last_root, last_root_digest) = client
+        .last_root()
+        .map(|(version, digest)| (version, digest.to_owned()))
+        .unwrap();
     let archive =
         served.files[&format!("blobs/sha256/{}", digest.strip_prefix("sha256:").unwrap())].clone();
     drop(client);
@@ -1003,6 +1007,8 @@ fn bundled_with(rotation: Rotation) -> Bundled {
         root: test.pin(),
         checkpoint_size: size,
         checkpoint_hash: hash_hex(&root),
+        last_root,
+        last_root_digest,
     };
     Bundled {
         archive,
@@ -2458,6 +2464,62 @@ fn a_point_cosigned_by_retired_witnesses_unbundles() {
         "{failure:?}"
     );
     assert!(!store.contains(&b.expected.digest).unwrap());
+}
+
+/// ADR 0122, amendment of 2026-11-03: unbundling verifies each provenance as every load does.
+/// A provenance whose point a retired witness cosigns, without the prefix proof it carries in
+/// its newer format, is unavailable (U7013) even when the bundle holds the latest checkpoint
+/// and its tiles; a chain below the root-version floor is refused (U7010); and a floor that
+/// exists and cannot be read stops the unbundling (U7013), never a note.
+#[test]
+fn unbundling_verifies_the_provenance_as_every_load_does() {
+    let b = bundled_with(Rotation::AfterPoint(2));
+    let mut document = una_project::provenance::parse(&b.provenance).unwrap();
+    assert!(document.latest.is_some());
+    document.latest = None;
+    document.format = una_project::provenance::Format::V1;
+    let first = document.encode();
+    let store = Itaoca {
+        root: scratch("unbundle-format-1"),
+    };
+    let bytes = bundle_of(&b, &b.archive, &first, &b.files);
+    let (_, failure) =
+        bundle::unbundle(&bytes, &store, std::slice::from_ref(&b.expected), &no_place).unwrap_err();
+    assert!(
+        matches!(&failure, Failure::Unavailable(why) if why.contains("retired")),
+        "{failure:?}"
+    );
+    assert!(!store.contains(&b.expected.digest).unwrap());
+    // Below the floor: refused.
+    let store = Itaoca {
+        root: scratch("unbundle-below-floor"),
+    };
+    let id = registry_id(&b.expected.root);
+    store.store_root_version(&id, 3).unwrap();
+    let bytes = bundle_of(&b, &b.archive, &b.provenance, &b.files);
+    let (_, failure) =
+        bundle::unbundle(&bytes, &store, std::slice::from_ref(&b.expected), &no_place).unwrap_err();
+    assert!(
+        matches!(&failure, Failure::Refused(why) if why.contains("older than root version 3")),
+        "{failure:?}"
+    );
+    assert!(!store.contains(&b.expected.digest).unwrap());
+    // A floor that does not read, of either kind.
+    for floor in ["root-version", "checkpoint"] {
+        let store = Itaoca {
+            root: scratch(&format!("unbundle-unreadable-{floor}")),
+        };
+        let dir = store.root.join("registry").join(&id);
+        std::fs::create_dir_all(dir.join(floor)).unwrap();
+        let (_, failure) =
+            bundle::unbundle(&bytes, &store, std::slice::from_ref(&b.expected), &no_place)
+                .unwrap_err();
+        assert!(
+            matches!(&failure, Failure::Unavailable(why) if why.contains("cannot be read")),
+            "{floor}: {failure:?}"
+        );
+        assert!(!store.contains(&b.expected.digest).unwrap());
+    }
 }
 
 /// An equivocation, two checkpoints of one size the log signed naming different root

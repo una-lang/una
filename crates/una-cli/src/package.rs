@@ -209,6 +209,7 @@ fn load_registry(
             }
             Err(Problem::Absent(message)) => Some((Code::U7011, message)),
             Err(Problem::Refused(message)) => Some((Code::U7010, message)),
+            Err(Problem::Unavailable(message)) => Some((Code::U7013, message)),
         };
         registry.push(RegistryPackage { index, problem });
     }

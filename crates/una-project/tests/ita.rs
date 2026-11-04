@@ -395,6 +395,24 @@ fn the_lock_is_checked() {
         "\npackage a 1.0.0\n  from itaty\n  digest \"sha256:x\"\n",
         "64 lowercase",
     );
+    // A registry section's `last root` (ADR 0122, amendment of 2026-11-03): a version from 1,
+    // and a digest.
+    check(
+        &format!(
+            "\nregistry acme\n  root \"{DIGEST}\"\n  checkpoint 2 \"{DIGEST}\"\n  last root 0 \"{DIGEST}\"\n"
+        ),
+        "root versions start at 1",
+    );
+    check(
+        &format!(
+            "\nregistry acme\n  root \"{DIGEST}\"\n  checkpoint 2 \"{DIGEST}\"\n  last root 1 \"sha256:x\"\n"
+        ),
+        "64 lowercase",
+    );
+    check(
+        &format!("\nregistry acme\n  root \"{DIGEST}\"\n  checkpoint 2 \"{DIGEST}\"\n"),
+        "a `last root` line",
+    );
     check(
         &format!("\npackage a 1.0.0\n  from acme\n  digest \"{DIGEST}\"\n"),
         "no registry of the lock",

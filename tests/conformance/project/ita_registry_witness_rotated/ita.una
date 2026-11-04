@@ -4,7 +4,7 @@ ita case
 
 sources
   acme "https://ita.acme.example"
-    root "sha256:9588528ba6e809b94ce70c00b66df3e2a294775ac79478c2c34b524f85588fc1"
+    root "sha256:914ad5961feae2691676995ff65f308cbbb98d769f8745d40ff93ca9a72efc32"
     owners acme
 
 needs

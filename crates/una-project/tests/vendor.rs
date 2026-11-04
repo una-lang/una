@@ -10,7 +10,9 @@ use ed25519_dalek::{Signer, SigningKey};
 use pretty_assertions::assert_eq;
 use una_project::content::{File, archive, digest_of};
 use una_project::itaoca::Itaoca;
-use una_project::provenance::{Expected, Provenance, parse, sha256_digest, signed_name, verify};
+use una_project::provenance::{
+    Expected, Floor, Format, Provenance, parse, sha256_digest, signed_name, verify,
+};
 use una_project::tlog::merkle::{inclusion_proof, leaf_hash, root as tree_root};
 use una_project::tlog::note::{Key, encode_base64};
 use una_project::vendor::{self, Place, Problem};
@@ -152,8 +154,10 @@ fn make_release(expires: u64, witnesses: &[u8]) -> Release {
     Release {
         archive,
         provenance: Provenance {
+            format: Format::V2,
             roots: vec![root_document],
             checkpoint,
+            latest: None,
             statement,
             index: 1,
             proof: inclusion_proof(1, &leaves),
@@ -166,9 +170,11 @@ fn make_release(expires: u64, witnesses: &[u8]) -> Release {
             digest,
             signed: signed_name(NAME, &publisher.public),
             logged: 1,
-            root: root_digest,
+            root: root_digest.clone(),
             checkpoint_size: 2,
             checkpoint_hash: format!("sha256:{}", hex(&top)),
+            last_root: 1,
+            last_root_digest: root_digest.clone(),
         },
     }
 }
@@ -193,7 +199,7 @@ fn a_release_verifies_from_its_provenance() {
     let encoded = release.provenance.encode();
     let read = parse(&encoded).unwrap();
     assert_eq!(read, release.provenance);
-    let statement = verify(&read, &release.expected).unwrap();
+    let statement = verify(&read, &release.expected, &Floor::None).unwrap();
     assert_eq!(statement.name, NAME);
     assert!(release.expected.signed.starts_with("ed25519:acme:"));
     assert_eq!(
@@ -243,7 +249,10 @@ fn each_thing_the_lock_says_is_verified() {
     for (what, change) in changes {
         let mut expected = release.expected.clone();
         change(&mut expected);
-        assert!(verify(&release.provenance, &expected).is_err(), "{what}");
+        assert!(
+            verify(&release.provenance, &expected, &Floor::None).is_err(),
+            "{what}"
+        );
     }
 }
 
@@ -273,20 +282,58 @@ fn each_part_of_the_provenance_is_verified() {
     changes.push(("an edited root", unpinned));
     changes.push(("one witness", make_release(EXPIRES, &[30]).provenance));
     for (what, provenance) in changes {
-        assert!(verify(&provenance, &release.expected).is_err(), "{what}");
+        assert!(
+            verify(&provenance, &release.expected, &Floor::None).is_err(),
+            "{what}"
+        );
     }
     // A root that expired before the checkpoint's witness time, against its own pin.
     let expired = make_release(WITNESS_TIME - 1, &[30, 31]);
     assert!(
-        verify(&expired.provenance, &expired.expected)
+        verify(&expired.provenance, &expired.expected, &Floor::None)
             .unwrap_err()
+            .message()
             .contains("expired")
     );
     let witness = make_release(EXPIRES, &[30]);
     assert!(
-        verify(&witness.provenance, &witness.expected)
+        verify(&witness.provenance, &witness.expected, &Floor::None)
             .unwrap_err()
+            .message()
             .contains("fewer than its threshold")
+    );
+}
+
+/// The bounds of the hash lines a provenance holds: at most 64 `consistency` lines in its
+/// `latest` block and 64 `proof` lines; 64 read and round-trip, 65 are refused.
+#[test]
+fn the_provenance_bounds_its_hash_lines() {
+    let release = good();
+    let mut carried = release.provenance.clone();
+    carried.latest = Some(una_project::provenance::Latest {
+        checkpoint: release.provenance.checkpoint.clone(),
+        consistency: vec![[7; 32]; una_project::provenance::MAX_CONSISTENCY],
+    });
+    assert_eq!(una_project::provenance::MAX_CONSISTENCY, 64);
+    let encoded = carried.encode();
+    assert_eq!(parse(&encoded).unwrap(), carried);
+    let mut over = carried.clone();
+    if let Some(latest) = over.latest.as_mut() {
+        latest.consistency.push([7; 32]);
+    }
+    let refusal = parse(&over.encode()).unwrap_err();
+    assert!(
+        refusal.contains("consistency proof holds more than 64 hashes"),
+        "{refusal}"
+    );
+    let mut proof = release.provenance.clone();
+    proof.proof = vec![[9; 32]; una_project::provenance::MAX_PROOF];
+    assert_eq!(parse(&proof.encode()).unwrap(), proof);
+    proof.proof.push([9; 32]);
+    let refusal = parse(&proof.encode()).unwrap_err();
+    assert!(
+        refusal.contains("inclusion proof holds more than 64 hashes"),
+        "{refusal}"
     );
 }
 
@@ -378,6 +425,101 @@ fn itaoca_stores_a_provenance_once() {
     );
 }
 
+/// A provenance of the newer format is stored beside one of the earlier format for the same
+/// point, which is never replaced or removed, and is preferred by every load; one of the earlier
+/// format is never written where one of the newer format is stored.
+#[test]
+fn itaoca_stores_the_newer_format_beside_the_earlier_one() {
+    let release = good();
+    let itaoca = Itaoca {
+        root: fresh("store-formats"),
+    };
+    let mut first = release.provenance.clone();
+    first.format = Format::V1;
+    let first = first.encode();
+    assert!(first.starts_with(b"ita-provenance/1\n"));
+    let second = release.provenance.encode();
+    itaoca
+        .store_provenance(SOURCE, NAME, VERSION, 2, &first)
+        .unwrap();
+    assert_eq!(
+        itaoca.load_provenance(SOURCE, NAME, VERSION, 2).unwrap(),
+        Some(first.clone())
+    );
+    itaoca
+        .store_provenance(SOURCE, NAME, VERSION, 2, &second)
+        .unwrap();
+    assert_eq!(
+        itaoca.load_provenance(SOURCE, NAME, VERSION, 2).unwrap(),
+        Some(second.clone())
+    );
+    let dir = itaoca.root.join("registry/acme/releases/acme+ledger-0.3.1");
+    assert_eq!(
+        std::fs::read(dir.join("checkpoint-2.provenance")).unwrap(),
+        first
+    );
+    assert_eq!(
+        std::fs::read(dir.join("checkpoint-2-2.provenance")).unwrap(),
+        second
+    );
+    // The earlier format again, or another one: nothing is written, the newer one stays.
+    let mut other = make_release(EXPIRES, &[30]).provenance;
+    other.format = Format::V1;
+    itaoca
+        .store_provenance(SOURCE, NAME, VERSION, 2, &other.encode())
+        .unwrap();
+    assert_eq!(
+        std::fs::read(dir.join("checkpoint-2.provenance")).unwrap(),
+        first
+    );
+    assert_eq!(
+        itaoca.load_provenance(SOURCE, NAME, VERSION, 2).unwrap(),
+        Some(second)
+    );
+}
+
+/// ADR 0122, amendment of 2026-11-03, item 4: every offline load reads the root-version floor
+/// Itaoca stores for the registry. A provenance whose chain ends below it is refused (U7010),
+/// from the vendor directory and from Itaoca alike; a floor that exists and cannot be read is
+/// unavailable (U7013), never a load without it; no floor stored, or no Itaoca, is trust on
+/// first use.
+#[test]
+fn every_load_reads_the_root_version_floor() {
+    let (release, itaoca) = stored("floor");
+    let root = fresh("floor-root");
+    vendor::vendor(&root, Some(&itaoca), &release.expected).unwrap();
+    let id = una_project::itaoca::registry_id(&release.expected.root);
+    assert!(vendor::load(&root, Some(&itaoca), &release.expected).is_ok());
+    itaoca.store_root_version(&id, 1).unwrap();
+    assert!(vendor::load(&root, Some(&itaoca), &release.expected).is_ok());
+    itaoca.store_root_version(&id, 2).unwrap();
+    for place in [Some(root.as_path()), None] {
+        let at = place.map_or_else(|| fresh("floor-no-vendor"), std::path::Path::to_path_buf);
+        let refusal = vendor::load(&at, Some(&itaoca), &release.expected).unwrap_err();
+        assert!(
+            matches!(&refusal, Problem::Refused(message)
+                if message.contains("older than root version 2") && !message.contains("forked")),
+            "{refusal:?}"
+        );
+    }
+    // No Itaoca at all: the vendored chain is trusted on first use.
+    assert!(vendor::load(&root, None, &release.expected).is_ok());
+    // A floor that does not read: stored read-only, so replaced, not written through.
+    let floor = itaoca.root.join("registry").join(&id).join("root-version");
+    std::fs::remove_file(&floor).unwrap();
+    std::fs::write(&floor, b"two\n").unwrap();
+    let refusal = vendor::load(&root, Some(&itaoca), &release.expected).unwrap_err();
+    assert!(
+        matches!(&refusal, Problem::Unavailable(message) if message.contains("cannot be read")),
+        "{refusal:?}"
+    );
+    // Vendoring never replaces a vendored copy with what it cannot verify either.
+    assert!(matches!(
+        vendor::vendor(&root, Some(&itaoca), &release.expected),
+        Err(Problem::Unavailable(_))
+    ));
+}
+
 fn stored(name: &str) -> (Release, Itaoca) {
     let release = good();
     let itaoca = Itaoca {
@@ -465,7 +607,7 @@ fn an_interrupted_provenance_store_is_repaired_on_load() {
     let stray = release_dir.join(".una-fresh-9-9-9");
     std::fs::create_dir(&stray).unwrap();
     std::fs::hard_link(
-        release_dir.join("checkpoint-2.provenance"),
+        release_dir.join("checkpoint-2-2.provenance"),
         stray.join("file"),
     )
     .unwrap();
@@ -489,7 +631,7 @@ fn a_provenance_is_never_stored_through_a_link() {
     std::fs::create_dir_all(&release_dir).unwrap();
     let target = fresh("provenance-link-target").join("kept");
     std::fs::write(&target, b"kept").unwrap();
-    std::os::unix::fs::symlink(&target, release_dir.join("checkpoint-2.provenance")).unwrap();
+    std::os::unix::fs::symlink(&target, release_dir.join("checkpoint-2-2.provenance")).unwrap();
     assert!(
         itaoca
             .store_provenance(SOURCE, NAME, VERSION, 2, &release.provenance.encode())

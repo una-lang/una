@@ -59,7 +59,7 @@ use super::{decimal, digest_hex, hex};
 use crate::client::{Floors, Omission, OpenError, Point, Registry, shown};
 use crate::content::check_path;
 use crate::itaoca::{Itaoca, registry_id};
-use crate::provenance::{self, Expected};
+use crate::provenance::{self, Expected, Floor};
 use crate::transport::{Fallback, Refusal, Transport, segments};
 use crate::tree::VerifiedTree;
 use crate::vendor::{Problem, check_source};
@@ -414,22 +414,19 @@ pub fn entries(
 }
 
 /// Verifies the package `expected` names from the bundle `bytes` that `read` read: its archive's
-/// digest is the lock's, and its provenance verifies against the lock and the archive's
-/// `ita.una` (rule 17). Returns the archive and the provenance, verified; a package the bundle
-/// does not hold is [`Problem::Absent`], any other failure [`Problem::Refused`].
-pub fn verify_package(bytes: &[u8], read: &Read, expected: &Expected) -> Result<Packed, Problem> {
-    verify_held(bytes, read, expected).map_err(|(absent, why)| {
-        if absent {
-            Problem::Absent(why)
-        } else {
-            Problem::Refused(why)
-        }
-    })
-}
-
-fn verify_held(bytes: &[u8], read: &Read, expected: &Expected) -> Result<Packed, (bool, String)> {
+/// digest is the lock's, and its provenance verifies against the lock, the root-version floor
+/// `floor` this machine stores, and the archive's `ita.una` (rule 17). Returns the archive and
+/// the provenance, verified; a package the bundle does not hold is [`Problem::Absent`], one
+/// that cannot be verified offline [`Problem::Unavailable`], any other failure
+/// [`Problem::Refused`].
+pub fn verify_package(
+    bytes: &[u8],
+    read: &Read,
+    expected: &Expected,
+    floor: &Floor,
+) -> Result<Packed, Problem> {
     let what = format!("`{} {}`", expected.name, expected.version);
-    let refused = |why: String| (false, why);
+    let refused = |why: String| Problem::Refused(why);
     let archive_path = package_path(&expected.digest)
         .ok_or_else(|| refused(format!("the digest of {what} is not a digest")))?;
     let provenance_path =
@@ -439,14 +436,14 @@ fn verify_held(bytes: &[u8], read: &Read, expected: &Expected) -> Result<Packed,
         .entries
         .get(&archive_path)
         .and_then(|range| bytes.get(range.clone()))
-        .ok_or_else(|| (true, format!("the bundle does not hold {what}")))?;
+        .ok_or_else(|| Problem::Absent(format!("the bundle does not hold {what}")))?;
     let provenance = read
         .entries
         .get(&provenance_path)
         .and_then(|range| bytes.get(range.clone()))
         .ok_or_else(|| refused(format!("the bundle holds {what} without its provenance")))?;
     // What the bundle served is quoted as a message may show it.
-    verify_parts(archive, provenance, &what, expected).map_err(refused)
+    verify_parts(archive, provenance, &what, expected, floor)
 }
 
 fn verify_parts(
@@ -454,35 +451,41 @@ fn verify_parts(
     provenance: &[u8],
     what: &str,
     expected: &Expected,
-) -> Result<Packed, String> {
-    let tree = VerifiedTree::from_archive(archive)
-        .map_err(|refusal| format!("the archive of {what} in the bundle: {}", shown(&refusal)))?;
+    floor: &Floor,
+) -> Result<Packed, Problem> {
+    let tree = VerifiedTree::from_archive(archive).map_err(|refusal| {
+        Problem::Refused(format!(
+            "the archive of {what} in the bundle: {}",
+            shown(&refusal)
+        ))
+    })?;
     if tree.digest() != expected.digest {
-        return Err(format!(
+        return Err(Problem::Refused(format!(
             "the archive of {what} in the bundle has the digest {}, not the lock's {}",
             tree.digest(),
             expected.digest
-        ));
+        )));
     }
     let document = provenance::parse(provenance).map_err(|refusal| {
-        format!(
+        Problem::Refused(format!(
             "the provenance of {what} in the bundle: {}",
             shown(&refusal)
-        )
+        ))
     })?;
-    let statement = provenance::verify(&document, expected).map_err(|refusal| {
-        format!(
-            "the provenance of {what} in the bundle: {}",
-            shown(&refusal)
-        )
+    let statement = provenance::verify(&document, expected, floor).map_err(|problem| {
+        let said = |why: &str| format!("the provenance of {what} in the bundle: {}", shown(why));
+        match problem {
+            provenance::Problem::Refused(why) => Problem::Refused(said(&why)),
+            provenance::Problem::Unavailable(why) => Problem::Unavailable(said(&why)),
+        }
     })?;
     let manifest = tree
         .file("ita.una")
-        .ok_or_else(|| format!("{what} in the bundle has no ita.una"))?;
+        .ok_or_else(|| Problem::Refused(format!("{what} in the bundle has no ita.una")))?;
     if statement.manifest != provenance::sha256_digest(manifest) {
-        return Err(format!(
+        return Err(Problem::Refused(format!(
             "the ita.una of {what} in the bundle is not the one its release statement names"
-        ));
+        )));
     }
     Ok(Packed {
         archive: archive.to_vec(),
@@ -511,6 +514,7 @@ impl From<Problem> for Failure {
         match problem {
             Problem::Absent(why) => Failure::Absent(why),
             Problem::Refused(why) => Failure::Refused(why),
+            Problem::Unavailable(why) => Failure::Unavailable(why),
         }
     }
 }
@@ -642,7 +646,7 @@ pub struct Unbundled {
     /// The entries of the bundle that no locked package uses, or that this module does not
     /// store: documents of the per-name state, and packages the lock does not name.
     pub unused: Vec<String>,
-    /// Notes: a floor that could not be stored, or read, which is never a failure.
+    /// Notes: a floor that could not be stored, which is never a failure.
     pub notes: Vec<String>,
 }
 
@@ -662,7 +666,10 @@ pub fn unbundle(
     let mut verified = Vec::with_capacity(expected.len());
     let mut used: BTreeSet<String> = BTreeSet::new();
     for (index, package) in expected.iter().enumerate() {
-        let packed = verify_package(bytes, &read, package)
+        // Verified as every load verifies it, against the root-version floor this machine
+        // stores, read here: one that exists and cannot be read stops the unbundling (U7013).
+        let floor = Floor::of(Some(itaoca), &package.root);
+        let packed = verify_package(bytes, &read, package, &floor)
             .map_err(|why| (Some(index), Failure::from(why)))?;
         used.extend(package_path(&package.digest));
         used.extend(provenance_path(
@@ -685,23 +692,31 @@ pub fn unbundle(
         for path in copy.files.keys() {
             used.insert(format!("registry/{source}/{path}"));
         }
-        let Some(package) = expected.iter().find(|e| e.source == source) else {
+        let Some((at, package)) = expected
+            .iter()
+            .enumerate()
+            .find(|(_, e)| e.source == source)
+        else {
             continue;
         };
         let id = registry_id(&package.root);
-        // A floor that cannot be read is no floor: it is a note, and the copy is still verified.
-        let floor = itaoca.load_checkpoint(&id).unwrap_or_else(|why| {
-            notes.push(format!(
-                "note: the floor of `{source}` does not read: {why}"
-            ));
-            None
-        });
-        let root_version = itaoca.load_root_version(&id).unwrap_or_else(|why| {
-            notes.push(format!(
-                "note: the root floor of `{source}` does not read: {why}"
-            ));
-            None
-        });
+        // Unbundling is offline, with no registry to fall back on: a floor that exists and
+        // cannot be read stops it (U7013), never a verification without it (ADR 0122,
+        // amendment of 2026-11-03, item 4).
+        let unreadable = |which: &str, why: String| {
+            (
+                Some(at),
+                Failure::Unavailable(format!(
+                    "the {which} this machine has accepted for `{source}` cannot be read, so the bundle cannot be verified offline: {why}"
+                )),
+            )
+        };
+        let floor = itaoca
+            .load_checkpoint(&id)
+            .map_err(|why| unreadable("checkpoint", why))?;
+        let root_version = itaoca
+            .load_root_version(&id)
+            .map_err(|why| unreadable("root version", why))?;
         let stored = Floors {
             checkpoint: floor.as_deref(),
             root_version,

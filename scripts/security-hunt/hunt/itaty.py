@@ -142,6 +142,24 @@ def inclusion_proof(index, leaves):
     return inclusion_proof(index - k, leaves[k:]) + [tree_root(leaves[:k])]
 
 
+def _subproof(m, leaves, whole):
+    n = len(leaves)
+    if m == n:
+        return [] if whole else [tree_root(leaves)]
+    k = _split(n)
+    if m <= k:
+        return _subproof(m, leaves[:k], whole) + [tree_root(leaves[k:])]
+    return _subproof(m - k, leaves[k:], False) + [tree_root(leaves[:k])]
+
+
+def consistency_proof(m, leaves):
+    """The consistency proof from the tree of the first `m` of `leaves` to the tree of all of
+    them (RFC 9162 §2.1.4.1)."""
+    if 0 < m < len(leaves):
+        return _subproof(m, leaves, True)
+    return []
+
+
 WIDTH = 256
 
 
@@ -326,6 +344,8 @@ class Registry:
         # Each release logged: (name, version) -> (index, statement, signer, content digest).
         self.releases = {}
         self.checkpoints = {}
+        # The root version each checkpoint names, by size.
+        self.named = {}
         self.add_root()
 
     def root_text(self, version, revoked=()):
@@ -430,6 +450,7 @@ class Registry:
             document = text + "\n" + sign_line(self.log, text)
             document += "".join(cosign_line(w, text, time) for w in witnesses)
             self.checkpoints[kept] = document
+            self.named[kept] = len(self.roots)
             self.files[f"checkpoint/{kept}"] = document.encode()
         self.files["checkpoint/latest"] = self.checkpoints[size].encode()
         self.files.update(log_tiles(self.entries))
@@ -441,10 +462,25 @@ class Registry:
         leaves = [leaf_hash(e) for e in self.entries[:size]]
         return size, "sha256:" + tree_root(leaves).hex()
 
+    def latest_under_last(self, size):
+        """(checkpoint, consistency proof) of the latest checkpoint signed under the last root
+        version, larger than `size`, as a client proves the point of `size` its prefix (`spec/30
+        §11` rule 9), or None when the registry signed none."""
+        last = len(self.roots)
+        sizes = [s for s, v in self.named.items() if v == last and s > size]
+        if not sizes:
+            return None
+        to = max(sizes)
+        leaves = [leaf_hash(e) for e in self.entries[:to]]
+        return self.checkpoints[to], consistency_proof(size, leaves)
+
     def provenance(self, name, version, size, roots=None, checkpoint=None, statement=None,
-                   index=None, proof=None, key=None):
+                   index=None, proof=None, key=None, fmt=2, latest="honest"):
         """The provenance of a release at the resolution point of `size` (`spec/30 §9` rule 7);
-        any part may be given in place of the honest one, for a forgery."""
+        any part may be given in place of the honest one, for a forgery. In format 2, when the
+        point names a root version older than the last, it carries the latest checkpoint under
+        the last version and the consistency proof (ADR 0122, amendment of 2026-11-03), unless
+        `latest` is None; `latest` may also be a (checkpoint, proof) pair of a forgery's."""
         rel_index, rel_statement, signer, _ = self.releases[(name, version)]
         roots = self.roots if roots is None else roots
         checkpoint = self.checkpoints[size] if checkpoint is None else checkpoint
@@ -453,15 +489,31 @@ class Registry:
         if proof is None:
             proof = inclusion_proof(rel_index, [leaf_hash(e) for e in self.entries[:size]])
         key = signer if key is None else key
-        out = "ita-provenance/1\n"
+        if latest == "honest":
+            latest = (self.latest_under_last(size)
+                      if self.named.get(size, len(self.roots)) < len(self.roots) else None)
+        out = f"ita-provenance/{fmt}\n"
         for document in roots:
             out += f"root {len(document.encode())}\n{document}"
         out += f"checkpoint {len(checkpoint.encode())}\n{checkpoint}"
+        if fmt == 2 and latest is not None:
+            latest_checkpoint, consistency = latest
+            out += f"latest {len(latest_checkpoint.encode())}\n{latest_checkpoint}"
+            out += "".join(f"consistency {b64(h)}\n" for h in consistency)
         out += f"statement {len(statement.encode())}\n{statement}"
         out += f"index {index}\n"
         out += "".join(f"proof {b64(h)}\n" for h in proof)
         out += f"key {key.name} {b64(key.public)}\n"
         return out
+
+    def lock_point(self, size, last=None):
+        """The lock's `registry` section at the resolution point of `size`, as `una ita lock`
+        writes it: (source, pin, size, root hash, last root version, its digest), the last root
+        version the one the registry serves, or `last`."""
+        _, root = self.resolution_point(size)
+        version = len(self.roots) if last is None else last
+        return (self.source, self.pin(), size, root, version,
+                sha256_digest(self.roots[version - 1].encode()))
 
     def signed_name(self, name, key):
         owner = name.split("/", 1)[0] if "/" in name else "itauna"
@@ -479,13 +531,15 @@ SOLVER = ('solver\n  encoding "una-smt-1"\n  name "z3"\n  version "5.1.0"\n'
 
 
 def lock_text(registries=(), packages=()):
-    """`ita.lock`: `registries` are (source, pin, size, root hash) and `packages` dicts with
+    """`ita.lock`: `registries` are (source, pin, size, root hash, last root version, its
+    digest), as `Registry.lock_point` gives them, and `packages` dicts with
     `name`, `version`, `from` (a source, or `path "<dir>"`), `digest`, and optionally `signed`,
     `logged`, `needs` [(local, name, version)], `granted` [(by, ceiling)], `consented` and
     `trusted` [module paths]."""
     out = LOCK_HEADER + "lock 1\n\n" + SOLVER
-    for source, pin, size, root in registries:
-        out += f'\nregistry {source}\n  root "{pin}"\n  checkpoint {size} "{root}"\n'
+    for source, pin, size, root, last, last_digest in registries:
+        out += (f'\nregistry {source}\n  root "{pin}"\n  checkpoint {size} "{root}"\n'
+                f'  last root {last} "{last_digest}"\n')
     for p in sorted(packages, key=lambda p: (p["name"], p["version"])):
         out += f"\npackage {p['name']} {p['version']}\n  from {p['from']}\n"
         out += f'  digest "{p["digest"]}"\n'

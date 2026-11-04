@@ -118,9 +118,8 @@ class Dep:
             # A vendored copy edited after the lock: its digest is not the lock's (U7010).
             files.update(under(f"vendor/ita/{SOURCE}/{itaty.release_dir(self.name, VERSION)}",
                                self.loaded))
-        _, root = reg.resolution_point(size)
         entry = registry_lock_entry(reg, self.name, VERSION, granted=granted)
-        return files, [entry], [(SOURCE, reg.pin(), size, root)], reg.pin()
+        return files, [entry], [reg.lock_point(size)], reg.pin()
 
 
 def _authority(files):
