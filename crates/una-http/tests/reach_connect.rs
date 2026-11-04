@@ -78,7 +78,8 @@ fn an_abandon_during_a_hung_connect_returns_at_once_and_deadlines_still_hold() {
     assert_eq!(result, Err(Error::Interrupted));
     assert!(took < Duration::from_millis(400), "{took:?}");
     // Twice as many hung attempts as the pool has: each request fails with `TimedOut` at its
-    // own deadline, the later ones queued behind the hung ones, and the pool never grows.
+    // own deadline, waiting in its zone's line behind the hung attempt that holds the zone's
+    // share of the pool, 1 of 2 (#1265), and the pool never grows.
     let deadline = Duration::from_millis(300);
     let requests: Vec<_> = (0..4)
         .map(|_| std::thread::spawn(move || get(deadline, None)))
