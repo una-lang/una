@@ -142,7 +142,8 @@ impl Checker<'_, '_, '_> {
     /// loop, a `within`, a `first of`, a `tasks`, `together`, `together for` or `start`
     /// statement (S-40), a call
     /// of a function value, or an operation, which a handler of the package may serve (S-39,
-    /// `spec/26 §6` rule 4).
+    /// `spec/26 §6` rule 4); or the handler call of a `with` binding, whose installation then
+    /// takes no number, so that no instance id shows whether it ran (S-41).
     pub(crate) fn quiet_site(&mut self, span: Span) {
         self.quiet_site_under(span, &Label::public());
     }
