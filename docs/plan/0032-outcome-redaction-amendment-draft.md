@@ -14,6 +14,8 @@ Rule 3 now reads, for a run's trace:
 
 The outcome label is static: the checker computes it once per operation site, elaboration carries it in Core IR as the `outcome` label of the operation (`spec/09`, `spec/13 §8`), and the native backend embeds it in its description of the site, which fails to load without it. An operation with no recorded label counts as `⊤`, and so does one in a body that no label rule checks (a policy's `via` function). Whether an outcome is redacted therefore depends on no value.
 
+**What it does not cover.** The rule covers what an event shows, not whether it occurs. On this line each operation invocation still appends one event, so an operation performed under a branch on an `internal` value shows by occurrence: which events appear, how many, and the `seq` of later events can depend on that value. The Consequences' "traces never show labeled data" therefore holds, after this amendment, for every argument and outcome of an event, each shown at most at its label, and not for the trace's shape.
+
 **Examples.** An example's trace keeps its outcomes in clear: an example's data come from its source (ADR 0078), and `expect performed` and the reasons of a failed example read them. `una test --json` is therefore unchanged.
 
 **Editions.** The rule applies to a run in every edition the v0.3 line accepts (`0.1` to `0.3`): the routes above need no construct of a later edition.
@@ -25,6 +27,7 @@ This is the rule of the fix on `main` (#1562), without its parts for constructs 
 ## Consequences
 
 - Nothing stops compiling, no check is weakened, and no edition changes its language: the change is in what a run's trace shows.
+- **Rebuild.** There is no version handshake between the compiler and the runtime. A native executable built before the fix embeds the old runtime and keeps writing outcomes in clear until it is rebuilt; a patched `una` linked with an older `libuna_rt.a` (through `UNA_RT_LIB` or a stale runtime in a source tree) still leaks, since the old runtime ignores the new `outcome` key; an older `una` with the patched runtime exits 3, since its description lacks the key. Native executables must be rebuilt with the patched toolchain, `una` and its runtime together.
 - **The cost is trace observability.** In a run's trace the outcome of every `Http` request (its result is `internal Response`), every `Files.read` (`internal Text`), every `Env.get`, every `Keys.hmac`, and every `Files` operation of a package whose file-state label is above `public`, is `redacted`. An operator no longer reads from the trace whether a request failed, or how. Outcomes of `Console.print`, `Clock.now`, handler operations whose result and failure decisions are `public`, and `Files.write` in a package whose writes are all `public`, stay in clear.
 - Consumers of trace outcomes must accept the kind `redacted`: the equivalence tests of both engines do, `una test`'s `expect performed` counts a redacted outcome as performed (examples are not redacted anyway), and external readers (the hunt's oracle, `docs/security/tcb.md` item 5, and the una-bench readers) need adjusting.
 - Complexity: O(1) per operation site at check time (one label recorded), O(1) per event at run time (one test of a static level), O(S) space for S operation sites.
