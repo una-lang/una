@@ -2466,6 +2466,49 @@ fn a_point_cosigned_by_retired_witnesses_unbundles() {
     assert!(!store.contains(&b.expected.digest).unwrap());
 }
 
+/// `spec/30 §11` rule 9 at unbundling: bundled copies whose latest checkpoint, signed by the log
+/// under root 2, is of the lock's point's own size, while the point names root 1, are two
+/// checkpoints of one size. Refused (U7010), said as evidence against the registry with both
+/// versions, as `una ita lock --check` and `una ita bundle` say it, and nothing is stored.
+#[test]
+fn a_same_size_latest_in_a_bundle_is_evidence() {
+    let b = bundled_with(Rotation::AfterPoint(2));
+    let size = b.expected.checkpoint_size;
+    let point = String::from_utf8(b.files[&format!("checkpoint/{size}")].clone()).unwrap();
+    let text = point.split_once("\n\n").unwrap().0.to_owned() + "\n";
+    let first_line = format!(
+        "ita-root 1 {}",
+        una_project::tlog::root::digest(&b.test.roots[0])
+    );
+    assert!(text.contains(&first_line), "{text}");
+    let text = text.replacen(&first_line, &b.test.root_line(), 1);
+    let mut latest = format!(
+        "{text}\n{}",
+        support::sign_line(&b.test.keys.log.0, &b.test.keys.log.1, &text)
+    );
+    for (pair, key) in &b.test.keys.witnesses {
+        latest.push_str(&support::cosign_line(pair, key, &text, NOW));
+    }
+    let mut files = b.files.clone();
+    files.insert("checkpoint".to_owned(), latest.into_bytes());
+    let store = Itaoca {
+        root: scratch("unbundle-same-size"),
+    };
+    let bytes = bundle_of(&b, &b.archive, &b.provenance, &files);
+    let (_, failure) =
+        bundle::unbundle(&bytes, &store, std::slice::from_ref(&b.expected), &no_place).unwrap_err();
+    assert!(
+        matches!(
+            &failure,
+            Failure::Refused(why) if why.contains(&format!("two checkpoints of size {size}"))
+                && why.contains("evidence against the registry `acme`")
+                && why.contains("naming the root versions 1 and 2")
+        ),
+        "{failure:?}"
+    );
+    assert!(!store.contains(&b.expected.digest).unwrap());
+}
+
 /// ADR 0122, amendment of 2026-11-03: unbundling verifies each provenance as every load does.
 /// A provenance whose point a retired witness cosigns, without the prefix proof it carries in
 /// its newer format, is unavailable (U7013) even when the bundle holds the latest checkpoint

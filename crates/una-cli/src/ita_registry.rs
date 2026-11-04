@@ -1565,6 +1565,13 @@ fn bundle_source(
                 reasons.push(format!("`{from}`: {why}"));
                 continue;
             }
+            // Evidence against the registry (`spec/30 §11` rule 9): refused, and said as such.
+            Err(OpenError::Evidence(misbehavior, why)) => {
+                refused = true;
+                let evidence = audit::Evidence::from(misbehavior).text(&declared.name.value);
+                reasons.push(format!("`{from}`: {why}; {evidence}"));
+                continue;
+            }
         };
         let mut out = Vec::new();
         for (at, (one, _)) in packages.iter().enumerate() {
