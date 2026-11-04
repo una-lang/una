@@ -9,7 +9,7 @@ policy attendee_key : secret[PII] {Text | Phone} ⇝ internal Hashed via events.
 fun hmac_phone(phone: secret[PII] {Text | Phone}) : internal Hashed uses {keys ↦ Keys[hmac]} fails KeyError =
   let %t0: secret[PII] Hashed =
     quiet
-      let %t1: secret[PII] Hashed = keys.hmac("phone_pepper", phone) in
+      let %t1: secret[PII] Hashed = keys.hmac("phone_pepper", phone) outcome restricted[Location, PII] in
       %t1
   in
   %t0

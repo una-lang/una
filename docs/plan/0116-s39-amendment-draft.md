@@ -25,6 +25,7 @@ Out of scope:
 - **Handler installations** (S-41, #1514), closed by the addition below.
 - **The counters of quiet blocks** (S-44, #1546). `qs<c>` and `qf<c>` counted every quiet statement of a task, those under a raised program counter included. In code that is quiet only by the conservative rules, under an effect floor or a decision on values of a type parameter, events that always happen carried a `c` that showed how many statements guarded by a secret ran before. Closed with S-40 above: quiet statements and races take no number, as the installation ids of the addition below take none.
 - **Operations of a capability that accepts a label above `public`** (S-42, #1515), closed by the last addition below.
+- **Shared host state** (S-45, #1552). The events of quiet code are left out, not what its operations did to host state: a later public operation on the same files or limiter showed it in its outcome. Closed by the proposed amendment of ADR 0032 (`docs/plan/0032-outcome-redaction-amendment-draft.md`), which renders every outcome of a run's trace at its label; the route needs no quiet code, so it is a rule of the trace's rendering, not of this amendment.
 - **The run-wide budget** (S-36, #1478): how many iterations a `secret` loop took from `--stop-after-iterations` shows in the output of a later public loop, not in the trace.
 - **The hard stop.** The `cancelled` events and U6007 of the hard stop of `public` code are the time of a host stop (`spec/07 §1`); inside quiet code its `cancelled` events are left out as well.
 

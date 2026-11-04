@@ -4811,19 +4811,27 @@ fn a_host_stop_interrupts_a_waiting_request_in_a_for_ever_body_in_both_engines()
         "module poll
 
 pub main() -> Unit
+  uses @files: Files[write]
   uses @http: Http[get]
   diverges
 =
   for ever
     let reply = attempt @http.get(\"http://127.0.0.1:{port}/\", headers: [], key_name: None)
+    let shown: internal Text = when reply
+      is Ok(response) -> \"ok\"
+      is Err(e) -> \"{{e}}\"
+    let w = attempt @files.write(\"v.txt\", content: shown)
     unit
 "
     );
     let dir = ita_package(
         "poll",
-        &format!("\nrun\n  entry poll\n  grants\n    http \"http://127.0.0.1:{port}\" get\n"),
+        &format!(
+            "\nrun\n  entry poll\n  grants\n    files \"out/\" write\n    http \"http://127.0.0.1:{port}\" get\n"
+        ),
         &[("src/poll.una", &program)],
     );
+    std::fs::create_dir_all(dir.join("out")).unwrap();
     let trace = dir.join("trace.json");
     let [mut run, mut native] = engines(&dir, "poll", &["--http-timeout", "600"]);
     run.arg("--json");
@@ -4859,13 +4867,26 @@ pub main() -> Unit
             serde_json::from_slice::<Value>(&std::fs::read(&trace).unwrap()).unwrap()
         });
         drop(connection);
+        // S-45 (#1552): the trace redacts the request's outcome; the program wrote its variant.
+        assert_eq!(
+            std::fs::read_to_string(dir.join("out/v.txt")).unwrap(),
+            "Interrupted"
+        );
+        std::fs::remove_file(dir.join("out/v.txt")).unwrap();
     }
     for events in &traces {
         assert_eq!(events[0]["op"], "get", "{events}");
-        assert_eq!(events[0]["outcome"]["kind"], "fail", "{events}");
-        assert_eq!(events[0]["outcome"]["variant"], "Interrupted", "{events}");
-        assert_eq!(events[1]["outcome"]["kind"], "stop", "{events}");
-        assert_eq!(events.as_array().unwrap().len(), 2, "{events}");
+        // S-45 (#1552, `spec/11 §5`): the request's outcome, `internal`, is redacted in a
+        // run's trace, so its `Interrupted` is not shown; that the request returned at once
+        // shows in the `stop` of the next iteration start and the time bound above.
+        assert_eq!(
+            events[0]["outcome"],
+            serde_json::json!({"kind": "redacted", "level": "internal"}),
+            "{events}"
+        );
+        assert_eq!(events[1]["op"], "write", "{events}");
+        assert_eq!(events[2]["outcome"]["kind"], "stop", "{events}");
+        assert_eq!(events.as_array().unwrap().len(), 3, "{events}");
     }
     assert_eq!(traces[0], traces[1]);
     let _ = std::fs::remove_dir_all(&dir);
@@ -7198,7 +7219,8 @@ fn s42_quiet_code_does_not_consume_the_iteration_timeout_event() {
     // reported and no `timeout` event was left for `s > 0`.
     let args = ["--virtual-time", "--stop-after-iterations", "3"];
     let source = QUIET_DEADLINE;
-    let iteration = ["fail:RateLimited", "timeout"];
+    // Since S-45 (#1552, `spec/11 §5`) every `acquire` outcome is redacted at `internal`.
+    let iteration = ["redacted", "timeout"];
     let mut expected: Vec<&str> = iteration.repeat(3);
     expected.extend(["stop", "ok"]);
     for secret in [1, 3] {
@@ -7207,20 +7229,15 @@ fn s42_quiet_code_does_not_consume_the_iteration_timeout_event() {
         assert_eq!(run, native, "{secret}");
         assert_eq!(outcome_kinds(&run), expected, "{secret}: {run}");
     }
-    // `s = 0`: the public `acquire` of the first iteration takes the token. That the outcomes
-    // differ from `s > 0` is the open channel of shared host state (S-45, #1552), not this rule.
+    // `s = 0`: the public `acquire` of the first iteration takes the token. Its outcome is
+    // redacted (S-45, #1552), but its iteration has no `timeout` event: whether it waited at
+    // the limit is timing, out of model (`spec/27 §10` rule 5, `spec/26 §6` rule 4).
     let (_, run, native) = secret_run("s42l1", source, 0, &args);
     assert_eq!(run, native);
     assert_eq!(
         outcome_kinds(&run),
         [
-            "ok",
-            "fail:RateLimited",
-            "timeout",
-            "fail:RateLimited",
-            "timeout",
-            "stop",
-            "ok"
+            "redacted", "redacted", "timeout", "redacted", "timeout", "stop", "ok"
         ],
         "{run}"
     );

@@ -269,6 +269,8 @@ fn run_example<'p>(
     machine.run.stop_after.set(example.stop_after);
     // An example's operations in quiet code keep their events, for `expect performed` (S-42).
     machine.run.quiet_events.set(true);
+    // An example's outcomes are written in clear, its data from its source (S-45).
+    machine.run.clear_outcomes.set(true);
     let result = machine
         .rooted(|machine| machine.eval_closed(&mut Env::new(), &example.body))
         .unwrap_or_else(unrooted);
