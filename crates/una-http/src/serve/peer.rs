@@ -18,10 +18,11 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv6Addr};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
 
 use una_hash::{SipKey, sip24};
 
+use super::fault::{Health, hold};
 use super::gcra::Gcra;
 
 /// Shards of a peer table.
@@ -109,24 +110,25 @@ pub struct PeerTable {
     shards: Vec<Mutex<HashMap<PeerKey, Arc<Peer>>>>,
     /// Handshakes one peer may start per second.
     handshake_rate: u64,
-}
-
-/// Locks a shard. A poisoned mutex still holds a consistent map: every critical section
-/// below leaves the map valid at each step, so the guard is taken regardless.
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    /// The run's record of faults: a panic with a shard locked stops the run.
+    health: Arc<Health>,
 }
 
 impl PeerTable {
     /// An empty table whose shards are chosen under `key`, and whose peers may start
     /// `handshake_rate` handshakes per second.
     pub fn new(key: SipKey, handshake_rate: u64) -> PeerTable {
+        PeerTable::with_health(key, handshake_rate, Arc::default())
+    }
+
+    /// [`PeerTable::new`] in a run whose record of faults is `health`. Each shard is locked
+    /// through [`hold`], so a panic with a shard locked stops the run.
+    pub fn with_health(key: SipKey, handshake_rate: u64, health: Arc<Health>) -> PeerTable {
         PeerTable {
             key,
             shards: (0..SHARDS).map(|_| Mutex::new(HashMap::new())).collect(),
             handshake_rate,
+            health,
         }
     }
 
@@ -149,7 +151,7 @@ impl PeerTable {
         let Some(shard) = self.shard(peer) else {
             return Err(Refused::TooMany);
         };
-        let mut map = lock(shard);
+        let mut map = hold(&self.health, shard);
         let entry = Arc::clone(map.entry(peer).or_insert_with(|| {
             Arc::new(Peer {
                 key: peer,
@@ -174,7 +176,7 @@ impl PeerTable {
     /// that calls [`PeerTable::expire`]. O(1) expected.
     pub fn close(&self, peer: &Peer, now: u64) -> Option<u64> {
         let shard = self.shard(peer.key)?;
-        let mut map = lock(shard);
+        let mut map = hold(&self.health, shard);
         let left = peer.open.load(Ordering::Acquire).saturating_sub(1);
         peer.open.store(left, Ordering::Release);
         Self::drop_if_idle(&mut map, peer.key, now)
@@ -184,7 +186,7 @@ impl PeerTable {
     /// otherwise the time at which it will be, when it holds no connection.
     pub fn expire(&self, peer: PeerKey, now: u64) -> Option<u64> {
         let shard = self.shard(peer)?;
-        let mut map = lock(shard);
+        let mut map = hold(&self.health, shard);
         Self::drop_if_idle(&mut map, peer, now)
     }
 
@@ -203,7 +205,10 @@ impl PeerTable {
 
     /// The entries in the table. O(shards).
     pub fn len(&self) -> usize {
-        self.shards.iter().map(|shard| lock(shard).len()).sum()
+        self.shards
+            .iter()
+            .map(|shard| hold(&self.health, shard).len())
+            .sum()
     }
 
     /// Whether the table has no entry.

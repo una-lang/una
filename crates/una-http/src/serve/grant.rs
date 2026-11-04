@@ -9,12 +9,15 @@
 
 use std::net::IpAddr;
 use std::ops::Deref;
+#[cfg(feature = "test-hooks")]
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use una_core::http::serve::{Hosts, Limits, ServeGrant};
 use una_hash::SipKey;
 
+use super::fault::Health;
 use super::gcra::Gcra;
 use super::peer::{Peer, PeerKey, PeerTable};
 use super::pressure::{Pressure, Registry};
@@ -49,7 +52,9 @@ pub fn sub(counter: &AtomicU64, n: u64) {
     });
 }
 
-/// Locks a mutex whose protected data stays consistent at every step, even after a panic.
+/// Locks a mutex that is not part of a grant's shared state (an ended thread's inbox, a
+/// listener, a thread's registrations): its data stays consistent at every step, even after a
+/// panic. A grant's shared state is locked through [`super::fault::hold`] instead.
 pub fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
         .lock()
@@ -73,6 +78,8 @@ pub enum AcceptRefusal {
     /// A fault of the host while the connection was accepted: contained, and what it took was
     /// given back.
     Fault,
+    /// The run stopped by a fault (`super::fault::Failure`): nothing is accepted any more.
+    Failed,
 }
 
 /// A connection refused at accept: why, and when its peer's entry may be forgotten if it is
@@ -140,11 +147,29 @@ pub struct GrantState {
     pub(crate) pressure: Mutex<Pressure>,
     pub(crate) registry: Registry,
     next_connection: AtomicU64,
+    /// The run's record of faults and of its stop.
+    pub health: Arc<Health>,
+    /// Contained faults of this grant's connections, accepts and peers.
+    faults: AtomicU64,
+    /// The next admissions panic after the peer's place is taken, in tests.
+    #[cfg(feature = "test-hooks")]
+    admission_faults: AtomicUsize,
 }
 
 impl GrantState {
-    /// The state of grant number `index`, whose peer table is keyed by `key`.
+    /// The state of grant number `index`, whose peer table is keyed by `key`, with a record of
+    /// faults of its own.
     pub fn new(index: usize, grant: &ServeGrant, key: SipKey) -> GrantState {
+        GrantState::with_health(index, grant, key, Arc::default())
+    }
+
+    /// [`GrantState::new`] in a run whose record of faults is `health`.
+    pub fn with_health(
+        index: usize,
+        grant: &ServeGrant,
+        key: SipKey,
+        health: Arc<Health>,
+    ) -> GrantState {
         let limits = grant.limits;
         GrantState {
             index,
@@ -162,12 +187,32 @@ impl GrantState {
                 .rate
                 .map(|rate| Gcra::new(rate.interval_nanos(), rate.count)),
             handshakes: Gcra::per_second(limits.handshakes),
-            peers: PeerTable::new(key, limits.peer_handshakes()),
+            peers: PeerTable::with_health(key, limits.peer_handshakes(), Arc::clone(&health)),
             pressure_on: AtomicBool::new(false),
             pressure: Mutex::new(Pressure::default()),
-            registry: Registry::default(),
+            registry: Registry::new(Arc::clone(&health)),
             next_connection: AtomicU64::new(0),
+            health,
+            faults: AtomicU64::new(0),
+            #[cfg(feature = "test-hooks")]
+            admission_faults: AtomicUsize::new(0),
         }
+    }
+
+    /// Counts a contained fault of this grant. What `faults()` of S5 (#1571) reads per grant.
+    pub(crate) fn count_fault(&self) {
+        self.faults.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Contained faults of this grant so far.
+    pub fn faults(&self) -> u64 {
+        self.faults.load(Ordering::SeqCst)
+    }
+
+    /// The next `n` admissions panic after the peer's place is taken, in tests.
+    #[cfg(feature = "test-hooks")]
+    pub fn fail_next_admissions(&self, n: usize) {
+        self.admission_faults.store(n, Ordering::SeqCst);
     }
 
     /// A snapshot of the counters.
@@ -220,6 +265,18 @@ impl GrantState {
     /// which the caller gives back, and the time at which the peer's entry may be forgotten,
     /// when it is kept until then. O(1) expected.
     pub fn admit(&self, address: IpAddr, now: u64) -> Result<Arc<Peer>, Refused> {
+        self.admit_into(address, now, &mut None)
+    }
+
+    /// [`GrantState::admit`], recording in `held` the peer whose place the connection holds from
+    /// the moment it is taken until a refusal gives it back: a panic between the two leaves
+    /// `held` naming the place to give back.
+    pub fn admit_into(
+        &self,
+        address: IpAddr,
+        now: u64,
+        held: &mut Option<Arc<Peer>>,
+    ) -> Result<Arc<Peer>, Refused> {
         let peer = self
             .peers
             .open(PeerKey::of(address), self.limits.peer)
@@ -227,6 +284,16 @@ impl GrantState {
                 reason: AcceptRefusal::PeerLimit,
                 expiry: None,
             })?;
+        *held = Some(Arc::clone(&peer));
+        #[cfg(feature = "test-hooks")]
+        #[allow(clippy::panic)]
+        if self
+            .admission_faults
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .is_ok()
+        {
+            panic!("an admission fails by a fault after the peer's place is taken, for a test");
+        }
         if self.tls {
             let refusal = if peer.handshakes.take(now).is_err() {
                 Some(AcceptRefusal::PeerHandshakes)
@@ -236,6 +303,8 @@ impl GrantState {
                 None
             };
             if let Some(refusal) = refusal {
+                // Given back once: `held` is cleared before the place is.
+                *held = None;
                 let expiry = self.peers.close(&peer, now).map(|at| (peer.key, at));
                 return Err(Refused {
                     reason: refusal,

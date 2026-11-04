@@ -11,7 +11,6 @@
 
 use std::collections::VecDeque;
 use std::net::SocketAddr;
-use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering, fence};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -19,6 +18,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use una_core::http::serve::ServeGrant;
 use una_hash::SipKey;
 
+use super::fault::{self, Failure, Health, Site, hold};
 use super::gate::HandshakeGate;
 use super::grant::{AcceptRefusal, Blocked, GrantState, lock};
 use super::net::{Clock, Socket, Waker};
@@ -157,8 +157,8 @@ impl ExchState {
 
     /// Takes the request: only the winner of the compare-and-swap that ended the queueing
     /// calls it, so it finds the request there.
-    fn take_request(&self) -> Option<Request> {
-        lock(&self.request).take()
+    fn take_request(&self, health: &Health) -> Option<Request> {
+        hold(health, &self.request).take()
     }
 
     fn change(&self, from: u8, to: u8) -> bool {
@@ -178,11 +178,11 @@ impl ExchState {
     }
 
     /// Ends a request that was never delivered: the owner's. `true` for the winner, who gives
-    /// back its `waiting` place and its body reservation.
-    pub fn expire_queued(&self) -> bool {
+    /// back its `waiting` place and its body reservation. `health` is the run's.
+    pub fn expire_queued(&self, health: &Health) -> bool {
         let won = self.change(QUEUED, DEAD);
         if won {
-            drop(self.take_request());
+            drop(self.take_request(health));
         }
         won
     }
@@ -234,6 +234,8 @@ pub enum Next {
     Blocked(Option<u64>),
     /// No request waits.
     Empty,
+    /// The run stopped by a fault (`spec/31 §6` rule 13): nothing is delivered any more.
+    Failed(Failure),
 }
 
 /// What the program learns of a reply.
@@ -264,16 +266,14 @@ impl std::fmt::Display for AlreadyRegistered {
     }
 }
 
-/// What a connection on its way through [`Shared::accept`] holds.
-enum Taken {
+/// What a connection on its way through [`Shared::accept`] holds. Each part is cleared before
+/// it is given back or handed on, so a panic anywhere leaves it naming exactly what is still
+/// held, and nothing is given back twice.
+struct Taken {
     /// Its slot of `connections`.
-    Slot,
-    /// Its slot and its place in its peer's entry.
-    Peer(Arc<super::peer::Peer>),
-    /// Everything, now owned by the message that hands it to its owner.
-    Handed,
-    /// Nothing: a refusal gave the slot back.
-    Released,
+    slot: bool,
+    /// Its place in its peer's entry, from the moment the admission takes it.
+    peer: Option<Arc<super::peer::Peer>>,
 }
 
 /// Takes one from a counter of faults a test asked for; `true` when there was one.
@@ -303,9 +303,8 @@ pub struct Shared {
     cursor: AtomicUsize,
     /// The serve thread that holds the turn to accept, or `usize::MAX` before the first.
     turn: AtomicUsize,
-    /// Panics caught in a callback or in a connection's step: each is contained, so it costs at
-    /// most the connection it happened on, never a serve thread.
-    faults: AtomicUsize,
+    /// The run's record of contained faults and of the failure that stops it.
+    pub health: Arc<Health>,
     /// Serve threads a test asked to panic (`Shared::kill_for_test`).
     #[cfg(feature = "test-hooks")]
     kill: Vec<AtomicBool>,
@@ -315,6 +314,10 @@ pub struct Shared {
     burst_faults: AtomicUsize,
     #[cfg(feature = "test-hooks")]
     refusal_faults: AtomicUsize,
+    #[cfg(feature = "test-hooks")]
+    hand_off_faults: AtomicUsize,
+    #[cfg(feature = "test-hooks")]
+    queue_faults: AtomicUsize,
     /// Set at a host stop.
     pub stopping: AtomicBool,
     /// Set at the hard stop.
@@ -323,6 +326,11 @@ pub struct Shared {
     pub clock: Arc<dyn Clock>,
     notify: OnceLock<Ready>,
     freed: OnceLock<Freed>,
+    /// The callback of `notify` panicked once: it is not called again, so a broken callback
+    /// prints once and not once per connection the stop closes.
+    notify_broken: AtomicBool,
+    /// The same for `freed`.
+    freed_broken: AtomicBool,
 }
 
 impl Shared {
@@ -335,7 +343,9 @@ impl Shared {
         clock: Arc<dyn Clock>,
         wakers: Vec<Box<dyn Waker>>,
     ) -> (Arc<Shared>, Vec<Receiver<Msg>>) {
+        fault::install_hook();
         let threads = threads.max(1);
+        let health = Arc::new(Health::default());
         let mut ports = Vec::with_capacity(threads);
         let mut receivers = Vec::with_capacity(threads);
         let mut wakers = wakers.into_iter();
@@ -354,7 +364,14 @@ impl Shared {
         let states: Vec<_> = grants
             .iter()
             .enumerate()
-            .map(|(index, grant)| Arc::new(GrantState::new(index, grant, key)))
+            .map(|(index, grant)| {
+                Arc::new(GrantState::with_health(
+                    index,
+                    grant,
+                    key,
+                    Arc::clone(&health),
+                ))
+            })
             .collect();
         let queues = (0..ports.len() * states.len())
             .map(|_| Queue::default())
@@ -368,7 +385,7 @@ impl Shared {
             queues,
             cursor: AtomicUsize::new(0),
             turn: AtomicUsize::new(usize::MAX),
-            faults: AtomicUsize::new(0),
+            health,
             #[cfg(feature = "test-hooks")]
             kill: (0..threads).map(|_| AtomicBool::new(false)).collect(),
             #[cfg(feature = "test-hooks")]
@@ -377,11 +394,17 @@ impl Shared {
             burst_faults: AtomicUsize::new(0),
             #[cfg(feature = "test-hooks")]
             refusal_faults: AtomicUsize::new(0),
+            #[cfg(feature = "test-hooks")]
+            hand_off_faults: AtomicUsize::new(0),
+            #[cfg(feature = "test-hooks")]
+            queue_faults: AtomicUsize::new(0),
             stopping: AtomicBool::new(false),
             hard: AtomicBool::new(false),
             clock,
             notify: OnceLock::new(),
             freed: OnceLock::new(),
+            notify_broken: AtomicBool::new(false),
+            freed_broken: AtomicBool::new(false),
         };
         (Arc::new(shared), receivers)
     }
@@ -400,32 +423,67 @@ impl Shared {
         self.freed.set(f).map_err(|_| AlreadyRegistered)
     }
 
-    /// Runs the program's callback. A panic in it is caught and counted: it must not end the
-    /// serve thread it runs on, which would take that thread's connections with it.
+    /// Runs the program's callback. A panic in it is caught, so it does not end the serve
+    /// thread it runs on, and stops the run (`spec/31 §6` rule 13): the fault is the program's,
+    /// and the program must see it. Called with no lock of a grant held.
     pub(crate) fn notify(&self) {
         if let Some(f) = self.notify.get()
-            && catch_unwind(AssertUnwindSafe(|| f())).is_err()
+            && !self.notify_broken.load(Ordering::SeqCst)
+            && !fault::callback(&self.health, || f())
         {
-            self.fault();
+            self.notify_broken.store(true, Ordering::SeqCst);
+            self.enforce();
         }
     }
 
+    /// Runs the callback of a freed slot, as [`Shared::notify`] runs its own.
     pub(crate) fn slot_freed(&self, grant: usize) {
         if let Some(f) = self.freed.get()
-            && catch_unwind(AssertUnwindSafe(|| f(grant))).is_err()
+            && !self.freed_broken.load(Ordering::SeqCst)
+            && !fault::callback(&self.health, || f(grant))
         {
-            self.fault();
+            self.freed_broken.store(true, Ordering::SeqCst);
+            self.enforce();
         }
     }
 
-    /// Counts a panic that was contained.
-    pub(crate) fn fault(&self) {
-        self.faults.fetch_add(1, Ordering::Relaxed);
+    /// Counts a fault that was contained at `site`, on grant `grant` when it is known, and
+    /// stops the run when the faults pass [`fault::FAULT_LIMIT`] or the panic left a lock of a
+    /// grant's shared state held. The single place every contained fault passes: the trace
+    /// event of S5 (#1571) is written here. Called with no lock of a grant held.
+    pub(crate) fn contain(&self, grant: Option<&GrantState>, site: Site) {
+        let _ = site;
+        if let Some(state) = grant {
+            state.count_fault();
+        }
+        self.health.contain();
+        self.enforce();
     }
 
-    /// Panics contained so far, in callbacks and connections' steps.
+    /// A serve thread ended by a panic that was not contained (item 9 of the amendment). When
+    /// that panic left a lock of a grant's shared state held, the run stops.
+    pub(crate) fn thread_ended(&self) {
+        self.health.thread_ended();
+        self.enforce();
+    }
+
+    /// When a failure is recorded and not yet enforced, enforces it: the hard stop, once. Called
+    /// at points that hold no lock of a grant, since the hard stop runs the callback and sends
+    /// to every serve thread.
+    pub fn enforce(&self) {
+        if self.health.take_enforcement() {
+            self.hard_stop();
+        }
+    }
+
+    /// The failure that stopped the run, if any (`spec/31 §6` rule 13).
+    pub fn failure(&self) -> Option<Failure> {
+        self.health.failure()
+    }
+
+    /// Faults contained so far, over every grant. What `faults()` of S5 (#1571) reads.
     pub fn faults(&self) -> usize {
-        self.faults.load(Ordering::Relaxed)
+        usize::try_from(self.health.contained()).unwrap_or(usize::MAX)
     }
 
     /// Sends a message to serve thread `thread`; `true` when it went to a thread that had not
@@ -436,25 +494,14 @@ impl Shared {
     /// sender sees `ended` and drains, or the ending thread's drain finds the message, and no
     /// message is lost.
     pub fn send(&self, thread: usize, msg: Msg) -> bool {
-        let Some(port) = self.ports.get(thread) else {
-            return false;
-        };
-        if port.is_ended() {
+        if let Err(msg) = self.hand_off(thread, msg) {
             self.bury(thread, msg);
             return false;
         }
-        if let Err(msg) = port.push(msg) {
-            self.bury(thread, msg);
-            return false;
-        }
-        fence(Ordering::SeqCst);
-        if port.is_ended() {
-            // The message may have reached the thread before it ended, or be in its inbox.
-            self.drain_ended(thread);
-            return false;
-        }
-        port.wake_if_sleeping();
-        true
+        self.after_push(thread);
+        // The message may have reached the thread before it ended, or be in its inbox: an
+        // ended thread's inbox was drained by `after_push`.
+        !self.is_ended(thread)
     }
 
     /// Whether serve thread `thread` ended (or does not exist).
@@ -625,7 +672,7 @@ impl Shared {
     #[cfg(feature = "test-hooks")]
     pub fn queued_dead(&self, thread: usize, grant: usize) -> usize {
         self.queue(thread, grant)
-            .map_or(0, |queue| lock(&queue.items).dead)
+            .map_or(0, |queue| hold(&self.health, &queue.items).dead)
     }
 
     /// The port of a thread.
@@ -646,30 +693,38 @@ impl Shared {
         let Some(state) = self.grants.get(grant) else {
             return Ok(());
         };
+        let mut taken = Taken {
+            slot: true,
+            peer: None,
+        };
+        if self.health.is_failed() {
+            self.give_back(state, &mut taken, now, 0);
+            return Err(AcceptRefusal::Failed);
+        }
         // The peer's address is input: a panic on the way to the hand-off is contained, and
-        // what was taken so far, as recorded in `taken`, is given back.
-        let mut taken = Taken::Slot;
-        let outcome = catch_unwind(AssertUnwindSafe(|| {
-            self.accept_steps(state, socket, address, now, &mut taken)
-        }));
+        // what is still held, as `taken` records it, is given back.
+        let outcome =
+            fault::contained(|| self.accept_steps(state, socket, address, now, &mut taken));
         if let Ok(result) = outcome {
             return result;
         }
-        self.fault();
-        match taken {
-            // From the hand-off on, the message owns what the connection holds (once pushed;
-            // a fault before the push leaves the slot and the peer's place held).
-            Taken::Handed | Taken::Released => return Err(AcceptRefusal::Fault),
-            Taken::Peer(peer) => {
-                if let Some(at) = state.peers.close(&peer, now) {
-                    self.expire_peer_at(0, grant, peer.key, at);
-                }
-            }
-            Taken::Slot => {}
-        }
-        state.give_slot();
-        self.slot_freed(grant);
+        self.give_back(state, &mut taken, now, 0);
+        self.contain(Some(state), Site::Accept);
         Err(AcceptRefusal::Fault)
+    }
+
+    /// Gives back what `taken` records, each part cleared first: the peer's place, whose entry
+    /// a live serve thread from `start` on expires when it outlives the place, then the slot.
+    fn give_back(&self, state: &GrantState, taken: &mut Taken, now: u64, start: usize) {
+        if let Some(peer) = taken.peer.take()
+            && let Some(at) = state.peers.close(&peer, now)
+        {
+            self.expire_peer_at(start, state.index, peer.key, at);
+        }
+        if std::mem::take(&mut taken.slot) {
+            state.give_slot();
+            self.slot_freed(state.index);
+        }
     }
 
     /// The steps of [`Shared::accept`], recording in `taken` what the connection holds.
@@ -688,17 +743,14 @@ impl Shared {
         // serve thread that accepts is itself live.
         let placed = place::owner(self.key, self.threads, grant, address);
         let Some(owner) = self.live_from(placed) else {
-            *taken = Taken::Released;
-            state.give_slot();
-            self.slot_freed(grant);
+            self.give_back(state, taken, now, 0);
             return Err(AcceptRefusal::NoThread);
         };
-        let peer = match state.admit(address.ip(), now) {
+        // The admission records the peer's place in `taken` as soon as it is taken.
+        let peer = match state.admit_into(address.ip(), now, &mut taken.peer) {
             Ok(peer) => peer,
             Err(refused) => {
-                *taken = Taken::Released;
-                state.give_slot();
-                self.slot_freed(grant);
+                self.give_back(state, taken, now, 0);
                 #[cfg(feature = "test-hooks")]
                 #[allow(clippy::panic)]
                 if take_one(&self.refusal_faults) {
@@ -710,24 +762,82 @@ impl Shared {
                 return Err(refused.reason);
             }
         };
-        *taken = Taken::Peer(Arc::clone(&peer));
         #[cfg(feature = "test-hooks")]
         #[allow(clippy::panic)]
         if take_one(&self.accept_faults) {
             panic!("an accept fails by a fault, for a test");
         }
         let conn = ConnShared::new(Arc::clone(state), peer, owner, address);
-        *taken = Taken::Handed;
-        // An owner that ends meanwhile: `send` closes the connection, gives back what it took
-        // and sends the peer's expiry to a live thread (`Shared::bury`).
-        self.send(owner, Msg::Adopt(Box::new(Adopt { socket, conn })));
+        let adopt = Msg::Adopt(Box::new(Adopt { socket, conn }));
+        #[cfg(feature = "test-hooks")]
+        #[allow(clippy::panic)]
+        if take_one(&self.hand_off_faults) {
+            panic!("a hand-off fails by a fault before the owner's inbox, for a test");
+        }
+        // The message owns the slot and the peer's place from the moment it is in the owner's
+        // inbox, and not before.
+        match self.hand_off(owner, adopt) {
+            Ok(()) => {
+                taken.slot = false;
+                taken.peer = None;
+                self.after_push(owner);
+            }
+            Err(msg) => {
+                // The owner ended meanwhile: the connection closes here, the socket first, so
+                // the peer sees the close at once, and `taken` gives back the rest.
+                if let Msg::Adopt(adopt) = msg {
+                    let Adopt { socket, conn } = *adopt;
+                    drop(socket);
+                    conn.close();
+                }
+                self.give_back(state, taken, now, owner.wrapping_add(1));
+            }
+        }
         Ok(())
+    }
+
+    /// Pushes `msg` to the inbox of a serve thread that has not ended, or gives it back.
+    fn hand_off(&self, thread: usize, msg: Msg) -> Result<(), Msg> {
+        let Some(port) = self.ports.get(thread) else {
+            return Err(msg);
+        };
+        if port.is_ended() {
+            return Err(msg);
+        }
+        port.push(msg)
+    }
+
+    /// After a push to `thread`'s inbox: the fence, then the drain of an inbox the thread gave
+    /// up meanwhile, or a wake (see [`Shared::send`]).
+    fn after_push(&self, thread: usize) {
+        fence(Ordering::SeqCst);
+        let Some(port) = self.ports.get(thread) else {
+            return;
+        };
+        if port.is_ended() {
+            self.drain_ended(thread);
+        } else {
+            port.wake_if_sleeping();
+        }
     }
 
     /// The next `n` calls of [`Shared::accept`] panic after the peer is admitted, in tests.
     #[cfg(feature = "test-hooks")]
     pub fn fail_next_accepts(&self, n: usize) {
         self.accept_faults.store(n, Ordering::SeqCst);
+    }
+
+    /// The next `n` hand-offs at accept panic before the connection reaches its owner's inbox,
+    /// in tests.
+    #[cfg(feature = "test-hooks")]
+    pub fn fail_next_hand_offs(&self, n: usize) {
+        self.hand_off_faults.store(n, Ordering::SeqCst);
+    }
+
+    /// The next `n` requests queued panic with their queue's lock held, in tests.
+    #[cfg(feature = "test-hooks")]
+    pub fn fail_next_queueings(&self, n: usize) {
+        self.queue_faults.store(n, Ordering::SeqCst);
     }
 
     /// The next `n` refusals at accept panic after they gave the slot back, in tests.
@@ -764,7 +874,12 @@ impl Shared {
     /// Queues a request read on `thread` for grant `grant`. O(1) amortized.
     pub fn enqueue(&self, thread: usize, grant: usize, pending: Pending) {
         if let Some(queue) = self.queue(thread, grant) {
-            let mut items = lock(&queue.items);
+            let mut items = hold(&self.health, &queue.items);
+            #[cfg(feature = "test-hooks")]
+            #[allow(clippy::panic)]
+            if take_one(&self.queue_faults) {
+                panic!("a queue fails by a fault with its lock held, for a test");
+            }
             if items.dead > 32 && items.dead * 2 > items.queue.len() {
                 items.queue.retain(|p| p.exch.is_queued());
                 items.dead = 0;
@@ -779,7 +894,7 @@ impl Shared {
     /// until the queue reaches it or is compacted.
     pub fn queued_died(&self, thread: usize, grant: usize) {
         if let Some(queue) = self.queue(thread, grant) {
-            lock(&queue.items).dead += 1;
+            hold(&self.health, &queue.items).dead += 1;
         }
     }
 
@@ -787,6 +902,10 @@ impl Shared {
     /// order its thread read, and the first request that fits the grant's `/once`, `delivered`
     /// and rate becomes an exchange. O(1) expected under load, O(threads × grants) at worst.
     pub fn next(self: &Arc<Shared>, now: u64) -> Next {
+        if let Some(failure) = self.failure() {
+            self.enforce();
+            return Next::Failed(failure);
+        }
         let total = self.queues.len();
         if total == 0 {
             return Next::Empty;
@@ -806,7 +925,7 @@ impl Shared {
             let Some(state) = self.grants.get(grant) else {
                 continue;
             };
-            let mut items = lock(&queue.items);
+            let mut items = hold(&self.health, &queue.items);
             loop {
                 let Some(front) = items.queue.front() else {
                     queue.ready.store(false, Ordering::Release);
@@ -841,7 +960,7 @@ impl Shared {
                         state.release_body(&pending.conn.peer, pending.exch.body);
                         drop(items);
                         self.cursor.fetch_add(1, Ordering::Relaxed);
-                        let Some(request) = pending.exch.take_request() else {
+                        let Some(request) = pending.exch.take_request(&self.health) else {
                             // Unreachable: the winner of the race alone takes the request.
                             pending.exch.expire_open();
                             state.end_exchange(bytes);
@@ -979,6 +1098,12 @@ impl Exchange {
     }
 
     fn send(&self, bytes: Vec<u8>, close: bool) -> Sent {
+        // A run stopped by a fault is never served from again: the hard stop answers the
+        // exchange.
+        if self.shared.health.is_failed() {
+            self.shared.enforce();
+            return Sent::Discarded;
+        }
         if !self.exch.change(TAKEN, REPLIED) {
             return Sent::Discarded;
         }

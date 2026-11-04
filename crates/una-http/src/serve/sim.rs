@@ -416,7 +416,7 @@ impl Sim {
     pub fn deliver(&mut self) -> Option<Exchange> {
         match self.shared.next(self.clock.now()) {
             Next::Exchange(exchange) => Some(*exchange),
-            Next::Blocked(_) | Next::Empty => None,
+            Next::Blocked(_) | Next::Empty | Next::Failed(_) => None,
         }
     }
 
@@ -474,6 +474,21 @@ impl Sim {
     pub fn fault_in_step(&mut self, thread: usize) {
         if let Some(serve) = self.threads.get_mut(thread) {
             serve.fault_in_step();
+        }
+    }
+
+    /// The next `n` closes of connections of serve thread `thread` panic after their exchange
+    /// is given back and before their peer's place and their slot are.
+    pub fn fault_in_close(&mut self, thread: usize, n: usize) {
+        if let Some(serve) = self.threads.get_mut(thread) {
+            serve.fault_in_close(n);
+        }
+    }
+
+    /// The next connection handed to serve thread `thread` panics before it is in its slot.
+    pub fn fault_in_adopt(&mut self, thread: usize) {
+        if let Some(serve) = self.threads.get_mut(thread) {
+            serve.fault_in_adopt();
         }
     }
 

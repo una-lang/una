@@ -31,7 +31,8 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
-use super::grant::{GrantState, lock, sub};
+use super::fault::{Health, hold};
+use super::grant::{GrantState, sub};
 use super::peer::{Peer, PeerKey};
 
 /// The most bytes of one segment of a pending reply.
@@ -148,7 +149,7 @@ impl ConnShared {
     pub fn push(self: &Arc<ConnShared>, reply: Vec<u8>) -> bool {
         let size = reply.len() as u64;
         let queued = {
-            let mut outbox = lock(&self.outbox);
+            let mut outbox = hold(&self.grant.health, &self.outbox);
             if outbox.discarded {
                 false
             } else {
@@ -169,7 +170,7 @@ impl ConnShared {
             return false;
         }
         if self.grant.pressure_on.load(Ordering::Acquire) {
-            let mut pressure = lock(&self.grant.pressure);
+            let mut pressure = hold(&self.grant.health, &self.grant.pressure);
             if self.grant.pressure_on.load(Ordering::Acquire) {
                 pressure.insert(self, &self.grant);
             }
@@ -181,7 +182,7 @@ impl ConnShared {
     /// A segment fully written is dropped and its bytes are given back at once.
     pub fn write_front(&self, write: impl FnOnce(&[u8]) -> io::Result<usize>) -> io::Result<Step> {
         let step = {
-            let mut outbox = lock(&self.outbox);
+            let mut outbox = hold(&self.grant.health, &self.outbox);
             if outbox.discarded {
                 return Ok(Step::Discarded);
             }
@@ -214,7 +215,7 @@ impl ConnShared {
     /// reply is never written, which the program never sees (rule 14). Idempotent.
     pub fn discard(&self) -> u64 {
         let freed = {
-            let mut outbox = lock(&self.outbox);
+            let mut outbox = hold(&self.grant.health, &self.outbox);
             outbox.discarded = true;
             self.dead.store(true, Ordering::Release);
             let freed: usize = outbox.segments.iter().map(Vec::len).sum();
@@ -245,20 +246,22 @@ impl ConnShared {
 pub struct Registry {
     shards: Vec<Mutex<HashMap<u64, Weak<ConnShared>>>>,
     count: AtomicUsize,
+    /// The run's record of faults: a panic with a shard locked stops the run.
+    health: Arc<Health>,
 }
 
-impl Default for Registry {
-    fn default() -> Registry {
+impl Registry {
+    /// An empty registry of a run whose record of faults is `health`.
+    pub fn new(health: Arc<Health>) -> Registry {
         Registry {
             shards: (0..REGISTRY_SHARDS)
                 .map(|_| Mutex::new(HashMap::new()))
                 .collect(),
             count: AtomicUsize::new(0),
+            health,
         }
     }
-}
 
-impl Registry {
     fn shard(&self, id: u64) -> Option<&Mutex<HashMap<u64, Weak<ConnShared>>>> {
         self.shards.get((id % REGISTRY_SHARDS as u64) as usize)
     }
@@ -266,7 +269,9 @@ impl Registry {
     /// Adds a connection. O(1) expected.
     pub fn insert(&self, conn: &Arc<ConnShared>) {
         if let Some(shard) = self.shard(conn.id)
-            && lock(shard).insert(conn.id, Arc::downgrade(conn)).is_none()
+            && hold(&self.health, shard)
+                .insert(conn.id, Arc::downgrade(conn))
+                .is_none()
         {
             self.count.fetch_add(1, Ordering::AcqRel);
         }
@@ -275,7 +280,7 @@ impl Registry {
     /// Removes a connection. O(1) expected.
     pub fn remove(&self, id: u64) {
         if let Some(shard) = self.shard(id)
-            && lock(shard).remove(&id).is_some()
+            && hold(&self.health, shard).remove(&id).is_some()
         {
             self.count.fetch_sub(1, Ordering::AcqRel);
         }
@@ -285,7 +290,7 @@ impl Registry {
     pub fn all(&self) -> Vec<Arc<ConnShared>> {
         let mut out = Vec::new();
         for shard in &self.shards {
-            out.extend(lock(shard).values().filter_map(Weak::upgrade));
+            out.extend(hold(&self.health, shard).values().filter_map(Weak::upgrade));
         }
         out
     }
@@ -555,7 +560,7 @@ impl GrantState {
         let mut victims = Vec::new();
         if self.replies.load(Ordering::Acquire) > cap || self.pressure_on.load(Ordering::Acquire) {
             let share = self.limits.peer_replies.unwrap_or(u64::MAX);
-            let mut pressure = lock(&self.pressure);
+            let mut pressure = hold(&self.health, &self.pressure);
             if self.pressure_on.load(Ordering::Acquire) {
                 // Every reservation made while the heaps exist updates its peer's key.
                 pressure.raise(&conn.peer, self, share);
@@ -585,7 +590,7 @@ impl GrantState {
         }
         let low = self.limits.replies / 4 * 3;
         if self.replies.load(Ordering::Acquire) <= low {
-            let mut pressure = lock(&self.pressure);
+            let mut pressure = hold(&self.health, &self.pressure);
             if self.replies.load(Ordering::Acquire) <= low {
                 pressure.clear();
                 self.pressure_on.store(false, Ordering::Release);
@@ -595,7 +600,7 @@ impl GrantState {
 
     /// The entries held by the pressure heaps; 0 outside pressure.
     pub fn pressure_entries(&self) -> usize {
-        lock(&self.pressure).entries()
+        hold(&self.health, &self.pressure).entries()
     }
 
     /// Whether pressure heaps exist.
