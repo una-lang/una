@@ -131,7 +131,9 @@ fn package(name: &str, grants: &str, program: &str) -> PathBuf {
     dir
 }
 
-/// The outcomes of a trace: `op:Variant` for a failure, the outcome's kind otherwise.
+/// The outcomes of a trace: `op:Variant` for a failure, the outcome's kind otherwise. A
+/// request's outcome is `internal`, so a run's trace shows it as `redacted` (S-45, #1552,
+/// `spec/11 §5`): these tests see its failures through timing and the `timeout` events only.
 fn outcomes(trace: &serde_json::Value) -> Vec<String> {
     trace
         .as_array()
@@ -223,7 +225,11 @@ pub main() -> Unit
     );
     for (time, trace) in both(&dir, "paced", &[]) {
         assert!(time >= Duration::from_millis(900), "{time:?}");
-        assert_eq!(outcomes(&trace), ["ok", "ok", "ok", "ok", "ok"], "{trace}");
+        assert_eq!(
+            outcomes(&trace),
+            ["redacted", "redacted", "redacted", "redacted", "ok"],
+            "{trace}"
+        );
     }
     assert_eq!(server.take(), 8);
     let _ = std::fs::remove_dir_all(&dir);
@@ -288,7 +294,7 @@ pub main() -> Unit
     );
     for (time, trace) in both(&dir, "hops", &["--http-timeout", "20"]) {
         assert!(time < Duration::from_secs(15), "{time:?}");
-        assert_eq!(outcomes(&trace), ["ok", "ok"], "{trace}");
+        assert_eq!(outcomes(&trace), ["redacted", "ok"], "{trace}");
     }
     // Two hops per run.
     assert_eq!(server.take(), 4);
@@ -327,7 +333,7 @@ pub main() -> Unit
         assert!(time < Duration::from_secs(15), "{time:?}");
         assert_eq!(
             outcomes(&trace),
-            ["ok", "get:TimedOut", "timeout", "ok"],
+            ["redacted", "redacted", "timeout", "ok"],
             "{trace}"
         );
     }
@@ -361,7 +367,7 @@ pub main() -> Unit
     for (time, trace) in both(&dir, "timed", &["--http-timeout", "1"]) {
         assert!(time >= Duration::from_millis(900), "{time:?}");
         assert!(time < Duration::from_secs(15), "{time:?}");
-        assert_eq!(outcomes(&trace), ["ok", "get:TimedOut", "ok"], "{trace}");
+        assert_eq!(outcomes(&trace), ["redacted", "redacted", "ok"], "{trace}");
     }
     assert_eq!(server.take(), 2);
     let _ = std::fs::remove_dir_all(&dir);

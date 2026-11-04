@@ -4862,8 +4862,14 @@ pub main() -> Unit
     }
     for events in &traces {
         assert_eq!(events[0]["op"], "get", "{events}");
-        assert_eq!(events[0]["outcome"]["kind"], "fail", "{events}");
-        assert_eq!(events[0]["outcome"]["variant"], "Interrupted", "{events}");
+        // S-45 (#1552, `spec/11 §5`): the request's outcome, `internal`, is redacted in a
+        // run's trace, so its `Interrupted` is not shown; that the request returned at once
+        // shows in the `stop` of the next iteration start and the time bound above.
+        assert_eq!(
+            events[0]["outcome"],
+            serde_json::json!({"kind": "redacted", "level": "internal"}),
+            "{events}"
+        );
         assert_eq!(events[1]["outcome"]["kind"], "stop", "{events}");
         assert_eq!(events.as_array().unwrap().len(), 2, "{events}");
     }
@@ -7198,7 +7204,8 @@ fn s42_quiet_code_does_not_consume_the_iteration_timeout_event() {
     // reported and no `timeout` event was left for `s > 0`.
     let args = ["--virtual-time", "--stop-after-iterations", "3"];
     let source = QUIET_DEADLINE;
-    let iteration = ["fail:RateLimited", "timeout"];
+    // Since S-45 (#1552, `spec/11 §5`) every `acquire` outcome is redacted at `internal`.
+    let iteration = ["redacted", "timeout"];
     let mut expected: Vec<&str> = iteration.repeat(3);
     expected.extend(["stop", "ok"]);
     for secret in [1, 3] {
@@ -7207,20 +7214,15 @@ fn s42_quiet_code_does_not_consume_the_iteration_timeout_event() {
         assert_eq!(run, native, "{secret}");
         assert_eq!(outcome_kinds(&run), expected, "{secret}: {run}");
     }
-    // `s = 0`: the public `acquire` of the first iteration takes the token. That the outcomes
-    // differ from `s > 0` is the open channel of shared host state (S-45, #1552), not this rule.
+    // `s = 0`: the public `acquire` of the first iteration takes the token. Its outcome is
+    // redacted (S-45, #1552), but its iteration has no `timeout` event: whether it waited at
+    // the limit is timing, out of model (`spec/27 §10` rule 5, `spec/26 §6` rule 4).
     let (_, run, native) = secret_run("s42l1", source, 0, &args);
     assert_eq!(run, native);
     assert_eq!(
         outcome_kinds(&run),
         [
-            "ok",
-            "fail:RateLimited",
-            "timeout",
-            "fail:RateLimited",
-            "timeout",
-            "stop",
-            "ok"
+            "redacted", "redacted", "timeout", "redacted", "timeout", "stop", "ok"
         ],
         "{run}"
     );

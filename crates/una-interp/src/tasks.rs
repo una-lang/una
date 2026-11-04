@@ -64,6 +64,10 @@ pub(crate) struct Run<'p, 'w> {
     /// whose data come from its source (ADR 0078) and whose `expect performed` lines read
     /// them (`spec/08`); a run leaves them out (S-42, `spec/26 §6` rule 4).
     pub(crate) quiet_events: Cell<bool>,
+    /// Whether operations' outcomes are written in clear whatever their labels: only in an
+    /// example, whose data come from its source (ADR 0078); a run writes an outcome labeled
+    /// above `public` as `redacted` (S-45, #1552, `spec/11 §5`).
+    pub(crate) clear_outcomes: Cell<bool>,
     /// The scheduler.
     pub(crate) sched: RefCell<Sched<'w>>,
     /// Whether the run's tasks run as coroutines: its program has a `tasks` statement.
@@ -102,6 +106,7 @@ impl<'p, 'w> Run<'p, 'w> {
             trace: RefCell::new(Vec::new()),
             written: Cell::new(0),
             quiet_events: Cell::new(false),
+            clear_outcomes: Cell::new(false),
             sched: RefCell::new(Sched::default()),
             coroutines,
             abort: RefCell::new(None),

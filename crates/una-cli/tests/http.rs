@@ -646,15 +646,9 @@ pub main() -> Unit
     assert_eq!(
         outcomes,
         [
-            "get:TimedOut",
-            "timeout",
-            "get:TimedOut",
-            "ok",
-            "get:TimedOut",
-            "timeout",
-            "get:TimedOut",
-            "ok",
-            "ok",
+            // S-45 (#1552, `spec/11 §5`): a request's outcome, `internal`, is redacted in a
+            // run's trace; its `TimedOut` shows only in the iteration's `timeout` event.
+            "redacted", "timeout", "redacted", "ok", "redacted", "timeout", "redacted", "ok", "ok",
         ],
         "{trace}"
     );
@@ -757,7 +751,8 @@ pub main() -> Unit
             }
         })
         .collect();
-    assert_eq!(outcomes, ["get:TimedOut", "timeout", "ok"], "{trace}");
+    // S-45 (#1552): the request's outcome is redacted in a run's trace.
+    assert_eq!(outcomes, ["redacted", "timeout", "ok"], "{trace}");
 
     let built = una(&dir, &["build", "."]);
     assert_eq!(built.status.code(), Some(0), "{built:?}");
@@ -850,12 +845,13 @@ pub main() -> Unit
         })
         .collect();
     let expected: Vec<(String, String)> = [
-        ("1", "TimedOut"),
-        ("2", "TimedOut"),
+        // S-45 (#1552): the requests' outcomes are redacted in a run's trace.
+        ("1", "redacted"),
+        ("2", "redacted"),
         ("", "timeout"),
         ("", "ok"),
-        ("1", "TimedOut"),
-        ("2", "TimedOut"),
+        ("1", "redacted"),
+        ("2", "redacted"),
         ("", "timeout"),
         ("", "ok"),
     ]
