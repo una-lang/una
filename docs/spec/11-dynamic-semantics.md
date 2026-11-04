@@ -106,7 +106,7 @@ A fault that a checked and verified program cannot reach aborts the run with U80
 
 ## 5. Traces
 
-Each operation invocation appends one event:
+Each operation invocation appends one event, except, in every edition, one performed in quiet code (`spec/26 §6` rule 4, S-42, #1515) in a run: it appends none and takes no `seq`, so neither the number of events nor the `seq` of a later one shows whether code under a raised program counter ran. The trace of an example keeps it (§6):
 
 ```json
 {
@@ -119,7 +119,7 @@ Each operation invocation appends one event:
 }
 ```
 
-- `instance` is `given:<name>` for example bindings, `host:<Capability>` for host instances and `with:<handler>#<n>` for handlers installed by `with`; in every edition, a handler that quiet code installs is `with:<handler>#q`, with no number (`spec/26 §6` rule 4, S-41).
+- `instance` is `given:<name>` for example bindings, `host:<Capability>` for host instances and `with:<handler>#<n>` for handlers installed by `with`; in every edition, a handler that quiet code installs is `with:<handler>#q`, with no number (`spec/26 §6` rule 4, S-41), which only an example's trace shows, since only quiet code performs that handler's operations.
 - Arguments whose static label is above `public` are printed as `<redacted:level>`.
 - Handler events appear before the events produced inside the handler body (E-OpHandler).
 - Host operation results are recorded in full (subject to redaction), so a future `una replay` can substitute them (`plan/backlog.md`).
@@ -146,7 +146,7 @@ Values in traces and outputs are JSON strings holding their Una form: `"42"`, `"
 
 ## 6. Example harness
 
-For each example, the harness builds `H0` from its `given` lines (one fresh instance per line), evaluates the desugared `do` expression with an empty environment and an empty world, then evaluates the expectations against the result and trace (`spec/08 §2`). Examples cannot reach host capabilities, so they are deterministic.
+For each example, the harness builds `H0` from its `given` lines (one fresh instance per line), evaluates the desugared `do` expression with an empty environment and an empty world, then evaluates the expectations against the result and trace (`spec/08 §2`). An example's trace records the operations performed in quiet code, which a run's leaves out (§5, S-42): its data come from its source (ADR 0078), and `expect performed` reads them. Examples cannot reach host capabilities, so they are deterministic.
 
 ## 7. Limits
 

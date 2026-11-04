@@ -1128,7 +1128,7 @@ pub(crate) struct Findings {
     /// adds to `quiet` those whose callee can run a construct that appends events of its own.
     pub(crate) quiet_calls: std::collections::BTreeMap<Span, usize>,
     /// The operations under a raised program counter, by span: [`flow::close_quiet`] adds them
-    /// to `quiet` when the package declares a handler.
+    /// to `quiet`, since each appends an event of its own (S-42, #1515).
     pub(crate) quiet_ops: std::collections::BTreeSet<Span>,
     /// The `within`s checked (ADR 0117 rule 5, IF2): each one's deadline, span, function and
     /// the seed of its timing label.

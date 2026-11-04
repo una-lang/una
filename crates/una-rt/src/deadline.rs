@@ -379,6 +379,12 @@ pub(crate) fn left() -> Option<Covering> {
 /// that runs the loop, the iteration observes it here; in a task it started, at the join of
 /// that task's block ([`joined`]).
 pub(crate) fn timed_out() {
+    // Quiet code neither observes the deadline nor tells the join it did, so whether the
+    // iteration's `timeout` event appears never depends on whether quiet code ran (S-39 L1,
+    // S-42, `spec/26 §6` rule 4).
+    if quiet() {
+        return;
+    }
     let Some(deadline) = ever() else {
         return;
     };
@@ -407,7 +413,11 @@ pub(crate) fn joined() {
 }
 
 /// Appends the iteration's one `timeout` event, with the path of the task that runs the loop.
+/// Quiet code does not consume it: a later observation in public code still appends it.
 fn observed(deadline: &Deadline) {
+    if quiet() {
+        return;
+    }
     if deadline
         .reported
         .fetch_max(deadline.iteration, Ordering::SeqCst)
@@ -416,6 +426,11 @@ fn observed(deadline: &Deadline) {
         return;
     }
     timeout_event(deadline.owner.clone());
+}
+
+/// Whether the thread's task runs in a `quiet` expression (S-39, `spec/26 §6` rule 4).
+fn quiet() -> bool {
+    with_state(|state| state.quiet > 0).unwrap_or(false)
 }
 
 /// Appends a `timeout` event with the path `task`; none inside a `quiet` expression of the

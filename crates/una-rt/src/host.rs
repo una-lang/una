@@ -511,8 +511,13 @@ pub fn limit_acquire(_site: i64, instance: i64) -> i64 {
 }
 
 /// Starts the event of operation `site` on `instance`, when the run records a trace: its
-/// position in the trace, or -1. Its outcome is `Aborted` until [`event_end`].
+/// position in the trace, or -1. Its outcome is `Aborted` until [`event_end`]. An operation
+/// performed in quiet code has none, and takes no `seq`, so neither the number of events nor
+/// the `seq` of a later one shows whether it ran (S-42, #1515, `spec/26 §6` rule 4).
 pub fn event(site: i64, instance: i64) -> i64 {
+    if with_state(|state| state.quiet > 0).unwrap_or(false) {
+        return -1;
+    }
     let id = values::instance_id(instance);
     with_state(|state| {
         let op = usize::try_from(site).ok().and_then(|s| state.ops.get(s))?;

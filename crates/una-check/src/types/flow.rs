@@ -176,8 +176,8 @@ impl Checker<'_, '_, '_> {
     }
 
     /// Records the operation at `span` under a raised program counter ([`Self::raised`]): once
-    /// every body is checked, [`close_quiet`] marks it `quiet` when the package declares a
-    /// handler, whose operation bodies may run such a construct.
+    /// every body is checked, [`close_quiet`] marks it `quiet`, so that neither its own event nor
+    /// those of a handler's code that serves it are recorded (S-39, S-42, #1515).
     pub(crate) fn quiet_op_site(&mut self, span: Span) {
         if self.pass == Pass::Check && self.raised() {
             self.findings.quiet_ops.insert(span);
@@ -871,14 +871,14 @@ pub(crate) fn bound_of(env: &super::env::Env<'_>, uses: &[FnUse]) -> Option<Labe
 
 /// Closes the `quiet` marks over the call graph, once every body is checked (S-39, `spec/26 §6`
 /// rule 4): a call under a raised program counter is `quiet` when its callee can run a
-/// construct that appends events of its own to the trace, and an operation there when the
-/// package declares a handler.
+/// construct that appends events to the trace, and every operation there is `quiet`, since
+/// its own event is one (S-42, #1515).
 ///
 /// A function can run one when its body, its lambdas included, holds a `for ever`, a `within`,
 /// a `first of`, a `tasks`, `together` or `together for` statement or a `start`, or says
 /// `diverges`; when it calls a function value, applies a function argument whose code is not
-/// known at the call, installs a handler, or performs an operation while the package declares
-/// a handler; or when it calls or names a function that can. A prelude function that applies a
+/// known at the call, installs a handler, or performs an operation; or when it calls or names
+/// a function that can. A prelude function that applies a
 /// function argument can too. The standard library's own bodies hold no such construct. The
 /// closure is a least fixed point over the reversed call edges, linear in their number.
 pub(crate) fn close_quiet(env: &super::env::Env<'_>, findings: &mut super::Findings) {
@@ -886,7 +886,6 @@ pub(crate) fn close_quiet(env: &super::env::Env<'_>, findings: &mut super::Findi
     if findings.quiet_calls.is_empty() && findings.quiet_ops.is_empty() {
         return;
     }
-    let handlers = env.handlers.iter().any(|h| env.in_package(h.module));
     let mut emitting: BTreeSet<usize> = env
         .functions
         .iter()
@@ -906,17 +905,17 @@ pub(crate) fn close_quiet(env: &super::env::Env<'_>, findings: &mut super::Findi
     emitting.extend(findings.value_callers.iter().copied());
     emitting.extend(findings.opaque_applies.iter().map(|&(f, _)| f));
     emitting.extend(findings.installs.iter().map(|&(f, _)| f));
-    if handlers {
-        emitting.extend(
-            findings
-                .caller_ops
-                .iter()
-                .filter_map(|(caller, _, _)| match caller {
-                    super::timing::Caller::Function(f) => Some(*f),
-                    _ => None,
-                }),
-        );
-    }
+    // S-42 (#1515): an operation appends its own event, whatever serves it, so a function that
+    // performs one can append an event.
+    emitting.extend(
+        findings
+            .caller_ops
+            .iter()
+            .filter_map(|(caller, _, _)| match caller {
+                super::timing::Caller::Function(f) => Some(*f),
+                _ => None,
+            }),
+    );
     let mut callers: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
     for &(caller, callee, _) in &findings.edges {
         callers.entry(callee).or_default().push(caller);
@@ -940,7 +939,5 @@ pub(crate) fn close_quiet(env: &super::env::Env<'_>, findings: &mut super::Findi
         }
     }
     let ops = std::mem::take(&mut findings.quiet_ops);
-    if handlers {
-        findings.quiet.extend(ops);
-    }
+    findings.quiet.extend(ops);
 }

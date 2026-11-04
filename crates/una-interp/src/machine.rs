@@ -3308,6 +3308,13 @@ impl<'p, 'w> Machine<'p, 'w> {
             .get(cap)
             .cloned()
             .ok_or_else(|| fault(format!("no capability `@{cap}`")))?;
+        // S-42 (#1515, `spec/26 §6` rule 4): an operation performed in quiet code appends no
+        // event and takes no `seq`, so neither the number of events nor the `seq` of a later
+        // one shows whether it ran; the events of a handler's code that serves it are in quiet
+        // code too. An example's trace keeps it, for `expect performed` (`spec/08`).
+        if self.quiet > 0 && !self.run.quiet_events.get() {
+            return self.serve(&instance, capability, op, args, span);
+        }
         let names: Vec<String> = match self.index.capabilities.get(capability) {
             Some(ops) => ops
                 .iter()
@@ -3432,6 +3439,12 @@ impl<'p, 'w> Machine<'p, 'w> {
     /// rule 11). In the task that runs the loop, the iteration observes it here; in a task it
     /// started, at the join of that task's block ([`Self::joined`]).
     fn timeout_event(&mut self) {
+        // Quiet code neither observes the deadline nor tells the join it did, so whether the
+        // iteration's `timeout` event appears never depends on whether quiet code ran (S-39 L1,
+        // S-42, `spec/26 §6` rule 4).
+        if self.quiet > 0 {
+            return;
+        }
         let Some(deadline) = self.deadline.as_mut() else {
             return;
         };
@@ -3457,9 +3470,13 @@ impl<'p, 'w> Machine<'p, 'w> {
     /// Appends the iteration's one `timeout` event, with the path of the task that runs the
     /// loop, the first time its control flow observes a failure the deadline caused: a trace
     /// does not depend on which task met the deadline first (`spec/26 §7`). None inside a
-    /// `quiet` expression (S-39, `spec/26 §6` rule 4); the iteration still observes it once.
+    /// `quiet` expression (S-39, `spec/26 §6` rule 4), which does not mark it as appended either.
     fn timeout_observed(&mut self) {
-        let quiet = self.quiet > 0;
+        // Quiet code does not consume the iteration's one event either: a later observation
+        // in public code still appends it (S-39 L1).
+        if self.quiet > 0 {
+            return;
+        }
         let Some(deadline) = self.deadline.as_mut() else {
             return;
         };
@@ -3467,9 +3484,6 @@ impl<'p, 'w> Machine<'p, 'w> {
             return;
         }
         deadline.reported = true;
-        if quiet {
-            return;
-        }
         let task = deadline.owner.join(".");
         self.emit(Event {
             seq: 0,

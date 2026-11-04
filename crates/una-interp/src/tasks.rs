@@ -60,6 +60,10 @@ pub(crate) struct Run<'p, 'w> {
     /// were written, which numbers `seq`.
     trace: RefCell<Vec<Event>>,
     written: Cell<usize>,
+    /// Whether operations performed in quiet code append their events: only in an example,
+    /// whose data come from its source (ADR 0078) and whose `expect performed` lines read
+    /// them (`spec/08`); a run leaves them out (S-42, `spec/26 §6` rule 4).
+    pub(crate) quiet_events: Cell<bool>,
     /// The scheduler.
     pub(crate) sched: RefCell<Sched<'w>>,
     /// Whether the run's tasks run as coroutines: its program has a `tasks` statement.
@@ -97,6 +101,7 @@ impl<'p, 'w> Run<'p, 'w> {
             hashing: RefCell::new(None),
             trace: RefCell::new(Vec::new()),
             written: Cell::new(0),
+            quiet_events: Cell::new(false),
             sched: RefCell::new(Sched::default()),
             coroutines,
             abort: RefCell::new(None),

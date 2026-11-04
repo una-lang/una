@@ -6802,28 +6802,17 @@ pub main() -> Unit
 #[test]
 fn s41_quiet_installations_take_no_number_in_the_root_and_in_started_tasks() {
     // S-41 (#1514), `spec/26 §6` rule 4, `spec/27 §8`: quiet code numbers none of its
-    // installations, `with:<h>#q`, in the root task and in a started one, whose block leaves
-    // those ids as they are at its join and renumbers the public ones. The operations quiet
-    // code performs under the branch are still recorded by occurrence (S-42, #1515); no id
-    // depends on the secret, in both engines.
-    for secret in [0_u64, 1, 2, 3] {
-        let (output, run, native) = secret_run("s41ids", SECRET_INSTALL_IDS, secret as i64, &[]);
+    // installations, in the root task and in a started one, so the public ones are `#1` and
+    // `#2` for every secret. The operations quiet code performs under the branch append no
+    // event either (S-42, #1515): whole traces are the same for every secret, in both engines.
+    let expected = Value::from(vec![
+        sink_put(1, "s1.1", "with:keep#1"),
+        sink_put(2, "", "with:keep#2"),
+        done_print(3),
+    ]);
+    for secret in [0, 1, 2, 3] {
+        let (output, run, native) = secret_run("s41ids", SECRET_INSTALL_IDS, secret, &[]);
         assert_eq!(output, serde_json::json!(["done"]), "{secret}");
-        let quiet = secret.min(3);
-        let mut expected = Vec::new();
-        let mut seq = 0;
-        for _ in 1..=quiet {
-            seq += 1;
-            expected.push(sink_put(seq, "", "with:keep#q"));
-        }
-        for _ in 1..=quiet {
-            seq += 1;
-            expected.push(sink_put(seq, "s1.1", "with:keep#q"));
-        }
-        expected.push(sink_put(seq + 1, "s1.1", "with:keep#1"));
-        expected.push(sink_put(seq + 2, "", "with:keep#2"));
-        expected.push(done_print(seq + 3));
-        let expected = Value::from(expected);
         assert_eq!(run, expected, "{secret}");
         assert_eq!(native, expected, "{secret}");
     }
@@ -6944,22 +6933,26 @@ fn s41_quiet_installations_reached_by_the_conservative_rules_show_no_secret() {
     // above `public` and a decision on values of a type parameter, where the occurrence of
     // its events is public. A run-wide ordinal of quiet installations gave the `put` there
     // `with:keep#q#(s+1)`; quiet ids take no number, so whole traces are equal across secrets.
+    // Since S-42 (#1515) the `put` of quiet code appends no event at all, though it occurs
+    // whatever the secret here: the cost of the conservative rules.
     let done = serde_json::json!(["done"]);
     let floor = one_trace_for_every_secret("s41floor", SECRET_INSTALL_FLOOR, &done);
-    let puts: Vec<&Value> = floor
+    let ops: Vec<(&Value, &Value)> = floor
         .as_array()
         .into_iter()
         .flatten()
-        .filter(|event| event["op"] == "put")
+        .map(|event| (&event["instance"], &event["op"]))
         .collect();
-    assert_eq!(puts.len(), 1, "{floor}");
-    assert_eq!(puts[0]["instance"], "with:keep#q", "{floor}");
+    assert_eq!(
+        ops,
+        [
+            (&Value::from("with:box#1"), &Value::from("hold")),
+            (&Value::from("host:Console"), &Value::from("print"))
+        ],
+        "{floor}"
+    );
     let generic = one_trace_for_every_secret("s41qid", SECRET_INSTALL_GENERIC, &done);
-    let expected = Value::from(vec![
-        sink_put(1, "", "with:keep#q"),
-        sink_put(2, "", "with:keep#1"),
-        done_print(3),
-    ]);
+    let expected = Value::from(vec![sink_put(1, "", "with:keep#1"), done_print(2)]);
     assert_eq!(generic, expected);
 }
 
@@ -6982,9 +6975,90 @@ fn s41_the_conformance_case_has_one_trace_for_every_secret() {
         .filter(|event| event["op"] == "put")
         .filter_map(|event| event["instance"].as_str())
         .collect();
+    // The two quiet `put`s append no event (S-42, #1515).
+    assert_eq!(ids, ["with:keep#1", "with:keep#2"], "{trace}");
+}
+
+/// S-42 (#1515), review H3 of #1511 round 2 (`op1.una`): an operation of a capability that
+/// accepts `secret`, performed under `if COND`, once per `i` the condition holds for.
+const SECRET_OPS: &str = r#"module leak
+
+capability Sink
+  op put(x: Int) -> Unit
+    accepts secret
+
+handler keep() for Sink
+  op put(x) = unit
+
+feed(s: secret Int) -> Unit
+  uses @k: Sink[put]
+=
+  for i in 0..<4
+    if COND
+      @k.put(s)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let s: secret Int = SECRET
+  feed(s) with @k = keep()
+  @console.print("done")
+"#;
+
+#[test]
+fn s42_operations_under_a_secret_branch_append_no_event() {
+    // S-42 (#1515), `spec/26 §6` rule 4, `spec/11 §5`: an operation performed in quiet code
+    // appends no event and takes no `seq`. Before, `s` `put` events (their arguments redacted)
+    // came before `done`, whose `seq` was `s + 1`: the whole secret in one run.
+    let source = SECRET_OPS.replace("COND", "s > i");
+    for secret in [0, 1, 3, 4] {
+        let (output, run, native) = secret_run("s42ops", &source, secret, &[]);
+        assert_eq!(output, serde_json::json!(["done"]), "{secret}");
+        assert_eq!(run, done_only(), "{secret}");
+        assert_eq!(native, done_only(), "{secret}");
+    }
+    // The control: at a `public` program counter the same operations keep their events, their
+    // `secret` argument redacted.
+    let source = SECRET_OPS.replace("COND", "3 > i");
+    let (_, run, native) = secret_run("s42pub", &source, 2, &[]);
+    assert_eq!(run, native);
+    let events = run.as_array().cloned().unwrap_or_default();
+    assert_eq!(events.len(), 4, "{run}");
+    for (index, event) in events.iter().take(3).enumerate() {
+        assert_eq!(event["seq"], index + 1, "{run}");
+        assert_eq!(event["instance"], "with:keep#1", "{run}");
+        assert_eq!(event["args"]["x"], "<redacted:secret>", "{run}");
+    }
+}
+
+#[test]
+fn s42_the_conformance_case_has_one_trace_for_every_secret() {
+    // S-42 (#1515): the conformance case `operations_under_secret` checks its output; here its
+    // whole trace is compared across secrets, in both engines. Only the operations at a
+    // `public` program counter are left: the `hold`, and the last `put`; those of code quiet by
+    // a `secret` branch, by the effect floor of `hold`'s body or by a decision on values of a
+    // type parameter, and those of the started task under its branch, append nothing.
+    let path = root().join("tests/conformance/runtime/operations_under_secret/src/operations.una");
+    let source = std::fs::read_to_string(&path).unwrap();
+    let fixed = "let s: secret Int = 2";
+    assert_eq!(source.matches(fixed).count(), 1, "{}", path.display());
+    let source = source
+        .replace(fixed, "let s: secret Int = SECRET")
+        .replace("module operations", "module leak");
+    let trace = one_trace_for_every_secret("s42conf", &source, &serde_json::json!(["done 2"]));
+    let ops: Vec<(&str, &str)> = trace
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|event| Some((event["instance"].as_str()?, event["op"].as_str()?)))
+        .collect();
     assert_eq!(
-        ids,
-        ["with:keep#q", "with:keep#q", "with:keep#1", "with:keep#2"],
+        ops,
+        [
+            ("with:box#1", "hold"),
+            ("with:keep#3", "put"),
+            ("host:Console", "print")
+        ],
         "{trace}"
     );
 }
@@ -7360,23 +7434,31 @@ fn s40_quiet_tasks_have_no_number_so_quiet_code_without_a_secret_branch_shows_no
     // S-40 round 2 (#1512, review H1), `spec/27 §7` rule 5: code quiet by a decision on values
     // of a type parameter, or by the effect floor of an operation body, writes events whatever
     // the secret. Quiet `start`s, statements and races take no number, so those events' paths
-    // do not count how many quiet ones ran before under a `secret` branch: whole events are the
-    // same for every secret, in both engines.
+    // do not count how many quiet ones ran before under a `secret` branch; since S-42 (#1515)
+    // an operation in quiet code appends no event at all: whole events are the same for every
+    // secret, in both engines, and no event of quiet code is left.
     let generic = same_traces_across("s40generic", SECRET_START_GENERIC, &[0, 1, 2, 3]);
-    let tasks: Vec<&str> = generic
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|event| event["task"].as_str())
-        .collect();
-    assert_eq!(tasks, ["s1.q", "s2.q", "s3.q"], "{generic}");
+    assert_eq!(generic, Value::from(vec![done_print(1)]), "{generic}");
     for (name, source) in [
         ("s40floor", SECRET_START_FLOOR),
         ("s40blocks", SECRET_BLOCKS_FLOOR),
     ] {
         let trace = same_traces_across(name, source, &[0, 1, 2, 3]);
-        assert_eq!(trace[0]["task"], "qs.q", "{name}: {trace}");
-        assert_eq!(trace[0]["op"], "put", "{name}: {trace}");
+        let ops: Vec<&Value> = trace
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|event| &event["op"])
+            .collect();
+        assert_eq!(ops, ["hold", "print"], "{name}: {trace}");
+        assert!(
+            trace
+                .as_array()
+                .into_iter()
+                .flatten()
+                .all(|e| e.get("task").is_none()),
+            "{name}: {trace}"
+        );
     }
 }
 
