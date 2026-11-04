@@ -304,6 +304,39 @@ fn each_part_of_the_provenance_is_verified() {
     );
 }
 
+/// The bounds of the hash lines a provenance holds: at most 64 `consistency` lines in its
+/// `latest` block and 64 `proof` lines; 64 read and round-trip, 65 are refused.
+#[test]
+fn the_provenance_bounds_its_hash_lines() {
+    let release = good();
+    let mut carried = release.provenance.clone();
+    carried.latest = Some(una_project::provenance::Latest {
+        checkpoint: release.provenance.checkpoint.clone(),
+        consistency: vec![[7; 32]; una_project::provenance::MAX_CONSISTENCY],
+    });
+    assert_eq!(una_project::provenance::MAX_CONSISTENCY, 64);
+    let encoded = carried.encode();
+    assert_eq!(parse(&encoded).unwrap(), carried);
+    let mut over = carried.clone();
+    if let Some(latest) = over.latest.as_mut() {
+        latest.consistency.push([7; 32]);
+    }
+    let refusal = parse(&over.encode()).unwrap_err();
+    assert!(
+        refusal.contains("consistency proof holds more than 64 hashes"),
+        "{refusal}"
+    );
+    let mut proof = release.provenance.clone();
+    proof.proof = vec![[9; 32]; una_project::provenance::MAX_PROOF];
+    assert_eq!(parse(&proof.encode()).unwrap(), proof);
+    proof.proof.push([9; 32]);
+    let refusal = parse(&proof.encode()).unwrap_err();
+    assert!(
+        refusal.contains("inclusion proof holds more than 64 hashes"),
+        "{refusal}"
+    );
+}
+
 /// The reader of provenance documents on mutated inputs: deterministic, it never panics, and
 /// what it accepts is in its one encoding.
 #[test]
