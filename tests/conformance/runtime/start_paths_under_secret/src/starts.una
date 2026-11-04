@@ -1,0 +1,40 @@
+-- test: `start`s under a `secret` program counter inside a public `tasks` statement, before, between and after public ones, in the root task and in a started one, stay legal and run as before; a quiet `start` takes no number and no public slot, so the paths of the public tasks do not depend on the secret; `s40_starts_under_a_secret_branch_between_public_ones_do_not_move_their_paths` in crates/una-cli/tests/native.rs runs this file with other secrets and compares whole traces, interpreter and executable (spec/26 §6 rule 4, spec/27 §7, S-40)
+-- spec: spec/27 §7
+-- grant: console
+-- expect: run-output "w 1"
+-- expect: run-output "w 2"
+-- expect: run-output "w 3"
+module starts
+
+noop() -> Unit = unit
+
+worker(n: Int) -> Unit
+  uses @console: Console[print]
+=
+  @console.print("w {n}")
+
+inner(s: secret Int) -> Unit
+  uses @console: Console[print]
+=
+  tasks
+    for i in 0..<3
+      if s > i
+        start noop()
+    start worker(3)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let s: secret Int = 2
+  tasks at most 1 at once
+    start worker(1)
+    if s > 0
+      start noop()
+    for i in 0..<3
+      if s > i
+        start noop()
+    start worker(2)
+    if s > 5
+      start noop()
+  tasks
+    start inner(s)

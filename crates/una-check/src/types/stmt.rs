@@ -849,6 +849,10 @@ impl<'a> Checker<'_, 'a, '_> {
         if let Some(current) = self.current {
             self.findings.task_functions.insert(current);
         }
+        // S-40 (#1512): under a raised program counter, the task takes no number, `q`, so it
+        // moves no index of the statement's public ones, and its own `cancelled` event is left
+        // out of the trace, since it runs under that program counter.
+        self.quiet_site(stmt.span);
         let placed = self.tasks_frames.last().is_some_and(|&(tasks, lambdas)| {
             tasks == self.task_depth && lambdas == self.lambda_depth
         });

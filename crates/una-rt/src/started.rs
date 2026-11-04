@@ -128,6 +128,9 @@ pub(crate) struct StartScope {
     /// `s<c>` in the root task, `p.s<c>` in the task `p`.
     pub(crate) path: String,
     bound: usize,
+    /// How many tasks public code started: a `start` in quiet code is not counted, so it never
+    /// moves the index, and so the placement, of a later public one (S-40, #1512, `spec/27 §7`
+    /// rule 5).
     started: AtomicUsize,
     running: sched::Counter,
     pub(crate) cancel: Arc<AtomicUsize>,
@@ -232,13 +235,15 @@ fn too_deep(message: &str) -> bool {
 /// while the innermost statement runs as many tasks as its bound, then starts the next one on
 /// the run's workers, and goes on. 0, or 2 when the task stops instead.
 pub fn start(closure: i64, site: usize, invoke: Invoke) -> i64 {
-    let scope = with_state(|state| {
+    // Whether the `start` stands in quiet code (S-40, #1512): its task is then not numbered,
+    // and its static site places it.
+    let (scope, quiet) = with_state(|state| {
         if state.stopped.is_some() {
-            return None;
+            return (None, false);
         }
-        state.scopes.last().cloned()
+        (state.scopes.last().cloned(), state.quiet > 0)
     })
-    .flatten();
+    .unwrap_or((None, false));
     let Some(scope) = scope else {
         let location = with_state(|state| state.location(site)).unwrap_or_else(nowhere);
         runtime::abort_from_task(
@@ -248,6 +253,8 @@ pub fn start(closure: i64, site: usize, invoke: Invoke) -> i64 {
         );
         return 2;
     };
+    // Quiet and public tasks share the one bound (ADR 0117 rule 7): a quiet task's slot can make
+    // a later public `start` wait, an open channel (#1545, `spec/26 §6` rule 4).
     scope.running.acquire(scope.bound);
     let shared = with_state(|state| Arc::clone(&state.shared));
     let Some(shared) = shared else {
@@ -286,12 +293,24 @@ pub fn start(closure: i64, site: usize, invoke: Invoke) -> i64 {
             return 2;
         }
     };
-    let k = scope.started.fetch_add(1, Ordering::SeqCst) + 1;
     let Some(template) = with_state(|state| state.for_start(site)) else {
         scope.running.release();
         return 2;
     };
-    let path = format!("{}.{k}", scope.path);
+    // A `start` in quiet code is not counted, and its task is `q`, with no number, so that
+    // whether it ran, which may depend on data above `public`, moves neither the index, the
+    // path and the worker of a later public one, nor the path of a later quiet one (S-40,
+    // #1512, `spec/27 §7` rule 5).
+    let k = if quiet {
+        0
+    } else {
+        scope.started.fetch_add(1, Ordering::SeqCst) + 1
+    };
+    let path = format!(
+        "{}.{}",
+        scope.path,
+        una_interp::concurrency::start_name(quiet, k)
+    );
     let entry = (Arc::clone(&scope.cancel), ENTRY);
     shared.live.fetch_add(1, Ordering::SeqCst);
     let sched = Arc::clone(&template.sched);
@@ -300,9 +319,12 @@ pub fn start(closure: i64, site: usize, invoke: Invoke) -> i64 {
     let alive = Arc::clone(&shared);
     // The task's place in its statement places it: the `k`-th `start` of the statement, counted
     // from 1, is part `k`, which runs on worker `(w + k) mod N`, `w` being the starting task's
-    // worker, 0 for the root (`spec/27 §1` rule 2, #1145). It also names the task's path.
+    // worker, 0 for the root (`spec/27 §1` rule 2, #1145). It also names the task's path. A
+    // quiet `start` has no `k`: its static site places it, so its worker depends on the
+    // program only (S-40).
+    let part = if quiet { site.saturating_add(1) } else { k };
     let spawned = sched.spawn_started(
-        k,
+        part,
         stack,
         move || {
             // A panic of the runtime is caught on the task's own stack, so nothing unwinds

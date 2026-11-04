@@ -868,16 +868,15 @@ pub(crate) struct Machine<'p, 'w> {
     /// The path of the task in progress, one part per enclosing block (`spec/19 §6`): the
     /// 1-based index of a `together` task; for a branch of the `c`-th `first of` its task runs,
     /// `f<c>` and the branch's 1-based index (`spec/27 §6`); for the `k`-th task of its task's
-    /// `c`-th `tasks` statement, `s<c>` and `k` (`spec/27 §7`); `qf<c>` and `qs<c>` for the
-    /// blocks of quiet code, counted apart (S-39).
+    /// `c`-th `tasks` statement, `s<c>` and `k` (`spec/27 §7`); `qf`, `qs` and `q`, with no
+    /// number, for the blocks and tasks of quiet code, which are not counted (S-39, S-40).
     task: Vec<String>,
     /// How many `first of` blocks each task in progress has run, the root's first, for the
-    /// paths of their branches (`spec/27 §6`): outside `quiet` code, then inside it, which
-    /// counts apart so that quiet code never moves the paths of later public blocks (S-39,
-    /// `spec/26 §6` rule 4).
+    /// paths of their branches (`spec/27 §6`): outside `quiet` code only, so that quiet code
+    /// never moves the paths of later public blocks (S-39, `spec/26 §6` rule 4).
     races: Vec<crate::concurrency::BlockCounts>,
     /// How many `tasks` statements each task in progress has run, for the paths of the tasks
-    /// they start (`spec/27 §7`), outside `quiet` code and inside it, as `races`.
+    /// they start (`spec/27 §7`), outside `quiet` code only, as `races`.
     tasks_runs: Vec<crate::concurrency::BlockCounts>,
     /// `--task-depth`: the calls a branch of `first of`, or a started task, may make below its
     /// block or its `start` (`spec/27 §3`).
@@ -993,13 +992,13 @@ impl<'p, 'w> Machine<'p, 'w> {
         }
     }
 
-    /// The machine of the `k`-th task of the statement `scope`, started here by this task: it
-    /// shares the run, inherits the deadlines and cancellations in force, and may make
-    /// `--task-depth` calls below the `start`, within the maximum in force (`spec/27 §7`, ADR
-    /// 0117 amendment of 2026-10-19 on S3, point 3).
-    fn child(&self, scope: &Rc<TasksScope>, k: usize) -> Machine<'p, 'w> {
+    /// The machine of the task `part` of the statement `scope`, `k` or, in quiet code, `q`
+    /// (S-40), started here by this task: it shares the run, inherits the deadlines and
+    /// cancellations in force, and may make `--task-depth` calls below the `start`, within the
+    /// maximum in force (`spec/27 §7`, ADR 0117 amendment of 2026-10-19 on S3, point 3).
+    fn child(&self, scope: &Rc<TasksScope>, part: String) -> Machine<'p, 'w> {
         let mut task = scope.path.clone();
-        task.push(k.to_string());
+        task.push(part);
         let mut cancels: Vec<Rc<TasksScope>> = self
             .cancels
             .iter()
@@ -2721,7 +2720,7 @@ impl<'p, 'w> Machine<'p, 'w> {
     }
 
     /// Branch `index` of the `first of` named `race` in the task in progress, `task`, with its
-    /// path `p.<race>.<index + 1>`, `race` being `f<c>` or, in quiet code, `qf<c>` (`spec/27
+    /// path `p.<race>.<index + 1>`, `race` being `f<c>` or, in quiet code, `qf` (`spec/27
     /// §6`), and the depth limit of `--task-depth` below its block, within the run's.
     fn branch(
         &mut self,
@@ -2752,8 +2751,8 @@ impl<'p, 'w> Machine<'p, 'w> {
         bound: Option<usize>,
         body: &'p Expr,
     ) -> Flow<'p> {
-        // Quiet code counts its statements apart, `qs<c>`, so that whether it ran, which may
-        // depend on data above `public`, never moves the paths of later public ones (S-39,
+        // Quiet code does not count its statements, `qs`, so that whether it ran one, which may
+        // depend on data above `public`, moves the path of no later statement (S-39, S-40,
         // `spec/26 §6` rule 4).
         let quiet = self.quiet > 0;
         let count = match self.tasks_runs.last_mut() {
@@ -2801,7 +2800,8 @@ impl<'p, 'w> Machine<'p, 'w> {
     }
 
     /// `start e` at `span` (`spec/27 §7`, ADR 0117 rule 7): once fewer tasks of the innermost
-    /// statement run than its bound allows, starts the next one, `p.s<c>.<k>`, for `task` with
+    /// statement run than its bound allows, starts the next one, `p.s<c>.<k>`, or `p.s<c>.q` in
+    /// quiet code (S-40), for `task` with
     /// the bindings it reads and the capabilities in scope, at the back of the run's queue,
     /// and goes on. On Linux, a run already holding as many started tasks as the system allows
     /// at once aborts with U6003 at the `start`, before any mapping fails (ADR 0117 rule 2).
@@ -2816,6 +2816,9 @@ impl<'p, 'w> Machine<'p, 'w> {
             return Err(fault("a `start` outside its `tasks` statement"));
         };
         self.flush();
+        // Quiet and public tasks share the one bound (ADR 0117 rule 7): a quiet task's slot can
+        // make a later public `start` wait, which reorders public events here, an open channel
+        // (#1545, `spec/26 §6` rule 4).
         self.wait_for(&scope, |scope| scope.running.get() < scope.bound)?;
         if let Some(abort) = self.run.aborted() {
             return Err(Stop::Abort(abort));
@@ -2828,9 +2831,14 @@ impl<'p, 'w> Machine<'p, 'w> {
                 cap: Some(cap),
             }));
         }
-        let k = scope.started.get() + 1;
-        scope.started.set(k);
-        let mut child = self.child(&scope, k);
+        // A `start` in quiet code is not counted, and its task is `q`, with no number, so that
+        // whether it ran, which may depend on data above `public`, moves neither the index of a
+        // later public one nor the path of a later quiet one (S-40, #1512, `spec/27 §7` rule 5).
+        let quiet = self.quiet > 0;
+        let mut counts = scope.started.get();
+        let k = counts.next(quiet);
+        scope.started.set(counts);
+        let mut child = self.child(&scope, crate::concurrency::start_name(quiet, k));
         let reads = self.reads(task);
         let mut captured: Env<'p> = reads.iter().filter_map(|name| env.binding(name)).collect();
         let caps = caps.clone();
@@ -2903,7 +2911,7 @@ impl<'p, 'w> Machine<'p, 'w> {
     /// renumbered as native code numbers them at the join, the ids of the handlers they
     /// installed included.
     fn first_of(&mut self, env: &mut Env<'p>, caps: &Caps<'p>, tasks: &'p [Expr]) -> Flow<'p> {
-        // Quiet code counts its races apart, `qf<c>`, as `tasks` statements (S-39).
+        // Quiet code does not count its races, `qf`, as `tasks` statements (S-39, S-40).
         let quiet = self.quiet > 0;
         let race = match self.races.last_mut() {
             Some(counts) => crate::concurrency::block_name('f', quiet, counts.next(quiet)),
