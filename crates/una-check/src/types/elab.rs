@@ -2484,11 +2484,24 @@ impl<'e, 'a> Fx<'e, 'a> {
                 }
             };
         }
+        // S-41: the installations of a `with` under a raised program counter, which the checker
+        // marked by their handler calls, run `quiet`, with the body they scope, which stands
+        // under the same program counter (`spec/26 §6` rule 4).
+        let quiet = handled.with.iter().any(|binding| match &binding.value {
+            CapBindingValue::Handler(call) => self.findings.quiet.contains(&call.span),
+            _ => false,
+        });
         for (cap, source) in bindings.into_iter().rev() {
             current = CoreExpr::With {
                 cap,
                 source,
                 body: Box::new(current),
+            };
+        }
+        if quiet {
+            current = CoreExpr::Quiet {
+                body: Box::new(current),
+                span,
             };
         }
         (close(lets, current), components)

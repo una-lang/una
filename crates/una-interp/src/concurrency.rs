@@ -151,6 +151,19 @@ pub fn block_name(kind: char, quiet: bool, count: usize) -> String {
     }
 }
 
+/// The key under which a task counts its installations of the handler `name`, as both engines
+/// name them: `name` itself, or, in quiet code, `name#q`, which no handler name can be, so that
+/// quiet code counts its installations apart and its ids read `with:<name>#q#<n>` (S-41,
+/// `spec/26 §6` rule 4). Whether quiet code installed a handler, which may depend on data above
+/// `public`, never moves the `n` of a later public installation.
+pub fn install_key(name: &str, quiet: bool) -> String {
+    if quiet {
+        format!("{name}#q")
+    } else {
+        name.to_owned()
+    }
+}
+
 /// The one line on stderr of a started task that ran too deep and ended alone (`spec/27 §7`,
 /// ADR 0117 rule 7), as both engines write it: U6003, the task's path, why, and the position
 /// `file:line:column` of the call, when it is known.

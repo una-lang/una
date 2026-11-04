@@ -6678,3 +6678,153 @@ fn s39_quiet_blocks_left_by_exits_do_not_move_the_paths_of_later_public_ones() {
         }
     }
 }
+
+/// S-41 (#1514), review round 2 of #1511, H2 (`inst1.una`, `inst2.una`): handler installations
+/// under a `secret` branch, through a callee and written directly under the branch, then a
+/// public installation whose operation is traced. `INSTALL` is replaced by the installation
+/// under the branch.
+const SECRET_INSTALLS: &str = r#"module leak
+
+capability Sink
+  op put(x: Int) -> Unit
+
+handler keep() for Sink
+  op put(x) = unit
+
+use_it() -> Unit
+  uses @k: Sink[put]
+=
+  @k.put(1)
+
+quietly() -> Int
+=
+  let n = 1
+  n
+
+inner() -> Unit
+=
+  let r = quietly() with @k = keep()
+  unit
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let s: secret Int = SECRET
+  for i in 0..<3
+    if s > i
+INSTALL
+  use_it() with @k = keep()
+  @console.print("done")
+"#;
+
+/// The event of `put(1)` on the instance `instance`, with the number `seq` and the path `task`.
+fn sink_put(seq: u64, task: &str, instance: &str) -> Value {
+    let mut event = serde_json::json!({
+        "seq": seq,
+        "instance": instance,
+        "capability": "Sink",
+        "op": "put",
+        "args": {"x": "1"},
+        "outcome": {"kind": "ok", "value": "unit"}
+    });
+    if !task.is_empty() {
+        event["task"] = Value::from(task);
+    }
+    event
+}
+
+/// The event of `print("done")` with the number `seq`.
+fn done_print(seq: u64) -> Value {
+    let mut event = done_only()[0].clone();
+    event["seq"] = Value::from(seq);
+    event
+}
+
+#[test]
+fn s41_installations_under_a_secret_branch_do_not_move_later_public_instance_ids() {
+    // S-41 (#1514), `spec/26 §6` rule 4: an installation under a raised program counter is
+    // quiet and counts apart, so the public installation after it is `with:keep#1` for every
+    // secret: whole events are the same, in both engines.
+    let expected = Value::from(vec![sink_put(1, "", "with:keep#1"), done_print(2)]);
+    for install in [
+        "      inner()",
+        "      let r = quietly() with @k = keep()\n      unit",
+    ] {
+        let source = SECRET_INSTALLS.replace("INSTALL", install);
+        for secret in [0, 1, 2, 3] {
+            let (output, run, native) = secret_run("s41inst", &source, secret, &[]);
+            assert_eq!(output, serde_json::json!(["done"]), "{install} {secret}");
+            assert_eq!(run, expected, "{install} {secret}");
+            assert_eq!(native, expected, "{install} {secret}");
+        }
+    }
+}
+
+/// S-41 (#1514): quiet installations whose operations are traced, in the root task and in a
+/// task started at a `public` program counter, then public installations in each.
+const SECRET_INSTALL_IDS: &str = r#"module leak
+
+capability Sink
+  op put(x: Int) -> Unit
+
+handler keep() for Sink
+  op put(x) = unit
+
+use_it() -> Unit
+  uses @k: Sink[put]
+=
+  @k.put(1)
+
+quiet_put() -> Unit
+=
+  use_it() with @k = keep()
+
+worker(s: secret Int) -> Unit
+=
+  for i in 0..<3
+    if s > i
+      quiet_put()
+  use_it() with @k = keep()
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let s: secret Int = SECRET
+  for i in 0..<3
+    if s > i
+      quiet_put()
+  tasks
+    start worker(s)
+  use_it() with @k = keep()
+  @console.print("done")
+"#;
+
+#[test]
+fn s41_quiet_installations_number_apart_in_the_root_and_in_started_tasks() {
+    // S-41 (#1514), `spec/26 §6` rule 4, `spec/27 §7`: quiet code numbers its installations
+    // `with:<h>#q#<n>`, in the root task and in a started one, whose block renumbers them at
+    // its join as it does public ones. The operations quiet code performs are still recorded
+    // by occurrence (S-42, #1515); the ids of the public installations do not depend on the
+    // secret, in both engines.
+    for secret in [0_u64, 1, 2, 3] {
+        let (output, run, native) = secret_run("s41ids", SECRET_INSTALL_IDS, secret as i64, &[]);
+        assert_eq!(output, serde_json::json!(["done"]), "{secret}");
+        let quiet = secret.min(3);
+        let mut expected = Vec::new();
+        let mut seq = 0;
+        for n in 1..=quiet {
+            seq += 1;
+            expected.push(sink_put(seq, "", &format!("with:keep#q#{n}")));
+        }
+        for n in 1..=quiet {
+            seq += 1;
+            expected.push(sink_put(seq, "s1.1", &format!("with:keep#q#{}", quiet + n)));
+        }
+        expected.push(sink_put(seq + 1, "s1.1", "with:keep#1"));
+        expected.push(sink_put(seq + 2, "", "with:keep#2"));
+        expected.push(done_print(seq + 3));
+        let expected = Value::from(expected);
+        assert_eq!(run, expected, "{secret}");
+        assert_eq!(native, expected, "{secret}");
+    }
+}

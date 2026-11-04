@@ -119,7 +119,7 @@ Each operation invocation appends one event:
 }
 ```
 
-- `instance` is `given:<name>` for example bindings, `host:<Capability>` for host instances and `with:<handler>#<n>` for handlers installed by `with`.
+- `instance` is `given:<name>` for example bindings, `host:<Capability>` for host instances and `with:<handler>#<n>` for handlers installed by `with`; in edition `0.4`, a handler that quiet code installs is `with:<handler>#q#<n>`, counted apart (`spec/26 §6` rule 4, S-41).
 - Arguments whose static label is above `public` are printed as `<redacted:level>`.
 - Handler events appear before the events produced inside the handler body (E-OpHandler).
 - Host operation results are recorded in full (subject to redaction), so a future `una replay` can substitute them (`plan/backlog.md`).

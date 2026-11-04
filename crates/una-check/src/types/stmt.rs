@@ -1239,6 +1239,9 @@ impl<'a> Checker<'_, 'a, '_> {
                         self.findings.with_installs.push((id, binding.span));
                     }
                     let (capability, handler, install) = self.install(call);
+                    // S-41: an installation under a raised program counter is `quiet`, so it
+                    // counts apart from public code's (`spec/26 §6` rule 4).
+                    self.quiet_site(call.span);
                     if let Some(install) = install {
                         installs.push((self.name(&binding.cap).to_owned(), install));
                     }

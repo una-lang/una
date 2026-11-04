@@ -1,0 +1,51 @@
+-- test: handler installations under a `secret` program counter, through a callee and written directly under the branch, stay legal and run as before, then public ones run; quiet code numbers its installations apart, `with:<h>#q#<n>`, so the instance id of a later public installation does not depend on the secret, which the native tests compare across secrets in both engines (spec/26 §6 rule 4, spec/27 §7, S-41)
+-- spec: spec/26 §6
+-- grant: console
+-- expect: run-output "done 3"
+module installs
+
+capability Sink
+  op put(x: Int) -> Unit
+
+handler keep() for Sink
+  op put(x) = unit
+
+use_it() -> Unit
+  uses @k: Sink[put]
+=
+  @k.put(1)
+
+quietly() -> Int
+=
+  let n = 1
+  n
+
+inner() -> Unit
+=
+  let r = quietly() with @k = keep()
+  unit
+
+quiet_put() -> Unit
+=
+  use_it() with @k = keep()
+
+worker(s: secret Int) -> Unit
+=
+  for i in 0..<3
+    if s > i
+      quiet_put()
+  use_it() with @k = keep()
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let s: secret Int = 2
+  for i in 0..<3
+    if s > i
+      inner()
+      let r = quietly() with @k = keep()
+      quiet_put()
+  tasks
+    start worker(s)
+  use_it() with @k = keep()
+  @console.print("done 3")
