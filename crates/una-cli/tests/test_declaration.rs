@@ -12,6 +12,9 @@
     clippy::unwrap_used
 )]
 
+#[path = "common/hermetic.rs"]
+mod hermetic;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -19,6 +22,12 @@ use serde_json::Value;
 
 fn repository() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+/// A sealed copy of the conformance corpus: no manifest above the checkout changes the edition
+/// of its single files (#1560).
+fn corpus() -> PathBuf {
+    hermetic::checkout(&["tests/conformance"])
 }
 
 fn una_in(dir: &Path, args: &[&str]) -> Output {
@@ -375,7 +384,7 @@ fn una_fmt_leaves_an_example_in_edition_0_3_as_it_is() {
 /// are edition 0.1, and directories whose `una.toml` names one of the two editions, each with
 /// a `test-pass` or `test-fail` expectation.
 fn earlier_edition_test_cases() -> Vec<PathBuf> {
-    let root = repository().join("tests/conformance");
+    let root = corpus().join("tests/conformance");
     let mut cases = Vec::new();
     let mut pending = vec![root];
     while let Some(dir) = pending.pop() {
@@ -442,7 +451,7 @@ fn editions_0_1_and_0_2_keep_una_test_1() {
     let cases = earlier_edition_test_cases();
     assert!(cases.len() >= 10, "{cases:#?}");
     for case in cases {
-        let output = una_in(&repository(), &["--json", "test", case.to_str().unwrap()]);
+        let output = una_in(&corpus(), &["--json", "test", case.to_str().unwrap()]);
         let text = stdout(&output);
         assert!(
             text.starts_with("{\"schema\":\"una.test/1\",\"tier\":"),

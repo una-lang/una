@@ -5,6 +5,9 @@
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
 
+#[path = "common/hermetic.rs"]
+mod hermetic;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -115,6 +118,14 @@ fn a_loose_file_with_no_manifest_above_it_stays_in_edition_0_1() {
     let root = scratch("named-file-loose");
     let file = root.join("s.una");
     std::fs::write(&file, WRAPPED_0_1).unwrap();
+    // This test is about the absence of a manifest, which no test can create: it says so when
+    // one lies above the temporary directory rather than fail on its edition (#1560).
+    let above = hermetic::manifest_above(&file);
+    assert!(
+        above.is_none(),
+        "{} lies above the temporary directory, so no file there is without a manifest above it; remove it or set TMPDIR elsewhere",
+        above.unwrap_or_default().display()
+    );
     let file_arg = file.to_str().unwrap();
 
     let check = una(&root, &["fmt", "--check", "--json", file_arg]);

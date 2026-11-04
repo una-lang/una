@@ -81,6 +81,10 @@ Exactly one `.una` file under the case's `src/` carries the directive block; the
 
 Every directory directly under `tests/conformance/` MUST be one of the areas above; files there (such as `README.md`) are not cases. Inside an area, every `.una` file is a single-module case and every directory containing `una.toml` or `ita.una` is a multi-module case; any other entry is malformed. A run that discovers no case fails. Entries whose names start with `.` are ignored everywhere: at the root, inside areas and among the files of a multi-module case (ADR 0013, D6).
 
+### Independence from the directories above
+
+A single file takes the edition of the nearest `ita.una` or `una.toml` above it, however far up (`spec/30`, #1175), so a stray manifest above the checkout, above `CARGO_TARGET_DIR` or above the system's temporary directory would change the edition of every single-file case below it. No test depends on what lies above it (#1560): the runner and every test that reads the corpus in place read a copy of it below a seal, a `una.toml` of edition `0.1`, and every test that writes single files under a temporary directory seals that directory first (`crates/una-cli/tests/common/hermetic.rs`). The repository holds no seal of its own, since a `una.toml` at its root would also be the package root that `una lsp` finds for its single files.
+
 ### Pending cases
 
 `-- pending: M<n>` declares that the case is expected to fail until milestone `M<n>` of `plan/milestones-v0.1.md`, with `n` from 1 to 10. The runner validates every directive of a pending case and runs it like any other case, then classifies it:
