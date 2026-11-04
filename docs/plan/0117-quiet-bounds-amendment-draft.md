@@ -16,7 +16,7 @@ start worker(2)
 @console.print("main")
 ```
 
-The interpreter prints `main, worker 1, worker 2` for `s = 0` and `worker 1, main, worker 2` for `s = 1`. With 64 such `start`s, the default bound gives the same result.
+The interpreter prints `main, worker 1, worker 2` for `s = 0` and `worker 1, main, worker 2` for `s = 1`. Without `at most`, the default bound `max(64, M)` (`M` being `--max-memory` in MiB, at most the Linux cap) gives the same result with `max(64, M)` such `start`s: 64 of them when `--max-memory` is 64 MiB or less, and `M` of them above that.
 
 **Proposed rule.** A statement bounds its tasks of public code and its tasks of quiet code apart, each at its bound `n`. A quiet `start` waits only for a slot among the statement's running quiet tasks, and a public one only among its public tasks. The statement ends once both counts are 0. A quiet `start` then never makes a public one wait.
 
