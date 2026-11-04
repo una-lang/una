@@ -92,22 +92,159 @@ theorem walkFold_uok {app : World H → Val → Val → Run H} {A : Event → Pr
     simp only [walkFold]
     exact andThen_uok (happ w _ v hacc hv) (fun w acc' hacc' => walkFold_uok happ w hacc' hvs)
 
+/-- The failures and exits of a loop's iterations once their `skip`s are caught (ADR 0116 rule 20):
+the failures of `F`, and `stop`s with a state of the types `ts`. -/
+def FailCond.loop (p : Program) (F : FailCond) (ts : List LTy) : FailCond :=
+  ⟨F.code, F.raised, fun b vs => b = true ∧ LValsTy p vs ts⟩
+
+/-- An iteration that keeps its state typed, and whose exits carry a typed state, keeps it typed
+once its `skip` is caught. -/
+theorem iter_uok {A : Event → Prop} {F : FailCond} {ts : List LTy} {w : World H} {r : Run H}
+    (h : UOk A (fun r => ∃ st', r = .tuple st' ∧ LValsTy p st' ts) F w r)
+    (hex : ∀ b vs, F.exit b vs → LValsTy p vs ts) :
+    UOk A (fun r => ∃ st', r = .tuple st' ∧ LValsTy p st' ts) (F.loop p ts) w (Run.iter r) := by
+  obtain ⟨tr, res, w'⟩ := r
+  have h2 := h.2.1
+  cases res with
+  | exit b vs =>
+    have hvs := hex b vs h2
+    cases b
+    · exact ⟨h.1, ⟨_, rfl, hvs⟩, h.2.2⟩
+    · exact ⟨h.1, ⟨rfl, hvs⟩, h.2.2⟩
+  | _ => exact ⟨h.1, h2, h.2.2⟩
+
+/-- The end of a loop's iterations: a `stop` with a typed state gives the loop's value. -/
+theorem endLoop_uok {A : Event → Prop} {F : FailCond} {ts : List LTy} {w : World H} {r : Run H}
+    (E : Bool → List Val → Prop)
+    (h : UOk A (fun r => ∃ st', r = .tuple st' ∧ LValsTy p st' ts) (F.loop p ts) w r) :
+    UOk A (fun r => ∃ st', r = .tuple st' ∧ LValsTy p st' ts) ⟨F.code, F.raised, E⟩ w
+      (Run.endLoop ts.length r) := by
+  obtain ⟨tr, res, w'⟩ := r
+  have h2 := h.2.1
+  cases res with
+  | exit b vs =>
+    obtain ⟨rfl, hvs⟩ := h2
+    simp only [Run.endLoop]
+    rw [if_pos (LValsTy.length hvs)]
+    exact ⟨h.1, ⟨_, rfl, hvs⟩, h.2.2⟩
+  | _ => exact h
+
 /-- **A loop keeps its state typed** (T-Loop's invariant): when every iteration maps a typed state
-to a tuple of the same types, so does the loop, by induction on the iterations. -/
+to a tuple of the same types, and its exits carry such a state, so does the loop, by induction on
+the iterations. -/
 theorem walkLoop_uok {body : World H → Val → List Val → Run H} {A : Event → Prop} {F : FailCond}
     {a : LTy} {ts : List LTy}
     (hbody : ∀ w v st, LValTy p v a → LValsTy p st ts →
-      UOk A (fun r => ∃ st', r = .tuple st' ∧ LValsTy p st' ts) F w (body w v st)) :
+      UOk A (fun r => ∃ st', r = .tuple st' ∧ LValsTy p st' ts) F w (body w v st))
+    (hex : ∀ b vs, F.exit b vs → LValsTy p vs ts) :
     ∀ {items : List Val} (w : World H) {st : List Val}, LValsTy p st ts → (∀ v ∈ items, LValTy p v a) →
-      UOk A (fun r => ∃ st', r = .tuple st' ∧ LValsTy p st' ts) F w (walkLoop body w st items)
+      UOk A (fun r => ∃ st', r = .tuple st' ∧ LValsTy p st' ts) (F.loop p ts) w
+        (walkLoop body w st items)
   | [], _, _, hst, _ => uok_done ⟨_, rfl, hst⟩
   | v :: vs, w, st, hst, h => by
     simp only [walkLoop]
-    refine andThen_uok (hbody w v st (h v List.mem_cons_self) hst) (fun w r hr => ?_)
+    refine andThen_uok (iter_uok (hbody w v st (h v List.mem_cons_self) hst) hex) (fun w r hr => ?_)
     obtain ⟨st', rfl, hst'⟩ := hr
     simp only
     rw [ite_eq_left (by rw [LValsTy.length hst', LValsTy.length hst])]
-    exact walkLoop_uok hbody w hst' (fun u hu => h u (List.mem_cons_of_mem _ hu))
+    exact walkLoop_uok hbody hex w hst' (fun u hu => h u (List.mem_cons_of_mem _ hu))
+
+/-- `for until` keeps its state typed (ADR 0116 rule 7): its condition gives a `Bool`, and keeps
+to the loop's conditions, so does not exit; each iteration keeps the state typed. -/
+theorem walkUntil_uok {cond body : World H → List Val → Run H} {A : Event → Prop} {F : FailCond}
+    {ts : List LTy}
+    (hcond : ∀ w st, LValsTy p st ts → UOk A (fun r => ∃ b, r = .bool b) (F.loop p ts) w (cond w st))
+    (hbody : ∀ w st, LValsTy p st ts →
+      UOk A (fun r => ∃ st', r = .tuple st' ∧ LValsTy p st' ts) F w (body w st))
+    (hex : ∀ b vs, F.exit b vs → LValsTy p vs ts) :
+    ∀ (k : Nat) (w : World H) {st : List Val}, LValsTy p st ts →
+      UOk A (fun r => ∃ st', r = .tuple st' ∧ LValsTy p st' ts) (F.loop p ts) w
+        (walkUntil cond body k w st)
+  | 0, w, _, _ => ⟨fun _ h => (nomatch h), trivial, WEff.self _ w⟩
+  | k + 1, w, st, hst => by
+    simp only [walkUntil]
+    refine andThen_uok (hcond w st hst) (fun w c hc => ?_)
+    obtain ⟨b, rfl⟩ := hc
+    cases b
+    · simp only
+      refine andThen_uok (iter_uok (hbody w st hst) hex) (fun w r hr => ?_)
+      obtain ⟨st', rfl, hst'⟩ := hr
+      simp only
+      rw [ite_eq_left (by rw [LValsTy.length hst', LValsTy.length hst])]
+      exact walkUntil_uok hcond hbody hex k w hst'
+    · exact uok_done ⟨_, rfl, hst⟩
+
+/-- `for ever` keeps its state typed (ADR 0116 rule 10), whatever the host's stop schedule. -/
+theorem walkEver_uok {stops : Nat → Bool} {body : World H → List Val → Run H} {A : Event → Prop}
+    {F : FailCond} {ts : List LTy}
+    (hbody : ∀ w st, LValsTy p st ts →
+      UOk A (fun r => ∃ st', r = .tuple st' ∧ LValsTy p st' ts) F w (body w st))
+    (hex : ∀ b vs, F.exit b vs → LValsTy p vs ts) :
+    ∀ (k i : Nat) (w : World H) {st : List Val}, LValsTy p st ts →
+      UOk A (fun r => ∃ st', r = .tuple st' ∧ LValsTy p st' ts) (F.loop p ts) w
+        (walkEver stops body k i w st)
+  | 0, _, w, _, _ => ⟨fun _ h => (nomatch h), trivial, WEff.self _ w⟩
+  | k + 1, i, w, st, hst => by
+    simp only [walkEver]
+    split
+    · exact uok_done ⟨_, rfl, hst⟩
+    · refine andThen_uok (iter_uok (hbody w st hst) hex) (fun w r hr => ?_)
+      obtain ⟨st', rfl, hst'⟩ := hr
+      simp only
+      rw [ite_eq_left (by rw [LValsTy.length hst', LValsTy.length hst])]
+      exact walkEver_uok hbody hex k (i + 1) w hst'
+
+/-- `on stop` after a `for ever` (ADR 0116 rule 10): the block, run on a typed state, keeps to its
+own conditions, and a failure of the loop that it follows stays the loop's. -/
+theorem finishEver_uok {k : World H → List Val → Run H} {A : Event → Prop} {P : Val → Prop}
+    {F : FailCond} {ts : List LTy} {st₀ : List Val} {w : World H} {r : Run H}
+    (hk : ∀ w st, LValsTy p st ts → UOk A P F w (k w st)) (hst₀ : LValsTy p st₀ ts)
+    (h : UOk A (fun r => ∃ st', r = .tuple st' ∧ LValsTy p st' ts) F w r) :
+    UOk A P F w (finishEver k st₀ r) := by
+  obtain ⟨tr, res, w₁⟩ := r
+  have h2 := h.2.1
+  cases res with
+  | ok v =>
+    obtain ⟨st, rfl, hst⟩ := h2
+    have hk' := hk w₁ st hst
+    simp only [finishEver]
+    revert hk'
+    obtain ⟨tr', r', w₂⟩ := k w₁ st
+    intro hk'
+    refine ⟨fun ev hev => ?_, hk'.2.1, WEff.trans h.2.2 hk'.2.2⟩
+    rcases List.mem_append.mp hev with hev | hev
+    · exact h.1 ev hev
+    · exact hk'.1 ev hev
+  | failed c =>
+    have hk' := hk w₁ st₀ hst₀
+    simp only [finishEver]
+    revert hk'
+    obtain ⟨tr', r', w₂⟩ := k w₁ st₀
+    intro hk'
+    have hev : ∀ ev ∈ tr ++ tr', A ev := fun ev hev => by
+      rcases List.mem_append.mp hev with hev | hev
+      · exact h.1 ev hev
+      · exact hk'.1 ev hev
+    cases r' with
+    | ok _ => exact ⟨hev, h2, WEff.trans h.2.2 hk'.2.2⟩
+    | _ => exact ⟨hev, hk'.2.1, WEff.trans h.2.2 hk'.2.2⟩
+  | raised kd c ps =>
+    have hk' := hk w₁ st₀ hst₀
+    simp only [finishEver]
+    revert hk'
+    obtain ⟨tr', r', w₂⟩ := k w₁ st₀
+    intro hk'
+    have hev : ∀ ev ∈ tr ++ tr', A ev := fun ev hev => by
+      rcases List.mem_append.mp hev with hev | hev
+      · exact h.1 ev hev
+      · exact hk'.1 ev hev
+    cases r' with
+    | ok _ => exact ⟨hev, h2, WEff.trans h.2.2 hk'.2.2⟩
+    | _ => exact ⟨hev, hk'.2.1, WEff.trans h.2.2 hk'.2.2⟩
+  | exit b vs => exact ⟨h.1, h2, h.2.2⟩
+  | stuck => exact ⟨h.1, trivial, h.2.2⟩
+  | outOfFuel => exact ⟨h.1, trivial, h.2.2⟩
+  | aborted => exact ⟨h.1, trivial, h.2.2⟩
 
 theorem LValsAll.mem : ∀ {items : List Val} {t : LTy}, LValsAll p items t → ∀ v ∈ items, LValTy p v t
   | _, _, .nil => fun _ h => nomatch h
@@ -462,31 +599,37 @@ theorem flag_of_fails {pc : LExpr} {s : List (String × LExpr)} {ε : Eff} {f : 
 
 /-! ### What a failure may be (#512): a code, or a payload of a kind the effects raise -/
 
-theorem FailsAs.union_left_inst {pc : LExpr} {s : List (String × LExpr)} {ε₁ ε₂ : Eff} :
-    (FailsAs p pc (ε₁.inst s)).Le (FailsAs p pc ((ε₁.union ε₂).inst s)) :=
+theorem FailsAs.union_left_inst {pc : LExpr} {s : List (String × LExpr)} {ε₁ ε₂ : Eff}
+    {X : ExitCtx} :
+    (FailsAsX p pc (ε₁.inst s) X).Le (FailsAsX p pc ((ε₁.union ε₂).inst s) X) :=
   ⟨fun ⟨h, hc⟩ => ⟨Fails.union_left_inst h, by
       simp only [Eff.inst, Eff.union] at hc ⊢; simp [hc]⟩,
     fun _ _ _ ⟨h, hk, hp⟩ => ⟨Fails.union_left_inst h, by
-      simp only [Eff.inst, Eff.union] at hk ⊢; exact List.mem_append_left _ hk, hp⟩⟩
+      simp only [Eff.inst, Eff.union] at hk ⊢; exact List.mem_append_left _ hk, hp⟩,
+    fun _ _ h => h⟩
 
 theorem FailsAs.union_right_inst {pc pc' : LExpr} {s : List (String × LExpr)} {ε₁ ε₂ : Eff}
-    (hpc : p.le pc pc') : (FailsAs p pc' (ε₂.inst s)).Le (FailsAs p pc ((ε₁.union ε₂).inst s)) :=
+    {X : ExitCtx} (hpc : p.le pc pc') :
+    (FailsAsX p pc' (ε₂.inst s) X).Le (FailsAsX p pc ((ε₁.union ε₂).inst s) X) :=
   ⟨fun ⟨h, hc⟩ => ⟨Fails.union_right_inst hpc h, by
       simp only [Eff.inst, Eff.union] at hc ⊢; simp [hc]⟩,
     fun _ _ _ ⟨h, hk, hp⟩ => ⟨Fails.union_right_inst hpc h, by
-      simp only [Eff.inst, Eff.union] at hk ⊢; exact List.mem_append_right _ hk, hp⟩⟩
+      simp only [Eff.inst, Eff.union] at hk ⊢; exact List.mem_append_right _ hk, hp⟩,
+    fun _ _ h => ExitAs.mono hpc h⟩
 
-theorem FailsAs.mono_pc {pc pc' : LExpr} {ε : Eff} (hpc : p.le pc pc') :
-    (FailsAs p pc' ε).Le (FailsAs p pc ε) :=
+theorem FailsAs.mono_pc {pc pc' : LExpr} {ε : Eff} {X : ExitCtx}
+    (hpc : p.le pc pc') : (FailsAsX p pc' ε X).Le (FailsAsX p pc ε X) :=
   ⟨fun ⟨h, hc⟩ => ⟨Fails.mono hpc (fun l hl => ⟨l, hl, LExpr.le_refl l⟩) h, hc⟩,
-    fun _ _ _ ⟨h, hk, hp⟩ => ⟨Fails.mono hpc (fun l hl => ⟨l, hl, LExpr.le_refl l⟩) h, hk, hp⟩⟩
+    fun _ _ _ ⟨h, hk, hp⟩ => ⟨Fails.mono hpc (fun l hl => ⟨l, hl, LExpr.le_refl l⟩) h, hk, hp⟩,
+    fun _ _ h => ExitAs.mono hpc h⟩
 
 /-- A function value fails with a code only, at a call its bound allows. -/
 theorem bound_failsAs_inst {pc pc' : LExpr} {s : List (String × LExpr)} {o : Bool} {g : HostFx}
     {f : Bool} (hb : p.Bound pc' o g f) (hpc : p.le pc (pc'.inst s)) :
-    FailCond.Le ⟨f = true, fun _ _ _ => False⟩ (FailsAs p pc ((Eff.ofFn o g f).inst s)) :=
+    FailCond.Le ⟨f = true, fun _ _ _ => False, fun _ _ => False⟩
+      (FailsAs p pc ((Eff.ofFn o g f).inst s)) :=
   ⟨fun (hf : f = true) => ⟨bound_fails_inst hb hpc hf, by simp [Eff.ofFn, Eff.inst, hf]⟩,
-    fun _ _ _ h => h.elim⟩
+    fun _ _ _ h => h.elim, fun _ _ h => h.elim⟩
 
 /-- **A call fails as its callee declares**: with a code when it declares no payload kind, and with
 a payload of a kind it declares (`Eff.ofCall`, T-Fun). -/
@@ -497,7 +640,8 @@ theorem call_failsAs_inst {pc pc₀ pc' : LExpr} {s s' : List (String × LExpr)}
     (FailsAs p pc₀ (εb.inst s')).Le (FailsAs p pc ((Eff.ofCall fn).inst s)) := by
   have hfl : ∀ {pc₁ : LExpr}, Fails p pc₁ (εb.inst s') → Fails p pc ((Eff.ofCall fn).inst s) :=
     fun h => bound_fails_instR (rs := fn.rels) hb hpc (flag_of_fails hfs h)
-  refine ⟨fun ⟨h, hc⟩ => ⟨hfl h, ?_⟩, fun k _ _ ⟨h, hk, hp⟩ => ⟨hfl h, ?_, hp⟩⟩
+  refine ⟨fun ⟨h, hc⟩ => ⟨hfl h, ?_⟩, fun k _ _ ⟨h, hk, hp⟩ => ⟨hfl h, ?_, hp⟩,
+    fun _ _ h => (ExitAs.none h).elim⟩
   · have hf := flag_of_fails hfs h
     have hr := hcodes (by simpa [Eff.inst] using hc)
     simp [Eff.ofCall, Eff.ofFnR, Eff.ofFn, Eff.inst, hf, hr]
@@ -537,7 +681,8 @@ theorem invoke_failsAs_inst {pc pc₀ : LExpr} {s s' : List (String × LExpr)} {
   have hfl : ∀ {pc₁ : LExpr}, Fails p pc₁ (εb.inst s') →
       Fails p (pc.inst s) ((Eff.ofInvoke pc fn).inst s) :=
     fun h => ⟨pc.inst s, by simp [Eff.ofInvoke, Eff.inst, flag_of_fails hfs h], LExpr.le_refl _⟩
-  refine ⟨fun ⟨h, hc⟩ => ⟨hfl h, ?_⟩, fun k _ _ ⟨h, hk, hp⟩ => ⟨hfl h, ?_, hp⟩⟩
+  refine ⟨fun ⟨h, hc⟩ => ⟨hfl h, ?_⟩, fun k _ _ ⟨h, hk, hp⟩ => ⟨hfl h, ?_, hp⟩,
+    fun _ _ h => (ExitAs.none h).elim⟩
   · have hf := flag_of_fails hfs h
     have hr := hcodes (by simpa [Eff.inst] using hc)
     simp [Eff.ofInvoke, Eff.inst, hf, hr]
@@ -630,12 +775,32 @@ theorem Eff.decide_inst_eq (c : LExpr) (ε : Eff) (s : List (String × LExpr)) :
 
 /-- **A run's unary guarantees do not read the decision label** (#524). -/
 theorem UOk.of_decide {pc c : LExpr} {ε : Eff} {s : List (String × LExpr)} {P : Val → Prop}
-    {w : World H} {r : Run H}
-    (h : UOk (Allowed p pc (ε.inst s)) P (FailsAs p pc (ε.inst s)) w r) :
-    UOk (Allowed p pc ((ε.decide c).inst s)) P (FailsAs p pc ((ε.decide c).inst s)) w r := by
+    {X : ExitCtx} {w : World H} {r : Run H}
+    (h : UOk (Allowed p pc (ε.inst s)) P (FailsAsX p pc (ε.inst s) X) w r) :
+    UOk (Allowed p pc ((ε.decide c).inst s)) P (FailsAsX p pc ((ε.decide c).inst s) X) w r := by
   obtain ⟨d, hd⟩ := Eff.decide_inst_eq c ε s
   rw [hd]
   exact h
+
+/-- A loop's state types, instantiated, are as many as its binders. -/
+theorem loop_len (σ : List (String × LTy)) (st : List (String × LTy)) :
+    ((st.map Prod.snd).map (LTy.lsubst p.recordDeep σ)).length = st.length := by
+  simp
+
+/-- An exit in the body of a loop over the state `st` carries a state of its declared types. -/
+theorem exitAs_state {pc : LExpr} {ε : Eff} (σ : List (String × LTy))
+    (st : List (String × LTy)) :
+    ∀ b vs, (FailsAsX p pc ε (p.xsub σ (some (st.map Prod.snd)))).exit b vs →
+      LValsTy p vs ((st.map Prod.snd).map (LTy.lsubst p.recordDeep σ))
+  | _, _, ⟨S, σ', hX, _, hvs⟩ => by
+    simp only [Program.xsub, Option.map, Option.some.injEq, Prod.mk.injEq] at hX
+    obtain ⟨rfl, rfl⟩ := hX
+    exact hvs
+
+/-- A run outside a loop's body keeps to the conditions of a loop's iterations. -/
+theorem FailsAsX.none_le_loop {pc : LExpr} {ε : Eff} {X : ExitCtx}
+    (ts : List LTy) : (FailsAsX p pc ε none).Le ((FailsAsX p pc ε X).loop p ts) :=
+  ⟨id, fun _ _ _ => id, fun _ _ h => (ExitAs.none h).elim⟩
 
 /-- **The unary half, at every ground instance.** A run of a body the labeled typing accepts,
 in an environment of the instance of its context, keeps to the instance of its typing. -/
@@ -644,12 +809,14 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
       {t : LTy} {ε : Eff}, GroundSubst σ → LEnvTy p env (Γ.lsub p.recordDeep σ) →
       LRhsTy p E Γ pc r t ε →
       UGood p (pc.inst (p.sd σ)) (t.lsubst p.recordDeep σ) (ε.inst (p.sd σ)) w (evalRhs H n p w env r)) ∧
-    (∀ {σ : List (String × LTy)} {w : World H} {env : Env} {Γ : LCtx} {E : List String} {pc : LExpr} {e : Expr}
+    (∀ {σ : List (String × LTy)} {w : World H} {env : Env} {Γ : LCtx} {E : List String}
+      {X : Option (List LTy)} {pc : LExpr} {e : Expr}
       {t : LTy} {ε : Eff}, GroundSubst σ → LEnvTy p env (Γ.lsub p.recordDeep σ) →
-      LExprTy p E Γ pc e t ε →
-      UGood p (pc.inst (p.sd σ)) (t.lsubst p.recordDeep σ) (ε.inst (p.sd σ)) w (eval H n p w env e))
-  | 0 => ⟨fun _ _ _ => by simp [evalRhs, UGood, UOk, URes, WEff],
-      fun _ _ _ => by simp [eval, UGood, UOk, URes, WEff]⟩
+      LExprTyX p E X Γ pc e t ε →
+      UGoodX p (pc.inst (p.sd σ)) (t.lsubst p.recordDeep σ) (ε.inst (p.sd σ)) (p.xsub σ X) w
+        (eval H n p w env e))
+  | 0 => ⟨fun _ _ _ => ⟨(fun _ h => nomatch h), trivial, WEff.self _ _⟩,
+      fun _ _ _ => ⟨(fun _ h => nomatch h), trivial, WEff.self _ _⟩⟩
   | n + 1 => by
     obtain ⟨ihR, ihE⟩ := unary_soundR hwf hb1 h4 n
     have hdst : ∀ po ∈ p.policies, po.dst.top.SymFree := fun po h => (hb1.dst po h).1.top_symFree
@@ -1092,6 +1259,7 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
         | stuck | outOfFuel | aborted =>
           exact ⟨fun ev h => by obtain ⟨k, rfl⟩ := htr ev h; trivial, trivial, WEff.self _ _⟩
         | raised k c ps => exact absurd rfl (hnr k c ps)
+        | exit b vs => simp [GoodX] at hgood
       | map hxs hf hte hb =>
         obtain ⟨xv, hxv, hxt⟩ := latom_ltypedσ henv hxs
         obtain ⟨fv, hfv, hft⟩ := latom_ltypedσ henv hf
@@ -1214,7 +1382,7 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
             exact uok_done (.tuple (.cons (.list (LValsAll.set _ hitems
               (LValTy.flow hvt (Flow.lsubst _ _ hflow)))) (.cons .unit .nil)))
           · exact ⟨fun _ h => by simp [abort] at h, by simp [abort, URes], WEff.self _ _⟩
-    · intro σ w env Γ E pc e t ε hσ henv he
+    · intro σ w env Γ E X pc e t ε hσ henv he
       have hpc0 : ∀ x : LExpr, p.le (pc.inst (p.sd σ)) ((pc.join x).inst (p.sd σ)) :=
         fun x => le_inst_join_left _ pc x
       cases he with
@@ -1224,7 +1392,8 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
       | letR hr hflow hb _ =>
         simp only [eval]
         refine andThen_uok (UOk.mono allowed_union_left_inst
-          (fun v hv => LValTy.flow hv (Flow.lsubst _ _ hflow)) FailsAs.union_left_inst
+          (fun v hv => LValTy.flow hv (Flow.lsubst _ _ hflow))
+          ((FailsAs.le_x _).trans FailsAs.union_left_inst)
           (ihR hσ henv hr)) (fun w' v hv => ?_)
         exact UOk.mono (allowed_union_right_inst (hpc0 _)) (fun _ h => h)
           (FailsAs.union_right_inst (hpc0 _)) (ihE (w := w') hσ (.cons hv henv) hb)
@@ -1301,12 +1470,12 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
                 exact LExpr.join_le (LExpr.le_join_left _ _) (LExpr.le_join_right _ _))⟩,
           by simp [Eff.inst], _, _, hs, hf, hpay⟩, WEff.self _ _⟩
       | unreachable _ => exact ⟨fun _ h => by simp [eval] at h, by simp [eval, URes], WEff.self _ _⟩
-      | @withH _ _ o f fn body t ε hl hfn hb =>
+      | @withH _ _ _ o f fn body t ε hl hfn hb =>
         simp only [eval]
         exact UOk.mono (Allowed.mono (LExpr.le_refl _) (withOf_emits hwf hl hfn) (HostFx.Le.refl _)
             (fun x h => by simp only [Eff.inst, Eff.withOf] at h ⊢; exact h)) (fun _ h => h)
           (FailCond.Le.refl _) (ihE hσ (.cons .text henv) hb)
-      | @caseSum _ _ scrutinee kind ctor binders thenE elseE ls sm fs t₁ t₂ s ε₁ ε₂ hsc hsm hf hlen hth hel h₁ h₂ _ =>
+      | @caseSum _ _ _ scrutinee kind ctor binders thenE elseE ls sm fs t₁ t₂ s ε₁ ε₂ hsc hsm hf hlen hth hel h₁ h₂ _ =>
         apply UOk.of_decide
         obtain ⟨v, hv, hvt⟩ := latom_ltypedσ henv hsc
         simp only [LTy.lsubst] at hvt
@@ -1334,7 +1503,7 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
             exact UOk.mono (allowed_union_right_inst (hpc0 _))
               (fun _ h => LValTy.lsubst_raise (LValTy.flow h (Flow.lsubst _ _ h₂)))
               (FailsAs.union_right_inst (hpc0 _)) (ihE hσ henv hel)
-      | @caseSumT _ _ scrutinee kind ctor binders thenE elseE ls sm fs t₁ t₂ ts ε₁ ε₂ hsc hsm hf hlen hth hel h₁ h₂ _ _ =>
+      | @caseSumT _ _ _ scrutinee kind ctor binders thenE elseE ls sm fs t₁ t₂ ts ε₁ ε₂ hsc hsm hf hlen hth hel h₁ h₂ _ _ =>
         apply UOk.of_decide
         obtain ⟨v, hv, hvt⟩ := latom_ltypedσ henv hsc
         simp only [LTy.lsubst] at hvt
@@ -1362,7 +1531,7 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
             exact UOk.mono (allowed_union_right_inst (hpc0 _))
               (fun _ h => LValTy.flow h (Flow.lsubst _ _ h₂))
               (FailsAs.union_right_inst (hpc0 _)) (ihE hσ henv hel)
-      | @attempt _ _ body t ε hb hr =>
+      | @attempt _ _ _ body t ε hb hr =>
         have h := ihE (w := w) hσ henv hb
         simp only [eval]
         revert h
@@ -1377,7 +1546,8 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
         | stuck => exact ⟨hev, trivial, h.2.2⟩
         | outOfFuel | aborted => exact ⟨hev, trivial, h.2.2⟩
         | raised k c ps => exact absurd h.2.1.2.1 (by simp [Eff.inst, hr])
-      | @attemptK _ _ kind body t ε hb hcd hra =>
+        | exit _ _ => exact (ExitAs.none h.2.1).elim
+      | @attemptK _ _ _ kind body t ε hb hcd hra =>
         have h := ihE (w := w) hσ henv hb
         simp only [eval]
         revert h
@@ -1398,7 +1568,8 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
           dsimp only
           rw [if_pos rfl]
           exact ⟨hev, .err (.variant hs hf hps), h.2.2⟩
-      | @handleK _ _ kind body x handler _ _ _ ε₁ ε₂ hb hcd hra hh h₁ h₂ _ =>
+        | exit _ _ => exact (ExitAs.none h.2.1).elim
+      | @handleK _ _ _ kind body x handler _ _ _ ε₁ ε₂ hb hcd hra hh h₁ h₂ _ =>
         apply UOk.of_decide
         have h := ihE (w := w) hσ henv hb
         simp only [eval]
@@ -1430,12 +1601,14 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
             cases r' <;> simp only [URes] at h2 ⊢
             · exact LValTy.lsubst_raise (LValTy.flow h2 (Flow.lsubst _ _ h₂))
             · exact (FailsAs.mono_pc (hpc0 _)).1 h2
-            · exact (FailsAs.mono_pc (hpc0 _)).2 _ _ _ h2
+            · exact (FailsAs.mono_pc (hpc0 _)).2.1 _ _ _ h2
+            · exact (ExitAs.none h2).elim
         | failed c => exact absurd h.2.1.2 (by simp [Eff.inst, hcd])
         | ok v => exact ⟨hev, LValTy.lsubst_raise (LValTy.flow h.2.1 (Flow.lsubst _ _ h₁)), h.2.2⟩
         | stuck => exact ⟨hev, trivial, h.2.2⟩
         | outOfFuel | aborted => exact ⟨hev, trivial, h.2.2⟩
-      | @handleKT _ _ kind body x handler _ _ _ ε₁ ε₂ hb hcd hra hh h₁ h₂ _ _ =>
+        | exit _ _ => exact (ExitAs.none h.2.1).elim
+      | @handleKT _ _ _ kind body x handler _ _ _ ε₁ ε₂ hb hcd hra hh h₁ h₂ _ _ =>
         apply UOk.of_decide
         have h := ihE (w := w) hσ henv hb
         simp only [eval]
@@ -1467,12 +1640,14 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
             cases r' <;> simp only [URes] at h2 ⊢
             · exact LValTy.flow h2 (Flow.lsubst _ _ h₂)
             · exact (FailsAs.mono_pc (hpc0 _)).1 h2
-            · exact (FailsAs.mono_pc (hpc0 _)).2 _ _ _ h2
+            · exact (FailsAs.mono_pc (hpc0 _)).2.1 _ _ _ h2
+            · exact (ExitAs.none h2).elim
         | failed c => exact absurd h.2.1.2 (by simp [Eff.inst, hcd])
         | ok v => exact ⟨hev, LValTy.flow h.2.1 (Flow.lsubst _ _ h₁), h.2.2⟩
         | stuck => exact ⟨hev, trivial, h.2.2⟩
         | outOfFuel | aborted => exact ⟨hev, trivial, h.2.2⟩
-      | @handle _ _ body x handler _ _ _ ε₁ ε₂ hb hr hh h₁ h₂ _ =>
+        | exit _ _ => exact (ExitAs.none h.2.1).elim
+      | @handle _ _ _ body x handler _ _ _ ε₁ ε₂ hb hr hh h₁ h₂ _ =>
         apply UOk.of_decide
         have h := ihE (w := w) hσ henv hb
         simp only [eval]
@@ -1500,11 +1675,13 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
             cases r' <;> simp only [URes] at h2 ⊢
             · exact LValTy.lsubst_raise (LValTy.flow h2 (Flow.lsubst _ _ h₂))
             · exact (FailsAs.mono_pc (hpc0 _)).1 h2
-            · exact (FailsAs.mono_pc (hpc0 _)).2 _ _ _ h2
+            · exact (FailsAs.mono_pc (hpc0 _)).2.1 _ _ _ h2
+            · exact (ExitAs.none h2).elim
         | ok v => exact ⟨hev, LValTy.lsubst_raise (LValTy.flow h.2.1 (Flow.lsubst _ _ h₁)), h.2.2⟩
         | stuck => exact ⟨hev, trivial, h.2.2⟩
         | outOfFuel | aborted => exact ⟨hev, trivial, h.2.2⟩
         | raised k c ps => exact absurd h.2.1.2.1 (by simp [Eff.inst, hr])
+        | exit _ _ => exact (ExitAs.none h.2.1).elim
       | iteT hc ht he h₁ h₂ _ _ =>
         apply UOk.of_decide
         obtain ⟨v, hv, hvt⟩ := latom_ltypedσ henv hc
@@ -1554,7 +1731,7 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
           exact UOk.mono (allowed_union_right_inst (hpc0 _))
             (fun _ h => LValTy.flow h (Flow.lsubst _ _ h₂))
             (FailsAs.union_right_inst (hpc0 _)) (ihE hσ (.cons (LValTy.lsubst_raise hw) henv) herr)
-      | @handleT _ _ body x handler _ _ _ ε₁ ε₂ hb hr hh h₁ h₂ _ _ =>
+      | @handleT _ _ _ body x handler _ _ _ ε₁ ε₂ hb hr hh h₁ h₂ _ _ =>
         apply UOk.of_decide
         have h := ihE (w := w) hσ henv hb
         simp only [eval]
@@ -1582,12 +1759,14 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
             cases r' <;> simp only [URes] at h2 ⊢
             · exact LValTy.flow h2 (Flow.lsubst _ _ h₂)
             · exact (FailsAs.mono_pc (hpc0 _)).1 h2
-            · exact (FailsAs.mono_pc (hpc0 _)).2 _ _ _ h2
+            · exact (FailsAs.mono_pc (hpc0 _)).2.1 _ _ _ h2
+            · exact (ExitAs.none h2).elim
         | ok v => exact ⟨hev, LValTy.flow h.2.1 (Flow.lsubst _ _ h₁), h.2.2⟩
         | stuck => exact ⟨hev, trivial, h.2.2⟩
         | outOfFuel | aborted => exact ⟨hev, trivial, h.2.2⟩
         | raised k c ps => exact absurd h.2.1.2.1 (by simp [Eff.inst, hr])
-      | @letTuple _ _ bs value body ts l _ _ hv hflows _ hb =>
+        | exit _ _ => exact (ExitAs.none h.2.1).elim
+      | @letTuple _ _ _ bs value body ts l _ _ hv hflows _ hb =>
         obtain ⟨v, hv', hvt⟩ := latom_ltypedσ henv hv
         simp only [LTy.lsubst] at hvt
         cases hvt with
@@ -1602,7 +1781,7 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
               (by rw [LCtx.lsub_snd]; exact hbs) henv
             simpa [bindParams, LCtx.lsub, List.map_map, Function.comp_def] using this
           exact ihE hσ henv' hb
-      | @loopList _ _ xs x xty st init body te ls ts tb ε hxs hx _ hi hflows _ hb hbt _ =>
+      | @loopList _ _ _ xs x xty st init body te ls ts tb ε hxs hx _ hi hflows _ hb hbt _ =>
         apply UOk.of_decide
         obtain ⟨xv, hxv, hxt⟩ := latom_ltypedσ henv hxs
         simp only [LTy.lsubst] at hxt
@@ -1612,8 +1791,11 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
           have hst0 := LValsTy.flowsσ hsvt hflows
           simp only [eval, sourceVals, hxv, hsv]
           rw [ite_eq_left (by rw [LValsTy.length hst0]; simp)]
-          refine UOk.mono (fun _ h => h) (fun r hr => ?_) (FailCond.Le.refl _) (walkLoop_uok (a := te.lsubst p.recordDeep σ)
-            (fun w v st' hv hst' => ?_) w hst0 (LValsAll.mem hitems))
+          rw [← loop_len (p := p) σ st]
+          refine UOk.mono (fun _ h => h) (fun r hr => ?_) ⟨id, fun _ _ _ => id, fun _ _ => id⟩
+            (endLoop_uok (fun _ vs => ExitAs p (pc.inst (p.sd σ)) (p.xsub σ X) vs)
+              (walkLoop_uok (a := te.lsubst p.recordDeep σ) (fun w v st' hv hst' => ?_) (exitAs_state σ st)
+                w hst0 (LValsAll.mem hitems)))
           · obtain ⟨st', rfl, hst'⟩ := hr
             simp only [LTy.lsubst, LTy.lsubsts_eq]
             exact .tuple hst'
@@ -1632,7 +1814,7 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
             simp only [LTy.lsubst, LTy.lsubsts_eq] at this
             cases this with
             | tuple h => exact ⟨_, rfl, h⟩
-      | @loopRange _ _ low high inc x xty st init body l₁ l₂ ts tb ε hlo hhi hx _ hi hflows _ hb hbt _ =>
+      | @loopRange _ _ _ low high inc x xty st init body l₁ l₂ ts tb ε hlo hhi hx _ hi hflows _ hb hbt _ =>
         apply UOk.of_decide
         obtain ⟨lv, hlv, hlt⟩ := latom_ltypedσ henv hlo
         obtain ⟨hv₀, hhv, hht⟩ := latom_ltypedσ henv hhi
@@ -1645,9 +1827,11 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
             have hst0 := LValsTy.flowsσ hsvt hflows
             simp only [eval, sourceVals, hlv, hhv, hsv]
             rw [ite_eq_left (by rw [LValsTy.length hst0]; simp)]
-            refine UOk.mono (fun _ h => h) (fun r hr => ?_) (FailCond.Le.refl _)
-              (walkLoop_uok (a := (LTy.int (l₁.join l₂)).lsubst p.recordDeep σ)
-                (fun w v st' hv hst' => ?_) w hst0 (fun v hv => ?_))
+            rw [← loop_len (p := p) σ st]
+            refine UOk.mono (fun _ h => h) (fun r hr => ?_) ⟨id, fun _ _ _ => id, fun _ _ => id⟩
+              (endLoop_uok (fun _ vs => ExitAs p (pc.inst (p.sd σ)) (p.xsub σ X) vs)
+                (walkLoop_uok (a := (LTy.int (l₁.join l₂)).lsubst p.recordDeep σ)
+                  (fun w v st' hv hst' => ?_) (exitAs_state σ st) w hst0 (fun v hv => ?_)))
             · obtain ⟨st', rfl, hst'⟩ := hr
               simp only [LTy.lsubst, LTy.lsubsts_eq]
               exact .tuple hst'
@@ -1670,6 +1854,82 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
               obtain ⟨_, _, rfl⟩ := hv
               simp only [LTy.lsubst]
               exact .int
+      | @exit _ _ stop state ts S s hst hfl hle _ =>
+        obtain ⟨vs, hvs, hvst⟩ := latoms_ltypedσ henv hst
+        simp only [eval, hvs]
+        exact ⟨fun _ h => (nomatch h), ⟨_, _, rfl, LExpr.le_inst _ hle, LValsTy.flowsσ hvst hfl⟩,
+          WEff.self _ _⟩
+      | @loopUntil _ _ _ cond st init body ts ld lc tb εc ε hi hflows hst _ hc _ hb hbt _ _ _ =>
+        apply UOk.of_decide
+        obtain ⟨sv, hsv, hsvt⟩ := latoms_ltypedσ henv hi
+        have hst0 := LValsTy.flowsσ hsvt hflows
+        simp only [eval, hsv]
+        rw [ite_eq_left (by rw [LValsTy.length hst0]; simp)]
+        have henvS : ∀ {st' : List Val},
+            LValsTy p st' ((st.map Prod.snd).map (LTy.lsubst p.recordDeep σ)) →
+            LEnvTy p (bindParams st st' env) (LCtx.lsub p.recordDeep σ (st ++ Γ)) := by
+          intro st' hst'
+          rw [LCtx.lsub_append]
+          have := bindParams_ltyped (params := LCtx.lsub p.recordDeep σ st)
+            (by rw [LCtx.lsub_snd]; exact hst') henv
+          simpa [bindParams, LCtx.lsub, List.map_map, Function.comp_def] using this
+        rw [← loop_len (p := p) σ st]
+        refine UOk.mono (fun _ h => h) (fun r hr => ?_) ⟨id, fun _ _ _ => id, fun _ _ => id⟩
+          (endLoop_uok (F := FailsAsX p (pc.inst (p.sd σ)) ((εc.union ε).inst (p.sd σ))
+              (p.xsub σ (some (st.map Prod.snd))))
+            (fun _ vs => ExitAs p (pc.inst (p.sd σ)) (p.xsub σ X) vs)
+            (walkUntil_uok (fun w st' hst' => ?_) (fun w st' hst' => ?_) (exitAs_state σ st) n w hst0))
+        · obtain ⟨st', rfl, hst'⟩ := hr
+          simp only [LTy.lsubst, LTy.lsubsts_eq]
+          exact .tuple hst'
+        · refine UOk.mono (Allowed.mono (hpc0 _) union_op_left union_host_left
+            (fun x h => union_rels_left x h)) (fun r hr => ?_)
+            (((FailsAs.mono_pc (hpc0 _)).trans FailsAs.union_left_inst).trans
+              (FailsAsX.none_le_loop _))
+            (ihE (w := w) hσ (henvS hst') hc)
+          simp only [LTy.lsubst] at hr
+          cases hr with
+          | bool => exact ⟨_, rfl⟩
+        · refine UOk.mono (allowed_union_right_inst (hpc0 _)) (fun r hr => ?_)
+            (FailsAs.union_right_inst (hpc0 _)) (ihE (w := w) hσ (henvS hst') hb)
+          have := LValTy.flow hr (Flow.lsubst _ _ hbt)
+          simp only [LTy.lsubst, LTy.lsubsts_eq] at this
+          cases this with
+          | tuple h => exact ⟨_, rfl, h⟩
+      | @loopEver _ _ _ site st init body os o ts tb to ε εo hi hflows hst hb hbt _ hos ho _ hot =>
+        obtain ⟨sv, hsv, hsvt⟩ := latoms_ltypedσ henv hi
+        have hst0 := LValsTy.flowsσ hsvt hflows
+        simp only [eval, hsv]
+        rw [ite_eq_left (by rw [LValsTy.length hst0]; simp)]
+        have henvS : ∀ {bs : List (String × LTy)} {st' : List Val}, bs.map Prod.snd = st.map Prod.snd →
+            LValsTy p st' ((st.map Prod.snd).map (LTy.lsubst p.recordDeep σ)) →
+            LEnvTy p (bindParams bs st' env) (LCtx.lsub p.recordDeep σ (bs ++ Γ)) := by
+          intro bs st' hbs hst'
+          rw [LCtx.lsub_append]
+          have := bindParams_ltyped (params := LCtx.lsub p.recordDeep σ bs)
+            (by rw [LCtx.lsub_snd, hbs]; exact hst') henv
+          simpa [bindParams, LCtx.lsub, List.map_map, Function.comp_def] using this
+        rw [← loop_len (p := p) σ st]
+        refine finishEver_uok (ts := (st.map Prod.snd).map (LTy.lsubst p.recordDeep σ))
+          (fun w st' hst' => ?_) hst0
+          (UOk.mono (fun _ h => h) (fun r hr => hr) ⟨id, fun _ _ _ => id, fun _ _ => id⟩
+            (endLoop_uok (F := FailsAsX p (pc.inst (p.sd σ)) ((ε.union εo).inst (p.sd σ))
+                (p.xsub σ (some (st.map Prod.snd))))
+              (fun _ vs => ExitAs p (pc.inst (p.sd σ)) (p.xsub σ X) vs)
+              (walkEver_uok (fun w st' hst' => ?_) (exitAs_state σ st) n 0 w hst0)))
+        · split
+          · refine UOk.mono (allowed_union_right_inst (LExpr.le_refl _)) (fun r hr => ?_)
+              ((FailsAs.union_right_inst (LExpr.le_refl _)).trans (FailsAs.le_x _))
+              (ihE (w := w) hσ (henvS hos hst') ho)
+            exact LValTy.flow hr (Flow.lsubst _ _ hot)
+          · exact uok_stuck
+        · refine UOk.mono (Allowed.mono (LExpr.le_refl _) union_op_left union_host_left
+            (fun x h => union_rels_left x h)) (fun r hr => ?_) FailsAs.union_left_inst
+            (ihE (w := w) hσ (henvS rfl hst') hb)
+          have := LValTy.flow hr (Flow.lsubst _ _ hbt)
+          simp only [LTy.lsubst, LTy.lsubsts_eq] at this
+          cases this with
+          | tuple h => exact ⟨_, rfl, h⟩
 
 /-- **The unary half without policies**, as M3 and M4 state it: `unary_soundR`, whose
 restrictions hold when there is no policy. -/
@@ -1682,6 +1942,7 @@ theorem unary_sound (hwf : p.LWellFormed) (hpol : p.policies = []) (h4 : H.RespT
       {t : LTy} {ε : Eff}, GroundSubst σ → LEnvTy p env (Γ.lsub p.recordDeep σ) →
       LExprTy p E Γ pc e t ε →
       UGood p (pc.inst (p.sd σ)) (t.lsubst p.recordDeep σ) (ε.inst (p.sd σ)) w (eval H n p w env e)) :=
-  unary_soundR hwf (.of_nil hpol) h4
+  fun n => ⟨(unary_soundR hwf (.of_nil hpol) h4 n).1,
+    fun hσ henv he => (unary_soundR hwf (.of_nil hpol) h4 n).2 hσ henv he⟩
 
 end Una.F1

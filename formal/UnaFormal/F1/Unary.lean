@@ -239,26 +239,31 @@ theorem lfield_typed {t : LTy} :
 /-! ### Runs that keep to their typing -/
 
 /-- What a run's failure must satisfy (#512): a code failure `code`, and a failure with a
-payload `raised`, of its kind, variant and payload. -/
+payload `raised`, of its kind, variant and payload; and what an exit of a loop's iteration must
+satisfy (ADR 0116 rule 20), of its tag and state. -/
 structure FailCond where
   code : Prop
   raised : String → Nat → List Val → Prop
+  exit : Bool → List Val → Prop
 
-/-- One condition on failures implies another, for both forms of failure. -/
+/-- One condition on failures implies another, for both forms of failure, and for exits. -/
 def FailCond.Le (F F' : FailCond) : Prop :=
-  (F.code → F'.code) ∧ ∀ k c ps, F.raised k c ps → F'.raised k c ps
+  (F.code → F'.code) ∧ (∀ k c ps, F.raised k c ps → F'.raised k c ps) ∧
+    ∀ b vs, F.exit b vs → F'.exit b vs
 
-theorem FailCond.Le.refl (F : FailCond) : F.Le F := ⟨id, fun _ _ _ => id⟩
+theorem FailCond.Le.refl (F : FailCond) : F.Le F := ⟨id, fun _ _ _ => id, fun _ _ => id⟩
 
 theorem FailCond.Le.trans {F G K : FailCond} (h₁ : F.Le G) (h₂ : G.Le K) : F.Le K :=
-  ⟨fun h => h₂.1 (h₁.1 h), fun k c ps h => h₂.2 k c ps (h₁.2 k c ps h)⟩
+  ⟨fun h => h₂.1 (h₁.1 h), fun k c ps h => h₂.2.1 k c ps (h₁.2.1 k c ps h),
+    fun b vs h => h₂.2.2 b vs (h₁.2.2 b vs h)⟩
 
-/-- An outcome: `P` of a value, `F` of a failure. A stuck run is T1's, and a run out of fuel
-says nothing. -/
+/-- An outcome: `P` of a value, `F` of a failure or an exit. A stuck run is T1's, and a run out
+of fuel says nothing. -/
 abbrev URes (P : Val → Prop) (F : FailCond) : Res → Prop
   | .ok v => P v
   | .failed _ => F.code
   | .raised k c ps => F.raised k c ps
+  | .exit b vs => F.exit b vs
   | .stuck => True
   | .outOfFuel | .aborted => True
 
@@ -311,7 +316,8 @@ theorem UOk.mono {A A' : Event → Prop} {P P' : Val → Prop} {F F' : FailCond}
   cases r <;> simp only [URes] at h2 ⊢
   · exact hP _ h2
   · exact hF.1 h2
-  · exact hF.2 _ _ _ h2
+  · exact hF.2.1 _ _ _ h2
+  · exact hF.2.2 _ _ h2
 
 /-- A ghost in front of a run that keeps to `A` (#561): the ghost is allowed, and it changes
 nothing in the world. -/
@@ -344,6 +350,7 @@ theorem andThen_uok {A : Event → Prop} {P Q : Val → Prop} {F : FailCond} {w 
     · exact h.1 ev hev
   | failed c => exact h1
   | raised _ _ _ => exact h1
+  | exit _ _ => exact h1
   | stuck => exact h1
   | outOfFuel | aborted => exact h1
 
@@ -369,14 +376,57 @@ abbrev Fails (p : Program) (pc : LExpr) (ε : Eff) : Prop := ∃ l, ε.fails = s
 def PayTy (p : Program) (k : String) (c : Nat) (ps : List Val) : Prop :=
   ∃ sm fs, p.sum k = some sm ∧ sm.variants[c]? = some fs ∧ LValsTy p ps fs
 
-/-- The failures a typing with effects `ε` allows at `pc` (#512): above `pc`, a code only when
-`ε` may fail with one, and a payload only of a kind `ε` raises, typed by its variant. -/
-def FailsAs (p : Program) (pc : LExpr) (ε : Eff) : FailCond :=
-  ⟨Fails p pc ε ∧ ε.codes = true, fun k c ps => Fails p pc ε ∧ k ∈ ε.raises ∧ PayTy p k c ps⟩
+/-- What instantiation by `σ` gives the symbolic labels: `ℓ*` of each type argument. -/
+def Program.sd (p : Program) (σ : List (String × LTy)) : List (String × LExpr) :=
+  σ.map (fun q => (q.1, q.2.deep p.recordDeep))
+
+/-- The loop of a body's exits (ADR 0116 rule 20), as the unary and binary halves read it: the
+state's declared types, and the ground instance of the typing. -/
+abbrev ExitCtx := Option (List LTy × List (String × LTy))
+
+/-- The loop `X` of a typing at the ground instance `σ`. -/
+def Program.xsub (_ : Program) (σ : List (String × LTy)) (X : Option (List LTy)) : ExitCtx :=
+  X.map fun S => (S, σ)
+
+/-- What an exit must satisfy (ADR 0116 rule 20): in the body of a loop whose state has the
+declared types `S`, at the ground instance `σ`, it runs at the public program counter, and it
+carries a state of the types' instances; outside a loop's body (`none`), no exit happens. -/
+def ExitAs (p : Program) (pc : LExpr) (X : ExitCtx) (vs : List Val) : Prop :=
+  ∃ S σ, X = some (S, σ) ∧ p.le pc (LExpr.bot.inst (p.sd σ)) ∧
+    LValsTy p vs (S.map (LTy.lsubst p.recordDeep σ))
+
+theorem ExitAs.none {pc : LExpr} {vs : List Val} : ¬ ExitAs p pc none vs :=
+  fun ⟨_, _, h, _⟩ => nomatch h
+
+theorem ExitAs.mono {pc pc' : LExpr} {X : ExitCtx} {vs : List Val} (hpc : p.le pc pc')
+    (h : ExitAs p pc' X vs) : ExitAs p pc X vs :=
+  let ⟨S, σ, hX, hle, hvs⟩ := h
+  ⟨S, σ, hX, LExpr.le_trans hpc hle, hvs⟩
+
+/-- The failures a typing with effects `ε` allows at `pc`, in the body of the loop `X` (#512):
+above `pc`, a code only when `ε` may fail with one, and a payload only of a kind `ε` raises, typed
+by its variant; and exits as `ExitAs` says (ADR 0116 rule 20). -/
+def FailsAsX (p : Program) (pc : LExpr) (ε : Eff) (X : ExitCtx) : FailCond :=
+  ⟨Fails p pc ε ∧ ε.codes = true, fun k c ps => Fails p pc ε ∧ k ∈ ε.raises ∧ PayTy p k c ps,
+    fun _ vs => ExitAs p pc X vs⟩
+
+/-- The failures a typing with effects `ε` allows at `pc` outside a loop's body: no exit. -/
+abbrev FailsAs (p : Program) (pc : LExpr) (ε : Eff) : FailCond := FailsAsX p pc ε none
+
+/-- A run from `w` that keeps to a typing at `pc` with type `t` and effects `ε`, in the body of
+the loop `X`. -/
+abbrev UGoodX (p : Program) (pc : LExpr) (t : LTy) (ε : Eff) (X : ExitCtx) (w : World H)
+    (run : Run H) : Prop :=
+  UOk (Allowed p pc ε) (fun v => LValTy p v t) (FailsAsX p pc ε X) w run
 
 /-- A run from `w` that keeps to a typing at `pc` with type `t` and effects `ε`. -/
 abbrev UGood (p : Program) (pc : LExpr) (t : LTy) (ε : Eff) (w : World H) (run : Run H) : Prop :=
-  UOk (Allowed p pc ε) (fun v => LValTy p v t) (FailsAs p pc ε) w run
+  UGoodX p pc t ε none w run
+
+/-- A run outside a loop's body keeps to its typing in one. -/
+theorem FailsAs.le_x {pc : LExpr} {ε : Eff} (X : ExitCtx) :
+    (FailsAs p pc ε).Le (FailsAsX p pc ε X) :=
+  ⟨id, fun _ _ _ => id, fun _ _ h => (ExitAs.none h).elim⟩
 
 theorem Allowed.mono {pc pc' : LExpr} {ε ε' : Eff} (hpc : p.le pc pc')
     (ho : ε'.emits p = true → ε.emits p = true) (hg : HostFx.Le ε'.host ε.host)
@@ -474,9 +524,6 @@ theorem bound_fails {pc pc' : LExpr} {o : Bool} {g : HostFx} {f : Bool} (hb : p.
     (hpc : p.le pc pc') (hf : f = true) : Fails p pc (Eff.ofFn o g f) :=
   ⟨.bot, by simp [Eff.ofFn, hf], LExpr.le_trans hpc (hb.2.2.2.2 hf).1⟩
 
-/-- What instantiation by `σ` gives the symbolic labels: `ℓ*` of each type argument. -/
-def Program.sd (p : Program) (σ : List (String × LTy)) : List (String × LExpr) :=
-  σ.map (fun q => (q.1, q.2.deep p.recordDeep))
 
 /-- Effects instantiated: the labels of failures. -/
 def Eff.inst (s : List (String × LExpr)) (ε : Eff) : Eff :=
@@ -501,7 +548,7 @@ theorem applyWith_uok {run : World H → Env → Expr → Run H} {fv : Val} {vs 
       LExprTy p E Γ .bot e t ε →
       UGood p (LExpr.bot.inst (p.sd σ)) (t.lsubst p.recordDeep σ) (ε.inst (p.sd σ)) w (run w env e))
     (hf : LValTy p fv (.fn ps r o g f lf)) (hvs : LValsTy p vs ps) (w : World H) :
-    UOk (FnAllowed o g) (fun v => LValTy p v r) ⟨f = true, fun _ _ _ => False⟩ w
+    UOk (FnAllowed o g) (fun v => LValTy p v r) ⟨f = true, fun _ _ _ => False, fun _ _ => False⟩ w
       (applyWith run w fv vs) := by
   cases hf with
   | @closure params _ cenv Γc _ _ _ _ _ _ _ _ _ σc hσ henv hb hfl hrl hrs hps hr ho hg hfs =>
@@ -525,7 +572,7 @@ theorem applyWith_uok {run : World H → Env → Expr → Run H} {fv : Val} {vs 
       | keyUse _ => trivial
     · -- A function value fails with a code only (#512): its body raises no payload.
       refine ⟨fun ⟨⟨l, hl, _⟩, _⟩ => hfs (by simp [Eff.inst] at hl; obtain ⟨l', hl', _⟩ := hl; simp [hl']),
-        fun _ _ _ ⟨_, hk, _⟩ => ?_⟩
+        fun _ _ _ ⟨_, hk, _⟩ => ?_, fun _ _ h => (ExitAs.none h).elim⟩
       simp [Eff.inst, hrs] at hk
 
 end Una.F1

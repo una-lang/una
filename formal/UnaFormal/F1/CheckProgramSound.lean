@@ -90,50 +90,64 @@ theorem _root_.Una.F1.LTy.erase_lowerTop (t : LTy) : t.lowerTop.erase = t.erase 
 
 /-- **Lowering `let` annotations keeps the structural typing** (#510): `ExprTy` reads no
 annotation of a `let`, and `lowerLets` changes nothing else. -/
-theorem _root_.Una.F1.ExprTy.of_lowerLets {p : Program} :
-    ∀ (e : Expr) {ctx : Ctx} {s : Ty}, ExprTy p ctx e.lowerLets s → ExprTy p ctx e s
-  | .letR x t v b, _, _, h => by
-    cases h with | letR hv hb => exact .letR hv (ExprTy.of_lowerLets b hb)
-  | .letE x t v b, _, _, h => by
+theorem _root_.Una.F1.ExprTyX.of_lowerLets {p : Program} :
+    ∀ (e : Expr) {X : Option (List Ty)} {ctx : Ctx} {s : Ty}, ExprTyX p X ctx e.lowerLets s →
+      ExprTyX p X ctx e s
+  | .letR x t v b, _, _, _, h => by
+    cases h with | letR hv hb => exact .letR hv (ExprTyX.of_lowerLets b hb)
+  | .letE x t v b, _, _, _, h => by
     cases h with
-    | letE hv hb => exact .letE (ExprTy.of_lowerLets v hv) (ExprTy.of_lowerLets b hb)
-  | .ite c a b, _, _, h => by
+    | letE hv hb => exact .letE (ExprTyX.of_lowerLets v hv) (ExprTyX.of_lowerLets b hb)
+  | .ite c a b, _, _, _, h => by
     cases h with
-    | ite hc ha hb => exact .ite hc (ExprTy.of_lowerLets a ha) (ExprTy.of_lowerLets b hb)
-  | .caseOption sc n x sm, _, _, h => by
+    | ite hc ha hb => exact .ite hc (ExprTyX.of_lowerLets a ha) (ExprTyX.of_lowerLets b hb)
+  | .caseOption sc n x sm, _, _, _, h => by
     cases h with
     | caseOption hs hn hm =>
-      exact .caseOption hs (ExprTy.of_lowerLets n hn) (ExprTy.of_lowerLets sm hm)
-  | .caseResult sc x ok y er, _, _, h => by
+      exact .caseOption hs (ExprTyX.of_lowerLets n hn) (ExprTyX.of_lowerLets sm hm)
+  | .caseResult sc x ok y er, _, _, _, h => by
     cases h with
     | caseResult hs ho he =>
-      exact .caseResult hs (ExprTy.of_lowerLets ok ho) (ExprTy.of_lowerLets er he)
-  | .attempt b, _, _, h => by
-    cases h with | attempt hb => exact .attempt (ExprTy.of_lowerLets b hb)
-  | .handle b x hd, _, _, h => by
+      exact .caseResult hs (ExprTyX.of_lowerLets ok ho) (ExprTyX.of_lowerLets er he)
+  | .attempt b, _, _, _, h => by
+    cases h with | attempt hb => exact .attempt (ExprTyX.of_lowerLets b hb)
+  | .handle b x hd, _, _, _, h => by
     cases h with
-    | handle hb hh => exact .handle (ExprTy.of_lowerLets b hb) (ExprTy.of_lowerLets hd hh)
-  | .letTuple bs v b, _, _, h => by
+    | handle hb hh => exact .handle (ExprTyX.of_lowerLets b hb) (ExprTyX.of_lowerLets hd hh)
+  | .letTuple bs v b, _, _, _, h => by
     cases h with
-    | letTuple hv hl hb => exact .letTuple hv hl (ExprTy.of_lowerLets b hb)
-  | .loop src x xt st init b, _, _, h => by
+    | letTuple hv hl hb => exact .letTuple hv hl (ExprTyX.of_lowerLets b hb)
+  | .loop src x xt st init b, _, _, _, h => by
     cases h with
-    | loop hs hi hl hb => exact .loop hs hi hl (ExprTy.of_lowerLets b hb)
-  | .caseSum sc i xs a b, _, _, h => by
+    | loop hs hi hl hb => exact .loop hs hi hl (ExprTyX.of_lowerLets b hb)
+  | .caseSum sc i xs a b, _, _, _, h => by
     cases h with
     | caseSum hs hsm hf hl ha hb =>
-      exact .caseSum hs hsm hf hl (ExprTy.of_lowerLets a ha) (ExprTy.of_lowerLets b hb)
-  | .attemptK k b, _, _, h => by
-    cases h with | attemptK hb => exact .attemptK (ExprTy.of_lowerLets b hb)
-  | .handleK k b x hd, _, _, h => by
+      exact .caseSum hs hsm hf hl (ExprTyX.of_lowerLets a ha) (ExprTyX.of_lowerLets b hb)
+  | .attemptK k b, _, _, _, h => by
+    cases h with | attemptK hb => exact .attemptK (ExprTyX.of_lowerLets b hb)
+  | .handleK k b x hd, _, _, _, h => by
     cases h with
-    | handleK hb hh => exact .handleK (ExprTy.of_lowerLets b hb) (ExprTy.of_lowerLets hd hh)
-  | .atom a, _, _, h => h
-  | .fail c, _, _, h => h
-  | .raise k c args, _, _, h => h
-  | .unreachable, _, _, h => h
-  | .withH o f b, _, _, h => by
-    cases h with | withH hb => exact .withH (ExprTy.of_lowerLets b hb)
+    | handleK hb hh => exact .handleK (ExprTyX.of_lowerLets b hb) (ExprTyX.of_lowerLets hd hh)
+  | .atom a, _, _, _, h => h
+  | .fail c, _, _, _, h => h
+  | .raise k c args, _, _, _, h => h
+  | .unreachable, _, _, _, h => h
+  | .withH o f b, _, _, _, h => by
+    cases h with | withH hb => exact .withH (ExprTyX.of_lowerLets b hb)
+  | .exit k st, _, _, _, h => h
+  | .loopUntil c st init b, _, _, _, h => by
+    cases h with
+    | loopUntil hi hl hc hb => exact .loopUntil hi hl (ExprTyX.of_lowerLets c hc) (ExprTyX.of_lowerLets b hb)
+  | .loopEver site st init b os o, _, _, _, h => by
+    cases h with
+    | loopEver hi hl hb hlo ho =>
+      exact .loopEver hi hl (ExprTyX.of_lowerLets b hb) hlo (ExprTyX.of_lowerLets o ho)
+
+/-- `ExprTyX.of_lowerLets` outside a loop's body. -/
+theorem _root_.Una.F1.ExprTy.of_lowerLets {p : Program} (e : Expr) {ctx : Ctx} {s : Ty}
+    (h : ExprTy p ctx e.lowerLets s) : ExprTy p ctx e s :=
+  ExprTyX.of_lowerLets e h
 
 theorem viaTypedAt_sound {p : Program} {fn : Fun} {ps : List (String × LTy)} {body : Expr}
     (h : viaTypedAt p fn ps body = true) : ExprTy p (LCtx.erase ps) body fn.result.erase := by
@@ -376,30 +390,31 @@ mutual
       simp [Rhs.callees] at hg
 
   theorem expr_reach (hwf : p.LWellFormed) :
-      ∀ (e : Expr) {Γ : LCtx} {pc : LExpr} {t : LTy} {ε : Eff}, LExprTy p E Γ pc e t ε →
+      ∀ (e : Expr) {X : Option (List LTy)} {Γ : LCtx} {pc : LExpr} {t : LTy} {ε : Eff},
+        LExprTyX p E X Γ pc e t ε →
         ∀ f ∈ e.callees, ∃ fn, p.find f = some fn ∧ p.FunOk fn
-    | .atom _, _, _, _, _, _, _, hg | .fail _, _, _, _, _, _, _, hg
-    | .raise _ _ _, _, _, _, _, _, _, hg | .unreachable, _, _, _, _, _, _, hg => by
+    | .atom _, _, _, _, _, _, _, _, hg | .fail _, _, _, _, _, _, _, _, hg
+    | .raise _ _ _, _, _, _, _, _, _, _, hg | .unreachable, _, _, _, _, _, _, _, hg => by
       simp [Expr.callees] at hg
-    | .withH _ _ b, _, _, _, _, h, g, hg => by
+    | .withH _ _ b, _, _, _, _, _, h, g, hg => by
       simp only [Expr.callees] at hg
       cases h with
       | withH _ _ hb => exact expr_reach hwf b hb g hg
-    | .letR _ _ v b, _, _, _, _, h, g, hg => by
+    | .letR _ _ v b, _, _, _, _, _, h, g, hg => by
       simp only [Expr.callees, List.mem_append] at hg
       cases h with
       | letR hv _ hb =>
         rcases hg with hg | hg
         · exact rhs_reach hwf v hv g hg
         · exact expr_reach hwf b hb g hg
-    | .letE _ _ v b, _, _, _, _, h, g, hg => by
+    | .letE _ _ v b, _, _, _, _, _, h, g, hg => by
       simp only [Expr.callees, List.mem_append] at hg
       cases h with
       | letE hv _ hb =>
         rcases hg with hg | hg
         · exact expr_reach hwf v hv g hg
         · exact expr_reach hwf b hb g hg
-    | .ite _ t e, _, _, _, _, h, g, hg => by
+    | .ite _ t e, _, _, _, _, _, h, g, hg => by
       simp only [Expr.callees, List.mem_append] at hg
       cases h with
       | ite _ ht he =>
@@ -410,7 +425,7 @@ mutual
         rcases hg with hg | hg
         · exact expr_reach hwf t ht g hg
         · exact expr_reach hwf e he g hg
-    | .caseOption _ t _ e, _, _, _, _, h, g, hg => by
+    | .caseOption _ t _ e, _, _, _, _, _, h, g, hg => by
       simp only [Expr.callees, List.mem_append] at hg
       cases h with
       | caseOption _ ht he =>
@@ -421,7 +436,7 @@ mutual
         rcases hg with hg | hg
         · exact expr_reach hwf t ht g hg
         · exact expr_reach hwf e he g hg
-    | .caseResult _ _ t _ e, _, _, _, _, h, g, hg => by
+    | .caseResult _ _ t _ e, _, _, _, _, _, h, g, hg => by
       simp only [Expr.callees, List.mem_append] at hg
       cases h with
       | caseResult _ ht he =>
@@ -432,7 +447,7 @@ mutual
         rcases hg with hg | hg
         · exact expr_reach hwf t ht g hg
         · exact expr_reach hwf e he g hg
-    | .handle t _ e, _, _, _, _, h, g, hg => by
+    | .handle t _ e, _, _, _, _, _, h, g, hg => by
       simp only [Expr.callees, List.mem_append] at hg
       cases h with
       | handle ht _ he =>
@@ -443,7 +458,7 @@ mutual
         rcases hg with hg | hg
         · exact expr_reach hwf t ht g hg
         · exact expr_reach hwf e he g hg
-    | .handleK _ t _ e, _, _, _, _, h, g, hg => by
+    | .handleK _ t _ e, _, _, _, _, _, h, g, hg => by
       simp only [Expr.callees, List.mem_append] at hg
       cases h with
       | handleK ht _ _ he =>
@@ -454,7 +469,7 @@ mutual
         rcases hg with hg | hg
         · exact expr_reach hwf t ht g hg
         · exact expr_reach hwf e he g hg
-    | .caseSum _ _ _ t e, _, _, _, _, h, g, hg => by
+    | .caseSum _ _ _ t e, _, _, _, _, _, h, g, hg => by
       simp only [Expr.callees, List.mem_append] at hg
       cases h with
       | caseSum _ _ _ _ ht he =>
@@ -465,23 +480,38 @@ mutual
         rcases hg with hg | hg
         · exact expr_reach hwf t ht g hg
         · exact expr_reach hwf e he g hg
-    | .attempt b, _, _, _, _, h, g, hg => by
+    | .attempt b, _, _, _, _, _, h, g, hg => by
       simp only [Expr.callees] at hg
       cases h with
       | attempt hb => exact expr_reach hwf b hb g hg
-    | .attemptK _ b, _, _, _, _, h, g, hg => by
+    | .attemptK _ b, _, _, _, _, _, h, g, hg => by
       simp only [Expr.callees] at hg
       cases h with
       | attemptK hb => exact expr_reach hwf b hb g hg
-    | .letTuple _ _ b, _, _, _, _, h, g, hg => by
+    | .letTuple _ _ b, _, _, _, _, _, h, g, hg => by
       simp only [Expr.callees] at hg
       cases h with
       | letTuple _ _ _ hb => exact expr_reach hwf b hb g hg
-    | .loop _ _ _ _ _ b, _, _, _, _, h, g, hg => by
+    | .loop _ _ _ _ _ b, _, _, _, _, _, h, g, hg => by
       simp only [Expr.callees] at hg
       cases h with
       | loopList _ _ _ _ _ _ hb _ _ => exact expr_reach hwf b hb g hg
       | loopRange _ _ _ _ _ _ _ hb _ _ => exact expr_reach hwf b hb g hg
+    | .exit _ _, _, _, _, _, _, _, _, hg => by simp [Expr.callees] at hg
+    | .loopUntil c _ _ b, _, _, _, _, _, h, g, hg => by
+      simp only [Expr.callees, List.mem_append] at hg
+      cases h with
+      | loopUntil _ _ _ _ hc _ hb _ _ _ _ =>
+        rcases hg with hg | hg
+        · exact expr_reach hwf c hc g hg
+        · exact expr_reach hwf b hb g hg
+    | .loopEver _ _ _ b _ o, _, _, _, _, _, h, g, hg => by
+      simp only [Expr.callees, List.mem_append] at hg
+      cases h with
+      | loopEver _ _ _ hb _ _ _ ho _ _ =>
+        rcases hg with hg | hg
+        · exact expr_reach hwf b hb g hg
+        · exact expr_reach hwf o ho g hg
 end
 
 /-- **No accept without a theorem, formally.** In a program the labeled typing accepts, every

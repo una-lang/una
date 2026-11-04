@@ -136,6 +136,9 @@ mutual
     | .attempt b | .attemptK _ b | .loop _ _ _ _ _ b => b.reach p
     | .handle b _ h | .handleK _ b _ h => pairJoin (b.reach p) (h.reach p)
     | .withH _ f b => pairJoin ([], [f]) (b.reach p)
+    | .exit _ _ => ([], [])
+    | .loopUntil c _ _ b => pairJoin (c.reach p) (b.reach p)
+    | .loopEver _ _ _ b _ o => pairJoin (b.reach p) (o.reach p)
 
 end
 
@@ -187,6 +190,9 @@ mutual
       t.closuresOk p && e.closuresOk p
     | .attempt b | .attemptK _ b | .loop _ _ _ _ _ b | .letTuple _ _ b | .withH _ _ b => b.closuresOk p
     | .handle b _ h | .handleK _ b _ h => b.closuresOk p && h.closuresOk p
+    | .exit _ _ => true
+    | .loopUntil c _ _ b => c.closuresOk p && b.closuresOk p
+    | .loopEver _ _ _ b _ o => b.closuresOk p && o.closuresOk p
 end
 
 /-- Stage 1 reads the program: its closures run no conditioned operation. -/
@@ -317,6 +323,15 @@ mutual
     | .loop _ x _ st _ b =>
       freshFor conds x && st.all (freshFor conds ·.1) &&
         b.condOk p conds (st.foldl (forget · ·.1) (forget K x))
+    | .exit _ _ => true
+    -- ADR 0116's `until` and `ever` (#946): the condition and the body run with the state bound
+    -- afresh, as a loop's body does, and `on stop` with its own binders of the state.
+    | .loopUntil c st _ b =>
+      st.all (freshFor conds ·.1) && c.condOk p conds (st.foldl (forget · ·.1) K) &&
+        b.condOk p conds (st.foldl (forget · ·.1) K)
+    | .loopEver _ st _ b os o =>
+      st.all (freshFor conds ·.1) && os.all (freshFor conds ·.1) &&
+        b.condOk p conds (st.foldl (forget · ·.1) K) && o.condOk p conds (os.foldl (forget · ·.1) K)
 end
 
 /-- `f` passes the condition check: its body, with its own conditions, from no knowledge. -/

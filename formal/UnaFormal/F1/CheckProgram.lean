@@ -30,6 +30,9 @@ mutual
     | .caseSum _ _ _ t e | .handleK _ t _ e =>
       t.callees ++ e.callees
     | .attempt b | .attemptK _ b | .letTuple _ _ b | .loop _ _ _ _ _ b => b.callees
+    | .exit _ _ => []
+    | .loopUntil c _ _ b => c.callees ++ b.callees
+    | .loopEver _ _ _ b _ o => b.callees ++ o.callees
 end
 
 end Una.F1
@@ -192,6 +195,9 @@ def _root_.Una.F1.Expr.lowerLets : Expr → Expr
   | .raise k c args => .raise k c args
   | .unreachable => .unreachable
   | .withH o f b => .withH o f b.lowerLets
+  | .exit k st => .exit k st
+  | .loopUntil c st init b => .loopUntil c.lowerLets st init b.lowerLets
+  | .loopEver site st init b os o => .loopEver site st init b.lowerLets os o.lowerLets
 
 /-- A body the labeled checker types under these parameters, against the result raised to `⊤`. -/
 def viaTypedAt (p : Program) (fn : Fun) (ps : List (String × LTy)) (body : Expr := fn.body) :

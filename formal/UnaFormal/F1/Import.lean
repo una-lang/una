@@ -103,7 +103,13 @@ partial def Expr.resolveAt (sums : List String) (t : LTy) : Expr → Option Expr
   | .handleK k a x b => do pure (.handleK k (← a.resolveAt sums t) x (← b.resolveAt sums t))
   | .loop src x xt st init b =>
     (b.resolveAt sums (.tuple (st.map Prod.snd) .bot)).map (.loop src x xt st init)
-  | e@(.atom _) | e@(.fail _) | e@(.raise _ _ _) | e@.unreachable => some e
+  | .loopUntil c st init b => do
+    pure (.loopUntil (← c.resolveAt sums (.bool .bot)) st init
+      (← b.resolveAt sums (.tuple (st.map Prod.snd) .bot)))
+  | .loopEver site st init b os o => do
+    pure (.loopEver site st init (← b.resolveAt sums (.tuple (st.map Prod.snd) .bot)) os
+      (← o.resolveAt sums (.tuple (st.map Prod.snd) .bot)))
+  | e@(.atom _) | e@(.fail _) | e@(.raise _ _ _) | e@.unreachable | e@(.exit _ _) => some e
 
 /-- The payload kinds `e` may fail with (#512), with `raisesOf` giving those of each function:
 its `raise`s and calls, less what an `attempt` or handler of a kind catches. A lambda's body is a
@@ -112,12 +118,13 @@ partial def Expr.raisesIn (raisesOf : String → List String) : Expr → List St
   | .raise k _ _ => [k]
   | .letR _ _ (.call f _ _) b => raisesOf f ++ b.raisesIn raisesOf
   | .letR _ _ _ b | .letTuple _ _ b | .loop _ _ _ _ _ b | .attempt b | .withH _ _ b => b.raisesIn raisesOf
+  | .loopUntil c _ _ b | .loopEver _ _ _ c _ b => c.raisesIn raisesOf ++ b.raisesIn raisesOf
   | .letE _ _ v b => v.raisesIn raisesOf ++ b.raisesIn raisesOf
   | .ite _ a b | .caseOption _ a _ b | .caseResult _ _ a _ b | .caseSum _ _ _ a b | .handle a _ b =>
     a.raisesIn raisesOf ++ b.raisesIn raisesOf
   | .attemptK k b => (b.raisesIn raisesOf).filter (· != k)
   | .handleK k a _ b => (a.raisesIn raisesOf).filter (· != k) ++ b.raisesIn raisesOf
-  | .atom _ | .fail _ | .unreachable => []
+  | .atom _ | .fail _ | .unreachable | .exit _ _ => []
 
 end Una.F1
 
@@ -840,18 +847,56 @@ mutual
     | "let_tuple" =>
       let bs ← (← arr (← field j "names")).mapM (binder c)
       pure (.letTuple bs (← atom (← field j "value")) (← expr c (← field j "body")))
+    | "exit" =>
+      -- `exit_k(b̄)` (ADR 0116 rule 20): `skip` (`next`) or `stop`, with the loop's state.
+      let stop ← match ← str (← field j "tag") with
+        | "stop" => pure true
+        | "next" => pure false
+        | t => throw s!"an exit tagged `{t}`"
+      pure (.exit stop (← atoms (← field j "state")))
     | "loop" =>
       let src ← field j "source"
-      let source ← match ← kind src with
-        | "list" => pure (Source.list (← atom (← field src "value")))
-        | "range" =>
-          match (← field src "inclusive").getBool? with
-          | .ok inc => pure (Source.range (← atom (← field src "low")) (← atom (← field src "high")) inc)
-          | .error _ => throw "a range's `inclusive`"
-        | k => throw s!"a loop over `{k}`"
       let (x, xt) ← binder c (← field j "var")
       let st ← (← arr (← field j "state")).mapM (binder c)
-      pure (.loop source x xt st (← atoms (← field j "init")) (← expr c (← field j "body")))
+      let init ← atoms (← field j "init")
+      let bodyJ ← field j "body"
+      match ← kind src with
+      | "until" =>
+        -- `for until c` (ADR 0116 rule 7): Core binds no element; its variable is never read. The
+        -- measure is the verifier's, and the model takes none.
+        let condJ ← field src "cond"
+        if reads x condJ || reads x bodyJ then throw "an `until` loop that reads its variable"
+        pure (.loopUntil (← expr c condJ) st init (← expr c bodyJ))
+      | "ever" =>
+        -- `for ever` (ADR 0116 rule 10), with its `on stop` block, the identity when it has none.
+        -- A deadline (`within`) is timing, which the model leaves out (ADR 0116 step 8).
+        if (src.getObjVal? "within").toOption.isSome then
+          throw "F1 restriction (`for ever within`: a deadline is timing)" -- restriction-check: importer refusal
+        if reads x bodyJ then throw "a `for ever` loop that reads its variable"
+        let site ← match j.getObjVal? "span" with
+          | .ok sp => match (sp.getObjValD "start").getArrVal? 0, (sp.getObjValD "start").getArrVal? 1 with
+            | .ok (.num l), .ok (.num col) => pure (l.mantissa.toNat * 65536 + col.mantissa.toNat)
+            | _, _ => pure 0
+          | .error _ => pure 0
+        let body ← expr c bodyJ
+        match j.getObjVal? "on_stop" with
+        | .ok os =>
+          let ost ← (← arr (← field os "state")).mapM (binder c)
+          pure (.loopEver site st init body ost (← expr c (← field os "body")))
+        | .error _ =>
+          let tup := "%on_stop"
+          pure (.loopEver site st init body st
+            (.letR tup (.tuple (st.map Prod.snd) .bot) (.tuple (st.map fun q => .var q.1))
+              (.atom (.var tup))))
+      | k =>
+        let source ← match k with
+          | "list" => pure (Source.list (← atom (← field src "value")))
+          | "range" =>
+            match (← field src "inclusive").getBool? with
+            | .ok inc => pure (Source.range (← atom (← field src "low")) (← atom (← field src "high")) inc)
+            | .error _ => throw "a range's `inclusive`"
+          | k => throw s!"a loop over `{k}`"
+        pure (.loop source x xt st init (← expr c bodyJ))
     | "with" =>
       -- `with @c = h() do e` (#538): each operation of the capability, with `h`'s function for it.
       -- A `with` node of an export before #538's reading, without `source`, keeps its reason.
@@ -1478,6 +1523,10 @@ mutual
     | .handleK k b x h => .handleK k (Expr.toInst cond b) x (Expr.toInst cond h)
     | .letTuple bs v b => .letTuple bs v (Expr.toInst cond b)
     | .loop src x xt st init b => .loop src x xt st init (Expr.toInst cond b)
+    | .exit k st => .exit k st
+    | .loopUntil c st init b => .loopUntil (Expr.toInst cond c) st init (Expr.toInst cond b)
+    | .loopEver site st init b os o =>
+      .loopEver site st init (Expr.toInst cond b) os (Expr.toInst cond o)
 end
 
 /-- The parts of the program checked at instances, from the final members: the functions checked
@@ -1605,6 +1654,8 @@ mutual
     | .caseSum _ _ _ t e | .handleK _ t _ e =>
       Expr.usesEnv t || Expr.usesEnv e
     | .attempt b | .attemptK _ b | .letTuple _ _ b | .loop _ _ _ _ _ b => Expr.usesEnv b
+    | .exit _ _ => false
+    | .loopUntil c _ _ b | .loopEver _ _ _ c _ b => Expr.usesEnv c || Expr.usesEnv b
 end
 
 /-- Whether a note's verdict may rest on the file-state label: the program uses `Files`, or a

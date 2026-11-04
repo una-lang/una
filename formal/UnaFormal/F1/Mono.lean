@@ -11,30 +11,27 @@ namespace Una.F1
 variable {H : Host}
 
 /-- A run of `f'` agrees with one of `f` wherever `f`'s ends. -/
-def Agrees {α : Type} (f' f : α → Run H) : Prop := ∀ a, Term (f a).2.1 → f' a = f a
+def Agrees {α : Type} (f' f : α → Run H) : Prop := ∀ a, TermX (f a).2.1 → f' a = f a
 
 theorem andThen_mono {f f' : Run H} {k k' : World H → Val → Run H}
-    (ht : Term (andThen f k).2.1) (hf : Term f.2.1 → f' = f)
-    (hk : ∀ v, f.2.1 = .ok v → Term (k f.2.2 v).2.1 → k' f.2.2 v = k f.2.2 v) :
+    (ht : TermX (andThen f k).2.1) (hf : TermX f.2.1 → f' = f)
+    (hk : ∀ v, f.2.1 = .ok v → TermX (k f.2.2 v).2.1 → k' f.2.2 v = k f.2.2 v) :
     andThen f' k' = andThen f k := by
-  rw [hf (andThen_term ht)]
+  rw [hf (andThen_termX ht)]
   obtain ⟨tr, r, w⟩ := f
   cases r with
   | ok v =>
     simp only [andThen] at ht ⊢
-    have hkt : Term (k w v).2.1 := by
+    have hkt : TermX (k w v).2.1 := by
       revert ht
       rcases k w v with ⟨_, _, _⟩
       exact id
     rw [hk v rfl hkt]
-  | failed c => rfl
-  | raised _ _ _ => rfl
-  | stuck => rfl
-  | outOfFuel | aborted => rfl
+  | _ => rfl
 
 theorem applyWith_mono {run run' : World H → Env → Expr → Run H} {w : World H} {fv : Val}
-    {vs : List Val} (h : ∀ w env e, Term (run w env e).2.1 → run' w env e = run w env e)
-    (ht : Term (applyWith run w fv vs).2.1) : applyWith run' w fv vs = applyWith run w fv vs := by
+    {vs : List Val} (h : ∀ w env e, TermX (run w env e).2.1 → run' w env e = run w env e)
+    (ht : TermX (applyWith run w fv vs).2.1) : applyWith run' w fv vs = applyWith run w fv vs := by
   cases fv with
   | closure params body cenv =>
     simp only [applyWith] at ht ⊢
@@ -45,8 +42,8 @@ theorem applyWith_mono {run run' : World H → Env → Expr → Run H} {w : Worl
   | _ => rfl
 
 theorem walkMap_mono {app app' : World H → Val → Run H}
-    (h : ∀ w v, Term (app w v).2.1 → app' w v = app w v) :
-    ∀ {w : World H} {xs : List Val}, Term (walkMap app w xs).2.1 →
+    (h : ∀ w v, TermX (app w v).2.1 → app' w v = app w v) :
+    ∀ {w : World H} {xs : List Val}, TermX (walkMap app w xs).2.1 →
       walkMap app' w xs = walkMap app w xs
   | _, [], _ => rfl
   | w, v :: vs, ht => by
@@ -55,8 +52,8 @@ theorem walkMap_mono {app app' : World H → Val → Run H}
     exact andThen_mono hk (walkMap_mono h) (fun _ _ _ => rfl)
 
 theorem walkFilter_mono {app app' : World H → Val → Run H}
-    (h : ∀ w v, Term (app w v).2.1 → app' w v = app w v) :
-    ∀ {w : World H} {xs : List Val}, Term (walkFilter app w xs).2.1 →
+    (h : ∀ w v, TermX (app w v).2.1 → app' w v = app w v) :
+    ∀ {w : World H} {xs : List Val}, TermX (walkFilter app w xs).2.1 →
       walkFilter app' w xs = walkFilter app w xs
   | _, [], _ => rfl
   | w, v :: vs, ht => by
@@ -67,8 +64,8 @@ theorem walkFilter_mono {app app' : World H → Val → Run H}
     | _ => rfl
 
 theorem walkFirst_mono {app app' : World H → Val → Run H}
-    (h : ∀ w v, Term (app w v).2.1 → app' w v = app w v) :
-    ∀ {w : World H} {xs : List Val}, Term (walkFirst app w xs).2.1 →
+    (h : ∀ w v, TermX (app w v).2.1 → app' w v = app w v) :
+    ∀ {w : World H} {xs : List Val}, TermX (walkFirst app w xs).2.1 →
       walkFirst app' w xs = walkFirst app w xs
   | _, [], _ => rfl
   | w, v :: vs, ht => by
@@ -82,22 +79,39 @@ theorem walkFirst_mono {app app' : World H → Val → Run H}
     | _ => rfl
 
 theorem walkFold_mono {app app' : World H → Val → Val → Run H}
-    (h : ∀ w a v, Term (app w a v).2.1 → app' w a v = app w a v) :
-    ∀ {w : World H} {xs : List Val} {acc : Val}, Term (walkFold app w acc xs).2.1 →
+    (h : ∀ w a v, TermX (app w a v).2.1 → app' w a v = app w a v) :
+    ∀ {w : World H} {xs : List Val} {acc : Val}, TermX (walkFold app w acc xs).2.1 →
       walkFold app' w acc xs = walkFold app w acc xs
   | _, [], _, _ => rfl
   | w, v :: vs, acc, ht => by
     simp only [walkFold] at ht ⊢
     exact andThen_mono ht (h w acc v) (fun acc' _ hk => walkFold_mono h hk)
 
+theorem iter_termX {r : Run H} (h : TermX (Run.iter r).2.1) : TermX r.2.1 := by
+  obtain ⟨t, o, w⟩ := r
+  cases o with
+  | exit b _ => trivial
+  | _ => exact h
+
+theorem endLoop_termX {n : Nat} {r : Run H} (h : TermX (Run.endLoop n r).2.1) : TermX r.2.1 := by
+  obtain ⟨t, o, w⟩ := r
+  cases o with
+  | exit b _ => trivial
+  | _ => exact h
+
+/-- An iteration's run, as `iter` reads it, agrees where the iteration ends. -/
+theorem iter_mono {r r' : Run H} (h : TermX r.2.1 → r' = r) (ht : TermX (Run.iter r).2.1) :
+    Run.iter r' = Run.iter r := by
+  rw [h (iter_termX ht)]
+
 theorem walkLoop_mono {b b' : World H → Val → List Val → Run H}
-    (h : ∀ w v st, Term (b w v st).2.1 → b' w v st = b w v st) :
-    ∀ {w : World H} {st xs : List Val}, Term (walkLoop b w st xs).2.1 →
+    (h : ∀ w v st, TermX (b w v st).2.1 → b' w v st = b w v st) :
+    ∀ {w : World H} {st xs : List Val}, TermX (walkLoop b w st xs).2.1 →
       walkLoop b' w st xs = walkLoop b w st xs
   | _, _, [], _ => rfl
   | w, st, v :: vs, ht => by
     simp only [walkLoop] at ht ⊢
-    refine andThen_mono ht (h w v st) (fun r w' hk => ?_)
+    refine andThen_mono ht (fun hf => iter_mono (h w v st) hf) (fun r w' hk => ?_)
     cases r with
     | tuple st' =>
       simp only at hk ⊢
@@ -106,13 +120,91 @@ theorem walkLoop_mono {b b' : World H → Val → List Val → Run H}
       · rename_i hc; simp only [hc, ite_false]
     | _ => rfl
 
+/-- `for until` with more fuel: the same run wherever it ends (ADR 0116 rule 7). -/
+theorem walkUntil_mono {c c' b b' : World H → List Val → Run H}
+    (hc : ∀ w st, TermX (c w st).2.1 → c' w st = c w st)
+    (hb : ∀ w st, TermX (b w st).2.1 → b' w st = b w st) :
+    ∀ {n m : Nat} {w : World H} {st : List Val}, n ≤ m → TermX (walkUntil c b n w st).2.1 →
+      walkUntil c' b' m w st = walkUntil c b n w st
+  | 0, _, _, _, _, ht => by simp [walkUntil, TermX] at ht
+  | _ + 1, 0, _, _, h, _ => absurd h (by omega)
+  | n + 1, m + 1, w, st, h, ht => by
+    simp only [walkUntil] at ht ⊢
+    refine andThen_mono ht (hc w st) (fun v _ hk => ?_)
+    cases v with
+    | bool cb =>
+      cases cb
+      · simp only at hk ⊢
+        refine andThen_mono hk (fun hf => iter_mono (hb _ st) hf) (fun r _ hk' => ?_)
+        cases r with
+        | tuple st' =>
+          simp only at hk' ⊢
+          split at hk'
+          · rename_i hl; simp only [hl, ite_true]; exact walkUntil_mono hc hb (by omega) hk'
+          · rename_i hl; simp only [hl, ite_false]
+        | _ => rfl
+      · rfl
+    | _ => rfl
+
+/-- `for ever` with more fuel: the same run wherever it ends (ADR 0116 rule 10). -/
+theorem walkEver_mono {stops : Nat → Bool} {b b' : World H → List Val → Run H}
+    (hb : ∀ w st, TermX (b w st).2.1 → b' w st = b w st) :
+    ∀ {n m i : Nat} {w : World H} {st : List Val}, n ≤ m → TermX (walkEver stops b n i w st).2.1 →
+      walkEver stops b' m i w st = walkEver stops b n i w st
+  | 0, _, _, _, _, _, ht => by simp [walkEver, TermX] at ht
+  | _ + 1, 0, _, _, _, h, _ => absurd h (by omega)
+  | n + 1, m + 1, i, w, st, h, ht => by
+    simp only [walkEver] at ht ⊢
+    split
+    · rfl
+    · rename_i hs
+      simp only [hs] at ht
+      refine andThen_mono ht (fun hf => iter_mono (hb w st) hf) (fun r _ hk => ?_)
+      cases r with
+      | tuple st' =>
+        simp only at hk ⊢
+        split at hk
+        · rename_i hl; simp only [hl, ite_true]; exact walkEver_mono hb (by omega) hk
+        · rename_i hl; simp only [hl, ite_false]
+      | _ => rfl
+
+/-- `on stop` agrees where it ends. -/
+theorem finishEver_mono {k k' : World H → List Val → Run H} {st₀ : List Val} {r r' : Run H}
+    (hk : ∀ w st, TermX (k w st).2.1 → k' w st = k w st) (hr : TermX r.2.1 → r' = r)
+    (ht : TermX (finishEver k st₀ r).2.1) : finishEver k' st₀ r' = finishEver k st₀ r := by
+  have hT : TermX r.2.1 := by
+    obtain ⟨t, o, w⟩ := r
+    cases o <;> simp_all [finishEver, TermX]
+  rw [hr hT]
+  obtain ⟨t, o, w⟩ := r
+  cases o with
+  | ok v =>
+    cases v with
+    | tuple st =>
+      simp only [finishEver] at ht ⊢
+      have : TermX (k w st).2.1 := by
+        revert ht; rcases k w st with ⟨_, _, _⟩; exact id
+      rw [hk w st this]
+    | _ => rfl
+  | failed c =>
+    simp only [finishEver] at ht ⊢
+    have : TermX (k w st₀).2.1 := by
+      revert ht; rcases k w st₀ with ⟨_, r', _⟩; cases r' <;> simp [TermX]
+    rw [hk w st₀ this]
+  | raised kd c ps =>
+    simp only [finishEver] at ht ⊢
+    have : TermX (k w st₀).2.1 := by
+      revert ht; rcases k w st₀ with ⟨_, r', _⟩; cases r' <;> simp [TermX]
+    rw [hk w st₀ this]
+  | _ => rfl
+
 variable {p : Program}
 
 theorem eval_mono : ∀ n m : Nat, n ≤ m →
-    (∀ w env r, Term (evalRhs H n p w env r).2.1 → evalRhs H m p w env r = evalRhs H n p w env r) ∧
-    (∀ w env e, Term (eval H n p w env e).2.1 → eval H m p w env e = eval H n p w env e)
-  | 0, _, _ => ⟨fun _ _ _ h => by simp [evalRhs, Term] at h,
-      fun _ _ _ h => by simp [eval, Term] at h⟩
+    (∀ w env r, TermX (evalRhs H n p w env r).2.1 → evalRhs H m p w env r = evalRhs H n p w env r) ∧
+    (∀ w env e, TermX (eval H n p w env e).2.1 → eval H m p w env e = eval H n p w env e)
+  | 0, _, _ => ⟨fun _ _ _ h => by simp [evalRhs, TermX] at h,
+      fun _ _ _ h => by simp [eval, TermX] at h⟩
   | n + 1, 0, h => absurd h (by omega)
   | n + 1, m + 1, h => by
     obtain ⟨ihR, ihE⟩ := eval_mono n m (by omega)
@@ -159,10 +251,10 @@ theorem eval_mono : ∀ n m : Nat, n ≤ m →
         rename_i fn
         by_cases hl : 1 = fn.params.length
         · simp only [hl, ite_true] at ht ⊢
-          have hin : Term (eval H n p w (bindParams fn.params [v] []) fn.body).2.1 := by
+          have hin : TermX (eval H n p w (bindParams fn.params [v] []) fn.body).2.1 := by
             revert ht
             rcases eval H n p w (bindParams fn.params [v] []) fn.body with ⟨t, r, w'⟩
-            cases r <;> simp [Term]
+            cases r <;> simp [TermX]
           rw [ihE _ _ _ hin]
         · simp only [hl, ite_false]
       | map xs f =>
@@ -228,17 +320,17 @@ theorem eval_mono : ∀ n m : Nat, n ≤ m →
           | _ => simp [hsc]
       | attemptK kind body =>
         simp only [eval] at ht ⊢
-        have hb : Term (eval H n p w env body).2.1 := by
+        have hb : TermX (eval H n p w env body).2.1 := by
           revert ht
           rcases eval H n p w env body with ⟨tr, r, w'⟩
-          cases r <;> dsimp only <;> (try split) <;> simp [Term]
+          cases r <;> dsimp only <;> (try split) <;> simp [TermX]
         rw [ihE w env body hb]
       | handleK kind body x handler =>
         simp only [eval] at ht ⊢
-        have hb : Term (eval H n p w env body).2.1 := by
+        have hb : TermX (eval H n p w env body).2.1 := by
           revert ht
           rcases eval H n p w env body with ⟨tr, r, w'⟩
-          cases r <;> dsimp only <;> (try split) <;> simp [Term]
+          cases r <;> dsimp only <;> (try split) <;> simp [TermX]
         rw [ihE w env body hb]
         revert ht
         rcases eval H n p w env body with ⟨tr, r, w'⟩
@@ -248,7 +340,7 @@ theorem eval_mono : ∀ n m : Nat, n ≤ m →
           dsimp only at ht ⊢
           by_cases hk : k = kind
           · simp only [if_pos hk] at ht ⊢
-            have hh : Term (eval H n p w' ((x, .variant k c ps) :: env) handler).2.1 := by
+            have hh : TermX (eval H n p w' ((x, .variant k c ps) :: env) handler).2.1 := by
               revert ht
               rcases eval H n p w' ((x, .variant k c ps) :: env) handler with ⟨_, _, _⟩
               exact id
@@ -257,17 +349,17 @@ theorem eval_mono : ∀ n m : Nat, n ≤ m →
         | _ => intro _; rfl
       | attempt body =>
         simp only [eval] at ht ⊢
-        have hb : Term (eval H n p w env body).2.1 := by
+        have hb : TermX (eval H n p w env body).2.1 := by
           revert ht
           rcases eval H n p w env body with ⟨tr, r, w'⟩
-          cases r <;> simp [Term]
+          cases r <;> simp [TermX]
         rw [ihE w env body hb]
       | handle body x handler =>
         simp only [eval] at ht ⊢
-        have hb : Term (eval H n p w env body).2.1 := by
+        have hb : TermX (eval H n p w env body).2.1 := by
           revert ht
           rcases eval H n p w env body with ⟨tr, r, w'⟩
-          cases r <;> simp [Term]
+          cases r <;> simp [TermX]
         rw [ihE w env body hb]
         revert ht
         rcases eval H n p w env body with ⟨tr, r, w'⟩
@@ -275,7 +367,7 @@ theorem eval_mono : ∀ n m : Nat, n ≤ m →
         | failed c =>
           intro ht
           simp only [] at ht ⊢
-          have hh : Term (eval H n p w' ((x, .int c) :: env) handler).2.1 := by
+          have hh : TermX (eval H n p w' ((x, .int c) :: env) handler).2.1 := by
             revert ht
             rcases eval H n p w' ((x, .int c) :: env) handler with ⟨_, _, _⟩
             exact id
@@ -292,7 +384,30 @@ theorem eval_mono : ∀ n m : Nat, n ≤ m →
         simp only [eval] at ht ⊢
         split at ht
         · split at ht
-          · rename_i hc; simp only [hc, ite_true]; exact walkLoop_mono (fun w v st hv => ihE _ _ _ hv) ht
+          · rename_i hc; simp only [hc, ite_true]
+            rw [walkLoop_mono (fun w v st hv => ihE _ _ _ hv) (endLoop_termX ht)]
+          · rename_i hc; simp only [hc, ite_false]
+        · rfl
+      | exit stop state => rfl
+      | loopUntil cond state init body =>
+        simp only [eval] at ht ⊢
+        split at ht
+        · split at ht
+          · rename_i hc; simp only [hc, ite_true]
+            rw [walkUntil_mono (fun w st hv => ihE _ _ _ hv) (fun w st hv => ihE _ _ _ hv) (by omega)
+              (endLoop_termX ht)]
+          · rename_i hc; simp only [hc, ite_false]
+        · rfl
+      | loopEver site state init body os o =>
+        simp only [eval] at ht ⊢
+        split at ht
+        · split at ht
+          · rename_i hc; simp only [hc, ite_true]
+            refine finishEver_mono (fun w st hk => ?_) (fun hr => ?_) ht
+            · split at hk
+              · rename_i hl; simp only [hl, ite_true]; exact ihE _ _ _ hk
+              · rename_i hl; simp only [hl, ite_false]
+            · rw [walkEver_mono (fun w st hv => ihE _ _ _ hv) (by omega) (endLoop_termX hr)]
           · rename_i hc; simp only [hc, ite_false]
         · rfl
 
@@ -311,8 +426,10 @@ theorem t6_ended (hwf : p.LWellFormed) (hpol : p.policies = []) (hh : p.HostWF)
     proj p L (eval H n₁ p w₁ e₁ e).1 = proj p L (eval H n₂ p w₂ e₂ e).1 ∧
       OutRel p L (V p L t) (Vis p L ε.failLabel) (eval H n₁ p w₁ e₁ e).2.1 (eval H n₂ p w₂ e₂ e).2.1 ∧
       WorldRel p L (eval H n₁ p w₁ e₁ e).2.2 (eval H n₂ p w₂ e₂ e).2.2 := by
-  have m₁ := (eval_mono (H := H) (p := p) n₁ (max n₁ n₂) (Nat.le_max_left _ _)).2 w₁ e₁ e ht₁
-  have m₂ := (eval_mono (H := H) (p := p) n₂ (max n₁ n₂) (Nat.le_max_right _ _)).2 w₂ e₂ e ht₂
+  have m₁ := (eval_mono (H := H) (p := p) n₁ (max n₁ n₂) (Nat.le_max_left _ _)).2 w₁ e₁ e
+    (termX_of_term ht₁)
+  have m₂ := (eval_mono (H := H) (p := p) n₂ (max n₁ n₂) (Nat.le_max_right _ _)).2 w₂ e₂ e
+    (termX_of_term ht₂)
   have h := t6_host_ground hwf hpol hh hlaw hΓ hpc hw h₁ h₂ hrel he (max n₁ n₂)
     (by rw [m₁]; exact ht₁) (by rw [m₂]; exact ht₂)
   rw [m₁, m₂] at h

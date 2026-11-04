@@ -88,9 +88,16 @@ def Res.IsFail : Res → Prop
   | .failed _ | .raised _ _ _ => True
   | _ => False
 
-/-- A run that ended, with a value or a failure. -/
+/-- A run that ended, with a value or a failure. An exit of a loop's iteration (ADR 0116 rule 20)
+ends the code around it, not the run: `TermX` counts it, in a loop's body. -/
 def Term : Res → Prop
   | .ok _ | .failed _ | .raised _ _ _ => True
+  | .stuck | .outOfFuel | .aborted | .exit _ _ => False
+
+/-- A run of code in a loop's body that ended, with a value, a failure or an exit (ADR 0116
+rule 20). -/
+def TermX : Res → Prop
+  | .ok _ | .failed _ | .raised _ _ _ | .exit _ _ => True
   | .stuck | .outOfFuel | .aborted => False
 
 /-- Two payloads of the variant `c` of the sum kind `k` related field by field, at the fields'
@@ -109,11 +116,27 @@ def OutRel (R : Val → Val → Prop) (vf : Prop) : Res → Res → Prop
   | .ok _, .failed _ | .failed _, .ok _ | .ok _, .raised _ _ _ | .raised _ _ _, .ok _
   | .failed _, .raised _ _ _ | .raised _ _ _, .failed _ => ¬ vf
   -- A run that did not end relates to anything: `BRel` asks both to end. Each such pair is
-  -- listed, with no wildcard, so an outcome added to `Res` must be placed here.
-  | .stuck, _ | .outOfFuel, _ | .aborted, _
-  | .ok _, .stuck | .ok _, .outOfFuel | .ok _, .aborted
-  | .failed _, .stuck | .failed _, .outOfFuel | .failed _, .aborted
-  | .raised _ _ _, .stuck | .raised _ _ _, .outOfFuel | .raised _ _ _, .aborted => True
+  -- listed, with no wildcard, so an outcome added to `Res` must be placed here. An exit ends no
+  -- run (`Term`): `OutRelX` relates exits, in a loop's body.
+  | .stuck, _ | .outOfFuel, _ | .aborted, _ | .exit _ _, _
+  | .ok _, .stuck | .ok _, .outOfFuel | .ok _, .aborted | .ok _, .exit _ _
+  | .failed _, .stuck | .failed _, .outOfFuel | .failed _, .aborted | .failed _, .exit _ _
+  | .raised _ _ _, .stuck | .raised _ _ _, .outOfFuel | .raised _ _ _, .aborted
+  | .raised _ _ _, .exit _ _ => True
+
+/-- `OutRel` in a loop's body (ADR 0116 rule 20): also two exits of the loop's iteration, related
+by `XE`. An exit runs at the public program counter (T-Exit), so it is never against another
+outcome. -/
+def OutRelX (R : Val → Val → Prop) (XE : Bool → List Val → Bool → List Val → Prop) (vf : Prop) :
+    Res → Res → Prop
+  | .exit b₁ vs₁, .exit b₂ vs₂ => XE b₁ vs₁ b₂ vs₂
+  | .exit _ _, .ok _ | .exit _ _, .failed _ | .exit _ _, .raised _ _ _
+  | .ok _, .exit _ _ | .failed _, .exit _ _ | .raised _ _ _, .exit _ _ => False
+  | .exit _ _, .stuck | .exit _ _, .outOfFuel | .exit _ _, .aborted => True
+  | .ok a, r => OutRel p L R vf (.ok a) r
+  | .failed c, r => OutRel p L R vf (.failed c) r
+  | .raised k c ps, r => OutRel p L R vf (.raised k c ps) r
+  | .stuck, _ | .outOfFuel, _ | .aborted, _ => True
 
 /-- `internal`. -/
 def internalLabel : Label := ⟨.internal, []⟩
@@ -135,6 +158,14 @@ events and related outcomes, and cannot tell their final worlds apart. -/
 def BRel {H : Host} (R : Val → Val → Prop) (vf : Prop) (r₁ r₂ : Run H) : Prop :=
   Term r₁.2.1 → Term r₂.2.1 →
     proj p L r₁.1 = proj p L r₂.1 ∧ OutRel p L R vf r₁.2.1 r₂.2.1 ∧ WorldRel p L r₁.2.2 r₂.2.2
+
+/-- `BRel` in a loop's body (ADR 0116 rule 20): runs that end with an exit too, related by
+`OutRelX`. -/
+def BRelX {H : Host} (R : Val → Val → Prop) (XE : Bool → List Val → Bool → List Val → Prop)
+    (vf : Prop) (r₁ r₂ : Run H) : Prop :=
+  TermX r₁.2.1 → TermX r₂.2.1 →
+    proj p L r₁.1 = proj p L r₂.1 ∧ OutRelX p L R XE vf r₁.2.1 r₂.2.1 ∧
+      WorldRel p L r₁.2.2 r₂.2.2
 
 variable {p L}
 
@@ -348,7 +379,8 @@ theorem World.ext' {w w' : World H} (hfs : w'.fs = w.fs) (hsrv : w'.srv = w.srv)
 event, a failure it ends with is decided above what the observer sees, and the world it leaves
 is one the observer cannot tell from the one it started from. -/
 theorem confined {pc : LExpr} {ε : Eff} {P : Val → Prop} {w : World H} {run : Run H}
-    (hwf : p.HostWF) (h : UOk (Allowed p pc ε) P (FailsAs p pc ε) w run) (hpc : ¬ Vis p L pc) :
+    {X : ExitCtx} (hwf : p.HostWF) (h : UOk (Allowed p pc ε) P (FailsAsX p pc ε X) w run)
+    (hpc : ¬ Vis p L pc) :
     proj p L run.1 = [] ∧ (run.2.1.IsFail → ¬ Vis p L ε.failLabel) ∧
       WorldRel p L w run.2.2 := by
   obtain ⟨tr, r, w'⟩ := run
@@ -414,7 +446,41 @@ theorem OutRel.mono {R R' : Val → Val → Prop} {vf vf' : Prop} (hR : ∀ a b,
   | .ok _, .stuck, _ | .ok _, .outOfFuel, _ | .ok _, .aborted, _ | .failed _, .stuck, _
   | .failed _, .outOfFuel, _ | .failed _, .aborted, _ | .raised _ _ _, .stuck, _
   | .raised _ _ _, .outOfFuel, _ | .raised _ _ _, .aborted, _
-  | .stuck, _, _ | .outOfFuel, _, _ | .aborted, _, _ => trivial
+  | .stuck, _, _ | .outOfFuel, _, _ | .aborted, _, _ | .exit _ _, _, _
+  | .ok _, .exit _ _, _ | .failed _, .exit _ _, _ | .raised _ _ _, .exit _ _, _ => trivial
+
+theorem vis_bot_inst' (s : List (String × LExpr)) : Vis p L (LExpr.bot.inst s) := by
+  rw [show LExpr.bot = LExpr.ofLabel Label.bot from rfl, LExpr.inst_ofLabel]
+  exact Vis.join Vis.bot Vis.bot
+
+/-- **A run under a program counter the observer does not see does not exit** (T-Exit): an exit
+runs at the public program counter. -/
+theorem noExit_of_hidden {pc : LExpr} {ε : Eff} {P : Val → Prop} {w : World H} {run : Run H}
+    {X : ExitCtx} (h : UOk (Allowed p pc ε) P (FailsAsX p pc ε X) w run) (hpc : ¬ Vis p L pc) :
+    ∀ b vs, run.2.1 ≠ .exit b vs := by
+  intro b vs he
+  have h2 := h.2.1
+  rw [he] at h2
+  obtain ⟨_, σ, _, hle, _⟩ := h2
+  exact hpc (Vis.of_le hle (vis_bot_inst' (p := p) (L := L) _))
+
+theorem OutRelX.mono {R R' : Val → Val → Prop} {XE XE' : Bool → List Val → Bool → List Val → Prop}
+    {vf vf' : Prop} (hR : ∀ a b, R a b → R' a b)
+    (hXE : ∀ b₁ vs₁ b₂ vs₂, XE b₁ vs₁ b₂ vs₂ → XE' b₁ vs₁ b₂ vs₂) (hvf : vf' → vf) :
+    ∀ {r₁ r₂ : Res}, OutRelX p L R XE vf r₁ r₂ → OutRelX p L R' XE' vf' r₁ r₂ := by
+  intro r₁ r₂ h
+  cases r₁ <;> cases r₂ <;> simp only [OutRelX] at h ⊢ <;>
+    first
+    | exact OutRel.mono hR hvf h
+    | exact hXE _ _ _ _ h
+    | exact h
+    | trivial
+
+/-- Outcomes other than exits are related by `OutRelX` as by `OutRel`. -/
+theorem OutRelX.of_noExit {R : Val → Val → Prop} {XE : Bool → List Val → Bool → List Val → Prop}
+    {vf : Prop} {r₁ r₂ : Res} (h₁ : ∀ b vs, r₁ ≠ .exit b vs) (h₂ : ∀ b vs, r₂ ≠ .exit b vs) :
+    OutRelX p L R XE vf r₁ r₂ ↔ OutRel p L R vf r₁ r₂ := by
+  cases r₁ <;> cases r₂ <;> simp_all [OutRelX, OutRel]
 
 /-- A run whose outcome is not a value is passed on by sequencing. -/
 theorem andThen_not_ok {tr : Trace} {r : Res} {w : World H} {k : World H → Val → Run H}

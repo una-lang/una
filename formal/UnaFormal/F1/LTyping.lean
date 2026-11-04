@@ -488,7 +488,7 @@ mutual
     /-- A lambda's body is checked at the public program counter (ADR 0031 rule 4), and, as a
     function's, its failures must be decided there. -/
     | lambda {Γ pc params body t ε} :
-        LExprTy p E (params ++ Γ) .bot body t ε → p.le ε.failLabel .bot → ε.rels = [] →
+        LExprTyX p E none (params ++ Γ) .bot body t ε → p.le ε.failLabel .bot → ε.rels = [] →
         ε.raises = [] → (∀ q ∈ params, q.2.InPlace) →
         LRhsTy p E Γ pc (.lambda params body)
           (.fn (params.map Prod.snd) t (ε.emits p) ε.host ε.fails.isSome .bot) .none
@@ -575,152 +575,158 @@ mutual
         LAtomTy Γ item t → Flow p.top t te →
         LRhsTy p E Γ pc (.set xs index item) (.tuple [.list te lx, .unit .bot] .bot) .none
 
-  inductive LExprTy (p : Program) (E : List String) : LCtx → LExpr → Expr → LTy → Eff → Prop where
-    | atom {Γ pc a t} : LAtomTy Γ a t → LExprTy p E Γ pc (.atom a) t .none
+  /-- The labeled typing of bodies, with `X` the declared types of the state of the innermost loop
+  whose body this is, which its exits carry (ADR 0116 rule 20), or `none` outside a loop's body: a
+  function's or a lambda's body, a condition of `until`, an `on stop` block, and the body of
+  `attempt` and both parts of a handled expression, which an exit never crosses (the model's
+  restriction: Core does not place one there). `LExprTy` is the judgment at `none`. -/
+  inductive LExprTyX (p : Program) (E : List String) :
+      Option (List LTy) → LCtx → LExpr → Expr → LTy → Eff → Prop where
+    | atom {X Γ pc a t} : LAtomTy Γ a t → LExprTyX p E X Γ pc (.atom a) t .none
     /-- T-Let. The body runs only when the bound code did not fail, so it runs under the label
     of what decides that: the model's reading of U4002 for `if error pass` (`spec/07 §7`
     rule 4), whose failure reaches the function's boundary, where it must be public. -/
-    | letR {Γ pc x ann value body t s ε₁ ε₂} :
+    | letR {X Γ pc x ann value body t s ε₁ ε₂} :
         LRhsTy p E Γ pc value t ε₁ → Flow p.top t ann →
-        LExprTy p E ((x, ann) :: Γ) (pc.join ε₁.failLabel) body s ε₂ → ann.InPlace →
-        LExprTy p E Γ pc (.letR x ann value body) s (ε₁.union ε₂)
-    | letE {Γ pc x ann value body t s ε₁ ε₂} :
-        LExprTy p E Γ pc value t ε₁ → Flow p.top t ann →
-        LExprTy p E ((x, ann) :: Γ) (pc.join ε₁.failLabel) body s ε₂ → ann.InPlace →
-        LExprTy p E Γ pc (.letE x ann value body) s (ε₁.union ε₂)
+        LExprTyX p E X ((x, ann) :: Γ) (pc.join ε₁.failLabel) body s ε₂ → ann.InPlace →
+        LExprTyX p E X Γ pc (.letR x ann value body) s (ε₁.union ε₂)
+    | letE {X Γ pc x ann value body t s ε₁ ε₂} :
+        LExprTyX p E X Γ pc value t ε₁ → Flow p.top t ann →
+        LExprTyX p E X ((x, ann) :: Γ) (pc.join ε₁.failLabel) body s ε₂ → ann.InPlace →
+        LExprTyX p E X Γ pc (.letE x ann value body) s (ε₁.union ε₂)
     /-- T-If: the branches run under the condition's label, flow into the joined type, and the
     value is raised by it. -/
-    | ite {Γ pc cond thenE elseE lc t₁ t₂ s ε₁ ε₂} :
-        LAtomTy Γ cond (.bool lc) → LExprTy p E Γ (pc.join lc) thenE t₁ ε₁ →
-        LExprTy p E Γ (pc.join lc) elseE t₂ ε₂ → Flow p.top t₁ s → Flow p.top t₂ s → s.InPlace →
-        LExprTy p E Γ pc (.ite cond thenE elseE) (s.raise lc) ((ε₁.union ε₂).decide lc)
+    | ite {X Γ pc cond thenE elseE lc t₁ t₂ s ε₁ ε₂} :
+        LAtomTy Γ cond (.bool lc) → LExprTyX p E X Γ (pc.join lc) thenE t₁ ε₁ →
+        LExprTyX p E X Γ (pc.join lc) elseE t₂ ε₂ → Flow p.top t₁ s → Flow p.top t₂ s → s.InPlace →
+        LExprTyX p E X Γ pc (.ite cond thenE elseE) (s.raise lc) ((ε₁.union ε₂).decide lc)
     /-- T-If at a tuple type, Core's join of the bindings an `if` updates (`spec/17 §4`): a tuple
     carries no label of its own, so the condition's label goes into every component, which the
     premise asks to be at least it, as U4001 asks of a rebind under a raised program counter. A
     `Unit` component is exempt only because any two units are related (`V.unit`, `Flow.unit`). -/
-    | iteT {Γ pc cond thenE elseE lc t₁ t₂ ts ε₁ ε₂} :
-        LAtomTy Γ cond (.bool lc) → LExprTy p E Γ (pc.join lc) thenE t₁ ε₁ →
-        LExprTy p E Γ (pc.join lc) elseE t₂ ε₂ → Flow p.top t₁ (.tuple ts .bot) →
+    | iteT {X Γ pc cond thenE elseE lc t₁ t₂ ts ε₁ ε₂} :
+        LAtomTy Γ cond (.bool lc) → LExprTyX p E X Γ (pc.join lc) thenE t₁ ε₁ →
+        LExprTyX p E X Γ (pc.join lc) elseE t₂ ε₂ → Flow p.top t₁ (.tuple ts .bot) →
         Flow p.top t₂ (.tuple ts .bot) → LTy.InPlaceAll ts → Flows p.top (ts.map (LTy.raise lc)) ts →
-        LExprTy p E Γ pc (.ite cond thenE elseE) (.tuple ts .bot) ((ε₁.union ε₂).decide lc)
+        LExprTyX p E X Γ pc (.ite cond thenE elseE) (.tuple ts .bot) ((ε₁.union ε₂).decide lc)
     /-- T-Case on an option: the pattern binding takes the element type raised by the
     scrutinee's top label. -/
-    | caseOption {Γ pc scrutinee noneE x someE te ls t₁ t₂ s ε₁ ε₂} :
-        LAtomTy Γ scrutinee (.option te ls) → LExprTy p E Γ (pc.join ls) noneE t₁ ε₁ →
-        LExprTy p E ((x, te.raise ls) :: Γ) (pc.join ls) someE t₂ ε₂ →
+    | caseOption {X Γ pc scrutinee noneE x someE te ls t₁ t₂ s ε₁ ε₂} :
+        LAtomTy Γ scrutinee (.option te ls) → LExprTyX p E X Γ (pc.join ls) noneE t₁ ε₁ →
+        LExprTyX p E X ((x, te.raise ls) :: Γ) (pc.join ls) someE t₂ ε₂ →
         Flow p.top t₁ s → Flow p.top t₂ s → s.InPlace →
-        LExprTy p E Γ pc (.caseOption scrutinee noneE x someE) (s.raise ls) ((ε₁.union ε₂).decide ls)
+        LExprTyX p E X Γ pc (.caseOption scrutinee noneE x someE) (s.raise ls) ((ε₁.union ε₂).decide ls)
     /-- T-Case on an option at a tuple type: as `iteT`. -/
-    | caseOptionT {Γ pc scrutinee noneE x someE te ls t₁ t₂ ts ε₁ ε₂} :
-        LAtomTy Γ scrutinee (.option te ls) → LExprTy p E Γ (pc.join ls) noneE t₁ ε₁ →
-        LExprTy p E ((x, te.raise ls) :: Γ) (pc.join ls) someE t₂ ε₂ →
+    | caseOptionT {X Γ pc scrutinee noneE x someE te ls t₁ t₂ ts ε₁ ε₂} :
+        LAtomTy Γ scrutinee (.option te ls) → LExprTyX p E X Γ (pc.join ls) noneE t₁ ε₁ →
+        LExprTyX p E X ((x, te.raise ls) :: Γ) (pc.join ls) someE t₂ ε₂ →
         Flow p.top t₁ (.tuple ts .bot) → Flow p.top t₂ (.tuple ts .bot) → LTy.InPlaceAll ts →
         Flows p.top (ts.map (LTy.raise ls)) ts →
-        LExprTy p E Γ pc (.caseOption scrutinee noneE x someE) (.tuple ts .bot) ((ε₁.union ε₂).decide ls)
-    | caseResult {Γ pc scrutinee x okE y errE te ee ls t₁ t₂ s ε₁ ε₂} :
+        LExprTyX p E X Γ pc (.caseOption scrutinee noneE x someE) (.tuple ts .bot) ((ε₁.union ε₂).decide ls)
+    | caseResult {X Γ pc scrutinee x okE y errE te ee ls t₁ t₂ s ε₁ ε₂} :
         LAtomTy Γ scrutinee (.result te ee ls) →
-        LExprTy p E ((x, te.raise ls) :: Γ) (pc.join ls) okE t₁ ε₁ →
-        LExprTy p E ((y, ee.raise ls) :: Γ) (pc.join ls) errE t₂ ε₂ →
+        LExprTyX p E X ((x, te.raise ls) :: Γ) (pc.join ls) okE t₁ ε₁ →
+        LExprTyX p E X ((y, ee.raise ls) :: Γ) (pc.join ls) errE t₂ ε₂ →
         Flow p.top t₁ s → Flow p.top t₂ s → s.InPlace →
-        LExprTy p E Γ pc (.caseResult scrutinee x okE y errE) (s.raise ls) ((ε₁.union ε₂).decide ls)
+        LExprTyX p E X Γ pc (.caseResult scrutinee x okE y errE) (s.raise ls) ((ε₁.union ε₂).decide ls)
     /-- T-Case on a result at a tuple type: as `iteT`. -/
-    | caseResultT {Γ pc scrutinee x okE y errE te ee ls t₁ t₂ ts ε₁ ε₂} :
+    | caseResultT {X Γ pc scrutinee x okE y errE te ee ls t₁ t₂ ts ε₁ ε₂} :
         LAtomTy Γ scrutinee (.result te ee ls) →
-        LExprTy p E ((x, te.raise ls) :: Γ) (pc.join ls) okE t₁ ε₁ →
-        LExprTy p E ((y, ee.raise ls) :: Γ) (pc.join ls) errE t₂ ε₂ →
+        LExprTyX p E X ((x, te.raise ls) :: Γ) (pc.join ls) okE t₁ ε₁ →
+        LExprTyX p E X ((y, ee.raise ls) :: Γ) (pc.join ls) errE t₂ ε₂ →
         Flow p.top t₁ (.tuple ts .bot) → Flow p.top t₂ (.tuple ts .bot) → LTy.InPlaceAll ts →
         Flows p.top (ts.map (LTy.raise ls)) ts →
-        LExprTy p E Γ pc (.caseResult scrutinee x okE y errE) (.tuple ts .bot) ((ε₁.union ε₂).decide ls)
+        LExprTyX p E X Γ pc (.caseResult scrutinee x okE y errE) (.tuple ts .bot) ((ε₁.union ε₂).decide ls)
     /-- T-Fail: only at the public program counter (U4002). -/
-    | fail {Γ pc code s} :
+    | fail {X Γ pc code s} :
         p.le pc .bot → pc.SymFree → s.InPlace →
-        LExprTy p E Γ pc (.fail code) s ⟨false, HostFx.none, some .bot, [], true, [], LExpr.bot, []⟩
+        LExprTyX p E X Γ pc (.fail code) s ⟨false, HostFx.none, some .bot, [], true, [], LExpr.bot, []⟩
     /-- T-Fail with a payload (#512): only at the public program counter, and each argument flows
     into its field's declared type. -/
-    | raise {Γ pc kind code args sm fs ts s} :
+    | raise {X Γ pc kind code args sm fs ts s} :
         p.sum kind = some sm → sm.variants[code]? = some fs → LAtomsTy Γ args ts → Flows p.top ts fs →
         p.le pc .bot → pc.SymFree → s.InPlace →
-        LExprTy p E Γ pc (.raise kind code args) s ⟨false, HostFx.none, some .bot, [], false, [kind], LExpr.bot, []⟩
+        LExprTyX p E X Γ pc (.raise kind code args) s ⟨false, HostFx.none, some .bot, [], false, [kind], LExpr.bot, []⟩
     /-- T-Case on a sum (#512), one arm against the rest: both run under the scrutinee's top
     label, which decides which runs, the bindings take their fields' declared types raised by it,
     and the value is raised by it. A chain of them is the `when` of several arms: each later arm
     is under every earlier test's label. -/
-    | caseSum {Γ pc scrutinee kind ctor binders thenE elseE ls sm fs t₁ t₂ s ε₁ ε₂} :
+    | caseSum {X Γ pc scrutinee kind ctor binders thenE elseE ls sm fs t₁ t₂ s ε₁ ε₂} :
         LAtomTy Γ scrutinee (.record kind ls) → p.sum kind = some sm → sm.variants[ctor]? = some fs →
         fs.length = binders.length →
-        LExprTy p E (binders.zip (fs.map (LTy.raise ls)) ++ Γ) (pc.join ls) thenE t₁ ε₁ →
-        LExprTy p E Γ (pc.join ls) elseE t₂ ε₂ → Flow p.top t₁ s → Flow p.top t₂ s → s.InPlace →
-        LExprTy p E Γ pc (.caseSum scrutinee ctor binders thenE elseE) (s.raise ls) ((ε₁.union ε₂).decide ls)
+        LExprTyX p E X (binders.zip (fs.map (LTy.raise ls)) ++ Γ) (pc.join ls) thenE t₁ ε₁ →
+        LExprTyX p E X Γ (pc.join ls) elseE t₂ ε₂ → Flow p.top t₁ s → Flow p.top t₂ s → s.InPlace →
+        LExprTyX p E X Γ pc (.caseSum scrutinee ctor binders thenE elseE) (s.raise ls) ((ε₁.union ε₂).decide ls)
     /-- The `else` of an exhaustive `when` on a sum (#512): no effect, at any type. A run that
     reached it aborts, which T6, termination-insensitive, does not observe. -/
-    | unreachable {Γ pc s} : s.InPlace → LExprTy p E Γ pc .unreachable s .none
+    | unreachable {X Γ pc s} : s.InPlace → LExprTyX p E X Γ pc .unreachable s .none
     /-- T-With (#538): `f` is a handler of `o`, and the body runs with `o`'s marker bound to it,
     at the same program counter. No premise on `pc`: every invocation in the scope is checked
     against `accepts` (T-Invoke), and every handler is under the effect floor (Hu). -/
-    | withH {Γ pc o f fn body t ε} :
+    | withH {X Γ pc o f fn body t ε} :
         List.lookup f p.handlerOf = some o → p.find f = some fn →
-        LExprTy p E ((markerName o, .text .bot) :: Γ) pc body t ε →
-        LExprTy p E Γ pc (.withH o f body) t (Eff.withOf o fn ε)
+        LExprTyX p E X ((markerName o, .text .bot) :: Γ) pc body t ε →
+        LExprTyX p E X Γ pc (.withH o f body) t (Eff.withOf o fn ε)
     /-- T-Case on a sum at a tuple type: as `iteT`. -/
-    | caseSumT {Γ pc scrutinee kind ctor binders thenE elseE ls sm fs t₁ t₂ ts ε₁ ε₂} :
+    | caseSumT {X Γ pc scrutinee kind ctor binders thenE elseE ls sm fs t₁ t₂ ts ε₁ ε₂} :
         LAtomTy Γ scrutinee (.record kind ls) → p.sum kind = some sm → sm.variants[ctor]? = some fs →
         fs.length = binders.length →
-        LExprTy p E (binders.zip (fs.map (LTy.raise ls)) ++ Γ) (pc.join ls) thenE t₁ ε₁ →
-        LExprTy p E Γ (pc.join ls) elseE t₂ ε₂ →
+        LExprTyX p E X (binders.zip (fs.map (LTy.raise ls)) ++ Γ) (pc.join ls) thenE t₁ ε₁ →
+        LExprTyX p E X Γ (pc.join ls) elseE t₂ ε₂ →
         Flow p.top t₁ (.tuple ts .bot) → Flow p.top t₂ (.tuple ts .bot) → LTy.InPlaceAll ts →
         Flows p.top (ts.map (LTy.raise ls)) ts →
-        LExprTy p E Γ pc (.caseSum scrutinee ctor binders thenE elseE) (.tuple ts .bot) ((ε₁.union ε₂).decide ls)
+        LExprTyX p E X Γ pc (.caseSum scrutinee ctor binders thenE elseE) (.tuple ts .bot) ((ε₁.union ε₂).decide ls)
     /-- T-Attempt: the result carries the label of what decides the failure, and its error is
     the failure's code, which that label decides too. -/
-    | attempt {Γ pc body t ε} :
-        LExprTy p E Γ pc body t ε → ε.raises = [] →
-        LExprTy p E Γ pc (.attempt body) (.result t (.int .bot) ε.dl)
+    | attempt {X Γ pc body t ε} :
+        LExprTyX p E none Γ pc body t ε → ε.raises = [] →
+        LExprTyX p E X Γ pc (.attempt body) (.result t (.int .bot) ε.dl)
           (Eff.attemptOf ε)
     /-- T-Attempt of a payload kind (#512): the body fails with `kind` only, and the error is the
     failure's value, whose variant and fields that label decides. -/
-    | attemptK {Γ pc kind body t ε} :
-        LExprTy p E Γ pc body t ε → ε.codes = false → (∀ k ∈ ε.raises, k = kind) →
-        LExprTy p E Γ pc (.attemptK kind body) (.result t (.record kind .bot) ε.dl)
+    | attemptK {X Γ pc kind body t ε} :
+        LExprTyX p E none Γ pc body t ε → ε.codes = false → (∀ k ∈ ε.raises, k = kind) →
+        LExprTyX p E X Γ pc (.attemptK kind body) (.result t (.record kind .bot) ε.dl)
           (Eff.attemptOf ε)
     /-- T-Handle: the handler runs under the label of what decides the failure, which binds its
     code, and the value is raised by it, since it decides which branch gives the value. -/
-    | handle {Γ pc body x handler t₁ t₂ s ε₁ ε₂} :
-        LExprTy p E Γ pc body t₁ ε₁ → ε₁.raises = [] →
-        LExprTy p E ((x, .int ε₁.dl) :: Γ) (pc.join ε₁.failLabel) handler t₂ ε₂ →
+    | handle {X Γ pc body x handler t₁ t₂ s ε₁ ε₂} :
+        LExprTyX p E none Γ pc body t₁ ε₁ → ε₁.raises = [] →
+        LExprTyX p E none ((x, .int ε₁.dl) :: Γ) (pc.join ε₁.failLabel) handler t₂ ε₂ →
         Flow p.top t₁ s → Flow p.top t₂ s → s.InPlace →
-        LExprTy p E Γ pc (.handle body x handler) (s.raise ε₁.dl)
+        LExprTyX p E X Γ pc (.handle body x handler) (s.raise ε₁.dl)
           (Eff.handleOf ε₁ ε₂)
     /-- T-Handle of a payload kind (#512): the body fails with `kind` only, and the handler binds
     the failure's value at the label of what decides it (`spec/10`), so every field read from it
     is raised by that label. -/
-    | handleK {Γ pc kind body x handler t₁ t₂ s ε₁ ε₂} :
-        LExprTy p E Γ pc body t₁ ε₁ → ε₁.codes = false → (∀ k ∈ ε₁.raises, k = kind) →
-        LExprTy p E ((x, .record kind ε₁.dl) :: Γ) (pc.join ε₁.failLabel) handler t₂ ε₂ →
+    | handleK {X Γ pc kind body x handler t₁ t₂ s ε₁ ε₂} :
+        LExprTyX p E none Γ pc body t₁ ε₁ → ε₁.codes = false → (∀ k ∈ ε₁.raises, k = kind) →
+        LExprTyX p E none ((x, .record kind ε₁.dl) :: Γ) (pc.join ε₁.failLabel) handler t₂ ε₂ →
         Flow p.top t₁ s → Flow p.top t₂ s → s.InPlace →
-        LExprTy p E Γ pc (.handleK kind body x handler) (s.raise ε₁.dl)
+        LExprTyX p E X Γ pc (.handleK kind body x handler) (s.raise ε₁.dl)
           (Eff.handleOf ε₁ ε₂)
     /-- T-Handle at a tuple type: as `iteT`, with what decides the failure. -/
-    | handleT {Γ pc body x handler t₁ t₂ ts ε₁ ε₂} :
-        LExprTy p E Γ pc body t₁ ε₁ → ε₁.raises = [] →
-        LExprTy p E ((x, .int ε₁.dl) :: Γ) (pc.join ε₁.failLabel) handler t₂ ε₂ →
+    | handleT {X Γ pc body x handler t₁ t₂ ts ε₁ ε₂} :
+        LExprTyX p E none Γ pc body t₁ ε₁ → ε₁.raises = [] →
+        LExprTyX p E none ((x, .int ε₁.dl) :: Γ) (pc.join ε₁.failLabel) handler t₂ ε₂ →
         Flow p.top t₁ (.tuple ts .bot) → Flow p.top t₂ (.tuple ts .bot) → LTy.InPlaceAll ts →
         Flows p.top (ts.map (LTy.raise ε₁.dl)) ts →
-        LExprTy p E Γ pc (.handle body x handler) (.tuple ts .bot)
+        LExprTyX p E X Γ pc (.handle body x handler) (.tuple ts .bot)
           (Eff.handleOf ε₁ ε₂)
     /-- T-Handle of a payload kind at a tuple type: as `iteT`, with what decides the failure. -/
-    | handleKT {Γ pc kind body x handler t₁ t₂ ts ε₁ ε₂} :
-        LExprTy p E Γ pc body t₁ ε₁ → ε₁.codes = false → (∀ k ∈ ε₁.raises, k = kind) →
-        LExprTy p E ((x, .record kind ε₁.dl) :: Γ) (pc.join ε₁.failLabel) handler t₂ ε₂ →
+    | handleKT {X Γ pc kind body x handler t₁ t₂ ts ε₁ ε₂} :
+        LExprTyX p E none Γ pc body t₁ ε₁ → ε₁.codes = false → (∀ k ∈ ε₁.raises, k = kind) →
+        LExprTyX p E none ((x, .record kind ε₁.dl) :: Γ) (pc.join ε₁.failLabel) handler t₂ ε₂ →
         Flow p.top t₁ (.tuple ts .bot) → Flow p.top t₂ (.tuple ts .bot) → LTy.InPlaceAll ts →
         Flows p.top (ts.map (LTy.raise ε₁.dl)) ts →
-        LExprTy p E Γ pc (.handleK kind body x handler) (.tuple ts .bot)
+        LExprTyX p E X Γ pc (.handleK kind body x handler) (.tuple ts .bot)
           (Eff.handleOf ε₁ ε₂)
     /-- T-LetTuple: each component, raised by the tuple's top label, flows into its binder's
     declared type. -/
-    | letTuple {Γ pc binders value body ts l s ε} :
+    | letTuple {X Γ pc binders value body ts l s ε} :
         LAtomTy Γ value (.tuple ts l) → Flows p.top (ts.map (LTy.raise l)) (binders.map Prod.snd) →
-        (∀ q ∈ binders, q.2.InPlace) → LExprTy p E (binders ++ Γ) pc body s ε →
-        LExprTy p E Γ pc (.letTuple binders value body) s ε
+        (∀ q ∈ binders, q.2.InPlace) → LExprTyX p E X (binders ++ Γ) pc body s ε →
+        LExprTyX p E X Γ pc (.letTuple binders value body) s ε
     /-- T-Loop over a list (`spec/17 §6` rule 3, ADR 0075): the declared state types are an
     invariant. The initial values flow into them, and the body, run under the list's top label,
     which decides how many iterations run, maps the state at those types to a tuple that flows
@@ -732,25 +738,72 @@ mutual
     whether the later iterations run, as a failure decides T-Let's continuation, so it is
     decided by no more than what decides whether the iteration runs (M6, a finding of the
     proof; `una check` gives U4002 to any failure a loop body passes on that is not public). -/
-    | loopList {Γ pc xs x xty state init body te ls ts tb ε} :
+    | loopList {X Γ pc xs x xty state init body te ls ts tb ε} :
         LAtomTy Γ xs (.list te ls) → Flow p.top (te.raise ls) xty → xty.InPlace →
         LAtomsTy Γ init ts → Flows p.top ts (state.map Prod.snd) → (∀ q ∈ state, q.2.InPlace) →
-        LExprTy p E ((x, xty) :: (state ++ Γ)) (pc.join ls) body tb ε →
+        LExprTyX p E (some (state.map Prod.snd)) ((x, xty) :: (state ++ Γ)) (pc.join ls) body tb ε →
         Flow p.top tb (.tuple (state.map Prod.snd) .bot) → (p.oldLoop = false → p.le ε.failLabel (pc.join ls)) →
         Flows p.top ((state.map Prod.snd).map (LTy.raise ls)) (state.map Prod.snd) →
-        LExprTy p E Γ pc (.loop (.list xs) x xty state init body) (.tuple (state.map Prod.snd) .bot) (ε.decide ls)
+        LExprTyX p E X Γ pc (.loop (.list xs) x xty state init body) (.tuple (state.map Prod.snd) .bot) (ε.decide ls)
     /-- T-Loop over a range: as over a list, with the bounds' labels, which decide the variable's
     values and how many iterations run. -/
-    | loopRange {Γ pc low high inclusive x xty state init body l₁ l₂ ts tb ε} :
+    | loopRange {X Γ pc low high inclusive x xty state init body l₁ l₂ ts tb ε} :
         LAtomTy Γ low (.int l₁) → LAtomTy Γ high (.int l₂) → Flow p.top (.int (l₁.join l₂)) xty →
         xty.InPlace →
         LAtomsTy Γ init ts → Flows p.top ts (state.map Prod.snd) → (∀ q ∈ state, q.2.InPlace) →
-        LExprTy p E ((x, xty) :: (state ++ Γ)) (pc.join (l₁.join l₂)) body tb ε →
+        LExprTyX p E (some (state.map Prod.snd)) ((x, xty) :: (state ++ Γ))
+          (pc.join (l₁.join l₂)) body tb ε →
         Flow p.top tb (.tuple (state.map Prod.snd) .bot) → (p.oldLoop = false → p.le ε.failLabel (pc.join (l₁.join l₂))) →
         Flows p.top ((state.map Prod.snd).map (LTy.raise (l₁.join l₂))) (state.map Prod.snd) →
-        LExprTy p E Γ pc (.loop (.range low high inclusive) x xty state init body)
+        LExprTyX p E X Γ pc (.loop (.range low high inclusive) x xty state init body)
           (.tuple (state.map Prod.snd) .bot) (ε.decide (l₁.join l₂))
+    /-- T-Exit (ADR 0116 rule 20, IF2): `exit_k(b̄)` in the body of a loop whose state has the
+    declared types `S`. Each component flows into its declared type, as at the end of the body.
+    The exit runs at the public program counter, as `fail` does (T-Fail): whether an iteration
+    ends here is then decided by data every observer sees. IF2 allows `stop` at the program counter
+    its iteration started at, and IF3 allows `skip` under a labeled branch: the model's rule is
+    stricter (its restriction, which keeps whether a later failure is reached from depending on an
+    exit's hidden decision). It ends the code around it, so it has any type, and no effect: its
+    loop catches it. -/
+    | exit {Γ pc stop state ts S s} :
+        LAtomsTy Γ state ts → Flows p.top ts S → p.le pc .bot → s.InPlace →
+        LExprTyX p E (some S) Γ pc (.exit stop state) s .none
+    /-- T-Until (ADR 0116 rule 7, IF1): the condition, a `Bool` with the state bound, and the body
+    run under `pc ⊔ ld`, where `ld`, at least the condition's label, decides how many iterations
+    run; the declared state types are an invariant at least `ld`, as over a list's top label; the
+    condition does not fail (the model's restriction), and the body's failures are decided by no
+    more than `pc ⊔ ld`. The measure is the verifier's (V1). -/
+    | loopUntil {X Γ pc cond state init body ts ld lc tb εc ε} :
+        LAtomsTy Γ init ts → Flows p.top ts (state.map Prod.snd) → (∀ q ∈ state, q.2.InPlace) →
+        ld.plain = [] →
+        LExprTyX p E none (state ++ Γ) (pc.join ld) cond (.bool lc) εc → p.le lc ld →
+        LExprTyX p E (some (state.map Prod.snd)) (state ++ Γ) (pc.join ld) body tb ε →
+        Flow p.top tb (.tuple (state.map Prod.snd) .bot) →
+        εc.fails = none → (p.oldLoop = false → p.le ε.failLabel (pc.join ld)) →
+        Flows p.top ((state.map Prod.snd).map (LTy.raise ld)) (state.map Prod.snd) →
+        LExprTyX p E X Γ pc (.loopUntil cond state init body) (.tuple (state.map Prod.snd) .bot)
+          ((εc.union ε).decide ld)
+    /-- T-Ever (ADR 0116 rules 10 and 13, IF4): the body runs under the enclosing program counter,
+    since how many iterations run is decided by its `stop`s, its failures and the host's fixed
+    stop schedule, an input from the host, not by data. Its failures are decided at that program
+    counter, as a loop's. `on stop` runs under it too, on the state at its declared types, does
+    not fail (U3029), and its value, flowing into the state's types, is the loop's. -/
+    | loopEver {X Γ pc site state init body os o ts tb to ε εo} :
+        LAtomsTy Γ init ts → Flows p.top ts (state.map Prod.snd) → (∀ q ∈ state, q.2.InPlace) →
+        LExprTyX p E (some (state.map Prod.snd)) (state ++ Γ) pc body tb ε →
+        Flow p.top tb (.tuple (state.map Prod.snd) .bot) →
+        (p.oldLoop = false → p.le ε.failLabel pc) →
+        os.map Prod.snd = state.map Prod.snd →
+        LExprTyX p E none (os ++ Γ) pc o to εo → εo.fails = none →
+        Flow p.top to (.tuple (state.map Prod.snd) .bot) →
+        LExprTyX p E X Γ pc (.loopEver site state init body os o) (.tuple (state.map Prod.snd) .bot)
+          (ε.union εo)
 end
+
+/-- The labeled typing of bodies outside a loop's body (`LExprTyX` at `none`). -/
+abbrev LExprTy (p : Program) (E : List String) (Γ : LCtx) (pc : LExpr) (e : Expr) (t : LTy)
+    (ε : Eff) : Prop :=
+  LExprTyX p E none Γ pc e t ε
 
 /-- T-Fun: the body, at the public program counter, flows into the declared result, which may
 carry the symbolic labels of the type parameters (`spec/07 §7` rule 8); its effects are

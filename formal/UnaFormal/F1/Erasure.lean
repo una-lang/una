@@ -77,6 +77,11 @@ mutual
     | .handleK k b x h => .handleK k (b.anon ρ) x (h.anon ρ)
     | .letTuple bs v b => .letTuple (bs.map fun q => (q.1, anonTy)) v (b.anon ρ)
     | .loop src x _ st init b => .loop src x anonTy (st.map fun q => (q.1, anonTy)) init (b.anon ρ)
+    | .exit k st => .exit k st
+    | .loopUntil c st init b => .loopUntil (c.anon ρ) (st.map fun q => (q.1, anonTy)) init (b.anon ρ)
+    | .loopEver site st init b os o =>
+      .loopEver site (st.map fun q => (q.1, anonTy)) init (b.anon ρ) (os.map fun q => (q.1, anonTy))
+        (o.anon ρ)
 end
 
 /-- Parameters with their types forgotten. -/
@@ -150,6 +155,7 @@ def Res.anon (ρ : String → String) : Res → Res
   | .ok v => .ok (v.anon ρ)
   | .failed c => .failed c
   | .raised k c ps => .raised k c (Val.anons ρ ps)
+  | .exit b vs => .exit b (Val.anons ρ vs)
   | .stuck => .stuck
   | .outOfFuel => .outOfFuel
   | .aborted => .aborted
@@ -371,7 +377,23 @@ theorem andThen_anon {r r' : Run H} {k k' : World H → Val → Run H} (hr : run
     obtain ⟨t', r', w'⟩ := kv
     rw [← this]
     cases r' <;> simp [runAnon, Res.anon]
-  | failed _ | raised _ _ _ | stuck | outOfFuel | aborted => simp [andThen, runAnon, Res.anon]
+  | failed _ | raised _ _ _ | exit _ _ | stuck | outOfFuel | aborted => simp [andThen, runAnon, Res.anon]
+
+theorem iter_anon (r : Run H) : runAnon ρ (Run.iter r) = Run.iter (runAnon ρ r) := by
+  obtain ⟨t, o, w⟩ := r
+  cases o with
+  | exit b vs => cases b <;> simp [Run.iter, runAnon, Res.anon, Val.anon, Val.anons_eq]
+  | _ => simp [Run.iter, runAnon, Res.anon]
+
+theorem endLoop_anon (n : Nat) (r : Run H) : runAnon ρ (Run.endLoop n r) = Run.endLoop n (runAnon ρ r) := by
+  obtain ⟨t, o, w⟩ := r
+  cases o with
+  | exit b vs =>
+    cases b
+    · simp [Run.endLoop, runAnon, Res.anon]
+    · simp only [Run.endLoop, runAnon, Res.anon, Val.anons_eq, List.length_map]
+      split <;> simp [Res.anon, Val.anon, Val.anons_eq]
+  | _ => simp [Run.endLoop, runAnon, Res.anon]
 
 theorem applyWith_anon {run run' : World H → Env → Expr → Run H}
     (hrun : ∀ w env e, runAnon ρ (run w env e) = run' w (Val.anonEnv ρ env) (e.anon ρ))
@@ -440,7 +462,7 @@ theorem walkLoop_anon {body body' : World H → Val → List Val → Run H}
   | w, st, [] => by simp [walkLoop, runAnon_done, Val.anon, Val.anons_eq]
   | w, st, v :: vs => by
     simp only [walkLoop, List.map_cons]
-    refine andThen_anon (h w v st) fun w r => ?_
+    refine andThen_anon (by rw [iter_anon, h w v st]) fun w r => ?_
     cases r with
     | tuple st' =>
       simp only [Val.anon, Val.anons_eq, List.length_map]
@@ -448,6 +470,82 @@ theorem walkLoop_anon {body body' : World H → Val → List Val → Run H}
       · exact walkLoop_anon h w st' vs
       · rfl
     | _ => simp [Val.anon, runAnon_stuck]
+
+theorem walkUntil_anon {c c' b b' : World H → List Val → Run H}
+    (hc : ∀ w st, runAnon ρ (c w st) = c' w (st.map (Val.anon ρ)))
+    (hb : ∀ w st, runAnon ρ (b w st) = b' w (st.map (Val.anon ρ))) :
+    ∀ (k : Nat) (w : World H) (st : List Val),
+      runAnon ρ (walkUntil c b k w st) = walkUntil c' b' k w (st.map (Val.anon ρ))
+  | 0, w, st => rfl
+  | k + 1, w, st => by
+    simp only [walkUntil]
+    refine andThen_anon (hc w st) fun w v => ?_
+    cases v with
+    | bool cb =>
+      cases cb
+      · simp only [Val.anon]
+        refine andThen_anon (by rw [iter_anon, hb w st]) fun w r => ?_
+        cases r with
+        | tuple st' =>
+          simp only [Val.anon, Val.anons_eq, List.length_map]
+          split
+          · exact walkUntil_anon hc hb k w st'
+          · rfl
+        | _ => simp [Val.anon, runAnon_stuck]
+      · simp [Val.anon, runAnon_done, Val.anons_eq]
+    | _ => simp [Val.anon, runAnon_stuck]
+
+theorem walkEver_anon {stops : Nat → Bool} {b b' : World H → List Val → Run H}
+    (hb : ∀ w st, runAnon ρ (b w st) = b' w (st.map (Val.anon ρ))) :
+    ∀ (k i : Nat) (w : World H) (st : List Val),
+      runAnon ρ (walkEver stops b k i w st) = walkEver stops b' k i w (st.map (Val.anon ρ))
+  | 0, _, w, st => rfl
+  | k + 1, i, w, st => by
+    simp only [walkEver]
+    split
+    · simp [runAnon_done, Val.anon, Val.anons_eq]
+    · refine andThen_anon (by rw [iter_anon, hb w st]) fun w r => ?_
+      cases r with
+      | tuple st' =>
+        simp only [Val.anon, Val.anons_eq, List.length_map]
+        split
+        · exact walkEver_anon hb k (i + 1) w st'
+        · rfl
+      | _ => simp [Val.anon, runAnon_stuck]
+
+theorem finishEver_anon {k k' : World H → List Val → Run H}
+    (hk : ∀ w st, runAnon ρ (k w st) = k' w (st.map (Val.anon ρ))) (st₀ : List Val) (r : Run H) :
+    runAnon ρ (finishEver k st₀ r) = finishEver k' (st₀.map (Val.anon ρ)) (runAnon ρ r) := by
+  obtain ⟨t, o, w⟩ := r
+  cases o with
+  | ok v =>
+    cases v with
+    | tuple st =>
+      simp only [finishEver, runAnon, Res.anon, Val.anon, Val.anons_eq]
+      have := hk w st
+      generalize k w st = kr at this
+      generalize k' w (st.map (Val.anon ρ)) = kr' at this
+      subst this
+      obtain ⟨_, r', _⟩ := kr
+      cases r' <;> simp [runAnon, Res.anon, Val.anons_eq]
+    | _ => simp_all [finishEver, runAnon, Res.anon, Val.anon]
+  | failed c =>
+    simp only [finishEver, runAnon, Res.anon]
+    have := hk w st₀
+    generalize k w st₀ = kr at this
+    generalize k' w (st₀.map (Val.anon ρ)) = kr' at this
+    subst this
+    obtain ⟨_, r', _⟩ := kr
+    cases r' <;> simp [runAnon, Res.anon]
+  | raised kd c ps =>
+    simp only [finishEver, runAnon, Res.anon]
+    have := hk w st₀
+    generalize k w st₀ = kr at this
+    generalize k' w (st₀.map (Val.anon ρ)) = kr' at this
+    subst this
+    obtain ⟨_, r', _⟩ := kr
+    cases r' <;> simp [runAnon, Res.anon]
+  | _ => simp [finishEver, runAnon, Res.anon]
 
 theorem rangeVals_anon (a b : Int) (i : Bool) : (rangeVals a b i).map (Val.anon ρ) = rangeVals a b i := by
   simp [rangeVals, Val.anon]
@@ -974,10 +1072,52 @@ theorem eval_anon (hH : H.AnonInvariant) (h4 : H.RespTyped) (hf : ∀ f, (P.find
           | some stv =>
             simp only [Option.map_some, List.length_map]
             split
-            · refine walkLoop_anon (fun w v st' => ?_) w stv items
+            · rw [endLoop_anon]
+              congr 1
+              refine walkLoop_anon (fun w v st' => ?_) w stv items
               rw [ihE, Val.anonEnv, bindParams_anon st (anonParams st) (anonParams_fst st).symm]
               rfl
             · rfl
+      | exit stop state =>
+        simp only [eval, Expr.anon, evalAtoms_anon]
+        cases evalAtoms env state with
+        | none => simp [stuck, runAnon, Res.anon]
+        | some vs => simp [runAnon, Res.anon, Val.anons_eq]
+      | loopUntil c st init b =>
+        simp only [eval, Expr.anon, evalAtoms_anon]
+        cases evalAtoms env init with
+        | none => simp [stuck, runAnon, Res.anon]
+        | some stv =>
+          simp only [Option.map_some, List.length_map]
+          split
+          · rw [endLoop_anon]
+            congr 1
+            refine walkUntil_anon (fun w st' => ?_) (fun w st' => ?_) n w stv
+            · rw [ihE, bindParams_anon st (anonParams st) (anonParams_fst st).symm]
+              rfl
+            · rw [ihE, bindParams_anon st (anonParams st) (anonParams_fst st).symm]
+              rfl
+          · rfl
+      | loopEver site st init b os o =>
+        simp only [eval, Expr.anon, evalAtoms_anon]
+        cases evalAtoms env init with
+        | none => simp [stuck, runAnon, Res.anon]
+        | some stv =>
+          simp only [Option.map_some, List.length_map]
+          split
+          · rw [finishEver_anon (k' := fun w st => if st.length = (os.map fun q => (q.1, anonTy)).length
+                then eval H n _ w (bindParams (os.map fun q => (q.1, anonTy)) st (Val.anonEnv ρ env)) (o.anon ρ)
+                else stuck w) (fun w st' => ?_), endLoop_anon, List.length_map]
+            · congr 2
+              refine walkEver_anon (fun w st' => ?_) n 0 w stv
+              rw [ihE, bindParams_anon st (anonParams st) (anonParams_fst st).symm]
+              rfl
+            · simp only [List.length_map]
+              split
+              · rw [ihE, bindParams_anon os (anonParams os) (anonParams_fst os).symm]
+                rfl
+              · rfl
+          · rfl
 
 /-- `find` in a forgotten program is `find`, forgotten. -/
 theorem Program.find_anon (p : Program) (f : String) :

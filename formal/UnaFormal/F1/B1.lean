@@ -25,7 +25,8 @@ mutual
     | .caseSum _ _ _ t e | .handleK _ t _ e =>
       Expr.Pure t ∧ Expr.Pure e
     | .attempt b | .attemptK _ b => Expr.Pure b
-    | .fail _ | .raise _ _ _ | .unreachable | .letTuple _ _ _ | .loop _ _ _ _ _ _ | .withH _ _ _ => False
+    | .fail _ | .raise _ _ _ | .unreachable | .letTuple _ _ _ | .loop _ _ _ _ _ _ | .withH _ _ _
+    | .exit _ _ | .loopUntil _ _ _ _ | .loopEver _ _ _ _ _ _ => False
 end
 
 /-- A right-hand side that performs no event and calls nothing, but may fail: a pure one, or
@@ -47,7 +48,8 @@ def Expr.PureOrFails : Expr → Prop
   | .fail _ => True
   -- A `via` function's failure is released as `Err(c)`, a code (ADR 0090): one with a payload
   -- is not a `via` function's (#512).
-  | .raise _ _ _ | .unreachable | .letTuple _ _ _ | .loop _ _ _ _ _ _ | .withH _ _ _ => False
+  | .raise _ _ _ | .unreachable | .letTuple _ _ _ | .loop _ _ _ _ _ _ | .withH _ _ _
+  | .exit _ _ | .loopUntil _ _ _ _ | .loopEver _ _ _ _ _ _ => False
 
 /-- **The restrictions of option B1**, on the policies. Each `from` is a scalar type, each `to`
 is a scalar type with a concrete label, and each `via` function performs no operation and
@@ -99,6 +101,7 @@ theorem quiet_andThen {w : World H} {first : Run H} {rest : World H → Val → 
   | failed c => exact absurd rfl (hr c)
   | stuck => exact ⟨rfl, fun _ h => (nomatch h), rfl⟩
   | raised _ _ _ => exact ⟨rfl, fun _ h => (nomatch h), rfl⟩
+  | exit _ _ => exact ⟨rfl, fun _ h => (nomatch h), rfl⟩
   | outOfFuel | aborted => exact ⟨rfl, fun _ h => (nomatch h), rfl⟩
 
 theorem quiet_elim {w : World H} {o : Option Val} : Quiet w ([], o.elim .stuck .ok, w) := by
@@ -172,6 +175,7 @@ theorem pure_run (p : Program) (w : World H) : ∀ n : Nat,
         | failed c => exact absurd rfl (h.2.1 c)
         | stuck => exact ⟨h.1, fun _ h => (nomatch h), h.2.2⟩
         | raised _ _ _ => exact ⟨h.1, fun _ h => (nomatch h), h.2.2⟩
+        | exit _ _ => exact ⟨h.1, fun _ h => (nomatch h), h.2.2⟩
         | outOfFuel | aborted => exact ⟨h.1, fun _ h => (nomatch h), h.2.2⟩
       | attemptK k b =>
         have h := ihE env b he
@@ -184,6 +188,7 @@ theorem pure_run (p : Program) (w : World H) : ∀ n : Nat,
         | failed c => exact absurd rfl (h.2.1 c)
         | stuck => exact ⟨h.1, fun _ h => (nomatch h), h.2.2⟩
         | raised _ _ _ => dsimp only; split <;> exact ⟨h.1, fun _ h => (nomatch h), h.2.2⟩
+        | exit _ _ => exact ⟨h.1, fun _ h => (nomatch h), h.2.2⟩
         | outOfFuel | aborted => exact ⟨h.1, fun _ h => (nomatch h), h.2.2⟩
       | handle b x hd =>
         have h := ihE env b he.1
@@ -196,6 +201,7 @@ theorem pure_run (p : Program) (w : World H) : ∀ n : Nat,
         | ok v => exact h
         | stuck => exact h
         | raised _ _ _ => exact h
+        | exit _ _ => exact h
         | outOfFuel | aborted => exact h
       | handleK k b x hd =>
         have h := ihE env b he.1
@@ -216,9 +222,13 @@ theorem pure_run (p : Program) (w : World H) : ∀ n : Nat,
         | failed c => exact absurd rfl (h.2.1 c)
         | ok v => exact h
         | stuck => exact h
+        | exit _ _ => exact h
         | outOfFuel | aborted => exact h
       | letTuple _ _ _ => exact (show False from he).elim
       | loop _ _ _ _ _ _ => exact (show False from he).elim
+      | exit _ _ => exact (show False from he).elim
+      | loopUntil _ _ _ _ => exact (show False from he).elim
+      | loopEver _ _ _ _ _ _ => exact (show False from he).elim
 
 /-- A run from `w` with no event, that leaves the world as it was: it may fail. -/
 def Silent (w : World H) (r : Run H) : Prop := r.1 = [] ∧ r.2.2 = w
@@ -239,6 +249,7 @@ theorem silent_andThen {w : World H} {first : Run H} {rest : World H → Val →
   | failed c => exact ⟨rfl, rfl⟩
   | stuck => exact ⟨rfl, rfl⟩
   | raised _ _ _ => exact ⟨rfl, rfl⟩
+  | exit _ _ => exact ⟨rfl, rfl⟩
   | outOfFuel | aborted => exact ⟨rfl, rfl⟩
 
 theorem Quiet.silent {w : World H} {r : Run H} (h : Quiet w r) : Silent w r := ⟨h.1, h.2.2⟩
@@ -333,6 +344,7 @@ theorem silent_run (p : Program) (w : World H) : ∀ n : Nat,
         | ok v => exact ⟨rfl, rfl⟩
         | stuck => exact ⟨rfl, rfl⟩
         | raised _ _ _ => exact ⟨rfl, rfl⟩
+        | exit _ _ => exact ⟨rfl, rfl⟩
         | outOfFuel | aborted => exact ⟨rfl, rfl⟩
       | handleK k b x hd =>
         have h := ihE env b he.1
@@ -353,9 +365,13 @@ theorem silent_run (p : Program) (w : World H) : ∀ n : Nat,
         | failed c => exact ⟨rfl, rfl⟩
         | ok v => exact ⟨rfl, rfl⟩
         | stuck => exact ⟨rfl, rfl⟩
+        | exit _ _ => exact ⟨rfl, rfl⟩
         | outOfFuel | aborted => exact ⟨rfl, rfl⟩
       | letTuple _ _ _ => exact (show False from he).elim
       | loop _ _ _ _ _ _ => exact (show False from he).elim
+      | exit _ _ => exact (show False from he).elim
+      | loopUntil _ _ _ _ => exact (show False from he).elim
+      | loopEver _ _ _ _ _ _ => exact (show False from he).elim
 
 end Una.F1
 
@@ -507,5 +523,8 @@ theorem noRaise_run (p : Program) (w : World H) : ∀ n : Nat,
       | _ => simp
     | letTuple _ _ _ => exact (show False from he).elim
     | loop _ _ _ _ _ _ => exact (show False from he).elim
+    | exit _ _ => exact (show False from he).elim
+    | loopUntil _ _ _ _ => exact (show False from he).elim
+    | loopEver _ _ _ _ _ _ => exact (show False from he).elim
 
 end Una.F1

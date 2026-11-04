@@ -271,6 +271,24 @@ mutual
     state; the loop's value is the tuple of the final state. Iterations are not calls. -/
     | loop (source : Source) (x : String) (xty : LTy) (state : List (String × LTy))
         (init : List Atom) (body : Expr)
+    /-- `exit_k(b₁, ...)` (ADR 0116 rule 20, `spec/26 §3`): ends the current iteration of the
+    innermost enclosing loop with the state `b₁, ...`. `skip` (`stop = false`) goes on to the next
+    iteration, as the end of the body does with the body's value; `stop` ends the loop, whose value
+    is then that state. Core places it only in a loop's body, outside any lambda in it. -/
+    | exit (stop : Bool) (state : List Atom)
+    /-- `loop until(c) with (b₁: S₁, ...) = (a₁, ...) do e` (ADR 0116 rule 7, `spec/26 §4`): before
+    each iteration, `c` runs with the current state bound, and the loop ends when it is `true`. The
+    measure of `decreases` is never evaluated (ADR 0116 V1), so it is not part of the syntax: the
+    termination theorem takes it as a function of the state (`Until.lean`). -/
+    | loopUntil (cond : Expr) (state : List (String × LTy)) (init : List Atom) (body : Expr)
+    /-- `loop ever with (b₁: S₁, ...) = (a₁, ...) do e on stop (b'₁: S₁, ...) -> o` (ADR 0116 rules
+    10, 13 and 14, `spec/26 §5`): the body runs again and again, until `stop`, a failure, or a host
+    stop at the start of an iteration, which the host's fixed schedule decides for the loop `site`
+    (`Host.stopAt`). Then `o` runs with the state bound to `onState`, and its value, the tuple of
+    the state, is the loop's; after a failure it runs with the state from before the loop, and the
+    failure propagates. A loop without `on stop` has the identity block. -/
+    | loopEver (site : Nat) (state : List (String × LTy)) (init : List Atom) (body : Expr)
+        (onState : List (String × LTy)) (onStop : Expr)
 end
 
 /-- A condition on an operation (ADR 0092, #561): the Boolean fragment of the refinement language
@@ -342,6 +360,11 @@ mutual
     | .withH _ _ b => b.bindsMarker
     | .letTuple bs _ b => bs.any (fun q => isMarker q.1) || b.bindsMarker
     | .loop _ x _ st _ b => isMarker x || st.any (fun q => isMarker q.1) || b.bindsMarker
+    | .exit _ _ => false
+    | .loopUntil c st _ b => st.any (fun q => isMarker q.1) || c.bindsMarker || b.bindsMarker
+    | .loopEver _ st _ b os o =>
+      st.any (fun q => isMarker q.1) || b.bindsMarker || os.any (fun q => isMarker q.1) ||
+        o.bindsMarker
 end
 
 /-- **Only markers are named with `@`** (#676), checked: every parameter of `fn` whose name is a
@@ -496,7 +519,8 @@ mutual
     | .ite _ t e | .caseOption _ t _ e | .caseResult _ _ t _ e | .handle t _ e
     | .caseSum _ _ _ t e | .handleK _ t _ e => t.pureB && e.pureB
     | .attempt b | .attemptK _ b => b.pureB
-    | .fail _ | .raise _ _ _ | .unreachable | .letTuple _ _ _ | .loop _ _ _ _ _ _ | .withH _ _ _ => false
+    | .fail _ | .raise _ _ _ | .unreachable | .letTuple _ _ _ | .loop _ _ _ _ _ _ | .withH _ _ _
+    | .exit _ _ | .loopUntil _ _ _ _ | .loopEver _ _ _ _ _ _ => false
 end
 
 /-- `@k.hmac("literal", d)` (ADR 0098 rule 2), as a test. -/

@@ -193,7 +193,7 @@ mutual
     | _, _, _, _, _, .mkOk h _ => .mkOk (latom_erase h)
     | _, _, _, _, _, .mkErr h _ => .mkErr (latom_erase h)
     | _, _, _, _, _, .lambda (params := params) hb _ _ _ _ => by
-      have h := LExprTy.toStruct hb
+      have h := LExprTyX.toStruct hb
       rw [params_erase] at h
       simp only [LTy.erase, LTy.erases_eq, List.map_map]
       exact .lambda (by simp) h
@@ -262,156 +262,194 @@ mutual
       exact .set h1 h2 h3
 
   /-- Erasing labels from a labeled typing of a body gives a structural typing. -/
-  theorem LExprTy.toStruct :
-      ∀ {Γ : LCtx} {pc : LExpr} {e : Expr} {t : LTy} {ε : Eff},
-        LExprTy p E Γ pc e t ε → ExprTy p Γ.erase e t.erase
-    | _, _, _, _, _, .atom h => .atom (latom_erase h)
-    | _, _, _, _, _, .letR hr hflow hb _ => by
-      have h := LExprTy.toStruct hb
+  theorem LExprTyX.toStruct :
+      ∀ {X : Option (List LTy)} {Γ : LCtx} {pc : LExpr} {e : Expr} {t : LTy} {ε : Eff},
+        LExprTyX p E X Γ pc e t ε → ExprTyX p (X.map (·.map LTy.erase)) Γ.erase e t.erase
+    | _, _, _, _, _, _, .atom h => .atom (latom_erase h)
+    | _, _, _, _, _, _, .letR hr hflow hb _ => by
+      have h := LExprTyX.toStruct hb
       simp only [LCtx.erase, List.map_cons] at h
       rw [← Flow.erase hflow] at h
       exact .letR (LRhsTy.toStruct hr) h
-    | _, _, _, _, _, .letE hv hflow hb _ => by
-      have h := LExprTy.toStruct hb
+    | _, _, _, _, _, _, .letE hv hflow hb _ => by
+      have h := LExprTyX.toStruct hb
       simp only [LCtx.erase, List.map_cons] at h
       rw [← Flow.erase hflow] at h
-      exact .letE (LExprTy.toStruct hv) h
-    | _, _, _, _, _, .ite hc ht he h₁ h₂ _ => by
+      exact .letE (LExprTyX.toStruct hv) h
+    | _, _, _, _, _, _, .ite hc ht he h₁ h₂ _ => by
       have hc' := latom_erase hc
-      have ht' := LExprTy.toStruct ht
-      have he' := LExprTy.toStruct he
+      have ht' := LExprTyX.toStruct ht
+      have he' := LExprTyX.toStruct he
       rw [Flow.erase h₁] at ht'
       rw [Flow.erase h₂] at he'
       rw [LTy.erase_raise]
       exact .ite hc' ht' he'
-    | _, _, _, _, _, .caseOption hs hn hsome h₁ h₂ _ => by
+    | _, _, _, _, _, _, .caseOption hs hn hsome h₁ h₂ _ => by
       have hs' := latom_erase hs
-      have hn' := LExprTy.toStruct hn
-      have hsome' := LExprTy.toStruct hsome
+      have hn' := LExprTyX.toStruct hn
+      have hsome' := LExprTyX.toStruct hsome
       simp only [LCtx.erase, List.map_cons, LTy.erase_raise] at hsome'
       rw [Flow.erase h₁] at hn'
       rw [Flow.erase h₂] at hsome'
       rw [LTy.erase_raise]
       exact .caseOption hs' hn' hsome'
-    | _, _, _, _, _, .caseResult hs hok herr h₁ h₂ _ => by
+    | _, _, _, _, _, _, .caseResult hs hok herr h₁ h₂ _ => by
       have hs' := latom_erase hs
-      have hok' := LExprTy.toStruct hok
-      have herr' := LExprTy.toStruct herr
+      have hok' := LExprTyX.toStruct hok
+      have herr' := LExprTyX.toStruct herr
       simp only [LCtx.erase, List.map_cons, LTy.erase_raise] at hok' herr'
       rw [Flow.erase h₁] at hok'
       rw [Flow.erase h₂] at herr'
       rw [LTy.erase_raise]
       exact .caseResult hs' hok' herr'
-    | _, _, _, _, _, .fail _ _ _ => .fail
-    | _, _, _, _, _, .raise hs hf has hflows _ _ _ => by
+    | _, _, _, _, _, _, .fail _ _ _ => .fail
+    | _, _, _, _, _, _, .raise hs hf has hflows _ _ _ => by
       have h := latoms_erase has
       rw [← Flows.erase hflows] at h
       exact .raise hs (by simp [Sum.fieldTys, hf]) h
-    | _, _, _, _, _, .unreachable _ => .unreachable
-    | _, _, _, _, _, .withH _ _ hb => .withH (LExprTy.toStruct hb)
-    | _, _, _, _, _, .caseSum hs hsm hf hlen hth hel h₁ h₂ _ => by
-      have hth' := LExprTy.toStruct hth
-      have hel' := LExprTy.toStruct hel
+    | _, _, _, _, _, _, .unreachable _ => .unreachable
+    | _, _, _, _, _, _, .withH _ _ hb => .withH (LExprTyX.toStruct hb)
+    | _, _, _, _, _, _, .caseSum hs hsm hf hlen hth hel h₁ h₂ _ => by
+      have hth' := LExprTyX.toStruct hth
+      have hel' := LExprTyX.toStruct hel
       rw [LCtx.erase_zip_raise, Flow.erase h₁] at hth'
       rw [Flow.erase h₂] at hel'
       rw [LTy.erase_raise]
       exact .caseSum (latom_erase hs) hsm (by simp [Sum.fieldTys, hf]) (by simp [hlen]) hth' hel'
-    | _, _, _, _, _, .caseSumT hs hsm hf hlen hth hel h₁ h₂ _ _ => by
-      have hth' := LExprTy.toStruct hth
-      have hel' := LExprTy.toStruct hel
+    | _, _, _, _, _, _, .caseSumT hs hsm hf hlen hth hel h₁ h₂ _ _ => by
+      have hth' := LExprTyX.toStruct hth
+      have hel' := LExprTyX.toStruct hel
       rw [LCtx.erase_zip_raise, Flow.erase h₁] at hth'
       rw [Flow.erase h₂] at hel'
       exact .caseSum (latom_erase hs) hsm (by simp [Sum.fieldTys, hf]) (by simp [hlen]) hth' hel'
-    | _, _, _, _, _, .attempt hb _ => .attempt (LExprTy.toStruct hb)
-    | _, _, _, _, _, .attemptK hb _ _ => .attemptK (LExprTy.toStruct hb)
-    | _, _, _, _, _, .handle hb _ hh h₁ h₂ _ => by
-      have hb' := LExprTy.toStruct hb
-      have hh' := LExprTy.toStruct hh
+    | _, _, _, _, _, _, .attempt hb _ => .attempt (LExprTyX.toStruct hb)
+    | _, _, _, _, _, _, .attemptK hb _ _ => .attemptK (LExprTyX.toStruct hb)
+    | _, _, _, _, _, _, .handle hb _ hh h₁ h₂ _ => by
+      have hb' := LExprTyX.toStruct hb
+      have hh' := LExprTyX.toStruct hh
       simp only [LCtx.erase, List.map_cons] at hh'
       rw [Flow.erase h₁] at hb'
       rw [Flow.erase h₂] at hh'
       rw [LTy.erase_raise]
       exact .handle hb' hh'
-    | _, _, _, _, _, .handleK hb _ _ hh h₁ h₂ _ => by
-      have hb' := LExprTy.toStruct hb
-      have hh' := LExprTy.toStruct hh
+    | _, _, _, _, _, _, .handleK hb _ _ hh h₁ h₂ _ => by
+      have hb' := LExprTyX.toStruct hb
+      have hh' := LExprTyX.toStruct hh
       simp only [LCtx.erase, List.map_cons] at hh'
       rw [Flow.erase h₁] at hb'
       rw [Flow.erase h₂] at hh'
       rw [LTy.erase_raise]
       exact .handleK hb' hh'
-    | _, _, _, _, _, .iteT hc ht he h₁ h₂ _ _ => by
+    | _, _, _, _, _, _, .iteT hc ht he h₁ h₂ _ _ => by
       have hc' := latom_erase hc
-      have ht' := LExprTy.toStruct ht
-      have he' := LExprTy.toStruct he
+      have ht' := LExprTyX.toStruct ht
+      have he' := LExprTyX.toStruct he
       rw [Flow.erase h₁] at ht'
       rw [Flow.erase h₂] at he'
       exact .ite hc' ht' he'
-    | _, _, _, _, _, .caseOptionT hs hn hsome h₁ h₂ _ _ => by
+    | _, _, _, _, _, _, .caseOptionT hs hn hsome h₁ h₂ _ _ => by
       have hs' := latom_erase hs
-      have hn' := LExprTy.toStruct hn
-      have hsome' := LExprTy.toStruct hsome
+      have hn' := LExprTyX.toStruct hn
+      have hsome' := LExprTyX.toStruct hsome
       simp only [LCtx.erase, List.map_cons, LTy.erase_raise] at hsome'
       rw [Flow.erase h₁] at hn'
       rw [Flow.erase h₂] at hsome'
       exact .caseOption hs' hn' hsome'
-    | _, _, _, _, _, .caseResultT hs hok herr h₁ h₂ _ _ => by
+    | _, _, _, _, _, _, .caseResultT hs hok herr h₁ h₂ _ _ => by
       have hs' := latom_erase hs
-      have hok' := LExprTy.toStruct hok
-      have herr' := LExprTy.toStruct herr
+      have hok' := LExprTyX.toStruct hok
+      have herr' := LExprTyX.toStruct herr
       simp only [LCtx.erase, List.map_cons, LTy.erase_raise] at hok' herr'
       rw [Flow.erase h₁] at hok'
       rw [Flow.erase h₂] at herr'
       exact .caseResult hs' hok' herr'
-    | _, _, _, _, _, .handleT hb _ hh h₁ h₂ _ _ => by
-      have hb' := LExprTy.toStruct hb
-      have hh' := LExprTy.toStruct hh
+    | _, _, _, _, _, _, .handleT hb _ hh h₁ h₂ _ _ => by
+      have hb' := LExprTyX.toStruct hb
+      have hh' := LExprTyX.toStruct hh
       simp only [LCtx.erase, List.map_cons] at hh'
       rw [Flow.erase h₁] at hb'
       rw [Flow.erase h₂] at hh'
       exact .handle hb' hh'
-    | _, _, _, _, _, .handleKT hb _ _ hh h₁ h₂ _ _ => by
-      have hb' := LExprTy.toStruct hb
-      have hh' := LExprTy.toStruct hh
+    | _, _, _, _, _, _, .handleKT hb _ _ hh h₁ h₂ _ _ => by
+      have hb' := LExprTyX.toStruct hb
+      have hh' := LExprTyX.toStruct hh
       simp only [LCtx.erase, List.map_cons] at hh'
       rw [Flow.erase h₁] at hb'
       rw [Flow.erase h₂] at hh'
       exact .handleK hb' hh'
-    | _, _, _, _, _, .letTuple (binders := bs) (ts := ts) hv hflows _ hb => by
+    | _, _, _, _, _, _, .letTuple (binders := bs) (ts := ts) hv hflows _ hb => by
       have h1 := latom_erase hv
-      have hb' := LExprTy.toStruct hb
+      have hb' := LExprTyX.toStruct hb
       have he : bs.map (fun q => q.2.erase) = ts.map LTy.erase := by
         have := flows_erase_binders hflows
         simpa [List.map_map, Function.comp_def, LTy.erase_raise] using this
       rw [params_erase, he] at hb'
       simp only [LTy.erase, LTy.erases_eq] at h1
       exact .letTuple h1 (by simpa using (congrArg List.length he).symm) hb'
-    | _, _, _, _, _, .loopList (state := st) (ts := ts) hxs hx _ hi hflows _ hb hbt _ _ => by
+    | _, _, _, _, _, _, .loopList (state := st) (ts := ts) hxs hx _ hi hflows _ hb hbt _ _ => by
       have h1 := latom_erase hxs
-      have hb' := LExprTy.toStruct hb
+      have hb' := LExprTyX.toStruct hb
       have hi' := latoms_erase hi
       have he := flows_erase_binders hflows
       have hxe := Flow.erase hx
       rw [LTy.erase_raise] at hxe
       simp only [LCtx.erase, List.map_cons] at hb'
       rw [← LCtx.erase, params_erase, he, ← hxe, Flow.erase hbt] at hb'
-      simp only [LTy.erase, LTy.erases_eq, List.map_map, Function.comp_def] at h1 hb' ⊢
+      simp only [Option.map, LTy.erase, LTy.erases_eq, List.map_map, Function.comp_def] at h1 hb' ⊢
       rw [he]
       rw [he] at hb'
       exact .loop (.list h1) hi' (by simpa using (congrArg List.length he).symm) hb'
-    | _, _, _, _, _, .loopRange (state := st) (ts := ts) hl hh hx _ hi hflows _ hb hbt _ _ => by
-      have hb' := LExprTy.toStruct hb
+    | _, _, _, _, _, _, .loopRange (state := st) (ts := ts) hl hh hx _ hi hflows _ hb hbt _ _ => by
+      have hb' := LExprTyX.toStruct hb
       have hi' := latoms_erase hi
       have he := flows_erase_binders hflows
       have hxe := Flow.erase hx
       simp only [LCtx.erase, List.map_cons] at hb'
       rw [← LCtx.erase, params_erase, he, ← hxe, Flow.erase hbt] at hb'
-      simp only [LTy.erase, LTy.erases_eq, List.map_map, Function.comp_def] at hb' ⊢
+      simp only [Option.map, LTy.erase, LTy.erases_eq, List.map_map, Function.comp_def] at hb' ⊢
       rw [he]
       rw [he] at hb'
       exact .loop (.range (latom_erase hl) (latom_erase hh)) hi'
         (by simpa using (congrArg List.length he).symm) hb'
+    | _, _, _, _, _, _, .exit has hflows _ _ => by
+      have h := latoms_erase has
+      rw [← Flows.erase hflows] at h
+      simp only [Option.map]
+      exact .exit h
+    | _, _, _, _, _, _, .loopUntil (state := st) (ts := ts) hi hflows _ _ hc _ hb hbt _ _ _ => by
+      have hc' := LExprTyX.toStruct hc
+      have hb' := LExprTyX.toStruct hb
+      have hi' := latoms_erase hi
+      have he := flows_erase_binders hflows
+      rw [params_erase, he] at hc'
+      rw [params_erase, he, Flow.erase hbt] at hb'
+      simp only [Option.map, LTy.erase, LTy.erases_eq, List.map_map, Function.comp_def] at hc' hb' ⊢
+      rw [he]
+      rw [he] at hb'
+      exact .loopUntil hi' (by simpa using (congrArg List.length he).symm) hc' hb'
+    | _, _, _, _, _, _, .loopEver (state := st) (os := os) (ts := ts) hi hflows _ hb hbt _ hos ho _ hot => by
+      have hb' := LExprTyX.toStruct hb
+      have ho' := LExprTyX.toStruct ho
+      have hi' := latoms_erase hi
+      have he := flows_erase_binders hflows
+      have heo : os.map (fun q => q.2.erase) = ts.map LTy.erase := by
+        rw [← he]
+        have := congrArg (List.map LTy.erase) hos
+        simpa [List.map_map, Function.comp_def] using this
+      rw [params_erase, he, Flow.erase hbt] at hb'
+      rw [params_erase, heo, Flow.erase hot] at ho'
+      simp only [Option.map, LTy.erase, LTy.erases_eq, List.map_map, Function.comp_def] at hb' ho' ⊢
+      rw [he]
+      rw [he] at hb' ho'
+      exact .loopEver hi' (by simpa using (congrArg List.length he).symm) hb'
+        (by simpa using (congrArg List.length heo).symm) ho'
 end
+
+/-- Erasing labels from a labeled typing of a body outside a loop's body gives a structural
+typing. -/
+theorem LExprTy.toStruct {Γ : LCtx} {pc : LExpr} {e : Expr} {t : LTy} {ε : Eff}
+    (h : LExprTy p E Γ pc e t ε) : ExprTy p Γ.erase e t.erase :=
+  LExprTyX.toStruct h
 
 theorem paramTys_nil (fn : Fun) : fn.paramTys [] = fn.params.map (fun q => q.2.erase) := by
   simp [Fun.paramTys, Ty.subst_nil]

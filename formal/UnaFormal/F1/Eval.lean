@@ -104,6 +104,16 @@ structure Host where
   key : String → Option String := fun _ => Option.none
   /-- HMAC-SHA-256 of a text under a key, as a text. -/
   mac : String → String → String := fun _ _ => ""
+  /-- **The host's stop schedule** (ADR 0116, "Where this sits in the model"): whether a host stop
+  request ends the `for ever` loop `site` at the start of its iteration `i` (counted from 0), the
+  stop points of rule 13. It is chosen by the host, before the run, and fixed for a host, so the two
+  runs T6 compares share it: how the wall clock maps to a schedule is timing, out of model. The
+  schedule's other half, whether a host stop interrupts an interruptible operation, is the host's
+  answer to a request (`request`), which may fail with any code, `Interrupted` included. The
+  schedule gives a loop the same stop points at every entry: one whose stop points differ between
+  entries of a loop, such as a sticky request that ends a loop entered after it at once, is outside
+  the model (`spec/26 §9`). -/
+  stopAt : Nat → Nat → Bool := fun _ _ => false
 
 /-- The host's state. -/
 structure World (H : Host) where
@@ -163,6 +173,11 @@ inductive Res where
   /-- A failure of a payload kind (#512): its kind, its variant's index and its payload. A failure
   of a kind without fields is `failed`, its code. -/
   | raised (kind : String) (code : Nat) (payload : List Val)
+  /-- An exit of a loop's iteration (ADR 0116 rule 20, `spec/26 §3`): `exit_k(b̄)` with its tag,
+  `stop` or not (`skip`), and the state `b̄`. Like a failure, it ends the code around it up to
+  its loop, which catches it (`Run.iter`, `Run.endLoop`): the interpreter carries it beside
+  failures, as `Stop::Exit`. -/
+  | exit (stop : Bool) (state : List Val)
 
 /-- The value of variable `x` in `env`, the innermost binding. -/
 def lookup (env : Env) (x : String) : Option Val :=
@@ -351,17 +366,86 @@ def walkFold (app : World H → Val → Val → Run H) (w : World H) (acc : Val)
   | [] => done w acc
   | v :: vs => andThen (app w acc v) fun w acc' => walkFold app w acc' vs
 
+/-- An iteration's run, with `skip` caught (ADR 0116 rule 20): `exit_next(b̄)` gives the state `b̄`,
+as the end of the body does with its value. `stop`'s exit stays, and ends the loop. -/
+def Run.iter (r : Run H) : Run H :=
+  match r with
+  | (t, .exit false st, w) => (t, .ok (.tuple st), w)
+  | r => r
+
+/-- The end of a loop's iterations (ADR 0116 rule 20): `exit_stop(b̄)` gives the state `b̄` of
+the `n` bindings the loop updates, as the loop's value. -/
+def Run.endLoop (n : Nat) (r : Run H) : Run H :=
+  match r with
+  | (t, .exit true st, w) => if st.length = n then (t, .ok (.tuple st), w) else (t, .stuck, w)
+  | r => r
+
 /-- A loop (`spec/17 §4`), with `body` the run of its body on an element and the current state:
 each iteration's value must be a tuple of the state's length, the next state; the loop's value
-is the final state. A failure ends the loop, and the state is dropped (`spec/17 §7` rule 1). -/
+is the final state. A failure ends the loop, and the state is dropped (`spec/17 §7` rule 1). An
+iteration that ends in `skip` gives its state as its value (`Run.iter`); one that ends in `stop`
+ends the loop, whose run catches it (`Run.endLoop`). -/
 def walkLoop (body : World H → Val → List Val → Run H) (w : World H) (st : List Val) :
     List Val → Run H
   | [] => done w (.tuple st)
   | v :: vs =>
-    andThen (body w v st) fun w r =>
+    andThen (Run.iter (body w v st)) fun w r =>
       match r with
       | .tuple st' => if st'.length = st.length then walkLoop body w st' vs else stuck w
       | _ => stuck w
+
+/-- `for until c` (ADR 0116 rule 7, `spec/26 §4`), with `cond` and `body` the runs of the
+condition and of the body on the current state: before each iteration the condition runs, and the
+loop ends with the state when it is `true`. At most `k` iterations run, the fuel's bound: past it,
+the run is out of fuel, as a run that does not end. -/
+def walkUntil (cond body : World H → List Val → Run H) : Nat → World H → List Val → Run H
+  | 0, w, _ => ([], .outOfFuel, w)
+  | k + 1, w, st =>
+    andThen (cond w st) fun w c =>
+      match c with
+      | .bool true => done w (.tuple st)
+      | .bool false =>
+        andThen (Run.iter (body w st)) fun w r =>
+          match r with
+          | .tuple st' => if st'.length = st.length then walkUntil cond body k w st' else stuck w
+          | _ => stuck w
+      | _ => stuck w
+
+/-- `for ever` (ADR 0116 rules 10, 13 and 14, `spec/26 §5`), with `stops` the host's schedule for
+this loop and `body` the run of the body on the current state: at the start of iteration `i`, a
+host stop ends the loop with the state when the schedule says so, its stop point; otherwise the
+body runs. Only `stop`, a failure or the host ends it. At most `k` iterations run, the fuel's
+bound. -/
+def walkEver (stops : Nat → Bool) (body : World H → List Val → Run H) :
+    Nat → Nat → World H → List Val → Run H
+  | 0, _, w, _ => ([], .outOfFuel, w)
+  | k + 1, i, w, st =>
+    if stops i then done w (.tuple st)
+    else
+      andThen (Run.iter (body w st)) fun w r =>
+        match r with
+        | .tuple st' => if st'.length = st.length then walkEver stops body k (i + 1) w st' else stuck w
+        | _ => stuck w
+
+/-- `on stop` after a `for ever` (ADR 0116 rule 10), with `k` the run of its block on a state and
+`st₀` the state from before the loop: once the loop has ended with its state, the block runs on
+it, and gives the loop's value; after a failure of the body, it runs on `st₀`, and then the
+failure propagates, unless the block itself does not end with a value. -/
+def finishEver (k : World H → List Val → Run H) (st₀ : List Val) (r : Run H) : Run H :=
+  match r with
+  | (t, .ok (.tuple st), w) =>
+    match k w st with
+    | (t', r', w') => (t ++ t', r', w')
+  | (t, .failed c, w) =>
+    match k w st₀ with
+    | (t', .ok _, w') => (t ++ t', .failed c, w')
+    | (t', r', w') => (t ++ t', r', w')
+  | (t, .raised kd c ps, w) =>
+    match k w st₀ with
+    | (t', .ok _, w') => (t ++ t', .raised kd c ps, w')
+    | (t', r', w') => (t ++ t', r', w')
+  | (t, .ok _, w) => (t, .stuck, w)
+  | res => res
 
 /-- The integers a range visits, in increasing order. -/
 def rangeVals (low high : Int) (inclusive : Bool) : List Val :=
@@ -670,9 +754,34 @@ mutual
         match sourceVals env source, evalAtoms env init with
         | some items, some st =>
           if st.length = state.length then
-            walkLoop (fun w v st => eval H n p w ((x, v) :: bindParams state st env) body) w st items
+            Run.endLoop state.length
+              (walkLoop (fun w v st => eval H n p w ((x, v) :: bindParams state st env) body) w st items)
           else stuck w
         | _, _ => stuck w
+      | .exit stop state =>
+        match evalAtoms env state with
+        | some vs => ([], .exit stop vs, w)
+        | none => stuck w
+      | .loopUntil cond state init body =>
+        match evalAtoms env init with
+        | some st =>
+          if st.length = state.length then
+            Run.endLoop state.length
+              (walkUntil (fun w st => eval H n p w (bindParams state st env) cond)
+                (fun w st => eval H n p w (bindParams state st env) body) n w st)
+          else stuck w
+        | none => stuck w
+      | .loopEver site state init body os o =>
+        match evalAtoms env init with
+        | some st =>
+          if st.length = state.length then
+            finishEver
+              (fun w st => if st.length = os.length then eval H n p w (bindParams os st env) o else stuck w)
+              st
+              (Run.endLoop state.length
+                (walkEver (H.stopAt site) (fun w st => eval H n p w (bindParams state st env) body) n 0 w st))
+          else stuck w
+        | none => stuck w
 end
 
 end Una.F1
