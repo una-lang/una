@@ -392,7 +392,10 @@ pub enum Floor {
     /// No Itaoca, or none stored for the registry: the vendored chain past the pin is trusted
     /// on first use.
     None,
-    /// The highest root version this machine accepted.
+    /// The highest root version this machine accepted, by its number: the stored floor holds
+    /// no digest (`spec/30 §14`, Floors), so a chain that reaches that version through another
+    /// root document, which a threshold of root keys would have to sign, is not told apart
+    /// here; the registry client compares the digests of the chain it walks.
     At(u64),
     /// A floor that exists and cannot be read: the load is unavailable (U7013), never one
     /// without it.

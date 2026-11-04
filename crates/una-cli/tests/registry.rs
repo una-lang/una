@@ -1087,6 +1087,66 @@ fn a_resolution_takes_the_code_of_its_registrys_failure() {
     }
 }
 
+/// `spec/30 §11` rule 9 end to end: after a rotation to root 2, a place whose latest checkpoint
+/// is of the lock's point's own size and names root 2, while the point names root 1, serves two
+/// checkpoints of that size, both signed by the log. `una ita lock --check` refuses it (U7010,
+/// exit code 1) and reports it as evidence against the registry, with both versions.
+#[test]
+fn a_same_size_checkpoint_under_another_root_is_evidence() {
+    let (mut registry, _) = acme();
+    let (dir, mirror, itaoca) = project("same-size-evidence", &registry);
+    let (code, _, err) = una_in(&["una", "ita", "lock", arg(&dir)], &itaoca);
+    assert_eq!(code, 0, "{err}");
+    let lock = std::fs::read_to_string(dir.join("ita.lock")).unwrap();
+    let size = lock
+        .lines()
+        .find_map(|line| line.strip_prefix("  checkpoint "))
+        .and_then(|rest| rest.split(' ').next())
+        .unwrap()
+        .to_owned();
+    let first_line = format!(
+        "ita-root 1 {}",
+        una_project::tlog::root::digest(&registry.roots[0])
+    );
+    registry.rotate_witnesses(2, false);
+    let point = String::from_utf8(registry.files[&format!("checkpoint/{size}")].clone()).unwrap();
+    let text = point.split_once("\n\n").unwrap().0.to_owned() + "\n";
+    assert!(text.contains(&first_line), "{text}");
+    let text = text.replacen(&first_line, &registry.root_line(), 1);
+    let mut latest = format!(
+        "{text}\n{}",
+        support::sign_line(&registry.keys.log.0, &registry.keys.log.1, &text)
+    );
+    for (pair, key) in &registry.keys.witnesses {
+        latest.push_str(&support::cosign_line(pair, key, &text, now() - 30));
+    }
+    registry
+        .files
+        .insert("checkpoint".to_owned(), latest.into_bytes());
+    registry.write(&mirror);
+    let (code, _, err) = una_in(&["una", "ita", "lock", "--check", arg(&dir)], &itaoca);
+    assert_eq!(code, 1, "{err}");
+    assert!(err.contains("U7010") && !err.contains("U7013"), "{err}");
+    assert!(
+        err.contains(&format!("two checkpoints of size {size}")),
+        "{err}"
+    );
+    assert!(
+        err.contains("evidence against the registry `acme`")
+            && err.contains("naming the root versions 1 and 2"),
+        "{err}"
+    );
+    // `una ita bundle` reads the same point: refused, said as evidence, nothing written.
+    let file = dir.parent().unwrap().join("demo.bundle");
+    let (code, _, err) = una_in(&["una", "ita", "bundle", arg(&file), arg(&dir)], &itaoca);
+    assert_eq!(code, 1, "{err}");
+    assert!(
+        err.contains("U7010") && err.contains("evidence against the registry `acme`"),
+        "{err}"
+    );
+    assert!(!file.exists());
+}
+
 /// ADR 0122, amendment of 2026-11-03, end to end: a lock's point signed under root 1, whose
 /// witnesses root 2 then retires, is fetched with the consistency proof and loads offline; a
 /// provenance of the earlier format, with no proof, is unavailable (U7013, exit code 1) until
