@@ -128,7 +128,26 @@ fn package(name: &str, grants: &str, program: &str) -> PathBuf {
     )
     .unwrap();
     std::fs::write(dir.join(format!("src/{name}.una")), program).unwrap();
+    std::fs::create_dir_all(dir.join("out")).unwrap();
     dir
+}
+
+/// A function that writes a request's outcome as text, `ok <status>` or the failure's
+/// variant: a program writes it to `out/v.txt`, since a run's trace redacts it (S-45, #1552).
+const SHOWN: &str = r#"
+shown(r: internal Result[internal Response, internal HttpError]) -> internal Text
+=
+  when r
+    is Ok(response) -> "ok {response.status}"
+    is Err(e) -> "{e}"
+"#;
+
+/// The grant of `out/`, where a program writes the variants of its outcomes.
+const OUT: &str = "    files \"out/\" write\n";
+
+/// What the last engine wrote to `out/v.txt`.
+fn written(dir: &Path) -> String {
+    std::fs::read_to_string(dir.join("out/v.txt")).unwrap_or_default()
 }
 
 /// The outcomes of a trace: `op:Variant` for a failure, the outcome's kind otherwise. A
@@ -164,6 +183,10 @@ fn both(dir: &Path, name: &str, flags: &[&str]) -> [(Duration, serde_json::Value
         serde_json::json!(["done"]),
         "{document}"
     );
+    // What a program wrote to `out/v.txt`, its outcomes' variants, which a run's trace redacts
+    // (S-45): the executable must write the same.
+    let written = std::fs::read_to_string(dir.join("out/v.txt")).ok();
+    let _ = std::fs::remove_file(dir.join("out/v.txt"));
 
     let built = una(dir, &["build", "."]);
     assert_eq!(built.status.code(), Some(0), "{built:?}");
@@ -182,6 +205,7 @@ fn both(dir: &Path, name: &str, flags: &[&str]) -> [(Duration, serde_json::Value
     let native_trace: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(trace_file).unwrap()).unwrap();
     assert_eq!(document["trace"], native_trace);
+    assert_eq!(std::fs::read_to_string(dir.join("out/v.txt")).ok(), written);
     [
         (interpreted_time, document["trace"].clone()),
         (native_time, native_trace),
@@ -276,26 +300,31 @@ fn a_redirect_to_the_same_origin_under_one_at_once_completes_in_both_engines() {
     let port = server.port;
     let program = format!(
         r#"module hops
-
+{SHOWN}
 pub main() -> Unit
   uses @console: Console[print]
+  uses @files: Files[write]
   uses @http: Http[get]
+  fails FileError
 =
   let reply = attempt @http.get("http://127.0.0.1:{port}/hop", headers: [], key_name: None)
+  @files.write("v.txt", content: shown(reply))
+    if error pass
   @console.print("done")
 "#
     );
     let dir = package(
         "hops",
         &format!(
-            "    console\n    http \"http://127.0.0.1:{port}\" get\n      at most 1 at once\n"
+            "    console\n{OUT}    http \"http://127.0.0.1:{port}\" get\n      at most 1 at once\n"
         ),
         &program,
     );
     for (time, trace) in both(&dir, "hops", &["--http-timeout", "20"]) {
         assert!(time < Duration::from_secs(15), "{time:?}");
-        assert_eq!(outcomes(&trace), ["redacted", "ok"], "{trace}");
+        assert_eq!(outcomes(&trace), ["redacted", "ok", "ok"], "{trace}");
     }
+    assert_eq!(written(&dir), "ok 200");
     // Two hops per run.
     assert_eq!(server.take(), 4);
     let _ = std::fs::remove_dir_all(&dir);
@@ -311,21 +340,28 @@ fn a_wait_at_a_limit_is_cut_by_within_in_both_engines() {
         r#"module cut
 
 import std.time (millisecond)
-
+{SHOWN}
 pub main() -> Unit
   uses @console: Console[print]
+  uses @files: Files[write]
   uses @http: Http[get]
+  fails FileError
 =
   let first = attempt @http.get("http://127.0.0.1:{port}/a", headers: [], key_name: None)
   let url = "http://127.0.0.1:{port}/b"
   let second = attempt @http.get(url, headers: [], key_name: None) within 100 * millisecond
+  let cut: internal Text = when second
+    is Ok(response) -> "ok {{response.status}}"
+    is Err(e) -> "{{e}}"
+  @files.write("v.txt", content: "{{shown(first)}}|{{cut}}")
+    if error pass
   @console.print("done")
 "#
     );
     let dir = package(
         "cut",
         &format!(
-            "    console\n    http \"http://127.0.0.1:{port}\" get\n      at most 1 per hour\n"
+            "    console\n{OUT}    http \"http://127.0.0.1:{port}\" get\n      at most 1 per hour\n"
         ),
         &program,
     );
@@ -333,10 +369,11 @@ pub main() -> Unit
         assert!(time < Duration::from_secs(15), "{time:?}");
         assert_eq!(
             outcomes(&trace),
-            ["redacted", "redacted", "timeout", "ok"],
+            ["redacted", "redacted", "timeout", "ok", "ok"],
             "{trace}"
         );
     }
+    assert_eq!(written(&dir), "ok 200|TimedOut");
     assert_eq!(server.take(), 2);
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -347,28 +384,37 @@ fn the_http_timeout_covers_a_wait_at_a_limit_in_both_engines() {
     let port = server.port;
     let program = format!(
         r#"module timed
-
+{SHOWN}
 pub main() -> Unit
   uses @console: Console[print]
+  uses @files: Files[write]
   uses @http: Http[get]
+  fails FileError
 =
   let first = attempt @http.get("http://127.0.0.1:{port}/a", headers: [], key_name: None)
   let second = attempt @http.get("http://127.0.0.1:{port}/b", headers: [], key_name: None)
+  @files.write("v.txt", content: "{{shown(first)}}|{{shown(second)}}")
+    if error pass
   @console.print("done")
 "#
     );
     let dir = package(
         "timed",
         &format!(
-            "    console\n    http \"http://127.0.0.1:{port}\" get\n      at most 1 per hour\n"
+            "    console\n{OUT}    http \"http://127.0.0.1:{port}\" get\n      at most 1 per hour\n"
         ),
         &program,
     );
     for (time, trace) in both(&dir, "timed", &["--http-timeout", "1"]) {
         assert!(time >= Duration::from_millis(900), "{time:?}");
         assert!(time < Duration::from_secs(15), "{time:?}");
-        assert_eq!(outcomes(&trace), ["redacted", "redacted", "ok"], "{trace}");
+        assert_eq!(
+            outcomes(&trace),
+            ["redacted", "redacted", "ok", "ok"],
+            "{trace}"
+        );
     }
+    assert_eq!(written(&dir), "ok 200|TimedOut");
     assert_eq!(server.take(), 2);
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -4811,19 +4811,27 @@ fn a_host_stop_interrupts_a_waiting_request_in_a_for_ever_body_in_both_engines()
         "module poll
 
 pub main() -> Unit
+  uses @files: Files[write]
   uses @http: Http[get]
   diverges
 =
   for ever
     let reply = attempt @http.get(\"http://127.0.0.1:{port}/\", headers: [], key_name: None)
+    let shown: internal Text = when reply
+      is Ok(response) -> \"ok\"
+      is Err(e) -> \"{{e}}\"
+    let w = attempt @files.write(\"v.txt\", content: shown)
     unit
 "
     );
     let dir = ita_package(
         "poll",
-        &format!("\nrun\n  entry poll\n  grants\n    http \"http://127.0.0.1:{port}\" get\n"),
+        &format!(
+            "\nrun\n  entry poll\n  grants\n    files \"out/\" write\n    http \"http://127.0.0.1:{port}\" get\n"
+        ),
         &[("src/poll.una", &program)],
     );
+    std::fs::create_dir_all(dir.join("out")).unwrap();
     let trace = dir.join("trace.json");
     let [mut run, mut native] = engines(&dir, "poll", &["--http-timeout", "600"]);
     run.arg("--json");
@@ -4859,6 +4867,12 @@ pub main() -> Unit
             serde_json::from_slice::<Value>(&std::fs::read(&trace).unwrap()).unwrap()
         });
         drop(connection);
+        // S-45 (#1552): the trace redacts the request's outcome; the program wrote its variant.
+        assert_eq!(
+            std::fs::read_to_string(dir.join("out/v.txt")).unwrap(),
+            "Interrupted"
+        );
+        std::fs::remove_file(dir.join("out/v.txt")).unwrap();
     }
     for events in &traces {
         assert_eq!(events[0]["op"], "get", "{events}");
@@ -4870,8 +4884,9 @@ pub main() -> Unit
             serde_json::json!({"kind": "redacted", "level": "internal"}),
             "{events}"
         );
-        assert_eq!(events[1]["outcome"]["kind"], "stop", "{events}");
-        assert_eq!(events.as_array().unwrap().len(), 2, "{events}");
+        assert_eq!(events[1]["op"], "write", "{events}");
+        assert_eq!(events[2]["outcome"]["kind"], "stop", "{events}");
+        assert_eq!(events.as_array().unwrap().len(), 3, "{events}");
     }
     assert_eq!(traces[0], traces[1]);
     let _ = std::fs::remove_dir_all(&dir);

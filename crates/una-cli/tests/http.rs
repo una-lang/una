@@ -140,6 +140,17 @@ impl Server {
     }
 }
 
+/// A function that writes a request's outcome as text, `ok <status>` or the failure's
+/// variant: the programs of the deadline tests write it to `out/v.txt`, since a run's trace
+/// redacts it (S-45, #1552), so they still check the variant.
+const SHOWN: &str = r#"
+shown(r: internal Result[internal Response, internal HttpError]) -> internal Text
+=
+  when r
+    is Ok(response) -> "ok {response.status}"
+    is Err(e) -> "{e}"
+"#;
+
 /// A program that makes one request of each kind and writes what each gave, one per line.
 fn program(port: u16) -> String {
     format!(
@@ -581,9 +592,10 @@ fn a_for_ever_within_deadline_cuts_http_waits_in_both_engines() {
         r#"module poll
 
 import std.time (millisecond)
-
+{SHOWN}
 pub main() -> Unit
   uses @console: Console[print]
+  uses @files: Files[write]
   uses @http: Http[get]
   diverges
 =
@@ -592,6 +604,7 @@ pub main() -> Unit
     stop when n == 2
     let first = attempt @http.get("http://127.0.0.1:{port}/a", headers: [], key_name: None)
     let second = attempt @http.get("http://127.0.0.1:{port}/b", headers: [], key_name: None)
+    let w = attempt @files.write("v{{n}}.txt", content: "{{shown(first)}}|{{shown(second)}}")
     @console.print("iteration {{n}}")
     n = n + 1
   @console.print("done {{n}}")
@@ -600,10 +613,11 @@ pub main() -> Unit
     let dir = std::env::temp_dir().join(format!("una-http-within-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::create_dir_all(dir.join("out")).unwrap();
     std::fs::write(
         dir.join("ita.una"),
         format!(
-            "ita within\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry poll\n  grants\n    console\n    http \"http://127.0.0.1:{port}\" get\n"
+            "ita within\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry poll\n  grants\n    console\n    files \"out/\" write\n    http \"http://127.0.0.1:{port}\" get\n"
         ),
     )
     .unwrap();
@@ -647,11 +661,20 @@ pub main() -> Unit
         outcomes,
         [
             // S-45 (#1552, `spec/11 §5`): a request's outcome, `internal`, is redacted in a
-            // run's trace; its `TimedOut` shows only in the iteration's `timeout` event.
-            "redacted", "timeout", "redacted", "ok", "redacted", "timeout", "redacted", "ok", "ok",
+            // run's trace; the program writes its variant to `out/` (below).
+            "redacted", "timeout", "redacted", "ok", "ok", "redacted", "timeout", "redacted", "ok",
+            "ok", "ok",
         ],
         "{trace}"
     );
+    // The variants, which the program wrote: the first request cut by the deadline, the
+    // second started after it.
+    for n in 0..2 {
+        assert_eq!(
+            std::fs::read_to_string(dir.join(format!("out/v{n}.txt"))).unwrap(),
+            "TimedOut|TimedOut"
+        );
+    }
     assert_eq!(
         trace[1],
         serde_json::json!({"seq": 2, "outcome": {"kind": "timeout"}})
@@ -697,21 +720,27 @@ import std.time (millisecond)
 
 pub main() -> Unit
   uses @console: Console[print]
+  uses @files: Files[write]
   uses @http: Http[get]
 =
   let outcome = attempt @http.get("http://127.0.0.1:{port}/a", headers: [],
     key_name: None
   ) within 50 * millisecond
+  let shown: internal Text = when outcome
+    is Ok(response) -> "ok {{response.status}}"
+    is Err(e) -> "{{e}}"
+  let w = attempt @files.write("v.txt", content: shown)
   @console.print("done")
 "#
     );
     let dir = std::env::temp_dir().join(format!("una-http-cut-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::create_dir_all(dir.join("out")).unwrap();
     std::fs::write(
         dir.join("ita.una"),
         format!(
-            "ita cut\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry cut\n  grants\n    console\n    http \"http://127.0.0.1:{port}\" get\n"
+            "ita cut\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry cut\n  grants\n    console\n    files \"out/\" write\n    http \"http://127.0.0.1:{port}\" get\n"
         ),
     )
     .unwrap();
@@ -751,8 +780,13 @@ pub main() -> Unit
             }
         })
         .collect();
-    // S-45 (#1552): the request's outcome is redacted in a run's trace.
-    assert_eq!(outcomes, ["redacted", "timeout", "ok"], "{trace}");
+    // S-45 (#1552): the request's outcome is redacted in a run's trace; the program wrote
+    // its variant.
+    assert_eq!(outcomes, ["redacted", "timeout", "ok", "ok"], "{trace}");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("out/v.txt")).unwrap(),
+        "TimedOut"
+    );
 
     let built = una(&dir, &["build", "."]);
     assert_eq!(built.status.code(), Some(0), "{built:?}");
@@ -789,9 +823,10 @@ fn the_timeout_event_of_tasks_is_the_same_in_every_run_and_both_engines() {
         r#"module poll
 
 import std.time (millisecond)
-
+{SHOWN}
 pub main() -> Unit
   uses @console: Console[print]
+  uses @files: Files[write]
   uses @http: Http[get]
   diverges
 =
@@ -801,6 +836,7 @@ pub main() -> Unit
     together
       let first = attempt @http.get("http://127.0.0.1:{port}/a", headers: [], key_name: None)
       let second = attempt @http.get("http://127.0.0.1:{port}/b", headers: [], key_name: None)
+    let w = attempt @files.write("v{{n}}.txt", content: "{{shown(first)}}|{{shown(second)}}")
     @console.print("iteration {{n}}")
     n = n + 1
 "#
@@ -808,10 +844,11 @@ pub main() -> Unit
     let dir = std::env::temp_dir().join(format!("una-http-within-tasks-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::create_dir_all(dir.join("out")).unwrap();
     std::fs::write(
         dir.join("ita.una"),
         format!(
-            "ita tasked\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry poll\n  grants\n    console\n    http \"http://127.0.0.1:{port}\" get\n"
+            "ita tasked\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry poll\n  grants\n    console\n    files \"out/\" write\n    http \"http://127.0.0.1:{port}\" get\n"
         ),
     )
     .unwrap();
@@ -850,15 +887,24 @@ pub main() -> Unit
         ("2", "redacted"),
         ("", "timeout"),
         ("", "ok"),
+        ("", "ok"),
         ("1", "redacted"),
         ("2", "redacted"),
         ("", "timeout"),
+        ("", "ok"),
         ("", "ok"),
     ]
     .iter()
     .map(|(task, outcome)| ((*task).to_owned(), (*outcome).to_owned()))
     .collect();
     assert_eq!(shape, expected, "{trace}");
+    // The variants, which the program wrote: both requests cut by the deadline.
+    for n in 0..2 {
+        assert_eq!(
+            std::fs::read_to_string(dir.join(format!("out/v{n}.txt"))).unwrap(),
+            "TimedOut|TimedOut"
+        );
+    }
 
     let built = una(&dir, &["build", "."]);
     assert_eq!(built.status.code(), Some(0), "{built:?}");

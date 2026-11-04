@@ -703,6 +703,57 @@ fn s45_an_example_trace_keeps_its_outcomes_in_clear() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Two `acquire`s of a limiter with one token and no queue, in an example and in a run.
+const LIMITED: &str = r#"module leak
+
+import std.limit (Limit, limiter)
+import std.time (minute)
+
+pub twice() -> Unit
+  uses @gate: Limit[acquire]
+=
+  let a = attempt @gate.acquire()
+  let b = attempt @gate.acquire()
+  unit
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  twice() with @gate = limiter(at_most: 1, per: minute, waiting: 0)
+  @console.print("done")
+
+test "the second acquire finds no token"
+  given @gate = limiter(at_most: 1, per: minute, waiting: 0)
+  do twice()
+  expect performed @gate.acquire
+"#;
+
+#[test]
+fn s45_a_limiter_failure_keeps_its_variant_in_an_example_trace() {
+    // Review L2 of #1562: a run's trace redacts every `acquire` outcome, so the variant
+    // `RateLimited` is checked where it stays visible, in an example's trace (ADR 0078).
+    let dir = package("s45limited", &Manifest::Ita(""), LIMITED);
+    let tested = una(&dir, &["--json", "test", "."]);
+    let document: Value = serde_json::from_slice(&tested.stdout).unwrap();
+    assert_eq!(tested.status.code(), Some(0), "{document}");
+    assert_eq!(
+        outcomes(&document["tests"][0]["trace"]),
+        ["acquire:ok", "acquire:fail:RateLimited"],
+        "{document}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    let trace = one_trace("s45limitedrun", &Manifest::Ita(""), LIMITED, &[0], &[]);
+    assert_eq!(
+        outcomes(&trace),
+        [
+            "acquire:redacted:internal",
+            "acquire:redacted:internal",
+            "print:ok"
+        ],
+        "{trace}"
+    );
+}
+
 #[test]
 fn s45_core_carries_the_outcome_label_of_each_operation() {
     // S45-2: `una --json core` holds `outcome` on each `op` node, after `labels`, and the text
