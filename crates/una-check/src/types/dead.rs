@@ -130,6 +130,7 @@ pub(crate) fn judge(
         BTreeSet::new()
     };
     for site in sites {
+        una_core::label_counters::pass_step();
         let judged = !family
             || plain(
                 &site,
@@ -192,6 +193,7 @@ fn poisoned(findings: &Findings, in_error: &BTreeSet<usize>) -> BTreeSet<usize> 
     let mut todo: Vec<usize> = poisoned.iter().copied().collect();
     while let Some(function) = todo.pop() {
         for &caller in mentioned_by.get(&function).map_or(&[][..], Vec::as_slice) {
+            una_core::label_counters::pass_step();
             if poisoned.insert(caller) {
                 todo.push(caller);
             }
@@ -213,6 +215,7 @@ fn plain(
     let first = Position { line: 0, col: 0 };
     if sites_of_family
         .range((expr.file.clone(), expr.start, first)..(expr.file.clone(), expr.end, first))
+        .inspect(|_| una_core::label_counters::pass_step())
         .any(|(_, _, end)| *end <= expr.end)
     {
         return false;
@@ -225,6 +228,7 @@ fn plain(
         .res
         .range(Span::at(site.expr.file, site.expr.start)..)
         .take_while(|(span, _)| span.file == site.expr.file && span.start < site.expr.end)
+        .inspect(|_| una_core::label_counters::pass_step())
         .filter(|(span, _)| inside(span));
     for (span, res) in calls_and_mentions {
         match res {
