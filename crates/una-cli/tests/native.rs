@@ -7226,6 +7226,115 @@ fn s42_quiet_code_does_not_consume_the_iteration_timeout_event() {
     );
 }
 
+/// S-46 (#1563): a hidden `acquire` under an `internal` branch takes the one token, then a
+/// public `acquire` follows. What the program decides from whether that call failed stays
+/// `internal`: a count it returns, an `if error use` that handles the failure in place, and a
+/// value it never prints.
+const LIMITED_KEPT: &str = r#"module leak
+
+import std.limit (Limit, Limited, limiter)
+import std.time (minute)
+
+maybe(s: internal Int) -> Unit
+  uses @gate: Limit[acquire]
+=
+  if s > 0
+    let a = attempt @gate.acquire()
+    unit
+  else
+    unit
+
+taken(got: internal Result[Unit, internal Limited]) -> internal Int
+=
+  when got
+    is Ok(took) -> 1
+    is Err(failure) -> 0
+
+step(s: internal Int) -> internal Int
+  uses @gate: Limit[acquire]
+  uses @console: Console[print]
+=
+  maybe(s)
+  let b = attempt @gate.acquire()
+  @gate.acquire()
+    if error use unit
+  @console.print("asked")
+  taken(b)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let s: internal Int = SECRET
+  let count = step(s) with @gate = limiter(at_most: 1, per: minute, waiting: 0)
+  let kept: internal Int = count + 1
+  @console.print("done")
+"#;
+
+/// S-46 (#1563), `lim_branch.una` of the review of #1562 verbatim: it printed "token" when
+/// `s = 0` and "none" when `s = 1`.
+const LIMITED_BRANCH: &str = r#"module leak
+
+import std.limit (Limit, limiter)
+import std.time (minute)
+
+maybe(s: internal Int) -> Unit
+  uses @gate: Limit[acquire]
+=
+  if s > 0
+    let a = attempt @gate.acquire()
+    unit
+  else
+    unit
+
+step(s: internal Int) -> Unit
+  uses @gate: Limit[acquire]
+  uses @console: Console[print]
+=
+  maybe(s)
+  let b = attempt @gate.acquire()
+  when b
+    is Ok(v) -> @console.print("token")
+    is Err(e) -> @console.print("none")
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let s: internal Int = SECRET
+  step(s) with @gate = limiter(at_most: 1, per: minute, waiting: 0)
+  @console.print("done")
+"#;
+
+#[test]
+fn s46_limited_is_internal_so_the_output_is_the_same_for_every_secret() {
+    // S-46 (#1563), `spec/27 §10` rule 4: `Limited` is labeled `internal`. The program still
+    // compiles, and its whole output is the same in both engines for every secret, although the
+    // hidden `acquire` takes the token only when `s > 0`. `secret_run` checks the executable's
+    // output against the interpreter's.
+    let mut outputs = Vec::new();
+    for secret in [0, 1, 3] {
+        let (output, _, _) = secret_run("s46kept", LIMITED_KEPT, secret, &[]);
+        outputs.push(output);
+    }
+    assert_eq!(outputs[0], serde_json::json!(["asked", "done"]));
+    assert!(outputs.iter().all(|o| *o == outputs[0]), "{outputs:?}");
+    // The program that prints whether the public `acquire` failed is rejected: its prints run
+    // under the `internal` condition (U4003), in `una check` and in `una build`.
+    let branch = LIMITED_BRANCH.replace("SECRET", "1");
+    let dir = ita_package("s46branch", &ever_run("leak"), &[("src/leak.una", &branch)]);
+    let checked = una(&dir, &["--json", "check"]);
+    assert_eq!(checked.status.code(), Some(1), "{checked:?}");
+    let document: Value = serde_json::from_slice(&checked.stdout).unwrap();
+    let codes: Vec<&str> = document["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["code"].as_str().unwrap())
+        .collect();
+    assert_eq!(codes, ["U4003", "U4003"], "{document}");
+    let built = una(&dir, &["build"]);
+    assert_ne!(built.status.code(), Some(0), "{built:?}");
+}
+
 /// S-40 (#1512), review H2 of #1511 (`taskid3.una` verbatim): a finite task started under a
 /// `secret` branch, then a public task that prints, in the same `tasks` statement.
 const SECRET_START_INDEX: &str = r#"module leak

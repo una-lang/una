@@ -1,0 +1,18 @@
+-- test: `Limited` is `internal` whatever handler serves `acquire`: through a handler of the package, a public print that branches on whether it failed is U4003 too (S-46, spec/27 §10 rule 4)
+-- spec: spec/27 §10
+-- expect: error U4003 at src/gate.una:17:17
+-- expect: error U4003 at src/gate.una:18:18
+module gate
+
+import std.limit (Limit, Limited)
+
+handler never() for Limit
+  op acquire() = fail RateLimited
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let got = attempt @gate.acquire() with @gate = never()
+  when got
+    is Ok(v) -> @console.print("token")
+    is Err(e) -> @console.print("none")

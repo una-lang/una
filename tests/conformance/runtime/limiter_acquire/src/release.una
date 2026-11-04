@@ -1,0 +1,11 @@
+--- Releases what a program decided from whether `acquire` failed, `internal` as `Limited` is.
+trusted module release
+
+pub policy shown
+  from internal Text
+  to Text
+  via same
+  purpose "show in a test whether a limiter served its calls"
+  owner tests
+
+same(text: internal Text) -> Text = text
