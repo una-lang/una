@@ -16,7 +16,7 @@ installs its state, stays pending until that task's next check point.
 
 A worker sets a turn's end when it takes the job, before the task installs its state. If the
 install took the word's value as seen, a raise that came in between was lost. The slicer
-raises each end only once, so the task kept its worker. Then a ready task's wait was not
+raised each end only once (it now raises again while the turn stays overdue with another task waiting, #1535), so a lost raise left the task on its worker. Then a ready task's wait was not
 bounded by the slices ahead of it, which breaks the Fairness bound of rule 2. The cost is one
 slow path at most per task start, and only when a raise is pending. Under virtual time the seen
 value is not read, so traces and stop schedules do not change.

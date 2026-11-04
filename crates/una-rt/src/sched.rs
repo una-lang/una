@@ -705,8 +705,9 @@ fn nanos() -> u64 {
 /// new end when the next one begins ([`Worker::next`]), which stops the raises. An end that
 /// moved after it was read is handled again at its new value, and a raise before a turn's end
 /// costs one slow path, where [`turn_due`] finds the turn not over. Each wake is O(w) in the
-/// w workers, with O(w) state, one end and one time per worker, as before the raises again;
-/// a check point does no more than before, one clock read on its slow path.
+/// w workers, with O(w) state (one end and one time per worker, where it was one end before
+/// the raises were repeated). A check point does no more than before: one clock read on its
+/// slow path.
 fn slice(scheduler: &std::sync::Weak<Scheduler>) {
     // Per worker: the end last handled, and when it is due to be handled again, if its turn
     // still stays at it.
