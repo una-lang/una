@@ -49,6 +49,49 @@ const OUT_OF_MODEL: [&str; 13] = [
 /// The capabilities of the prelude, whose implementations the host provides (`spec/14 §3`).
 const HOST_CAPABILITIES: [&str; 6] = ["Console", "Clock", "Env", "Files", "Keys", "Http"];
 
+/// The premises on the host that acceptance rests on (ADR 0094 rule 5), in the order of
+/// `spec/13 §6`: an id and its statement, as `spec/13 §6` writes it. They are assumed of
+/// the deployment, never proven: the report lists each with what the package uses it for.
+const PREMISES: [(&str, &str); 6] = [
+    (
+        "H1",
+        "whether a read fails depends on the path and on which files exist, not on their content",
+    ),
+    (
+        "H2",
+        "whether a write fails, and which files it leaves, does not depend on what it writes",
+    ),
+    (
+        "H3",
+        "a response does not depend on the program's type annotations (the host is given text)",
+    ),
+    (
+        "H4",
+        "every successful HTTP response is a `Response` of `spec/24`",
+    ),
+    (
+        "Env",
+        "the environment variables that exist are the same in both runs; their values may differ",
+    ),
+    (
+        "H5",
+        "what an operation answers through a binding where it is labeled l′, and whether it fails, is a function only of the arguments and of the part of the host state at or below l′",
+    ),
+];
+
+/// Whether the premise `id` covers the host operation `capability.op`: H1 the reads of
+/// `Files`, H2 its writes, H3 and H4 every operation of `Http`, and the `Env` note every
+/// operation of `Env`. H5 covers labeled operations instead.
+fn covers(id: &str, capability: &str, op: &str) -> bool {
+    match id {
+        "H1" => capability == "Files" && op == "read",
+        "H2" => capability == "Files" && op == "write",
+        "H3" | "H4" => capability == "Http",
+        "Env" => capability == "Env",
+        _ => false,
+    }
+}
+
 /// `una.report/2`, with keys in the order of `spec/13 §6`.
 #[derive(Serialize)]
 struct Report {
@@ -64,6 +107,9 @@ struct Report {
     information: InformationDoc,
     escapes: EscapesDoc,
     assumptions: Vec<AssumptionDoc>,
+    /// The host premises, each with what it is used for (ADR 0094 rule 5): additive under
+    /// ADR 0076.
+    premises: Vec<PremiseDoc>,
     tcb: TcbDoc,
     requirements: Vec<RequirementDoc>,
     coverage: CoverageDoc,
@@ -266,6 +312,16 @@ struct AssumptionDoc {
     capability: String,
     operations: Vec<String>,
     ensures: Vec<String>,
+}
+
+/// A premise on the host, assumed and not proven, with the host operations
+/// (`Capability.op`) or the labeled operations (`module.function: @binding.op gives label`)
+/// of the package that rely on it, `[]` when none does.
+#[derive(Serialize)]
+struct PremiseDoc {
+    id: &'static str,
+    statement: &'static str,
+    used_for: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -518,16 +574,6 @@ fn build(
             })
         })
         .collect();
-    let declared_capabilities: BTreeSet<&str> = program
-        .modules
-        .iter()
-        .flat_map(|module| {
-            module.decls.iter().filter_map(|decl| match decl {
-                Decl::Cap { name, .. } => Some(name.as_str()),
-                _ => None,
-            })
-        })
-        .collect();
     // ADR 0067: the result summaries of the public generic functions.
     let generic_results: Vec<GenericResultDoc> = analysis
         .headers
@@ -557,17 +603,30 @@ fn build(
         .collect();
     let mut authority = Vec::new();
     let mut host = BTreeSet::new();
+    // The host operations the package's functions and handlers use, and its labeled operations.
+    let mut host_ops: BTreeSet<(String, String)> = BTreeSet::new();
+    let mut labeled: Vec<String> = Vec::new();
     for header in &analysis.headers {
         if header.uses.is_empty() && header.uses_of.is_empty() {
             continue;
         }
         let function = format!("{}.{}", header.module, header.name);
         for used in &header.uses {
-            if HOST_CAPABILITIES.contains(&used.capability.as_str())
-                && !declared_capabilities.contains(used.capability.as_str())
-            {
+            // The host's own capability, not a package capability of the same name.
+            if used.host && HOST_CAPABILITIES.contains(&used.capability.as_str()) {
                 host.insert(used.capability.clone());
+                host_ops.extend(
+                    used.ops
+                        .iter()
+                        .map(|op| (used.capability.clone(), op.clone())),
+                );
             }
+            // ADR 0094 rule 5: every labeled operation relies on H5, in declaration order.
+            labeled.extend(
+                used.gives
+                    .iter()
+                    .map(|(op, label)| format!("{function}: @{}.{op} gives {label}", used.cap)),
+            );
         }
         authority.push(AuthorityDoc {
             public: public.get(&function).copied().unwrap_or(false),
@@ -583,6 +642,26 @@ fn build(
         });
     }
     authority.sort_by(|a, b| a.function.cmp(&b.function));
+    // A handler's host operations count as a function's do, and its labeled operations rely on
+    // H5 too, after the functions'.
+    for handler in &analysis.handler_headers {
+        let name = format!("{}.{}", handler.module, handler.name);
+        for used in &handler.uses {
+            if used.host && HOST_CAPABILITIES.contains(&used.capability.as_str()) {
+                host.insert(used.capability.clone());
+                host_ops.extend(
+                    used.ops
+                        .iter()
+                        .map(|op| (used.capability.clone(), op.clone())),
+                );
+            }
+            labeled.extend(
+                used.gives
+                    .iter()
+                    .map(|(op, label)| format!("{name}: @{}.{op} gives {label}", used.cap)),
+            );
+        }
+    }
     // ADR 0081 (#14): every handler with `uses`, whose host capabilities count for the TCB too.
     let public_handlers = public_handlers(&modules);
     let mut handler_authority = Vec::new();
@@ -600,13 +679,8 @@ fn build(
             if uses.is_empty() {
                 continue;
             }
-            for used in uses {
-                if HOST_CAPABILITIES.contains(&used.capability.as_str())
-                    && !declared_capabilities.contains(used.capability.as_str())
-                {
-                    host.insert(used.capability.clone());
-                }
-            }
+            // Its host capabilities were counted from `handler_headers`, which tell the host's
+            // from a package capability of the same name.
             let handler = format!("{}.{name}", module.path);
             handler_authority.push(HandlerAuthorityDoc {
                 public: public_handlers.contains(&handler),
@@ -684,6 +758,22 @@ fn build(
         }
     }
     assumptions.sort_by(|a, b| a.capability.cmp(&b.capability));
+    let premises = PREMISES
+        .iter()
+        .map(|(id, statement)| PremiseDoc {
+            id,
+            statement,
+            used_for: if *id == "H5" {
+                labeled.clone()
+            } else {
+                host_ops
+                    .iter()
+                    .filter(|(capability, op)| covers(id, capability, op))
+                    .map(|(capability, op)| format!("{capability}.{op}"))
+                    .collect()
+            },
+        })
+        .collect();
     // The root's own trusted modules; those of dependencies are under `dependency_trust`.
     let mut trusted_modules: Vec<TrustedDoc> = manifest
         .trusted
@@ -789,6 +879,7 @@ fn build(
         },
         escapes,
         assumptions,
+        premises,
         tcb: TcbDoc {
             trusted_modules,
             host_capabilities: host.into_iter().collect(),
@@ -932,7 +1023,7 @@ impl Sites {
             | Expr::Tasks { body, .. } => {
                 self.expr(body);
             }
-            Expr::Start { task, .. } => self.expr(task),
+            Expr::Start { task, .. } | Expr::Quiet { body: task, .. } => self.expr(task),
             Expr::Atom { .. }
             | Expr::Fail { .. }
             | Expr::Exit { .. }
@@ -1160,6 +1251,16 @@ fn human(report: &Report) -> String {
             assumption.capability,
             assumption.operations.join(", ")
         ));
+    }
+    // ADR 0094 rule 5: what the package assumes of the host, never proven.
+    line("assumed of the host:".to_owned());
+    for premise in &report.premises {
+        let used_for = if premise.used_for.is_empty() {
+            "nothing".to_owned()
+        } else {
+            premise.used_for.join(", ")
+        };
+        line(format!("  {}: used for {used_for}", premise.id));
     }
     line("tcb:".to_owned());
     let trusted: Vec<String> = report

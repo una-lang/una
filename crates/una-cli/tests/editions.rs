@@ -76,6 +76,20 @@ enum Difference {
         /// The diagnostics of edition `0.2` that edition `0.3` does not report.
         edition_0_2: &'static [(&'static str, &'static str)],
     },
+    /// Only the repairs differ (ADR 0093 rule 6): edition `0.3` reports the same diagnostics,
+    /// messages and positions as edition `0.2`, and ranks a narrowed rebinding first and a
+    /// widening of a public header last, marked. Each diagnostic keeps at least its repairs'
+    /// count, since edition `0.3` only adds routes that keep authority and changes texts, and
+    /// `fixable` may grow with them. The repairs of edition `0.3` are pinned exactly, and an
+    /// edit that `una fix` may apply in edition `0.3` and not in `0.2` is one narrowed
+    /// rebinding, which widens nothing.
+    Repairs {
+        /// The package, relative to `tests/conformance`.
+        case: &'static str,
+        /// Every diagnostic of edition `0.3`, in output order: its code, line, column and
+        /// repairs, each as (widening kind or "", description, edit replacement or "").
+        edition_0_3: &'static [PinnedRepairs],
+    },
 }
 
 impl Difference {
@@ -85,7 +99,8 @@ impl Difference {
             Difference::Syntax { case, .. }
             | Difference::Stricter { case, .. }
             | Difference::Renamed { case, .. }
-            | Difference::Looser { case, .. } => case,
+            | Difference::Looser { case, .. }
+            | Difference::Repairs { case, .. } => case,
         }
     }
 
@@ -95,7 +110,8 @@ impl Difference {
             Difference::Syntax { case, twin, .. } => vec![*case, *twin],
             Difference::Stricter { case, .. }
             | Difference::Renamed { case, .. }
-            | Difference::Looser { case, .. } => vec![*case],
+            | Difference::Looser { case, .. }
+            | Difference::Repairs { case, .. } => vec![*case],
         }
     }
 }
@@ -103,6 +119,92 @@ impl Difference {
 /// The edition `0.2` packages whose output in edition `0.3` differs by design, with the exact
 /// result of each edition.
 const EXPECTED_DIFFERENCES: &[Difference] = &[
+    // ADR 0093 rule 6: U3001 and U3002 rank a narrowed rebinding first and mark a widening of a
+    // public header as an authority change, last; nothing else differs.
+    Difference::Repairs {
+        case: "authority/narrowing_repairs_edition_0_2",
+        edition_0_3: &[
+            (
+                "U3002",
+                22,
+                3,
+                &[
+                    (
+                        "",
+                        "add `with @files = @store[read]` to this statement, since `@store` permits `read`",
+                        " with @files = @store[read]",
+                    ),
+                    (
+                        "authority",
+                        "add `read` to the `uses` clause of `@files`; this is an authority change of the public header of `more`, which every caller in every module must then hold",
+                        "uses @files: Files[read, write]",
+                    ),
+                ],
+            ),
+            (
+                "U3001",
+                27,
+                3,
+                &[
+                    (
+                        "",
+                        "add `with @files = @store[read]` to this statement, since `@store` permits `read`",
+                        " with @files = @store[read]",
+                    ),
+                    (
+                        "authority",
+                        "declare `uses @files: Files[read]` in the header; this is an authority change of the public header of `missing`, which every caller in every module must then hold",
+                        "\n  uses @files: Files[read]",
+                    ),
+                ],
+            ),
+            (
+                "U3002",
+                32,
+                3,
+                &[(
+                    "authority",
+                    "add `read` to the `uses` clause of `@files`",
+                    "uses @files: Files[read, write]",
+                )],
+            ),
+            (
+                "U3002",
+                37,
+                10,
+                &[(
+                    "authority",
+                    "add `read` to the `uses` clause of `@files`; this is an authority change of the public header of `direct`, which every caller in every module must then hold",
+                    "uses @files: Files[read, write]",
+                )],
+            ),
+        ],
+    },
+    Difference::Repairs {
+        case: "authority/value_uses_at_reference_0_2",
+        edition_0_3: &[
+            (
+                "U3001",
+                39,
+                16,
+                &[(
+                    "authority",
+                    "declare `uses @log: Log[write]` in the header; this is an authority change of the public header of `no_binding`, which every caller in every module must then hold",
+                    "\n  uses @log: Log[write]",
+                )],
+            ),
+            (
+                "U3003",
+                41,
+                40,
+                &[(
+                    "authority",
+                    "declare `uses @log: Log[write]` in the header",
+                    "\n  uses @log: Log[write]\n=\n  ",
+                )],
+            ),
+        ],
+    },
     // ADR 0105 rule 3: an `example` declaration is U0103 in edition 0.3, where the test
     // declaration is written `test`, with the exact rewrite that `una fix` applies.
     Difference::Stricter {
@@ -1013,6 +1115,9 @@ fn every_expected_difference_is_exact() {
             Difference::Looser { case, edition_0_2 } => {
                 looser(&root, &scratch, case, edition_0_2);
             }
+            Difference::Repairs { case, edition_0_3 } => {
+                repairs_only(&root, &scratch, case, edition_0_3);
+            }
         }
     }
 }
@@ -1119,6 +1224,158 @@ fn stricter(root: &Path, scratch: &Path, name: &str, added: &[(&str, &str)]) {
     assert!(!added.is_empty(), "{name}: a stricter entry adds nothing");
     assert_eq!(status, Some(1), "{name} as edition 0.3");
     differs_by(name, "edition 0.3", "edition 0.2", after, &before, added);
+}
+
+/// A diagnostic's code, line, column and repairs, as [`Difference::Repairs`] pins them.
+type PinnedRepairs = (
+    &'static str,
+    u64,
+    u64,
+    &'static [(&'static str, &'static str, &'static str)],
+);
+
+/// A repair as (widening kind or "", description, edit replacement or "").
+type RepairRow = (String, String, String);
+
+/// A diagnostic's code, line, column and repairs, as found.
+type FoundRepairs = (String, u64, u64, Vec<RepairRow>);
+
+/// Each repair of `diagnostic` as a [`RepairRow`].
+fn repair_rows(diagnostic: &Value) -> Vec<RepairRow> {
+    diagnostic["repairs"]
+        .as_array()
+        .map(|repairs| {
+            repairs
+                .iter()
+                .map(|repair| {
+                    (
+                        repair["widens"]["kind"].as_str().unwrap_or("").to_owned(),
+                        repair["description"].as_str().unwrap_or("").to_owned(),
+                        repair["edit"]["replacement"]
+                            .as_str()
+                            .unwrap_or("")
+                            .to_owned(),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Whether `text` is one narrowed rebinding added to a statement, ` with @x = @y[ops]` or
+/// `, @x = @y[ops]` (ADR 0093 rule 6): it passes the callee only the operations listed, and
+/// adds nothing to a header.
+fn narrowed_rebinding(text: &str) -> bool {
+    let name = |part: &str| {
+        part.strip_prefix('@').is_some_and(|rest| {
+            !rest.is_empty() && rest.chars().all(|c| c.is_alphanumeric() || c == '_')
+        })
+    };
+    text.strip_prefix(" with ")
+        .or_else(|| text.strip_prefix(", "))
+        .and_then(|binding| binding.split_once(" = "))
+        .and_then(|(target, source)| {
+            let (held, ops) = source.strip_suffix(']')?.split_once('[')?;
+            Some(
+                name(target)
+                    && name(held)
+                    && ops.split(", ").all(|op| {
+                        !op.is_empty() && op.chars().all(|c| c.is_alphanumeric() || c == '_')
+                    }),
+            )
+        })
+        .unwrap_or(false)
+}
+
+/// A [`Difference::Repairs`]: the two documents are the same once each diagnostic's repairs
+/// and the `fixable` count are set aside, they differ, no diagnostic of edition `0.3` has fewer
+/// repairs than in edition `0.2`, `fixable` never falls, the repairs of edition `0.3` are
+/// exactly `pinned`, and every edit that `una fix` may apply in edition `0.3` and not in `0.2`
+/// is a narrowed rebinding that widens nothing.
+fn repairs_only(root: &Path, scratch: &Path, name: &str, pinned: &[PinnedRepairs]) {
+    let case = root.join(name);
+    let (before_status, before, _) = check_as(&case, scratch, EDITION_0_2);
+    let (after_status, after, _) = check_as(&case, scratch, EDITION_0_3);
+    let before: Value = serde_json::from_slice(&before).unwrap();
+    let after: Value = serde_json::from_slice(&after).unwrap();
+    assert_eq!(before_status, after_status, "{name}");
+    assert_ne!(before, after, "{name}: a repairs entry differs in nothing");
+    // A narrowing route with an edit makes a diagnostic fixable (ADR 0096 rule 6), never less.
+    assert!(
+        after["fixable"].as_u64() >= before["fixable"].as_u64(),
+        "{name}: edition 0.3 is less fixable"
+    );
+    let without = |document: &Value| {
+        let mut document = document.clone();
+        document.as_object_mut().unwrap().remove("fixable");
+        for diagnostic in document["diagnostics"].as_array_mut().unwrap() {
+            diagnostic.as_object_mut().unwrap().remove("repairs");
+        }
+        document
+    };
+    assert_eq!(
+        without(&before),
+        without(&after),
+        "{name}: more than repairs differ"
+    );
+    let counts = |document: &Value| -> Vec<usize> {
+        document["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["repairs"].as_array().map_or(0, Vec::len))
+            .collect()
+    };
+    for (old, new) in counts(&before).into_iter().zip(counts(&after)) {
+        assert!(new >= old, "{name}: edition 0.3 drops a repair");
+    }
+    let found: Vec<FoundRepairs> = after["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| {
+            (
+                d["code"].as_str().unwrap().to_owned(),
+                d["primary"]["start"]["line"].as_u64().unwrap(),
+                d["primary"]["start"]["col"].as_u64().unwrap(),
+                repair_rows(d),
+            )
+        })
+        .collect();
+    let expected: Vec<FoundRepairs> = pinned
+        .iter()
+        .map(|(code, line, col, repairs)| {
+            (
+                (*code).to_owned(),
+                *line,
+                *col,
+                repairs
+                    .iter()
+                    .map(|(w, d, e)| ((*w).to_owned(), (*d).to_owned(), (*e).to_owned()))
+                    .collect(),
+            )
+        })
+        .collect();
+    assert_eq!(found, expected, "{name}: the repairs of edition 0.3");
+    // An edit `una fix` may apply carries no widening; one that edition 0.2 does not offer is a
+    // narrowed rebinding (ADR 0093 rule 6, ADR 0084).
+    let applicable = |document: &Value| -> Vec<String> {
+        document["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(repair_rows)
+            .filter(|(widens, _, edit)| widens.is_empty() && !edit.is_empty())
+            .map(|(_, _, edit)| edit)
+            .collect()
+    };
+    let old = applicable(&before);
+    for edit in applicable(&after) {
+        assert!(
+            old.contains(&edit) || narrowed_rebinding(&edit),
+            "{name}: edition 0.3 makes an edit applicable that is not a narrowed rebinding: {edit:?}"
+        );
+    }
 }
 
 /// A [`Difference::Renamed`]: edition `0.3` reports what edition `0.2` does, with the test

@@ -353,6 +353,12 @@ pub(crate) struct Checker<'c, 'a, 's> {
     /// The labeled fields that interpolations wrote, by the text literal's span: the field,
     /// its kind and its declared label, which U4003 names at a sink (ADR 0068 D8).
     pub(crate) written_fields: Vec<(Span, String, String, Label)>,
+    /// In pass 2, the answers of operations that their binding labels (ADR 0094 rule 2): for
+    /// each distinct label, the earliest answer in source order that carries it, with the span
+    /// of the call, the binding and operation as written there, and the label. The U4001, U4002
+    /// and U4003 that such an answer causes name it (rule 7). Its length is bounded by the
+    /// distinct `gives` labels of the declaration's header and rebindings, not by its body.
+    pub(crate) answers: Vec<super::flow::Answer>,
     /// Set when an expression checked under [`Rl::Probe`] is outside the refinement language.
     pub(crate) probe_failed: bool,
     /// The instantiations of type parameters, judged when the declaration ends (U3016).
@@ -379,6 +385,9 @@ pub(crate) struct Statement {
     pub(crate) with: bool,
     /// The references its `with` clause binds.
     pub(crate) bound: Vec<String>,
+    /// The number of frames below its `with` frame: where the right-hand sides of its `with`
+    /// resolve, and so where a binding added to that `with` resolves (`spec/05 §3`).
+    pub(crate) outer: usize,
 }
 
 impl Names for Checker<'_, '_, '_> {
@@ -570,6 +579,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             needs: Vec::new(),
             interpolations: Vec::new(),
             written_fields: Vec::new(),
+            answers: Vec::new(),
             probe_failed: false,
             instantiations: Vec::new(),
             escaped: Vec::new(),
@@ -1283,9 +1293,9 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                 continue;
             }
             if self.pass == Pass::Check
-                && let Some((at, _, _)) = super::lock::header_site(self.env, def, entry, &op_name)
+                && let Some(site) = super::lock::header_site(self.env, def, entry, &op_name)
             {
-                self.obligation(ObligationKind::ContractLock, at, None);
+                self.obligation(ObligationKind::ContractLock, site.at, None);
             }
         }
     }

@@ -709,16 +709,29 @@ pub extern "C" fn una_rt_drive_tick() -> i64 {
     runtime::drive_tick()
 }
 
-/// 1 when a `for ever` stops at the iteration that starts now ([`runtime::ever_start`]).
+/// 1 when a `for ever` stops at the iteration that starts now, its instance having started
+/// `started` iterations ([`runtime::ever_start`]).
 #[unsafe(no_mangle)]
-pub extern "C" fn una_rt_ever_start() -> i64 {
-    runtime::ever_start()
+pub extern "C" fn una_rt_ever_start(started: i64) -> i64 {
+    runtime::ever_start(started)
 }
 
 /// Leaves the body of a `for ever` ([`runtime::ever_end`]).
 #[unsafe(no_mangle)]
 pub extern "C" fn una_rt_ever_end() {
     runtime::ever_end();
+}
+
+/// Enters a `quiet` expression ([`runtime::quiet_enter`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_quiet_enter() {
+    runtime::quiet_enter();
+}
+
+/// Leaves a `quiet` expression ([`runtime::quiet_leave`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_quiet_leave() {
+    runtime::quiet_leave();
 }
 
 /// 1 when the task must stop before an operation ([`runtime::poll`]).

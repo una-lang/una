@@ -550,14 +550,18 @@ impl<'a> Checker<'_, 'a, '_> {
                 // callee that would call it could not prove the condition (ADR 0092 rule 1).
                 // Nor is one whose `uses` label an operation: a function type carries no
                 // `gives`, so the callee would read the answers below the label (ADR 0094
-                // rule 1).
-                let conditioned = self.env.functions.get(id).is_some_and(|f| match f.ast {
-                    super::env::FnAst::Function(decl) => decl.clauses.iter().any(|clause| {
-                        matches!(&clause.kind, ClauseKind::Uses(uses)
-                            if uses.cap_type.conditions.iter().any(Option::is_some)
-                                || uses.cap_type.gives.iter().any(Option::is_some))
-                    }),
-                    _ => false,
+                // rule 1), written or inferred from its callers (rule 3), which only pass 2
+                // knows.
+                let conditioned = self.env.functions.get(id).is_some_and(|f| {
+                    let written = match f.ast {
+                        super::env::FnAst::Function(decl) => decl.clauses.iter().any(|clause| {
+                            matches!(&clause.kind, ClauseKind::Uses(uses)
+                                if uses.cap_type.conditions.iter().any(Option::is_some)
+                                    || uses.cap_type.gives.iter().any(Option::is_some))
+                        }),
+                        _ => false,
+                    };
+                    written || f.uses.iter().any(|need| !need.usage.gives.is_empty())
                 });
                 let declared = self
                     .env
@@ -574,7 +578,14 @@ impl<'a> Checker<'_, 'a, '_> {
                 if let Some(boundary) = self.crossing(module) {
                     let in_package = self.env.in_package(module);
                     let granted = self.crossing_needs(
-                        boundary, &callee, &needs, &declared, in_package, ident.span, level,
+                        boundary,
+                        &callee,
+                        &needs,
+                        &declared,
+                        in_package,
+                        ident.span,
+                        level,
+                        super::crossing::GrantSite::Value,
                     );
                     self.needs_site(&callee, &granted, ident.span, level);
                     self.cross(
@@ -2122,6 +2133,10 @@ impl<'a> Checker<'_, 'a, '_> {
         // The frames where the lambda is written, which its frame's bindings resolve to
         // (ADR 0092 rule 3, #615).
         self.outer_frames.push(frames);
+        // The enclosing statement's `with` and its `outer` level belong to the frames where
+        // the lambda is written, not to the lambda's own: a repair inside the body never
+        // resolves against them (ADR 0093 rule 6).
+        let statement = self.statement.take();
         // A lambda's body starts at a `public` program counter (ADR 0031 rule 4).
         let ctx = Ctx {
             fails: fails.clone(),
@@ -2139,6 +2154,7 @@ impl<'a> Checker<'_, 'a, '_> {
             found
         });
         self.lambda_depth -= 1;
+        self.statement = statement;
         self.frames_depth = frames_depth;
         self.frames_lambda = frames_lambda;
         self.prelude_lambda = prelude_lambda;

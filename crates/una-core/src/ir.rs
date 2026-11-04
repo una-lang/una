@@ -229,6 +229,13 @@ pub struct Use {
     pub capability: String,
     /// The operations.
     pub ops: Vec<String>,
+    /// (Never set on a function type: `gives` is U0101 there.)
+    /// The label each operation gives through the binding, `op gives l` (ADR 0094 rule 1),
+    /// declared or inferred, in the order of `ops`; an operation absent here gives `public`,
+    /// so the list is empty when none is labeled, as always before edition 0.3. The formal
+    /// track's re-check reads a declaration with a labeled operation as not re-checked until
+    /// F1 models the labels (ADR 0094 rule 8, #563).
+    pub gives: Vec<(String, Label)>,
     /// The conditions written on its operations (ADR 0092), each with its operation, in the
     /// order written; empty when none is written, as always before edition 0.3.
     pub conds: Vec<(String, Clause)>,
@@ -2184,6 +2191,17 @@ pub enum Expr {
         /// The started expression, with its deadline and handling clauses.
         task: Box<Expr>,
         /// The statement in the source.
+        span: Span,
+    },
+    /// `quiet e` (S-39, `spec/26 §6` rule 4): `e`, a `for ever` loop or a call of a function that
+    /// says `diverges`, stands under a program counter above `public`. A host stop that ends a
+    /// `for ever` loop that `e` runs, in its callees and in the tasks it starts included, appends
+    /// no `stop` event to the trace, so the event, and the `seq` of the events after it, never
+    /// reveal the data the program counter depends on. Its value is `e`'s.
+    Quiet {
+        /// The loop, or the `let` of the call that ends in its result.
+        body: Box<Expr>,
+        /// The loop or the call in the source.
         span: Span,
     },
     /// `if a then e else e`.

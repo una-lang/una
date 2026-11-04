@@ -23,7 +23,7 @@ Syntax: `secret[PII] Phone`, `confidential[Location, PII] Report`, `internal Has
 
 ## 3. Typing rules (informal; formal rules in `spec/10`)
 
-1. **Explicit flows.** The label of an operation's result is the join of its operands' labels. Field access joins the record's label with the field's declared label.
+1. **Explicit flows.** The label of an operation's result is the join of its operands' labels. Field access joins the record's label with the field's declared label. (v0.3, ADR 0094 rule 2.) The answer of a capability operation through a binding whose header gives it a label `l` (`spec/05 §3` rule 6) carries `l`, and so does the decision on whether it fails; the rule is stated in §7 rule 4, its last paragraph, where ADR 0094's amendment of this section lives.
 2. **Program-counter label.** Branching (`if`, `when`, `if none`) on a value labeled `l` raises the pc to `pc ⊔ l` inside the branches. Values produced inside the branches are joined with the raised pc.
 
     ```una

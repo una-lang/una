@@ -159,6 +159,8 @@ impl<'p, 'l> Frames<'p, 'l> {
             Expr::With { body, .. } | Expr::Within { body, .. } => self.expr(body, env),
             // A `tasks` statement has its block's value; its `exit`s cross it (`spec/27 §7`).
             Expr::Tasks { body, .. } => self.expr(body, env),
+            // `quiet e` is `e` (S-39).
+            Expr::Quiet { body, .. } => self.expr(body, env),
             Expr::Fail { .. } | Expr::Unreachable { .. } => None,
             // `skip` and `stop` complete the iteration with their state, and the path ends.
             Expr::Exit { state, .. } => {

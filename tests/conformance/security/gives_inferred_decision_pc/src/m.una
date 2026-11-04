@@ -1,0 +1,26 @@
+-- test: in an inferred function, whether a labeled operation failed carries the label its callers pass, so a `fail` in a branch on the outcome is U4002 there (ADR 0094 rules 2 and 3)
+-- spec: spec/07 §3
+-- expect: error U4002 at src/m.una:18:24
+module m
+
+pub kind Lookup = | NotFound
+
+pub capability Files
+  op owner(file: Text) -> Text
+    fails Lookup
+
+owner_of(file: Text) -> internal[Service] Text
+  fails Lookup
+=
+  let found = attempt @files.owner(file)
+  when found
+    is Ok(owner) -> owner
+    is Err(failure) -> fail NotFound
+
+pub refusal(file: Text) -> internal[Service] Text
+  uses @files: Files[owner gives internal[Service]]
+  fails Lookup
+=
+  let owner = owner_of(file)
+    if error pass
+  owner

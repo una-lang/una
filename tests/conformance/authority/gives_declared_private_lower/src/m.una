@@ -1,0 +1,18 @@
+-- test: a private function with a declared header that lists a labeled operation without `gives` reads it at `public`, so the labeled binding is U3022 at the call: only an inferred header infers labels (ADR 0094 rule 3)
+-- spec: spec/05 §4
+-- expect: error U3022 at src/m.una:18:3
+module m
+
+pub capability Files
+  op owner(file: Text) -> Text
+  op role(file: Text) -> Text
+
+owner_of(file: Text) -> Text
+  uses @files: Files[owner]
+=
+  @files.owner(file)
+
+pub refusal(file: Text) -> internal[Service] Text
+  uses @files: Files[owner gives internal[Service]]
+=
+  owner_of(file)

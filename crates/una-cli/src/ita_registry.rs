@@ -7,11 +7,11 @@
 //! there is no https transport yet; plain `http://` is never used. The owner's keys come from
 //! `~/.una/keys/` ([`keyfile::owner_keys`]). What a command needs to know of a registry (a name's
 //! chain head, its releases, yanks and advisories, an owner's key events) comes from the verified
-//! registry client ([`client`]), never from a transport's word; until that client joins, those
-//! commands stop before sending anything, and `audit` reports every registry package as not
-//! verified (U7010) rather than as clean. `bundle` and `unbundle` need no client: the lock's
-//! digests and the provenance stored beside each package decide. No command here opens a
-//! connection or starts a program.
+//! registry client ([`client`]), never from a transport's word: `audit`, `watch` and `bundle`
+//! read the registry through it, and `publish` and `yank` stop at the source's `https://` URL
+//! before they read it. `unbundle` verifies the bundle's copy of each registry through the
+//! client and each package against the lock's digests and its provenance. No command here
+//! opens a connection or starts a program.
 
 use std::collections::BTreeMap;
 use std::io;
@@ -1605,7 +1605,14 @@ fn bundle_source(
             let provenance = registry
                 .provenance(&release, &key)
                 .map_err(|why| coded(&mut registry, at, why))?;
-            una_project::provenance::verify(&provenance, one).map_err(|why| fail(shown(&why)))?;
+            // The registry was opened against the floors Itaoca stores, so the chain it writes
+            // is not below them; unbundling verifies it again against the floor of its machine.
+            una_project::provenance::verify(
+                &provenance,
+                one,
+                &una_project::provenance::Floor::None,
+            )
+            .map_err(|problem| fail(shown(problem.message())))?;
             let archive = registry
                 .archive(&one.digest)
                 .map_err(|why| coded(&mut registry, at, why))?;

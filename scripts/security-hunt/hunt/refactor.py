@@ -3,6 +3,11 @@
 Each takes a program's files and returns new files, or `None` when it does not apply. The
 must-keep driver checks both and compares the verdicts. They work on the canonical layout of
 `spec/15`, so they are line-based: a top-level declaration starts at column 0.
+
+They rewrite the root package's own modules only, `src/`: a program of several packages
+(families D and Y) keeps its dependencies' files, whose bytes a lock's consent, a vendored
+copy's digest and a registry's statements pin, so a refactor of them would change a verdict by
+design, not by a label.
 """
 
 import re
@@ -62,12 +67,17 @@ def _split_code(text):
     return out
 
 
+def _own(rel):
+    """Whether `rel` is a module of the root package, which the refactors may rewrite."""
+    return rel.startswith("src/") and rel.endswith(".una")
+
+
 def r6_rename(files, rng):
-    """Renames every function a module declares, in every file, outside strings and
+    """Renames every function the root's modules declare, in each of them, outside strings and
     comments, with a suffix no generator uses."""
     names = set()
     for rel, text in files.items():
-        if rel.endswith(".una"):
+        if _own(rel):
             names.update(m.group(1) for m in DECL_NAME.finditer(text))
     names -= KEYWORDS
     if not names:
@@ -76,7 +86,7 @@ def r6_rename(files, rng):
     pat = re.compile(r"\b(" + "|".join(sorted(map(re.escape, names))) + r")\b")
     out = {}
     for rel, text in files.items():
-        if not rel.endswith(".una"):
+        if not _own(rel):
             out[rel] = text
             continue
         out[rel] = "".join(pat.sub(lambda m: m.group(1) + suffix, piece) if code else piece
@@ -106,10 +116,10 @@ def _blocks(text):
 
 
 def r9_reorder(files, rng):
-    """Reorders the top-level declarations of one module with at least two."""
+    """Reorders the top-level declarations of one module of the root with at least two."""
     candidates = []
     for rel, text in sorted(files.items()):
-        if rel.endswith(".una"):
+        if _own(rel):
             head, decls = _blocks(text)
             if len(decls) >= 2:
                 candidates.append((rel, head, decls))

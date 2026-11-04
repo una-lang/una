@@ -5,9 +5,12 @@
 //!   archive's verified bytes into a fresh private directory, every file created exclusively,
 //!   with no link followed, and made read-only through its descriptor, then renamed into place
 //!   ([`crate::tree::store_tree`]);
-//! - `registry/<source>/releases/<release>/checkpoint-<size>.provenance`: the provenance of a
-//!   release at the resolution point of size `size` ([`crate::provenance`]), where `<release>`
-//!   is the release's directory name ([`crate::vendor::release_dir`]);
+//! - `registry/<source>/releases/<release>/checkpoint-<size>-2.provenance`: the provenance of
+//!   a release at the resolution point of size `size` ([`crate::provenance`]), of the format
+//!   `ita-provenance/2`, where `<release>` is the release's directory name
+//!   ([`crate::vendor::release_dir`]); and `checkpoint-<size>.provenance` beside it, one of the
+//!   earlier format `ita-provenance/1`, stored before it and never replaced, read only when no
+//!   provenance of format 2 is stored for that point;
 //! - `registry/<id>/checkpoint` and `registry/<id>/root-version`: the floors of rule 39 of the
 //!   registry whose identity is `id` ([`registry_id`]), the largest checkpoint and the highest
 //!   root version the client accepted, each replaced only by a larger one under the kernel-held
@@ -110,26 +113,34 @@ impl Itaoca {
         tree::read_verified(&dir, digest)
     }
 
-    /// The components of the provenance of a release at the resolution point of `size`.
+    /// The components of the provenance of a release at the resolution point of `size`, of the
+    /// format `format`: each format has a name of its own, so a provenance of format 2 is stored
+    /// beside one of format 1, which is never replaced.
     fn provenance_parts(
         source: &str,
         name: &str,
         version: &str,
         size: u64,
+        format: provenance::Format,
     ) -> Result<[String; 5], Refusal> {
         vendor::check_source(source)?;
+        let file = match format {
+            provenance::Format::V1 => format!("checkpoint-{size}.provenance"),
+            provenance::Format::V2 => format!("checkpoint-{size}-2.provenance"),
+        };
         Ok([
             "registry".to_owned(),
             source.to_owned(),
             "releases".to_owned(),
             vendor::release_dir(name, version)?,
-            format!("checkpoint-{size}.provenance"),
+            file,
         ])
     }
 
-    /// Stores the provenance of a release at the resolution point of `size`, once: the
-    /// document must read ([`provenance::parse`]), and one already stored must be the same
-    /// bytes. It is written into a fresh private directory, never through a link, then linked
+    /// Stores the provenance of a release at the resolution point of `size`, once, under the
+    /// name of its format: the document must read ([`provenance::parse`]), and one of that
+    /// format already stored must be the same bytes. One of format 1 is never written where one
+    /// of format 2 is stored. It is written into a fresh private directory, never through a link, then linked
     /// to its name, which fails when anything is there, so a stored provenance is never
     /// replaced, even by a process storing another at the same moment
     /// ([`tree::store_file_once`]); what is there is then read and compared.
@@ -141,9 +152,17 @@ impl Itaoca {
         size: u64,
         bytes: &[u8],
     ) -> Result<(), Refusal> {
-        provenance::parse(bytes)?;
-        let parts = Self::provenance_parts(source, name, version, size)?;
-        if let Some(stored) = self.load_provenance(source, name, version, size)? {
+        let format = provenance::parse(bytes)?.format;
+        let parts = Self::provenance_parts(source, name, version, size, format)?;
+        if format == provenance::Format::V1
+            && self
+                .load_one(source, name, version, size, provenance::Format::V2)?
+                .is_some()
+        {
+            // The newer document of the point is kept and preferred; nothing is written.
+            return Ok(());
+        }
+        if let Some(stored) = self.load_one(source, name, version, size, format)? {
             return if stored == bytes {
                 Ok(())
             } else {
@@ -168,7 +187,7 @@ impl Itaoca {
         match stored {
             tree::Stored::Written => Ok(()),
             // Another process stored one first: it must be the same document.
-            tree::Stored::Present => match self.load_provenance(source, name, version, size)? {
+            tree::Stored::Present => match self.load_one(source, name, version, size, format)? {
                 Some(there) if there == bytes => Ok(()),
                 Some(_) => Err(format!(
                     "another provenance of `{name} {version}` at the checkpoint of size {size} is stored"
@@ -181,9 +200,11 @@ impl Itaoca {
     }
 
     /// The provenance of a release at the resolution point of `size`, read once with no link
-    /// followed, or `None` when it is not stored. A second link that an interrupted
-    /// [`Itaoca::store_provenance`] left beside it is removed first
-    /// ([`tree::clear_stray_links`]). It is verified by the caller, on every load.
+    /// followed, or `None` when it is not stored: the one of format 2 when it is stored, else
+    /// the one of format 1. A second link that an interrupted [`Itaoca::store_provenance`] left
+    /// beside it is removed first ([`tree::clear_stray_links`]). It is verified by the caller,
+    /// on every load; a format 2 document that does not verify is never passed over for one of
+    /// format 1.
     pub fn load_provenance(
         &self,
         source: &str,
@@ -191,7 +212,23 @@ impl Itaoca {
         version: &str,
         size: u64,
     ) -> Result<Option<Vec<u8>>, Refusal> {
-        let parts = Self::provenance_parts(source, name, version, size)?;
+        match self.load_one(source, name, version, size, provenance::Format::V2)? {
+            Some(bytes) => Ok(Some(bytes)),
+            None => self.load_one(source, name, version, size, provenance::Format::V1),
+        }
+    }
+
+    /// The provenance of a release at the resolution point of `size` stored under the name of
+    /// `format`, as [`Itaoca::load_provenance`] reads it.
+    fn load_one(
+        &self,
+        source: &str,
+        name: &str,
+        version: &str,
+        size: u64,
+        format: provenance::Format,
+    ) -> Result<Option<Vec<u8>>, Refusal> {
+        let parts = Self::provenance_parts(source, name, version, size, format)?;
         let relative: Vec<&str> = parts.iter().map(String::as_str).collect();
         tree::not_a_link(&self.root)?;
         match tree::locate(&self.root, &relative)? {

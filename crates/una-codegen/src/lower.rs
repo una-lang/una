@@ -605,6 +605,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 Expr::Start { task, span } => {
                     return self.start(task, *span, env, scope, catch);
                 }
+                Expr::Quiet { body, .. } => return self.quiet(body, env, scope, catch),
                 Expr::Atom { atom, .. } => {
                     let (value, kind) = self.atom(atom, env)?;
                     // A binding the scope owns moves out as the result; another word is
@@ -832,6 +833,69 @@ impl<'p> Lowerer<'_, 'p, '_> {
         }
     }
 
+    /// `quiet e` (S-39, `spec/26 §6` rule 4): `e` between the runtime's count of the task's
+    /// `quiet` expressions and its restoration, on every way out of `e`. A failure or a stop of
+    /// the task leaves `e` through a catch of its own, which restores the count, then goes on to
+    /// `catch`; `e`'s words are released on the way, as `catch` would. An `exit` of an
+    /// enclosing loop, which crosses a `tasks` statement in `e`, leaves through blocks of their
+    /// own, which restore the count and go on to the loop's: the exit has released its words
+    /// already.
+    fn quiet(
+        &mut self,
+        body: &'p Expr,
+        env: &mut Env,
+        scope: &mut Scope,
+        catch: &Catch,
+    ) -> Result<Option<Value>, CodegenError> {
+        self.runtime("una_rt_quiet_enter", &[]);
+        let leaving = self.join();
+        let crossing = catch.exit.as_ref().map(|outer| {
+            let next = self.builder.create_block();
+            let stop = self.builder.create_block();
+            for _ in &outer.kinds {
+                self.builder.append_block_param(next, types::I64);
+                self.builder.append_block_param(stop, types::I64);
+            }
+            (outer.clone(), next, stop)
+        });
+        // The body's failures release what `catch` would release of `scope`, and the restoring
+        // block then what it would release of the enclosing expressions.
+        let inner = Catch {
+            block: leaving,
+            outer: Scope::new(),
+            base: catch.base,
+            exit: crossing.as_ref().map(|(outer, next, stop)| Exit {
+                next: *next,
+                stop: *stop,
+                ..outer.clone()
+            }),
+        };
+        let done = self.join();
+        let reached = match self.expr(body, env, scope, &inner)? {
+            Some(value) => {
+                self.runtime("una_rt_quiet_leave", &[]);
+                self.builder.ins().jump(done, &[value.into()]);
+                true
+            }
+            None => false,
+        };
+        self.builder.switch_to_block(leaving);
+        let failure = self.param(leaving)?;
+        self.runtime("una_rt_quiet_leave", &[]);
+        self.fail(failure, &Scope::new(), catch);
+        if let Some((outer, next, stop)) = crossing {
+            for (block, target) in [(next, outer.next), (stop, outer.stop)] {
+                self.builder.switch_to_block(block);
+                let state: Vec<Value> = self.builder.block_params(block).to_vec();
+                self.runtime("una_rt_quiet_leave", &[]);
+                let args: Vec<cranelift_codegen::ir::BlockArg> =
+                    state.iter().map(|&value| value.into()).collect();
+                self.builder.ins().jump(target, &args);
+            }
+        }
+        self.joined(done, reached)
+    }
+
     /// A join block with one parameter, the value of the construct.
     fn join(&mut self) -> Block {
         let join = self.builder.create_block();
@@ -944,13 +1008,20 @@ impl<'p> Lowerer<'_, 'p, '_> {
             self.builder.append_block_param(following, types::I64);
             self.builder.append_block_param(exit, types::I64);
         }
+        // The iterations this instance of the loop has started, from 0 at each entry: the
+        // budget of `--stop-after-iterations` is per loop instance (ADR 0116 rule 19, #1472).
+        let count = self.builder.declare_var(types::I64);
+        let none_started = self.builder.ins().iconst(types::I64, 0);
+        self.builder.def_var(count, none_started);
         self.builder.ins().jump(head, &initial);
 
-        // An iteration starts: a host stop ends the loop there (ADR 0116 rule 14), then its
-        // budget, then the body, which owns the state, with its exits.
+        // An iteration starts: a host stop, or the end of this instance's budget, ends the
+        // loop there (ADR 0116 rules 14 and 19), then the deadline's budget, then the body,
+        // which owns the state, with its exits.
         self.builder.switch_to_block(head);
         let current = self.builder.block_params(head).to_vec();
-        let host_stop = self.call("una_rt_ever_start", &[])?;
+        let so_far = self.builder.use_var(count);
+        let host_stop = self.call("una_rt_ever_start", &[so_far])?;
         let started = self.builder.create_block();
         let current_arguments: Vec<cranelift_codegen::ir::BlockArg> =
             current.iter().map(|&v| v.into()).collect();
@@ -958,6 +1029,8 @@ impl<'p> Lowerer<'_, 'p, '_> {
             .ins()
             .brif(host_stop, exit, &current_arguments, started, &[]);
         self.builder.switch_to_block(started);
+        let one_more = self.builder.ins().iadd_imm_s(so_far, 1);
+        self.builder.def_var(count, one_more);
         if within.is_some() {
             self.runtime("una_rt_deadline_iteration", &[]);
         }
@@ -4474,7 +4547,8 @@ fn borrowed_from(expr: &Expr, out: &mut BTreeSet<String>) {
         Expr::Attempt { body, .. }
         | Expr::With { body, .. }
         | Expr::Within { body, .. }
-        | Expr::Tasks { body, .. } => {
+        | Expr::Tasks { body, .. }
+        | Expr::Quiet { body, .. } => {
             borrowed_from(body, out);
         }
         Expr::Together { .. }

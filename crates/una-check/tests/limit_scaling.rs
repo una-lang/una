@@ -1,13 +1,24 @@
-//! Scaling of `L_lim` (ADR 0117 IF4, ADR 0116 P8, slice T1): the label of each request covers
-//! the bodies of every ancestor of its function in the call graph, computed by two passes of
-//! strongly connected components, never by a search per request. A chain of `n` functions, each
-//! of which makes a request and calls the next, has `n` requests with up to `n` ancestors each,
-//! so a search per request would take quadratic time. Timed, so this file holds one test.
+//! Scaling of `L_lim` (ADR 0117 IF4, ADR 0116 P8, slice T1): the label of each request covers the
+//! bodies of every ancestor of its function in the call graph, computed by two passes of strongly
+//! connected components, never by a search per request. A chain of `n` functions, each of which
+//! makes a request and calls the next, has `n` requests with up to `n` ancestors each, so a search
+//! per request would take quadratic time. Counted first (issue #1197): the successors the closures
+//! follow, the edges of the search for the nearest raising ancestor and the requests labeled, which
+//! the process-wide counter `pass_steps` counts, must grow linearly; timed as a fallback, by the
+//! shared helper of `una-cli/tests/common/timing.rs`, over a span of 16 times the size against a
+//! bound of 32 times, which separates linear (about 16 times) from quadratic (about 256 times) on a
+//! shared machine: with a time a·n + b·n², it tolerates a quadratic share r = b·n0/a at the
+//! smallest size n0 of at most (32 - 16)/(256 - 32) = 1/14, as tight as the old bound of 2.5 times
+//! per doubling over 8 times the size (1/12). This file holds one test, so no other test of its
+//! binary moves the counter while it reads it.
 
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
 
 use std::time::{Duration, Instant};
+
+#[path = "../../una-cli/tests/common/timing.rs"]
+mod timing;
 
 use una_check::{ModuleInput, PackageInput, check_names, check_types};
 use una_project::parse_manifest;
@@ -35,9 +46,9 @@ fn app(n: usize) -> String {
     text
 }
 
-/// Whether `L_lim` of the package of size `n` is above `internal`, its codes, and the time it
-/// took.
-fn checked(n: usize) -> (bool, Vec<String>, Duration) {
+/// Whether `L_lim` of the package of size `n` is above `internal`, its codes, the pass steps
+/// its type check took, and its time.
+fn checked(n: usize) -> (bool, Vec<String>, usize, Duration) {
     let text = app(n);
     let mut db = SourceDb::new();
     let mut interner = Interner::new();
@@ -64,9 +75,11 @@ fn checked(n: usize) -> (bool, Vec<String>, Duration) {
         locks: &[],
     };
     assert!(check_names(&input).is_empty());
+    let steps = una_core::label_counters::pass_steps();
     let started = Instant::now();
     let check = check_types(&input);
     let took = started.elapsed();
+    let steps = una_core::label_counters::pass_steps() - steps;
     let internal = una_core::Label {
         level: una_syntax::ast::Level::Internal,
         ..una_core::Label::public()
@@ -78,36 +91,46 @@ fn checked(n: usize) -> (bool, Vec<String>, Duration) {
             .iter()
             .map(|d| d.code.as_str().to_owned())
             .collect(),
+        steps,
         took,
     )
 }
 
-/// A doubling of the chain may not take more than 2.5 times as long, and the `secret` work of
-/// `top`, an ancestor of every request, raises `L_lim` above `internal`.
+/// A doubling of the chain at most doubles the pass steps, with a margin of 10 % for the steps that
+/// do not grow, and 16 times the size takes less than 32 times as long; the `secret` work of `top`,
+/// an ancestor of every request, raises `L_lim` above `internal`.
 #[test]
 fn the_history_of_a_limit_scales_linearly() {
-    let sizes = [250, 500, 1_000, 2_000];
-    let times: Vec<Duration> = sizes
+    let sizes = [250, 500, 1_000, 2_000, 4_000];
+    let judged = |n: usize, raised: bool, codes: &[String]| {
+        assert!(raised, "`L_lim` of {n} functions stays at most `internal`");
+        assert_eq!(codes, Vec::<String>::new());
+    };
+    let counts: Vec<usize> = sizes
         .iter()
         .map(|&n| {
-            (0..3)
-                .map(|_| {
-                    let (raised, codes, took) = checked(n);
-                    assert!(raised, "`L_lim` of {n} functions stays at most `internal`");
-                    assert_eq!(codes, Vec::<String>::new());
-                    took
-                })
-                .min()
-                .unwrap()
+            let (raised, codes, steps, _) = checked(n);
+            judged(n, raised, &codes);
+            steps
         })
         .collect();
-    for (pair, sizes_pair) in times.windows(2).zip(sizes.windows(2)) {
-        let (small, large) = (pair[0], pair[1]);
-        assert!(
-            large.as_secs_f64() <= 2.5 * small.as_secs_f64() + 0.02,
-            "{} functions took {large:?}, {} took {small:?}",
-            sizes_pair[1],
-            sizes_pair[0]
-        );
-    }
+    timing::assert_count_growth("the history of a limit", &sizes, &counts, 1.1);
+    // The fallback spans 16 times the smallest size against a bound of 32 (see the module
+    // documentation).
+    let span = [sizes[0], sizes[4]];
+    timing::assert_growth(
+        "the history of a limit",
+        &span,
+        0.0,
+        timing::FLOOR,
+        32.0,
+        |n| {
+            let (raised, codes, steps, took) = checked(n);
+            judged(n, raised, &codes);
+            // The count is deterministic: the same in every run.
+            let expected = counts[sizes.iter().position(|&size| size == n).unwrap()];
+            assert_eq!(steps, expected, "{n}: the steps of a second run");
+            took.as_secs_f64()
+        },
+    );
 }

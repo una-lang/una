@@ -18,7 +18,7 @@
 //!   waits whose run has stopped. It stays readable for good after it, so its registration is
 //!   then deleted, and the reactor itself looks at the listed waits' runs every 100 ms, keeping
 //!   the time of its last look, without waking the others. A run's own stop (its deadline, or
-//!   `--stop-after-iterations`) writes the pipe too (`RunStop::request_local`).
+//!   a local request) writes the pipe too (`RunStop::request_local`).
 //! - **Costs.** Register, wake and deregister are O(1): a slab slot, a wheel timer, a list link
 //!   and one system call each. A timer that fires is O(1) amortized ([`Wheel`]). A look at the
 //!   listed waits is O(k) for their k, on the reactor's thread only.
@@ -1020,8 +1020,8 @@ mod tests {
     #[cfg_attr(miri, ignore = "runs a process of its own, which Miri cannot")]
     fn a_run_s_own_stop_wakes_its_parked_waits_with_the_handlers_installed() {
         // Review R7-11: with the handlers installed the pipe is watched, and the reactor does
-        // not look at the runs of listed waits; the run's own stop, as at
-        // `--stop-after-iterations`, writes the pipe, so the wait wakes at once. The scenario
+        // not look at the runs of listed waits; the run's own stop, as its deadline's, writes
+        // the pipe, so the wait wakes at once. The scenario
         // installs the handlers of SIGINT and SIGTERM, so it runs in a process of its own,
         // and the handlers of this process stay as they are.
         let name = "own_stop_with_the_handlers_installed";

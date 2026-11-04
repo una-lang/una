@@ -94,6 +94,10 @@ linux_archive() {
     docker build --platform "linux/$arch" --build-arg "TOOLCHAIN=$toolchain" --tag "$image" \
         "$root/scripts/local-ci" || fail "the container image for linux/$arch did not build"
     name="una-$version-$target.tar.gz"
+    # The image runs as an unprivileged user, uid 1000 (#1394); the volumes are handed to it first.
+    "$root/scripts/container-volumes.sh" "linux/$arch" "$image" "$volume$suffix:/work/target" \
+        una-local-ci-registry:/opt/cargo/registry "una-local-ci-z3$suffix:/opt/z3" \
+        || fail "handing the container's volumes to its user for linux/$arch"
     docker run --rm --platform "linux/$arch" \
         --volume "$checkout:/work" \
         --volume "$volume$suffix:/work/target" \

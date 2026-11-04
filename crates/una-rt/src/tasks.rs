@@ -1330,9 +1330,11 @@ fn task_path(template: &TaskTemplate, index: usize) -> String {
         path.push_str(&template.path);
         path.push('.');
     }
-    // A branch of the `c`-th `first of` of its task: `p.f<c>.<i>` (`spec/27 §6`).
-    if let Some(race) = template.race {
-        let _ = std::fmt::Write::write_fmt(&mut path, format_args!("f{race}."));
+    // A branch of the `c`-th `first of` of its task: `p.f<c>.<i>` (`spec/27 §6`), `p.qf<c>.<i>`
+    // in quiet code, which counts its races apart (S-39).
+    if let Some((quiet, race)) = template.race {
+        let name = if quiet { "qf" } else { "f" };
+        let _ = std::fmt::Write::write_fmt(&mut path, format_args!("{name}{race}."));
     }
     let _ = std::fmt::Write::write_fmt(&mut path, format_args!("{}", index + 1));
     path
@@ -2010,6 +2012,14 @@ mod tests {
             assert_eq!(task_path(&first, 0), "1.f1.1");
             assert_eq!(task_path(&second, 2), "1.f2.3");
             assert_eq!(path_len(&second, 2), "1.f2.3".len());
+            // S-39: a race in quiet code counts apart, so it moves no public race's path.
+            with_state(|state| state.quiet = 1);
+            let quiet = with_state(|state| state.for_race(0)).unwrap();
+            assert_eq!(task_path(&quiet, 1), "1.qf1.2");
+            assert_eq!(path_len(&quiet, 1), "1.qf1.2".len());
+            with_state(|state| state.quiet = 0);
+            let third = with_state(|state| state.for_race(0)).unwrap();
+            assert_eq!(task_path(&third, 0), "1.f3.1");
             let _ = runtime::leave_task();
         })
         .join()

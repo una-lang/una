@@ -1,11 +1,22 @@
-//! Scaling of the judgment of dead failure handling (ADR 0100): with family errors in the
-//! package, each U3025 site is judged plain or not against the U3007 sites, and that judgment
-//! stays linear in the package (#602). Timed, so this file holds one test.
+//! Scaling of the judgment of dead failure handling (ADR 0100): with family errors in the package,
+//! each U3025 site is judged plain or not against the U3007 sites, and that judgment stays linear
+//! in the package (#602). Counted first (issue #1197): the sites, family sites and resolutions the
+//! judgment examines, and the callers its search for poisoned functions follows, which the
+//! process-wide counter `pass_steps` counts, must grow linearly; timed as a fallback, by the shared
+//! helper of `una-cli/tests/common/timing.rs`, over a span of 16 times the size against a bound of
+//! 32 times, which separates linear (about 16 times) from quadratic (about 256 times) on a shared
+//! machine: with a time a·n + b·n², it tolerates a quadratic share r = b·n0/a at the smallest size
+//! n0 of at most (32 - 16)/(256 - 32) = 1/14, as tight as the old bound of 2.5 times per doubling
+//! over 8 times the size (1/12). This file holds one test, so no other test of its binary moves the
+//! counter while it reads it.
 
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
 
 use std::time::{Duration, Instant};
+
+#[path = "../../una-cli/tests/common/timing.rs"]
+mod timing;
 
 use una_check::{ModuleInput, PackageInput, check_names, check_types};
 use una_project::parse_manifest;
@@ -26,8 +37,8 @@ fn many(n: usize) -> String {
     text
 }
 
-/// The codes `check_types` reports for [`many`]`(n)`, and the time it took.
-fn checked(n: usize) -> (Vec<String>, Duration) {
+/// The codes `check_types` reports for [`many`]`(n)`, the pass steps it took, and its time.
+fn checked(n: usize) -> (Vec<String>, usize, Duration) {
     let source = many(n);
     let mut db = SourceDb::new();
     let mut interner = Interner::new();
@@ -53,47 +64,58 @@ fn checked(n: usize) -> (Vec<String>, Duration) {
         locks: &[],
     };
     assert!(check_names(&input).is_empty());
+    let steps = una_core::label_counters::pass_steps();
     let started = Instant::now();
     let diagnostics = check_types(&input).diagnostics;
     let took = started.elapsed();
+    let steps = una_core::label_counters::pass_steps() - steps;
     (
         diagnostics
             .iter()
             .map(|d| d.code.as_str().to_owned())
             .collect(),
+        steps,
         took,
     )
 }
 
-/// A doubling of the package may not take more than 2.5 times as long, and every site is
-/// judged: one U3007 and one U3025 per function.
+/// A doubling of the package at most doubles the pass steps, with a margin of 10 % for the steps
+/// that do not grow, and 16 times the size takes less than 32 times as long; every site is judged:
+/// one U3007 and one U3025 per function.
 #[test]
 fn judging_dead_handling_scales_linearly() {
-    let sizes = [500, 1_000, 2_000, 4_000];
-    let times: Vec<Duration> = sizes
+    let sizes = [500, 1_000, 2_000, 4_000, 8_000];
+    let codes_of = |n: usize, codes: &[String]| {
+        let count = |code: &str| codes.iter().filter(|c| *c == code).count();
+        assert_eq!(count("U3007"), n);
+        assert_eq!(count("U3025"), n);
+        assert_eq!(codes.len(), 2 * n, "{codes:?}");
+    };
+    let counts: Vec<usize> = sizes
         .iter()
         .map(|&n| {
-            // The shortest of five runs per size: robust to preemption, still linear.
-            (0..5)
-                .map(|_| {
-                    let (codes, took) = checked(n);
-                    let count = |code: &str| codes.iter().filter(|c| *c == code).count();
-                    assert_eq!(count("U3007"), n);
-                    assert_eq!(count("U3025"), n);
-                    assert_eq!(codes.len(), 2 * n, "{codes:?}");
-                    took
-                })
-                .min()
-                .unwrap()
+            let (codes, steps, _) = checked(n);
+            codes_of(n, &codes);
+            steps
         })
         .collect();
-    for (pair, sizes_pair) in times.windows(2).zip(sizes.windows(2)) {
-        let (small, large) = (pair[0], pair[1]);
-        assert!(
-            large.as_secs_f64() <= 2.5 * small.as_secs_f64() + 0.02,
-            "{} functions took {large:?}, {} took {small:?}",
-            sizes_pair[1],
-            sizes_pair[0]
-        );
-    }
+    timing::assert_count_growth("judging dead handling", &sizes, &counts, 1.1);
+    // The fallback spans 16 times the smallest size against a bound of 32 (see the module
+    // documentation).
+    let span = [sizes[0], sizes[4]];
+    timing::assert_growth(
+        "judging dead handling",
+        &span,
+        0.0,
+        timing::FLOOR,
+        32.0,
+        |n| {
+            let (codes, steps, took) = checked(n);
+            codes_of(n, &codes);
+            // The count is deterministic: the same in every run.
+            let expected = counts[sizes.iter().position(|&size| size == n).unwrap()];
+            assert_eq!(steps, expected, "{n}: the steps of a second run");
+            took.as_secs_f64()
+        },
+    );
 }

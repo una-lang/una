@@ -1,12 +1,16 @@
 //! Scaling of the extents of `[boundaries]` (ADR 0093 rule 9): finding the boundary that holds
 //! a module is one lookup per segment of its path, so checking a manifest's trusted modules
 //! against its boundaries, and mapping modules to boundaries, grow with the modules and not with
-//! modules times boundaries (#565). Timed, so this file holds one test.
+//! modules times boundaries (#565). Timed by the shared helper of
+//! `una-cli/tests/common/timing.rs`, so this file holds one test.
 
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
 
 use std::time::{Duration, Instant};
+
+#[path = "../../una-cli/tests/common/timing.rs"]
+mod timing;
 
 use una_project::parse_manifest;
 
@@ -42,22 +46,20 @@ fn timed(n: usize) -> Duration {
     started.elapsed()
 }
 
-/// A doubling of the modules and the boundaries together may not take more than 2.5 times as
-/// long: a scan of the boundaries per module would take four.
+/// A doubling of the modules and the boundaries together takes less than 2.5 times as long: a
+/// scan of the boundaries per module would take four. The parse has no fixed cost to speak of
+/// and its time is pure work, stable to a few percent at 13 ms, so the floor is 10 ms rather
+/// than the helper's `FLOOR` of 20 ms, and the smallest size (about 13 ms at 2,000 in a debug
+/// build) is above it: every doubling is judged, not only the last (#1197). The largest size
+/// stays near 0.1 s, short enough that a loaded machine does not inflate its shortest run.
 #[test]
 fn extents_scale_with_modules_not_modules_times_boundaries() {
-    let sizes = [1_000, 2_000, 4_000, 8_000];
-    let times: Vec<Duration> = sizes
-        .iter()
-        .map(|&n| (0..3).map(|_| timed(n)).min().unwrap())
-        .collect();
-    for (pair, sizes_pair) in times.windows(2).zip(sizes.windows(2)) {
-        let (small, large) = (pair[0], pair[1]);
-        assert!(
-            large.as_secs_f64() <= 2.5 * small.as_secs_f64() + 0.02,
-            "{} took {large:?}, {} took {small:?}",
-            sizes_pair[1],
-            sizes_pair[0]
-        );
-    }
+    timing::assert_growth(
+        "extents",
+        &[2_000, 4_000, 8_000, 16_000],
+        0.0,
+        0.01,
+        2.5,
+        |n| timed(n).as_secs_f64(),
+    );
 }

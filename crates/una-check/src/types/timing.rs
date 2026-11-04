@@ -402,6 +402,7 @@ fn close<T: Clone>(succ: &[Vec<usize>], local: &[T], join: impl Fn(&T, &T) -> T)
             let successors = succ.get(node).map_or(&[][..], Vec::as_slice);
             if let Some(&to) = successors.get(*at) {
                 *at += 1;
+                una_core::label_counters::pass_step();
                 let to_index = index.get(to).copied().unwrap_or(0);
                 if to_index == usize::MAX {
                     if let (Some(i), Some(l)) = (index.get_mut(to), low.get_mut(to)) {
@@ -1189,6 +1190,7 @@ pub(crate) fn limit_labels(
     while let Some(node) = queue.pop_front() {
         let witness = nearest.get(node).copied().flatten();
         for &to in succ.get(node).map_or(&[][..], Vec::as_slice) {
+            una_core::label_counters::pass_step();
             if let Some(slot) = nearest.get_mut(to)
                 && slot.is_none()
             {
@@ -1250,6 +1252,7 @@ pub(crate) fn limit_labels(
     let mut sites = Vec::new();
     let mut label = Label::public();
     for site in &findings.http_sites {
+        una_core::label_counters::pass_step();
         let beside = site.unplaced
             || site.function.is_none()
             || site.function.is_some_and(|f| concurrent.contains(&f));
