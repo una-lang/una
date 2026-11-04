@@ -555,18 +555,24 @@ impl Checker<'_, '_, '_> {
             } else if !own.is_public() {
                 // A call of a function value labeled `own` is a call under `pc ⊔ own`
                 // (`spec/07 §3` rule 4, #216), and passing it on runs it there too.
-                self.report.error(
+                self.flow_error(
                     Code::U4002,
                     span,
                     format!("`{name}` is a `{own}` function that runs effects this function cannot see, so running it is running them under a `{own}` condition, which they would reveal"),
+                    super::flow::Carrier::Condition,
+                    own,
+                    &Label::public(),
                 );
             } else if !raise.is_public() {
                 // Passed on to a function that runs it under its own raised program counter,
                 // as the prelude does over a labeled list (`spec/07 §7` rule 9).
-                self.report.error(
+                self.flow_error(
                     Code::U4002,
                     span,
                     format!("`{name}` runs effects and failures that this function cannot see, and the callee runs it under a `{raise}` condition, such as the length of a `{raise}` list, which they would reveal"),
+                    super::flow::Carrier::Condition,
+                    raise,
+                    &Label::public(),
                 );
             }
         }
@@ -839,10 +845,13 @@ impl Checker<'_, '_, '_> {
         {
             return;
         }
-        self.report.error(
+        self.flow_error(
             Code::U4002,
             span,
             format!("`first_where` stops at the first element {what} accepts, so its effects reveal its `{label}` result; perform them in a `for` loop over the elements instead"),
+            super::flow::Carrier::Condition,
+            label,
+            &Label::public(),
         );
     }
 }

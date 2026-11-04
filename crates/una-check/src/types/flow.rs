@@ -29,13 +29,15 @@ pub(crate) fn below(from: &Label, to: &Label, top: &Label) -> bool {
 /// found there and the label allowed there. `top` is `⊤`. Kind arguments are compared by the
 /// variance of their parameters (ADR 0046 rule 2): a covariant one as data, an invariant one
 /// in both directions, so that its labels are equal at every position.
+/// The third element says whether the position is covariant, where the value's data flows
+/// into the declared type, rather than contravariant, where the declared type's flows into it.
 fn violation(
     found: &Ty,
     expected: &Ty,
     covariant: bool,
     top: &Label,
     kinds: &KindLabels,
-) -> Option<(Label, Label)> {
+) -> Option<(Label, Label, bool)> {
     // A `Unit` value has one inhabitant, so it carries no information.
     if matches!(expected.unlabeled(), Ty::Unit) {
         return None;
@@ -46,7 +48,7 @@ fn violation(
         (expected.top_label(), found.top_label())
     };
     if !below(&from, &to, top) {
-        return Some((from, to));
+        return Some((from, to, covariant));
     }
     match (found.unlabeled(), expected.unlabeled()) {
         (Ty::List(x), Ty::List(y)) | (Ty::Dense(_, x), Ty::Dense(_, y)) => {
@@ -101,6 +103,9 @@ pub(crate) enum Carrier {
     Value(&'static str),
     /// The condition the code runs under.
     Condition,
+    /// A parameter of a function value, at a contravariant position of a flow: the answer
+    /// would flow into it.
+    Parameter,
 }
 
 /// Whether `label` contains the symbolic label of a type parameter.
@@ -194,6 +199,10 @@ impl Checker<'_, '_, '_> {
     /// to `allowed` reveals (ADR 0094 rule 7). Every answer the flow carries has its label
     /// within `found`, so the answer that caused the flow is never filtered out; when several
     /// qualify, the first in source order is named.
+    ///
+    /// [`Self::note_answer`] keeps one answer per distinct label, so the scan is bounded by the
+    /// labels the declaration's header and rebindings write, not by the size of its body, and
+    /// reporting many flows in a body that reads many answers stays linear.
     pub(crate) fn answer_in(&self, found: &Label, allowed: &Label) -> Option<&Answer> {
         let top = self.top();
         self.answers
@@ -202,6 +211,22 @@ impl Checker<'_, '_, '_> {
                 below(&answer.label, found, &top) && !below(&answer.label, allowed, &top)
             })
             .min_by_key(|answer| (answer.span.start, answer.span.end))
+    }
+
+    /// Records a labeled answer (ADR 0094 rule 7): the earliest in source order of each
+    /// distinct label is kept, since [`Self::answer_in`] chooses by label and then by source
+    /// order, so the choice is the same as over every answer.
+    pub(crate) fn note_answer(&mut self, answer: Answer) {
+        let key = |a: &Answer| (a.span.start, a.span.end);
+        match self
+            .answers
+            .iter_mut()
+            .find(|known| known.label == answer.label)
+        {
+            Some(known) if key(&answer) < key(known) => *known = answer,
+            Some(_) => {}
+            None => self.answers.push(answer),
+        }
     }
 
     /// Names in `diagnostic`, a U4001, U4002 or U4003 of a flow from `found` to `allowed`,
@@ -230,6 +255,10 @@ impl Checker<'_, '_, '_> {
             Carrier::Condition => (
                 "the condition",
                 "or decide this without branching on it".to_owned(),
+            ),
+            Carrier::Parameter => (
+                "this flow",
+                format!("or pass a function whose parameter accepts `{label}` data"),
             ),
         };
         diagnostic
@@ -342,7 +371,7 @@ impl Checker<'_, '_, '_> {
         }
         let (found_ty, expected_ty) = (self.labeled(found), self.labeled(expected));
         let top = self.top();
-        let Some((from, to)) =
+        let Some((from, to, covariant)) =
             violation(&found_ty, &expected_ty, true, &top, &self.env.kind_labels)
         else {
             return;
@@ -363,7 +392,14 @@ impl Checker<'_, '_, '_> {
         if let Some(advice) = advice {
             diagnostic.repairs.push(Report::advice(advice));
         }
-        self.name_answer(&mut diagnostic, Carrier::Value("this value"), &from, &to);
+        // At a contravariant position, a parameter of a function type, the data flows from the
+        // declared type into the value: the answer would reach the value's parameter.
+        let carrier = if covariant {
+            Carrier::Value("this value")
+        } else {
+            Carrier::Parameter
+        };
+        self.name_answer(&mut diagnostic, carrier, &from, &to);
         self.report.push(diagnostic);
     }
 

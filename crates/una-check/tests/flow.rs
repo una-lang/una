@@ -647,3 +647,45 @@ pub two(file: Text) -> internal[Service] Text\n  uses @service_files: Files[role
         ]
     );
 }
+
+#[test]
+fn a_parameter_run_under_a_labeled_answer_and_a_contravariant_flow_name_it() {
+    // ADR 0094 rule 7 (review of #1536, L2 and L3): the U4002 of an effectful parameter that
+    // the callee runs under a labeled list names the answer the list is, and the U4001 at a
+    // contravariant position says that the flow, not the function value, carries the answer.
+    let module = "module m\n\
+\n\
+pub capability Files\n  op sizes(file: Text) -> List[Int]\n\
+\n\
+relay(file: Text, f: fn(Int) -> Unit) -> Unit\n  uses of f\n  uses @service_files: Files[sizes gives internal[Service]]\n=\n  let xs = @service_files.sizes(file)\n  let done = xs.map(each: f)\n  unit\n";
+    let lines = answers(module);
+    let joined = lines.join("\n");
+    let u4002 = lines
+        .iter()
+        .find(|l| l.starts_with("U4002 11:27 "))
+        .unwrap_or_else(|| panic!("{joined}"));
+    assert!(
+        u4002.ends_with(
+            "; the condition carries the answer of `@service_files.sizes`, labeled `internal[Service]`"
+        ),
+        "{joined}"
+    );
+    let u4001 = lines
+        .iter()
+        .find(|l| l.starts_with("U4001 11:27 "))
+        .unwrap_or_else(|| panic!("{joined}"));
+    assert!(
+        u4001.ends_with(
+            "; this flow carries the answer of `@service_files.sizes`, labeled `internal[Service]`"
+        ),
+        "{joined}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l
+                .contains("or pass a function whose parameter accepts `internal[Service]` data")),
+        "{joined}"
+    );
+    assert!(!joined.contains("this value carries"), "{joined}");
+}

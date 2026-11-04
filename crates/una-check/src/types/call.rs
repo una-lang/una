@@ -1590,7 +1590,7 @@ impl<'a> Checker<'_, 'a, '_> {
             _ => Label::public(),
         };
         if !gives.is_public() && self.pass == super::authority::Pass::Check {
-            self.answers.push(super::flow::Answer {
+            self.note_answer(super::flow::Answer {
                 span,
                 binding: cap_name.to_owned(),
                 op: op_name.to_owned(),

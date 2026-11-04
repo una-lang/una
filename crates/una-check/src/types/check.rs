@@ -353,10 +353,11 @@ pub(crate) struct Checker<'c, 'a, 's> {
     /// The labeled fields that interpolations wrote, by the text literal's span: the field,
     /// its kind and its declared label, which U4003 names at a sink (ADR 0068 D8).
     pub(crate) written_fields: Vec<(Span, String, String, Label)>,
-    /// In pass 2, the answers of operations that their binding labels (ADR 0094 rule 2), in
-    /// the order they are checked: the span of the call, the binding and operation as written
-    /// there, and the label the binding gives the answer. The U4001, U4002 and U4003 that such
-    /// an answer causes name it (rule 7).
+    /// In pass 2, the answers of operations that their binding labels (ADR 0094 rule 2): for
+    /// each distinct label, the earliest answer in source order that carries it, with the span
+    /// of the call, the binding and operation as written there, and the label. The U4001, U4002
+    /// and U4003 that such an answer causes name it (rule 7). Its length is bounded by the
+    /// distinct `gives` labels of the declaration's header and rebindings, not by its body.
     pub(crate) answers: Vec<super::flow::Answer>,
     /// Set when an expression checked under [`Rl::Probe`] is outside the refinement language.
     pub(crate) probe_failed: bool,
