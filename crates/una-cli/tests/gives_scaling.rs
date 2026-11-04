@@ -185,3 +185,60 @@ fn inferring_labels_along_a_chain_of_helpers_adds_a_bounded_share() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// One function that reads `n` labeled answers and sends `n` values of the answers' label to
+/// an operation that accepts `public` data: `n` U4003, each naming an answer (ADR 0094 rule 7).
+fn reports(n: usize) -> String {
+    let mut source = String::from(
+        "module m\n\npub capability Files\n  op owner(file: Text) -> Text\n\npub capability Mailer\n  op send(to: Text) -> Unit\n\npub leak(file: Text, pin: internal[Service] Text) -> Unit\n  uses @files: Files[owner gives internal[Service]]\n  uses @mailer: Mailer[send]\n=\n",
+    );
+    for i in 0..n {
+        source.push_str(&format!("  let a{i} = @files.owner(file)\n"));
+    }
+    for _ in 0..n {
+        source.push_str("  @mailer.send(to: pin)\n");
+    }
+    source.push_str("  unit\n");
+    source
+}
+
+/// The seconds a tier-0 check of `source` takes, the best of three, with `n` U4003 reported.
+fn report_seconds(dir: &Path, source: &str, n: usize) -> f64 {
+    package(dir, source);
+    (0..3)
+        .map(|_| {
+            let started = Instant::now();
+            let checked = una_cli::check(dir, Tier::Zero).unwrap();
+            let named = checked
+                .diagnostics
+                .iter()
+                .filter(|d| {
+                    d.code == una_diag::Code::U4003
+                        && d.message.contains("the answer of `@files.owner`")
+                })
+                .count();
+            assert_eq!(named, n, "{:?}", checked.diagnostics.first());
+            started.elapsed().as_secs_f64()
+        })
+        .fold(f64::INFINITY, f64::min)
+}
+
+#[test]
+fn naming_the_answer_of_each_flow_report_stays_linear() {
+    // ADR 0094 rule 7: each report names an answer by its label, and the checker keeps one
+    // answer per distinct label, so `n` answers and `n` reports cost linear time. From 250 to
+    // 4,000 of each, sixteen times as many take about sixteen times as long; scanning every
+    // answer at every report (the first version, review of #1536) takes far more there, and
+    // 256 times once the scan dominates. The bound, 40, leaves a wide margin.
+    let dir = std::env::temp_dir().join(format!("una-gives-reports-{}", std::process::id()));
+    let fixed = report_seconds(&dir, &reports(2), 2);
+    timing::assert_growth(
+        "answers and reports",
+        &[250, 4_000],
+        fixed,
+        1e-6,
+        40.0,
+        |n| report_seconds(&dir, &reports(n), n),
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

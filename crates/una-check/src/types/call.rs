@@ -1589,6 +1589,14 @@ impl<'a> Checker<'_, 'a, '_> {
             super::authority::Resolved::Cap { gives, .. } => super::ty::given(&gives, op_name),
             _ => Label::public(),
         };
+        if !gives.is_public() && self.pass == super::authority::Pass::Check {
+            self.note_answer(super::flow::Answer {
+                span,
+                binding: cap_name.to_owned(),
+                op: op_name.to_owned(),
+                label: gives.clone(),
+            });
+        }
         let resolved = self.op_site(cap, op);
         // S-39: a handler of the package that serves the operation may run any construct.
         self.quiet_op_site(span);
