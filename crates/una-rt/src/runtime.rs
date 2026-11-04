@@ -963,8 +963,8 @@ pub(crate) struct TaskTemplate {
     concurrency: una_interp::Concurrency,
     pub(crate) sched: Arc<crate::sched::Scheduler>,
     /// For the branches of a `first of`, whether it stands in `quiet` code, and the count of the
-    /// block among those its task ran there: their paths are `p.f<c>.<i>`, or `p.qf<c>.<i>` in
-    /// quiet code (`spec/27 §6`, S-39).
+    /// block among those its public code ran: their paths are `p.f<c>.<i>`, or `p.qf.<i>` in
+    /// quiet code, which counts none (`spec/27 §6`, S-39, S-40).
     pub(crate) race: Option<(bool, usize)>,
     /// What the run's tasks share, and whether the task writes its events as they happen: a
     /// started task does (ADR 0117 rule 10).
@@ -991,7 +991,7 @@ impl TaskTemplate {
         };
         own + self
             .race
-            .map_or(0, |(quiet, race)| 2 + usize::from(quiet) + digits(race))
+            .map_or(0, |(quiet, race)| if quiet { 3 } else { 2 + digits(race) })
     }
 
     /// The bytes the template owns: its path, its cancellation entries, its location's file and
@@ -1066,7 +1066,7 @@ impl State {
     /// rule 2).
     pub(crate) fn for_race(&mut self, site: usize) -> TaskTemplate {
         let mut template = self.for_tasks(site);
-        // Quiet code counts its races apart (S-39, `spec/26 §6` rule 4).
+        // Quiet code counts no races (S-39, S-40, `spec/26 §6` rule 4).
         let quiet = self.quiet > 0;
         template.race = Some((quiet, self.races.next(quiet)));
         let left = template
@@ -1097,8 +1097,8 @@ impl State {
     /// Opens a `tasks` statement in this task, at most `bound` tasks at once, or the default
     /// bound: `max(64, M)` for the budget `M` in MiB, within the system's cap (ADR 0117 rule 7).
     pub(crate) fn open_tasks(&mut self, bound: Option<usize>) {
-        // Quiet code counts its statements apart, `qs<c>`, so that whether it ran, which may
-        // depend on data above `public`, never moves the paths of later public ones (S-39,
+        // Quiet code does not count its statements, `qs`, so that whether it ran one, which may
+        // depend on data above `public`, moves the path of no later statement (S-39, S-40,
         // `spec/26 §6` rule 4).
         let quiet = self.quiet > 0;
         let name = una_interp::concurrency::block_name('s', quiet, self.tasks_runs.next(quiet));

@@ -118,46 +118,49 @@ pub fn default_bound(max_memory: usize, cap: Option<usize>) -> usize {
     cap.map_or(bound, |cap| bound.min(cap))
 }
 
-/// How many `tasks` statements, or `first of` blocks, a task has run, for the paths of the
-/// tasks they start (`spec/27 §6` rule 5, `§7` rule 5): those of public code and those of quiet
-/// code apart, so that whether quiet code ran a block, which may depend on data above `public`,
-/// never moves the number of a later public one (S-39, `spec/26 §6` rule 4).
+/// How many `tasks` statements, `first of` blocks or `start`s of one statement, public code
+/// has run, for the paths of the tasks they start (`spec/27 §6` rule 5, `§7` rule 5). Quiet
+/// code counts none (S-39, S-40, `spec/26 §6` rule 4): how many times quiet code ran a block or
+/// a `start` may depend on data above `public`, so it never moves the number of a later public
+/// one, and no number in a path of quiet code counts it either. Code can be quiet without a
+/// `secret` branch around it (a decision on values of a type parameter, the effect floor of an
+/// operation body), and its events then occur whatever the secret, so a count of quiet runs in
+/// their paths would show how many ran before under a `secret` branch.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct BlockCounts {
     public: usize,
-    quiet: usize,
 }
 
 impl BlockCounts {
-    /// Counts one more block, in quiet code or not, and returns its number there, from 1.
+    /// Counts one more block of public code, and returns its number, from 1; a block of quiet
+    /// code is not counted, and has no number (0).
     pub fn next(&mut self, quiet: bool) -> usize {
-        let count = if quiet {
-            &mut self.quiet
-        } else {
-            &mut self.public
-        };
-        *count = count.saturating_add(1);
-        *count
+        if quiet {
+            return 0;
+        }
+        self.public = self.public.saturating_add(1);
+        self.public
     }
 }
 
 /// The part of a task path that names the `count`-th block of kind `kind` (`s` for `tasks`,
-/// `f` for `first of`) of its task: `<kind><count>`, or `q<kind><count>` in quiet code.
+/// `f` for `first of`) of its task: `<kind><count>`, or `q<kind>`, with no number, in quiet
+/// code (S-39, S-40).
 pub fn block_name(kind: char, quiet: bool, count: usize) -> String {
     if quiet {
-        format!("q{kind}{count}")
+        format!("q{kind}")
     } else {
         format!("{kind}{count}")
     }
 }
 
-/// The part of a task path that names the `count`-th task that a `tasks` statement started:
-/// `<count>`, or `q<count>` for a `start` in quiet code, which counts apart so that a `start`
-/// under a raised program counter never moves the index of a later public one (S-40, #1512,
-/// `spec/27 §7` rule 5).
+/// The part of a task path that names the `count`-th task that a `tasks` statement started in
+/// public code: `<count>`; a task started in quiet code is `q`, with no number, so that neither
+/// a public nor a quiet path depends on how many `start`s ran under a raised program counter
+/// (S-40, #1512, `spec/27 §7` rule 5).
 pub fn start_name(quiet: bool, count: usize) -> String {
     if quiet {
-        format!("q{count}")
+        "q".to_owned()
     } else {
         count.to_string()
     }
@@ -198,18 +201,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn quiet_blocks_are_counted_apart_from_public_ones() {
-        // S-39: quiet code never moves the number of a later public block.
+    fn quiet_blocks_and_starts_take_no_number() {
+        // S-39: quiet code never moves the number of a later public block, and has none.
         let mut counts = BlockCounts::default();
         assert_eq!(counts.next(false), 1);
-        assert_eq!(counts.next(true), 1);
-        assert_eq!(counts.next(true), 2);
+        assert_eq!(counts.next(true), 0);
+        assert_eq!(counts.next(true), 0);
         assert_eq!(counts.next(false), 2);
         assert_eq!(block_name('s', false, 2), "s2");
-        assert_eq!(block_name('f', true, 2), "qf2");
-        // S-40: nor does a quiet `start` move the index of a later public one.
+        assert_eq!(block_name('f', true, 0), "qf");
+        // S-40: nor does a quiet `start` move the index of a later public one, or have one.
         assert_eq!(start_name(false, 2), "2");
-        assert_eq!(start_name(true, 1), "q1");
+        assert_eq!(start_name(true, 0), "q");
     }
 
     #[test]
