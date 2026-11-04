@@ -97,10 +97,10 @@ Each question changes what a programmer writes or can rely on, and states its re
    - **Decided:**
 
 7. **Ownership: may a constant be passed with `edit` or `take`?**
-   - **Recommended: no marker applies to a constant.** A constant is not a binding of the function that uses it: it is neither an editable binding (`spec/17 §2` rule 1) nor a local binding (`spec/17 §3` rule 2). So `max_items = 2` and `f(edit max_items)` are U2019, as for a plain `let`, and `f(take origin)` is U2020, as for a field. A plain use of a constant is a value, and a function that takes a parameter by `take` receives it after `let edit copy = origin`, as any non-local value is passed today.
+   - **Recommended: no marker applies to a constant.** A constant is not a binding of the function that uses it: it is neither an editable binding (`spec/17 §2` rule 1) nor a local binding (`spec/17 §3` rule 2). So `max_items = 2` and `f(edit max_items)` are U2019, as for a plain `let`, and `f(take origin)` is U2020, as for a field. A plain use of a constant is a value, and a function that takes a parameter by `take` receives it after `let p = origin`, since any local binding, a plain `let` included, can be taken (`spec/17 §3` rule 2).
    - **The alternative** lets `take origin` mean "a fresh copy of the value". It is sound, since the value is substituted (rule 8), but it makes `take` mean two things: consume a binding, or copy a constant. It also hides an O(size) construction behind a marker that, for a binding, promises a move.
-   - **Cost to the programmer:** one `let edit` line where a constant is handed to a `take` parameter.
-   - **Complexity:** the recommendation adds no check: a constant already fails the existing tests for a place and for a local binding. Under the alternative, each `take` of a record or list constant constructs it, O(size), as the recommendation's `let edit` line does, so the cost is the same and only visibility differs.
+   - **Cost to the programmer:** one `let` line where a constant is handed to a `take` parameter.
+   - **Complexity:** the recommendation needs one new check, O(1), at the root of each `edit` argument, each `take` argument and each assignment: whether the root names a constant. The checker does not refuse these today: for a root that is not a local, it gives no error at an `edit` argument or an assignment and accepts a `take` (`crates/una-check/src/types/memory.rs`, `editable_place` and `take`), since no non-local value name exists yet. Under the alternative, each `take` of a record or list constant constructs it, O(size), as the recommendation's `let` line does, so the run-time cost is the same and only visibility differs.
    - **Decided:**
 
    ```una
@@ -109,7 +109,7 @@ Each question changes what a programmer writes or can rely on, and states its re
    pub moved(take p: Point) -> Point = Point(x: p.x + 1, y: p.y)
 
    pub start() -> Point
-     let edit p = origin          -- a copy, made visible
+     let p = origin               -- a local binding, which can be taken
      moved(take p)                -- not moved(take origin): U2020
    ```
 
@@ -183,7 +183,7 @@ In one paragraph: a module may declare a constant, `[pub] let name: type = value
 
 12. **`std.time`** (Question 6). `crates/una-check/src/std/time.una` declares `pub let millisecond: Int of Millisecond = 1`, `pub let second: Int of Millisecond = 1000` and `pub let minute: Int of Millisecond = 60_000`, and `STD_TIME_CONSTANTS` and `Entity::Constant` are removed. The names, types and values that `spec/26 §2` states are unchanged.
 
-13. **Ownership** (Question 7, `spec/17`). A constant is neither an editable binding nor a local binding. An assignment to a constant, and an `edit` argument rooted at one, are U2019; a `take` argument that is a constant is U2020. A use of a constant is a value: a backend MAY build it in place, share it or move it into a call (`spec/17 §7` rule 3), since none of these is observable.
+13. **Ownership** (Question 7, `spec/17`). A constant is neither an editable binding nor a local binding. An assignment to a constant, and an `edit` argument rooted at one, are U2019; a `take` argument that is a constant is U2020. A use of a constant is a value: a backend MAY build it in place, share it or move it into a call (`spec/17 §7` rule 3), since none of these is observable. The checker refuses these with one O(1) test of the root's name at each `edit` argument, `take` argument and assignment; today it gives no error for a root that is not a local, since no non-local value name exists before this record.
 
 14. **Authority** (Question 8, `spec/05`). A constant's declared type contains no capability type and no function type, at any depth (U2041 at the type); a capability reference as its value is U3005. A constant's value holds no authority, and the top level of a module still performs nothing, grants nothing and installs no handler.
 
@@ -218,6 +218,7 @@ No label, rule or theorem of `spec/07` changes. Literals are `public`; a constan
 | Check-time evaluation of all constants | O(total size of their values), each constant once, in dependency order, under rule 5's caps | O(total size of the values) |
 | Cycle detection | O(constants + references), one traversal | O(constants) |
 | A reference, at check | O(1) lookup | O(1) |
+| The ownership check of rule 13 | O(1) per `edit` argument, `take` argument and assignment | O(1) |
 | A reference, in Core | O(size of the value) written at the reference; a scalar is O(1) | the same |
 | A reference, at run time | a scalar: that of a literal, O(1); a record or list: one construction, O(size), unless the engine shares one | the construction counts against the budget |
 | A reference, in a query | O(size of the value), with the encoder's `let` sharing for repeated uses | the same |
@@ -236,7 +237,7 @@ The whole addition is linear in the source and in the values. **Scaling tests:**
 | Functions without parameters (Alternative A) | O(r) calls to check | a call per reference, O(s) to build its result | an application per reference, opaque unless inlined | O(s) per call |
 | Scalars only (Alternative E) | O(v + n + r) | O(1) per reference | O(1) per reference | O(n) |
 
-The recommendation has the best average case where it matters: O(1) per scalar reference at run time with no start-up cost, and closed queries the solver discharges with literals. Alternative D is asymptotically better only for a large record or list named many times in one query, and rule 8's sharing closes most of that gap; it remains the path if measurement shows otherwise.
+The recommendation has the best average case where it matters: O(1) per scalar reference at run time with no start-up cost, and closed queries the solver discharges with literals. Alternative D is better in two cases: a large record or list named many times in one query, where rule 8's `let` sharing closes most of the gap; and the same constant used many times at run time, where D builds the value once per run and substitution builds it at each use, O(s) each, unless the engine shares it as rule 8 permits. D remains the path if measurement shows that either cost matters.
 
 ## Diagnostics
 
@@ -245,7 +246,7 @@ Two new codes, which join `spec/13 §4` with the implementation. U1010 and U2040
 | Code | Domain | Meaning |
 | --- | --- | --- |
 | U1011 | names | A constant depends on itself, directly or through other constants |
-| U2041 | types | The value of a constant is not a constant expression (a call, a lambda, an interpolation, a control construct), divides by zero, does not fit its fixed-width type, or exceeds the size caps; or its declared type holds a function type |
+| U2041 | types | The value of a constant is not a constant expression (a call, a lambda, an interpolation, a control construct), divides by zero, does not fit its fixed-width type, or exceeds the size caps; or its declared type holds a capability type or a function type, at any depth |
 
 Existing codes cover the rest: U2019 for an assignment or `edit` rooted at a constant, U2020 for `take` of a constant (rule 13); U3005 for a capability reference as a constant's value (rule 14); U0101 for `let` at the top level in editions before `0.4`, and for a missing type annotation; U1001 and U1002 for names; U2001, U2002, U2028 and U4001 for a value that does not flow into the declared type; U5001 for a refuted refinement (rule 7); U1005 for the conventions.
 
@@ -253,6 +254,7 @@ Existing codes cover the rest: U2019 for an assignment or `edit` rooted at a con
 
 - **Libraries export values.** A package can name π, limits, defaults and units of its domain once, and its users and its contracts read them by name.
 - **`std.time` is written in Una** for its constants too; one special case leaves the checker.
+- **One new ownership check** (rule 13): the roots of `edit` arguments, `take` arguments and assignments are tested against constants, O(1) each, since today's checker accepts a non-local root silently.
 - **No run-time cost for scalars;** a record or list constant costs a construction per use unless the engine shares it, which a later record may require if measurement shows the need.
 - **Core IR is unchanged,** and so are the Core export (`una.core/1`), the report and the trace: a reference leaves no mark. A program's trace is the same whether a value was written as a constant or inline.
 - **A closed set of constant expressions.** Widening it (`if` over constants, a call of a pure function, decimal multiplication) is a dated amendment, not a quiet change.
@@ -284,7 +286,7 @@ Each step ships behind edition `0.4`, with its conformance cases, in both engine
 - **Constant expressions:** each form of rule 3 is accepted; a call, a lambda, an interpolated text, an `if`, a `when`, a field access and `result` are each U2041 naming the construct; `1 / 0` and `1 mod 0` are U2041; a cycle of two constants is U1011 once; a constant of 4,301 digits, and a list constant that nests another past 1,000,000 elements, are U2041.
 - **Typing:** `let n: I32 = 3_000_000_000` is U2041; `let d: Int of Meter = 5 * 2` is accepted and `let d: Int of Meter = other_seconds` is U2028; `let s: secret Int = 1` is accepted and `print(s)` is U4003; `let m: Int in 1..1000 = 500` has a proven `refinement` obligation, `= 0` a refuted one with U5001 at the value and no counterexample note; a record constant whose field is refined gives the obligation at the field.
 - **Substitution and engines:** `una core` shows the value where the source wrote the name; for every operator and type of rule 3, a program that computes with a constant and one that writes the literal give the same output, trace and status in both engines, and the same obligation statuses; a list constant used in a loop of 1,000 iterations under a memory budget behaves as the literal would.
-- **Ownership and authority:** `max_items = 2` and `f(edit max_items)` are U2019; `f(take origin)` is U2020, and `let edit p = origin` then `f(take p)` is accepted; a constant whose value names a capability is U3005; `pub let g: fn(Int) -> Int = ...` is U2041 at the type, as is a record field of a function type.
+- **Ownership and authority:** `max_items = 2` and `f(edit max_items)` are U2019; `f(take origin)` is U2020, and `let p = origin` then `f(take p)` is accepted; a constant whose value names a capability is U3005; `pub let g: fn(Int) -> Int = ...` is U2041 at the type, as is a record field of a function type.
 - **Types and contracts:** `requires n <= max_items` is proven and refuted by callers as with the literal; `Int in 1..max_items` as a parameter type; a range bound that names a function is U2002 and one that names a `Text` constant is U2002.
 - **`std.time`:** `import std.time (second)` and `2 * second` keep their type and value; the `una std` listing lists the three constants with their types and values.
 - **Canonical form:** `una fmt` writes `pub let x: Int = 1` from `pub let x :Int=1`, and keeps declaration order.
