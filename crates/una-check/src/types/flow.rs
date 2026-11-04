@@ -80,6 +80,29 @@ fn violation(
     }
 }
 
+/// The answer of an operation that its binding labels (ADR 0094 rule 2), where it is called.
+#[derive(Clone, Debug)]
+pub(crate) struct Answer {
+    /// The call.
+    pub(crate) span: Span,
+    /// The binding, without `@`, as the call writes it.
+    pub(crate) binding: String,
+    /// The operation.
+    pub(crate) op: String,
+    /// The label the binding gives the operation's answers.
+    pub(crate) label: Label,
+}
+
+/// What carries a labeled answer into a flow, for the words of ADR 0094 rule 7: a value, or
+/// the program counter that a branch on the answer, or on whether it failed, raised.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Carrier {
+    /// The value at the flow, `this value`, `this argument` or `this item`.
+    Value(&'static str),
+    /// The condition the code runs under.
+    Condition,
+}
+
 /// Whether `label` contains the symbolic label of a type parameter.
 pub(crate) fn symbolic(label: &Label) -> bool {
     label.symbols.iter().any(|symbol| !symbol.starts_with('?'))
@@ -166,6 +189,96 @@ impl Checker<'_, '_, '_> {
         self.labeled(ty).deep_label(&self.env.kind_labels)
     }
 
+    /// The first answer checked in this declaration, in source order, that the binding labels
+    /// above `allowed` and whose label `found` carries: the labeled answer a flow from `found`
+    /// to `allowed` reveals (ADR 0094 rule 7). Every answer the flow carries has its label
+    /// within `found`, so the answer that caused the flow is never filtered out; when several
+    /// qualify, the first in source order is named.
+    pub(crate) fn answer_in(&self, found: &Label, allowed: &Label) -> Option<&Answer> {
+        let top = self.top();
+        self.answers
+            .iter()
+            .filter(|answer| {
+                below(&answer.label, found, &top) && !below(&answer.label, allowed, &top)
+            })
+            .min_by_key(|answer| (answer.span.start, answer.span.end))
+    }
+
+    /// Names in `diagnostic`, a U4001, U4002 or U4003 of a flow from `found` to `allowed`,
+    /// the labeled answer that the flow reveals, when there is one ([`Self::answer_in`]): the
+    /// message says that `carrier` carries the answer of the binding's operation and its label,
+    /// the call is a related location, and the first repair names them too, with today's
+    /// routes: read the operation through another binding, change the sink, or, last, release
+    /// the answer through a policy of a trusted module (ADR 0094 rule 7, ADR 0095).
+    pub(crate) fn name_answer(
+        &self,
+        diagnostic: &mut una_diag::Diagnostic,
+        carrier: Carrier,
+        found: &Label,
+        allowed: &Label,
+    ) {
+        let Some(answer) = self.answer_in(found, allowed) else {
+            return;
+        };
+        let (binding, op, label) = (&answer.binding, &answer.op, &answer.label);
+        let named = format!("the answer of `@{binding}.{op}`, labeled `{label}`");
+        let (subject, route) = match carrier {
+            Carrier::Value(what) => (
+                what,
+                format!("or send the value only where `{label}` data may go"),
+            ),
+            Carrier::Condition => (
+                "the condition",
+                "or decide this without branching on it".to_owned(),
+            ),
+        };
+        diagnostic
+            .message
+            .push_str(&format!("; {subject} carries {named}"));
+        // The call as a related location, unless the diagnostic is there or already names it.
+        let at = self.report.location(answer.span);
+        if at != diagnostic.primary && diagnostic.related.iter().all(|r| r.location != at) {
+            diagnostic.related.push(
+                self.report
+                    .related(answer.span, format!("the answer of `@{binding}.{op}`")),
+            );
+        }
+        diagnostic.repairs.insert(
+            0,
+            Report::advice(format!(
+                "{subject} carries {named}: read `{op}` through a binding whose `{op}` answers within `{allowed}`, {route}"
+            )),
+        );
+        if !diagnostic
+            .repairs
+            .iter()
+            .any(|repair| repair.escape.is_some())
+        {
+            diagnostic.repairs.push(Report::escape(
+                Escape::Trusted,
+                format!(
+                    "release the answer of `@{binding}.{op}` through a policy of a trusted module"
+                ),
+            ));
+        }
+    }
+
+    /// Reports `code` at `span` with `message`, a flow from `found` to `allowed`, naming the
+    /// labeled answer that `carrier` carries into it (ADR 0094 rule 7).
+    pub(crate) fn flow_error(
+        &mut self,
+        code: Code,
+        span: Span,
+        message: String,
+        carrier: Carrier,
+        found: &Label,
+        allowed: &Label,
+    ) {
+        let mut diagnostic = self.report.make(code, span, message);
+        self.name_answer(&mut diagnostic, carrier, found, allowed);
+        self.report.push(diagnostic);
+    }
+
     /// `⊤`: `restricted` with every declared category.
     pub(crate) fn top(&self) -> Label {
         Label::top(&self.env.categories)
@@ -250,6 +363,7 @@ impl Checker<'_, '_, '_> {
         if let Some(advice) = advice {
             diagnostic.repairs.push(Report::advice(advice));
         }
+        self.name_answer(&mut diagnostic, Carrier::Value("this value"), &from, &to);
         self.report.push(diagnostic);
     }
 
@@ -288,13 +402,15 @@ impl Checker<'_, '_, '_> {
         if below(label, &allowed, &self.top()) {
             return;
         }
-        self.report.error(
+        let mut diagnostic = self.report.make(
             Code::U4001,
             condition,
             format!(
                 "{into} is `{allowed}`, and which value it returns depends on this `{label}` condition: a flow from `{label}` to `{allowed}`"
             ),
         );
+        self.name_answer(&mut diagnostic, Carrier::Condition, label, &allowed);
+        self.report.push(diagnostic);
     }
 
     /// The program counter inside the branches of a construct whose condition at `span` has
@@ -355,6 +471,12 @@ impl Checker<'_, '_, '_> {
                 .related
                 .push(self.report.related(*at, note.clone()));
         }
+        self.name_answer(
+            &mut diagnostic,
+            Carrier::Condition,
+            &label,
+            &Label::public(),
+        );
         self.report.push(diagnostic);
     }
 
@@ -412,6 +534,7 @@ impl Checker<'_, '_, '_> {
                 format!(
                     "{callee} can fail, and it is {action} under {a} `{pc}` condition, which would be revealed"
                 ),
+                Some((&pc, &Label::public())),
             );
             return;
         }
@@ -434,6 +557,7 @@ impl Checker<'_, '_, '_> {
                 format!(
                     "{callee} has effects, and it is {action} under {a} `{pc}` condition on a value of a type parameter, whose label is known only at each call"
                 ),
+                None,
             );
             return;
         }
@@ -476,17 +600,21 @@ impl Checker<'_, '_, '_> {
                 "{callee} has effects that accept at most `{bound}` data, and it is {action} under {a} `{pc}` condition, which would be revealed"
             ),
         };
-        self.under_pc(span, message);
+        self.under_pc(span, message, Some((&pc, &bound)));
     }
 
     /// U4002 at `span`, with the condition that raised the program counter as a related
-    /// location.
-    fn under_pc(&mut self, span: Span, message: String) {
+    /// location. `flow`, the program counter's label and the label it exceeds, names the
+    /// labeled answer the condition carries (ADR 0094 rule 7).
+    fn under_pc(&mut self, span: Span, message: String, flow: Option<(&Label, &Label)>) {
         let mut diagnostic = self.report.make(Code::U4002, span, message);
         if let Some(from) = self.ctx.pc_from {
             diagnostic
                 .related
                 .push(self.report.related(from, "the labeled condition"));
+        }
+        if let Some((found, allowed)) = flow {
+            self.name_answer(&mut diagnostic, Carrier::Condition, found, allowed);
         }
         self.report.push(diagnostic);
     }
@@ -510,6 +638,7 @@ impl Checker<'_, '_, '_> {
                 .related
                 .push(self.report.related(from, "the labeled condition"));
         }
+        self.name_answer(&mut diagnostic, Carrier::Condition, &pc, to);
         self.report.push(diagnostic);
     }
 
@@ -553,6 +682,7 @@ impl Checker<'_, '_, '_> {
                 format!(
                     "{what} runs under {a} `{pc}` condition on a value of a type parameter, whose label is known only at each call, so its sink cannot be checked here"
                 ),
+                None,
             );
             return;
         }
@@ -613,6 +743,8 @@ impl Checker<'_, '_, '_> {
                     .related
                     .push(self.report.related(from, "the labeled condition"));
             }
+            let at = self.ctx.pc.clone();
+            self.name_answer(&mut diagnostic, Carrier::Condition, &at, accepts);
             self.report.push(diagnostic);
             return;
         }
@@ -654,6 +786,12 @@ impl Checker<'_, '_, '_> {
                         "declassify the value through a policy of a trusted module",
                     ));
                 }
+                self.name_answer(
+                    &mut diagnostic,
+                    Carrier::Value("this argument"),
+                    &label,
+                    accepts,
+                );
                 self.report.push(diagnostic);
             }
         }

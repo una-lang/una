@@ -545,6 +545,12 @@ impl Checker<'_, '_, '_> {
                         .related
                         .push(self.report.related(from, "the condition that raises it"));
                 }
+                self.name_answer(
+                    &mut diagnostic,
+                    super::flow::Carrier::Condition,
+                    &pc,
+                    &Label::public(),
+                );
                 self.report.push(diagnostic);
             } else if !own.is_public() {
                 // A call of a function value labeled `own` is a call under `pc ⊔ own`
