@@ -127,12 +127,23 @@ impl Checker<'_, '_, '_> {
     /// `within`, as an effect's does (`spec/07 §3` rule 4, `spec/27 §5`), and a body that no
     /// label rule checks counts as `⊤`. A label of a type parameter is not `public` either.
     fn raised(&self) -> bool {
+        self.raised_pc()
+            || self
+                .ctx
+                .timing
+                .as_ref()
+                .is_some_and(|(timing, _, _)| !timing.is_public())
+    }
+
+    /// As [`Self::raised`], without the timing floor: whether the program counter, joined with
+    /// the effect floor, is above `public`, or no label rule checks the body. Only then do the
+    /// operations of quiet code append no event (S-42, #1515): under a timing floor alone their
+    /// occurrence is the reported timing channel, and they keep their events (`spec/27 §5`
+    /// rule 7).
+    fn raised_pc(&self) -> bool {
         let mut pc = self.ctx.pc.clone();
         if let Some(floor) = &self.ctx.floor {
             pc = pc.join(floor);
-        }
-        if let Some((timing, _, _)) = &self.ctx.timing {
-            pc = pc.join(timing);
         }
         !self.ctx.labels || !pc.is_public()
     }
@@ -154,7 +165,13 @@ impl Checker<'_, '_, '_> {
     /// amendment). Such a call is quiet when `raise` is above `public`, a symbolic label
     /// included, even at a `public` program counter (S-39 round 4, `spec/26 §6` rule 4).
     pub(crate) fn quiet_site_under(&mut self, span: Span, raise: &Label) {
-        if self.pass == Pass::Check && (self.raised() || !raise.is_public()) {
+        if self.pass != Pass::Check {
+            return;
+        }
+        if self.raised_pc() || !raise.is_public() {
+            self.findings.quiet.insert(span);
+            self.findings.hushed.insert(span);
+        } else if self.raised() {
             self.findings.quiet.insert(span);
         }
     }
@@ -170,8 +187,13 @@ impl Checker<'_, '_, '_> {
     /// decision that edition 0.1 raises a call by when its arguments give function values data
     /// decided by values of a type parameter (`ℓ*_T`, T-Call, #346, #350).
     pub(crate) fn quiet_call_site_under(&mut self, span: Span, callee: usize, raise: &Label) {
-        if self.pass == Pass::Check && (self.raised() || !raise.is_public()) {
+        if self.pass != Pass::Check {
+            return;
+        }
+        if self.raised_pc() || !raise.is_public() {
             self.findings.quiet_calls.insert(span, callee);
+        } else if self.raised() {
+            self.findings.timing_calls.insert(span, callee);
         }
     }
 
@@ -179,8 +201,13 @@ impl Checker<'_, '_, '_> {
     /// every body is checked, [`close_quiet`] marks it `quiet`, so that neither its own event nor
     /// those of a handler's code that serves it are recorded (S-39, S-42, #1515).
     pub(crate) fn quiet_op_site(&mut self, span: Span) {
-        if self.pass == Pass::Check && self.raised() {
+        if self.pass != Pass::Check {
+            return;
+        }
+        if self.raised_pc() {
             self.findings.quiet_ops.insert(span);
+        } else if self.raised() {
+            self.findings.timing_ops.insert(span);
         }
     }
 
@@ -872,72 +899,107 @@ pub(crate) fn bound_of(env: &super::env::Env<'_>, uses: &[FnUse]) -> Option<Labe
 /// Closes the `quiet` marks over the call graph, once every body is checked (S-39, `spec/26 §6`
 /// rule 4): a call under a raised program counter is `quiet` when its callee can run a
 /// construct that appends events to the trace, and every operation there is `quiet`, since
-/// its own event is one (S-42, #1515).
+/// its own event is one (S-42, #1515); both are also `hushed`, so that the operations they
+/// run append no event. Under the timing floor of a `within` or a `first of` alone, a call is
+/// `quiet` when its callee can run a construct that appends events of its own (an operation
+/// counting only when the package declares a handler), and an operation when the package
+/// declares one, as S-39 made them; they are not `hushed`, so operations keep their events.
 ///
-/// A function can run one when its body, its lambdas included, holds a `for ever`, a `within`,
-/// a `first of`, a `tasks`, `together` or `together for` statement or a `start`, or says
-/// `diverges`; when it calls a function value, applies a function argument whose code is not
-/// known at the call, installs a handler, or performs an operation; or when it calls or names
-/// a function that can. A prelude function that applies a
+/// A function can run such a construct when its body, its lambdas included, holds a `for
+/// ever`, a `within`, a `first of`, a `tasks`, `together` or `together for` statement or a
+/// `start`, or says `diverges`; when it calls a function value, applies a function argument
+/// whose code is not known at the call, installs a handler, or performs an operation (always
+/// under a raised program counter, while the package declares a handler under a timing floor);
+/// or when it calls or names a function that can. A prelude function that applies a
 /// function argument can too. The standard library's own bodies hold no such construct. The
 /// closure is a least fixed point over the reversed call edges, linear in their number.
 pub(crate) fn close_quiet(env: &super::env::Env<'_>, findings: &mut super::Findings) {
     use std::collections::{BTreeMap, BTreeSet};
-    if findings.quiet_calls.is_empty() && findings.quiet_ops.is_empty() {
+    if findings.quiet_calls.is_empty()
+        && findings.quiet_ops.is_empty()
+        && findings.timing_calls.is_empty()
+        && findings.timing_ops.is_empty()
+    {
         return;
     }
-    let mut emitting: BTreeSet<usize> = env
+    let handlers = env.handlers.iter().any(|h| env.in_package(h.module));
+    let mut seeds: BTreeSet<usize> = env
         .functions
         .iter()
         .enumerate()
         .filter(|(_, def)| def.diverges)
         .map(|(id, _)| id)
         .collect();
-    emitting.extend(findings.withins.iter().filter_map(|site| site.function));
-    emitting.extend(
+    seeds.extend(findings.withins.iter().filter_map(|site| site.function));
+    seeds.extend(
         findings
             .deadline_loops
             .iter()
             .filter_map(|site| site.function),
     );
-    emitting.extend(findings.tasks_sites.iter().filter_map(|site| site.function));
-    emitting.extend(findings.task_functions.iter().copied());
-    emitting.extend(findings.value_callers.iter().copied());
-    emitting.extend(findings.opaque_applies.iter().map(|&(f, _)| f));
-    emitting.extend(findings.installs.iter().map(|&(f, _)| f));
-    // S-42 (#1515): an operation appends its own event, whatever serves it, so a function that
-    // performs one can append an event.
-    emitting.extend(
-        findings
-            .caller_ops
-            .iter()
-            .filter_map(|(caller, _, _)| match caller {
-                super::timing::Caller::Function(f) => Some(*f),
-                _ => None,
-            }),
-    );
+    seeds.extend(findings.tasks_sites.iter().filter_map(|site| site.function));
+    seeds.extend(findings.task_functions.iter().copied());
+    seeds.extend(findings.value_callers.iter().copied());
+    seeds.extend(findings.opaque_applies.iter().map(|&(f, _)| f));
+    seeds.extend(findings.installs.iter().map(|&(f, _)| f));
+    let performers: BTreeSet<usize> = findings
+        .caller_ops
+        .iter()
+        .filter_map(|(caller, _, _)| match caller {
+            super::timing::Caller::Function(f) => Some(*f),
+            _ => None,
+        })
+        .collect();
     let mut callers: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
     for &(caller, callee, _) in &findings.edges {
         callers.entry(callee).or_default().push(caller);
     }
-    let mut pending: Vec<usize> = emitting.iter().copied().collect();
-    while let Some(f) = pending.pop() {
-        for &caller in callers.get(&f).into_iter().flatten() {
-            if emitting.insert(caller) {
-                pending.push(caller);
+    let close = |mut set: BTreeSet<usize>| {
+        let mut pending: Vec<usize> = set.iter().copied().collect();
+        while let Some(f) = pending.pop() {
+            for &caller in callers.get(&f).into_iter().flatten() {
+                if set.insert(caller) {
+                    pending.push(caller);
+                }
             }
         }
+        set
+    };
+    // The functions that can run a construct whose running appends events of its own (S-39);
+    // an operation counts when the package declares a handler, whose code may run one.
+    let mut own = seeds.clone();
+    if handlers {
+        own.extend(performers.iter().copied());
     }
-    let calls = std::mem::take(&mut findings.quiet_calls);
-    for (span, callee) in calls {
-        let applies = env
-            .functions
+    let own = close(own);
+    // S-42 (#1515): under a raised program counter, an operation's own event counts too,
+    // whatever serves it, so a function that performs one can append an event there.
+    let mut any = seeds;
+    any.extend(performers);
+    let any = close(any);
+    let applies = |callee: usize| {
+        env.functions
             .get(callee)
-            .is_some_and(|def| super::timing::applies_function(env, def));
-        if emitting.contains(&callee) || applies {
+            .is_some_and(|def| super::timing::applies_function(env, def))
+    };
+    for (span, callee) in std::mem::take(&mut findings.quiet_calls) {
+        if any.contains(&callee) || applies(callee) {
+            findings.quiet.insert(span);
+            findings.hushed.insert(span);
+        }
+    }
+    // Under a timing floor alone, a call is quiet as S-39 made it, and keeps its operations'
+    // events (`spec/27 §5` rule 7).
+    for (span, callee) in std::mem::take(&mut findings.timing_calls) {
+        if own.contains(&callee) || applies(callee) {
             findings.quiet.insert(span);
         }
     }
     let ops = std::mem::take(&mut findings.quiet_ops);
+    findings.hushed.extend(ops.iter().copied());
     findings.quiet.extend(ops);
+    let timed = std::mem::take(&mut findings.timing_ops);
+    if handlers {
+        findings.quiet.extend(timed);
+    }
 }

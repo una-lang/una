@@ -908,6 +908,9 @@ pub(crate) struct State {
     /// `start` included: while one is, a `for ever` that a host stop ends appends no `stop`
     /// event (S-39, `spec/26 §6` rule 4).
     pub(crate) quiet: u32,
+    /// How many of those are not quiet by a timing floor alone: while one is, an operation
+    /// appends no event (S-42, #1515, `spec/26 §6` rule 4).
+    pub(crate) hushed: u32,
     /// The settings of the run's tasks (ADR 0117 rules 2 and 3).
     concurrency: una_interp::Concurrency,
     /// The run's scheduler, made at its first block: none in a run without tasks.
@@ -973,6 +976,8 @@ pub(crate) struct TaskTemplate {
     /// The `quiet` count of the task that runs the block or starts the task (S-39): a task
     /// runs under the program counter of its `start` (`spec/27 §7` rule 3).
     pub(crate) quiet: u32,
+    /// Its `hushed` count (S-42).
+    pub(crate) hushed: u32,
 }
 
 impl TaskTemplate {
@@ -1057,6 +1062,7 @@ impl State {
             shared: Arc::clone(&self.shared),
             streaming: false,
             quiet: self.quiet,
+            hushed: self.hushed,
         }
     }
 
@@ -1929,15 +1935,22 @@ pub fn ever_end() {
 }
 
 /// Enters a `quiet` expression: a `for ever` loop, or a call of a function that says
-/// `diverges`, under a program counter above `public` (S-39, `spec/26 §6` rule 4).
-pub fn quiet_enter() {
-    with_state(|state| state.quiet = state.quiet.saturating_add(1));
+/// `diverges`, under a program counter above `public` (S-39, `spec/26 §6` rule 4); with `hush`,
+/// one not marked by a timing floor alone, whose operations append no event (S-42).
+pub fn quiet_enter(hush: bool) {
+    with_state(|state| {
+        state.quiet = state.quiet.saturating_add(1);
+        state.hushed = state.hushed.saturating_add(u32::from(hush));
+    });
 }
 
 /// Leaves a `quiet` expression, on every way out of it: its value, or a failure or a stop of
-/// the task that leaves it.
-pub fn quiet_leave() {
-    with_state(|state| state.quiet = state.quiet.saturating_sub(1));
+/// the task that leaves it; `hush` as it entered.
+pub fn quiet_leave(hush: bool) {
+    with_state(|state| {
+        state.quiet = state.quiet.saturating_sub(1);
+        state.hushed = state.hushed.saturating_sub(u32::from(hush));
+    });
 }
 
 /// Runs the executable: parses the command line, checks `main`'s capabilities against the
@@ -2137,6 +2150,7 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
         stopped: None,
         in_ever: false,
         quiet: 0,
+        hushed: 0,
         concurrency: options.concurrency,
         sched: None,
     };
@@ -2901,6 +2915,7 @@ pub(crate) fn enter_task(template: &TaskTemplate, path: String, entry: Cancel) {
         stopped: None,
         in_ever: false,
         quiet: template.quiet,
+        hushed: template.hushed,
         concurrency: template.concurrency,
         sched: Some(Arc::clone(&template.sched)),
     };
@@ -3003,6 +3018,7 @@ pub(crate) fn install_test_state_as(path: String, tracing: bool, file: String) {
         stopped: None,
         in_ever: false,
         quiet: 0,
+        hushed: 0,
         concurrency: options.concurrency,
         sched: None,
     };

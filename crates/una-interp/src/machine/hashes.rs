@@ -217,6 +217,7 @@ fn reaches_tables<'p>(index: &Index<'p>, roots: &[&'p Expr]) -> bool {
             Expr::Start { task, span: _ }
             | Expr::Quiet {
                 body: task,
+                timing: _,
                 span: _,
             } => {
                 pending.push(task);

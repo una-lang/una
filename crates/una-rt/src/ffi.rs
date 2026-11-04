@@ -722,16 +722,17 @@ pub extern "C" fn una_rt_ever_end() {
     runtime::ever_end();
 }
 
-/// Enters a `quiet` expression ([`runtime::quiet_enter`]).
+/// Enters a `quiet` expression ([`runtime::quiet_enter`]); `hush` is 1 unless a timing floor
+/// alone marked it.
 #[unsafe(no_mangle)]
-pub extern "C" fn una_rt_quiet_enter() {
-    runtime::quiet_enter();
+pub extern "C" fn una_rt_quiet_enter(hush: i64) {
+    runtime::quiet_enter(hush != 0);
 }
 
-/// Leaves a `quiet` expression ([`runtime::quiet_leave`]).
+/// Leaves a `quiet` expression ([`runtime::quiet_leave`]), with the `hush` it entered with.
 #[unsafe(no_mangle)]
-pub extern "C" fn una_rt_quiet_leave() {
-    runtime::quiet_leave();
+pub extern "C" fn una_rt_quiet_leave(hush: i64) {
+    runtime::quiet_leave(hush != 0);
 }
 
 /// 1 when the task must stop before an operation ([`runtime::poll`]).

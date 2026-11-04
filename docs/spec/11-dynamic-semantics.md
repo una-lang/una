@@ -106,7 +106,7 @@ A fault that a checked and verified program cannot reach aborts the run with U80
 
 ## 5. Traces
 
-Each operation invocation appends one event, except, in every edition, one performed in quiet code (`spec/26 §6` rule 4, S-42, #1515) in a run: it appends none and takes no `seq`, so neither the number of events nor the `seq` of a later one shows whether code under a raised program counter ran. The trace of an example keeps it (§6):
+Each operation invocation appends one event, except, in every edition, one performed in a run in quiet code that a program counter or effect floor above `public` makes quiet, not a timing floor alone (`spec/26 §6` rule 4, S-42, #1515): it appends none and takes no `seq`, so neither the number of events nor the `seq` of a later one shows whether code under a raised program counter ran. The trace of an example keeps it (§6):
 
 ```json
 {
