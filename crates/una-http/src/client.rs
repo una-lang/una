@@ -2,8 +2,8 @@
 //! within one deadline for the whole request, its redirects included.
 
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
-use std::sync::{Arc, OnceLock, mpsc};
+use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError, mpsc};
 use std::time::{Duration, Instant};
 
 use crate::grant::{Grant, Method, Url, allowed};
@@ -207,21 +207,125 @@ fn left(deadline: Instant) -> Result<Duration, Error> {
     Ok(deadline - now)
 }
 
-/// The addresses of a host, resolved by the system within the deadline. The resolver has no
-/// timeout of its own, so it runs on a thread of its own, which may outlive a late answer.
+/// The most resolver threads alive at once in the process (#1575).
+///
+/// The system's resolver has no timeout of its own and nothing in the process can cut a lookup,
+/// so a lookup runs on a thread of its own, which a request abandons at its deadline and which
+/// lives until the resolver returns. Without a bound, a program that keeps requesting names
+/// whose lookups stall (a slow or unreachable authority) would keep one thread per request it
+/// gave up on. With this bound, the lookups in flight, abandoned or not, are at most 64, each on
+/// one thread (a thread past its lookup may still be exiting), about 128 MiB of reserved and
+/// mostly uncommitted stack at the default 2 MiB a thread. The bound is shared by every name:
+/// while 64 lookups stall, a request to any name waits for a slot and fails with `TimedOut` at
+/// its deadline. Address literals take no slot.
+const MAX_RESOLVERS: usize = 64;
+
+/// The resolver threads of the process.
+static RESOLVERS: Slots = Slots::new(MAX_RESOLVERS);
+
+/// A lookup: the addresses of a name and a port, as the system's resolver gives them.
+type Lookup = fn(&str, u16) -> std::io::Result<Vec<SocketAddr>>;
+
+/// The system's resolver (`getaddrinfo`).
+fn system_lookup(name: &str, port: u16) -> std::io::Result<Vec<SocketAddr>> {
+    (name, port).to_socket_addrs().map(Iterator::collect)
+}
+
+/// A counting semaphore of resolver threads: how many are alive, out of `cap`.
+///
+/// Taking a slot and giving it back are O(1) under one mutex. A request that finds every slot
+/// taken waits on its own thread, woken when a slot is given back, until its deadline: there is
+/// no queue of lookups, so a lookup never starts after its request gave up, and the waiting
+/// requests are at most the threads that make requests.
+struct Slots {
+    used: Mutex<usize>,
+    freed: Condvar,
+    cap: usize,
+}
+
+impl Slots {
+    const fn new(cap: usize) -> Slots {
+        Slots {
+            used: Mutex::new(0),
+            freed: Condvar::new(),
+            cap,
+        }
+    }
+
+    /// A slot, waiting for one until `deadline`, else `TimedOut`.
+    fn take(&'static self, deadline: Instant) -> Result<Slot, Error> {
+        let mut used = self.used.lock().unwrap_or_else(PoisonError::into_inner);
+        loop {
+            if *used < self.cap {
+                *used += 1;
+                return Ok(Slot(self));
+            }
+            let wait = left(deadline)?;
+            used = self
+                .freed
+                .wait_timeout(used, wait)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
+    }
+
+    /// The slots taken now.
+    #[cfg(test)]
+    fn used(&self) -> usize {
+        *self.used.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// A slot of [`Slots`], given back when the thread that holds it ends, or when its thread
+/// could not start.
+struct Slot(&'static Slots);
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        let mut used = self.0.used.lock().unwrap_or_else(PoisonError::into_inner);
+        *used = used.saturating_sub(1);
+        drop(used);
+        self.0.freed.notify_one();
+    }
+}
+
+/// The addresses of a host, resolved by the system within the deadline. An address literal
+/// needs no lookup. A name is looked up on a thread of its own, which may outlive a late answer;
+/// such threads are at most [`MAX_RESOLVERS`], and a request that finds none free by its
+/// deadline fails with `TimedOut`.
 fn resolve(host: &str, port: u16, deadline: Instant) -> Result<Vec<SocketAddr>, Error> {
+    resolve_on(&RESOLVERS, system_lookup, host, port, deadline)
+}
+
+/// [`resolve`], on the slots `slots` with the lookup `lookup`.
+fn resolve_on(
+    slots: &'static Slots,
+    lookup: Lookup,
+    host: &str,
+    port: u16,
+    deadline: Instant,
+) -> Result<Vec<SocketAddr>, Error> {
     let name = host
         .trim_start_matches('[')
         .trim_end_matches(']')
         .to_owned();
+    // Before any lookup, so none starts for a request that already gave up.
+    left(deadline)?;
+    // As `to_socket_addrs` reads a literal, without a thread or a slot.
+    if let Ok(ip) = name.parse::<IpAddr>() {
+        return Ok(vec![SocketAddr::new(ip, port)]);
+    }
+    let slot = slots.take(deadline)?;
+    // Again once the slot is taken, since waiting for it may have passed the deadline: on the
+    // error, `slot` drops here and gives the slot back.
+    left(deadline)?;
     let (sender, receiver) = mpsc::channel();
     std::thread::Builder::new()
         .name("una-http-resolve".to_owned())
         .spawn(move || {
-            let found = (name.as_str(), port)
-                .to_socket_addrs()
-                .map(Iterator::collect::<Vec<_>>);
+            let found = lookup(&name, port);
             let _ = sender.send(found);
+            drop(slot);
         })
         .map_err(|_| Error::Unreachable)?;
     match receiver.recv_timeout(left(deadline)?) {
@@ -502,5 +606,135 @@ fn parse_error(error: parse::Error) -> Error {
     match error {
         parse::Error::Protocol => Error::Protocol,
         parse::Error::TooLarge => Error::TooLarge,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Whether the stalled lookups may return, and the lookups that entered and are running.
+    static GATE: Mutex<bool> = Mutex::new(false);
+    static OPENED: Condvar = Condvar::new();
+    static ENTERED: AtomicUsize = AtomicUsize::new(0);
+    static LIVE: AtomicUsize = AtomicUsize::new(0);
+    static PEAK: AtomicUsize = AtomicUsize::new(0);
+
+    /// A lookup that stalls until the gate opens, as one against a blackholed authority does.
+    fn stalled(_: &str, port: u16) -> std::io::Result<Vec<SocketAddr>> {
+        ENTERED.fetch_add(1, Ordering::SeqCst);
+        let live = LIVE.fetch_add(1, Ordering::SeqCst) + 1;
+        PEAK.fetch_max(live, Ordering::SeqCst);
+        let mut open = GATE.lock().unwrap();
+        while !*open {
+            open = OPENED.wait(open).unwrap();
+        }
+        drop(open);
+        LIVE.fetch_sub(1, Ordering::SeqCst);
+        Ok(vec![SocketAddr::from(([127, 0, 0, 1], port))])
+    }
+
+    fn never(_: &str, _: u16) -> std::io::Result<Vec<SocketAddr>> {
+        panic!("an address literal needs no lookup")
+    }
+
+    fn soon(millis: u64) -> Instant {
+        Instant::now() + Duration::from_millis(millis)
+    }
+
+    /// #1575: requests that give up on stalled lookups leave at most the cap of resolver
+    /// threads; past it, a request waits for a slot until its deadline and starts no thread.
+    #[test]
+    fn stalled_lookups_hold_at_most_the_cap_of_threads() {
+        static SLOTS: Slots = Slots::new(4);
+        for _ in 0..10 {
+            let found = resolve_on(&SLOTS, stalled, "stalled.example", 80, soon(30));
+            assert_eq!(found, Err(Error::TimedOut));
+        }
+        // The threads started run on their own: give the last of them time to enter.
+        let start = Instant::now();
+        while ENTERED.load(Ordering::SeqCst) < 4 && start.elapsed() < Duration::from_secs(10) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(ENTERED.load(Ordering::SeqCst), 4, "threads started");
+        assert_eq!(PEAK.load(Ordering::SeqCst), 4, "threads alive at once");
+        assert_eq!(SLOTS.used(), 4);
+        // A request that waits for a slot gets one when a stalled lookup returns.
+        let waiting =
+            std::thread::spawn(|| resolve_on(&SLOTS, stalled, "stalled.example", 81, soon(10_000)));
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(ENTERED.load(Ordering::SeqCst), 4, "no thread past the cap");
+        *GATE.lock().unwrap() = true;
+        OPENED.notify_all();
+        let found = waiting.join().unwrap();
+        assert_eq!(found, Ok(vec![SocketAddr::from(([127, 0, 0, 1], 81))]));
+        assert_eq!(ENTERED.load(Ordering::SeqCst), 5);
+        let start = Instant::now();
+        while SLOTS.used() != 0 && start.elapsed() < Duration::from_secs(10) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(SLOTS.used(), 0, "every thread gave its slot back");
+        assert_eq!(LIVE.load(Ordering::SeqCst), 0);
+    }
+
+    /// #1575 review L1: a request whose deadline passes while it waits for a slot starts no
+    /// lookup, even when a slot is free by the time it wakes, and gives that slot back.
+    #[test]
+    fn a_slot_taken_past_the_deadline_starts_no_lookup() {
+        static SLOTS: Slots = Slots::new(1);
+        static STARTED: AtomicUsize = AtomicUsize::new(0);
+        fn counted(_: &str, port: u16) -> std::io::Result<Vec<SocketAddr>> {
+            STARTED.fetch_add(1, Ordering::SeqCst);
+            Ok(vec![SocketAddr::from(([127, 0, 0, 1], port))])
+        }
+        let held = SLOTS.take(soon(60_000)).unwrap();
+        let start = Instant::now();
+        let deadline = start + Duration::from_millis(200);
+        let waiter =
+            std::thread::spawn(move || resolve_on(&SLOTS, counted, "name.example", 80, deadline));
+        std::thread::sleep(Duration::from_millis(50));
+        // Hold the slots' mutex across the waiter's deadline, then free the slot under it, so
+        // the waiter finds a free slot only after its deadline.
+        let mut used = SLOTS.used.lock().unwrap();
+        while Instant::now() < deadline + Duration::from_millis(100) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        *used -= 1;
+        std::mem::forget(held);
+        drop(used);
+        assert_eq!(waiter.join().unwrap(), Err(Error::TimedOut));
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(
+            STARTED.load(Ordering::SeqCst),
+            0,
+            "lookups started past the deadline"
+        );
+        assert_eq!(SLOTS.used(), 0, "the slot was given back");
+    }
+
+    /// Address literals take no slot: they resolve when every slot is taken.
+    #[test]
+    fn literals_need_no_slot() {
+        static NONE: Slots = Slots::new(0);
+        assert_eq!(
+            resolve_on(&NONE, never, "127.0.0.1", 8080, soon(1_000)),
+            Ok(vec![SocketAddr::from(([127, 0, 0, 1], 8080))])
+        );
+        let v6 = resolve_on(&NONE, never, "[::1]", 9, soon(1_000)).unwrap();
+        assert_eq!(v6, vec!["[::1]:9".parse::<SocketAddr>().unwrap()]);
+        // A name finds no slot, and fails at its deadline without a lookup.
+        let found = resolve_on(&NONE, never, "name.example", 80, soon(20));
+        assert_eq!(found, Err(Error::TimedOut));
+    }
+
+    /// A request whose deadline passed starts no lookup.
+    #[test]
+    fn a_passed_deadline_starts_no_lookup() {
+        static SLOTS: Slots = Slots::new(1);
+        let found = resolve_on(&SLOTS, never, "name.example", 80, Instant::now());
+        assert_eq!(found, Err(Error::TimedOut));
+        assert_eq!(SLOTS.used(), 0);
     }
 }
