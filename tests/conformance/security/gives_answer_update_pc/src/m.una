@@ -1,0 +1,16 @@
+-- test: an update of a `public` editable binding in a branch on a labeled answer is U4001 at the update, and its repair names the binding and operation (ADR 0094 rules 2 and 7)
+-- spec: spec/07 §3
+-- expect: error U4001 at src/m.una:15:9
+module m
+
+pub capability Files
+  op owner(file: Text) -> Text
+
+pub counted(file: Text) -> Int
+  uses @service_files: Files[owner gives internal[Service]]
+=
+  let edit n: Int = 0
+  let owner = @service_files.owner(file)
+  if owner == "root"
+    n = 1
+  n

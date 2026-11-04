@@ -185,12 +185,15 @@ impl Checker<'_, '_, '_> {
                 && self.labels()
                 && !key_label.flows_to(&place_top)
             {
-                self.report.error(
+                self.flow_error(
                     Code::U4001,
                     *key_span,
                     format!(
                         "this key is labeled `{key_label}`, above the label `{place_top}` of the map `{receiver}`, whose size and keys would reveal it; declare the map with a `{key_label}` top label"
                     ),
+                    super::flow::Carrier::Value("this key"),
+                    &key_label,
+                    &place_top,
                 );
             }
             let span = found.get(1).map_or(span, |(value_span, _)| *value_span);
