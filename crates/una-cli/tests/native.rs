@@ -6743,7 +6743,7 @@ fn done_print(seq: u64) -> Value {
 #[test]
 fn s41_installations_under_a_secret_branch_do_not_move_later_public_instance_ids() {
     // S-41 (#1514), `spec/26 §6` rule 4: an installation under a raised program counter is
-    // quiet and counts apart, so the public installation after it is `with:keep#1` for every
+    // quiet and takes no number, so the public installation after it is `with:keep#1` for every
     // secret: whole events are the same, in both engines.
     let expected = Value::from(vec![sink_put(1, "", "with:keep#1"), done_print(2)]);
     for install in [

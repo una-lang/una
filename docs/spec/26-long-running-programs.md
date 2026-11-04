@@ -4,7 +4,7 @@ Status: Normative, edition 0.4 preview (ADR 0116).
 
 A program that runs until it is told to stop, such as a game loop, a server or a worker, hands its loop to the host, or runs a `for ever` loop in a function whose header says `diverges`. The rules of ADR 0116 join this chapter as they land, each with its conformance cases; until a rule has landed, the construct it defines is a syntax error (U0101) or its word is reserved (U0103).
 
-**Editions.** The rules of this chapter apply only to packages of edition `0.4` (`spec/13 §7`). Earlier editions do not change.
+**Editions.** The rules of this chapter apply only to packages of edition `0.4` (`spec/13 §7`). Earlier editions do not change, with one exception: the rule for quiet code (§6 rule 4) is applied in every edition, since it protects the trace and needs no syntax. In an earlier edition it reaches only the constructs that edition has: a call, an operation or a `with` under a raised program counter is `quiet` in Core, and a handler that quiet code installs is `with:<h>#q`.
 
 ## 1. Edition and words
 
