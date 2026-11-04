@@ -21,6 +21,12 @@ Out of scope:
 - **Stack exhaustion.** The `aborted` event of a started task that runs too deep is stack exhaustion, which also writes its line to stderr, and stays out of model (`spec/07 §1`): leaving the event out would not hide the line.
 - **A `start` under a raised program counter in a `public` `tasks` statement** (S-40, #1512). The statement itself is not quiet, so the `cancelled` events of the tasks started there, and the index `k` in the paths of the tasks the same statement starts after them, still depend on the secret. The tasks such a `start` starts are not quiet either. The separate block counters of quiet code number statements, not the `start`s inside one, and do not close this.
 - **Handler installations** (S-41, #1514), closed by the addition below.
+- **The counters of quiet blocks** (S-44, #1546). `qs<c>` and `qf<c>` count every quiet statement of a task, those under a raised program counter included. In code that is quiet only by the conservative rules, under an effect floor or a decision on values of a type parameter, events that always happen carry a `c` that shows how many statements guarded by a secret ran before. The installation ids of the addition below take no number for this reason.
+- **Operations of a capability that accepts a label above `public`** (S-42, #1515). Performed under a raised program counter they are recorded by occurrence, each taking a `seq`: the count of events and the `seq` of later events depend on the secret. This needs a decision on what the trace is, the `public` view or a reader at the highest `accepts` label of the program's capabilities; this amendment does not make it.
+- **The run-wide budget** (S-36, #1478): how many iterations a `secret` loop took from `--stop-after-iterations` shows in the output of a later public loop, not in the trace.
+- **The hard stop.** The `cancelled` events and U6007 of the hard stop of `public` code are the time of a host stop (`spec/07 §1`); inside quiet code its `cancelled` events are left out as well.
+
+The formal model has none of these events yet, so a declaration that runs a `for ever`, or holds `quiet`, is not re-checked by it.
 
 ## Addition (proposed 2026-11-04): handler installations in quiet code (S-41)
 
@@ -29,8 +35,3 @@ An adversarial review of #1511 (round 2, H2; issue #1514, S-41) showed that a `w
 Choice. Rejecting a `with` under a raised program counter would reject programs that the label rules accept today, a handler answering at `public` in the body that installs it (ADR 0094 rule 4). Numbering installations by static site plus occurrence would change every id of the trace format. A count of quiet installations reset at each outermost quiet extent would still carry, inside one extent, how many installations code under a secret branch of that extent ran. An id with no number keeps every public id as it was, needs no change to the adoption and streaming renumbering, which leave an id with no task path untouched, and keeps the format `una.run/1`.
 
 Costs. An installation in quiet code makes its id, O(|h|), and touches no count; outside quiet code nothing changes: O(log h) per installation, h the handler names the task installed, as before.
-- **Operations of a capability that accepts a label above `public`** (S-42, #1515). Performed under a raised program counter they are recorded by occurrence, each taking a `seq`: the count of events and the `seq` of later events depend on the secret. This needs a decision on what the trace is, the `public` view or a reader at the highest `accepts` label of the program's capabilities; this amendment does not make it.
-- **The run-wide budget** (S-36, #1478): how many iterations a `secret` loop took from `--stop-after-iterations` shows in the output of a later public loop, not in the trace.
-- **The hard stop.** The `cancelled` events and U6007 of the hard stop of `public` code are the time of a host stop (`spec/07 §1`); inside quiet code its `cancelled` events are left out as well.
-
-The formal model has none of these events yet, so a declaration that runs a `for ever`, or holds `quiet`, is not re-checked by it.
