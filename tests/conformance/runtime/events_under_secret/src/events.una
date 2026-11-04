@@ -1,0 +1,88 @@
+-- test: a `within`, a failing `tasks` statement, a `first of` and calls that reach them stay legal under a `secret` program counter, in a function that says `diverges` or not, through a function value and across `skip`, and run as before; the `timeout` and `cancelled` events they append there are left out of the trace, which the native tests compare across secrets in both engines (spec/26 §6 rule 4, S-39)
+-- spec: spec/26 §6
+-- grant: console
+-- expect: run-output "done 4"
+module events
+
+import std.time (millisecond)
+
+pub kind Bad = Boom | Other
+
+spin() -> Unit
+  diverges
+=
+  let edit k = 0
+  for ever
+    k = k + 1
+
+noop() -> Unit = unit
+
+boom() -> Unit
+  fails Bad
+=
+  fail Boom
+
+run_block() -> Unit
+  fails Bad
+=
+  tasks
+    start noop()
+    boom()
+      if error pass
+
+blocked() -> Unit
+  fails Bad
+  diverges
+=
+  tasks
+    start spin()
+    boom()
+      if error pass
+
+inner() -> Unit
+=
+  let r = attempt run_block()
+  noop()
+
+cut() -> Unit
+  diverges
+=
+  let r = attempt spin() within 20 * millisecond
+  let b = attempt blocked()
+  noop()
+
+middle() -> Unit = inner()
+
+apply(f: fn() -> Unit) -> Unit = f()
+
+double(n: Int) -> Int = n * 2
+
+race(i: Int) -> Int
+=
+  first of
+    double(i)
+    double(i)
+
+pub main() -> Unit
+  uses @console: Console[print]
+  diverges
+=
+  let s: secret Int = 13
+  let edit n = 0
+  for i in 0..<4
+    n = n + 1
+    if s > i
+      cut()
+      let r = attempt spin() within 20 * millisecond
+      middle()
+    if s > i + 4
+      apply(inner)
+      let g = inner
+      g()
+    if s > i + 8
+      let v = race(i)
+      tasks
+        start noop()
+        if i == 1
+          skip
+  @console.print("done {n}")

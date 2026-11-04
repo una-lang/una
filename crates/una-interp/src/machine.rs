@@ -848,6 +848,10 @@ pub(crate) struct Machine<'p, 'w> {
     /// included: its `Http` operations are interruptible there (rule 14). No `for ever` holds
     /// another one, so a flag suffices.
     in_ever: bool,
+    /// How many `quiet` expressions the task is in, those of the task that started it at its
+    /// `start` included: while one is, a `for ever` that a host stop ends appends no `stop`
+    /// event (S-39, `spec/26 §6` rule 4).
+    quiet: u32,
     /// The thread's attention word, and its value at the last check point (rule 18).
     word: una_sys::attention::Word,
     seen: Cell<u64>,
@@ -864,14 +868,17 @@ pub(crate) struct Machine<'p, 'w> {
     /// The path of the task in progress, one part per enclosing block (`spec/19 §6`): the
     /// 1-based index of a `together` task; for a branch of the `c`-th `first of` its task runs,
     /// `f<c>` and the branch's 1-based index (`spec/27 §6`); for the `k`-th task of its task's
-    /// `c`-th `tasks` statement, `s<c>` and `k` (`spec/27 §7`).
+    /// `c`-th `tasks` statement, `s<c>` and `k` (`spec/27 §7`); `qf<c>` and `qs<c>` for the
+    /// blocks of quiet code, counted apart (S-39).
     task: Vec<String>,
     /// How many `first of` blocks each task in progress has run, the root's first, for the
-    /// paths of their branches (`spec/27 §6`).
-    races: Vec<usize>,
+    /// paths of their branches (`spec/27 §6`): outside `quiet` code, then inside it, which
+    /// counts apart so that quiet code never moves the paths of later public blocks (S-39,
+    /// `spec/26 §6` rule 4).
+    races: Vec<crate::concurrency::BlockCounts>,
     /// How many `tasks` statements each task in progress has run, for the paths of the tasks
-    /// they start (`spec/27 §7`).
-    tasks_runs: Vec<usize>,
+    /// they start (`spec/27 §7`), outside `quiet` code and inside it, as `races`.
+    tasks_runs: Vec<crate::concurrency::BlockCounts>,
     /// `--task-depth`: the calls a branch of `first of`, or a started task, may make below its
     /// block or its `start` (`spec/27 §3`).
     task_depth: usize,
@@ -957,6 +964,7 @@ impl<'p, 'w> Machine<'p, 'w> {
             max_depth,
             stop,
             in_ever: false,
+            quiet: 0,
             word,
             seen: Cell::new(seen),
             max_memory: limits.max_memory,
@@ -968,8 +976,8 @@ impl<'p, 'w> Machine<'p, 'w> {
                 .map_or(usize::MAX, |bytes| bytes.saturating_sub(STACK_RESERVE)),
             frames: Vec::new(),
             task: Vec::new(),
-            races: vec![0],
-            tasks_runs: vec![0],
+            races: vec![crate::concurrency::BlockCounts::default()],
+            tasks_runs: vec![crate::concurrency::BlockCounts::default()],
             task_depth: limits.task_depth,
             deadline: None,
             withins: Vec::new(),
@@ -1015,6 +1023,8 @@ impl<'p, 'w> Machine<'p, 'w> {
                 .min(self.depth.saturating_add(self.task_depth)),
             stop: Arc::clone(&self.stop),
             in_ever: false,
+            // A task started under a raised program counter runs under it (`spec/27 §7` rule 3).
+            quiet: self.quiet,
             word: self.word,
             seen: Cell::new(self.seen.get()),
             max_memory: self.max_memory,
@@ -1025,8 +1035,8 @@ impl<'p, 'w> Machine<'p, 'w> {
             stack_budget,
             frames: self.frames.last().copied().into_iter().collect(),
             task,
-            races: vec![0],
-            tasks_runs: vec![0],
+            races: vec![crate::concurrency::BlockCounts::default()],
+            tasks_runs: vec![crate::concurrency::BlockCounts::default()],
             task_depth: self.task_depth,
             deadline: self.deadline.clone(),
             withins: self
@@ -1526,8 +1536,12 @@ impl<'p, 'w> Machine<'p, 'w> {
 
     /// The `cancelled` events of the tasks `from..to` of the block in progress, which a cut
     /// stopped or kept from starting (`spec/27 §5`), in task order: each task the cut stops ends
-    /// with one, as natively, whatever had started.
+    /// with one, as natively, whatever had started. None inside a `quiet` expression (S-39,
+    /// `spec/26 §6` rule 4), whose program counter they would reveal.
     fn cut_events(&mut self, from: usize, to: usize) {
+        if self.quiet > 0 {
+            return;
+        }
         for index in from..to {
             let mut path: Vec<String> = self.task.iter().map(ToString::to_string).collect();
             path.push((index + 1).to_string());
@@ -1543,13 +1557,16 @@ impl<'p, 'w> Machine<'p, 'w> {
         }
     }
 
-    /// The `cancelled` events of the branches `from..to` of the `race`-th `first of` of the task
-    /// in progress, which a cut stopped or kept from starting (`spec/27 §5`, `§6`), in index
-    /// order, as for the tasks of a block ([`Self::cut_events`]).
-    fn race_cut_events(&mut self, race: usize, from: usize, to: usize) {
+    /// The `cancelled` events of the branches `from..to` of the `first of` named `race` (`f<c>`)
+    /// of the task in progress, which a cut stopped or kept from starting (`spec/27 §5`, `§6`),
+    /// in index order, as for the tasks of a block ([`Self::cut_events`]).
+    fn race_cut_events(&mut self, race: &str, from: usize, to: usize) {
+        if self.quiet > 0 {
+            return;
+        }
         for index in from..to {
             let mut path: Vec<String> = self.task.iter().map(ToString::to_string).collect();
-            path.push(format!("f{race}"));
+            path.push(race.to_owned());
             path.push((index + 1).to_string());
             self.emit(Event {
                 seq: 0,
@@ -1563,8 +1580,12 @@ impl<'p, 'w> Machine<'p, 'w> {
         }
     }
 
-    /// Appends the `timeout` event of a `within` of the task in progress (`spec/27 §5`).
+    /// Appends the `timeout` event of a `within` of the task in progress (`spec/27 §5`); none
+    /// inside a `quiet` expression (S-39, `spec/26 §6` rule 4).
     fn within_timeout_event(&mut self) {
+        if self.quiet > 0 {
+            return;
+        }
         let task = self.task.join(".");
         self.emit(Event {
             seq: 0,
@@ -2134,6 +2155,14 @@ impl<'p, 'w> Machine<'p, 'w> {
                     self.start(env, &caps, task, *span)?;
                     return Ok(Value::Unit);
                 }
+                // `quiet e` (S-39, `spec/26 §6` rule 4): `e`, then the count as before, on every
+                // way out of it.
+                Expr::Quiet { body, .. } => {
+                    self.quiet = self.quiet.saturating_add(1);
+                    let result = self.eval(env, &caps, body);
+                    self.quiet = self.quiet.saturating_sub(1);
+                    return result;
+                }
                 // `let (x, ...) = a in e` (`spec/17 §4`).
                 Expr::LetTuple {
                     names, value, body, ..
@@ -2578,8 +2607,12 @@ impl<'p, 'w> Machine<'p, 'w> {
     }
 
     /// Appends the `stop` event of a loop that stops at the start of an iteration (ADR 0116
-    /// rule 14), in the current task.
+    /// rule 14), in the current task; none inside a `quiet` expression, whose program counter
+    /// the event would reveal (S-39, `spec/26 §6` rule 4). It then takes no `seq` either.
     pub(crate) fn stop_event(&mut self) {
+        if self.quiet > 0 {
+            return;
+        }
         let task = self.task.join(".");
         self.emit(Event {
             seq: 0,
@@ -2656,8 +2689,9 @@ impl<'p, 'w> Machine<'p, 'w> {
         task: &'p Expr,
     ) -> (Flow<'p>, Part) {
         self.task.push((index + 1).to_string());
-        self.races.push(0);
-        self.tasks_runs.push(0);
+        self.races.push(crate::concurrency::BlockCounts::default());
+        self.tasks_runs
+            .push(crate::concurrency::BlockCounts::default());
         self.buffers.push(Buffer {
             start: self.events.len(),
             path: self.task.join("."),
@@ -2681,17 +2715,17 @@ impl<'p, 'w> Machine<'p, 'w> {
         (result, part)
     }
 
-    /// Branch `index` of the `race`-th `first of` of the task in progress, `task`, with its path
-    /// `p.f<race>.<index + 1>` (`spec/27 §6`), and the depth limit of `--task-depth` below its
-    /// block, within the run's.
+    /// Branch `index` of the `first of` named `race` in the task in progress, `task`, with its
+    /// path `p.<race>.<index + 1>`, `race` being `f<c>` or, in quiet code, `qf<c>` (`spec/27
+    /// §6`), and the depth limit of `--task-depth` below its block, within the run's.
     fn branch(
         &mut self,
         env: &mut Env<'p>,
         caps: &Caps<'p>,
-        (race, index): (usize, usize),
+        (race, index): (&str, usize),
         task: &'p Expr,
     ) -> (Flow<'p>, Part) {
-        self.task.push(format!("f{race}"));
+        self.task.push(race.to_owned());
         let max_depth = self.max_depth;
         self.max_depth = max_depth.min(self.depth.saturating_add(self.task_depth));
         let ended = self.task(env, caps, index, task);
@@ -2713,17 +2747,18 @@ impl<'p, 'w> Machine<'p, 'w> {
         bound: Option<usize>,
         body: &'p Expr,
     ) -> Flow<'p> {
+        // Quiet code counts its statements apart, `qs<c>`, so that whether it ran, which may
+        // depend on data above `public`, never moves the paths of later public ones (S-39,
+        // `spec/26 §6` rule 4).
+        let quiet = self.quiet > 0;
         let count = match self.tasks_runs.last_mut() {
-            Some(count) => {
-                *count += 1;
-                *count
-            }
+            Some(counts) => counts.next(quiet),
             None => return Err(fault("a `tasks` statement outside any task")),
         };
         let bound = bound
             .unwrap_or_else(|| crate::concurrency::default_bound(self.max_memory, self.run.cap));
         let mut path = self.task.clone();
-        path.push(format!("s{count}"));
+        path.push(crate::concurrency::block_name('s', quiet, count));
         let scope = Rc::new(TasksScope::new(path, bound));
         self.scopes.push(Rc::clone(&scope));
         let result = self.eval(env, caps, body);
@@ -2843,6 +2878,9 @@ impl<'p, 'w> Machine<'p, 'w> {
                 self.emit(ended(task, EventOutcome::TaskAborted));
             }
             Err(Stop::Abort(abort)) => self.run.abort_run(abort),
+            // None inside a `quiet` expression, which the task started under (S-39, `spec/26 §6`
+            // rule 4).
+            Err(Stop::Cut(_)) if self.quiet > 0 => {}
             Err(Stop::Cut(_)) => self.emit(ended(task, EventOutcome::Cancelled)),
             // A started task cannot fail (U3029), and no exit leaves its expression.
             Err(Stop::Fail(_) | Stop::Exit(..)) => self.run.abort_run(Abort::Fault {
@@ -2860,11 +2898,10 @@ impl<'p, 'w> Machine<'p, 'w> {
     /// renumbered as native code numbers them at the join, the ids of the handlers they
     /// installed included.
     fn first_of(&mut self, env: &mut Env<'p>, caps: &Caps<'p>, tasks: &'p [Expr]) -> Flow<'p> {
+        // Quiet code counts its races apart, `qf<c>`, as `tasks` statements (S-39).
+        let quiet = self.quiet > 0;
         let race = match self.races.last_mut() {
-            Some(count) => {
-                *count += 1;
-                *count
-            }
+            Some(counts) => crate::concurrency::block_name('f', quiet, counts.next(quiet)),
             None => return Err(fault("a `first of` outside any task")),
         };
         let start = self.events.len();
@@ -2875,7 +2912,7 @@ impl<'p, 'w> Machine<'p, 'w> {
             let result = match self.passed_within(self.within_shield) {
                 Some(id) => Err(Stop::Cut(id)),
                 None => {
-                    let (result, part) = self.branch(env, caps, (race, index), task);
+                    let (result, part) = self.branch(env, caps, (&race, index), task);
                     parts.push(part);
                     result
                 }
@@ -2895,7 +2932,7 @@ impl<'p, 'w> Machine<'p, 'w> {
                 Err(stop) => {
                     self.adopt(start, &parts.iter().collect::<Vec<_>>());
                     if matches!(stop, Stop::Cut(_)) {
-                        self.race_cut_events(race, index, tasks.len());
+                        self.race_cut_events(&race, index, tasks.len());
                     }
                     return Err(stop);
                 }
@@ -3406,8 +3443,10 @@ impl<'p, 'w> Machine<'p, 'w> {
 
     /// Appends the iteration's one `timeout` event, with the path of the task that runs the
     /// loop, the first time its control flow observes a failure the deadline caused: a trace
-    /// does not depend on which task met the deadline first (`spec/26 §7`).
+    /// does not depend on which task met the deadline first (`spec/26 §7`). None inside a
+    /// `quiet` expression (S-39, `spec/26 §6` rule 4); the iteration still observes it once.
     fn timeout_observed(&mut self) {
+        let quiet = self.quiet > 0;
         let Some(deadline) = self.deadline.as_mut() else {
             return;
         };
@@ -3415,6 +3454,9 @@ impl<'p, 'w> Machine<'p, 'w> {
             return;
         }
         deadline.reported = true;
+        if quiet {
+            return;
+        }
         let task = deadline.owner.join(".");
         self.emit(Event {
             seq: 0,

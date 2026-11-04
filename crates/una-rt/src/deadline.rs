@@ -418,9 +418,13 @@ fn observed(deadline: &Deadline) {
     timeout_event(deadline.owner.clone());
 }
 
-/// Appends a `timeout` event with the path `task`.
+/// Appends a `timeout` event with the path `task`; none inside a `quiet` expression of the
+/// thread's task (S-39, `spec/26 §6` rule 4).
 fn timeout_event(task: String) {
     with_state(|state| {
+        if state.quiet > 0 {
+            return;
+        }
         if let Some(trace) = state.trace.as_mut() {
             trace.push(Event {
                 seq: trace.len() + 1,
