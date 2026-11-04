@@ -54,15 +54,21 @@ pub fn seal(dir: &Path) {
 /// A sealed copy of the repository's `trees` (paths relative to the repository root, each a
 /// directory or a file), at the same relative paths under the returned root: the files that a
 /// test would read in place in the checkout, read where no manifest above the checkout reaches
-/// them. The root itself holds no manifest; its parent is sealed. Made once per test binary,
-/// which passes the same `trees` on every call, under `CARGO_TARGET_TMPDIR`. O(bytes of the
-/// trees); `std::fs::copy` clones files on APFS.
+/// them. The root itself holds no manifest; its parent is sealed. Made once per process of a
+/// test binary, which passes the same `trees` on every call, under
+/// `CARGO_TARGET_TMPDIR/hermetic/<test crate>-<process id>`, so two runs of one binary at once
+/// never share or remove each other's copy; the copies of earlier runs, a day old or more, are
+/// removed. O(bytes of the trees); `std::fs::copy` clones files on APFS.
 pub fn checkout(trees: &[&str]) -> PathBuf {
     static ROOT: OnceLock<(Vec<String>, PathBuf)> = OnceLock::new();
     let (made, root) = ROOT.get_or_init(|| {
-        let base = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
-            .join("hermetic")
-            .join(env!("CARGO_CRATE_NAME"));
+        let parent = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("hermetic");
+        remove_stale(&parent);
+        let base = parent.join(format!(
+            "{}-{}",
+            env!("CARGO_CRATE_NAME"),
+            std::process::id()
+        ));
         let root = checkout_under(&base, trees);
         (trees.iter().map(|tree| (*tree).to_owned()).collect(), root)
     });
@@ -80,6 +86,26 @@ pub fn checkout_under(base: &Path, trees: &[&str]) -> PathBuf {
         copy(&repository.join(tree), &root.join(tree));
     }
     root
+}
+
+/// Removes the copies of [`checkout`] under `parent` that are a day old or more: no run of a
+/// test binary lasts that long, so none of them is in use.
+fn remove_stale(parent: &Path) {
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return;
+    };
+    let day = std::time::Duration::from_secs(24 * 60 * 60);
+    for entry in entries.flatten() {
+        let old = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(|modified| modified.elapsed().ok())
+            .is_some_and(|age| age >= day);
+        if old {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
 }
 
 /// Copies `from`, a file, a directory or a link, to `to`, links as links.

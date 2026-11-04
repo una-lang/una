@@ -3,7 +3,9 @@
 //! file, as the upward search of `spec/30` says, and changes nothing below a seal of
 //! `common/hermetic.rs`, for the two failures the stray manifest caused: the U3014 example of
 //! `explain_examples` and the verifier's corpus cross-check on
-//! `verification/fn_type_join_not_refined.una`.
+//! `verification/fn_type_join_not_refined.una`. The call sites keep their seals: each test file
+//! that writes single files under a temporary directory or reads the corpus calls the helpers
+//! as often as it did when #1560 was fixed.
 
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
@@ -154,4 +156,39 @@ fn a_sealed_copy_of_the_corpus_ignores_a_planted_manifest() {
     assert!(!pending.is_empty());
     assert_eq!(pending, generated);
     std::fs::remove_dir_all(&base).unwrap();
+}
+
+/// The test files that seal a temporary directory or read a sealed copy of the corpus, with
+/// how many calls of `hermetic::seal(` and of `hermetic::checkout(` each holds (#1560). A file
+/// that drops one fails here; a new call site is added to the table with the file.
+const CALL_SITES: [(&str, usize, usize); 13] = [
+    ("cli.rs", 0, 1),
+    ("conformance/main.rs", 0, 1),
+    ("core_symbols.rs", 0, 1),
+    ("demo_scripts.rs", 0, 1),
+    ("explain_examples.rs", 1, 0),
+    ("native.rs", 2, 0),
+    ("recovery.rs", 1, 0),
+    ("runtime.rs", 0, 1),
+    ("serve_grants.rs", 1, 0),
+    ("test_declaration.rs", 0, 1),
+    ("unknown_names.rs", 1, 0),
+    ("verification.rs", 0, 1),
+    ("widening_repairs.rs", 0, 1),
+];
+
+#[test]
+fn every_call_site_keeps_its_seal() {
+    let tests = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+    for (file, seals, checkouts) in CALL_SITES {
+        let text = std::fs::read_to_string(tests.join(file)).unwrap();
+        assert_eq!(
+            (
+                text.matches("hermetic::seal(").count(),
+                text.matches("hermetic::checkout(").count()
+            ),
+            (seals, checkouts),
+            "{file}: calls of hermetic::seal and hermetic::checkout"
+        );
+    }
 }

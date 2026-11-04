@@ -6,13 +6,18 @@
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
 
+#[path = "common/hermetic.rs"]
+mod hermetic;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use serde_json::Value;
 
+/// A sealed copy of the conformance cases and the examples, read in place of the checkout's:
+/// no manifest above the checkout changes the edition of their single files (#1560).
 fn root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
+    hermetic::checkout(&["examples", "tests/conformance"])
 }
 
 /// Every package and single-file case of the corpus: the conformance cases and the examples.
