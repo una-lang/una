@@ -239,16 +239,14 @@ pub(crate) struct TasksScope {
     /// The path parts of the statement's tasks before their index: those of the task that runs
     /// it, then `s<c>`.
     pub(crate) path: Vec<String>,
-    /// How many tasks of public code, and how many of quiet code, may run at once: each.
+    /// How many tasks may run at once, those of quiet code included (ADR 0117 rule 7).
     pub(crate) bound: usize,
     /// How many tasks public code started: a `start` in quiet code is not counted (S-40,
     /// #1512, `spec/27 §7` rule 5).
     pub(crate) started: Cell<crate::concurrency::BlockCounts>,
-    /// How many tasks that public code started still run, and how many that quiet code
-    /// started: each kind waits for a slot of its own, so that a `start` under a raised program
-    /// counter never makes a later public one wait, which would reorder public events (S-40).
+    /// How many of its tasks still run, those of quiet code included: a quiet task holds a slot
+    /// of the one bound, so it can make a later public `start` wait, an open channel (#1545).
     pub(crate) running: Cell<usize>,
-    pub(crate) running_quiet: Cell<usize>,
     pub(crate) cancelled: Cell<bool>,
     pub(crate) waiter: Cell<Option<usize>>,
 }
@@ -261,7 +259,6 @@ impl TasksScope {
             bound: bound.max(1),
             started: Cell::new(crate::concurrency::BlockCounts::default()),
             running: Cell::new(0),
-            running_quiet: Cell::new(0),
             cancelled: Cell::new(false),
             waiter: Cell::new(None),
         }
@@ -269,22 +266,17 @@ impl TasksScope {
 }
 
 /// Ends a started task, whether its body ran or was dropped before it started: its statement
-/// counts one task less, of quiet code when `quiet`, and the task waiting on the statement, if
-/// any, is ready again.
+/// counts one task less, and the task waiting on the statement, if any, is ready again.
 pub(crate) struct Ending<'p, 'w> {
     pub(crate) scope: Rc<TasksScope>,
     pub(crate) run: Rc<Run<'p, 'w>>,
-    pub(crate) quiet: bool,
 }
 
 impl Drop for Ending<'_, '_> {
     fn drop(&mut self) {
-        let running = if self.quiet {
-            &self.scope.running_quiet
-        } else {
-            &self.scope.running
-        };
-        running.set(running.get().saturating_sub(1));
+        self.scope
+            .running
+            .set(self.scope.running.get().saturating_sub(1));
         self.run.live.set(self.run.live.get().saturating_sub(1));
         if let Some(waiter) = self.scope.waiter.take() {
             self.run.sched.borrow_mut().wake(waiter);
@@ -497,7 +489,6 @@ mod tests {
                 let ending = Ending {
                     scope: Rc::clone(&scope),
                     run: Rc::clone(&run),
-                    quiet: false,
                 };
                 let log = &log;
                 run.sched.borrow_mut().start(

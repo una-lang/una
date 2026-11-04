@@ -7070,8 +7070,8 @@ fn s40_quiet_tasks_have_no_number_so_quiet_code_without_a_secret_branch_shows_no
     }
 }
 
-/// S-40 round 2 (#1512, review M1, `p_bound.una` verbatim): a quiet `start` between two public
-/// ones of a statement bounded at 2.
+/// S-40 (#1512, review M1, `p_bound.una` verbatim): a quiet `start` between two public ones of
+/// a statement bounded at 2.
 const SECRET_START_BOUND: &str = r#"module leak
 
 worker(n: Int) -> Unit
@@ -7096,28 +7096,40 @@ pub main() -> Unit
 "#;
 
 #[test]
-fn s40_a_quiet_start_takes_no_slot_of_the_public_tasks() {
-    // S-40 round 2 (#1512, review M1), `spec/27 §7` rule 4: a `start` under a `secret` branch
-    // waits only for the statement's quiet tasks, so the public `start` after it does not wait,
-    // and the interpreter's output and whole trace are the same for every secret; before, a
-    // secret above 0 made `worker(2)` wait and moved `main` after `worker 1`. The executable's
-    // tasks run at once, so its events are compared task by task.
-    let mut first: Option<(Value, Value)> = None;
+fn s40_open_channel_1545_a_quiet_start_holds_a_slot_of_the_shared_bound() {
+    // OPEN CHANNEL, #1545 (`spec/26 §6` rule 4): this test documents a leak, it does not show
+    // a fix. Quiet and public tasks share the one bound of ADR 0117 rule 7, so the quiet `start`
+    // under `if s > 0` holds one of the two slots, `start worker(2)` waits for it, and the
+    // interpreter runs `worker(1)` before `main` prints: its output and trace depend on the
+    // secret, deterministically. Separate bounds would close it but let a statement run twice
+    // its bound (`docs/plan/0117-quiet-bounds-amendment-draft.md`). When #1545 is fixed, these
+    // expectations become one, the same for every secret. What is already closed is checked
+    // here too: the paths, and the executable's events task by task, equal the interpreter's.
+    let leaked = |secret: i64| {
+        if secret == 0 {
+            serde_json::json!(["main", "worker 1", "worker 2", "done"])
+        } else {
+            serde_json::json!(["worker 1", "main", "worker 2", "done"])
+        }
+    };
+    let mut paths: Option<std::collections::BTreeMap<String, Vec<Value>>> = None;
     for secret in [0, 1, 2] {
         let (output, run, native_output, native) =
             secret_runs("s40bound", SECRET_START_BOUND, secret, &[]);
-        assert_eq!(
-            output,
-            serde_json::json!(["main", "worker 1", "worker 2", "done"]),
-            "{secret}"
-        );
+        assert_eq!(output, leaked(secret), "{secret}");
         assert_eq!(by_task(&native), by_task(&run), "{secret}");
         let mut lines: Vec<String> = serde_json::from_value(native_output).unwrap();
         lines.sort();
         assert_eq!(lines, ["done", "main", "worker 1", "worker 2"], "{secret}");
-        match &first {
-            None => first = Some((output, run)),
-            Some(seen) => assert_eq!((&output, &run), (&seen.0, &seen.1), "{secret}"),
+        let tasks = by_task(&run);
+        assert_eq!(
+            tasks.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["", "s1.1", "s1.2"],
+            "{secret}: {run}"
+        );
+        match &paths {
+            None => paths = Some(tasks),
+            Some(seen) => assert_eq!(&tasks, seen, "{secret}"),
         }
     }
 }

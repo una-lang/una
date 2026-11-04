@@ -2766,9 +2766,7 @@ impl<'p, 'w> Machine<'p, 'w> {
             scope.cancelled.set(true);
         }
         self.flush();
-        self.wait_for(&scope, |scope| {
-            scope.running.get() == 0 && scope.running_quiet.get() == 0
-        })?;
+        self.wait_for(&scope, |scope| scope.running.get() == 0)?;
         // A task's abort that ends the run ends the statement with it.
         if let Some(abort) = self.run.aborted() {
             return Err(Stop::Abort(abort));
@@ -2798,7 +2796,7 @@ impl<'p, 'w> Machine<'p, 'w> {
 
     /// `start e` at `span` (`spec/27 §7`, ADR 0117 rule 7): once fewer tasks of the innermost
     /// statement run than its bound allows, starts the next one, `p.s<c>.<k>`, or `p.s<c>.q` in
-    /// quiet code, whose tasks have slots of their own (S-40), for `task` with
+    /// quiet code (S-40), for `task` with
     /// the bindings it reads and the capabilities in scope, at the back of the run's queue,
     /// and goes on. On Linux, a run already holding as many started tasks as the system allows
     /// at once aborts with U6003 at the `start`, before any mapping fails (ADR 0117 rule 2).
@@ -2813,18 +2811,10 @@ impl<'p, 'w> Machine<'p, 'w> {
             return Err(fault("a `start` outside its `tasks` statement"));
         };
         self.flush();
-        // A `start` in quiet code waits for a slot among the quiet tasks of its statement, and
-        // a public one among the public tasks, so that whether a `start` under a raised program
-        // counter ran never makes a public one wait, nor reorders public events (S-40, #1512).
-        let quiet = self.quiet > 0;
-        let running = move |scope: &TasksScope| {
-            if quiet {
-                scope.running_quiet.get()
-            } else {
-                scope.running.get()
-            }
-        };
-        self.wait_for(&scope, |scope| running(scope) < scope.bound)?;
+        // Quiet and public tasks share the one bound (ADR 0117 rule 7): a quiet task's slot can
+        // make a later public `start` wait, which reorders public events here, an open channel
+        // (#1545, `spec/26 §6` rule 4).
+        self.wait_for(&scope, |scope| scope.running.get() < scope.bound)?;
         if let Some(abort) = self.run.aborted() {
             return Err(Stop::Abort(abort));
         }
@@ -2839,6 +2829,7 @@ impl<'p, 'w> Machine<'p, 'w> {
         // A `start` in quiet code is not counted, and its task is `q`, with no number, so that
         // whether it ran, which may depend on data above `public`, moves neither the index of a
         // later public one nor the path of a later quiet one (S-40, #1512, `spec/27 §7` rule 5).
+        let quiet = self.quiet > 0;
         let mut counts = scope.started.get();
         let k = counts.next(quiet);
         scope.started.set(counts);
@@ -2847,17 +2838,11 @@ impl<'p, 'w> Machine<'p, 'w> {
         let mut captured: Env<'p> = reads.iter().filter_map(|name| env.binding(name)).collect();
         let caps = caps.clone();
         let bytes = crate::stack_bytes(self.task_depth).unwrap_or(STACK_RESERVE * 2);
-        let slots = if quiet {
-            &scope.running_quiet
-        } else {
-            &scope.running
-        };
-        slots.set(slots.get() + 1);
+        scope.running.set(scope.running.get() + 1);
         self.run.live.set(self.run.live.get() + 1);
         let ending = Ending {
             scope,
             run: Rc::clone(&self.run),
-            quiet,
         };
         let body = move || {
             // Its statement counts it ended once its events are written, or, if it never

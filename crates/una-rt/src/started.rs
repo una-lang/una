@@ -132,9 +132,7 @@ pub(crate) struct StartScope {
     /// moves the index, and so the placement, of a later public one (S-40, #1512, `spec/27 §7`
     /// rule 5).
     started: AtomicUsize,
-    /// How many tasks of public code, and of quiet code, still run, each bounded apart (S-40).
     running: sched::Counter,
-    running_quiet: sched::Counter,
     pub(crate) cancel: Arc<AtomicUsize>,
 }
 
@@ -175,7 +173,6 @@ pub fn tasks_end(cancel: i64) {
         cancel_tasks(&scope, crate::deadline::cut());
     }
     scope.running.wait_zero();
-    scope.running_quiet.wait_zero();
 }
 
 /// Cancels the tasks of `scope`, whose block failed or stops (ADR 0117 rule 7). `by_deadline`
@@ -209,15 +206,6 @@ pub(crate) fn cancel_tasks(scope: &StartScope, by_deadline: bool) {
 }
 
 impl StartScope {
-    /// The count of the running tasks of public code, or of quiet code when `quiet` (S-40).
-    fn slots(&self, quiet: bool) -> &sched::Counter {
-        if quiet {
-            &self.running_quiet
-        } else {
-            &self.running
-        }
-    }
-
     /// The scope of a statement whose tasks' paths start with `path`, at most `bound` at once.
     pub(crate) fn new(path: String, bound: usize) -> StartScope {
         StartScope {
@@ -225,7 +213,6 @@ impl StartScope {
             bound: bound.max(1),
             started: AtomicUsize::new(0),
             running: sched::Counter::default(),
-            running_quiet: sched::Counter::default(),
             cancel: Arc::new(AtomicUsize::new(ENTRY)),
         }
     }
@@ -248,8 +235,8 @@ fn too_deep(message: &str) -> bool {
 /// while the innermost statement runs as many tasks as its bound, then starts the next one on
 /// the run's workers, and goes on. 0, or 2 when the task stops instead.
 pub fn start(closure: i64, site: usize, invoke: Invoke) -> i64 {
-    // Whether the `start` stands in quiet code (S-40, #1512): its task is then counted among
-    // the quiet tasks of its statement, for its slot and its place, and not numbered.
+    // Whether the `start` stands in quiet code (S-40, #1512): its task is then not numbered,
+    // and its static site places it.
     let (scope, quiet) = with_state(|state| {
         if state.stopped.is_some() {
             return (None, false);
@@ -266,14 +253,12 @@ pub fn start(closure: i64, site: usize, invoke: Invoke) -> i64 {
         );
         return 2;
     };
-    // A `start` in quiet code waits for a slot among the quiet tasks of its statement, and a
-    // public one among the public tasks, so that whether a `start` under a raised program
-    // counter ran never makes a public one wait (S-40, #1512).
-    let slots = scope.slots(quiet);
-    slots.acquire(scope.bound);
+    // Quiet and public tasks share the one bound (ADR 0117 rule 7): a quiet task's slot can make
+    // a later public `start` wait, an open channel (#1545, `spec/26 §6` rule 4).
+    scope.running.acquire(scope.bound);
     let shared = with_state(|state| Arc::clone(&state.shared));
     let Some(shared) = shared else {
-        slots.release();
+        scope.running.release();
         return 2;
     };
     // On Linux, a run holds at most a quarter of `vm.max_map_count` started tasks at once
@@ -281,7 +266,7 @@ pub fn start(closure: i64, site: usize, invoke: Invoke) -> i64 {
     if let Some(cap) = shared.cap
         && shared.live.load(Ordering::SeqCst) >= cap
     {
-        slots.release();
+        scope.running.release();
         let location = with_state(|state| state.location(site)).unwrap_or_else(nowhere);
         runtime::abort_from_task(
             Code::U6003,
@@ -297,19 +282,19 @@ pub fn start(closure: i64, site: usize, invoke: Invoke) -> i64 {
     let form = match runtime::guarded(runtime::COPY, || values::export(closure)) {
         Ok(Ok(form)) => form,
         Ok(Err(values::Refused(message))) => {
-            slots.release();
+            scope.running.release();
             runtime::refuse(site, message);
             return 2;
         }
         Err(message) => {
-            slots.release();
+            scope.running.release();
             let location = with_state(|state| state.location(site)).unwrap_or_else(nowhere);
             runtime::abort_from_task(Code::U8001, location, message);
             return 2;
         }
     };
     let Some(template) = with_state(|state| state.for_start(site)) else {
-        slots.release();
+        scope.running.release();
         return 2;
     };
     // A `start` in quiet code is not counted, and its task is `q`, with no number, so that
@@ -362,13 +347,13 @@ pub fn start(closure: i64, site: usize, invoke: Invoke) -> i64 {
         // Once the task's state and heap are gone, its statement counts it ended.
         move || {
             alive.live.fetch_sub(1, Ordering::SeqCst);
-            ended.slots(quiet).release();
+            ended.running.release();
         },
     );
     if spawned.is_err() {
         // The task never starts: its statement counts it ended.
         shared.live.fetch_sub(1, Ordering::SeqCst);
-        slots.release();
+        scope.running.release();
         let location = with_state(|state| state.location(site)).unwrap_or_else(nowhere);
         runtime::abort_from_task(
             Code::U6003,
