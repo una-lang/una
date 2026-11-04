@@ -3320,8 +3320,13 @@ impl<'p, 'w> Machine<'p, 'w> {
         // event and takes no `seq`, so neither the number of events nor the `seq` of a later
         // one shows whether it ran; the events of a handler's code that serves it are in quiet
         // code too. Code quiet by a timing floor alone keeps them (`spec/27 §5` rule 7), and
-        // an example's trace keeps them all, for `expect performed` (`spec/08`).
-        if self.hushed > 0 && !self.run.quiet_events.get() {
+        // an example's trace keeps them, for `expect performed` (`spec/08`).
+        // #1544: an instance that quiet code installed, `with:<h>#q`, is in scope only in quiet
+        // code, so its operations append no event in any trace; the handler's code runs as
+        // before. Natively the runtime starts no event for either (`una_rt::host::event`).
+        if (self.hushed > 0 && !self.run.quiet_events.get())
+            || crate::concurrency::is_quiet_install(instance.id())
+        {
             return self.serve(&instance, capability, op, args, span);
         }
         let names: Vec<String> = match self.index.capabilities.get(capability) {

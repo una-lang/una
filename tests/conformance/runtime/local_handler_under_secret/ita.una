@@ -1,0 +1,8 @@
+ita local_handler_under_secret
+  version 0.1.0
+  edition 0.4
+
+run
+  entry local
+  grants
+    console

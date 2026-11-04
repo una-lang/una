@@ -514,12 +514,17 @@ pub fn limit_acquire(_site: i64, instance: i64) -> i64 {
 /// position in the trace, or -1. Its outcome is `Aborted` until [`event_end`]. An operation
 /// performed in quiet code has none, and takes no `seq`, so neither the number of events nor
 /// the `seq` of a later one shows whether it ran (S-42, #1515, `spec/26 §6` rule 4); code
-/// quiet by a timing floor alone keeps it (`spec/27 §5` rule 7).
+/// quiet by a timing floor alone keeps it (`spec/27 §5` rule 7). An instance that quiet code
+/// installed, `with:<h>#q`, starts none either: it is in scope only in quiet code (#1544), as
+/// in the interpreter.
 pub fn event(site: i64, instance: i64) -> i64 {
     if with_state(|state| state.hushed > 0).unwrap_or(false) {
         return -1;
     }
     let id = values::instance_id(instance);
+    if una_interp::concurrency::is_quiet_install(&id) {
+        return -1;
+    }
     with_state(|state| {
         let op = usize::try_from(site).ok().and_then(|s| state.ops.get(s))?;
         let (capability, name) = (op.capability.clone(), op.op.clone());

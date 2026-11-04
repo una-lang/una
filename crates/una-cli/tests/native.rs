@@ -6802,9 +6802,11 @@ pub main() -> Unit
 #[test]
 fn s41_quiet_installations_take_no_number_in_the_root_and_in_started_tasks() {
     // S-41 (#1514), `spec/26 §6` rule 4, `spec/27 §8`: quiet code numbers none of its
-    // installations, in the root task and in a started one, so the public ones are `#1` and
-    // `#2` for every secret. The operations quiet code performs under the branch append no
-    // event either (S-42, #1515): whole traces are the same for every secret, in both engines.
+    // installations, `with:<h>#q`, in the root task and in a started one, whose block leaves
+    // those ids as they are at its join and renumbers the public ones. The operations that the
+    // quiet instances serve under the branch append no event (#1544): before that fix there was
+    // one `put` per quiet installation, `s` in each task. Whole traces are equal for every
+    // secret, in both engines.
     let expected = Value::from(vec![
         sink_put(1, "s1.1", "with:keep#1"),
         sink_put(2, "", "with:keep#2"),
@@ -6821,7 +6823,8 @@ fn s41_quiet_installations_take_no_number_in_the_root_and_in_started_tasks() {
 /// S-41 review of #1541, H1 (`p_floor.una`): quiet installations under a `secret` branch whose
 /// bodies perform no operation, then, at a `public` program counter, an operation of a
 /// capability that accepts `secret`, whose body is quiet only by its effect floor and installs
-/// a handler whose operation is traced. The event always happens, at the same `seq`.
+/// a handler. Since #1544 the operation of that quiet instance appends no event, although it
+/// always happens: the safe direction.
 const SECRET_INSTALL_FLOOR: &str = r#"module leak
 
 capability Sink
@@ -6870,8 +6873,8 @@ pub main() -> Unit
 
 /// S-41 review of #1541, H1 (`p_qid.una`): the same quiet installations, then a generic
 /// function called with public arguments, whose decision is quiet only by the rule for values
-/// of a type parameter, and installs a handler whose operation is traced; then a public
-/// installation.
+/// of a type parameter, and installs a handler, whose operation appends no event since #1544;
+/// then a public installation.
 const SECRET_INSTALL_GENERIC: &str = r#"module leak
 
 capability Sink
@@ -6933,24 +6936,18 @@ fn s41_quiet_installations_reached_by_the_conservative_rules_show_no_secret() {
     // above `public` and a decision on values of a type parameter, where the occurrence of
     // its events is public. A run-wide ordinal of quiet installations gave the `put` there
     // `with:keep#q#(s+1)`; quiet ids take no number, so whole traces are equal across secrets.
-    // Since S-42 (#1515) the `put` of quiet code appends no event at all, though it occurs
-    // whatever the secret here: the cost of the conservative rules.
+    // Since #1544 the operations of quiet instances append no event, the `put` there included,
+    // though it always happens: the safe direction (`spec/26 §6` rule 4, "Core").
     let done = serde_json::json!(["done"]);
     let floor = one_trace_for_every_secret("s41floor", SECRET_INSTALL_FLOOR, &done);
-    let ops: Vec<(&Value, &Value)> = floor
+    let ops: Vec<&Value> = floor
         .as_array()
         .into_iter()
         .flatten()
-        .map(|event| (&event["instance"], &event["op"]))
+        .map(|event| &event["op"])
         .collect();
-    assert_eq!(
-        ops,
-        [
-            (&Value::from("with:box#1"), &Value::from("hold")),
-            (&Value::from("host:Console"), &Value::from("print"))
-        ],
-        "{floor}"
-    );
+    assert_eq!(ops, ["hold", "print"], "{floor}");
+    assert_eq!(floor[0]["instance"], "with:box#1", "{floor}");
     let generic = one_trace_for_every_secret("s41qid", SECRET_INSTALL_GENERIC, &done);
     let expected = Value::from(vec![sink_put(1, "", "with:keep#1"), done_print(2)]);
     assert_eq!(generic, expected);
@@ -6975,8 +6972,80 @@ fn s41_the_conformance_case_has_one_trace_for_every_secret() {
         .filter(|event| event["op"] == "put")
         .filter_map(|event| event["instance"].as_str())
         .collect();
-    // The two quiet `put`s append no event (S-42, #1515).
+    // The two `put`s of quiet instances, under an effect floor and a decision on values of a
+    // type parameter, append no event since #1544.
     assert_eq!(ids, ["with:keep#1", "with:keep#2"], "{trace}");
+}
+
+/// #1544, `spec/26 §6` rule 4: the reproducer of the review of #1543 (`p_local.una`): a
+/// function with no effects of its own installs a handler and performs an operation served by
+/// it; `main` calls it under a `secret` branch. `INSTALL` is the callee's body: through a
+/// function that uses the capability, or the operation written in the `with` itself.
+const LOCAL_HANDLER: &str = r#"module leak
+
+capability Sink
+  op put(x: Int) -> Unit
+
+handler keep() for Sink
+  op put(x) = unit
+
+use_it() -> Unit
+  uses @k: Sink[put]
+=
+  @k.put(1)
+
+pinger() -> Unit
+=
+INSTALL
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let s: secret Int = SECRET
+  if s > 0
+    pinger()
+  @console.print("done")
+"#;
+
+#[test]
+fn l1544_an_operation_of_a_handler_installed_in_a_callee_under_a_secret_branch_adds_no_event() {
+    // #1544: the instance that the callee installs is quiet, `with:keep#q`, since the call stands
+    // under a raised program counter (S-41); its operation appended an event, so the trace of
+    // `s > 0` held a `put` that the trace of `s <= 0` did not, in both engines. Operations of a
+    // quiet instance now append no event: whole traces are one for every secret.
+    for install in [
+        "  use_it() with @k = keep()",
+        "  @k.put(1) with @k = keep()",
+    ] {
+        let source = LOCAL_HANDLER.replace("INSTALL", install);
+        for secret in [0, 1, 2, 3, 7] {
+            let (output, run, native) = secret_run("l1544", &source, secret, &[]);
+            assert_eq!(output, serde_json::json!(["done"]), "{install} {secret}");
+            assert_eq!(run, done_only(), "{install} {secret}");
+            assert_eq!(native, done_only(), "{install} {secret}");
+        }
+    }
+}
+
+#[test]
+fn l1544_the_conformance_case_has_one_trace_for_every_secret() {
+    // #1544: the conformance case `local_handler_under_secret` checks only its output; here its
+    // whole trace is compared across secrets, in both engines, and is exactly the events of its
+    // public installations: a `put` in the started task, then one in the root task.
+    let path = root().join("tests/conformance/runtime/local_handler_under_secret/src/local.una");
+    let source = std::fs::read_to_string(&path).unwrap();
+    let fixed = "let s: secret Int = 2";
+    assert_eq!(source.matches(fixed).count(), 1, "{}", path.display());
+    let source = source
+        .replace(fixed, "let s: secret Int = SECRET")
+        .replace("module local", "module leak");
+    let trace = one_trace_for_every_secret("l1544conf", &source, &serde_json::json!(["done"]));
+    let expected = Value::from(vec![
+        sink_put(1, "s1.1", "with:keep#1"),
+        sink_put(2, "", "with:keep#2"),
+        done_print(3),
+    ]);
+    assert_eq!(trace, expected);
 }
 
 /// S-42 (#1515), review H3 of #1511 round 2 (`op1.una`): an operation of a capability that
@@ -7298,14 +7367,17 @@ pub main() -> Unit
   @console.print("done")
 "#;
 
-/// S-40 round 2 (#1512, review H1, `p_floor.una` verbatim): a `tasks` statement in the body of
+/// S-40 round 2 (#1512, review H1, after `p_floor.una`): a `tasks` statement in the body of
 /// an operation of a capability that accepts `secret` is quiet by the effect floor, and its last
 /// task's `put` occurs whatever the secret; before, its path counted the quiet `start`s under
-/// the `secret` branches before it (`qs1.q1` for 0, `qs1.q3` for 2).
+/// the `secret` branches before it (`qs1.q1` for 0, `qs1.q3` for 2). The `put` is served by an
+/// instance that public code installed, so that it keeps its event (#1544), and its capability
+/// accepts `secret`, as an effect under that floor must.
 const SECRET_START_FLOOR: &str = r#"module leak
 
 capability Sink
   op put(x: Int) -> Unit
+    accepts secret
 
 capability Box
   op hold(x: Int) -> Unit
@@ -7321,20 +7393,18 @@ use_it() -> Unit
 =
   @k.put(1)
 
-pinger() -> Unit
-=
-  use_it() with @k = keep()
-
 block(x: secret Int) -> Unit
+  uses @k: Sink[put]
 =
   tasks
     if x > 0
       start noop()
     if x > 1
       start noop()
-    start pinger()
+    start use_it()
 
 handler box() for Box
+  uses @k: Sink[put]
   op hold(x) = block(x)
 
 hold_it(s: secret Int) -> Unit
@@ -7342,11 +7412,16 @@ hold_it(s: secret Int) -> Unit
 =
   @b.hold(s)
 
+boxed(s: secret Int) -> Unit
+  uses @k: Sink[put]
+=
+  hold_it(s) with @b = box()
+
 pub main() -> Unit
   uses @console: Console[print]
 =
   let s: secret Int = SECRET
-  hold_it(s) with @b = box()
+  boxed(s) with @k = keep()
   @console.print("done")
 "#;
 
@@ -7357,6 +7432,7 @@ const SECRET_BLOCKS_FLOOR: &str = r#"module leak
 
 capability Sink
   op put(x: Int) -> Unit
+    accepts secret
 
 capability Box
   op hold(x: Int) -> Unit
@@ -7374,11 +7450,8 @@ use_it() -> Unit
 =
   @k.put(1)
 
-pinger() -> Unit
-=
-  use_it() with @k = keep()
-
 block(x: secret Int) -> Unit
+  uses @k: Sink[put]
 =
   for i in 0..<3
     if x > i
@@ -7392,9 +7465,10 @@ block(x: secret Int) -> Unit
     double(1)
     double(2)
   tasks
-    start pinger()
+    start use_it()
 
 handler box() for Box
+  uses @k: Sink[put]
   op hold(x) = block(x)
 
 hold_it(s: secret Int) -> Unit
@@ -7402,11 +7476,16 @@ hold_it(s: secret Int) -> Unit
 =
   @b.hold(s)
 
+boxed(s: secret Int) -> Unit
+  uses @k: Sink[put]
+=
+  hold_it(s) with @b = box()
+
 pub main() -> Unit
   uses @console: Console[print]
 =
   let s: secret Int = SECRET
-  hold_it(s) with @b = box()
+  boxed(s) with @k = keep()
   @console.print("done")
 "#;
 
@@ -7434,11 +7513,16 @@ fn s40_quiet_tasks_have_no_number_so_quiet_code_without_a_secret_branch_shows_no
     // S-40 round 2 (#1512, review H1), `spec/27 §7` rule 5: code quiet by a decision on values
     // of a type parameter, or by the effect floor of an operation body, writes events whatever
     // the secret. Quiet `start`s, statements and races take no number, so those events' paths
-    // do not count how many quiet ones ran before under a `secret` branch; since S-42 (#1515)
-    // an operation in quiet code appends no event at all: whole events are the same for every
-    // secret, in both engines, and no event of quiet code is left.
+    // do not count how many quiet ones ran before under a `secret` branch: whole events are the
+    // same for every secret, in both engines.
+    // Since #1544 the `put`s that the generic case's quiet tasks perform, on instances they
+    // install themselves, append no event, and an effect under a decision on values of a type
+    // parameter is U4002: no event of those tasks is left to carry a path. The floor cases
+    // perform their `put` on an instance that public code installed, in quiet code (the effect
+    // floor of `hold`'s body), so since S-42 (#1515) it appends no event either: only the
+    // `hold` and the `print` are left, and no event carries a path.
     let generic = same_traces_across("s40generic", SECRET_START_GENERIC, &[0, 1, 2, 3]);
-    assert_eq!(generic, Value::from(vec![done_print(1)]), "{generic}");
+    assert_eq!(generic, done_only(), "{generic}");
     for (name, source) in [
         ("s40floor", SECRET_START_FLOOR),
         ("s40blocks", SECRET_BLOCKS_FLOOR),
