@@ -2048,8 +2048,11 @@ mod tests {
         let holding = start(&sched, 1, move || {
             crate::runtime::install_test_state_as("1".to_owned(), false, String::new());
             let word = crate::runtime::attention_word();
-            let before = word.load();
             wait_queued.recv().unwrap();
+            // Read once the other task is queued, so only a raise made after that counts: one
+            // for the end `arrive` set then, which the slicer raised once before #1535, not one
+            // for this turn's earlier end, raised as the other task was queued.
+            let before = word.load();
             let bound = Instant::now() + Duration::from_secs(10);
             while word.load() == before && Instant::now() < bound {
                 std::thread::sleep(Duration::from_millis(1));
