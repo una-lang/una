@@ -698,31 +698,45 @@ fn nanos() -> u64 {
 /// slicer is awake by then. With no end pending it still wakes every [`SLICE`], one O(w)
 /// scan: waiting on a condition variable instead would need every turn's start to check a
 /// sleeping flag and the scheduler's drop to wake it, for a thread that costs little idle.
-/// Each end is handled once; an end that moved after it was read is
-/// handled again at its new value, and a raise before a turn's end costs one slow path, where
-/// [`turn_due`] finds the turn not over. Each wake is O(w) in the w workers; a check point does
-/// no more than before, one clock read on its slow path.
+/// An end is raised once when it is reached, and again once per further [`SLICE`] while the
+/// turn stays at that end, overdue, with another task waiting (#1535): the scheduler's
+/// liveness then never rests on one raise being heard, so a path that consumed a raise
+/// without yielding delays the waiting task by a slice, not for good. A turn that yields gets a
+/// new end when the next one begins ([`Worker::next`]), which stops the raises. An end that
+/// moved after it was read is handled again at its new value, and a raise before a turn's end
+/// costs one slow path, where [`turn_due`] finds the turn not over. Each wake is O(w) in the
+/// w workers, with O(w) state (one end and one time per worker, where it was one end before
+/// the raises were repeated). A check point does no more than before: one clock read on its
+/// slow path.
 fn slice(scheduler: &std::sync::Weak<Scheduler>) {
-    let mut handled: Vec<u64> = Vec::new();
+    // Per worker: the end last handled, and when it is due to be handled again, if its turn
+    // still stays at it.
+    let mut handled: Vec<(u64, u64)> = Vec::new();
     loop {
         let Some(scheduler) = scheduler.upgrade() else {
             return;
         };
-        handled.resize(scheduler.workers.len(), 0);
+        handled.resize(scheduler.workers.len(), (0, 0));
         let now = nanos();
         let mut next = now.saturating_add(SLICE_NANOS);
-        for (worker, done) in scheduler.workers.iter().zip(handled.iter_mut()) {
+        for (worker, (done, again)) in scheduler.workers.iter().zip(handled.iter_mut()) {
             let ends = worker.turn_ends.load(Ordering::SeqCst);
-            if ends == 0 || ends == *done {
+            if ends == 0 {
                 continue;
             }
             if ends > now {
                 next = next.min(ends);
                 continue;
             }
-            // With no task waiting, the end is left: a task queued later moves it to a full
-            // slice from then ([`Worker::arrive`]), which this loop handles in turn.
+            if ends == *done && now < *again {
+                next = next.min(*again);
+                continue;
+            }
+            // Reached, or still overdue a slice after it was last handled. With no task
+            // waiting, nothing is raised: a task queued later moves the end to a full slice
+            // from then ([`Worker::arrive`]), which this loop handles in turn.
             *done = ends;
+            *again = now.saturating_add(SLICE_NANOS);
             if worker.others()
                 && let Some(word) = *lock(&worker.word)
             {
@@ -2011,6 +2025,80 @@ mod tests {
             ran,
             "the task kept its worker past its turn's end while another waited"
         );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "times turns on the real clock, which Miri simulates")]
+    fn a_lost_turn_end_raise_is_raised_again_while_the_turn_stays_overdue() {
+        // #1535, after S-43 (#1533): the slicer raised each turn's end once, so any path that
+        // consumed that raise without yielding left the task on its worker for good while
+        // another task waited. Now the slicer raises the word again once per further slice
+        // while the turn stays overdue with a task waiting.
+        //
+        // The task waits, with no check point, until the slicer has raised its word for the
+        // turn's end, with the other task queued behind it: waiting on the raise itself, not on
+        // a sleep, so a slicer held off by load cannot make the test pass. It then loses that
+        // raise, as a faulty check point would, and passes check points: it must still give
+        // its worker to the waiting task.
+        use std::time::{Duration, Instant};
+        let sched = Scheduler::new(settings(1, 1, 1));
+        let other_ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (queued, wait_queued) = std::sync::mpsc::channel::<()>();
+        let (heard, was_heard) = std::sync::mpsc::channel();
+        let seen = Arc::clone(&other_ran);
+        let holding = start(&sched, 1, move || {
+            crate::runtime::install_test_state_as("1".to_owned(), false, String::new());
+            let word = crate::runtime::attention_word();
+            wait_queued.recv().unwrap();
+            // Read once the other task is queued, so only a raise made after that counts: one
+            // for the end `arrive` set then, which the slicer raised once before #1535, not one
+            // for this turn's earlier end, raised as the other task was queued.
+            let before = word.load();
+            let bound = Instant::now() + Duration::from_secs(10);
+            while word.load() == before && Instant::now() < bound {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            let raised = word.load() != before;
+            crate::runtime::lose_attention();
+            let bound = Instant::now() + Duration::from_secs(5);
+            while !seen.load(Ordering::SeqCst) && Instant::now() < bound {
+                std::hint::black_box(crate::runtime::poll());
+            }
+            let ran = seen.load(Ordering::SeqCst);
+            drop(crate::runtime::leave_task());
+            heard.send((raised, ran)).unwrap();
+        });
+        let flag = Arc::clone(&other_ran);
+        let waiting = start(&sched, 2, move || flag.store(true, Ordering::SeqCst));
+        queued.send(()).unwrap();
+        assert_eq!(holding.recv(), Some(()));
+        assert_eq!(waiting.recv(), Some(()));
+        let (raised, ran) = was_heard.recv().unwrap();
+        assert!(raised, "the slicer never raised the word for the turn");
+        assert!(
+            ran,
+            "a lost raise left the task on its worker past its turn's end while another waited"
+        );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "times turns on the real clock, which Miri simulates")]
+    fn a_lone_overdue_turn_is_not_raised() {
+        // #1535: raising an overdue turn again happens only while another task waits; a task
+        // alone on its worker past its turn's end is never interrupted, so its check points
+        // stay on the fast path.
+        use std::time::Duration;
+        let sched = Scheduler::new(settings(1, 1, 1));
+        let (heard, was_heard) = std::sync::mpsc::channel();
+        let lone = start(&sched, 1, move || {
+            let word = crate::runtime::attention_word();
+            let before = word.load();
+            // Ten slices past the turn's end, with no task waiting.
+            std::thread::sleep(Duration::from_millis(SLICE * 11));
+            heard.send(word.load() == before).unwrap();
+        });
+        assert_eq!(lone.recv(), Some(()));
+        assert!(was_heard.recv().unwrap(), "a lone task's word was raised");
     }
 
     #[test]

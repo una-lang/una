@@ -2931,6 +2931,18 @@ pub(crate) fn take_report() -> Option<Report> {
     })
 }
 
+/// Consumes a pending raise of the thread's attention word without acting on it, as a check
+/// point that took the slow path and failed to yield would: the fault #1535 guards against, so
+/// a test can show the scheduler still ends the turn.
+#[cfg(test)]
+pub(crate) fn lose_attention() {
+    HOT.with(|hot| {
+        if let Some(word) = hot.word.get() {
+            hot.seen.set(word.load());
+        }
+    });
+}
+
 /// Installs on this thread the state of a run with the default options, with the task path
 /// `path`, a trace when `tracing`, and one site whose file is `file`, so that a test can run a
 /// block in process; [`leave_task`] ends it. With a path, a stop is recorded in the state, as a
