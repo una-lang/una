@@ -308,12 +308,14 @@ enum Decision {
 const WARM_SITE: usize = usize::MAX;
 
 /// The task of the warm-up block, in place of its closure's code, which is never called: it
-/// gives its argument back and returns `unit`.
+/// gives its argument back and returns a new empty list, an object of its heap, so that its
+/// value is copied at the join as one node, out of the task's heap on its worker and into the
+/// root's, as a program's task that returns a list, a record or a text is.
 fn warm_invoke(_closure: i64, arg: Option<i64>, _site: usize) -> (i64, i64) {
     if let Some(arg) = arg {
         values::release(arg);
     }
-    (0, 0)
+    (values::list(), 0)
 }
 
 /// Runs one real task on every worker before `main`, `workers` of them (#1254; ADR 0116
@@ -336,13 +338,18 @@ fn warm_invoke(_closure: i64, arg: Option<i64>, _site: usize) -> (i64, i64) {
 /// a public block only as often as earlier code had started tasks, possibly by `secret` data:
 /// the allocator's state for them was the one part of a task's path the warm-up left to the
 /// program (#1254, second part). The closure's code is never called: [`warm_invoke`] stands
-/// for it.
+/// for it, and returns an object, so the copy at the join is made too: each worker exports a
+/// one-node value, with its pending segment, and the root imports it into its own heap's slot
+/// table, as for a program's task whose value is a list, a record or a text (review of #1570,
+/// M1). The block's list of those values is released before `main`.
 ///
 /// The block runs with the trace taken out, so it leaves no event, and its value is released,
 /// so it leaves no object; the caller lifts the memory budget around it. O(N) tasks in batches
-/// of [`WAVE`], once per run, each copying one node in and nothing out; the transient memory is
-/// that of one batch, at most [`WAVE`] task heaps and pending segments at once, about 1.3 MiB
-/// whatever N (`--workers 1024` included). Returns how many tasks returned.
+/// of [`WAVE`], once per run, each copying one node in at its fork and one node out at its
+/// join. The transient memory is bounded by one batch, at most [`WAVE`] task heaps with their
+/// pending segments of 16 KiB, about 1.3 MiB, whatever N (`--workers 1024` included), plus the
+/// block's list of N empty lists in the root's heap, O(N) words, all of it freed before `main`
+/// reads its baseline. Returns how many tasks returned.
 pub(crate) fn warm_up(workers: usize) -> usize {
     let trace = with_state(|state| state.trace.take()).flatten();
     let closure = values::closure(crate::ffi::Code::NONE, 1);
@@ -2326,9 +2333,12 @@ mod tests {
     fn the_warm_up_copies_a_closure_object_into_every_task_as_a_program_s_block_does() {
         // #1254, second part: each warm-up task's closure is a closure object, exported from the
         // root as one portable node and imported into the task's heap, as the closure of every
-        // compiled block is, so the warm-up makes the copies' pending segments and slot tables
-        // that a program's tasks make. An integer word for a closure, as the first warm-up had,
-        // exports no node: this count was 0 then.
+        // compiled block is, and each task's value is an object, exported from the task's heap
+        // and imported into the root's at the join (review of #1570, M1). So the warm-up makes
+        // the copies' pending segments and slot tables at both ends of a task, as a program's
+        // tasks do. The root counts two steps per task: the closure's node at the fork and the
+        // value's object at the join. The first warm-up, with integer words, counted 0; the
+        // warm-up of abd449ce, whose value was an integer word, counted one per task.
         for workers in [1, 5, 64, 65] {
             let ((returned, steps, live), stopped, trace) =
                 in_task_as("1", true, String::new(), move || {
@@ -2337,8 +2347,9 @@ mod tests {
                     (returned, values::object_steps() - before, values::live())
                 });
             assert_eq!(returned, workers);
-            // One node per task: the closure; the items and the values are integer words.
-            assert_eq!(steps, workers, "{workers} workers");
+            // Two steps per task on the root: the closure's export and the value's import; the
+            // items are integer words.
+            assert_eq!(steps, 2 * workers, "{workers} workers");
             assert_eq!((live, stopped), (0, None));
             assert_eq!(trace, Vec::<String>::new());
         }
