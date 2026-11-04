@@ -1079,3 +1079,105 @@ fn a_resolution_takes_the_code_of_its_registrys_failure() {
         assert!(!dir.join("ita.lock").exists());
     }
 }
+
+/// ADR 0122, amendment of 2026-11-03, end to end: a lock's point signed under root 1, whose
+/// witnesses root 2 then retires, is fetched with the consistency proof and loads offline; a
+/// provenance of the earlier format, with no proof, is unavailable (U7013, exit code 1) until
+/// `una ita fetch` stores the newer format beside it; `una ita lock --check` keeps the lock's
+/// `last root`; and the root-version floor this machine stores refuses a chain below it
+/// (U7010) and, unreadable, makes the load unavailable (U7013).
+#[test]
+fn a_retired_witness_counts_offline_only_with_the_proof() {
+    let (mut registry, _) = acme();
+    let (dir, mirror, itaoca) = project("retired-proof", &registry);
+    let (code, _, err) = una_in(&["una", "ita", "lock", arg(&dir)], &itaoca);
+    assert_eq!(code, 0, "{err}");
+    let lock = std::fs::read_to_string(dir.join("ita.lock")).unwrap();
+    let first_root = una_project::tlog::root::digest(&registry.roots[0]);
+    assert!(
+        lock.contains(&format!("\n  last root 1 \"{first_root}\"\n")),
+        "{lock}"
+    );
+    // Two of the three witnesses retired by root 2, and a later checkpoint signed under it.
+    registry.rotate_witnesses(2, false);
+    registry.append("other", "after the rotation");
+    registry.checkpoint(now() - 30);
+    registry.write(&mirror);
+    let (code, out, err) = una_in(&["una", "ita", "fetch", arg(&dir)], &itaoca);
+    assert_eq!(
+        (code, out.as_str()),
+        (0, "fetched acme/ledger 0.3.1\n"),
+        "{err}"
+    );
+    assert_eq!(codes(&dir, &itaoca), Vec::<String>::new());
+    let (code, _, err) = una_in(&["una", "ita", "lock", "--check", arg(&dir)], &itaoca);
+    assert_eq!(code, 0, "{err}");
+    let release = itaoca.join("registry/acme/releases/acme+ledger-0.3.1");
+    let size = lock
+        .lines()
+        .find_map(|line| line.strip_prefix("  checkpoint "))
+        .and_then(|rest| rest.split(' ').next())
+        .unwrap()
+        .to_owned();
+    let second = std::fs::read(release.join(format!("checkpoint-{size}-2.provenance"))).unwrap();
+    let mut document = una_project::provenance::parse(&second).unwrap();
+    assert!(document.latest.is_some());
+    // The earlier format, alone in another machine's Itaoca: unavailable, exit code 1.
+    document.latest = None;
+    document.format = una_project::provenance::Format::V1;
+    let other = scratch("retired-proof-format-1").join("itaoca");
+    std::fs::create_dir_all(&other).unwrap();
+    list_mirrors(&other, &[&mirror]);
+    let store = una_project::itaoca::Itaoca {
+        root: other.clone(),
+    };
+    let digest = lock
+        .lines()
+        .find_map(|line| line.strip_prefix("  digest \"sha256:"))
+        .and_then(|rest| rest.strip_suffix('"'))
+        .unwrap();
+    let archive = registry.files[&format!("blobs/sha256/{digest}")].clone();
+    store.store(&archive).unwrap();
+    store
+        .store_provenance(
+            "acme",
+            "acme/ledger",
+            "0.3.1",
+            size.parse().unwrap(),
+            &document.encode(),
+        )
+        .unwrap();
+    let found = codes(&dir, &other);
+    assert!(
+        found.contains(&"U7013".to_owned()) && !found.contains(&"U7010".to_owned()),
+        "{found:?}"
+    );
+    let (code, _, err) = una_in(&["una", "check", arg(&dir)], &other);
+    assert_eq!(code, 1, "{err}");
+    assert!(err.contains("retired"), "{err}");
+    // Fetched again: the newer format is stored beside it, and preferred.
+    let (code, out, err) = una_in(&["una", "ita", "fetch", arg(&dir)], &other);
+    assert_eq!(
+        (code, out.as_str()),
+        (0, "fetched acme/ledger 0.3.1\n"),
+        "{err}"
+    );
+    assert_eq!(codes(&dir, &other), Vec::<String>::new());
+    // The root-version floor: below it, refused; unreadable, unavailable.
+    let floor = floor_dir(&itaoca, &registry).join("root-version");
+    std::fs::remove_file(&floor).unwrap();
+    std::fs::write(&floor, "3\n").unwrap();
+    assert!(codes(&dir, &itaoca).contains(&"U7010".to_owned()));
+    let (_, _, err) = una_in(&["una", "check", arg(&dir)], &itaoca);
+    assert!(
+        err.contains("older than root version 3") && !err.contains("forked"),
+        "{err}"
+    );
+    std::fs::remove_file(&floor).unwrap();
+    std::fs::create_dir(&floor).unwrap();
+    let found = codes(&dir, &itaoca);
+    assert!(
+        found.contains(&"U7013".to_owned()) && !found.contains(&"U7010".to_owned()),
+        "{found:?}"
+    );
+}

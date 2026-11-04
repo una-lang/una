@@ -1,56 +1,68 @@
-ita-provenance/1
+ita-provenance/2
 root 860
 ita-root/1
 source acme
 version 1
 expires 4000000000
 root 2
-key acme.root.0 W45grsj5ZMGqJAQ38mfGXWL/5VoTzLE/hED0+YnkYh4=
-key acme.root.1 oKO1WL6MCI5CKcK005x0I6FYXc6T7ylJMITZ8q4wdlI=
-key acme.root.2 r1SKGkMZRHY5L4hsBEn+e6H/9L5WMrwA0U8kHz/UUB4=
-log acme.example/log ohaqwYsnXUrqDW69ZDT0noSRxAlyTmYl0uWae8qBg9I=
+key acme.root.0 2Ymcmiw6DVc3Fs4P09p6FFbHctWfr2GWenq+ugvaiOw=
+key acme.root.1 kf+RtYNzDeOx2WsjqMYhZbr/Uuo2EBJdDGrEONBHwQ4=
+key acme.root.2 e3KVXIAPLoXoYw2/30rTQ3CaeGIiCUwc5Uy5leF01nQ=
+log acme.example/log p+bWLnRDwjrKsgwgnrmHsMKEaabKAlnPzF73caLNrIg=
 witnesses 2
-key witness.0 LUcWCT/DXqH06sYqI+5we3+4OBqGw02mOdqq2McJTAw=
-key witness.1 Kclft0V5Wgyittrk+zg7Ca95wEvD1PvUCLffFaq5tHg=
-key witness.2 6hjmaedLFgdw0lsLjlrEcJPeE6svu8cb0IIUqTG+KSQ=
+key witness.0 uNomjzZ/NHxJthP5y5UNPZWmcWz610gDNWGY7rH3KzQ=
+key witness.1 66RKwurATrSxXkc6ceyP13/5XiUgzFtIyDsKXlR+v5Y=
+key witness.2 zT2J4tfN30BdZYK3Qr+kOlFa2mIGqdj2NYhqY1YVFDU=
 security 1
-key acme.security n+3DP8MFZwpJpXLOpRyLJyzqLjbsECaIHGJ2jvrjX78=
+key acme.security 15KrZMnAcB1ETEl5ml6HzZo9plZ8awFaPxMxABh4YO0=
 itauna 1
-key acme.itauna v9H65m7ip/OADZ7NhztIgDHkTZi4dhEZBKEszg1mKiY=
+key acme.itauna Y21211yDNKQi/fWdk9pZpbkxfnO9DEi9vNnUpKkzOjs=
 
-— acme.root.0 Ui8FFb7o9FVUCk7014odmxrzdc80NHMUbeUT28NgzmMN/n05MZtD5+4rG8tmVOm+TExy/qaDKvtjC9ai4L9SFCwFSwo=
-— acme.root.1 nt4ry5DhTmWTuyJkM4tJsY2ijxIPaXQcyB0OAtm4Fh/FCGB5b9aH8/bobCwSTUMTNtASKXF60OmhM9xivl30IoqcRQg=
+— acme.root.0 JDqAze7N2L+bwDmFcevW04eWHf+hn54OTB/twHyqfM1Xgv3hV57EKPwXvIjmlWT91SreYbc59RP7U0b/tAoPMN/mpg8=
+— acme.root.1 m7ablJC+vSFwv2C/FFxmRO6R9glDaL//MdGztWapn5zKXnsM5hs/k/6zSByRUEP69sz+PXk+Z+LkB+WCJmXquiMp2gc=
 root 868
 ita-root/1
 source acme
 version 2
 expires 4000000000
 root 2
-key acme.root.0 W45grsj5ZMGqJAQ38mfGXWL/5VoTzLE/hED0+YnkYh4=
-key acme.root.1 oKO1WL6MCI5CKcK005x0I6FYXc6T7ylJMITZ8q4wdlI=
-key acme.root.2 r1SKGkMZRHY5L4hsBEn+e6H/9L5WMrwA0U8kHz/UUB4=
-log acme.example/log ohaqwYsnXUrqDW69ZDT0noSRxAlyTmYl0uWae8qBg9I=
+key acme.root.0 2Ymcmiw6DVc3Fs4P09p6FFbHctWfr2GWenq+ugvaiOw=
+key acme.root.1 kf+RtYNzDeOx2WsjqMYhZbr/Uuo2EBJdDGrEONBHwQ4=
+key acme.root.2 e3KVXIAPLoXoYw2/30rTQ3CaeGIiCUwc5Uy5leF01nQ=
+log acme.example/log p+bWLnRDwjrKsgwgnrmHsMKEaabKAlnPzF73caLNrIg=
 witnesses 2
-key witness.rotated.0 GoGG5g3B7R70O4d3QXtER/p8KRuKP86065rSuBJ0vOg=
-key witness.1 Kclft0V5Wgyittrk+zg7Ca95wEvD1PvUCLffFaq5tHg=
-key witness.2 6hjmaedLFgdw0lsLjlrEcJPeE6svu8cb0IIUqTG+KSQ=
+key witness.rotated.0 hYkKvoqaiADOzsCS8OMkppT9QbJV8V+r3giWUOR/XO0=
+key witness.1 66RKwurATrSxXkc6ceyP13/5XiUgzFtIyDsKXlR+v5Y=
+key witness.2 zT2J4tfN30BdZYK3Qr+kOlFa2mIGqdj2NYhqY1YVFDU=
 security 1
-key acme.security n+3DP8MFZwpJpXLOpRyLJyzqLjbsECaIHGJ2jvrjX78=
+key acme.security 15KrZMnAcB1ETEl5ml6HzZo9plZ8awFaPxMxABh4YO0=
 itauna 1
-key acme.itauna v9H65m7ip/OADZ7NhztIgDHkTZi4dhEZBKEszg1mKiY=
+key acme.itauna Y21211yDNKQi/fWdk9pZpbkxfnO9DEi9vNnUpKkzOjs=
 
-— acme.root.0 Ui8FFQzx0akt8nuUhfDZrduRCMT7k0HuaSqhqnvhvDgY08XbCr7kuyTpF3UkjqGUsfUYLLMK8ONsJ7Pe0xDK7LY61gc=
-— acme.root.1 nt4ry05ThXOVppw8+qTn7xqNTfJ8nT5CPGOeG2wI2plSG+LjLDfHF2e0ggBiXElpEQEJ3HP/IqG8Ia2mbfspGOs/EAE=
+— acme.root.0 JDqAzZvEPEvr1BhfByRHFBKwQ2wKkGdf8K3JVzrYd8uUp7rsVBZYjska4tf1p6/WNCt+jVEL8NUGi/SSSkpHPHgNzAU=
+— acme.root.1 m7ablGZ/IejsVOLvNGW9xTtrGopOZUHN38KDpgdocken41Vg1rnCSpod3qFuHZqZOGj4Ql/BqSG5+1+7xyndPb70DAU=
 checkpoint 553
 acme.example/log
 2
-nujIB67WCyEWMHTJTe0guL9UI/wEtkUJI6BQE0OCnHI=
-ita-map 09E4K25QBq+dXFMvNVv+FLWjjRjuD6VWDp7EEHAa6cc=
-ita-root 1 sha256:9588528ba6e809b94ce70c00b66df3e2a294775ac79478c2c34b524f85588fc1
+m9u+oXYKuArOrSHUsHaOLDCT7r4qD3SWpOAieYjqS60=
+ita-map VEcrX1TUEBu49sGx6jbZIXjT8f7z2pHyMiRR4z8LTxA=
+ita-root 1 sha256:914ad5961feae2691676995ff65f308cbbb98d769f8745d40ff93ca9a72efc32
 
-— acme.example/log OHY53nV/d93Fkfyu+Pa1qiE08p1mH+POlqfCut89sl9aBuVR0zK+Iqh9M/tLvysjkl8ZMNdjg8jrAhi5saKpHNz72wg=
-— witness.0 ucsujgAAAABlU/EAUywB48aI5f22la/djT7oU7U5f5IeUB7vhenUjEF0ZSNIyL5QfIEohSJiUVS42hAhVeBxC4j4tGhbMpbqkA8qCg==
-— witness.1 0MbrjAAAAABlU/EAQuiPLKp50/U85gkFm54hWlaRaoKvCGQ5dbm0nCSGFzuWWj12etgzQZhig4d2Sz9LluMf8u0OJqyLgBvJ6yq3Cg==
+— acme.example/log JkIMTzr4tqo00bH6R66f+PXYFLLvQ5gKa2+Cvxp0fyi+Vr98uX0fTE0vi+v8F8OU31fH6Yhj3gMOSQ+KXmvmryoCSQQ=
+— witness.0 65DBCwAAAABlU/EA09/oi7wKQK5TkScgB2YYZeilfIq8E4JDAGvovZ9GpS74X45Kfjzc+bgNBZw0ztrhSVkc8eB2bxy/ux+29tCTDg==
+— witness.1 McPjyAAAAABlU/EAWU9BJcU7wUfiS5yKVWaydXlr9jGkYdSO0v5QGuBfc1pCc5PjKlpd14WOZv2IdUmyc5pO7QtuqBL4fH9YQMlYBg==
+latest 680
+acme.example/log
+3
+ifon7YJMYkYPe/vOxwwaOkYwXddHEy+6d/zYkT5RHqM=
+ita-map 4lutoV8rY1h3nb8WZ2SHCdY/kQ+H/i42mH7JAYT1uc0=
+ita-root 2 sha256:feb02fa60ae5bc0062dff9079b9dd8cde472cf10b91bc3f5ec798b779052aa2f
+
+— acme.example/log JkIMT9wkWbVW50FynoHWqVR22terBUQOgZFrdHNWdHYCb1e+s3Vl1CbMS6C3VB3nZRhQ20dBK8sWhFPYit8OsC4E0Ao=
+— witness.rotated.0 PFB+kQAAAABlVUKAXCG5exWUFbT3Y8+39fLhEwPm4PYppUTrMiv77XzFW5Azwy1QZxc1Q4X0S32Dnq1aNRKMzX2v1Wobgw+sIfoxAw==
+— witness.1 McPjyAAAAABlVUKAaEWL8tUXv5QN6IeaQtX4tAsdhhS2plwwHmSBq+QngXJoQo9Fc6ujiNa8jEF6eW3NgdU+4ySQXgtfxBxqDeDzBw==
+— witness.2 33vd+wAAAABlVUKAhhtMg0Lzm0stbChaYkhWbwENtOiwkce4DU6TlwB/b63sVYmMCbnAcF4nM8IJv7687jRWdb3UTJJxYGRquCdNCw==
+consistency PO16sc23Fum+e4+IvvmlvBmB6qRbD8ElYXAwSyzvkHI=
 statement 379
 ita-release/1
 source acme
@@ -63,7 +75,7 @@ edition 0.4
 authority none
 trust none
 
-— acme.laptop IT02tXCPg6GRQKWBsCxk7Dr/9J6Sot9HF3gFbZ1KVZFg3NUeRDQ5W0JOcK72J/3Mv3AFOJZitoHbJPo6yNK1XIsdigs=
+— acme.laptop MFnxiTsR36sn5nAPucJujQZ35eWsNo8QeutuTmi20xv71cW38SwD2sXEXaOUWtOvLa00w73BMASvPxGgXzwIxVRKJQE=
 index 1
-proof b9AFQJflPTGTk28IiIvtJ/mDdBbiIsBMhYxq3g8nqzs=
-key acme.laptop lPKSfMllBlvIadgFX0j3XvsQEGPtORAqcxbpUfDWKYc=
+proof lRP0pB//E3xDrMKUprWNUMGPpB8b+ne/ZQ3azXjMXhI=
+key acme.laptop moY3tujp9UvZEtdIMgotRY/NNbAWw7yEnbIaa00/iSw=

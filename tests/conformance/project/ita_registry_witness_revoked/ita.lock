@@ -12,6 +12,7 @@ solver
 registry acme
   root "sha256:6a46c71a22f7c00dbcb27ee5a88a18c90238149a49d4b5fe8d271a37f9b1bfbf"
   checkpoint 2 "sha256:63f2432819c3fd5f91fcc75c6ce975e357080ce73af960960c20ee356c03e442"
+  last root 2 "sha256:282728b36a26d47aa1e2ff8e0c6210e4128795d1cc72cb12e6e12efe4c6f0e69"
 
 package acme/ledger 0.3.1
   from acme

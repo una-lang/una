@@ -229,8 +229,9 @@ fn failing_examples_yield_their_code_and_fixed_examples_yield_nothing() {
     // Every code has its examples, but U8001, an internal error, which no program should
     // cause, U6005, which the host's data causes and no program text does (ADR 0086), and
     // U6006, which the platform's floating-point environment causes (ADR 0114), U6009, which
-    // the host's random source causes (ADR 0119 rule 9), and U7013, which only `una ita`
-    // reports when it resolves, and `una check` never does (ADR 0122 rule 25), and U7015, which
+    // the host's random source causes (ADR 0119 rule 9), and U7013, which `una ita` reports
+    // when it resolves (ADR 0122 rule 25) and a load reports only for a registry's signed
+    // documents, which an example cannot carry (its amendment of 2026-11-03), and U7015, which
     // only the linker of `una build` reports for an executable too large to lay out (ADR 0124).
     // U7014's
     // examples are audited against a stated registry state. U2039 and U3032 belong to the

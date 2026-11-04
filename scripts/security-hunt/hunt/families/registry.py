@@ -178,7 +178,6 @@ def y1(seed, edition, form=None):
     releases = {v: (t, v in yanked) for v, (t, _) in releases.items()}
     reg.append("other", "filler")
     size = reg.checkpoint(point_time)
-    _, root = reg.resolution_point(size)
     chosen = resolve(need, avoided, releases, point_time)
     candidates = sorted((v for v in releases if line(v) == (0, 3)), key=key)
     pinned = chosen
@@ -218,7 +217,7 @@ def y1(seed, edition, form=None):
     files = _root(edition, reg, [{"name": NAME, "version": need, "origin": SOURCE,
                                   "avoid": avoid_lines}],
                   module("main", "pub one() -> Int = 1"))
-    files["ita.lock"] = itaty.lock_text([(SOURCE, reg.pin(), size, root)], [entry])
+    files["ita.lock"] = itaty.lock_text([reg.lock_point(size)], [entry])
     files.update(mirror_files(reg))
     return Program(op="Y1", rule="ADR 0122 rules 20 to 24, spec/30 §10", edition=edition,
                    seed=seed, cls=cls, files=files, expect=expect, variant=form,
@@ -323,7 +322,7 @@ def y2(seed, edition, form=None):
     entry = registry_lock_entry(reg, NAME, version)
     prov = None
     vendor_files = dict(files)
-    point = (SOURCE, reg.pin(), size, root)
+    point = reg.lock_point(size)
     pin = reg.pin()
     if form == "file-changed":
         vendor_files["src/ledger.una"] = LEDGER.format(n=n + 1)
@@ -364,7 +363,7 @@ def y2(seed, edition, form=None):
         prov = reg.provenance(NAME, version, size, roots=reg.roots + [weak])
     elif form == "point-moved":
         moved = "sha256:" + itaty.sha256(root.encode()).hex()
-        point = (SOURCE, pin, size, moved)
+        point = (SOURCE, pin, size, moved) + point[4:]
     elif form == "logged-moved":
         entry["logged"] += 1
     elif form == "proof-tampered":
@@ -397,13 +396,24 @@ def y2(seed, edition, form=None):
 
 # The forms of Y3: the vendored release of Y2, its point cosigned under the first root version and
 # its provenance holding later versions that rotate witnesses or change the threshold (`spec/30
-# §9` rule 7, §11 rules 8 and 9). The `honest-` forms are must-accept controls, the honest twin
-# of each forgery of Y2 and Y3 across a rotation, so that a defect of the hunt's own rotation
-# (`itaty.Registry.rotate_witness`, `add_root`) cannot make those forgeries reject for a reason
-# of its own unseen: a control the checks refuse is an error of the gate (`CONTROL_FAMILIES`).
+# §9` rule 7, §11 rules 8 and 9), with the latest checkpoint signed under the last version and the
+# consistency proof that the point is its prefix, which a retired witness's cosignature needs to
+# count at every load (ADR 0122, amendment of 2026-11-03). The `honest-` forms are must-accept
+# controls, the honest twin of each forgery of Y2 and Y3 across a rotation, so that a defect of
+# the hunt's own rotation (`itaty.Registry.rotate_witness`, `add_root`) or of its proof cannot
+# make those forgeries reject for a reason of its own unseen: a control the checks refuse is an
+# error of the gate (`CONTROL_FAMILIES`). The forgeries of the proof: one of the earlier format,
+# which carries none, or of the newer format with none, whose retired witness's cosignature makes
+# the load unavailable (U7013); a consistency proof edited; and the later root versions dropped
+# with the proof, the lock kept, or the lock edited too, below the root-version floor of the run's
+# Itaoca (U7010).
 Y3_FORMS = ("honest-retired", "honest-two-retired", "honest-revoked-enough",
             "honest-raised-enough", "honest-raised-lowered", "honest-new-witness",
-            "revoked-then-retired", "retired-revoked-later", "raised-to-three")
+            "revoked-then-retired", "retired-revoked-later", "raised-to-three",
+            "retired-format-1", "retired-no-proof", "consistency-tampered",
+            "truncated-lock-kept", "truncated-below-floor")
+# The forms whose load is unavailable (U7013) rather than refused.
+Y3_UNAVAILABLE = ("retired-format-1", "retired-no-proof")
 
 
 def y3(seed, edition, form=None):
@@ -432,9 +442,11 @@ def y3(seed, edition, form=None):
     else:
         cosigners = [first[a], first[b]]
     size = reg.checkpoint(itaty.T0, witnesses=cosigners)
-    prov = None
-    if form == "honest-retired":
-        # `a` retired, not revoked: it still counts on its version's point, with `b`: two.
+    retired_a = form in ("honest-retired", "retired-format-1", "retired-no-proof",
+                         "consistency-tampered", "truncated-lock-kept", "truncated-below-floor")
+    if retired_a:
+        # `a` retired, not revoked: it still counts on its version's point, with `b`: two, once
+        # the point is proven a prefix of a checkpoint signed under the last version.
         reg.rotate_witness(a, "retired", revoke=False)
     elif form == "honest-two-retired":
         reg.rotate_witness(a, "retired-a", revoke=False)
@@ -457,9 +469,6 @@ def y3(seed, edition, form=None):
         # `a` revoked and replaced: its replacement, a witness of the last root, cosigns the
         # point of the first version, beside `b`: two that count.
         reg.rotate_witness(a, "new", revoke=True)
-        prov = reg.provenance(NAME, version, size, checkpoint=_checkpoint_with(
-            reg, size, reg.log, [(first[b], first[b].name),
-                                 (reg.witnesses[a], reg.witnesses[a].name)]))
     elif form == "revoked-then-retired":
         # `a` revoked by the second version, `b` retired by the third: `b` counts, `a` never
         # does, one below two (U7010).
@@ -474,19 +483,50 @@ def y3(seed, edition, form=None):
         # Raised to three: two cosignatures below the last version's threshold (U7010).
         reg.witness_k = 3
         reg.add_root()
-    _, root = reg.resolution_point(size)
+    # The latest checkpoint, signed under the last version and cosigned by its witnesses, which
+    # the provenance's consistency proof binds the point to.
+    reg.append("other", "after the rotation")
+    reg.checkpoint(itaty.T0 + itaty.DAY)
+    prov = None
+    lock_last = None
+    floors = {}
+    if form == "honest-new-witness":
+        prov = reg.provenance(NAME, version, size, checkpoint=_checkpoint_with(
+            reg, size, reg.log, [(first[b], first[b].name),
+                                 (reg.witnesses[a], reg.witnesses[a].name)]))
+    elif form == "retired-format-1":
+        prov = reg.provenance(NAME, version, size, fmt=1)
+    elif form == "retired-no-proof":
+        prov = reg.provenance(NAME, version, size, latest=None)
+    elif form == "consistency-tampered":
+        latest, proof = reg.latest_under_last(size)
+        proof = list(proof)
+        proof[0] = bytes([proof[0][0] ^ 1]) + proof[0][1:]
+        prov = reg.provenance(NAME, version, size, latest=(latest, proof))
+    elif form in ("truncated-lock-kept", "truncated-below-floor"):
+        # The rollback of the amendment's context: the later root version dropped, and the
+        # proof with it, so that the retired witness is a witness of the last version stored.
+        prov = reg.provenance(NAME, version, size, roots=reg.roots[:1], latest=None)
+        if form == "truncated-below-floor":
+            # The lock edited too, to the version kept; this machine accepted version 2.
+            lock_last = 1
+            floors = {reg.pin(): len(reg.roots)}
     entry = registry_lock_entry(reg, NAME, version)
     files_out = vendored(reg, NAME, version, files, size, provenance=prov)
     root_files = _root(edition, reg, [{"name": NAME, "version": "0.3", "origin": SOURCE}],
                        module("main", "pub one() -> Int = total()",
                               imports=[("ledger.ledger", ["total"])]))
-    root_files["ita.lock"] = itaty.lock_text([(SOURCE, reg.pin(), size, root)], [entry])
+    root_files["ita.lock"] = itaty.lock_text([reg.lock_point(size, last=lock_last)], [entry])
     root_files.update(files_out)
     honest = form.startswith("honest")
-    cls, expect = (MUST_ACCEPT, []) if honest else (MUST_REJECT, ["U7010"])
-    return Program(op="Y3", rule="ADR 0122 rules 16 to 32, spec/30 §9 rule 7, §11 rules 8 and 9",
-                   edition=edition, seed=seed, cls=cls, files=root_files, expect=expect,
-                   variant=form, note=f"{len(reg.roots)} root versions, threshold "
+    if honest:
+        cls, expect = MUST_ACCEPT, []
+    else:
+        cls, expect = MUST_REJECT, ["U7013" if form in Y3_UNAVAILABLE else "U7010"]
+    return Program(op="Y3", rule="ADR 0122 rules 16 to 32 and the amendment of 2026-11-03, "
+                   "spec/30 §9 rule 7, §11 rules 8 and 9", edition=edition, seed=seed, cls=cls,
+                   files=root_files, expect=expect, variant=form, floors=floors,
+                   note=f"{len(reg.roots)} root versions, threshold "
                    f"{reg.witness_k}, witnesses rotated {a} and {b}")
 
 
