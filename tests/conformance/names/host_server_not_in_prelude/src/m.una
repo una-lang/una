@@ -1,0 +1,7 @@
+-- test: the prelude does not put the names of the server in scope, so `Reply` without an import is U1001 in edition 0.4 (spec/31 §1, spec/10 §11 rule 10, ADR 0123 rule 0)
+-- spec: spec/31 §1
+-- expect: error U1001 at src/m.una:7:16
+-- expect: error U1001 at src/m.una:7:24
+module m
+
+pub empty() -> Reply = Reply(status: 204, headers: [], body: "")

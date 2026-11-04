@@ -214,6 +214,7 @@ impl Writer<'_> {
             Base::Text => node!(Text),
             Base::Unit => node!(Unit),
             Base::Hashed => node!(Hashed),
+            Base::ReplyRight => node!(ReplyRight),
             // ADR 0114 rule 17: the kind `f64`.
             Base::F64 => J::Obj(vec![("kind", s("f64"))]),
             // ADR 0120: the kind `decimal`, with its scale.

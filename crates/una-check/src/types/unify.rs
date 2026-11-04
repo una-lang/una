@@ -538,6 +538,7 @@ impl Vars {
             | (Ty::Text, Ty::Text)
             | (Ty::Unit, Ty::Unit)
             | (Ty::Hashed, Ty::Hashed)
+            | (Ty::ReplyRight, Ty::ReplyRight)
             | (Ty::F64, Ty::F64)
             | (Ty::F32, Ty::F32) => true,
             (Ty::Decimal(a), Ty::Decimal(b)) => a == b,

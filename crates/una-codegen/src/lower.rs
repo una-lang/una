@@ -153,6 +153,8 @@ fn kind(ty: &Type) -> Result<Kind, CodegenError> {
             Base::Text => Ok(Kind::Text),
             Base::Unit => Ok(Kind::Unit),
             Base::Hashed => Ok(Kind::Hashed),
+            // ADR 0123 rule 1: the runtime of `HttpServer` lands after this slice (#1007).
+            Base::ReplyRight => Err(unsupported("`ReplyRight` of `std.host`")),
             // A fixed-width integer is an integer word: its range is proven, so arithmetic on
             // it never leaves the type (`spec/18 §3`).
             Base::Fixed(_) => Ok(Kind::Int),

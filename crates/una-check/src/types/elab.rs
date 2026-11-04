@@ -349,6 +349,18 @@ pub(crate) const PRELUDE_CORE_KINDS: [&str; 8] = [
 /// from the facts of `checked`, and both engines read their fields, as for a kind of the
 /// package. Both engines call the predicate by name, never its placeholder body. `None` in
 /// edition 0.1, where the prelude does not declare them.
+/// The kinds of the server that `std.host` declares in edition 0.4 (ADR 0123 rule 1), which Core
+/// IR declares in the module `prelude` only for a package that imports a name of the server, so
+/// the Core IR of every other package does not change (`spec/31 §1`).
+pub(crate) const SERVER_CORE_KINDS: [&str; 6] = [
+    "Method",
+    "Param",
+    "Request",
+    "Exchange",
+    "Reply",
+    "ServeError",
+];
+
 /// A kind of [`PRELUDE_CORE_KINDS`] or the predicate that does not elaborate is recorded in
 /// `dropped` (#1050).
 fn prelude_kinds(
@@ -358,12 +370,16 @@ fn prelude_kinds(
     dropped: &mut Vec<(Span, &'static str)>,
 ) -> Option<CoreModule> {
     let m = env.modules.get(env.prelude)?;
+    let core_kind = |name: &str| {
+        PRELUDE_CORE_KINDS.contains(&name)
+            || (env.server_imported && SERVER_CORE_KINDS.contains(&name))
+    };
     let mut decls = Vec::new();
     for (decl, entity) in m.tree.decls.iter().zip(m.decls.clone()) {
         let wanted = match &decl.kind {
-            DeclKind::Kind(kind) => PRELUDE_CORE_KINDS
-                .contains(&env.text(env.prelude, kind.name.name))
-                .then_some("prelude kind"),
+            DeclKind::Kind(kind) => {
+                core_kind(env.text(env.prelude, kind.name.name)).then_some("prelude kind")
+            }
             DeclKind::Predicate(predicate) => (env.text(env.prelude, predicate.name.name)
                 == "is_json_number")
                 .then_some("prelude predicate"),
@@ -380,7 +396,7 @@ fn prelude_kinds(
             continue;
         };
         let json = match &core {
-            Decl::Data { name, .. } => PRELUDE_CORE_KINDS.contains(&name.as_str()),
+            Decl::Data { name, .. } => core_kind(name.as_str()),
             Decl::Pred { name, .. } => name == "is_json_number",
             _ => false,
         };
@@ -761,6 +777,7 @@ impl<'e, 'a> Fx<'e, 'a> {
             Ty::Text => Base::Text,
             Ty::Unit => Base::Unit,
             Ty::Hashed => Base::Hashed,
+            Ty::ReplyRight => Base::ReplyRight,
             Ty::F64 => Base::F64,
             Ty::Decimal(scale) => Base::Decimal(*scale),
             Ty::F32 => Base::F32,

@@ -438,6 +438,7 @@ fn write_base(out: &mut String, base: &Base) {
         Base::Text => out.push_str("Text"),
         Base::Unit => out.push_str("Unit"),
         Base::Hashed => out.push_str("Hashed"),
+        Base::ReplyRight => out.push_str("ReplyRight"),
         // A complex kind of the prelude is written as its type (ADR 0120 rule 22).
         Base::Named { module, name, .. } if crate::complex::is_kind(module, name) => {
             out.push_str(crate::complex::written(name).unwrap_or("Complex"));

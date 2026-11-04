@@ -202,6 +202,9 @@ pub enum Base {
     Unit,
     /// `Hashed`.
     Hashed,
+    /// `ReplyRight` of `std.host`, edition 0.4 (ADR 0123 rule 1): an opaque handle that names
+    /// one exchange of `HttpServer`, with equality and no constructor.
+    ReplyRight,
     /// A kind with its type arguments, `List` and `Option` included.
     Named {
         /// The module that declares the kind: `prelude` for `List`, `Option` and `Result`.

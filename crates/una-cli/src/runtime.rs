@@ -483,6 +483,15 @@ pub(crate) fn run_command(
         };
         (entry, main)
     };
+    let started: &[&str] = if drive.is_some() {
+        &["init", "step", "on_stop"]
+    } else {
+        &["main"]
+    };
+    if let Some(message) = server_pending(&analysis, &entry, started) {
+        writeln!(stderr, "error: {message}")?;
+        return Ok(ExitStatus::Usage);
+    }
     let keys = match load_keys(&grants) {
         Ok(keys) => keys,
         Err(message) => {
@@ -806,6 +815,25 @@ pub(crate) fn entry_main<'a>(
         }
     )
     .then_some(main)
+}
+
+/// The usage error of a run whose entry functions use the host's `HttpServer` (`spec/31 §1`):
+/// the capability is checked from ADR 0123's first slice of it, and its operations run in
+/// neither engine until the slice that lands them, so such a run fails closed before anything
+/// starts, in `una run` and `una build` alike. `None` when the run serves nothing.
+pub(crate) fn server_pending(analysis: &Analysis, module: &str, names: &[&str]) -> Option<String> {
+    let header = analysis.headers.iter().find(|header| {
+        header.module == module
+            && names.contains(&header.name.as_str())
+            && header
+                .uses
+                .iter()
+                .any(|need| need.host && need.capability == "HttpServer")
+    })?;
+    Some(format!(
+        "`{}.{}` uses `HttpServer`, whose operations do not run in this release yet: the checks of a server are in place, and its runtime lands with a later slice of ADR 0123 (`spec/31 §1`)",
+        header.module, header.name
+    ))
 }
 
 /// The message of U6007, which says why the hard stop came (ADR 0116 rule 16): the same in
