@@ -175,6 +175,15 @@ pub fn quiet_install_id(name: &str) -> String {
     format!("with:{name}#q")
 }
 
+/// Whether `id` names an instance that quiet code installed, `with:<name>#q`
+/// ([`quiet_install_id`]). Every other id of an installation ends in its number, and a handler's
+/// name holds no `#`, so the suffix tells them apart. Both engines append no event for an
+/// operation such an instance serves (#1544, `spec/26 §6` rule 4): it occurs only in quiet code,
+/// whose running may depend on data above `public`. O(1).
+pub fn is_quiet_install(id: &str) -> bool {
+    id.starts_with("with:") && id.ends_with("#q")
+}
+
 /// The one line on stderr of a started task that ran too deep and ended alone (`spec/27 §7`,
 /// ADR 0117 rule 7), as both engines write it: U6003, the task's path, why, and the position
 /// `file:line:column` of the call, when it is known.
@@ -222,6 +231,24 @@ mod tests {
         // S-40: nor does a quiet `start` move the index of a later public one, or have one.
         assert_eq!(start_name(false, 2), "2");
         assert_eq!(start_name(true, 0), "q");
+    }
+
+    #[test]
+    fn only_quiet_installations_are_quiet_ids() {
+        // #1544: the operations of these instances append no event.
+        assert!(is_quiet_install(&quiet_install_id("keep")));
+        assert!(is_quiet_install(&quiet_install_id("limiter")));
+        for id in [
+            "with:keep#1",
+            "with:keep#12",
+            "with:q#1",
+            "with:keep#@s1.2#3",
+            "given:k",
+            "host:Console",
+            "given:q",
+        ] {
+            assert!(!is_quiet_install(id), "{id}");
+        }
     }
 
     #[test]

@@ -511,9 +511,15 @@ pub fn limit_acquire(_site: i64, instance: i64) -> i64 {
 }
 
 /// Starts the event of operation `site` on `instance`, when the run records a trace: its
-/// position in the trace, or -1. Its outcome is `Aborted` until [`event_end`].
+/// position in the trace, or -1. Its outcome is `Aborted` until [`event_end`]. An instance that
+/// quiet code installed, `with:<h>#q`, starts none: it is in scope only in quiet code, whose
+/// running may depend on data above `public`, so its operations append no event and take no
+/// `seq` (#1544, `spec/26 §6` rule 4), as in the interpreter.
 pub fn event(site: i64, instance: i64) -> i64 {
     let id = values::instance_id(instance);
+    if una_interp::concurrency::is_quiet_install(&id) {
+        return -1;
+    }
     with_state(|state| {
         let op = usize::try_from(site).ok().and_then(|s| state.ops.get(s))?;
         let (capability, name) = (op.capability.clone(), op.op.clone());
