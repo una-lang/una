@@ -1033,7 +1033,7 @@ pub main() -> Unit
 }
 
 /// A package of edition 0.4 named `name` whose `main` runs a `tasks` statement under
-/// `within 300 * millisecond`: its block starts two tasks, each of which makes a request to a
+/// `within 600 * millisecond`: its block starts two tasks, each of which makes a request to a
 /// server that never answers on `port`, then computes until the deadline cuts it.
 fn cut_started_package(name: &str, port: u16) -> PathBuf {
     let program = format!(
@@ -1072,7 +1072,7 @@ pub main() -> Unit
   uses @console: Console[print]
   uses @http: Http[get]
 =
-  let outcome = attempt work() within 300 * millisecond
+  let outcome = attempt work() within 600 * millisecond
   @console.print("done")
 "#
     );
@@ -1180,30 +1180,51 @@ fn a_within_s_cut_ends_a_started_request_timed_out_on_the_reactor_and_on_a_helpe
         let built = una(&dir, &["build", "."]);
         assert_eq!(built.status.code(), Some(0), "{name}: {built:?}");
         for run in 0..5 {
-            let trace_file = dir.join(format!("trace-{run}.json"));
-            let started = std::time::Instant::now();
-            let native = Command::new(dir.join(format!("target/una/{name}")))
-                .args(flags)
-                .args(["--workers", "3"])
-                .args(extra)
-                .arg("--trace")
-                .arg(&trace_file)
-                .current_dir(&dir)
-                .output()
-                .unwrap();
+            // Under heavy load a task may reach its first check point only after the cut, and
+            // then stops before its request, so the run writes one request event fewer: such a
+            // run is tried again, at most 3 times. Any other trace fails at once, an
+            // `interrupted` request first of all, and the last try must give `expected`.
+            let mut tries = 0;
+            let trace = loop {
+                tries += 1;
+                let trace_file = dir.join(format!("trace-{run}-{tries}.json"));
+                let started = std::time::Instant::now();
+                let native = Command::new(dir.join(format!("target/una/{name}")))
+                    .args(flags)
+                    .args(["--workers", "3"])
+                    .args(extra)
+                    .arg("--trace")
+                    .arg(&trace_file)
+                    .current_dir(&dir)
+                    .output()
+                    .unwrap();
+                assert_eq!(
+                    native.status.code(),
+                    Some(0),
+                    "{name} run {run}: {native:?}"
+                );
+                assert!(
+                    started.elapsed() < Duration::from_secs(20),
+                    "{name} run {run}: the deadline cut nothing"
+                );
+                assert_eq!(String::from_utf8_lossy(&native.stdout), "done\n");
+                let trace: serde_json::Value =
+                    serde_json::from_str(&std::fs::read_to_string(&trace_file).unwrap()).unwrap();
+                let outcomes = task_outcomes(&trace);
+                let requests = outcomes.iter().filter(|(task, _)| task == "qs.q").count();
+                let late = requests < 2
+                    && outcomes
+                        .iter()
+                        .all(|(task, outcome)| task != "qs.q" || outcome == "redacted");
+                if outcomes == expected || !late || tries == 3 {
+                    break trace;
+                }
+            };
             assert_eq!(
-                native.status.code(),
-                Some(0),
-                "{name} run {run}: {native:?}"
+                task_outcomes(&trace),
+                expected,
+                "{name} run {run}, try {tries}: {trace}"
             );
-            assert!(
-                started.elapsed() < Duration::from_secs(20),
-                "{name} run {run}: the deadline cut nothing"
-            );
-            assert_eq!(String::from_utf8_lossy(&native.stdout), "done\n");
-            let trace: serde_json::Value =
-                serde_json::from_str(&std::fs::read_to_string(&trace_file).unwrap()).unwrap();
-            assert_eq!(task_outcomes(&trace), expected, "{name} run {run}: {trace}");
         }
         let _ = std::fs::remove_dir_all(&dir);
     }

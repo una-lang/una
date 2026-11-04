@@ -215,6 +215,26 @@ pub fn host_failed() -> i64 {
     .unwrap_or(0)
 }
 
+/// Runs `job`, an interruptible operation of `Http` or of `std.limit`, on a helper of the I/O
+/// pool while the task parks ([`sched::blocking_interruptible`]), `abandoned` raised when a
+/// cancellation of `entries` interrupts it. `None` when such a cancellation interrupted it: the
+/// operation ends `interrupted`. A deadline's cut of the task's `tasks` statement is not one
+/// (`spec/27 §2` rule 4, #1266): a job that has begun is waited for, and one still queued, which
+/// the cut takes off the queue unsent, fails with `TimedOut`, the failure that the same
+/// deadline gives a job that runs, so the outcome never depends on the pool's load. The cut
+/// comes once the `within`'s timer has fired, at or after the deadline that covers the job.
+fn on_helper<T: Send + 'static>(
+    entries: &[crate::runtime::Cancel],
+    abandoned: crate::interrupt::Wake,
+    job: impl FnOnce() -> Result<T, una_http::client::Error> + Send + 'static,
+) -> Option<Result<T, una_http::client::Error>> {
+    match sched::blocking_interruptible(Pool::Io, entries, Some(abandoned), job) {
+        Some(done) => Some(done),
+        None if crate::interrupt::cut_only(entries) => Some(Err(una_http::client::Error::TimedOut)),
+        None => None,
+    }
+}
+
 /// The word an interrupted operation returns: the stop of a task in the generated code
 /// (`una_codegen::lower::STOPPED`), which its caller passes on by the failure path.
 const INTERRUPTED: i64 = -1;
@@ -499,12 +519,11 @@ pub fn limit_acquire(_site: i64, instance: i64) -> i64 {
     };
     let entries = crate::runtime::interruptible_entries();
     let abandoned: crate::interrupt::Wake = Arc::new(move || abandon.abandon());
-    let acquired = match sched::blocking_interruptible(Pool::Io, &entries, Some(abandoned), job) {
+    // A deadline's cut of the task's `tasks` statement that takes a call still queued for a
+    // helper makes it fail with `RateLimited`, as its deadline makes a call that waits fail,
+    // never `interrupted` (`spec/27 §2` rule 4, §10, #1266).
+    let acquired = match on_helper(&entries, abandoned, job) {
         Some(acquired) => acquired,
-        // A deadline's cut of the task's `tasks` statement woke a call still queued for a
-        // helper: it fails with `RateLimited`, as its deadline makes a call that waits fail,
-        // never `interrupted` (`spec/27 §2` rule 4, #1266).
-        None if crate::interrupt::cut_only(&entries) => Err(Error::TimedOut),
         None => {
             with_state(|state| state.interrupted = true);
             return INTERRUPTED;
@@ -914,13 +933,12 @@ fn http(
         // sent is an effect in doubt.
         let entries = crate::runtime::interruptible_entries();
         let abandoned: crate::interrupt::Wake = Arc::new(move || abandon.abandon());
-        match sched::blocking_interruptible(Pool::Io, &entries, Some(abandoned), job) {
+        // A deadline's cut of the task's `tasks` statement that takes a request still queued
+        // for a helper makes it fail with `TimedOut`, never sent, the outcome its deadline gives
+        // a request that runs, on a helper or on the reactor, never `interrupted` (`spec/27 §2`
+        // rule 4, #1266).
+        match on_helper(&entries, abandoned, job) {
             Some(sent) => sent,
-            // A deadline's cut of the task's `tasks` statement woke a request still queued for
-            // a helper, which is never sent: it fails with `TimedOut`, the outcome its deadline
-            // gives a request that runs, on a helper or on the reactor, never `interrupted`
-            // (`spec/27 §2` rule 4, #1266). The cut came once that deadline had passed.
-            None if crate::interrupt::cut_only(&entries) => Err(Error::TimedOut),
             None => {
                 with_state(|state| state.interrupted = true);
                 return INTERRUPTED;
@@ -1036,6 +1054,83 @@ pub fn http_delete(site: i64, url: i64, headers: i64, key_name: i64) -> i64 {
 mod tests {
     use super::http_error_index;
     use una_http::client::Error;
+
+    /// Starts, on `sched`, a task whose operation runs on a helper of the I/O pool through
+    /// [`super::on_helper`] until `gate` opens, its cancellation entry that of `scope`'s tasks;
+    /// the receiver gives what [`super::on_helper`] gave.
+    fn on_a_helper(
+        sched: &crate::sched::Scheduler,
+        scope: &crate::started::StartScope,
+        gate: std::sync::mpsc::Receiver<()>,
+    ) -> std::sync::mpsc::Receiver<Option<Result<i32, Error>>> {
+        let (outcome, seen) = std::sync::mpsc::channel();
+        let entries = vec![(
+            std::sync::Arc::clone(&scope.cancel),
+            crate::tasks::RACE_ENTRY | 1,
+        )];
+        sched
+            .spawn(
+                1,
+                256 * 1024,
+                move || {
+                    let abandoned: crate::interrupt::Wake = std::sync::Arc::new(|| {});
+                    let done = super::on_helper(&entries, abandoned, move || {
+                        let _ = gate.recv();
+                        Ok(7)
+                    });
+                    let _ = outcome.send(done);
+                },
+                || {},
+            )
+            .unwrap();
+        seen
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
+    fn a_cut_fails_a_queued_operation_timed_out_and_a_failure_interrupts_it() {
+        // #1266, `spec/27 §2` rule 4: behind the only helper, a deadline's cut of the `tasks`
+        // statement takes a queued operation off the queue unsent, and it fails with
+        // `TimedOut` (`RateLimited` for `acquire`), as the job that runs does at the same
+        // deadline, never `interrupted`; a failure of the block interrupts it (`None`). Before
+        // the fix the cut ended the queued one `interrupted` too, which depended on the load
+        // of the pool. `Http` and `limit_acquire` both map their helper's wait through it.
+        let sched = crate::sched::Scheduler::new(una_interp::Concurrency {
+            workers: 1,
+            task_depth: 10,
+            io_threads: 1,
+            file_threads: 1,
+        });
+        let wait = std::time::Duration::from_millis(100);
+        let long = std::time::Duration::from_secs(10);
+        for by_deadline in [true, false] {
+            let scope = crate::started::StartScope::new("s1".to_owned(), 2);
+            let (release, gate) = std::sync::mpsc::channel();
+            let running = on_a_helper(&sched, &scope, gate);
+            std::thread::sleep(wait);
+            let (never, queued_gate) = std::sync::mpsc::channel::<()>();
+            let queued = on_a_helper(&sched, &scope, queued_gate);
+            std::thread::sleep(wait);
+            crate::started::cancel_tasks(&scope, by_deadline);
+            let queued = queued.recv_timeout(long).unwrap();
+            if by_deadline {
+                assert_eq!(queued, Some(Err(Error::TimedOut)));
+                // The running job is waited for, and gives its own result.
+                assert!(
+                    running.recv_timeout(wait).is_err(),
+                    "woken before its helper"
+                );
+                release.send(()).unwrap();
+                assert_eq!(running.recv_timeout(long).unwrap(), Some(Ok(7)));
+            } else {
+                assert_eq!(queued, None);
+                assert_eq!(running.recv_timeout(long).unwrap(), None);
+                let _ = release.send(());
+                std::thread::sleep(wait);
+            }
+            drop(never);
+        }
+    }
 
     #[test]
     fn http_error_codes_follow_the_declaration_order() {

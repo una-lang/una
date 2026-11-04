@@ -133,6 +133,15 @@ pub(crate) fn cancelled(entries: &[Cancel]) -> bool {
 /// and of `tasks` statements, `tasks::RACE_ENTRY`), which drop to 0. So a wait that reads the
 /// count tells a cut from another cancellation: a cut makes a request fail with its own
 /// `TimedOut`, on every path, never `interrupted`.
+///
+/// The argument assumes that a `within`'s flag reaches 0 no earlier than its deadline, so that
+/// at the cut every request it covers has its own deadline passed. One exception: a `within`
+/// that can arm no timer (the timer thread is gone, or its wheel is full) counts as passed at
+/// once (`deadline::within_enter`), and a request of a task that its cut cancels then runs on
+/// to its own deadline, that `within`'s, instead of ending at once. That is bounded by the
+/// deadline, changes no outcome, and is pre-existing for a job running on a helper (#1148); the
+/// timer thread starts before `main` (ADR 0116 P8), so a run meets it only after a failure of
+/// that thread.
 pub(crate) const CUT: usize = 1;
 
 /// Whether one of `entries` is cancelled by something other than a deadline's cut: its count

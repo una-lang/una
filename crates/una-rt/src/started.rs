@@ -230,7 +230,8 @@ impl StartScope {
 }
 
 /// The cancellation entry of a statement's tasks, and its count until the statement cancels
-/// them, which lowers the count to 0. It carries the mark of the entries whose cancellation
+/// them, which lowers the count to 0, or to [`crate::interrupt::CUT`] on a deadline's cut
+/// (#1266). It carries the mark of the entries whose cancellation
 /// interrupts a waiting operation (`tasks::RACE_ENTRY`, ADR 0117 rule 4): started tasks exist
 /// in edition `0.4` only, whose interruptions rule 4 gives them.
 const ENTRY: usize = crate::tasks::RACE_ENTRY | 1;
