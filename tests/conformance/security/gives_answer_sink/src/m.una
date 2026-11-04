@@ -1,0 +1,17 @@
+-- test: a labeled answer sent to an operation that accepts only `public` data is U4003 at the argument, and its repair names the binding and operation (ADR 0094 rules 2 and 7)
+-- spec: spec/07 §4
+-- expect: error U4003 at src/m.una:17:20
+module m
+
+pub capability Files
+  op owner(file: Text) -> Text
+
+pub capability Mailer
+  op send(to: Text) -> Unit
+
+pub notify(file: Text) -> Unit
+  uses @service_files: Files[owner gives internal[Service]]
+  uses @mailer: Mailer[send]
+=
+  let owner = @service_files.owner(file)
+  @mailer.send(to: owner)

@@ -692,6 +692,12 @@ impl<'a> Checker<'_, 'a, '_> {
                 .related
                 .push(self.report.related(from, "the labeled condition"));
         }
+        self.name_answer(
+            &mut diagnostic,
+            super::flow::Carrier::Condition,
+            &decided,
+            &start,
+        );
         self.report.push(diagnostic);
     }
 

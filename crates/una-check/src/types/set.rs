@@ -235,12 +235,15 @@ impl Checker<'_, '_, '_> {
                 && self.labels()
                 && !item_label.flows_to(&place_top)
             {
-                self.report.error(
+                self.flow_error(
                     Code::U4001,
                     *item_span,
                     format!(
                         "this item is labeled `{item_label}`, above the label `{place_top}` of the set `{receiver}`, whose size and items would reveal it; declare the set with a `{item_label}` top label"
                     ),
+                    super::flow::Carrier::Value("this item"),
+                    &item_label,
+                    &place_top,
                 );
             }
             let span = found.first().map_or(span, |(item_span, _)| *item_span);

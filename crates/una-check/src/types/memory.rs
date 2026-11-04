@@ -303,12 +303,15 @@ impl<'a> Checker<'_, 'a, '_> {
         // rule 6, #384).
         if self.labels() && !self.ctx.pc.flows_to(&top) {
             let pc = self.ctx.pc.clone();
-            self.report.error(
+            self.flow_error(
                 Code::U4001,
                 span,
                 format!(
                     "`{shown}` is labeled `{top}`, and this update runs under a `{pc}` condition, which it would reveal"
                 ),
+                super::flow::Carrier::Condition,
+                &pc,
+                &top,
             );
         }
         if let Some((root, fields)) = place_root(place)

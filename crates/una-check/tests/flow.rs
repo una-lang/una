@@ -10,8 +10,8 @@ use una_check::{
     ModuleInput, PackageInput, TypeCheck, check_names, check_types, check_types_with_rejected,
 };
 use una_diag::Diagnostic;
-use una_project::{Manifest, parse_manifest};
-use una_syntax::{Interner, SourceDb, lex, parse};
+use una_project::{Edition, Manifest, parse_manifest};
+use una_syntax::{Interner, KeywordSet, SourceDb, lex_in, parse};
 
 const MANIFEST: &str = "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"0.1\"\n";
 
@@ -40,7 +40,14 @@ fn with_input<R>(
             settings = parse_manifest(text).0;
             continue;
         }
-        let lexed = lex(db.file(id), id, &mut interner);
+        // The keywords of the package's edition: `una.toml` comes first among `files`.
+        let keywords = match settings.edition {
+            Edition::V0_1 => KeywordSet::V0_1,
+            Edition::V0_2 => KeywordSet::V0_2,
+            Edition::V0_3 => KeywordSet::V0_3,
+            Edition::V0_4 => KeywordSet::V0_4,
+        };
+        let lexed = lex_in(db.file(id), id, &mut interner, keywords);
         let parsed = parse(&lexed, id, &interner);
         let broken = !lexed.errors.is_empty() || !parsed.errors.is_empty();
         assert!(!broken, "{name} has syntax errors: {:?}", parsed.errors);
@@ -529,4 +536,156 @@ fn exporting_rejected_declarations_changes_nothing_else() {
         let program = format!("{:?}", plain.program);
         assert!(!program.contains("\"leak\""), "{program}");
     });
+}
+
+// ----- labeled answers named in flow reports (ADR 0094 rule 7) -----
+
+/// Every diagnostic of `module`, in an edition `0.3` package that declares the category
+/// `Service`, as "code line:col message", each followed by its related locations as
+/// "  related line:col message" and its repairs as "  repair [escape] description".
+fn answers(module: &str) -> Vec<String> {
+    let manifest = "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"0.3\"\n\n[labels]\ncategories = [\"Service\"]\n";
+    let files = [("una.toml", manifest), ("src/m.una", module)];
+    let (names, types) = run(&files, false);
+    let mut diagnostics: Vec<Diagnostic> = names.into_iter().chain(types.diagnostics).collect();
+    diagnostics.sort_by_key(|d| (d.primary.start, d.code));
+    let mut lines = Vec::new();
+    for d in &diagnostics {
+        lines.push(format!(
+            "{} {}:{} {}",
+            d.code, d.primary.start.line, d.primary.start.col, d.message
+        ));
+        for related in &d.related {
+            lines.push(format!(
+                "  related {}:{} {}",
+                related.location.start.line, related.location.start.col, related.message
+            ));
+        }
+        let mut repairs = d.repairs.clone();
+        repairs.sort_by_key(una_diag::Repair::order_key);
+        for repair in &repairs {
+            let escape = if repair.escape.is_some() {
+                "escape "
+            } else {
+                ""
+            };
+            lines.push(format!("  repair {escape}{}", repair.description));
+        }
+    }
+    lines
+}
+
+const ANSWER_CAPS: &str = "module m\n\
+\n\
+pub kind Lookup = | NotFound\n\
+\n\
+pub capability Files\n  op owner(file: Text) -> Text\n  op role(file: Text) -> Text\n  op find(file: Text) -> Text\n    fails Lookup\n\
+\n\
+pub capability Mailer\n  op send(to: Text) -> Unit\n";
+
+#[test]
+fn flows_of_a_labeled_answer_name_its_binding_and_operation() {
+    // ADR 0094 rule 7: the U4001, U4002 and U4003 that a labeled answer causes name the binding
+    // and operation whose label the value carries, in the message and the first repair, with
+    // the call as a related location; the policy that releases it ranks last (ADR 0095).
+    let module = format!(
+        "{ANSWER_CAPS}\n\
+pub returned(file: Text) -> Text\n  uses @service_files: Files[owner gives internal[Service]]\n=\n  @service_files.owner(file)\n\
+\n\
+pub sent(file: Text) -> Unit\n  uses @service_files: Files[owner gives internal[Service]]\n  uses @mailer: Mailer[send]\n=\n  let owner = @service_files.owner(file)\n  @mailer.send(to: owner)\n\
+\n\
+pub branched(file: Text) -> Unit\n  uses @service_files: Files[owner gives internal[Service]]\n  uses @mailer: Mailer[send]\n=\n  let owner = @service_files.owner(file)\n  if owner == \"root\"\n    @mailer.send(to: \"root\")\n  unit\n\
+\n\
+pub passed_on(file: Text) -> internal[Service] Text\n  uses @service_files: Files[find gives internal[Service]]\n  fails Lookup\n=\n  let found = @service_files.find(file)\n    if error pass\n  found\n"
+    );
+    assert_eq!(
+        answers(&module),
+        [
+            "U4001 17:3 the result of `returned` is `Text`, and this value is `internal[Service] Text`: a flow from `internal[Service]` to `public`; this value carries the answer of `@service_files.owner`, labeled `internal[Service]`",
+            "  repair this value carries the answer of `@service_files.owner`, labeled `internal[Service]`: read `owner` through a binding whose `owner` answers within `public`, or send the value only where `internal[Service]` data may go",
+            "  repair escape release the answer of `@service_files.owner` through a policy of a trusted module",
+            "U4003 24:20 `@mailer.send` accepts `public` data, and this argument is `internal[Service]`; this argument carries the answer of `@service_files.owner`, labeled `internal[Service]`",
+            "  related 23:15 the answer of `@service_files.owner`",
+            "  repair this argument carries the answer of `@service_files.owner`, labeled `internal[Service]`: read `owner` through a binding whose `owner` answers within `public`, or send the value only where `internal[Service]` data may go",
+            "  repair send `@mailer.send` only data labeled `public` or lower, or send this value to an operation that accepts `internal[Service]`",
+            "  repair escape declassify the value through a policy of a trusted module",
+            "U4003 32:5 `@mailer.send` accepts `public` data, and it runs under an `internal[Service]` condition, which it would reveal; the condition carries the answer of `@service_files.owner`, labeled `internal[Service]`",
+            "  related 31:6 the labeled condition",
+            "  related 30:15 the answer of `@service_files.owner`",
+            "  repair the condition carries the answer of `@service_files.owner`, labeled `internal[Service]`: read `owner` through a binding whose `owner` answers within `public`, or decide this without branching on it",
+            "  repair escape release the answer of `@service_files.owner` through a policy of a trusted module",
+            "U4002 40:5 `if error pass` depends on `internal[Service]` data, so its failure would reveal it; return a labeled value instead of failing; the condition carries the answer of `@service_files.find`, labeled `internal[Service]`",
+            "  related 39:15 the labeled condition",
+            "  repair the condition carries the answer of `@service_files.find`, labeled `internal[Service]`: read `find` through a binding whose `find` answers within `public`, or decide this without branching on it",
+            "  repair escape release the answer of `@service_files.find` through a policy of a trusted module",
+        ]
+    );
+}
+
+#[test]
+fn flows_name_only_an_answer_whose_label_they_carry_above_the_sink() {
+    // ADR 0094 rule 7, boundaries: a flow whose label no labeled answer explains names none,
+    // even when the body reads one; an answer within the sink is not named; of two answers,
+    // the one above the sink is named, though the other is read first.
+    let module = format!(
+        "{ANSWER_CAPS}\n\
+pub other(file: Text, pin: secret Text) -> Text\n  uses @service_files: Files[owner gives internal[Service]]\n=\n  let owner = @service_files.owner(file)\n  pin\n\
+\n\
+pub within(file: Text, pin: secret Text) -> internal[Service] Text\n  uses @service_files: Files[owner gives internal[Service]]\n=\n  let owner = @service_files.owner(file)\n  pin\n\
+\n\
+pub two(file: Text) -> internal[Service] Text\n  uses @service_files: Files[role gives internal[Service], owner gives secret[Service]]\n=\n  let role = @service_files.role(file)\n  let owner = @service_files.owner(file)\n  \"{{role}} {{owner}}\"\n"
+    );
+    assert_eq!(
+        answers(&module),
+        [
+            "U4001 18:3 the result of `other` is `Text`, and this value is `secret Text`: a flow from `secret` to `public`",
+            "U4001 24:3 the result of `within` is `internal[Service] Text`, and this value is `secret Text`: a flow from `secret` to `internal[Service]`",
+            "U4001 31:3 the result of `two` is `internal[Service] Text`, and this value is `secret[Service] Text`: a flow from `secret[Service]` to `internal[Service]`; this value carries the answer of `@service_files.owner`, labeled `secret[Service]`",
+            "  related 30:15 the answer of `@service_files.owner`",
+            "  repair this value carries the answer of `@service_files.owner`, labeled `secret[Service]`: read `owner` through a binding whose `owner` answers within `internal[Service]`, or send the value only where `secret[Service]` data may go",
+            "  repair escape release the answer of `@service_files.owner` through a policy of a trusted module",
+        ]
+    );
+}
+
+#[test]
+fn a_parameter_run_under_a_labeled_answer_and_a_contravariant_flow_name_it() {
+    // ADR 0094 rule 7 (review of #1536, L2 and L3): the U4002 of an effectful parameter that
+    // the callee runs under a labeled list names the answer the list is, and the U4001 at a
+    // contravariant position says that the flow, not the function value, carries the answer.
+    let module = "module m\n\
+\n\
+pub capability Files\n  op sizes(file: Text) -> List[Int]\n\
+\n\
+relay(file: Text, f: fn(Int) -> Unit) -> Unit\n  uses of f\n  uses @service_files: Files[sizes gives internal[Service]]\n=\n  let xs = @service_files.sizes(file)\n  let done = xs.map(each: f)\n  unit\n";
+    let lines = answers(module);
+    let joined = lines.join("\n");
+    let u4002 = lines
+        .iter()
+        .find(|l| l.starts_with("U4002 11:27 "))
+        .unwrap_or_else(|| panic!("{joined}"));
+    assert!(
+        u4002.ends_with(
+            "; the condition carries the answer of `@service_files.sizes`, labeled `internal[Service]`"
+        ),
+        "{joined}"
+    );
+    let u4001 = lines
+        .iter()
+        .find(|l| l.starts_with("U4001 11:27 "))
+        .unwrap_or_else(|| panic!("{joined}"));
+    assert!(
+        u4001.ends_with(
+            "; this flow carries the answer of `@service_files.sizes`, labeled `internal[Service]`"
+        ),
+        "{joined}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l
+                .contains("or pass a function whose parameter accepts `internal[Service]` data")),
+        "{joined}"
+    );
+    assert!(!joined.contains("this value carries"), "{joined}");
 }
