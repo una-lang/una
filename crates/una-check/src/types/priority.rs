@@ -194,12 +194,15 @@ impl Checker<'_, '_, '_> {
             {
                 let priority_label = self.deep(priority_ty);
                 if !priority_label.flows_to(&place_top) {
-                    self.report.error(
+                    self.flow_error(
                         Code::U4001,
                         *priority_span,
                         format!(
                             "this priority is labeled `{priority_label}`, above the label `{place_top}` of the priority queue `{receiver}`, whose order of pops would reveal it; declare the priority type or the queue with a `{priority_label}` label"
                         ),
+                        super::flow::Carrier::Value("this priority"),
+                        &priority_label,
+                        &place_top,
                     );
                 }
             }
