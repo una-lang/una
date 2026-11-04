@@ -570,8 +570,15 @@ fn verify_source(
                 Err(OpenError::Omitted(omission, why)) => {
                     return Err((index, Failure::Omitted(omission, why)));
                 }
-                Err(error @ (OpenError::Refused(_) | OpenError::Evidence(..))) => {
+                Err(error @ OpenError::Refused(_)) => {
                     return Err((index, Failure::Refused(error.message())));
+                }
+                // Evidence against the registry (`spec/30 §11` rule 9): refused, and said as
+                // such, as `una ita lock --check` and `una ita bundle` say it.
+                Err(OpenError::Evidence(misbehavior, why)) => {
+                    let evidence =
+                        crate::registry::audit::Evidence::from(misbehavior).text(&copy.source);
+                    return Err((index, Failure::Refused(format!("{why}; {evidence}"))));
                 }
             }
         }
