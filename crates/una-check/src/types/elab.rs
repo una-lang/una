@@ -3309,6 +3309,8 @@ impl<'e, 'a> Fx<'e, 'a> {
             task: Box::new(close(inner, value)),
             span: stmt.span,
         };
+        // S-40 (#1512): a `start` under a raised program counter is `quiet`.
+        let expr = self.quiet_construct(stmt.span, expr, stmt.span);
         bind_expr(lets, "_".to_owned(), unit(), expr, stmt.span, false);
     }
 
@@ -4535,8 +4537,8 @@ impl<'e, 'a> Fx<'e, 'a> {
     }
 
     /// `expr`, `quiet` when the checker marked the construct `key` (S-39, `spec/26 §6` rule 4):
-    /// a `within`, keyed by its deadline, a `first of`, or a `tasks`, `together` or `together
-    /// for` statement, under a raised program counter.
+    /// a `within`, keyed by its deadline, a `first of`, or a `tasks`, `together`, `together
+    /// for` or `start` statement, under a raised program counter.
     fn quiet_construct(&self, key: Span, expr: CoreExpr, span: Span) -> CoreExpr {
         if self.findings.quiet.contains(&key) {
             CoreExpr::Quiet {

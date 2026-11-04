@@ -993,13 +993,13 @@ impl<'p, 'w> Machine<'p, 'w> {
         }
     }
 
-    /// The machine of the `k`-th task of the statement `scope`, started here by this task: it
-    /// shares the run, inherits the deadlines and cancellations in force, and may make
-    /// `--task-depth` calls below the `start`, within the maximum in force (`spec/27 §7`, ADR
-    /// 0117 amendment of 2026-10-19 on S3, point 3).
-    fn child(&self, scope: &Rc<TasksScope>, k: usize) -> Machine<'p, 'w> {
+    /// The machine of the task `part` of the statement `scope`, `k` or, in quiet code, `q<k>`
+    /// (S-40), started here by this task: it shares the run, inherits the deadlines and
+    /// cancellations in force, and may make `--task-depth` calls below the `start`, within the
+    /// maximum in force (`spec/27 §7`, ADR 0117 amendment of 2026-10-19 on S3, point 3).
+    fn child(&self, scope: &Rc<TasksScope>, part: String) -> Machine<'p, 'w> {
         let mut task = scope.path.clone();
-        task.push(k.to_string());
+        task.push(part);
         let mut cancels: Vec<Rc<TasksScope>> = self
             .cancels
             .iter()
@@ -2796,7 +2796,8 @@ impl<'p, 'w> Machine<'p, 'w> {
     }
 
     /// `start e` at `span` (`spec/27 §7`, ADR 0117 rule 7): once fewer tasks of the innermost
-    /// statement run than its bound allows, starts the next one, `p.s<c>.<k>`, for `task` with
+    /// statement run than its bound allows, starts the next one, `p.s<c>.<k>`, or `p.s<c>.q<k>`
+    /// in quiet code (S-40), for `task` with
     /// the bindings it reads and the capabilities in scope, at the back of the run's queue,
     /// and goes on. On Linux, a run already holding as many started tasks as the system allows
     /// at once aborts with U6003 at the `start`, before any mapping fails (ADR 0117 rule 2).
@@ -2823,9 +2824,14 @@ impl<'p, 'w> Machine<'p, 'w> {
                 cap: Some(cap),
             }));
         }
-        let k = scope.started.get() + 1;
-        scope.started.set(k);
-        let mut child = self.child(&scope, k);
+        // A `start` in quiet code is counted apart, `q<k>`, so that whether it ran, which may
+        // depend on data above `public`, never moves the index of a later public one (S-40,
+        // #1512, `spec/27 §7` rule 5).
+        let quiet = self.quiet > 0;
+        let mut counts = scope.started.get();
+        let k = counts.next(quiet);
+        scope.started.set(counts);
+        let mut child = self.child(&scope, crate::concurrency::start_name(quiet, k));
         let reads = self.reads(task);
         let mut captured: Env<'p> = reads.iter().filter_map(|name| env.binding(name)).collect();
         let caps = caps.clone();

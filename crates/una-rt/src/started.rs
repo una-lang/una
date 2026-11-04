@@ -128,7 +128,11 @@ pub(crate) struct StartScope {
     /// `s<c>` in the root task, `p.s<c>` in the task `p`.
     pub(crate) path: String,
     bound: usize,
+    /// How many tasks it started outside `quiet` code, and inside it, which counts apart so
+    /// that a `start` under a raised program counter never moves the index, and so the
+    /// placement, of a later public one (S-40, #1512, `spec/27 §7` rule 5).
     started: AtomicUsize,
+    started_quiet: AtomicUsize,
     running: sched::Counter,
     pub(crate) cancel: Arc<AtomicUsize>,
 }
@@ -209,6 +213,7 @@ impl StartScope {
             path,
             bound: bound.max(1),
             started: AtomicUsize::new(0),
+            started_quiet: AtomicUsize::new(0),
             running: sched::Counter::default(),
             cancel: Arc::new(AtomicUsize::new(ENTRY)),
         }
@@ -286,12 +291,26 @@ pub fn start(closure: i64, site: usize, invoke: Invoke) -> i64 {
             return 2;
         }
     };
-    let k = scope.started.fetch_add(1, Ordering::SeqCst) + 1;
     let Some(template) = with_state(|state| state.for_start(site)) else {
         scope.running.release();
         return 2;
     };
-    let path = format!("{}.{k}", scope.path);
+    // A `start` in quiet code is counted apart, `q<k>`, so that whether it ran, which may
+    // depend on data above `public`, never moves the index, the path and the worker of a later
+    // public one (S-40, #1512, `spec/27 §7` rule 5). The template holds the `quiet` count of
+    // the starting task.
+    let quiet = template.quiet > 0;
+    let counter = if quiet {
+        &scope.started_quiet
+    } else {
+        &scope.started
+    };
+    let k = counter.fetch_add(1, Ordering::SeqCst) + 1;
+    let path = format!(
+        "{}.{}",
+        scope.path,
+        una_interp::concurrency::start_name(quiet, k)
+    );
     let entry = (Arc::clone(&scope.cancel), ENTRY);
     shared.live.fetch_add(1, Ordering::SeqCst);
     let sched = Arc::clone(&template.sched);
@@ -300,7 +319,8 @@ pub fn start(closure: i64, site: usize, invoke: Invoke) -> i64 {
     let alive = Arc::clone(&shared);
     // The task's place in its statement places it: the `k`-th `start` of the statement, counted
     // from 1, is part `k`, which runs on worker `(w + k) mod N`, `w` being the starting task's
-    // worker, 0 for the root (`spec/27 §1` rule 2, #1145). It also names the task's path.
+    // worker, 0 for the root (`spec/27 §1` rule 2, #1145). It also names the task's path. A
+    // quiet `start` takes its place among the quiet ones (S-40).
     let spawned = sched.spawn_started(
         k,
         stack,

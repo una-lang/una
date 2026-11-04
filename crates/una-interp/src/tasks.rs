@@ -241,7 +241,10 @@ pub(crate) struct TasksScope {
     pub(crate) path: Vec<String>,
     /// How many tasks may run at once.
     pub(crate) bound: usize,
-    pub(crate) started: Cell<usize>,
+    /// How many tasks it started, outside `quiet` code and inside it, which counts apart so
+    /// that a `start` under a raised program counter never moves the index of a later public
+    /// one (S-40, #1512, `spec/27 §7` rule 5).
+    pub(crate) started: Cell<crate::concurrency::BlockCounts>,
     pub(crate) running: Cell<usize>,
     pub(crate) cancelled: Cell<bool>,
     pub(crate) waiter: Cell<Option<usize>>,
@@ -253,7 +256,7 @@ impl TasksScope {
         TasksScope {
             path,
             bound: bound.max(1),
-            started: Cell::new(0),
+            started: Cell::new(crate::concurrency::BlockCounts::default()),
             running: Cell::new(0),
             cancelled: Cell::new(false),
             waiter: Cell::new(None),

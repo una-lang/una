@@ -151,6 +151,18 @@ pub fn block_name(kind: char, quiet: bool, count: usize) -> String {
     }
 }
 
+/// The part of a task path that names the `count`-th task that a `tasks` statement started:
+/// `<count>`, or `q<count>` for a `start` in quiet code, which counts apart so that a `start`
+/// under a raised program counter never moves the index of a later public one (S-40, #1512,
+/// `spec/27 §7` rule 5).
+pub fn start_name(quiet: bool, count: usize) -> String {
+    if quiet {
+        format!("q{count}")
+    } else {
+        count.to_string()
+    }
+}
+
 /// The one line on stderr of a started task that ran too deep and ended alone (`spec/27 §7`,
 /// ADR 0117 rule 7), as both engines write it: U6003, the task's path, why, and the position
 /// `file:line:column` of the call, when it is known.
@@ -195,6 +207,9 @@ mod tests {
         assert_eq!(counts.next(false), 2);
         assert_eq!(block_name('s', false, 2), "s2");
         assert_eq!(block_name('f', true, 2), "qf2");
+        // S-40: nor does a quiet `start` move the index of a later public one.
+        assert_eq!(start_name(false, 2), "2");
+        assert_eq!(start_name(true, 1), "q1");
     }
 
     #[test]

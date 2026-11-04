@@ -139,7 +139,8 @@ impl Checker<'_, '_, '_> {
 
     /// Records `span`, a construct whose running appends events of its own to the trace, as
     /// `quiet` when it stands under a raised program counter ([`Self::raised`]): a `for ever`
-    /// loop, a `within`, a `first of`, a `tasks`, `together` or `together for` statement, a call
+    /// loop, a `within`, a `first of`, a `tasks`, `together`, `together for` or `start`
+    /// statement (S-40), a call
     /// of a function value, or an operation, which a handler of the package may serve (S-39,
     /// `spec/26 §6` rule 4).
     pub(crate) fn quiet_site(&mut self, span: Span) {
