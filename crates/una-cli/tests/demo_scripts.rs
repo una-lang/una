@@ -4,12 +4,17 @@
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
 
+#[path = "common/hermetic.rs"]
+mod hermetic;
+
 use std::path::PathBuf;
 use std::process::Command;
 
 #[test]
 fn every_demo_script_finds_its_expected_outcomes() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    // The scripts run in a sealed copy of the trees they read: no manifest above the checkout
+    // changes the edition of their single files (#1560).
+    let root = hermetic::checkout(&["examples", "scripts/demo", "tests/demo"]);
     let mut scripts: Vec<PathBuf> = std::fs::read_dir(root.join("scripts/demo"))
         .unwrap()
         .map(|entry| entry.unwrap().path())

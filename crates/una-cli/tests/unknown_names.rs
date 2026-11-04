@@ -5,6 +5,9 @@
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
 
+#[path = "common/hermetic.rs"]
+mod hermetic;
+
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
@@ -14,7 +17,8 @@ use una_syntax::{DeclarationKind, declarations};
 
 fn scratch(name: &str) -> PathBuf {
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("unknown-names");
-    std::fs::create_dir_all(&dir).unwrap();
+    // The copy of a single-file case keeps edition 0.1 whatever lies above the build (#1560).
+    hermetic::seal(&dir);
     dir.join(name)
 }
 

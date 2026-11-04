@@ -10,6 +10,9 @@
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
 
+#[path = "common/hermetic.rs"]
+mod hermetic;
+
 use std::path::{Path, PathBuf};
 
 use pretty_assertions::assert_eq;
@@ -98,10 +101,10 @@ fn fixed_headings(text: &str) -> Vec<String> {
 /// The codes `check` reports for `example`, written under a directory named after the code.
 /// A fixed example is checked at tier 1, a failing one at the tier of its code.
 fn codes(code: Code, name: &str, example: &Example, fixed: bool, flags: &[String]) -> Vec<Code> {
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
-        .join("explain-examples")
-        .join(code.as_str())
-        .join(name);
+    // A single-file example is of edition 0.1 whatever lies above the build (#1560).
+    let sealed = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("explain-examples");
+    hermetic::seal(&sealed);
+    let dir = sealed.join(code.as_str()).join(name);
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let target = match example {

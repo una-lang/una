@@ -11,16 +11,20 @@
     clippy::unwrap_used
 )]
 
+#[path = "common/hermetic.rs"]
+mod hermetic;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 
-/// The conformance case at `case`, relative to `tests/conformance`.
+/// The conformance case at `case`, relative to `tests/conformance`, in a sealed copy of the
+/// corpus: no manifest above the checkout changes its edition (#1560).
 fn case(case: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/conformance")
+    hermetic::checkout(&["tests/conformance"])
+        .join("tests/conformance")
         .join(case)
 }
 
