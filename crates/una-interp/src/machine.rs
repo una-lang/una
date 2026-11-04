@@ -87,6 +87,10 @@ pub enum EventOutcome {
         /// The failure in its Una form.
         value: String,
     },
+    /// It returned or failed, at an outcome label above `public` in a run's trace (S-45,
+    /// #1552, `spec/11 §5`): only that label's level is written, never whether it failed, its
+    /// variant or its value, so no text is built from the value.
+    Redacted(String),
     /// The run aborted before it ended.
     Aborted,
 }
@@ -393,6 +397,10 @@ pub(crate) struct Machine<'p, 'w> {
     installs: BTreeMap<String, usize>,
     /// The name spans of the functions in progress, innermost last, to locate faults.
     frames: Vec<Span>,
+    /// Whether operations' outcomes are written in clear whatever their labels: only in an
+    /// example, whose data come from its source (`spec/11 §6`); a run writes an outcome labeled
+    /// above `public` as `redacted` (S-45, #1552, `spec/11 §5`).
+    pub(crate) clear_outcomes: bool,
 }
 
 impl<'p, 'w> Machine<'p, 'w> {
@@ -418,6 +426,7 @@ impl<'p, 'w> Machine<'p, 'w> {
                 .map_or(usize::MAX, |bytes| bytes.saturating_sub(STACK_RESERVE)),
             installs: BTreeMap::new(),
             frames: Vec::new(),
+            clear_outcomes: false,
         }
     }
 
@@ -668,6 +677,7 @@ impl<'p, 'w> Machine<'p, 'w> {
                 op,
                 args,
                 labels,
+                outcome,
                 span,
                 ..
             } => {
@@ -678,6 +688,7 @@ impl<'p, 'w> Machine<'p, 'w> {
                     op,
                     labels,
                     result: deep_label(ty),
+                    outcome: outcome.join(&deep_label(ty)),
                     span: *span,
                 };
                 self.op(caps, &request, args)
@@ -855,7 +866,14 @@ impl<'p, 'w> Machine<'p, 'w> {
                 self.leave(result)
             }
         };
+        // S-45 (#1552, `spec/11 §5`): in a run, an outcome labeled above `public` is written
+        // as `redacted`, at the static label of the site, so whether it is depends on no
+        // value, and no text is built from its value.
+        let hidden = !request.outcome.is_public() && !self.clear_outcomes;
         let outcome = match &result {
+            Ok(_) | Err(Stop::Fail(_)) if hidden => {
+                EventOutcome::Redacted(level_name(request.outcome.level).to_owned())
+            }
             Ok(value) => EventOutcome::Ok(self.index.redacted(value, &request.result)),
             Err(Stop::Fail(failure)) => EventOutcome::Fail {
                 variant: variant(failure),
@@ -1093,8 +1111,10 @@ struct Request<'a> {
     capability: &'a str,
     op: &'a str,
     labels: &'a [Label],
-    /// The label of the binder of its result, which redacts its outcome.
+    /// The label of the binder of its result, which redacts its value.
     result: Label,
+    /// The label of its outcome: Core's, joined with the binder's (S-45, #1552).
+    outcome: Label,
     span: Span,
 }
 

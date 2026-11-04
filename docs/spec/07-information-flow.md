@@ -41,6 +41,8 @@ Every capability operation argument is a sink with the operation's `accepts` lab
 
 Text interpolation propagates labels: `"id {phone}"` has the label of `phone`. Printing it through `Console` is then U4003.
 
+(S-45, #1552, ADR 0032 amendment, proposed.) The trace of `una run` is a sink that accepts `public`: each item of an event is rendered at its label, an argument at its static label and an outcome at the label of the operation's decision, failure type and result (`spec/11 §5`). An example's trace keeps its outcomes in clear: its data come from its source.
+
 `expect` lines in examples observe values for the test harness and are exempt from sink checks.
 
 ## 5. Declassification policies

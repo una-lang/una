@@ -47,6 +47,10 @@ pub(crate) struct Records {
     /// The refinements of each lambda parameter, by the span of its name: its annotation's,
     /// or the expected parameter type's (ADR 0037 rule 1).
     pub(crate) lambda_params: BTreeMap<Span, Vec<Refinement>>,
+    /// For each operation call, by its span, the types whose labels, joined, are the label its
+    /// outcome is rendered at in a run's trace (S-45, #1552, `spec/11 §5`): the decision's
+    /// label on `Unit`, the result and the failure type.
+    pub(crate) outcomes: BTreeMap<Span, Vec<Ty>>,
 }
 
 impl Records {
@@ -66,6 +70,12 @@ impl Records {
             self.res.insert(span, res);
         }
         self.args.extend(other.args);
+        for (span, parts) in other.outcomes {
+            self.outcomes
+                .entry(span)
+                .or_default()
+                .extend(parts.iter().map(&resolve));
+        }
         self.annotations.extend(other.annotations);
         self.lambda_params.extend(other.lambda_params);
     }

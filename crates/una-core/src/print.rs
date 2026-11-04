@@ -647,6 +647,14 @@ fn rhs_line(rhs: &Rhs) -> String {
             format!("{}{type_args}({})", function.qualified(), atoms(args))
         }
         Rhs::Apply { callee, args, .. } => format!("{}({})", print_atom(callee), atoms(args)),
+        // S-45 (#1552): the label of an outcome a run's trace redacts follows the call.
+        Rhs::Op {
+            cap,
+            op,
+            args,
+            outcome,
+            ..
+        } if !outcome.is_public() => format!("{cap}.{op}({}) outcome {outcome}", atoms(args)),
         Rhs::Op { cap, op, args, .. } => format!("{cap}.{op}({})", atoms(args)),
         Rhs::Construct { ctor: c, args, .. } => ctor(c, args),
         Rhs::Field { value, field, .. } => format!("{}.{field}", print_atom(value)),

@@ -77,4 +77,4 @@ Examples are not Core IR declarations. The test harness (`spec/11 §6`) runs the
 
 ## 4. Debug output
 
-`una check --dump-core <module> [path]` prints the Core IR of the module's declarations on stdout, in the text syntax above, with every binder's type, label and refinements, deterministically (ADR 0032). The diagnostics of the package still go to stderr, and the exit code follows them. The dump is used by snapshot tests and is not a stable interface.
+`una check --dump-core <module> [path]` prints the Core IR of the module's declarations on stdout, in the text syntax above, with every binder's type, label and refinements, deterministically (ADR 0032). The diagnostics of the package still go to stderr, and the exit code follows them. The dump is used by snapshot tests and is not a stable interface. (S-45, #1552.) An operation `c.o(a, ...)` carries, with its arguments' static labels, the static label its outcome is rendered at in a run's trace (`spec/11 §5`); the dump prints it after the call, `c.o(a, ...) outcome internal`, when it is above `public`.
