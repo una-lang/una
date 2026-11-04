@@ -1,7 +1,17 @@
 """Writes formal/UnaFormal/F1/LoopImportTests.lean (#946) from `una --json core --with-rejected`.
 
-The package is `formal/gen/loop_import_tests.una` as the module `m` of an edition-0.4 package
-(ADR 0116). `una check` rejects `when_secret`, `under_secret` and `ever_secret` (U4002),
+The package is `formal/gen/loop_import_tests.una` as the module `m`, the file `src/m.una`, of an
+edition-0.4 package (ADR 0116) whose manifest `ita.una` is exactly these three lines and nothing
+after them:
+
+    ita loop_import_tests
+      version 0.1.0
+      edition 0.4
+
+The export gives the arguments the elaborator synthesizes the span of the manifest's last line
+plus one, `ita.una:4:1`, so another manifest gives another document; `una.toml` is U7002 for
+edition 0.4. The package name does not reach the export, and no `ita.lock` is needed (`una check`
+reports U7009 for its absence, which does not change the export). `una check` rejects `when_secret`, `under_secret` and `ever_secret` (U4002),
 `after_skip` (U4001) and `loud_until` (U4003), so the export lists them under `rejected`; the importer reads one complete document, so they are
 put back into the module, in source order, and the document is marked complete. Nothing else of
 the export changes.

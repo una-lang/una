@@ -90,6 +90,7 @@ A declaration whose program uses no host operation, and whose parameters cannot 
 - other writers: the file system changes only by the package's own writes, during and between runs, and the servers do not write it;
 - the network's nondeterminism: the model's request is a function of the URL, the arguments and the server's state;
 - host stops other than a fixed stop schedule that gives each `for ever` loop its stop points, the same for every entry of the loop (`spec/26 §9`);
+- the events the runtime appends by itself, `stop`, `timeout` and `cancelled`, which the model's trace does not hold: T6 says nothing of them, nor of the channel they give under a raised program counter, which quiet code closes (S-39, `spec/26 §9` item 6). The iteration budget of `--stop-after-iterations` and `stop after`, per loop instance since S-36, is a fixed stop schedule and inside the model;
 - handler bodies the re-check does not read: a handler from outside the document, or one installed with `given` or of a capability not read by scopes (`docs/plan/formal-track-with.md` §4c), is outside the reach set until M7 (F2, T4). A `with` of a handler the document declares is read since #538, and its handler's events are charged where it is installed (ruling E). A handler a document declares for its own capability is read and checked (#524); the theorems hold for every handler `una check` accepted (premise Hu), not for forged or unchecked Core.
 
 **The trusted base:**
