@@ -151,6 +151,15 @@ pub fn block_name(kind: char, quiet: bool, count: usize) -> String {
     }
 }
 
+/// The id of an instance of the handler `name` that quiet code installs, as both engines name
+/// it: `with:<name>#q`, with no number (S-41, `spec/26 §6` rule 4). Quiet code counts none of
+/// its installations, so how many it ran, which may depend on data above `public`, shows in no
+/// id: neither in the `n` of a later public installation nor in a later quiet one's. A join
+/// leaves the id as it is, since it names no task path.
+pub fn quiet_install_id(name: &str) -> String {
+    format!("with:{name}#q")
+}
+
 /// The one line on stderr of a started task that ran too deep and ended alone (`spec/27 §7`,
 /// ADR 0117 rule 7), as both engines write it: U6003, the task's path, why, and the position
 /// `file:line:column` of the call, when it is known.

@@ -1357,8 +1357,13 @@ impl<'p, 'w> Machine<'p, 'w> {
         }
     }
 
-    /// The id of a new instance of the handler `name` installed by `with`.
+    /// The id of a new instance of the handler `name` installed by `with`. Quiet code counts
+    /// none of its installations: their ids read `with:<name>#q`, so whether and how often it
+    /// ran shows in no id (S-41, `spec/26 §6` rule 4). O(log h) for h installed handler names.
     fn install_id(&mut self, name: &str) -> String {
+        if self.quiet > 0 {
+            return crate::concurrency::quiet_install_id(name);
+        }
         let count = self.installed(name) + 1;
         self.add_installs(name, 1);
         self.renamed(name, count)
