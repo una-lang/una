@@ -343,12 +343,6 @@ pub(crate) const PRELUDE_CORE_KINDS: [&str; 8] = [
     una_core::complex::COMPLEX_F32,
 ];
 
-/// The kinds of JSON and their opaque predicate `is_json_number`, which the prelude declares in
-/// edition 0.2 (`spec/23 §1`), in a module of the prelude's path: so the verifier generates the
-/// obligations of the refinements of their fields, as `Decimal`'s `JsonNumber`, proves them
-/// from the facts of `checked`, and both engines read their fields, as for a kind of the
-/// package. Both engines call the predicate by name, never its placeholder body. `None` in
-/// edition 0.1, where the prelude does not declare them.
 /// The kinds of the server that `std.host` declares in edition 0.4 (ADR 0123 rule 1), which Core
 /// IR declares in the module `prelude` only for a package that imports a name of the server, so
 /// the Core IR of every other package does not change (`spec/31 §1`).
@@ -361,6 +355,12 @@ pub(crate) const SERVER_CORE_KINDS: [&str; 6] = [
     "ServeError",
 ];
 
+/// The kinds of JSON and their opaque predicate `is_json_number`, which the prelude declares in
+/// edition 0.2 (`spec/23 §1`), in a module of the prelude's path: so the verifier generates the
+/// obligations of the refinements of their fields, as `Decimal`'s `JsonNumber`, proves them
+/// from the facts of `checked`, and both engines read their fields, as for a kind of the
+/// package. Both engines call the predicate by name, never its placeholder body. `None` in
+/// edition 0.1, where the prelude does not declare them.
 /// A kind of [`PRELUDE_CORE_KINDS`] or the predicate that does not elaborate is recorded in
 /// `dropped` (#1050).
 fn prelude_kinds(
@@ -471,7 +471,15 @@ fn host(
     };
     let mut out = Vec::new();
     for (decl, entity) in m.tree.decls.iter().zip(m.decls.clone()) {
-        if let DeclKind::Capability(_) = &decl.kind {
+        if let DeclKind::Capability(capability) = &decl.kind {
+            // ADR 0123 rule 0: `HttpServer` joins Core IR only for a package that imports a
+            // name of the server, with the kinds its operations name, so the Core IR of every
+            // other package does not change.
+            if !env.server_imported
+                && env.text(env.prelude, capability.name.name) == super::server::HTTP_SERVER
+            {
+                continue;
+            }
             let core = match entity {
                 Some(entity @ Entity::Capability(_)) => {
                     let mut fx = Fx::new(env, findings, dbs, env.prelude);
@@ -6768,5 +6776,20 @@ fn aligned(term: Term, k: u8) -> Term {
             una_core::decimal::pow10(u32::from(k)).to_string(),
         )),
         right: Box::new(term),
+    }
+}
+
+#[cfg(test)]
+mod server_kinds {
+    #[test]
+    fn the_server_kinds_of_core_are_the_server_names_with_a_declaration_of_their_own() {
+        // ADR 0123 rule 1: every name of the server but the capability, the refined alias
+        // `Status` and the built-in `ReplyRight` is a kind that Core IR declares.
+        let kinds: Vec<&str> = crate::names::prelude::SERVER_NAMES
+            .iter()
+            .copied()
+            .filter(|name| !matches!(*name, "HttpServer" | "Status" | "ReplyRight"))
+            .collect();
+        assert_eq!(kinds, super::SERVER_CORE_KINDS);
     }
 }

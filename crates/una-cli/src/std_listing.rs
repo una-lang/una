@@ -58,19 +58,6 @@ pub struct Variant {
 /// import of it brings into scope (`spec/31 §1`), and `std.testing`.
 const MODULES: [&str; 3] = ["prelude", "std.host", "std.testing"];
 
-/// The declarations of the prelude's source that belong to `std.host` alone, edition 0.4
-/// (ADR 0123 rule 0): the prelude does not put them in scope.
-const HOST_ONLY: [&str; 8] = [
-    "HttpServer",
-    "Method",
-    "Param",
-    "Request",
-    "Exchange",
-    "Status",
-    "Reply",
-    "ServeError",
-];
-
 /// Every public item of the standard modules, in order of first declaration: the prelude's,
 /// then `std.testing`'s, each in source order, oldest edition first.
 pub fn std_items() -> Vec<Item> {
@@ -99,11 +86,12 @@ pub fn std_items() -> Vec<Item> {
                     continue;
                 }
                 let docs = docs(decl, text);
-                let module = if module == MODULES[0] && HOST_ONLY.contains(&name.as_str()) {
-                    MODULES[1]
-                } else {
-                    module
-                };
+                let module =
+                    if module == MODULES[0] && una_check::server_names().contains(&name.as_str()) {
+                        MODULES[1]
+                    } else {
+                        module
+                    };
                 let at = *index.entry((module, name.clone())).or_insert_with(|| {
                     items.push(Item {
                         name,

@@ -362,3 +362,36 @@ fn a_run_or_a_build_whose_main_uses_http_server_fails_closed_until_its_runtime_l
     assert!(!out.exists());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn the_core_of_a_package_that_imports_no_server_name_names_nothing_of_the_server() {
+    // ADR 0123 rule 0 (`spec/31 §1`): Core IR declares `HttpServer` and its kinds only for a
+    // package that imports a name of the server, so the `una.core/1` document of every other
+    // package of edition 0.4 is what it was before them, and refers to no kind it lacks.
+    let dir = package("core", "");
+    let plain = una(&dir, &["core", "--json"]);
+    assert!(plain.status.success(), "{}", stderr(&plain));
+    let text = stdout(&plain);
+    for name in ["HttpServer", "Exchange", "ServeError", "reply_right"] {
+        assert!(
+            !text.contains(name),
+            "{name} in the core of a package that serves nothing"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    let dir = package(
+        "core-serving",
+        &format!("    serve \"http://127.0.0.1:{}\"\n", free_port()),
+    );
+    std::fs::write(dir.join("src/main.una"), SERVER).unwrap();
+    let serving = una(&dir, &["core", "--json"]);
+    assert!(serving.status.success(), "{}", stderr(&serving));
+    let text = stdout(&serving);
+    for name in ["HttpServer", "Exchange", "ServeError", "reply_right"] {
+        assert!(
+            text.contains(name),
+            "{name} missing from the core of a server"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

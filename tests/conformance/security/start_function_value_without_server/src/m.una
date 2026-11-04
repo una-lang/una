@@ -1,0 +1,13 @@
+-- test: in a package of edition 0.4 that imports no name of the server, no value can hold a reply right, so a `start` that captures a function value under a `secret` program counter is accepted as before (spec/31 §1, ADR 0123 IF6)
+-- spec: spec/31 §1
+-- expect: ok
+module m
+
+spawn(jobs: internal List[fn() -> Unit], key: secret Int) -> Unit
+=
+  tasks
+    for job in jobs
+      if key > 0
+        start job()
+      else
+        unit

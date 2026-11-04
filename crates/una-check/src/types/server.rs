@@ -58,7 +58,9 @@ pub(crate) struct StartSite {
 pub(crate) struct CaptureFrame {
     /// Where the locals of the started expression begin: a local before it is a capture.
     mark: usize,
+    /// Whether a capture's type can hold a `ReplyRight`.
     reply: bool,
+    /// Whether a capture's type can hold a function value.
     function_value: bool,
 }
 
@@ -109,7 +111,11 @@ pub(crate) fn serving_capabilities(env: &Env<'_>) -> BTreeSet<CapId> {
 /// parameter and a unification variable count as holding one, failing closed.
 pub(crate) fn holds_reply(env: &Env<'_>, ty: &Ty, resolve: &dyn Fn(&Ty) -> Ty) -> bool {
     match resolve(ty) {
-        Ty::ReplyRight | Ty::Param(_) | Ty::Var(_) => true,
+        Ty::ReplyRight => true,
+        // A value of a type parameter or an unsolved variable holds a reply right only in a
+        // package where a value can hold one at all: one that imports `HttpServer`, `Exchange`
+        // or `ReplyRight`, the checker seeing every module of the program (ADR 0123 IF6).
+        Ty::Param(_) | Ty::Var(_) => env.reply_rights,
         Ty::List(inner)
         | Ty::Dense(_, inner)
         | Ty::Labeled(_, inner)
@@ -182,6 +188,24 @@ impl Checker<'_, '_, '_> {
         }
         let message = format!(
             "{callee} can perform an operation of `HttpServer`, which cannot run in {words}; answer after the block"
+        );
+        self.branch_server_error(span, message, construct);
+    }
+
+    /// U3033 for the `uses of` parameter `name`, called or passed on at `span` inside a branch,
+    /// in a program that imports a name of the server (ADR 0123 rule 5): its argument's effects
+    /// are its callers', unknown here, and a caller outside the branch may pass a lambda that
+    /// replies, so the branch could answer a reply right beside another. Failing closed, as
+    /// the most secure reading of the effect set of the branch (`spec/05 §3` rule 3).
+    pub(crate) fn branch_server_of_param(&mut self, name: &str, span: Span) {
+        let Some((words, construct)) = self.server_branch else {
+            return;
+        };
+        if self.pass != super::authority::Pass::Check || !self.env.server_imported {
+            return;
+        }
+        let message = format!(
+            "`{name}` runs the code its callers pass, which in a program that serves can perform an operation of `HttpServer`, and that cannot run in {words}; call it after the block"
         );
         self.branch_server_error(span, message, construct);
     }
@@ -309,7 +333,7 @@ pub(crate) fn start_rights(env: &Env<'_>, findings: &Findings, report: &mut Repo
             Code::U4003,
             site.keyword,
             format!(
-                "this `start` moves the reply rights its task holds, since {what}, and the host answers each one its task leaves unanswered, which accepts `internal` data; {why}, which that answer would reveal"
+                "this `start` may move reply rights to its task, since {what}, and the host answers each one its task leaves unanswered, which accepts `internal` data; {why}, which that answer would reveal"
             ),
         );
         diagnostic.repairs.push(Report::advice(

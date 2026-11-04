@@ -42,3 +42,8 @@ The S4 amendment (IF-S1) defines `L_srv` with `sfx(s)`, the statements that can 
 Slice S5 lands in two parts: the checks of this draft (#1007), then the operations in both engines (#1571) with the timing oracles that `spec/31 §6` requires before the serve threads meet a program. Between them a program can name `HttpServer` but not run it.
 
 **Decided in the implementation:** `una run` and `una build` of a program whose entry function uses `HttpServer` are a usage error, exit code 2, before anything runs (`spec/31 §1` rule 10); `una check` and `una test`, whose tests install handlers with `given`, work as for any capability.
+
+## G. Two readings added after review
+
+- **`uses of` parameters in branches (rule 5).** A function that calls its `uses of` parameter in a branch runs code its callers choose, which the branch cannot see: in a program that imports a name of the server, such a call, or the passing on of the parameter, is U3033, failing closed.
+- **Type parameters (IF6).** A capture of a type parameter's type counts as one that can hold a reply right only in a package that imports `HttpServer`, `Exchange` or `ReplyRight`, as for function values (C).

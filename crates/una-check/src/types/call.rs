@@ -440,6 +440,10 @@ impl<'a> Checker<'_, 'a, '_> {
                     // A parameter that an `of` clause names runs the effects of its argument
                     // (ADR 0062).
                     let own = self.labeled(&ty).top_label();
+                    // ADR 0123 rule 5: a `uses of` parameter called in a branch (U3033).
+                    if self.of_param(name).is_some() {
+                        self.branch_server_of_param(name, ident.span);
+                    }
                     let of = self.of_param(name).map(|index| {
                         self.run_of_param(name, index, ident.span, &Label::public(), &own)
                     });
