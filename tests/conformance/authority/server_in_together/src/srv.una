@@ -1,0 +1,17 @@
+-- test: an operation of `HttpServer` in a branch of `together` is U3033, since two branches could answer one reply right in an order that timing decides (spec/31 §1, ADR 0123 rule 5)
+-- spec: spec/31 §1
+-- expect: error U3033 at src/srv.una:15:16
+module srv
+
+import std.host (Exchange, HttpServer, Reply)
+
+price(n: internal Int) -> internal Int = n * 3
+
+answer(exchange: internal Exchange, n: internal Int) -> Unit
+  uses @server: HttpServer[reply]
+=
+  together
+    let total = price(n)
+    let sent = @server.reply(to: exchange.right, reply: Reply(status: 204, headers: [], body: ""))
+      if error use unit
+  unit

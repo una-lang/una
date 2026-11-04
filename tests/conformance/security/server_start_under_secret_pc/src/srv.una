@@ -1,0 +1,17 @@
+-- test: a `start` that moves a reply right under a `secret` program counter is U4003 at the `start`, since whether the host answers for its task would reveal the condition (spec/31 §1, ADR 0123 IF6)
+-- spec: spec/31 §1
+-- expect: error U4003 at src/srv.una:15:9
+module srv
+
+import std.host (Exchange)
+
+idle(exchange: internal Exchange) -> Unit = unit
+
+serve_all(exchanges: internal List[Exchange], key: secret Int) -> Unit
+=
+  tasks
+    for exchange in exchanges
+      if key > 0
+        start idle(exchange)
+      else
+        unit

@@ -338,3 +338,64 @@ fn executables_check_serve_grants_as_una_run_does() {
     );
     let _ = std::fs::remove_dir_all(&old);
 }
+
+/// A server of the language form (`spec/31 §1` rule 6), whose `main` uses `HttpServer`.
+const SERVER: &str = "module main\n\nimport std.host (Exchange, HttpServer, Reply)\n\nanswer(exchange: internal Exchange) -> Unit\n  uses @server: HttpServer[reply]\n=\n  @server.reply(to: exchange.right, reply: Reply(status: 204, headers: [], body: \"\"))\n    if error use unit\n\npub main() -> Unit\n  uses @server: HttpServer[next, reply, close]\n  diverges\n=\n  tasks\n    for ever\n      let next = attempt @server.next()\n      when next\n        is Ok(exchange) ->\n          start answer(exchange)\n        is Err(failure) -> unit\n    on stop\n      @server.close()\n";
+
+#[test]
+fn a_run_or_a_build_whose_main_uses_http_server_fails_closed_until_its_runtime_lands() {
+    // `spec/31 §1` rule 10: the program is checked in full, and neither engine runs it, before
+    // anything starts: no listener is bound, no executable is written.
+    let port = free_port();
+    let dir = package(
+        "pending",
+        &format!("    serve \"http://127.0.0.1:{port}\"\n"),
+    );
+    std::fs::write(dir.join("src/main.una"), SERVER).unwrap();
+    let checked = una(&dir, &["check"]);
+    assert!(checked.status.success(), "{}", stderr(&checked));
+    let wanted = "`main.main` uses `HttpServer`, whose operations do not run in this release yet";
+    let ran = una(&dir, &["run"]);
+    assert_eq!(ran.status.code(), Some(2), "{}", stderr(&ran));
+    assert!(stderr(&ran).contains(wanted), "{}", stderr(&ran));
+    assert_eq!(stdout(&ran), "");
+    let out = dir.join("server");
+    let built = una(&dir, &["build", "--out", out.to_str().unwrap()]);
+    assert_eq!(built.status.code(), Some(2), "{}", stderr(&built));
+    assert!(stderr(&built).contains(wanted), "{}", stderr(&built));
+    assert!(!out.exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_core_of_a_package_that_imports_no_server_name_names_nothing_of_the_server() {
+    // ADR 0123 rule 0 (`spec/31 §1`): Core IR declares `HttpServer` and its kinds only for a
+    // package that imports a name of the server, so the `una.core/1` document of every other
+    // package of edition 0.4 is what it was before them, and refers to no kind it lacks.
+    let dir = package("core", "");
+    let plain = una(&dir, &["core", "--json"]);
+    assert!(plain.status.success(), "{}", stderr(&plain));
+    let text = stdout(&plain);
+    for name in ["HttpServer", "Exchange", "ServeError", "reply_right"] {
+        assert!(
+            !text.contains(name),
+            "{name} in the core of a package that serves nothing"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    let dir = package(
+        "core-serving",
+        &format!("    serve \"http://127.0.0.1:{}\"\n", free_port()),
+    );
+    std::fs::write(dir.join("src/main.una"), SERVER).unwrap();
+    let serving = una(&dir, &["core", "--json"]);
+    assert!(serving.status.success(), "{}", stderr(&serving));
+    let text = stdout(&serving);
+    for name in ["HttpServer", "Exchange", "ServeError", "reply_right"] {
+        assert!(
+            text.contains(name),
+            "{name} missing from the core of a server"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

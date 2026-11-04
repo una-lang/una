@@ -490,6 +490,8 @@ impl<'a> Checker<'_, 'a, '_> {
         // A parameter that an `of` clause names is only called or passed on for another `of`
         // parameter (ADR 0062, `spec/05 §9` rule 9).
         if let (Some(index), Some(ty)) = (self.of_param(name), self.local(name)) {
+            // ADR 0123 rule 5: a `uses of` parameter passed on in a branch runs there (U3033).
+            self.branch_server_of_param(name, ident.span);
             match self.of_argument.take() {
                 Some(slot) => {
                     let own = self.labeled(&ty).top_label();

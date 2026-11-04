@@ -233,6 +233,12 @@ pub(crate) struct Checker<'c, 'a, 's> {
     /// Inside the expression of a `start`, which must not fail after its handling clauses
     /// (U3029, `spec/27 §7`).
     pub(crate) in_start: bool,
+    /// Inside a branch of `together`, the body of a `together for` or a branch of `first of`:
+    /// how a message names it, and the construct's words (ADR 0123 rule 5, U3033).
+    pub(crate) server_branch: Option<(&'static str, Span)>,
+    /// The `start`s whose expression is being checked, innermost last, with what their captures
+    /// can hold (ADR 0123 IF6).
+    pub(crate) start_captures: Vec<super::server::CaptureFrame>,
     /// The `tasks` statements whose blocks enclose the statement checked, innermost last: the
     /// task depth and lambda depth at each, where a `start` of it may stand (U2035).
     pub(crate) tasks_frames: Vec<(usize, usize)>,
@@ -544,6 +550,8 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             misplaced_exits: Vec::new(),
             in_on_stop: false,
             in_start: false,
+            server_branch: None,
+            start_captures: Vec::new(),
             tasks_frames: Vec::new(),
             in_ever: false,
             do_stops: false,

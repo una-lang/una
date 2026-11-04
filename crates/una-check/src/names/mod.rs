@@ -1050,6 +1050,15 @@ impl<'p, 'a> Checker<'p, 'a> {
                                 .extend(declared.variants.iter().copied());
                         }
                     }
+                    // ADR 0123 rule 1: an import of a sum kind of the server brings its variants,
+                    // as an import of a kind of the package does (ADR 0023 rule 2).
+                    Found::Standard if path == prelude::STD_HOST => {
+                        if let Some(variants) = prelude::server_variants(name)
+                            && let Some(table) = tables.get_mut(index)
+                        {
+                            table.imported_variants.extend(variants.iter().copied());
+                        }
+                    }
                     Found::Standard | Found::Unknown => {}
                 }
                 self.import_name(tables, index, ident, name);

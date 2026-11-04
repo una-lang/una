@@ -46,6 +46,7 @@ mod memory;
 mod priority;
 mod records;
 mod seq;
+mod server;
 mod set;
 mod shared;
 #[cfg(test)]
@@ -83,6 +84,11 @@ const PRELUDE_0_3: &str = include_str!("../std/prelude_0_3.una");
 /// methods resolve to (`spec/29 §17`, ADR 0120), then the functions of `F32` and the finite
 /// kinds (ADR 0120 rules 5 and 11), appended after those of edition 0.3.
 const PRELUDE_0_4: &str = include_str!("../std/prelude_0_4.una");
+
+/// The declarations of `HttpServer` that edition 0.4 adds to `std.host`, which is the prelude's
+/// host part (ADR 0123 rules 0 and 1, `spec/31 §1`), appended after those of [`PRELUDE_0_4`].
+/// Only an import from `std.host` brings their names into scope (`spec/10 §11` rule 10).
+const HOST_0_4: &str = include_str!("../std/host_0_4.una");
 
 /// The declaration of `HttpError` in `PRELUDE_0_2`, and the one edition 0.4 replaces it with,
 /// which adds `Interrupted` (ADR 0116 rule 12) and then `RateLimited` (ADR 0117 rule 8) last,
@@ -282,7 +288,7 @@ pub fn standard_source(edition: Edition) -> StandardSource {
     let (prelude, keywords) = if edition >= Edition::V0_4 {
         (
             format!(
-                "{}\n{}{PRELUDE_0_3}{PRELUDE_0_4}",
+                "{}\n{}{PRELUDE_0_3}{PRELUDE_0_4}{HOST_0_4}",
                 of_prelude(),
                 PRELUDE_0_2.replace(HTTP_ERROR_0_4.0, HTTP_ERROR_0_4.1)
             ),
@@ -568,6 +574,10 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
     // Every package, for the timing label of a handler's parameters (#1436): a parameter that
     // holds a function runs code its type does not bound.
     env.holds_function_kinds = crossing::function_kinds(&env);
+    // ADR 0123: the kinds that can hold a reply right (IF6), and the capabilities whose
+    // handlers can perform an operation of `HttpServer` (U3033).
+    env.holds_reply_kinds = server::reply_kinds(&env);
+    env.serving_capabilities = server::serving_capabilities(&env);
     let vias = via::plain_vias(&env, &report);
     env.plain_vias = vias.plain;
     env.blocked_vias = vias.blocked;
@@ -829,6 +839,8 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
         &mut report,
     ));
     timing_sites.sort_by_key(|(_, _, span, _)| (span.file, span.start, span.end));
+    // ADR 0123 IF6: the auto-answers of the reply rights each `start` moves.
+    server::start_rights(&env, &findings, &mut report);
     authority::budget(&env, &findings, package.settings, &mut report);
     // Edition 0.3 (ADR 0100): last, once every other error of the package is known.
     dead::judge(
@@ -1143,6 +1155,11 @@ pub(crate) struct Findings {
     pub(crate) withins: Vec<within::WithinSite>,
     /// The operations of the host's `Http` checked, for `L_lim` (ADR 0117 IF4).
     pub(crate) http_sites: Vec<timing::HttpSite>,
+    /// The operations of the host's `HttpServer` checked, the hand-off sites of `L_srv` (ADR
+    /// 0123, S4 amendment IF-S1).
+    pub(crate) server_sites: Vec<timing::HttpSite>,
+    /// The `start`s whose captures can hold a reply right or a function value (ADR 0123 IF6).
+    pub(crate) server_starts: Vec<server::StartSite>,
     /// The `tasks` statements checked, each with the seed of `κ` of the whole statement, for
     /// the residue label `L_res` (ADR 0116 P9).
     pub(crate) tasks_sites: Vec<timing::TasksSite>,
@@ -1740,10 +1757,13 @@ mod tests {
             let source = standard_source(*edition);
             let (prelude, keywords) = if *edition >= Edition::V0_4 {
                 // `HttpError` gains `Interrupted` and `RateLimited` (ADR 0116 rule 12, ADR 0117
-                // rule 8).
+                // rule 8), and `std.host` the server (ADR 0123 rule 1).
                 let http = PRELUDE_0_2.replace(HTTP_ERROR_0_4.0, HTTP_ERROR_0_4.1);
                 (
-                    format!("{}\n{http}{PRELUDE_0_3}{PRELUDE_0_4}", of_prelude()),
+                    format!(
+                        "{}\n{http}{PRELUDE_0_3}{PRELUDE_0_4}{HOST_0_4}",
+                        of_prelude()
+                    ),
                     KeywordSet::V0_4,
                 )
             } else if *edition >= Edition::V0_3 {
@@ -1781,7 +1801,7 @@ mod tests {
         // a keyword used as a name does.
         let v0_2 = format!("{}\n{PRELUDE_0_2}", of_prelude());
         let v0_3 = format!("{v0_2}{PRELUDE_0_3}");
-        let v0_4 = format!("{v0_3}{PRELUDE_0_4}");
+        let v0_4 = format!("{v0_3}{PRELUDE_0_4}{HOST_0_4}");
         let testing_0_4 = testing_source(Edition::V0_4);
         assert!(testing_0_4.contains("import std.time (Millisecond)"));
         for (name, text, keywords) in [

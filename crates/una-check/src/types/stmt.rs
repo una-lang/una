@@ -899,8 +899,12 @@ impl<'a> Checker<'_, 'a, '_> {
         let word = std::mem::replace(&mut self.task_word, "started task");
         let in_start = std::mem::replace(&mut self.in_start, true);
         self.task_depth += 1;
+        // ADR 0123 IF6: what the started expression captures.
+        self.start_capture_open();
         let ty = self.handled(&stmt.handled, None, Role::Plain, false);
         self.task_depth -= 1;
+        let within = stmt.handled.within.as_ref().map(|deadline| deadline.span);
+        self.start_capture_close(stmt.keyword, within);
         self.in_start = in_start;
         self.task_word = word;
         self.task_mark = saved_mark;
@@ -944,6 +948,9 @@ impl<'a> Checker<'_, 'a, '_> {
         let mark = self.locals.len();
         let saved = self.task_mark.replace(mark);
         let word = std::mem::replace(&mut self.task_word, "`together` task");
+        let branch = self
+            .server_branch
+            .replace(("a branch of `together`", stmt.keyword));
         self.task_depth += 1;
         let mut bound = Vec::new();
         for branch in &stmt.body {
@@ -964,6 +971,7 @@ impl<'a> Checker<'_, 'a, '_> {
         }
         self.task_mark = saved;
         self.task_word = word;
+        self.server_branch = branch;
         self.task_depth -= 1;
         self.locals.extend(bound);
     }
@@ -1015,6 +1023,9 @@ impl<'a> Checker<'_, 'a, '_> {
         let mark = self.locals.len();
         let saved_mark = self.task_mark.replace(mark);
         let word = std::mem::replace(&mut self.task_word, "branch of `first of`");
+        let branch = self
+            .server_branch
+            .replace(("a branch of `first of`", first.keyword));
         self.task_depth += 1;
         let mut joined = expected.cloned();
         let mut types: Vec<(Span, Ty)> = Vec::new();
@@ -1038,6 +1049,7 @@ impl<'a> Checker<'_, 'a, '_> {
         }
         self.task_mark = saved_mark;
         self.task_word = word;
+        self.server_branch = branch;
         self.task_depth -= 1;
         let tau = self.race_close(&open);
         let reached: Vec<(Span, Ty)> = types
@@ -1092,6 +1104,9 @@ impl<'a> Checker<'_, 'a, '_> {
         let mark = self.locals.len();
         let saved_mark = self.task_mark.replace(mark);
         let word = std::mem::replace(&mut self.task_word, "`together` task");
+        let branch = self
+            .server_branch
+            .replace(("the body of `together for`", together.span));
         self.task_depth += 1;
         self.bind(self.name(&together.var), var_ty);
         let element = self.block(
@@ -1104,6 +1119,7 @@ impl<'a> Checker<'_, 'a, '_> {
         self.task_depth -= 1;
         self.task_mark = saved_mark;
         self.task_word = word;
+        self.server_branch = branch;
         self.restore_pc(saved_pc);
         // How many elements there are depends on the label of what the tasks visit.
         let ty = Ty::List(Shared::new(element)).with_label(&label);
