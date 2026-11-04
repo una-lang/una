@@ -125,10 +125,14 @@ struct Conn {
     drained: u64,
     /// The close began: the connection does nothing more.
     closed: bool,
+    /// The close discarded the pending reply (`ConnShared::close`).
+    discarded: bool,
     /// The close gave back the peer's place.
     gave_peer: bool,
     /// The close gave back the slot of `connections`.
     gave_slot: bool,
+    /// The close woke the program's side.
+    notified: bool,
     /// The close forgot the readiness registration.
     forgot: bool,
     /// The close ran every step: nothing is held any more.
@@ -572,8 +576,10 @@ impl Thread {
             own_off: 0,
             drained: 0,
             closed: false,
+            discarded: false,
             gave_peer: false,
             gave_slot: false,
+            notified: false,
             forgot: false,
             finished: false,
         });
@@ -1188,13 +1194,15 @@ impl Core {
         if std::mem::take(&mut c.waiting) {
             c.grant.unqueue_waiting();
         }
-        #[cfg(feature = "test-hooks")]
-        #[allow(clippy::panic)]
-        if self.fault_in_close > 0 {
-            self.fault_in_close -= 1;
-            panic!("a close fails by a fault, for a test");
+        if !std::mem::replace(&mut c.discarded, true) {
+            #[cfg(feature = "test-hooks")]
+            #[allow(clippy::panic)]
+            if self.fault_in_close > 0 {
+                self.fault_in_close -= 1;
+                panic!("a close fails by a fault, for a test");
+            }
+            c.shared.close();
         }
-        c.shared.close();
         if !std::mem::replace(&mut c.gave_peer, true)
             && let Some(at) = c.grant.peers.close(&c.shared.peer, now)
         {
@@ -1204,7 +1212,9 @@ impl Core {
             c.grant.give_slot();
             self.shared.slot_freed(c.grant.index);
         }
-        self.shared.notify();
+        if !std::mem::replace(&mut c.notified, true) {
+            self.shared.notify();
+        }
         // Last, after everything is given back: a fault in the readiness leaves nothing held.
         if !std::mem::replace(&mut c.forgot, true) {
             self.critical += 1;

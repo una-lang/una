@@ -148,7 +148,7 @@ pub struct GrantState {
     pub(crate) registry: Registry,
     next_connection: AtomicU64,
     /// The run's record of faults and of its stop.
-    pub health: Arc<Health>,
+    pub(crate) health: Arc<Health>,
     /// Contained faults of this grant's connections, accepts and peers.
     faults: AtomicU64,
     /// The next admissions panic after the peer's place is taken, in tests.

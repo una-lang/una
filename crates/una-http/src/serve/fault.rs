@@ -25,6 +25,11 @@
 //! state held, and one inside a serve thread's timers or readiness registrations, which ends the
 //! thread. The filter is a hook chained, once, to the hook in place; it decides per thread, so
 //! other threads' panics print as before.
+//!
+//! **Precondition of the install.** Chaining takes the hook in place and then sets the new one,
+//! which is not atomic: this install and the runtime's (`una-rt`) must not run at once on two
+//! threads, or one of the hooks is lost. Today each runs on its own start path; S5 (#1571)
+//! installs both from one place before any serve thread or worker starts.
 
 use std::cell::Cell;
 use std::fmt;
@@ -93,7 +98,7 @@ pub struct Health {
 impl Health {
     /// Records `failure`, unless one is recorded: the first stays. Takes no lock, so it may run
     /// inside a lock's guard.
-    pub fn fail(&self, failure: Failure) {
+    pub(crate) fn fail(&self, failure: Failure) {
         let _ = self.failure.set(failure);
     }
 
@@ -201,6 +206,25 @@ pub(crate) fn contained<R>(f: impl FnOnce() -> R) -> std::thread::Result<R> {
     catch_unwind(AssertUnwindSafe(f))
 }
 
+/// Runs `f`, a step taken with a lock of a grant's shared state held that changes nothing the
+/// lock protects (a socket's write from a pending reply), catching its panic: the caller drops
+/// its guard and raises the panic again outside the lock, so the panic is contained per
+/// connection and does not stop the run. Inside it a panic is quiet, as in a contained step.
+pub(crate) fn consistent<R>(f: impl FnOnce() -> R) -> std::thread::Result<R> {
+    let _suspended = Suspend(LOUD.with(|depth| depth.replace(0)));
+    catch_unwind(AssertUnwindSafe(f))
+}
+
+/// Restores the depth of [`Loud`] places that [`consistent`] suspended.
+struct Suspend(u32);
+
+impl Drop for Suspend {
+    fn drop(&mut self) {
+        let depth = self.0;
+        LOUD.with(|cell| cell.set(depth));
+    }
+}
+
 /// Runs a callback of the program's side: a panic is caught, prints through the panic hook, and
 /// fails the run with [`Failure::Callback`]. `true` when it returned.
 pub(crate) fn callback(health: &Health, f: impl FnOnce()) -> bool {
@@ -213,7 +237,7 @@ pub(crate) fn callback(health: &Health, f: impl FnOnce()) -> bool {
 }
 
 /// The guard of a lock of a grant's shared state ([`hold`]).
-pub struct Held<'a, T> {
+pub(crate) struct Held<'a, T> {
     guard: MutexGuard<'a, T>,
     health: &'a Health,
     /// The thread was unwinding already when it took the lock (a destructor that runs during
@@ -225,7 +249,7 @@ pub struct Held<'a, T> {
 /// Locks `mutex`, part of a grant's shared state. A panic that unwinds while the guard lives
 /// fails the run with [`Failure::LockHeld`]; a mutex that a panic already poisoned does too, and
 /// is then used only to give back what is held.
-pub fn hold<'a, T>(health: &'a Health, mutex: &'a Mutex<T>) -> Held<'a, T> {
+pub(crate) fn hold<'a, T>(health: &'a Health, mutex: &'a Mutex<T>) -> Held<'a, T> {
     let loud = Loud::enter();
     let guard = match mutex.lock() {
         Ok(guard) => guard,

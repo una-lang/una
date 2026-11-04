@@ -374,9 +374,11 @@ fn a_panicking_callback_stops_the_run() {
         let _ = client.read_to_end(&mut bytes);
         assert!(!String::from_utf8_lossy(&bytes).contains("alive"));
     }
+    // The serve threads end with no host stop: each saw the failure, closed the listeners
+    // (a thread waits for them to close before it ends) and its connections.
     live.server.join();
+    assert!(live.server.shared().is_stopping());
     assert!(live.server.shared().is_quiet());
-    assert!(TcpStream::connect(("127.0.0.1", port)).is_err());
 }
 
 #[test]

@@ -31,7 +31,7 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
-use super::fault::{Health, hold};
+use super::fault::{self, Health, hold};
 use super::grant::{GrantState, sub};
 use super::peer::{Peer, PeerKey};
 
@@ -191,7 +191,19 @@ impl ConnShared {
                 return Ok(Step::Empty);
             };
             let rest = front.get(offset..).unwrap_or_default();
-            let written = write(rest)?.min(rest.len());
+            // The socket's write runs with the outbox held but changes nothing in it: a panic
+            // there leaves the outbox as it was, so it is caught here, carried out of the lock
+            // and raised again after it, and only this connection's step fails (contained per
+            // connection, `spec/31 §6` rule 13), not the run. With TLS the write parses what
+            // the peer sent, so a stop here would be a peer's lever on the whole server.
+            let outcome = match fault::consistent(|| write(rest)) {
+                Ok(outcome) => outcome,
+                Err(payload) => {
+                    drop(outbox);
+                    std::panic::resume_unwind(payload);
+                }
+            };
+            let written = outcome?.min(rest.len());
             let length = front.len();
             if offset + written >= length {
                 outbox.segments.pop_front();

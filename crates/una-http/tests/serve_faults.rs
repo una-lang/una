@@ -177,7 +177,7 @@ fn an_open_exchange_is_answered_503_when_the_run_stops_and_its_reply_is_discarde
     let mut exchange = sim.deliver().unwrap();
     // A failure recorded where no stop could run (under a lock) is enforced at the next point
     // that holds none: here the reply.
-    sim.shared.health.fail(Failure::LockHeld);
+    sim.shared.fail_for_test(Failure::LockHeld);
     assert_eq!(
         exchange.reply(&ok("late")).unwrap(),
         una_http::serve::run::Sent::Discarded
@@ -198,7 +198,7 @@ fn a_failure_recorded_without_a_stop_is_enforced_by_next() {
     let mut sim = Sim::new(&[GRANT], 1);
     assert!(sim.connect(1, 0, &addr(1), Reads::Eager));
     sim.send(1, &get("/queued"));
-    sim.shared.health.fail(Failure::LockHeld);
+    sim.shared.fail_for_test(Failure::LockHeld);
     assert!(!sim.shared.is_stopping());
     assert!(matches!(
         sim.shared.next(sim.now()),
@@ -773,4 +773,96 @@ fn a_fault_after_a_refusal_at_accept_gives_the_slot_back_once() {
     assert_eq!(sim.refused.last().map(|r| r.1), Some(AcceptRefusal::Fault));
     assert_eq!(sim.shared.faults(), 1);
     assert_eq!(sim.shared.grants[0].counters().connections, 1);
+}
+
+#[test]
+fn a_panic_inside_a_sockets_write_closes_only_that_connection() {
+    // The reply is written from the pending reply with its lock held; the socket's write
+    // changes nothing there, so its panic is contained to the connection and the run goes on.
+    let mut sim = Sim::new(&[GRANT], 1);
+    assert!(sim.connect(1, 0, &addr(1), Reads::Eager));
+    assert!(sim.connect(2, 0, &addr(2), Reads::Eager));
+    sim.send(1, &get("/a"));
+    let mut exchange = sim.deliver().unwrap();
+    sim.panic_on_next_write(1);
+    exchange.reply(&ok("lost")).unwrap();
+    sim.flush();
+    assert_eq!(sim.shared.failure(), None);
+    assert!(sim.closed(1));
+    assert_eq!(sim.shared.faults(), 1);
+    assert!(!String::from_utf8_lossy(&sim.received(1)).contains("lost"));
+    // The other connection is served.
+    sim.send(2, &get("/b"));
+    let mut exchange = sim.deliver().unwrap();
+    exchange.reply(&ok("served")).unwrap();
+    sim.flush();
+    assert!(String::from_utf8_lossy(&sim.received(2)).ends_with("served"));
+    sim.close_peer(2);
+    assert!(
+        sim.shared.is_quiet(),
+        "{:?}",
+        sim.shared.grants[0].counters()
+    );
+}
+
+#[test]
+fn a_close_that_faults_at_the_same_point_on_every_attempt_still_gives_everything_back() {
+    // The seam fires on every attempt that reaches it; each step of the close runs at most
+    // once, so the resumed close passes it and gives back the slot and the peer's place.
+    let mut sim = Sim::new(&[&format!("{GRANT};peer=1")], 1);
+    assert!(sim.connect(1, 0, "192.0.2.9:4001", Reads::Eager));
+    sim.fault_in_close(0, 100);
+    sim.close_peer(1);
+    assert!(sim.closed(1));
+    assert_eq!(sim.shared.faults(), 1);
+    assert_eq!(sim.open(), 0);
+    assert!(
+        sim.shared.is_quiet(),
+        "{:?}",
+        sim.shared.grants[0].counters()
+    );
+    assert!(sim.shared.grants[0].peers.is_empty());
+    assert_eq!(sim.shared.failure(), None);
+}
+
+#[test]
+fn a_failure_on_the_programs_side_wakes_every_serve_thread() {
+    let mut sim = Sim::new(&[GRANT], 3);
+    assert!(sim.connect(1, 0, &addr(1), Reads::Eager));
+    sim.send(1, &get("/a"));
+    sim.shared.fail_next_deliveries(1);
+    let before = sim.wakes.load(Ordering::SeqCst);
+    let now = sim.now();
+    let shared = Arc::clone(&sim.shared);
+    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| shared.next(now)));
+    assert!(unwound.is_err());
+    assert_eq!(sim.shared.failure(), Some(Failure::LockHeld));
+    // One wake per serve thread, so their loops enforce the stop without waiting for an event.
+    assert_eq!(sim.wakes.load(Ordering::SeqCst), before + 3);
+    assert!(matches!(
+        sim.shared.next(sim.now()),
+        Next::Failed(Failure::LockHeld)
+    ));
+    sim.flush();
+    assert!(all_closed_and_quiet(&sim, &[1]));
+}
+
+#[test]
+fn the_faults_of_two_grants_add_up_to_the_run_wide_limit() {
+    let mut sim = Sim::new(&[GRANT, "serve:http://127.0.0.1:8081"], 1);
+    for k in 0..FAULT_LIMIT {
+        let grant = (k % 2) as usize;
+        assert!(sim.connect(k, grant, &addr(k as u32), Reads::Eager));
+        sim.fault_in_step(0);
+        sim.send(k, &get("/a"));
+        assert_eq!(sim.shared.failure(), None);
+    }
+    assert_eq!(sim.shared.grants[0].faults(), FAULT_LIMIT / 2);
+    assert_eq!(sim.shared.grants[1].faults(), FAULT_LIMIT / 2);
+    let last = FAULT_LIMIT;
+    assert!(sim.connect(last, 1, &addr(last as u32), Reads::Eager));
+    sim.fault_in_step(0);
+    sim.send(last, &get("/a"));
+    assert_eq!(sim.shared.failure(), Some(Failure::TooManyFaults));
+    assert!(sim.shared.is_quiet());
 }

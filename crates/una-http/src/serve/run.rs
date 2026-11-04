@@ -284,6 +284,24 @@ fn take_one(counter: &AtomicUsize) -> bool {
         .is_ok()
 }
 
+/// Wakes every serve thread when the program's side unwinds out of the engine after a panic
+/// that failed the run (one with a lock of a grant held, in `next` or in a reply): the serve
+/// threads enforce the stop at the top of their loops, so a stop recorded on the program's side
+/// is not left waiting for their next event. Waking is one byte to each wake pair and cannot
+/// panic, so it is safe during the unwinding; the hard stop itself, which runs the callback, is
+/// left to the threads.
+struct WakeOnFault<'a>(&'a Shared);
+
+impl Drop for WakeOnFault<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() && self.0.health.is_failed() {
+            for port in &self.0.ports {
+                port.waker.wake();
+            }
+        }
+    }
+}
+
 /// The value of `Shared::turn` while an ended thread hands the turn on, so that no other
 /// thread takes it back from the ended one at the same time.
 const HANDING: usize = usize::MAX - 1;
@@ -304,7 +322,7 @@ pub struct Shared {
     /// The serve thread that holds the turn to accept, or `usize::MAX` before the first.
     turn: AtomicUsize,
     /// The run's record of contained faults and of the failure that stops it.
-    pub health: Arc<Health>,
+    pub(crate) health: Arc<Health>,
     /// Serve threads a test asked to panic (`Shared::kill_for_test`).
     #[cfg(feature = "test-hooks")]
     kill: Vec<AtomicBool>,
@@ -318,6 +336,8 @@ pub struct Shared {
     hand_off_faults: AtomicUsize,
     #[cfg(feature = "test-hooks")]
     queue_faults: AtomicUsize,
+    #[cfg(feature = "test-hooks")]
+    delivery_faults: AtomicUsize,
     /// Set at a host stop.
     pub stopping: AtomicBool,
     /// Set at the hard stop.
@@ -398,6 +418,8 @@ impl Shared {
             hand_off_faults: AtomicUsize::new(0),
             #[cfg(feature = "test-hooks")]
             queue_faults: AtomicUsize::new(0),
+            #[cfg(feature = "test-hooks")]
+            delivery_faults: AtomicUsize::new(0),
             stopping: AtomicBool::new(false),
             hard: AtomicBool::new(false),
             clock,
@@ -431,6 +453,7 @@ impl Shared {
             && !self.notify_broken.load(Ordering::SeqCst)
             && !fault::callback(&self.health, || f())
         {
+            // Calls already under way on other serve threads finish: at most one per thread.
             self.notify_broken.store(true, Ordering::SeqCst);
             self.enforce();
         }
@@ -470,7 +493,7 @@ impl Shared {
     /// When a failure is recorded and not yet enforced, enforces it: the hard stop, once. Called
     /// at points that hold no lock of a grant, since the hard stop runs the callback and sends
     /// to every serve thread.
-    pub fn enforce(&self) {
+    pub(crate) fn enforce(&self) {
         if self.health.take_enforcement() {
             self.hard_stop();
         }
@@ -840,6 +863,19 @@ impl Shared {
         self.queue_faults.store(n, Ordering::SeqCst);
     }
 
+    /// The next `n` deliveries panic with their queue's lock held, on the program's side, in
+    /// tests.
+    #[cfg(feature = "test-hooks")]
+    pub fn fail_next_deliveries(&self, n: usize) {
+        self.delivery_faults.store(n, Ordering::SeqCst);
+    }
+
+    /// Records `failure` as a fault of the engine would, in tests.
+    #[cfg(feature = "test-hooks")]
+    pub fn fail_for_test(&self, failure: Failure) {
+        self.health.fail(failure);
+    }
+
     /// The next `n` refusals at accept panic after they gave the slot back, in tests.
     #[cfg(feature = "test-hooks")]
     pub fn fail_next_refusals(&self, n: usize) {
@@ -906,6 +942,7 @@ impl Shared {
             self.enforce();
             return Next::Failed(failure);
         }
+        let _wake = WakeOnFault(self);
         let total = self.queues.len();
         if total == 0 {
             return Next::Empty;
@@ -926,6 +963,11 @@ impl Shared {
                 continue;
             };
             let mut items = hold(&self.health, &queue.items);
+            #[cfg(feature = "test-hooks")]
+            #[allow(clippy::panic)]
+            if take_one(&self.delivery_faults) {
+                panic!("a delivery fails by a fault with its queue's lock held, for a test");
+            }
             loop {
                 let Some(front) = items.queue.front() else {
                     queue.ready.store(false, Ordering::Release);
@@ -1098,6 +1140,7 @@ impl Exchange {
     }
 
     fn send(&self, bytes: Vec<u8>, close: bool) -> Sent {
+        let _wake = WakeOnFault(&self.shared);
         // A run stopped by a fault is never served from again: the hard stop answers the
         // exchange.
         if self.shared.health.is_failed() {

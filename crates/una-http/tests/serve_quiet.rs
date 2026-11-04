@@ -59,6 +59,27 @@ fn contained_faults_stay_off_the_panic_hook_and_the_others_reach_it() {
     assert_eq!(sim.shared.faults(), 19);
     assert_eq!(printed(), 0, "a contained fault printed");
 
+    // A panic inside a socket's write, under the pending reply's lock, is contained and quiet.
+    assert!(sim.connect(30, 0, &addr(30), Reads::Eager));
+    sim.send(30, &get("/w"));
+    let mut exchange = sim.deliver().unwrap();
+    sim.panic_on_next_write(30);
+    exchange
+        .reply(&una_http::reply::Reply {
+            status: 200,
+            headers: Vec::new(),
+            body: "w".to_owned(),
+        })
+        .unwrap();
+    sim.flush();
+    assert_eq!(sim.shared.failure(), None);
+    assert_eq!(sim.shared.faults(), 20);
+    assert_eq!(
+        printed(),
+        0,
+        "a contained fault in a socket's write printed"
+    );
+
     // A panic inside the thread's wheel is not contained: it prints, once.
     let mut wheel = Sim::new(&[GRANT], 1);
     assert!(wheel.connect(1, 0, &addr(1), Reads::Eager));
