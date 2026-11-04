@@ -1803,6 +1803,31 @@ fn a_committed_link_on_the_way_to_the_cache_turns_it_off_1540() {
     let _ = std::fs::remove_dir_all(package.join(".una"));
     assert_eq!(report(), solved);
     assert_eq!(report(), cached);
+    // A single file named by a relative path: its package root is the empty path, so the
+    // cache is `.una/cache/proofs` of the working directory, and the same guard applies there.
+    let single = scratch.join("single");
+    std::fs::create_dir_all(&single).unwrap();
+    std::fs::copy(package.join("src/div0.una"), single.join("div0.una")).unwrap();
+    let alone = || {
+        let output = Command::new(env!("CARGO_BIN_EXE_una"))
+            .env("HOME", scratch.join("home"))
+            .env_remove("UNA_PROOF_KEY")
+            .current_dir(&single)
+            .args(["--json", "report", "div0.una"])
+            .output()
+            .unwrap();
+        let document: Value = serde_json::from_slice(&output.stdout).unwrap();
+        document["obligations"].clone()
+    };
+    assert_eq!(alone(), solved);
+    assert_eq!(alone(), cached);
+    assert!(single.join(".una/cache/proofs").is_dir());
+    std::fs::rename(single.join(".una"), scratch.join("single-una")).unwrap();
+    let moved = snapshot(&scratch.join("single-una"));
+    std::os::unix::fs::symlink(scratch.join("single-una"), single.join(".una")).unwrap();
+    assert_eq!(alone(), solved);
+    assert_eq!(alone(), solved);
+    assert_eq!(snapshot(&scratch.join("single-una")), moved);
     let _ = std::fs::remove_dir_all(&scratch);
 }
 

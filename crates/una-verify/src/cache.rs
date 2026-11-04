@@ -589,6 +589,23 @@ mod tests {
         std::fs::write(package.join(".una"), "not a directory").unwrap();
         assert!(build().is_none());
         std::fs::remove_file(package.join(".una")).unwrap();
+        // A `.una` without search permission, so that `.una/cache` cannot be examined
+        // (`EACCES`): off, failing closed. A superuser examines it anyway, so the case is
+        // skipped when the stat succeeds.
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::create_dir_all(&dir).unwrap();
+            let una = package.join(".una");
+            std::fs::set_permissions(&una, std::fs::Permissions::from_mode(0o000)).unwrap();
+            let denied = std::fs::symlink_metadata(una.join("cache")).is_err();
+            let built = build();
+            std::fs::set_permissions(&una, std::fs::Permissions::from_mode(0o755)).unwrap();
+            if denied {
+                assert!(built.is_none());
+            }
+            assert!(build().is_some());
+            std::fs::remove_dir_all(&una).unwrap();
+        }
         // A cache directory that is not below the root is never used.
         assert!(
             ProofCache::new(
