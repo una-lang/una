@@ -123,7 +123,7 @@ impl RunShared {
 
 /// The scope of a `tasks` statement in progress (`spec/27 §7`): the prefix of its tasks' paths,
 /// its bound, how many tasks it started, how many still run, and the cancellation entry its
-/// tasks carry, which it lowers to 0 to cancel them.
+/// tasks carry, which it lowers to 0 to cancel them, or to `interrupt::CUT` on a deadline's cut.
 pub(crate) struct StartScope {
     /// `s<c>` in the root task, `p.s<c>` in the task `p`.
     pub(crate) path: String,
@@ -187,9 +187,15 @@ pub fn tasks_end(cancel: i64) {
 ///   deadline as its own, an instant its helper's exchange never passes, and ends at it, at its
 ///   next I/O step, with its own `TimedOut`. Each task waits for its helper, so nothing of the
 ///   statement's work outlives it, and the argument that a deadline's cut leaves no residue
-///   holds. The count still falls to 0, so each task stops at its next check point after. Only
-///   a job that has begun on its helper is waited for: a task whose job is still queued is
-///   woken at once, and its abandon keeps the job from running at all.
+///   holds. The count falls to [`crate::interrupt::CUT`], below the tasks' entry, so each task
+///   stops at its next check point after. Only a job that has begun on its helper is waited
+///   for: a task whose job is still queued is woken at once, and its abandon keeps the job from
+///   running at all; its request fails with `TimedOut`, never sent.
+/// - **On the reactor** (#1266): a request parked there runs on its task, as a begun job does,
+///   so the cut wakes none of its waits, and its own time-out, that same deadline, ends it with
+///   `TimedOut`. So a cut request's outcome is `TimedOut` on every path, never `interrupted`,
+///   and never depends on which path ran it, nor on whether its task or the statement saw the
+///   deadline first.
 /// - **Which deadlines.** `deadline::cut` reads the `within`s that cover the block, never the
 ///   deadline of a `for ever within` iteration, which cancels no task: a `tasks` statement in
 ///   such a body is counted by `L_res` whatever ends it.
@@ -197,10 +203,15 @@ pub fn tasks_end(cancel: i64) {
 /// O(1), and O(k log w) to wake the `k` waits of the scope's count among the `w` of the process
 /// ([`crate::interrupt::lowered`]).
 pub(crate) fn cancel_tasks(scope: &StartScope, by_deadline: bool) {
-    scope.cancel.store(0, Ordering::SeqCst);
     if by_deadline {
+        // The cut's own value, so a wait that reads the count ends with its `TimedOut`, on the
+        // reactor as on a helper (#1266); one that a cancellation reached first stays at 0.
+        scope
+            .cancel
+            .fetch_min(crate::interrupt::CUT, Ordering::SeqCst);
         crate::interrupt::lowered_unstarted(&scope.cancel);
     } else {
+        scope.cancel.store(0, Ordering::SeqCst);
         crate::interrupt::lowered(&scope.cancel);
     }
 }
@@ -602,6 +613,33 @@ mod tests {
             Some(7)
         );
         drop(never);
+    }
+
+    #[test]
+    fn a_deadline_s_cut_is_told_from_every_other_cancellation() {
+        // #1266, `spec/27 §2` rule 4: the cut of a `tasks` statement by a deadline lowers its
+        // count to `CUT`, which cancels its tasks, and which a wait reads as a time-out, never as
+        // an interruption, on every path; a failure of the block lowers it to 0, which
+        // interrupts. A cut that comes after a failure leaves the failure's 0.
+        let entries = |scope: &StartScope| vec![(Arc::clone(&scope.cancel), ENTRY)];
+        let cut = StartScope::new("s1".to_owned(), 1);
+        cancel_tasks(&cut, true);
+        assert!(crate::interrupt::cancelled(&entries(&cut)));
+        assert!(crate::interrupt::cut_only(&entries(&cut)));
+        assert!(!crate::interrupt::interrupting(&entries(&cut)));
+        let failed = StartScope::new("s2".to_owned(), 1);
+        cancel_tasks(&failed, false);
+        assert!(crate::interrupt::interrupting(&entries(&failed)));
+        assert!(!crate::interrupt::cut_only(&entries(&failed)));
+        cancel_tasks(&failed, true);
+        assert!(crate::interrupt::interrupting(&entries(&failed)));
+        // A task under both, a cut statement inside a race that decided: the race interrupts.
+        let both: Vec<_> = entries(&cut).into_iter().chain(entries(&failed)).collect();
+        assert!(crate::interrupt::interrupting(&both));
+        // A statement still running cancels nothing.
+        let running = StartScope::new("s3".to_owned(), 1);
+        assert!(!crate::interrupt::cancelled(&entries(&running)));
+        assert!(!crate::interrupt::cut_only(&entries(&running)));
     }
 
     #[test]

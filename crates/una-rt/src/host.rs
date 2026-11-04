@@ -501,6 +501,10 @@ pub fn limit_acquire(_site: i64, instance: i64) -> i64 {
     let abandoned: crate::interrupt::Wake = Arc::new(move || abandon.abandon());
     let acquired = match sched::blocking_interruptible(Pool::Io, &entries, Some(abandoned), job) {
         Some(acquired) => acquired,
+        // A deadline's cut of the task's `tasks` statement woke a call still queued for a
+        // helper: it fails with `RateLimited`, as its deadline makes a call that waits fail,
+        // never `interrupted` (`spec/27 §2` rule 4, #1266).
+        None if crate::interrupt::cut_only(&entries) => Err(Error::TimedOut),
         None => {
             with_state(|state| state.interrupted = true);
             return INTERRUPTED;
@@ -841,7 +845,9 @@ fn http(
         // parks the task on the reactor, so no thread waits for the server (ADR 0117 rule 3,
         // slice S7); resolution and connection go to a helper of the I/O pool. A cancellation
         // that comes while it waits ends it `interrupted`, its connection closed, and the task
-        // stops (rule 4). Only when no grant carries limits: a wait at a limit parks its thread
+        // stops (rule 4); a deadline's cut of its `tasks` statement does not, and the request
+        // ends at that deadline, its own, with `TimedOut`, as on a helper (#1266). Only when no
+        // grant carries limits: a wait at a limit parks its thread
         // (rule 8), which must never be a worker, so a run with limits sends on a helper.
         let entries = crate::runtime::interruptible_entries();
         let parked = crate::reactor::Parked::new(reactor, stop, &entries);
@@ -910,6 +916,11 @@ fn http(
         let abandoned: crate::interrupt::Wake = Arc::new(move || abandon.abandon());
         match sched::blocking_interruptible(Pool::Io, &entries, Some(abandoned), job) {
             Some(sent) => sent,
+            // A deadline's cut of the task's `tasks` statement woke a request still queued for
+            // a helper, which is never sent: it fails with `TimedOut`, the outcome its deadline
+            // gives a request that runs, on a helper or on the reactor, never `interrupted`
+            // (`spec/27 §2` rule 4, #1266). The cut came once that deadline had passed.
+            None if crate::interrupt::cut_only(&entries) => Err(Error::TimedOut),
             None => {
                 with_state(|state| state.interrupted = true);
                 return INTERRUPTED;

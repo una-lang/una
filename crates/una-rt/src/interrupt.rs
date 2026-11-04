@@ -127,6 +127,31 @@ pub(crate) fn cancelled(entries: &[Cancel]) -> bool {
         .any(|(count, entry)| count.load(Ordering::SeqCst) < *entry)
 }
 
+/// The value a deadline's cut lowers the count of a `tasks` statement to (`spec/27 §2` rule 4,
+/// #1266): below every entry registered on it, as 0 is, so it cancels the statement's tasks,
+/// and taken by no other lowering of a count whose entries interrupt a wait (those of races
+/// and of `tasks` statements, `tasks::RACE_ENTRY`), which drop to 0. So a wait that reads the
+/// count tells a cut from another cancellation: a cut makes a request fail with its own
+/// `TimedOut`, on every path, never `interrupted`.
+pub(crate) const CUT: usize = 1;
+
+/// Whether one of `entries` is cancelled by something other than a deadline's cut: its count
+/// is below the task's entry, and not [`CUT`]. Such a cancellation interrupts a waiting
+/// operation, which ends `interrupted` (ADR 0117 rule 4). O(d) for the d entries.
+pub(crate) fn interrupting(entries: &[Cancel]) -> bool {
+    entries.iter().any(|(count, entry)| {
+        let now = count.load(Ordering::SeqCst);
+        now < *entry && now != CUT
+    })
+}
+
+/// Whether `entries` are cancelled, and only by deadlines' cuts ([`CUT`]): an operation that
+/// such a cancellation ended fails with its time-out failure, as its own deadline, the same
+/// one, would have made it (`spec/27 §2` rule 4, §5 rule 5, #1266). O(d).
+pub(crate) fn cut_only(entries: &[Cancel]) -> bool {
+    cancelled(entries) && !interrupting(entries)
+}
+
 /// Wakes every wait registered on `count` whose entry it now cancels, after the count was
 /// lowered. The waits are woken outside the lock.
 pub(crate) fn lowered(count: &AtomicUsize) {
