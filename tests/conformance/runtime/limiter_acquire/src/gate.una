@@ -3,30 +3,33 @@
 -- grant: console
 -- expect: run-output "paced: 3"
 -- expect: run-output "limited"
+-- `Limited` is `internal` (spec/27 §10 rule 4, S-46): the counts and the text are released to the
+-- console through the policy `shown` of the trusted module `release`, visible in the report.
 module gate
 
+import release (shown)
 import std.limit (Limit, Limited, limiter)
 import std.time (millisecond, minute)
 
 --- One for a token taken, zero for a call that found none.
-taken(got: Result[Unit, Limited]) -> Int
+taken(got: internal Result[Unit, internal Limited]) -> internal Int
 =
   when got
     is Ok(took) -> 1
     is Err(failure) -> 0
 
 --- How many of `n` calls took a token: all of them, the third after a refill.
-paced(n: Int) -> Int
+paced(n: Int) -> internal Int
   uses @gate: Limit[acquire]
 =
-  let edit done = 0
+  let edit done: internal Int = 0
   for i in 1..n
     let got = attempt @gate.acquire()
     done = done + taken(got)
   done
 
 --- The second call of a bucket of one token that nothing may wait for.
-busy() -> Text
+busy() -> internal Text
   uses @gate: Limit[acquire]
 =
   let first = attempt @gate.acquire()
@@ -39,6 +42,6 @@ pub main() -> Unit
   uses @console: Console[print]
 =
   let count = paced(3) with @gate = limiter(at_most: 2, per: 20 * millisecond, waiting: 4)
-  @console.print("paced: {count}")
+  @console.print(shown("paced: {count}"))
   let state = busy() with @gate = limiter(at_most: 1, per: minute, waiting: 0)
-  @console.print(state)
+  @console.print(shown(state))

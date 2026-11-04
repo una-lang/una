@@ -1595,6 +1595,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 binding: cap_name.to_owned(),
                 op: op_name.to_owned(),
                 label: gives.clone(),
+                limited: false,
             });
         }
         let resolved = self.op_site(cap, op);
@@ -1760,6 +1761,26 @@ impl<'a> Checker<'_, 'a, '_> {
         // binding gives it, as the value does below; the decision on the outcome then runs
         // under the label (`spec/07 §3` rule 4).
         decided = decided.join(&gives);
+        // S-46 (#1563), `spec/27 §10` rule 4 (ADR 0117 IF5): `Limited` is labeled `internal`.
+        // Whether `acquire` of `std.limit` finds a token depends on the timing of all the code
+        // that shares the instance, hidden code included, so whether it fails, and how, is
+        // `internal` for the program, whatever handler serves it. O(1) per operation site.
+        if self.is_limit(&capability) {
+            let limited = Label {
+                level: una_syntax::ast::Level::Internal,
+                ..Label::public()
+            };
+            decided = decided.join(&limited);
+            if self.pass == super::authority::Pass::Check {
+                self.note_answer(super::flow::Answer {
+                    span,
+                    binding: cap_name.to_owned(),
+                    op: op_name.to_owned(),
+                    label: limited,
+                    limited: true,
+                });
+            }
+        }
         if let Some(fails) = &def.fails {
             // Whether a host operation fails, and how, is labeled like the arguments that
             // decide it, as a prelude function's failure is (`spec/07 §7`): its
@@ -1809,6 +1830,8 @@ impl<'a> Checker<'_, 'a, '_> {
         result: &Ty,
     ) {
         let mut seed = decided.clone();
+        // Since S-46 (#1563) `decided` already holds `internal` for `acquire`; this join stays
+        // as the trace's fail-closed backstop, independent of the program's label rule.
         let limit = self
             .env
             .limiter
@@ -1828,6 +1851,18 @@ impl<'a> Checker<'_, 'a, '_> {
             parts.push(fails.raise_deep(decided));
         }
         self.records.outcomes.entry(span).or_default().extend(parts);
+    }
+
+    /// Whether `capability` is `Limit` of `std.limit` (`spec/27 §10`): the module that declares
+    /// it also holds the handler `limiter`, which is in scope only when a package of edition
+    /// 0.4 imports the module.
+    fn is_limit(&self, capability: &super::env::CapDef<'_>) -> bool {
+        capability.name == "Limit"
+            && self
+                .env
+                .limiter
+                .and_then(|id| self.env.handlers.get(id))
+                .is_some_and(|limiter| limiter.module == capability.module)
     }
 
     /// The capability bound to `@cap` and the position of its operation `op`.

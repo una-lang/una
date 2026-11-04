@@ -55,7 +55,9 @@ const PACED: &str = r#"module paced
 import std.limit (Limit, limiter)
 import std.time (second)
 
---- Takes a token and prints when it got it, on the run's clock.
+--- Takes a token and prints when the call returned, on the run's clock. Whether it failed is
+--- `internal`, as `Limited` is (S-46), so it is not printed: a call that failed would return at
+--- once, and the readings show that each waited for its token.
 tick(n: Int) -> Unit
   uses @gate: Limit[acquire]
   uses @clock: Clock[now]
@@ -63,9 +65,7 @@ tick(n: Int) -> Unit
 =
   let got = attempt @gate.acquire()
   let now = @clock.now()
-  when got
-    is Ok(took) -> @console.print("{n} at {now}")
-    is Err(failure) -> @console.print("{n} limited")
+  @console.print("{n} at {now}")
 
 --- Five calls at two per ten seconds: at 0, 0, 5, 10 and 15 seconds of the run's clock.
 run() -> Unit
@@ -147,6 +147,7 @@ fn a_limiter_under_virtual_time_gives_the_same_readings_in_both_engines() {
 
 /// The interpreter alone: a `given` line installs `limiter` for an example, on the test's
 /// virtual clock, where a bucket of one token that nothing may wait for serves one of two calls.
+/// The count is `internal`, as `Limited` is (S-46); an `expect` line is not checked for labels.
 #[test]
 fn a_given_limiter_serves_an_example() {
     let program = r#"module gated
@@ -155,14 +156,14 @@ import std.limit (Limit, Limited, limiter)
 import std.time (second)
 
 --- One for a token taken, zero for a call that found none.
-taken(got: Result[Unit, Limited]) -> Int
+taken(got: internal Result[Unit, internal Limited]) -> internal Int
 =
   when got
     is Ok(took) -> 1
     is Err(failure) -> 0
 
 --- Takes a token, then asks for another at once.
-twice() -> Int
+twice() -> internal Int
   uses @gate: Limit[acquire]
 =
   let first = attempt @gate.acquire()

@@ -93,6 +93,9 @@ pub(crate) struct Answer {
     pub(crate) op: String,
     /// The label the binding gives the operation's answers.
     pub(crate) label: Label,
+    /// Whether the label is that of `Limited` instead (S-46, `spec/27 §10` rule 4): whether
+    /// `acquire` of `std.limit` fails is `internal` whatever the binding.
+    pub(crate) limited: bool,
 }
 
 /// What carries a labeled answer into a flow, for the words of ADR 0094 rule 7: a value, or
@@ -250,7 +253,7 @@ impl Checker<'_, '_, '_> {
         match self
             .answers
             .iter_mut()
-            .find(|known| known.label == answer.label)
+            .find(|known| known.label == answer.label && known.limited == answer.limited)
         {
             Some(known) if key(&answer) < key(known) => *known = answer,
             Some(_) => {}
@@ -275,19 +278,31 @@ impl Checker<'_, '_, '_> {
             return;
         };
         let (binding, op, label) = (&answer.binding, &answer.op, &answer.label);
-        let named = format!("the answer of `@{binding}.{op}`, labeled `{label}`");
+        let (named, what) = if answer.limited {
+            (
+                format!(
+                    "whether `@{binding}.{op}` failed, labeled `{label}`, the label `Limited` carries"
+                ),
+                format!("whether `@{binding}.{op}` failed"),
+            )
+        } else {
+            (
+                format!("the answer of `@{binding}.{op}`, labeled `{label}`"),
+                format!("the answer of `@{binding}.{op}`"),
+            )
+        };
         let (subject, route) = match carrier {
             Carrier::Value(what) => (
                 what,
-                format!("or send the value only where `{label}` data may go"),
+                format!("send the value only where `{label}` data may go"),
             ),
             Carrier::Condition => (
                 "the condition",
-                "or decide this without branching on it".to_owned(),
+                "decide this without branching on it".to_owned(),
             ),
             Carrier::Parameter => (
                 "this flow",
-                format!("or pass a function whose parameter accepts `{label}` data"),
+                format!("pass a function whose parameter accepts `{label}` data"),
             ),
         };
         diagnostic
@@ -296,17 +311,24 @@ impl Checker<'_, '_, '_> {
         // The call as a related location, unless the diagnostic is there or already names it.
         let at = self.report.location(answer.span);
         if at != diagnostic.primary && diagnostic.related.iter().all(|r| r.location != at) {
-            diagnostic.related.push(
-                self.report
-                    .related(answer.span, format!("the answer of `@{binding}.{op}`")),
-            );
+            diagnostic
+                .related
+                .push(self.report.related(answer.span, what.clone()));
         }
-        diagnostic.repairs.insert(
-            0,
-            Report::advice(format!(
-                "{subject} carries {named}: read `{op}` through a binding whose `{op}` answers within `{allowed}`, {route}"
-            )),
-        );
+        // No binding lowers the label of `Limited` (`spec/27 §10` rule 4), so its repair names
+        // only the routes that remain.
+        let advice = if answer.limited && carrier == Carrier::Condition {
+            format!(
+                "{subject} carries {named}: under it, perform only operations that accept `{label}`, or {route}"
+            )
+        } else if answer.limited {
+            format!("{subject} carries {named}: {route}")
+        } else {
+            format!(
+                "{subject} carries {named}: read `{op}` through a binding whose `{op}` answers within `{allowed}`, or {route}"
+            )
+        };
+        diagnostic.repairs.insert(0, Report::advice(advice));
         if !diagnostic
             .repairs
             .iter()
@@ -314,9 +336,7 @@ impl Checker<'_, '_, '_> {
         {
             diagnostic.repairs.push(Report::escape(
                 Escape::Trusted,
-                format!(
-                    "release the answer of `@{binding}.{op}` through a policy of a trusted module"
-                ),
+                format!("release {what} through a policy of a trusted module"),
             ));
         }
     }
