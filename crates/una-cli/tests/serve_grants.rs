@@ -7,6 +7,9 @@
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
 
+#[path = "common/hermetic.rs"]
+mod hermetic;
+
 use std::net::TcpListener;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -164,10 +167,11 @@ fn serve_flags_need_edition_0_4() {
         )
     );
     // A single file outside any package is of edition 0.1: a file inside a package's
-    // directory is read as that package.
+    // directory is read as that package. The seal keeps it of edition 0.1 whatever lies above
+    // the temporary directory (#1560).
     let alone = std::env::temp_dir().join(format!("una-serve-alone-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&alone);
-    std::fs::create_dir_all(&alone).unwrap();
+    hermetic::seal(&alone);
     let file = alone.join("main.una");
     std::fs::write(&file, MAIN).unwrap();
     let output = una(

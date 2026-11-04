@@ -11,6 +11,8 @@
 //! the test until it leaves the list, so the list stays exact.
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
 
+#[path = "common/hermetic.rs"]
+mod hermetic;
 #[path = "common/native_build.rs"]
 mod native_build;
 #[path = "common/timing.rs"]
@@ -193,7 +195,9 @@ fn every_runnable_program_runs_natively_as_in_the_interpreter() {
         .collect();
     let scratch = std::env::temp_dir().join(format!("una-native-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&scratch);
-    std::fs::create_dir_all(&scratch).unwrap();
+    // A copied single file keeps edition 0.1 whatever lies above the temporary directory
+    // (#1560).
+    hermetic::seal(&scratch);
     let mut failures = Vec::new();
     let mut compiled = Vec::new();
     let mut not_compiled = Vec::new();
@@ -358,7 +362,9 @@ fn every_runnable_program_runs_alike_linked_by_una_link_and_by_cc() {
     let root = root();
     let scratch = std::env::temp_dir().join(format!("una-linkers-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&scratch);
-    std::fs::create_dir_all(&scratch).unwrap();
+    // A copied single file keeps edition 0.1 whatever lies above the temporary directory
+    // (#1560).
+    hermetic::seal(&scratch);
     let mut failures = Vec::new();
     let mut compared = 0usize;
     for (index, program) in candidates().into_iter().enumerate() {

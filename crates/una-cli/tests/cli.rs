@@ -3,6 +3,9 @@
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
 
+#[path = "common/hermetic.rs"]
+mod hermetic;
+
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
@@ -111,7 +114,18 @@ fn json_is_a_global_flag() {
 fn check_json_is_byte_identical_across_runs() {
     // compiler/testing.md §4: every example, and every case of the finished areas with its
     // diagnostics, twice and with one worker thread.
-    let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    // A sealed copy of the examples and the corpus: no manifest above the checkout changes the
+    // edition of their single files (#1560).
+    let repository = hermetic::checkout(&["examples", "tests/conformance"]);
+    let una = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_una"))
+            .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+            .env_remove("UNA_PROOF_KEY")
+            .args(args)
+            .current_dir(&repository)
+            .output()
+            .unwrap()
+    };
     let mut targets: Vec<String> = std::fs::read_dir(repository.join("examples"))
         .unwrap()
         .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())

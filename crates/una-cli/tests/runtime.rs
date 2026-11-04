@@ -4,6 +4,8 @@
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
 
+#[path = "common/hermetic.rs"]
+mod hermetic;
 #[path = "common/timing.rs"]
 mod timing;
 
@@ -17,13 +19,20 @@ fn repository() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-/// Runs the `una` binary in `dir`, relative to the repository root, or absolute.
+/// A sealed copy of the examples and of the conformance corpus, which the tests run in place
+/// of the checkout's: no manifest above the checkout changes the edition of their single files
+/// (#1560).
+fn corpus() -> PathBuf {
+    hermetic::checkout(&["examples", "tests/conformance"])
+}
+
+/// Runs the `una` binary in `dir`, relative to the root of [`corpus`], or absolute.
 fn una_in(dir: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
         .env_remove("UNA_PROOF_KEY")
         .args(args)
-        .current_dir(repository().join(dir))
+        .current_dir(corpus().join(dir))
         .output()
         .unwrap()
 }
@@ -1354,12 +1363,12 @@ fn trace_arguments_are_keyed_by_source_names() {
 #[test]
 fn no_trace_key_carries_a_binder_suffix() {
     // `spec/11 §5`: trace keys are source names, so none contains Core's `%` suffix.
-    let mut targets: Vec<PathBuf> = std::fs::read_dir(repository().join("examples"))
+    let mut targets: Vec<PathBuf> = std::fs::read_dir(corpus().join("examples"))
         .unwrap()
         .map(|entry| entry.unwrap().path())
         .collect();
     targets.extend(
-        std::fs::read_dir(repository().join("tests/conformance/runtime"))
+        std::fs::read_dir(corpus().join("tests/conformance/runtime"))
             .unwrap()
             .map(|entry| entry.unwrap().path()),
     );
@@ -1371,7 +1380,7 @@ fn no_trace_key_carries_a_binder_suffix() {
             (target.clone(), vec!["--json".into(), "test".into()])
         } else {
             let file = target.to_string_lossy().into_owned();
-            (repository(), vec!["--json".into(), "test".into(), file])
+            (corpus(), vec!["--json".into(), "test".into(), file])
         };
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
         let output = una_in(&dir, &args);
@@ -1679,7 +1688,7 @@ fn una_closed(fd: u8, args: &[&str]) -> Output {
         .args(args)
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
         .env_remove("UNA_PROOF_KEY")
-        .current_dir(repository())
+        .current_dir(corpus())
         .output()
         .unwrap()
 }

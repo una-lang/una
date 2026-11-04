@@ -5,6 +5,9 @@
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
 
+#[path = "common/hermetic.rs"]
+mod hermetic;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -17,12 +20,20 @@ fn repository() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
+/// A sealed copy of the examples and of the conformance corpus, which the tests read in place
+/// of the checkout's: no manifest above the checkout changes the edition of their single files
+/// (#1560).
+fn corpus() -> PathBuf {
+    hermetic::checkout(&["examples", "tests/conformance"])
+}
+
+/// Runs the `una` binary in the root of [`corpus`].
 fn una(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
         .env_remove("UNA_PROOF_KEY")
         .args(args)
-        .current_dir(repository())
+        .current_dir(corpus())
         .output()
         .unwrap()
 }
@@ -525,10 +536,10 @@ fn a_query_the_solver_rejects_is_u8001_and_exits_with_3() {
 fn the_verifier_generates_every_obligation_the_checker_found() {
     // `spec/12 §3` over Core IR agrees with the sites the type checker records since M4: the
     // site of each obligation, or each return path of a return obligation.
-    let root = repository().join("tests/conformance");
+    let root = corpus().join("tests/conformance");
     let mut targets: Vec<PathBuf> = vec![
-        repository().join("examples/events"),
-        repository().join("examples/hello"),
+        corpus().join("examples/events"),
+        corpus().join("examples/hello"),
     ];
     for area in ["types", "authority", "security", "verification", "runtime"] {
         let mut entries: Vec<PathBuf> = std::fs::read_dir(root.join(area))
@@ -598,7 +609,7 @@ fn the_verifier_generates_every_obligation_the_checker_found() {
         generated.sort();
         generated.dedup();
         let name = target
-            .strip_prefix(repository())
+            .strip_prefix(corpus())
             .unwrap_or(&target)
             .display()
             .to_string();
@@ -2224,8 +2235,8 @@ fn collection_frames_grow_linearly_in_updates_and_in_key_terms() {
 fn every_program() -> Vec<PathBuf> {
     let mut found = Vec::new();
     let mut pending = vec![
-        repository().join("tests/conformance"),
-        repository().join("examples"),
+        corpus().join("tests/conformance"),
+        corpus().join("examples"),
     ];
     while let Some(dir) = pending.pop() {
         if dir.join("una.toml").is_file() {
@@ -2632,7 +2643,7 @@ fn effect_condition_sites_are_exactly_the_pinned_ones() {
     // from both tiers at once fails here; the corpus cross-check compares the checker's sites
     // with these (#615).
     for (case, expected) in EFFECT_SITES {
-        let (checked, obligations) = generated(&repository().join("tests/conformance").join(case));
+        let (checked, obligations) = generated(&corpus().join("tests/conformance").join(case));
         assert_eq!(checked.diagnostics, [], "{case}");
         let mut found: Vec<String> = obligations
             .iter()

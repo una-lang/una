@@ -14,6 +14,8 @@
 
 mod directives;
 mod discovery;
+#[path = "../common/hermetic.rs"]
+mod hermetic;
 mod outcome;
 
 use std::collections::BTreeSet;
@@ -373,7 +375,9 @@ fn unencodable_locks(checked: &una_cli::Checked) -> Vec<String> {
 #[test]
 fn conformance_suite() {
     let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let root = repository.join("tests/conformance");
+    // The cases run from a sealed copy of the corpus: no manifest above the checkout changes
+    // the edition of a single-file case (#1560).
+    let root = hermetic::checkout(&["tests/conformance"]).join("tests/conformance");
     let specs = SpecIndex::load(&repository.join("docs/spec"));
     let (cases, mut failures) = discover(&root);
     let mut passed = 0;

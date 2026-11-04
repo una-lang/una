@@ -53,7 +53,14 @@ struct Parsed {
 /// The keywords of the edition of the package that holds `path`, by its nearest `una.toml`
 /// (`spec/13 §7`); a single file is edition 0.1.
 fn keywords_for(path: &Path) -> KeywordSet {
-    for dir in path.ancestors().skip(1) {
+    // The search stops at the repository root: no manifest above the checkout gives an edition
+    // to the repository's files (#1560).
+    let repository = repository();
+    for dir in path
+        .ancestors()
+        .skip(1)
+        .take_while(|dir| dir.starts_with(&repository))
+    {
         // `ita.una` exists from edition 0.4 only (ADR 0122), so it names that edition for the
         // wrapping formatter (#1175); it comes first, as the package reads its manifests.
         if dir.join("ita.una").is_file() {
