@@ -32,7 +32,7 @@ let pages = together for id in ids
 ```
 
 1. **Branches.** Each `let` statement of a `together_stmt` is a **branch**. Its expression, with its `with` bindings and its handling clauses, is the branch's task.
-2. **`together for`** stands where a `block_expr` can: as the value of a `let` or of an assignment. Its body is a block, as the body of a `for` loop (`spec/17 §1`), whose final expression is the value of the element's task.
+2. **`together for`** stands where a `block_expr` can: as the value of a `let` or of an assignment, or as the last line of a block. Elsewhere, as a line followed by another line of its block, it is U0101 with the message `` a `together for` must be the last line of its block or the value of a `let` or of an assignment ``. Its body is a block, as the body of a `for` loop (`spec/17 §1`), whose final expression is the value of the element's task.
 3. **Malformed bodies.** A `together` body that holds a statement other than `let`, or fewer than two `let` statements, is U2024 at `together`.
 4. **Placement.** `together` followed by a newline is a statement. Written as an expression, as `let x = together` with branches, it is U0101 with the message `` `together` with branches is a statement; write `together for` to build a list ``.
 5. **Nesting.** A task may contain a `together` block or a `together for`, inside a called function or inside the expression of its branch.
