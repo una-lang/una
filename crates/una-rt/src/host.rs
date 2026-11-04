@@ -357,11 +357,14 @@ pub fn handler_instance(name: i64) -> i64 {
 }
 
 /// A new instance of the handler `name`, with the next id `with:<name>#<n>` of the task, or of
-/// the run in a streaming task. Quiet code counts its installations apart, `with:<name>#q#<n>`
-/// (S-41, `spec/26 §6` rule 4).
+/// the run in a streaming task. Quiet code counts none of its installations: their ids read
+/// `with:<name>#q` (S-41, `spec/26 §6` rule 4).
 fn instance_named(name: &str) -> i64 {
     let id = with_state(|state| {
-        let name = una_interp::concurrency::install_key(name, state.quiet > 0);
+        if state.quiet > 0 {
+            return una_interp::concurrency::quiet_install_id(name);
+        }
+        let name = name.to_owned();
         // A streaming task, the root or a started one, counts run-wide (`spec/27 §7`).
         let count = if state.streaming {
             let mut counts = state

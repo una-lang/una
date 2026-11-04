@@ -1,4 +1,4 @@
--- test: handler installations under a `secret` program counter, through a callee and written directly under the branch, stay legal and run as before, then public ones run; quiet code numbers its installations apart, `with:<h>#q#<n>`, so the instance id of a later public installation does not depend on the secret, which the native tests compare across secrets in both engines (spec/26 §6 rule 4, spec/27 §7, S-41)
+-- test: handler installations in quiet code, under a `secret` program counter (through a callee, written directly under the branch, in a started task) and under the conservative rules (an operation body under an effect floor above `public`, a decision on values of a type parameter), stay legal and run as before; quiet code numbers none of its installations, `with:<h>#q`, so no instance id depends on the secret: the native test `s41_the_conformance_case_has_one_trace_for_every_secret` runs this case for several secrets and compares whole traces in both engines (spec/26 §6 rule 4, spec/27 §8, S-41)
 -- spec: spec/26 §6
 -- grant: console
 -- expect: run-output "done 3"
@@ -7,8 +7,15 @@ module installs
 capability Sink
   op put(x: Int) -> Unit
 
+capability Box
+  op hold(x: Int) -> Unit
+    accepts secret
+
 handler keep() for Sink
   op put(x) = unit
+
+handler box() for Box
+  op hold(x) = quiet_put()
 
 use_it() -> Unit
   uses @k: Sink[put]
@@ -29,11 +36,21 @@ quiet_put() -> Unit
 =
   use_it() with @k = keep()
 
+hold_one() -> Unit
+  uses @b: Box[hold]
+=
+  @b.hold(1)
+
+branchy[T](a: T, b: T) -> Unit
+=
+  if a == b
+    quiet_put()
+
 worker(s: secret Int) -> Unit
 =
   for i in 0..<3
     if s > i
-      quiet_put()
+      inner()
   use_it() with @k = keep()
 
 pub main() -> Unit
@@ -44,7 +61,9 @@ pub main() -> Unit
     if s > i
       inner()
       let r = quietly() with @k = keep()
-      quiet_put()
+      unit
+  hold_one() with @b = box()
+  branchy(1, b: 1)
   tasks
     start worker(s)
   use_it() with @k = keep()

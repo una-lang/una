@@ -151,17 +151,13 @@ pub fn block_name(kind: char, quiet: bool, count: usize) -> String {
     }
 }
 
-/// The key under which a task counts its installations of the handler `name`, as both engines
-/// name them: `name` itself, or, in quiet code, `name#q`, which no handler name can be, so that
-/// quiet code counts its installations apart and its ids read `with:<name>#q#<n>` (S-41,
-/// `spec/26 §6` rule 4). Whether quiet code installed a handler, which may depend on data above
-/// `public`, never moves the `n` of a later public installation.
-pub fn install_key(name: &str, quiet: bool) -> String {
-    if quiet {
-        format!("{name}#q")
-    } else {
-        name.to_owned()
-    }
+/// The id of an instance of the handler `name` that quiet code installs, as both engines name
+/// it: `with:<name>#q`, with no number (S-41, `spec/26 §6` rule 4). Quiet code counts none of
+/// its installations, so how many it ran, which may depend on data above `public`, shows in no
+/// id: neither in the `n` of a later public installation nor in a later quiet one's. A join
+/// leaves the id as it is, since it names no task path.
+pub fn quiet_install_id(name: &str) -> String {
+    format!("with:{name}#q")
 }
 
 /// The one line on stderr of a started task that ran too deep and ended alone (`spec/27 §7`,

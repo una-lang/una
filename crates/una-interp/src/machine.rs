@@ -1358,14 +1358,15 @@ impl<'p, 'w> Machine<'p, 'w> {
     }
 
     /// The id of a new instance of the handler `name` installed by `with`. Quiet code counts
-    /// its installations apart, under the key `<name>#q`, so its ids read `with:<name>#q#<n>`
-    /// and whether it ran never moves the `n` of a later public installation (S-41, `spec/26
-    /// §6` rule 4). O(log h) for h installed handler names.
+    /// none of its installations: their ids read `with:<name>#q`, so whether and how often it
+    /// ran shows in no id (S-41, `spec/26 §6` rule 4). O(log h) for h installed handler names.
     fn install_id(&mut self, name: &str) -> String {
-        let key = crate::concurrency::install_key(name, self.quiet > 0);
-        let count = self.installed(&key) + 1;
-        self.add_installs(&key, 1);
-        self.renamed(&key, count)
+        if self.quiet > 0 {
+            return crate::concurrency::quiet_install_id(name);
+        }
+        let count = self.installed(name) + 1;
+        self.add_installs(name, 1);
+        self.renamed(name, count)
     }
 
     /// The join of a block whose branches ended as `parts`, given in the order the join takes
