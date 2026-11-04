@@ -34,10 +34,46 @@ pub struct ProofCache {
 
 impl ProofCache {
     /// The cache in `dir`, `.una/cache/proofs` of the package directory `root`, whose entries
-    /// are authenticated under `key`; `None` when the key is shorter than 16 bytes.
+    /// are authenticated under `key`; `None`, so that the run uses no cache, when the key is
+    /// shorter than 16 bytes or when [`links_below`] finds a link between `root` and `dir`.
     pub fn new(root: PathBuf, dir: PathBuf, key: Vec<u8>) -> Option<ProofCache> {
-        (key.len() >= MINIMUM_KEY).then_some(ProofCache { root, dir, key })
+        if key.len() < MINIMUM_KEY || links_below(&root, &dir) {
+            return None;
+        }
+        Some(ProofCache { root, dir, key })
     }
+}
+
+/// Whether the cache in `dir` must be off because of what is on the way to it from `root`
+/// (#1540, the interim of `docs/plan/proof-cache-eviction.md` section 6.4): `dir` is not below
+/// `root`, or a component between them (`.una`, `.una/cache` and `.una/cache/proofs`) is a
+/// symbolic link, dangling or not, wherever it leads, even inside the package, or cannot be
+/// examined. A repository can commit such a link, and the cache must then neither read nor
+/// write through it. A component that does not exist yet ends the walk: the store creates it
+/// inside the root (`create_dir_inside`).
+///
+/// One `symlink_metadata` per component, three for the package's cache: O(1) per run. The
+/// check is made once, when the cache is built; a process of the user that swaps a directory
+/// for a link later in the run is the residual case section 6.4 names, which the stores'
+/// `create_dir_inside` still bounds to the root.
+fn links_below(root: &Path, dir: &Path) -> bool {
+    let Ok(below) = dir.strip_prefix(root) else {
+        return true;
+    };
+    let mut path = root.to_path_buf();
+    for component in below.components() {
+        let std::path::Component::Normal(name) = component else {
+            return true;
+        };
+        path.push(name);
+        match std::fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => return true,
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return false,
+            Err(_) => return true,
+        }
+    }
+    false
 }
 
 impl std::fmt::Debug for ProofCache {
@@ -492,6 +528,106 @@ mod tests {
         std::fs::remove_file(&file).unwrap();
         std::fs::create_dir(&file).unwrap();
         assert_eq!(get(&mine, &query), None);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_on_the_way_to_the_cache_turns_it_off_1540() {
+        // #1540 (`docs/plan/proof-cache-eviction.md` section 6.4): a link at `.una`,
+        // `.una/cache` or `.una/cache/proofs`, to a directory outside the package, to one
+        // inside it, or dangling, turns the cache off for the run, so that it neither reads
+        // nor writes through the link. Regular directories, or none yet, keep it on.
+        let base = std::env::temp_dir().join(format!("una-cache-1540-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let package = base.join("package");
+        let outside = base.join("outside");
+        std::fs::create_dir_all(&package).unwrap();
+        let dir = package.join(".una").join("cache").join("proofs");
+        let build = || {
+            ProofCache::new(
+                package.clone(),
+                dir.clone(),
+                b"0123456789abcdef0123456789abcdef".to_vec(),
+            )
+        };
+        let query = key("lock", "", "(check-sat)");
+        // No `.una` yet, then regular directories: on, and the entry reads back.
+        assert!(build().is_some());
+        put(&build().unwrap(), &query, &proven());
+        assert_eq!(get(&build().unwrap(), &query), Some(proven()));
+        // A valid entry of this key, kept outside the package, as a link would find it.
+        let entries = outside.join("una").join("cache").join("proofs");
+        std::fs::create_dir_all(entries.parent().unwrap()).unwrap();
+        let _ = std::fs::remove_dir_all(&entries);
+        std::fs::rename(&dir, &entries).unwrap();
+        let inside = package.join("data");
+        std::fs::create_dir_all(&inside).unwrap();
+        for planted in [".una", ".una/cache", ".una/cache/proofs"] {
+            // The directory of the moved `.una` that this level names.
+            let leads_outside = match planted {
+                ".una" => outside.join("una"),
+                ".una/cache" => outside.join("una").join("cache"),
+                _ => entries.clone(),
+            };
+            let targets = [
+                ("outside", leads_outside),
+                ("inside", inside.clone()),
+                ("dangling", base.join("missing")),
+            ];
+            for (what, target) in targets {
+                let _ = std::fs::remove_dir_all(package.join(".una"));
+                if let Some(parent) = Path::new(planted).parent() {
+                    std::fs::create_dir_all(package.join(parent)).unwrap();
+                }
+                std::os::unix::fs::symlink(&target, package.join(planted)).unwrap();
+                assert!(build().is_none(), "{planted} {what}");
+            }
+        }
+        // A regular file at `.una`, under which nothing can be read or written: off as well.
+        let _ = std::fs::remove_dir_all(package.join(".una"));
+        std::fs::write(package.join(".una"), "not a directory").unwrap();
+        assert!(build().is_none());
+        std::fs::remove_file(package.join(".una")).unwrap();
+        // A `.una` without search permission, so that `.una/cache` cannot be examined
+        // (`EACCES`): off, failing closed. A superuser examines it anyway, so the case is
+        // skipped when the stat succeeds.
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::create_dir_all(&dir).unwrap();
+            let una = package.join(".una");
+            std::fs::set_permissions(&una, std::fs::Permissions::from_mode(0o000)).unwrap();
+            let denied = std::fs::symlink_metadata(una.join("cache")).is_err();
+            let built = build();
+            std::fs::set_permissions(&una, std::fs::Permissions::from_mode(0o755)).unwrap();
+            if denied {
+                assert!(built.is_none());
+            }
+            assert!(build().is_some());
+            std::fs::remove_dir_all(&una).unwrap();
+        }
+        // A cache directory that is not below the root is never used.
+        assert!(
+            ProofCache::new(
+                package.clone(),
+                outside.join("una"),
+                b"0123456789abcdef0123456789abcdef".to_vec()
+            )
+            .is_none()
+        );
+        assert!(
+            ProofCache::new(
+                package.clone(),
+                package.join("..").join("outside"),
+                b"0123456789abcdef0123456789abcdef".to_vec()
+            )
+            .is_none()
+        );
+        // Nothing outside was written or removed, and the regular layout is on again.
+        assert_eq!(std::fs::read_dir(&entries).unwrap().count(), 1);
+        assert_eq!(std::fs::read_dir(&inside).unwrap().count(), 0);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(build().is_some());
         let _ = std::fs::remove_dir_all(&base);
     }
 

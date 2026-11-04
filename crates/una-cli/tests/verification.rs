@@ -1699,6 +1699,138 @@ fn a_forged_or_foreign_cache_entry_is_solved_again() {
     let _ = std::fs::remove_dir_all(&scratch);
 }
 
+#[cfg(unix)]
+#[test]
+fn a_committed_link_on_the_way_to_the_cache_turns_it_off_1540() {
+    // #1540 (`docs/plan/proof-cache-eviction.md` section 6.4): a link at `.una`, `.una/cache`
+    // or `.una/cache/proofs`, even to a directory holding valid entries under the user's own
+    // key, turns the cache off for the run. Nothing is read or written through it, and the
+    // verdicts and the exit code are those of a run with regular directories.
+    let scratch = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("cache-link-1540");
+    let _ = std::fs::remove_dir_all(&scratch);
+    let package = scratch.join("div0");
+    std::fs::create_dir_all(package.join("src")).unwrap();
+    let source =
+        repository().join("docs/reviews/v0.1-review/adversarial/escape-proof-cache-forgery");
+    for file in ["una.toml", "verification.lock", "src/div0.una"] {
+        std::fs::copy(source.join(file), package.join(file)).unwrap();
+    }
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_una"))
+            .env("HOME", scratch.join("home"))
+            .env_remove("UNA_PROOF_KEY")
+            .args(args)
+            .arg(&package)
+            .output()
+            .unwrap()
+    };
+    let report = || {
+        let output = run(&["--json", "report"]);
+        let document: Value = serde_json::from_slice(&output.stdout).unwrap();
+        document["obligations"].clone()
+    };
+    let solved = json!({"proven": 0, "refuted": 1, "unknown": 0, "cached": 0});
+    let cached = json!({"proven": 0, "refuted": 1, "unknown": 0, "cached": 1});
+    // Regular directories: the second run is answered by the cache.
+    assert_eq!(report(), solved);
+    assert_eq!(report(), cached);
+    let baseline = run(&["check"]);
+    assert_eq!(baseline.status.code(), Some(1));
+    // The package's `.una`, with its valid entries, moved outside the package.
+    let outside = scratch.join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::rename(package.join(".una"), outside.join("una")).unwrap();
+    let snapshot = |dir: &Path| -> Vec<(PathBuf, Vec<u8>)> {
+        let mut files = Vec::new();
+        let mut pending = vec![dir.to_path_buf()];
+        while let Some(next) = pending.pop() {
+            for entry in std::fs::read_dir(&next).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else {
+                    files.push((path.clone(), std::fs::read(&path).unwrap()));
+                }
+            }
+        }
+        files.sort();
+        files
+    };
+    let before = snapshot(&outside);
+    assert!(!before.is_empty());
+    let inside = package.join("data");
+    std::fs::create_dir_all(&inside).unwrap();
+    for planted in [".una", ".una/cache", ".una/cache/proofs"] {
+        // The directory of the moved `.una` that this level names.
+        let leads_outside = match planted {
+            ".una" => outside.join("una"),
+            ".una/cache" => outside.join("una/cache"),
+            _ => outside.join("una/cache/proofs"),
+        };
+        let targets = [
+            ("outside", leads_outside),
+            ("inside", inside.clone()),
+            ("dangling", scratch.join("missing")),
+        ];
+        for (what, target) in targets {
+            let _ = std::fs::remove_dir_all(package.join(".una"));
+            if let Some(parent) = Path::new(planted).parent() {
+                std::fs::create_dir_all(package.join(parent)).unwrap();
+            }
+            std::os::unix::fs::symlink(&target, package.join(planted)).unwrap();
+            // Twice: the first run stores nothing that the second could read.
+            assert_eq!(report(), solved, "{planted} {what}");
+            assert_eq!(report(), solved, "{planted} {what}");
+            let checked = run(&["check"]);
+            assert_eq!(
+                checked.status.code(),
+                baseline.status.code(),
+                "{planted} {what}"
+            );
+            assert_eq!(stderr(&checked), stderr(&baseline), "{planted} {what}");
+            assert!(
+                std::fs::symlink_metadata(package.join(planted))
+                    .unwrap()
+                    .file_type()
+                    .is_symlink()
+            );
+        }
+        assert_eq!(snapshot(&outside), before, "{planted}");
+        assert!(snapshot(&inside).is_empty(), "{planted}");
+        assert!(!scratch.join("missing").exists(), "{planted}");
+    }
+    // The link removed, regular directories bring the cache back.
+    let _ = std::fs::remove_dir_all(package.join(".una"));
+    assert_eq!(report(), solved);
+    assert_eq!(report(), cached);
+    // A single file named by a relative path: its package root is the empty path, so the
+    // cache is `.una/cache/proofs` of the working directory, and the same guard applies there.
+    let single = scratch.join("single");
+    std::fs::create_dir_all(&single).unwrap();
+    std::fs::copy(package.join("src/div0.una"), single.join("div0.una")).unwrap();
+    let alone = || {
+        let output = Command::new(env!("CARGO_BIN_EXE_una"))
+            .env("HOME", scratch.join("home"))
+            .env_remove("UNA_PROOF_KEY")
+            .current_dir(&single)
+            .args(["--json", "report", "div0.una"])
+            .output()
+            .unwrap();
+        let document: Value = serde_json::from_slice(&output.stdout).unwrap();
+        document["obligations"].clone()
+    };
+    assert_eq!(alone(), solved);
+    assert_eq!(alone(), cached);
+    assert!(single.join(".una/cache/proofs").is_dir());
+    std::fs::rename(single.join(".una"), scratch.join("single-una")).unwrap();
+    let moved = snapshot(&scratch.join("single-una"));
+    std::os::unix::fs::symlink(scratch.join("single-una"), single.join(".una")).unwrap();
+    assert_eq!(alone(), solved);
+    assert_eq!(alone(), solved);
+    assert_eq!(snapshot(&scratch.join("single-una")), moved);
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
 #[test]
 fn a_damaged_cache_entry_is_solved_again_and_never_reused_11() {
     // #11 (R-037, cache robustness): every entry of a refuted package's cache, damaged in each
