@@ -102,6 +102,10 @@ pub enum EventOutcome {
         /// The failure in its Una form.
         value: String,
     },
+    /// It returned or failed, at an outcome label above `public` in a run's trace (S-45,
+    /// #1552, `spec/11 §5`): only that label's level is written, never whether it failed, its
+    /// variant or its value, so no text is built from the value.
+    Redacted(String),
     /// The run aborted before it ended.
     Aborted,
     /// A task was cancelled (`spec/19 §7` rule 3): the event that ends a started task after a
@@ -3084,6 +3088,7 @@ impl<'p, 'w> Machine<'p, 'w> {
                 op,
                 args,
                 labels,
+                outcome,
                 span,
                 ..
             } => {
@@ -3094,6 +3099,7 @@ impl<'p, 'w> Machine<'p, 'w> {
                     op,
                     labels,
                     result: ty.deep_label(),
+                    outcome: outcome.join(&ty.deep_label()),
                     span: *span,
                 };
                 self.op(caps, &request, args)
@@ -3368,14 +3374,22 @@ impl<'p, 'w> Machine<'p, 'w> {
         self.ops_open += 1;
         let result = self.serve(&instance, capability, op, args, span);
         self.ops_open = self.ops_open.saturating_sub(1);
+        // S-45 (#1552, `spec/11 §5`): in a run, an outcome labeled above `public` is written
+        // as `redacted`, at the static label of the site, so whether it is depends on no
+        // value; no text is built from its value, so it raises no abort for a long integer.
+        let hidden = (!request.outcome.is_public() && !self.run.clear_outcomes.get())
+            .then(|| level_name(request.outcome.level));
         // An outcome that holds an integer too long for text aborts the run at the operation
         // (`spec/11 §7`, #923), its event left `aborted`.
-        let (result, outcome) = match result {
-            Ok(value) => match self.index.redacted(&value, &request.result) {
+        let (result, outcome) = match (result, hidden) {
+            (result @ (Ok(_) | Err(Stop::Fail(_))), Some(level)) => {
+                (result, EventOutcome::Redacted(level.to_owned()))
+            }
+            (Ok(value), None) => match self.index.redacted(&value, &request.result) {
                 Ok(text) => (Ok(value), EventOutcome::Ok(text)),
                 Err(IntTooLong) => (Err(int_text_abort(Some(span))), EventOutcome::Aborted),
             },
-            Err(Stop::Fail(failure)) => match self.index.render(&failure) {
+            (Err(Stop::Fail(failure)), None) => match self.index.render(&failure) {
                 Ok(text) => {
                     let variant = variant(&failure);
                     (
@@ -3391,7 +3405,7 @@ impl<'p, 'w> Machine<'p, 'w> {
             // An operation in progress completes (`spec/19 §6` rule 4): a cut inside its
             // handler is only one of a `within` that the handler's own code started, which
             // catches it there.
-            other @ Err(Stop::Abort(_) | Stop::Exit(..) | Stop::Cut(_)) => {
+            (other @ Err(Stop::Abort(_) | Stop::Exit(..) | Stop::Cut(_)), _) => {
                 (other, EventOutcome::Aborted)
             }
         };
@@ -4135,8 +4149,10 @@ struct Request<'a> {
     capability: &'a str,
     op: &'a str,
     labels: &'a [Label],
-    /// The label of the binder of its result, which redacts its outcome.
+    /// The label of the binder of its result, which redacts its value.
     result: Label,
+    /// The label of its outcome: Core's, joined with the binder's (S-45, #1552).
+    outcome: Label,
     span: Span,
 }
 

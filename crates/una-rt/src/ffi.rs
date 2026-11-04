@@ -2016,7 +2016,7 @@ mod tests {
 
     /// The meta of the scenario of a refused export in a later batch: the block's site, and one
     /// operation that each task records in the trace.
-    const BATCH_META: &str = r#"{"grants":[],"uses":[],"sites":[{"file":"src/c.una","start":{"line":2,"col":3},"end":{"line":2,"col":9}}],"ops":[{"capability":"Console","op":"print","params":[],"args":[],"result":{"type":0}}]}"#;
+    const BATCH_META: &str = r#"{"grants":[],"uses":[],"sites":[{"file":"src/c.una","start":{"line":2,"col":3},"end":{"line":2,"col":9}}],"ops":[{"capability":"Console","op":"print","params":[],"args":[],"result":{"type":0},"outcome":null}]}"#;
 
     /// A lambda that records one event of the operation of [`BATCH_META`].
     extern "C" fn evented(_closure: i64, _arg: i64) -> Returned {

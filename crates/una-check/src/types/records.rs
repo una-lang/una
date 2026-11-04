@@ -167,6 +167,10 @@ pub(crate) struct Records {
     /// The function's own error kind of each `e within d` whose `if error pass` passes the
     /// time-out as its `TimedOut`, by the span of `d` (ADR 0117 rule 5).
     pub(crate) within_passes: BTreeMap<Span, Ty>,
+    /// For each operation call, by its span, the types whose labels, joined, are the label its
+    /// outcome is rendered at in a run's trace (S-45, #1552, `spec/11 §5`): the decision's
+    /// label on `Unit`, the result and the failure type.
+    pub(crate) outcomes: BTreeMap<Span, Vec<Ty>>,
 }
 
 /// A flow of a value at `span` into `target`, in the module `module` and the function
@@ -203,6 +207,12 @@ impl Records {
         }
         for (span, ty) in other.within_passes {
             self.within_passes.insert(span, resolve(&ty));
+        }
+        for (span, parts) in other.outcomes {
+            self.outcomes
+                .entry(span)
+                .or_default()
+                .extend(parts.iter().map(&resolve));
         }
         self.annotations.extend(other.annotations);
         self.lambda_params.extend(other.lambda_params);

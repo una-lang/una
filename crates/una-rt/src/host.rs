@@ -40,6 +40,9 @@ pub struct OpSite {
     pub args: Vec<Shown>,
     /// Its result.
     pub result: Shown,
+    /// The level its outcome is redacted at, when its outcome label is above `public` (S-45,
+    /// #1552, `spec/11 §5`): the event's outcome is then `redacted`.
+    pub outcome: Option<String>,
     /// The type of its failures, when it can fail.
     pub error: Option<usize>,
 }
@@ -75,6 +78,12 @@ impl OpSite {
                 .map(shown)
                 .collect::<Option<Vec<_>>>()?,
             result: shown(value.get("result")?)?,
+            // Required, `null` when the outcome is in clear: a description without it fails
+            // to load, never an outcome shown in clear by default.
+            outcome: match value.get("outcome")? {
+                Value::Null => None,
+                level => Some(level.as_str()?.to_owned()),
+            },
             error: index(value, "error"),
         })
     }
@@ -624,7 +633,11 @@ fn end_event(site: usize, slot: usize, value: i64, (failed, interrupted): (i64, 
         let Some(op) = state.ops.get(site) else {
             return false;
         };
-        let outcome = if failed == 0 {
+        // S-45 (#1552): an outcome labeled above `public` is written as `redacted`, from the
+        // site's static level alone; no text is built from the value, so it raises no abort.
+        let outcome = if let Some(level) = &op.outcome {
+            Some(EventOutcome::Redacted(level.clone()))
+        } else if failed == 0 {
             state
                 .types
                 .redacted(op.result.ty, value, op.result.redacted.as_deref())

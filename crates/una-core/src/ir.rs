@@ -1887,6 +1887,11 @@ pub enum Rhs {
         arg_spans: Vec<Span>,
         /// The static labels of the arguments.
         labels: Vec<Label>,
+        /// The label its outcome is rendered at in a run's trace (S-45, #1552, `spec/11 §5`):
+        /// the label of the decision whether it fails and of its payload, joined with the
+        /// labels of its failure type and of its result. Above `public`, the event's outcome
+        /// is `redacted`, its kind, variant and value hidden.
+        outcome: Label,
         /// The operation in the source.
         span: Span,
     },

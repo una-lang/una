@@ -2344,6 +2344,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
             op,
             args,
             labels,
+            outcome,
             span,
             ..
         } = rhs
@@ -2379,6 +2380,9 @@ impl<'p> Lowerer<'_, 'p, '_> {
             "type": self.emitter.types.of(ty),
             "redacted": redaction(&ty.deep_label()),
         });
+        // S-45 (#1552, `spec/11 §5`): the level an outcome labeled above `public` is written at,
+        // `redacted`, joined with the binder's label as the interpreter joins it.
+        let outcome = redaction(&outcome.join(&ty.deep_label()));
         let error = match (&declared.fails, &declared.error) {
             (None, _) => None,
             (Some(_), Some(kind)) => Some(self.emitter.types.of(&base(Base::Named {
@@ -2404,6 +2408,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
             "params": params,
             "args": shown,
             "result": result,
+            "outcome": outcome,
             "error": error,
         }));
         let site = self.builder.ins().iconst(types::I64, site);
