@@ -307,7 +307,8 @@ enum Decision {
 /// the runtime's own (`runtime::site_location`).
 const WARM_SITE: usize = usize::MAX;
 
-/// The task of the warm-up block: it gives its argument back and returns `unit`.
+/// The task of the warm-up block, in place of its closure's code, which is never called: it
+/// gives its argument back and returns `unit`.
 fn warm_invoke(_closure: i64, arg: Option<i64>, _site: usize) -> (i64, i64) {
     if let Some(arg) = arg {
         values::release(arg);
@@ -325,13 +326,26 @@ fn warm_invoke(_closure: i64, arg: Option<i64>, _site: usize) -> (i64, i64) {
 /// runtime's thread-locals and in the system allocator's per-thread caches, then exists before
 /// `main` on every worker whatever earlier code starts: the no-op coroutine of the scheduler's
 /// warm-up left those untouched, so a public block that followed `secret` code paid them, or
-/// not, by how many tasks that code had started. The block runs with the trace taken out, so it
-/// leaves no event, and its value is released, so it leaves no object; the caller lifts the
-/// memory budget around it. O(N) tasks in batches of [`WAVE`], once per run. Returns how many
-/// tasks returned.
+/// not, by how many tasks that code had started.
+///
+/// The closure is a closure object on the heap, as every closure of a compiled block is, never
+/// an integer word: its export is a portable node, so each task makes the copy's pending stack,
+/// one segment of `values::SEGMENT` entries (16 KiB), and imports an object into a slot table
+/// of its own heap, as every task of the program does. With an integer word for a closure, the
+/// warm-up copied nothing, so those allocations, the largest a task makes, had happened before
+/// a public block only as often as earlier code had started tasks, possibly by `secret` data:
+/// the allocator's state for them was the one part of a task's path the warm-up left to the
+/// program (#1254, second part). The closure's code is never called: [`warm_invoke`] stands
+/// for it.
+///
+/// The block runs with the trace taken out, so it leaves no event, and its value is released,
+/// so it leaves no object; the caller lifts the memory budget around it. O(N) tasks in batches
+/// of [`WAVE`], once per run, each copying one node in and nothing out; the transient memory is
+/// that of one batch, at most [`WAVE`] task heaps and pending segments at once, about 1.3 MiB
+/// whatever N (`--workers 1024` included). Returns how many tasks returned.
 pub(crate) fn warm_up(workers: usize) -> usize {
     let trace = with_state(|state| state.trace.take()).flatten();
-    let closure = values::int_word(&una_core::bigint::BigInt::from(0));
+    let closure = values::closure(crate::ffi::Code::NONE, 1);
     let items = values::list();
     for item in 0..workers.max(1) {
         let word = values::int_word(&una_core::bigint::BigInt::from(item));
@@ -2305,6 +2319,29 @@ mod tests {
         assert_eq!(live, 0);
         assert_eq!(stopped, None);
         assert_eq!(trace, Vec::<String>::new());
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
+    fn the_warm_up_copies_a_closure_object_into_every_task_as_a_program_s_block_does() {
+        // #1254, second part: each warm-up task's closure is a closure object, exported from the
+        // root as one portable node and imported into the task's heap, as the closure of every
+        // compiled block is, so the warm-up makes the copies' pending segments and slot tables
+        // that a program's tasks make. An integer word for a closure, as the first warm-up had,
+        // exports no node: this count was 0 then.
+        for workers in [1, 5, 64, 65] {
+            let ((returned, steps, live), stopped, trace) =
+                in_task_as("1", true, String::new(), move || {
+                    let before = values::object_steps();
+                    let returned = warm_up(workers);
+                    (returned, values::object_steps() - before, values::live())
+                });
+            assert_eq!(returned, workers);
+            // One node per task: the closure; the items and the values are integer words.
+            assert_eq!(steps, workers, "{workers} workers");
+            assert_eq!((live, stopped), (0, None));
+            assert_eq!(trace, Vec::<String>::new());
+        }
     }
 
     #[test]
