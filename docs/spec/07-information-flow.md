@@ -41,6 +41,8 @@ Every capability operation argument is a sink with the operation's `accepts` lab
 
 Text interpolation propagates labels: `"id {phone}"` has the label of `phone`. Printing it through `Console` is then U4003.
 
+(S-45, #1552, ADR 0032 amendment, proposed.) In a run's trace, each item of an event is rendered at its label: an argument at its static label and an outcome at the label of the operation's decision, failure type and result (`spec/11 §5`), so neither is shown above its label. The trace is not a sink that accepts `public` as a whole on this line: an operation performed under a branch on an `internal` value appends its event by occurrence (`spec/11 §5`), so which events appear, and how many, and the `seq` of later events, can depend on that value. An example's trace keeps its outcomes in clear: its data come from its source.
+
 `expect` lines in examples observe values for the test harness and are exempt from sink checks.
 
 ## 5. Declassification policies

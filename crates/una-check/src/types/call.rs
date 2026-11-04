@@ -1432,7 +1432,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 self.call_fails.insert(span, fails.clone());
             } else {
                 self.call_fails.insert(span, fails.raise_deep(&decided));
-                self.decided_failures.insert(span, decided);
+                self.decided_failures.insert(span, decided.clone());
             }
         }
         let what = format!("`@{cap_name}.{op_name}`");
@@ -1444,7 +1444,30 @@ impl<'a> Checker<'_, 'a, '_> {
             site.top,
             site.handled,
         );
-        def.result.base.with_label(&carried)
+        let result = def.result.base.with_label(&carried);
+        if self.pass == super::authority::Pass::Check {
+            self.outcome_site(span, &decided, def.fails.as_ref(), &result);
+        }
+        result
+    }
+
+    /// S-45 (#1552, `spec/11 §5`): records the label that the outcome of the operation at
+    /// `span` is rendered at in a run's trace, for elaboration to carry into Core IR: the
+    /// label of the decision whether it fails and of its payload, `decided`, joined with the
+    /// labels of its failure type and of its result. A body that no label rule checks counts
+    /// as `⊤`. The parts are kept as types, so the labels of unification variables resolve
+    /// with the declaration's records. O(1) per operation site.
+    fn outcome_site(&mut self, span: Span, decided: &Label, fails: Option<&Ty>, result: &Ty) {
+        let seed = if self.ctx.labels {
+            decided.clone()
+        } else {
+            Label::top(&self.env.categories)
+        };
+        let mut parts = vec![Ty::Unit.with_label(&seed), result.clone()];
+        if let Some(fails) = fails {
+            parts.push(fails.raise_deep(decided));
+        }
+        self.records.outcomes.entry(span).or_default().extend(parts);
     }
 
     /// The capability bound to `@cap` and the position of its operation `op`.

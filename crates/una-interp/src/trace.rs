@@ -52,6 +52,7 @@ impl<'a> From<&'a Event> for EventDoc<'a> {
             outcome: match &event.outcome {
                 EventOutcome::Ok(value) => OutcomeDoc::Ok { value },
                 EventOutcome::Fail { variant, value } => OutcomeDoc::Fail { variant, value },
+                EventOutcome::Redacted(level) => OutcomeDoc::Redacted { level },
                 EventOutcome::Aborted => OutcomeDoc::Aborted,
                 EventOutcome::Cancelled => OutcomeDoc::Cancelled,
             },
@@ -74,6 +75,12 @@ pub enum OutcomeDoc<'a> {
         variant: &'a str,
         /// The failure, in its Una form.
         value: &'a str,
+    },
+    /// It returned or failed, at an outcome label above `public` (S-45, #1552): only the
+    /// label's level is shown.
+    Redacted {
+        /// The level, as `internal`.
+        level: &'a str,
     },
     /// The run aborted before it ended.
     Aborted,
