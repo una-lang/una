@@ -106,7 +106,7 @@ A fault that a checked and verified program cannot reach aborts the run with U80
 
 ## 5. Traces
 
-Each operation invocation appends one event:
+Each operation invocation appends one event, except an operation served by an instance that quiet code installed, `with:<handler>#q`, which appends none and takes no `seq`, in every edition (`spec/26 §6` rule 4, #1544):
 
 ```json
 {

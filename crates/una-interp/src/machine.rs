@@ -3300,6 +3300,15 @@ impl<'p, 'w> Machine<'p, 'w> {
             .get(cap)
             .cloned()
             .ok_or_else(|| fault(format!("no capability `@{cap}`")))?;
+        // #1544, `spec/26 §6` rule 4: an instance that quiet code installed, `with:<h>#q`, is
+        // in scope only in quiet code, whose running may depend on data above `public`, as
+        // when a function with no effects installs a handler and is called under a `secret`
+        // branch. Its operations append no event and take no `seq`; the handler's code runs as
+        // before, and the events it writes are its own. Natively the runtime starts no event
+        // for such an instance either (`una_rt::host::event`).
+        if crate::concurrency::is_quiet_install(instance.id()) {
+            return self.serve(&instance, capability, op, args, span);
+        }
         let names: Vec<String> = match self.index.capabilities.get(capability) {
             Some(ops) => ops
                 .iter()
