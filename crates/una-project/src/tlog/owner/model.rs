@@ -1843,7 +1843,9 @@ fn client_view(
             vec![crate::client::Omission::Document("checkpoint".to_owned())],
         ),
         Err(crate::client::OpenError::Omitted(omission, why)) => (Err(why), vec![omission]),
-        Err(crate::client::OpenError::Refused(why)) => (Err(why), Vec::new()),
+        Err(
+            crate::client::OpenError::Refused(why) | crate::client::OpenError::Evidence(_, why),
+        ) => (Err(why), Vec::new()),
     }
 }
 

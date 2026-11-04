@@ -1016,7 +1016,7 @@ fn the_first_place_whose_copy_verifies_is_taken() {
         .map(|registry| registry.point.checkpoint.size)
         .map_err(|error| match error {
             OpenError::Unavailable(why) | OpenError::Omitted(_, why) => Attempt::Unavailable(why),
-            OpenError::Refused(why) => Attempt::Refused(why),
+            OpenError::Refused(why) | OpenError::Evidence(_, why) => Attempt::Refused(why),
         })
     });
     assert_eq!(fetched.value, Some((2, "file:///good".to_owned())));
@@ -4095,14 +4095,14 @@ fn the_last_root_expires_by_the_latest_checkpoints_time() {
     ));
 }
 
-/// The client's prefix proof (`spec/30 §11` rule 9): a latest checkpoint of the lock's point's
-/// own size that names the last root while the point names an older one is a second checkpoint
-/// of that size, refused (U7010), never a proof.
-#[test]
-fn a_latest_checkpoint_of_the_points_size_is_no_prefix_proof() {
+/// The registry of [`rotated_with_older_point`] served by a place whose latest checkpoint is of
+/// the lock's point's own size and names the last root, signed by the log and cosigned by the
+/// current witnesses: with the point, two checkpoints of one size naming different versions.
+fn same_size_latest() -> Option<(TestRegistry, Point, Memory, u64)> {
     let (registry, at) = rotated_with_older_point(2);
-    let Point::At { size, .. } = &at else {
-        panic!("the rotated registry's point is at a size")
+    let size = match &at {
+        Point::At { size, .. } => *size,
+        _ => return None,
     };
     let point_text = text_of(&registry.files[&format!("checkpoint/{size}")]);
     let older_line = format!(
@@ -4117,6 +4117,50 @@ fn a_latest_checkpoint_of_the_points_size_is_no_prefix_proof() {
         "checkpoint".to_owned(),
         resigned(&registry, &same_size_text, &registry.keys.witnesses, NOW),
     );
+    Some((registry, at, place, size))
+}
+
+/// The client's prefix proof (`spec/30 §11` rule 9): a latest checkpoint of the lock's point's
+/// own size that names the last root while the point names an older one is a second checkpoint
+/// of that size, refused (U7010), never a proof, and recorded as evidence against the registry,
+/// the two versions and the places read, as two copies of a kept checkpoint are.
+#[test]
+fn a_latest_checkpoint_of_the_points_size_is_no_prefix_proof() {
+    let (registry, at, place, size) = same_size_latest().unwrap();
+    match Registry::open_with("acme", &place, &registry.pin(), &at, &Floors::default()) {
+        Err(OpenError::Evidence(misbehavior, why)) => {
+            assert!(why.contains("two checkpoints of size"), "{why}");
+            assert_eq!(
+                misbehavior,
+                Misbehavior::Equivocation {
+                    size,
+                    versions: vec![1, 2],
+                    places: vec!["memory".to_owned()],
+                }
+            );
+        }
+        other => panic!("{:?}", other.err()),
+    }
+}
+
+/// Evidence against a registry needs both copies signed by the log: a point of the latest
+/// checkpoint's size whose log signature does not verify is refused (U7010) as before, and
+/// records no equivocation, since a place alone could have made it.
+#[test]
+fn a_same_size_point_the_log_did_not_sign_is_no_evidence() {
+    let (registry, at, mut place, size) = same_size_latest().unwrap();
+    let path = format!("checkpoint/{size}");
+    let text = text_of(&place.files[&path]);
+    // The point's text, signed by another key under the log's name.
+    let forger = keypair(77, &registry.keys.log.1.name);
+    let mut forged = format!(
+        "{text}\n{}",
+        registry::sign_line(&forger.0, &registry.keys.log.1, &text)
+    );
+    for (pair, key) in &registry.keys.witnesses {
+        forged.push_str(&registry::cosign_line(pair, key, &text, NOW - 10 * DAY));
+    }
+    place.files.insert(path, forged.into_bytes());
     match Registry::open_with("acme", &place, &registry.pin(), &at, &Floors::default()) {
         Err(OpenError::Refused(why)) => assert!(why.contains("two checkpoints of size"), "{why}"),
         other => panic!("{:?}", other.err()),

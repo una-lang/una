@@ -146,6 +146,11 @@ pub(crate) fn open_first<'t>(
         open(source, transport, point, itaoca, lock_floor).map_err(|error| match error {
             OpenError::Unavailable(why) | OpenError::Omitted(_, why) => Attempt::Unavailable(why),
             OpenError::Refused(why) => Attempt::Refused(why),
+            // Evidence against the registry (`spec/30 §11` rule 9): refused, and said as such.
+            OpenError::Evidence(misbehavior, why) => Attempt::Refused(format!(
+                "{why}; {}",
+                una_project::registry::audit::Evidence::from(misbehavior).text(name)
+            )),
         })
     });
     let mut notes: Vec<String> = fetched

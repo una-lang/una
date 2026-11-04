@@ -295,14 +295,19 @@ enum Proof {
     /// No place serves a document the proof needs: the documents unserved, the tiles' paths,
     /// and why, one sentence.
     Missing(Vec<String>, String),
+    /// The latest checkpoint, accepted under the last root version, which it names, is of the
+    /// point's own size: with the point, which names an older version, two checkpoints of one
+    /// size (`spec/30 §11` rule 9). Holds the version the latest one names.
+    SameSize(u64),
 }
 
 /// Proves the lock's point, the checkpoint of `size` and root `hash`, a prefix of the latest
 /// checkpoint, which must name the last root version of `chain`: one more checkpoint read and
 /// a consistency proof of O(log L) hashes. The latest checkpoint unserved, naming an older
 /// version, or short of cosignatures, or a tile of the proof unserved, leaves it
-/// [`Proof::Missing`]; anything served that does not verify, the log forked included, is an
-/// error, one sentence.
+/// [`Proof::Missing`]; a latest checkpoint of the point's size is [`Proof::SameSize`], which
+/// the caller refuses; anything else served that does not verify, the log forked included, is
+/// an error, one sentence.
 fn prefix_proof(
     transport: &dyn Transport,
     chain: &[(Root, String)],
@@ -318,7 +323,7 @@ fn prefix_proof(
     let latest = String::from_utf8(latest).map_err(|_| "`checkpoint` is not UTF-8".to_owned())?;
     let latest = match accept_checkpoint(&latest, chain, Retired::Count) {
         Ok(latest) => latest,
-        Err(OpenError::Refused(why)) => return Err(why),
+        Err(OpenError::Refused(why) | OpenError::Evidence(_, why)) => return Err(why),
         Err(other) => return missing(&other.message()),
     };
     let last = chain.last().map_or(0, |(root, _)| root.version);
@@ -338,9 +343,7 @@ fn prefix_proof(
     if to == size {
         // Every copy of one size's checkpoint names one root version (`spec/30 §11` rule 9):
         // the latest names the last version, the point an older one.
-        return Err(format!(
-            "its latest checkpoint and the lock's point are two checkpoints of size {size} that name different root versions"
-        ));
+        return Ok(Proof::SameSize(latest.version));
     }
     let mut tiles = Tiles::new(transport, to);
     let proof = match tiles.consistency(size) {
@@ -362,6 +365,17 @@ fn prefix_proof(
         checkpoint: latest.document,
         consistency: proof,
     }))
+}
+
+/// The root version that the checkpoint `document` of `size` names, when it is a checkpoint of
+/// that size of the log of that version, in `chain`, and signed by that log's key: a copy the
+/// log signed, whatever its cosignatures. O(1) signature checks.
+fn log_signed(document: &str, chain: &[(Root, String)], size: u64) -> Option<u64> {
+    let signed = note::parse_note(document).ok()?;
+    let checkpoint = note::parse_checkpoint(&signed.text).ok()?;
+    let root = named_root(&checkpoint, chain).ok()?;
+    (checkpoint.size == size && checkpoint.origin == root.log.name && signed.signed_by(&root.log))
+        .then_some(root.version)
 }
 
 /// Whether a retired witness's cosignatures count on the checkpoints a client reads
@@ -549,15 +563,21 @@ pub enum OpenError {
     Omitted(Omission, String),
     /// What it served does not verify: evidence against it (U7010).
     Refused(String),
+    /// What it served does not verify, and its log's own signatures show the registry's
+    /// misbehavior: refused (U7010) as [`OpenError::Refused`] is, with the typed record of it
+    /// that `una ita audit` reports as evidence against the registry
+    /// ([`Misbehavior::Equivocation`]).
+    Evidence(Misbehavior, String),
 }
 
 impl OpenError {
     /// The sentence that says why.
     pub fn message(self) -> String {
         match self {
-            OpenError::Unavailable(why) | OpenError::Omitted(_, why) | OpenError::Refused(why) => {
-                why
-            }
+            OpenError::Unavailable(why)
+            | OpenError::Omitted(_, why)
+            | OpenError::Refused(why)
+            | OpenError::Evidence(_, why) => why,
         }
     }
 }
@@ -905,7 +925,9 @@ impl<'t> Registry<'t> {
     /// checkpoint accepted, and its highest root version accepted, below which no root chain is
     /// accepted, so a place that hides a newer root version is refused. A document the place
     /// does not serve, or cannot read, is [`OpenError::Unavailable`]; anything served that does
-    /// not verify is [`OpenError::Refused`]. Nothing of a message is matched to tell them apart.
+    /// not verify is [`OpenError::Refused`], or [`OpenError::Evidence`] when the log signed two
+    /// checkpoints of the lock's point's size naming different root versions (`spec/30 §11` rule
+    /// 9). Nothing of a message is matched to tell them apart.
     pub fn open_with(
         source: &str,
         transport: &'t dyn Transport,
@@ -1007,6 +1029,29 @@ impl<'t> Registry<'t> {
                         unproven.extend(documents.into_iter().map(Omission::Document));
                         unproven_why = why;
                     }
+                    Ok(Proof::SameSize(latest)) => {
+                        let why = format!(
+                            "its latest checkpoint and the lock's point are two checkpoints of size {size} that name different root versions"
+                        );
+                        // Evidence against the registry only when its log signed both copies:
+                        // the latest one is accepted, the point is verified here under the
+                        // version it names. A point the log did not sign is refused alone.
+                        return Err(match log_signed(&document, &chain, *size) {
+                            Some(version) if version != latest => {
+                                let mut versions = vec![version, latest];
+                                versions.sort_unstable();
+                                OpenError::Evidence(
+                                    Misbehavior::Equivocation {
+                                        size: *size,
+                                        versions,
+                                        places: transport.describe_all(),
+                                    },
+                                    says(format!("{why}, both signed by its log")),
+                                )
+                            }
+                            _ => refused(why),
+                        });
+                    }
                     Err(why) => return Err(refused(why)),
                 }
             }
@@ -1027,6 +1072,7 @@ impl<'t> Registry<'t> {
                 ),
                 OpenError::Omitted(omission, why) => OpenError::Omitted(omission, says(why)),
                 OpenError::Refused(why) => refused(why),
+                OpenError::Evidence(misbehavior, why) => OpenError::Evidence(misbehavior, says(why)),
             })?;
         let point_k = chain
             .iter()
@@ -1582,7 +1628,9 @@ impl<'t> Registry<'t> {
                 }
                 return Err(self.unserved(why));
             }
-            Err(OpenError::Refused(why) | OpenError::Omitted(_, why)) => {
+            Err(
+                OpenError::Refused(why) | OpenError::Omitted(_, why) | OpenError::Evidence(_, why),
+            ) => {
                 return Err(self.refuse(why));
             }
         };

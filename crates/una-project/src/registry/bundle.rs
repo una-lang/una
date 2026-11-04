@@ -570,7 +570,7 @@ fn verify_source(
                 Err(OpenError::Omitted(omission, why)) => {
                     return Err((index, Failure::Omitted(omission, why)));
                 }
-                Err(error @ OpenError::Refused(_)) => {
+                Err(error @ (OpenError::Refused(_) | OpenError::Evidence(..))) => {
                     return Err((index, Failure::Refused(error.message())));
                 }
             }
