@@ -1,7 +1,7 @@
 # 0126. Module constants: named values declared at the top level
 
 - Status: Proposed
-- Date: 2026-10-27
+- Date: 2026-10-27 (revised 2026-11-04: ownership, authority, the costs of each option, Questions 7 and 8)
 - Deciders:
 - Resolves: issue #949
 - Related:
@@ -10,11 +10,15 @@
   - ADR 0104 and `spec/25` (units of measure), whose rule 3 of §3 gives a constant expression the unit its context expects;
   - ADR 0114 and `spec/29` (`F64`), whose operations are exactly specified, so that a value folded at compile time equals the one computed at run time;
   - ADR 0121 (the terms of a preview edition), whose rule 1 lets edition `0.4` add a construct that widens what a program can do;
-  - ADR 0061 (the memory budget), which counts every value a run constructs.
+  - ADR 0061 (the memory budget), which counts every value a run constructs;
+  - `spec/17` (the memory model), whose `edit` and `take` conventions apply to bindings and places;
+  - `spec/05 §6` and ADR 0038 D2, by which capability references and effectful function values are second-class and cannot be bound, stored or returned.
 - Target: edition `0.4` (ADR 0116 rule 0). Editions `0.1` to `0.3` do not change.
 - Amends:
   - **Grammar:** `spec/02 §1` (`decl` gains `constant_decl`), `§7` (a constant name is a `primary`), and, under Question 4, `§2` (a range bound may name a constant);
-  - **Lexical structure:** `spec/01 §5` (no new keyword: `let` at the top level);
+  - **Lexical structure:** `spec/01 §5` (no new keyword: `let`, reserved in every edition, at the top level);
+  - **Memory model:** `spec/17 §2`, `§3` (a constant is neither an editable binding nor a local binding, Question 7);
+  - **Capabilities:** `spec/05 §6` (a constant's type holds no capability and no function type, Question 8);
   - **Static semantics:** `spec/10 §8` (the typing of a constant), `§11` (the lower-case namespace holds constants; a cycle among constants), `§12`;
   - **Verification:** `spec/12 §3` (the `refinement` obligation of a constant), `§4` (a reference is its value);
   - **Dynamic semantics:** `spec/11 §2` (a reference evaluates to the value);
@@ -38,6 +42,7 @@ Each question changes what a programmer writes or can rely on, and states its re
    - **(b)** A new contextual keyword, such as `constant pi: F64 = ...`, as `measure` is a contextual keyword for units.
    - **Cost of (a):** a block-local `let` and a module `let` share a word; the type annotation, required at the top level and optional in a block, tells them apart on sight.
    - **Cost of (b):** one more keyword, and one more thing to teach; it buys nothing that the required annotation does not.
+   - **Complexity:** the same for both: parsing a declaration is O(its length) and adds no lookahead, since a top-level `let` is a declaration in every position where it can appear. (b) also adds one entry to the contextual-keyword check of each top-level line, O(1).
    - **Decided:**
 
    ```una
@@ -53,6 +58,7 @@ Each question changes what a programmer writes or can rely on, and states its re
    - **Recommended: yes,** a constant expression (rule 3). The compiler computes it at check time, once, with the same results as a run would give, and the value is exact everywhere: in queries, in traces, in native code.
    - **The alternative** is a module value computed when the program starts, from any expression without effects. It needs an initialization order, a story for a value that fails to compute, and an evaluation the verifier cannot see through.
    - **Cost to the programmer:** a value that needs a call, as `sqrt(2.0)` or a parsed `Decimal`, is written as a function instead, as today.
+   - **Complexity:** with the recommendation, checking costs O(total size of the values) once, a scalar reference costs O(1) at run time, and program start costs nothing. With the alternative, start costs the evaluation of every module value, O(sum of their costs), which is unbounded for an arbitrary effect-free expression (a recursive function), plus an O(modules + edges) initialization order; each reference costs O(1) at run time, but the verifier must treat it as an uninterpreted symbol, so each obligation that uses it needs a hypothesis it cannot have, or a proof of the initializer's postcondition.
    - **Decided:**
 
    ```una
@@ -68,6 +74,7 @@ Each question changes what a programmer writes or can rely on, and states its re
 4. **May a constant appear in types and contracts?**
    - **Recommended: yes.** In `requires`, `ensures`, `where` refinements and `given` lines, a constant name is an ordinary expression. In a range of a type (`Int in 1..max_items`), a bound may name a constant of an integer type, since after substitution it is a literal; `spec/02 §2`'s `range` gains that form. The verifier sees the literal in every case.
    - **Cost to the programmer:** none. The cost to the implementation is a resolution of names inside types, which refinements already need for `where`.
+   - **Complexity:** resolving a bound is one O(1) lookup in the module's name table; the substituted bound is a literal, so the query is what a literal range gives. The alternative, constants only in bodies, saves that lookup and nothing else.
    - **Decided:**
 
    ```una
@@ -80,11 +87,37 @@ Each question changes what a programmer writes or can rely on, and states its re
 5. **Which types may a constant have?**
    - **Recommended:** every type whose values a constant expression can write (rule 3): `Int` and the fixed-width integers, `F64`, `Decimal[s]`, `Text`, `Bool`, `Unit`, measured and refined forms of these, and record, sum and list types whose contents are such values. Not function types, not capability types, not `Map` or the collections of `spec/28`, which have no literal.
    - **Cost to the programmer:** a constant map is written as a list of pairs, or built by a function.
+   - **Complexity:** a scalar constant costs O(1) per reference everywhere; a record or list constant costs O(size) per reference in Core and in queries (rule 8, with the encoder's sharing) and O(size) per construction at run time, unless the engine shares it. Admitting `Map` would need a check-time hash or tree construction, O(n log n) or O(n) expected, and a canonical order for its encoding; it is left out for that reason, not for a soundness one.
    - **Decided:**
 
 6. **`std.time` declares its constants in Una.**
    - **Recommended: yes.** `millisecond`, `second` and `minute` become `pub let` declarations of `crates/una-check/src/std/time.una`, and the built-in special case (`STD_TIME_CONSTANTS`, `Entity::Constant`) is removed. Nothing changes for a program: the names, types and values stay.
    - **Cost to the programmer:** none.
+   - **Complexity:** the lookup of a `std.time` name moves from a built-in table to the module's name table, both O(1); one special case of the checker goes away.
+   - **Decided:**
+
+7. **Ownership: may a constant be passed with `edit` or `take`?**
+   - **Recommended: no marker applies to a constant.** A constant is not a binding of the function that uses it: it is neither an editable binding (`spec/17 §2` rule 1) nor a local binding (`spec/17 §3` rule 2). So `max_items = 2` and `f(edit max_items)` are U2019, as for a plain `let`, and `f(take origin)` is U2020, as for a field. A plain use of a constant is a value, and a function that takes a parameter by `take` receives it after `let edit copy = origin`, as any non-local value is passed today.
+   - **The alternative** lets `take origin` mean "a fresh copy of the value". It is sound, since the value is substituted (rule 8), but it makes `take` mean two things: consume a binding, or copy a constant. It also hides an O(size) construction behind a marker that, for a binding, promises a move.
+   - **Cost to the programmer:** one `let edit` line where a constant is handed to a `take` parameter.
+   - **Complexity:** the recommendation adds no check: a constant already fails the existing tests for a place and for a local binding. Under the alternative, each `take` of a record or list constant constructs it, O(size), as the recommendation's `let edit` line does, so the cost is the same and only visibility differs.
+   - **Decided:**
+
+   ```una
+   pub let origin: Point = Point(x: 0, y: 0)
+
+   pub moved(take p: Point) -> Point = Point(x: p.x + 1, y: p.y)
+
+   pub start() -> Point
+     let edit p = origin          -- a copy, made visible
+     moved(take p)                -- not moved(take origin): U2020
+   ```
+
+8. **Capabilities and authority: what may a constant's type hold?**
+   - **Recommended: no capability and no function type,** at any depth, so that a constant can never carry authority. A capability reference is not a value (`spec/05 §6`): naming one as a constant's value is U3005, as a `let` of one is. A declared type that is, or contains, a function type is U2041, "a constant cannot hold a function": rule 3 admits no lambda, so no value could flow into it, and ruling the type out says so at the declaration rather than at the value. Importing a constant therefore grants nothing: authority still enters a program only through `uses`, handlers and the grants of `una run` (`spec/05`, `spec/13 §5`).
+   - **The alternative** admits pure function values, `fn` types without `uses` and `fails`, named at the top level. It needs lambdas in rule 3, a check-time closure representation, and a reference that is a call target rather than a literal; the verifier would see an application, not a value. A named function already does this job.
+   - **Cost to the programmer:** none beyond writing a function as a function.
+   - **Complexity:** checking the declared type is one traversal, O(size of the type). The alternative adds O(size of the closure) at each reference in Core and a call at run time.
    - **Decided:**
 
 ## Glossary
@@ -127,7 +160,7 @@ In one paragraph: a module may declare a constant, `[pub] let name: type = value
    - parentheses around a constant expression;
    - the name of a constant of this module or an imported one.
 
-   Nothing else: not a call, a method, a lambda, a capability reference, `attempt`, `fail`, `checked`, `if`, `when`, `result`, `it`, `error`, an interpolated text or a field access. A value outside this set is U2041 at the expression, naming the construct. The set is closed: a later record widens it by a dated amendment.
+   Nothing else: not a call, a method, a lambda, a capability reference (U3005, rule 14), `attempt`, `fail`, `checked`, `if`, `when`, `result`, `it`, `error`, an interpolated text or a field access. A value outside this set is U2041 at the expression, naming the construct. The set is closed: a later record widens it by a dated amendment.
 
 4. **Cycles.** A constant may name constants declared before or after it; a constant that depends on itself, directly or through others, is U1011 at the first declaration of the cycle in path order, once per cycle, as U1003 reports an import cycle.
 
@@ -150,6 +183,10 @@ In one paragraph: a module may declare a constant, `[pub] let name: type = value
 
 12. **`std.time`** (Question 6). `crates/una-check/src/std/time.una` declares `pub let millisecond: Int of Millisecond = 1`, `pub let second: Int of Millisecond = 1000` and `pub let minute: Int of Millisecond = 60_000`, and `STD_TIME_CONSTANTS` and `Entity::Constant` are removed. The names, types and values that `spec/26 §2` states are unchanged.
 
+13. **Ownership** (Question 7, `spec/17`). A constant is neither an editable binding nor a local binding. An assignment to a constant, and an `edit` argument rooted at one, are U2019; a `take` argument that is a constant is U2020. A use of a constant is a value: a backend MAY build it in place, share it or move it into a call (`spec/17 §7` rule 3), since none of these is observable.
+
+14. **Authority** (Question 8, `spec/05`). A constant's declared type contains no capability type and no function type, at any depth (U2041 at the type); a capability reference as its value is U3005. A constant's value holds no authority, and the top level of a module still performs nothing, grants nothing and installs no handler.
+
 ## Security
 
 - **No code runs at load.** A module declares values; it still does nothing until a function is called. There is no initialization order, no module initializer and no effect at the top level: rule 3 admits no call and no capability.
@@ -169,6 +206,11 @@ In one paragraph: a module may declare a constant, `[pub] let name: type = value
 
 No label, rule or theorem of `spec/07` changes. Literals are `public`; a constant is a literal by rule 8, and its declared label applies to each use by the flow rules that apply to any annotated binding.
 
+## Ownership and authority
+
+- **Ownership** (rule 13). A constant is a value, not a binding of any function: no `edit`, no `take`, no assignment. No new aliasing exists, since every use is a fresh value or an unobservable share of an immutable one; the affine rule of `take` (`spec/17 §3` rule 3) is unchanged, because a constant is never taken.
+- **No ambient authority** (rule 14). A constant cannot hold a capability or a function value, so a module that exports constants exports no authority, and an import of a constant from a package (ADR 0122) cannot widen what a program may do. The rules of second-class values (ADR 0038 D2) are unchanged.
+
 ## Costs
 
 | Operation | Time | Memory |
@@ -182,6 +224,20 @@ No label, rule or theorem of `spec/07` changes. Literals are `public`; a constan
 
 The whole addition is linear in the source and in the values. **Scaling tests:** modules of 10, 100, 1,000 and 10,000 constants, each referencing the previous one, check in time growing at most linearly (each doubling at most ×2.3, medians of 9 runs); a constant list of 10, 100, 1,000 and 10,000 elements referenced 100 times in one function checks, elaborates and runs in time linear in the product, in both engines; the cap of rule 5 refuses a chain of 40 squarings at the 4,300-digit cap in time linear in the chain.
 
+### The costs of the options
+
+`n` is the number of constants, `v` the total size of their values, `r` the number of references, `s` the size of one referenced value.
+
+| Option | Check time | Run time | Query size | Memory |
+| --- | --- | --- | --- | --- |
+| **Recommended:** check-time constant, substituted (rules 3, 5, 8) | O(v + n + r) | O(1) per scalar reference, O(s) per record or list construction, or O(1) if shared | O(s) per reference, O(s + r) with `let` sharing | O(v) at check |
+| Module values computed at start (Alternative C) | O(n + edges) for the order; the values are opaque | O(sum of the initializers' costs) at start, unbounded; O(1) per reference | O(1) per reference, but no fact about the value | O(v) for the whole run |
+| Core IR declaration with facts in queries (Alternative D) | O(v + n + r) | O(1) per reference, the value built once per run | O(s) once per query that names it, plus O(1) per reference | O(v) per run |
+| Functions without parameters (Alternative A) | O(r) calls to check | a call per reference, O(s) to build its result | an application per reference, opaque unless inlined | O(s) per call |
+| Scalars only (Alternative E) | O(v + n + r) | O(1) per reference | O(1) per reference | O(n) |
+
+The recommendation has the best average case where it matters: O(1) per scalar reference at run time with no start-up cost, and closed queries the solver discharges with literals. Alternative D is asymptotically better only for a large record or list named many times in one query, and rule 8's sharing closes most of that gap; it remains the path if measurement shows otherwise.
+
 ## Diagnostics
 
 Two new codes, which join `spec/13 §4` with the implementation. U1010 and U2040 are the highest in their domains on `main`; U1011 and U2041 are free on `main` and in every open pull request at the time of writing.
@@ -189,9 +245,9 @@ Two new codes, which join `spec/13 §4` with the implementation. U1010 and U2040
 | Code | Domain | Meaning |
 | --- | --- | --- |
 | U1011 | names | A constant depends on itself, directly or through other constants |
-| U2041 | types | The value of a constant is not a constant expression (a call, a lambda, a capability, an interpolation, a control construct), divides by zero, does not fit its fixed-width type, or exceeds the size caps |
+| U2041 | types | The value of a constant is not a constant expression (a call, a lambda, an interpolation, a control construct), divides by zero, does not fit its fixed-width type, or exceeds the size caps; or its declared type holds a function type |
 
-Existing codes cover the rest: U0101 for `let` at the top level in editions before `0.4`, and for a missing type annotation; U1001 and U1002 for names; U2001, U2002, U2028 and U4001 for a value that does not flow into the declared type; U5001 for a refuted refinement (rule 7); U1005 for the conventions.
+Existing codes cover the rest: U2019 for an assignment or `edit` rooted at a constant, U2020 for `take` of a constant (rule 13); U3005 for a capability reference as a constant's value (rule 14); U0101 for `let` at the top level in editions before `0.4`, and for a missing type annotation; U1001 and U1002 for names; U2001, U2002, U2028 and U4001 for a value that does not flow into the declared type; U5001 for a refuted refinement (rule 7); U1005 for the conventions.
 
 ## Consequences
 
@@ -225,9 +281,10 @@ Each step ships behind edition `0.4`, with its conformance cases, in both engine
 ## Conformance
 
 - **Syntax and names:** a `pub let` with a type parses and resolves; one without a type is U0101 at `=`; `let` at the top level in edition `0.3` is U0101; two constants of one name, and a constant named as a function of the module, are U1002; a `pub let` imported by name resolves, and one without `pub` imported is U1004; a local shadows a constant; a constant named `max__items` is U1005.
-- **Constant expressions:** each form of rule 3 is accepted; a call, a lambda, a capability reference, an interpolated text, an `if`, a `when`, a field access and `result` are each U2041 naming the construct; `1 / 0` and `1 mod 0` are U2041; a cycle of two constants is U1011 once; a constant of 4,301 digits, and a list constant that nests another past 1,000,000 elements, are U2041.
+- **Constant expressions:** each form of rule 3 is accepted; a call, a lambda, an interpolated text, an `if`, a `when`, a field access and `result` are each U2041 naming the construct; `1 / 0` and `1 mod 0` are U2041; a cycle of two constants is U1011 once; a constant of 4,301 digits, and a list constant that nests another past 1,000,000 elements, are U2041.
 - **Typing:** `let n: I32 = 3_000_000_000` is U2041; `let d: Int of Meter = 5 * 2` is accepted and `let d: Int of Meter = other_seconds` is U2028; `let s: secret Int = 1` is accepted and `print(s)` is U4003; `let m: Int in 1..1000 = 500` has a proven `refinement` obligation, `= 0` a refuted one with U5001 at the value and no counterexample note; a record constant whose field is refined gives the obligation at the field.
 - **Substitution and engines:** `una core` shows the value where the source wrote the name; for every operator and type of rule 3, a program that computes with a constant and one that writes the literal give the same output, trace and status in both engines, and the same obligation statuses; a list constant used in a loop of 1,000 iterations under a memory budget behaves as the literal would.
+- **Ownership and authority:** `max_items = 2` and `f(edit max_items)` are U2019; `f(take origin)` is U2020, and `let edit p = origin` then `f(take p)` is accepted; a constant whose value names a capability is U3005; `pub let g: fn(Int) -> Int = ...` is U2041 at the type, as is a record field of a function type.
 - **Types and contracts:** `requires n <= max_items` is proven and refuted by callers as with the literal; `Int in 1..max_items` as a parameter type; a range bound that names a function is U2002 and one that names a `Text` constant is U2002.
 - **`std.time`:** `import std.time (second)` and `2 * second` keep their type and value; the `una std` listing lists the three constants with their types and values.
 - **Canonical form:** `una fmt` writes `pub let x: Int = 1` from `pub let x :Int=1`, and keeps declaration order.
