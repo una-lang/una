@@ -2102,7 +2102,13 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
     // The scripted engine of the runs of `tests/serve_runs/`, in the toolchain's own test builds
     // only, takes the listeners' place (ADR 0123 rule 21).
     #[cfg(feature = "test-hooks")]
-    let scripted = crate::serve::script::install_from_environment();
+    let scripted = match crate::serve::script::install_from_environment() {
+        Ok(scripted) => scripted,
+        Err(message) => {
+            let _ = writeln!(stderr, "error: {message}");
+            return USAGE;
+        }
+    };
     #[cfg(not(feature = "test-hooks"))]
     let scripted = false;
     // Nothing accepts on the listeners until the serve threads of ADR 0123 step 4 take them
@@ -2477,11 +2483,13 @@ fn finish(mut state: State) -> i32 {
 
 /// Ends the run from a started task with `code` at `location`, as an abort of `main` does:
 /// U6003 for the run's memory budget, U6007 for the hard stop, U8001 for a defect (`spec/27
-/// §7`). Never returns.
+/// §7`). Never returns, except in a run that serves, where an abort the run's tasks end by is
+/// recorded and the task ends as its abort says, the root then ending the run
+/// ([`crate::serve::defer_abort`]).
 pub(crate) fn end_run_from_task(code: Code, location: Location, message: String) {
     // In a run that serves, the task ends and every other stops at its next check point, so
     // that the host answers the rights each holds; the root ends the run (`crate::serve`).
-    if crate::serve::defer_abort(code, &location, &message) {
+    if crate::serve::defer_abort(code, &location, &message, false) {
         return;
     }
     let state = STATE.with(|cell| take_state(&mut cell.borrow_mut()));
@@ -2896,7 +2904,7 @@ fn stop_or_abort(
         }
         // In a run that serves, the root stops as a task does, and ends the run with the abort
         // once its tasks have ended (`crate::serve`).
-        Some(state) if crate::serve::defer_abort(code, &location, &message) => {
+        Some(state) if crate::serve::defer_abort(code, &location, &message, true) => {
             state.stopped = Some((code, location, message));
             None
         }
@@ -3232,7 +3240,7 @@ pub fn main_failed(failure: i64) {
     // it. Should it, that is an internal error (U8001, exit code 3), never a failure of `main`.
     // In a run that serves, `main` stops when another task aborted the run, which the root's
     // end reports (`crate::serve`).
-    if failure == -1 && crate::serve::run_aborted() {
+    if failure == -1 && crate::serve::abort_recorded() {
         return;
     }
     debug_assert_ne!(failure, -1, "`main` returned the stop of a task");

@@ -146,8 +146,10 @@ impl Serving {
         }
     }
 
+    /// Whether a started task aborted the run, which lowered the run's entry: every task stops
+    /// at its next check point.
     fn aborted(&self) -> bool {
-        lock(&self.abort).is_some()
+        self.entry.load(Ordering::SeqCst) < RUN_ENTRY
     }
 }
 
@@ -163,10 +165,13 @@ fn is_run_entry(serving: &Serving, (count, _): &Cancel) -> bool {
 }
 
 /// Records the abort of the run with `code` at `location`, when the run serves and the abort is
-/// one the run's tasks end by (not U6007 nor U8001): the first one counts, every task stops at
-/// its next check point, and the root ends the run with it ([`take_abort`]). `false` when the
-/// caller ends the process at once instead.
-pub(crate) fn defer_abort(code: Code, location: &Location, message: &str) -> bool {
+/// one the run's tasks end by (not U6007 nor U8001): the first one counts, and the root ends
+/// the run with it ([`take_abort`]). A started task's abort, `root` false, also lowers the run's
+/// entry, so every task stops at its next check point and its `next` ends `aborted`, as the
+/// interpreter's tasks see an abort of the run. The root's own abort, `root` true, lowers
+/// nothing: the root unwinds through its `tasks` statements, which cancel their tasks, as the
+/// interpreter unwinds it. `false` when the caller ends the process at once instead.
+pub(crate) fn defer_abort(code: Code, location: &Location, message: &str, root: bool) -> bool {
     let Some(serving) = serving() else {
         return false;
     };
@@ -179,14 +184,21 @@ pub(crate) fn defer_abort(code: Code, location: &Location, message: &str) -> boo
             *abort = Some((code, location.clone(), message.to_owned()));
         }
     }
-    serving.entry.store(0, Ordering::SeqCst);
-    crate::interrupt::lowered(&serving.entry);
+    if !root {
+        serving.entry.store(0, Ordering::SeqCst);
+        crate::interrupt::lowered(&serving.entry);
+    }
     true
 }
 
-/// Whether the run serves and one of its tasks aborted it.
+/// Whether the run serves and one of its started tasks aborted it, which every task sees.
 pub(crate) fn run_aborted() -> bool {
     serving().is_some_and(|serving| serving.aborted())
+}
+
+/// Whether the run serves and an abort that ends it was recorded, the root's included.
+pub(crate) fn abort_recorded() -> bool {
+    serving().is_some_and(|serving| lock(&serving.abort).is_some())
 }
 
 /// The abort that ends the run, once its root has ended.
@@ -453,6 +465,11 @@ pub fn next(site: i64) -> i64 {
                 })
         });
         if yielded {
+            // An abort of the run that came meanwhile comes first, as at the loop's head; a
+            // cancellation that came with it does not make the operation `interrupted`.
+            if serving.aborted() {
+                return stopped();
+            }
             if cancelled(&entries) {
                 return interrupted();
             }
@@ -681,25 +698,33 @@ pub fn close(site: i64) -> i64 {
 pub(crate) mod script {
     use super::*;
 
-    /// Installs the scripted engine when the environment names a case: whether it did.
-    pub(crate) fn install_from_environment() -> bool {
+    /// Installs the scripted engine when the environment names a case: whether it did, or why
+    /// the case cannot be read, a missing or invalid `grant.txt` or `script.jsonl` included,
+    /// which the run reports as a usage error before `main`.
+    pub(crate) fn install_from_environment() -> Result<bool, String> {
         // A test build of the runtime: the executable is the process, as for `env_var`.
         #[allow(clippy::disallowed_methods)]
         let Some(dir) = std::env::var_os("UNA_TEST_SERVE_SCRIPT") else {
-            return false;
+            return Ok(false);
         };
         let dir = std::path::PathBuf::from(dir);
-        let grants: Vec<String> = std::fs::read_to_string(dir.join("grant.txt"))
-            .unwrap_or_default()
+        let read = |name: &str| {
+            let path = dir.join(name);
+            std::fs::read_to_string(&path).map_err(|error| {
+                format!("cannot read the serve case's `{}`: {error}", path.display())
+            })
+        };
+        let grants: Vec<String> = read("grant.txt")?
             .lines()
             .filter(|l| !l.trim().is_empty())
             .map(str::to_owned)
             .collect();
+        if grants.is_empty() {
+            return Err(format!("the serve case `{}` names no grant", dir.display()));
+        }
         let specs: Vec<&str> = grants.iter().map(String::as_str).collect();
-        let script = std::fs::read_to_string(dir.join("script.jsonl"))
-            .ok()
-            .and_then(|text| una_http::serve::script::lines(&text).ok())
-            .unwrap_or_default();
+        let script = una_http::serve::script::lines(&read("script.jsonl")?)
+            .map_err(|error| format!("the serve case's `script.jsonl`: {error}"))?;
         let port = Arc::new(una_http::serve::script::ScriptPort::new(
             &specs,
             script,
@@ -712,7 +737,7 @@ pub(crate) mod script {
         let mut serving = Serving::new(Arc::clone(&port) as Arc<dyn Port + Send + Sync>);
         serving.script = Some(port);
         *lock(&SERVING) = Some(Arc::new(serving));
-        true
+        Ok(true)
     }
 
     /// Ends the scripted engine at the run's end and writes what each connection received, one

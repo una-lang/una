@@ -149,10 +149,13 @@ fn run_here(dir: &Path) -> (Vec<Value>, Vec<Value>) {
         virtual_time: true,
     };
     let mut lines = Lines::default();
+    // The depths of `una run` and of a native executable by default: `--max-depth` and the
+    // `--task-depth` of started tasks below it (ADR 0117 rule 2).
     let limits = Limits {
         stop: Some(&stop),
         serve: Some(&port),
-        ..Limits::depth(10_000)
+        task_depth: una_interp::Concurrency::default().task_depth,
+        ..Limits::depth(una_interp::DEFAULT_MAX_DEPTH)
     };
     let run =
         una_interp::run_main(&checked.program, "srv", &mut lines, &host, limits).expect("a `main`");

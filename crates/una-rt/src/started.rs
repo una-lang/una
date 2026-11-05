@@ -465,7 +465,7 @@ fn started(
         match (&stopped, depth) {
             // The run's end by this abort comes first, so the other tasks stop now too.
             (Some((code, location, message)), false) => {
-                if crate::serve::defer_abort(*code, location, message) {
+                if crate::serve::defer_abort(*code, location, message, false) {
                     crate::serve::answer_held(status);
                 }
             }

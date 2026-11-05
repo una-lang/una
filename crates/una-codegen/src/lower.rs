@@ -1695,26 +1695,23 @@ impl<'p> Lowerer<'_, 'p, '_> {
 
     /// A new closure of the lambda `params` to `body`, which captures the values of `env` that
     /// `body` uses and every capability in scope (`spec/11 §4`).
-    /// How many values a closure of `params` and `body` made in `env` captures, before the
-    /// instances of its capabilities: the captures of [`Lowerer::closure`].
-    fn captures(&self, params: &[(Name, Type)], body: &Expr, env: &Env) -> usize {
-        let mut names = BTreeSet::new();
-        vars(body, &mut names);
-        names.extend(env.keys().filter(|key| key.starts_with('$')).cloned());
-        names
-            .into_iter()
-            .filter(|name| !name.starts_with('@'))
-            .filter(|name| !params.iter().any(|(p, _)| p == name))
-            .filter(|name| env.contains_key(name))
-            .count()
-    }
-
     fn closure(
         &mut self,
         params: &'p [(Name, Type)],
         body: &'p Expr,
         env: &Env,
     ) -> Result<Value, CodegenError> {
+        Ok(self.counted_closure(params, body, env)?.0)
+    }
+
+    /// [`Lowerer::closure`], and how many values it captures, which come before the instances of
+    /// its capabilities in its environment.
+    fn counted_closure(
+        &mut self,
+        params: &'p [(Name, Type)],
+        body: &'p Expr,
+        env: &Env,
+    ) -> Result<(Value, usize), CodegenError> {
         let mut names = BTreeSet::new();
         vars(body, &mut names);
         // The type descriptors in scope too: the lambda's body may compare values of a type
@@ -1735,6 +1732,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
             .filter_map(|key| key.strip_prefix('@'))
             .map(str::to_owned)
             .collect();
+        let count = captures.len();
         let values: Vec<Value> = captures
             .iter()
             .map(|(name, _)| name.clone())
@@ -1757,7 +1755,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
         for value in values {
             self.runtime("una_rt_push", &[closure, value]);
         }
-        Ok(closure)
+        Ok((closure, count))
     }
 
     /// `together`, `together for` (`spec/19`) and `first of` (`spec/27 §6`), as the value of
@@ -1985,12 +1983,12 @@ impl<'p> Lowerer<'_, 'p, '_> {
         // a `tasks` statement, which sets it too.
         self.emitter.threads = true;
         let site = self.site(span);
-        let closure = self.closure(&[], task, env)?;
+        let (closure, count) = self.counted_closure(&[], task, env)?;
         // The closure's values come first, in the order of their names, then the instances of
         // the capabilities in scope, which are no captured values: the runtime walks the values
         // only, for the reply rights to move (ADR 0123 rule 4.2, `spec/31 §1` rule 3).
         let captures = if moves {
-            i64::try_from(self.captures(&[], task, env)).map_err(crate::internal)?
+            i64::try_from(count).map_err(crate::internal)?
         } else {
             0
         };

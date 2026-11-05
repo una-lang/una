@@ -396,6 +396,11 @@ impl<'p> Machine<'p, '_> {
             // slot, or end, which another task waits for, or it is a waiter that its
             // cancellation or its deadline ended.
             if run.yield_turn() {
+                // An abort of the run that came meanwhile comes first, as at the loop's head; a
+                // cancellation that came with it does not make the operation `interrupted`.
+                if let Some(abort) = run.aborted() {
+                    return Err(Stop::Abort(abort));
+                }
                 if self.cancelled() {
                     return Err(Stop::Cut(CANCEL));
                 }
