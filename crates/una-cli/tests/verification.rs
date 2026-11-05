@@ -7,6 +7,8 @@
 
 #[path = "common/hermetic.rs"]
 mod hermetic;
+#[path = "common/stand_in.rs"]
+mod stand_in;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -519,17 +521,28 @@ fn a_query_the_solver_rejects_is_u8001_and_exits_with_3() {
     .unwrap();
     std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755)).unwrap();
     std::fs::rename(&staged, &solver).unwrap();
-    let _ = std::fs::remove_dir_all(root.join(".una"));
-    let output = Command::new(env!("CARGO_BIN_EXE_una"))
-        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
-        .env_remove("UNA_PROOF_KEY")
-        .env("UNA_SOLVER_STAND_IN", &solver)
-        .args(["--json", "check", root.to_str().unwrap()])
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(3), "{}", stdout(&output));
+    // A run whose stand-in started too late for its handshake is run again (#1573).
+    let (output, late) = stand_in::check_with_stand_in(|| {
+        let _ = std::fs::remove_dir_all(root.join(".una"));
+        Command::new(env!("CARGO_BIN_EXE_una"))
+            .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+            .env_remove("UNA_PROOF_KEY")
+            .env("UNA_SOLVER_STAND_IN", &solver)
+            .args(["--json", "check", root.to_str().unwrap()])
+            .output()
+            .unwrap()
+    });
+    assert_eq!(
+        output.status.code(),
+        Some(3),
+        "{} (earlier runs: {late:?})",
+        stdout(&output)
+    );
     let document: Value = serde_json::from_str(stdout(&output)).unwrap();
-    assert_eq!(document["diagnostics"][0]["code"], "U8001");
+    assert_eq!(
+        document["diagnostics"][0]["code"], "U8001",
+        "earlier runs: {late:?}"
+    );
 }
 
 #[test]
@@ -1956,18 +1969,30 @@ fn a_query_the_solver_rejects_is_an_internal_error_11() {
             "module app\n\npub kind Pos = Int where it > 0\n\npub one() -> Pos = 1\n",
         )],
     );
-    let output = Command::new(env!("CARGO_BIN_EXE_una"))
-        .env("HOME", scratch.join("home"))
-        .env_remove("UNA_PROOF_KEY")
-        .env("UNA_SOLVER_STAND_IN", bin.join("z3"))
-        .args(["--json", "check"])
-        .arg(&root)
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(3), "{}", stdout(&output));
+    // A run whose stand-in started too late for its handshake is run again (#1573).
+    let (output, late) = stand_in::check_with_stand_in(|| {
+        Command::new(env!("CARGO_BIN_EXE_una"))
+            .env("HOME", scratch.join("home"))
+            .env_remove("UNA_PROOF_KEY")
+            .env("UNA_SOLVER_STAND_IN", bin.join("z3"))
+            .args(["--json", "check"])
+            .arg(&root)
+            .output()
+            .unwrap()
+    });
+    assert_eq!(
+        output.status.code(),
+        Some(3),
+        "{} (earlier runs: {late:?})",
+        stdout(&output)
+    );
     let document: Value = serde_json::from_str(stdout(&output)).unwrap();
     let diagnostics = document["diagnostics"].as_array().unwrap();
-    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "{diagnostics:?} (earlier runs: {late:?})"
+    );
     assert_eq!(diagnostics[0]["code"], "U8001");
     let message = diagnostics[0]["message"].as_str().unwrap();
     assert!(
