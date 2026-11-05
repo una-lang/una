@@ -442,8 +442,10 @@ mod tests {
     /// Asserts that `wait(timeout)` ends at or after `timeout` in every run, and, as a median,
     /// less than [`EXCESS`] after the machine's own latency (#1151, P13; #1573). That latency
     /// is measured beside the wait: each of 20 waits of 1.3 to 4.3 ms, whose rest past the
-    /// whole milliseconds is 300 us, is paired with a plain `std::thread::sleep` of the same
-    /// length just before it, which ends as late as the system wakes a sleeper. On a quiet
+    /// whole milliseconds is 300 us, is paired with a plain `std::thread::sleep` of that rest,
+    /// [`REST`], just before it, which ends as late as the system wakes a sleeper. A sleep of
+    /// the whole timeout is no floor: on macOS its timer slack makes it later than the wait,
+    /// which polls the whole milliseconds and sleeps only the rest. On a quiet
     /// machine that is a few tens of microseconds, so the bound is tighter than a fixed one;
     /// on a loaded machine both medians grow alike, while the old rounding, late by about
     /// 700 us in every wait on top of that latency, still fails. A round whose medians miss

@@ -1081,28 +1081,45 @@ fn words(text: &str) -> impl Iterator<Item = &str> {
         .filter(|w| !w.is_empty())
 }
 
-/// Whether a rename may not take `name`: a word of the file, so any binding, declaration,
-/// import or call it holds; a word of the prelude or `std.testing`; or a keyword or reserved
-/// word of any edition. Every name visible at an occurrence is one of these (rule 3a).
-fn taken(text: &str, name: &str) -> bool {
-    words(text).any(|w| w == name)
-        || PRELUDES
-            .iter()
-            .any(|prelude| words(prelude).any(|w| w == name))
-        || crate::token::Keyword::from_word(name).is_some()
-        || crate::keywords::reserved_for_later(name).is_some()
-        || crate::keywords::reserved_in(name, KeywordSet::V0_2).is_some()
-        || crate::keywords::is_contextual(name)
+/// The names a rename may not take (rule 3a): every word of the file, so any binding,
+/// declaration, import or call it holds; every word of the prelude and `std.testing`; and the
+/// keywords and reserved words of every edition. Every name visible at an occurrence is one of
+/// these. The words are read once per file into a set, so each look-up is O(log w) for `w`
+/// distinct words; reading the whole file again for each name made the repairs of a file with
+/// many `_x` errors O(errors x file size) (#1573). The set holds the words of the text as it
+/// is, never the names earlier repairs propose: each repair is computed alone, as before.
+struct Taken<'a> {
+    words: BTreeSet<&'a str>,
 }
 
-/// `base`, or the first of `base2`, `base3`, ... that is not [`taken`].
-fn fresh(text: &str, base: &str) -> String {
-    if !taken(text, base) {
+impl<'a> Taken<'a> {
+    /// The words of `text` and of the preludes: O(n log w) for `n` words.
+    fn of(text: &'a str) -> Taken<'a> {
+        let mut words: BTreeSet<&'a str> = self::words(text).collect();
+        for prelude in PRELUDES {
+            words.extend(self::words(prelude));
+        }
+        Taken { words }
+    }
+
+    /// Whether a rename may not take `name`.
+    fn contains(&self, name: &str) -> bool {
+        self.words.contains(name)
+            || crate::token::Keyword::from_word(name).is_some()
+            || crate::keywords::reserved_for_later(name).is_some()
+            || crate::keywords::reserved_in(name, KeywordSet::V0_2).is_some()
+            || crate::keywords::is_contextual(name)
+    }
+}
+
+/// `base`, or the first of `base2`, `base3`, ... that is not taken.
+fn fresh(taken: &Taken<'_>, base: &str) -> String {
+    if !taken.contains(base) {
         return base.to_owned();
     }
     (2..10_000)
         .map(|n| format!("{base}{n}"))
-        .find(|name| !taken(text, name))
+        .find(|name| !taken.contains(name))
         .unwrap_or_else(|| format!("{base}_renamed"))
 }
 
@@ -1153,6 +1170,8 @@ pub(crate) fn underscore_renames(
         return;
     };
     let offset = |i: usize| lines.get(i).map_or(text.len(), |l| l.start);
+    // Read once, when the first rename needs it.
+    let mut taken: Option<Taken<'_>> = None;
     for error in errors.iter_mut() {
         if error.code != Code::U0001 || !error.message.contains("`_`") || !error.repairs.is_empty()
         {
@@ -1224,7 +1243,7 @@ pub(crate) fn underscore_renames(
         if !exact {
             continue;
         }
-        let new = fresh(text, base);
+        let new = fresh(taken.get_or_insert_with(|| Taken::of(text)), base);
         let mut replacement = String::new();
         let mut cursor = first;
         for &i in &occurrences {
