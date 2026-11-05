@@ -84,6 +84,19 @@ impl Live {
     }
 }
 
+/// Polls `f` every few milliseconds for up to `limit` and returns its last value, so a count that
+/// settles a moment after the event that causes it is read once settled, not at once.
+fn settled<T: PartialEq>(limit: Duration, want: &T, f: impl Fn() -> T) -> T {
+    let end = Instant::now() + limit;
+    loop {
+        let value = f();
+        if value == *want || Instant::now() >= end {
+            return value;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
 fn ok(body: &str) -> Reply {
     Reply {
         status: 200,
@@ -224,7 +237,11 @@ fn a_peer_over_its_connections_is_closed_at_once() {
     let mut byte = [0u8; 1];
     // Closed by the host without a byte.
     assert_eq!(c.read(&mut byte).unwrap_or(0), 0);
-    assert_eq!(live.server.shared().grants[0].counters().connections, 2);
+    // The accept loop holds a slot for an instant while it attempts the refused connection.
+    let held = settled(Duration::from_secs(5), &2, || {
+        live.server.shared().grants[0].counters().connections
+    });
+    assert_eq!(held, 2);
     drop((a, b));
     live.server.stop();
     live.server.join();
@@ -485,7 +502,8 @@ fn a_fault_while_accepting_gives_back_the_slot_and_accepting_goes_on() {
         matches!(first.read(&mut byte), Ok(0)),
         "the faulted connection is closed"
     );
-    assert_eq!(shared.faults(), 1);
+    // The fault is counted just after the connection is closed.
+    assert_eq!(settled(Duration::from_secs(5), &1, || shared.faults()), 1);
     ask(8);
     assert!((0..shared.threads).all(|t| !shared.is_ended(t)));
     shared.fail_next_bursts(1);
