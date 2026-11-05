@@ -26,6 +26,7 @@ pub mod server;
 #[cfg(feature = "test-hooks")]
 pub mod sim;
 pub mod thread;
+pub mod trace;
 
 use std::fs::{File, Metadata, OpenOptions};
 use std::io::Read;

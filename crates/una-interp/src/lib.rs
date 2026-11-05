@@ -13,6 +13,7 @@ mod harness;
 mod host;
 mod json;
 mod machine;
+pub mod serve_trace;
 pub mod stopping;
 mod tasks;
 mod trace;

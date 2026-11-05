@@ -20,6 +20,13 @@
 //!   bytes that are UTF-8.
 //! - `run.jsonl`: `{"completion", "output"}`, then each event of the trace as `una run --json`
 //!   writes it.
+//! - `revealed.jsonl` (optional): the same lines from a run whose trace writes the values of the
+//!   events of the host's `HttpServer` without the redaction of their labels, still in the
+//!   reduced form of ADR 0123 rule 1 (`spec/31 §1` rule 7), which only the scripted engine of
+//!   these tests can ask for (`Port::reveals_trace`): so the reduced form of both engines is
+//!   compared, byte for byte, although a run's labels redact every field of a request and a
+//!   reply.
+//! - `secrets.txt` (optional): texts, one per line, that neither trace may hold anywhere.
 //!
 //! After the program ends the engine's clock runs one more hour, so every timer ends, and then
 //! every counter, reserve and share must be zero, and no reply right may be left.
@@ -94,13 +101,18 @@ fn lines(path: &Path) -> Vec<Value> {
 const HANG: std::time::Duration = std::time::Duration::from_secs(60);
 
 fn run(dir: &Path) -> (Vec<Value>, Vec<Value>) {
+    run_with(dir, false)
+}
+
+/// [`run`], with the trace revealed when `reveal` (`revealed.jsonl`).
+fn run_with(dir: &Path, reveal: bool) -> (Vec<Value>, Vec<Value>) {
     let stack = una_interp::stack_bytes(10_000).unwrap();
     let (sender, receiver) = std::sync::mpsc::channel();
     let owned = dir.to_path_buf();
     std::thread::Builder::new()
         .stack_size(stack)
         .spawn(move || {
-            let _ = sender.send(run_here(&owned));
+            let _ = sender.send(run_here(&owned, reveal));
         })
         .unwrap();
     receiver
@@ -108,7 +120,7 @@ fn run(dir: &Path) -> (Vec<Value>, Vec<Value>) {
         .unwrap_or_else(|error| panic!("{}: the run did not end: {error}", dir.display()))
 }
 
-fn run_here(dir: &Path) -> (Vec<Value>, Vec<Value>) {
+fn run_here(dir: &Path, reveal: bool) -> (Vec<Value>, Vec<Value>) {
     let grants: Vec<String> = std::fs::read_to_string(dir.join("grant.txt"))
         .expect("grant.txt")
         .lines()
@@ -143,6 +155,9 @@ fn run_here(dir: &Path) -> (Vec<Value>, Vec<Value>) {
         lines(&dir.join("script.jsonl")),
         Box::new(move || stopping.request_local()),
     );
+    if reveal {
+        port.reveal();
+    }
     let host = Host {
         grants: vec![Grant::Console],
         keys: BTreeMap::new(),
@@ -197,6 +212,25 @@ fn text(values: &[Value]) -> String {
     values.iter().map(|v| format!("{v}\n")).collect()
 }
 
+/// The case's `secrets.txt`: texts that no trace of it may hold.
+fn secrets(dir: &Path) -> Vec<String> {
+    std::fs::read_to_string(dir.join("secrets.txt"))
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Fails when `trace`, a trace of the case `dir` named `name`, holds one of its secrets.
+fn hides_secrets(dir: &Path, name: &str, trace: &str, failures: &mut Vec<String>) {
+    for secret in secrets(dir) {
+        if trace.contains(&secret) {
+            failures.push(format!("{}: {name} holds `{secret}`", dir.display()));
+        }
+    }
+}
+
 #[test]
 fn every_serve_run_gives_its_expected_bytes_and_trace() {
     // A test, not a library crate: `UNA_BLESS` asks it to write the expected files.
@@ -207,7 +241,16 @@ fn every_serve_run_gives_its_expected_bytes_and_trace() {
     let mut failures = Vec::new();
     for dir in dirs {
         let (wire, ran) = run(&dir);
-        for (name, got) in [("expected.jsonl", text(&wire)), ("run.jsonl", text(&ran))] {
+        let mut files = vec![("expected.jsonl", text(&wire)), ("run.jsonl", text(&ran))];
+        if dir.join("revealed.jsonl").exists() {
+            let (revealed_wire, revealed) = run_with(&dir, true);
+            assert_eq!(revealed_wire, wire, "{}: the wire", dir.display());
+            files.push(("revealed.jsonl", text(&revealed)));
+        }
+        for (name, got) in &files[1..] {
+            hides_secrets(&dir, name, got, &mut failures);
+        }
+        for (name, got) in files {
             let path = dir.join(name);
             if bless {
                 std::fs::write(&path, &got).expect("write an expected file");
@@ -302,41 +345,33 @@ fn a_reply_never_follows_an_abort_of_the_run_at_any_switch_point() {
 }
 
 /// The runtime library with its test hook of the scripted engine (`una-rt`'s `test-hooks`),
-/// built once for this test binary beside the plain one, which is then built again, so that
-/// the other tests of the toolchain link the plain runtime: its path. `cargo test` builds
-/// `una-rt`'s static library only when asked.
+/// built once for this test binary in a target directory of its own, so that the plain
+/// `libuna_rt.a` that the other tests of the toolchain link is never replaced, even for a
+/// moment: its path. `cargo test` builds `una-rt`'s static library only when asked.
 fn hooked_runtime() -> PathBuf {
     static BUILT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     BUILT
         .get_or_init(|| {
             let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-            let profile_args: &[&str] = if cfg!(debug_assertions) {
-                &[]
+            let (profile_args, profile): (&[&str], &str) = if cfg!(debug_assertions) {
+                (&[], "debug")
             } else {
-                &["--release"]
+                (&["--release"], "release")
             };
-            let build = |features: &[&str]| {
-                let status = std::process::Command::new(env!("CARGO"))
-                    .args(["build", "--quiet", "--locked", "-p", "una-rt"])
-                    .args(profile_args)
-                    .args(features)
-                    .current_dir(&root)
-                    .status()
-                    .unwrap();
-                assert!(
-                    status.success(),
-                    "cargo build -p una-rt {features:?} failed"
-                );
-            };
-            build(&["--features", "una-rt/test-hooks"]);
-            let built = Path::new(env!("CARGO_BIN_EXE_una"))
-                .parent()
-                .unwrap()
-                .join("libuna_rt.a");
-            let kept = Path::new(env!("CARGO_TARGET_TMPDIR")).join("serve-hooks-libuna_rt.a");
-            std::fs::copy(&built, &kept).unwrap();
-            build(&[]);
-            kept
+            let target = Path::new(env!("CARGO_TARGET_TMPDIR")).join("serve-hooks");
+            let status = std::process::Command::new(env!("CARGO"))
+                .args(["build", "--quiet", "--locked", "-p", "una-rt"])
+                .args(profile_args)
+                .args(["--features", "una-rt/test-hooks", "--target-dir"])
+                .arg(&target)
+                .current_dir(&root)
+                .status()
+                .unwrap();
+            assert!(
+                status.success(),
+                "cargo build -p una-rt --features una-rt/test-hooks failed"
+            );
+            target.join(profile).join("libuna_rt.a")
         })
         .clone()
 }
@@ -353,12 +388,13 @@ fn abort_code(completion: &Value) -> Option<&'static str> {
 /// Runs one case as a native executable over the same scripted engine, through its runtime's
 /// test hook: the lines of `expected.jsonl` and of `run.jsonl` it gives, the completion given
 /// as the interpreter's when the exit status and the diagnostic agree with it.
-fn run_native(dir: &Path, interpreted: &Value) -> (Vec<Value>, Vec<Value>) {
+fn run_native(dir: &Path, interpreted: &Value, reveal: bool) -> (Vec<Value>, Vec<Value>) {
     let runtime = hooked_runtime();
     let scratch = std::env::temp_dir().join(format!(
-        "una-serve-native-{}-{}",
+        "una-serve-native-{}-{}{}",
         std::process::id(),
-        dir.file_name().unwrap().to_string_lossy()
+        dir.file_name().unwrap().to_string_lossy(),
+        if reveal { "-revealed" } else { "" }
     ));
     let _ = std::fs::remove_dir_all(&scratch);
     std::fs::create_dir_all(&scratch).unwrap();
@@ -393,6 +429,7 @@ fn run_native(dir: &Path, interpreted: &Value) -> (Vec<Value>, Vec<Value>) {
     let mut child = std::process::Command::new(package.join("target/una").join(&name))
         .env("UNA_TEST_SERVE_SCRIPT", &package)
         .env("UNA_TEST_SERVE_WIRE", &wire)
+        .env("UNA_TEST_SERVE_REVEAL", if reveal { "1" } else { "0" })
         .args(["--virtual-time", "--trace"])
         .arg(&trace)
         .current_dir(&package)
@@ -457,7 +494,26 @@ fn every_serve_run_runs_alike_in_native_code() {
     for dir in cases() {
         let interpreted: Vec<Value> = lines(&dir.join("run.jsonl"));
         let expected: Vec<Value> = lines(&dir.join("expected.jsonl"));
-        let (wire, ran) = run_native(&dir, &interpreted[0]);
+        if dir.join("revealed.jsonl").exists() {
+            let revealed: Vec<Value> = lines(&dir.join("revealed.jsonl"));
+            let (wire, ran) = run_native(&dir, &revealed[0], true);
+            if wire != expected || ran != revealed {
+                failures.push(format!(
+                    "{}: the revealed run\n--- interpreter\n{}--- native\n{}",
+                    dir.display(),
+                    text(&revealed),
+                    text(&ran)
+                ));
+            }
+            hides_secrets(
+                &dir,
+                "the native revealed trace",
+                &text(&ran),
+                &mut failures,
+            );
+        }
+        let (wire, ran) = run_native(&dir, &interpreted[0], false);
+        hides_secrets(&dir, "the native trace", &text(&ran), &mut failures);
         if wire != expected {
             failures.push(format!(
                 "{}: the wire\n--- interpreter\n{}--- native\n{}",

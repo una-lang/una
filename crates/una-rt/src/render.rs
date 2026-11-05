@@ -8,6 +8,7 @@
 
 use serde_json::Value;
 use una_diag::Location;
+use una_http::serve::trace::TraceKey;
 
 use crate::values;
 
@@ -70,6 +71,10 @@ pub struct Variant {
     pub name: String,
     /// Its fields, in order.
     pub fields: Vec<Field>,
+    /// The name of its kind when it is a kind of the server of `std.host` (`Request`, `Reply`,
+    /// `Header`, `Param`), whose fields an event of the host's `HttpServer` writes in the
+    /// reduced form of ADR 0123 rule 1.
+    pub server: Option<String>,
 }
 
 /// A field of a variant.
@@ -165,14 +170,39 @@ impl Types {
     /// `Int` of more than `MAX_INT_DIGITS` digits, which is never written (`spec/11 §7`,
     /// #923): the caller aborts the run with U6003.
     pub fn render(&self, ty: usize, word: i64) -> Option<String> {
-        render(&self.0, ty, word, true, &[])
+        render(&self.0, ty, word, true, &[], None)
+    }
+
+    /// `word` in an event of the host's `HttpServer`: `<redacted:level>` when `redacted` names a
+    /// level, as [`Types::redacted`] writes it, and otherwise its Una form with the fields of
+    /// the server's kinds in the reduced form of ADR 0123 rule 1 under `key`
+    /// (`una_interp::serve_trace`).
+    pub fn server_redacted(
+        &self,
+        ty: usize,
+        word: i64,
+        redacted: Option<&str>,
+        key: &TraceKey,
+    ) -> Option<String> {
+        let unit = matches!(self.0.get(ty), Some(Shape::Unit));
+        match redacted {
+            Some(level) if !unit => Some(format!("<redacted:{level}>")),
+            _ => render(&self.0, ty, word, true, &[], Some(key)),
+        }
+    }
+
+    /// `word` in an event of the host's `HttpServer` with every field, in the reduced form under
+    /// `key`, without the redaction of labels: for the toolchain's tests only, which compare
+    /// the reduced form of both engines (`una_http::serve::program::Port::reveals_trace`).
+    pub fn server_written(&self, ty: usize, word: i64, key: &TraceKey) -> Option<String> {
+        render(&self.0, ty, word, false, &[], Some(key))
     }
 
     /// The Una form of `word` with every field, as interpolation writes it: the text carries
     /// the value's labels (`spec/11 §5`, ADR 0068). `params` are the descriptors of the type
     /// parameters that the type at `ty` holds, by position.
     pub fn written(&self, ty: usize, word: i64, params: &[i64]) -> Option<String> {
-        render(&self.0, ty, word, false, params)
+        render(&self.0, ty, word, false, params, None)
     }
 }
 
@@ -187,7 +217,16 @@ enum Task {
 /// than the native stack: a value can nest deeper than any call (ADR 0060, draft). With
 /// `redact`, a field of a kind whose declared type is labeled above `public` is
 /// `<redacted:level>`.
-fn render(types: &[Shape], ty: usize, word: i64, redact: bool, params: &[i64]) -> Option<String> {
+/// With `reduce`, the fields of the server's kinds are in the reduced form of ADR 0123 rule 1
+/// under that key.
+fn render(
+    types: &[Shape],
+    ty: usize,
+    word: i64,
+    redact: bool,
+    params: &[i64],
+    reduce: Option<&TraceKey>,
+) -> Option<String> {
     let mut out = String::new();
     let mut tasks = vec![Task::Value(ty, word, std::rc::Rc::new(params.to_vec()))];
     while let Some(task) = tasks.pop() {
@@ -348,7 +387,28 @@ fn render(types: &[Shape], ty: usize, word: i64, redact: bool, params: &[i64]) -
                     out.push('(');
                     // One field is shown bare, several with their names.
                     let named = variant.fields.len() > 1;
+                    // In an event of the host's `HttpServer`, the fields of its kinds that the
+                    // reduced form of ADR 0123 rule 1 changes (`una_interp::serve_trace`).
+                    let server = reduce.zip(variant.server.as_deref());
+                    let header = server
+                        .and_then(|_| variant.fields.first())
+                        .filter(|field| matches!(types.get(field.ty), Some(Shape::Text)))
+                        .map(|_| values::text_value(field_word(word, 0)));
                     for (index, field) in variant.fields.iter().enumerate() {
+                        let reduced = server.and_then(|(key, kind)| {
+                            let how =
+                                una_interp::serve_trace::field(kind, index, header.as_deref())?;
+                            Some(match types.get(field.ty) {
+                                Some(Shape::Text) => una_interp::serve_trace::write(
+                                    how,
+                                    key,
+                                    &values::text_value(field_word(word, index)),
+                                ),
+                                // These fields are `Text`; any other value is written as
+                                // nothing of it, never in clear.
+                                _ => "?".to_owned(),
+                            })
+                        });
                         if index > 0 {
                             parts.push(Task::Text(", ".to_owned()));
                         }
@@ -356,11 +416,12 @@ fn render(types: &[Shape], ty: usize, word: i64, redact: bool, params: &[i64]) -
                             parts.push(Task::Text(format!("{}: ", field.name)));
                         }
                         let unit = matches!(types.get(field.ty), Some(Shape::Unit));
-                        parts.push(match &field.redacted {
+                        parts.push(match (&field.redacted, reduced) {
                             // `unit` carries no information and is never redacted.
-                            Some(level) if redact && !unit => {
+                            (Some(level), _) if redact && !unit => {
                                 Task::Text(format!("<redacted:{level}>"))
                             }
+                            (_, Some(text)) => Task::Text(text),
                             _ => Task::Value(
                                 field.ty,
                                 field_word(word, index),
@@ -444,6 +505,10 @@ fn shape(value: &Value) -> Option<Shape> {
                 .iter()
                 .map(|variant| {
                     Some(Variant {
+                        server: value
+                            .get("server")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned),
                         name: variant.get("name")?.as_str()?.to_owned(),
                         fields: variant
                             .get("fields")?
@@ -542,10 +607,12 @@ mod tests {
                         redacted: None,
                         shown: false,
                     }],
+                    server: None,
                 },
                 Variant {
                     name: "None".to_owned(),
                     fields: Vec::new(),
+                    server: None,
                 },
             ]),
             Shape::List(0),
