@@ -18,18 +18,18 @@
   - **Grammar:** `spec/02 §6` (`let_stmt`), `§8` (the context restrictions that name `let`);
   - **Types, functions, capabilities, errors, information flow:** `spec/03`, `spec/04`, `spec/05` (U3005, "MUST NOT be bound with `let`"), `spec/06`, `spec/07` ("an annotated `let`");
   - **Tests:** `spec/08 §2` (no test binds a name today; rule 8 fixes the form a later step binding takes);
-  - **Static semantics and verification:** `spec/10 §5`, `§11`; `spec/12 §3`, `§4`, `§8`, where they name the surface form;
-  - **Diagnostics:** `spec/13 §4` (U7007, U2019, U2024 and the messages that name `let`), `§7` (edition `0.5`);
+  - **Static semantics and verification:** `spec/10 §11`, `§13`; `spec/12 §3`, `§4`, `§7`, where they name the surface form;
+  - **Diagnostics:** `spec/13 §4` (U7007, U2019, U2024 and the messages that name `let`), `§3` (the repair text of U3020), `§7` (edition `0.5`);
   - **Standard library:** `spec/14` (a call with effects is bound before it is given);
   - **Canonical form:** `spec/15`;
   - **Memory model:** `spec/17 §1` to `§5` and `§9` (editable bindings are `var` bindings and `edit` parameters);
   - **Fixed-width integers:** `spec/18`;
   - **Concurrency:** `spec/19 §1` to `§3` (the branches of `together`);
-  - **Units, long-running programs, tasks and time:** `spec/25`, `spec/26`, `spec/27` (U2035, "a line that is not a `handled` expression (a `let`, ...)");
+  - **Units, long-running programs, tasks and time:** `spec/25`, `spec/26`, `spec/27` (the text of `§6` for U2035, "a line that is not a `handled` expression (a `let`, ...)");
   - **Collections, numerics, HTTP servers, quality:** `spec/28`, `spec/29`, `spec/31` (its Una blocks), `spec/32 §3` (rule 3 of the matching of functions, which names the surface `let`);
   - **Accepted and proposed records:** ADR 0126, by a revision while it is Proposed (Appendix A).
 
-  `spec/09`, `spec/11` and `spec/16` name only Core IR's `let`, which stays (Question 5); `spec/32`'s table of costs and its operators name Core forms and stay too.
+  `spec/09`, `spec/11`, `spec/13 §8` (the Core export) and `spec/16` name only Core IR's `let`, which stays (Question 5); `spec/32`'s table of costs and its operators name Core forms and stay too.
 
 > **In plain words.**
 > - **Two words, one meaning each.** `const total = 0` names a value that never changes. `var total = 0` names a value that the function may assign again. `let` and `let edit` are their names in editions `0.1` to `0.4`, and edition `0.5` does not have them.
@@ -125,13 +125,14 @@ In one paragraph: in edition `0.5`, `const` and `var` are keywords; a binding st
     - **U2019** on a local: `` `x` is not editable; declare it `var x`, or the parameter `edit x` ``;
     - **U2019** on the variable of a `for` loop (issue #931): `` `x` is the variable of a `for` loop, which is read-only; bind a copy in the body with `var`, as `var next_x = x` `` (and the same for `together for`);
     - **U2011, U3013 and the `edit`-method messages:** "bind its result with `const` first";
-    - **U2024**, both messages and its registry meaning: `` the body of `together` holds only `const` or `var` statements, one per branch `` and `` `together` needs at least two branches; with one, write a plain `const` ``;
-    - **U2035** (`spec/27 §6`): a line of `first of` that is not a `handled` expression, "a `const` or `var` statement, a loop, a `when`";
+    - **U2024**, both messages and its registry meaning: `` the body of `together` holds only `const` or `var` statements, one per branch; call a function from a branch's `const` for more steps ``, its related note `` not a `const` or `var` statement ``, and `` `together` needs at least two branches; with one, write a plain `const` ``;
+    - **U2035:** its messages and registry meaning do not name `let` and do not change; only the text of `spec/27 §6` that describes it reads "a `const` or `var` statement, a loop, a `when`";
+    - **U3020:** the repair text of `spec/13 §3`, "the whole expression of its statement, or of a `const` or `var`";
     - **U1002** is unchanged: two module constants of one name, or a constant and a function of one name, are duplicate definitions.
 
     The domain and meaning of every code stay as they are; no code is added.
 
-11. **The rewrite** (`una fix`, ADR 0096, `spec/13 §5`). The U7007 of `let` in edition `0.5` carries an exact repair: `let edit x` becomes `var x`, `let x` becomes `const x`, keeping the annotation and the value, in blocks, in `together` branches and at the top level (where ADR 0126's form follows). No test binds a name in any edition (rule 8), so no test form is rewritten. **Names `const`.** Edition `0.5` reads `const` as a keyword, so a name `const` of an edition `0.4` package is U0101 there, with the rename of ADR 0105 and ADR 0096 rule 3a: a local or a parameter gets the exact rename to `const_value`, or the first of `const_value2`, `const_value3`, … free in its scope; a function, a field, a handler, a predicate or a module path segment gets the rename as advice. No `.una` file of the project's repositories names anything `const` today. `var` is reserved in every edition, so no program has a name `var`. `una fix`:
+11. **The rewrite** (`una fix`, ADR 0096, `spec/13 §5`). The U7007 of `let` in edition `0.5` carries an exact repair: `let edit x` becomes `var x`, `let x` becomes `const x`, keeping the annotation and the value, in blocks, in `together` branches and at the top level (where ADR 0126's form follows). No test binds a name in any edition (rule 8), so no test form is rewritten. **Names `const`.** Edition `0.5` reads `const` as a keyword, so a name `const` of an edition `0.4` package is U0101 there, and its repair is a description with no edit: the advice to rename it, as `const_value`, wherever it is a name: a local, a lambda parameter, a pattern binding, a function parameter, a handler parameter, a function, a field, a handler, a predicate or a module path segment. This follows ADR 0096's amendment of 2026-10-15, which gives no exact rename to a parameter of a function, since calls name it, and lists `let`, a statement keyword as `const` now is, among the keywords whose repair is a description. An exact rename of locals would need a dated row in ADR 0096 and is not proposed: no `.una` file of the project's repositories names anything `const` today, so the advice costs nothing. `var` is reserved in every edition, so no program has a name `var`. `una fix`:
     - applies these repairs under its usual conditions;
     - is idempotent: on a file it has rewritten, it finds nothing to rewrite;
     - changes no meaning: the rewritten program has the result of the original in edition `0.4`, since rule 2 maps each form to one with the same semantics;
@@ -265,7 +266,7 @@ No new code.
 | --- | --- | --- |
 | `0.5` | `let x = e`, `let edit x = e`, `let` at the top level | U7007, with the exact rewrite to `const` or `var` (rules 1 and 11) |
 | `0.5` | `const edit x`, `var edit x`, a top-level `var` | U0101 (rules 2 and 3) |
-| `0.5` | a name `const` from an edition `0.4` package | U0101, with the rename of rule 11 |
+| `0.5` | a name `const` from an edition `0.4` package | U0101, with the rename of rule 11 as advice, no edit |
 | `0.5` | assignment to a `const`; `edit` of a `const`; use after `take` | U2019, U2019, U2017, with the words of rules 4, 5 and 10 |
 | `0.5` | two module constants of one name | U1002, unchanged |
 | `0.1` to `0.4` | a line starting with `const` or `var` and a name | U0101 or U0103 as today, with the help of rule 1 |
@@ -304,7 +305,7 @@ Each step ships behind edition `0.5`, with its conformance cases, in both engine
 - **Conventions:** `f(edit c)` with `c` a `const` is U2019; `f(take c)` with `c` a `const` is accepted and a later use is U2017; `f(take v)` with `v` a `var`, then `v = e`, then a use, is accepted; a `const` taken in a loop body and declared outside it is U2017; `f(take origin)` of a module constant is U2020.
 - **`together`:** branches written `const` and `var` are accepted; a body with another statement is U2024 with the message of rule 7.
 - **Equivalence:** for every conformance package of edition `0.4` that uses `let` or `let edit`, the package rewritten by `una fix` and checked in edition `0.5` gives the same output, trace, status and obligation statuses, in both engines.
-- **`una fix`:** a second run changes nothing; a `let` inside a doc comment is listed and left; a local named `const` is renamed to `const_value`, and to `const_value2` when `const_value` is taken; a function named `const` gets the rename as advice only.
+- **`una fix`:** a second run changes nothing; a `let` inside a doc comment is listed and left; a local named `const` and a function parameter named `const` (with a call that names it, `scale(const: 2, x: y)`) each get U0101 with the rename as advice and no edit, and `una fix` leaves both unchanged, as it leaves a function named `const`.
 - **Canonical form:** `una fmt` writes `var x: Int = 1` from `var x :Int=1`.
 
 ## Appendix A. Amendments and revisions
@@ -313,7 +314,8 @@ To be made, dated, when this record is accepted, with the implementation:
 
 - **ADR 0121:** none from this record. Its rules are written for edition `0.4`; the record of issue #1620 gives edition `0.5` the same terms, U7007 included, and rules 1 and 12 above follow ADR 0121 rules 4, 5, 6, 9 and 19.
 - **ADR 0126:** revised while it is Proposed, before acceptance: its syntax becomes `[pub] const name: type = value`, its target edition `0.5`; in edition `0.5`, `let` at the top level is U7007 with the message of rule 1, and in editions `0.1` to `0.4`, `const` at the top level is U0101, as `let` is there today.
-Each chapter states, in an edition note, that edition `0.5` writes its `let` as `const` and its `let edit` as `var`, and its Una blocks for edition `0.5` use the new words:
+
+**Specification chapters.** Each chapter states, in an edition note, that edition `0.5` writes its `let` as `const` and its `let edit` as `var`, and its Una blocks for edition `0.5` use the new words:
 
 - **`spec/01 §5`:** the keyword tables of edition `0.5`, `let` with U7007 (rule 1).
 - **`spec/02 §6`, `§8`:** `let_stmt` (rule 2), the sentence of rule 3, and the context restrictions that name `let`.
@@ -323,14 +325,14 @@ Each chapter states, in an edition note, that edition `0.5` writes its `let` as 
 - **`spec/06`:** the binding of a handled result.
 - **`spec/07`:** the flow into "an annotated `let`".
 - **`spec/08 §2`:** rule 8.
-- **`spec/10 §5`, `§11`:** the binding forms by edition, and the scopes that list `let`.
-- **`spec/12 §3`, `§4`, `§8`:** "`let` with annotation" as a subsumption point, and the binders that name `let`s, where they mean the surface form; the Core rows of `§3` stay.
-- **`spec/13 §4`, `§7`:** U7007 for `let` in edition `0.5`, the messages of rule 10 (U2019, U2024, U2035, U2011, U3013) and edition `0.5`.
+- **`spec/10 §11`, `§13`:** the scopes that list `let`, and "as a statement or the value of a `let`"; the T-Let rules of `§4` and `§13` are Core and stay.
+- **`spec/12 §3`, `§4`, `§7`:** "`let` with annotation" as a subsumption point, the binders that name `let`s, and the counterexample bindings of "named `let`s", where they mean the surface form; the Core rows of `§3` stay.
+- **`spec/13 §3`, `§4`, `§7`:** U7007 for `let` in edition `0.5`, the messages of rule 10 (U2019, U2024, U2011, U3013), the repair text of U3020, and edition `0.5`; `§8`, the Core export, stays.
 - **`spec/14`:** a call with effects is bound with `const` before it is given.
 - **`spec/15`:** rule 9.
 - **`spec/17 §1` to `§5`, `§9`:** rules 2, 4 and 5; the reserved-word table of edition `0.5`.
 - **`spec/18`:** the fixed-width type an annotated binding gives a literal.
 - **`spec/19 §1` to `§3`:** rule 7.
 - **`spec/25`:** the unit an annotated binding gives a literal.
-- **`spec/26`, `spec/27`, `spec/28`, `spec/29`, `spec/31`:** their rules and Una blocks that use `let` or `let edit`; in `spec/27 §6`, the U2035 wording of rule 10.
+- **`spec/26`, `spec/27`, `spec/28`, `spec/29`, `spec/31`:** their rules and Una blocks that use `let` or `let edit`; in `spec/27 §6`, the text that describes U2035 (rule 10).
 - **`spec/32 §3`:** "a contiguous run of `let`s", the surface statements; its cost table and operators name Core forms and stay.
