@@ -14,6 +14,8 @@ This note fixes how S6 is built, and lists the decisions it takes where the reco
 - **`within` is U4003 under the preview's `L_srv`.** The driver is a hand-off site whose `next` runs inside its `tasks` statement, so the preview's `τ_conc` at it is `⊤` and `L_srv` of a `serve` package is the top label, as for the language form's `next`; the IF6 check of the driver's `start ... within w` (an auto-answer `503` accepting `internal`) then refuses every `within`, at its value in `ita.una`, as the preview refuses the language form's `start ... within`. It MAY become less strict with a more precise `L_srv` (#1155).
 - **The report**: `tcb.serve_grants`, `tcb.server` and `tcb.tls` (always `null` until #1059) are present in every report, `[]` and `null` for a package that serves nothing, and `warnings` likewise `[]`; `out_of_model` gains the S4 amendment's third entry (section E) beside rule 22's two.
 - **No guide page yet**: it describes running a server, which waits for the driver.
+- **No `requires` on `handle` or `on_stop`** (review of #1588, M1): the host establishes no precondition at its calls, so a `requires` is U7008 at the section's `module` in the checks and a shape difference in the usage error. The same question stands for `init` and `step` of a `drive` module, which this slice does not change.
+- **The final grants of `una run` check `handle` and `on_stop`** (review L2): the run input names the `serve` module when the package has no `run entry`.
 
 ## 1. What this slice delivers, and what it leaves
 

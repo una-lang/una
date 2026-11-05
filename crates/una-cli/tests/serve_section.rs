@@ -151,6 +151,40 @@ fn a_run_without_a_serve_grant_is_a_usage_error() {
 }
 
 #[test]
+fn the_final_grants_of_a_run_check_handle() {
+    // `spec/31 §7` rule 3: `una run` checks the `uses` of `handle` against its final grants, the
+    // flags included, as `main`'s, although the package has no `run entry`.
+    let source = HEALTH.replace(
+        "pub handle(request: internal Request) -> internal Reply\n=\n",
+        "pub handle(request: internal Request) -> internal Reply\n  uses @console: Console[print]\n=\n  @console.print(\"request\")\n",
+    );
+    let dir = package("final-grants", "", &source);
+    let output = una(
+        &dir,
+        &["run", ".", "--grant", "serve:http://127.0.0.1:8080"],
+    );
+    let message = stderr(&output);
+    assert_eq!(output.status.code(), Some(1), "{message}");
+    assert!(
+        message.contains("U3012") && message.contains("`handle` uses `print` of `Console`"),
+        "{message}"
+    );
+    assert!(!message.contains(PENDING), "{message}");
+}
+
+#[test]
+fn a_requires_on_handle_is_refused() {
+    let source = HEALTH.replace(
+        "pub handle(request: internal Request) -> internal Reply\n=\n",
+        "pub handle(request: internal Request) -> internal Reply\n  requires request.body == \"\"\n=\n",
+    );
+    let dir = package("requires", LOOPBACK, &source);
+    let check = una(&dir, &["check", "."]);
+    assert_eq!(check.status.code(), Some(1), "{}", stderr(&check));
+    assert!(stderr(&check).contains("U7008"), "{}", stderr(&check));
+}
+
+#[test]
 fn the_driver_fails_closed_before_any_listener_is_bound() {
     // A port in use by this test: a run that bound its listener would fail on it differently.
     let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();

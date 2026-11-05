@@ -785,6 +785,9 @@ pub struct Serve {
     pub within: Option<At<u64>>,
     /// The section's header line.
     pub range: Range<usize>,
+    /// The whole section, from its header to the end of its last line: a problem inside it
+    /// means the section is not read (`spec/31 §7` rule 1).
+    pub extent: Range<usize>,
 }
 
 /// The sections of `ita.una`, in their canonical order (ADR 0122 rule 5).
@@ -1883,10 +1886,19 @@ fn drive(line: &Line, errors: &mut Vec<Error>) -> Drive {
 }
 
 fn serve(line: &Line, errors: &mut Vec<Error>) -> Serve {
+    fn end(line: &Line) -> usize {
+        line.children
+            .iter()
+            .map(end)
+            .chain([line.range.end])
+            .max()
+            .unwrap_or(line.range.end)
+    }
     let mut serve = Serve {
         module: None,
         within: None,
         range: line.range.clone(),
+        extent: line.range.start..end(line),
     };
     for child in &line.children {
         no_children(child, errors);

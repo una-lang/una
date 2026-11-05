@@ -2398,13 +2398,14 @@ pub(crate) fn grants(
 ) {
     let (path, names): (&str, &[&str]) =
         match (run, &settings.entry, &settings.drive, &settings.serve) {
+            // ADR 0123 rule 16: the functions of the `serve` module are called by the host, and
+            // `una run` checks them against its final grants as `main`'s (`spec/31 §7` rule 3).
+            (_, None, None, Some(serve)) => (serve.module.value.as_str(), &SERVED),
             (Some(run), _, _, _) => (run.entry, &["main"]),
             (None, Some(entry), _, _) => (entry.value.as_str(), &["main"]),
             (None, None, Some(drive), _) => {
                 (drive.module.value.as_str(), &["init", "step", "on_stop"])
             }
-            // ADR 0123 rule 16: the functions of the `serve` module are called by the host.
-            (None, None, None, Some(serve)) => (serve.module.value.as_str(), &SERVED),
             (None, None, None, None) => return,
         };
     let Some(module) =
@@ -2580,6 +2581,34 @@ pub(crate) fn serve_functions(env: &Env<'_>, settings: &Manifest, report: &mut R
                         diagnostic.repairs.push(Report::advice(
                             "handle each failure inside `on_stop`, with `if error use` or `attempt`, and remove the `fails` clause",
                         ));
+                        report.push(diagnostic);
+                    }
+                    // `spec/31 §7` rule 2: the exact shape has no `requires`. The host calls
+                    // `handle` for every request it reads and `on_stop` at every stop, and no
+                    // call of the host establishes a precondition, so a `requires` would be a
+                    // fact the verifier assumes and nothing proves.
+                    una_syntax::ast::ClauseKind::Requires(_) => {
+                        let at = env.serve_driver.map_or(clause.span, |driver| {
+                            Span::new(
+                                driver.file,
+                                serve.module.range.start,
+                                serve.module.range.end,
+                            )
+                        });
+                        let mut diagnostic = report.make(
+                            Code::U7008,
+                            at,
+                            format!(
+                                "the `serve` section's module `{}` declares `requires` on `{name}`, which no call of the host establishes, so nothing would prove it",
+                                serve.module.value
+                            ),
+                        );
+                        diagnostic
+                            .related
+                            .push(report.related(clause.span, "the `requires` clause"));
+                        diagnostic.repairs.push(Report::advice(format!(
+                            "remove the `requires` clause from `{name}` and check the condition in its body, answering a request that fails it"
+                        )));
                         report.push(diagnostic);
                     }
                     una_syntax::ast::ClauseKind::Diverges => {
@@ -2822,8 +2851,13 @@ pub(crate) fn serve_within(
                 _ => None,
             },
         );
+    // A module that is not in the package, or without `handle`, is reported already (U7008 or
+    // the run's usage error); the deadline is only checked for a section that can run.
+    let Some(handle) = handle else {
+        return;
+    };
     let seed = super::timing::TimingSeed {
-        callees: handle.into_iter().collect(),
+        callees: BTreeSet::from([handle]),
         unplaced: true,
         ..super::timing::TimingSeed::default()
     };

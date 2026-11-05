@@ -252,7 +252,13 @@ fn analyze_and(
     } else {
         manifest.entry.as_ref().map(|entry| entry.value.clone())
     };
-    let run = match (run_grants, entry.as_deref()) {
+    // The final grants of `una run` check the functions the host calls: `main` of the entry,
+    // or `handle` and `on_stop` of a `serve` module (`spec/31 §7` rule 3), which has no entry.
+    let served = manifest
+        .serve
+        .as_ref()
+        .map(|serve| serve.module.value.as_str());
+    let run = match (run_grants, entry.as_deref().or(served)) {
         (Some(grants), Some(entry)) => Some(RunInput { entry, grants }),
         _ => None,
     };

@@ -992,6 +992,17 @@ pub(crate) fn served_module(
             "its `handle` does not take exactly one parameter, passed by value",
         ));
     }
+    // `spec/31 §7` rule 2: no `requires`, which the host could never establish (U7008 in the
+    // checks too).
+    let requires = |function: &una_syntax::ast::FunctionDecl| {
+        function
+            .clauses
+            .iter()
+            .any(|clause| matches!(clause.kind, una_syntax::ast::ClauseKind::Requires(_)))
+    };
+    if requires(handle) {
+        return Err(missing("its `handle` declares `requires`"));
+    }
     let Some(fun) = core("handle") else {
         return Err(missing("it declares no `handle`"));
     };
@@ -1009,6 +1020,7 @@ pub(crate) fn served_module(
     }
     if let Some((_, _, on_stop)) = modules.function(&format!("{module}.on_stop")) {
         let shaped = on_stop.public
+            && !requires(on_stop)
             && on_stop.type_params.is_empty()
             && on_stop.params.is_empty()
             && core("on_stop").is_some_and(|fun| fun.params.is_empty() && is_unit(&fun.result));

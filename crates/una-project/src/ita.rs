@@ -425,7 +425,12 @@ pub fn parse_ita_manifest(text: &str) -> (Manifest, Vec<ProjectError>) {
     // U7008. A section with a problem is not read, so the run never serves what it does not
     // say.
     if let Some(serve) = &read.serve {
-        let mut valid = true;
+        // A problem the grammar found inside the section, a line given twice, an unknown line
+        // or a malformed literal included, leaves it unread too.
+        let mut valid = !errors.iter().any(|e| {
+            e.range.start >= serve.extent.start
+                && e.range.start < serve.extent.end.max(serve.extent.start + 1)
+        });
         let within = match &serve.within {
             Some(at) if (1..=MAX_SERVE_MILLISECONDS).contains(&at.value) => Some(at.value),
             Some(at) => {
