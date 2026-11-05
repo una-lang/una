@@ -427,6 +427,24 @@ pub struct TypeCheck {
     /// with limits needs at most `internal`; `public` without such a request. `una build`
     /// embeds it, and `una run` checks a limited `--grant` against it (`spec/27 §9` rule 5).
     pub limit_label: una_core::Label,
+    /// The units of measure of the state types of the package's `[drive]` module, which Core
+    /// IR erases, for the shape check of `una run` and `una build` (`spec/26 §2` rule 2).
+    pub drive_units: Option<DriveUnits>,
+}
+
+/// The units of measure at each position of the state types of a `[drive]` module: the
+/// result of `init` and the state parameters of `step` and `on_stop`, each as the list of its
+/// measured positions with the normal form of their units (ADR 0104 rule 2). The host hands
+/// the state on unchanged, so these MUST be equal (`spec/26 §2` rule 2); the checker reports
+/// a difference as U2028, and `una run` and `una build` refuse one as a usage error.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DriveUnits {
+    /// The result of `init`.
+    pub init: String,
+    /// The state parameter of `step`, when the module has one.
+    pub step: Option<String>,
+    /// The state parameter of `on_stop`, when it takes one parameter.
+    pub on_stop: Option<String>,
 }
 
 /// A site with a deadline and its timing label (ADR 0116 IF5, rule 21).
@@ -457,6 +475,7 @@ impl Default for TypeCheck {
             index: Index::default(),
             timing: Vec::new(),
             limit_label: una_core::Label::public(),
+            drive_units: None,
         }
     }
 }
@@ -838,6 +857,8 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
     authority::grants(&env, package.settings, package.run, &mut report);
     authority::drive_failures(&env, package.settings, &mut report);
     authority::drive_state_labels(&env, package.settings, &mut report);
+    authority::drive_state_units(&env, package.settings, &mut report);
+    let drive_units = authority::drive_units(&env, package.settings);
     authority::serve_functions(&env, package.settings, &mut report);
     // `L_res` of the checked package, computed once for every site that joins it (ADR 0116 P9).
     let residue = timing::residue_of(&env, &findings);
@@ -948,6 +969,7 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
     };
     let check = TypeCheck {
         limit_label,
+        drive_units,
         timing: timing_sites
             .into_iter()
             .map(|(construct, function, span, label)| TimingSite {
