@@ -3333,6 +3333,20 @@ impl<'e, 'a> Fx<'e, 'a> {
         let wrap = self.tail_wrap.take();
         let join = self.current_join.take();
         let mark = self.scope.len();
+        // The captures that can hold a reply right, by their binders before the task's own
+        // names (ADR 0123 rule 4.2), in the order of their names.
+        let rights: Vec<Name> = self
+            .findings
+            .start_rights
+            .get(&stmt.keyword)
+            .map(|names| {
+                let binders: std::collections::BTreeSet<Name> = names
+                    .iter()
+                    .filter_map(|name| self.scope.find(name))
+                    .collect();
+                binders.into_iter().collect()
+            })
+            .unwrap_or_default();
         let handled = &stmt.handled;
         let mut inner = Vec::new();
         let value = if self.marked(&handled.expr) {
@@ -3351,6 +3365,7 @@ impl<'e, 'a> Fx<'e, 'a> {
         self.loop_names = outer;
         let expr = CoreExpr::Start {
             task: Box::new(close(inner, value)),
+            rights,
             span: stmt.span,
         };
         // S-40 (#1512): a `start` under a raised program counter is `quiet`.

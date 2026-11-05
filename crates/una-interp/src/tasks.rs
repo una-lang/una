@@ -88,6 +88,8 @@ pub(crate) struct Run<'p, 'w> {
     /// The run's `Http` grants and the state of their limits, which every task shares (ADR
     /// 0117 rule 8, `spec/27 §9`).
     pub(crate) http_limits: una_http::limit::Governor,
+    /// The serve engine of a run that serves, and its reply rights (ADR 0123 rules 1 to 4).
+    pub(crate) serve: Option<crate::machine::serve::Serving<'w>>,
 }
 
 impl<'p, 'w> Run<'p, 'w> {
@@ -115,6 +117,7 @@ impl<'p, 'w> Run<'p, 'w> {
             serving: Cell::new(false),
             panic: RefCell::new(None),
             http_limits: una_http::limit::Governor::new(Vec::new()),
+            serve: None,
         }
     }
 
@@ -202,6 +205,31 @@ impl<'p, 'w> Run<'p, 'w> {
         self.sched.borrow().current
     }
 
+    /// Lets the other ready tasks run before the task that runs goes on: when one is ready, the
+    /// task goes to the back of the queue and its coroutine suspends, and `true` once it runs
+    /// again; `false`, with no switch, when no other task is ready or the driver does not serve
+    /// the run. A wait of the host's that no task can end, `next` of `HttpServer` with no request,
+    /// yields first, so a task that would answer one runs before the thread blocks.
+    pub(crate) fn yield_turn(&self) -> bool {
+        if !self.coroutines || !self.serving.get() {
+            return false;
+        }
+        let switch = {
+            let mut sched = self.sched.borrow_mut();
+            if sched.queue.is_empty() {
+                false
+            } else {
+                let current = sched.current;
+                sched.queue.push_back(current);
+                true
+            }
+        };
+        if switch {
+            una_sys::coroutine::suspend();
+        }
+        switch
+    }
+
     /// Parks the task that runs until a task it waits for wakes it: its coroutine suspends.
     /// `false`, with no switch, unless [`drive`] serves the run, which only a defect reaches.
     pub(crate) fn park(&self) -> bool {
@@ -228,12 +256,24 @@ pub(crate) struct Sched<'w> {
 }
 
 impl<'w> Sched<'w> {
-    /// Starts a task that runs `body` on a stack of `bytes`, at the back of the queue. O(log n).
-    pub(crate) fn start(&mut self, body: Box<dyn FnOnce() + 'w>, bytes: usize, span: Span) {
+    /// Starts a task that runs `body` on a stack of `bytes`, at the back of the queue: its id,
+    /// [`Sched::upcoming`] before the call. O(log n).
+    pub(crate) fn start(
+        &mut self,
+        body: Box<dyn FnOnce() + 'w>,
+        bytes: usize,
+        span: Span,
+    ) -> usize {
         self.next += 1;
         let id = self.next;
         self.pending.insert(id, (body, bytes, span));
         self.queue.push_back(id);
+        id
+    }
+
+    /// The id the next [`Sched::start`] gives.
+    pub(crate) fn upcoming(&self) -> usize {
+        self.next + 1
     }
 
     /// Puts the parked task `id` at the back of the queue.
@@ -280,10 +320,17 @@ impl TasksScope {
 pub(crate) struct Ending<'p, 'w> {
     pub(crate) scope: Rc<TasksScope>,
     pub(crate) run: Rc<Run<'p, 'w>>,
+    /// The task's id. A task whose body never ran, or ended by a panic, still holds the reply
+    /// rights its `start` moved to it: they are answered here, `503`, as for a stopped task
+    /// (ADR 0123 rule 4.5). A task that ended answered its own already.
+    pub(crate) task: usize,
 }
 
 impl Drop for Ending<'_, '_> {
     fn drop(&mut self) {
+        if let Some(serving) = &self.run.serve {
+            serving.answer_left(self.task as u64);
+        }
         self.scope
             .running
             .set(self.scope.running.get().saturating_sub(1));
@@ -499,6 +546,7 @@ mod tests {
                 let ending = Ending {
                     scope: Rc::clone(&scope),
                     run: Rc::clone(&run),
+                    task: run.sched.borrow().upcoming(),
                 };
                 let log = &log;
                 run.sched.borrow_mut().start(

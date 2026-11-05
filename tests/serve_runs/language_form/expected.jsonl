@@ -1,0 +1,6 @@
+{"at":1,"connection":1,"text":"HTTP/1.1 200 OK\r\nDate: Tue, 14 Nov 2023 22:13:20 GMT\r\nContent-Length: 9\r\ncontent-type: text/plain; charset=utf-8\r\n\r\nhello one"}
+{"at":2,"connection":1,"text":"HTTP/1.1 200 OK\r\nDate: Tue, 14 Nov 2023 22:13:20 GMT\r\nContent-Length: 9\r\ncontent-type: text/plain; charset=utf-8\r\n\r\nhello two"}
+{"at":3,"connection":1,"text":"HTTP/1.1 200 OK\r\nDate: Tue, 14 Nov 2023 22:13:20 GMT\r\nContent-Length: 11\r\ncontent-type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\nhello three"}
+{"at":3,"closed":true,"connection":1}
+{"at":5,"connection":2,"text":"HTTP/1.1 200 OK\r\nDate: Tue, 14 Nov 2023 22:13:20 GMT\r\nContent-Length: 9\r\ncontent-type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\nhello old"}
+{"at":5,"closed":true,"connection":2}

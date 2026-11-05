@@ -214,7 +214,11 @@ fn reaches_tables<'p>(index: &Index<'p>, roots: &[&'p Expr]) -> bool {
                 pending.extend(source_condition(source));
             }
             // A started task runs code of the run as a `together` task does (`spec/27 §7`).
-            Expr::Start { task, span: _ }
+            Expr::Start {
+                task,
+                rights: _,
+                span: _,
+            }
             | Expr::Quiet {
                 body: task,
                 timing: _,
@@ -356,6 +360,9 @@ fn encode<S: Sink>(encoder: &mut Encoder<'_, S>, value: &Value<'_>) -> bool {
             Value::Unit => encoder.unit(),
             Value::Text(t) => encoder.bytes(t.as_str().as_bytes()),
             Value::Hashed(bytes) => encoder.bytes(bytes),
+            // A reply right has no hash (ADR 0123 rule 1), so no table holds one as a key;
+            // its word is the encoding, should a defect reach here.
+            Value::Right(right) => encoder.uint(*right),
             // A variant's declaration index, then its fields in order; a variant without
             // payload is its index alone.
             Value::Data(data) => {

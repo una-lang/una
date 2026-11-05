@@ -54,7 +54,7 @@ pub(crate) struct StartSite {
 }
 
 /// One open `start`, whose captures [`Checker::start_capture_read`] marks.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct CaptureFrame {
     /// Where the locals of the started expression begin: a local before it is a capture.
     mark: usize,
@@ -62,6 +62,9 @@ pub(crate) struct CaptureFrame {
     reply: bool,
     /// Whether a capture's type can hold a function value.
     function_value: bool,
+    /// The source names of the captures that can hold a reply right, which the engines walk
+    /// at the start for the rights that move (ADR 0123 rule 4.2).
+    names: BTreeSet<String>,
 }
 
 /// Whether `id` is the host capability `HttpServer` of `std.host` (ADR 0123 rule 1), not a
@@ -241,6 +244,7 @@ impl Checker<'_, '_, '_> {
             mark: self.locals.len(),
             reply: false,
             function_value: false,
+            names: BTreeSet::new(),
         });
     }
 
@@ -252,10 +256,17 @@ impl Checker<'_, '_, '_> {
         }
         let reply = holds_reply(self.env, ty, &|ty: &Ty| self.resolve(ty));
         let function_value = self.holds_function(ty);
+        // A capture the engines walk for reply rights: one whose type can hold a right, or a
+        // function value in a package where a value can hold one (IF6, rule 4.2).
+        let walked = reply || (function_value && self.env.reply_rights);
+        let name = self.locals.get(position).map(|local| local.name.to_owned());
         for frame in &mut self.start_captures {
             if position < frame.mark {
                 frame.reply |= reply;
                 frame.function_value |= function_value;
+                if walked && let Some(name) = &name {
+                    frame.names.insert(name.clone());
+                }
             }
         }
     }
@@ -266,6 +277,14 @@ impl Checker<'_, '_, '_> {
         let Some(frame) = self.start_captures.pop() else {
             return;
         };
+        // What the engines walk at this `start`, whatever the labels (rule 4.2).
+        if self.pass == super::authority::Pass::Check && !frame.names.is_empty() {
+            self.findings
+                .start_rights
+                .entry(keyword)
+                .or_default()
+                .extend(frame.names.iter().cloned());
+        }
         if self.pass != super::authority::Pass::Check
             || !(frame.reply || frame.function_value)
             || !self.labels()

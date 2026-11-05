@@ -128,6 +128,10 @@ pub enum EventOutcome {
     /// A started task ran too deep, past `--task-depth` or short of its stack, and ended alone
     /// (`spec/27 §7`, ADR 0117 rules 7 and 10). Like `Cancelled`, it names no operation.
     TaskAborted,
+    /// A task ended holding a reply right, which the host answered with this status, `500` or
+    /// `503` (ADR 0123 rule 4.5): appended whether or not the answer was sent, so the trace does
+    /// not depend on timing. Like `Cancelled`, it names no operation.
+    Unanswered(u16),
 }
 
 /// The deadline of the iteration of a `for ever within` in progress (ADR 0116 rule 11), on the
@@ -267,6 +271,8 @@ mod seqs;
 mod sets;
 
 pub(crate) mod hashes;
+
+pub(crate) mod serve;
 
 mod bitsets;
 
@@ -447,6 +453,8 @@ impl<'p> Index<'p> {
                 Value::Hashed(_) if form == Form::Written => out.push_str("<hashed>"),
                 Value::Hashed(bytes) => out.push_str(&format!("hashed:{}", host::hex(bytes))),
                 Value::Closure(_) => out.push_str("<function>"),
+                // Nothing of a reply right is ever written (ADR 0123 rule 1).
+                Value::Right(_) => out.push_str("<reply-right>"),
                 Value::List(items) | Value::Tuple(items) => {
                     let (open, close) = if matches!(value, Value::List(_)) {
                         ("[", "]")
@@ -726,6 +734,7 @@ fn host_params(capability: &str, op: &str) -> &'static [&'static str] {
         ("Files", "write") => &["path", "content"],
         ("Keys", "hmac") => &["key_name", "data"],
         ("Http", "get" | "delete") => &["url", "headers", "key_name"],
+        ("HttpServer", "reply") => &["to", "reply"],
         ("Http", "post" | "put") => &["url", "headers", "body", "key_name"],
         _ => &[],
     }
@@ -780,6 +789,10 @@ pub struct Limits<'a> {
     /// The table of dense kernels the run calls (ADR 0120 rules 53 and 56): the baseline by
     /// default; the caller may give the variant its processor runs, which gives the same bits.
     pub kernels: &'static una_core::dense::variants::Kernels,
+    /// The serve engine of a run that serves (ADR 0123 rules 1 to 4): the operations of
+    /// `HttpServer` meet it. `None` in a run that serves nothing, where such an operation is a
+    /// fault, since `una run` refuses the program.
+    pub serve: Option<&'a dyn una_http::serve::program::Port>,
 }
 
 impl Limits<'_> {
@@ -795,6 +808,7 @@ impl Limits<'_> {
             task_depth: max_depth,
             stop: None,
             kernels: &una_core::dense::variants::Kernels::BASELINE,
+            serve: None,
         }
     }
 }
@@ -949,6 +963,7 @@ impl<'p, 'w> Machine<'p, 'w> {
         };
         let mut run = Run::new(world, clock, index.tasks);
         run.stop_after.set(limits.stop_after);
+        run.serve = limits.serve.map(serve::Serving::new);
         // The run's limits refill on the run's clock (ADR 0116 rule 19).
         run.http_limits = una_http::limit::Governor::with_clock(
             grants
@@ -1086,6 +1101,8 @@ impl<'p, 'w> Machine<'p, 'w> {
         let result = self.eval(&mut Env::new(), &Rc::new(caps), &main.body);
         let result = self.locate(result);
         self.frames.pop();
+        // The root task's end answers the reply rights it still holds (ADR 0123 rule 4.5).
+        self.answer_held(serve::status_of(&result, false));
         result
     }
 
@@ -1120,6 +1137,20 @@ impl<'p, 'w> Machine<'p, 'w> {
     /// started (the budget of `--stop-after-iterations`, rule 19), or after a host stop. A failure of `init` ends the run as one of `main` does; `step` and `on_stop`
     /// cannot fail (U3029).
     pub(crate) fn drive(
+        &mut self,
+        init: &'p Fun,
+        step: &'p Fun,
+        on_stop: Option<&'p Fun>,
+        drive: &Drive,
+    ) -> Flow<'p> {
+        let result = self.drive_steps(init, step, on_stop, drive);
+        // The root task's end answers the reply rights it still holds (ADR 0123 rule 4.5).
+        self.answer_held(serve::status_of(&result, false));
+        result
+    }
+
+    /// The steps of [`Machine::drive`].
+    fn drive_steps(
         &mut self,
         init: &'p Fun,
         step: &'p Fun,
@@ -2164,8 +2195,8 @@ impl<'p, 'w> Machine<'p, 'w> {
                     return self.tasks(env, &caps, bound, body);
                 }
                 // `start e` (`spec/27 §7`): a task for `e`, and the block goes on.
-                Expr::Start { task, span } => {
-                    self.start(env, &caps, task, *span)?;
+                Expr::Start { task, rights, span } => {
+                    self.start(env, &caps, (task, rights), *span)?;
                     return Ok(Value::Unit);
                 }
                 // `quiet e` (S-39, `spec/26 §6` rule 4): `e`, then the count as before, on every
@@ -2821,7 +2852,7 @@ impl<'p, 'w> Machine<'p, 'w> {
         &mut self,
         env: &Env<'p>,
         caps: &Caps<'p>,
-        task: &'p Expr,
+        (task, rights): (&'p Expr, &'p [Name]),
         span: Span,
     ) -> Result<(), Stop<'p>> {
         let Some(scope) = self.scopes.last().cloned() else {
@@ -2853,13 +2884,25 @@ impl<'p, 'w> Machine<'p, 'w> {
         let mut child = self.child(&scope, crate::concurrency::start_name(quiet, k));
         let reads = self.reads(task);
         let mut captured: Env<'p> = reads.iter().filter_map(|name| env.binding(name)).collect();
+        // What the walk of ADR 0123 rule 4.2 reads: the captures that can hold a reply right.
+        let moved: Env<'p> = if rights.is_empty() || self.run.serve.is_none() {
+            Env::new()
+        } else {
+            rights
+                .iter()
+                .filter_map(|name| captured.binding(name))
+                .collect()
+        };
         let caps = caps.clone();
         let bytes = crate::stack_bytes(self.task_depth).unwrap_or(STACK_RESERVE * 2);
         scope.running.set(scope.running.get() + 1);
         self.run.live.set(self.run.live.get() + 1);
+        // The started task's id, which its reply rights are recorded under (ADR 0123 rule 4).
+        let id = self.run.sched.borrow().upcoming();
         let ending = Ending {
             scope,
             run: Rc::clone(&self.run),
+            task: id,
         };
         let body = move || {
             // Its statement counts it ended once its events are written, or, if it never
@@ -2873,10 +2916,17 @@ impl<'p, 'w> Machine<'p, 'w> {
                 child.started_end(result);
             });
         };
-        self.run
+        // ADR 0123 rule 4.2: the reply rights this task holds that the captures reach move to
+        // the started task, before it can run.
+        self.move_rights(&moved, rights, id as u64);
+        let started = self
+            .run
             .sched
             .borrow_mut()
             .start(Box::new(body), bytes, span);
+        if started != id {
+            return Err(fault("a started task took an id other than its own"));
+        }
         Ok(())
     }
 
@@ -2896,6 +2946,9 @@ impl<'p, 'w> Machine<'p, 'w> {
             outcome,
         };
         self.ops_open = 0;
+        // The reply rights the task still holds are answered first, each with its `unanswered`
+        // event, then the event of how it ended (ADR 0123 rule 4.5).
+        self.answer_held(serve::status_of(&result, true));
         match result {
             Ok(_) => {}
             Err(Stop::Abort(abort @ Abort::Depth { .. })) => {
@@ -3346,11 +3399,23 @@ impl<'p, 'w> Machine<'p, 'w> {
                 .map(|n| (*n).to_owned())
                 .collect(),
         };
+        // ADR 0123 rule 1: the arguments of the host's `HttpServer` are never written in clear
+        // whatever their labels; until the reduced form of that rule lands, every one is
+        // written as an `internal` value is, redacted.
+        let server = capability == "HttpServer" && matches!(*instance, Instance::Host { .. });
         let mut shown: Vec<(String, String)> = Vec::with_capacity(args.len());
         for (i, value) in args.iter().enumerate() {
             let name = names.get(i).cloned().unwrap_or_else(|| format!("arg{i}"));
             // An argument labeled above `public` is redacted.
             let label = labels.get(i).cloned().unwrap_or_else(Label::public);
+            let label = if server {
+                label.join(&Label {
+                    level: Level::Internal,
+                    ..Label::public()
+                })
+            } else {
+                label
+            };
             // An integer too long for text aborts the run at the operation (`spec/11 §7`).
             let text = self
                 .index
@@ -3402,6 +3467,12 @@ impl<'p, 'w> Machine<'p, 'w> {
                 }
                 Err(IntTooLong) => (Err(int_text_abort(Some(span))), EventOutcome::Aborted),
             },
+            // `next` of the host's `HttpServer`, an interruptible operation, was waiting when its
+            // task was cancelled, and took no request (ADR 0117 rules 4 and 10, ADR 0123 rule
+            // 4.7).
+            (other @ Err(Stop::Cut(CANCEL)), _) if server && op == "next" => {
+                (other, EventOutcome::Interrupted)
+            }
             // An operation in progress completes (`spec/19 §6` rule 4): a cut inside its
             // handler is only one of a `within` that the handler's own code started, which
             // catches it there.
@@ -3778,6 +3849,8 @@ impl<'p, 'w> Machine<'p, 'w> {
                 })
             }
             ("Http", "get" | "post" | "put" | "delete") => self.http(op, args, span),
+            // ADR 0123 rules 1 to 4, `spec/31 §1`.
+            ("HttpServer", _) => self.server(op, args, span),
             ("Keys", "hmac") => match self.keys.get(&text(0)) {
                 Some(key) => Ok(Value::Hashed(Rc::from(host::hmac_sha256(
                     key,
@@ -5044,6 +5117,7 @@ mod tests {
             task_depth: 10,
             stop: None,
             kernels: &una_core::dense::variants::Kernels::BASELINE,
+            serve: None,
         };
         let mut machine = Machine::new(&index, &mut world, &[], &keys, limits, Clock::real());
         held.store(

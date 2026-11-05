@@ -1160,6 +1160,9 @@ pub(crate) struct Findings {
     pub(crate) server_sites: Vec<timing::HttpSite>,
     /// The `start`s whose captures can hold a reply right or a function value (ADR 0123 IF6).
     pub(crate) server_starts: Vec<server::StartSite>,
+    /// For each `start`, by its word `start`, the source names of the captures that can hold a
+    /// reply right, which the engines walk for the rights that move (ADR 0123 rule 4.2).
+    pub(crate) start_rights: std::collections::BTreeMap<Span, std::collections::BTreeSet<String>>,
     /// The `tasks` statements checked, each with the seed of `κ` of the whole statement, for
     /// the residue label `L_res` (ADR 0116 P9).
     pub(crate) tasks_sites: Vec<timing::TasksSite>,

@@ -1,0 +1,6 @@
+{"completion":{"ok":"unit"},"output":["closed"]}
+{"args":{},"capability":"HttpServer","instance":"host:HttpServer","op":"next","outcome":{"kind":"redacted","level":"internal"},"seq":1}
+{"args":{},"capability":"HttpServer","instance":"host:HttpServer","op":"close","outcome":{"kind":"ok","value":"unit"},"seq":2}
+{"args":{},"capability":"HttpServer","instance":"host:HttpServer","op":"next","outcome":{"kind":"redacted","level":"internal"},"seq":3}
+{"args":{"line":"\"closed\""},"capability":"Console","instance":"host:Console","op":"print","outcome":{"kind":"ok","value":"unit"},"seq":4}
+{"args":{"reply":"<redacted:internal>","to":"<redacted:internal>"},"capability":"HttpServer","instance":"host:HttpServer","op":"reply","outcome":{"kind":"redacted","level":"internal"},"seq":5}

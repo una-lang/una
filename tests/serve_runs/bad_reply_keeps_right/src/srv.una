@@ -1,0 +1,40 @@
+module srv
+
+import std.host (HttpServer, Reply, ServeError)
+
+--- What a failure of `reply` says.
+said(outcome: internal Result[Unit, internal ServeError]) -> internal Text
+=
+  when outcome
+    is Ok(done) -> "sent"
+    is Err(failure) ->
+      when failure
+        is BadReply -> "bad reply"
+        is NotHeld -> "not held"
+        is Interrupted -> "interrupted"
+        is TimedOut -> "timed out"
+        is Closed -> "closed"
+
+--- A reply the host refuses fails with `BadReply`, sends nothing and keeps the right, so the
+--- program can still answer (`spec/31 §5` rule 1): here a `content-length` header it may not
+--- set, then a `204` with a body.
+pub main() -> Unit
+  uses @server: HttpServer[next, reply, close]
+=
+  let next = attempt @server.next()
+  let answered = when next
+    is Ok(exchange) ->
+      let framed = attempt @server.reply(to: exchange.right,
+        reply: Reply(status: 200, headers: [Header(name: "Content-Length", value: "3")],
+          body: "abc"
+        )
+      )
+      let empty = attempt @server.reply(to: exchange.right,
+        reply: Reply(status: 204, headers: [], body: "x")
+      )
+      @server.reply(to: exchange.right,
+        reply: Reply(status: 200, headers: [], body: "{said(framed)}, {said(empty)}, then answered")
+      )
+        if error use unit
+    is Err(failure) -> unit
+  @server.close()

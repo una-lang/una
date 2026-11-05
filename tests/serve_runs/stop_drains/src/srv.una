@@ -1,0 +1,29 @@
+module srv
+
+import std.host (HttpServer, Reply, ServeError)
+
+--- A host stop: the `next` that waits fails with `Interrupted`; a request that `/once` held back
+--- is answered `503`; the exchange open drains, its reply carrying `Connection: close`
+--- (ADR 0123 rule 18).
+pub main() -> Unit
+  uses @server: HttpServer[next, reply, close]
+  uses @console: Console[print]
+=
+  let first = attempt @server.next()
+  let second = attempt @server.next()
+  let said = when second
+    is Err(failure) ->
+      when failure
+        is Interrupted -> "interrupted"
+        is Closed -> "closed"
+        is TimedOut -> "timed out"
+        is NotHeld -> "not held"
+        is BadReply -> "bad reply"
+    is Ok(exchange) -> "delivered"
+  @console.print(said)
+  let answered = when first
+    is Ok(one) ->
+      @server.reply(to: one.right, reply: Reply(status: 200, headers: [], body: "drained"))
+        if error use unit
+    is Err(failure) -> unit
+  @server.close()
