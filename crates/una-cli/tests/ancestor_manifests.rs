@@ -112,16 +112,16 @@ fn a_planted_manifest_reaches_an_unsealed_file_and_no_sealed_one() {
     let base = planted("explain");
     let failing = example(Code::U3014, "## Failing example");
     let fixed = example(Code::U3014, "## Fixed example");
-    // Unsealed, the file takes the planted edition 0.4, where `example` is written `test`: the
+    // Unsealed, the file takes the planted edition 0.4, where the test declaration is written
+    // `test` and `example` is an identifier (ADR 0105, amendment of 2026-11-05), so its
+    // `example "..."` line is the syntax error U0101 in place of the U3014 of edition 0.1: the
     // failure of #1560, which shows that the plant is effective.
     let unsealed = base.join("unsealed").join("failing.una");
     std::fs::create_dir_all(unsealed.parent().unwrap()).unwrap();
     std::fs::write(&unsealed, &failing).unwrap();
-    assert!(
-        codes(&unsealed).contains(&Code::U0103),
-        "{:?}",
-        codes(&unsealed)
-    );
+    let found = codes(&unsealed);
+    assert!(found.contains(&Code::U0101), "{found:?}");
+    assert!(!found.contains(&Code::U3014), "{found:?}");
     // Sealed, as `explain_examples` writes its examples, it keeps edition 0.1.
     let sealed = base.join("sealed");
     hermetic::seal(&sealed);
@@ -171,7 +171,7 @@ const CALL_SITES: [(&str, usize, usize); 13] = [
     ("recovery.rs", 1, 0),
     ("runtime.rs", 0, 1),
     ("serve_grants.rs", 1, 0),
-    ("test_declaration.rs", 0, 1),
+    ("test_declaration.rs", 1, 1),
     ("unknown_names.rs", 1, 0),
     ("verification.rs", 0, 1),
     ("widening_repairs.rs", 0, 1),
