@@ -187,8 +187,10 @@ impl Port for ScriptPort {
     }
 
     fn next(&self) -> Next {
-        let mut scripted = self.scripted();
-        scripted.sim.flush();
+        // The serve thread handles its messages only when the program waits, as a real one
+        // handles them on its own time: a `close` or a reply is not yet seen by the thread
+        // when the program's next operation comes.
+        let scripted = self.scripted();
         let now = scripted.sim.now();
         scripted.sim.shared.next(now)
     }
@@ -245,7 +247,6 @@ impl Port for ScriptPort {
     fn close(&self) {
         let mut scripted = self.scripted();
         scripted.sim.shared.stop();
-        scripted.sim.flush();
         scripted.epoch += 1;
     }
 }
