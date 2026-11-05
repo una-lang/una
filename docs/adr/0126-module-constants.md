@@ -10,14 +10,14 @@
   - ADR 0120 (the numeric foundation), whose programs want named constants: π, physical constants, tolerances and limits;
   - ADR 0104 and `spec/25` (units of measure), whose rule 3 of §3 gives a constant expression the unit its context expects;
   - ADR 0114 and `spec/29` (`F64`), whose operations are exactly specified, so that a value folded at compile time equals the one computed at run time;
-  - ADR 0121 (the terms of a preview edition), whose rule 1 lets a preview edition add a construct that widens what a program can do, and issue #1620, which numbers the editions after the release that closes them;
+  - ADR 0121 (the terms of a preview edition), whose rule 3 lets a preview edition accept a construct that widens what a program can do, by the terms issue #1620 gives edition `0.5`, and issue #1620, which numbers the editions after the release that closes them;
   - ADR 0061 (the memory budget), which counts every value a run constructs;
   - `spec/17` (the memory model), whose `edit` and `take` conventions apply to bindings and places;
   - `spec/05 §6` and ADR 0038 D2, by which capability references and effectful function values are second-class and cannot be bound, stored or returned.
 - Target: edition `0.5`, with ADR 0137, numbered as issue #1620 numbers editions. Editions `0.1` to `0.4` do not change: in edition `0.4`, `const` at the top level is U0101, as `let` at the top level is there today.
 - Amends:
   - **Grammar:** `spec/02 §1` (`decl` gains `constant_decl`), `§7` (a constant name is a `primary`), and, under Question 4, `§2` (a range bound may name a constant);
-  - **Lexical structure:** `spec/01 §5` (no keyword of its own: `const`, a keyword of edition `0.5` under ADR 0137, at the top level; `let` at the top level is U0103 there, as everywhere in edition `0.5`);
+  - **Lexical structure:** `spec/01 §5` (no keyword of its own: `const`, a keyword of edition `0.5` under ADR 0137, at the top level; `let` at the top level is U7007 there, as everywhere in edition `0.5`, ADR 0137 rule 1);
   - **Memory model:** `spec/17 §2`, `§3` (a constant is neither an editable binding nor a local binding, Question 7);
   - **Capabilities:** `spec/05 §6` (a constant's type holds no capability and no function type, Question 8);
   - **Static semantics:** `spec/10 §8` (the typing of a constant), `§11` (the lower-case namespace holds constants; a cycle among constants), `§12`;
@@ -94,7 +94,7 @@ Each question changes what a programmer writes or can rely on, and states its re
    - **Decided:** the project, 2026-11-05: as recommended.
 
 6. **`std.time` declares its constants in Una.**
-   - **Recommended: yes.** `millisecond`, `second` and `minute` become `pub const` declarations of `crates/una-check/src/std/time.una`, and the built-in special case (`STD_TIME_CONSTANTS`, `Entity::Constant`) is removed. Nothing changes for a program: the names, types and values stay.
+   - **Recommended: yes.** `millisecond`, `second` and `minute` become `pub const` declarations of `crates/una-check/src/std/time.una` in the source that edition `0.5` serves, and the built-in special case (`STD_TIME_CONSTANTS`, `Entity::Constant`) is not used there; it stays for edition `0.4`, which has no module constants (rule 12). Nothing changes for a program: the names, types and values stay.
    - **Cost to the programmer:** none.
    - **Complexity:** the lookup of a `std.time` name moves from a built-in table to the module's name table, both O(1); one special case of the checker goes away.
    - **Decided:** the project, 2026-11-05: yes, `std.time` declares its constants in Una.
@@ -107,6 +107,10 @@ Each question changes what a programmer writes or can rely on, and states its re
    - **Decided:** the project, 2026-11-05: as recommended: no marker applies to a constant; an assignment and an `edit` argument rooted at one are U2019, a `take` of one is U2020, and a program copies it to a local `const` before passing it to a `take` parameter. ADR 0137 rule 5 explains `take` under `const` and `var`.
 
    ```una
+   pub kind Point
+     x: Int
+     y: Int
+
    pub const origin: Point = Point(x: 0, y: 0)
 
    pub moved(take p: Point) -> Point = Point(x: p.x + 1, y: p.y)
@@ -137,14 +141,14 @@ Each question changes what a programmer writes or can rely on, and states its re
 - **What wants constants.** The numeric foundation (ADR 0120): π, e, physical constants, tolerances, iteration limits, the sizes of matrices; servers (ADR 0123): limits, time-outs, header names; every program: a `max_items`, a `default_port`, a `version` text.
 - **What exists for literals.** Literals are `public` (`spec/07 §7` rule 3); a constant expression of integer literals takes the unit its context expects (`spec/25 §3` rule 3) and the fixed-width type its context expects (`spec/18 §2`); `F64` arithmetic is specified operation by operation (`spec/29`), with round-to-nearest-even and no fast-math, so folding an expression at compile time gives the run's value; text literals are distinct constants in queries (`spec/12 §4`).
 - **The verifier's names.** Binders of a query are the program's parameters, local bindings and pattern variables (`spec/12 §4`), quantifier-free; a constant that entered a query as an uninterpreted symbol would need an equation per query; one that enters as its literal needs nothing.
-- **The preview edition.** ADR 0121 rule 1 lets a preview edition add constructs that widen what a program can do; rule 4 keeps every accepted program's meaning or rejects it with a diagnostic. The construct lands in edition `0.5` with ADR 0137, so that `let` and `const` never name a binding in one edition.
+- **The preview edition.** ADR 0121 rule 3 lets a preview edition accept constructs that widen what a program can do, by the terms issue #1620 gives edition `0.5`; rule 4 keeps every accepted program's meaning or rejects it with a diagnostic. The construct lands in edition `0.5` with ADR 0137, so that `let` and `const` never name a binding in one edition.
 - **The way Una is written.** Una's syntax is its own (`spec/01`, `spec/02`): declarations read as signatures, values are immutable, and a word means one thing. From edition `0.5`, `const` is the word for binding a value that does not change (ADR 0137).
 
 ## Decision
 
 This record and ADR 0137 are accepted together: the syntax below depends on ADR 0137, which is Proposed, and the project accepts both in one step.
 
-In one paragraph: a module may declare a constant, `[pub] const name: type = value`, whose value is a constant expression that the compiler evaluates at check time by the language's own semantics; the value must flow into the declared type, with its refinement an obligation like that of an annotated `let`; a reference to the constant is substituted by its value at elaboration, so Core IR, the verifier, the interpreter and native code see a literal; constants live in the lower-case namespace, are exported with `pub` and imported by name, may refer to one another without a cycle, and may appear in contracts, refinements and, as bounds, in ranges; the construct exists from edition `0.5`, and `std.time` uses it for its three constants.
+In one paragraph: a module may declare a constant, `[pub] const name: type = value`, whose value is a constant expression that the compiler evaluates at check time by the language's own semantics; the value must flow into the declared type, with its refinement an obligation like that of an annotated `const` or `var` binding; a reference to the constant is substituted by its value at elaboration, so Core IR, the verifier, the interpreter and native code see a literal; constants live in the lower-case namespace, are exported with `pub` and imported by name, may refer to one another without a cycle, and may appear in contracts, refinements and, as bounds, in ranges; the construct exists from edition `0.5`, and `std.time` uses it for its three constants.
 
 1. **Syntax.** In `spec/02 §1`, `decl` gains:
 
@@ -152,9 +156,9 @@ In one paragraph: a module may declare a constant, `[pub] const name: type = val
    constant_decl = [ "pub" ] "const" lower_ident ":" type "=" line_expr NEWLINE ;
    ```
 
-   The type is required. The declaration is one logical line, continued inside brackets as any line is (ADR 0125). A doc comment (`---`) may lead it, as for any declaration. In `spec/02 §7`, a `primary` that is a `lower_ident` may resolve to a constant (rule 4). In editions `0.1` to `0.3`, `let` at the top level is U0101 at the keyword, as today, and in edition `0.4` so is `const`, an identifier there, with the help that ADR 0137 rule 1 gives. In edition `0.5`, `let` at the top level is U0103 with the message of ADR 0137 rule 1 and the exact rewrite to `const`.
+   The type is required. The declaration is one logical line, continued inside brackets as any line is (ADR 0125). A doc comment (`---`) may lead it, as for any declaration. In `spec/02 §7`, a `primary` that is a `lower_ident` may resolve to a constant (rule 4). In editions `0.1` to `0.4`, `let` at the top level is U0101 at the keyword, as today, and so is `const`, an identifier there, with the help that ADR 0137 rule 1 gives. In edition `0.5`, `let` at the top level is U7007 with the message of ADR 0137 rule 1 and the exact rewrite to `const`.
 
-2. **Names.** A constant is in the module's lower-case namespace (`spec/10 §11` rule 1), with functions, predicates, handlers and policies; two declarations of one name are U1002; the conventions of rule 9 apply. `pub` exports it; an import brings it in by name (rule 6). A local of the same name shadows it, as a local shadows any non-local name (rule 5). A constant is identified by its module path and its name (rule 8).
+2. **Names.** A constant is in the module's lower-case namespace (`spec/10 §11` rule 1), with functions, predicates, handlers and policies; two declarations of one name are U1002 (`spec/10 §11` rule 5); the conventions of `spec/10 §11` rule 9 apply. `pub` exports it; an import brings it in by name (`spec/10 §11` rule 6). A local of the same name shadows it, as a local shadows any non-local name (`spec/10 §11` rule 2). A constant is identified by its module path and its name (`spec/10 §11` rule 8).
 
 3. **Constant expressions.** The value is one of:
    - a literal: an integer, a float or a decimal (edition `0.3` and later, `spec/29`), a text without interpolation, `true`, `false`, `unit`;
@@ -254,12 +258,12 @@ Two new codes, which join `spec/13 §4` with the implementation. U1010 and U2040
 | U1011 | names | A constant depends on itself, directly or through other constants |
 | U2041 | types | The value of a constant is not a constant expression (a call, a lambda, an interpolation, a control construct), divides by zero, does not fit its fixed-width type, or exceeds the size caps; or its declared type holds a capability type or a function type, at any depth |
 
-Existing codes cover the rest: U2019 for an assignment or `edit` rooted at a constant, U2020 for `take` of a constant (rule 13); U3005 for a capability reference as a constant's value (rule 14); U0101 for `let` at the top level in editions before `0.4`, for `const` at the top level in edition `0.4`, and for a missing type annotation; U0103 for `let` at the top level in edition `0.5`, with the rewrite to `const`; U1001 and U1002 for names; U2001, U2002, U2028 and U4001 for a value that does not flow into the declared type; U5001 for a refuted refinement (rule 7); U1005 for the conventions.
+Existing codes cover the rest: U2019 for an assignment or `edit` rooted at a constant, U2020 for `take` of a constant (rule 13); U3005 for a capability reference as a constant's value (rule 14); U0101 for `let` and for `const` at the top level in editions `0.1` to `0.4`, and for a missing type annotation; U7007 for `let` at the top level in edition `0.5`, with the rewrite to `const` (ADR 0137 rule 1); U1001 and U1002 for names; U2001, U2002, U2028 and U4001 for a value that does not flow into the declared type; U5001 for a refuted refinement (rule 7); U1005 for the conventions.
 
 ## Consequences
 
 - **Libraries export values.** A package can name π, limits, defaults and units of its domain once, and its users and its contracts read them by name.
-- **`std.time` is written in Una** for its constants too; one special case leaves the checker.
+- **`std.time` is written in Una** for its constants too, in edition `0.5`; the special case of the checker serves edition `0.4` only, and leaves when no served edition needs it.
 - **One new ownership check** (rule 13): the roots of `edit` arguments, `take` arguments and assignments are tested against constants, O(1) each, since today's checker accepts a non-local root silently.
 - **No run-time cost for scalars;** a record or list constant costs a construction per use unless the engine shares it, which a later record may require if measurement shows the need.
 - **Core IR is unchanged,** and so are the Core export (`una.core/1`), the report and the trace: a reference leaves no mark. A program's trace is the same whether a value was written as a constant or inline.
@@ -274,7 +278,7 @@ Existing codes cover the rest: U2019 for an assignment or `edit` rooted at a con
 - **D. A Core IR declaration** (`Decl::Const`) with references by name, and a fact `name = value` in queries. Not chosen for now: every engine, the encoder and the Core export would gain a form, for a benefit, sharing one construction of a record or list, that rule 8 lets an engine have anyway. If measurement shows that substitution bloats Core or queries, a later record moves to it.
 - **E. Constants only of scalar types.** Not chosen (Question 5): an `origin: Point` or a list of allowed values is what programs name most; the caps of rule 5 keep them bounded.
 - **F. Allowing text interpolation of constants.** Not chosen: it is computed text, which `spec/07 §7` rule 3 treats with care in patterns (S-28); a constant text is written out.
-- **G. Keeping `std.time`'s built-ins.** Not chosen (Question 6): the special case exists only because the language lacked the construct.
+- **G. Keeping `std.time`'s built-ins in edition `0.5`.** Not chosen (Question 6): the special case exists only because the language lacked the construct; edition `0.4`, which lacks it, keeps them (rule 12).
 
 ## Implementation plan
 
@@ -288,7 +292,7 @@ Each step ships behind edition `0.5`, after ADR 0137's keywords (issue #1628), w
 
 ## Conformance
 
-- **Syntax and names:** a `pub const` with a type parses and resolves; one without a type is U0101 at `=`; `let` at the top level in edition `0.3` is U0101, `const` at the top level in edition `0.4` is U0101, and `let` at the top level in edition `0.5` is U0103 with the rewrite to `const`; two constants of one name, and a constant named as a function of the module, are U1002; a `pub const` imported by name resolves, and one without `pub` imported is U1004; a local shadows a constant; a constant named `max__items` is U1005.
+- **Syntax and names:** a `pub const` with a type parses and resolves; one without a type is U0101 at `=`; `let` and `const` at the top level in editions `0.3` and `0.4` are U0101, and `let` at the top level in edition `0.5` is U7007 with the rewrite to `const`; two constants of one name, and a constant named as a function of the module, are U1002; a `pub const` imported by name resolves, and one without `pub` imported is U1004; a local shadows a constant; a constant named `max__items` is U1005.
 - **Constant expressions:** each form of rule 3 is accepted; a call, a lambda, an interpolated text, an `if`, a `when`, a field access and `result` are each U2041 naming the construct; `1 / 0` and `1 mod 0` are U2041; a cycle of two constants is U1011 once; a constant of 4,301 digits, and a list constant that nests another past 1,000,000 elements, are U2041.
 - **Typing:** `const n: I32 = 3_000_000_000` is U2041; `const d: Int of Meter = 5 * 2` is accepted and `const d: Int of Meter = other_seconds` is U2028; `const s: secret Int = 1` is accepted and `print(s)` is U4003; `const m: Int in 1..1000 = 500` has a proven `refinement` obligation, `= 0` a refuted one with U5001 at the value and no counterexample note; a record constant whose field is refined gives the obligation at the field.
 - **Substitution and engines:** `una core` shows the value where the source wrote the name; for every operator and type of rule 3, a program that computes with a constant and one that writes the literal give the same output, trace and status in both engines, and the same obligation statuses; a list constant used in a loop of 1,000 iterations under a memory budget behaves as the literal would.
