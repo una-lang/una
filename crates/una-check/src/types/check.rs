@@ -161,6 +161,9 @@ pub(crate) struct Local<'a> {
     pub(crate) lambda_depth: usize,
     /// Its declared type is refined, so each rebind carries an obligation (`spec/17 §5`).
     pub(crate) refined: bool,
+    /// The loop whose variable it is, as `` a `for` loop ``: a loop variable cannot be
+    /// declared `edit`, so U2019 on it names a separate `let edit` binding instead (#931).
+    pub(crate) loop_of: Option<&'static str>,
 }
 
 /// A `for` loop whose body is being checked, for its `stop` and `skip` (`spec/26 §3`, ADR
@@ -703,6 +706,16 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
 
     /// Binds a local name, editable when `editable` (`spec/17 §2`).
     pub(crate) fn bind_as(&mut self, name: &'a str, ty: Ty, editable: bool) {
+        self.push_local(name, ty, editable, None);
+    }
+
+    /// Binds the variable of `looped`, as `` a `for` loop ``: a plain binding (`spec/17 §1`,
+    /// `spec/19 §1`).
+    pub(crate) fn bind_loop_var(&mut self, name: &'a str, ty: Ty, looped: &'static str) {
+        self.push_local(name, ty, false, Some(looped));
+    }
+
+    fn push_local(&mut self, name: &'a str, ty: Ty, editable: bool, loop_of: Option<&'static str>) {
         self.locals.push(Local {
             name,
             ty,
@@ -710,6 +723,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             taken: None,
             lambda_depth: self.lambda_depth,
             refined: false,
+            loop_of,
         });
     }
 

@@ -192,6 +192,7 @@ mod tests {
             taken: None,
             lambda_depth: 0,
             refined: false,
+            loop_of: None,
         }
     }
 

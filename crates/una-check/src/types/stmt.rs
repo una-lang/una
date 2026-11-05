@@ -592,7 +592,7 @@ impl<'a> Checker<'_, 'a, '_> {
         let before_len = self.locals.len();
         let saved = self.raise_pc(&label, from);
         let mark = self.locals.len();
-        self.bind(self.name(&stmt.var), var_ty);
+        self.bind_loop_var(self.name(&stmt.var), var_ty, "a `for` loop");
         self.loops.push(LoopFrame {
             pc: self.ctx.pc.clone(),
             depth: (self.task_depth, self.lambda_depth),
@@ -1108,7 +1108,7 @@ impl<'a> Checker<'_, 'a, '_> {
             .server_branch
             .replace(("the body of `together for`", together.span));
         self.task_depth += 1;
-        self.bind(self.name(&together.var), var_ty);
+        self.bind_loop_var(self.name(&together.var), var_ty, "a `together for`");
         let element = self.block(
             &together.block,
             element_expected.as_ref(),
