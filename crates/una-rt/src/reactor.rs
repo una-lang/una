@@ -510,12 +510,18 @@ impl Reactor {
         }
         let cancel = Arc::clone(&wake);
         let on_cancel: crate::interrupt::Wake = Arc::new(move || cancel.send(Woken::Cancelled));
-        let registration = crate::interrupt::register_job(entries, &on_cancel, None);
+        // A parked wait runs on its task, as a job that has begun on its helper does: a
+        // deadline's cut of its `tasks` statement wakes it not, and its own time-out, the same
+        // deadline, ends it, so its request fails with `TimedOut` on this path as on a helper
+        // (`spec/27 §2` rule 4, #1266). Any other cancellation wakes it at once.
+        let begun = Some(Arc::new(std::sync::atomic::AtomicBool::new(true)));
+        let registration = crate::interrupt::register_job(entries, &on_cancel, begun);
         let ready_wake = Arc::clone(&wake);
         let ready: crate::interrupt::Wake = Arc::new(move || ready_wake.send(Woken::Ready));
         drop((on_cancel, wake));
-        // A cancellation before the registration woke nothing: seen here.
-        let woken = if crate::interrupt::cancelled(entries) {
+        // A cancellation before the registration woke nothing: seen here. A deadline's cut is
+        // not one: the wait runs to its own time-out (#1266).
+        let woken = if crate::interrupt::interrupting(entries) {
             Woken::Cancelled
         } else if arm(&ready) {
             Woken::Ready
@@ -614,9 +620,12 @@ impl<'a> Parked<'a> {
         self.cancelled.get()
     }
 
-    /// Reads the task's cancellation entries, and records one that is cancelled.
+    /// Reads the task's cancellation entries, and records one that is cancelled. A deadline's
+    /// cut of the task's `tasks` statement is not such a cancellation: the request runs on to
+    /// its own time-out, that same deadline, and fails with `TimedOut`, as on a helper
+    /// (`spec/27 §2` rule 4, #1266).
     fn cut(&self) -> bool {
-        if !self.cancelled.get() && crate::interrupt::cancelled(self.entries) {
+        if !self.cancelled.get() && crate::interrupt::interrupting(self.entries) {
             self.mark_cancelled();
         }
         self.cancelled.get()
@@ -760,8 +769,11 @@ impl Interrupt for Parked<'_> {
         );
         let job = move |done: crate::interrupt::Wake| {
             let opened = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let stopped =
-                    || crate::interrupt::cancelled(&entries) || stop.is_some_and(RunStop::stopped);
+                // A deadline's cut stops nothing here: the connection's own deadline, the
+                // same one, ends it (#1266).
+                let stopped = || {
+                    crate::interrupt::interrupting(&entries) || stop.is_some_and(RunStop::stopped)
+                };
                 (
                     una_http::client::open(&host, port, deadline, &stopped, &abandon),
                     place,
@@ -979,6 +991,68 @@ mod tests {
         crate::interrupt::lowered(&count);
         let (woken, _b) = waited.recv_timeout(Duration::from_secs(10)).unwrap();
         assert_eq!(woken, Woken::Cancelled);
+        drop(a);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
+    fn a_deadline_s_cut_leaves_a_parked_request_to_its_own_time_out() {
+        // #1266, `spec/27 §2` rule 4: a deadline's cut of a `tasks` statement lowers its count
+        // to `CUT`, which wakes no wait parked on the reactor, as it wakes no job running on a
+        // helper: the wait ends at its own time-out, the same deadline, and the request fails
+        // with `TimedOut`, never `interrupted`. Before the fix the cut woke it at once as a
+        // cancellation, and the request ended `interrupted` where a helper's ended `TimedOut`.
+        let reactor = get().unwrap();
+        let sched = sched::Scheduler::new(settings(1));
+        let (a, b) = UnixStream::pair().unwrap();
+        b.set_nonblocking(true).unwrap();
+        let count = Arc::new(AtomicUsize::new(crate::tasks::RACE_ENTRY | 1));
+        let entry = Arc::clone(&count);
+        let waited = in_task(&sched, move || {
+            let entries = vec![(entry, crate::tasks::RACE_ENTRY | 1)];
+            let parked = Parked::new(reactor, None, &entries);
+            let started = Instant::now();
+            let waited = parked.wait(b.as_fd(), false, Duration::from_millis(300));
+            (
+                waited,
+                started.elapsed(),
+                parked.cancelled(),
+                parked.abandon().abandoned(),
+                b,
+            )
+        });
+        std::thread::sleep(Duration::from_millis(50));
+        count.fetch_min(crate::interrupt::CUT, Ordering::SeqCst);
+        crate::interrupt::lowered_unstarted(&count);
+        let (waited, took, cancelled, abandoned, b) =
+            waited.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert_eq!(waited, Waited::TimedOut);
+        assert!(took >= Duration::from_millis(300), "{took:?}");
+        assert!(!cancelled && !abandoned);
+        // Any other cancellation, a failure of the block, still interrupts the wait at once,
+        // raising the request's abandon.
+        let count = Arc::new(AtomicUsize::new(crate::tasks::RACE_ENTRY | 1));
+        let entry = Arc::clone(&count);
+        let waited = in_task(&sched, move || {
+            let entries = vec![(entry, crate::tasks::RACE_ENTRY | 1)];
+            let parked = Parked::new(reactor, None, &entries);
+            let started = Instant::now();
+            let waited = parked.wait(b.as_fd(), false, Duration::from_secs(30));
+            (
+                waited,
+                started.elapsed(),
+                parked.cancelled(),
+                parked.abandon().abandoned(),
+            )
+        });
+        std::thread::sleep(Duration::from_millis(50));
+        count.store(0, Ordering::SeqCst);
+        crate::interrupt::lowered(&count);
+        let (waited, took, cancelled, abandoned) =
+            waited.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert_eq!(waited, Waited::Stopped);
+        assert!(took < Duration::from_secs(10), "{took:?}");
+        assert!(cancelled && abandoned);
         drop(a);
     }
 
