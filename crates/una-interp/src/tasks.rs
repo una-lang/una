@@ -90,10 +90,12 @@ pub(crate) struct Run<'p, 'w> {
     pub(crate) http_limits: una_http::limit::Governor,
     /// The serve engine of a run that serves, and its reply rights (ADR 0123 rules 1 to 4).
     pub(crate) serve: Option<crate::machine::serve::Serving<'w>>,
-    /// The tasks waiting in `next` of `HttpServer` for the engine: a task in it never yields to
-    /// another one in it, so a pool of them blocks on the engine instead of handing the turn
-    /// back and forth (ADR 0123 rule 4.7).
-    pub(crate) next_waiters: RefCell<BTreeSet<usize>>,
+    /// The tasks waiting in `next` of `HttpServer` for the engine, by id: a task waiting there
+    /// yields only to a task that can make progress, so a pool of them blocks on the engine
+    /// instead of handing the turn back and forth, and a waiter that its cancellation or its
+    /// deadline ended still runs to see it (ADR 0123 rule 4.7). Each task enters at most once,
+    /// and leaves on every way out of `next`.
+    pub(crate) next_waiters: RefCell<BTreeMap<usize, NextWaiter>>,
 }
 
 impl<'p, 'w> Run<'p, 'w> {
@@ -122,7 +124,7 @@ impl<'p, 'w> Run<'p, 'w> {
             panic: RefCell::new(None),
             http_limits: una_http::limit::Governor::new(Vec::new()),
             serve: None,
-            next_waiters: RefCell::new(BTreeSet::new()),
+            next_waiters: RefCell::new(BTreeMap::new()),
         }
     }
 
@@ -215,17 +217,20 @@ impl<'p, 'w> Run<'p, 'w> {
     /// again; `false`, with no switch, when no other task is ready or the driver does not serve
     /// the run. A wait of the host's that no task can end, `next` of `HttpServer` with no request,
     /// yields first, so a task that would answer one runs before the thread blocks.
-    /// A ready task that waits in `next` itself does not count: it would only hand the turn
-    /// back, so when every ready task waits there, the task that runs blocks on the engine.
+    /// A ready task that waits in `next` itself does not count, unless its cancellation or its
+    /// deadline ended the wait: it would only hand the turn back, so when every ready task waits
+    /// there, the task that runs blocks on the engine.
     /// O(ready tasks) at most, O(1) when the front of the queue does not wait in `next`.
     pub(crate) fn yield_turn(&self) -> bool {
         if !self.coroutines || !self.serving.get() {
             return false;
         }
+        let now = self.clock.now();
         let switch = {
             let waiters = self.next_waiters.borrow();
             let mut sched = self.sched.borrow_mut();
-            if !sched.queue.iter().any(|id| !waiters.contains(id)) {
+            let progress = |id: &usize| waiters.get(id).is_none_or(|waiter| waiter.ended(now));
+            if !sched.queue.iter().any(progress) {
                 false
             } else {
                 let current = sched.current;
@@ -243,6 +248,25 @@ impl<'p, 'w> Run<'p, 'w> {
     /// `false`, with no switch, unless [`drive`] serves the run, which only a defect reaches.
     pub(crate) fn park(&self) -> bool {
         self.serving.get() && una_sys::coroutine::suspend()
+    }
+}
+
+/// A task waiting in `next` of `HttpServer` (ADR 0123 rule 4.7): the `tasks` statements whose
+/// cancellation cancels it, and the deadline on the run's clock that ends its wait, if any.
+pub(crate) struct NextWaiter {
+    /// The scopes that cancel the task, those its operation does not shield.
+    pub(crate) cancels: Vec<Rc<TasksScope>>,
+    /// When the deadline in force passes, on the run's clock: the waiter's own, set at each
+    /// pass of its loop.
+    pub(crate) until: Cell<Option<u64>>,
+}
+
+impl NextWaiter {
+    /// Whether the wait has ended at `now` by a cancellation or a deadline, so the task must run
+    /// to end its `next`.
+    pub(crate) fn ended(&self, now: u64) -> bool {
+        self.cancels.iter().any(|scope| scope.cancelled.get())
+            || self.until.get().is_some_and(|until| until <= now)
     }
 }
 
@@ -533,6 +557,73 @@ mod tests {
         // Outside the driver no task suspends.
         assert!(!run.serving.get());
         assert!(!run.park());
+    }
+
+    #[test]
+    fn a_waiter_in_next_counts_as_ready_once_cancelled_or_past_its_deadline() {
+        // ADR 0123 rule 4.7 (review of #1595, M2): a waiter yields only to a task that can make
+        // progress, and a waiter whose cancellation or deadline ended its wait is one.
+        let scope = Rc::new(TasksScope::new(vec!["s1".to_owned()], 4));
+        let waiter = NextWaiter {
+            cancels: vec![Rc::clone(&scope)],
+            until: Cell::new(None),
+        };
+        assert!(!waiter.ended(0));
+        waiter.until.set(Some(10));
+        assert!(!waiter.ended(9));
+        assert!(waiter.ended(10));
+        waiter.until.set(None);
+        scope.cancelled.set(true);
+        assert!(waiter.ended(0));
+    }
+
+    #[test]
+    fn a_waiter_yields_to_a_cancelled_waiter_and_not_to_a_waiting_one() {
+        // The set of waiters decides `yield_turn`: two waiters do not hand the turn back and
+        // forth, and a cancelled one runs.
+        let log: RefCell<Vec<String>> = RefCell::new(Vec::new());
+        let mut world = crate::host::NoWorld;
+        let run = Rc::new(Run::new(&mut world, Clock::virtual_time(), true));
+        let scope = Rc::new(TasksScope::new(vec!["s1".to_owned()], 4));
+        rooted(&run, || {
+            let other = run.sched.borrow().upcoming();
+            run.next_waiters.borrow_mut().insert(
+                other,
+                NextWaiter {
+                    cancels: vec![Rc::clone(&scope)],
+                    until: Cell::new(None),
+                },
+            );
+            let (log2, run2) = (&log, Rc::clone(&run));
+            run.sched.borrow_mut().start(
+                Box::new(move || {
+                    log2.borrow_mut().push("the waiter ran".to_owned());
+                    run2.next_waiters.borrow_mut().remove(&other);
+                }),
+                64 * 1024,
+                span(),
+            );
+            run.next_waiters.borrow_mut().insert(
+                0,
+                NextWaiter {
+                    cancels: Vec::new(),
+                    until: Cell::new(None),
+                },
+            );
+            // The only other ready task waits in `next`: no switch.
+            let switched = run.yield_turn();
+            log.borrow_mut().push(format!("yield {switched}"));
+            scope.cancelled.set(true);
+            // Cancelled, it can end its wait: it runs.
+            let switched = run.yield_turn();
+            log.borrow_mut().push(format!("yield {switched}"));
+            run.next_waiters.borrow_mut().remove(&0);
+        });
+        assert_eq!(
+            log.borrow().as_slice(),
+            ["yield false", "the waiter ran", "yield true"]
+        );
+        assert!(run.next_waiters.borrow().is_empty());
     }
 
     #[test]

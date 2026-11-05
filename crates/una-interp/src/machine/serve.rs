@@ -80,15 +80,51 @@ struct Waiting<'r, 'p, 'w> {
 }
 
 impl<'r, 'p, 'w> Waiting<'r, 'p, 'w> {
-    fn enter(run: &'r crate::tasks::Run<'p, 'w>, task: usize) -> Self {
-        run.next_waiters.borrow_mut().insert(task);
+    fn enter(
+        run: &'r crate::tasks::Run<'p, 'w>,
+        task: usize,
+        cancels: Vec<Rc<crate::tasks::TasksScope>>,
+    ) -> Self {
+        let waiter = crate::tasks::NextWaiter {
+            cancels,
+            until: Cell::new(None),
+        };
+        let fresh = run.next_waiters.borrow_mut().insert(task, waiter).is_none();
+        // INVARIANT: a task runs one operation at a time, so it enters `next` once.
+        debug_assert!(fresh, "task {task} entered `next` twice");
         Waiting { run, task }
+    }
+
+    /// Records the deadline that ends this wait, on the run's clock.
+    fn until(&self, until: Option<u64>) {
+        if let Some(waiter) = self.run.next_waiters.borrow().get(&self.task) {
+            waiter.until.set(until);
+        }
+    }
+
+    /// The earliest deadline of the other waiters, which the wait of this one may not outlast,
+    /// so that a waiter whose deadline passed runs to end its `next`.
+    fn others_until(&self) -> Option<u64> {
+        self.run
+            .next_waiters
+            .borrow()
+            .iter()
+            .filter(|(id, _)| **id != self.task)
+            .filter_map(|(_, waiter)| waiter.until.get())
+            .min()
     }
 }
 
 impl Drop for Waiting<'_, '_, '_> {
     fn drop(&mut self) {
-        self.run.next_waiters.borrow_mut().remove(&self.task);
+        let left = self
+            .run
+            .next_waiters
+            .borrow_mut()
+            .remove(&self.task)
+            .is_some();
+        // INVARIANT: only this guard removes its task, once.
+        debug_assert!(left, "task {} left `next` twice", self.task);
     }
 }
 
@@ -281,7 +317,13 @@ impl<'p> Machine<'p, '_> {
         serving.port.begin();
         // While it waits here, the task is one of the run's waiters in `next` (`yield_turn`),
         // on every way out.
-        let _waiting = Waiting::enter(&run, run.current());
+        let cancels = self
+            .cancels
+            .iter()
+            .skip(self.cancel_shield)
+            .cloned()
+            .collect();
+        let waiting = Waiting::enter(&run, run.current(), cancels);
         loop {
             if serving.closed.get() {
                 return Err(closed());
@@ -322,22 +364,30 @@ impl<'p> Machine<'p, '_> {
                 }
                 return Err(timed_out());
             }
+            let now = self.run.clock.now();
+            let until = left.map(|left| {
+                now.saturating_add(u64::try_from(left.as_millis()).unwrap_or(u64::MAX))
+            });
+            waiting.until(until);
             // Another ready task runs first: it may answer an exchange, which frees a `/once`
-            // slot, or end, which another task waits for.
+            // slot, or end, which another task waits for, or it is a waiter that its
+            // cancellation or its deadline ended.
             if run.yield_turn() {
                 if self.cancelled() {
                     return Err(Stop::Cut(CANCEL));
                 }
                 continue;
             }
-            let now = self.run.clock.now();
-            let until = left.map(|left| {
-                now.saturating_add(u64::try_from(left.as_millis()).unwrap_or(u64::MAX))
-            });
-            let deadline = match left {
-                Some(left) if !self.run.clock.is_virtual() => {
-                    std::time::Instant::now().checked_add(left)
-                }
+            // The wait lasts no longer than the earliest deadline of any waiter, so one whose
+            // deadline passes runs; only its own ends this `next` with `TimedOut`.
+            let others = waiting.others_until();
+            let wake = match (until, others) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            };
+            let deadline = match wake {
+                Some(at) if !self.run.clock.is_virtual() => std::time::Instant::now()
+                    .checked_add(std::time::Duration::from_millis(at.saturating_sub(now))),
                 _ => None,
             };
             let stop = std::sync::Arc::clone(&self.stop);
@@ -347,6 +397,9 @@ impl<'p> Machine<'p, '_> {
             {
                 Waited::Changed => {}
                 Waited::Stopped => return Err(interrupted()),
+                Waited::TimedOut if until.is_none() || wake != until => {
+                    // Another waiter's deadline passed: it runs, and this one waits again.
+                }
                 Waited::TimedOut => {
                     // The call returns once the run's clock has reached the deadline, as an
                     // `Http` request does (`spec/27 §5` rule 6, #1355).

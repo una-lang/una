@@ -88,6 +88,11 @@ pub fn run_main(
     let result = machine
         .rooted(|machine| machine.run_main(main))
         .unwrap_or_else(unrooted);
+    // Every way out of `next` leaves the run's waiters (ADR 0123 rule 4.7).
+    debug_assert!(
+        machine.run.next_waiters.borrow().is_empty(),
+        "a task left in the waiters of `next`"
+    );
     let completion = completion(&index, result, Form::Redacted);
     Some(Run {
         completion,
@@ -133,6 +138,10 @@ pub fn run_drive(
     let result = machine
         .rooted(|machine| machine.drive(init, step, on_stop, &drive))
         .unwrap_or_else(unrooted);
+    debug_assert!(
+        machine.run.next_waiters.borrow().is_empty(),
+        "a task left in the waiters of `next`"
+    );
     let completion = completion(&index, result, Form::Redacted);
     Ok(Run {
         completion,
