@@ -288,7 +288,7 @@ Each step ships behind edition `0.5`, after ADR 0137's keywords (issue #1628), w
 2. **Evaluation and typing.** The constant evaluator over rule 3's set with the caps of rule 5 and U2041; the flow into the declared type with units, labels and fixed-width fit; the `refinement` obligation of rule 7.
 3. **Substitution and the engines.** Elaboration substitutes values; `una core` shows them; the differential cases of `spec/16 §5` cover every operator and every type of rule 3 in the interpreter and the native backend; the encoder's `let` sharing for repeated references.
 4. **Types and contracts** (Question 4): constants in `requires`, `ensures`, `where`, `given`, and as range bounds.
-5. **`std.time` and the documents.** `time.una` declares its constants; the built-in table and `Entity::Constant` are removed; `spec/14 §3`, `spec/26 §2`, the guide's chapter on modules, Una by Example's chapter on numerics and the `una std` listing show the construct.
+5. **`std.time` and the documents.** the `time.una` of edition `0.5` declares its constants, and edition `0.5` does not use the built-in table; the built-in table and `Entity::Constant` stay for edition `0.4`, and are removed when no served edition needs them (rule 12); `spec/14 §3`, `spec/26 §2`, the guide's chapter on modules, Una by Example's chapter on numerics and the `una std` listing show the construct.
 
 ## Conformance
 
