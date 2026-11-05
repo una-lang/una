@@ -1116,7 +1116,7 @@ Items 1 to 4 are confirmed as written, with the notes each carries; item 10 stat
 
 ## Amendment (2026-11-05): the native move at `start`
 
-- Status: Accepted by the project on 2026-11-05. Drafted for issue #1571 (slice S5b) as `docs/plan/0123-s5b-native-move-amendment-draft.md`, which now points here. The accepted text of this record above this amendment is unchanged.
+- Status: Accepted by the project on 2026-11-05. Drafted for issue #1571 (slice S5b) as `docs/plan/0123-s5b-native-move-amendment-draft.md`, which now points here. The wording of the cost and of the order was corrected afterwards to match the code (the pass runs after the copy succeeds, and native code walks every captured value); the corrected wording awaits the project's confirmation. The accepted text of this record above this amendment is unchanged.
 - Concerns: rule 4 item 2 ("A task's reply rights are found by the walk that copies its captures, so the walk costs nothing in native code") and the Costs row "Move reply rights at `start`" ("native: none beyond the copy of the captures (ADR 0113)").
 
 ### Why
@@ -1128,14 +1128,14 @@ The copy of the captures that ADR 0113 makes in native code (`values::export`) w
 - **Reorder the copy.** The copy's order is where a copy is refused (U6003) and what keeps it deterministic. Reordering it would move the memory-refusal points of every program, servers or not, for a cost that only servers need. Rejected.
 - **Record the rights where the copy meets them.** In the copy's order, an object that several values share is reached at its last left-to-right meeting, not its first, so the order of moves, and with it the order of auto-answers and their events, would differ from the interpreter's whenever a right is shared. Rejected.
 
-So native code finds the rights with a pass of its own over the values of the closure that `start` copies, before the copy, in the order above.
+So native code finds the rights with a pass of its own over the values of the closure that `start` copies, in the order above. The order of the steps is: the copy of ADR 0113, then the pass, then the task is queued. The pass runs after the copy succeeds and before the task is queued, so a refused copy moves no right to a task that never exists.
 
 ### Amendment
 
-The Costs row "Move reply rights at `start`" reads, for native code: one extra pass, O(objects the marked captures reach), only at a `start` whose captures can hold a `ReplyRight`; none otherwise. Rule 4 item 2's "so the walk costs nothing in native code" reads: native code finds the rights in a pass of its own over the captured values, in the order of the interpreter's walk, before the copy of ADR 0113, whose order and refusal points do not change. The order of moves and the result are the same in both engines.
+The Costs row "Move reply rights at `start`" reads, for native code: one extra pass, O(objects that the task's captured values reach), the same order as the copy itself, only at a `start` with at least one capture that can hold a `ReplyRight`; none otherwise. When any capture is marked, native code hands over every capture and walks all of them; the interpreter walks only the marked ones. Both engines move the same rights in the same order, because an unmarked capture holds no right. Rule 4 item 2's "so the walk costs nothing in native code" reads: native code finds the rights in a pass of its own over the captured values, in the order of the interpreter's walk, after the copy of ADR 0113 succeeds and before the task is queued; the copy's order and refusal points do not change. The order of moves and the result are the same in both engines.
 
 ### Bounds
 
-- Time: each object that the marked captures reach is looked at once (a set of the objects seen), so the pass is O(objects reached), the copy's own order of cost; a scaling test bounds it (`values::tests::the_walk_of_start_is_linear_in_the_values_it_reaches`).
-- Space: the pass's stack and its set of the objects seen, O(objects reached), released before the copy.
+- Time: each object that the captured values reach is looked at once (a set of the objects seen), so the pass is O(objects reached by the task's captures), the copy's own order of cost; a scaling test bounds it (`values::tests::the_walk_of_start_is_linear_in_the_values_it_reaches`).
+- Space: the pass's stack and its set of the objects seen, O(objects reached by the task's captures), released before the task is queued.
 - A `start` whose captures cannot hold a reply right, as Core IR marks it (`rights` empty), makes no pass at all.
