@@ -2842,27 +2842,41 @@ pub(crate) fn drive_state_labels(env: &Env<'_>, settings: &Manifest, report: &mu
         if reported.contains(name) {
             continue;
         }
-        let Some((from, to, _)) =
+        let Some((from, to, covariant)) =
             super::flow::violation(found, &state.ty.base, true, &top, &env.kind_labels)
         else {
             continue;
         };
         reported.insert(name);
-        let mut diagnostic = report.make(
-            Code::U4001,
-            state.span,
-            format!(
-                "the host hands `{name}` its state `{}` from {from_what}, which carries `{from}` where `{}` is `{to}`: a flow from `{from}` to `{to}`",
-                state.name, state.name
-            ),
-        );
-        diagnostic
-            .related
-            .push(report.related(from_span, format!("{from_what}, labeled `{from}` there")));
-        diagnostic.repairs.push(Report::advice(format!(
-            "label the state parameter `{}` of `{name}` at least `{from}` at that position, as the state is declared where the host takes it from",
-            state.name
-        )));
+        let param = state.name;
+        // At a covariant position the source's data flows into the parameter. At a
+        // contravariant one, a parameter of a function type, the data flows the other way: the
+        // parameter's function would pass data labeled `from` to the source's function, which
+        // takes `to` there.
+        let (message, related, repair) = if covariant {
+            (
+                format!(
+                    "the host hands `{name}` its state `{param}` from {from_what}, which carries `{from}` where `{param}` is `{to}`: a flow from `{from}` to `{to}`"
+                ),
+                format!("{from_what}, labeled `{from}` there"),
+                format!(
+                    "label the state parameter `{param}` of `{name}` at least `{from}` at that position, as the state is declared where the host takes it from"
+                ),
+            )
+        } else {
+            (
+                format!(
+                    "the host hands `{name}` its state `{param}` from {from_what}, and through `{param}` the code would pass `{from}` data to the function in {from_what}, which takes `{to}` there: a flow from `{from}` to `{to}`"
+                ),
+                format!("{from_what}, a function that takes `{to}` there"),
+                format!(
+                    "label that parameter position in {from_what} at least `{from}`, or lower it to `{to}` in the type of `{param}`"
+                ),
+            )
+        };
+        let mut diagnostic = report.make(Code::U4001, state.span, message);
+        diagnostic.related.push(report.related(from_span, related));
+        diagnostic.repairs.push(Report::advice(repair));
         report.push(diagnostic);
     }
 }
