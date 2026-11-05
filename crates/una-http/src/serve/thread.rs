@@ -17,9 +17,9 @@
 
 use std::collections::VecDeque;
 use std::io;
-use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 
+use super::fault::{self, Loud, Site};
 use super::grant::GrantState;
 use super::net::Readiness;
 use super::peer::PeerKey;
@@ -45,6 +45,10 @@ pub const CHUNK_STEP: u64 = 64 * 1024;
 
 /// The work one pump of a connection does before it yields to the others.
 const PUMP_STEPS: usize = 64;
+
+/// The most times a close is resumed after a fault in it: more than its steps, each of which a
+/// fault passes for good.
+const CLOSE_ATTEMPTS: usize = 8;
 
 const SECOND: u64 = 1_000_000_000;
 
@@ -119,7 +123,20 @@ struct Conn {
     own: Vec<u8>,
     own_off: usize,
     drained: u64,
+    /// The close began: the connection does nothing more.
     closed: bool,
+    /// The close discarded the pending reply (`ConnShared::close`).
+    discarded: bool,
+    /// The close gave back the peer's place.
+    gave_peer: bool,
+    /// The close gave back the slot of `connections`.
+    gave_slot: bool,
+    /// The close woke the program's side.
+    notified: bool,
+    /// The close forgot the readiness registration.
+    forgot: bool,
+    /// The close ran every step: nothing is held any more.
+    finished: bool,
 }
 
 struct Slot {
@@ -153,6 +170,13 @@ struct Core {
     /// The next closes panic inside the readiness, in tests.
     #[cfg(feature = "test-hooks")]
     fault_in_forget: usize,
+    /// The next closes panic after the exchange is given back and before the peer's place and
+    /// the slot are, in tests.
+    #[cfg(feature = "test-hooks")]
+    fault_in_close: usize,
+    /// The next connection handed to the thread panics before it is in its slot, in tests.
+    #[cfg(feature = "test-hooks")]
+    fault_in_adopt: bool,
 }
 
 /// One serve thread's connections and timers.
@@ -198,6 +222,10 @@ impl Thread {
                 fault_in_step: false,
                 #[cfg(feature = "test-hooks")]
                 fault_in_forget: 0,
+                #[cfg(feature = "test-hooks")]
+                fault_in_close: 0,
+                #[cfg(feature = "test-hooks")]
+                fault_in_adopt: false,
             },
             slots: Vec::new(),
             free: Vec::new(),
@@ -272,17 +300,14 @@ impl Thread {
             match timer {
                 Timer::Peer { grant, key } => {
                     let core = &mut self.core;
-                    let expired = catch_unwind(AssertUnwindSafe(|| {
-                        core.shared
-                            .grants
-                            .get(grant)
-                            .and_then(|state| state.peers.expire(key, now))
-                    }));
+                    let state = core.shared.grants.get(grant).cloned();
+                    let expired =
+                        fault::contained(|| state.as_ref().and_then(|s| s.peers.expire(key, now)));
                     match expired {
                         Ok(Some(at)) => core.arm_peer(grant, key, at),
                         Ok(None) => {}
                         // The entry stays until another of its connections closes.
-                        Err(_) => core.shared.fault(),
+                        Err(_) => core.shared.contain(state.as_deref(), Site::PeerExpiry),
                     }
                 }
                 Timer::Conn {
@@ -310,12 +335,13 @@ impl Thread {
     }
 
     /// Takes a connection out of its slot, runs `f` on it, and puts it back or frees the slot.
-    /// A panic in `f` (a fault of the engine on this connection's bytes) is contained: the
-    /// connection closes, giving back what it holds as far as its state says, and the thread
-    /// goes on with its other connections. Containment assumes that the grant-wide state `f`
-    /// may be changing (pressure heaps, queues, registry shards) stays consistent at each step.
-    /// A panic inside the thread's wheel or readiness, which other connections share, is not
-    /// contained: the connection goes back to its slot and the thread ends.
+    /// A panic in `f` (a fault of the engine on this connection's bytes) is contained, quietly
+    /// (`super::fault`): the connection closes, giving back what it holds, and the thread goes
+    /// on with its other connections. A panic with a lock of a grant's shared state held
+    /// (pressure heaps, queues, registry shards, peers, replies) is contained here too, and
+    /// then stops the run, since that state may be half-updated; so does the fault that passes
+    /// the run's limit. A panic inside the thread's wheel or readiness, which other connections
+    /// share, is not contained: the connection goes back to its slot and the thread ends.
     fn run(&mut self, slot: u32, now: u64, f: impl FnOnce(&mut Core, &mut Conn, u64)) {
         let Some(entry) = self.slots.get_mut(slot as usize) else {
             return;
@@ -324,7 +350,7 @@ impl Thread {
             return;
         };
         let core = &mut self.core;
-        if let Err(payload) = catch_unwind(AssertUnwindSafe(|| f(core, &mut conn, now))) {
+        if let Err(payload) = fault::contained(|| f(core, &mut conn, now)) {
             if core.critical > 0 && !core.abandoning {
                 // Inside the wheel or the readiness: not contained. The connection goes back
                 // to its slot, so that `abandon` closes it with the others.
@@ -334,19 +360,26 @@ impl Thread {
             // Reached with `critical` raised only while the thread ends, when nothing of it is
             // used again: the fault is contained, so it does not stop the closing of the others.
             core.critical = 0;
-            core.shared.fault();
-            if !conn.closed
-                && let Err(payload) = catch_unwind(AssertUnwindSafe(|| core.close(&mut conn, now)))
-            {
+            core.shared.contain(Some(&conn.grant), Site::Step);
+            // The close, resumed after each step of it that faults: every step a fault passed is
+            // done for good, so everything after it is still given back, and nothing twice.
+            for _ in 0..CLOSE_ATTEMPTS {
+                if conn.finished {
+                    break;
+                }
+                let Err(payload) = fault::contained(|| core.close(&mut conn, now)) else {
+                    break;
+                };
                 if core.critical > 0 && !core.abandoning {
                     // The close after a contained fault faulted inside the wheel or the
-                    // readiness: the thread ends, as for any such fault.
+                    // readiness: the thread ends, as for any such fault, and its `abandon`
+                    // resumes the close.
                     conn.closed = true;
                     entry.conn = Some(conn);
                     std::panic::resume_unwind(payload);
                 }
                 core.critical = 0;
-                core.shared.fault();
+                core.shared.contain(Some(&conn.grant), Site::Step);
             }
             conn.closed = true;
         }
@@ -445,14 +478,68 @@ impl Thread {
         self.core.fault_in_forget = n;
     }
 
+    /// The next `n` closes of a connection panic after the exchange is given back, before the
+    /// peer's place and the slot are, in tests.
+    #[cfg(feature = "test-hooks")]
+    pub fn fault_in_close(&mut self, n: usize) {
+        self.core.fault_in_close = n;
+    }
+
+    /// The next connection handed to the thread panics before it is in its slot, in tests.
+    #[cfg(feature = "test-hooks")]
+    pub fn fault_in_adopt(&mut self) {
+        self.core.fault_in_adopt = true;
+    }
+
+    /// A connection handed to this thread: in its slot before any step, then its first step.
+    /// A panic before it is in its slot is contained: its socket closes, and its slot and its
+    /// peer's place are given back, since nothing else would find them.
     fn adopt(&mut self, adopt: Adopt, now: u64) {
+        let Adopt { socket, conn } = adopt;
+        let placed = fault::contained(|| self.place(socket, Arc::clone(&conn), now));
+        let slot = match placed {
+            Ok(Some(slot)) => slot,
+            Ok(None) => return,
+            Err(_) => {
+                conn.close();
+                release(&conn, now, &mut self.core);
+                self.core.contain_accept(&conn);
+                return;
+            }
+        };
+        self.run(slot, now, |core, c, now| {
+            if core.shared.is_stopping() {
+                core.close(c, now);
+                return;
+            }
+            // The first request is read within `read` of the accept (rule 7).
+            let secs = c.grant.limits.read;
+            core.arm(c, Kind::Read, now, seconds(secs));
+            core.pump(c, now);
+        });
+    }
+
+    /// Puts a connection in a free slot; `None` when no slot can be numbered, in which case
+    /// the connection was closed and gave everything back.
+    fn place(
+        &mut self,
+        socket: Box<dyn super::net::Socket>,
+        shared: Arc<ConnShared>,
+        now: u64,
+    ) -> Option<u32> {
+        #[cfg(feature = "test-hooks")]
+        #[allow(clippy::panic)]
+        if std::mem::take(&mut self.core.fault_in_adopt) {
+            panic!("a connection's adoption fails by a fault, for a test");
+        }
         let slot = match self.free.pop() {
             Some(slot) => slot,
             None => {
                 let Ok(slot) = u32::try_from(self.slots.len()) else {
-                    adopt.conn.close();
-                    release(&adopt.conn, now, &mut self.core);
-                    return;
+                    drop(socket);
+                    shared.close();
+                    release(&shared, now, &mut self.core);
+                    return None;
                 };
                 self.slots.push(Slot {
                     generation: 0,
@@ -462,14 +549,14 @@ impl Thread {
             }
         };
         let generation = self.slots.get(slot as usize).map_or(0, |e| e.generation);
-        adopt.conn.place(slot, generation);
-        let grant = Arc::clone(&adopt.conn.grant);
+        shared.place(slot, generation);
+        let grant = Arc::clone(&shared.grant);
         let reader = new_reader(&grant);
         let conn = Box::new(Conn {
             slot,
             generation,
-            sock: adopt.socket,
-            shared: adopt.conn,
+            sock: socket,
+            shared,
             grant,
             phase: Phase::Reading,
             after: After::Keep,
@@ -489,23 +576,19 @@ impl Thread {
             own_off: 0,
             drained: 0,
             closed: false,
+            discarded: false,
+            gave_peer: false,
+            gave_slot: false,
+            notified: false,
+            forgot: false,
+            finished: false,
         });
-        self.core.live += 1;
         // In its slot before any step, so a fault in the steps is contained by `run` and an
         // ending thread's `abandon` finds the connection.
-        if let Some(entry) = self.slots.get_mut(slot as usize) {
-            entry.conn = Some(conn);
-        }
-        self.run(slot, now, |core, c, now| {
-            if core.shared.is_stopping() {
-                core.close(c, now);
-                return;
-            }
-            // The first request is read within `read` of the accept (rule 7).
-            let secs = c.grant.limits.read;
-            core.arm(c, Kind::Read, now, seconds(secs));
-            core.pump(c, now);
-        });
+        let entry = self.slots.get_mut(slot as usize)?;
+        entry.conn = Some(conn);
+        self.core.live += 1;
+        Some(slot)
     }
 }
 
@@ -547,14 +630,21 @@ impl Core {
         self.shared.clock.unix_seconds()
     }
 
+    /// Counts a contained fault in the hand-off of `conn`.
+    fn contain_accept(&self, conn: &ConnShared) {
+        self.shared.contain(Some(&conn.grant), Site::Accept);
+    }
+
     fn tell(&mut self, c: &Conn, interest: Interest) {
         self.critical += 1;
+        let loud = Loud::enter();
         self.readiness.set(
             token(c.slot, c.generation),
             &*c.sock,
             interest.read,
             interest.write,
         );
+        drop(loud);
         self.critical -= 1;
     }
 
@@ -574,12 +664,14 @@ impl Core {
             return;
         }
         self.critical += 1;
+        let loud = Loud::enter();
         #[cfg(feature = "test-hooks")]
         #[allow(clippy::panic)]
         if std::mem::take(&mut self.fault_in_wheel) {
             panic!("the wheel fails by a fault, for a test");
         }
         let armed = self.wheel.arm(now.saturating_add(after), timer);
+        drop(loud);
         self.critical -= 1;
         match armed {
             Ok(id) => c.timer = Some((id, kind, c.sequence)),
@@ -591,7 +683,9 @@ impl Core {
     fn disarm(&mut self, c: &mut Conn) {
         if let Some((id, _, _)) = c.timer.take() {
             self.critical += 1;
+            let loud = Loud::enter();
             self.wheel.cancel(id);
+            drop(loud);
             self.critical -= 1;
         }
     }
@@ -600,7 +694,9 @@ impl Core {
     /// timers still armed to a live thread.
     fn arm_peer(&mut self, grant: usize, key: PeerKey, at: u64) {
         self.critical += 1;
+        let loud = Loud::enter();
         let _ = self.wheel.arm(at, Timer::Peer { grant, key });
+        drop(loud);
         self.critical -= 1;
     }
 
@@ -1054,7 +1150,7 @@ impl Core {
                 let Some(exch) = c.exch.clone() else {
                     return;
                 };
-                if exch.expire_queued() {
+                if exch.expire_queued(&c.grant.health) {
                     c.grant.unqueue_waiting();
                     c.grant.release_body(&c.shared.peer, exch.body);
                     self.shared.queued_died(self.index, c.grant.index);
@@ -1073,14 +1169,17 @@ impl Core {
     }
 
     /// Ends the connection: its exchange, its reservations, its reply, its timer, its place.
+    /// Each step is marked done before it runs, so a close that a fault interrupted is resumed
+    /// by calling it again: the faulting step is passed, every later one still runs, and none
+    /// runs twice (`spec/31 §6` rule 13).
     fn close(&mut self, c: &mut Conn, now: u64) {
-        if c.closed {
+        if c.finished {
             return;
         }
         c.closed = true;
         self.disarm(c);
         if let Some(exch) = c.exch.take() {
-            if exch.expire_queued() {
+            if exch.expire_queued(&c.grant.health) {
                 c.grant.unqueue_waiting();
                 c.grant.release_body(&c.shared.peer, exch.body);
                 self.shared.queued_died(self.index, c.grant.index);
@@ -1088,30 +1187,49 @@ impl Core {
                 c.grant.end_exchange(exch.bytes);
             }
         }
-        if c.reserved > 0 {
-            c.grant.release_body(&c.shared.peer, c.reserved);
-            c.reserved = 0;
+        let reserved = std::mem::take(&mut c.reserved);
+        if reserved > 0 {
+            c.grant.release_body(&c.shared.peer, reserved);
         }
         if std::mem::take(&mut c.waiting) {
             c.grant.unqueue_waiting();
         }
-        c.shared.close();
-        if let Some(at) = c.grant.peers.close(&c.shared.peer, now) {
+        if !std::mem::replace(&mut c.discarded, true) {
+            #[cfg(feature = "test-hooks")]
+            #[allow(clippy::panic)]
+            if self.fault_in_close > 0 {
+                self.fault_in_close -= 1;
+                panic!("a close fails by a fault, for a test");
+            }
+            c.shared.close();
+        }
+        if !std::mem::replace(&mut c.gave_peer, true)
+            && let Some(at) = c.grant.peers.close(&c.shared.peer, now)
+        {
             self.arm_peer(c.grant.index, c.shared.peer.key, at);
         }
-        c.grant.give_slot();
-        self.shared.slot_freed(c.grant.index);
-        self.shared.notify();
-        // Last, after everything is given back: a fault in the readiness leaves nothing held.
-        self.critical += 1;
-        #[cfg(feature = "test-hooks")]
-        #[allow(clippy::panic)]
-        if self.fault_in_forget > 0 {
-            self.fault_in_forget -= 1;
-            panic!("the readiness fails by a fault, for a test");
+        if !std::mem::replace(&mut c.gave_slot, true) {
+            c.grant.give_slot();
+            self.shared.slot_freed(c.grant.index);
         }
-        self.readiness.forget(token(c.slot, c.generation), &*c.sock);
-        self.critical -= 1;
+        if !std::mem::replace(&mut c.notified, true) {
+            self.shared.notify();
+        }
+        // Last, after everything is given back: a fault in the readiness leaves nothing held.
+        if !std::mem::replace(&mut c.forgot, true) {
+            self.critical += 1;
+            let loud = Loud::enter();
+            #[cfg(feature = "test-hooks")]
+            #[allow(clippy::panic)]
+            if self.fault_in_forget > 0 {
+                self.fault_in_forget -= 1;
+                panic!("the readiness fails by a fault, for a test");
+            }
+            self.readiness.forget(token(c.slot, c.generation), &*c.sock);
+            drop(loud);
+            self.critical -= 1;
+        }
+        c.finished = true;
     }
 
     /// A host stop (rule 18): idle connections close, requests not delivered or still being
@@ -1127,7 +1245,10 @@ impl Core {
                 }
             }
             Phase::Waiting => {
-                let queued = c.exch.as_ref().is_some_and(|exch| exch.expire_queued());
+                let queued = c
+                    .exch
+                    .as_ref()
+                    .is_some_and(|exch| exch.expire_queued(&c.grant.health));
                 if queued {
                     if let Some(exch) = c.exch.take() {
                         c.grant.unqueue_waiting();
