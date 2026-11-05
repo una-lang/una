@@ -7477,9 +7477,10 @@ fn print_event(seq: u64, task: &str, line: &str) -> Value {
 #[test]
 fn s40_a_start_under_a_secret_branch_does_not_move_the_paths_of_later_public_tasks() {
     // S-40 (#1512), `spec/27 §7` rule 5: a `start` under a raised program counter is quiet, and
-    // its statement counts it apart, `q<k>`, so the public `worker` is `s<c>.1` for every
-    // secret, where it was `s<c>.2` in the first `s` statements, in both engines. The same
-    // index places it (`spec/27 §1` rule 2), so its worker does not depend on the secret either.
+    // its statement does not count it: its task is `s<c>.q`, with no `k`, so the public
+    // `worker` is `s<c>.1` for every secret, where it was `s<c>.2` in the first `s`
+    // statements, in both engines. The same index places it (`spec/27 §1` rule 2), so its
+    // worker does not depend on the secret either.
     let mut expected: Vec<Value> = (1..=5)
         .map(|c| print_event(c, &format!("s{c}.1"), "worker"))
         .collect();

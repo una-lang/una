@@ -975,7 +975,7 @@ pub(crate) struct TaskTemplate {
     pub(crate) streaming: bool,
     /// The `quiet` count of the task that runs the block or starts the task (S-39): a task
     /// runs under the program counter of its `start` (`spec/27 §7` rule 3).
-    pub(crate) quiet: u32,
+    quiet: u32,
     /// Its `hushed` count (S-42).
     pub(crate) hushed: u32,
 }
