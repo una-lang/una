@@ -360,6 +360,9 @@ fn encode<S: Sink>(types: &Types, encoder: &mut Encoder<'_, S>, desc: i64, word:
             Some(Shape::Unit) => encoder.unit(),
             Some(Shape::Text) => encoder.bytes(super::text_value(word).as_bytes()),
             Some(Shape::Hashed) => encoder.bytes(&super::bytes(word)),
+            // A reply right has no hash (ADR 0123 rule 1), so no table holds one as a key; its
+            // word is the encoding, should a defect reach here, as in the interpreter.
+            Some(Shape::Right) => encoder.uint(super::right_of(word).unwrap_or(0)),
             // Every `F64` is canonical, so every NaN encodes alike, and `-0.0` and `0.0` differ,
             // as their `==` does (ADR 0114 rule 6.1).
             Some(Shape::F64) => encoder.f64_bits(una_core::float::to_bits(super::f64_value(word))),

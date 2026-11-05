@@ -67,6 +67,9 @@ enum Kind {
     Fn,
     /// A handle to a keyed hash.
     Hashed,
+    /// A handle to a reply right of `std.host` (ADR 0123 rule 4): the runtime's word of the
+    /// run's table, which `==` compares and interpolation writes `<reply-right>`.
+    Right,
     /// A handle to a boxed `F64` (ADR 0114 rule 9.6).
     F64,
     /// An `F32`: the tagged word of the key of totalOrder of its canonical bits, which fits 63
@@ -100,6 +103,7 @@ impl Kind {
                 | Kind::Map
                 | Kind::Fn
                 | Kind::Hashed
+                | Kind::Right
                 | Kind::Tuple
                 | Kind::F64
                 | Kind::Dense
@@ -153,8 +157,7 @@ fn kind(ty: &Type) -> Result<Kind, CodegenError> {
             Base::Text => Ok(Kind::Text),
             Base::Unit => Ok(Kind::Unit),
             Base::Hashed => Ok(Kind::Hashed),
-            // ADR 0123 rule 1: the runtime of `HttpServer` lands after this slice (#1007).
-            Base::ReplyRight => Err(unsupported("`ReplyRight` of `std.host`")),
+            Base::ReplyRight => Ok(Kind::Right),
             // A fixed-width integer is an integer word: its range is proven, so arithmetic on
             // it never leaves the type (`spec/18 §3`).
             Base::Fixed(_) => Ok(Kind::Int),
@@ -605,15 +608,9 @@ impl<'p> Lowerer<'_, 'p, '_> {
                     return self.tasks(bound.as_ref(), body, *span, env, scope, catch);
                 }
                 Expr::Start { task, rights, span } => {
-                    // ADR 0123 rule 4.2: native code moves no reply right yet (#1571), so a
-                    // `start` whose captures can hold one is refused rather than run with its
-                    // rights left behind.
-                    if !rights.is_empty() {
-                        return Err(unsupported(
-                            "a `start` whose captures can hold a reply right of `std.host`",
-                        ));
-                    }
-                    return self.start(task, *span, env, scope, catch);
+                    // ADR 0123 rule 4.2: the runtime moves the rights that the captures reach,
+                    // looking only when one of them can hold a right.
+                    return self.start(task, !rights.is_empty(), *span, env, scope, catch);
                 }
                 Expr::Quiet { body, timing, .. } => {
                     return self.quiet(body, *timing, env, scope, catch);
@@ -1698,6 +1695,20 @@ impl<'p> Lowerer<'_, 'p, '_> {
 
     /// A new closure of the lambda `params` to `body`, which captures the values of `env` that
     /// `body` uses and every capability in scope (`spec/11 §4`).
+    /// How many values a closure of `params` and `body` made in `env` captures, before the
+    /// instances of its capabilities: the captures of [`Lowerer::closure`].
+    fn captures(&self, params: &[(Name, Type)], body: &Expr, env: &Env) -> usize {
+        let mut names = BTreeSet::new();
+        vars(body, &mut names);
+        names.extend(env.keys().filter(|key| key.starts_with('$')).cloned());
+        names
+            .into_iter()
+            .filter(|name| !name.starts_with('@'))
+            .filter(|name| !params.iter().any(|(p, _)| p == name))
+            .filter(|name| env.contains_key(name))
+            .count()
+    }
+
     fn closure(
         &mut self,
         params: &'p [(Name, Type)],
@@ -1964,6 +1975,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
     fn start(
         &mut self,
         task: &'p Expr,
+        moves: bool,
         span: Span,
         env: &Env,
         scope: &Scope,
@@ -1974,7 +1986,16 @@ impl<'p> Lowerer<'_, 'p, '_> {
         self.emitter.threads = true;
         let site = self.site(span);
         let closure = self.closure(&[], task, env)?;
-        let status = self.call("una_rt_start_task", &[closure, site])?;
+        // The closure's values come first, in the order of their names, then the instances of
+        // the capabilities in scope, which are no captured values: the runtime walks the values
+        // only, for the reply rights to move (ADR 0123 rule 4.2, `spec/31 §1` rule 3).
+        let captures = if moves {
+            i64::try_from(self.captures(&[], task, env)).map_err(crate::internal)?
+        } else {
+            0
+        };
+        let captures = self.builder.ins().iconst(types::I64, captures);
+        let status = self.call("una_rt_start_task", &[closure, site, captures])?;
         self.release(closure, Kind::Fn);
         let stop = self.builder.ins().iconst(types::I64, STOPPED);
         self.check(stop, status, scope, catch);
@@ -2462,6 +2483,10 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 ("Http", "post") => ("una_rt_http_post", true),
                 ("Http", "put") => ("una_rt_http_put", true),
                 ("Http", "delete") => ("una_rt_http_delete", true),
+                // ADR 0123 rules 1 to 4: over the run's serve engine (`una_rt::serve`).
+                ("HttpServer", "next") => ("una_rt_serve_next", true),
+                ("HttpServer", "reply") => ("una_rt_serve_reply", true),
+                ("HttpServer", "close") => ("una_rt_serve_close", false),
                 _ => return Err(unsupported(format!("`{capability}.{op}`"))),
             };
             if capability_path.name == "Http" && !limit {
@@ -2470,7 +2495,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
             let sited = limit
                 || matches!(
                     (capability_path.name.as_str(), op.as_str()),
-                    ("Http", _) | ("Env", "get") | ("Files", "read")
+                    ("Http" | "HttpServer", _) | ("Env", "get") | ("Files", "read")
                 );
             let value = if sited {
                 // The call's site, where a header value with a control character aborts with

@@ -23,6 +23,13 @@ una-http.workspace = true
 una-interp.workspace = true
 una-sys.workspace = true
 
+[features]
+# The toolchain's own test builds only: the scripted serve engine of the runs of
+# `tests/serve_runs/` (ADR 0123 rule 21), which a run whose environment names a case serves in
+# place of listeners (`serve::script`). It compiles una-http's test hooks, whose marker
+# scripts/check-release.sh refuses in a shipped `libuna_rt.a`.
+test-hooks = ["una-http/test-hooks"]
+
 # The tests of the request pool use the test-only hooks of una-http (#1148); a dev-dependency
 # never reaches the shipped `libuna_rt.a`.
 [dev-dependencies]

@@ -20,6 +20,8 @@ pub mod pressure;
 pub mod program;
 pub mod rights;
 pub mod run;
+#[cfg(feature = "test-hooks")]
+pub mod script;
 pub mod server;
 #[cfg(feature = "test-hooks")]
 pub mod sim;

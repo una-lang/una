@@ -8,7 +8,7 @@
 
 use std::ffi::{CStr, c_char, c_int};
 
-use crate::{decimal, generic, host, json, runtime, tasks, values};
+use crate::{decimal, generic, host, json, runtime, serve, tasks, values};
 
 /// The allocator of a debug build (ADR 0113, I3): the release build's [`cap::Cap`], wrapped to
 /// keep the most bytes the process ever held, its high-water mark, and the bytes each thread
@@ -442,6 +442,9 @@ exported! {
     una_rt_handler_instance => host::handler_instance, (name);
     una_rt_limiter_instance => host::limiter_instance, (at_most, per, waiting);
     una_rt_limit_acquire => host::limit_acquire, (site, instance);
+    una_rt_serve_next => serve::next, (site);
+    una_rt_serve_reply => serve::reply, (site, to, reply);
+    una_rt_serve_close => serve::close, (site);
     una_rt_event => host::event, (site, instance);
     // Dense values (`spec/29 §17`, ADR 0120, design note D5): the site first, and a tensor's
     // functions per rank.
@@ -785,11 +788,17 @@ pub extern "C" fn una_rt_tasks_begin(bound: i64, bounded: i64, site: i64) -> i64
     crate::started::tasks_begin(bound, bounded, usize::try_from(site).unwrap_or(usize::MAX))
 }
 
-/// Starts a task for the closure `closure`, which the caller keeps, at the `start` at `site`:
-/// 0, or 2 when the task stops instead ([`crate::started::start`]).
+/// Starts a task for the closure `closure`, which the caller keeps, at the `start` at `site`,
+/// moving to it the reply rights that its first `captures` values reach: 0, or 2 when the task
+/// stops instead ([`crate::started::start`]).
 #[unsafe(no_mangle)]
-pub extern "C" fn una_rt_start_task(closure: i64, site: i64) -> i64 {
-    crate::started::start(closure, usize::try_from(site).unwrap_or(usize::MAX), invoke)
+pub extern "C" fn una_rt_start_task(closure: i64, site: i64, captures: i64) -> i64 {
+    crate::started::start(
+        closure,
+        usize::try_from(site).unwrap_or(usize::MAX),
+        usize::try_from(captures).unwrap_or(0),
+        invoke,
+    )
 }
 
 /// Ends the innermost `tasks` statement once its block has ended, cancelling its tasks first

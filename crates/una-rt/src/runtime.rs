@@ -915,6 +915,13 @@ pub(crate) struct State {
     concurrency: una_interp::Concurrency,
     /// The run's scheduler, made at its first block: none in a run without tasks.
     sched: Option<Arc<crate::sched::Scheduler>>,
+    /// The task as the run's reply rights know it, its holder number (ADR 0123 rule 4): 0 for
+    /// the root, a fresh one for each started task, and its block's for a task of `together`
+    /// or `first of` ([`crate::serve`]).
+    pub(crate) serve_task: u64,
+    /// Whether the last host operation stopped its task in progress, its event left `aborted`:
+    /// a `next` of `HttpServer` once the run aborted ([`crate::serve`]).
+    pub(crate) op_stopped: bool,
 }
 
 /// Makes an abort say, on stderr, the debug high-water mark of the heap and the run's ceiling, in
@@ -978,6 +985,9 @@ pub(crate) struct TaskTemplate {
     quiet: u32,
     /// Its `hushed` count (S-42).
     pub(crate) hushed: u32,
+    /// The holder number of the task's reply rights: the block's task's, and a fresh one for a
+    /// started task, set by `start` ([`crate::serve`]).
+    pub(crate) serve_task: u64,
 }
 
 impl TaskTemplate {
@@ -1063,6 +1073,7 @@ impl State {
             streaming: false,
             quiet: self.quiet,
             hushed: self.hushed,
+            serve_task: self.serve_task,
         }
     }
 
@@ -1398,6 +1409,12 @@ fn set_in_ever(inside: bool) {
 
 /// The interruption of an `Http` operation of the thread's task, when it runs in the body of
 /// a `for ever` (rule 12).
+pub(crate) fn run_stop() -> Option<&'static RunStop> {
+    RUN_STOP.get().map(AsRef::as_ref)
+}
+
+/// The run's host stop state, inside the body of a `for ever` only, where it interrupts an
+/// operation that waits (ADR 0116 rule 12).
 pub(crate) fn op_interrupt() -> Option<&'static RunStop> {
     let inside = with_state(|state| state.in_ever).unwrap_or(false);
     RUN_STOP.get().filter(|_| inside).map(AsRef::as_ref)
@@ -2082,10 +2099,16 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
             return USAGE;
         }
     };
+    // The scripted engine of the runs of `tests/serve_runs/`, in the toolchain's own test builds
+    // only, takes the listeners' place (ADR 0123 rule 21).
+    #[cfg(feature = "test-hooks")]
+    let scripted = crate::serve::script::install_from_environment();
+    #[cfg(not(feature = "test-hooks"))]
+    let scripted = false;
     // Nothing accepts on the listeners until the serve threads of ADR 0123 step 4 take them
     // over; they are held until the run ends.
     let _listeners = match serve(
-        &grants,
+        if scripted { &[] } else { &grants },
         options.serve_threads.max(1),
         options.concurrency.file_threads,
     ) {
@@ -2144,7 +2167,9 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
         max_memory: options.max_memory,
         baseline: 0,
         path: String::new(),
-        cancel: Vec::new(),
+        // A run that serves carries its own cancellation entry, which every task inherits and
+        // an abort of the run lowers (`crate::serve`).
+        cancel: crate::serve::run_entry().into_iter().collect(),
         shielded: 0,
         operations: Vec::new(),
         stopped: None,
@@ -2153,6 +2178,8 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
         hushed: 0,
         concurrency: options.concurrency,
         sched: None,
+        serve_task: 0,
+        op_stopped: false,
     };
     // ADR 0116 amendment, P8 (#1148): a run whose grants include `Http` builds the client's TLS
     // settings here, before `main`, with the other state it starts up front. Built at the run's
@@ -2300,6 +2327,19 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
         crate::ceiling(held_baseline.saturating_add(budget.saturating_mul(2)));
         DRIVER.with(|cell| *cell.borrow_mut() = drive);
         let status = entry();
+        // The root's end answers the reply rights it still holds (ADR 0123 rule 4.5): `503`
+        // when the run aborted, which then ends here with its abort, else `500`.
+        if crate::serve::serving().is_some() {
+            match crate::serve::take_abort() {
+                Some((code, location, message)) => {
+                    crate::serve::answer_held(crate::serve::STOPPED);
+                    if let Some(state) = STATE.with(|cell| take_state(&mut cell.borrow_mut())) {
+                        abort_run(state, code, location, message);
+                    }
+                }
+                None => crate::serve::answer_held(crate::serve::UNANSWERED),
+            }
+        }
         crate::ceiling(usize::MAX);
         // A debug build of the runtime checks the compiled code's reference counting: it
         // never used a value it had released, and released every value it made, which is
@@ -2424,6 +2464,10 @@ fn finish(mut state: State) -> i32 {
     state.streaming = true;
     state.open_events = 0;
     state.flush();
+    // The scripted engine of the tests ends with the run, after every answer (ADR 0123 rule
+    // 21).
+    #[cfg(feature = "test-hooks")]
+    crate::serve::script::end();
     if let Err(error) = state.shared.finish() {
         let _ = writeln!(stderr, "error: cannot write the trace: {error}");
         code = USAGE;
@@ -2435,6 +2479,11 @@ fn finish(mut state: State) -> i32 {
 /// U6003 for the run's memory budget, U6007 for the hard stop, U8001 for a defect (`spec/27
 /// §7`). Never returns.
 pub(crate) fn end_run_from_task(code: Code, location: Location, message: String) {
+    // In a run that serves, the task ends and every other stops at its next check point, so
+    // that the host answers the rights each holds; the root ends the run (`crate::serve`).
+    if crate::serve::defer_abort(code, &location, &message) {
+        return;
+    }
     let state = STATE.with(|cell| take_state(&mut cell.borrow_mut()));
     match state {
         Some(state) => abort_run(state, code, location, message),
@@ -2845,6 +2894,12 @@ fn stop_or_abort(
             state.stopped = Some((code, location, message));
             None
         }
+        // In a run that serves, the root stops as a task does, and ends the run with the abort
+        // once its tasks have ended (`crate::serve`).
+        Some(state) if crate::serve::defer_abort(code, &location, &message) => {
+            state.stopped = Some((code, location, message));
+            None
+        }
         _ => take_state(cell).map(|state| (state, code, location, message)),
     }
 }
@@ -2918,6 +2973,8 @@ pub(crate) fn enter_task(template: &TaskTemplate, path: String, entry: Cancel) {
         hushed: template.hushed,
         concurrency: template.concurrency,
         sched: Some(Arc::clone(&template.sched)),
+        serve_task: template.serve_task,
+        op_stopped: false,
     };
     state.stack_base = stack_position(&state);
     install(state, template.depth);
@@ -3022,6 +3079,8 @@ pub(crate) fn install_test_state_as(path: String, tracing: bool, file: String) {
         hushed: 0,
         concurrency: options.concurrency,
         sched: None,
+        serve_task: 0,
+        op_stopped: false,
     };
     state.stack_base = stack_position(&state);
     install(state, 0);
@@ -3106,6 +3165,9 @@ fn site_location(state: &State, site: usize) -> Location {
 /// internal error of the runtime (#424), it exits with code 3 (`spec/13 §5`).
 fn abort_run(state: State, code: Code, location: Location, message: String) {
     let least = if code == Code::U8001 { 3 } else { 1 };
+    // Every reply right still held is answered `503`, with no event, before the process ends
+    // without waiting for its tasks (ADR 0123 rule 4.5, rule 18 item 6).
+    crate::serve::answer_all_left();
     crate::ceiling(usize::MAX);
     // One stop ends the process: a stop on another thread may have claimed it (ADR 0113).
     end_once();
@@ -3168,6 +3230,11 @@ pub fn main_failed(failure: i64) {
     // The word of a stopped task (`una_codegen` `STOPPED`) is no failure: `main`'s thread ends
     // the run at an abort, and every cut is caught by its own `within`, so `main` never returns
     // it. Should it, that is an internal error (U8001, exit code 3), never a failure of `main`.
+    // In a run that serves, `main` stops when another task aborted the run, which the root's
+    // end reports (`crate::serve`).
+    if failure == -1 && crate::serve::run_aborted() {
+        return;
+    }
     debug_assert_ne!(failure, -1, "`main` returned the stop of a task");
     if failure == -1 {
         let state = STATE.with(|cell| take_state(&mut cell.borrow_mut()));

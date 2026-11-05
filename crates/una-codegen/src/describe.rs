@@ -67,9 +67,8 @@ impl<'p> Types<'p> {
             Base::Text => json!({ "shape": "text" }),
             Base::Unit => json!({ "shape": "unit" }),
             Base::Hashed => json!({ "shape": "hashed" }),
-            // ADR 0123 rule 1: no value of it exists before the operations of `HttpServer` land
-            // in the runtime (#1007), so no trace or U6001 shows one.
-            Base::ReplyRight => json!({ "shape": "other" }),
+            // ADR 0123 rule 1: nothing of a reply right is ever written, `<reply-right>`.
+            Base::ReplyRight => json!({ "shape": "reply-right" }),
             Base::F64 => json!({ "shape": "f64" }),
             // A decimal is its coefficient, written with its scale (`spec/29 §16`).
             Base::Decimal(scale) => json!({ "shape": "decimal", "scale": scale }),

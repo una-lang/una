@@ -144,7 +144,16 @@ pub(crate) fn build_command(
         };
         (entry, main, ["main"].as_slice())
     };
-    if let Some(message) = crate::runtime::server_pending(&analysis, &entry, started) {
+    // The toolchain's own test builds build a program that serves when `UNA_TEST_BUILD_SERVER`
+    // is 1, for the runs of `tests/serve_runs/` in native code, which its runtime's test hook
+    // feeds with a script (ADR 0123 rule 21); every other build keeps the usage error of
+    // `spec/31 §1` rule 10.
+    #[cfg(feature = "test-hooks")]
+    let pending =
+        crate::variable(options.environment, "UNA_TEST_BUILD_SERVER").as_deref() != Some("1");
+    #[cfg(not(feature = "test-hooks"))]
+    let pending = true;
+    if pending && let Some(message) = crate::runtime::server_pending(&analysis, &entry, started) {
         writeln!(stderr, "error: {message}")?;
         return Ok(ExitStatus::Usage);
     }
