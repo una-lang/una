@@ -106,6 +106,18 @@ pub(crate) fn build_command(
     // The module the host drives (ADR 0116 rule 3), whose `init` starts the run; or the entry,
     // whose `main` runs.
     let (manifest, _) = crate::package::project(&package);
+    // The host-driven form of a server (ADR 0123 rule 16): the module's shapes are a usage
+    // error, and the driver, which does not run yet, fails closed. The grants of the
+    // executable may come from its flags, so a build does not require a `serve:` grant.
+    if let Some(serve) = &manifest.serve {
+        let module = serve.module.value.as_str();
+        let message = match crate::runtime::served_module(&analysis, &package.sources, module) {
+            Err(message) => message,
+            Ok(()) => crate::runtime::serve_pending(module),
+        };
+        writeln!(stderr, "error: {message}")?;
+        return Ok(ExitStatus::Usage);
+    }
     let (entry, main, started) = if let Some(driven) = &manifest.drive {
         let module = driven.module.value.clone();
         match driven_init(&analysis, &package.sources, &module) {

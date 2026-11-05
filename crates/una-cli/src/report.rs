@@ -46,8 +46,28 @@ const OUT_OF_MODEL: [&str; 13] = [
     "which branch of `first of` wins, beyond its label",
 ];
 
-/// The capabilities of the prelude, whose implementations the host provides (`spec/14 §3`).
-const HOST_CAPABILITIES: [&str; 6] = ["Console", "Clock", "Env", "Files", "Keys", "Http"];
+/// The entries `out_of_model` gains, at its end, for a package with a `serve:` grant or a
+/// `serve` section (ADR 0123 rule 22, and its S4 amendment, section E).
+const SERVER_OUT_OF_MODEL: [&str; 3] = [
+    "what a server's peers send in reaction to its timing, and which requests its full queues refuse",
+    "what a peer receives when the host's deadlines cut an exchange",
+    "which request a call of `next` receives when several serve threads hold requests, which the timing of every task of the run and of the serve threads decides",
+];
+
+/// The server code of the host, an entry of `tcb` for a package that serves (ADR 0123 rule 22).
+const SERVER_CODE: &str = "una-http/serve";
+
+/// The capabilities of the prelude, whose implementations the host provides (`spec/14 §3`), and
+/// `HttpServer` of `std.host` (ADR 0123 rule 22).
+const HOST_CAPABILITIES: [&str; 7] = [
+    "Console",
+    "Clock",
+    "Env",
+    "Files",
+    "Keys",
+    "Http",
+    "HttpServer",
+];
 
 /// The premises on the host that acceptance rests on (ADR 0094 rule 5), in the order of
 /// `spec/13 §6`: an id and its statement, as `spec/13 §6` writes it. They are assumed of
@@ -115,7 +135,50 @@ struct Report {
     coverage: CoverageDoc,
     native: NativeDoc,
     generic_results: Vec<GenericResultDoc>,
-    out_of_model: [&'static str; 13],
+    /// The channels outside the model, with the server's at the end for a package that serves
+    /// (ADR 0123 rule 22).
+    out_of_model: Vec<&'static str>,
+    /// What the report warns of, in the report only (ADR 0123 rule 22): `[]` when nothing.
+    warnings: Vec<String>,
+}
+
+/// A `serve:` grant of the manifest, as the report lists it (ADR 0123 rule 22).
+#[derive(Serialize)]
+struct ServeGrantDoc {
+    /// The address and port, as `127.0.0.1:8080` or `[::1]:8080`.
+    address: String,
+    /// `http` or `https`.
+    scheme: &'static str,
+    /// Every limit of `spec/31 §2`, its default applied.
+    limits: ServeLimitsDoc,
+    /// Whether the host checks `Host` against a list of names: `false` for `hosts=*`.
+    checks_host: bool,
+}
+
+/// The limits of a `serve:` grant (`spec/31 §2` rule 3), in the order of its table, with sizes
+/// in bytes and times in seconds; `null` for `none`.
+#[derive(Serialize)]
+struct ServeLimitsDoc {
+    once: u64,
+    rate: Option<String>,
+    waiting: u64,
+    connections: u64,
+    peer: Option<u64>,
+    handshakes: u64,
+    requests: u64,
+    line: u64,
+    headers: u64,
+    header: u64,
+    body: u64,
+    buffers: u64,
+    peer_buffers: Option<u64>,
+    replies: u64,
+    peer_replies: Option<u64>,
+    delivered: u64,
+    idle: u64,
+    read: u64,
+    write: u64,
+    answer: u64,
 }
 
 /// A public generic function and its result summary (ADR 0067, `spec/13 §6`).
@@ -351,6 +414,12 @@ struct TcbDoc {
     /// Under an outer sandbox, the operations it denies, in rule 7's order.
     #[serde(skip_serializing_if = "Option::is_none")]
     solver_outer_denied: Option<Vec<String>>,
+    /// The `serve:` grants of the manifest, in its order (ADR 0123 rule 22): `[]` for none.
+    serve_grants: Vec<ServeGrantDoc>,
+    /// The server code of the host, for a package that serves; `null` otherwise.
+    server: Option<&'static str>,
+    /// The TLS server of `https` grants: `null` while no TLS server is built (#1059).
+    tls: Option<&'static str>,
 }
 
 /// The digests of the solver's build (ADR 0124 rule 20).
@@ -845,6 +914,16 @@ fn build(
             with_derived_from += 1;
         }
     }
+    // ADR 0123 rule 22: a package serves when it has a `serve:` grant or a `serve` section.
+    let (grant_docs, warnings) = serve_grants(&manifest);
+    let serves = !grant_docs.is_empty() || manifest.serve.is_some();
+    if serves {
+        host.insert("HttpServer".to_owned());
+    }
+    let mut out_of_model = OUT_OF_MODEL.to_vec();
+    if serves {
+        out_of_model.extend(SERVER_OUT_OF_MODEL);
+    }
     Report {
         schema: REPORT_SCHEMA,
         package: package_doc,
@@ -896,6 +975,9 @@ fn build(
             solver_outer_denied: crate::solver_child::confinement_seen()
                 .filter(|(kind, _)| kind == "outer")
                 .map(|(_, denied)| denied),
+            serve_grants: grant_docs,
+            server: serves.then_some(SERVER_CODE),
+            tls: None,
         },
         requirements,
         coverage: CoverageDoc {
@@ -922,8 +1004,83 @@ fn build(
             debuggable: crate::build::linker_name() == "cc",
         },
         generic_results,
-        out_of_model: OUT_OF_MODEL,
+        out_of_model,
+        warnings,
     }
+}
+
+/// The `serve:` grants of the manifest as the report lists them, and its warnings about them
+/// (ADR 0123 rule 22): a plain `http` grant on an address that is not loopback, a wildcard
+/// included; `hosts=*`; `peer=none`; `peer_buffers=none`; `tls12`. O(grants).
+fn serve_grants(manifest: &una_project::Manifest) -> (Vec<ServeGrantDoc>, Vec<String>) {
+    let mut grants = Vec::new();
+    let mut warnings = Vec::new();
+    for spec in &manifest.grants {
+        if !spec.value.starts_with(una_core::http::serve::PREFIX) {
+            continue;
+        }
+        // A grant that does not parse was refused by the manifest's checks (U7008).
+        let Ok(grant) = una_core::http::serve::ServeGrant::parse(&spec.value) else {
+            continue;
+        };
+        let address = grant.listener();
+        let limits = &grant.limits;
+        if !grant.tls && !grant.address.is_loopback() {
+            warnings.push(format!(
+                "the grant `{address}` serves plain `http` on an address that is not loopback, so its requests and replies cross the network unencrypted"
+            ));
+        }
+        if grant.hosts == una_core::http::serve::Hosts::Any {
+            warnings.push(format!(
+                "the grant `{address}` has `hosts=*`, so the host accepts every name in `Host`"
+            ));
+        }
+        if limits.peer.is_none() {
+            warnings.push(format!(
+                "the grant `{address}` has `peer=none`, so one peer may hold every connection"
+            ));
+        }
+        if limits.peer_buffers.is_none() {
+            warnings.push(format!(
+                "the grant `{address}` has `peer_buffers=none`, so one peer may hold every request buffer"
+            ));
+        }
+        if grant.tls12 {
+            warnings.push(format!(
+                "the grant `{address}` has `tls12`, so it accepts TLS 1.2 beside TLS 1.3"
+            ));
+        }
+        grants.push(ServeGrantDoc {
+            address,
+            scheme: if grant.tls { "https" } else { "http" },
+            limits: ServeLimitsDoc {
+                once: limits.once,
+                rate: limits
+                    .rate
+                    .map(|rate| format!("{}/{}", rate.count, rate.period.name())),
+                waiting: limits.waiting,
+                connections: limits.connections,
+                peer: limits.peer,
+                handshakes: limits.handshakes,
+                requests: limits.requests,
+                line: limits.line,
+                headers: limits.headers,
+                header: limits.header,
+                body: limits.body,
+                buffers: limits.buffers,
+                peer_buffers: limits.peer_buffers,
+                replies: limits.replies,
+                peer_replies: limits.peer_replies,
+                delivered: limits.delivered,
+                idle: limits.idle,
+                read: limits.read,
+                write: limits.write,
+                answer: limits.answer,
+            },
+            checks_host: grant.hosts != una_core::http::serve::Hosts::Any,
+        });
+    }
+    (grants, warnings)
 }
 
 /// The parameters and results of the package's functions whose type is `Int` with no proven
@@ -1290,6 +1447,9 @@ fn human(report: &Report) -> String {
             denied.join(", ")
         ));
     }
+    if let Some(server) = report.tcb.server {
+        line(format!("  server: {server}"));
+    }
     line(format!("  proof cache: {}", report.tcb.proof_cache));
     line(format!(
         "  proof cache key: {}",
@@ -1353,7 +1513,37 @@ fn human(report: &Report) -> String {
         };
         line(format!("generic result {}: {summary}", generic.function));
     }
+    if !report.tcb.serve_grants.is_empty() {
+        line("servers:".to_owned());
+        for grant in &report.tcb.serve_grants {
+            let limits = &grant.limits;
+            let none =
+                |value: Option<u64>| value.map_or_else(|| "none".to_owned(), |v| v.to_string());
+            line(format!(
+                "  {}://{}: {}/once, rate {}, waiting {}, connections {}, peer {}, body {} bytes, buffers {} bytes, peer buffers {}, answer within {} s, {}",
+                grant.scheme,
+                grant.address,
+                limits.once,
+                limits.rate.as_deref().unwrap_or("none"),
+                limits.waiting,
+                limits.connections,
+                none(limits.peer),
+                limits.body,
+                limits.buffers,
+                none(limits.peer_buffers),
+                limits.answer,
+                if grant.checks_host {
+                    "checks Host"
+                } else {
+                    "accepts every Host"
+                }
+            ));
+        }
+    }
     line(format!("out of model: {}", report.out_of_model.join(", ")));
+    for warning in &report.warnings {
+        line(format!("warning: {warning}"));
+    }
     out
 }
 

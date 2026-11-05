@@ -1,0 +1,13 @@
+-- test: the `uses` of `handle` are checked against the grants as `main`'s are (spec/31 §7, ADR 0123 rule 16)
+-- spec: spec/31 §7
+-- expect: error U3012 at src/srv.una:10:3
+module srv
+
+import std.host (Reply, Request)
+
+--- Answers every request with the time.
+pub handle(request: internal Request) -> internal Reply
+  uses @clock: Clock[now]
+=
+  let now = @clock.now()
+  Reply(status: 200, headers: [], body: "{now}")
