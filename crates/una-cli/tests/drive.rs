@@ -222,3 +222,46 @@ fn on_the_real_clock_the_clock_reads_the_wall_clock() {
     // `Clock.now` reads the world's wall clock, and the first tick is at 0.
     assert_eq!(lines, ["step 1 at 0 missed 0 now 1234"].map(str::to_owned));
 }
+
+/// The messages of U4001 of the driven state's hand-offs (`spec/26 §2` rule 2), in the
+/// conformance case `name`.
+fn state_label_messages(name: &str) -> Vec<String> {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/conformance/security")
+        .join(name);
+    let checked = una_cli::check(&dir, una_cli::Tier::Zero).unwrap();
+    checked
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == una_diag::Code::U4001)
+        .map(|d| {
+            let repairs: Vec<String> = d.repairs.iter().map(|r| r.description.clone()).collect();
+            format!("{} | {}", d.message, repairs.join(" | "))
+        })
+        .collect()
+}
+
+#[test]
+fn a_state_hand_off_says_which_way_its_data_goes() {
+    let invariant = state_label_messages("drive_state_label_invariant");
+    assert_eq!(invariant.len(), 1, "{invariant:?}");
+    assert!(
+        invariant[0].contains("an invariant type argument of a kind carries data both ways")
+            && invariant[0].contains("make the labels of that type argument equal"),
+        "{invariant:?}"
+    );
+    assert!(!invariant[0].contains("function"), "{invariant:?}");
+    let function = state_label_messages("drive_state_label_function");
+    assert_eq!(function.len(), 1, "{function:?}");
+    assert!(
+        function[0].contains("would pass `secret` data to the function in the result of `init`")
+            && function[0].contains("label that parameter position in the result of `init`"),
+        "{function:?}"
+    );
+    let step = state_label_messages("drive_state_label_step");
+    assert_eq!(step.len(), 1, "{step:?}");
+    assert!(
+        step[0].contains("which carries `secret` where `count` is `public`"),
+        "{step:?}"
+    );
+}

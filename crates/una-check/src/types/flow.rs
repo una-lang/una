@@ -31,13 +31,53 @@ pub(crate) fn below(from: &Label, to: &Label, top: &Label) -> bool {
 /// in both directions, so that its labels are equal at every position.
 /// The third element says whether the position is covariant, where the value's data flows
 /// into the declared type, rather than contravariant, where the declared type's flows into it.
-pub(crate) fn violation(
+fn violation(
     found: &Ty,
     expected: &Ty,
     covariant: bool,
     top: &Label,
     kinds: &KindLabels,
 ) -> Option<(Label, Label, bool)> {
+    flow_violation(found, expected, covariant, top, kinds)
+        .map(|found| (found.from, found.to, found.covariant))
+}
+
+/// Where a flow into a declared type fails, as [`violation`] finds it, for a message that
+/// says which way the data goes there.
+#[derive(Clone, Debug)]
+pub(crate) struct Violation {
+    /// The label of the data at the position.
+    pub(crate) from: Label,
+    /// The label allowed there.
+    pub(crate) to: Label,
+    /// Whether the value's data flows into the declared type there.
+    pub(crate) covariant: bool,
+    /// Whether the position lies in an argument of an invariant kind parameter, compared in
+    /// the direction opposite to the flow's, where the labels must be equal rather than rise.
+    pub(crate) invariant: bool,
+}
+
+/// [`violation`], with the position's [`Violation::invariant`] too.
+pub(crate) fn flow_violation(
+    found: &Ty,
+    expected: &Ty,
+    covariant: bool,
+    top: &Label,
+    kinds: &KindLabels,
+) -> Option<Violation> {
+    walk(found, expected, covariant, false, top, kinds)
+}
+
+/// The walk of [`flow_violation`]; `invariant` says whether it is inside the reversed pass of
+/// an invariant kind argument.
+fn walk(
+    found: &Ty,
+    expected: &Ty,
+    covariant: bool,
+    invariant: bool,
+    top: &Label,
+    kinds: &KindLabels,
+) -> Option<Violation> {
     // A `Unit` value has one inhabitant, so it carries no information.
     if matches!(expected.unlabeled(), Ty::Unit) {
         return None;
@@ -48,24 +88,29 @@ pub(crate) fn violation(
         (expected.top_label(), found.top_label())
     };
     if !below(&from, &to, top) {
-        return Some((from, to, covariant));
+        return Some(Violation {
+            from,
+            to,
+            covariant,
+            invariant,
+        });
     }
+    let go = |x: &Ty, y: &Ty, covariant: bool| walk(x, y, covariant, invariant, top, kinds);
     match (found.unlabeled(), expected.unlabeled()) {
-        (Ty::List(x), Ty::List(y)) | (Ty::Dense(_, x), Ty::Dense(_, y)) => {
-            violation(x, y, covariant, top, kinds)
+        (Ty::List(x), Ty::List(y)) | (Ty::Dense(_, x), Ty::Dense(_, y)) => go(x, y, covariant),
+        (Ty::Map(xk, xv), Ty::Map(yk, yv)) => {
+            go(xk, yk, covariant).or_else(|| go(xv, yv, covariant))
         }
-        (Ty::Map(xk, xv), Ty::Map(yk, yv)) => violation(xk, yk, covariant, top, kinds)
-            .or_else(|| violation(xv, yv, covariant, top, kinds)),
         // A collection is a value, as a map is: its arguments are compared as data.
         (Ty::Coll(i, xs), Ty::Coll(j, ys)) if i == j => xs
             .iter()
             .zip(ys.iter())
-            .find_map(|(x, y)| violation(x, y, covariant, top, kinds)),
+            .find_map(|(x, y)| go(x, y, covariant)),
         (Ty::Kind(i, xs), Ty::Kind(j, ys)) if i == j => {
             xs.iter().zip(ys).enumerate().find_map(|(index, (x, y))| {
-                violation(x, y, covariant, top, kinds).or_else(|| {
+                go(x, y, covariant).or_else(|| {
                     if kinds.is_invariant(*i, index) {
-                        violation(x, y, !covariant, top, kinds)
+                        walk(x, y, !covariant, true, top, kinds)
                     } else {
                         None
                     }
@@ -76,8 +121,8 @@ pub(crate) fn violation(
             .params
             .iter()
             .zip(&g.params)
-            .find_map(|(x, y)| violation(x, y, !covariant, top, kinds))
-            .or_else(|| violation(&f.result, &g.result, covariant, top, kinds)),
+            .find_map(|(x, y)| go(x, y, !covariant))
+            .or_else(|| go(&f.result, &g.result, covariant)),
         _ => None,
     }
 }

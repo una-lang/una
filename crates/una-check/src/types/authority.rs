@@ -2842,8 +2842,12 @@ pub(crate) fn drive_state_labels(env: &Env<'_>, settings: &Manifest, report: &mu
         if reported.contains(name) {
             continue;
         }
-        let Some((from, to, covariant)) =
-            super::flow::violation(found, &state.ty.base, true, &top, &env.kind_labels)
+        let Some(super::flow::Violation {
+            from,
+            to,
+            covariant,
+            invariant,
+        }) = super::flow::flow_violation(found, &state.ty.base, true, &top, &env.kind_labels)
         else {
             continue;
         };
@@ -2852,8 +2856,19 @@ pub(crate) fn drive_state_labels(env: &Env<'_>, settings: &Manifest, report: &mu
         // At a covariant position the source's data flows into the parameter. At a
         // contravariant one, a parameter of a function type, the data flows the other way: the
         // parameter's function would pass data labeled `from` to the source's function, which
-        // takes `to` there.
-        let (message, related, repair) = if covariant {
+        // takes `to` there. In an argument of an invariant kind parameter, data flows both
+        // ways, so its labels must be equal.
+        let (message, related, repair) = if invariant {
+            (
+                format!(
+                    "the host hands `{name}` its state `{param}` from {from_what}, and an invariant type argument of a kind carries data both ways, so its labels must be equal: `{param}` has `{from}` where {from_what} has `{to}`, a flow from `{from}` to `{to}`"
+                ),
+                format!("{from_what}, labeled `{to}` in that type argument"),
+                format!(
+                    "make the labels of that type argument equal in {from_what} and in the type of `{param}`"
+                ),
+            )
+        } else if covariant {
             (
                 format!(
                     "the host hands `{name}` its state `{param}` from {from_what}, which carries `{from}` where `{param}` is `{to}`: a flow from `{from}` to `{to}`"
