@@ -78,9 +78,8 @@ impl Live {
 
     fn client(&self) -> TcpStream {
         let stream = TcpStream::connect(("127.0.0.1", self.port)).unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(10)))
-            .unwrap();
+        // macOS rejects the call with EINVAL once the server has closed the socket.
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
         stream
     }
 }
@@ -351,9 +350,8 @@ fn a_panicking_callback_stops_the_run() {
         let Ok(mut stream) = TcpStream::connect(("127.0.0.1", port)) else {
             break;
         };
-        stream
-            .set_read_timeout(Some(Duration::from_secs(10)))
-            .unwrap();
+        // macOS rejects the call with EINVAL once the server has closed the socket.
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
         let _ =
             stream.write_all(format!("GET /{n} HTTP/1.1\r\nHost: localhost\r\n\r\n").as_bytes());
         clients.push(stream);
@@ -422,9 +420,8 @@ fn a_serve_thread_that_ends_gives_back_its_connections_and_accepting_goes_on() {
     // The connections thread 0 owned are closed: their peers read the end of the stream.
     let mut closed = 0;
     for (client, &mine) in idle.iter_mut().zip(&on_zero) {
-        client
-            .set_read_timeout(Some(Duration::from_millis(200)))
-            .unwrap();
+        // macOS rejects the call with EINVAL once the server has closed the socket.
+        let _ = client.set_read_timeout(Some(Duration::from_millis(200)));
         let mut byte = [0u8; 1];
         let ended = matches!(client.read(&mut byte), Ok(0));
         assert_eq!(ended, mine, "a connection closed iff thread 0 owned it");
