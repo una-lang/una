@@ -1165,7 +1165,7 @@ impl<'p, 'w> Machine<'p, 'w> {
         let result = self.locate(result);
         self.frames.pop();
         // The root task's end answers the reply rights it still holds (ADR 0123 rule 4.5).
-        self.answer_held(serve::status_of(&result, false));
+        self.answer_held(&result, false);
         result
     }
 
@@ -1210,7 +1210,7 @@ impl<'p, 'w> Machine<'p, 'w> {
         let _root = serve::RootRights(&run);
         let result = self.drive_steps(init, step, on_stop, drive);
         // The root task's end answers the reply rights it still holds (ADR 0123 rule 4.5).
-        self.answer_held(serve::status_of(&result, false));
+        self.answer_held(&result, false);
         result
     }
 
@@ -3021,7 +3021,7 @@ impl<'p, 'w> Machine<'p, 'w> {
         self.ops_open = 0;
         // The reply rights the task still holds are answered first, each with its `unanswered`
         // event, then the event of how it ended (ADR 0123 rule 4.5).
-        self.answer_held(serve::status_of(&result, true));
+        self.answer_held(&result, true);
         match result {
             Ok(_) => {}
             Err(Stop::Abort(abort @ Abort::Depth { .. })) => {

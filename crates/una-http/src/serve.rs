@@ -13,6 +13,7 @@ pub mod fault;
 pub mod gate;
 pub mod gcra;
 pub mod grant;
+pub mod live;
 pub mod net;
 pub mod peer;
 pub mod place;

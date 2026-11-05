@@ -2111,9 +2111,19 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
     };
     #[cfg(not(feature = "test-hooks"))]
     let scripted = false;
-    // Nothing accepts on the listeners until the serve threads of ADR 0123 step 4 take them
-    // over; they are held until the run ends.
-    let _listeners = match serve(
+    // Live peers send in real time, which virtual time cannot place: a run under
+    // `--virtual-time` takes no `serve:` grant until `--serve-script` (ADR 0123, S4 amendment
+    // C). The scripted engine of the tests stands for such a script.
+    if options.virtual_time
+        && !scripted
+        && grants
+            .iter()
+            .any(|grant| matches!(grant, Grant::Serve { .. }))
+    {
+        let _ = writeln!(stderr, "error: {}", una_interp::VIRTUAL_SERVE);
+        return USAGE;
+    }
+    let listeners = match serve(
         if scripted { &[] } else { &grants },
         options.serve_threads.max(1),
         options.concurrency.file_threads,
@@ -2123,6 +2133,28 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
             let _ = writeln!(stderr, "error: {message}");
             return USAGE;
         }
+    };
+    // A program that serves starts its serve threads here, before `main`, over the listeners
+    // bound above; they accept nothing until its first server operation (S4 amendment B.2).
+    // Any other run holds its listeners until it ends.
+    let serves = meta.serve && meta.uses.iter().any(|need| need.capability == "HttpServer");
+    let _listeners = if serves && !scripted && !listeners.listeners.is_empty() {
+        let served: Vec<una_core::http::serve::ServeGrant> = grants
+            .iter()
+            .filter_map(|grant| match grant {
+                Grant::Serve { grant, .. } => Some((**grant).clone()),
+                _ => None,
+            })
+            .collect();
+        if let Err(message) =
+            crate::serve::install_live(listeners, &served, options.serve_threads.max(1), &stop)
+        {
+            let _ = writeln!(stderr, "error: {message}");
+            return USAGE;
+        }
+        None
+    } else {
+        Some(listeners)
     };
     let drive = meta.drive.map(|drive| Driver {
         ticks: drive.ticks,
@@ -2474,6 +2506,12 @@ fn finish(mut state: State) -> i32 {
     // 21).
     #[cfg(feature = "test-hooks")]
     crate::serve::script::end();
+    // The serve threads write what the run answered, then end (ADR 0123 rule 18); after an
+    // abort that ends the process at once, `abort_run` made the hard stop already.
+    crate::serve::end_engine(
+        run_stop().map_or(std::time::Duration::from_secs(1), |stop| stop.grace()),
+        false,
+    );
     if let Err(error) = state.shared.finish() {
         let _ = writeln!(stderr, "error: cannot write the trace: {error}");
         code = USAGE;
@@ -3174,7 +3212,14 @@ fn site_location(state: &State, site: usize) -> Location {
 fn abort_run(state: State, code: Code, location: Location, message: String) {
     let least = if code == Code::U8001 { 3 } else { 1 };
     // Every reply right still held is answered `503`, with no event, before the process ends
-    // without waiting for its tasks (ADR 0123 rule 4.5, rule 18 item 6).
+    // without waiting for its tasks (ADR 0123 rule 4.5, rule 18 item 6). After the hard stop or
+    // an internal error, the engine's hard stop comes first, while the exchanges the tasks hold
+    // are still open: the serve threads answer each `503` in one non-blocking write and close
+    // every connection, without waiting on a peer, whatever the order in which they see the
+    // stop and a later answer (`Port::hard_stop`); the answers below then send nothing.
+    if matches!(code, Code::U6007 | Code::U8001) {
+        crate::serve::end_engine(std::time::Duration::ZERO, true);
+    }
     crate::serve::answer_all_left();
     crate::ceiling(usize::MAX);
     // One stop ends the process: a stop on another thread may have claimed it (ADR 0113).

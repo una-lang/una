@@ -94,6 +94,41 @@ pub struct RunStop {
     grace: u64,
     /// [`RUNNING`], [`ENDED`] or [`KILLING`].
     life: AtomicU8,
+    /// What the host does besides at the host stop and at the hard stop ([`RunStop::on_stops`]).
+    hook: StopHooks,
+}
+
+/// What the host does when a host stop comes, `false`, and when the hard stop comes, `true`,
+/// besides the run's own check points: the serve engine's stop and hard stop (ADR 0123 rule 18).
+/// It runs on the watcher's thread, runs no Una code, and does not wait on a peer.
+pub type StopHook = Box<dyn Fn(bool) + Send + Sync>;
+
+/// The run's [`StopHook`], set once, and whether it was called for the host stop and for the
+/// hard stop, so that each call happens once.
+#[derive(Default)]
+struct StopHooks(std::sync::OnceLock<StopHook>, AtomicBool, AtomicBool);
+
+impl std::fmt::Debug for StopHooks {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.get().is_some() {
+            "StopHooks(set)"
+        } else {
+            "StopHooks(none)"
+        })
+    }
+}
+
+impl StopHooks {
+    /// Calls the hook for the host stop, `false`, or the hard stop, `true`, at most once each.
+    fn run(&self, hard: bool) {
+        let Some(hook) = self.0.get() else {
+            return;
+        };
+        let once = if hard { &self.2 } else { &self.1 };
+        if !once.swap(true, Ordering::SeqCst) {
+            hook(hard);
+        }
+    }
 }
 
 impl RunStop {
@@ -109,7 +144,31 @@ impl RunStop {
             hard: AtomicU8::new(0),
             grace: grace.max(1),
             life: AtomicU8::new(RUNNING),
+            hook: StopHooks::default(),
         })
+    }
+
+    /// Sets what the host does at the run's host stop and at its hard stop ([`StopHook`]):
+    /// once per run; `false` when one was set already, which stays. The watcher calls it with
+    /// `false` once a host stop request reached the run, and with `true` once the hard stop
+    /// came, each at most once; a stop that came before the hook was set calls it here. A run
+    /// without a watcher takes no host stop, and never calls it.
+    pub fn on_stops(&self, hook: StopHook) -> bool {
+        if self.hook.0.set(hook).is_err() {
+            return false;
+        }
+        if self.stopped() {
+            self.hook.run(false);
+        }
+        if self.hard().is_some() {
+            self.hook.run(true);
+        }
+        true
+    }
+
+    /// The grace period between the first host stop request and the hard stop (rule 16).
+    pub fn grace(&self) -> Duration {
+        Duration::from_secs(self.grace)
     }
 
     /// The host stop requests that have reached the run so far.
@@ -244,6 +303,9 @@ fn watch(stop: &RunStop, deadline: Option<Duration>) {
             wake = false;
         }
     }
+    // The serve engine closes its listeners at once, and refuses what it did not deliver
+    // (ADR 0123 rule 18).
+    stop.hook.run(false);
     let grace = Duration::from_secs(stop.grace);
     let first = Instant::now();
     let reason = loop {
@@ -262,6 +324,9 @@ fn watch(stop: &RunStop, deadline: Option<Duration>) {
     stop.hard.store(reason, Ordering::SeqCst);
     // Every check point of the run takes its slow path, and finds the hard stop.
     una_sys::attention::raise_all();
+    // The serve engine answers every open exchange `503` in one write and closes every
+    // connection, without waiting on a peer (ADR 0123 rule 18 item 6).
+    stop.hook.run(true);
     let hard = Instant::now();
     loop {
         if stop.done() {

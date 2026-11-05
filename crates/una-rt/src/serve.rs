@@ -7,8 +7,10 @@
 //! - **The run's engine** ([`Serving`]) is installed before `main` and is the same for every
 //!   task of the run: its [`Port`], its [`Rights`], whether `close` came, the tasks waiting in
 //!   `next`, and the abort that ends the run. Without one, a server operation is a defect that
-//!   ends the run with U8001, as in the interpreter: `una build` refuses a program that serves
-//!   until the serve threads start before `main` (`spec/31 §1` rule 10).
+//!   ends the run with U8001, as in the interpreter. A program that serves installs the engine
+//!   of its serve threads before `main` ([`install_live`]), and the runs of
+//!   `tests/serve_runs/` a scripted one; `una build` still refuses a program that serves
+//!   outside the toolchain's own tests (`spec/31 §1` rule 10).
 //! - **Holders.** Each task has a holder number in the run, the root 0 and each started task a
 //!   fresh one; a task of `together` or `first of` holds as the task that runs its block, as in
 //!   the interpreter, which runs those tasks inline (they perform no server operation, U3033).
@@ -116,6 +118,8 @@ pub(crate) struct Serving {
     /// The key of the run's reduced trace form, and whether the trace writes the server's
     /// values without their labels' redaction (`Port::reveals_trace`, the tests only).
     trace: (TraceKey, bool),
+    /// The serve threads of a run over live sockets, which the run's end ends ([`end_engine`]).
+    live: Option<Arc<una_http::serve::live::Live>>,
     /// The scripted engine of the tests, which the run's end ends.
     #[cfg(feature = "test-hooks")]
     script: Option<Arc<una_http::serve::script::ScriptPort>>,
@@ -130,12 +134,6 @@ pub(crate) fn serving() -> Option<Arc<Serving>> {
 }
 
 impl Serving {
-    // The serve threads that start before `main` install the real engine (#1571, part 4);
-    // until then only the scripted engine of the test builds is installed.
-    #[cfg_attr(
-        not(feature = "test-hooks"),
-        allow(dead_code, reason = "the engine of the serve threads lands later")
-    )]
     fn new(port: Arc<dyn Port + Send + Sync>) -> Serving {
         Serving {
             trace: (port.trace_key(), port.reveals_trace()),
@@ -146,6 +144,7 @@ impl Serving {
             waiters: Mutex::new(BTreeMap::new()),
             abort: Mutex::new(None),
             entry: Arc::new(AtomicUsize::new(RUN_ENTRY)),
+            live: None,
             #[cfg(feature = "test-hooks")]
             script: None,
         }
@@ -155,6 +154,44 @@ impl Serving {
     /// at its next check point.
     fn aborted(&self) -> bool {
         self.entry.load(Ordering::SeqCst) < RUN_ENTRY
+    }
+}
+
+/// Starts the serve threads of a program that serves, before `main` (S4 amendment B.2), over
+/// the listeners `prepared` bound for `grants`, `threads` of them, and installs the run's
+/// engine over them; they accept nothing until the run's first server operation. The run's
+/// host stop and hard stop reach the engine through `stop` (ADR 0123 rule 18). A failure is
+/// the message of a usage error.
+pub(crate) fn install_live(
+    prepared: una_http::serve::Prepared,
+    grants: &[una_core::http::serve::ServeGrant],
+    threads: usize,
+    stop: &una_interp::stopping::RunStop,
+) -> Result<(), String> {
+    let live = Arc::new(una_http::serve::live::Live::start(
+        prepared, grants, threads,
+    )?);
+    let hooked = Arc::clone(&live);
+    stop.on_stops(Box::new(move |hard| {
+        if hard {
+            hooked.hard_stop();
+        } else {
+            hooked.host_stop();
+        }
+    }));
+    let mut serving = Serving::new(Arc::clone(&live) as Arc<dyn Port + Send + Sync>);
+    serving.live = Some(live);
+    *lock(&SERVING) = Some(Arc::new(serving));
+    Ok(())
+}
+
+/// Ends the serve threads of a run over live sockets, once, before the process ends: what the
+/// run answered is written, as a host stop drains, for at most the grace period `drain`, then
+/// the hard stop closes what is left; with `hard`, after the hard stop or an internal error,
+/// the hard stop at once (ADR 0123 rule 18). Nothing in a run with no live engine.
+pub(crate) fn end_engine(drain: std::time::Duration, hard: bool) {
+    if let Some(live) = serving().and_then(|serving| serving.live.clone()) {
+        live.end(drain, hard);
     }
 }
 

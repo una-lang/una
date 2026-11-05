@@ -61,6 +61,14 @@ pub trait Port: Sync {
     /// has open and closes. The program's side refuses every later `next` with `Closed`.
     fn close(&self);
 
+    /// The hard stop of the engine (ADR 0123 rule 18 item 6): every exchange still open is
+    /// answered `503` in one non-blocking write and every connection closes, without waiting on
+    /// a peer. The program's side calls it before it drops the exchanges that its tasks still
+    /// hold at the hard stop, so that those exchanges are open when the engine answers them,
+    /// whatever the order in which the serve threads see the stop and a later answer. An engine
+    /// with no peers to answer, as a script's, does nothing.
+    fn hard_stop(&self) {}
+
     /// The key of the run's reduced trace form (ADR 0123 rule 1, [`TraceKey`]): drawn at random
     /// when the run starts, all zeros under a script of connections.
     fn trace_key(&self) -> TraceKey;
