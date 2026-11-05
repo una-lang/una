@@ -61,6 +61,9 @@ pub struct Run {
     pub completion: Completion,
     /// Its trace.
     pub trace: Vec<Event>,
+    /// The reply rights of `HttpServer` still recorded when the run ended: 0, since every
+    /// task's end answers the rights it holds (ADR 0123 rule 4.5), unless a defect leaves one.
+    pub rights_left: usize,
 }
 
 /// Runs `main` of module `module` with the host capabilities of `host`, in `world`, with a
@@ -89,6 +92,7 @@ pub fn run_main(
     Some(Run {
         completion,
         trace: machine.run.take_trace(),
+        rights_left: machine.run.serve.as_ref().map_or(0, |s| s.live()),
     })
 }
 
@@ -133,6 +137,7 @@ pub fn run_drive(
     Ok(Run {
         completion,
         trace: machine.run.take_trace(),
+        rights_left: machine.run.serve.as_ref().map_or(0, |s| s.live()),
     })
 }
 
@@ -148,6 +153,7 @@ fn not_started(abort: Abort) -> Run {
     Run {
         completion: Completion::Aborted(abort),
         trace: Vec::new(),
+        rights_left: 0,
     }
 }
 

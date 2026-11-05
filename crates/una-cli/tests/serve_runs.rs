@@ -289,16 +289,23 @@ fn bytes_line(at: u64, k: u64, bytes: &[u8]) -> Value {
 
 /// Runs one case: the lines of `expected.jsonl` and of `run.jsonl` it produces. The run, its
 /// engine and its script live on one thread, with the evaluator's stack.
+/// A run that has not ended after this long hangs, which fails the case rather than the suite's
+/// time limit.
+const HANG: std::time::Duration = std::time::Duration::from_secs(60);
+
 fn run(dir: &Path) -> (Vec<Value>, Vec<Value>) {
     let stack = una_interp::stack_bytes(10_000).unwrap();
-    std::thread::scope(|scope| {
-        std::thread::Builder::new()
-            .stack_size(stack)
-            .spawn_scoped(scope, || run_here(dir))
-            .unwrap()
-            .join()
-            .unwrap()
-    })
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let owned = dir.to_path_buf();
+    std::thread::Builder::new()
+        .stack_size(stack)
+        .spawn(move || {
+            let _ = sender.send(run_here(&owned));
+        })
+        .unwrap();
+    receiver
+        .recv_timeout(HANG)
+        .unwrap_or_else(|error| panic!("{}: the run did not end: {error}", dir.display()))
 }
 
 fn run_here(dir: &Path) -> (Vec<Value>, Vec<Value>) {
@@ -361,6 +368,7 @@ fn run_here(dir: &Path) -> (Vec<Value>, Vec<Value>) {
     let run =
         una_interp::run_main(&checked.program, "srv", &mut lines, &host, limits).expect("a `main`");
     let printed = lines.0;
+    assert_eq!(run.rights_left, 0, "{}: reply rights left", dir.display());
     let mut scripted = port.0.into_inner().unwrap();
     // The events the program did not wait for still happen, then the host stop.
     while let Some(event) = scripted.events.pop_front() {
@@ -460,7 +468,7 @@ fn every_serve_run_gives_its_expected_bytes_and_trace() {
     #[allow(clippy::disallowed_methods)]
     let bless = std::env::var("UNA_BLESS").is_ok_and(|v| v == "1");
     let dirs = cases();
-    assert!(dirs.len() >= 11, "{} cases", dirs.len());
+    assert!(dirs.len() >= 13, "{} cases", dirs.len());
     let mut failures = Vec::new();
     for dir in dirs {
         let (wire, ran) = run(&dir);

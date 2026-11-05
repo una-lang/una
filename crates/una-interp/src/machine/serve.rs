@@ -66,6 +66,45 @@ impl<'w> Serving<'w> {
             exchange.answer(STOPPED);
         }
     }
+
+    /// The rights live in the run, none once every task answered its own (for tests).
+    pub(crate) fn live(&self) -> usize {
+        self.rights.live()
+    }
+}
+
+/// A task waiting in `next`, recorded in the run's waiters until it leaves `next`.
+struct Waiting<'r, 'p, 'w> {
+    run: &'r crate::tasks::Run<'p, 'w>,
+    task: usize,
+}
+
+impl<'r, 'p, 'w> Waiting<'r, 'p, 'w> {
+    fn enter(run: &'r crate::tasks::Run<'p, 'w>, task: usize) -> Self {
+        run.next_waiters.borrow_mut().insert(task);
+        Waiting { run, task }
+    }
+}
+
+impl Drop for Waiting<'_, '_, '_> {
+    fn drop(&mut self) {
+        self.run.next_waiters.borrow_mut().remove(&self.task);
+    }
+}
+
+/// Answers `503`, with no event, the rights the root task still holds when it unwinds by a
+/// panic of the interpreter, as [`crate::tasks::Ending`] does for a started task (ADR 0123 rule
+/// 4.5); on a normal end the root answered them already.
+pub(crate) struct RootRights<'r, 'p, 'w>(pub(crate) &'r crate::tasks::Run<'p, 'w>);
+
+impl Drop for RootRights<'_, '_, '_> {
+    fn drop(&mut self) {
+        if std::thread::panicking()
+            && let Some(serving) = &self.0.serve
+        {
+            serving.answer_left(0);
+        }
+    }
 }
 
 /// A failure of `ServeError` (`spec/31 §1`), by its variant's name and position.
@@ -240,6 +279,9 @@ impl<'p> Machine<'p, '_> {
         };
         // The run's first server operation begins accepting (S4 amendment B.2).
         serving.port.begin();
+        // While it waits here, the task is one of the run's waiters in `next` (`yield_turn`),
+        // on every way out.
+        let _waiting = Waiting::enter(&run, run.current());
         loop {
             if serving.closed.get() {
                 return Err(closed());

@@ -90,6 +90,10 @@ pub(crate) struct Run<'p, 'w> {
     pub(crate) http_limits: una_http::limit::Governor,
     /// The serve engine of a run that serves, and its reply rights (ADR 0123 rules 1 to 4).
     pub(crate) serve: Option<crate::machine::serve::Serving<'w>>,
+    /// The tasks waiting in `next` of `HttpServer` for the engine: a task in it never yields to
+    /// another one in it, so a pool of them blocks on the engine instead of handing the turn
+    /// back and forth (ADR 0123 rule 4.7).
+    pub(crate) next_waiters: RefCell<BTreeSet<usize>>,
 }
 
 impl<'p, 'w> Run<'p, 'w> {
@@ -118,6 +122,7 @@ impl<'p, 'w> Run<'p, 'w> {
             panic: RefCell::new(None),
             http_limits: una_http::limit::Governor::new(Vec::new()),
             serve: None,
+            next_waiters: RefCell::new(BTreeSet::new()),
         }
     }
 
@@ -210,13 +215,17 @@ impl<'p, 'w> Run<'p, 'w> {
     /// again; `false`, with no switch, when no other task is ready or the driver does not serve
     /// the run. A wait of the host's that no task can end, `next` of `HttpServer` with no request,
     /// yields first, so a task that would answer one runs before the thread blocks.
+    /// A ready task that waits in `next` itself does not count: it would only hand the turn
+    /// back, so when every ready task waits there, the task that runs blocks on the engine.
+    /// O(ready tasks) at most, O(1) when the front of the queue does not wait in `next`.
     pub(crate) fn yield_turn(&self) -> bool {
         if !self.coroutines || !self.serving.get() {
             return false;
         }
         let switch = {
+            let waiters = self.next_waiters.borrow();
             let mut sched = self.sched.borrow_mut();
-            if sched.queue.is_empty() {
+            if !sched.queue.iter().any(|id| !waiters.contains(id)) {
                 false
             } else {
                 let current = sched.current;

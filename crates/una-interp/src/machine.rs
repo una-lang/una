@@ -1098,6 +1098,8 @@ impl<'p, 'w> Machine<'p, 'w> {
             })
             .collect();
         self.frames.push(main.span);
+        let run = Rc::clone(&self.run);
+        let _root = serve::RootRights(&run);
         let result = self.eval(&mut Env::new(), &Rc::new(caps), &main.body);
         let result = self.locate(result);
         self.frames.pop();
@@ -1143,6 +1145,8 @@ impl<'p, 'w> Machine<'p, 'w> {
         on_stop: Option<&'p Fun>,
         drive: &Drive,
     ) -> Flow<'p> {
+        let run = Rc::clone(&self.run);
+        let _root = serve::RootRights(&run);
         let result = self.drive_steps(init, step, on_stop, drive);
         // The root task's end answers the reply rights it still holds (ADR 0123 rule 4.5).
         self.answer_held(serve::status_of(&result, false));
