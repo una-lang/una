@@ -48,7 +48,8 @@ bomb() -> Unit
   unit
 
 --- A task aborts the run at 0 ms while others wait in `next`: each `next` ends with the run,
---- taking no request, so nothing is answered at 50 ms (`spec/27 §7`, ADR 0123 rule 4.7).
+--- taking no request, so the program answers nothing; the request read at 50 ms and never
+--- delivered gets the host's `503` at the stop (`spec/27 §7`, ADR 0123 rules 4.7 and 18 item 2).
 pub main() -> Unit
   uses @server: HttpServer[next, reply, close]
 =

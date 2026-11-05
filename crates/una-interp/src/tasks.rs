@@ -226,7 +226,9 @@ impl<'p, 'w> Run<'p, 'w> {
             return false;
         }
         let now = self.clock.now();
-        // Once the run aborted, every waiter can end its `next`.
+        // Once the run aborted, every waiter can end its `next`. In this one-thread interpreter
+        // the abort is recorded only by a task that runs, so a waiter already resumed sees it at
+        // its loop's head first; the term guards the rule, it changes no schedule today.
         let aborted = self.abort.borrow().is_some();
         let switch = {
             let waiters = self.next_waiters.borrow();

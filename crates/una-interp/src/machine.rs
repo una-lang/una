@@ -3367,6 +3367,14 @@ impl<'p, 'w> Machine<'p, 'w> {
         } = *request;
         // An operation is a check point of the task's turn (ADR 0117 rule 12).
         self.run.tick();
+        // The tick may have let another task run: when its abort ended the whole run, this
+        // operation does not start, as at every check point (`spec/27 §7`), so no `reply` or
+        // other effect follows an abort of the run (ADR 0123 rule 4.7).
+        if self.run.coroutines
+            && let Some(abort) = self.run.aborted()
+        {
+            return Err(Stop::Abort(abort));
+        }
         // A cancelled task, or a `within` whose deadline has passed, stops before an operation
         // starts, as native code polls before each one (`spec/27 §5`, §7, `spec/19 §6` rule 4).
         if self.cancelled() {

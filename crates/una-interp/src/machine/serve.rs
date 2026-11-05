@@ -408,6 +408,8 @@ impl<'p> Machine<'p, '_> {
                 _ => None,
             };
             let stop = std::sync::Arc::clone(&self.stop);
+            // No other task runs while this one blocks, so an abort cannot come during the
+            // wait today; the term keeps the wait correct should one ever come from elsewhere.
             let aborted = || run.aborted().is_some();
             match serving
                 .port
