@@ -1,0 +1,18 @@
+-- test: a refined kind on the parameter of `handle` is a precondition that no call of the host establishes, as a `requires` is, so it is U7008 at the `serve` section's module (spec/31 §7, ADR 0123 rule 16)
+-- spec: spec/31 §7
+-- expect: error U7008 at ita.una:10:10
+module srv
+
+import std.host (Reply, Request)
+
+--- A request that cannot exist.
+kind Never = Request where it.body == "a" and it.body == "b"
+
+--- Needs the impossible.
+impossible(request: internal Request) -> internal Reply
+  requires 1 == 2
+=
+  Reply(status: 200, headers: [], body: request.body)
+
+--- Answers through the impossible, which the refinement would prove.
+pub handle(request: internal Never) -> internal Reply = impossible(request)

@@ -13,7 +13,7 @@ use una_syntax::ast::{Body, ClauseKind, Expr, ExprKind, Ident};
 
 use super::check::Checker;
 use super::env::{Entity, Env, FnAst};
-use super::ty::{CapId, FnUse, Ty, given};
+use super::ty::{CapId, Declared, FnUse, Ty, given};
 use super::{Findings, Report};
 use crate::names::RunInput;
 
@@ -2625,6 +2625,50 @@ pub(crate) fn serve_functions(env: &Env<'_>, settings: &Manifest, report: &mut R
                 }
             }
         }
+        // `spec/31 §7` rule 2: the exact shape has no refinement. A refinement on a type of
+        // `handle` or `on_stop`, written there or carried by a refined kind such as
+        // `kind Full = Request where ...`, is a precondition that no call of the host
+        // establishes, as a `requires` is. Which kinds the types name is the shape's usage
+        // error at the run.
+        let positions = def
+            .params
+            .iter()
+            .map(|param| (&param.ty, param.span, "parameter"))
+            .chain([(&def.result, def.result_span, "result")]);
+        for (declared, span, what) in positions {
+            if unrefined(declared) {
+                continue;
+            }
+            let at = env.serve_driver.map_or(span, |driver| {
+                Span::new(
+                    driver.file,
+                    serve.module.range.start,
+                    serve.module.range.end,
+                )
+            });
+            let why = if what == "parameter" {
+                format!(
+                    "which the host cannot establish: it calls `{name}` with no fact about it, so the refinement would be a precondition nothing proves"
+                )
+            } else {
+                "but the shape of the host's functions is exact, with no refinement".to_owned()
+            };
+            let mut diagnostic = report.make(
+                Code::U7008,
+                at,
+                format!(
+                    "the `serve` section's module `{}` declares the {what} of `{name}` with a refined type, {why}",
+                    serve.module.value
+                ),
+            );
+            diagnostic
+                .related
+                .push(report.related(span, format!("the refined type of the {what}")));
+            diagnostic.repairs.push(Report::advice(format!(
+                "declare the {what} without a refinement, as `pub handle(request: internal Request) -> internal Reply` and `pub on_stop() -> Unit` are, and check the condition in the body of `{name}`"
+            )));
+            report.push(diagnostic);
+        }
         for need in &def.uses {
             let capability = need.usage.capability;
             let serving = super::server::is_server(env, capability)
@@ -2647,6 +2691,22 @@ pub(crate) fn serve_functions(env: &Env<'_>, settings: &Manifest, report: &mut R
                 "remove the `uses` of `{shown}` from `{name}` and return the reply; a server that takes requests itself is written in the language form, with `next` in a `for ever` loop and no `serve` section"
             )));
             report.push(diagnostic);
+        }
+    }
+}
+
+/// Whether `declared` carries no refinement at any level of its top, labels aside: a refined
+/// kind is a refinement of its base (`spec/31 §7` rule 2). O(depth of the type's top).
+fn unrefined(declared: &Declared) -> bool {
+    if !declared.refinements.is_empty() {
+        return false;
+    }
+    let mut ty = &declared.base;
+    loop {
+        match ty {
+            Ty::Labeled(_, inner) => ty = inner,
+            Ty::Refined(..) => return false,
+            _ => return true,
         }
     }
 }

@@ -1023,7 +1023,11 @@ pub(crate) fn served_module(
             && !requires(on_stop)
             && on_stop.type_params.is_empty()
             && on_stop.params.is_empty()
-            && core("on_stop").is_some_and(|fun| fun.params.is_empty() && is_unit(&fun.result));
+            && core("on_stop").is_some_and(|fun| {
+                fun.params.is_empty()
+                    && is_unit(&fun.result)
+                    && matches!(&fun.result, Type::Base { refinements, .. } if refinements.is_empty())
+            });
         if !shaped {
             return Err(format!(
                 "`on_stop` of the module `{module}` of the `serve` section is not `pub on_stop() -> Unit`"
@@ -1043,11 +1047,12 @@ pub(crate) fn serve_pending(module: &str) -> String {
     )
 }
 
-/// Whether `ty` is the kind `name` of `std.host`, labeled exactly `label`. The kinds of
-/// `std.host` are the prelude's in Core IR, whose module path a package cannot take.
+/// Whether `ty` is the kind `name` of `std.host`, labeled exactly `label`, with no refinement:
+/// a refined kind is a precondition no call of the host establishes (`spec/31 §7` rule 2). The
+/// kinds of `std.host` are the prelude's in Core IR, whose module path a package cannot take.
 fn is_host_kind(ty: &Type, name: &str, label: &una_core::Label) -> bool {
-    matches!(ty, Type::Base { base: Base::Named { module, name: found, args }, label: at, .. }
-        if module == "prelude" && found == name && args.is_empty() && at == label)
+    matches!(ty, Type::Base { base: Base::Named { module, name: found, args }, refinements, label: at }
+        if module == "prelude" && found == name && args.is_empty() && at == label && refinements.is_empty())
 }
 
 /// Whether two types are the same, labels and refinements aside.
