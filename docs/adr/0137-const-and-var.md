@@ -7,28 +7,35 @@
 - Related:
   - ADR 0126 (module constants), whose constants are written `const` under this record, and which moves with it to edition `0.5`;
   - ADR 0056 (the memory model, editions) and `spec/17`, which define editable bindings, places, `edit` and `take`;
-  - ADR 0121 (the terms of a preview edition), whose rules 4 and 5 forbid a silent change of meaning;
+  - ADR 0121 (the terms of a preview edition), whose rules 4 and 5 forbid a silent change of meaning and whose rule 19 defines U7007, the code of a form a preview changed;
   - ADR 0105 (`test` replaces `example`), the precedent for a word that an edition replaces with an exact rewrite;
   - ADR 0096 (exact rewrites), whose renames and repairs `una fix` applies;
   - issue #1620 (edition numbering follows the release that closes it), which names edition `0.5`;
   - issue #1591 (data-driven and multi-step tests), which may add bindings to tests.
 - Target: edition `0.5`. Editions `0.1` to `0.4` do not change. The benchmark baseline, pinned to the release line of edition `0.1`, does not move.
-- Amends (when accepted, with the implementation):
+- Amends (when accepted, with the implementation): every chapter of `docs/spec` whose rules, messages or Una blocks name the binding forms `let` or `let edit`, for edition `0.5` (Appendix A lists each). On `main` at the time of writing they are:
   - **Lexical structure:** `spec/01 §5` (the keyword tables of edition `0.5`);
   - **Grammar:** `spec/02 §6` (`let_stmt`), `§8` (the context restrictions that name `let`);
-  - **Memory model:** `spec/17 §1` to `§5` and `§9` (editable bindings are `var` bindings and `edit` parameters);
-  - **Concurrency:** `spec/19 §1` to `§3` (the branches of `together`);
-  - **Static semantics and verification:** `spec/10 §5`, `§11` and `spec/12 §4`, where they name `let`;
-  - **Tests:** `spec/08 §2` (a binding in a test is written `const`);
+  - **Types, functions, capabilities, errors, information flow:** `spec/03`, `spec/04`, `spec/05` (U3005, "MUST NOT be bound with `let`"), `spec/06`, `spec/07` ("an annotated `let`");
+  - **Tests:** `spec/08 §2` (no test binds a name today; rule 8 fixes the form a later step binding takes);
+  - **Static semantics and verification:** `spec/10 §5`, `§11`; `spec/12 §3`, `§4`, `§8`, where they name the surface form;
+  - **Diagnostics:** `spec/13 §4` (U7007, U2019, U2024 and the messages that name `let`), `§7` (edition `0.5`);
+  - **Standard library:** `spec/14` (a call with effects is bound before it is given);
   - **Canonical form:** `spec/15`;
-  - **Diagnostics:** `spec/13 §4` (U0103, U2019 and the messages that name `let`), `§7` (edition `0.5`);
+  - **Memory model:** `spec/17 §1` to `§5` and `§9` (editable bindings are `var` bindings and `edit` parameters);
+  - **Fixed-width integers:** `spec/18`;
+  - **Concurrency:** `spec/19 §1` to `§3` (the branches of `together`);
+  - **Units, long-running programs, tasks and time:** `spec/25`, `spec/26`, `spec/27` (U2035, "a line that is not a `handled` expression (a `let`, ...)");
+  - **Collections, numerics, HTTP servers, quality:** `spec/28`, `spec/29`, `spec/31` (its Una blocks), `spec/32 §3` (rule 3 of the matching of functions, which names the surface `let`);
   - **Accepted and proposed records:** ADR 0126, by a revision while it is Proposed (Appendix A).
+
+  `spec/09`, `spec/11` and `spec/16` name only Core IR's `let`, which stays (Question 5); `spec/32`'s table of costs and its operators name Core forms and stay too.
 
 > **In plain words.**
 > - **Two words, one meaning each.** `const total = 0` names a value that never changes. `var total = 0` names a value that the function may assign again. `let` and `let edit` are their names in editions `0.1` to `0.4`, and edition `0.5` does not have them.
 > - **Parameters do not change.** `edit` and `take` stay the markers of parameters and arguments: `bump(edit n: Int)`, `bump(edit count)`, `consume(take order)`.
 > - **Module constants are `const` too.** `pub const pi: F64 = 3.141592653589793` at the top level of a module (ADR 0126). At the top level the value must be one the compiler can compute; in a function body it can be any expression.
-> - **Moving is mechanical.** A package that changes its edition to `0.5` gets one diagnostic per `let`, each with its exact rewrite, and `una fix` applies them all.
+> - **Moving is mechanical.** A package that changes its edition to `0.5` gets one diagnostic (U7007) per `let`, each with its exact rewrite, and `una fix` applies them all.
 
 ## Questions for acceptance
 
@@ -43,7 +50,7 @@ Each question changes what a programmer writes. The decisions are the project's;
    - **Decided:** the project, 2026-11-05: (a).
 
 2. **What does the rename cover?**
-   - **Chosen:** every binding statement: locals, the branches of `together`, bindings of tests, and the constants of ADR 0126. `let` leaves the language in edition `0.5`, reserved and rejected with its rewrite. `edit` and `take` stay what they are, the markers of parameters, arguments and method receivers; they no longer appear in a binding statement.
+   - **Chosen:** every binding statement: locals, the branches of `together`, and the constants of ADR 0126. No test binds a name today; a later step that binds one (issue #1591) uses `const` or `var` (rule 8). `let` leaves the language in edition `0.5`, reserved and rejected with its rewrite. `edit` and `take` stay what they are, the markers of parameters, arguments and method receivers; they no longer appear in a binding statement.
    - **Decided:** the project, 2026-11-05.
 
 3. **Which edition?**
@@ -51,7 +58,7 @@ Each question changes what a programmer writes. The decisions are the project's;
    - **Decided:** the project, 2026-11-05.
 
 4. **Does `una fix` turn a `var` that is never assigned into a `const`?**
-   - **Recommended: no.** The rewrite maps forms one to one (rule 9): `let edit x` becomes `var x` whether or not the body assigns `x`, so the rewrite never depends on an analysis and is idempotent. A later lint of Una Quality may report a `var` that is never assigned, as advice.
+   - **Recommended: no.** The rewrite maps forms one to one (rules 2 and 11): `let edit x` becomes `var x` whether or not the body assigns `x`, so the rewrite never depends on an analysis and is idempotent. A later lint of Una Quality may report a `var` that is never assigned, as advice.
    - **Cost of the alternative:** a rewrite that reads assignments, `edit` arguments and joins, which would change if the analysis changed.
    - **Decided:**
 
@@ -69,23 +76,25 @@ Each question changes what a programmer writes. The decisions are the project's;
 ## Context
 
 - **The forms today.** Edition `0.1` binds with `let x = e`. Edition `0.2` adds `let edit x = e`, a binding that can be assigned (`spec/17 §1`, `§2`). `var` is reserved in every edition and rejected with U0103: "not a keyword in Una; values are immutable, use `let`" in edition `0.1`, and "not a keyword in Una; use `let edit`" from edition `0.2` (`spec/01 §5`, `spec/17 §9`). `const` is an ordinary identifier, and no `.una` file of the language repository uses it as one.
-- **How much code uses them.** On `main` at the time of writing, the language repository has about 4,300 `.una` files; about 1,900 of them hold about 6,700 lines with `let`, of which about 940 are `let edit`. Its Markdown documents hold about 1,000 lines with `let`, about 900 of them under `docs/`. The other repositories of the project hold about 1,000 `.una` files with about 3,600 lines with `let`, and Una code in pages, primers and grammars besides.
+- **How much code uses them.** On `main` at the time of writing, the language repository has 4,299 `.una` files; 1,904 of them hold 6,706 lines with the word `let`, of which 939 are `let edit`. Its Markdown documents hold 1,048 lines with `let`, 900 of them under `docs/`. The other repositories of the project hold 1,018 `.una` files with `let` (of about 2,600), with 3,612 such lines, and Una code in pages, primers and grammars besides. The counts are of lines that hold the word, comments and prose included, so they are upper bounds of what moves (Costs).
 - **What agents and programmers read into the words.** In JavaScript and TypeScript, `let` declares a *mutable* binding and `const` an immutable one: a reader trained on them reads Una's `let` as the rebindable form, the opposite of its meaning. In Swift, `let` is immutable and `var` mutable. In Rust, `let` is immutable, `let mut` mutable, and `const` a compile-time item. In JavaScript, `const` is a runtime immutable name. `const` therefore means "this name does not change" in every language a reader is likely to know, and `var` means "this one does". `let` means opposite things in the two families.
 - **Module constants.** ADR 0126 adds named values at the top level of a module. Written with `let`, the word would bind both a local and a module value; written with a new word next to `let`, Una would have two words for one meaning, an immutable name. Una's syntax keeps one word per meaning (`spec/01`, `spec/02`).
 - **`edit` in two roles.** Today `edit` marks a parameter and an argument (passed in and out) and also a binding (`let edit`, assignable). The two are related, since an `edit` argument needs an editable place, but they are different things: one is a calling convention, the other a kind of binding.
-- **Editions.** A change of a keyword lands in a new edition: editions `0.1` and `0.2` are stable, and `0.3` and `0.4` keep their terms (ADR 0121 rules 13 and 18). ADR 0105 replaced `example` with `test` in edition `0.3` with a U0103 and an exact rewrite, the model followed here.
+- **Editions.** Editions `0.1` and `0.2` are stable and cannot change what they accept. Edition `0.4`, a preview, could in principle change a form under ADR 0121 rule 3, but the project decided to land the rename in edition `0.5` with ADR 0126 (Question 3), so that the binding words change once, together with module constants. ADR 0105 replaced `example` with `test` in edition `0.3` with a diagnostic and an exact rewrite, the model followed here.
 
 ## Decision
 
-In one paragraph: in edition `0.5`, `const` and `var` are keywords; a binding statement is `const` or `var`; a `const` binding is immutable and a `var` binding can be assigned; `let` is reserved and rejected with U0103 and the exact rewrite to `const` or `var`; `edit` and `take` are only markers of parameters, arguments and receivers; a module-level `const` is ADR 0126's constant; every message names the edition's words; `una fix` rewrites a package from edition `0.4`; editions `0.1` to `0.4` are unchanged.
+In one paragraph: in edition `0.5`, `const` and `var` are keywords; a binding statement is `const` or `var`; a `const` binding is immutable and a `var` binding can be assigned; `let` is reserved and rejected with U7007 and the exact rewrite to `const` or `var`; `edit` and `take` are only markers of parameters, arguments and receivers; a module-level `const` is ADR 0126's constant; every message names the edition's words; `una fix` rewrites a package from edition `0.4`; editions `0.1` to `0.4` are unchanged.
 
 1. **Keywords** (`spec/01 §5`). In edition `0.5`:
    - `const` and `var` are reserved keywords;
-   - `let` leaves the keywords and joins the table of reserved words with U0103, with the message `` use `const`, or `var` for a binding that is reassigned ``, written `` `let` is not a keyword in edition 0.5; use `const`, or `var` for a binding that is reassigned ``;
+   - `let` is reserved: it is no keyword and no name. Each occurrence is **U7007** at the word, the code of a form a preview edition changed (ADR 0121 rules 5 and 19), with the message `` this form of edition 0.5 changed in release <version>: `let` is written `const`, or `var` for a binding that is reassigned ``, where `<version>` is the release that lands this record; its first repair is the exact rewrite of rule 11;
    - the row of `var` in the U0103 tables is removed, since it is a keyword;
    - every other row is that of edition `0.4`.
 
-   In editions `0.1` to `0.4` nothing changes: `let` is a keyword, `var` gives its U0103 message of that edition, and `const` is an identifier. There a line that starts with `const` or `var` followed by a lower-case name, at the top level or in a block, keeps its diagnostic (U0101 for `const`, U0103 for `var`) and gains the help `` `const` and `var` are keywords of edition 0.5 ``.
+   **Why U7007 and not U0103.** Under issue #1620, edition `0.5` opens as a preview with other constructs (collections and numerics), so a release may serve it, with `let` as its binding word, before this record lands. Removing `let` then changes a form of a served preview, which ADR 0121 rule 5 says is U7007 with the new form as its first repair. To keep one diagnostic for one form, `let` is U7007 in edition `0.5` in every release from the one that lands this record, whether or not an earlier release served edition `0.5`. U0103 stays the code of words reserved for later editions; U7007 stays after edition `0.5` becomes stable, as ADR 0121 rule 16 keeps it for the forms a preview changed. ADR 0121 writes U7007's message for edition `0.4`; the terms of issue #1620 give it edition `0.5`.
+
+   In editions `0.1` to `0.4`, what a program means and whether it is accepted do not change: `let` is a keyword, `var` gives its U0103 message of that edition, and `const` is an identifier. Only a help is added: a line that starts with `const` or `var` followed by a lower-case name, at the top level or in a block, keeps its diagnostic (U0101 for `const`, U0103 for `var`) and gains the help `` `const` and `var` are keywords of edition 0.5 ``.
 
 2. **Binding statements** (`spec/02 §6`, `spec/17 §1`). In edition `0.5`:
 
@@ -110,17 +119,19 @@ In one paragraph: in edition `0.5`, `const` and `var` are keywords; a binding st
 
 8. **Tests** (`spec/08 §2`). A test's `do` line is an expression and binds nothing, in every edition. Where a test needs a value it can edit, it writes a function with `var`, as `spec/17 §3` rule 5 shows: `var copy = n`, `bump(edit copy)`, `copy`. When a later record lets a step of a test bind a name (issue #1591), the step is written `do const name = e`, and `do var` where it can be assigned; no edition has `do let`.
 
-9. **Canonical form** (`spec/15`). `una fmt` writes `const x = e`, `const x: T = e`, `var x = e` and `var x: T = e`, with one space after the keyword, around `:` and around `=`, as it writes `let` today; a module constant is one logical line (ADR 0126 rule 10). In edition `0.5`, `una fmt` refuses a file with U0103, as it refuses any file with a syntax error.
+9. **Canonical form** (`spec/15`). `una fmt` writes `const x = e`, `const x: T = e`, `var x = e` and `var x: T = e`, with one space after the keyword, around `:` and around `=`, as it writes `let` today; a module constant is one logical line (ADR 0126 rule 10). In edition `0.5`, `una fmt` refuses a file with U7007, as it refuses any file with a syntax error; `una fix` comes first.
 
 10. **Messages.** Every message, help, repair, `una explain` text and standard-library description that names a binding form names the form of the package's edition: `let` and `let edit` up to edition `0.4`, `const` and `var` in edition `0.5`. In particular:
     - **U2019** on a local: `` `x` is not editable; declare it `var x`, or the parameter `edit x` ``;
     - **U2019** on the variable of a `for` loop (issue #931): `` `x` is the variable of a `for` loop, which is read-only; bind a copy in the body with `var`, as `var next_x = x` `` (and the same for `together for`);
     - **U2011, U3013 and the `edit`-method messages:** "bind its result with `const` first";
+    - **U2024**, both messages and its registry meaning: `` the body of `together` holds only `const` or `var` statements, one per branch `` and `` `together` needs at least two branches; with one, write a plain `const` ``;
+    - **U2035** (`spec/27 §6`): a line of `first of` that is not a `handled` expression, "a `const` or `var` statement, a loop, a `when`";
     - **U1002** is unchanged: two module constants of one name, or a constant and a function of one name, are duplicate definitions.
 
     The domain and meaning of every code stay as they are; no code is added.
 
-11. **The rewrite** (`una fix`, ADR 0096, `spec/13 §5`). The U0103 of `let` in edition `0.5` carries an exact repair: `let edit x` becomes `var x`, `let x` becomes `const x`, keeping the annotation and the value, in blocks, in `together` branches, at the top level (where ADR 0126's form follows) and in any form that a test may bind (rule 8). A local named `const` in an edition `0.4` package, which edition `0.5` reads as a keyword, gets U0101 with the exact rename to `const_value`, as ADR 0096 renames a local named `test`. `una fix`:
+11. **The rewrite** (`una fix`, ADR 0096, `spec/13 §5`). The U7007 of `let` in edition `0.5` carries an exact repair: `let edit x` becomes `var x`, `let x` becomes `const x`, keeping the annotation and the value, in blocks, in `together` branches and at the top level (where ADR 0126's form follows). No test binds a name in any edition (rule 8), so no test form is rewritten. **Names `const`.** Edition `0.5` reads `const` as a keyword, so a name `const` of an edition `0.4` package is U0101 there, with the rename of ADR 0105 and ADR 0096 rule 3a: a local or a parameter gets the exact rename to `const_value`, or the first of `const_value2`, `const_value3`, … free in its scope; a function, a field, a handler, a predicate or a module path segment gets the rename as advice. No `.una` file of the project's repositories names anything `const` today. `var` is reserved in every edition, so no program has a name `var`. `una fix`:
     - applies these repairs under its usual conditions;
     - is idempotent: on a file it has rewritten, it finds nothing to rewrite;
     - changes no meaning: the rewritten program has the result of the original in edition `0.4`, since rule 2 maps each form to one with the same semantics;
@@ -128,7 +139,7 @@ In one paragraph: in edition `0.5`, `const` and `var` are keywords; a binding st
 
     The repairs exist only in a package of edition `0.5`: a package moves by changing `edition` in its manifest and running `una fix`.
 
-12. **Editions and preview terms.** The change is a new edition's, not a change inside a released preview: editions `0.1` to `0.4` keep their forms, and no program of those editions changes its result. Within edition `0.5`, the old form is loud, never silently read: `let` is U0103 with its rewrite (rule 1), which is the requirement of ADR 0121 rules 4 and 5 for a form that changes. If edition `0.5` is already served as a preview when this record lands, a release that accepted `let` in edition `0.5` makes it U0103 with the repair, and its changelog lists the change under the preview heading of ADR 0121 rule 6.
+12. **Editions and preview terms.** Editions `0.1` to `0.4` keep their forms, and no program of those editions changes its result. Within edition `0.5`, the old form is loud, never silently read: `let` is U7007 with its rewrite (rule 1), as ADR 0121 rules 4 and 5 require for a form a preview changes. The release that lands this record lists the change in its changelog under the preview heading of ADR 0121 rule 6, with U7007 as its diagnostic and `una fix` as its migration, and its ledger entry (ADR 0121 rule 9) names `const` and `var` as reserved keywords and `let` as the changed form.
 
 13. **Standard modules.** The Una sources of the standard modules (`crates/una-check/src/std/`) are checked in their own edition. Those that edition `0.5` serves are written with `const` and `var`; those of earlier editions keep their forms, so a package of edition `0.4` sees the same standard modules as today.
 
@@ -197,6 +208,10 @@ A module constant (ADR 0126), and `take` of its value:
 ```una
 module geometry
 
+pub kind Point
+  x: Int
+  y: Int
+
 --- The point at the center of the plane.
 pub const origin: Point = Point(x: 0, y: 0)
 
@@ -235,16 +250,25 @@ Rules 4 and 5. `edit` and `take` keep their meaning and their checks; `take` is 
 | --- | --- | --- |
 | Lexing `const`, `var` and the reserved `let` | O(1) per word, a lookup in the keyword table of the edition | none |
 | Parsing a binding statement | O(its length), as today; one token of lookahead decides `const` or `var` | none |
-| `una fix` on a package | O(size of its sources): each repair is a local edit at a U0103 or U0101 site | O(size of a file) |
+| `una fix` on a package | O(size of its sources): each repair is a local edit at a U7007 or U0101 site | O(size of a file) |
 
-**Migration.**
-- **The language repository:** about 6,700 lines in about 1,900 `.una` files, and about 1,000 Markdown lines, rewritten by `una fix` and by a check of the documents' Una blocks (issue #1630). Conformance cases of editions `0.1` to `0.4` keep their forms, since those editions keep them.
-- **The other repositories:** about 1,000 `.una` files with about 3,600 lines, and the Una code of pages, primers and editor grammars (issue #1631).
+**Migration.** The counts of the Context are upper bounds: they count lines that hold the word, comments and prose included, and they include code that does not move.
+- **The language repository:** at most 6,706 lines in 1,904 `.una` files, and at most 1,048 Markdown lines, rewritten by `una fix` and by a check of the documents' Una blocks (issue #1630). Conformance cases and examples of editions `0.1` to `0.4` keep their forms, since those editions keep them, so the real migration is smaller.
+- **The other repositories:** at most 3,612 lines in 1,018 `.una` files, and the Una code of pages, primers and editor grammars (issue #1631), less the pinned baseline below.
 - **Gate 1:** the benchmark baseline stays pinned to the release line of edition `0.1`, whose forms do not change; it is not migrated.
 
 ## Diagnostics
 
-No new code. In edition `0.5`: U0103 for `let`, with its exact rewrite (rules 1 and 11); U0101 for `const edit`, `var edit` and a top-level `var` (rules 2 and 3), and for a local named `const`, with its rename (rule 11); U2019 and U2017 with the words of rules 4, 5 and 10; U1002 unchanged. In editions `0.1` to `0.4`: the same codes as today, with the help of rule 1 at a line starting with `const` or `var`.
+No new code.
+
+| Edition | Form | Code |
+| --- | --- | --- |
+| `0.5` | `let x = e`, `let edit x = e`, `let` at the top level | U7007, with the exact rewrite to `const` or `var` (rules 1 and 11) |
+| `0.5` | `const edit x`, `var edit x`, a top-level `var` | U0101 (rules 2 and 3) |
+| `0.5` | a name `const` from an edition `0.4` package | U0101, with the rename of rule 11 |
+| `0.5` | assignment to a `const`; `edit` of a `const`; use after `take` | U2019, U2019, U2017, with the words of rules 4, 5 and 10 |
+| `0.5` | two module constants of one name | U1002, unchanged |
+| `0.1` to `0.4` | a line starting with `const` or `var` and a name | U0101 or U0103 as today, with the help of rule 1 |
 
 ## Consequences
 
@@ -275,25 +299,38 @@ Each step ships behind edition `0.5`, with its conformance cases, in both engine
 
 ## Conformance
 
-- **Keywords:** in edition `0.5`, `let x = 1` is U0103 with the message of rule 1 and the repair `const x = 1`; `let edit x = 1` is U0103 with the repair `var x = 1`; `const` and `var` as names are U0101; in edition `0.4`, `const x = 1` is U0101 and `var x = 1` U0103, each with the help of rule 1, and `let` programs check as today.
+- **Keywords:** in edition `0.5`, `let x = 1` is U7007 with the message of rule 1 and the repair `const x = 1`; `let edit x = 1` is U7007 with the repair `var x = 1`; a top-level `let` is U7007 with the rewrite to `const`; `const` and `var` as names are U0101; in edition `0.4`, `const x = 1` is U0101 and `var x = 1` U0103, each with the help of rule 1, and `let` programs check as today.
 - **Bindings:** `const x = 1` then `x = 2` is U2019 with the message of rule 10; `var x = 1` then `x = 2` is accepted; `var n: Pos = 1` then `n = 0` gives a refuted obligation, as `let edit` does; `const edit x = 1` and a top-level `var` are U0101.
 - **Conventions:** `f(edit c)` with `c` a `const` is U2019; `f(take c)` with `c` a `const` is accepted and a later use is U2017; `f(take v)` with `v` a `var`, then `v = e`, then a use, is accepted; a `const` taken in a loop body and declared outside it is U2017; `f(take origin)` of a module constant is U2020.
 - **`together`:** branches written `const` and `var` are accepted; a body with another statement is U2024 with the message of rule 7.
 - **Equivalence:** for every conformance package of edition `0.4` that uses `let` or `let edit`, the package rewritten by `una fix` and checked in edition `0.5` gives the same output, trace, status and obligation statuses, in both engines.
-- **`una fix`:** a second run changes nothing; a `let` inside a doc comment is listed and left; a local named `const` is renamed to `const_value`.
+- **`una fix`:** a second run changes nothing; a `let` inside a doc comment is listed and left; a local named `const` is renamed to `const_value`, and to `const_value2` when `const_value` is taken; a function named `const` gets the rename as advice only.
 - **Canonical form:** `una fmt` writes `var x: Int = 1` from `var x :Int=1`.
 
 ## Appendix A. Amendments and revisions
 
 To be made, dated, when this record is accepted, with the implementation:
 
-- **ADR 0121:** none. Its rules govern edition `0.4`; the terms of edition `0.5` come with issue #1620, and rule 12 above follows ADR 0121 rules 4 and 5.
-- **ADR 0126:** revised while it is Proposed, before acceptance: its syntax becomes `[pub] const name: type = value`, its target edition `0.5`; in edition `0.5`, `let` at the top level is U0103 with the message of rule 1, and in edition `0.4`, `const` at the top level is U0101, as `let` is there today.
-- **`spec/01 §5`:** the keyword tables of edition `0.5` (rule 1).
+- **ADR 0121:** none from this record. Its rules are written for edition `0.4`; the record of issue #1620 gives edition `0.5` the same terms, U7007 included, and rules 1 and 12 above follow ADR 0121 rules 4, 5, 6, 9 and 19.
+- **ADR 0126:** revised while it is Proposed, before acceptance: its syntax becomes `[pub] const name: type = value`, its target edition `0.5`; in edition `0.5`, `let` at the top level is U7007 with the message of rule 1, and in editions `0.1` to `0.4`, `const` at the top level is U0101, as `let` is there today.
+Each chapter states, in an edition note, that edition `0.5` writes its `let` as `const` and its `let edit` as `var`, and its Una blocks for edition `0.5` use the new words:
+
+- **`spec/01 §5`:** the keyword tables of edition `0.5`, `let` with U7007 (rule 1).
 - **`spec/02 §6`, `§8`:** `let_stmt` (rule 2), the sentence of rule 3, and the context restrictions that name `let`.
+- **`spec/03`:** the inference of a binding's type ("`let` bindings infer their type").
+- **`spec/04`:** values bound with `let` in function bodies and contracts.
+- **`spec/05`:** U3005, a capability reference "MUST NOT be bound with `let`", and the binding of an operation's result.
+- **`spec/06`:** the binding of a handled result.
+- **`spec/07`:** the flow into "an annotated `let`".
 - **`spec/08 §2`:** rule 8.
-- **`spec/10 §5`, `§11`; `spec/12 §4`:** the binding forms by edition, where they name `let`.
-- **`spec/13 §4`, `§7`:** the messages of rule 10 and edition `0.5`.
+- **`spec/10 §5`, `§11`:** the binding forms by edition, and the scopes that list `let`.
+- **`spec/12 §3`, `§4`, `§8`:** "`let` with annotation" as a subsumption point, and the binders that name `let`s, where they mean the surface form; the Core rows of `§3` stay.
+- **`spec/13 §4`, `§7`:** U7007 for `let` in edition `0.5`, the messages of rule 10 (U2019, U2024, U2035, U2011, U3013) and edition `0.5`.
+- **`spec/14`:** a call with effects is bound with `const` before it is given.
 - **`spec/15`:** rule 9.
-- **`spec/17 §1` to `§5`, `§9`:** rules 2, 4 and 5; the U0103 table of edition `0.5`.
+- **`spec/17 §1` to `§5`, `§9`:** rules 2, 4 and 5; the reserved-word table of edition `0.5`.
+- **`spec/18`:** the fixed-width type an annotated binding gives a literal.
 - **`spec/19 §1` to `§3`:** rule 7.
+- **`spec/25`:** the unit an annotated binding gives a literal.
+- **`spec/26`, `spec/27`, `spec/28`, `spec/29`, `spec/31`:** their rules and Una blocks that use `let` or `let edit`; in `spec/27 §6`, the U2035 wording of rule 10.
+- **`spec/32 §3`:** "a contiguous run of `let`s", the surface statements; its cost table and operators name Core forms and stay.
