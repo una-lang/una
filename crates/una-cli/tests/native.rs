@@ -4394,6 +4394,107 @@ fn a_driven_module_without_its_shapes_or_a_bad_stop_count_is_a_usage_error() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A driven state of a function type, labeled higher at its result in `step` and `on_stop`
+/// than in the result of `init`.
+const RAISED_FUNCTION: &str = "module counter
+
+import std.drive (Tick)
+
+pub init() -> fn(Int) -> Int = double
+
+pub step(edit f: fn(Int) -> secret Int, input: Tick) -> Unit
+  uses @console: Console[print]
+=
+  @console.print(\"step\")
+
+pub on_stop(f: fn(Int) -> secret Int) -> Unit
+  uses @console: Console[print]
+=
+  @console.print(\"stopped\")
+
+double(x: Int) -> Int = x * 2
+";
+
+/// A driven state refined in `step`, `Pos`, where `init` returns a plain `Int`: nothing proves
+/// the hand-off satisfies the refinement, which the division in `step` relies on.
+const REFINED_STEP: &str = "module counter
+
+import std.drive (Tick)
+
+pub kind Pos = Int where it > 0
+
+pub init() -> Int = 0
+
+pub step(edit n: Pos, input: Tick) -> Unit
+  uses @console: Console[print]
+=
+  @console.print(\"q {100 / n}\")
+";
+
+/// The same refinement written as a range in each signature.
+const RANGED: &str = "module counter
+
+import std.drive (Tick)
+
+pub init() -> Int in 1..10 = 1
+
+pub step(edit n: Int in 1..10, input: Tick) -> Unit
+  uses @console: Console[print]
+=
+  @console.print(\"q {100 / n}\")
+";
+
+#[test]
+fn a_driven_state_is_one_type_with_labels_aside_and_refinements_included() {
+    // `spec/26 §2` rule 2, issue #1644: the labels of the state are the checker's, so a
+    // function-typed state labeled higher in `step` runs in both engines, as `una check`
+    // accepts it; the refinements are part of `S`, so a refinement `init`'s result does not
+    // carry is a usage error, exit code 2, in `una run` and `una build`, where the native
+    // build would otherwise elide the division's check on a premise nothing proved.
+    runtime();
+    for (name, source, output) in [
+        ("raisedfn", RAISED_FUNCTION, "step\nstep\nstopped\n"),
+        ("ranged", RANGED, "q 100\nq 100\n"),
+    ] {
+        let dir = ita_package(name, DRIVE, &[("src/counter.una", source)]);
+        let run = una(&dir, &["run", "--stop-after-iterations", "2"]);
+        assert_eq!(
+            run.status.code(),
+            Some(0),
+            "{name}: {}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&run.stdout), output, "{name}");
+        let built = una(&dir, &["build"]);
+        assert_eq!(
+            built.status.code(),
+            Some(0),
+            "{name}: {}",
+            String::from_utf8_lossy(&built.stderr)
+        );
+        let native = Command::new(dir.join("target/una").join(name))
+            .current_dir(&dir)
+            .args(["--stop-after-iterations", "2"])
+            .output()
+            .unwrap();
+        assert_eq!(native.status.code(), Some(0), "{name}");
+        assert_eq!(String::from_utf8_lossy(&native.stdout), output, "{name}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    let dir = ita_package("refined", DRIVE, &[("src/counter.una", REFINED_STEP)]);
+    for args in [&["run", "--stop-after-iterations", "1"][..], &["build"][..]] {
+        let output = una(&dir, args);
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("has no `pub step("),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    assert!(!dir.join("target/una/refined").exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The `run` section of a `for ever` program whose entry is `name`, granted the console.
 fn ever_run(name: &str) -> String {
     format!("\nrun\n  entry {name}\n  grants\n    console\n")

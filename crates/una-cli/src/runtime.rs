@@ -1058,31 +1058,72 @@ fn is_host_kind(ty: &Type, name: &str, label: &una_core::Label) -> bool {
         if module == "prelude" && found == name && args.is_empty() && at == label && refinements.is_empty())
 }
 
-/// Whether two types are the same, labels and refinements aside. The labels of a driven
-/// module's state are the checker's: each hand-off of the host is a flow into the parameter's
-/// declared type, U4001 otherwise (`spec/26 §2` rule 2).
+/// Whether two types are the same `S` of a driven module's state, labels aside (`spec/26 §2`
+/// rule 2). The labels are the checker's: each hand-off of the host is a flow into the
+/// parameter's declared type, U4001 otherwise, so a state labeled higher in `step` or `on_stop`
+/// is the same `S` at every position, the parameters and result of a function type included
+/// (issue #1644). The refinements are part of `S`: no rule of the checker or the verifier
+/// proves that the state `init` returns satisfies a refinement `step` or `on_stop` declares on
+/// it, so they must be equal, predicate by predicate. A function type's effects and failures
+/// are compared exactly. O(size of the types).
 fn same_type(a: &Type, b: &Type) -> bool {
     let all = |xs: &[Type], ys: &[Type]| {
         xs.len() == ys.len() && xs.iter().zip(ys).all(|(x, y)| same_type(x, y))
     };
     match (a, b) {
-        (Type::Base { base: x, .. }, Type::Base { base: y, .. }) => match (x, y) {
-            (
-                Base::Named {
-                    module: m,
-                    name: n,
-                    args: xs,
-                },
-                Base::Named {
-                    module: k,
-                    name: o,
-                    args: ys,
-                },
-            ) => m == k && n == o && all(xs, ys),
-            (Base::Tuple(xs), Base::Tuple(ys)) => all(xs, ys),
-            _ => x == y,
-        },
-        _ => a == b,
+        (
+            Type::Fn {
+                params: xs,
+                result: x,
+                uses: xu,
+                fails: xf,
+                ..
+            },
+            Type::Fn {
+                params: ys,
+                result: y,
+                uses: yu,
+                fails: yf,
+                ..
+            },
+        ) => all(xs, ys) && same_type(x, y) && xu == yu && xf == yf,
+        (
+            Type::Base {
+                base: x,
+                refinements: xr,
+                ..
+            },
+            Type::Base {
+                base: y,
+                refinements: yr,
+                ..
+            },
+        ) => {
+            // The predicates, not where they are written: one kind or range written in two
+            // signatures is one refinement.
+            xr.len() == yr.len()
+                && xr
+                    .iter()
+                    .zip(yr)
+                    .all(|(p, q)| p.clause.term == q.clause.term)
+                && match (x, y) {
+                    (
+                        Base::Named {
+                            module: m,
+                            name: n,
+                            args: xs,
+                        },
+                        Base::Named {
+                            module: k,
+                            name: o,
+                            args: ys,
+                        },
+                    ) => m == k && n == o && all(xs, ys),
+                    (Base::Tuple(xs), Base::Tuple(ys)) => all(xs, ys),
+                    _ => x == y,
+                }
+        }
+        _ => false,
     }
 }
 
