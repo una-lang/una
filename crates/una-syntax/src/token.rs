@@ -286,9 +286,16 @@ impl Keyword {
     /// rule 2): `test`, the keyword of the test declaration.
     pub const EDITION_0_3: [Keyword; 1] = [Keyword::Test];
 
+    /// The keywords of [`Keyword::ALL`] that edition 0.4 removes: `example`, an identifier there
+    /// (ADR 0105, amendment of 2026-11-05).
+    pub const REMOVED_IN_0_4: [Keyword; 1] = [Keyword::Example];
+
     /// The keyword `word` is under the keyword set `set`.
     pub fn from_word_in(word: &str, set: KeywordSet) -> Option<Keyword> {
         Keyword::from_word(word)
+            .filter(|keyword| {
+                !(set >= KeywordSet::V0_4 && Keyword::REMOVED_IN_0_4.contains(keyword))
+            })
             .or_else(|| {
                 (set >= KeywordSet::V0_2)
                     .then(|| {
@@ -324,7 +331,8 @@ pub enum KeywordSet {
     /// Edition 0.3: the keywords of edition 0.2 (`spec/13 §7`), and `test` (ADR 0105).
     V0_3,
     /// Edition 0.4: the keywords of edition 0.3, with `diverges` and `within` reserved
-    /// (`spec/26 §1`, ADR 0116 rule 0), and `simd` no longer reserved (ADR 0120 rule 1).
+    /// (`spec/26 §1`, ADR 0116 rule 0), `simd` no longer reserved (ADR 0120 rule 1), and
+    /// `example` an identifier (ADR 0105, amendment of 2026-11-05).
     V0_4,
 }
 
@@ -485,4 +493,36 @@ pub struct Comment {
     pub span: Span,
     /// Whether it is a doc comment (`---`).
     pub doc: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn example_is_a_keyword_through_edition_0_3_and_an_identifier_from_0_4() {
+        // ADR 0105 rule 2 and its amendment of 2026-11-05.
+        for set in [KeywordSet::V0_1, KeywordSet::V0_2, KeywordSet::V0_3] {
+            assert_eq!(
+                Keyword::from_word_in("example", set),
+                Some(Keyword::Example)
+            );
+        }
+        assert_eq!(Keyword::from_word_in("example", KeywordSet::V0_4), None);
+        // `test` stays the keyword of the test declaration in edition 0.4.
+        assert_eq!(
+            Keyword::from_word_in("test", KeywordSet::V0_4),
+            Some(Keyword::Test)
+        );
+        assert_eq!(Keyword::from_word_in("test", KeywordSet::V0_2), None);
+        // The other keywords of edition 0.1 are unchanged in edition 0.4.
+        for keyword in Keyword::ALL {
+            if keyword != Keyword::Example {
+                assert_eq!(
+                    Keyword::from_word_in(keyword.as_str(), KeywordSet::V0_4),
+                    Some(keyword)
+                );
+            }
+        }
+    }
 }

@@ -9,7 +9,7 @@ codes: [U1001, U1002, U3001, U3014, U3020, U3021]
 
 ## What it does
 
-An `example` is executable evidence of behavior: a small test written beside the code it exercises, which `una test` runs. This is the declaration of editions `0.1` and `0.2`; edition `0.3` writes it [`test`](test.md), with the same lines and rules, and rejects `example` with a rewrite that `una fix` applies.
+An `example` is executable evidence of behavior: a small test written beside the code it exercises, which `una test` runs. This is the declaration of editions `0.1` and `0.2`; edition `0.3` writes it [`test`](test.md), with the same lines and rules, and rejects `example` with a rewrite that `una fix` applies. Edition `0.4` writes it `test` as well, and there `example` is an ordinary name.
 
 Learn more: [Examples: do and expect](/learn/testing/examples-do-and-expect/), [Fakes: given, expect performed and expect not performed](/learn/testing/fakes-given-expect-performed-and-expect-not-performed/) and [Testing failures: expect fails](/learn/testing/testing-failures-expect-fails/).
 
@@ -186,7 +186,7 @@ Further rules:
 
 ## Edition
 
-Examples are the same in editions `0.1` and `0.2`. In edition `0.3` the declaration is written [`test`](test.md) (ADR 0105): an `example` declaration there is U0103 with the exact rewrite of the keyword, which `una fix` applies. Edition `0.3` also adds boundaries (modules whose authority `una.toml` limits, see [`[boundaries]`](../../configure/boundaries.md)): the `given` handlers of an example of a boundary module count against its ceiling (U3021), and a `do` line that calls into a boundary from outside it grants it nothing by name (U3020). Learn more: [A ceiling for a module: boundaries](/learn/authority/a-ceiling-for-a-module-boundaries/).
+Examples are the same in editions `0.1` and `0.2`. In edition `0.3` the declaration is written [`test`](test.md) (ADR 0105): an `example` declaration there is U0103 with the exact rewrite of the keyword, which `una fix` applies. In edition `0.4` `example` is an ordinary name, with no U0103 and no rewrite (ADR 0105, amendment of 2026-11-05). Edition `0.3` also adds boundaries (modules whose authority `una.toml` limits, see [`[boundaries]`](../../configure/boundaries.md)): the `given` handlers of an example of a boundary module count against its ceiling (U3021), and a `do` line that calls into a boundary from outside it grants it nothing by name (U3020). Learn more: [A ceiling for a module: boundaries](/learn/authority/a-ceiling-for-a-module-boundaries/).
 
 ## Normative source
 

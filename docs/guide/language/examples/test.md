@@ -9,7 +9,7 @@ codes: [U1001, U1002, U3001, U3014, U3020, U3021]
 
 ## What it does
 
-A `test` is executable evidence of behavior: a small test written beside the code it exercises, which `una test` runs. It is the declaration of edition `0.3`; editions `0.1` and `0.2` write it [`example`](example.md), with the same lines and rules.
+A `test` is executable evidence of behavior: a small test written beside the code it exercises, which `una test` runs. It is the declaration of editions `0.3` and `0.4`; editions `0.1` and `0.2` write it [`example`](example.md), with the same lines and rules.
 
 Learn more: [Examples: do and expect](/learn/testing/examples-do-and-expect/), [Fakes: given, expect performed and expect not performed](/learn/testing/fakes-given-expect-performed-and-expect-not-performed/) and [Testing failures: expect fails](/learn/testing/testing-failures-expect-fails/).
 
@@ -192,7 +192,7 @@ Further rules:
 
 ## Edition
 
-In edition `0.3` the declaration is written `test`, and `test` is a keyword there: a local named `test` is renamed by `una fix` to `test_value`, and a function, field, handler or module named `test` needs another name (U0101). An `example` declaration in an edition `0.3` package is U0103, "`example` is written `test` in edition 0.3", and `una fix` rewrites the keyword; the body does not change. Editions `0.1` and `0.2` keep [`example`](example.md) and `test` as a name. `una test` prints `test <module> "<name>" ... ok` and `<n> tests: ...` for an edition `0.3` package, and its `--json` is `una.test/2`, with the key `tests` where `una.test/1` has `examples`. Edition `0.3` also adds boundaries (modules whose authority `una.toml` limits, see [`[boundaries]`](../../configure/boundaries.md)): the `given` handlers of an example of a boundary module count against its ceiling (U3021), and a `do` line that calls into a boundary from outside it grants it nothing by name (U3020). Learn more: [A ceiling for a module: boundaries](/learn/authority/a-ceiling-for-a-module-boundaries/).
+In edition `0.3` the declaration is written `test`, and `test` is a keyword there: a local named `test` is renamed by `una fix` to `test_value`, and a function, field, handler or module named `test` needs another name (U0101). An `example` declaration in an edition `0.3` package is U0103, "`example` is written `test` in edition 0.3", and `una fix` rewrites the keyword; the body does not change. Editions `0.1` and `0.2` keep [`example`](example.md) and `test` as a name. In edition `0.4` the declaration is `test` too, and `example` is an ordinary name: a function, a local, a field or a module may be called `example`, and a line `example "..."` is a plain syntax error (U0101) with no rewrite, since `una fix` rewrites `example` in edition `0.3` packages only (ADR 0105, amendment of 2026-11-05). `una test` prints `test <module> "<name>" ... ok` and `<n> tests: ...` for an edition `0.3` package, and its `--json` is `una.test/2`, with the key `tests` where `una.test/1` has `examples`. Edition `0.3` also adds boundaries (modules whose authority `una.toml` limits, see [`[boundaries]`](../../configure/boundaries.md)): the `given` handlers of an example of a boundary module count against its ceiling (U3021), and a `do` line that calls into a boundary from outside it grants it nothing by name (U3020). Learn more: [A ceiling for a module: boundaries](/learn/authority/a-ceiling-for-a-module-boundaries/).
 
 ## Normative source
 

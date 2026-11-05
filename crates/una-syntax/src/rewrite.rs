@@ -957,7 +957,7 @@ pub fn declarations_in(text: &str, keywords: KeywordSet) -> Vec<Declaration> {
             .find(|&i| lines.get(i).is_some_and(|l| !l.blank()))
             .map_or(first + 1, |i| i + 1);
         let body = text.get(start..end).unwrap_or("");
-        let (what, names) = declared(body);
+        let (what, names) = declared(body, keywords);
         let module = matches!(what, DeclarationKind::Header | DeclarationKind::Import)
             .then(|| module_path(body))
             .flatten();
@@ -990,8 +990,9 @@ fn module_path(body: &str) -> Option<String> {
     (!path.is_empty()).then_some(path)
 }
 
-/// What a declaration's text declares, read from its tokens (ADR 0096 rule 8).
-fn declared(body: &str) -> (DeclarationKind, Vec<String>) {
+/// What a declaration's text declares, read from its tokens (ADR 0096 rule 8), under the keyword
+/// set `keywords`.
+fn declared(body: &str, keywords: KeywordSet) -> (DeclarationKind, Vec<String>) {
     let first = body.split('\n').next().unwrap_or("");
     let first = foreign_word(first).map_or(first, |(_, rest)| rest);
     let first = first.strip_prefix("pub ").unwrap_or(first);
@@ -1045,8 +1046,10 @@ fn declared(body: &str) -> (DeclarationKind, Vec<String>) {
             None => (DeclarationKind::Unnamed, Vec::new()),
         },
         // An example, or a test in edition 0.3 (ADR 0105), declares nothing another
-        // declaration names; `test(` is a function named `test` in editions 0.1 and 0.2.
-        "example" => (DeclarationKind::Named, Vec::new()),
+        // declaration names; `test(` is a function named `test` in editions 0.1 and 0.2. From
+        // edition 0.4 `example` is an identifier (ADR 0105, amendment of 2026-11-05), so
+        // `example(` there is a function named `example`, read by the arm of a function name.
+        "example" if keywords < KeywordSet::V0_4 => (DeclarationKind::Named, Vec::new()),
         "test"
             if !first
                 .get(4..)
