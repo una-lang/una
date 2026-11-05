@@ -31,11 +31,23 @@ pub const CREDENTIALS: [&str; 6] = [
     "x-auth-token",
 ];
 
-/// Whether a header named `name` holds a credential, in any letter case.
+/// Whether a header named `name` holds a credential: one of [`CREDENTIALS`] in any letter
+/// case, or a name that is not a token (RFC 9110 §5.6.2), such as `"set-cookie "` or one with
+/// a tab or a control byte, which the host refuses to send and whose value is still written
+/// as a credential's, failing closed: no spelling of a credential's name escapes the reduction.
 pub fn is_credential(name: &str) -> bool {
-    CREDENTIALS
-        .iter()
-        .any(|credential| credential.eq_ignore_ascii_case(name))
+    !is_token(name)
+        || CREDENTIALS
+            .iter()
+            .any(|credential| credential.eq_ignore_ascii_case(name))
+}
+
+/// Whether `name` is a token: one or more of RFC 9110's `tchar`.
+fn is_token(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b))
 }
 
 /// The reduced form of a body `text`: `{"length": n, "hmac": "<hex>"}`.
@@ -51,6 +63,11 @@ pub fn body(key: &TraceKey, text: &str) -> String {
 /// `?`, each value of a part `name=value`, split at its first `=`, written as a body is. A part
 /// with no `=` is a name, and an empty part stays empty, so the target keeps its shape.
 pub fn target(key: &TraceKey, target: &str) -> String {
+    reduce_target(target, &mut |value| body(key, value))
+}
+
+/// [`target`], with each value of its query written by `value`.
+fn reduce_target(target: &str, value: &mut dyn FnMut(&str) -> String) -> String {
     let Some((path, query)) = target.split_once('?') else {
         return target.to_owned();
     };
@@ -62,10 +79,10 @@ pub fn target(key: &TraceKey, target: &str) -> String {
             out.push('&');
         }
         match part.split_once('=') {
-            Some((name, value)) => {
+            Some((name, text)) => {
                 out.push_str(name);
                 out.push('=');
-                out.push_str(&body(key, value));
+                out.push_str(&value(text));
             }
             None => out.push_str(part),
         }
@@ -128,7 +145,21 @@ mod tests {
         assert!(is_credential("Set-Cookie"));
         assert!(!is_credential("x-thing"));
         assert!(!is_credential("cookies"));
-        assert!(!is_credential(""));
+        // A name that is not a token is written as a credential's, whatever it spells.
+        for name in [
+            "",
+            "set-cookie ",
+            " cookie",
+            "\tauthorization",
+            "cookie\u{0}",
+            "x-api-key\r",
+            "x thing",
+            "x:y",
+            "caf\u{e9}",
+        ] {
+            assert!(is_credential(name), "{name:?}");
+        }
+        assert!(!is_credential("x-a.b_c~1!#$%&'*+^`|"));
     }
 
     #[test]
@@ -196,19 +227,34 @@ mod tests {
 
     #[test]
     fn the_reduction_of_a_target_is_linear_in_its_bytes() {
-        // A scaling test (CLAUDE.md, Performance): the time per byte stays bounded as the
-        // target grows 16 times, which a quadratic reduction would not.
-        let time = |parts: usize| {
+        // A scaling test (CLAUDE.md, Performance), by counts rather than time, so load cannot
+        // fail it: as the target grows 16 times, the reduction hashes each value once, exactly
+        // the value's bytes, and writes an output whose length grows by the same factor; a
+        // reduction that hashed or copied a prefix or the rest of the target per part would
+        // hash a quadratic number of bytes. `body` is one HMAC over its bytes, O(b).
+        let counts = |parts: usize| {
             let query: Vec<String> = (0..parts).map(|i| format!("k{i}=v{i}")).collect();
             let text = format!("/p?{}", query.join("&"));
-            let started = std::time::Instant::now();
-            for _ in 0..4 {
-                std::hint::black_box(target(&ZERO, &text));
-            }
-            started.elapsed().as_secs_f64() / text.len() as f64
+            let (mut calls, mut hashed) = (0usize, 0usize);
+            let out = reduce_target(&text, &mut |value| {
+                calls += 1;
+                hashed += value.len();
+                body(&ZERO, value)
+            });
+            let values: usize = (0..parts).map(|i| format!("v{i}").len()).sum();
+            assert_eq!(calls, parts);
+            assert_eq!(hashed, values);
+            assert_eq!(out, target(&ZERO, &text));
+            (text.len(), hashed, out.len())
         };
-        let small = time(2_000);
-        let large = time(32_000);
-        assert!(large < small * 4.0, "{small} {large}");
+        let (small_in, small_hashed, small_out) = counts(2_000);
+        let (large_in, large_hashed, large_out) = counts(32_000);
+        // Each bound is the input's own growth, about 16 to 20 times, never its square.
+        let grew = large_in.div_ceil(small_in) + 1;
+        assert!(
+            large_hashed <= small_hashed * grew,
+            "{small_hashed} {large_hashed}"
+        );
+        assert!(large_out <= small_out * grew, "{small_out} {large_out}");
     }
 }

@@ -1,4 +1,6 @@
 {"at":1,"connection":1,"text":"HTTP/1.1 201 Created\r\nDate: Tue, 14 Nov 2023 22:13:20 GMT\r\nContent-Length: 12\r\nSet-Cookie: s3cr3t-set\r\nx-trace: kept\r\ncontent-type: text/plain; charset=utf-8\r\n\r\ns3cr3t-reply"}
-{"at":3,"closed":true,"connection":1}
 {"at":3,"connection":2,"text":"HTTP/1.1 200 OK\r\nDate: Tue, 14 Nov 2023 22:13:20 GMT\r\nContent-Length: 11\r\nx-api-key: s3cr3t-echo\r\ncontent-type: text/plain; charset=utf-8\r\n\r\ns3cr3t-echo"}
-{"at":3,"closed":true,"connection":2}
+{"at":5,"closed":true,"connection":1}
+{"at":5,"closed":true,"connection":2}
+{"at":5,"connection":3,"text":"HTTP/1.1 200 OK\r\nDate: Tue, 14 Nov 2023 22:13:20 GMT\r\nContent-Length: 2\r\ncontent-type: text/plain; charset=utf-8\r\n\r\nok"}
+{"at":5,"closed":true,"connection":3}

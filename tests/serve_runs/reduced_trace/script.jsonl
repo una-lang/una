@@ -2,3 +2,5 @@
 {"at": 1, "connection": 1, "text": "POST /login/Ana?user=ana&token=s3cr3t-query&&flag HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer s3cr3t-auth\r\nCookie: session=s3cr3t-cookie\r\nProxy-Authorization: Basic s3cr3t-proxy\r\nX-Api-Key: s3cr3t-key\r\nX-Auth-Token: s3cr3t-token\r\nX-Thing: visible\r\nContent-Length: 13\r\n\r\ns3cr3t-body!!"}
 {"at": 2, "connection": 2, "grant": "127.0.0.1:8080", "peer": "192.0.2.2", "reads": "eager"}
 {"at": 3, "connection": 2, "text": "PUT /echo?k=s3cr3t-value HTTP/1.1\r\nHost: localhost\r\nContent-Length: 11\r\n\r\ns3cr3t-echo"}
+{"at": 4, "connection": 3, "grant": "127.0.0.1:8080", "peer": "192.0.2.3", "reads": "eager"}
+{"at": 5, "connection": 3, "text": "GET /padded HTTP/1.1\r\nHost: localhost\r\n\r\n"}
