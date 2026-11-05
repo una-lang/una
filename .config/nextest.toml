@@ -1,0 +1,14 @@
+# cargo nextest configuration (the harness runs the `tests` gate with it; `cargo test --workspace --locked` stays valid).
+#
+# Timing and scaling tests compare wall-clock readings, so a busy machine makes them flaky. Each takes
+# half of the test slots, which leaves no room for a second heavy test beside it: they run in pairs at
+# most, with nothing else running. No test is skipped and no assertion is changed.
+
+[profile.default]
+fail-fast = false
+slow-timeout = { period = "60s", terminate-after = 60 }
+
+[[profile.default.overrides]]
+filter = 'test(/scales|scaling|linear|n_log_n|bounded_share|limiter|virtual_time/)'
+threads-required = 5
+slow-timeout = { period = "120s", terminate-after = 30 }

@@ -112,6 +112,8 @@ eval "$(scripts/z3-library.sh --export)"   # UNA_Z3_LIB=~/.cache/una/z3/<key>/li
 cargo test --workspace --locked
 ```
 
+The gate runs the tests with `cargo nextest run --workspace --locked --no-fail-fast` and the documentation tests with `cargo test --workspace --doc --locked` (nextest does not run documentation tests); `cargo test --workspace --locked` runs the same tests. `.config/nextest.toml` gives each timing or scaling test (a name with `scales`, `scaling`, `linear`, `n_log_n`, `bounded_share`, `limiter` or `virtual_time`) half of the slots, so such a test runs with at most one other heavy test and nothing else beside it: their wall-clock comparisons do not depend on how busy the machine is. No test is skipped and no assertion changes. A new timing or scaling test is named so that the pattern matches it.
+
 Without `UNA_Z3_LIB`, `cargo` builds a development `una` with no solver and the build of `una-z3` warns so; about 120 tests then fail with U5003. Changing `UNA_Z3_LIB` rebuilds `una-z3` and what depends on it.
 
 A test harness that calls `una_cli` in its own process starts its solver children from the `una` of the same build (`target/<profile>/una`, under the feature `test-hooks`), a file it does not run from. The first launch of a newly linked executable costs the operating system's one-time work before the program's first instruction, more than a second for the debug `una` on macOS, so the harness runs its `una` once (`una --version`) before its first child, outside the child's 2-second handshake window, which starts at the spawn (#1278). A shipped `una` re-executes the file it already runs from and never pays that cost in the window.

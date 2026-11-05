@@ -1,0 +1,1 @@
+Test runs use `cargo nextest` through `.config/nextest.toml`: tests of all binaries run side by side, and the timing and scaling tests each take half of the slots, so a busy machine no longer makes them fail. `cargo test --workspace --locked` still runs the same tests.
