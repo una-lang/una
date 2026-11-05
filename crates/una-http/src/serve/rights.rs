@@ -232,6 +232,30 @@ impl<X> Rights<X> {
         out
     }
 
+    /// The end of every task at once, at an end of the run that does not wait for its tasks
+    /// (a hard stop, a fault): every right still held, released, with its exchange, by holder
+    /// in increasing order and each holder's in the order received. O(rights held + holders
+    /// log holders).
+    pub fn end_all(&self) -> Vec<(Task, Word, X)> {
+        let tasks: Vec<Task> = match self.table() {
+            Some(table) => {
+                let mut tasks: Vec<Task> = table.held.keys().copied().collect();
+                tasks.sort_unstable();
+                tasks
+            }
+            None => return Vec::new(),
+        };
+        let mut out = Vec::new();
+        for task in tasks {
+            out.extend(
+                self.end(task)
+                    .into_iter()
+                    .map(|(right, exchange)| (task, right, exchange)),
+            );
+        }
+        out
+    }
+
     /// The rights `task` holds, in the order received, for tests.
     pub fn held_by(&self, task: Task) -> Vec<Word> {
         self.table()
@@ -509,6 +533,23 @@ mod tests {
             large < small * 64,
             "{small:?} for 20,000 rights, {large:?} for 320,000"
         );
+    }
+
+    #[test]
+    fn the_end_of_every_task_takes_each_right_once_by_holder_and_order() {
+        // A hard stop's end of the run: every right left, by holder, each holder's in the
+        // order it received them, and none after.
+        let rights: Rights<u32> = Rights::new();
+        let a = rights.deliver(2, 1).unwrap();
+        let b = rights.deliver(0, 2).unwrap();
+        let c = rights.deliver(2, 3).unwrap();
+        let d = rights.deliver(1, 4).unwrap();
+        rights.take(1, d).unwrap();
+        rights.release(1, d);
+        let ended = rights.end_all();
+        assert_eq!(ended, [(0, b, 2), (2, a, 1), (2, c, 3)]);
+        assert!(rights.end_all().is_empty());
+        assert_eq!(rights.live(), 0);
     }
 
     #[test]

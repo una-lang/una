@@ -206,7 +206,10 @@ pub(crate) fn failed(word: i64) -> i64 {
 pub fn host_failed() -> i64 {
     with_state(|state| {
         let failed = std::mem::take(&mut state.host_failed);
-        if state.interrupted {
+        // An operation that stopped its task in progress, its event left `aborted`: a `next` of
+        // `HttpServer` once the run aborted (`crate::serve`).
+        let stopped = std::mem::take(&mut state.op_stopped);
+        if state.interrupted || stopped {
             2
         } else {
             i64::from(failed)
@@ -601,7 +604,20 @@ pub fn event_arg(site: i64, slot: i64, index: i64, value: i64) {
             .get(index)
             .cloned()
             .unwrap_or_else(|| format!("arg{index}"));
+        // ADR 0123 rule 1: the arguments of the host's `HttpServer` are never written in clear
+        // whatever their labels; until the reduced form of that rule lands, every one is
+        // written as an `internal` value is, redacted, as in the interpreter.
+        let server = op.capability == "HttpServer"
+            && state
+                .trace
+                .as_ref()
+                .and_then(|trace| trace.get(slot))
+                .is_some_and(|event| event.instance == "host:HttpServer");
         let shown = match op.args.get(index) {
+            Some(arg) if server => {
+                let level = arg.redacted.as_deref().unwrap_or("internal");
+                state.types.redacted(arg.ty, value, Some(level))
+            }
             Some(arg) => state.types.redacted(arg.ty, value, arg.redacted.as_deref()),
             None => Some("?".to_owned()),
         };

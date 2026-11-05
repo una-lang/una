@@ -2,7 +2,7 @@
 //! server program of edition 0.4, checked at tier 1, runs in the interpreter over the real serve
 //! engine fed by a script of connections in place of live peers (`docs/plan/0123-s5-design.md`
 //! §9). The program's `next`, `reply` and `close` meet the engine through a scripted
-//! [`Port`], the bytes each connection receives are compared with `expected.jsonl`, and the
+//! `Port` (`una_http::serve::script`), the bytes each connection receives are compared with `expected.jsonl`, and the
 //! program's output, completion and trace with `run.jsonl`.
 //!
 //! A case directory holds the package (`ita.una`, `ita.lock`, `src/`), `grant.txt` (the
@@ -24,8 +24,15 @@
 //! After the program ends the engine's clock runs one more hour, so every timer ends, and then
 //! every counter, reserve and share must be zero, and no reply right may be left.
 //!
-//! `una run` itself still refuses these programs (`spec/31 §1` rule 10): this harness calls the
-//! interpreter with the engine directly, until the serve threads start before `main`.
+//! The same case then runs as a native executable under `--virtual-time` (ADR 0117 rule 12),
+//! built by a `una` of the toolchain's tests with `UNA_TEST_BUILD_SERVER=1` and linked with a
+//! runtime built with its `test-hooks`, which serves the same scripted engine
+//! (`una_http::serve::script`) when `UNA_TEST_SERVE_SCRIPT` names the case: its bytes, output,
+//! completion and trace must be the interpreter's, byte for byte.
+//!
+//! `una run` and `una build` themselves still refuse these programs (`spec/31 §1` rule 10): this
+//! harness calls the interpreter with the engine directly, and builds the native executable
+//! through the test hook, until the serve threads start before `main`.
 
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(
@@ -35,221 +42,15 @@
     clippy::unwrap_used
 )]
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::Arc;
 use std::time::Instant;
 
 use serde_json::{Value, json};
-use una_http::serve::program::{Port, Waited};
-use una_http::serve::run::Next;
-use una_http::serve::sim::{Reads, Sim};
+use una_http::serve::script::{self, ScriptPort};
 use una_interp::stopping::RunStop;
 use una_interp::{FileFault, Grant, Host, Limits, NotText, World};
-
-const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-fn encode(bytes: &[u8]) -> String {
-    let mut out = String::new();
-    for chunk in bytes.chunks(3) {
-        let [a, b, c] = [
-            chunk.first().copied().unwrap_or(0),
-            chunk.get(1).copied().unwrap_or(0),
-            chunk.get(2).copied().unwrap_or(0),
-        ];
-        let n = (u32::from(a) << 16) | (u32::from(b) << 8) | u32::from(c);
-        for shift in [18, 12, 6, 0] {
-            out.push(char::from(ALPHABET[((n >> shift) & 63) as usize]));
-        }
-        let pad = 3 - chunk.len();
-        for _ in 0..pad {
-            out.pop();
-        }
-        for _ in 0..pad {
-            out.push('=');
-        }
-    }
-    out
-}
-
-fn decode(text: &str) -> Vec<u8> {
-    let mut out = Vec::new();
-    let mut bits = 0u32;
-    let mut count = 0;
-    for ch in text.bytes().filter(|b| *b != b'=') {
-        let value = ALPHABET.iter().position(|a| *a == ch).expect("base64") as u32;
-        bits = (bits << 6) | value;
-        count += 6;
-        if count >= 8 {
-            count -= 8;
-            out.push((bits >> count) as u8);
-            bits &= (1 << count) - 1;
-        }
-    }
-    out
-}
-
-fn lines(path: &Path) -> Vec<Value> {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return Vec::new();
-    };
-    text.lines()
-        .filter(|l| !l.trim().is_empty())
-        .map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("{}: {e}: {l}", path.display())))
-        .collect()
-}
-
-fn peer_address(peer: &str, k: u64) -> String {
-    let ip: std::net::IpAddr = peer.parse().expect("a peer address");
-    match ip {
-        std::net::IpAddr::V4(_) => format!("{ip}:{}", 20_000 + k),
-        std::net::IpAddr::V6(_) => format!("[{ip}]:{}", 20_000 + k),
-    }
-}
-
-/// The engine of a run over a script: the serve thread, its clock and the script's events,
-/// which the program's waits advance.
-struct Scripted {
-    sim: Sim,
-    listeners: Vec<String>,
-    events: VecDeque<Value>,
-    epoch: u64,
-    begun: bool,
-    stopped: bool,
-    stop: Arc<RunStop>,
-    /// The last time the script named, in milliseconds.
-    last: u64,
-}
-
-impl Scripted {
-    fn stop(&mut self) {
-        if !self.stopped {
-            self.stopped = true;
-            self.stop.request_local();
-            self.sim.shared.stop();
-            self.sim.flush();
-        }
-        self.epoch += 1;
-    }
-
-    /// Applies the script's next event at its time.
-    fn step(&mut self, event: &Value) {
-        let at = event["at"].as_u64().expect("at");
-        self.last = self.last.max(at);
-        self.sim.run_to_ms(at);
-        let k = event["connection"].as_u64().unwrap_or(0);
-        if let Some(grant) = event.get("grant") {
-            let grant = self
-                .listeners
-                .iter()
-                .position(|l| Some(l.as_str()) == grant.as_str())
-                .expect("a grant of the case");
-            let from = peer_address(event["peer"].as_str().expect("peer"), k);
-            let reads = match event["reads"].as_str() {
-                Some("paced") => Reads::Paced,
-                _ => Reads::Eager,
-            };
-            self.sim.connect(k, grant, &from, reads);
-        } else if let Some(text) = event.get("text") {
-            self.sim.send(k, text.as_str().expect("text").as_bytes());
-        } else if let Some(bytes) = event.get("bytes") {
-            self.sim.send(k, &decode(bytes.as_str().expect("base64")));
-        } else if let Some(n) = event.get("read") {
-            self.sim.allow(k, n.as_u64().expect("a count"));
-        } else if event.get("close").is_some() {
-            self.sim.close_peer(k);
-        } else if event.get("stop").is_some() {
-            self.stop();
-        } else {
-            panic!("an event of the script: {event}");
-        }
-        self.sim.flush();
-        self.epoch += 1;
-    }
-}
-
-/// The scripted engine as the program's operations meet it.
-struct ScriptPort(Mutex<Scripted>);
-
-impl ScriptPort {
-    fn scripted(&self) -> MutexGuard<'_, Scripted> {
-        self.0.lock().unwrap()
-    }
-}
-
-impl Port for ScriptPort {
-    fn begin(&self) {
-        self.scripted().begun = true;
-    }
-
-    fn epoch(&self) -> u64 {
-        self.scripted().epoch
-    }
-
-    fn next(&self) -> Next {
-        // The serve thread handles its messages only when the program waits, as a real one
-        // handles them on its own time: a `close` or a reply is not yet seen by the thread
-        // when the program's next operation comes.
-        let scripted = self.scripted();
-        let now = scripted.sim.now();
-        scripted.sim.shared.next(now)
-    }
-
-    fn wait(
-        &self,
-        epoch: u64,
-        retry: Option<u64>,
-        _deadline: Option<Instant>,
-        stopped: &dyn Fn() -> bool,
-    ) -> Waited {
-        let mut scripted = self.scripted();
-        // What the program handed over lands first, at the time it was handed over.
-        scripted.sim.flush();
-        if stopped() {
-            return Waited::Stopped;
-        }
-        if scripted.epoch != epoch {
-            return Waited::Changed;
-        }
-        let next_at = scripted
-            .events
-            .front()
-            .map(|event| event["at"].as_u64().expect("at").saturating_mul(1_000_000));
-        match (next_at, retry) {
-            (next, Some(retry)) if next.is_none_or(|at| retry < at) => {
-                scripted.sim.run_to(retry);
-                scripted.epoch += 1;
-                Waited::Changed
-            }
-            (Some(at), _) => {
-                // Everything the script does at one instant happens before the program sees
-                // any of it, in the order of its lines.
-                while scripted.events.front().is_some_and(|event| {
-                    event["at"].as_u64().expect("at").saturating_mul(1_000_000) == at
-                }) {
-                    let event = scripted.events.pop_front().expect("an event");
-                    scripted.step(&event);
-                }
-                if stopped() {
-                    Waited::Stopped
-                } else {
-                    Waited::Changed
-                }
-            }
-            (None, _) => {
-                // The script is over: the host stops the run.
-                scripted.stop();
-                Waited::Stopped
-            }
-        }
-    }
-
-    fn close(&self) {
-        let mut scripted = self.scripted();
-        scripted.sim.shared.stop();
-        scripted.epoch += 1;
-    }
-}
 
 /// A world that keeps the printed lines.
 #[derive(Default)]
@@ -279,12 +80,11 @@ impl World for Lines {
     }
 }
 
-/// The wire's bytes as a line of `expected.jsonl`: text when they are UTF-8.
-fn bytes_line(at: u64, k: u64, bytes: &[u8]) -> Value {
-    match std::str::from_utf8(bytes) {
-        Ok(text) => json!({"at": at, "connection": k, "text": text}),
-        Err(_) => json!({"at": at, "connection": k, "bytes": encode(bytes)}),
-    }
+fn lines(path: &Path) -> Vec<Value> {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    script::lines(&text).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
 }
 
 /// Runs one case: the lines of `expected.jsonl` and of `run.jsonl` it produces. The run, its
@@ -336,104 +136,39 @@ fn run_here(dir: &Path) -> (Vec<Value>, Vec<Value>) {
         checked.diagnostics
     );
     let specs: Vec<&str> = grants.iter().map(String::as_str).collect();
-    let sim = Sim::new(&specs, 1);
-    let listeners: Vec<String> = sim
-        .shared
-        .grants
-        .iter()
-        .map(|g| g.listener.clone())
-        .collect();
     let stop = RunStop::new(1);
-    let port = ScriptPort(Mutex::new(Scripted {
-        sim,
-        listeners,
-        events: lines(&dir.join("script.jsonl")).into(),
-        epoch: 0,
-        begun: false,
-        stopped: false,
-        stop: Arc::clone(&stop),
-        last: 0,
-    }));
+    let stopping = Arc::clone(&stop);
+    let port = ScriptPort::new(
+        &specs,
+        lines(&dir.join("script.jsonl")),
+        Box::new(move || stopping.request_local()),
+    );
     let host = Host {
         grants: vec![Grant::Console],
         keys: BTreeMap::new(),
         virtual_time: true,
     };
     let mut lines = Lines::default();
+    // The depths of `una run` and of a native executable by default: `--max-depth` and the
+    // `--task-depth` of started tasks below it (ADR 0117 rule 2).
     let limits = Limits {
         stop: Some(&stop),
         serve: Some(&port),
-        ..Limits::depth(10_000)
+        task_depth: una_interp::Concurrency::default().task_depth,
+        ..Limits::depth(una_interp::DEFAULT_MAX_DEPTH)
     };
     let run =
         una_interp::run_main(&checked.program, "srv", &mut lines, &host, limits).expect("a `main`");
     let printed = lines.0;
     assert_eq!(run.rights_left, 0, "{}: reply rights left", dir.display());
-    let mut scripted = port.0.into_inner().unwrap();
-    // The events the program did not wait for still happen, then the host stop.
-    while let Some(event) = scripted.events.pop_front() {
-        scripted.step(&event);
-    }
-    scripted.stop();
-    let last = scripted.last;
-    let sim = &mut scripted.sim;
-    sim.flush();
-    sim.run_to_ms(last + 3_600_000);
-    for grant in &sim.shared.grants {
-        assert!(
-            grant.is_quiet(),
-            "{}: {:?}",
-            dir.display(),
-            grant.counters()
-        );
-        assert!(grant.peers.is_empty(), "{}: peers left", dir.display());
-    }
-    assert_eq!(sim.open(), 0, "{}", dir.display());
-    assert_eq!(sim.timers(), 0, "{}", dir.display());
-    assert!(scripted.begun || sim.connections().is_empty());
-    // What each connection received.
-    let mut out: Vec<(u64, u64, u8, Value)> = Vec::new();
-    for (k, why, at) in &sim.refused {
-        let reason = format!("{why:?}").to_lowercase();
-        out.push((
-            at / 1_000_000,
-            *k,
-            3,
-            json!({"at": at / 1_000_000, "connection": k, "refused": reason}),
-        ));
-    }
-    for k in sim.connections() {
-        let Some(wire) = sim.wire(k) else { continue };
-        let mut joined: Vec<(u64, Vec<u8>)> = Vec::new();
-        for (time, bytes) in &wire.out {
-            let ms = time / 1_000_000;
-            match joined.last_mut() {
-                Some((at, all)) if *at == ms => all.extend_from_slice(bytes),
-                _ => joined.push((ms, bytes.clone())),
-            }
-        }
-        for (ms, bytes) in joined {
-            out.push((ms, k, 0, bytes_line(ms, k, &bytes)));
-        }
-        if let Some(at) = wire.shut_at {
-            out.push((
-                at / 1_000_000,
-                k,
-                1,
-                json!({"at": at / 1_000_000, "connection": k, "shutdown": true}),
-            ));
-        }
-        if let Some(at) = wire.closed_at {
-            out.push((
-                at / 1_000_000,
-                k,
-                2,
-                json!({"at": at / 1_000_000, "connection": k, "closed": true}),
-            ));
-        }
-    }
-    out.sort_by_key(|(at, k, kind, _)| (*at, *k, *kind));
-    let wire = out.into_iter().map(|(_, _, _, v)| v).collect();
+    let ended = port.end();
+    assert!(
+        ended.problems.is_empty(),
+        "{}: {:?}",
+        dir.display(),
+        ended.problems
+    );
+    let wire = ended.wire;
     let completion = match &run.completion {
         una_interp::Completion::Ok(value) => json!({"ok": value}),
         una_interp::Completion::Failed { variant, .. } => json!({"failed": variant}),
@@ -564,4 +299,181 @@ fn a_reply_never_follows_an_abort_of_the_run_at_any_switch_point() {
         replied[first_late..].iter().all(|(_, yes)| !yes),
         "{replied:?}"
     );
+}
+
+/// The runtime library with its test hook of the scripted engine (`una-rt`'s `test-hooks`),
+/// built once for this test binary beside the plain one, which is then built again, so that
+/// the other tests of the toolchain link the plain runtime: its path. `cargo test` builds
+/// `una-rt`'s static library only when asked.
+fn hooked_runtime() -> PathBuf {
+    static BUILT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    BUILT
+        .get_or_init(|| {
+            let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+            let profile_args: &[&str] = if cfg!(debug_assertions) {
+                &[]
+            } else {
+                &["--release"]
+            };
+            let build = |features: &[&str]| {
+                let status = std::process::Command::new(env!("CARGO"))
+                    .args(["build", "--quiet", "--locked", "-p", "una-rt"])
+                    .args(profile_args)
+                    .args(features)
+                    .current_dir(&root)
+                    .status()
+                    .unwrap();
+                assert!(
+                    status.success(),
+                    "cargo build -p una-rt {features:?} failed"
+                );
+            };
+            build(&["--features", "una-rt/test-hooks"]);
+            let built = Path::new(env!("CARGO_BIN_EXE_una"))
+                .parent()
+                .unwrap()
+                .join("libuna_rt.a");
+            let kept = Path::new(env!("CARGO_TARGET_TMPDIR")).join("serve-hooks-libuna_rt.a");
+            std::fs::copy(&built, &kept).unwrap();
+            build(&[]);
+            kept
+        })
+        .clone()
+}
+
+/// The code of the abort an interpreted run ended with, as the native executable reports it.
+fn abort_code(completion: &Value) -> Option<&'static str> {
+    let aborted = completion["aborted"].as_str()?;
+    if aborted.starts_with("IntText") {
+        return Some("U6003");
+    }
+    panic!("the code of the abort {aborted}: add it here");
+}
+
+/// Runs one case as a native executable over the same scripted engine, through its runtime's
+/// test hook: the lines of `expected.jsonl` and of `run.jsonl` it gives, the completion given
+/// as the interpreter's when the exit status and the diagnostic agree with it.
+fn run_native(dir: &Path, interpreted: &Value) -> (Vec<Value>, Vec<Value>) {
+    let runtime = hooked_runtime();
+    let scratch = std::env::temp_dir().join(format!(
+        "una-serve-native-{}-{}",
+        std::process::id(),
+        dir.file_name().unwrap().to_string_lossy()
+    ));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).unwrap();
+    let status = std::process::Command::new("cp")
+        .arg("-R")
+        .arg(dir)
+        .arg(scratch.join("case"))
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let package = scratch.join("case");
+    let built = std::process::Command::new(env!("CARGO_BIN_EXE_una"))
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env("UNA_RT_LIB", &runtime)
+        .env("UNA_TEST_BUILD_SERVER", "1")
+        .env("NO_COLOR", "1")
+        .args(["build", "."])
+        .current_dir(&package)
+        .output()
+        .unwrap();
+    assert_eq!(built.status.code(), Some(0), "{}: {built:?}", dir.display());
+    let manifest = std::fs::read_to_string(package.join("ita.una")).unwrap();
+    let name = manifest
+        .lines()
+        .next()
+        .and_then(|line| line.strip_prefix("ita "))
+        .unwrap()
+        .trim()
+        .to_owned();
+    let trace = scratch.join("trace.json");
+    let wire = scratch.join("wire.jsonl");
+    let mut child = std::process::Command::new(package.join("target/una").join(&name))
+        .env("UNA_TEST_SERVE_SCRIPT", &package)
+        .env("UNA_TEST_SERVE_WIRE", &wire)
+        .args(["--virtual-time", "--trace"])
+        .arg(&trace)
+        .current_dir(&package)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    // A run that has not ended after `HANG` hangs, which fails the case rather than the suite.
+    let started = Instant::now();
+    while child.try_wait().unwrap().is_none() {
+        if started.elapsed() > HANG {
+            let _ = child.kill();
+            panic!("{}: the native run did not end", dir.display());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let ran = child.wait_with_output().unwrap();
+    let stderr = String::from_utf8_lossy(&ran.stderr).into_owned();
+    let completion = &interpreted["completion"];
+    match abort_code(completion) {
+        None => assert_eq!(ran.status.code(), Some(0), "{}: {ran:?}", dir.display()),
+        Some(code) => {
+            assert_eq!(ran.status.code(), Some(1), "{}: {ran:?}", dir.display());
+            assert!(
+                stderr.contains(&format!("[{code}]")),
+                "{}: {stderr}",
+                dir.display()
+            );
+        }
+    }
+    let mut wire = lines(&wire);
+    let last = wire
+        .pop()
+        .unwrap_or_else(|| panic!("{}: no wire", dir.display()));
+    assert_eq!(
+        last["rights_left"],
+        0,
+        "{}: reply rights left",
+        dir.display()
+    );
+    assert_eq!(last["problems"], json!([]), "{}: {last}", dir.display());
+    let output: Vec<String> = String::from_utf8_lossy(&ran.stdout)
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    let events: Value = serde_json::from_str(&std::fs::read_to_string(&trace).unwrap())
+        .unwrap_or_else(|e| {
+            panic!("{}: the trace: {e}: {stderr}", dir.display());
+        });
+    let mut out = vec![json!({"completion": completion, "output": output})];
+    out.extend(events.as_array().cloned().unwrap_or_default());
+    let _ = std::fs::remove_dir_all(&scratch);
+    (wire, out)
+}
+
+#[test]
+fn every_serve_run_runs_alike_in_native_code() {
+    // ADR 0117 rule 12 and ADR 0123 rule 21: under `--virtual-time` a native executable fed by
+    // the same script gives the bytes, output, completion and trace of the interpreter's run,
+    // byte for byte, over the same engine.
+    let mut failures = Vec::new();
+    for dir in cases() {
+        let interpreted: Vec<Value> = lines(&dir.join("run.jsonl"));
+        let expected: Vec<Value> = lines(&dir.join("expected.jsonl"));
+        let (wire, ran) = run_native(&dir, &interpreted[0]);
+        if wire != expected {
+            failures.push(format!(
+                "{}: the wire\n--- interpreter\n{}--- native\n{}",
+                dir.display(),
+                text(&expected),
+                text(&wire)
+            ));
+        }
+        if ran != interpreted {
+            failures.push(format!(
+                "{}: the run\n--- interpreter\n{}--- native\n{}",
+                dir.display(),
+                text(&interpreted),
+                text(&ran)
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }

@@ -824,6 +824,70 @@ pub(crate) fn yield_due() -> bool {
     una_sys::coroutine::suspend()
 }
 
+/// A task on the run's workers, as the waits of `next` of `HttpServer` name it (ADR 0123 rule
+/// 4.7): its worker, and its slot and that slot's generation there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct TaskKey {
+    worker: usize,
+    slot: usize,
+    generation: u64,
+}
+
+/// The task that runs on this worker's coroutine, if any.
+pub(crate) fn current_key() -> Option<TaskKey> {
+    if !una_sys::coroutine::inside() {
+        return None;
+    }
+    RUNNING.with(|running| {
+        running.borrow().as_ref().map(|(worker, id, _)| TaskKey {
+            worker: worker.index,
+            slot: id.slot,
+            generation: id.generation,
+        })
+    })
+}
+
+/// Lets another ready task of this worker run first, when one can make progress: `progress`
+/// says it of each queued task, by its key, or of a task not yet begun, by `None`. The task
+/// that runs then goes to the back of its worker's queue, a turn of its own, and returns once
+/// resumed, `true`; `false`, with no switch, when no queued task can, or outside a task's
+/// coroutine. The interpreter's `yield_turn` (ADR 0123 rule 4.7, `spec/31 §1` rule 3,
+/// Waiting). O(queued tasks) under one hold of the queue's lock.
+pub(crate) fn yield_to_progress(progress: impl Fn(Option<TaskKey>) -> bool) -> bool {
+    if !una_sys::coroutine::inside() {
+        return false;
+    }
+    let running = RUNNING.with(|running| {
+        running
+            .borrow()
+            .as_ref()
+            .map(|(worker, id, _)| (Arc::clone(worker), *id))
+    });
+    let Some((worker, id)) = running else {
+        return false;
+    };
+    let switch = {
+        let mut queue = lock(&worker.queue);
+        let any = queue.jobs.iter().any(|(job, _)| match job {
+            Job::Start(..) => progress(None),
+            Job::Resume(queued) => progress(Some(TaskKey {
+                worker: worker.index,
+                slot: queued.slot,
+                generation: queued.generation,
+            })),
+        });
+        if any {
+            worker.arrive(&mut queue, Job::Resume(id));
+        }
+        any
+    };
+    if !switch {
+        return false;
+    }
+    worker.ready.notify_one();
+    una_sys::coroutine::suspend()
+}
+
 /// A count of the tasks of one `tasks` statement that still run, and the one task that may wait
 /// on it, the statement's own (`spec/27 §7`): it parks at the bound and at the end of the
 /// statement, and a task that ends wakes it at the back of its queue, a turn of its own.

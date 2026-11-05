@@ -26,6 +26,8 @@ pub enum Shape {
     Unit,
     /// `Hashed`.
     Hashed,
+    /// `ReplyRight` of `std.host` (ADR 0123 rule 1): written `<reply-right>` everywhere.
+    Right,
     /// `F64`, by its shortest round-trip text (`spec/29 §7`).
     F64,
     /// `F32`, by its shortest round-trip text (ADR 0120 rule 5).
@@ -219,6 +221,8 @@ fn render(types: &[Shape], ty: usize, word: i64, redact: bool, params: &[i64]) -
                 out.push_str(&una_interp::hex(&values::bytes(word)));
             }
             Some(Shape::Fn) => out.push_str("<function>"),
+            // Nothing of a reply right is ever written (ADR 0123 rule 1).
+            Some(Shape::Right) => out.push_str("<reply-right>"),
             Some(Shape::List(item)) => {
                 out.push('[');
                 for index in 0..values::count(word) {
@@ -420,6 +424,7 @@ fn shape(value: &Value) -> Option<Shape> {
         "text" => Shape::Text,
         "unit" => Shape::Unit,
         "hashed" => Shape::Hashed,
+        "reply-right" => Shape::Right,
         "f64" => Shape::F64,
         "f32" => Shape::F32,
         "fn" => Shape::Fn,
