@@ -456,6 +456,27 @@ pub(crate) fn run_command(
     }
     // The module the host drives (ADR 0116 rule 3), whose `init` starts the run; or the entry,
     // `[run] entry` or the module of a single file, whose `main` runs.
+    // The host-driven form of a server (ADR 0123 rule 16): the module's shapes, then a `serve:`
+    // grant, each a usage error; then the driver, which does not run yet, fails closed.
+    if let Some(serve) = &manifest.serve {
+        let module = serve.module.value.as_str();
+        if let Err(message) = served_module(&analysis, &package.sources, module) {
+            writeln!(stderr, "error: {message}")?;
+            return Ok(ExitStatus::Usage);
+        }
+        if !specs
+            .iter()
+            .any(|spec| spec.starts_with(una_core::http::serve::PREFIX))
+        {
+            writeln!(
+                stderr,
+                "error: the `serve` section's module `{module}` answers requests, but neither `run grants` of ita.una nor a `--grant` flag grants an address to serve on; grant one, as `serve \"http://127.0.0.1:8080\"` in `run grants` or `--grant serve:http://127.0.0.1:8080`"
+            )?;
+            return Ok(ExitStatus::Usage);
+        }
+        writeln!(stderr, "error: {}", serve_pending(module))?;
+        return Ok(ExitStatus::Usage);
+    }
     let drive = manifest.drive.as_ref().map(|drive| una_interp::Drive {
         ticks: drive.ticks,
         budget: drive.budget,
@@ -933,6 +954,108 @@ pub(crate) fn driven_init<'a>(
         ));
     }
     Ok(init)
+}
+
+/// The usage error of a package with a `serve` section whose module lacks the shapes of
+/// ADR 0123 rule 16: `pub handle(request: internal Request) -> internal Reply`, with `Request`
+/// and `Reply` of `std.host`, and, when declared, `pub on_stop() -> Unit`. The message names
+/// the first difference found. `diverges` and `fails` are the checker's (U3027, U3029).
+pub(crate) fn served_module(
+    analysis: &Analysis,
+    sources: &SourceDb,
+    module: &str,
+) -> Result<(), String> {
+    let modules = Modules {
+        sources,
+        interner: &analysis.interner,
+        trees: &analysis.trees,
+        mounts: &analysis.mounts,
+    };
+    let core = |name: &str| {
+        let found = analysis.program.modules.iter().find(|m| m.path == module)?;
+        found.decls.iter().find_map(|decl| match decl {
+            Decl::Fun(fun) if fun.name == name => Some(fun.as_ref()),
+            _ => None,
+        })
+    };
+    let shape = "`pub handle(request: internal Request) -> internal Reply`";
+    let missing =
+        |why: &str| format!("the module `{module}` of the `serve` section has no {shape}: {why}");
+    let Some((_, _, handle)) = modules.function(&format!("{module}.handle")) else {
+        return Err(missing("it declares no `handle`"));
+    };
+    if !handle.public {
+        return Err(missing("its `handle` is not public"));
+    }
+    if !handle.type_params.is_empty() {
+        return Err(missing("its `handle` has type parameters"));
+    }
+    if !matches!(handle.params.as_slice(), [request] if request.convention.is_none()) {
+        return Err(missing(
+            "its `handle` does not take exactly one parameter, passed by value",
+        ));
+    }
+    // `spec/31 §7` rule 2: no `requires`, which the host could never establish (U7008 in the
+    // checks too).
+    let requires = |function: &una_syntax::ast::FunctionDecl| {
+        function
+            .clauses
+            .iter()
+            .any(|clause| matches!(clause.kind, una_syntax::ast::ClauseKind::Requires(_)))
+    };
+    if requires(handle) {
+        return Err(missing("its `handle` declares `requires`"));
+    }
+    let Some(fun) = core("handle") else {
+        return Err(missing("it declares no `handle`"));
+    };
+    let internal = crate::build::internal_label();
+    if !matches!(fun.params.as_slice(), [(_, request)] if is_host_kind(request, "Request", &internal))
+    {
+        return Err(missing(
+            "the parameter of its `handle` is not `internal Request` of `std.host`",
+        ));
+    }
+    if !is_host_kind(&fun.result, "Reply", &internal) {
+        return Err(missing(
+            "the result of its `handle` is not `internal Reply` of `std.host`",
+        ));
+    }
+    if let Some((_, _, on_stop)) = modules.function(&format!("{module}.on_stop")) {
+        let shaped = on_stop.public
+            && !requires(on_stop)
+            && on_stop.type_params.is_empty()
+            && on_stop.params.is_empty()
+            && core("on_stop").is_some_and(|fun| {
+                fun.params.is_empty()
+                    && is_unit(&fun.result)
+                    && matches!(&fun.result, Type::Base { refinements, .. } if refinements.is_empty())
+            });
+        if !shaped {
+            return Err(format!(
+                "`on_stop` of the module `{module}` of the `serve` section is not `pub on_stop() -> Unit`"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The usage error of a run or a build of a package with a `serve` section, while the driver
+/// of ADR 0123 rule 16 runs in neither engine: the section, its module and its checks are in
+/// place, and the driver needs the operations of `HttpServer`, which land with a later slice.
+/// Fails closed before anything starts, as [`server_pending`] does.
+pub(crate) fn serve_pending(module: &str) -> String {
+    format!(
+        "the `serve` section's module `{module}` is checked, but the host's driver that calls its `handle` for each request does not run in this release yet: it lands with a later slice of ADR 0123 (`spec/31 §7`)"
+    )
+}
+
+/// Whether `ty` is the kind `name` of `std.host`, labeled exactly `label`, with no refinement:
+/// a refined kind is a precondition no call of the host establishes (`spec/31 §7` rule 2). The
+/// kinds of `std.host` are the prelude's in Core IR, whose module path a package cannot take.
+fn is_host_kind(ty: &Type, name: &str, label: &una_core::Label) -> bool {
+    matches!(ty, Type::Base { base: Base::Named { module, name: found, args }, refinements, label: at }
+        if module == "prelude" && found == name && args.is_empty() && at == label && refinements.is_empty())
 }
 
 /// Whether two types are the same, labels and refinements aside.

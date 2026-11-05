@@ -472,6 +472,9 @@ pub(crate) struct Env<'a> {
     /// The capabilities whose operations can run an operation of `HttpServer` through a handler
     /// (ADR 0123 rule 5, U3033).
     pub(crate) serving_capabilities: BTreeSet<super::ty::CapId>,
+    /// The `serve` section of `ita.una`, at its header, when the package has one: the driver
+    /// of ADR 0123 rule 16 is a hand-off site of `L_srv` (IF-S1).
+    pub(crate) serve_driver: Option<Span>,
     /// Whether a module of the package imports a name of the server from `std.host` (ADR 0123
     /// rule 0): only then does Core IR declare the server's kinds, and a value of the package
     /// can hold a reply right.
@@ -624,6 +627,7 @@ impl<'a> Env<'a> {
             holds_function_kinds: Vec::new(),
             holds_reply_kinds: Vec::new(),
             serving_capabilities: BTreeSet::new(),
+            serve_driver: None,
             server_imported: false,
             reply_rights: false,
             plain_vias: BTreeSet::new(),

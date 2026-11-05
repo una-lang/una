@@ -49,7 +49,7 @@ together_for    = "together" "for" lower_ident "in" ( line_expr | range_expr ) N
 ```
 
 - **`together`** is a statement: its body holds only `let` statements, at least two. Each `let`, with its `with` bindings and handling clauses, is a branch.
-- **`together for`** stands where a block expression can: as the value of a `let` or of an assignment. Its body is a block whose final expression is the element's result.
+- **`together for`** stands where a block expression can: as the value of a `let` or of an assignment, or as the last line of a block. Its body is a block whose final expression is the element's result.
 
 ## Examples
 

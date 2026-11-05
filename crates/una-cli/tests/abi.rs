@@ -122,8 +122,12 @@ fn the_report_of_the_events_example() {
         .collect();
     // ADR 0067 added `generic_results`, after `native`; ADR 0081 `handler_authority`, after
     // `authority`; ADR 0122 `dependencies`, after `handler_authority`, always present; ADR 0094
-    // `premises`, after `assumptions`.
-    assert_eq!(keys.len(), 18);
+    // `premises`, after `assumptions`; ADR 0123 rule 22 `warnings`, after `out_of_model`, and
+    // `tcb.serve_grants`, `tcb.server` and `tcb.tls`, empty for a package that serves nothing.
+    assert_eq!(keys.len(), 19);
+    assert_eq!(report["warnings"], json!([]));
+    assert_eq!(report["tcb"]["serve_grants"], json!([]));
+    assert_eq!(report["tcb"]["server"], json!(null));
     assert_eq!(report["generic_results"], json!([]));
     assert_eq!(report["dependencies"], json!([]));
     assert_eq!(report["tcb"]["registries"], json!([]));

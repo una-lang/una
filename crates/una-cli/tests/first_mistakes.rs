@@ -282,3 +282,33 @@ fn a_function_parameter_named_with_a_declaration_keyword_gets_advice() {
     );
     assert!(found["repairs"][0]["edit"].is_null(), "{found:#?}");
 }
+
+/// A loop variable has no `edit` form, so U2019 on it does not suggest declaring it `let edit`
+/// but a separate `let edit` binding in the body, and that binding checks (#931).
+#[test]
+fn assigning_a_loop_variable_suggests_a_separate_let_edit_binding() {
+    let assigned = "module m\n\npub total(xs: List[Int]) -> Int\n=\n  let edit sum = 0\n  for x in xs\n    x = x + 1\n    sum = sum + x\n  sum\n";
+    let root = package("loop-variable", "m", assigned);
+    let found = only(&root, "U2019");
+    assert_eq!(
+        found["message"],
+        "`x` is the variable of a `for` loop, which is read-only; bind a copy in the body with `let edit`, as `let edit next_x = x`"
+    );
+    assert_eq!(found["repairs"], Value::Array(Vec::new()), "{found:#?}");
+    let fixed = assigned.replace(
+        "    x = x + 1\n    sum = sum + x\n",
+        "    let edit next_x = x\n    next_x = next_x + 1\n    sum = sum + next_x\n",
+    );
+    let after = package("loop-variable-fixed", "m", &fixed);
+    assert_eq!(diagnostics(&after), Vec::<Value>::new());
+    // A plain `let` keeps the advice to declare it `let edit`.
+    let plain = package(
+        "plain-let",
+        "m",
+        "module m\n\npub f(n: Int) -> Int\n=\n  let y = n\n  y = 2\n  y\n",
+    );
+    assert_eq!(
+        only(&plain, "U2019")["message"],
+        "`y` is not editable; declare it `let edit y`, or the parameter `edit y`"
+    );
+}

@@ -6,7 +6,7 @@
 
 use pretty_assertions::assert_eq;
 use una_syntax::ast::{DeclKind, ExprKind, File, Stmt};
-use una_syntax::{Interner, SourceDb, dump, lex, parse};
+use una_syntax::{Interner, KeywordSet, SourceDb, dump, lex, lex_in, parse};
 
 struct Parsed {
     file: File,
@@ -16,10 +16,18 @@ struct Parsed {
 }
 
 fn parse_source(text: &str) -> Parsed {
+    parse_source_in(text, None)
+}
+
+/// [`parse_source`] with the keywords of an edition, or of edition `0.1` when `None`.
+fn parse_source_in(text: &str, keywords: Option<KeywordSet>) -> Parsed {
     let mut db = SourceDb::new();
     let id = db.add("t.una", text.as_bytes());
     let mut interner = Interner::new();
-    let lexed = lex(db.file(id), id, &mut interner);
+    let lexed = match keywords {
+        Some(keywords) => lex_in(db.file(id), id, &mut interner, keywords),
+        None => lex(db.file(id), id, &mut interner),
+    };
     let parsed = parse(&lexed, id, &interner);
     let errors = lexed
         .errors
@@ -458,6 +466,26 @@ fn if_forms() {
              (let b (if (> x 0) (block 1) (if (== x 0) (block 0) (block (neg 1)))))\n    \
              (if (> a b) a b)))\n\
          (fn g ((x {Int})) {Int} (block (if (> x 0) (block 1) (block 2))))\n"
+    );
+}
+
+/// From edition `0.2` a `block_expr` may also be the value of an assignment (`spec/17 §1`),
+/// so the message of a misplaced one names it (`spec/19 §1` rule 2, #929).
+#[test]
+fn misplaced_block_expr_names_assignments_from_edition_0_2() {
+    let errors_0_2 =
+        |body: &str| parse_source_in(&format!("module t\n\n{body}"), Some(KeywordSet::V0_2)).errors;
+    assert_eq!(
+        errors_0_2("f(xs: List[Int]) -> Int\n=\n  together for x in xs\n    x\n  0\n"),
+        [
+            "U0101 5:3 a `together for` must be the last line of its block or the value of a `let` or of an assignment"
+        ]
+    );
+    assert_eq!(
+        errors_0_2("f(x: Int) -> Int\n=\n  when x\n    else -> 1\n  x\n"),
+        [
+            "U0101 5:3 a `when` must be the last line of its block or the value of a `let` or of an assignment"
+        ]
     );
 }
 

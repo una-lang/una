@@ -2559,7 +2559,7 @@ fn is_lower_word(word: &str) -> bool {
 }
 
 /// The sections of `ita.una` that come after `needs`, in the canonical order (ADR 0122 rule 5).
-const AFTER_NEEDS: [&str; 9] = [
+const AFTER_NEEDS: [&str; 10] = [
     "replace",
     "trust",
     "labels",
@@ -2569,6 +2569,7 @@ const AFTER_NEEDS: [&str; 9] = [
     "contracts",
     "run",
     "drive",
+    "serve",
 ];
 
 /// `text` with `line` added as the last need: at the end of the `needs` section, or in a new

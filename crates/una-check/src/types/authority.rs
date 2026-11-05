@@ -13,7 +13,7 @@ use una_syntax::ast::{Body, ClauseKind, Expr, ExprKind, Ident};
 
 use super::check::Checker;
 use super::env::{Entity, Env, FnAst};
-use super::ty::{CapId, FnUse, Ty, given};
+use super::ty::{CapId, Declared, FnUse, Ty, given};
 use super::{Findings, Report};
 use crate::names::RunInput;
 
@@ -2396,12 +2396,18 @@ pub(crate) fn grants(
     run: Option<RunInput<'_>>,
     report: &mut Report<'_>,
 ) {
-    let (path, names): (&str, &[&str]) = match (run, &settings.entry, &settings.drive) {
-        (Some(run), _, _) => (run.entry, &["main"]),
-        (None, Some(entry), _) => (entry.value.as_str(), &["main"]),
-        (None, None, Some(drive)) => (drive.module.value.as_str(), &["init", "step", "on_stop"]),
-        (None, None, None) => return,
-    };
+    let (path, names): (&str, &[&str]) =
+        match (run, &settings.entry, &settings.drive, &settings.serve) {
+            // ADR 0123 rule 16: the functions of the `serve` module are called by the host, and
+            // `una run` checks them against its final grants as `main`'s (`spec/31 §7` rule 3).
+            (_, None, None, Some(serve)) => (serve.module.value.as_str(), &SERVED),
+            (Some(run), _, _, _) => (run.entry, &["main"]),
+            (None, Some(entry), _, _) => (entry.value.as_str(), &["main"]),
+            (None, None, Some(drive), _) => {
+                (drive.module.value.as_str(), &["init", "step", "on_stop"])
+            }
+            (None, None, None, None) => return,
+        };
     let Some(module) =
         (0..env.prelude).find(|m| env.modules.get(*m).is_some_and(|m| m.path == path))
     else {
@@ -2516,6 +2522,191 @@ fn function_grants(
             grant.widens = Some(Widening::Grant);
             diagnostic.repairs.push(grant);
             report.push(diagnostic);
+        }
+    }
+}
+
+/// The functions of a `serve` module that the host calls (ADR 0123 rule 16).
+pub(crate) const SERVED: [&str; 2] = ["handle", "on_stop"];
+
+/// The checks of a `serve` module's functions (ADR 0123 rule 16, `spec/31 §7`):
+/// - U3029: `on_stop` declares no `fails`, since the host has no caller to give a failure to;
+///   `handle` may, and a failure of it becomes the host's `500`;
+/// - U3027: neither says `diverges`, so every request ends after finitely many steps;
+/// - U3033 (decision S6-D3): neither names `HttpServer`, or a capability whose handlers can
+///   perform one of its operations, in its `uses`. The host owns every exchange in this form
+///   and answers each request with the reply `handle` returns, so `handle` must not take,
+///   answer or close one. A public function's effect set is bounded by its declared `uses`
+///   (`spec/05 §3`), so refusing the binding refuses every operation of `HttpServer` in the
+///   effect set, through a callee, a function value or a handler included.
+///
+/// O(clauses + uses) of the two functions.
+pub(crate) fn serve_functions(env: &Env<'_>, settings: &Manifest, report: &mut Report<'_>) {
+    let Some(serve) = &settings.serve else {
+        return;
+    };
+    let Some(module) = (0..env.prelude).find(|m| {
+        env.modules
+            .get(*m)
+            .is_some_and(|m| m.path == serve.module.value)
+    }) else {
+        return;
+    };
+    if !env.reports(module) {
+        return;
+    }
+    for name in SERVED {
+        let Some(Entity::Function(id)) = env
+            .modules
+            .get(module)
+            .and_then(|m| m.lower.get(name).copied())
+        else {
+            continue;
+        };
+        let Some(def) = env.functions.get(id) else {
+            continue;
+        };
+        if let super::env::FnAst::Function(decl) = def.ast {
+            for clause in &decl.clauses {
+                match clause.kind {
+                    una_syntax::ast::ClauseKind::Fails(_) if name == "on_stop" => {
+                        let mut diagnostic = report.make(
+                            Code::U3029,
+                            clause.span,
+                            format!(
+                                "`on_stop` of the served module `{}` declares `fails`, but the host has no caller to give a failure to",
+                                serve.module.value
+                            ),
+                        );
+                        diagnostic.repairs.push(Report::advice(
+                            "handle each failure inside `on_stop`, with `if error use` or `attempt`, and remove the `fails` clause",
+                        ));
+                        report.push(diagnostic);
+                    }
+                    // `spec/31 §7` rule 2: the exact shape has no `requires`. The host calls
+                    // `handle` for every request it reads and `on_stop` at every stop, and no
+                    // call of the host establishes a precondition, so a `requires` would be a
+                    // fact the verifier assumes and nothing proves.
+                    una_syntax::ast::ClauseKind::Requires(_) => {
+                        let at = env.serve_driver.map_or(clause.span, |driver| {
+                            Span::new(
+                                driver.file,
+                                serve.module.range.start,
+                                serve.module.range.end,
+                            )
+                        });
+                        let mut diagnostic = report.make(
+                            Code::U7008,
+                            at,
+                            format!(
+                                "the `serve` section's module `{}` declares `requires` on `{name}`, which no call of the host establishes, so nothing would prove it",
+                                serve.module.value
+                            ),
+                        );
+                        diagnostic
+                            .related
+                            .push(report.related(clause.span, "the `requires` clause"));
+                        diagnostic.repairs.push(Report::advice(format!(
+                            "remove the `requires` clause from `{name}` and check the condition in its body, answering a request that fails it"
+                        )));
+                        report.push(diagnostic);
+                    }
+                    una_syntax::ast::ClauseKind::Diverges => {
+                        report.error(
+                            Code::U3027,
+                            clause.span,
+                            format!(
+                                "`{name}` of the served module `{}` says `diverges`, but the host's loop is the only one that runs forever: every request, and the stop, must end after finitely many steps",
+                                serve.module.value
+                            ),
+                        );
+                    }
+                    _ => {}
+                }
+            }
+        }
+        // `spec/31 §7` rule 2: the exact shape has no refinement. A refinement on a type of
+        // `handle` or `on_stop`, written there or carried by a refined kind such as
+        // `kind Full = Request where ...`, is a precondition that no call of the host
+        // establishes, as a `requires` is. Which kinds the types name is the shape's usage
+        // error at the run.
+        let positions = def
+            .params
+            .iter()
+            .map(|param| (&param.ty, param.span, "parameter"))
+            .chain([(&def.result, def.result_span, "result")]);
+        for (declared, span, what) in positions {
+            if unrefined(declared) {
+                continue;
+            }
+            let at = env.serve_driver.map_or(span, |driver| {
+                Span::new(
+                    driver.file,
+                    serve.module.range.start,
+                    serve.module.range.end,
+                )
+            });
+            let why = if what == "parameter" {
+                format!(
+                    "which the host cannot establish: it calls `{name}` with no fact about it, so the refinement would be a precondition nothing proves"
+                )
+            } else {
+                "but the shape of the host's functions is exact, with no refinement".to_owned()
+            };
+            let mut diagnostic = report.make(
+                Code::U7008,
+                at,
+                format!(
+                    "the `serve` section's module `{}` declares the {what} of `{name}` with a refined type, {why}",
+                    serve.module.value
+                ),
+            );
+            diagnostic
+                .related
+                .push(report.related(span, format!("the refined type of the {what}")));
+            diagnostic.repairs.push(Report::advice(format!(
+                "declare the {what} without a refinement, as `pub handle(request: internal Request) -> internal Reply` and `pub on_stop() -> Unit` are, and check the condition in the body of `{name}`"
+            )));
+            report.push(diagnostic);
+        }
+        for need in &def.uses {
+            let capability = need.usage.capability;
+            let serving = super::server::is_server(env, capability)
+                || capability.is_some_and(|id| env.serving_capabilities.contains(&id));
+            if !serving {
+                continue;
+            }
+            let shown = capability
+                .and_then(|id| env.capabilities.get(id))
+                .map_or("HttpServer", |c| c.name);
+            let mut diagnostic = report.make(
+                Code::U3033,
+                need.span,
+                format!(
+                    "`{name}` of the served module `{}` uses `@{}: {shown}`, but in the `serve` form the host owns every exchange and answers each request with the reply `handle` returns",
+                    serve.module.value, need.usage.name
+                ),
+            );
+            diagnostic.repairs.push(Report::advice(format!(
+                "remove the `uses` of `{shown}` from `{name}` and return the reply; a server that takes requests itself is written in the language form, with `next` in a `for ever` loop and no `serve` section"
+            )));
+            report.push(diagnostic);
+        }
+    }
+}
+
+/// Whether `declared` carries no refinement at any level of its top, labels aside: a refined
+/// kind is a refinement of its base (`spec/31 §7` rule 2). O(depth of the type's top).
+fn unrefined(declared: &Declared) -> bool {
+    if !declared.refinements.is_empty() {
+        return false;
+    }
+    let mut ty = &declared.base;
+    loop {
+        match ty {
+            Ty::Labeled(_, inner) => ty = inner,
+            Ty::Refined(..) => return false,
+            _ => return true,
         }
     }
 }
@@ -2681,6 +2872,89 @@ pub(crate) fn drive_timing(
         "label `{}` at least `{tau}`, as `{}: {tau} Tick`",
         input.name, input.name
     )));
+    report.push(diagnostic);
+}
+
+/// IF6 (ADR 0123) at the driver of a `serve` section with `within` (rule 16): its `start
+/// answer(exchange) within w` moves the exchange's reply right to the request's task, whose end
+/// answers it through the host when the deadline cuts it (`503`), and that answer accepts
+/// `internal`. So `τ(e)` of the started expression, the timing of `handle` joined with `L_res`
+/// (which holds `L_srv`) and the preview's `τ_conc`, `⊤` for a task beside the driver's other
+/// tasks, must flow to `internal`: U4003 at the `within` line of `ita.una` otherwise. As every
+/// timing label of the preview it is an over-approximation that MAY become less strict and MUST
+/// NOT become stricter; while `L_srv` of a `serve` package is `⊤` (IF-S1), every `within` of
+/// the section is refused, as the language form's `start ... within` is. O(functions + call
+/// edges + operations).
+pub(crate) fn serve_within(
+    env: &Env<'_>,
+    findings: &Findings,
+    settings: &Manifest,
+    residue: &super::timing::Residue,
+    report: &mut Report<'_>,
+) {
+    let (Some(serve), Some(driver)) = (&settings.serve, env.serve_driver) else {
+        return;
+    };
+    let Some(within) = &serve.within_at else {
+        return;
+    };
+    let span = Span::new(driver.file, within.start, within.end);
+    let handle = (0..env.prelude)
+        .find(|m| {
+            env.modules
+                .get(*m)
+                .is_some_and(|m| m.path == serve.module.value)
+        })
+        .and_then(
+            |module| match env.modules.get(module)?.lower.get("handle") {
+                Some(Entity::Function(id)) => Some(*id),
+                _ => None,
+            },
+        );
+    // A module that is not in the package, or without `handle`, is reported already (U7008 or
+    // the run's usage error); the deadline is only checked for a section that can run.
+    let Some(handle) = handle else {
+        return;
+    };
+    let seed = super::timing::TimingSeed {
+        callees: BTreeSet::from([handle]),
+        unplaced: true,
+        ..super::timing::TimingSeed::default()
+    };
+    let concurrent = super::timing::concurrent_functions(findings);
+    let timing = super::timing::timing(
+        env,
+        findings,
+        &seed,
+        None,
+        super::timing::HostHandlers::Installed,
+        &concurrent,
+    );
+    let timing = residue.join_into(timing);
+    let internal = Label {
+        level: una_syntax::ast::Level::Internal,
+        ..Label::public()
+    };
+    let tau = timing.label.clone();
+    if tau.flows_to(&internal) {
+        return;
+    }
+    let culprit = timing.culprit(&internal);
+    let culprit = if culprit.is_empty() {
+        "the requests the other tasks of the server handle beside it".to_owned()
+    } else {
+        culprit
+    };
+    let mut diagnostic = report.make(
+        Code::U4003,
+        span,
+        format!(
+            "the `within` of the `serve` section cuts each request's task, whose reply right the host then answers with `503`, which accepts `internal` data; the deadline's timing label is `{tau}`, raised by {culprit}, which that answer would reveal"
+        ),
+    );
+    diagnostic.repairs.push(Report::advice(
+        "remove `within` from the `serve` section: the host's `answer` deadline of the grant already bounds what each peer waits",
+    ));
     report.push(diagnostic);
 }
 

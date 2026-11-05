@@ -1,0 +1,27 @@
+-- test: `handle` of the served module is an ordinary function, so a test calls it directly with a request it builds (spec/31 §7, ADR 0123 rule 16)
+-- spec: spec/31 §7
+-- expect: test-pass
+module health
+
+import std.host (Method, Reply, Request)
+
+--- Answers `GET /health` with 200, and every other request with 404.
+pub handle(request: internal Request) -> internal Reply
+=
+  if request.method is Get and request.segments == ["health"]
+    Reply(status: 200, headers: [], body: "ok")
+  else
+    Reply(status: 404, headers: [], body: "")
+
+--- A `GET` of the path of one segment, as the host would deliver it.
+get(segment: Text) -> internal Request = Request(method: Get, target: "/{segment}",
+  segments: [segment], params: [], headers: [], body: "", peer: "192.0.2.1", listener: "test"
+)
+
+test "the health endpoint answers ok"
+  do handle(get("health"))
+  expect result.status == 200
+
+test "another path is not found"
+  do handle(get("other"))
+  expect result.status == 404

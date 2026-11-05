@@ -1,0 +1,1 @@
+- **U2019 on a loop variable suggests a separate `let edit` binding** (#931, `spec/17 §1`). Assigning the variable of a `for` loop or of a `together for` used to suggest declaring it `let edit`, which a loop variable cannot be; the message now says that the variable is read-only and suggests a copy in the body, as `let edit next_x = x`.

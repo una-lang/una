@@ -261,7 +261,12 @@ impl<'a> Checker<'_, 'a, '_> {
         }
         let local = self.locals.get(index)?.clone();
         if !local.editable || local.lambda_depth < self.lambda_depth {
-            let reason = if !local.editable {
+            let reason = if let (false, Some(looped)) = (local.editable, local.loop_of) {
+                // A loop variable has no `edit` form, and a local cannot rebind its name.
+                format!(
+                    "`{name}` is the variable of {looped}, which is read-only; bind a copy in the body with `let edit`, as `let edit next_{name} = {name}`"
+                )
+            } else if !local.editable {
                 format!(
                     "`{name}` is not editable; declare it `let edit {name}`, or the parameter `edit {name}`"
                 )

@@ -775,8 +775,23 @@ pub struct Drive {
     pub range: Range<usize>,
 }
 
+/// The `serve` section (ADR 0123 rule 16, ADR 0122 rule 11): the module whose `handle` the host
+/// calls for each request, and the optional per-request deadline.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Serve {
+    /// `module`.
+    pub module: Option<At<String>>,
+    /// `within`, in milliseconds.
+    pub within: Option<At<u64>>,
+    /// The section's header line.
+    pub range: Range<usize>,
+    /// The whole section, from its header to the end of its last line: a problem inside it
+    /// means the section is not read (`spec/31 §7` rule 1).
+    pub extent: Range<usize>,
+}
+
 /// The sections of `ita.una`, in their canonical order (ADR 0122 rule 5).
-pub const SECTIONS: [&str; 11] = [
+pub const SECTIONS: [&str; 12] = [
     "sources",
     "needs",
     "replace",
@@ -788,6 +803,7 @@ pub const SECTIONS: [&str; 11] = [
     "contracts",
     "run",
     "drive",
+    "serve",
 ];
 
 /// The head lines of `ita.una`, in their canonical order (ADR 0122 rule 5).
@@ -840,6 +856,8 @@ pub struct Manifest {
     pub run: Option<Run>,
     /// `drive`.
     pub drive: Option<Drive>,
+    /// `serve`.
+    pub serve: Option<Serve>,
 }
 
 /// Reads `ita.una` by the closed grammar of ADR 0122 rule 5. Every line that has none of its
@@ -1122,7 +1140,8 @@ fn section(name: &str, line: &Line, manifest: &mut Manifest, errors: &mut Vec<Er
             }
         }
         "run" => manifest.run = Some(run(line, errors)),
-        _ => manifest.drive = Some(drive(line, errors)),
+        "drive" => manifest.drive = Some(drive(line, errors)),
+        _ => manifest.serve = Some(serve(line, errors)),
     }
 }
 
@@ -1864,6 +1883,62 @@ fn drive(line: &Line, errors: &mut Vec<Error>) -> Drive {
         }
     }
     drive
+}
+
+fn serve(line: &Line, errors: &mut Vec<Error>) -> Serve {
+    fn end(line: &Line) -> usize {
+        line.children
+            .iter()
+            .map(end)
+            .chain([line.range.end])
+            .max()
+            .unwrap_or(line.range.end)
+    }
+    let mut serve = Serve {
+        module: None,
+        within: None,
+        range: line.range.clone(),
+        extent: line.range.start..end(line),
+    };
+    for child in &line.children {
+        no_children(child, errors);
+        let mut cursor = Cursor::new(child);
+        let word = child.word(0).unwrap_or_default().to_owned();
+        cursor.next();
+        let result = match word.as_str() {
+            "module" => cursor
+                .module_path("the served module's path")
+                .and_then(|module| cursor.end().map(|()| module))
+                .map(|module| {
+                    if serve.module.is_some() {
+                        Err(Error::new(child.range.clone(), "`module` appears twice"))
+                    } else {
+                        serve.module = Some(module);
+                        Ok(())
+                    }
+                }),
+            "within" => cursor
+                .int("the value of `within`")
+                .and_then(|value| cursor.end().map(|()| value))
+                .map(|value| {
+                    if serve.within.is_some() {
+                        Err(Error::new(child.range.clone(), "`within` appears twice"))
+                    } else {
+                        serve.within = Some(value);
+                        Ok(())
+                    }
+                }),
+            _ => Err(Error::new(
+                child.range.clone(),
+                "the lines of `serve` are `module` and `within`",
+            )),
+        };
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) | Err(error) => errors.push(error),
+        }
+    }
+    serve
 }
 
 // ---------------------------------------------------------------------------------------------
