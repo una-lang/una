@@ -101,6 +101,16 @@ fn lines_of(text: &str) -> Option<Vec<Line<'_>>> {
     Some(lines)
 }
 
+/// The index of the line of `lines` that holds the byte offset `at`: the last that starts at
+/// or before it, if any. [`lines_of`] gives the lines in the order of the text, so their starts
+/// increase strictly and a binary search finds it in O(log L) for `L` lines; a scan from the
+/// end, once per error, made the repairs of a file with many errors quadratic (#1573).
+fn line_at(lines: &[Line<'_>], at: usize) -> Option<usize> {
+    lines
+        .partition_point(|line| line.start <= at)
+        .checked_sub(1)
+}
+
 /// Whether a line starts a declaration, as the parser's recovery reads it, or would with a
 /// foreign word in front (`fn name(`, `priv name(`).
 fn starts_decl(line: &Line<'_>, keywords: KeywordSet) -> bool {
@@ -806,10 +816,7 @@ pub(crate) fn attach(text: &str, file: FileId, keywords: KeywordSet, errors: &mu
         if error.code != Code::U0101 || error.repairs.iter().any(|r| r.edit.is_some()) {
             continue;
         }
-        let Some(at) = lines
-            .iter()
-            .rposition(|line| line.start <= error.span.start)
-        else {
+        let Some(at) = line_at(&lines, error.span.start) else {
             continue;
         };
         let Some(decl) = (0..=at)
@@ -1157,7 +1164,7 @@ pub(crate) fn underscore_renames(
             .map(|rest| rest.chars().take_while(|c| is_word_char(*c)).collect())
             .unwrap_or_default();
         let base = name.trim_start_matches('_');
-        let Some(at) = lines.iter().rposition(|l| l.start <= at_offset) else {
+        let Some(at) = line_at(&lines, at_offset) else {
             continue;
         };
         if base.is_empty() {
@@ -1194,7 +1201,7 @@ pub(crate) fn underscore_renames(
             }
             let absolute = start + i;
             let line_text = lines
-                .get(lines.iter().rposition(|l| l.start <= absolute).unwrap_or(0))
+                .get(line_at(&lines, absolute).unwrap_or(0))
                 .map_or("", |l| l.text);
             let labeled = after_text.trim_start().starts_with(':')
                 && !after_text.trim_start().starts_with("::");

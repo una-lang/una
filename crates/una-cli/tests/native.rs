@@ -6681,12 +6681,37 @@ pub main() -> Unit
   @console.print("done")
 "#;
 
+/// The events of `trace` by the path of the task that wrote them, the root's under `""`, each
+/// task's in its own order and without their `seq`: what `spec/27 §8` rule 4 compares of a run
+/// whose schedule decides the order across tasks.
+fn per_task(trace: &Value) -> std::collections::BTreeMap<String, Vec<Value>> {
+    let mut tasks: std::collections::BTreeMap<String, Vec<Value>> =
+        std::collections::BTreeMap::new();
+    for event in trace.as_array().unwrap() {
+        let mut event = event.clone();
+        event.as_object_mut().unwrap().remove("seq");
+        let task = event["task"].as_str().unwrap_or_default().to_owned();
+        tasks.entry(task).or_default().push(event);
+    }
+    tasks
+}
+
 #[test]
 fn s39_quiet_blocks_left_by_exits_do_not_move_the_paths_of_later_public_ones() {
     // S-39 round 3 (#1507, review H1): whatever way quiet `tasks` statements end, by `skip`,
     // `stop`, a `within`'s cut or a failure, the public statements after them are `s1` and
     // `s2`: the whole trace, paths included, is the same for every secret, in both engines.
+    //
+    // Under the real clock the public `tasks` statement of `blocked()` runs its started task
+    // `s2.1` on worker 1 beside the root on worker 0, both in a loop that stops after three
+    // iterations, so which of their two `stop` events comes first in the native trace is the
+    // order of real time across tasks, out of model (`spec/27 §8` rules 1 and 4, #1573): the
+    // native trace is compared with the interpreter's task by task, and is gapless. Under
+    // `--virtual-time` native code follows the interpreter's schedule, and the whole traces
+    // are equal (rule 3). The interpreter, deterministic, gives the same whole trace for every
+    // secret under both clocks.
     let mut first: Option<Value> = None;
+    let mut first_virtual: Option<Value> = None;
     for secret in [0, 1, 2, 4] {
         let (output, run, native) = secret_run(
             "s39xpaths",
@@ -6695,13 +6720,32 @@ fn s39_quiet_blocks_left_by_exits_do_not_move_the_paths_of_later_public_ones() {
             &["--stop-after-iterations", "3"],
         );
         assert_eq!(output, serde_json::json!(["done"]), "{secret}");
-        assert_eq!(run, native, "{secret}");
+        assert_eq!(
+            per_task(&run),
+            per_task(&native),
+            "{secret}: {run} {native}"
+        );
+        assert!(kinds_in_order(&native).1, "{secret}: {native}");
         assert_eq!(run[0]["task"], "s1.1", "{secret}: {run}");
         assert_eq!(run[0]["outcome"]["kind"], "cancelled", "{secret}: {run}");
         assert!(kinds_in_order(&run).1, "{secret}: {run}");
         match &first {
             None => first = Some(run),
             Some(first) => assert_eq!(&run, first, "{secret}"),
+        }
+
+        let (output, run, native) = secret_run(
+            "s39xpathsvt",
+            SECRET_EXIT_PATHS,
+            secret,
+            &["--stop-after-iterations", "3", "--virtual-time"],
+        );
+        assert_eq!(output, serde_json::json!(["done"]), "{secret}");
+        assert_eq!(run, native, "{secret} under virtual time");
+        assert!(kinds_in_order(&run).1, "{secret}: {run}");
+        match &first_virtual {
+            None => first_virtual = Some(run),
+            Some(first) => assert_eq!(&run, first, "{secret} under virtual time"),
         }
     }
 }

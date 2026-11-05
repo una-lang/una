@@ -378,8 +378,18 @@ pub main() -> Unit
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The `--http-timeout` of [`the_http_timeout_covers_a_wait_at_a_limit_in_both_engines`], in
+/// seconds. It bounds the first request too, whose exchange with the local server must end
+/// within it for the second to wait at the limit: 1 second, the old value, left a loaded
+/// machine too little for that exchange (#1573). Each engine waits this long once.
+const HTTP_TIMEOUT_SECS: u64 = 5;
+
 #[test]
 fn the_http_timeout_covers_a_wait_at_a_limit_in_both_engines() {
+    // One request per hour: the second waits at the limit until the time-out, and fails with
+    // `TimedOut`, never sent (`spec/27 §9` rule 4). Without the time-out it would wait an hour;
+    // the run takes the time-out, less a margin for the clocks, and at most 15 seconds more,
+    // the bound of the other cases of this file.
     let server = Server::start();
     let port = server.port;
     let program = format!(
@@ -405,9 +415,11 @@ pub main() -> Unit
         ),
         &program,
     );
-    for (time, trace) in both(&dir, "timed", &["--http-timeout", "1"]) {
-        assert!(time >= Duration::from_millis(900), "{time:?}");
-        assert!(time < Duration::from_secs(15), "{time:?}");
+    let timeout = Duration::from_secs(HTTP_TIMEOUT_SECS);
+    let flag = HTTP_TIMEOUT_SECS.to_string();
+    for (time, trace) in both(&dir, "timed", &["--http-timeout", &flag]) {
+        assert!(time >= timeout - Duration::from_millis(100), "{time:?}");
+        assert!(time < timeout + Duration::from_secs(15), "{time:?}");
         assert_eq!(
             outcomes(&trace),
             ["redacted", "redacted", "ok", "ok"],

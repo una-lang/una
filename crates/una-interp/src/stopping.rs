@@ -429,57 +429,109 @@ mod tests {
         values.get(values.len() / 2).copied().unwrap_or_default()
     }
 
+    /// How much later than the machine's own wake-up latency a wait may end, as a median: half
+    /// of what the old rounding to whole milliseconds added to a rest of 300 us (#1151, P13).
+    const EXCESS: Duration = Duration::from_micros(350);
+
+    /// The rest of each wait past its whole milliseconds, which the wait sleeps to the instant.
+    const REST: Duration = Duration::from_micros(300);
+
+    /// The most rounds of 20 paired waits that [`assert_ends_at_its_instant`] takes.
+    const ROUNDS: usize = 5;
+
+    /// Asserts that `wait(timeout)` ends at or after `timeout` in every run, and, as a median,
+    /// less than [`EXCESS`] after the machine's own latency (#1151, P13; #1573). That latency
+    /// is measured beside the wait: each of 20 waits of 1.3 to 4.3 ms, whose rest past the
+    /// whole milliseconds is 300 us, is paired with a plain `std::thread::sleep` of the same
+    /// length just before it, which ends as late as the system wakes a sleeper. On a quiet
+    /// machine that is a few tens of microseconds, so the bound is tighter than a fixed one;
+    /// on a loaded machine both medians grow alike, while the old rounding, late by about
+    /// 700 us in every wait on top of that latency, still fails. A round whose medians miss
+    /// the bound is measured again, up to [`ROUNDS`] in all: a burst of load that delays the
+    /// waits of one round more than the sleeps beside them is retried, a wait late in every
+    /// round is not. The bound is the same in every round, and the message lists them all.
+    fn assert_ends_at_its_instant(what: &str, mut wait: impl FnMut(Duration)) {
+        let mut rounds: Vec<(Duration, Duration)> = Vec::new();
+        for _ in 0..ROUNDS {
+            let mut late = Vec::new();
+            let mut floor = Vec::new();
+            for k in 0..20u32 {
+                let timeout = Duration::from_micros(1_300 + u64::from(k % 4) * 1_000);
+                let start = Instant::now();
+                std::thread::sleep(REST);
+                floor.push(start.elapsed().saturating_sub(REST));
+                let start = Instant::now();
+                wait(timeout);
+                let took = start.elapsed();
+                assert!(took >= timeout, "{what}: {took:?} before {timeout:?}");
+                late.push(took - timeout);
+            }
+            let (late, floor) = (median(&mut late), median(&mut floor));
+            rounds.push((late, floor));
+            if late < floor + EXCESS {
+                return;
+            }
+        }
+        panic!(
+            "{what}: the median wait ended {EXCESS:?} or more past the median plain sleep in \
+             each of {ROUNDS} rounds, (wait, sleep) past the instant: {rounds:?}"
+        );
+    }
+
+    #[test]
+    fn the_slices_of_a_wait_never_round_its_rest_up() {
+        // #1151, P13, deterministically: a wait is cut into the whole milliseconds that `poll`
+        // can wait without passing the instant, at most a slice each, and a rest under 1 ms
+        // that is slept to the instant, never a millisecond rounded up.
+        assert_eq!(whole_millis(Duration::ZERO), None);
+        assert_eq!(whole_millis(Duration::from_micros(300)), None);
+        assert_eq!(whole_millis(Duration::from_micros(999)), None);
+        assert_eq!(
+            whole_millis(Duration::from_millis(1)),
+            Some(Duration::from_millis(1))
+        );
+        assert_eq!(
+            whole_millis(Duration::from_micros(1_300)),
+            Some(Duration::from_millis(1))
+        );
+        assert_eq!(
+            whole_millis(Duration::from_micros(4_300)),
+            Some(Duration::from_millis(4))
+        );
+        assert_eq!(whole_millis(Duration::from_secs(30)), Some(SLICE));
+        // The rest is slept to its instant: never before it.
+        let end = Instant::now() + Duration::from_micros(300);
+        precise_rest(Some(end), Duration::from_micros(300));
+        assert!(Instant::now() >= end);
+    }
+
     #[test]
     fn a_tick_wait_ends_at_its_exact_instant_not_at_the_next_millisecond() {
         // #1151, P13: a wait of whole milliseconds plus a fraction ends at or after its exact
         // instant, and close to it. The old wait polled for the time left rounded up to whole
         // milliseconds, so it ended about 700 us late for a rest of 300 us, by the phase of the
         // tick, plus the system's latency; here the rest is slept to the instant, and only
-        // that latency is left. The bound, 600 us, is on the median of 20 waits, so one late
-        // wake of a busy machine does not fail it, while the old rounding, late in every wait,
-        // does.
+        // that latency is left, which the judge measures beside the waits (#1573).
         let stop = RunStop::new(1);
-        let mut late = Vec::new();
-        for k in 0..20u32 {
-            let timeout = Duration::from_micros(1_300 + u64::from(k % 4) * 1_000);
-            let start = Instant::now();
+        assert_ends_at_its_instant("a tick wait", |timeout| {
             assert!(wait_tick(&stop, timeout));
-            let took = start.elapsed();
-            assert!(took >= timeout, "{took:?} before {timeout:?}");
-            late.push(took - timeout);
-        }
-        let median = median(&mut late);
-        assert!(
-            median < Duration::from_micros(600),
-            "median {median:?} past the instant: {late:?}"
-        );
+        });
     }
 
     #[test]
     fn an_operation_wait_times_out_at_its_exact_instant() {
         // #1151, P13 (M3): an `Http` wait bounded by a deadline, on a socket that never becomes
         // readable, times out at or after its exact instant and close to it, not at the next
-        // millisecond.
+        // millisecond, judged as the tick wait is (#1573).
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
         let _server = listener.accept().unwrap();
         let stop = RunStop::new(1);
         let interrupt = stop.interrupt();
-        let mut late = Vec::new();
-        for k in 0..20u32 {
-            let timeout = Duration::from_micros(1_300 + u64::from(k % 4) * 1_000);
-            let start = Instant::now();
+        assert_ends_at_its_instant("an operation wait", |timeout| {
             let waited = interrupt.wait(client.as_fd(), false, timeout);
-            let took = start.elapsed();
             assert!(matches!(waited, Waited::TimedOut), "{waited:?}");
-            assert!(took >= timeout, "{took:?} before {timeout:?}");
-            late.push(took - timeout);
-        }
-        let median = median(&mut late);
-        assert!(
-            median < Duration::from_micros(600),
-            "median {median:?} past the instant: {late:?}"
-        );
+        });
     }
 
     #[test]
