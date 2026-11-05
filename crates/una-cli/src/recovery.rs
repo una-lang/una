@@ -13,7 +13,9 @@
 //! stays linear in the source up to that logarithmic factor: O(n log n) for `n` declarations
 //! and errors, where rule 12 of ADR 0096 says linear (`docs/compiler/architecture.md` §5,
 //! #1573). The renames of `_` names still rescan the declaration of each error, so one huge
-//! declaration with many such names stays quadratic in its own size (a follow-up card). The repairs that the parser attaches are bounded the same way (`una_syntax::rewrite`).
+//! declaration with many such names stays quadratic in its own size (card #1635).
+//! The repairs that the parser attaches (`una_syntax::rewrite`) are not shown to be better:
+//! `attach` also scans its declaration per error, and card #1635 probes it.
 
 use std::collections::{BTreeMap, BTreeSet};
 
