@@ -548,6 +548,12 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
         .collect();
     env.project_code = package.settings.format.code();
     env.manifest_file = package.settings.format.file();
+    env.serve_driver = package
+        .settings
+        .serve
+        .as_ref()
+        .zip(package.manifest)
+        .map(|(serve, manifest)| Span::new(manifest, serve.at.start, serve.at.end));
     env.trusted_dependencies = env
         .modules
         .iter()
@@ -825,9 +831,11 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
     }
     authority::grants(&env, package.settings, package.run, &mut report);
     authority::drive_failures(&env, package.settings, &mut report);
+    authority::serve_functions(&env, package.settings, &mut report);
     // `L_res` of the checked package, computed once for every site that joins it (ADR 0116 P9).
     let residue = timing::residue_of(&env, &findings);
     authority::drive_timing(&env, &findings, package.settings, &residue, &mut report);
+    authority::serve_within(&env, &findings, package.settings, &residue, &mut report);
     let limit_label =
         authority::limit_timing(&env, &findings, package.settings, &residue, &mut report);
     authority::limiter_timing(&env, &findings, &residue, &mut report);

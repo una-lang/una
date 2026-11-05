@@ -1320,6 +1320,22 @@ impl<'p, 'a> Checker<'p, 'a> {
                 ),
             );
         }
+        // ADR 0123 rule 16: the `serve` section's module is a module of the package, as `run
+        // entry` is.
+        if let Some(serve) = &settings.serve
+            && !paths.contains_key(&serve.module.value)
+            && !unparsed_entry(&serve.module.value)
+        {
+            self.error(
+                settings.format.code(),
+                Span::new(manifest, serve.module.range.start, serve.module.range.end),
+                format!(
+                    "{} `{}` is not a module of this package",
+                    settings.format.section("[serve] module"),
+                    serve.module.value
+                ),
+            );
+        }
     }
 }
 

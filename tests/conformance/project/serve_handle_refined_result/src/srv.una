@@ -1,0 +1,14 @@
+-- test: the result of `handle` is exactly `internal Reply`, so a refined kind there is U7008 at the `serve` section's module (spec/31 §7, ADR 0123 rule 16)
+-- spec: spec/31 §7
+-- expect: error U7008 at ita.una:10:10
+module srv
+
+import std.host (Reply, Request)
+
+--- A reply that succeeds.
+kind Success = Reply where it.status == 200
+
+--- Answers every request with 200.
+pub handle(request: internal Request) -> internal Success = Reply(status: 200, headers: [],
+  body: "ok"
+)

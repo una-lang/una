@@ -12,8 +12,8 @@ use una_syntax::ita::{self, At, CapType, LockOrigin, Origin, PkgName};
 use crate::lock::Lock;
 use crate::manifest::{
     Boundary, Ceiling, Contract, Drive, Edition, Format, MAX_DRIVE_MILLISECONDS, MAX_MEMORY_CAP,
-    Manifest, Profile, boundary_conflicts, budget_missing, budget_out_of_range, is_grant,
-    is_module_path, is_upper_camel, upper_camel,
+    MAX_SERVE_MILLISECONDS, Manifest, Profile, Serve, boundary_conflicts, budget_missing,
+    budget_out_of_range, is_grant, is_module_path, is_upper_camel, upper_camel,
 };
 use crate::names::{is_name_word, reserved_like};
 use crate::version::{Line, Version};
@@ -417,6 +417,66 @@ pub fn parse_ita_manifest(text: &str) -> (Manifest, Vec<ProjectError>) {
                 ticks,
                 budget: budget.flatten(),
                 at: drive.range.clone(),
+            });
+        }
+    }
+    // The host-driven form of a server (ADR 0123 rule 16, `spec/31 §7`): its keys, the range of
+    // `within`, and one program per package, so no `run entry` and no `drive` beside it, each
+    // U7008. A section with a problem is not read, so the run never serves what it does not
+    // say.
+    if let Some(serve) = &read.serve {
+        // A problem the grammar found inside the section, a line given twice, an unknown line
+        // or a malformed literal included, leaves it unread too.
+        let mut valid = !errors.iter().any(|e| {
+            e.range.start >= serve.extent.start
+                && e.range.start < serve.extent.end.max(serve.extent.start + 1)
+        });
+        let within = match &serve.within {
+            Some(at) if (1..=MAX_SERVE_MILLISECONDS).contains(&at.value) => Some(at.value),
+            Some(at) => {
+                errors.push(error(
+                    code,
+                    at.range.clone(),
+                    format!(
+                        "`within` is a number of milliseconds from 1 to {MAX_SERVE_MILLISECONDS}, not {}",
+                        at.value
+                    ),
+                ));
+                valid = false;
+                None
+            }
+            None => None,
+        };
+        if serve.module.is_none() {
+            errors.push(error(
+                code,
+                serve.range.clone(),
+                "the `serve` section has no `module`",
+            ));
+            valid = false;
+        }
+        if manifest.entry.is_some() {
+            errors.push(error(
+                code,
+                serve.range.clone(),
+                "a package has a `serve` section or a `run entry`, not both; the host runs the server of `serve` instead of `main`",
+            ));
+            valid = false;
+        }
+        if read.drive.is_some() {
+            errors.push(error(
+                code,
+                serve.range.clone(),
+                "a package has a `serve` section or a `drive` section, not both; a package runs one program",
+            ));
+            valid = false;
+        }
+        if valid && let Some(module) = &serve.module {
+            manifest.serve = Some(Serve {
+                module: located(module),
+                within,
+                within_at: serve.within.as_ref().map(|at| at.range.clone()),
+                at: serve.range.clone(),
             });
         }
     }

@@ -2,7 +2,7 @@
 
 Status: Normative, edition 0.4 preview (ADR 0123).
 
-A server answers HTTP/1.1 requests through the host capability `HttpServer`, granted by address with limits. The rules of ADR 0123 join this chapter as they land, each with its tests. A program names the capability and is checked against §1; its operations run in neither engine yet (§1 rule 10), and the rules of §2 to §6 bind the host code that will read, write and serve for it (`crates/una-http`), which its tests check.
+A server answers HTTP/1.1 requests through the host capability `HttpServer`, granted by address with limits. The rules of ADR 0123 join this chapter as they land, each with its tests. A program names the capability and is checked against §1, and a package's `serve` section against §7; its operations, and the driver of §7, run in neither engine yet (§1 rule 10, §7 rule 5), and the rules of §2 to §6 bind the host code that will read, write and serve for it (`crates/una-http`), which its tests check.
 
 **Editions.** The rules of this chapter apply only to packages of edition `0.4` (`spec/13 §7`). Earlier editions do not change, and the client of `spec/24` does not change.
 
@@ -300,3 +300,74 @@ The host code in `crates/una-http/src/serve` is the same in both engines and run
     5. *What the program sees.* Contained faults are counted per grant and for the run, but not yet shown to the program: `faults()` and the trace event of each contained fault come with step 5 (#1571).
 
 **Block for the capability.** The serve threads decide observable timing: `408` against a silent close, `idle` against `read`, the order of delivery, and the placement of connections. The checker computes the `L_srv` labels of the S4 design (`docs/plan/0123-s4-design.md` §10) with the preview's terms (§1 rule 5 item 7); the engines MUST NOT be wired to a program before their timing oracles exist, which land with the operations (§1 rule 10).
+
+## 7. The host-driven form: `serve`
+
+ADR 0123 rules 16 and 22, with decisions S6-D1 to S6-D6 of `docs/plan/0123-s6-design.md`. The section, its checks, its usage errors and the report's entries are in this section. The driver that runs the program of rule 4 needs the operations of `HttpServer` (§1 rule 10), so it runs in neither engine yet: a run or a build of a package with a `serve` section fails closed with a usage error (rule 5).
+
+1. **The section.** In `ita.una` (`spec/30 §2`), the `serve` section names the module whose functions the host calls, and optionally a per-request deadline in milliseconds:
+
+   ```text
+   serve
+     module shop.api
+     within 10000
+   ```
+
+   - Its lines are `module`, a module of the package, and `within`, an integer from 1 to 86,400,000. A missing `module`, a `within` out of range, a line of another form, a line given twice, the section given twice, a module that is not a module of the package, and a `serve` section beside a `run entry` or a `drive` section (a package runs one program), are U7008 at the line, or at the value for one out of range. A section with any problem inside it, one the grammar finds included (a line given twice, an unknown line, a malformed literal), is not read: nothing else is reported of it, and a run never serves what it does not say.
+   - `una.toml` has no `[serve]` table: edition `0.4` is written in `ita.una` only (ADR 0122), so `[serve]` in `una.toml` is U7002 as any unknown table. A dependency's `serve` section is not read, as its `run` and `drive` sections are not (ADR 0122 rule 12).
+   - `run grants` keeps its meaning. A run of a package with a `serve` section and no `serve:` grant, in `run grants` or by `--grant`, is a usage error, exit code 2, before anything starts.
+2. **The module.** It declares:
+
+   ```una
+   pub handle(request: internal Request) -> internal Reply
+   pub on_stop() -> Unit                 -- optional
+   ```
+
+   with `Request` and `Reply` of `std.host` (§1 rule 2), and neither has a `requires` clause: the host calls `handle` for every request it reads and `on_stop` at every stop, and no call of the host establishes a precondition, so a `requires` would be a fact the verifier assumes and nothing proves. A `requires` on either is U7008 at the section's `module`, with the clause as the related span, in `una check`; so is a refined type of a parameter or of the result of either, written there or carried by a refined kind such as `kind Full = Request where it.body != ""`, with the type as the related span, since a refinement of the parameter is the same precondition and the shape is exact. A module without `handle` of exactly this shape (public, no type parameters, one parameter passed by value whose type is `internal Request`, the result `internal Reply`), or with an `on_stop` that is not `pub on_stop() -> Unit`, is a usage error, exit code 2, of `una run` and `una build`, as for `drive` (`spec/26 §2`); the message names the module, the section and the first difference found.
+3. **Checks** (`una check`):
+   1. `handle` and `on_stop` MAY declare `uses`, checked against the grants as `main`'s are (U3012, `spec/05 §7`): against `run grants` in `una check`, and against the final grants, `--grant` flags included, in `una run`.
+   2. `handle` MAY declare `fails`. `on_stop` MUST NOT (U3029 at the clause): the host has no caller to give a failure to.
+   3. Neither may say `diverges` (U3027 at the clause): every request, and the stop, ends after finitely many steps (ADR 0116 rule 9).
+   4. Neither may name `HttpServer`, or a capability whose handlers can perform one of its operations (§1 rule 4), in its `uses` (U3033 at the binding; decision S6-D3). In this form the host owns every exchange and answers each request with the reply `handle` returns, so a `handle` that took, answered or closed exchanges would take work from the driver, or stop the server from a request. A public function's effect set is bounded by its declared `uses` (`spec/05 §3`), so this refuses every operation of `HttpServer` in their effect sets, through a callee, a function value or a handler included. A server that takes requests itself is written in the language form (§1 rule 6, ADR 0123 rule 15) without a `serve` section.
+   5. A `Reply` built from `secret` data is U4001 at the field, as for every constructor of `Reply` (§1 rule 2).
+   6. **The driver is a hand-off site** of `L_srv` (§1 rule 5 item 7, IF-S1): its `next` is inside the `tasks` statement whose started tasks run `handle`, so the preview's `τ_conc` at it is `⊤`, as for the language form's `next`, and `L_srv` of a package with a `serve` section is the top label. It raises every timing site of the package (a `within`, a `first of`, a limit), as it does in a language-form server.
+   7. **`within`.** With `within w`, the driver's `start answer(exchange) within w` moves the exchange's reply right to its task, whose cut by the deadline the host answers with `503` (§1 rule 3). That answer accepts `internal`, so `τ(e)` of the started expression, the timing of `handle` joined with `L_res` (which holds `L_srv`) and `τ_conc`, MUST flow to `internal`: U4003 at the value of `within` otherwise (§1 rule 5 item 6, IF6). While `L_srv` of the preview is `⊤` (item 6), every `within` of a `serve` section is U4003, as the language form's `start ... within` is; the label MAY become less strict with a more precise `L_srv` (#1155), and MUST NOT become stricter. Without `within`, the grant's `answer` bounds what each peer waits (§2), and `handle` cannot diverge.
+4. **Meaning.** `una run` and the executable that `una build` writes run this program, with `handle` and `on_stop` from the module (ADR 0123 rule 16):
+
+   ```una
+   main() -> Unit
+     uses @server: HttpServer[next, reply]
+     diverges
+   =
+     tasks
+       for ever
+         let next = attempt @server.next()
+         when next
+           is Ok(exchange) ->
+             start answer(exchange) within w   -- `within w`, and the clause below, only with `within`
+               if error use unit
+           is Err(failure) -> unit
+     on_stop()                                 -- only when declared, after every request has drained
+
+   answer(exchange: internal Exchange) -> Unit
+     uses @server: HttpServer[reply]           -- and the `uses` of handle
+   =
+     let reply = handle(exchange.request)
+       if error use Reply(status: 500, headers: [], body: "")   -- only when handle declares fails
+     @server.reply(to: exchange.right, reply: reply)
+       if error use unit
+   ```
+
+   - A failure of `handle` becomes `500` with an empty body, never the failure's payload. A `reply` that fails with `BadReply` sends nothing, and the task's end then answers `500` (§1 rule 3).
+   - The driver is engine code equivalent to this program, not Una source or Core IR that the package gains (decision S6-D4): `una core` of the package does not change, and `handle` stays an ordinary function for the checker, the verifier and tests, which call it directly with a `Request` they build.
+   - At a host stop, `next` fails with `Interrupted`, the loop ends, the started tasks drain, `on_stop` runs on the main task with the run's grants, and the run ends with exit code 0; at the hard stop every task is cancelled, the auto-answers of their reply rights are sent, `on_stop` does not run, and the run ends with U6007 (ADR 0123 rule 18).
+   - The `tasks` statement has no `at most`: the grant's `/once` bounds the exchanges open, and so the started tasks (decision S6-D6).
+5. **Not yet run.** Until the operations of `HttpServer` run (§1 rule 10), `una run` of a package with a `serve` section reports, in this order, the usage error of rule 2, the usage error of a missing `serve:` grant (rule 1), and then a usage error that says the driver does not run in this release yet; `una build` reports the first and the last. Each has exit code 2, and each comes before any listener is bound or any program code runs. `una check`, `una test` and `una report` of such a package work: tests call `handle` directly.
+6. **The report** (`spec/13 §6`, ADR 0123 rule 22), additions within `una.report/2`, for a package with a `serve:` grant or a `serve` section, which **serves**:
+   - `tcb.host_capabilities` lists `HttpServer` when the package serves, or when a function or handler of it uses `HttpServer`.
+   - `tcb.serve_grants` lists each `serve:` grant of `run grants`, in order, as `{"address": "127.0.0.1:8080", "scheme": "http", "limits": {...}, "checks_host": true}`: `limits` holds every item of §2's table but the TLS files and `hosts`, with its default applied, sizes in bytes, times in seconds, a rate as `"N/second"`, and `null` for `none` or no rate; `checks_host` is `false` for `hosts=*`. A package that serves nothing has `[]`.
+   - `tcb.server` is `"una-http/serve"`, the server code of the host, for a package that serves, and `null` otherwise; `tcb.tls` is `null` while no TLS server is built (§6 rule 10).
+   - `out_of_model` gains, at its end: "what a server's peers send in reaction to its timing, and which requests its full queues refuse"; "what a peer receives when the host's deadlines cut an exchange"; and "which request a call of `next` receives when several serve threads hold requests, which the timing of every task of the run and of the serve threads decides" (ADR 0123 S4 amendment, section E).
+   - `warnings`, a new key after `out_of_model`, a list of sentences, `[]` when none, in the order of the grants: a plain `http` grant on an address that is not loopback, a wildcard included; a grant with `hosts=*`; with `peer=none`; with `peer_buffers=none`; with `tls12`. Warnings appear in the report only.
+   - The human form prints `server:` in the `tcb` lines, a `servers:` section with one line per grant, and each warning as a `warning:` line after `out of model`.
+7. **Costs.** The section is read in O(lines); the checks of rule 3 are O(clauses + uses) of the two functions, with the timing label of item 7 the one rule of every timing label, O(functions + call edges + operations); the report's entries are O(grants).

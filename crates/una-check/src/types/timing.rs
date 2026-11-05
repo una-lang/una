@@ -1121,7 +1121,7 @@ pub(crate) fn server_label(
     concurrent: &BTreeSet<usize>,
     mut residue: Residue,
 ) -> Residue {
-    if findings.server_sites.is_empty() {
+    if findings.server_sites.is_empty() && env.serve_driver.is_none() {
         return residue;
     }
     let internal = Label {
@@ -1129,6 +1129,16 @@ pub(crate) fn server_label(
         ..Label::public()
     };
     let mut sites: Vec<HttpSite> = findings.server_sites.clone();
+    // ADR 0123 rule 16 and IF-S1: the driver of a `serve` section is a hand-off site, its
+    // `next` inside the `tasks` statement whose started tasks run `handle`, so `τ_conc` at it
+    // is the preview's `⊤`, as for the language form's `next` (rule 15).
+    if let Some(span) = env.serve_driver {
+        sites.push(HttpSite {
+            span,
+            function: None,
+            unplaced: true,
+        });
+    }
     sites.extend(
         findings
             .server_starts
@@ -1150,12 +1160,17 @@ pub(crate) fn server_label(
         .zip(&sites)
         .find(|(limit, _)| label.flows_to(&limit.label))
         .or_else(|| labels.sites.iter().zip(&sites).next())
-        .map(|(_, site)| site.function);
-    let place = match named.flatten().and_then(|id| env.functions.get(id)) {
+        .map(|(_, site)| site);
+    let driver = named.is_some_and(|site| Some(site.span) == env.serve_driver);
+    let place = match named
+        .and_then(|site| site.function)
+        .and_then(|id| env.functions.get(id))
+    {
         Some(def) => match env.modules.get(def.module).map(|m| m.path.as_str()) {
             Some(path) if !path.is_empty() => format!("`{path}.{}`", def.name),
             _ => format!("`{}`", def.name),
         },
+        None if driver => "the driver of the `serve` section".to_owned(),
         None => "a handler's operation".to_owned(),
     };
     residue.label = residue.label.join(&label);

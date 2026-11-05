@@ -33,6 +33,9 @@ pub struct Manifest {
     pub grants_listed: bool,
     /// The `drive` section of `ita.una`, edition `0.4`: the host-driven step (ADR 0116 rule 1).
     pub drive: Option<Drive>,
+    /// The `serve` section of `ita.una`, edition `0.4`: the host-driven form of a server
+    /// (ADR 0123 rule 16).
+    pub serve: Option<Serve>,
     /// `[package] edition`: `0.1`, the default, or `0.2` (`spec/13 §7`, ADR 0056).
     pub edition: Edition,
     /// `[contracts]`, edition `0.3`: the locked `uses` clauses of public functions (ADR 0092
@@ -170,6 +173,26 @@ pub struct Drive {
     /// `budget`, the time limit of one step, with the same range.
     pub budget: Option<u64>,
     /// Where the table's name is written.
+    pub at: std::ops::Range<usize>,
+}
+
+/// The longest per-request deadline of the `serve` section, in milliseconds: a day (ADR 0123
+/// rule 16).
+pub const MAX_SERVE_MILLISECONDS: u64 = 86_400_000;
+
+/// The `serve` section of `ita.una`, edition `0.4` (ADR 0123 rule 16, ADR 0122 rule 11,
+/// `spec/31 §7`): the module whose `handle` the host calls for each request, in a task of its
+/// own, and whose `on_stop` it calls after the drain; and the optional per-request deadline, in
+/// milliseconds. `una.toml` has no such table: edition 0.4 reads only `ita.una`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Serve {
+    /// `module`, a module of the package.
+    pub module: Located,
+    /// `within`, the deadline of each request's task, from 1 to [`MAX_SERVE_MILLISECONDS`].
+    pub within: Option<u64>,
+    /// Where `within` is written, when it is.
+    pub within_at: Option<std::ops::Range<usize>>,
+    /// Where the section's name is written.
     pub at: std::ops::Range<usize>,
 }
 
