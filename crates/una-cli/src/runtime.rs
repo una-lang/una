@@ -273,6 +273,9 @@ fn limits<'a>(
             .map_or(options.max_depth, |settings| settings.task_depth),
         stop,
         kernels: &una_core::dense::variants::Kernels::BASELINE,
+        // No run reaches the engine yet: a program that serves is refused before it starts
+        // (`spec/31 §1` rule 10).
+        serve: None,
     }
 }
 

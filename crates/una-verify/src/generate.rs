@@ -2156,7 +2156,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                 // `together` task is; its value is `unit`, and it gives no fact.
                 // `quiet e` is `e` for verification (S-39): only the trace differs.
                 Expr::Quiet { body, .. } => expr = body,
-                Expr::Start { task, span } => {
+                Expr::Start { task, span, .. } => {
                     let mut task_leaves = Vec::new();
                     self.walk(task, &ctx, &mut task_leaves);
                     leaves.push(Leaf {

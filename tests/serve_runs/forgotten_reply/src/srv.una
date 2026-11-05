@@ -1,0 +1,20 @@
+module srv
+
+import std.host (Exchange, HttpServer)
+
+--- Never answers: the task ends holding the reply right, which the host answers `500`.
+forget(exchange: internal Exchange) -> Unit = unit
+
+pub main() -> Unit
+  uses @server: HttpServer[next, reply, close]
+  diverges
+=
+  tasks
+    for ever
+      let next = attempt @server.next()
+      when next
+        is Ok(exchange) ->
+          start forget(exchange)
+        is Err(failure) -> unit
+    on stop
+      @server.close()

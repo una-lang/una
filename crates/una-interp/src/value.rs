@@ -36,6 +36,10 @@ pub(crate) enum Value<'p> {
     Closure(Rc<Closure<'p>>),
     /// A keyed hash.
     Hashed(Rc<[u8]>),
+    /// A `ReplyRight` of `std.host` (ADR 0123 rule 4): the word of the run's table of reply
+    /// rights that names one exchange, `(slot << 32) | generation`. The program cannot read it;
+    /// two are equal when they name the same exchange, and it is written `<reply-right>`.
+    Right(u64),
     /// A tuple, internal to the desugaring of the memory model (`spec/17 §4`).
     Tuple(Rc<Vec<Value<'p>>>),
     /// A map, in the order of its keys (`spec/21 §5`): each entry keeps its key as a value,
@@ -504,6 +508,8 @@ fn leaf_equal(a: &Value<'_>, b: &Value<'_>) -> bool {
         (Value::Text(x), Value::Text(y)) => Rc::ptr_eq(x, y) || x == y,
         (Value::Unit, Value::Unit) => true,
         (Value::Hashed(x), Value::Hashed(y)) => Rc::ptr_eq(x, y) || x == y,
+        // Two reply rights are equal when they name the same exchange (ADR 0123 rule 1).
+        (Value::Right(x), Value::Right(y)) => x == y,
         (Value::Data(x), Value::Data(y)) => {
             x.ctor.kind == y.ctor.kind
                 && x.ctor.index == y.ctor.index

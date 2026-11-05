@@ -604,7 +604,15 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 Expr::Tasks { bound, body, span } => {
                     return self.tasks(bound.as_ref(), body, *span, env, scope, catch);
                 }
-                Expr::Start { task, span } => {
+                Expr::Start { task, rights, span } => {
+                    // ADR 0123 rule 4.2: native code moves no reply right yet (#1571), so a
+                    // `start` whose captures can hold one is refused rather than run with its
+                    // rights left behind.
+                    if !rights.is_empty() {
+                        return Err(unsupported(
+                            "a `start` whose captures can hold a reply right of `std.host`",
+                        ));
+                    }
                     return self.start(task, *span, env, scope, catch);
                 }
                 Expr::Quiet { body, timing, .. } => {

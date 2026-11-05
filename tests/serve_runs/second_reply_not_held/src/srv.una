@@ -1,0 +1,43 @@
+module srv
+
+import std.host (Exchange, HttpServer, Reply, ServeError)
+
+--- What a second `reply` says.
+said(outcome: internal Result[Unit, internal ServeError]) -> internal Text
+=
+  when outcome
+    is Ok(done) -> "sent twice"
+    is Err(failure) ->
+      when failure
+        is NotHeld -> "not held"
+        is BadReply -> "bad reply"
+        is Interrupted -> "interrupted"
+        is TimedOut -> "timed out"
+        is Closed -> "closed"
+
+--- Answers `one` twice, and reports the second on `two`.
+twice(one: internal Exchange, two: internal Exchange) -> Unit
+  uses @server: HttpServer[reply]
+=
+  @server.reply(to: one.right, reply: Reply(status: 200, headers: [], body: "once"))
+    if error use unit
+  let again = attempt @server.reply(to: one.right,
+    reply: Reply(status: 200, headers: [], body: "twice")
+  )
+  @server.reply(to: two.right, reply: Reply(status: 200, headers: [], body: said(again)))
+    if error use unit
+
+--- A successful `reply` releases the right: a second one fails with `NotHeld` and sends nothing,
+--- which the reply to the second request reports (`spec/31 §1` rule 3 item 4).
+pub main() -> Unit
+  uses @server: HttpServer[next, reply, close]
+=
+  let first = attempt @server.next()
+  let second = attempt @server.next()
+  let answered = when first
+    is Ok(one) ->
+      when second
+        is Ok(two) -> twice(one, two)
+        is Err(failure) -> unit
+    is Err(failure) -> unit
+  @server.close()

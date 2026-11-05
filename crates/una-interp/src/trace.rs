@@ -48,6 +48,7 @@ impl<'a> From<&'a Event> for EventDoc<'a> {
                 | EventOutcome::Stop
                 | EventOutcome::Timeout
                 | EventOutcome::TaskAborted
+                | EventOutcome::Unanswered(_)
         );
         EventDoc {
             seq: event.seq,
@@ -67,6 +68,7 @@ impl<'a> From<&'a Event> for EventDoc<'a> {
                 EventOutcome::Stop => OutcomeDoc::Stop,
                 EventOutcome::Timeout => OutcomeDoc::Timeout,
                 EventOutcome::Interrupted => OutcomeDoc::Interrupted,
+                EventOutcome::Unanswered(status) => OutcomeDoc::Unanswered { status: *status },
             },
         }
     }
@@ -106,6 +108,11 @@ pub enum OutcomeDoc<'a> {
     /// An interruptible operation was waiting when its task was cancelled (ADR 0117 rules 4 and
     /// 10).
     Interrupted,
+    /// A task ended holding a reply right, which the host answered (ADR 0123 rule 4.5).
+    Unanswered {
+        /// `500` or `503`.
+        status: u16,
+    },
 }
 
 /// One event as JSON, compact, as an element of [`trace_json`]: a trace written as it happens is

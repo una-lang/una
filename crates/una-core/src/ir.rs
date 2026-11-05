@@ -2198,6 +2198,12 @@ pub enum Expr {
     Start {
         /// The started expression, with its deadline and handling clauses.
         task: Box<Expr>,
+        /// The bindings `task` captures whose types can hold a `ReplyRight` of `std.host`
+        /// (ADR 0123 rule 4.2, IF6): a function value among them in a package that can hold
+        /// reply rights, and a value of a type parameter there. Only these are walked at the
+        /// start for the reply rights that move to the started task; empty in a package that
+        /// holds none.
+        rights: Vec<Name>,
         /// The statement in the source.
         span: Span,
     },

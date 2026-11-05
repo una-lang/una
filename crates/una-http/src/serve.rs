@@ -17,6 +17,8 @@ pub mod net;
 pub mod peer;
 pub mod place;
 pub mod pressure;
+pub mod program;
+pub mod rights;
 pub mod run;
 pub mod server;
 #[cfg(feature = "test-hooks")]
