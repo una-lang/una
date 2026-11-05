@@ -2713,7 +2713,9 @@ fn unrefined(declared: &Declared) -> bool {
 
 /// U3029: `step` and `on_stop` of a `[drive]` module handle every failure they meet, since the
 /// host has no caller to give a failure to (ADR 0116 rule 2); `init` may fail. Reported at the
-/// `fails` clause. And U3027: none of them says `diverges` (rule 8).
+/// `fails` clause. U3027: none of them says `diverges` (rule 8). And U7008 at the section's
+/// `module`: none of them declares `requires` or a refined parameter or result type, a
+/// precondition no call of the host establishes (`spec/26 §2` rule 2). O(clauses + params).
 pub(crate) fn drive_failures(env: &Env<'_>, settings: &Manifest, report: &mut Report<'_>) {
     let Some(drive) = &settings.drive else {
         return;
@@ -2757,6 +2759,16 @@ pub(crate) fn drive_failures(env: &Env<'_>, settings: &Manifest, report: &mut Re
         }
     }
     // ADR 0116 rule 8: none of the driven functions may say `diverges` (U3027).
+    // `spec/26 §2` rule 2: the shapes are exact, with no `requires` and no refinement (U7008).
+    let at = |span: Span| {
+        env.drive_driver.map_or(span, |driver| {
+            Span::new(
+                driver.file,
+                drive.module.range.start,
+                drive.module.range.end,
+            )
+        })
+    };
     for name in ["init", "step", "on_stop"] {
         let Some(Entity::Function(id)) = env
             .modules
@@ -2765,20 +2777,75 @@ pub(crate) fn drive_failures(env: &Env<'_>, settings: &Manifest, report: &mut Re
         else {
             continue;
         };
-        let Some(super::env::FnAst::Function(decl)) = env.functions.get(id).map(|f| f.ast) else {
+        let Some(def) = env.functions.get(id) else {
             continue;
         };
-        for clause in &decl.clauses {
-            if matches!(clause.kind, una_syntax::ast::ClauseKind::Diverges) {
-                report.error(
-                    Code::U3027,
-                    clause.span,
-                    format!(
-                        "`{name}` of the driven module `{}` says `diverges`, but the host's loop is the only one that runs forever: each call of `{name}` must end",
-                        drive.module.value
-                    ),
-                );
+        if let super::env::FnAst::Function(decl) = def.ast {
+            for clause in &decl.clauses {
+                match clause.kind {
+                    una_syntax::ast::ClauseKind::Diverges => {
+                        report.error(
+                            Code::U3027,
+                            clause.span,
+                            format!(
+                                "`{name}` of the driven module `{}` says `diverges`, but the host's loop is the only one that runs forever: each call of `{name}` must end",
+                                drive.module.value
+                            ),
+                        );
+                    }
+                    // The host calls `init` once, `step` for every tick and `on_stop` at the
+                    // stop, and no call of the host establishes a precondition, so a `requires`
+                    // would be a fact the verifier assumes and nothing proves.
+                    una_syntax::ast::ClauseKind::Requires(_) => {
+                        let mut diagnostic = report.make(
+                            Code::U7008,
+                            at(clause.span),
+                            format!(
+                                "the `drive` section's module `{}` declares `requires` on `{name}`, which no call of the host establishes, so nothing would prove it",
+                                drive.module.value
+                            ),
+                        );
+                        diagnostic
+                            .related
+                            .push(report.related(clause.span, "the `requires` clause"));
+                        diagnostic.repairs.push(Report::advice(format!(
+                            "remove the `requires` clause from `{name}` and check the condition in its body"
+                        )));
+                        report.push(diagnostic);
+                    }
+                    _ => {}
+                }
             }
+        }
+        // A refinement on a type of `init`, `step` or `on_stop`, written there or carried by a
+        // refined kind, is a precondition that no call of the host establishes, as a `requires`
+        // is: the host gives `step` each tick with no fact about it, and hands the state from
+        // one function to the next by its type `S` alone, whose refinements the usage check of
+        // the shapes does not compare. Labels stay allowed (IF7 labels `input`).
+        let positions = def
+            .params
+            .iter()
+            .map(|param| (&param.ty, param.span, "parameter"))
+            .chain([(&def.result, def.result_span, "result")]);
+        for (declared, span, what) in positions {
+            if unrefined(declared) {
+                continue;
+            }
+            let mut diagnostic = report.make(
+                Code::U7008,
+                at(span),
+                format!(
+                    "the `drive` section's module `{}` declares the {what} of `{name}` with a refined type, but the host calls `{name}` with no fact it establishes and the shapes are exact, with no refinement",
+                    drive.module.value
+                ),
+            );
+            diagnostic
+                .related
+                .push(report.related(span, format!("the refined type of the {what}")));
+            diagnostic.repairs.push(Report::advice(format!(
+                "declare the {what} without a refinement, as in `pub init() -> S`, `pub step(edit state: S, input: Tick) -> Unit` and `pub on_stop(state: S) -> Unit`, and check the condition in the body of `{name}`"
+            )));
+            report.push(diagnostic);
         }
     }
 }
