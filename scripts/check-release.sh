@@ -237,7 +237,8 @@ echo "ok: the runtime built into una has no debug section"
 # keeps: neither the symbol, by `nm`, nor its bytes, which a stripped binary still holds, may be
 # in the shipped `una` or `libuna_rt.a`. The same holds for the test hooks of the `Http`
 # client's reach pool, a lookup and a connect function a test can make hang and a pool started
-# on a first request (#1148), which only una-http's `test-hooks` feature compiles, and which
+# on a first request (#1148), and the scripted serve engine of `tests/serve_runs/` (ADR 0123
+# rule 21, una-rt's `test-hooks`), which only una-http's `test-hooks` feature compiles, and which
 # can unify into the workspace's test builds.
 for artifact in "$una" "$runtime"; do
     for marker in UNA_HASH_TEST_HOOKS_MARKER UNA_HTTP_TEST_HOOKS_MARKER; do

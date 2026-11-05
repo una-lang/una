@@ -26,6 +26,7 @@ use una_core::Name;
 use una_http::serve::program::{Port, Waited, peer_text};
 use una_http::serve::rights::{Rights, Task, Word};
 use una_http::serve::run::{Exchange, Next, Sent};
+use una_http::serve::trace::TraceKey;
 use una_syntax::Span;
 
 use super::{Abort, CANCEL, Event, EventOutcome, Flow, Machine, Stop, fault, prelude_ctor};
@@ -46,6 +47,9 @@ pub(crate) struct Serving<'w> {
     rights: Rights<Box<Exchange>>,
     /// Set by `close`, once: every later `next` fails with `Closed`.
     closed: Cell<bool>,
+    /// The key of the run's reduced trace form, and whether the trace writes the server's
+    /// values without their labels' redaction ([`Port::reveals_trace`], the tests only).
+    trace: (TraceKey, bool),
 }
 
 impl<'w> Serving<'w> {
@@ -55,7 +59,14 @@ impl<'w> Serving<'w> {
             port,
             rights: Rights::new(),
             closed: Cell::new(false),
+            trace: (port.trace_key(), port.reveals_trace()),
         }
+    }
+
+    /// The key of the run's reduced trace form (ADR 0123 rule 1), and whether the trace writes
+    /// the server's values without their labels' redaction (the toolchain's tests only).
+    pub(crate) fn trace(&self) -> (TraceKey, bool) {
+        self.trace
     }
 
     /// Answers `503` each right `task` still holds, in the order it received them, and appends
@@ -396,6 +407,11 @@ impl<'p> Machine<'p, '_> {
             // slot, or end, which another task waits for, or it is a waiter that its
             // cancellation or its deadline ended.
             if run.yield_turn() {
+                // An abort of the run that came meanwhile comes first, as at the loop's head; a
+                // cancellation that came with it does not make the operation `interrupted`.
+                if let Some(abort) = run.aborted() {
+                    return Err(Stop::Abort(abort));
+                }
                 if self.cancelled() {
                     return Err(Stop::Cut(CANCEL));
                 }

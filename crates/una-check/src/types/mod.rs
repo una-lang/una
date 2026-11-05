@@ -837,6 +837,7 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
     }
     authority::grants(&env, package.settings, package.run, &mut report);
     authority::drive_failures(&env, package.settings, &mut report);
+    authority::drive_state_labels(&env, package.settings, &mut report);
     authority::serve_functions(&env, package.settings, &mut report);
     // `L_res` of the checked package, computed once for every site that joins it (ADR 0116 P9).
     let residue = timing::residue_of(&env, &findings);

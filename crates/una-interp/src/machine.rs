@@ -423,6 +423,43 @@ impl<'p> Index<'p> {
     /// `MAX_INT_DIGITS` digits is never written (`spec/11 §7`, #923): the form is refused
     /// before any conversion, and the caller aborts the run with U6003.
     fn una_form(&self, value: &Value<'_>, form: Form) -> Result<String, IntTooLong> {
+        self.una_form_in(value, form, None)
+    }
+
+    /// The Una form of `value` in an event of the host's `HttpServer`, in `form`, with the
+    /// fields of the server's kinds in the reduced form of ADR 0123 rule 1 under `key`
+    /// ([`crate::serve_trace`]).
+    pub(crate) fn server_form(
+        &self,
+        value: &Value<'_>,
+        form: Form,
+        key: &una_http::serve::trace::TraceKey,
+    ) -> Result<String, IntTooLong> {
+        self.una_form_in(value, form, Some(key))
+    }
+
+    /// `value` in an event of the host's `HttpServer`, redacted by `label` as [`Self::redacted`]
+    /// redacts, and otherwise in the reduced form of ADR 0123 rule 1 under `key`.
+    pub(crate) fn server_redacted(
+        &self,
+        value: &Value<'_>,
+        label: &Label,
+        key: &una_http::serve::trace::TraceKey,
+    ) -> Result<String, IntTooLong> {
+        if label.is_public() || matches!(value, Value::Unit) {
+            self.server_form(value, Form::Redacted, key)
+        } else {
+            Ok(format!("<redacted:{}>", level_name(label.level)))
+        }
+    }
+
+    /// [`Self::una_form`], with the reduced form of the server's kinds under `reduce`.
+    fn una_form_in(
+        &self,
+        value: &Value<'_>,
+        form: Form,
+        reduce: Option<&una_http::serve::trace::TraceKey>,
+    ) -> Result<String, IntTooLong> {
         // A worklist instead of recursion: a value built by a loop can be deeper than the
         // native stack allows (`spec/17 §4`, ADR 0032).
         enum Task<'v, 'p> {
@@ -603,6 +640,16 @@ impl<'p> Index<'p> {
                     }
                     parts.push(Task::Text(format!("{constructor}(")));
                     let named = data.fields.len() > 1;
+                    // In an event of the host's `HttpServer`, the fields of its kinds that the
+                    // reduced form of ADR 0123 rule 1 changes (`serve_trace`).
+                    let server = reduce.filter(|_| {
+                        data.ctor.kind.module == una_core::PRELUDE_MODULE
+                            && crate::serve_trace::is_server_kind(&data.ctor.kind.name)
+                    });
+                    let header = match data.fields.first() {
+                        Some(Value::Text(name)) => Some(name.as_str()),
+                        _ => None,
+                    };
                     for (i, field) in data.fields.iter().enumerate() {
                         let (name, ty) = names.get(i).copied().unwrap_or(("?", None));
                         if i > 0 {
@@ -612,11 +659,25 @@ impl<'p> Index<'p> {
                             parts.push(Task::Text(format!("{name}: ")));
                         }
                         let label = ty.map_or_else(Label::public, Type::deep_label);
+                        let reduced = server.and_then(|key| {
+                            let how = crate::serve_trace::field(&data.ctor.kind.name, i, header)?;
+                            match field {
+                                Value::Text(text) => {
+                                    Some(crate::serve_trace::write(how, key, text.as_str()))
+                                }
+                                // These fields are `Text`; any other value is written as
+                                // nothing of it, never in clear.
+                                _ => Some("?".to_owned()),
+                            }
+                        });
                         if form != Form::Redacted
                             || label.is_public()
                             || matches!(field, Value::Unit)
                         {
-                            parts.push(Task::Value(field));
+                            match reduced {
+                                Some(text) => parts.push(Task::Text(text)),
+                                None => parts.push(Task::Value(field)),
+                            }
                         } else {
                             parts.push(Task::Text(format!(
                                 "<redacted:{}>",
@@ -3419,28 +3480,37 @@ impl<'p, 'w> Machine<'p, 'w> {
                 .map(|n| (*n).to_owned())
                 .collect(),
         };
-        // ADR 0123 rule 1: the arguments of the host's `HttpServer` are never written in clear
-        // whatever their labels; until the reduced form of that rule lands, every one is
-        // written as an `internal` value is, redacted.
+        // ADR 0123 rule 1 (`spec/31 §1` rule 7): the values of the events of the host's
+        // `HttpServer` are redacted by their labels, as every event's are, and are written in
+        // the reduced form whatever their labels, under the run's trace key. Without the run's
+        // engine, which a run that serves nothing lacks, every argument is written as an
+        // `internal` value is, redacted, failing closed.
         let server = capability == "HttpServer" && matches!(*instance, Instance::Host { .. });
+        let trace = if server {
+            self.run.serve.as_ref().map(serve::Serving::trace)
+        } else {
+            None
+        };
         let mut shown: Vec<(String, String)> = Vec::with_capacity(args.len());
         for (i, value) in args.iter().enumerate() {
             let name = names.get(i).cloned().unwrap_or_else(|| format!("arg{i}"));
             // An argument labeled above `public` is redacted.
             let label = labels.get(i).cloned().unwrap_or_else(Label::public);
-            let label = if server {
-                label.join(&Label {
-                    level: Level::Internal,
-                    ..Label::public()
-                })
-            } else {
-                label
-            };
             // An integer too long for text aborts the run at the operation (`spec/11 §7`).
-            let text = self
-                .index
-                .redacted(value, &label)
-                .map_err(|IntTooLong| int_text_abort(Some(span)))?;
+            let text = match trace {
+                // The toolchain's tests only: the reduced form without the labels' redaction.
+                Some((key, true)) => self.index.server_form(value, Form::Written, &key),
+                Some((key, false)) => self.index.server_redacted(value, &label, &key),
+                None if server => self.index.redacted(
+                    value,
+                    &label.join(&Label {
+                        level: Level::Internal,
+                        ..Label::public()
+                    }),
+                ),
+                None => self.index.redacted(value, &label),
+            }
+            .map_err(|IntTooLong| int_text_abort(Some(span)))?;
             shown.push((name, text));
         }
         // The operation's event is written when it ends, after the events of the handler code
@@ -3462,7 +3532,8 @@ impl<'p, 'w> Machine<'p, 'w> {
         // S-45 (#1552, `spec/11 §5`): in a run, an outcome labeled above `public` is written
         // as `redacted`, at the static label of the site, so whether it is depends on no
         // value; no text is built from its value, so it raises no abort for a long integer.
-        let hidden = (!request.outcome.is_public() && !self.run.clear_outcomes.get())
+        let revealed = matches!(trace, Some((_, true)));
+        let hidden = (!request.outcome.is_public() && !self.run.clear_outcomes.get() && !revealed)
             .then(|| level_name(request.outcome.level));
         // An outcome that holds an integer too long for text aborts the run at the operation
         // (`spec/11 §7`, #923), its event left `aborted`.
@@ -3470,7 +3541,11 @@ impl<'p, 'w> Machine<'p, 'w> {
             (result @ (Ok(_) | Err(Stop::Fail(_))), Some(level)) => {
                 (result, EventOutcome::Redacted(level.to_owned()))
             }
-            (Ok(value), None) => match self.index.redacted(&value, &request.result) {
+            (Ok(value), None) => match match trace {
+                Some((key, true)) => self.index.server_form(&value, Form::Written, &key),
+                Some((key, false)) => self.index.server_redacted(&value, &request.result, &key),
+                None => self.index.redacted(&value, &request.result),
+            } {
                 Ok(text) => (Ok(value), EventOutcome::Ok(text)),
                 Err(IntTooLong) => (Err(int_text_abort(Some(span))), EventOutcome::Aborted),
             },

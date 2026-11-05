@@ -245,8 +245,10 @@ fn too_deep(message: &str) -> bool {
 
 /// `start` of the closure `closure` at `site`, which the caller keeps (`spec/27 §7`): parks
 /// while the innermost statement runs as many tasks as its bound, then starts the next one on
-/// the run's workers, and goes on. 0, or 2 when the task stops instead.
-pub fn start(closure: i64, site: usize, invoke: Invoke) -> i64 {
+/// the run's workers, and goes on. The reply rights that the first `captures` values of the
+/// closure reach move to the started task before it is queued (ADR 0123 rule 4.2): `captures` is
+/// 0 when no capture can hold one. 0, or 2 when the task stops instead.
+pub fn start(closure: i64, site: usize, captures: usize, invoke: Invoke) -> i64 {
     // Whether the `start` stands in quiet code (S-40, #1512): its task is then not numbered,
     // and its static site places it.
     let (scope, quiet) = with_state(|state| {
@@ -305,10 +307,18 @@ pub fn start(closure: i64, site: usize, invoke: Invoke) -> i64 {
             return 2;
         }
     };
-    let Some(template) = with_state(|state| state.for_start(site)) else {
+    let Some(mut template) = with_state(|state| state.for_start(site)) else {
         scope.running.release();
         return 2;
     };
+    // The started task's own holder of reply rights, and the rights its captures reach, moved
+    // to it now, in their order, so that it holds them from its first step (ADR 0123 rule 4.2,
+    // `crate::serve`).
+    if crate::serve::serving().is_some() {
+        template.serve_task = crate::serve::fresh_holder();
+        crate::serve::move_at_start(closure, captures, template.serve_task);
+    }
+    let holder = template.serve_task;
     // A `start` in quiet code is not counted, and its task is `q`, with no number, so that
     // whether it ran, which may depend on data above `public`, moves neither the index, the
     // path and the worker of a later public one, nor the path of a later quiet one (S-40,
@@ -363,7 +373,9 @@ pub fn start(closure: i64, site: usize, invoke: Invoke) -> i64 {
         },
     );
     if spawned.is_err() {
-        // The task never starts: its statement counts it ended.
+        // The task never starts: its statement counts it ended, and the host answers the rights
+        // it was given, with no event (ADR 0123 rule 4.5).
+        crate::serve::answer_left(holder);
         shared.live.fetch_sub(1, Ordering::SeqCst);
         scope.running.release();
         let location = with_state(|state| state.location(site)).unwrap_or_else(nowhere);
@@ -412,8 +424,12 @@ fn started(
             None
         }
     };
+    // How the task ended, for the auto-answers of the reply rights it still holds: stopped, or
+    // not (ADR 0123 rule 4.5).
+    let mut stopped_task = closure.is_none();
     if let Some(closure) = closure {
         let (value, status) = invoke(closure, None, site);
+        stopped_task = status == 2;
         if status != 2 {
             values::release(value);
             values::release(closure);
@@ -438,6 +454,25 @@ fn started(
         (ended, state.stopped.clone(), depth, state.path.clone())
     });
     if let Some((ended, stopped, depth, path)) = ended {
+        // The rights the task still holds: `500` when it returned or ended alone past its
+        // depth, `503` when it was cancelled, cut or stopped; their `unanswered` events come
+        // before the event that ends the task (ADR 0123 rule 4.5).
+        let status = if stopped_task && !depth {
+            crate::serve::STOPPED
+        } else {
+            crate::serve::UNANSWERED
+        };
+        match (&stopped, depth) {
+            // The run's end by this abort comes first, so the other tasks stop now too.
+            (Some((code, location, message)), false) => {
+                if crate::serve::defer_abort(*code, location, message, false) {
+                    crate::serve::answer_held(status);
+                }
+            }
+            _ => crate::serve::answer_held(status),
+        }
+        // A task of a run that aborted ends as the run's tasks do, with no `cancelled` event.
+        let ended = ended.filter(|_| !crate::serve::run_aborted());
         match (stopped, depth) {
             // Too deep: the task ends alone, and the others run on (ADR 0117 rule 7).
             (Some((_, location, message)), true) => {

@@ -206,7 +206,10 @@ pub(crate) fn failed(word: i64) -> i64 {
 pub fn host_failed() -> i64 {
     with_state(|state| {
         let failed = std::mem::take(&mut state.host_failed);
-        if state.interrupted {
+        // An operation that stopped its task in progress, its event left `aborted`: a `next` of
+        // `HttpServer` once the run aborted (`crate::serve`).
+        let stopped = std::mem::take(&mut state.op_stopped);
+        if state.interrupted || stopped {
             2
         } else {
             i64::from(failed)
@@ -581,6 +584,17 @@ pub fn event(site: i64, instance: i64) -> i64 {
     .unwrap_or(-1)
 }
 
+/// Whether the event at `slot`, of operation `op`, is one of the host's `HttpServer`, whose
+/// values are written in the reduced form of ADR 0123 rule 1.
+fn server_event(state: &crate::runtime::State, op: &OpSite, slot: usize) -> bool {
+    op.capability == "HttpServer"
+        && state
+            .trace
+            .as_ref()
+            .and_then(|trace| trace.get(slot))
+            .is_some_and(|event| event.instance == "host:HttpServer")
+}
+
 /// Records argument `index` of the event at `slot`, of operation `site`.
 pub fn event_arg(site: i64, slot: i64, index: i64, value: i64) {
     let (Ok(site), Ok(slot), Ok(index)) = (
@@ -592,6 +606,7 @@ pub fn event_arg(site: i64, slot: i64, index: i64, value: i64) {
     };
     // An argument that holds an integer too long for text aborts the run at the operation
     // (`spec/11 §7`, #923), its event left `aborted`.
+    let trace = crate::serve::trace();
     let too_long = with_state(|state| {
         let Some(op) = state.ops.get(site) else {
             return false;
@@ -601,9 +616,26 @@ pub fn event_arg(site: i64, slot: i64, index: i64, value: i64) {
             .get(index)
             .cloned()
             .unwrap_or_else(|| format!("arg{index}"));
-        let shown = match op.args.get(index) {
-            Some(arg) => state.types.redacted(arg.ty, value, arg.redacted.as_deref()),
-            None => Some("?".to_owned()),
+        // ADR 0123 rule 1 (`spec/31 §1` rule 7): the values of the events of the host's
+        // `HttpServer` are redacted by their labels, as every event's are, and are written in
+        // the reduced form whatever their labels, under the run's trace key, as in the
+        // interpreter. Without the run's engine every argument is written as an `internal`
+        // value is, redacted, failing closed.
+        let server = server_event(state, op, slot);
+        let shown = match (op.args.get(index), server.then_some(trace).flatten()) {
+            // The toolchain's tests only: the reduced form without the labels' redaction.
+            (Some(arg), Some((key, true))) => state.types.server_written(arg.ty, value, &key),
+            (Some(arg), Some((key, false))) => {
+                state
+                    .types
+                    .server_redacted(arg.ty, value, arg.redacted.as_deref(), &key)
+            }
+            (Some(arg), None) if server => {
+                let level = arg.redacted.as_deref().unwrap_or("internal");
+                state.types.redacted(arg.ty, value, Some(level))
+            }
+            (Some(arg), None) => state.types.redacted(arg.ty, value, arg.redacted.as_deref()),
+            (None, _) => Some("?".to_owned()),
         };
         let Some(shown) = shown else {
             return true;
@@ -652,19 +684,33 @@ fn end_event(site: usize, slot: usize, value: i64, (failed, interrupted): (i64, 
     }
     // An outcome that holds an integer too long for text aborts the run at the operation
     // (`spec/11 §7`, #923), its event left `aborted`.
+    let trace = crate::serve::trace();
     let too_long = with_state(|state| {
         let Some(op) = state.ops.get(site) else {
             return false;
         };
+        // The outcome of an event of the host's `HttpServer`, in the reduced form of ADR 0123
+        // rule 1, as its arguments are.
+        let trace = trace.filter(|_| server_event(state, op, slot));
+        let revealed = matches!(trace, Some((_, true)));
         // S-45 (#1552): an outcome labeled above `public` is written as `redacted`, from the
         // site's static level alone; no text is built from the value, so it raises no abort.
-        let outcome = if let Some(level) = &op.outcome {
+        let outcome = if let Some(level) = op.outcome.as_ref().filter(|_| !revealed) {
             Some(EventOutcome::Redacted(level.clone()))
         } else if failed == 0 {
-            state
-                .types
-                .redacted(op.result.ty, value, op.result.redacted.as_deref())
-                .map(EventOutcome::Ok)
+            match trace {
+                Some((key, true)) => state.types.server_written(op.result.ty, value, &key),
+                Some((key, false)) => state.types.server_redacted(
+                    op.result.ty,
+                    value,
+                    op.result.redacted.as_deref(),
+                    &key,
+                ),
+                None => state
+                    .types
+                    .redacted(op.result.ty, value, op.result.redacted.as_deref()),
+            }
+            .map(EventOutcome::Ok)
         } else {
             let ty = op.error.unwrap_or(usize::MAX);
             let variant = state.types.variant_name(ty, value);

@@ -18,6 +18,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::time::Instant;
 
 use super::run::Next;
+use super::trace::TraceKey;
 
 /// How a wait for the next request ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -59,6 +60,18 @@ pub trait Port: Sync {
     /// answered `503` with `Connection: close`, and each connection finishes the exchange it
     /// has open and closes. The program's side refuses every later `next` with `Closed`.
     fn close(&self);
+
+    /// The key of the run's reduced trace form (ADR 0123 rule 1, [`TraceKey`]): drawn at random
+    /// when the run starts, all zeros under a script of connections.
+    fn trace_key(&self) -> TraceKey;
+
+    /// Whether a trace writes the values of the events of the host's `HttpServer` without the
+    /// redaction of their labels, still in the reduced form: only the scripted engine of the
+    /// toolchain's own tests says so, when a test asks it to, so that the tests compare the
+    /// reduced form of both engines. Every other engine says no.
+    fn reveals_trace(&self) -> bool {
+        false
+    }
 }
 
 /// The peer's address as a request names it (`spec/31 §1`, `peer`): its IP address without its
