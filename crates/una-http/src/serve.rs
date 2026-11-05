@@ -9,6 +9,7 @@
 //! server configuration is built, pending the decision on the TLS provider (#1059); that step
 //! also checks that the key matches the certificate.
 
+pub mod fault;
 pub mod gate;
 pub mod gcra;
 pub mod grant;

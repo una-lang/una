@@ -322,21 +322,19 @@ fn answer_all(live: &Live, want: usize, limit: Duration) -> usize {
 }
 
 #[test]
-fn a_panicking_callback_costs_no_serve_thread_and_no_connection() {
-    // The program's callback runs on the serve thread that queued a request; it panics there
-    // twice. The panics are contained: no thread ends, every request is delivered and answered,
-    // and nothing is held after the stop.
+fn a_panicking_callback_stops_the_run() {
+    // The program's callback runs on the serve thread that queued a request, and panics there:
+    // the run stops with the hard stop. Every connection closes, the listener closes, the serve
+    // threads end without a host stop, and nothing is held.
     let port = free_port();
     let (server, _grant) = prepared(port, 4);
-    let panics = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let seen = Arc::clone(&panics);
     server
         .shared()
         .on_ready(Arc::new(move || {
             let on_serve = std::thread::current()
                 .name()
                 .is_some_and(|n| n.starts_with("una-serve-"));
-            if on_serve && seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < 2 {
+            if on_serve {
                 panic!("a program callback panics");
             }
         }))
@@ -347,25 +345,39 @@ fn a_panicking_callback_costs_no_serve_thread_and_no_connection() {
         port,
         ready: Arc::new((Mutex::new(0), Condvar::new())),
     };
+    // The first request stops the run, so a later client may find the listener closed.
     let mut clients = Vec::new();
-    for n in 0..40 {
-        let mut stream = live.client();
+    for n in 0..8 {
+        let Ok(mut stream) = TcpStream::connect(("127.0.0.1", port)) else {
+            break;
+        };
         stream
-            .write_all(format!("GET /{n} HTTP/1.1\r\nHost: localhost\r\n\r\n").as_bytes())
+            .set_read_timeout(Some(Duration::from_secs(10)))
             .unwrap();
+        let _ =
+            stream.write_all(format!("GET /{n} HTTP/1.1\r\nHost: localhost\r\n\r\n").as_bytes());
         clients.push(stream);
     }
-    assert_eq!(answer_all(&live, 40, Duration::from_secs(10)), 40);
-    for client in &mut clients {
-        assert!(response(client).ends_with("alive"));
+    assert!(!clients.is_empty());
+    let end = Instant::now() + Duration::from_secs(10);
+    while live.server.failure().is_none() && Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(5));
     }
-    let shared = live.server.shared();
-    assert!(panics.load(std::sync::atomic::Ordering::SeqCst) >= 2);
-    assert!(shared.faults() >= 2, "{} faults", shared.faults());
-    assert!((0..shared.threads).all(|t| !shared.is_ended(t)));
-    drop(clients);
-    live.server.stop();
+    assert_eq!(
+        live.server.failure(),
+        Some(una_http::serve::fault::Failure::Callback)
+    );
+    assert!(live.server.take().is_none());
+    // Each client reads the end of its stream, with no reply of the program.
+    for client in &mut clients {
+        let mut bytes = Vec::new();
+        let _ = client.read_to_end(&mut bytes);
+        assert!(!String::from_utf8_lossy(&bytes).contains("alive"));
+    }
+    // The serve threads end with no host stop: each saw the failure, closed the listeners
+    // (a thread waits for them to close before it ends) and its connections.
     live.server.join();
+    assert!(live.server.shared().is_stopping());
     assert!(live.server.shared().is_quiet());
 }
 

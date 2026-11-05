@@ -11,8 +11,10 @@
 //! listener at a time, through the bytes of a flag that only the thread holding the event may
 //! set.
 //!
-//! **A thread that ends.** A panic in a connection's step, in the hand-off at accept, in a
-//! peer's expiry or in a callback is contained and costs at most that connection. A panic inside
+//! **A thread that ends.** A panic in a connection's step, in the hand-off at accept or in a
+//! peer's expiry is contained and costs at most that connection; a panic in a callback, one with
+//! a lock of a grant's shared state held, or a contained fault past the limit stops the run
+//! (`super::fault`), which closes the listeners and makes the hard stop. A panic inside
 //! the thread's wheel or readiness, or elsewhere in its loop, ends the thread: it gives up its
 //! inbox, closes every connection it owns and gives back what they held as far as their state
 //! records it, registers again the listener of a burst it was in, and hands on the turn; new
@@ -46,6 +48,7 @@ use una_core::http::serve::ServeGrant;
 use una_hash::SipKey;
 use una_sys::poll::{Events, Interest, Poller};
 
+use super::fault::{Failure, Site};
 use super::grant::lock;
 use super::net::{Clock, Readiness, Socket, SystemClock, Waker};
 use super::run::{Exchange, Msg, Next, Shared};
@@ -354,8 +357,14 @@ impl Server {
     pub fn take(&self) -> Option<Exchange> {
         match self.next() {
             Next::Exchange(exchange) => Some(*exchange),
-            Next::Blocked(_) | Next::Empty => None,
+            Next::Blocked(_) | Next::Empty | Next::Failed(_) => None,
         }
+    }
+
+    /// The failure that stopped the run, if any (`spec/31 §6` rule 13). The serve threads
+    /// end once it is enforced and their connections are closed, as after the hard stop.
+    pub fn failure(&self) -> Option<Failure> {
+        self.shared.failure()
     }
 
     /// A host stop (rule 18): the listeners close at once, idle connections close, requests
@@ -424,10 +433,13 @@ impl Context {
         } = self;
         shared.end_thread(index, inbox);
         if catch_unwind(AssertUnwindSafe(|| thread.abandon(clock.now()))).is_err() {
-            shared.fault();
+            shared.contain(None, Site::Abandon);
         }
         if outcome.is_err() {
-            shared.fault();
+            shared.thread_ended();
+            if shared.failure().is_some() {
+                acceptor.close();
+            }
             if !acceptor.closed.load(Ordering::SeqCst) {
                 shared.hand_on_turn(index);
             }
@@ -446,6 +458,14 @@ impl Context {
             #[allow(clippy::panic)]
             if self.shared.take_kill(self.index) {
                 panic!("a serve thread ends by a fault, for a test");
+            }
+            // A failure recorded under a lock is enforced here, where none is held: the
+            // listeners close and the hard stop reaches every thread.
+            if self.shared.failure().is_some() {
+                if !self.acceptor.closed.load(Ordering::SeqCst) {
+                    self.acceptor.close();
+                }
+                self.shared.enforce();
             }
             let now = self.clock.now();
             let mut busy = false;
