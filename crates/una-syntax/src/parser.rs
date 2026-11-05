@@ -2336,11 +2336,16 @@ impl<'a> Parser<'a> {
                         BlockExpr::TogetherFor(_) => "a `together for`",
                         BlockExpr::FirstOf(_) => "a `first of`",
                     };
+                    // Edition 0.2 adds assignments, whose value may be a `block_expr` too
+                    // (`spec/17 §1`, `spec/19 §1` rule 2).
+                    let values = if self.v0_2 {
+                        "the value of a `let` or of an assignment"
+                    } else {
+                        "the value of a `let`"
+                    };
                     return self.fail(
                         first,
-                        format!(
-                            "{construct} must be the last line of its block or the value of a `let`"
-                        ),
+                        format!("{construct} must be the last line of its block or {values}"),
                     );
                 }
                 _ => {}
