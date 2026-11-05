@@ -1280,6 +1280,14 @@ impl<'p, 'w> Machine<'p, 'w> {
         // A call is a check point of the task's turn: after 1024 of them, the next ready task
         // runs (ADR 0117 rules 11 and 12), as native code counts its calls.
         self.run.tick();
+        // The tick may have let another task run: when its abort ended the whole run, this
+        // call ends with the run (`spec/27 §7`), before the depth check, so a call past the
+        // limit does not end its task alone after the run's end.
+        if self.run.coroutines
+            && let Some(abort) = self.run.aborted()
+        {
+            return Err(Stop::Abort(abort));
+        }
         let used = self.stack_base.abs_diff(stack_position(&span));
         if self.depth >= self.max_depth || used > self.stack_budget {
             return Err(Stop::Abort(Abort::Depth {
@@ -5107,6 +5115,47 @@ mod tests {
         ));
         machine.stack_budget = 1024 * 1024;
         assert!(machine.enter(span).is_ok());
+    }
+
+    #[test]
+    fn a_call_after_the_run_aborted_ends_with_the_run_before_the_depth_check() {
+        // A call whose check point let another task abort the whole run ends with the run
+        // (`spec/27 §7`), even past the maximum depth: its task does not end alone with
+        // U6003 after the run's end.
+        let program = Program::default();
+        let mut index = Index::new(&program);
+        index.tasks = true;
+        let mut world = crate::host::NoWorld;
+        let keys = BTreeMap::new();
+        let mut sources = una_syntax::SourceDb::new();
+        let span = Span::at(sources.add("a.una", b"module a\n"), 0);
+        let mut machine = Machine::new(
+            &index,
+            &mut world,
+            &[],
+            &keys,
+            Limits::depth(3),
+            Clock::real(),
+        );
+        for _ in 0..3 {
+            assert!(machine.enter(span).is_ok());
+        }
+        // At the limit and before any abort, the call stops with U6003.
+        assert!(matches!(
+            machine.enter(span),
+            Err(Stop::Abort(Abort::Depth { limit: 3, .. }))
+        ));
+        machine.run.abort_run(Abort::Memory { span, limit: 7 });
+        assert!(matches!(
+            machine.enter(span),
+            Err(Stop::Abort(Abort::Memory { limit: 7, .. }))
+        ));
+        // Below the limit, too, the call does not start.
+        machine.depth = 0;
+        assert!(matches!(
+            machine.enter(span),
+            Err(Stop::Abort(Abort::Memory { limit: 7, .. }))
+        ));
     }
 
     #[test]

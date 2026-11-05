@@ -341,17 +341,19 @@ impl<'p> Machine<'p, '_> {
             .collect();
         let waiting = Waiting::enter(&run, run.current(), cancels);
         loop {
+            // An abort of another task ends the whole run (`spec/27 §7`), and this `next` ends
+            // with it, taking no request. It comes first: a `close` or a host stop that came
+            // with the abort does not turn the run's end into a catchable failure of this task
+            // (`spec/31 §1` rule 3 item 5).
+            if let Some(abort) = run.aborted() {
+                return Err(Stop::Abort(abort));
+            }
             if serving.closed.get() {
                 return Err(closed());
             }
             // A stopped run never delivers: the engine refuses what it has not (rule 18).
             if self.stop.stopped() {
                 return Err(interrupted());
-            }
-            // Nor does an aborted one: an abort of another task ends the whole run (`spec/27
-            // §7`), and this `next` ends with it, taking no request.
-            if let Some(abort) = run.aborted() {
-                return Err(Stop::Abort(abort));
             }
             let ever = self
                 .deadline

@@ -468,7 +468,7 @@ fn every_serve_run_gives_its_expected_bytes_and_trace() {
     #[allow(clippy::disallowed_methods)]
     let bless = std::env::var("UNA_BLESS").is_ok_and(|v| v == "1");
     let dirs = cases();
-    assert!(dirs.len() >= 18, "{} cases", dirs.len());
+    assert!(dirs.len() >= 19, "{} cases", dirs.len());
     let mut failures = Vec::new();
     for dir in dirs {
         let (wire, ran) = run(&dir);
@@ -496,4 +496,72 @@ fn a_run_is_a_function_of_its_script() {
     for dir in cases() {
         assert_eq!(run(&dir), run(&dir), "{}", dir.display());
     }
+}
+
+#[test]
+fn a_reply_never_follows_an_abort_of_the_run_at_any_switch_point() {
+    // The case `aborted_run_ends_a_reply` pins one count, 1022, where the switch of tasks
+    // falls on the `reply`'s own check point today. Here the replier's count is swept over
+    // consecutive values around it, so one of them lands on that check point while the length
+    // of a turn or the check points of `busy` move the switch by up to about a hundred: the
+    // counts below the switch reply before the abort, the ones from it on start no reply
+    // after the abort (`spec/27 §7`, ADR 0123 rule 4.7). The sweep must see both sides, else
+    // it fails rather than pass without reaching that check point. O(K) runs for K counts.
+    let case = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/serve_runs/aborted_run_ends_a_reply");
+    let source = std::fs::read_to_string(case.join("src/srv.una")).expect("srv.una");
+    assert!(
+        source.contains("start replier(1022)"),
+        "the case's replier count"
+    );
+    let dir = std::env::temp_dir().join(format!("una-serve-sweep-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    for name in ["ita.una", "ita.lock", "grant.txt", "script.jsonl"] {
+        std::fs::copy(case.join(name), dir.join(name)).unwrap();
+    }
+    let mut replied = Vec::new();
+    for k in 900..=1150 {
+        let program = source.replace("start replier(1022)", &format!("start replier({k})"));
+        std::fs::write(dir.join("src/srv.una"), program).unwrap();
+        let (wire, ran) = run(&dir);
+        let completion = ran[0]["completion"]["aborted"].as_str().unwrap_or_default();
+        assert!(completion.starts_with("IntText"), "k = {k}: {}", ran[0]);
+        let events = &ran[1..];
+        let op = |event: &Value| event["op"].as_str().map(str::to_owned);
+        let abort_at = events
+            .iter()
+            .position(|e| op(e).as_deref() == Some("print"))
+            .unwrap_or_else(|| panic!("k = {k}: no `aborting`"));
+        // After the abort, only the host's answers to the held rights: no operation.
+        for event in &events[abort_at + 1..] {
+            assert_eq!(op(event), None, "k = {k}: {event} after the abort");
+        }
+        let replies = events
+            .iter()
+            .filter(|e| op(e).as_deref() == Some("reply"))
+            .count();
+        let sent = wire
+            .iter()
+            .filter(|line| {
+                line["text"]
+                    .as_str()
+                    .is_some_and(|t| t.starts_with("HTTP/1.1 200 "))
+            })
+            .count();
+        assert_eq!(replies, sent, "k = {k}: replies and `200`s");
+        assert!(replies <= 1, "k = {k}");
+        replied.push((k, replies == 1));
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    // One switch point: the counts that reply come first, then the ones that do not.
+    let first_late = replied
+        .iter()
+        .position(|(_, yes)| !yes)
+        .expect("a count whose reply comes after the abort");
+    assert!(first_late > 0, "no count replies before the abort");
+    assert!(
+        replied[first_late..].iter().all(|(_, yes)| !yes),
+        "{replied:?}"
+    );
 }
