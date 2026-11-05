@@ -468,7 +468,7 @@ fn every_serve_run_gives_its_expected_bytes_and_trace() {
     #[allow(clippy::disallowed_methods)]
     let bless = std::env::var("UNA_BLESS").is_ok_and(|v| v == "1");
     let dirs = cases();
-    assert!(dirs.len() >= 15, "{} cases", dirs.len());
+    assert!(dirs.len() >= 17, "{} cases", dirs.len());
     let mut failures = Vec::new();
     for dir in dirs {
         let (wire, ran) = run(&dir);

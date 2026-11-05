@@ -226,10 +226,13 @@ impl<'p, 'w> Run<'p, 'w> {
             return false;
         }
         let now = self.clock.now();
+        // Once the run aborted, every waiter can end its `next`.
+        let aborted = self.abort.borrow().is_some();
         let switch = {
             let waiters = self.next_waiters.borrow();
             let mut sched = self.sched.borrow_mut();
-            let progress = |id: &usize| waiters.get(id).is_none_or(|waiter| waiter.ended(now));
+            let progress =
+                |id: &usize| aborted || waiters.get(id).is_none_or(|waiter| waiter.ended(now));
             if !sched.queue.iter().any(progress) {
                 false
             } else {

@@ -143,6 +143,22 @@ impl Drop for RootRights<'_, '_, '_> {
     }
 }
 
+/// When a wait for the engine ends at the latest, on the run's clock: at the earliest of the
+/// waiter's own deadline, `own`, and the other waiters' earliest, `others`, so that a waiter
+/// whose deadline passes runs to end its `next`; `None` when no waiter has one.
+pub(crate) fn wake_at(own: Option<u64>, others: Option<u64>) -> Option<u64> {
+    match (own, others) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    }
+}
+
+/// Whether a wait that timed out at `wake` reached the waiter's own deadline `own`, which ends its
+/// `next` with `TimedOut`; otherwise another waiter's deadline woke it, and it waits again.
+pub(crate) fn own_deadline(own: Option<u64>, wake: Option<u64>) -> bool {
+    own.is_some() && wake == own
+}
+
 /// A failure of `ServeError` (`spec/31 §1`), by its variant's name and position.
 fn serve_error<'p>(name: &str, index: usize) -> Stop<'p> {
     Stop::Fail(Value::data(
@@ -332,6 +348,11 @@ impl<'p> Machine<'p, '_> {
             if self.stop.stopped() {
                 return Err(interrupted());
             }
+            // Nor does an aborted one: an abort of another task ends the whole run (`spec/27
+            // §7`), and this `next` ends with it, taking no request.
+            if let Some(abort) = run.aborted() {
+                return Err(Stop::Abort(abort));
+            }
             let ever = self
                 .deadline
                 .as_ref()
@@ -380,24 +401,21 @@ impl<'p> Machine<'p, '_> {
             }
             // The wait lasts no longer than the earliest deadline of any waiter, so one whose
             // deadline passes runs; only its own ends this `next` with `TimedOut`.
-            let others = waiting.others_until();
-            let wake = match (until, others) {
-                (Some(a), Some(b)) => Some(a.min(b)),
-                (a, b) => a.or(b),
-            };
+            let wake = wake_at(until, waiting.others_until());
             let deadline = match wake {
                 Some(at) if !self.run.clock.is_virtual() => std::time::Instant::now()
                     .checked_add(std::time::Duration::from_millis(at.saturating_sub(now))),
                 _ => None,
             };
             let stop = std::sync::Arc::clone(&self.stop);
+            let aborted = || run.aborted().is_some();
             match serving
                 .port
-                .wait(epoch, retry, deadline, &|| stop.stopped())
+                .wait(epoch, retry, deadline, &|| stop.stopped() || aborted())
             {
-                Waited::Changed => {}
-                Waited::Stopped => return Err(interrupted()),
-                Waited::TimedOut if until.is_none() || wake != until => {
+                // The loop's head says which: a host stop or an abort of the run.
+                Waited::Changed | Waited::Stopped => {}
+                Waited::TimedOut if !own_deadline(until, wake) => {
                     // Another waiter's deadline passed: it runs, and this one waits again.
                 }
                 Waited::TimedOut => {
@@ -596,5 +614,31 @@ impl<'p> Machine<'p, '_> {
                 });
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{own_deadline, wake_at};
+
+    #[test]
+    fn a_wait_ends_at_the_earliest_deadline_of_any_waiter() {
+        // Review of #1595, L7: the bound of a blocking wait.
+        assert_eq!(wake_at(None, None), None);
+        assert_eq!(wake_at(Some(10), None), Some(10));
+        assert_eq!(wake_at(None, Some(7)), Some(7));
+        assert_eq!(wake_at(Some(10), Some(7)), Some(7));
+        assert_eq!(wake_at(Some(5), Some(7)), Some(5));
+        assert_eq!(wake_at(Some(7), Some(7)), Some(7));
+    }
+
+    #[test]
+    fn only_the_waiters_own_deadline_ends_its_next() {
+        // Woken by its own deadline: `TimedOut`; by another's: it waits again.
+        assert!(own_deadline(Some(5), wake_at(Some(5), Some(7))));
+        assert!(!own_deadline(Some(10), wake_at(Some(10), Some(7))));
+        assert!(!own_deadline(None, wake_at(None, Some(7))));
+        assert!(own_deadline(Some(7), wake_at(Some(7), Some(7))));
+        assert!(!own_deadline(None, None));
     }
 }
