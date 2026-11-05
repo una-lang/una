@@ -1,0 +1,40 @@
+module srv
+
+import std.host (Exchange, HttpServer, Reply)
+
+--- Answers with a reply built from literals, its `set-cookie` a credential.
+literal(exchange: internal Exchange) -> Unit
+  uses @server: HttpServer[reply]
+=
+  let headers = [Header(name: "Set-Cookie", value: "s3cr3t-set"),
+    Header(name: "x-trace", value: "kept")
+  ]
+  @server.reply(to: exchange.right,
+    reply: Reply(status: 201, headers: headers, body: "s3cr3t-reply")
+  )
+    if error use unit
+
+--- Answers with the request's own body, in its body and in a header that holds a credential.
+echoed(exchange: internal Exchange) -> Unit
+  uses @server: HttpServer[reply]
+=
+  let request = exchange.request
+  let headers = [Header(name: "x-api-key", value: request.body)]
+  @server.reply(to: exchange.right, reply: Reply(status: 200, headers: headers, body: request.body))
+    if error use unit
+
+--- The trace of `next` and `reply` in the reduced form of ADR 0123 rule 1 (`spec/31 §1` rule
+--- 7): credentials as `<credential>`, bodies and the values of query parameters by length and
+--- keyed hash, a reply right as `<reply-right>`, in both engines.
+pub main() -> Unit
+  uses @server: HttpServer[next, reply, close]
+=
+  let first = attempt @server.next()
+  let answered = when first
+    is Ok(one) -> literal(one)
+    is Err(failure) -> unit
+  let second = attempt @server.next()
+  let echoed_one = when second
+    is Ok(two) -> echoed(two)
+    is Err(failure) -> unit
+  @server.close()

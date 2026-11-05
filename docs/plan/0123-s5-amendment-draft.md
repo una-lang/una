@@ -47,3 +47,30 @@ Slice S5 lands in two parts: the checks of this draft (#1007), then the operatio
 
 - **`uses of` parameters in branches (rule 5).** A function that calls its `uses of` parameter in a branch runs code its callers choose, which the branch cannot see: in a program that imports a name of the server, such a call, or the passing on of the parameter, is U3033, failing closed.
 - **Type parameters (IF6).** A capture of a type parameter's type counts as one that can hold a reply right only in a package that imports `HttpServer`, `Exchange` or `ReplyRight`, as for function values (C).
+
+## H. The reduced trace form (#1571, part 3)
+
+Rule 1 states the reduced form of the events of `next` and `reply` and that "their values are redacted by their labels, as every event's are". Four details are left to the implementation.
+
+**Decided in the implementation** (`spec/31 §1` rule 7, `una_interp::serve_trace`, one implementation for both engines):
+
+1. A header is a credential by its name in any letter case: a reply's `Set-Cookie` is one, as a request's `cookie` is (requests carry names in lower case already).
+2. `<credential>` and `{"length": n, "hmac": "<hex>"}` are written bare in the value's Una form, as `<reply-right>` and `<redacted:level>` are, so they cannot be mistaken for a text of that content.
+3. In `target`, which stays a quoted text, each value of a query part `name=value`, split at its first `=`, is replaced by the body form of the value as received, before its percent-decoding; a part without `=` is a name and stays, as names stay in `params`. In `params` the body form is of the decoded value.
+4. The fail-closed rendering that the first part of the slice used until the reduced form landed, every argument of the host's `HttpServer` written as an `internal` value whatever its label, gives way to rule 1's own reading: redaction by labels, the reduced form beneath it. Since every field of `Request` and `Reply` is declared `internal`, a run's trace still shows no field of either; a `Reply` built from `public` data is written `Reply(status: <redacted:internal>, headers: <redacted:internal>, body: <redacted:internal>)` instead of `<redacted:internal>`, which shows nothing but its static label. A run without the engine keeps the fail-closed rendering.
+
+The key is held by the engine of the run (`Port::trace_key`): all zeros under a script, and 32 bytes from the host's random source for the serve threads of a live run (part 4), where a host that gives none stops the run from starting, as for the placement key.
+
+## I. `faults()` and the event of a contained fault (not implemented)
+
+Decision 10 of the amendment of 2026-11-02 says "At S5 (#1007) the program reads the count of contained faults through `faults()`, and each contained fault is a trace event", and item 10 of the fault-policy draft (`docs/plan/0123-s4-faults-amendment-draft.md`) places both at `Shared::contain`. Neither text declares `faults()`, its type, its label, where it lives, or the event's form, and adding a name to `std.host` or an outcome kind to `spec/11 §5` without one is a change of the language (CLAUDE.md, "Scope guard"). The counts exist (`Shared::faults`, `GrantState::faults`), and the choke point passes its `fault::Site` already; nothing is shown to the program.
+
+**Proposed, for the project's decision:**
+
+1. `faults` is a fourth operation of `HttpServer`: `op faults() -> internal Int`, the run's count of contained faults, `accepts internal`, no failure, never parking. It is `internal` because the count depends on what peers send and when (IF5); an operation rather than a function, because it reads the host's state, so it is an event and is refused in a branch of `together` by U3033 as the other operations are. A `serve:` grant allows it with the others. The per-grant counts stay in the event of item 2.
+2. Each contained fault appends a host event with no task and no operation, `{"seq": n, "outcome": {"kind": "fault", "site": "step" | "accept" | "peer-expiry" | "abandon", "listener": "<grant>"}}`, written at the program's next server operation after it (the events of serve threads are not in any task's order), before that operation's own event, so that a trace stays a function of a script under `--virtual-time`.
+3. Until the project decides, contained faults stay counted and unseen, as `spec/31 §6` rule 13 item 5 states.
+
+## J. The root's abort and `next` (`spec/31 §1` rule 3, Waiting)
+
+The second part of the slice settled that an abort of the root does not lower the run's cancellation entry: the root unwinds through its `tasks` statements, which cancel their tasks. **Decided in the implementation:** a task waiting in `next` when the root aborts ends the operation `interrupted`, with its `cancelled` event, as a cancelled one does; only an abort by a started task ends a `next` with the run's abort. Both engines agree (`tests/serve_runs/aborted_root_ends_a_waiter`).

@@ -41,6 +41,7 @@ use una_diag::{Code, Location};
 use una_http::serve::program::{Port, Waited, peer_text};
 use una_http::serve::rights::{Rights, Task, Word};
 use una_http::serve::run::{Exchange, Next, Sent};
+use una_http::serve::trace::TraceKey;
 use una_interp::{Event, EventOutcome};
 
 use crate::runtime::{Cancel, with_state};
@@ -112,6 +113,9 @@ pub(crate) struct Serving {
     /// which it lowers to 0.
     abort: Mutex<Option<(Code, Location, String)>>,
     entry: Arc<AtomicUsize>,
+    /// The key of the run's reduced trace form, and whether the trace writes the server's
+    /// values without their labels' redaction (`Port::reveals_trace`, the tests only).
+    trace: (TraceKey, bool),
     /// The scripted engine of the tests, which the run's end ends.
     #[cfg(feature = "test-hooks")]
     script: Option<Arc<una_http::serve::script::ScriptPort>>,
@@ -134,6 +138,7 @@ impl Serving {
     )]
     fn new(port: Arc<dyn Port + Send + Sync>) -> Serving {
         Serving {
+            trace: (port.trace_key(), port.reveals_trace()),
             port,
             rights: Rights::new(),
             closed: AtomicBool::new(false),
@@ -151,6 +156,13 @@ impl Serving {
     fn aborted(&self) -> bool {
         self.entry.load(Ordering::SeqCst) < RUN_ENTRY
     }
+}
+
+/// The key of the run's reduced trace form (ADR 0123 rule 1), and whether the trace writes the
+/// server's values without their labels' redaction (the toolchain's tests only); `None` in a
+/// run that serves nothing.
+pub(crate) fn trace() -> Option<(TraceKey, bool)> {
+    serving().map(|serving| serving.trace)
 }
 
 /// The run's cancellation entry, which the root carries and every task inherits, when the run
@@ -734,6 +746,12 @@ pub(crate) mod script {
                 }
             }),
         ));
+        // `UNA_TEST_SERVE_REVEAL=1`: the trace writes the server's values without their
+        // labels' redaction, still in the reduced form, for the tests that compare it.
+        #[allow(clippy::disallowed_methods)]
+        if std::env::var_os("UNA_TEST_SERVE_REVEAL").is_some_and(|v| v == "1") {
+            port.reveal();
+        }
         let mut serving = Serving::new(Arc::clone(&port) as Arc<dyn Port + Send + Sync>);
         serving.script = Some(port);
         *lock(&SERVING) = Some(Arc::new(serving));
