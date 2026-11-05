@@ -31,7 +31,7 @@ pub(crate) fn below(from: &Label, to: &Label, top: &Label) -> bool {
 /// in both directions, so that its labels are equal at every position.
 /// The third element says whether the position is covariant, where the value's data flows
 /// into the declared type, rather than contravariant, where the declared type's flows into it.
-fn violation(
+pub(crate) fn violation(
     found: &Ty,
     expected: &Ty,
     covariant: bool,

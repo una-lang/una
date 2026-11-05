@@ -1058,7 +1058,9 @@ fn is_host_kind(ty: &Type, name: &str, label: &una_core::Label) -> bool {
         if module == "prelude" && found == name && args.is_empty() && at == label && refinements.is_empty())
 }
 
-/// Whether two types are the same, labels and refinements aside.
+/// Whether two types are the same, labels and refinements aside. The labels of a driven
+/// module's state are the checker's: each hand-off of the host is a flow into the parameter's
+/// declared type, U4001 otherwise (`spec/26 §2` rule 2).
 fn same_type(a: &Type, b: &Type) -> bool {
     let all = |xs: &[Type], ys: &[Type]| {
         xs.len() == ys.len() && xs.iter().zip(ys).all(|(x, y)| same_type(x, y))
