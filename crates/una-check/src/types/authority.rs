@@ -2711,6 +2711,32 @@ fn unrefined(declared: &Declared) -> bool {
     }
 }
 
+/// Whether `declared` carries no refinement at any depth, labels aside: at its top, in a type
+/// argument of a list, a map, a dense value, a collection or a kind, in a measured magnitude,
+/// and in a parameter, the result or the failure kind of a function type (`spec/26 §2` rule 2).
+/// A kind's own fields are not looked into: their refinements are invariants that each
+/// construction proves. O(size of the type).
+fn unrefined_deep(declared: &Declared) -> bool {
+    fn plain(ty: &Ty) -> bool {
+        match ty {
+            Ty::Refined(..) => false,
+            Ty::Labeled(_, inner) | Ty::List(inner) | Ty::Dense(_, inner) => plain(inner),
+            Ty::Measured(_, inner) => plain(inner),
+            Ty::Map(keys, values) => plain(keys) && plain(values),
+            Ty::Coll(_, args) | Ty::Kind(_, args) => args.iter().all(plain),
+            Ty::Fn(function) => {
+                function.refinements.params.iter().all(Vec::is_empty)
+                    && function.refinements.result.is_empty()
+                    && function.params.iter().all(plain)
+                    && plain(&function.result)
+                    && function.fails.as_ref().is_none_or(plain)
+            }
+            _ => true,
+        }
+    }
+    declared.refinements.is_empty() && plain(&declared.base)
+}
+
 /// U3029: `step` and `on_stop` of a `[drive]` module handle every failure they meet, since the
 /// host has no caller to give a failure to (ADR 0116 rule 2); `init` may fail. Reported at the
 /// `fails` clause. U3027: none of them says `diverges` (rule 8). And U7008 at the section's
@@ -2817,8 +2843,8 @@ pub(crate) fn drive_failures(env: &Env<'_>, settings: &Manifest, report: &mut Re
                 }
             }
         }
-        // A refinement on a type of `init`, `step` or `on_stop`, written there or carried by a
-        // refined kind, is a precondition that no call of the host establishes, as a `requires`
+        // A refinement on a type of `init`, `step` or `on_stop`, at any depth of it, written
+        // there or carried by a refined kind, is a precondition that no call of the host establishes, as a `requires`
         // is: the host gives `step` each tick with no fact about it, and hands the state from
         // one function to the next by its type `S` alone, whose refinements the usage check of
         // the shapes does not compare. Labels stay allowed (IF7 labels `input`).
@@ -2828,14 +2854,14 @@ pub(crate) fn drive_failures(env: &Env<'_>, settings: &Manifest, report: &mut Re
             .map(|param| (&param.ty, param.span, "parameter"))
             .chain([(&def.result, def.result_span, "result")]);
         for (declared, span, what) in positions {
-            if unrefined(declared) {
+            if unrefined_deep(declared) {
                 continue;
             }
             let mut diagnostic = report.make(
                 Code::U7008,
                 at(span),
                 format!(
-                    "the `drive` section's module `{}` declares the {what} of `{name}` with a refined type, but the host calls `{name}` with no fact it establishes and the shapes are exact, with no refinement",
+                    "the `drive` section's module `{}` declares the {what} of `{name}` with a refined type, or a type with a refinement inside it, but the host calls `{name}` with no fact it establishes and the shapes are exact, with no refinement",
                     drive.module.value
                 ),
             );

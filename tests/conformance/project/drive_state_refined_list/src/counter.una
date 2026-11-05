@@ -1,0 +1,24 @@
+-- test: a refinement of the elements of a list state is refused as one at its top is: `step` would assume of every element what `init` never proved (spec/26 §2)
+-- spec: spec/26 §2
+-- expect: error U7008 at ita.una:6:10
+module counter
+
+import std.drive (Tick)
+
+--- A count that cannot exist.
+kind Never = Int where it == 0 and it == 1
+
+--- Needs the impossible.
+impossible(count: Int) -> Unit
+  requires 1 == 2
+=
+  unit
+
+--- Starts with one count.
+pub init() -> List[Int] = [7]
+
+--- Counts each tick, through the impossible, which the refinement would prove.
+pub step(edit state: List[Never], input: Tick) -> Unit
+=
+  for count in state
+    impossible(count)
