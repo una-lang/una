@@ -910,7 +910,7 @@ impl Code {
             Code::U3033 => &Entry {
                 code: "U3033",
                 domain: Domain::Authority,
-                meaning: "An operation of `HttpServer` in the effect set of a `together` branch, a `together for` body or a `first of` branch",
+                meaning: "An operation of `HttpServer` in the effect set of a `together` branch, a `together for` body, a `first of` branch, or `handle` or `on_stop` of a `serve` module",
             },
             Code::U4001 => &Entry {
                 code: "U4001",
