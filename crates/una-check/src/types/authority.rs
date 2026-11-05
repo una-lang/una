@@ -2783,6 +2783,119 @@ pub(crate) fn drive_failures(env: &Env<'_>, settings: &Manifest, report: &mut Re
     }
 }
 
+/// U4001 at the state parameter of `step` or `on_stop` of a `[drive]` module whose declared
+/// type the state the host hands it does not flow into (`spec/26 §2` rule 2): the result of
+/// `init` into the state of `step` and of `on_stop`, and the state of `step` into that of
+/// `on_stop`. The host is a caller that no label rule checks, so without this a `secret`
+/// state would reach a parameter that is not, and from there any sink. Labels are compared
+/// at every position of the type, by the rule of every flow into a declared type
+/// ([`super::flow::violation`]). A flow to a higher label stays legal. O(size of the types).
+pub(crate) fn drive_state_labels(env: &Env<'_>, settings: &Manifest, report: &mut Report<'_>) {
+    let Some(drive) = &settings.drive else {
+        return;
+    };
+    let Some(module) = (0..env.prelude).find(|m| {
+        env.modules
+            .get(*m)
+            .is_some_and(|m| m.path == drive.module.value)
+    }) else {
+        return;
+    };
+    if !env.reports(module) {
+        return;
+    }
+    let function = |name: &str| match env
+        .modules
+        .get(module)
+        .and_then(|m| m.lower.get(name).copied())
+    {
+        Some(Entity::Function(id)) => env.functions.get(id),
+        _ => None,
+    };
+    // Which shapes the module has is the usage error of `una run` and `una build`; only a
+    // pair whose positions exist is compared here.
+    let Some(init) = function("init").filter(|init| init.params.is_empty()) else {
+        return;
+    };
+    let step = function("step").and_then(|step| step.params.first());
+    let on_stop = function("on_stop").and_then(|on_stop| match on_stop.params.as_slice() {
+        [state] => Some(state),
+        _ => None,
+    });
+    let from_init = (&init.result.base, init.result_span, "the result of `init`");
+    let mut pairs = Vec::new();
+    if let Some(state) = step {
+        pairs.push((from_init, state, "step"));
+    }
+    if let Some(state) = on_stop {
+        pairs.push((from_init, state, "on_stop"));
+        if let Some(held) = step {
+            let from_step = (&held.ty.base, held.span, "the state parameter of `step`");
+            pairs.push((from_step, state, "on_stop"));
+        }
+    }
+    let top = Label::top(&env.categories);
+    // One diagnostic per parameter: `on_stop`'s is reported for the first source that does
+    // not flow into it.
+    let mut reported = BTreeSet::new();
+    for ((found, from_span, from_what), state, name) in pairs {
+        if reported.contains(name) {
+            continue;
+        }
+        let Some(super::flow::Violation {
+            from,
+            to,
+            covariant,
+            invariant,
+        }) = super::flow::flow_violation(found, &state.ty.base, true, &top, &env.kind_labels)
+        else {
+            continue;
+        };
+        reported.insert(name);
+        let param = state.name;
+        // At a covariant position the source's data flows into the parameter. At a
+        // contravariant one, a parameter of a function type, the data flows the other way: the
+        // parameter's function would pass data labeled `from` to the source's function, which
+        // takes `to` there. In an argument of an invariant kind parameter, data flows both
+        // ways, so its labels must be equal.
+        let (message, related, repair) = if invariant {
+            (
+                format!(
+                    "the host hands `{name}` its state `{param}` from {from_what}, and an invariant type argument of a kind carries data both ways, so its labels must be equal: `{param}` has `{from}` where {from_what} has `{to}`, a flow from `{from}` to `{to}`"
+                ),
+                format!("{from_what}, labeled `{to}` in that type argument"),
+                format!(
+                    "make the labels of that type argument equal in {from_what} and in the type of `{param}`"
+                ),
+            )
+        } else if covariant {
+            (
+                format!(
+                    "the host hands `{name}` its state `{param}` from {from_what}, which carries `{from}` where `{param}` is `{to}`: a flow from `{from}` to `{to}`"
+                ),
+                format!("{from_what}, labeled `{from}` there"),
+                format!(
+                    "label the state parameter `{param}` of `{name}` at least `{from}` at that position, as the state is declared where the host takes it from"
+                ),
+            )
+        } else {
+            (
+                format!(
+                    "the host hands `{name}` its state `{param}` from {from_what}, and through `{param}` the code would pass `{from}` data to the function in {from_what}, which takes `{to}` there: a flow from `{from}` to `{to}`"
+                ),
+                format!("{from_what}, a function that takes `{to}` there"),
+                format!(
+                    "label that parameter position in {from_what} at least `{from}`, or lower it to `{to}` in the type of `{param}`"
+                ),
+            )
+        };
+        let mut diagnostic = report.make(Code::U4001, state.span, message);
+        diagnostic.related.push(report.related(from_span, related));
+        diagnostic.repairs.push(Report::advice(repair));
+        report.push(diagnostic);
+    }
+}
+
 /// U4001 at the `input` parameter of `step` of a `[drive]` module whose label is not at least
 /// the timing label of the step (ADR 0116 IF7): the tick's `at` and `missed` depend on how long
 /// earlier steps took, so `input` carries what that running time can depend on, `τ⁰` of the
