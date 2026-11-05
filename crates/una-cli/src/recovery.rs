@@ -8,8 +8,14 @@
 //! does not absorb every cascade from a broken declaration. Each declaration that parsed and is not a dependent
 //! is compared with its canonical text (rule 10).
 //!
-//! Every step is one pass over the text or over the declarations' words, so a check stays
-//! linear in the source (rule 12).
+//! Every step is one pass over the text or over the declarations' words, and each lookup of the
+//! declaration that holds a byte offset is a binary search over the declarations, so a check
+//! stays linear in the source up to that logarithmic factor: O(n log n) for `n` declarations
+//! and errors, where rule 12 of ADR 0096 says linear (`docs/compiler/architecture.md` §5,
+//! #1573). The renames of `_` names still rescan the declaration of each error, so one huge
+//! declaration with many such names stays quadratic in its own size (card #1635).
+//! The repairs that the parser attaches (`una_syntax::rewrite`) are not shown to be better:
+//! `attach` also scans its declaration per error, and card #1635 probes it.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -36,7 +42,7 @@ impl BrokenFile {
         let mut broken = BTreeSet::new();
         let mut whole = declarations.is_empty();
         for &at in errors {
-            match declarations.iter().rposition(|d| d.start <= at) {
+            match last_starting_by(&declarations, at) {
                 Some(index) => {
                     if declarations
                         .get(index)
@@ -60,10 +66,14 @@ impl BrokenFile {
         self.broken.iter().filter_map(|&i| self.declarations.get(i))
     }
 
-    /// Whether the byte offset `at` lies in a broken declaration.
+    /// Whether the byte offset `at` lies in a broken declaration. The declarations follow one
+    /// another in the text without overlapping, so the only one that can hold `at` is the last
+    /// that starts at or before it: a binary search, O(log d) for `d` declarations, where a scan
+    /// of the broken ones made the check of a file quadratic, one scan per declaration (#1573).
     pub(crate) fn in_broken(&self, at: usize) -> bool {
-        self.broken_declarations()
-            .any(|d| d.start <= at && at < d.end)
+        last_starting_by(&self.declarations, at).is_some_and(|index| {
+            self.broken.contains(&index) && self.declarations.get(index).is_some_and(|d| at < d.end)
+        })
     }
 
     /// The poisoned names of the module (rule 8).
@@ -110,6 +120,15 @@ impl BrokenFile {
         }
         (out, kept)
     }
+}
+
+/// The index of the last of `declarations` that starts at or before the byte offset `at`, if
+/// any. `declarations_in` delimits them in the order of the text, each starting on a later line
+/// than the one before, so their starts increase strictly and a binary search finds it: O(log d).
+fn last_starting_by(declarations: &[Declaration], at: usize) -> Option<usize> {
+    declarations
+        .partition_point(|d| d.start <= at)
+        .checked_sub(1)
 }
 
 /// A declaration kept in the text without the broken ones (0-based lines).

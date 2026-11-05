@@ -5,6 +5,8 @@
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
 
+use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::io::{BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -13,6 +15,9 @@ use std::time::{Duration, Instant};
 
 use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
+
+#[path = "common/stand_in.rs"]
+mod stand_in;
 
 /// How long a test waits for a message of the server.
 const PATIENCE: Duration = Duration::from_secs(60);
@@ -157,6 +162,9 @@ struct Session {
     child: Child,
     stdin: ChildStdin,
     messages: Receiver<Value>,
+    /// Messages read ahead by [`Session::late_handshake`], which [`Session::receive`] returns
+    /// first, in their order.
+    held: RefCell<VecDeque<Value>>,
     next_id: u64,
 }
 
@@ -193,6 +201,7 @@ impl Session {
             child,
             stdin,
             messages,
+            held: RefCell::new(VecDeque::new()),
             next_id: 0,
         };
         let initialized = session.request(
@@ -227,7 +236,25 @@ impl Session {
     }
 
     fn receive(&self) -> Option<Value> {
+        if let Some(message) = self.held.borrow_mut().pop_front() {
+            return Some(message);
+        }
         self.messages.recv_timeout(PATIENCE).ok()
+    }
+
+    /// The reason of a late handshake among the diagnostics published so far, if any
+    /// (`common/stand_in.rs`), for any file: U5003 lies at the lock's pin. Reads the messages
+    /// already sent without waiting, and keeps them for [`Session::receive`].
+    fn late_handshake(&self) -> Option<String> {
+        let mut held = self.held.borrow_mut();
+        while let Ok(message) = self.messages.try_recv() {
+            held.push_back(message);
+        }
+        held.iter().find_map(|message| {
+            (message["method"] == "textDocument/publishDiagnostics")
+                .then(|| stand_in::late_in(&message["params"]["diagnostics"]))
+                .flatten()
+        })
     }
 
     /// The next diagnostics published for `file`.
@@ -607,14 +634,32 @@ fn tier_1_on_open_equals_una_check_with_its_counterexample() {
 }
 
 /// A newer change cancels a running tier 1 check and kills its solver (ADR 0063 rule 4): a
-/// stand-in for Z3 reports the locked version, records its process id and sleeps.
+/// stand-in for Z3 reports the locked version, records its process id and sleeps. A run whose
+/// stand-in started too late for its handshake is run again, the last one judged whatever its
+/// outcome (`common/stand_in.rs`, #1573).
 #[cfg(unix)]
 #[test]
 fn a_newer_change_cancels_tier_1_and_leaves_no_solver_behind() {
+    let mut late = Vec::new();
+    for attempt in 1..=stand_in::ATTEMPTS {
+        match cancel_attempt(attempt, &late) {
+            Ok(()) => return,
+            Err(reason) => late.push(reason),
+        }
+    }
+    panic!("the stand-in missed its handshake in every run: {late:?}");
+}
+
+/// One run of [`a_newer_change_cancels_tier_1_and_leaves_no_solver_behind`], the `attempt`th,
+/// after the runs whose reasons are `late`: `Err` with the reason when the stand-in missed
+/// its handshake and a run is left; otherwise the case's own assertions decide.
+#[cfg(unix)]
+fn cancel_attempt(attempt: usize, late: &[String]) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
 
+    let last = attempt == stand_in::ATTEMPTS;
     let text = "module app\n\npub kind Pos = Int where it > 0\n\npub next(n: Pos) -> Pos = n + 1\n";
-    let dir = package("cancel", text);
+    let dir = package(&format!("cancel{attempt}"), text);
     let file = dir.join("src/app.una");
     let bin = dir.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
@@ -642,13 +687,29 @@ fn a_newer_change_cancels_tier_1_and_leaves_no_solver_behind() {
         if !text.is_empty() {
             break text;
         }
-        assert!(Instant::now() < deadline, "the solver never started");
+        if let Some(reason) = session.late_handshake() {
+            assert!(
+                !last,
+                "the solver never started: {reason} (earlier runs: {late:?})"
+            );
+            session.finish();
+            return Err(reason);
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the solver never started (earlier runs: {late:?})"
+        );
         std::thread::sleep(Duration::from_millis(20));
     };
 
     // The change cancels the solve; its tier 0 check still publishes.
     session.change(&file, 2, text);
-    assert_eq!(session.published(&file), json!([]));
+    let published = session.published(&file);
+    if let Some(reason) = stand_in::late_in(&published).filter(|_| !last) {
+        session.finish();
+        return Err(reason);
+    }
+    assert_eq!(published, json!([]));
     let alive = |pid: &str| {
         Command::new("kill")
             .args(["-0", pid])
@@ -684,13 +745,25 @@ fn a_newer_change_cancels_tier_1_and_leaves_no_solver_behind() {
     );
     let deadline = Instant::now() + PATIENCE;
     while std::fs::read_to_string(&pids).unwrap().lines().count() == before {
-        assert!(Instant::now() < deadline, "the solver never started again");
+        if let Some(reason) = session.late_handshake() {
+            assert!(
+                !last,
+                "the solver never started again: {reason} (earlier runs: {late:?})"
+            );
+            session.finish();
+            return Err(reason);
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the solver never started again (earlier runs: {late:?})"
+        );
         std::thread::sleep(Duration::from_millis(20));
     }
     session.finish();
     for pid in std::fs::read_to_string(&pids).unwrap().lines() {
         assert!(!alive(pid), "solver {pid} outlived the server");
     }
+    Ok(())
 }
 
 /// A package whose `uses` condition an operation, with one site of each kind that a tier-1

@@ -244,6 +244,51 @@ fn checking_past_broken_declarations_scales_linearly() {
     );
 }
 
+/// A file of `n` functions, each with a parameter `_count`: U0001 twice per function, each with
+/// the repair that renames `_count` to `count` in its declaration.
+fn underscored(n: usize) -> String {
+    let mut text = String::from("module m\n");
+    for i in 0..n {
+        text.push_str(&format!("\nf{i}(_count: Int) -> Int = _count + {i}\n"));
+    }
+    text
+}
+
+/// The time to check [`underscored`]`(n)`, whose every U0001 carries its rename.
+fn timed_renames(n: usize) -> Duration {
+    let path = scratch(&format!("underscored-{n}.una"));
+    let text = underscored(n);
+    let start = Instant::now();
+    let diagnostics = check(&path, &text);
+    let took = start.elapsed();
+    let renames = diagnostics
+        .iter()
+        .filter(|d| {
+            d.code.as_str() == "U0001"
+                && d.repairs
+                    .first()
+                    .is_some_and(|r| r.description.starts_with("rename `_count` to `count`"))
+        })
+        .count();
+    assert_eq!(renames, 2 * n, "{n}");
+    took
+}
+
+/// The repairs of names that start with `_` read the file's words once, not once per error
+/// (#1573): a doubling of a file with an error in every declaration takes less than 2.5 times
+/// as long, by the shared helper. Reading the file again for each error made it quadratic.
+#[test]
+fn renaming_underscored_names_scales_linearly() {
+    timing::assert_growth(
+        "renaming underscored names",
+        &[500, 1_000, 2_000, 4_000],
+        0.0,
+        timing::FLOOR,
+        2.5,
+        |n| timed_renames(n).as_secs_f64(),
+    );
+}
+
 /// A package of `files`, by path under `src/`, in a fresh directory.
 fn package_of(name: &str, files: &[(&str, &str)]) -> PathBuf {
     let root = scratch(name);
