@@ -802,4 +802,14 @@ fn test_is_the_keyword_of_the_test_declaration_from_edition_0_3() {
             Some("test".to_owned())
         )]
     );
+    // ADR 0105, amendment of 2026-11-05: from edition 0.4 `example` is an identifier, with no
+    // U0103 and no rewrite, at column 1 and elsewhere.
+    let (tokens, errors) = lexed(una_syntax::KeywordSet::V0_4);
+    assert_eq!(
+        tokens[..3],
+        ["test".to_owned(), "NL".to_owned(), "id:example".to_owned()]
+    );
+    assert!(tokens.contains(&"id:example".to_owned()));
+    assert!(!tokens.contains(&"example".to_owned()));
+    assert_eq!(errors, []);
 }

@@ -167,6 +167,21 @@ mod tests {
     }
 
     #[test]
+    fn example_is_no_reserved_word_in_any_edition() {
+        // `example` is the keyword of editions 0.1 to 0.3 (`Keyword::from_word_in`), never a
+        // reserved word of this table; from edition 0.4 it is an identifier (ADR 0105,
+        // amendment of 2026-11-05), so neither table holds it there.
+        for set in [
+            KeywordSet::V0_1,
+            KeywordSet::V0_2,
+            KeywordSet::V0_3,
+            KeywordSet::V0_4,
+        ] {
+            assert_eq!(reserved_in("example", set), None);
+        }
+    }
+
+    #[test]
     fn async_and_await_name_tasks_and_start_in_edition_0_4() {
         // ADR 0117 Diagnostics, `spec/19 §9`: the message of each edition.
         let message = "not supported; use `tasks` and `start`, or `together`";
