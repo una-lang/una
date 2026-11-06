@@ -119,6 +119,33 @@ pub fn reported(diagnostics: &[Diagnostic]) -> BTreeSet<ExpectedError> {
         .collect()
 }
 
+/// The diagnostics that `una check` reports more than once, with the same code, span and
+/// message, each named once (#932). `error` expectations compare as a set, so a repeat would
+/// match them; a diagnostic names one problem at one site, and a repeat is a defect.
+pub fn repeated(diagnostics: &[Diagnostic]) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    let mut repeated = BTreeSet::new();
+    for diagnostic in diagnostics {
+        let primary = &diagnostic.primary;
+        let key = (
+            diagnostic.code,
+            primary.file.as_str(),
+            (primary.start.line, primary.start.col),
+            (primary.end.line, primary.end.col),
+            diagnostic.message.as_str(),
+        );
+        if !seen.insert(key) {
+            repeated.insert(ExpectedError {
+                code: diagnostic.code,
+                file: primary.file.clone(),
+                line: primary.start.line,
+                col: primary.start.col,
+            });
+        }
+    }
+    repeated.iter().map(ToString::to_string).collect()
+}
+
 /// Classifies a case from its `pending` milestone and its mismatches (ADR 0013, D1).
 pub fn classify(pending: Option<u32>, mismatches: Vec<String>) -> Verdict {
     match (pending, mismatches.is_empty()) {
@@ -314,5 +341,35 @@ mod tests {
                 "pending case passes; remove -- pending: M5".to_owned()
             ])
         );
+    }
+
+    #[test]
+    fn a_diagnostic_reported_twice_is_named_once() {
+        let once = [
+            diagnostic(Code::U3007, "c.una", 13, 11),
+            diagnostic(Code::U3007, "c.una", 14, 11),
+        ];
+        assert_eq!(repeated(&once), Vec::<String>::new());
+        let twice = [
+            diagnostic(Code::U3007, "c.una", 13, 11),
+            diagnostic(Code::U0101, "c.una", 2, 1),
+            diagnostic(Code::U3007, "c.una", 13, 11),
+            diagnostic(Code::U3007, "c.una", 13, 11),
+        ];
+        assert_eq!(repeated(&twice), ["U3007 at c.una:13:11"]);
+    }
+
+    #[test]
+    fn diagnostics_that_differ_in_message_or_end_are_not_repeats() {
+        let mut other_message = diagnostic(Code::U4001, "c.una", 40, 28);
+        other_message.message = "another message".to_owned();
+        let mut other_end = diagnostic(Code::U4001, "c.una", 40, 28);
+        other_end.primary.end.col += 3;
+        let distinct = [
+            diagnostic(Code::U4001, "c.una", 40, 28),
+            other_message,
+            other_end,
+        ];
+        assert_eq!(repeated(&distinct), Vec::<String>::new());
     }
 }

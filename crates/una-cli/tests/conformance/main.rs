@@ -31,7 +31,7 @@ use crate::directives::{
     Case, CheckExpectation, ExpectedError, SpecIndex, TestExpectation, parse_case,
 };
 use crate::discovery::{CaseKind, CaseLocation, discover, read_case_files};
-use crate::outcome::{RunResult, TestResult, Verdict, classify, mismatches, reported};
+use crate::outcome::{RunResult, TestResult, Verdict, classify, mismatches, repeated, reported};
 
 /// Whether `code` is implemented: its explain text is no longer the stub of `spec/13 §4`.
 fn implemented(code: Code) -> bool {
@@ -423,6 +423,15 @@ fn run_one(root: &Path, location: &CaseLocation, specs: &SpecIndex) -> Outcome {
     let ranking = escape_ranking(&diagnostics, &package_root);
     if !ranking.is_empty() {
         return Outcome::Fail(format!("{}: {}", location.path, ranking.join("; ")));
+    }
+    // #932: `una check` reports each diagnostic once, whatever the case expects.
+    let repeats = repeated(&diagnostics);
+    if !repeats.is_empty() {
+        return Outcome::Fail(format!(
+            "{}: reported more than once: {}",
+            location.path,
+            repeats.join("; ")
+        ));
     }
     // ADR 0101: an error of the solver after `sat` means the generated script asks for
     // something it cannot answer. No case may have one, whatever its outcome (#668).
