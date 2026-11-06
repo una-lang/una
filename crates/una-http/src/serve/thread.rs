@@ -995,8 +995,9 @@ impl Core {
         Some(usize::try_from(room).unwrap_or(usize::MAX))
     }
 
-    /// The head is read: `Host` against the grant's names (`421`), the body's reservation
-    /// (`503` at once when it does not fit), and `100 Continue` after it (rule 10).
+    /// The head is read: `Host` against the grant's names (`421`), a declared length that can
+    /// never fit `delivered` and the body's reservation (`503` at once for either), and
+    /// `100 Continue` after it (rule 10).
     fn admit_head(&mut self, c: &mut Conn, now: u64) -> bool {
         let allowed = c
             .reader
@@ -1009,6 +1010,17 @@ impl Core {
         if self.shared.is_stopping() {
             self.refuse(c, 503, true, now);
             return false;
+        }
+        // A declared length that can never fit `delivered` is answered before its body is read
+        // (`spec/31 §6` rule 5): the head is what was read but the body. O(1).
+        if let Some(BodyFraming::Length(n)) = c.reader.framing() {
+            let head = c
+                .request_bytes
+                .saturating_sub(c.reader.body_length() as u64);
+            if head.saturating_add(n) > c.grant.limits.delivered {
+                self.refuse(c, 503, true, now);
+                return false;
+            }
         }
         let wanted = match c.reader.framing() {
             Some(BodyFraming::Length(n)) => n,
@@ -1045,9 +1057,10 @@ impl Core {
         }
         // A request whose bytes exceed the whole of `delivered` could never be delivered: it
         // would hold the front of its queue until `answer`, and every request behind it would
-        // wait (`spec/31 §6` rule 5). It is answered `413` at once and takes no place. O(1).
+        // wait. It gets the answer of ADR 0123 rule 14 for no room in `delivered`, `503` with
+        // `Retry-After: 1`, at once, and takes no place (`spec/31 §6` rule 5). O(1).
         if c.request_bytes > c.grant.limits.delivered {
-            self.refuse(c, 413, false, now);
+            self.refuse(c, 503, true, now);
             return;
         }
         if !c.grant.queue_waiting() {
