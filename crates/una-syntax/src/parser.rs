@@ -2323,7 +2323,12 @@ impl<'a> Parser<'a> {
                         "a block cannot end with `let`; its last line is its value",
                     );
                 }
-                Stmt::Together(_) if last => {
+                // A body with a statement other than `let` is U2024, which the checker reports
+                // wherever that statement stands, its last line included (`spec/19 §1` rule
+                // 3, #928).
+                Stmt::Together(together)
+                    if last && together.body.iter().all(|s| matches!(s, Stmt::Let(_))) =>
+                {
                     return self.fail(
                         first,
                         "a block cannot end with `together`; its last line is its value",

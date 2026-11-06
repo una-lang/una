@@ -118,7 +118,8 @@ impl<'a> Checker<'_, 'a, '_> {
                         self.returned_value(stmt.span, &Ty::Unit, expected, role);
                     }
                 }
-                // Never the last line of a block, which the parser reports.
+                // The last line of a block only when its body holds a statement other than
+                // `let`, which `together` reports (U2024); otherwise the parser does.
                 Stmt::Together(stmt) => {
                     self.outside_rl(stmt.span, || "`together`".to_owned());
                     self.together(stmt);
