@@ -469,10 +469,7 @@ pub(crate) fn run_command(
             .iter()
             .any(|spec| spec.starts_with(una_core::http::serve::PREFIX))
         {
-            writeln!(
-                stderr,
-                "error: the `serve` section's module `{module}` answers requests, but neither `run grants` of ita.una nor a `--grant` flag grants an address to serve on; grant one, as `serve \"http://127.0.0.1:8080\"` in `run grants` or `--grant serve:http://127.0.0.1:8080`"
-            )?;
+            writeln!(stderr, "error: {}", una_interp::unserved_section(module))?;
             return Ok(ExitStatus::Usage);
         }
         // The test builds run the driver when `UNA_TEST_RUN_SERVER` is 1, as a program that

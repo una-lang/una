@@ -482,10 +482,10 @@ pub struct Meta {
     /// Whether the program is of edition 0.4, whose runs may take `serve:` grants
     /// (`spec/31 §2` rule 4): the description's `serve_grants`.
     pub serve: bool,
-    /// Whether the program runs the driver of a `serve` section (ADR 0123 rule 16): the
-    /// description's `serve`, `{"module": ..., "within": null}`, whose serve threads start
+    /// The module of the `serve` section whose driver the program runs (ADR 0123 rule 16):
+    /// the description's `serve`, `{"module": ..., "within": null}`, whose serve threads start
     /// before the driver (S4 P8).
-    pub serve_section: bool,
+    pub serve_section: Option<String>,
     /// Whether the program has a `for ever`, so the run takes host stops: the executable then
     /// installs the handlers of SIGINT and SIGTERM (ADR 0116 rule 18).
     pub stops: bool,
@@ -630,13 +630,13 @@ impl Meta {
         // The driver applies no `within` (`spec/31 §7` rule 3 item 7 refuses every one today):
         // a description with one is no description, and the executable refuses to start.
         let serve_section = match value.get("serve") {
-            None => false,
+            None => None,
             Some(section) => {
-                section.get("module")?.as_str()?;
+                let module = section.get("module")?.as_str()?.to_owned();
                 if !section.get("within")?.is_null() {
                     return None;
                 }
-                true
+                Some(module)
             }
         };
         let float32_probes = value
@@ -2134,6 +2134,16 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
         .as_deref()
         .map(|label| (label, meta.limits_allowed));
     let specs: Vec<String> = meta.grants.iter().chain(&options.grants).cloned().collect();
+    // `spec/31 §7` rule 1: the driver of a `serve` section needs a `serve:` grant, of the
+    // description or of a `--grant` flag, before anything starts, as in `una run`.
+    if let Some(module) = &meta.serve_section
+        && !specs
+            .iter()
+            .any(|spec| spec.starts_with(una_core::http::serve::PREFIX))
+    {
+        let _ = writeln!(stderr, "error: {}", una_interp::unserved_section(module));
+        return USAGE;
+    }
     if let Err(message) = una_interp::check_limited_flags(&specs, limit) {
         let _ = writeln!(stderr, "error: {message}");
         return USAGE;
@@ -2203,7 +2213,7 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
     // A program that serves starts its serve threads here, before `main`, over the listeners
     // bound above; they accept nothing until its first server operation (S4 amendment B.2).
     // Any other run holds its listeners until it ends.
-    let serves = meta.serve_section
+    let serves = meta.serve_section.is_some()
         || (meta.serve && meta.uses.iter().any(|need| need.capability == "HttpServer"));
     let live = SERVE.get().map(|hooks| hooks.start).filter(|_| serves);
     let _listeners = if let Some(install) = live
