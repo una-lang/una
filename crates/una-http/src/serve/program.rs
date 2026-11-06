@@ -66,8 +66,9 @@ pub trait Port: Sync {
     /// a peer. From the call on, the engine discards every answer and reply of the program
     /// before it can take an exchange ([`super::run::Exchange::reply`]), so only the serve
     /// threads end the exchanges still open. The program's side calls it before it drops the
-    /// exchanges its tasks hold at the hard stop. A reply that took its exchange just before the
-    /// hard stop may still be lost: its connection can close before the reply is written. An
+    /// exchanges its tasks hold at the hard stop. A reply already in progress when the hard stop
+    /// comes, one that checked the stop before it and takes its exchange after it, may still be
+    /// lost: its connection can close before the reply is written, with no `503` either. An
     /// engine with no peers to answer, as a script's, does nothing.
     fn hard_stop(&self) {}
 

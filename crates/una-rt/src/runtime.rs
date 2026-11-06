@@ -352,10 +352,12 @@ pub(crate) fn enable_http() {
 }
 
 /// What the runtime does with the serve engine, set only by a program that performs an
-/// operation of `HttpServer` ([`enable_serve`]): the only references to the serve engine from
-/// the runtime, so an executable that serves nothing links none of its code, neither the serve
-/// threads, nor their stop and join, nor its panic hook (ADR 0074 H7;
+/// operation of `HttpServer` ([`enable_serve`]): the only references from the runtime to the
+/// serve threads, their start, stop and join, and the engine's panic hook, so an executable that
+/// serves nothing links none of them (ADR 0074 H7; the test
 /// `an_executable_that_serves_nothing_carries_no_serve_engine` in `crates/una-cli/tests/http.rs`).
+/// It still links what the run's end calls directly in case the run serves: the table of reply
+/// rights and the answer of an exchange (`crate::serve::answer_held`, `answer_all_left`).
 struct ServeHooks {
     /// Starts the serve threads before `main` ([`crate::serve::install_live`]).
     start: fn(
@@ -3263,7 +3265,8 @@ fn abort_run(state: State, code: Code, location: Location, message: String) {
     // program's answers, and the serve threads answer each exchange still open `503` in one
     // non-blocking write and close every connection, without waiting on a peer; the wait for
     // them (at most a second) ends before the answers below, which then send nothing. A reply
-    // that took its exchange just before the hard stop may be lost with its connection.
+    // already in progress when the hard stop comes, past its check of the stop, may be lost
+    // with its connection.
     if matches!(code, Code::U6007 | Code::U8001) {
         end_serving(std::time::Duration::ZERO, true);
     }

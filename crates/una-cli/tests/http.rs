@@ -560,7 +560,7 @@ fn an_executable_that_serves_nothing_carries_no_serve_engine() {
     let symbols = String::from_utf8_lossy(&symbols.stdout);
     // Mangled names: `una_http::serve::thread`, `Server::start`, `Server::stop`, `Live::end`,
     // `fault::install_hook`, and the runtime's `install_live` and `end_engine`.
-    for needle in [
+    const NEEDLES: [&str; 7] = [
         "5serve6thread",
         "6Server5start",
         "6Server4stop",
@@ -568,12 +568,50 @@ fn an_executable_that_serves_nothing_carries_no_serve_engine() {
         "5fault12install_hook",
         "12install_live",
         "10end_engine",
-    ] {
+    ];
+    for needle in NEEDLES {
         assert!(
             !symbols.contains(needle),
             "{needle} found in a program that serves nothing"
         );
     }
+    // The positive control: a program that serves, built by the test build of `una` while
+    // `spec/31 §1` rule 10 stands, links every one of them, so the names above still name the
+    // engine's code and the check above checks something.
+    let serving = std::env::temp_dir().join(format!("una-http-serving-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&serving);
+    std::fs::create_dir_all(serving.join("src")).unwrap();
+    let case = root().join("tests/serve_runs/language_form");
+    std::fs::write(
+        serving.join("ita.una"),
+        "ita serving\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry srv\n  grants\n    console\n    serve \"http://127.0.0.1:8080\"\n",
+    )
+    .unwrap();
+    std::fs::copy(case.join("ita.lock"), serving.join("ita.lock")).unwrap();
+    std::fs::copy(case.join("src/srv.una"), serving.join("src/srv.una")).unwrap();
+    runtime();
+    let built = Command::new(env!("CARGO_BIN_EXE_una"))
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env("UNA_TEST_BUILD_SERVER", "1")
+        .env("NO_COLOR", "1")
+        .args(["build", "."])
+        .current_dir(&serving)
+        .output()
+        .unwrap();
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    let listed = Command::new("nm")
+        .arg(serving.join("target/una/serving"))
+        .output()
+        .unwrap();
+    assert!(listed.status.success(), "{listed:?}");
+    let listed = String::from_utf8_lossy(&listed.stdout);
+    for needle in NEEDLES {
+        assert!(
+            listed.contains(needle),
+            "{needle} missing from a program that serves: the check names nothing"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&serving);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
