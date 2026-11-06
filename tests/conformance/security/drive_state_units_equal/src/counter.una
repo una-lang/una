@@ -1,0 +1,21 @@
+-- test: equal units at every position pass: an `Option[Int of Millisecond]` start, labeled higher in `step` and `on_stop`, with the same units (spec/26 §2, issue #1647)
+-- spec: spec/26 §2
+-- expect: ok
+module counter
+
+import std.drive (Tick)
+import std.time (Millisecond, millisecond)
+
+kind Clock[T]
+  elapsed: T
+
+pub init() -> Clock[Option[Int of Millisecond]]
+=
+  let start: Int of Millisecond = 7.measured()
+  Clock(elapsed: Some(start))
+
+pub step(edit state: Clock[Option[secret Int of Millisecond]], input: secret Tick) -> Unit
+=
+  state = Clock(elapsed: Some(input.at + millisecond))
+
+pub on_stop(state: Clock[Option[secret Int of Millisecond]]) -> Unit = unit

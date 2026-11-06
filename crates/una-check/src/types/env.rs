@@ -2761,6 +2761,21 @@ impl Names for LowerNames<'_, '_> {
     }
 }
 
+impl Env<'_> {
+    /// `ty` as messages print it, outside any declaration with type parameters: for the
+    /// shapes of a driven module, which declare none (`spec/26 §2` rule 2).
+    pub(crate) fn show_plain(&self, ty: &Ty) -> String {
+        Show(
+            ty,
+            &LowerNames {
+                env: self,
+                type_params: &[],
+            },
+        )
+        .to_string()
+    }
+}
+
 /// The first requirement of each name: a reference bound twice is U1002, and the first binding
 /// wins, as the first of two declarations does.
 fn first_of_each(needs: Vec<Need>) -> Vec<Need> {

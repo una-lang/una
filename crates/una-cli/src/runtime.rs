@@ -953,6 +953,21 @@ pub(crate) fn driven_init<'a>(
             "`on_stop` of the driven module `{module}` is not `pub on_stop(state: S) -> Unit`, with S the result of `init`"
         ));
     }
+    // Core IR erases units of measure, which `same_type` therefore cannot see: the host hands
+    // the state on unchanged, so its units MUST be those of the result of `init` at every
+    // position (`spec/26 §2` rule 2, U2028 in the checks too). Fails closed when the checker
+    // recorded none.
+    let units = analysis.drive_units.as_ref().is_some_and(|units| {
+        [&units.step, &units.on_stop]
+            .into_iter()
+            .flatten()
+            .all(|state| *state == units.init)
+    });
+    if !units {
+        return Err(format!(
+            "the state of the driven module `{module}` does not have the units of measure of the result of `init` at every position of its type in `step` and `on_stop`"
+        ));
+    }
     Ok(init)
 }
 
