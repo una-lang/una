@@ -664,7 +664,8 @@ fn registered_name(text: &str) -> Option<String> {
     }
     let last = name.rsplit('.').next().unwrap_or_default();
     let numeric = last.bytes().all(|b| b.is_ascii_digit());
-    let hex = last.len() > 2 && (last.starts_with("0x") || last.starts_with("0X"));
+    // `0x` alone starts with `0x` too: some resolvers read it as `0`.
+    let hex = last.starts_with("0x") || last.starts_with("0X");
     (!numeric && !hex).then(|| name.to_ascii_lowercase())
 }
 

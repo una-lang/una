@@ -482,7 +482,8 @@ pub fn host(value: &str) -> Result<Host, Refusal> {
     }
     let last = name.rsplit('.').next().unwrap_or_default();
     let numeric = !last.is_empty() && last.bytes().all(|b| b.is_ascii_digit());
-    let hex = last.len() > 2 && (last.starts_with("0x") || last.starts_with("0X"));
+    // `0x` alone starts with `0x` too: some resolvers read it as `0`.
+    let hex = last.starts_with("0x") || last.starts_with("0X");
     if numeric || hex || name.split('.').any(str::is_empty) {
         return Err(Refusal::BadRequest);
     }
