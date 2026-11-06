@@ -1101,6 +1101,37 @@ mod tests {
     use super::http_error_index;
     use una_http::client::Error;
 
+    #[test]
+    fn an_operation_site_without_its_outcome_label_fails_to_load() {
+        // S-45 (#1552, `spec/11 §5`), review L3 of #1562: the native description's `outcome`
+        // key is required. `null` is an outcome in clear and a string is the level it is
+        // redacted at; a site that lacks the key, or gives a value that is neither `null` nor a
+        // string, fails to load, so the executable never shows an outcome in clear by default.
+        let site = |outcome: Option<serde_json::Value>| {
+            let mut value = serde_json::json!({
+                "capability": "Console",
+                "op": "print",
+                "params": [],
+                "args": [],
+                "result": {"type": 0},
+            });
+            if let (Some(outcome), Some(fields)) = (outcome, value.as_object_mut()) {
+                fields.insert("outcome".to_owned(), outcome);
+            }
+            super::OpSite::parse(&value)
+        };
+        assert_eq!(site(None).map(|op| op.outcome), None);
+        assert_eq!(site(Some(serde_json::json!(1))).map(|op| op.outcome), None);
+        assert_eq!(
+            site(Some(serde_json::Value::Null)).map(|op| op.outcome),
+            Some(None)
+        );
+        assert_eq!(
+            site(Some(serde_json::json!("internal"))).map(|op| op.outcome),
+            Some(Some("internal".to_owned()))
+        );
+    }
+
     /// Starts, on `sched`, a task whose operation runs on a helper of the I/O pool through
     /// [`super::on_helper`] until `gate` opens, its cancellation entry that of `scope`'s tasks;
     /// the receiver gives what [`super::on_helper`] gave.
