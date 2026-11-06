@@ -1217,10 +1217,14 @@ pub(crate) struct Findings {
     /// IF5): each one's binding, its function and the seed of the timing label of the statement
     /// it scopes over.
     pub(crate) limiter_sites: Vec<LimiterSite>,
-    /// The edges of the call graph of ADR 0116 P1, one per call site, each with the node whose
+    /// The edges of the call graph of ADR 0116 P1, recorded at their call sites, each with the node whose
     /// code holds it (a function's body, a handler's operations, or `Λ` for a lambda's body)
     /// and the innermost task construct whose part holds it (P3).
     pub(crate) graph_edges: Vec<timing::GraphEdge>,
+    /// Each policy called, with its `via` function, which the call runs (`spec/07 §5`): an
+    /// edge from the policy to its `via` for the searches over `edges` that the timing label
+    /// (ADR 0116 IF5, IF6) and the quiet calls of S-39 make (#1673).
+    pub(crate) policy_vias: std::collections::BTreeSet<(usize, usize)>,
     /// The task constructs checked, the nodes of each body's construct tree (ADR 0116 P2, P3),
     /// by the ids that edges and sites record.
     pub(crate) constructs: Vec<timing::ConstructNode>,

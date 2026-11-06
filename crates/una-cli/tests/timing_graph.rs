@@ -6,6 +6,7 @@
 //! of its Core IR must have its edge, recorded by the type checker at the same call site, from
 //! the node whose code holds it:
 //! - a call of a function or predicate, and a function named as a value, to that function;
+//! - a policy call, to the policy and to its `via` function, which the call runs (#1673);
 //! - a call of a function value, a `uses of` parameter's included, to `Λ`;
 //! - an operation, to the operation;
 //! - an installation by `with` or `given`, to the handler;
@@ -17,7 +18,9 @@
 //! The innermost task construct the checker recorded for each edge (P3) must also be the one
 //! that an independent walk of Core IR finds: the parts are the branches of `together` and of
 //! `first of`, the body of `together for` and the block of `tasks`, the `start`s in it included;
-//! a lambda's body starts with none. So are the constructs of the timing sites.
+//! a lambda's body starts with none. Every timing site and every construct of Core IR must be
+//! recorded too, in that construct, a construct with the parent Core IR gives it; names are
+//! compared qualified; and every case must load.
 //!
 //! Two call nodes of Core IR are written by elaboration, not by the source, and are met
 //! otherwise:
@@ -52,13 +55,13 @@ use una_syntax::Span;
 /// What a call node of Core IR needs in the graph.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Need {
-    /// A function or predicate, by its name.
+    /// A function or predicate, by its qualified name.
     Function(String),
     /// `Λ`.
     Lambda,
     /// An operation, by its capability and its name.
     Operation(String, String),
-    /// A handler, by its name.
+    /// A handler, by its qualified name.
     Install(String),
 }
 
@@ -72,18 +75,35 @@ struct CallNode {
     construct: Option<Span>,
 }
 
+/// `module.name`, or `name` in a module without a path, as the graph names declarations.
+fn qualify(module: &str, name: &str) -> String {
+    if module.is_empty() {
+        name.to_owned()
+    } else {
+        format!("{module}.{name}")
+    }
+}
+
+/// What the walk of Core IR finds: the call nodes, the timing sites and the constructs, each
+/// site and construct with the construct whose part holds it.
+#[derive(Default)]
+struct Found {
+    calls: Vec<CallNode>,
+    sites: Vec<(&'static str, Span, Option<Span>)>,
+    constructs: Vec<(&'static str, Span, Option<Span>)>,
+}
+
 /// The walk of one node's code: its node and the constructs whose parts enclose the expression
 /// walked, innermost last.
 struct Walk<'a> {
     from: TimingNode,
     parts: Vec<Span>,
-    out: &'a mut Vec<CallNode>,
-    sites: &'a mut Vec<(Span, Option<Span>)>,
+    found: &'a mut Found,
 }
 
 impl Walk<'_> {
     fn need(&mut self, span: Span, need: Need) {
-        self.out.push(CallNode {
+        self.found.calls.push(CallNode {
             span,
             from: self.from.clone(),
             need,
@@ -91,8 +111,16 @@ impl Walk<'_> {
         });
     }
 
-    fn site(&mut self, span: Span) {
-        self.sites.push((span, self.parts.last().copied()));
+    fn site(&mut self, kind: &'static str, span: Span) {
+        self.found
+            .sites
+            .push((kind, span, self.parts.last().copied()));
+    }
+
+    fn construct(&mut self, kind: &'static str, span: Span) {
+        self.found
+            .constructs
+            .push((kind, span, self.parts.last().copied()));
     }
 
     fn part(&mut self, construct: Span, expr: &Expr) {
@@ -101,11 +129,13 @@ impl Walk<'_> {
         self.parts.pop();
     }
 
-    fn rhs(&mut self, rhs: &Rhs) {
+    /// The right-hand side of a `let` at `at`.
+    fn rhs(&mut self, rhs: &Rhs, at: Span) {
         match rhs {
-            Rhs::Call { function, span, .. } => {
-                self.need(*span, Need::Function(function.name.clone()))
-            }
+            Rhs::Call { function, span, .. } => self.need(
+                *span,
+                Need::Function(qualify(&function.module, &function.name)),
+            ),
             Rhs::Apply { span, .. } => self.need(*span, Need::Lambda),
             Rhs::Op {
                 capability,
@@ -113,11 +143,23 @@ impl Walk<'_> {
                 span,
                 ..
             } => self.need(*span, Need::Operation(capability.clone(), op.clone())),
-            // A function named as a value: an edge from here to it, at the name; its Core body
-            // is a call of it that the source does not hold.
+            // A policy call runs the policy's `via` function (`spec/07 §5`, #1673).
+            Rhs::Declassify {
+                policy, via, span, ..
+            } => {
+                self.need(*span, Need::Function(qualify(&policy.module, &policy.name)));
+                self.need(*span, Need::Function(qualify(&via.module, &via.name)));
+            }
+            // A function named as a value: an edge from here to it, at the name, which the
+            // `let` of the value carries; its Core body is a call of it that the source does not
+            // hold.
             Rhs::Lambda {
-                function: Some(_), ..
-            } => {}
+                function: Some(function),
+                ..
+            } => self.need(
+                at,
+                Need::Function(qualify(&function.module, &function.name)),
+            ),
             Rhs::Lambda {
                 body,
                 function: None,
@@ -126,8 +168,7 @@ impl Walk<'_> {
                 let mut inner = Walk {
                     from: TimingNode::Lambda,
                     parts: Vec::new(),
-                    out: &mut *self.out,
-                    sites: &mut *self.sites,
+                    found: &mut *self.found,
                 };
                 inner.expr(body);
             }
@@ -142,9 +183,11 @@ impl Walk<'_> {
             | Expr::Exit { .. }
             | Expr::Fail { .. }
             | Expr::Unreachable { .. } => {}
-            Expr::Let { value, body, .. } => {
+            Expr::Let {
+                value, body, span, ..
+            } => {
                 match value.as_ref() {
-                    Bound::Rhs(rhs) => self.rhs(rhs),
+                    Bound::Rhs(rhs) => self.rhs(rhs, *span),
                     Bound::Expr(inner) => self.expr(inner),
                 }
                 self.expr(body);
@@ -159,7 +202,7 @@ impl Walk<'_> {
             } => {
                 match source.as_ref() {
                     LoopSource::Until { cond, .. } => self.expr(cond),
-                    LoopSource::Ever { within: Some(_) } => self.site(*span),
+                    LoopSource::Ever { within: Some(_) } => self.site("for ever within", *span),
                     _ => {}
                 }
                 self.expr(body);
@@ -167,10 +210,15 @@ impl Walk<'_> {
                     self.expr(&on_stop.body);
                 }
             }
-            Expr::Together { tasks, span } | Expr::FirstOf { tasks, span } => {
-                if matches!(expr, Expr::FirstOf { .. }) {
-                    self.site(*span);
+            Expr::Together { tasks, span } => {
+                self.construct("together", *span);
+                for task in tasks {
+                    self.part(*span, task);
                 }
+            }
+            Expr::FirstOf { tasks, span } => {
+                self.site("first of", *span);
+                self.construct("first of", *span);
                 for task in tasks {
                     self.part(*span, task);
                 }
@@ -181,16 +229,18 @@ impl Walk<'_> {
                 if let LoopSource::Until { cond, .. } = source.as_ref() {
                     self.expr(cond);
                 }
+                self.construct("together for", *span);
                 self.part(*span, task);
             }
             Expr::Tasks { body, span, .. } => {
-                self.site(*span);
+                self.site("tasks", *span);
+                self.construct("tasks", *span);
                 self.part(*span, body);
             }
             Expr::Start { task, .. } => self.expr(task),
             Expr::Quiet { body, .. } | Expr::Attempt { body, .. } => self.expr(body),
             Expr::Within { body, span, .. } => {
-                self.site(*span);
+                self.site("within", *span);
                 self.expr(body);
             }
             Expr::If {
@@ -215,7 +265,10 @@ impl Walk<'_> {
             }
             Expr::With { source, body, .. } => {
                 if let Source::Handler { handler, span, .. } = source {
-                    self.need(*span, Need::Install(handler.name.clone()));
+                    self.need(
+                        *span,
+                        Need::Install(qualify(&handler.module, &handler.name)),
+                    );
                 }
                 self.expr(body);
             }
@@ -223,44 +276,39 @@ impl Walk<'_> {
     }
 }
 
-/// The last segment of a qualified name.
-fn last(name: &str) -> &str {
-    name.rsplit('.').next().unwrap_or(name)
-}
-
-/// Whether `node`, in the graph, is the node `from` of Core IR.
-fn same_node(node: &TimingNode, from: &TimingNode) -> bool {
-    match (node, from) {
-        (TimingNode::Function(a), TimingNode::Function(b))
-        | (TimingNode::Handler(a), TimingNode::Handler(b)) => last(a) == last(b),
-        (TimingNode::Lambda, TimingNode::Lambda) => true,
-        _ => false,
-    }
-}
-
 /// Whether `to`, in the graph, is what `need` asks for.
 fn meets(to: &TimingTarget, need: &Need) -> bool {
     match (to, need) {
         (TimingTarget::Function(a), Need::Function(b))
-        | (TimingTarget::Install(a), Need::Install(b)) => last(a) == last(b),
+        | (TimingTarget::Install(a), Need::Install(b)) => a == b,
         (TimingTarget::Lambda, Need::Lambda) => true,
         (TimingTarget::Operation(c, o), Need::Operation(d, p)) => c == d && o == p,
         _ => false,
     }
 }
 
+/// The hidden `update` functions that elaboration inlines, of the map module of the prelude and
+/// of `std.collections`.
+const INLINED_UPDATES: [&str; 2] = ["prelude.map.update", "std.collections.update"];
+
 /// The problems of one package: each call node without its edge, or whose edge records another
-/// innermost construct, and each site placed in another construct.
+/// innermost construct; each site or construct of Core IR not recorded, or recorded in another
+/// construct; and the number of sites placed.
 fn problems(case: &str, program: &una_core::Program, graph: &TimingGraph) -> (Vec<String>, usize) {
-    let mut calls = Vec::new();
-    let mut sites = Vec::new();
+    let mut found = Found::default();
     for module in &program.modules {
         for decl in &module.decls {
             let (from, bodies): (TimingNode, Vec<&Expr>) = match decl {
-                Decl::Fun(fun) => (TimingNode::Function(fun.name.clone()), vec![&fun.body]),
-                Decl::Pred { name, body, .. } => (TimingNode::Function(name.clone()), vec![body]),
+                Decl::Fun(fun) => (
+                    TimingNode::Function(qualify(&module.path, &fun.name)),
+                    vec![&fun.body],
+                ),
+                Decl::Pred { name, body, .. } => (
+                    TimingNode::Function(qualify(&module.path, name)),
+                    vec![body],
+                ),
                 Decl::Handler { name, ops, .. } => (
-                    TimingNode::Handler(name.clone()),
+                    TimingNode::Handler(qualify(&module.path, name)),
                     ops.iter().map(|op| &op.body).collect(),
                 ),
                 _ => continue,
@@ -269,8 +317,7 @@ fn problems(case: &str, program: &una_core::Program, graph: &TimingGraph) -> (Ve
                 let mut walk = Walk {
                     from: from.clone(),
                     parts: Vec::new(),
-                    out: &mut calls,
-                    sites: &mut sites,
+                    found: &mut found,
                 };
                 walk.expr(body);
             }
@@ -280,8 +327,8 @@ fn problems(case: &str, program: &una_core::Program, graph: &TimingGraph) -> (Ve
     let inside = |inner: Span, outer: Span| {
         inner.file == outer.file && outer.start <= inner.start && inner.end <= outer.end
     };
-    let mut found = Vec::new();
-    for call in &calls {
+    let mut problems = Vec::new();
+    for call in &found.calls {
         let mut edges: Vec<_> = graph
             .edges
             .iter()
@@ -294,28 +341,29 @@ fn problems(case: &str, program: &una_core::Program, graph: &TimingGraph) -> (Ve
                 .iter()
                 .filter(|edge| {
                     inside(call.span, edge.span)
-                        && matches!(&edge.to, TimingTarget::Function(name) if last(name) == "update")
+                        && matches!(&edge.to, TimingTarget::Function(name) if INLINED_UPDATES.contains(&name.as_str()))
                 })
                 .collect();
         }
-        // An operator on dense values.
+        // An operator on dense values: a call of the prelude that no source call holds.
         if edges.is_empty()
             && let Need::Function(name) = &call.need
-            && name.starts_with("dense_")
+            && name.starts_with("prelude.dense_")
             && name.ends_with("map")
             && !graph.edges.iter().any(|edge| edge.span == call.span)
         {
             continue;
         }
-        if !edges.iter().any(|edge| same_node(&edge.from, &call.from)) {
-            found.push(format!(
+        if !edges.iter().any(|edge| edge.from == call.from) {
+            problems.push(format!(
                 "{case}: no edge for {:?} at {:?} from {:?} (edges there: {:?})",
                 call.need, call.span, call.from, edges
             ));
-        } else if !edges.iter().any(|edge| {
-            same_node(&edge.from, &call.from) && construct_span(edge.construct) == call.construct
-        }) {
-            found.push(format!(
+        } else if !edges
+            .iter()
+            .any(|edge| edge.from == call.from && construct_span(edge.construct) == call.construct)
+        {
+            problems.push(format!(
                 "{case}: the edge for {:?} at {:?} lies in {:?}, Core IR places it in {:?}",
                 call.need,
                 call.span,
@@ -328,21 +376,41 @@ fn problems(case: &str, program: &una_core::Program, graph: &TimingGraph) -> (Ve
         }
     }
     let mut placed = 0;
-    for (span, construct) in &sites {
+    for (kind, span, construct) in &found.sites {
         let recorded: Vec<Option<Span>> = graph
             .sites
             .iter()
-            .filter(|site| site.span == *span)
+            .filter(|site| site.span == *span && site.kind == *kind)
             .map(|site| construct_span(site.construct))
             .collect();
-        placed += usize::from(!recorded.is_empty());
-        if !recorded.is_empty() && !recorded.contains(construct) {
-            found.push(format!(
-                "{case}: the site at {span:?} lies in {recorded:?}, Core IR places it in {construct:?}"
+        if recorded.is_empty() {
+            problems.push(format!(
+                "{case}: the {kind} site at {span:?} is not recorded"
+            ));
+        } else if !recorded.contains(construct) {
+            problems.push(format!(
+                "{case}: the {kind} site at {span:?} lies in {recorded:?}, Core IR places it in {construct:?}"
+            ));
+        } else {
+            placed += 1;
+        }
+    }
+    for (kind, span, parent) in &found.constructs {
+        let recorded: Vec<Option<Span>> = graph
+            .constructs
+            .iter()
+            .filter(|c| c.span == *span && c.kind == *kind)
+            .map(|c| construct_span(c.construct))
+            .collect();
+        if recorded.is_empty() {
+            problems.push(format!("{case}: the {kind} at {span:?} is not recorded"));
+        } else if !recorded.contains(parent) {
+            problems.push(format!(
+                "{case}: the {kind} at {span:?} has the parent {recorded:?}, Core IR gives it {parent:?}"
             ));
         }
     }
-    (found, placed)
+    (problems, placed)
 }
 
 /// Every case of the conformance suite: each `.una` file and each package directory of an
@@ -373,7 +441,7 @@ fn every_call_of_the_conformance_suite_has_its_edge_and_its_construct() {
     assert!(cases.len() > 1_000, "only {} cases found", cases.len());
     let workers = std::thread::available_parallelism().map_or(4, |n| n.get().min(4));
     let next = std::sync::atomic::AtomicUsize::new(0);
-    let results = std::sync::Mutex::new((0usize, 0usize, 0usize, Vec::new()));
+    let results = std::sync::Mutex::new((0usize, 0usize, 0usize, Vec::new(), Vec::new()));
     std::thread::scope(|scope| {
         for _ in 0..workers {
             scope.spawn(|| {
@@ -382,10 +450,15 @@ fn every_call_of_the_conformance_suite_has_its_edge_and_its_construct() {
                     let Some(path) = cases.get(at) else {
                         break;
                     };
-                    let Ok(checked) = una_cli::check(path, una_cli::Tier::Zero) else {
-                        continue;
-                    };
                     let name = path.display().to_string();
+                    let checked = match una_cli::check(path, una_cli::Tier::Zero) {
+                        Ok(checked) => checked,
+                        Err(error) => {
+                            let mut results = results.lock().unwrap();
+                            results.4.push(format!("{name}: {error:?}"));
+                            continue;
+                        }
+                    };
                     let (found, placed) = problems(&name, &checked.program, &checked.timing_graph);
                     let mut results = results.lock().unwrap();
                     results.0 += 1;
@@ -396,7 +469,14 @@ fn every_call_of_the_conformance_suite_has_its_edge_and_its_construct() {
             });
         }
     });
-    let (checked, edges, placed, found) = results.into_inner().unwrap();
+    let (checked, edges, placed, found, unloaded) = results.into_inner().unwrap();
+    // Every case loads, or the walk would skip it unseen.
+    assert!(
+        unloaded.is_empty(),
+        "{} cases did not load:\n{}",
+        unloaded.len(),
+        unloaded.join("\n")
+    );
     assert!(checked > 1_000, "only {checked} cases checked");
     assert!(edges > 1_000, "only {edges} edges recorded");
     // The sites of Core IR are found in the graph by their spans.

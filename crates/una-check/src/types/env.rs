@@ -769,6 +769,19 @@ impl<'a> Env<'a> {
     }
 
     /// The text of `symbol`, interned by module `module`.
+    /// The `via` function of the policy `policy`, which a call of the policy runs (`spec/07
+    /// §5`); `None` for a function that is not a policy, or whose `via` does not resolve.
+    pub(crate) fn via_of(&self, policy: usize) -> Option<usize> {
+        let def = self.functions.get(policy)?;
+        let FnAst::Policy(decl) = def.ast else {
+            return None;
+        };
+        match self.lower(def.module, self.text(def.module, decl.via.name)) {
+            Some(Entity::Function(via)) => Some(via),
+            _ => None,
+        }
+    }
+
     pub(crate) fn text(&self, module: usize, symbol: Symbol) -> &'a str {
         match self.modules.get(module) {
             Some(module) => module.interner.resolve(symbol),

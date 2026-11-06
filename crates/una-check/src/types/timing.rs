@@ -784,7 +784,7 @@ pub(crate) fn graph(env: &Env<'_>, findings: &Findings) -> Graph {
             add(&mut graph.succ, from, node);
         }
     }
-    // Each edge checking recorded, one per call site (P1): a call or a function named as a
+    // Each edge checking recorded at its call site (P1): a call or a function named as a
     // value, a call of a function value (to `Λ`), an operation (#1148), an installation.
     for edge in &findings.graph_edges {
         let Some(from) = graph.node_of(edge.from) else {
@@ -840,7 +840,7 @@ pub(crate) fn graph(env: &Env<'_>, findings: &Findings) -> Graph {
         let to = graph.cap_node(cap);
         add(&mut graph.succ, node, to);
     }
-    // One edge per pair of nodes, in the order of the nodes: the edges come one per call site,
+    // One edge per pair of nodes, in the order of the nodes: the edges come per call site,
     // so the searches below meet them in an order that does not depend on the source's.
     // O(E log E) in all.
     for edges in &mut graph.succ {
@@ -1509,11 +1509,15 @@ pub(crate) fn ancestor_labels(
     }
 }
 
-/// The callees of each function, from the package's call edges.
+/// The callees of each function, from the package's call edges, with the `via` function of
+/// each policy called, which the policy's call runs (#1673).
 fn callees_of(findings: &Findings) -> BTreeMap<usize, Vec<usize>> {
     let mut callees: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
     for &(caller, callee, _) in &findings.edges {
         callees.entry(caller).or_default().push(callee);
+    }
+    for &(policy, via) in &findings.policy_vias {
+        callees.entry(policy).or_default().push(via);
     }
     callees
 }
@@ -1951,7 +1955,7 @@ pub struct TimingPlace {
 /// of every package of the conformance suite.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TimingGraph {
-    /// Each edge, one per call site, in the order checking recorded them.
+    /// Each edge, at its call site, in the order checking recorded them.
     pub edges: Vec<TimingEdge>,
     /// Each task construct, by the ids edges and places record; its `construct` is its parent.
     pub constructs: Vec<TimingPlace>,

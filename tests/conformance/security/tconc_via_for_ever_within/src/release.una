@@ -1,0 +1,23 @@
+trusted module release
+
+pub capability Store
+  op get(key: Text) -> Int
+
+--- A handler of `Store` with a `secret Int` parameter: a site that installs it counts it (ADR 0116 IF5
+--- item 3).
+pub handler held(seed: secret Int) for Store
+  op get(key) = 0
+
+pub policy key_of
+  from secret Int
+  to Int
+  via reveal_it
+  purpose "a test"
+  owner privacy
+
+--- The `via` function, which a call of `key_of` runs: it installs `held` and performs `Store.get`
+--- under it, so the policy's callers need no binding of `Store`.
+reveal_it(t: secret Int) -> Int
+=
+  let v = @store.get("k") with @store = held(1)
+  v + 1

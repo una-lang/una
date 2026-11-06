@@ -1019,6 +1019,10 @@ pub(crate) fn close_quiet(env: &super::env::Env<'_>, findings: &mut super::Findi
     for &(caller, callee, _) in &findings.edges {
         callers.entry(callee).or_default().push(caller);
     }
+    // A policy's call runs its `via` function (#1673).
+    for &(policy, via) in &findings.policy_vias {
+        callers.entry(via).or_default().push(policy);
+    }
     let close = |mut set: BTreeSet<usize>| {
         let mut pending: Vec<usize> = set.iter().copied().collect();
         while let Some(f) = pending.pop() {
