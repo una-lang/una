@@ -162,6 +162,9 @@ struct Analysis {
     timing: Vec<una_check::TimingSite>,
     /// `L_lim` (ADR 0117 IF4), which a grant with limits needs at most `internal`.
     limit_label: una_core::Label,
+    /// The units of the state types of the `[drive]` module, which Core IR erases
+    /// (`spec/26 §2` rule 2), for the shape check of `una run` and `una build`.
+    drive_units: Option<una_check::DriveUnits>,
 }
 
 /// Checks `package`; with `run_grants`, for `una run`, whose grants are final (U3012).
@@ -325,6 +328,7 @@ fn analyze_and(
         file_state: types.file_state,
         timing: types.timing,
         limit_label: types.limit_label,
+        drive_units: types.drive_units,
     };
     (analysis, rejected)
 }
@@ -360,6 +364,7 @@ fn environment_failure(probe: &str) -> Analysis {
         mounts: Vec::new(),
         timing: Vec::new(),
         limit_label: una_core::Label::public(),
+        drive_units: None,
     }
 }
 

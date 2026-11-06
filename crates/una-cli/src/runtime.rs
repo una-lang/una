@@ -953,6 +953,21 @@ pub(crate) fn driven_init<'a>(
             "`on_stop` of the driven module `{module}` is not `pub on_stop(state: S) -> Unit`, with S the result of `init`"
         ));
     }
+    // Core IR erases units of measure, which `same_type` therefore cannot see: the host hands
+    // the state on unchanged, so its units MUST be those of the result of `init` at every
+    // position (`spec/26 §2` rule 2, U2028 in the checks too). Fails closed when the checker
+    // recorded none.
+    let units = analysis.drive_units.as_ref().is_some_and(|units| {
+        [&units.step, &units.on_stop]
+            .into_iter()
+            .flatten()
+            .all(|state| *state == units.init)
+    });
+    if !units {
+        return Err(format!(
+            "the state of the driven module `{module}` does not have the units of measure of the result of `init` at every position of its type in `step` and `on_stop`"
+        ));
+    }
     Ok(init)
 }
 
@@ -1062,10 +1077,12 @@ fn is_host_kind(ty: &Type, name: &str, label: &una_core::Label) -> bool {
 /// rule 2). The labels are the checker's: each hand-off of the host is a flow into the
 /// parameter's declared type, U4001 otherwise, so a state labeled higher in `step` or `on_stop`
 /// is the same `S` at every position, the parameters and result of a function type included
-/// (issue #1644). The refinements are part of `S`: no rule of the checker or the verifier
-/// proves that the state `init` returns satisfies a refinement `step` or `on_stop` declares on
-/// it, so they must be equal, predicate by predicate. A function type's effects and failures
-/// are compared exactly. O(size of the types).
+/// (issue #1644). A refinement anywhere in `S` is U7008 in `una check` (`spec/26 §2` rule 2,
+/// "No preconditions"), since nothing proves the state the host hands on satisfies it; as
+/// defense in depth the refinements are compared here too, predicate by predicate and in
+/// order, so a package that reaches the host past that check with a refinement on one side
+/// only is still refused. A function type's effects and failures are compared exactly.
+/// O(size of the types).
 fn same_type(a: &Type, b: &Type) -> bool {
     let all = |xs: &[Type], ys: &[Type]| {
         xs.len() == ys.len() && xs.iter().zip(ys).all(|(x, y)| same_type(x, y))
@@ -1659,5 +1676,78 @@ impl<'a> ExampleDoc<'a> {
             },
             trace: run.trace.iter().map(EventDoc::from).collect(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `Int` with the label `label` and the refinements whose predicates are `predicates`.
+    fn int(label: una_core::Label, predicates: &[bool]) -> Type {
+        Type::Base {
+            base: Base::Int,
+            refinements: predicates
+                .iter()
+                .map(|p| una_core::Refinement {
+                    name: "R".to_owned(),
+                    clause: una_core::Clause {
+                        term: una_core::Term::Bool(*p),
+                        text: p.to_string(),
+                        span: None,
+                    },
+                })
+                .collect(),
+            label,
+        }
+    }
+
+    /// `fn(param) -> result`, public, with no effects or failures.
+    fn function(param: Type, result: Type) -> Type {
+        Type::Fn {
+            params: vec![param],
+            result: Box::new(result),
+            uses: Vec::new(),
+            fails: None,
+            label: una_core::Label::public(),
+        }
+    }
+
+    #[test]
+    fn a_driven_state_is_compared_with_labels_aside_and_refinements_included() {
+        // `spec/26 §2` rule 2, issue #1644: the run-time shape check, reached directly, since a
+        // refinement in the state is U7008 in `una check` before any run.
+        let public = una_core::Label::public;
+        let secret = || una_core::Label::symbol("s");
+        // Labels aside at every position, a function type's parameter and result included.
+        assert!(same_type(&int(public(), &[]), &int(secret(), &[])));
+        assert!(same_type(
+            &function(int(public(), &[]), int(public(), &[])),
+            &function(int(secret(), &[]), int(secret(), &[]))
+        ));
+        // Refinements compared by predicate, wherever they are written, and in order.
+        assert!(same_type(&int(public(), &[true]), &int(secret(), &[true])));
+        assert!(!same_type(&int(public(), &[]), &int(public(), &[true])));
+        assert!(!same_type(
+            &int(public(), &[true]),
+            &int(public(), &[false])
+        ));
+        assert!(!same_type(
+            &int(public(), &[true, false]),
+            &int(public(), &[false, true])
+        ));
+        assert!(!same_type(
+            &function(int(public(), &[true]), int(public(), &[])),
+            &function(int(public(), &[]), int(public(), &[]))
+        ));
+        assert!(!same_type(
+            &function(int(public(), &[]), int(public(), &[true])),
+            &function(int(public(), &[]), int(public(), &[]))
+        ));
+        // A function type is never the same as a base type.
+        assert!(!same_type(
+            &function(int(public(), &[]), int(public(), &[])),
+            &int(public(), &[])
+        ));
     }
 }

@@ -11,7 +11,7 @@
 //! dropped, and the repair keeps its description without an edit. One declaration is parsed
 //! once more per broken declaration, so the cost stays linear in the source.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use una_diag::Code;
 
@@ -133,6 +133,24 @@ fn starts_decl(line: &Line<'_>, keywords: KeywordSet) -> bool {
         .get(word.len()..)
         .and_then(|rest| rest.chars().next());
     starts_declaration(&word, next, keywords)
+}
+
+/// The indices of the lines of `lines` that start a declaration, in order: read once per file,
+/// in O(L) for `L` lines.
+fn decl_starts(lines: &[Line<'_>], keywords: KeywordSet) -> Vec<usize> {
+    (0..lines.len())
+        .filter(|&i| lines.get(i).is_some_and(|line| starts_decl(line, keywords)))
+        .collect()
+}
+
+/// The declaration that holds line `at`, as `(first line, line past its end)`: the last start of
+/// `starts` at or before `at`, to the next start or the end of the `len` lines. A binary search
+/// finds it in O(log D) for `D` declarations; a scan of the lines back and forth, once per
+/// error, made the repairs of one large declaration with many errors quadratic (#1635).
+fn decl_around(starts: &[usize], at: usize, len: usize) -> Option<(usize, usize)> {
+    let next = starts.partition_point(|&i| i <= at);
+    let decl = *starts.get(next.checked_sub(1)?)?;
+    Some((decl, starts.get(next).copied().unwrap_or(len)))
 }
 
 /// A position of `s` at bracket depth 0, outside text literals.
@@ -812,6 +830,8 @@ pub(crate) fn attach(text: &str, file: FileId, keywords: KeywordSet, errors: &mu
     let Some(lines) = lines_of(text) else {
         return;
     };
+    // Read once, when the first error needs it.
+    let mut starts: Option<Vec<usize>> = None;
     for error in errors.iter_mut() {
         if error.code != Code::U0101 || error.repairs.iter().any(|r| r.edit.is_some()) {
             continue;
@@ -819,10 +839,8 @@ pub(crate) fn attach(text: &str, file: FileId, keywords: KeywordSet, errors: &mu
         let Some(at) = line_at(&lines, error.span.start) else {
             continue;
         };
-        let Some(decl) = (0..=at)
-            .rev()
-            .find(|&i| lines.get(i).is_some_and(|line| starts_decl(line, keywords)))
-        else {
+        let starts = starts.get_or_insert_with(|| decl_starts(&lines, keywords));
+        let Some((decl, decl_end)) = decl_around(starts, at, lines.len()) else {
             continue;
         };
         // An error of a module header or an import line has no rewrite here.
@@ -833,9 +851,6 @@ pub(crate) fn attach(text: &str, file: FileId, keywords: KeywordSet, errors: &mu
         }) {
             continue;
         }
-        let decl_end = (at + 1..lines.len())
-            .find(|&i| lines.get(i).is_some_and(|line| starts_decl(line, keywords)))
-            .unwrap_or(lines.len());
         let candidates = [
             header_equals(&lines, at, decl, decl_end),
             leading_word(&lines, at, decl),
@@ -1159,10 +1174,118 @@ fn in_plain_text(region: &str) -> Vec<bool> {
     out
 }
 
+/// What the renames read of one declaration, once, when its first error needs it.
+struct DeclText<'a> {
+    /// The byte offset of its first line.
+    start: usize,
+    /// The byte offset just past its header line.
+    header_end: usize,
+    /// Its text.
+    region: &'a str,
+    /// Which bytes of `region` are inside a text literal and outside its interpolations.
+    plain: Vec<bool>,
+    /// The offsets in `region` of each whole word, in order.
+    words: BTreeMap<&'a str, Vec<usize>>,
+}
+
+impl<'a> DeclText<'a> {
+    /// The declaration of the lines `decl..decl_end`: O(m log w) for its `m` bytes and `w`
+    /// distinct words.
+    fn of(text: &'a str, lines: &[Line<'_>], (decl, decl_end): (usize, usize)) -> Option<Self> {
+        let offset = |i: usize| lines.get(i).map_or(text.len(), |l| l.start);
+        let header_end = lines.get(decl).map_or(0, |l| l.start + l.text.len());
+        let (start, end) = (offset(decl), offset(decl_end).min(text.len()));
+        let region = text.get(start..end)?;
+        let mut words: BTreeMap<&'a str, Vec<usize>> = BTreeMap::new();
+        let mut word_start: Option<usize> = None;
+        for (i, c) in region.char_indices().chain([(region.len(), ' ')]) {
+            match (is_word_char(c), word_start) {
+                (true, None) => word_start = Some(i),
+                (false, Some(from)) => {
+                    if let Some(word) = region.get(from..i) {
+                        words.entry(word).or_default().push(from);
+                    }
+                    word_start = None;
+                }
+                _ => {}
+            }
+        }
+        Some(DeclText {
+            start,
+            header_end,
+            region,
+            plain: in_plain_text(region),
+            words,
+        })
+    }
+
+    /// The rename of `name` to a fresh name from `base` at every occurrence in this
+    /// declaration, or `None` when an occurrence is not one a rename may take: O(k log L + s)
+    /// for its `k` occurrences, `L` lines and the `s` bytes the edit spans.
+    fn rename(
+        &self,
+        lines: &[Line<'_>],
+        file: FileId,
+        name: &str,
+        new: impl FnOnce() -> String,
+    ) -> Option<SyntaxRepair> {
+        let (start, region) = (self.start, self.region);
+        let occurrences = self.words.get(name)?;
+        for &i in occurrences {
+            let before = region.get(..i).and_then(|b| b.chars().next_back());
+            let after_text = region.get(i + name.len()..).unwrap_or("");
+            let absolute = start + i;
+            let line_text = lines
+                .get(line_at(lines, absolute).unwrap_or(0))
+                .map_or("", |l| l.text);
+            let labeled = after_text.trim_start().starts_with(':')
+                && !after_text.trim_start().starts_with("::");
+            let bound_by_let = region
+                .get(..i)
+                .is_some_and(|b| b.trim_end().ends_with("let"));
+            if self.plain.get(i).copied().unwrap_or(false)
+                || before == Some('.')
+                || (absolute == start && !line_text.starts_with(' '))
+                || (labeled && absolute >= self.header_end && !bound_by_let)
+            {
+                return None;
+            }
+        }
+        let (&first, &last) = (occurrences.first()?, occurrences.last()?);
+        let new = new();
+        let mut replacement = String::new();
+        let mut cursor = first;
+        for &i in occurrences {
+            replacement.push_str(region.get(cursor..i).unwrap_or(""));
+            replacement.push_str(&new);
+            cursor = i + name.len();
+        }
+        Some(SyntaxRepair {
+            description: format!(
+                "rename `{name}` to `{new}` in its declaration: a name starts with a letter"
+            ),
+            edit: Some((
+                Span {
+                    file,
+                    start: start + first,
+                    end: start + last + name.len(),
+                },
+                replacement,
+            )),
+        })
+    }
+}
+
 /// The renames of names that start with `_` (U0001, ADR 0096 rule 3): `_x`, a local, a
 /// parameter or a pattern's binding, becomes `x`, or the first fresh name of rule 3a, at every
 /// occurrence in its declaration; `Variant(_)` loses its binding, and an arm `_ ->` becomes
 /// `else ->`. Every occurrence of one name gets the same edit, which `una fix` applies once.
+///
+/// Each declaration is read once, into its words and their offsets, and each rename is
+/// computed once per (declaration, name) and reused by every error of that name. With `n`
+/// bytes, `e` errors and `r` bytes of repairs, the pass takes O((n + e) log n + r): reading the
+/// declaration again for each error made one large declaration with many names quadratic
+/// (#1635).
 pub(crate) fn underscore_renames(
     text: &str,
     file: FileId,
@@ -1172,9 +1295,11 @@ pub(crate) fn underscore_renames(
     let Some(lines) = lines_of(text) else {
         return;
     };
-    let offset = |i: usize| lines.get(i).map_or(text.len(), |l| l.start);
-    // Read once, when the first rename needs it.
+    // Each read once, when the first rename needs it.
     let mut taken: Option<Taken<'_>> = None;
+    let mut starts: Option<Vec<usize>> = None;
+    let mut decls: BTreeMap<usize, Option<DeclText<'_>>> = BTreeMap::new();
+    let mut renames: BTreeMap<(usize, String), Option<SyntaxRepair>> = BTreeMap::new();
     for error in errors.iter_mut() {
         if error.code != Code::U0001 || !error.message.contains("`_`") || !error.repairs.is_empty()
         {
@@ -1198,75 +1323,24 @@ pub(crate) fn underscore_renames(
         if !base.starts_with(|c: char| c.is_ascii_lowercase()) {
             continue;
         }
-        let Some(decl) = (0..=at)
-            .rev()
-            .find(|&i| lines.get(i).is_some_and(|line| starts_decl(line, keywords)))
-        else {
+        let starts = starts.get_or_insert_with(|| decl_starts(&lines, keywords));
+        let Some(span) = decl_around(starts, at, lines.len()) else {
             continue;
         };
-        let decl_end = (at + 1..lines.len())
-            .find(|&i| lines.get(i).is_some_and(|line| starts_decl(line, keywords)))
-            .unwrap_or(lines.len());
-        let header_end = lines.get(decl).map_or(0, |l| l.start + l.text.len());
-        let (start, end) = (offset(decl), offset(decl_end).min(text.len()));
-        let Some(region) = text.get(start..end) else {
+        let decl = decls
+            .entry(span.0)
+            .or_insert_with(|| DeclText::of(text, &lines, span));
+        let Some(decl) = decl else {
             continue;
         };
-        let plain = in_plain_text(region);
-        let mut occurrences = Vec::new();
-        let mut exact = true;
-        for (i, _) in region.match_indices(name.as_str()) {
-            let before = region.get(..i).and_then(|b| b.chars().next_back());
-            let after_text = region.get(i + name.len()..).unwrap_or("");
-            if before.is_some_and(is_word_char) || after_text.starts_with(is_word_char) {
-                continue;
-            }
-            let absolute = start + i;
-            let line_text = lines
-                .get(line_at(&lines, absolute).unwrap_or(0))
-                .map_or("", |l| l.text);
-            let labeled = after_text.trim_start().starts_with(':')
-                && !after_text.trim_start().starts_with("::");
-            let bound_by_let = region
-                .get(..i)
-                .is_some_and(|b| b.trim_end().ends_with("let"));
-            if plain.get(i).copied().unwrap_or(false)
-                || before == Some('.')
-                || (absolute == start && !line_text.starts_with(' '))
-                || (labeled && absolute >= header_end && !bound_by_let)
-            {
-                exact = false;
-                break;
-            }
-            occurrences.push(i);
-        }
-        let (Some(&first), Some(&last)) = (occurrences.first(), occurrences.last()) else {
-            continue;
-        };
-        if !exact {
-            continue;
-        }
-        let new = fresh(taken.get_or_insert_with(|| Taken::of(text)), base);
-        let mut replacement = String::new();
-        let mut cursor = first;
-        for &i in &occurrences {
-            replacement.push_str(region.get(cursor..i).unwrap_or(""));
-            replacement.push_str(&new);
-            cursor = i + name.len();
-        }
-        error.repairs.push(SyntaxRepair {
-            description: format!(
-                "rename `{name}` to `{new}` in its declaration: a name starts with a letter"
-            ),
-            edit: Some((
-                Span {
-                    file,
-                    start: start + first,
-                    end: start + last + name.len(),
-                },
-                replacement,
-            )),
+        let repair = renames.entry((span.0, name.clone())).or_insert_with(|| {
+            decl.rename(&lines, file, &name, || {
+                fresh(taken.get_or_insert_with(|| Taken::of(text)), base)
+            })
         });
+        if let Some(repair) = repair {
+            error.repairs.push(repair.clone());
+        }
     }
 }
 
@@ -1475,6 +1549,36 @@ mod tests {
                 "module m\n\nx(n: Int) -> Int = n\n\nf(a: Int) -> Int\n=\n  let x = a\n  let x2 = x(n: x)\n  x2 + x\n"
             )
         );
+    }
+
+    #[test]
+    fn one_name_in_two_declarations_gets_a_rename_in_each() {
+        // The renames are computed once per (declaration, name): each error of `_seats` gets the
+        // edit of its own declaration, the same for both errors of one declaration.
+        let source = "module m\n\nf(_seats: Int) -> Int = _seats + 1\n\ng(_seats: Int) -> Int = _seats + 2\n";
+        let mut sources = SourceDb::new();
+        let id = sources.add("t.una", source.as_bytes());
+        let mut interner = Interner::new();
+        let lexed = lex_in(sources.file(id), id, &mut interner, KeywordSet::V0_1);
+        let edits: Vec<(usize, usize, String)> = lexed
+            .errors
+            .iter()
+            .filter_map(|e| e.repairs.first()?.edit.clone())
+            .map(|(span, text)| (span.start, span.end, text))
+            .collect();
+        let f = source.find("_seats").unwrap_or(0);
+        let g = source.rfind("g(_seats").unwrap_or(0) + 2;
+        let one = (
+            f,
+            f + "_seats: Int) -> Int = _seats".len(),
+            "seats: Int) -> Int = seats".to_owned(),
+        );
+        let two = (
+            g,
+            g + "_seats: Int) -> Int = _seats".len(),
+            "seats: Int) -> Int = seats".to_owned(),
+        );
+        assert_eq!(edits, vec![one.clone(), one, two.clone(), two]);
     }
 
     #[test]

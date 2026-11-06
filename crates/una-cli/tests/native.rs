@@ -4445,54 +4445,56 @@ pub step(edit n: Int in 1..10, input: Tick) -> Unit
 ";
 
 #[test]
-fn a_driven_state_is_one_type_with_labels_aside_and_refinements_included() {
+fn a_driven_state_is_one_type_with_labels_aside_and_no_refinement() {
     // `spec/26 §2` rule 2, issue #1644: the labels of the state are the checker's, so a
     // function-typed state labeled higher in `step` runs in both engines, as `una check`
-    // accepts it; the refinements are part of `S`, so a refinement `init`'s result does not
-    // carry is a usage error, exit code 2, in `una run` and `una build`, where the native
-    // build would otherwise elide the division's check on a premise nothing proved.
+    // accepts it. A refinement in the state is U7008 in `una check`, on one side only or equal
+    // on both, so `una run` and `una build` stop at the check and write no executable; the
+    // run-time comparison of refinements behind it is tested directly in `runtime.rs`.
     runtime();
-    for (name, source, output) in [
-        ("raisedfn", RAISED_FUNCTION, "step\nstep\nstopped\n"),
-        ("ranged", RANGED, "q 100\nq 100\n"),
-    ] {
+    let dir = ita_package("raisedfn", DRIVE, &[("src/counter.una", RAISED_FUNCTION)]);
+    let output = "step\nstep\nstopped\n";
+    let run = una(&dir, &["run", "--stop-after-iterations", "2"]);
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout), output);
+    let built = una(&dir, &["build"]);
+    assert_eq!(
+        built.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let native = Command::new(dir.join("target/una/raisedfn"))
+        .current_dir(&dir)
+        .args(["--stop-after-iterations", "2"])
+        .output()
+        .unwrap();
+    assert_eq!(native.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&native.stdout), output);
+    let _ = std::fs::remove_dir_all(&dir);
+    for (name, source) in [("refined", REFINED_STEP), ("ranged", RANGED)] {
         let dir = ita_package(name, DRIVE, &[("src/counter.una", source)]);
-        let run = una(&dir, &["run", "--stop-after-iterations", "2"]);
-        assert_eq!(
-            run.status.code(),
-            Some(0),
+        let checked = una(&dir, &["check"]);
+        assert_eq!(checked.status.code(), Some(1), "{name}");
+        assert!(
+            String::from_utf8_lossy(&checked.stdout).contains("U7008")
+                || String::from_utf8_lossy(&checked.stderr).contains("U7008"),
             "{name}: {}",
-            String::from_utf8_lossy(&run.stderr)
+            String::from_utf8_lossy(&checked.stderr)
         );
-        assert_eq!(String::from_utf8_lossy(&run.stdout), output, "{name}");
-        let built = una(&dir, &["build"]);
-        assert_eq!(
-            built.status.code(),
-            Some(0),
-            "{name}: {}",
-            String::from_utf8_lossy(&built.stderr)
-        );
-        let native = Command::new(dir.join("target/una").join(name))
-            .current_dir(&dir)
-            .args(["--stop-after-iterations", "2"])
-            .output()
-            .unwrap();
-        assert_eq!(native.status.code(), Some(0), "{name}");
-        assert_eq!(String::from_utf8_lossy(&native.stdout), output, "{name}");
+        for args in [&["run", "--stop-after-iterations", "1"][..], &["build"][..]] {
+            let output = una(&dir, args);
+            assert_eq!(output.status.code(), Some(1), "{name} {args:?}");
+            assert!(output.stdout.is_empty(), "{name} {args:?}");
+        }
+        assert!(!dir.join("target/una").join(name).exists(), "{name}");
         let _ = std::fs::remove_dir_all(&dir);
     }
-    let dir = ita_package("refined", DRIVE, &[("src/counter.una", REFINED_STEP)]);
-    for args in [&["run", "--stop-after-iterations", "1"][..], &["build"][..]] {
-        let output = una(&dir, args);
-        assert_eq!(output.status.code(), Some(2), "{args:?}");
-        assert!(
-            String::from_utf8_lossy(&output.stderr).contains("has no `pub step("),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-    assert!(!dir.join("target/una/refined").exists());
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// The `run` section of a `for ever` program whose entry is `name`, granted the console.

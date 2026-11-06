@@ -289,6 +289,52 @@ fn renaming_underscored_names_scales_linearly() {
     );
 }
 
+/// One function whose body binds `n` locals `_v0`, `_v1`, ..., each read once by the next:
+/// U0001 twice per name, all in one declaration.
+fn underscored_in_one(n: usize) -> String {
+    let mut text = String::from("module m\n\nf(a: Int) -> Int\n=\n  let _v0 = a\n");
+    for i in 1..n {
+        text.push_str(&format!("  let _v{i} = _v{} + 1\n", i - 1));
+    }
+    text.push_str(&format!("  _v{}\n", n - 1));
+    text
+}
+
+/// The time to check [`underscored_in_one`]`(n)`, whose every U0001 carries its rename.
+fn timed_renames_in_one(n: usize) -> Duration {
+    let path = scratch(&format!("underscored-in-one-{n}.una"));
+    let text = underscored_in_one(n);
+    let start = Instant::now();
+    let diagnostics = check(&path, &text);
+    let took = start.elapsed();
+    let renames = diagnostics
+        .iter()
+        .filter(|d| {
+            d.code.as_str() == "U0001"
+                && d.repairs
+                    .first()
+                    .is_some_and(|r| r.description.starts_with("rename `_v"))
+        })
+        .count();
+    assert_eq!(renames, 2 * n, "{n}");
+    took
+}
+
+/// The repairs of names that start with `_` read each declaration once, not once per error
+/// (#1635): a doubling of one declaration with `n` such names takes less than 2.5 times as
+/// long, by the shared helper. Scanning the declaration again for each error made it quadratic.
+#[test]
+fn renaming_underscored_names_in_one_declaration_scales_linearly() {
+    timing::assert_growth(
+        "renaming underscored names in one declaration",
+        &[500, 1_000, 2_000, 4_000],
+        0.0,
+        timing::FLOOR,
+        2.5,
+        |n| timed_renames_in_one(n).as_secs_f64(),
+    );
+}
+
 /// A package of `files`, by path under `src/`, in a fresh directory.
 fn package_of(name: &str, files: &[(&str, &str)]) -> PathBuf {
     let root = scratch(name);
