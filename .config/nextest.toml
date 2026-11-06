@@ -1,14 +1,28 @@
 # cargo nextest configuration (the harness runs the `tests` gate with it; `cargo test --workspace --locked` stays valid).
 #
-# Timing and scaling tests compare wall-clock readings, so a busy machine makes them flaky. Each takes
-# half of the test slots, which leaves no room for a second heavy test beside it: they run in pairs at
-# most, with nothing else running. No test is skipped and no assertion is changed.
+# Setup: under nextest every test is a process, and each test that links natively runs `cargo build -p una-rt`,
+# which rewrites target/debug/libuna_rt.a under the tests that read it. The setup script builds the library once
+# and sets UNA_RT_PREBUILT, which those tests honor by not building it again.
+#
+# Timing: tests that compare wall-clock readings (scaling and constant-time checks, deadlines, the limiter and
+# virtual-time checks) run alone: `threads-required = "num-cpus"` reserves every slot, so no other test of this
+# run runs beside them. Processes outside this run still add load; keep builders and other gates away while a
+# gate runs. No test is skipped and no assertion is changed.
+
+experimental = ["setup-scripts"]
+
+[scripts.setup.runtime]
+command = 'sh -c "cargo build --locked --quiet -p una-rt && echo UNA_RT_PREBUILT=1 >> $NEXTEST_ENV"'
 
 [profile.default]
 fail-fast = false
 slow-timeout = { period = "60s", terminate-after = 60 }
 
+[[profile.default.scripts]]
+filter = 'all()'
+setup = 'runtime'
+
 [[profile.default.overrides]]
-filter = 'test(/scales|scaling|linear|n_log_n|bounded_share|limiter|virtual_time/)'
-threads-required = 5
+filter = 'test(/scale|scaling|linear|n_log_n|bounded_share|limiter|virtual_time|cube|cubic|constant_time|cost_the_same|does_not_depend|whatever_the|no_real_time|meets?_the_deadline/) | binary(/scaling/)'
+threads-required = "num-cpus"
 slow-timeout = { period = "120s", terminate-after = 30 }

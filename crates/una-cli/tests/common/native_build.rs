@@ -21,26 +21,14 @@ pub fn root() -> PathBuf {
 /// static library only when asked. Under `cargo test --release`, where the `una` binary is the
 /// release one, it builds the release runtime beside it, so the executables link it: the
 /// timing oracles run that way (#1145), since debug timings are not those of a release.
-///
-/// `cargo nextest` runs each test in a process of its own and names its run in
-/// `NEXTEST_RUN_ID`: the first processes of a run build the runtime, and the others find the
-/// run's stamp, written after a build succeeded, and skip the build, so that the hundreds of
-/// tests of one run do not each wait for Cargo's lock (#1652). A run builds once, as one
-/// process of `cargo test` does; without the variable, every process builds.
 pub fn runtime() {
     static BUILT: OnceLock<()> = OnceLock::new();
     BUILT.get_or_init(|| {
-        let profile = if cfg!(debug_assertions) {
-            "debug"
-        } else {
-            "release"
-        };
+        // Set by the nextest setup script (.config/nextest.toml): the library is built, and a second build in each test
+        // process would rewrite it under the tests that link it.
         #[allow(clippy::disallowed_methods)]
-        let run = std::env::var("NEXTEST_RUN_ID").ok();
-        let stamp = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("una-rt-{profile}.run"));
-        if let Some(run) = &run
-            && std::fs::read_to_string(&stamp).is_ok_and(|built| &built == run)
-        {
+        let prebuilt = std::env::var_os("UNA_RT_PREBUILT").is_some();
+        if prebuilt {
             return;
         }
         let mut args = vec!["build", "--quiet", "--locked", "-p", "una-rt"];
@@ -53,13 +41,6 @@ pub fn runtime() {
             .status()
             .unwrap();
         assert!(status.success(), "cargo build -p una-rt failed");
-        if let Some(run) = run {
-            // Written whole under another name and renamed into place, so that no process
-            // reads half a stamp.
-            let staged = stamp.with_extension(format!("run.{}", std::process::id()));
-            std::fs::write(&staged, run).unwrap();
-            std::fs::rename(&staged, &stamp).unwrap();
-        }
     });
 }
 
