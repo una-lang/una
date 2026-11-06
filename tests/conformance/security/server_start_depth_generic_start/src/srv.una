@@ -1,0 +1,41 @@
+-- test: a `start` in a generic function takes the values of its type parameters from callers outside the task, so their labels count: `main` instantiates `T` with `secret Int`, the task recurses on it, U4003 at the `start` (spec/31 §1, ADR 0123 IF6, #1674)
+-- spec: spec/31 §1
+-- expect: error U4003 at src/srv.una:31:11
+module srv
+
+import std.host (Exchange, HttpServer, Reply)
+
+deep[T: Integer](n: T, i: internal Int) -> internal Int
+=
+  if n.to_int() - i <= 0
+    0
+  else
+    1 + deep(n, i: i + 1)
+
+answer[T: Integer](exchange: internal Exchange, key: T) -> Unit
+  uses @server: HttpServer[reply]
+=
+  let d = deep(key, i: exchange.request.body.len)
+  @server.reply(to: exchange.right, reply: Reply(status: 200, headers: [], body: "ok"))
+    if error use unit
+
+serve_all[T: Integer](key: T) -> Unit
+  uses @server: HttpServer[next, reply, close]
+  diverges
+=
+  tasks at most 1000 at once
+    for ever
+      let next = attempt @server.next()
+      when next
+        is Ok(exchange) ->
+          start answer(exchange, key: key)
+        is Err(failure) -> unit
+    on stop
+      @server.close()
+
+pub main() -> Unit
+  uses @server: HttpServer[next, reply, close]
+  diverges
+=
+  let key: secret Int = 4321
+  serve_all(key)

@@ -712,3 +712,229 @@ fn serve_section_hard_stop(engine: Engine) {
     assert!(!has_unanswered(&trace(&dir)), "{engine:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The probe of the serve hunt (#1674): a request task whose recursion depth depends on
+/// `secret` data and on the length of the request's body. Past `--task-depth` the task ends
+/// alone and its right is answered `500`, otherwise the program's `200` goes out, so a peer
+/// could recover `key` by a binary search on the body's length. `DEPTH_LABEL` is the label of
+/// `key` and of `deep`'s parameter.
+const DEPTH_PROBE: &str = r#"module srv
+
+import std.host (Exchange, HttpServer, Reply)
+
+deep(n: DEPTH_LABEL Int) -> DEPTH_LABEL Int
+=
+  if n <= 0
+    0
+  else
+    1 + deep(n - 1)
+
+answer(exchange: internal Exchange, key: DEPTH_LABEL Int) -> Unit
+  uses @server: HttpServer[reply]
+=
+  let d = deep(key - exchange.request.body.len)
+  @server.reply(to: exchange.right, reply: Reply(status: 200, headers: [], body: "ok"))
+    if error use unit
+
+pub main() -> Unit
+  uses @server: HttpServer[next, reply, close]
+  uses @console: Console[print]
+  diverges
+=
+  let key: DEPTH_LABEL Int = 4321
+  @console.print("serving")
+  tasks at most 1000 at once
+    for ever
+      let next = attempt @server.next()
+      when next
+        is Ok(exchange) ->
+          start answer(exchange, key: key)
+        is Err(failure) -> unit
+    on stop
+      @server.close()
+  @console.print("stopped")
+"#;
+
+/// The status line of the reply to a `POST` of `n` bytes.
+fn status_of_body(port: u16, n: usize) -> String {
+    let mut stream = connect(port);
+    let mut request =
+        format!("POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {n}\r\n\r\n").into_bytes();
+    request.extend(std::iter::repeat_n(b'a', n));
+    stream.write_all(&request).unwrap();
+    let reply = read_reply(&mut stream);
+    reply.lines().next().unwrap_or_default().to_owned()
+}
+
+/// The review's probe of #1674: the depth is chosen by a function value that data labeled
+/// `label` picks, a recursive lambda or a trivial one.
+fn value_probe(label: &str) -> String {
+    DEPTH_PROBE
+        .replace(
+            "deep(n: DEPTH_LABEL Int) -> DEPTH_LABEL Int",
+            "deep(n: internal Int) -> internal Int",
+        )
+        .replace(
+            "  let d = deep(key - exchange.request.body.len)\n",
+            "  let a = fn() -> deep(5000)\n  let b = fn() -> 0\n  let f = if key > exchange.request.body.len then a else b\n  let d = f()\n",
+        )
+        .replace("DEPTH_LABEL", label)
+}
+
+/// Review 3 of #1678: a `start` in a generic function, whose type parameter `main` instantiates
+/// with `KEY_LABEL Int`; the task recurses through generic functions on the key minus the body's
+/// length. With `generic` false the function that starts the task is not generic.
+fn generic_probe(label: &str, generic: bool) -> String {
+    let header = if generic {
+        "serve_all[T: Integer](key: T) -> Unit"
+    } else {
+        "serve_all(key: internal Int) -> Unit"
+    };
+    GENERIC_PROBE
+        .replace("SERVE_ALL", header)
+        .replace("KEY_LABEL", label)
+}
+
+const GENERIC_PROBE: &str = r#"module srv
+
+import std.host (Exchange, HttpServer, Reply)
+
+deep[T: Integer](n: T, i: internal Int) -> internal Int
+=
+  if n.to_int() - i <= 0
+    0
+  else
+    1 + deep(n, i: i + 1)
+
+answer[T: Integer](exchange: internal Exchange, key: T) -> Unit
+  uses @server: HttpServer[reply]
+=
+  let d = deep(key, i: exchange.request.body.len)
+  @server.reply(to: exchange.right, reply: Reply(status: 200, headers: [], body: "ok"))
+    if error use unit
+
+SERVE_ALL
+  uses @server: HttpServer[next, reply, close]
+  diverges
+=
+  tasks at most 1000 at once
+    for ever
+      let next = attempt @server.next()
+      when next
+        is Ok(exchange) ->
+          start answer(exchange, key: key)
+        is Err(failure) -> unit
+    on stop
+      @server.close()
+
+pub main() -> Unit
+  uses @server: HttpServer[next, reply, close]
+  uses @console: Console[print]
+  diverges
+=
+  let key: KEY_LABEL Int = 4321
+  @console.print("serving")
+  serve_all(key)
+  @console.print("stopped")
+"#;
+
+#[test]
+fn a_task_whose_depth_depends_on_secret_data_is_refused_before_it_serves() {
+    // ADR 0123 IF6, #1674: `una run` and `una build` check first, so neither engine binds the
+    // listener, and no peer can query the depth.
+    let probes = [
+        (
+            "depth_secret",
+            DEPTH_PROBE.replace("DEPTH_LABEL", "secret"),
+            "31:11",
+        ),
+        ("depth_value", value_probe("secret"), "34:11"),
+        ("depth_generic", generic_probe("secret", true), "28:11"),
+    ];
+    for (name, program, at) in probes {
+        refused_before_serving(name, &program, at);
+    }
+}
+
+/// Checks that `una run` and `una build` of `program` both refuse it with U4003 at `at` of
+/// `src/srv.una`, and that nothing listens on its port.
+fn refused_before_serving(name: &str, program: &str, at: &str) {
+    let port = free_port();
+    let dir = package(name, port, program, Engine::Interpreter);
+    for (verb, flag) in [
+        ("run", "UNA_TEST_RUN_SERVER"),
+        ("build", "UNA_TEST_BUILD_SERVER"),
+    ] {
+        let out = Command::new(env!("CARGO_BIN_EXE_una"))
+            .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+            .env(flag, "1")
+            .env("NO_COLOR", "1")
+            .args([verb, "."])
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "{name} {verb}: {stderr}");
+        assert!(
+            stderr.contains("[U4003]") && stderr.contains(&format!("src/srv.una:{at}")),
+            "{name} {verb}: {stderr}"
+        );
+        assert!(
+            TcpStream::connect(("127.0.0.1", port)).is_err(),
+            "{name} {verb}: a listener is open"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_task_whose_depth_depends_on_internal_data_answers_500_past_its_depth() {
+    // The twin, accepted: the depth depends only on `internal` data, which a reply accepts, so
+    // the `500` of a task that ends alone reveals no more than its reply could. Both engines
+    // answer the same: `200` below `--task-depth` (1000), `500` past it.
+    let twins = [
+        (
+            "depth_internal",
+            DEPTH_PROBE.replace("DEPTH_LABEL", "internal"),
+            4000,
+        ),
+        ("depth_value_internal", value_probe("internal"), 5000),
+        (
+            "depth_generic_internal",
+            generic_probe("internal", false),
+            4000,
+        ),
+    ];
+    for engine in ENGINES {
+        for (name, program, long) in &twins {
+            internal_twin(name, program, *long, engine);
+        }
+    }
+}
+
+/// Serves the `internal` twin `program` in `engine`: `200` for a body of `long` bytes, whose
+/// task stays below `--task-depth`, `500` for an empty one, whose task ends alone.
+fn internal_twin(name: &str, program: &str, long: usize, engine: Engine) {
+    {
+        let port = free_port();
+        let dir = package(name, port, program, engine);
+        let mut run = start(&dir, name, engine, &["--stop-grace", "10"]);
+        run.expect("serving");
+        assert_eq!(
+            status_of_body(port, long),
+            "HTTP/1.1 200 OK",
+            "{name} {engine:?}"
+        );
+        assert_eq!(
+            status_of_body(port, 0),
+            "HTTP/1.1 500 Internal Server Error",
+            "{engine:?}"
+        );
+        run.terminate();
+        let (code, lines, stderr) = run.end();
+        assert_eq!(code, Some(0), "{engine:?}: {stderr}");
+        assert_eq!(output(&lines), ["serving", "stopped"], "{engine:?}");
+        assert!(stderr.contains("ended alone"), "{engine:?}: {stderr}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

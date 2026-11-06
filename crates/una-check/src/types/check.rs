@@ -721,6 +721,9 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
     }
 
     fn push_local(&mut self, name: &'a str, ty: Ty, editable: bool, loop_of: Option<&'static str>) {
+        // ADR 0123 IF6 (#1674): the data the code being checked can hold.
+        let label = self.deep(&ty);
+        self.reach_label(&label);
         self.locals.push(Local {
             name,
             ty,

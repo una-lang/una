@@ -1447,14 +1447,17 @@ impl<'a> Checker<'_, 'a, '_> {
                     }
                 }
                 HandlingKind::ErrorUse(value) => {
+                    let expected = current.clone();
+                    // The default runs only when the failure comes, so under the label that
+                    // decides it: raised before the clause's context copies the program counter
+                    // (#1674).
+                    let saved = decided
+                        .as_ref()
+                        .map(|label| self.raise_pc(label, decided_at));
                     let ctx = Ctx {
                         error: Some(error.clone()),
                         ..self.ctx.clone()
                     };
-                    let expected = current.clone();
-                    let saved = decided
-                        .as_ref()
-                        .map(|label| self.raise_pc(label, decided_at));
                     let used = self.within(ctx, |checker| {
                         {
                             // The default's flow is the binder's (ADR 0103).

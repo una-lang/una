@@ -373,6 +373,14 @@ impl Checker<'_, '_, '_> {
     /// what the lambda receives or computes, which is checked where it is written.
     pub(crate) fn captured_value(&mut self, name: &str, span: Span) {
         self.timing_read(name);
+        // ADR 0123 IF6 (#1674): a lambda holds what it captures, which no binding of its own
+        // shows.
+        if self.lambda_depth > 0
+            && let Some(ty) = self.locals.find(name).map(|local| local.ty.clone())
+        {
+            let label = self.deep(&ty);
+            self.reach_label(&label);
+        }
         // ADR 0123 IF6: a capture of an open `start`.
         if !self.start_captures.is_empty()
             && let Some(position) = self.locals.position(name)

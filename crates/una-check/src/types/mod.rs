@@ -1230,6 +1230,10 @@ pub(crate) struct Findings {
     /// edge from the policy to its `via` for the searches over `edges` that the timing label
     /// (ADR 0116 IF5, IF6) and the quiet calls of S-39 make (#1673).
     pub(crate) policy_vias: std::collections::BTreeSet<(usize, usize)>,
+    /// For each node of the graph of ADR 0116 P1, the join of the deep labels of what its code
+    /// binds, parameters included, and of the answers of the operations it performs: the data
+    /// it can hold, for the reach of a `start` (#1674).
+    pub(crate) reach_labels: std::collections::BTreeMap<timing::Caller, una_core::Label>,
     /// The task constructs checked, the nodes of each body's construct tree (ADR 0116 P2, P3),
     /// by the ids that edges and sites record.
     pub(crate) constructs: Vec<timing::ConstructNode>,
