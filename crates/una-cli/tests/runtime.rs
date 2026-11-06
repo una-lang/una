@@ -28,15 +28,21 @@ fn corpus() -> PathBuf {
     hermetic::checkout(&["examples", "tests/conformance"])
 }
 
-/// Runs the `una` binary in `dir`, relative to the root of [`corpus`], or absolute.
-fn una_in(dir: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_una"))
+/// The command that runs the `una` binary in `dir`, relative to the root of [`corpus`], or
+/// absolute.
+fn una_command(dir: &Path, args: &[&str]) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_una"));
+    command
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
         .env_remove("UNA_PROOF_KEY")
         .args(args)
-        .current_dir(corpus().join(dir))
-        .output()
-        .unwrap()
+        .current_dir(corpus().join(dir));
+    command
+}
+
+/// Runs the `una` binary in `dir`, relative to the root of [`corpus`], or absolute.
+fn una_in(dir: &Path, args: &[&str]) -> Output {
+    una_command(dir, args).output().unwrap()
 }
 
 fn una(args: &[&str]) -> Output {
@@ -1860,8 +1866,10 @@ fn map_updates_and_lookups_scale_as_n_log_n_in_cpu_time() {
             MAP_SCALE.replace('N', &n.to_string()),
         )
         .unwrap();
-        let (output, seconds) =
-            cpu::cpu_timed(|| una(&["run", dir, "--grant", "console", "--max-memory", "1024"]));
+        let (output, seconds) = cpu::cpu_output(&una_command(
+            Path::new("."),
+            &["run", dir, "--grant", "console", "--max-memory", "1024"],
+        ));
         assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
         assert_eq!(stdout(&output), format!("{n} 0\n"));
         seconds
@@ -1924,8 +1932,10 @@ fn queue_and_stack_pushes_and_pops_scale_linearly_in_cpu_time() {
             SEQUENCE_SCALE.replace("COUNT", &n.to_string()),
         )
         .unwrap();
-        let (output, seconds) =
-            cpu::cpu_timed(|| una(&["run", dir, "--grant", "console", "--max-memory", "1024"]));
+        let (output, seconds) = cpu::cpu_output(&una_command(
+            Path::new("."),
+            &["run", dir, "--grant", "console", "--max-memory", "1024"],
+        ));
         assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
         assert_eq!(stdout(&output), "0 0\n");
         seconds
@@ -1991,8 +2001,10 @@ fn set_updates_lookups_and_operations_scale_as_n_log_n_in_cpu_time() {
             SET_SCALE.replace("COUNT", &n.to_string()),
         )
         .unwrap();
-        let (output, seconds) =
-            cpu::cpu_timed(|| una(&["run", dir, "--grant", "console", "--max-memory", "1024"]));
+        let (output, seconds) = cpu::cpu_output(&una_command(
+            Path::new("."),
+            &["run", dir, "--grant", "console", "--max-memory", "1024"],
+        ));
         assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
         assert_eq!(stdout(&output), format!("{n} {} 0\n", n - 1));
         seconds
@@ -2063,8 +2075,10 @@ fn hash_table_updates_lookups_and_operations_scale_linearly_in_cpu_time() {
             HASH_SCALE.replace("COUNT", &n.to_string()),
         )
         .unwrap();
-        let (output, seconds) =
-            cpu::cpu_timed(|| una(&["run", dir, "--grant", "console", "--max-memory", "1024"]));
+        let (output, seconds) = cpu::cpu_output(&una_command(
+            Path::new("."),
+            &["run", dir, "--grant", "console", "--max-memory", "1024"],
+        ));
         assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
         assert_eq!(stdout(&output), format!("{n} {} 0 0\n", n - 1));
         seconds
@@ -2135,8 +2149,10 @@ fn priority_queue_pushes_and_pops_scale_as_n_log_n_in_cpu_time() {
             PRIORITY_SCALE.replace("COUNT", &n.to_string()),
         )
         .unwrap();
-        let (output, seconds) =
-            cpu::cpu_timed(|| una(&["run", dir, "--grant", "console", "--max-memory", "1024"]));
+        let (output, seconds) = cpu::cpu_output(&una_command(
+            Path::new("."),
+            &["run", dir, "--grant", "console", "--max-memory", "1024"],
+        ));
         assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
         assert_eq!(stdout(&output), format!("{n} {n} 0\n"));
         seconds
@@ -2204,8 +2220,10 @@ fn bit_set_updates_and_lookups_scale_linearly_in_cpu_time() {
             BIT_SET_SCALE.replace("COUNT", &n.to_string()),
         )
         .unwrap();
-        let (output, seconds) =
-            cpu::cpu_timed(|| una(&["run", dir, "--grant", "console", "--max-memory", "1024"]));
+        let (output, seconds) = cpu::cpu_output(&una_command(
+            Path::new("."),
+            &["run", dir, "--grant", "console", "--max-memory", "1024"],
+        ));
         assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
         assert_eq!(stdout(&output), format!("{n} {} 0\n", n - 1));
         seconds
@@ -2264,7 +2282,10 @@ fn a_list_appended_through_calls_grows_in_linear_cpu_time() {
                 appends_through_calls(shape, steps),
             )
             .unwrap();
-            let (output, seconds) = cpu::cpu_timed(|| una(&["run", dir, "--grant", "console"]));
+            let (output, seconds) = cpu::cpu_output(&una_command(
+                Path::new("."),
+                &["run", dir, "--grant", "console"],
+            ));
             assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
             assert_eq!(stdout(&output), format!("{steps}\n"));
             seconds
@@ -2435,8 +2456,10 @@ fn text_len_and_slice_take_constant_cpu_time_on_any_text() {
             SLICE_SCALE.replace("COUNT", &count.to_string()),
         )
         .unwrap();
-        let (output, seconds) =
-            cpu::cpu_timed(|| una(&["run", dir, "--grant", "console", "--max-memory", "1024"]));
+        let (output, seconds) = cpu::cpu_output(&una_command(
+            Path::new("."),
+            &["run", dir, "--grant", "console", "--max-memory", "1024"],
+        ));
         assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
         // Each of the `count` slices adds 1 and the length `count`.
         let total = count * (count + 1);

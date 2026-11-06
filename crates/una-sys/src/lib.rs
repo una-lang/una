@@ -8,7 +8,7 @@
 //! it gets a security review before it merges. Only `signals`, `coroutine`, `io`, `poll`,
 //! `server` (`serve:` grants) and, behind the feature of that name, `solver` hold `unsafe` code,
 //! each block with a `// SAFETY:` comment; `solver` holds the solver child's confinement, limits,
-//! spawn attributes, footprint and processor-time reading, and the record of its confinement (ADR 0124 rules 5 to
+//! spawn attributes and footprint reading, and the record of its confinement (ADR 0124 rules 5 to
 //! 7). The context switch is Rust `naked_asm!` only,
 //! assembled by the toolchain: no `.s` or `.S` file, no build script, and no C is compiled.
 //! It assumes no x86 shadow stacks (CET) and no AArch64 branch targets (BTI) are enforced, as for

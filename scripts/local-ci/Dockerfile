@@ -7,13 +7,15 @@
 FROM ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
 
 RUN apt-get update \
-    && apt-get install --yes --no-install-recommends ca-certificates cmake curl g++ gcc git libc6-dev make python3 unzip \
+    && apt-get install --yes --no-install-recommends ca-certificates cmake curl g++ gcc git libc6-dev make python3 time unzip \
     && rm -rf /var/lib/apt/lists/* \
     && git config --system --add safe.directory '*'
 # git: the tests of scripts/release-gates.sh clone the checkout (#232), which the container
 # mounts with another owner than its user, hence the safe directory.
 # python3: the replay of the findings (#528), a step of scripts/local-ci.sh, converts the dumps
 # with docs/reviews/formal-m2-replay/dumpcore.py.
+# time: the POSIX `time -p` utility, which the scaling tests run their child under to read its
+# processor time (#1656, crates/una-cli/tests/common/cpu.rs).
 # cmake, g++, make: the Z3 build of scripts/build-z3.sh (ADR 0124 rule 1), whose Linux toolchain is
 # this image's.
 

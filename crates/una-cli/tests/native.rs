@@ -2281,12 +2281,9 @@ fn map_updates_are_in_place_and_scale_as_n_log_n_in_cpu_time() {
     // Times a run of the executable built for `n` keys.
     let measure = |n: usize| {
         let dir = &dirs[sizes.iter().position(|&s| s == n).unwrap()];
-        let (output, seconds) = cpu::cpu_timed(|| {
-            Command::new(dir.join(format!("target/una/maps_{n}")))
-                .current_dir(dir)
-                .output()
-                .unwrap()
-        });
+        let (output, seconds) = cpu::cpu_output(
+            Command::new(dir.join(format!("target/una/maps_{n}"))).current_dir(dir),
+        );
         assert_eq!(output.status.code(), Some(0));
         assert_eq!(
             String::from_utf8_lossy(&output.stdout),
@@ -3581,12 +3578,10 @@ fn json_parses_and_writes_in_linear_cpu_time_natively() {
     // Times a run of the executable built for `steps` items, and checks its notes.
     let measure = |steps: usize| {
         let dir = &dirs[sizes.iter().position(|&s| s == steps).unwrap()];
-        let (output, seconds) = cpu::cpu_timed(|| {
+        let (output, seconds) = cpu::cpu_output(
             Command::new(dir.join("target/una").join(format!("json-scaling-{steps}")))
-                .current_dir(dir)
-                .output()
-                .unwrap()
-        });
+                .current_dir(dir),
+        );
         assert_eq!(output.status.code(), Some(0), "{output:?}");
         assert!(
             String::from_utf8_lossy(&output.stdout).ends_with(" true\n"),
