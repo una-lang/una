@@ -739,32 +739,26 @@ fn numbered_instance(event: &Value) -> Option<&str> {
 /// places; `native` unchanged otherwise, which the comparison then reports. Started tasks
 /// install in the order of real time, which numbers the installations of the run (`spec/27
 /// §8` rules 1 and 4, #1542), so only this renumbering is set aside, and only one that:
-/// - is a bijection between the numbered ids of the two runs, which are then the same set:
-///   no number skipped or added, so a count that quiet code moved still shows (S-41). The
-///   trace cannot show that the numbers are dense, since an instance that serves no operation
-///   has no event, so the interpreter's set is the reference;
+/// - is one to one: two native ids never map onto one interpreter id, nor one onto two;
 /// - keeps each handler, whose installations are numbered apart;
 /// - keeps, within each task, the order of each handler's numbers, the order of the task's
 ///   installations;
 /// - leaves quiet (`#q`), host and `given` ids as they are.
 ///
-/// O(e log e) in the events.
+/// It does not require the same set of numbers: under the real clock a task that installs an
+/// instance which serves no operation, so has no event, can take a number before another
+/// task's, which then shows a number the interpreter's run does not (review of #1669, M2).
+/// Numbers skipped or shifted, as a count of quiet installations would shift them (S-41), are
+/// caught by the whole traces compared under `--virtual-time` (`spec/27 §8` rule 3) and by the
+/// `s41_*` tests. O(e log e) in the events.
 fn renumbered(
     interpreted: &std::collections::BTreeMap<String, Vec<Value>>,
     mut native: std::collections::BTreeMap<String, Vec<Value>>,
 ) -> std::collections::BTreeMap<String, Vec<Value>> {
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::collections::BTreeMap;
     let parts = |id: &str| -> (String, u64) {
         let (handler, number) = id.rsplit_once('#').unwrap_or((id, "0"));
         (handler.to_owned(), number.parse().unwrap_or(0))
-    };
-    let ids = |tasks: &BTreeMap<String, Vec<Value>>| -> BTreeSet<String> {
-        tasks
-            .values()
-            .flatten()
-            .filter_map(numbered_instance)
-            .map(str::to_owned)
-            .collect()
     };
     let mut to_interpreted: BTreeMap<String, String> = BTreeMap::new();
     let mut to_native: BTreeMap<String, String> = BTreeMap::new();
@@ -805,13 +799,6 @@ fn renumbered(
         {
             return native;
         }
-    }
-    let (ours, theirs) = (ids(&native), ids(interpreted));
-    if ours != theirs
-        || to_interpreted.keys().cloned().collect::<BTreeSet<_>>() != ours
-        || to_native.keys().cloned().collect::<BTreeSet<_>>() != theirs
-    {
-        return native;
     }
     for event in native.values_mut().flatten() {
         let renamed = numbered_instance(event).and_then(|id| to_interpreted.get(id).cloned());
@@ -7365,11 +7352,13 @@ fn started_tasks_number_installations_run_wide_in_schedule_order() {
 
 #[test]
 fn renumbering_sets_aside_only_one_renaming_of_the_installations() {
-    // #1542, review of #1669 (M1, L1): the comparison task by task accepts native ids that one
-    // bijection maps onto the interpreter's same set of ids, keeping each handler and, within
-    // each task, the order of its numbers: never two ids onto one, a change of handler or of a
-    // quiet id, numbers skipped (a counter stepping by 2), numbers shifted by installations
-    // counted elsewhere (quiet ones, S-41), nor two numbers of one task swapped.
+    // #1542, reviews of #1669 (M1, L1, M2): under the real clock the comparison task by task
+    // accepts native ids that a one-to-one renaming maps onto the interpreter's, keeping each
+    // handler and, within each task, the order of its numbers: never two ids onto one, a change
+    // of handler or of a quiet id, nor two numbers of one task swapped. Numbers that another
+    // task's unused installation shifted, which the real clock allows, are accepted; that is
+    // also what a counter stepping by 2 or counting quiet installations looks like here, which
+    // the whole traces under `--virtual-time` reject instead.
     let put = |task: &str, id: &str| serde_json::json!({"task": task, "instance": id, "op": "put"});
     let trace = |ids: &[(&str, &str)]| {
         by_task(&Value::from(
@@ -7389,7 +7378,7 @@ fn renumbering_sets_aside_only_one_renaming_of_the_installations() {
         ("s1.2", "with:k#1"),
     ]);
     assert_eq!(renumbered(&interpreted, swapped), interpreted);
-    for wrong in [
+    for shifted in [
         trace(&[
             ("s1.1", "with:k#2"),
             ("s1.1", "with:k#4"),
@@ -7400,6 +7389,13 @@ fn renumbering_sets_aside_only_one_renaming_of_the_installations() {
             ("s1.1", "with:k#4"),
             ("s1.2", "with:k#5"),
         ]),
+    ] {
+        assert_eq!(renumbered(&interpreted, shifted), interpreted);
+    }
+    // The reproducer of M2: `s1.2` installs an instance it never uses, and installs it first.
+    let user = trace(&[("s1.1", "with:keep#1")]);
+    assert_eq!(renumbered(&user, trace(&[("s1.1", "with:keep#2")])), user);
+    for wrong in [
         trace(&[
             ("s1.1", "with:k#2"),
             ("s1.1", "with:k#1"),
