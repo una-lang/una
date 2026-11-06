@@ -4,6 +4,13 @@
 #
 # Both tiers first run scripts/gate-tier-selftest.sh, which holds the classification to its cases.
 #
+# Trust: the harness does not run this file from the pull request. Its `tests` check runs a launcher
+# outside the repository that copies this script, gate-tier.sh and gate-tier-selftest.sh as origin/main
+# holds them into a temporary directory and runs them there, with UNA_GATE_ROOT naming the worktree
+# and UNA_GATE_SCRIPTS_FROM saying which copy runs (the worktree's own copy only while origin/main has
+# none). This script calls its siblings from its own directory. A change to any of the three scripts
+# is full (origin/main's rules say so), and the full tier then also runs the worktree's own self-test.
+#
 # full: cargo build --locked -p una-rt
 #       cargo nextest run --workspace --locked --no-fail-fast
 #       cargo test --workspace --doc --locked
@@ -25,7 +32,9 @@
 # Usage: scripts/gate-tests.sh [--plan]   (--plan prints the tier and the nextest filterset only)
 set -u
 
-root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+here=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+root=${UNA_GATE_ROOT:-$(CDPATH='' cd -- "$here/.." && pwd)}
+export UNA_GATE_ROOT=$root
 cd "$root" || exit 2
 
 NIGHTLY_SENTENCE='the full suite runs nightly and before every merge of a security, soundness or runtime change'
@@ -54,7 +63,7 @@ if [ "$plan" = 0 ]; then
     watchdog=$!
 fi
 
-tier_out=$(scripts/gate-tier.sh) || tier_out=$'full\nreason: scripts/gate-tier.sh failed'
+tier_out=$("$here/gate-tier.sh") || tier_out=$'full\nreason: scripts/gate-tier.sh failed'
 tier=$(printf '%s\n' "$tier_out" | sed -n 1p)
 reasons=$(printf '%s\n' "$tier_out" | sed -n 's/^reason: //p')
 extras=$(printf '%s\n' "$tier_out" | sed -n 's/^extra: //p')
@@ -89,13 +98,21 @@ step() {
 
 header() {
     echo "gate tier: $tier"
+    echo "gate scripts: ${UNA_GATE_SCRIPTS_FROM:-the copy in the worktree (run without the launcher)}"
     printf '%s\n' "$reasons" | sed '/^$/d; s/^/reason: /'
 }
 
 if [ "$tier" != fast ]; then
     header
     if [ "$plan" = 1 ]; then exit 0; fi
-    step scripts/gate-tier-selftest.sh || exit $?
+    step "$here/gate-tier-selftest.sh" || exit $?
+    # The worktree changes the gate scripts: its own self-test must pass with its own classifier too.
+    for f in gate-tier.sh gate-tests.sh gate-tier-selftest.sh; do
+        if ! cmp -s "$here/$f" "$root/scripts/$f"; then
+            step env UNA_GATE_ROOT="$root" bash "$root/scripts/gate-tier-selftest.sh" || exit $?
+            break
+        fi
+    done
     step cargo build --locked -p una-rt || exit $?
     step cargo nextest run --workspace --locked --no-fail-fast || exit $?
     step cargo test --workspace --doc --locked
@@ -119,7 +136,7 @@ fi
 
 log=$(mktemp "${TMPDIR:-/tmp}/gate-tests.XXXXXX") || exit 2
 t0=$SECONDS
-{ step scripts/gate-tier-selftest.sh && step cargo build --locked -p una-rt; } >"$log" 2>&1 || { header; cat "$log"; exit 1; }
+{ step "$here/gate-tier-selftest.sh" && step cargo build --locked -p una-rt; } >"$log" 2>&1 || { header; cat "$log"; exit 1; }
 # Listing builds every test binary; the second listing reuses them.
 all_count=$(cargo nextest list --workspace --locked --message-format oneline 2>>"$log" | grep -c .)
 fast_count=$(cargo nextest list --workspace --locked --message-format oneline -E "$expr" 2>>"$log" | grep -c .)

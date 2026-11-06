@@ -1,6 +1,7 @@
 #!/bin/bash
 # The tier of the `tests` gate for the current worktree (docs/compiler/testing.md, "Gate tiers"):
-# `full` (the whole suite) or `fast` (a subset of a few minutes, scripts/gate-tests.sh).
+# `full` (the whole suite) or `fast` (a subset of the tests, for documentation, corpus and test-only
+# changes; scripts/gate-tests.sh).
 #
 # Output, one item per line:
 #   line 1        `full` or `fast`
@@ -18,22 +19,31 @@
 # short list, shared test helpers, ...) is full. Nothing can lower the tier: there is no setting that
 # makes a change fast, and the base of the comparison is always origin/main.
 #
-# Changed paths: `git diff --name-only --no-renames origin/main...HEAD`, plus what is staged or
-# modified against HEAD (a merge-train worktree holds its merge in the index) and untracked files.
-# Bash 3.2 (macOS) compatible. scripts/gate-tier-selftest.sh holds the rule to a list of cases.
+# Changed paths: `git diff --raw --no-renames origin/main...HEAD`, plus what is staged or modified
+# against HEAD (a merge-train worktree holds its merge in the index) and untracked files. A symlink,
+# a submodule (gitlink) or a mode change on either side of an entry is full. Every path is also
+# classified in lowercase (a case-insensitive file system opens `SECURITY` as `security`), keeping
+# the higher tier. Bash 3.2 (macOS) compatible. scripts/gate-tier-selftest.sh holds the rule to a
+# list of cases.
 #
-# Usage: scripts/gate-tier.sh [--paths FILE]   (--paths classifies the paths listed in FILE, one per
-# line, instead of the worktree's changes: for reviewing the rule and for the self-test)
+# The worktree is UNA_GATE_ROOT, else the directory above this script: the trusted launcher of the
+# tests gate runs the copy of this script that origin/main holds, from a temporary directory.
+#
+# Usage: scripts/gate-tier.sh [--paths FILE | --raw FILE]
+#   --paths classifies the paths listed in FILE, one per line; --raw classifies lines in the format of
+#   `git diff --raw` (modes included). Both replace the worktree's changes: for review and the self-test.
 set -u
 
-paths_file=""
-if [ "${1:-}" = --paths ]; then
-    paths_file=${2:?--paths needs a file}
-    case "$paths_file" in /*) ;; *) paths_file="$PWD/$paths_file" ;; esac
-    [ -f "$paths_file" ] || { echo "gate-tier: no such file: $paths_file" >&2; exit 2; }
-fi
+paths_file="" raw_file=""
+case "${1:-}" in
+--paths | --raw)
+    f=${2:?$1 needs a file}
+    case "$f" in /*) ;; *) f="$PWD/$f" ;; esac
+    [ -f "$f" ] || { echo "gate-tier: no such file: $f" >&2; exit 2; }
+    if [ "$1" = --paths ]; then paths_file=$f; else raw_file=$f; fi ;;
+esac
 
-root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+root=${UNA_GATE_ROOT:-$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)}
 cd "$root" || exit 2
 
 tier=fast
@@ -77,16 +87,44 @@ fi
 
 base=origin/main
 paths=""
+raw=""
 if [ -n "$paths_file" ]; then
     paths=$(sed '/^$/d' "$paths_file" | sort -u)
     base="the paths of $2"
+elif [ -n "$raw_file" ]; then
+    raw=$(sed '/^$/d' "$raw_file")
+    base="the entries of $2"
 elif ! git rev-parse --verify -q "$base^{commit}" >/dev/null; then
     go_full "the base $base does not resolve to a commit, so the changed paths are unknown"
-elif ! committed=$(git diff --name-only --no-renames "$base"...HEAD 2>/dev/null); then
+elif ! committed=$(git diff --raw --no-renames "$base"...HEAD 2>/dev/null); then
     go_full "git diff against $base failed, so the changed paths are unknown"
 else
-    pending=$(git diff --name-only --no-renames HEAD 2>/dev/null; git ls-files --others --exclude-standard 2>/dev/null)
-    paths=$(printf '%s\n%s\n' "$committed" "$pending" | sed '/^$/d' | sort -u)
+    pending=$(git diff --raw --no-renames HEAD 2>/dev/null)
+    # Untracked files as `git diff --raw` would list them once added (a symlink keeps its mode).
+    untracked=$(git ls-files --others --exclude-standard 2>/dev/null | while IFS= read -r u; do
+        if [ -L "$u" ]; then m=120000; elif [ -x "$u" ]; then m=100755; else m=100644; fi
+        printf ':000000 %s 0000000 0000000 A\t%s\n' "$m" "$u"
+    done)
+    raw=$(printf '%s\n%s\n%s\n' "$committed" "$pending" "$untracked" | sed '/^$/d')
+fi
+if [ -n "$raw" ]; then
+    # `:<old mode> <new mode> <old sha> <new sha> <status>TAB<path>`: symlinks (120000), gitlinks
+    # (160000) and mode changes are full.
+    tab=$(printf '\t')
+    while IFS="$tab" read -r meta rpath; do
+        [ -n "$meta" ] || continue
+        om=$(printf '%s' "$meta" | awk '{print substr($1, 2)}')
+        nm=$(printf '%s' "$meta" | awk '{print $2}')
+        case "$om $nm" in
+        *120000* | *160000*) go_full "$rpath: a symlink or a submodule (mode $om to $nm)" ;;
+        esac
+        if [ "$om" != "$nm" ] && [ "$om" != 000000 ] && [ "$nm" != 000000 ]; then
+            go_full "$rpath: a mode change ($om to $nm)"
+        fi
+    done <<RAW
+$raw
+RAW
+    paths=$(printf '%s\n' "$raw" | awk -F'\t' '{print $2}' | sed '/^$/d' | sort -u)
 fi
 
 # The test name of a program of the native differential (crates/una-test-cases/build.rs, test_name).
@@ -303,6 +341,13 @@ classify() {
         go_full "$p: a security conformance case" ;;
     docs/reviews/*/adversarial | docs/reviews/*/adversarial/*)
         go_full "$p: an adversarial review case (read by the native differential and the verification suite)" ;;
+    tests/conformance/una.toml | tests/conformance/ita.una | tests/conformance/*/una.toml | tests/conformance/*/ita.una)
+        case "${p#tests/conformance/}" in
+        */*/*) native_programs_of "$p"; readers_of "$p"
+            add_extra "binary_id(una-cli::verification)"; add_extra "binary_id(una-cli::runtime)"
+            fast_count=$((fast_count + 1)) ;;
+        *) go_full "$p: a manifest at the corpus root or an area root regroups the programs of the native differential" ;;
+        esac ;;
     tests/conformance/* | examples/*)
         # The verification and runtime suites read the whole corpus (examples, tests/conformance).
         native_programs_of "$p"; readers_of "$p"
@@ -313,7 +358,7 @@ classify() {
         # Other corpora of tests/ (serve_runs, ...): the suites that read them by path or name.
         readers_of "$p"; corpus_readers_of "$p"
         fast_count=$((fast_count + 1)) ;;
-    docs/* | changelog.d/* | site/* | formal/* | images/* | .claude/* | *.md | LICENSE | .gitignore | .mcp.json)
+    docs/* | changelog.d/* | site/* | formal/* | images/* | .claude/* | *.md | LICENSE | license | .gitignore | .mcp.json)
         readers_of "$p"
         fast_count=$((fast_count + 1)) ;;
     *)
@@ -327,14 +372,11 @@ if [ -n "$paths" ]; then
         */./* | */../* | *//*) go_full "$p: a path with . or .. segments (not normalized)"; continue ;;
         esac
         classify "$p"
-        # A case-insensitive file system opens `tests/conformance/SECURITY` as `security`, and the
-        # corpus reader opens `ADVERSARIAL` as `adversarial`: those two rules also match the lowercase
-        # path (only ever raising the tier; every other uppercase variant is unclassified, so full).
+        # A case-insensitive file system opens `Examples/hello/README.md` as `examples/hello/README.md`
+        # and `tests/conformance/SECURITY` as `security`: the lowercase path is classified too, and the
+        # higher tier wins (it can only add reasons and tests).
         lp=$(printf '%s' "$p" | tr 'A-Z' 'a-z')
-        case "$lp" in
-        tests/conformance/security | tests/conformance/security/*) [ "$lp" = "$p" ] || go_full "$p: a security conformance case (case-insensitive)" ;;
-        docs/reviews/*/adversarial | docs/reviews/*/adversarial/*) [ "$lp" = "$p" ] || go_full "$p: an adversarial review case (case-insensitive)" ;;
-        esac
+        [ "$lp" = "$p" ] || classify "$lp"
     done <<EOF
 $paths
 EOF

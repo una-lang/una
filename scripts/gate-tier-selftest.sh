@@ -4,11 +4,14 @@
 # edit that makes one of these paths fast, or drops a suite it must add, fails here. The tests gate
 # runs this script before its tests, in both tiers.
 #
-# Case format: `<tier>|<path>[ <path>...]|<extra text or empty>`.
+# Case format: `<tier>|<path>[ <path>...]|<extra text or empty>`, or, for entries with modes as
+# `git diff --raw` lists them, `raw:<tier>|<old mode> <new mode> <path>|<extra text or empty>`.
 # Usage: scripts/gate-tier-selftest.sh
 set -u
-root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+here=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+root=${UNA_GATE_ROOT:-$(CDPATH='' cd -- "$here/.." && pwd)}
 cd "$root" || exit 2
+tier_script="$here/gate-tier.sh"
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/gate-tier-selftest.XXXXXX") || exit 2
 trap 'rm -rf "${tmp:?}"' EXIT
 fails=0 n=0
@@ -27,8 +30,16 @@ check() { # <name> <expected tier> <extra text> <output>
 
 while IFS='|' read -r want paths extra; do
     case "$want" in '' | '#'*) continue ;; esac
-    printf '%s\n' $paths > "$tmp/paths"
-    out=$(env -u UNA_GATE_TIER -u UNA_HARNESS_GATE_HELD scripts/gate-tier.sh --paths "$tmp/paths")
+    case "$want" in
+    raw:*)
+        want=${want#raw:}
+        set -- $paths
+        printf ':%s %s 0000000 0000000 M\t%s\n' "$1" "$2" "$3" > "$tmp/raw"
+        out=$(env -u UNA_GATE_TIER -u UNA_HARNESS_GATE_HELD "$tier_script" --raw "$tmp/raw") ;;
+    *)
+        printf '%s\n' $paths > "$tmp/paths"
+        out=$(env -u UNA_GATE_TIER -u UNA_HARNESS_GATE_HELD "$tier_script" --paths "$tmp/paths") ;;
+    esac
     check "$paths" "$want" "$extra" "$out"
 done <<'CASES'
 # Runtime code
@@ -238,6 +249,32 @@ fast|crates/una-cli/tests/verification.rs|una-cli::verification
 fast|crates/una-cli/tests/guide.rs|una-cli::guide
 full|crates/una-cli/src/std_listing.rs crates/una-cli/src/lib.rs|
 full|docs/adr/0001-x.md crates/una-diag/src/diagnostic.rs|
+# Round 3: case variants of fast patterns, corpus manifests, modes.
+full|Examples/hello/README.md|
+full|CRATES/una-check/src/notes.md|
+full|Scripts/x.md|
+full|Crates/una-rt/README.md|
+full|Docs/reviews/v0.1-review/Adversarial/x/src/main.una|
+full|TESTS/conformance/security/x.una|
+full|tests/conformance/runtime/una.toml|
+full|tests/conformance/runtime/ita.una|
+full|tests/conformance/una.toml|
+full|tests/conformance/ita.una|
+fast|tests/conformance/types/c/una.toml|tests__conformance__types__c
+fast|tests/conformance/types/c/ita.una|una-cli::verification
+fast|LICENSE|
+raw:full|000000 120000 docs/link.rs|
+raw:full|100644 120000 docs/std|
+raw:full|000000 120000 docs/reviews/zz|
+raw:full|000000 160000 docs/sub|
+raw:full|160000 000000 docs/sub|
+raw:full|100644 100755 docs/a.md|
+raw:full|100755 100644 crates/una-cli/tests/guide.rs|
+raw:full|120000 100644 tests/conformance/types/c.una|
+raw:fast|100644 100644 docs/a.md|
+raw:fast|000000 100644 docs/new.md|
+raw:fast|100644 000000 docs/old.md|
+raw:full|100644 100644 crates/una-rt/src/lib.rs|
 # Mixed changes: one full path makes the change full
 full|docs/spec/07-information-flow.md crates/una-check/src/lib.rs|
 full|docs/adr/0138-x.md crates/una-rt/src/lib.rs|
@@ -246,13 +283,19 @@ CASES
 
 # Conditions outside the paths.
 printf '%s\n' docs/adr/0138-x.md > "$tmp/docs"
-check "UNA_GATE_TIER=full" full "" "$(env -u UNA_HARNESS_GATE_HELD UNA_GATE_TIER=full scripts/gate-tier.sh --paths "$tmp/docs")"
-check "UNA_GATE_TIER=fast cannot lower" full "" "$(printf 'crates/una-rt/src/lib.rs\n' > "$tmp/rt"; env -u UNA_HARNESS_GATE_HELD UNA_GATE_TIER=fast scripts/gate-tier.sh --paths "$tmp/rt")"
-check "unreadable harness workflow" full "" "$(env -u UNA_GATE_TIER UNA_HARNESS_GATE_HELD=no-such-run-for-selftest:tests scripts/gate-tier.sh --paths "$tmp/docs")"
+check "UNA_GATE_TIER=full" full "" "$(env -u UNA_HARNESS_GATE_HELD UNA_GATE_TIER=full "$tier_script" --paths "$tmp/docs")"
+check "UNA_GATE_TIER=fast cannot lower" full "" "$(printf 'crates/una-rt/src/lib.rs\n' > "$tmp/rt"; env -u UNA_HARNESS_GATE_HELD UNA_GATE_TIER=fast "$tier_script" --paths "$tmp/rt")"
+check "unreadable harness workflow" full "" "$(env -u UNA_GATE_TIER UNA_HARNESS_GATE_HELD=no-such-run-for-selftest:tests "$tier_script" --paths "$tmp/docs")"
 : > "$tmp/empty"
-check "empty change" full "" "$(env -u UNA_GATE_TIER -u UNA_HARNESS_GATE_HELD scripts/gate-tier.sh --paths "$tmp/empty")"
+check "empty change" full "" "$(env -u UNA_GATE_TIER -u UNA_HARNESS_GATE_HELD "$tier_script" --paths "$tmp/empty")"
+plan=$(env -u UNA_HARNESS_GATE_HELD UNA_GATE_TIER=full UNA_GATE_ROOT="$root" "$here/gate-tests.sh" --plan)
 n=$((n + 1))
-if env -u UNA_GATE_TIER -u UNA_HARNESS_GATE_HELD scripts/gate-tier.sh --paths "$tmp/no-such-file" >/dev/null 2>&1; then
+if [ "$(printf '%s\n' "$plan" | sed -n 1p)" != "gate tier: full" ] || printf '%s\n' "$plan" | grep -q '^filterset:'; then
+    echo "FAIL gate-tests.sh --plan under UNA_GATE_TIER=full must print the full header and no filterset"
+    printf '%s\n' "$plan" | sed 's/^/    /'; fails=$((fails + 1))
+fi
+n=$((n + 1))
+if env -u UNA_GATE_TIER -u UNA_HARNESS_GATE_HELD "$tier_script" --paths "$tmp/no-such-file" >/dev/null 2>&1; then
     echo "FAIL a missing --paths file must be an error"; fails=$((fails + 1))
 fi
 
