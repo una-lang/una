@@ -9,8 +9,15 @@
 //! The backend is delivered in slices (#26): a runnable program that `una build` cannot compile
 //! yet must be listed in `tests/native/unsupported.txt`, and a listed program that compiles fails
 //! the test until it leaves the list, so the list stays exact.
+//!
+//! Each program is a test of its own (#1652), `interpreter::<name>` and `linkers::<name>`,
+//! generated from the list that `una-test-cases` builds from the corpus;
+//! [`the_generated_programs_are_the_runnable_programs_on_disk`] holds that list to the one on
+//! disk, and the tests of the lists' exactness hold each list to the programs.
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
 
+#[path = "common/case_lists.rs"]
+mod case_lists;
 #[path = "common/hermetic.rs"]
 mod hermetic;
 #[path = "common/native_build.rs"]
@@ -38,108 +45,6 @@ fn copy(source: &Path, scratch: &Path) -> PathBuf {
         .unwrap();
     assert!(status.success());
     target
-}
-
-/// A runnable program: where it is in the repository, and the grants it runs with.
-struct Program {
-    path: PathBuf,
-    grants: Vec<String>,
-}
-
-/// The programs of the suites that may run.
-fn candidates() -> Vec<Program> {
-    let root = root();
-    let mut programs = Vec::new();
-    for entry in sorted(&root.join("examples")) {
-        programs.push(Program {
-            path: entry,
-            grants: Vec::new(),
-        });
-    }
-    for case in files(&root.join("tests/conformance"), "una") {
-        let text = std::fs::read_to_string(&case).unwrap_or_default();
-        let directives: Vec<&str> = text.lines().take_while(|l| l.starts_with("-- ")).collect();
-        if !directives
-            .iter()
-            .any(|d| d.starts_with("-- expect: run-output") || d.starts_with("-- grant: "))
-        {
-            continue;
-        }
-        let grants = directives
-            .iter()
-            .filter_map(|d| d.strip_prefix("-- grant: "))
-            .map(str::to_owned)
-            .collect();
-        // A case of several modules is the directory above its `src`, described by `una.toml`
-        // or, from edition 0.4, by `ita.una` (ADR 0122).
-        let path = match case
-            .ancestors()
-            .find(|a| a.join("una.toml").is_file() || a.join("ita.una").is_file())
-        {
-            Some(package) if package.starts_with(root.join("tests/conformance")) => {
-                package.to_path_buf()
-            }
-            _ => case,
-        };
-        programs.push(Program { path, grants });
-    }
-    for review in sorted(&root.join("docs/reviews")) {
-        let mut dirs = vec![review.join("adversarial")];
-        dirs.extend(sorted(&review).into_iter().map(|d| d.join("adversarial")));
-        for dir in dirs.into_iter().filter(|d| d.is_dir()) {
-            for program in sorted(&dir) {
-                let text: String = files(&program, "una")
-                    .iter()
-                    .chain(std::iter::once(&program))
-                    .filter_map(|f| std::fs::read_to_string(f).ok())
-                    .collect();
-                if !text.contains("pub main(") {
-                    continue;
-                }
-                // A single file has no `[run] grants`: it runs with the grants that need no
-                // path.
-                let grants = if program.is_file() {
-                    vec!["console".to_owned(), "clock".to_owned(), "env".to_owned()]
-                } else {
-                    Vec::new()
-                };
-                programs.push(Program {
-                    path: program,
-                    grants,
-                });
-            }
-        }
-    }
-    programs.sort_by(|a, b| a.path.cmp(&b.path));
-    programs.dedup_by(|a, b| a.path == b.path);
-    programs
-}
-
-fn sorted(dir: &Path) -> Vec<PathBuf> {
-    let mut entries: Vec<PathBuf> = std::fs::read_dir(dir)
-        .map(|r| r.filter_map(|e| e.ok().map(|e| e.path())).collect())
-        .unwrap_or_default();
-    entries.retain(|e| {
-        !e.file_name()
-            .is_some_and(|n| n.to_string_lossy().starts_with('.'))
-    });
-    entries.sort();
-    entries
-}
-
-fn files(dir: &Path, extension: &str) -> Vec<PathBuf> {
-    if dir.is_file() {
-        return Vec::new();
-    }
-    let mut out = Vec::new();
-    for entry in sorted(dir) {
-        if entry.is_dir() {
-            out.extend(files(&entry, extension));
-        } else if entry.extension().is_some_and(|e| e == extension) {
-            out.push(entry);
-        }
-    }
-    out
 }
 
 /// The runnable programs whose `una run` is rejected, by repository path with a reason
@@ -175,77 +80,91 @@ fn unsupported() -> BTreeSet<String> {
         .collect()
 }
 
-#[test]
-fn every_runnable_program_runs_natively_as_in_the_interpreter() {
+/// The programs of the generated list, as [`case_lists::native_programs`] gives them.
+fn generated() -> Vec<case_lists::Program> {
+    macro_rules! programs {
+        ($($name:ident => $path:literal [$($grant:literal),*],)*) => {
+            vec![$(case_lists::Program {
+                path: $path.to_owned(),
+                grants: vec![$($grant.to_owned()),*],
+            }),*]
+        };
+    }
+    una_test_cases::native_programs!(programs)
+}
+
+/// A fresh, sealed scratch directory of one program's test, `kind` naming the test.
+fn scratch(kind: &str, name: &str) -> PathBuf {
+    let scratch = std::env::temp_dir().join(format!(
+        "una-{kind}-{}-{}",
+        std::process::id(),
+        name.replace('/', "_")
+    ));
+    let _ = std::fs::remove_dir_all(&scratch);
+    scratch
+}
+
+/// The copy of the program at `name` under `dir`: the directory it runs in and the target it
+/// names, `.` for a package.
+fn program_copy(name: &str, dir: &Path) -> (PathBuf, String) {
+    std::fs::create_dir_all(dir).unwrap();
+    let copied = copy(&root().join(name), dir);
+    if copied.is_file() {
+        (
+            dir.to_path_buf(),
+            copied.file_name().unwrap().to_string_lossy().into_owned(),
+        )
+    } else {
+        (copied.clone(), ".".to_owned())
+    }
+}
+
+/// One runnable program runs natively as in the interpreter: `name` is its path relative to
+/// the repository root, and `grants` the grants it runs with.
+fn runs_natively_as_in_the_interpreter(name: &str, grants: &[&str]) {
     runtime();
-    let root = root();
     let listed = unsupported();
     let rejected_list = rejected();
-    let mut seen_rejected: BTreeSet<String> = BTreeSet::new();
-    let candidate_names: BTreeSet<String> = candidates()
-        .iter()
-        .map(|program| {
-            program
-                .path
-                .strip_prefix(&root)
-                .unwrap()
-                .display()
-                .to_string()
-        })
-        .collect();
-    let scratch = std::env::temp_dir().join(format!("una-native-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&scratch);
+    let scratch = scratch("native", name);
     // A copied single file keeps edition 0.1 whatever lies above the temporary directory
     // (#1560).
     hermetic::seal(&scratch);
     let mut failures = Vec::new();
-    let mut compiled = Vec::new();
-    let mut not_compiled = Vec::new();
-    for (index, program) in candidates().into_iter().enumerate() {
-        let name = program
-            .path
-            .strip_prefix(&root)
-            .unwrap()
-            .display()
-            .to_string();
-        let dir = scratch.join(index.to_string());
-        std::fs::create_dir_all(&dir).unwrap();
-        let copied = copy(&program.path, &dir);
-        let (work, target) = if copied.is_file() {
-            (
-                dir.clone(),
-                copied.file_name().unwrap().to_string_lossy().into_owned(),
-            )
-        } else {
-            (copied.clone(), ".".to_owned())
-        };
-        let mut run_args = vec!["--json", "run", target.as_str()];
-        for grant in &program.grants {
-            run_args.push("--grant");
-            run_args.push(grant);
-        }
-        let run = una(&work, &run_args);
-        // A case that `una run` rejects, or whose document does not parse, is compared with
-        // nothing, so it is a failure unless tests/native/rejected.txt lists it with a reason
-        // (#1045); a listed case that runs must leave the list.
-        let document = serde_json::from_slice::<Value>(&run.stdout).ok();
-        let is_rejected = document
-            .as_ref()
-            .is_none_or(|document| document["status"] == "rejected");
+    let mut compiled = false;
+    let dir = scratch.join("0");
+    let (work, target) = program_copy(name, &dir);
+    let mut run_args = vec!["--json", "run", target.as_str()];
+    for grant in grants {
+        run_args.push("--grant");
+        run_args.push(grant);
+    }
+    let run = una(&work, &run_args);
+    // A case that `una run` rejects, or whose document does not parse, is compared with
+    // nothing, so it is a failure unless tests/native/rejected.txt lists it with a reason
+    // (#1045); a listed case that runs must leave the list.
+    let document = serde_json::from_slice::<Value>(&run.stdout).ok();
+    let is_rejected = document
+        .as_ref()
+        .is_none_or(|document| document["status"] == "rejected");
+    'compare: {
         if is_rejected {
-            if rejected_list.contains_key(&name) {
-                seen_rejected.insert(name.clone());
-            } else {
+            if !rejected_list.contains_key(name) {
                 failures.push(format!(
                     "{name}: una run rejected it, so nothing is compared, and it is not listed in tests/native/rejected.txt: {}",
                     String::from_utf8_lossy(&run.stderr).trim()
                 ));
             }
-            continue;
+            // A rejected program is neither compiled nor not compiled.
+            if listed.contains(name) {
+                failures.push(format!(
+                    "{name}: listed in tests/native/unsupported.txt, but not a runnable program"
+                ));
+            }
+            break 'compare;
         }
         // INVARIANT: a document that is not rejected parsed.
         let document = document.unwrap_or(Value::Null);
-        if let Some(reason) = rejected_list.get(&name) {
+        if let Some(reason) = rejected_list.get(name) {
             failures.push(format!(
                 "{name}: runs now; remove it from tests/native/rejected.txt (listed as: {reason})"
             ));
@@ -264,8 +183,7 @@ fn every_runnable_program_runs_natively_as_in_the_interpreter() {
         let stderr = String::from_utf8_lossy(&built.stderr);
         if !built.status.success() {
             if stderr.contains("the native backend does not compile") {
-                not_compiled.push(name.clone());
-                if !listed.contains(&name) {
+                if !listed.contains(name) {
                     failures.push(format!(
                         "{name}: runnable but not compiled, and not listed in tests/native/unsupported.txt: {}",
                         stderr.trim()
@@ -273,11 +191,17 @@ fn every_runnable_program_runs_natively_as_in_the_interpreter() {
                 }
             } else {
                 failures.push(format!("{name}: una build failed: {}", stderr.trim()));
+                // A program whose build fails otherwise is neither compiled nor not compiled.
+                if listed.contains(name) {
+                    failures.push(format!(
+                        "{name}: listed in tests/native/unsupported.txt, but not a runnable program"
+                    ));
+                }
             }
-            continue;
+            break 'compare;
         }
-        compiled.push(name.clone());
-        if listed.contains(&name) {
+        compiled = true;
+        if listed.contains(name) {
             failures.push(format!(
                 "{name}: compiles now; remove it from tests/native/unsupported.txt"
             ));
@@ -285,7 +209,7 @@ fn every_runnable_program_runs_natively_as_in_the_interpreter() {
         let trace = dir.join("trace.json");
         let mut native = Command::new(&exe);
         native.current_dir(&work).arg("--trace").arg(&trace);
-        for grant in &program.grants {
+        for grant in grants {
             native.arg("--grant").arg(grant);
         }
         let native = native.output().unwrap();
@@ -313,7 +237,7 @@ fn every_runnable_program_runs_natively_as_in_the_interpreter() {
                     .into_iter()
                     .map(|difference| format!("{name}: {difference}")),
             );
-            continue;
+            break 'compare;
         }
         if String::from_utf8_lossy(&native.stdout) != expected_stdout {
             failures.push(format!(
@@ -328,122 +252,91 @@ fn every_runnable_program_runs_natively_as_in_the_interpreter() {
             ));
         }
     }
-    for name in &listed {
-        if !compiled.contains(name) && !not_compiled.contains(name) {
-            failures.push(format!(
-                "{name}: listed in tests/native/unsupported.txt, but not a runnable program"
-            ));
-        }
-    }
-    for name in rejected_list.keys() {
-        if !seen_rejected.contains(name) && !candidate_names.contains(name) {
-            failures.push(format!(
-                "{name}: listed in tests/native/rejected.txt, but not a runnable program"
-            ));
-        }
-    }
     let _ = std::fs::remove_dir_all(&scratch);
-    assert!(
-        compiled.iter().any(|name| name == "examples/hello"),
-        "examples/hello must compile: {failures:#?}"
-    );
+    if name == "examples/hello" {
+        assert!(compiled, "examples/hello must compile: {failures:#?}");
+    }
     assert!(failures.is_empty(), "{failures:#?}");
 }
 
-/// Whether a trace has events of tasks (`spec/19 §7` rule 1).
-/// The internal linker against the system `cc` (ADR 0124 rule 33, "Per program"): every
-/// runnable program that compiles is built by both, from the same `una`, and the two executables
-/// run with the same grants give the same output, failure, exit status and trace. A program that
-/// starts tasks is compared by its exit status alone (see below).
+/// The internal linker against the system `cc` (ADR 0124 rule 33, "Per program"): a runnable
+/// program that compiles is built by both, from the same `una`, and the two executables run
+/// with the same grants give the same output, failure, exit status and trace. A program that
+/// starts tasks is compared by its exit status alone (see below). A program that neither
+/// builds must be one that `tests/native/unsupported.txt` or `tests/native/rejected.txt`
+/// lists, which [`runs_natively_as_in_the_interpreter`] holds exact: so a failure of both
+/// linkers on a program that compiles never passes unseen, as the count of compared programs
+/// guarded before #1652 ([`the_linkers_compare_more_than_a_hundred_programs`]).
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-#[test]
-fn every_runnable_program_runs_alike_linked_by_una_link_and_by_cc() {
+fn runs_alike_linked_by_una_link_and_by_cc(name: &str, grants: &[&str]) {
     runtime();
-    let root = root();
-    let scratch = std::env::temp_dir().join(format!("una-linkers-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&scratch);
+    let scratch = scratch("linkers", name);
     // A copied single file keeps edition 0.1 whatever lies above the temporary directory
     // (#1560).
     hermetic::seal(&scratch);
     let mut failures = Vec::new();
-    let mut compared = 0usize;
-    for (index, program) in candidates().into_iter().enumerate() {
-        let name = program
-            .path
-            .strip_prefix(&root)
-            .unwrap()
-            .display()
-            .to_string();
-        let dir = scratch.join(index.to_string());
-        std::fs::create_dir_all(&dir).unwrap();
-        let copied = copy(&program.path, &dir);
-        let (work, target) = if copied.is_file() {
-            (
-                dir.clone(),
-                copied.file_name().unwrap().to_string_lossy().into_owned(),
-            )
-        } else {
-            (copied.clone(), ".".to_owned())
-        };
-        let mut outcomes = Vec::new();
-        for linker in ["cc", "internal"] {
-            let exe = dir.join(format!("exe-{linker}"));
-            let built = Command::new(env!("CARGO_BIN_EXE_una"))
-                .env("HOME", env!("CARGO_TARGET_TMPDIR"))
-                .env_remove("UNA_PROOF_KEY")
-                .env("NO_COLOR", "1")
-                .env("UNA_LINKER", linker)
-                .args(["build", target.as_str(), "--out", exe.to_str().unwrap()])
-                .current_dir(&work)
-                .output()
-                .unwrap();
-            if !built.status.success() {
-                outcomes.push(None);
-                continue;
-            }
-            let trace = dir.join(format!("trace-{linker}.json"));
-            let mut run = Command::new(&exe);
-            run.current_dir(&work).arg("--trace").arg(&trace);
-            for grant in &program.grants {
-                run.arg("--grant").arg(grant);
-            }
-            let output = run.output().unwrap();
-            let trace: Value = std::fs::read(&trace)
-                .ok()
-                .and_then(|t| serde_json::from_slice(&t).ok())
-                .unwrap_or(Value::Null);
-            outcomes.push(Some((output, trace)));
+    let dir = scratch.join("0");
+    let (work, target) = program_copy(name, &dir);
+    let mut outcomes = Vec::new();
+    for linker in ["cc", "internal"] {
+        let exe = dir.join(format!("exe-{linker}"));
+        let built = Command::new(env!("CARGO_BIN_EXE_una"))
+            .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+            .env_remove("UNA_PROOF_KEY")
+            .env("NO_COLOR", "1")
+            .env("UNA_LINKER", linker)
+            .args(["build", target.as_str(), "--out", exe.to_str().unwrap()])
+            .current_dir(&work)
+            .output()
+            .unwrap();
+        if !built.status.success() {
+            outcomes.push(None);
+            continue;
         }
-        match (&outcomes[0], &outcomes[1]) {
-            (None, None) => continue,
-            (Some(_), None) => {
+        let trace = dir.join(format!("trace-{linker}.json"));
+        let mut run = Command::new(&exe);
+        run.current_dir(&work).arg("--trace").arg(&trace);
+        for grant in grants {
+            run.arg("--grant").arg(grant);
+        }
+        let output = run.output().unwrap();
+        let trace: Value = std::fs::read(&trace)
+            .ok()
+            .and_then(|t| serde_json::from_slice(&t).ok())
+            .unwrap_or(Value::Null);
+        outcomes.push(Some((output, trace)));
+    }
+    match (&outcomes[0], &outcomes[1]) {
+        (None, None) => {
+            if !unsupported().contains(name) && !rejected().contains_key(name) {
                 failures.push(format!(
-                    "{name}: cc links it and the internal linker does not"
+                    "{name}: neither cc nor the internal linker links it, and neither tests/native/unsupported.txt nor tests/native/rejected.txt lists it"
                 ));
-                continue;
             }
-            (None, Some(_)) => {
+        }
+        (Some(_), None) => {
+            failures.push(format!(
+                "{name}: cc links it and the internal linker does not"
+            ));
+        }
+        (None, Some(_)) => {
+            failures.push(format!(
+                "{name}: the internal linker links it and cc does not"
+            ));
+        }
+        (Some((cc, cc_trace)), Some((internal, internal_trace))) => {
+            if cc.status.code() != internal.status.code() {
                 failures.push(format!(
-                    "{name}: the internal linker links it and cc does not"
+                    "{name}: exit status differs: cc {:?}, internal {:?}",
+                    cc.status.code(),
+                    internal.status.code()
                 ));
-                continue;
             }
-            (Some((cc, cc_trace)), Some((internal, internal_trace))) => {
-                compared += 1;
-                if cc.status.code() != internal.status.code() {
-                    failures.push(format!(
-                        "{name}: exit status differs: cc {:?}, internal {:?}",
-                        cc.status.code(),
-                        internal.status.code()
-                    ));
-                }
-                // Two native runs that start tasks may interleave and cancel differently by
-                // design (`spec/19 §8`): each is held to the interpreter's run by
-                // `every_runnable_program_runs_natively_as_in_the_interpreter`, and only their
-                // exit status is compared here.
-                if starts_tasks(cc_trace) || starts_tasks(internal_trace) {
-                    continue;
-                }
+            // Two native runs that start tasks may interleave and cancel differently by
+            // design (`spec/19 §8`): each is held to the interpreter's run by
+            // `runs_natively_as_in_the_interpreter`, and only their exit status is compared
+            // here.
+            if !(starts_tasks(cc_trace) || starts_tasks(internal_trace)) {
                 if cc.stdout != internal.stdout {
                     failures.push(format!(
                         "{name}: stdout differs: cc {:?}, internal {:?}",
@@ -467,11 +360,91 @@ fn every_runnable_program_runs_alike_linked_by_una_link_and_by_cc() {
         }
     }
     let _ = std::fs::remove_dir_all(&scratch);
-    assert!(
-        compared > 100,
-        "only {compared} programs were compared: {failures:#?}"
-    );
     assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// One test per runnable program in each differential: `interpreter::<name>` and, on
+/// aarch64-apple-darwin, `linkers::<name>`.
+macro_rules! program_tests {
+    ($($name:ident => $path:literal [$($grant:literal),*],)*) => {
+        /// Every runnable program runs natively as in the interpreter.
+        mod interpreter {
+            $(
+                #[test]
+                fn $name() {
+                    super::runs_natively_as_in_the_interpreter($path, &[$($grant),*]);
+                }
+            )*
+        }
+        /// Every runnable program runs alike linked by una-link and by cc.
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        mod linkers {
+            $(
+                #[test]
+                fn $name() {
+                    super::runs_alike_linked_by_una_link_and_by_cc($path, &[$($grant),*]);
+                }
+            )*
+        }
+    };
+}
+
+una_test_cases::native_programs!(program_tests);
+
+/// The generated tests are the runnable programs on disk, path for path and grant for grant: a
+/// program added, removed or changed without a rebuild of `una-test-cases` fails here, never
+/// goes untested.
+#[test]
+fn the_generated_programs_are_the_runnable_programs_on_disk() {
+    let on_disk = case_lists::native_programs(&root());
+    assert!(
+        on_disk
+            .iter()
+            .any(|program| program.path == "examples/hello"),
+        "no runnable program found on disk"
+    );
+    pretty_assertions::assert_eq!(generated(), on_disk);
+}
+
+/// Every program that `tests/native/unsupported.txt` or `tests/native/rejected.txt` lists is a
+/// runnable program; whether each listed one is still not compiled or still rejected is its own
+/// test's.
+#[test]
+fn the_native_lists_name_runnable_programs_only() {
+    let names: BTreeSet<String> = generated()
+        .into_iter()
+        .map(|program| program.path)
+        .collect();
+    let mut failures = Vec::new();
+    for name in unsupported() {
+        if !names.contains(&name) {
+            failures.push(format!(
+                "{name}: listed in tests/native/unsupported.txt, but not a runnable program"
+            ));
+        }
+    }
+    for name in rejected().keys() {
+        if !names.contains(name) {
+            failures.push(format!(
+                "{name}: listed in tests/native/rejected.txt, but not a runnable program"
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// More than a hundred programs are expected to build and so are compared by the two linkers:
+/// each such program's test fails when neither linker builds it.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+fn the_linkers_compare_more_than_a_hundred_programs() {
+    let listed = unsupported();
+    let rejected = rejected();
+    let compared = generated()
+        .into_iter()
+        .filter(|program| !listed.contains(&program.path) && !rejected.contains_key(&program.path))
+        .count();
+    assert!(compared > 100, "only {compared} programs are compared");
 }
 
 /// The internal linker through `una build` (ADR 0124 rules 27 and 29, step 3): the same package
@@ -547,6 +520,7 @@ fn una_build_links_by_itself_deterministically_and_fails_closed() {
     let _ = std::fs::remove_dir_all(&scratch);
 }
 
+/// Whether a trace has events of tasks (`spec/19 §7` rule 1).
 fn starts_tasks(trace: &Value) -> bool {
     trace
         .as_array()

@@ -48,7 +48,7 @@ module conformance.authority.cap_let
 | `-- grant: <spec>` | Grant passed to `una run` |
 | `-- pending: M<n>` | Optional. The case is expected to fail until milestone `M<n>` (see "Pending cases") |
 
-The runner (`cargo test -p una-cli --test conformance`) discovers cases, runs the compiler in-process and compares results. It runs `una run --json` when a case expects output, grants a capability or expects an error of the runtime domain, and `una test --json` when it expects `test-pass` or `test-fail`; the errors these commands report join those of `una check` for `error` expectations, and the relative paths of `files:` and `keys:` grants resolve against the case's directory. A case whose directives are malformed fails. The rules below define well-formedness and pending cases (ADR 0013); they fill gaps and change none of the meanings above.
+The runner (`cargo test -p una-cli --test conformance`) discovers cases, runs the compiler in-process and compares results. Each case is a test of its own, `case::<name>`, whose name is the case's path with `/` as `__` and every character other than a letter or digit as `_` (#1652); the test `conformance_suite` checks the layout below ("Discovery") and that the generated tests are the cases on disk, path for path. It runs `una run --json` when a case expects output, grants a capability or expects an error of the runtime domain, and `una test --json` when it expects `test-pass` or `test-fail`; the errors these commands report join those of `una check` for `error` expectations, and the relative paths of `files:` and `keys:` grants resolve against the case's directory. A case whose directives are malformed fails. The rules below define well-formedness and pending cases (ADR 0013); they fill gaps and change none of the meanings above.
 
 ### Directive block
 
@@ -94,7 +94,7 @@ A single file takes the edition of the nearest `ita.una` or `una.toml` above it,
 | --- | --- | --- |
 | absent | yes | pass |
 | absent | no | fail |
-| present | no | pending: listed in the runner summary, does not fail the run |
+| present | no | pending: its test passes and prints the case's line of the runner summary (`pending M<n>  <path>  <test> (<spec>): <mismatches>`), so it does not fail the run |
 | present | yes | fail, with the message `pending case passes; remove -- pending: M<n>` |
 
 An expectation the compiler cannot evaluate yet (for example `run-output` before `una run` exists) does not match. A milestone is complete only when no case names it in `pending`, and no case may be pending at release (M10).
@@ -113,6 +113,8 @@ cargo test --workspace --locked
 ```
 
 The gate runs the tests with `cargo nextest run --workspace --locked --no-fail-fast` and the documentation tests with `cargo test --workspace --doc --locked` (nextest does not run documentation tests); `cargo test --workspace --locked` runs the same tests. `.config/nextest.toml` gives each timing or scaling test (a name with `scales`, `scaling`, `linear`, `n_log_n`, `bounded_share`, `limiter` or `virtual_time`) half of the slots, so such a test runs with at most one other heavy test and nothing else beside it: their wall-clock comparisons do not depend on how busy the machine is. No test is skipped and no assertion changes. A new timing or scaling test is named so that the pattern matches it.
+
+The tests that would otherwise loop over a whole corpus inside one test run one test per case, so that nextest spreads them over all cores (#1652): the conformance runner (`case::<name>`), the native differential (`interpreter::<name>` and `linkers::<name>` in `crates/una-cli/tests/native.rs`), the determinism test of §4 (`determinism::<name>` in `cli.rs`) and the Core IR export test (`core_ir::<name>` in `core_symbols.rs`). Their lists come from the build script of the dev-only crate `crates/una-test-cases`, which reads the corpus with the same code as the tests (`crates/una-cli/tests/common/case_lists.rs` and the runner's discovery), reruns when anything under `examples`, `tests/conformance` or `docs/reviews` changes, and fails the build on an empty list. Each file has a test that holds its generated list to the one on disk, entry for entry (`conformance_suite`, `the_generated_programs_are_the_runnable_programs_on_disk`, `the_determinism_targets_are_the_examples_and_cases_on_disk`, `the_core_corpus_is_the_packages_and_files_on_disk`), so a case is never left untested; the checks over the whole corpus that a loop made at its end are tests of their own: the lists of `tests/native` name runnable programs only (`the_native_lists_name_runnable_programs_only`), more than a hundred programs are compared by the two linkers, each failing when neither links it unless a list of `tests/native` names it, and the Core IR walk sees a plain symbolic label in place (`the_walk_sees_a_plain_symbolic_label_in_place`). A test of one case reads a sealed copy of that case alone (`hermetic::checkout_case`). Under nextest, `crates/una-cli/tests/common/native_build.rs` builds the runtime once per run (`NEXTEST_RUN_ID`), not once per test process.
 
 Without `UNA_Z3_LIB`, `cargo` builds a development `una` with no solver and the build of `una-z3` warns so; about 120 tests then fail with U5003. Changing `UNA_Z3_LIB` rebuilds `una-z3` and what depends on it.
 

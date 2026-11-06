@@ -159,36 +159,38 @@ fn a_sealed_copy_of_the_corpus_ignores_a_planted_manifest() {
 }
 
 /// The test files that seal a temporary directory or read a sealed copy of the corpus, with
-/// how many calls of `hermetic::seal(` and of `hermetic::checkout(` each holds (#1560). A file
+/// how many calls of `hermetic::seal(`, of `hermetic::checkout(` and of
+/// `hermetic::checkout_case(` (a sealed copy of one case, #1652) each holds (#1560). A file
 /// that drops one fails here; a new call site is added to the table with the file.
-const CALL_SITES: [(&str, usize, usize); 13] = [
-    ("cli.rs", 0, 1),
-    ("conformance/main.rs", 0, 1),
-    ("core_symbols.rs", 0, 1),
-    ("demo_scripts.rs", 0, 1),
-    ("explain_examples.rs", 1, 0),
-    ("native.rs", 2, 0),
-    ("recovery.rs", 1, 0),
-    ("runtime.rs", 0, 1),
-    ("serve_grants.rs", 1, 0),
-    ("test_declaration.rs", 1, 1),
-    ("unknown_names.rs", 1, 0),
-    ("verification.rs", 0, 1),
-    ("widening_repairs.rs", 0, 1),
+const CALL_SITES: [(&str, usize, usize, usize); 13] = [
+    ("cli.rs", 0, 0, 1),
+    ("conformance/main.rs", 0, 0, 1),
+    ("core_symbols.rs", 0, 0, 1),
+    ("demo_scripts.rs", 0, 1, 0),
+    ("explain_examples.rs", 1, 0, 0),
+    ("native.rs", 2, 0, 0),
+    ("recovery.rs", 1, 0, 0),
+    ("runtime.rs", 0, 1, 0),
+    ("serve_grants.rs", 1, 0, 0),
+    ("test_declaration.rs", 1, 1, 0),
+    ("unknown_names.rs", 1, 0, 0),
+    ("verification.rs", 0, 1, 0),
+    ("widening_repairs.rs", 0, 1, 0),
 ];
 
 #[test]
 fn every_call_site_keeps_its_seal() {
     let tests = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
-    for (file, seals, checkouts) in CALL_SITES {
+    for (file, seals, checkouts, case_checkouts) in CALL_SITES {
         let text = std::fs::read_to_string(tests.join(file)).unwrap();
         assert_eq!(
             (
                 text.matches("hermetic::seal(").count(),
-                text.matches("hermetic::checkout(").count()
+                text.matches("hermetic::checkout(").count(),
+                text.matches("hermetic::checkout_case(").count()
             ),
-            (seals, checkouts),
-            "{file}: calls of hermetic::seal and hermetic::checkout"
+            (seals, checkouts, case_checkouts),
+            "{file}: calls of hermetic::seal, hermetic::checkout and hermetic::checkout_case"
         );
     }
 }

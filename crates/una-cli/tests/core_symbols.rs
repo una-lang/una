@@ -4,47 +4,21 @@
 //! re-checker reads this export, so the checker and the model cannot drift apart.
 
 // Tests may unwrap freely (compiler/conventions.md §1).
-#![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
+#![allow(
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::unwrap_used
+)]
 
+#[path = "common/case_lists.rs"]
+mod case_lists;
 #[path = "common/hermetic.rs"]
 mod hermetic;
 
-use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use serde_json::Value;
-
-/// A sealed copy of the conformance cases and the examples, read in place of the checkout's:
-/// no manifest above the checkout changes the edition of their single files (#1560).
-fn root() -> PathBuf {
-    hermetic::checkout(&["examples", "tests/conformance"])
-}
-
-/// Every package and single-file case of the corpus: the conformance cases and the examples.
-fn corpus() -> Vec<PathBuf> {
-    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
-        if dir.join("una.toml").is_file() {
-            out.push(dir.to_path_buf());
-            return;
-        }
-        let mut entries: Vec<PathBuf> = std::fs::read_dir(dir)
-            .unwrap()
-            .map(|entry| entry.unwrap().path())
-            .collect();
-        entries.sort();
-        for path in entries {
-            if path.is_dir() {
-                walk(&path, out);
-            } else if path.extension().is_some_and(|e| e == "una") {
-                out.push(path);
-            }
-        }
-    }
-    let mut out = Vec::new();
-    walk(&root().join("tests/conformance"), &mut out);
-    walk(&root().join("examples"), &mut out);
-    out
-}
 
 /// A symbol of a type parameter that is not starred.
 fn plain(symbol: &str) -> bool {
@@ -105,32 +79,108 @@ fn walk(node: &Value, path: &str, out: &mut Vec<String>, in_place: &mut usize) {
     }
 }
 
-#[test]
-fn core_exports_a_plain_symbolic_label_only_on_its_own_type_parameter() {
-    let mut failures = Vec::new();
-    let mut checked = 0;
-    let mut in_place = 0;
-    for case in corpus() {
-        let output = Command::new(env!("CARGO_BIN_EXE_una"))
-            .env("HOME", env!("CARGO_TARGET_TMPDIR"))
-            .env_remove("UNA_PROOF_KEY")
-            .args(["--json", "core"])
-            .arg(&case)
-            .current_dir(root())
-            .output()
-            .unwrap();
-        let Ok(document) = serde_json::from_slice::<Value>(&output.stdout) else {
-            continue;
-        };
-        checked += 1;
-        let mut found = Vec::new();
-        walk(&document, "", &mut found, &mut in_place);
-        for finding in found {
-            failures.push(format!("{}: {finding}", case.display()));
+/// What `una --json core` prints for `case`, a package or single file by path relative to the
+/// repository root.
+enum Export {
+    /// A document, with the labels that hold a plain symbol off its own type parameter and the
+    /// number of plain symbolic labels in place.
+    Walked(Vec<String>, usize),
+    /// A document nested deeper than the parser's recursion limit of 128, which the walk
+    /// passes over, as it did before #1652.
+    TooDeep,
+    /// No document at all.
+    Nothing(std::process::Output),
+}
+
+fn exports(case: &str) -> Export {
+    // A sealed copy of the case: no manifest above the checkout changes the edition of its
+    // single files (#1560).
+    let copy = hermetic::checkout_case(&[case]);
+    let output = Command::new(env!("CARGO_BIN_EXE_una"))
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
+        .args(["--json", "core"])
+        .arg(copy.root.join(case))
+        .current_dir(&copy.root)
+        .output()
+        .unwrap();
+    match serde_json::from_slice::<Value>(&output.stdout) {
+        Ok(document) => {
+            let mut found = Vec::new();
+            let mut in_place = 0;
+            walk(&document, "", &mut found, &mut in_place);
+            Export::Walked(found, in_place)
+        }
+        Err(error)
+            if output.stdout.starts_with(b"{\"schema\":")
+                && error.to_string().starts_with("recursion limit exceeded") =>
+        {
+            Export::TooDeep
+        }
+        Err(_) => Export::Nothing(output),
+    }
+}
+
+/// The case `case` exports Core IR with a plain symbolic label only on its own type parameter.
+/// Before #1652, one test over the whole corpus passed over a case whose output did not parse,
+/// so long as more than 500 parsed; each case holds on its own now that it prints a document,
+/// which parses unless it is nested too deep for the parser.
+fn core_exports_a_plain_symbolic_label_only_on_its_own_type_parameter(case: &str) {
+    match exports(case) {
+        Export::Walked(found, _) => {
+            let failures: Vec<String> = found
+                .into_iter()
+                .map(|finding| format!("{case}: {finding}"))
+                .collect();
+            assert!(failures.is_empty(), "{}", failures.join("\n"));
+        }
+        Export::TooDeep => {}
+        Export::Nothing(output) => {
+            panic!("{case}: `una --json core` printed no document: {output:?}")
         }
     }
-    assert!(checked > 500, "only {checked} cases exported Core IR");
-    // The corpus has generic bodies, so the walk must see `ℓ_T` in place, or it checks nothing.
+}
+
+/// One test per package or single file of the corpus (#1652), `core_ir::<name>`.
+macro_rules! core_tests {
+    ($($name:ident => $path:literal [],)*) => {
+        /// The Core IR of every case keeps a plain symbolic label on its own type parameter only.
+        mod core_ir {
+            $(
+                #[test]
+                fn $name() {
+                    super::core_exports_a_plain_symbolic_label_only_on_its_own_type_parameter($path);
+                }
+            )*
+            /// The generated corpus, in order.
+            pub const CORPUS: &[&str] = &[$($path),*];
+        }
+    };
+}
+
+una_test_cases::core_corpus!(core_tests);
+
+/// The generated tests are the packages and single files on disk, more than 500 of them: a case
+/// added, removed or renamed without a rebuild of `una-test-cases` fails here, never goes
+/// untested.
+#[test]
+fn the_core_corpus_is_the_packages_and_files_on_disk() {
+    let on_disk = case_lists::core_corpus(&hermetic::repository());
+    assert!(on_disk.len() > 500, "only {} cases", on_disk.len());
+    assert_eq!(core_ir::CORPUS, on_disk.as_slice());
+}
+
+/// The corpus has generic bodies, so the walk must see `ℓ_T` in place, or it checks nothing:
+/// the examples hold one, which the walk finds.
+#[test]
+fn the_walk_sees_a_plain_symbolic_label_in_place() {
+    let in_place: usize = core_ir::CORPUS
+        .iter()
+        .filter(|case| case.starts_with("examples/"))
+        .map(|case| match exports(case) {
+            Export::Walked(_, in_place) => in_place,
+            _ => 0,
+        })
+        .sum();
     assert!(in_place > 0, "no plain symbolic label found in place");
-    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }

@@ -490,8 +490,10 @@ gate_native() {
     # The equivalence test of spec/16 §5: every runnable program of the repository (the
     # examples, the conformance cases that run, the review corpora), in the interpreter and as
     # a native executable, with the rules of spec/19 §8 rule 4 for tasks and the clock read
-    # aside. One test, so the gate and `cargo test` cannot drift apart.
-    run native sh -c 'cargo test -p una-cli --test native every_runnable_program_runs_natively_as_in_the_interpreter -- --exact --nocapture'
+    # aside. One test per program (`interpreter::<name>`, #1652), with the tests that hold the
+    # generated list to the programs on disk and the lists of tests/native to the programs, so
+    # the gate and `cargo test` cannot drift apart.
+    run native sh -c 'cargo test -p una-cli --test native interpreter:: the_generated_programs_are_the_runnable_programs_on_disk the_native_lists_name_runnable_programs_only -- --nocapture'
 }
 
 gate_hunt() {
