@@ -909,6 +909,15 @@ mutual
       for (_, f) in ops do refFun f
       let body ← expr { c with bound := c.bound ++ ops.map Prod.fst } (← field j "body")
       pure (ops.foldr (fun (oid, f) b => .withH oid f b) body)
+    -- `quiet e` (S-39, S-42, `spec/26 §6` rule 4) as `e` (#1553): its value is `e`'s, and it changes
+    -- only the runtime's trace, which leaves out the `stop` of a host stop, an event the model has
+    -- none of, and, unless `timing`, the events of the operations `e` performs, which the model
+    -- keeps. Code is quiet only under a program counter above `public`, where the re-check, as
+    -- `una check`, accepts an operation only on a sink that accepts that label, so each event left out is one that an
+    -- observer below the label does not see: T6 on the model's trace bounds the runtime's. That
+    -- step is an argument, not a theorem, since the model does not state the runtime's trace. A
+    -- form outside F1 inside `e` still refuses, as anywhere else.
+    | "quiet" => expr c (← field j "body")
     | k => throw s!"the form `{k}`"
 end
 

@@ -1,0 +1,40 @@
+module m
+
+pub capability Sink
+  op put(x: Int) -> Unit
+    accepts secret
+
+pub capability Log
+  op write(line: Text) -> Unit
+
+pub feed(s: secret Int) -> Unit
+  uses @k: Sink[put]
+=
+  if s > 0
+    @k.put(s)
+  else
+    unit
+
+pub fan(s: secret Int) -> Unit
+  uses @k: Sink[put]
+=
+  if s > 0
+    feed(s)
+  else
+    unit
+
+pub loud(s: secret Int) -> Unit
+  uses @log: Log[write]
+=
+  if s > 0
+    @log.write("positive")
+  else
+    unit
+
+pub public_put(p: Int) -> Unit
+  uses @k: Sink[put]
+=
+  if p > 0
+    @k.put(p)
+  else
+    unit
