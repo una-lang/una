@@ -475,13 +475,21 @@ pub(crate) struct Env<'a> {
     /// The `serve` section of `ita.una`, at its header, when the package has one: the driver
     /// of ADR 0123 rule 16 is a hand-off site of `L_srv` (IF-S1).
     pub(crate) serve_driver: Option<Span>,
+    /// The `drive` section of `ita.una`, at its header, when the package has one: the
+    /// diagnostics of its module's shapes point at its `module` line (`spec/26 §2`).
+    pub(crate) drive_driver: Option<Span>,
     /// Whether a module of the package imports a name of the server from `std.host` (ADR 0123
-    /// rule 0): only then does Core IR declare the server's kinds, and a value of the package
-    /// can hold a reply right.
+    /// rule 0), or one of `std.testing` that names the server's kinds (rule 21): only then does
+    /// Core IR declare the server's kinds, and a value of the package can hold a reply right.
     pub(crate) server_imported: bool,
-    /// Whether a module of the package imports `HttpServer`, `Exchange` or `ReplyRight`, the
-    /// names through which a value of the package can hold a reply right (ADR 0123 IF6).
+    /// Whether a module of the package imports `HttpServer`, `Exchange` or `ReplyRight`, or
+    /// `test_exchange` of `std.testing`, the names through which a value of the package can
+    /// hold a reply right (ADR 0123 IF6 and rule 21).
     pub(crate) reply_rights: bool,
+    /// Whether a module of the package imports `test_request`, `test_exchange` or
+    /// `TestRequestError` of `std.testing` (ADR 0123 rule 21): only then does Core IR declare
+    /// them, so the Core IR of a package that does not, a server's included, does not change.
+    pub(crate) testing_server: bool,
     /// The `via` functions whose failure reveals nothing, by function id (ADR 0098): a call of
     /// their policy fails at the program counter, not at `pc ⊔ ℓ(to)`.
     pub(crate) plain_vias: BTreeSet<usize>,
@@ -628,8 +636,10 @@ impl<'a> Env<'a> {
             holds_reply_kinds: Vec::new(),
             serving_capabilities: BTreeSet::new(),
             serve_driver: None,
+            drive_driver: None,
             server_imported: false,
             reply_rights: false,
+            testing_server: false,
             plain_vias: BTreeSet::new(),
             blocked_vias: BTreeMap::new(),
             map_module: None,
@@ -765,6 +775,19 @@ impl<'a> Env<'a> {
     }
 
     /// The text of `symbol`, interned by module `module`.
+    /// The `via` function of the policy `policy`, which a call of the policy runs (`spec/07
+    /// §5`); `None` for a function that is not a policy, or whose `via` does not resolve.
+    pub(crate) fn via_of(&self, policy: usize) -> Option<usize> {
+        let def = self.functions.get(policy)?;
+        let FnAst::Policy(decl) = def.ast else {
+            return None;
+        };
+        match self.lower(def.module, self.text(def.module, decl.via.name)) {
+            Some(Entity::Function(via)) => Some(via),
+            _ => None,
+        }
+    }
+
     pub(crate) fn text(&self, module: usize, symbol: Symbol) -> &'a str {
         match self.modules.get(module) {
             Some(module) => module.interner.resolve(symbol),
@@ -993,9 +1016,10 @@ impl<'a> Env<'a> {
                 let joined = path.join(".");
                 let host = joined == prelude::STD_HOST;
                 let time = joined == prelude::STD_TIME;
+                let joined_testing = joined == prelude::STD_TESTING;
                 let standard = host
                     || time
-                    || joined == "std.testing"
+                    || joined_testing
                     || joined == prelude::STD_DRIVE
                     || joined == prelude::STD_COLLECTIONS
                     || joined == prelude::STD_LIMIT;
@@ -1017,6 +1041,18 @@ impl<'a> Env<'a> {
                     if host && index < count && prelude::SERVER_NAMES.contains(&name) {
                         self.server_imported = true;
                         if matches!(name, "HttpServer" | "Exchange" | "ReplyRight") {
+                            self.reply_rights = true;
+                        }
+                    }
+                    // ADR 0123 rule 21: the functions of `std.testing` that make and return
+                    // the server's kinds, `test_exchange` a reply right.
+                    if joined_testing
+                        && index < count
+                        && prelude::STD_TESTING_SERVER_NAMES.contains(&name)
+                    {
+                        self.server_imported = true;
+                        self.testing_server = true;
+                        if name == "test_exchange" {
                             self.reply_rights = true;
                         }
                     }
@@ -2754,6 +2790,21 @@ impl Names for LowerNames<'_, '_> {
 
     fn refined_name(&self, refinements: &[Refinement], base: &str) -> Option<String> {
         self.env.refined_display(refinements, base)
+    }
+}
+
+impl Env<'_> {
+    /// `ty` as messages print it, outside any declaration with type parameters: for the
+    /// shapes of a driven module, which declare none (`spec/26 §2` rule 2).
+    pub(crate) fn show_plain(&self, ty: &Ty) -> String {
+        Show(
+            ty,
+            &LowerNames {
+                env: self,
+                type_params: &[],
+            },
+        )
+        .to_string()
     }
 }
 

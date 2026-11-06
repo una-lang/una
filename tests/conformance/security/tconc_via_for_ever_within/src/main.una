@@ -1,0 +1,18 @@
+-- test: a policy call runs its `via` function (#1673): the body of a `for ever within` calls a policy whose `via` performs `Store.get`, which a handler with a `secret` parameter can serve, so the loop's timing label is `secret`, above the `internal` failure of `Http` (U4001 at the loop)
+-- spec: spec/07 §5
+-- expect: error U4001 at src/main.una:14:3
+module main
+
+import release (key_of)
+import std.time (millisecond)
+
+--- The body of the loop calls the policy, and so runs its `via` function.
+pub poll(n: Int, url: Text) -> Unit
+  uses @http: Http[get]
+  diverges
+=
+  for ever within 100 * millisecond
+    let value = key_of(n)
+    let reading = attempt @http.get(url, headers: [], key_name: None)
+    stop
+  unit

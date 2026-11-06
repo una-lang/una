@@ -1,0 +1,26 @@
+-- test: a policy call runs its `via` function (#1673): the `via` makes a request on a grant with limits, and the policy is called in a branch of `first of`, beside a branch that runs, so tasks run beside the request and the preview's `τ_conc` is `⊤`, above the `internal` that `L_lim` allows (U4001 at the request)
+-- spec: spec/07 §5
+-- expect: error U4001 at src/release.una:14:23
+module main
+
+import release (key_of)
+
+crunch(key: Int) -> Int
+=
+  let edit acc = key
+  for i in 0..1000
+    acc = if acc > 0 then acc - 1 else acc + 1
+  acc
+
+spin(key: Int, n: Int) -> Int
+=
+  let spent = crunch(key)
+  n
+
+--- The policy is called in a branch of `first of`, beside a branch that works on `key`.
+pub both(key: Int, n: Int) -> internal Int
+  uses @http: Http[get]
+=
+  first of
+    key_of(n)
+    spin(key, n: n)

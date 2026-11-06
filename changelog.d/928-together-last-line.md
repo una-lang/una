@@ -1,0 +1,1 @@
+- **A `together` body whose last line is not a `let` reports U2024** (#928, `spec/19 §1` rule 3). When the block was also the last line of its own block, the parser reported only U0101; it now leaves the body to the checker, which reports U2024 at `together` as for any other position.

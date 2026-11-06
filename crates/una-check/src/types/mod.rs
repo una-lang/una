@@ -62,6 +62,7 @@ mod within;
 
 pub use hover::{Hover, HoverStats, HoverType};
 pub use index::Index;
+pub use timing::{TimingEdge, TimingGraph, TimingNode, TimingPlace, TimingTarget};
 use una_diag::{
     Code, Diagnostic, Edit, Escape, Location, ObligationKind, Related, Repair, Severity,
 };
@@ -150,18 +151,21 @@ fn of_prelude() -> String {
 const TESTING: &str = include_str!("../std/testing.una");
 
 /// What edition 0.4 adds to `std.testing`: `elapse` (ADR 0116 rule 19), whose duration is in
-/// `Millisecond` of `std.time`.
+/// `Millisecond` of `std.time`, and `test_request` and `test_exchange` (ADR 0123 rule 21),
+/// over the server's kinds of `std.host`.
 const TESTING_0_4: &str = include_str!("../std/testing_0_4.una");
 
-/// The line of `std.testing` after which edition 0.4 imports `Millisecond` from `std.time`.
+/// The line of `std.testing` after which edition 0.4 imports `Millisecond` from `std.time` and
+/// the server's kinds from `std.host`.
 const TESTING_MODULE_LINE: &str = "module std.testing\n";
 
-/// `std.testing` in `edition`: in edition 0.4, it imports `Millisecond` and adds `elapse`.
+/// `std.testing` in `edition`: in edition 0.4, it imports `Millisecond` and the server's kinds,
+/// and adds `elapse`, `test_request` and `test_exchange`.
 fn testing_source(edition: Edition) -> String {
     if edition >= Edition::V0_4 {
         let imported = TESTING.replacen(
             TESTING_MODULE_LINE,
-            "module std.testing\n\nimport std.time (Millisecond)\n",
+            "module std.testing\n\nimport std.host (Exchange, Method, Request)\nimport std.time (Millisecond)\n",
             1,
         );
         format!("{imported}{TESTING_0_4}")
@@ -427,6 +431,27 @@ pub struct TypeCheck {
     /// with limits needs at most `internal`; `public` without such a request. `una build`
     /// embeds it, and `una run` checks a limited `--grant` against it (`spec/27 §9` rule 5).
     pub limit_label: una_core::Label,
+    /// The units of measure of the state types of the package's `[drive]` module, which Core
+    /// IR erases, for the shape check of `una run` and `una build` (`spec/26 §2` rule 2).
+    pub drive_units: Option<DriveUnits>,
+    /// The graph of ADR 0116 P1 and the construct trees of P3 as checking recorded them, for
+    /// the completeness test of P1.
+    pub timing_graph: TimingGraph,
+}
+
+/// The units of measure at each position of the state types of a `[drive]` module: the
+/// result of `init` and the state parameters of `step` and `on_stop`, each as the list of its
+/// measured positions with the normal form of their units (ADR 0104 rule 2). The host hands
+/// the state on unchanged, so these MUST be equal (`spec/26 §2` rule 2); the checker reports
+/// a difference as U2028, and `una run` and `una build` refuse one as a usage error.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DriveUnits {
+    /// The result of `init`.
+    pub init: String,
+    /// The state parameter of `step`, when the module has one.
+    pub step: Option<String>,
+    /// The state parameter of `on_stop`, when it takes one parameter.
+    pub on_stop: Option<String>,
 }
 
 /// A site with a deadline and its timing label (ADR 0116 IF5, rule 21).
@@ -457,6 +482,8 @@ impl Default for TypeCheck {
             index: Index::default(),
             timing: Vec::new(),
             limit_label: una_core::Label::public(),
+            timing_graph: TimingGraph::default(),
+            drive_units: None,
         }
     }
 }
@@ -554,6 +581,12 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
         .as_ref()
         .zip(package.manifest)
         .map(|(serve, manifest)| Span::new(manifest, serve.at.start, serve.at.end));
+    env.drive_driver = package
+        .settings
+        .drive
+        .as_ref()
+        .zip(package.manifest)
+        .map(|(drive, manifest)| Span::new(manifest, drive.at.start, drive.at.end));
     env.trusted_dependencies = env
         .modules
         .iter()
@@ -831,6 +864,9 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
     }
     authority::grants(&env, package.settings, package.run, &mut report);
     authority::drive_failures(&env, package.settings, &mut report);
+    authority::drive_state_labels(&env, package.settings, &mut report);
+    authority::drive_state_units(&env, package.settings, &mut report);
+    let drive_units = authority::drive_units(&env, package.settings);
     authority::serve_functions(&env, package.settings, &mut report);
     // `L_res` of the checked package, computed once for every site that joins it (ADR 0116 P9).
     let residue = timing::residue_of(&env, &findings);
@@ -939,8 +975,11 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
     } else {
         Vec::new()
     };
+    let timing_graph = timing::recorded_graph(&env, &findings);
     let check = TypeCheck {
         limit_label,
+        drive_units,
+        timing_graph,
         timing: timing_sites
             .into_iter()
             .map(|(construct, function, span, label)| TimingSite {
@@ -1154,9 +1193,12 @@ pub(crate) struct Findings {
     /// a timing floor: the operations they run append no event (S-42, #1515). Core marks the
     /// others `quiet` with `timing`.
     pub(crate) hushed: std::collections::BTreeSet<Span>,
-    /// The calls and the operations under a timing floor alone, which [`flow::close_quiet`]
-    /// marks `quiet` as S-39 did, and not `hushed`.
+    /// The calls under a timing floor alone, by span, with their callees, which
+    /// [`flow::close_quiet`] marks `quiet` as S-39 did, and not `hushed`.
     pub(crate) timing_calls: std::collections::BTreeMap<Span, usize>,
+    /// The operations under a timing floor alone, by span, which [`flow::close_quiet`] marks
+    /// `quiet`, and not `hushed`, when the package declares a handler: Core marks them `quiet`
+    /// with `timing`, and their events stay (S-42, `spec/27 §5` rule 7).
     pub(crate) timing_ops: std::collections::BTreeSet<Span>,
     /// The `within`s checked (ADR 0117 rule 5, IF2): each one's deadline, span, function and
     /// the seed of its timing label.
@@ -1178,15 +1220,21 @@ pub(crate) struct Findings {
     /// IF5): each one's binding, its function and the seed of the timing label of the statement
     /// it scopes over.
     pub(crate) limiter_sites: Vec<LimiterSite>,
-    /// The calls of the call graph of ADR 0116 P1: from a function's body, a handler's
-    /// operations or a lambda (`Λ`), to a function called or named.
-    pub(crate) calls: std::collections::BTreeSet<(timing::Caller, usize)>,
-    /// The nodes of that graph that call a function value, and so reach `Λ`.
-    pub(crate) value_calls: std::collections::BTreeSet<timing::Caller>,
-    /// The handlers each node of that graph installs.
-    pub(crate) caller_installs: std::collections::BTreeSet<(timing::Caller, usize)>,
-    /// The operations each node of that graph performs, those of lambdas included (#1148).
-    pub(crate) caller_ops: std::collections::BTreeSet<(timing::Caller, ty::CapId, String)>,
+    /// The edges of the call graph of ADR 0116 P1, recorded at their call sites, each with the node whose
+    /// code holds it (a function's body, a handler's operations, or `Λ` for a lambda's body)
+    /// and the innermost task construct whose part holds it (P3).
+    pub(crate) graph_edges: Vec<timing::GraphEdge>,
+    /// Each policy called, with its `via` function, which the call runs (`spec/07 §5`): an
+    /// edge from the policy to its `via` for the searches over `edges` that the timing label
+    /// (ADR 0116 IF5, IF6) and the quiet calls of S-39 make (#1673).
+    pub(crate) policy_vias: std::collections::BTreeSet<(usize, usize)>,
+    /// For each node of the graph of ADR 0116 P1, the join of the deep labels of what its code
+    /// binds, parameters included, and of the answers of the operations it performs: the data
+    /// it can hold, for the reach of a `start` (#1674).
+    pub(crate) reach_labels: std::collections::BTreeMap<timing::Caller, una_core::Label>,
+    /// The task constructs checked, the nodes of each body's construct tree (ADR 0116 P2, P3),
+    /// by the ids that edges and sites record.
+    pub(crate) constructs: Vec<timing::ConstructNode>,
     /// Names bound by selfified `let`s.
     pub(crate) selfified: Vec<Span>,
     /// The conditions of `for until` loops that are in the refinement language, which the

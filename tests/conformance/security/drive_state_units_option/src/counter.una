@@ -1,0 +1,14 @@
+-- test: units are compared at every position of the state's type: `Option[Int of Second]` may not reach `Option[Int of Millisecond]` (spec/26 §2, issue #1647)
+-- spec: spec/26 §2
+-- expect: error U2028 at src/counter.una:14:22
+module counter
+
+import std.drive (Tick)
+import std.time (Millisecond, Second)
+
+pub init() -> Option[Int of Second]
+=
+  let start: Int of Second = 7.measured()
+  Some(start)
+
+pub step(edit state: Option[Int of Millisecond], input: Tick) -> Unit = unit

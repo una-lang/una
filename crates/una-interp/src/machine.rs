@@ -274,6 +274,8 @@ pub(crate) mod hashes;
 
 pub(crate) mod serve;
 
+mod driver;
+
 mod bitsets;
 
 /// The fault of a `slice` outside the text (#693).
@@ -423,6 +425,43 @@ impl<'p> Index<'p> {
     /// `MAX_INT_DIGITS` digits is never written (`spec/11 §7`, #923): the form is refused
     /// before any conversion, and the caller aborts the run with U6003.
     fn una_form(&self, value: &Value<'_>, form: Form) -> Result<String, IntTooLong> {
+        self.una_form_in(value, form, None)
+    }
+
+    /// The Una form of `value` in an event of the host's `HttpServer`, in `form`, with the
+    /// fields of the server's kinds in the reduced form of ADR 0123 rule 1 under `key`
+    /// ([`crate::serve_trace`]).
+    pub(crate) fn server_form(
+        &self,
+        value: &Value<'_>,
+        form: Form,
+        key: &una_http::serve::trace::TraceKey,
+    ) -> Result<String, IntTooLong> {
+        self.una_form_in(value, form, Some(key))
+    }
+
+    /// `value` in an event of the host's `HttpServer`, redacted by `label` as [`Self::redacted`]
+    /// redacts, and otherwise in the reduced form of ADR 0123 rule 1 under `key`.
+    pub(crate) fn server_redacted(
+        &self,
+        value: &Value<'_>,
+        label: &Label,
+        key: &una_http::serve::trace::TraceKey,
+    ) -> Result<String, IntTooLong> {
+        if label.is_public() || matches!(value, Value::Unit) {
+            self.server_form(value, Form::Redacted, key)
+        } else {
+            Ok(format!("<redacted:{}>", level_name(label.level)))
+        }
+    }
+
+    /// [`Self::una_form`], with the reduced form of the server's kinds under `reduce`.
+    fn una_form_in(
+        &self,
+        value: &Value<'_>,
+        form: Form,
+        reduce: Option<&una_http::serve::trace::TraceKey>,
+    ) -> Result<String, IntTooLong> {
         // A worklist instead of recursion: a value built by a loop can be deeper than the
         // native stack allows (`spec/17 §4`, ADR 0032).
         enum Task<'v, 'p> {
@@ -603,6 +642,16 @@ impl<'p> Index<'p> {
                     }
                     parts.push(Task::Text(format!("{constructor}(")));
                     let named = data.fields.len() > 1;
+                    // In an event of the host's `HttpServer`, the fields of its kinds that the
+                    // reduced form of ADR 0123 rule 1 changes (`serve_trace`).
+                    let server = reduce.filter(|_| {
+                        data.ctor.kind.module == una_core::PRELUDE_MODULE
+                            && crate::serve_trace::is_server_kind(&data.ctor.kind.name)
+                    });
+                    let header = match data.fields.first() {
+                        Some(Value::Text(name)) => Some(name.as_str()),
+                        _ => None,
+                    };
                     for (i, field) in data.fields.iter().enumerate() {
                         let (name, ty) = names.get(i).copied().unwrap_or(("?", None));
                         if i > 0 {
@@ -612,11 +661,25 @@ impl<'p> Index<'p> {
                             parts.push(Task::Text(format!("{name}: ")));
                         }
                         let label = ty.map_or_else(Label::public, Type::deep_label);
+                        let reduced = server.and_then(|key| {
+                            let how = crate::serve_trace::field(&data.ctor.kind.name, i, header)?;
+                            match field {
+                                Value::Text(text) => {
+                                    Some(crate::serve_trace::write(how, key, text.as_str()))
+                                }
+                                // These fields are `Text`; any other value is written as
+                                // nothing of it, never in clear.
+                                _ => Some("?".to_owned()),
+                            }
+                        });
                         if form != Form::Redacted
                             || label.is_public()
                             || matches!(field, Value::Unit)
                         {
-                            parts.push(Task::Value(field));
+                            match reduced {
+                                Some(text) => parts.push(Task::Text(text)),
+                                None => parts.push(Task::Value(field)),
+                            }
                         } else {
                             parts.push(Task::Text(format!(
                                 "<redacted:{}>",
@@ -1104,7 +1167,7 @@ impl<'p, 'w> Machine<'p, 'w> {
         let result = self.locate(result);
         self.frames.pop();
         // The root task's end answers the reply rights it still holds (ADR 0123 rule 4.5).
-        self.answer_held(serve::status_of(&result, false));
+        self.answer_held(&result, false);
         result
     }
 
@@ -1149,7 +1212,7 @@ impl<'p, 'w> Machine<'p, 'w> {
         let _root = serve::RootRights(&run);
         let result = self.drive_steps(init, step, on_stop, drive);
         // The root task's end answers the reply rights it still holds (ADR 0123 rule 4.5).
-        self.answer_held(serve::status_of(&result, false));
+        self.answer_held(&result, false);
         result
     }
 
@@ -2806,6 +2869,16 @@ impl<'p, 'w> Machine<'p, 'w> {
         bound: Option<usize>,
         body: &'p Expr,
     ) -> Flow<'p> {
+        self.tasks_with(bound, |machine| machine.eval(env, caps, body))
+    }
+
+    /// [`Machine::tasks`] with the block `body`, code of the engine's own: the driver of a
+    /// `serve` section (`spec/31 §7` rule 4) runs its loop as the block of a `tasks` statement.
+    pub(super) fn tasks_with(
+        &mut self,
+        bound: Option<usize>,
+        body: impl FnOnce(&mut Self) -> Flow<'p>,
+    ) -> Flow<'p> {
         // Quiet code does not count its statements, `qs`, so that whether it ran one, which may
         // depend on data above `public`, moves the path of no later statement (S-39, S-40,
         // `spec/26 §6` rule 4).
@@ -2820,7 +2893,7 @@ impl<'p, 'w> Machine<'p, 'w> {
         path.push(crate::concurrency::block_name('s', quiet, count));
         let scope = Rc::new(TasksScope::new(path, bound));
         self.scopes.push(Rc::clone(&scope));
-        let result = self.eval(env, caps, body);
+        let result = body(self);
         self.scopes.pop();
         if !matches!(result, Ok(_) | Err(Stop::Exit(..))) {
             scope.cancelled.set(true);
@@ -2867,6 +2940,36 @@ impl<'p, 'w> Machine<'p, 'w> {
         (task, rights): (&'p Expr, &'p [Name]),
         span: Span,
     ) -> Result<(), Stop<'p>> {
+        let reads = self.reads(task);
+        let mut captured: Env<'p> = reads.iter().filter_map(|name| env.binding(name)).collect();
+        // What the walk of ADR 0123 rule 4.2 reads: the captures that can hold a reply right.
+        let moved: Env<'p> = if rights.is_empty() || self.run.serve.is_none() {
+            Env::new()
+        } else {
+            rights
+                .iter()
+                .filter_map(|name| captured.binding(name))
+                .collect()
+        };
+        let caps = caps.clone();
+        self.start_with(
+            span,
+            move |child| child.eval(&mut captured, &caps, task),
+            // ADR 0123 rule 4.2: the reply rights this task holds that the captures reach move
+            // to the started task, before it can run.
+            |machine, id| machine.move_rights(&moved, rights, id),
+        )
+    }
+
+    /// [`Machine::start`] of a task that runs `body`, code of the engine's own or the started
+    /// expression, after `moves` gave it, by its id, the reply rights it takes (ADR 0123 rule
+    /// 4.2), before it can run.
+    pub(super) fn start_with(
+        &mut self,
+        span: Span,
+        body: impl FnOnce(&mut Machine<'p, 'w>) -> Flow<'p> + 'w,
+        moves: impl FnOnce(&Self, u64),
+    ) -> Result<(), Stop<'p>> {
         let Some(scope) = self.scopes.last().cloned() else {
             return Err(fault("a `start` outside its `tasks` statement"));
         };
@@ -2894,18 +2997,6 @@ impl<'p, 'w> Machine<'p, 'w> {
         let k = counts.next(quiet);
         scope.started.set(counts);
         let mut child = self.child(&scope, crate::concurrency::start_name(quiet, k));
-        let reads = self.reads(task);
-        let mut captured: Env<'p> = reads.iter().filter_map(|name| env.binding(name)).collect();
-        // What the walk of ADR 0123 rule 4.2 reads: the captures that can hold a reply right.
-        let moved: Env<'p> = if rights.is_empty() || self.run.serve.is_none() {
-            Env::new()
-        } else {
-            rights
-                .iter()
-                .filter_map(|name| captured.binding(name))
-                .collect()
-        };
-        let caps = caps.clone();
         let bytes = crate::stack_bytes(self.task_depth).unwrap_or(STACK_RESERVE * 2);
         scope.running.set(scope.running.get() + 1);
         self.run.live.set(self.run.live.get() + 1);
@@ -2916,7 +3007,7 @@ impl<'p, 'w> Machine<'p, 'w> {
             run: Rc::clone(&self.run),
             task: id,
         };
-        let body = move || {
+        let task = move || {
             // Its statement counts it ended once its events are written, or, if it never
             // starts, when the driver drops it, or after a panic, which the run keeps.
             let _ending = ending;
@@ -2924,18 +3015,16 @@ impl<'p, 'w> Machine<'p, 'w> {
             run.guarded(|| {
                 let base = 0usize;
                 child.stack_base = stack_position(&base);
-                let result = child.eval(&mut captured, &caps, task);
+                let result = body(&mut child);
                 child.started_end(result);
             });
         };
-        // ADR 0123 rule 4.2: the reply rights this task holds that the captures reach move to
-        // the started task, before it can run.
-        self.move_rights(&moved, rights, id as u64);
+        moves(self, id as u64);
         let started = self
             .run
             .sched
             .borrow_mut()
-            .start(Box::new(body), bytes, span);
+            .start(Box::new(task), bytes, span);
         if started != id {
             return Err(fault("a started task took an id other than its own"));
         }
@@ -2960,7 +3049,7 @@ impl<'p, 'w> Machine<'p, 'w> {
         self.ops_open = 0;
         // The reply rights the task still holds are answered first, each with its `unanswered`
         // event, then the event of how it ended (ADR 0123 rule 4.5).
-        self.answer_held(serve::status_of(&result, true));
+        self.answer_held(&result, true);
         match result {
             Ok(_) => {}
             Err(Stop::Abort(abort @ Abort::Depth { .. })) => {
@@ -3244,6 +3333,13 @@ impl<'p, 'w> Machine<'p, 'w> {
                     _ => Err(fault("`fake_hash` without an `Int` seed")),
                 };
             }
+            // ADR 0123 rule 21: a request and an exchange for a test of a server.
+            "std.testing" if function.name == "test_request" => {
+                return serve::test_request(&args);
+            }
+            "std.testing" if function.name == "test_exchange" => {
+                return self.test_exchange(&args);
+            }
             // `elapse(d)` moves the test's virtual clock forward by `d` milliseconds at once
             // (ADR 0116 rule 19, `spec/14 §4`). Its `requires d >= 0` is verified at each call,
             // and only tests call it, whose clock is always virtual.
@@ -3419,28 +3515,37 @@ impl<'p, 'w> Machine<'p, 'w> {
                 .map(|n| (*n).to_owned())
                 .collect(),
         };
-        // ADR 0123 rule 1: the arguments of the host's `HttpServer` are never written in clear
-        // whatever their labels; until the reduced form of that rule lands, every one is
-        // written as an `internal` value is, redacted.
+        // ADR 0123 rule 1 (`spec/31 §1` rule 7): the values of the events of the host's
+        // `HttpServer` are redacted by their labels, as every event's are, and are written in
+        // the reduced form whatever their labels, under the run's trace key. Without the run's
+        // engine, which a run that serves nothing lacks, every argument is written as an
+        // `internal` value is, redacted, failing closed.
         let server = capability == "HttpServer" && matches!(*instance, Instance::Host { .. });
+        let trace = if server {
+            self.run.serve.as_ref().map(serve::Serving::trace)
+        } else {
+            None
+        };
         let mut shown: Vec<(String, String)> = Vec::with_capacity(args.len());
         for (i, value) in args.iter().enumerate() {
             let name = names.get(i).cloned().unwrap_or_else(|| format!("arg{i}"));
             // An argument labeled above `public` is redacted.
             let label = labels.get(i).cloned().unwrap_or_else(Label::public);
-            let label = if server {
-                label.join(&Label {
-                    level: Level::Internal,
-                    ..Label::public()
-                })
-            } else {
-                label
-            };
             // An integer too long for text aborts the run at the operation (`spec/11 §7`).
-            let text = self
-                .index
-                .redacted(value, &label)
-                .map_err(|IntTooLong| int_text_abort(Some(span)))?;
+            let text = match trace {
+                // The toolchain's tests only: the reduced form without the labels' redaction.
+                Some((key, true)) => self.index.server_form(value, Form::Written, &key),
+                Some((key, false)) => self.index.server_redacted(value, &label, &key),
+                None if server => self.index.redacted(
+                    value,
+                    &label.join(&Label {
+                        level: Level::Internal,
+                        ..Label::public()
+                    }),
+                ),
+                None => self.index.redacted(value, &label),
+            }
+            .map_err(|IntTooLong| int_text_abort(Some(span)))?;
             shown.push((name, text));
         }
         // The operation's event is written when it ends, after the events of the handler code
@@ -3462,7 +3567,8 @@ impl<'p, 'w> Machine<'p, 'w> {
         // S-45 (#1552, `spec/11 §5`): in a run, an outcome labeled above `public` is written
         // as `redacted`, at the static label of the site, so whether it is depends on no
         // value; no text is built from its value, so it raises no abort for a long integer.
-        let hidden = (!request.outcome.is_public() && !self.run.clear_outcomes.get())
+        let revealed = matches!(trace, Some((_, true)));
+        let hidden = (!request.outcome.is_public() && !self.run.clear_outcomes.get() && !revealed)
             .then(|| level_name(request.outcome.level));
         // An outcome that holds an integer too long for text aborts the run at the operation
         // (`spec/11 §7`, #923), its event left `aborted`.
@@ -3470,7 +3576,11 @@ impl<'p, 'w> Machine<'p, 'w> {
             (result @ (Ok(_) | Err(Stop::Fail(_))), Some(level)) => {
                 (result, EventOutcome::Redacted(level.to_owned()))
             }
-            (Ok(value), None) => match self.index.redacted(&value, &request.result) {
+            (Ok(value), None) => match match trace {
+                Some((key, true)) => self.index.server_form(&value, Form::Written, &key),
+                Some((key, false)) => self.index.server_redacted(&value, &request.result, &key),
+                None => self.index.redacted(&value, &request.result),
+            } {
                 Ok(text) => (Ok(value), EventOutcome::Ok(text)),
                 Err(IntTooLong) => (Err(int_text_abort(Some(span))), EventOutcome::Aborted),
             },

@@ -18,6 +18,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::time::Instant;
 
 use super::run::Next;
+use super::trace::TraceKey;
 
 /// How a wait for the next request ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,9 +45,11 @@ pub trait Port: Sync {
     /// One attempt to deliver the next request: [`super::run::Shared::next`].
     fn next(&self) -> Next;
 
-    /// Waits until the epoch differs from `epoch`, until `retry` on the engine's clock when a
-    /// rate holds the next request, until `deadline`, or until `stopped` holds, which it reads
-    /// at least every few milliseconds. It takes no request.
+    /// Waits until something changed since `epoch` that may let the next attempt deliver,
+    /// until `retry` on the engine's clock when a rate holds the next request, until
+    /// `deadline`, or until `stopped` holds, which it reads at least every few milliseconds. It
+    /// takes no request. An engine may end only one wait for an event that lets one request
+    /// through, and every wait for a stop ([`super::live`]).
     fn wait(
         &self,
         epoch: u64,
@@ -55,10 +58,38 @@ pub trait Port: Sync {
         stopped: &dyn Fn() -> bool,
     ) -> Waited;
 
+    /// Hands on a wake that a wait ended with [`Waited::Changed`] and that its caller will not
+    /// use: a `next` that leaves without a further attempt, as at a cancellation, calls it so
+    /// that the request that woke it wakes another waiter. A spare call costs one wake.
+    fn pass(&self) {}
+
     /// `close` (ADR 0123 rule 1): the listeners close, the requests read and not delivered are
     /// answered `503` with `Connection: close`, and each connection finishes the exchange it
     /// has open and closes. The program's side refuses every later `next` with `Closed`.
     fn close(&self);
+
+    /// The hard stop of the engine (ADR 0123 rule 18 item 6): every exchange still open is
+    /// answered `503` in one non-blocking write and every connection closes, without waiting on
+    /// a peer. From the call on, the engine discards every answer and reply of the program
+    /// before it can take an exchange ([`super::run::Exchange::reply`]), so only the serve
+    /// threads end the exchanges still open. The program's side calls it before it drops the
+    /// exchanges its tasks hold at the hard stop. A reply already in progress when the hard stop
+    /// comes, one that checked the stop before it and takes its exchange after it, may still be
+    /// lost: its connection can close before the reply is written, with no `503` either. An
+    /// engine with no peers to answer, as a script's, does nothing.
+    fn hard_stop(&self) {}
+
+    /// The key of the run's reduced trace form (ADR 0123 rule 1, [`TraceKey`]): drawn at random
+    /// when the run starts, all zeros under a script of connections.
+    fn trace_key(&self) -> TraceKey;
+
+    /// Whether a trace writes the values of the events of the host's `HttpServer` without the
+    /// redaction of their labels, still in the reduced form: only the scripted engine of the
+    /// toolchain's own tests says so, when a test asks it to, so that the tests compare the
+    /// reduced form of both engines. Every other engine says no.
+    fn reveals_trace(&self) -> bool {
+        false
+    }
 }
 
 /// The peer's address as a request names it (`spec/31 §1`, `peer`): its IP address without its

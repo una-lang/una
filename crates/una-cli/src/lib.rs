@@ -100,6 +100,9 @@ pub struct Checked {
     /// The obligation sites that the type checker found, which the verifier generates over
     /// Core IR (`spec/12 §3`).
     pub pending: Vec<PendingObligation>,
+    /// The graph of ADR 0116 P1 and its construct trees as the type checker recorded them,
+    /// for the completeness test of P1 (`tests/timing_graph.rs`).
+    pub timing_graph: una_check::TimingGraph,
 }
 
 /// Loads and checks the file or package at `path` (`spec/13 §5`, `spec/12 §1`), with the
@@ -116,9 +119,14 @@ pub fn check_with(path: &Path, tier: Tier, solving: &Solving) -> Result<Checked,
         &std::collections::BTreeMap::new(),
         solving.itaoca.as_ref(),
     )?;
-    let (mut diagnostics, program, pending) = on_large_stack(|| {
+    let (mut diagnostics, program, pending, timing_graph) = on_large_stack(|| {
         let analysis = analyze(&package, None);
-        (analysis.diagnostics, analysis.program, analysis.pending)
+        (
+            analysis.diagnostics,
+            analysis.program,
+            analysis.pending,
+            analysis.timing_graph,
+        )
     });
     let mut verification = None;
     if tier == Tier::One && diagnostics.is_empty() {
@@ -132,6 +140,7 @@ pub fn check_with(path: &Path, tier: Tier, solving: &Solving) -> Result<Checked,
         program,
         verification,
         pending,
+        timing_graph,
     })
 }
 
@@ -162,6 +171,11 @@ struct Analysis {
     timing: Vec<una_check::TimingSite>,
     /// `L_lim` (ADR 0117 IF4), which a grant with limits needs at most `internal`.
     limit_label: una_core::Label,
+    /// The units of the state types of the `[drive]` module, which Core IR erases
+    /// (`spec/26 §2` rule 2), for the shape check of `una run` and `una build`.
+    drive_units: Option<una_check::DriveUnits>,
+    /// The graph of ADR 0116 P1 as the type checker recorded it, for [`Checked`].
+    timing_graph: una_check::TimingGraph,
 }
 
 /// Checks `package`; with `run_grants`, for `una run`, whose grants are final (U3012).
@@ -325,6 +339,8 @@ fn analyze_and(
         file_state: types.file_state,
         timing: types.timing,
         limit_label: types.limit_label,
+        drive_units: types.drive_units,
+        timing_graph: types.timing_graph,
     };
     (analysis, rejected)
 }
@@ -360,6 +376,8 @@ fn environment_failure(probe: &str) -> Analysis {
         mounts: Vec::new(),
         timing: Vec::new(),
         limit_label: una_core::Label::public(),
+        drive_units: None,
+        timing_graph: una_check::TimingGraph::default(),
     }
 }
 

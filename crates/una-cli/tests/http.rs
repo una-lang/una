@@ -23,6 +23,13 @@ fn root() -> PathBuf {
 fn runtime() {
     static BUILT: OnceLock<()> = OnceLock::new();
     BUILT.get_or_init(|| {
+        // Set by the nextest setup script (.config/nextest.toml): the library is built, and a second build in each test
+        // process would rewrite it under the tests that link it.
+        #[allow(clippy::disallowed_methods)]
+        let prebuilt = std::env::var_os("UNA_RT_PREBUILT").is_some();
+        if prebuilt {
+            return;
+        }
         let status = Command::new(env!("CARGO"))
             .args(["build", "--quiet", "-p", "una-rt"])
             .current_dir(root())
@@ -538,6 +545,83 @@ fn an_executable_that_never_uses_http_carries_no_tls_stack() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn an_executable_that_serves_nothing_carries_no_serve_engine() {
+    // ADR 0074 H7, `spec/31 §6` rule 14: the runtime reaches the serve engine only through
+    // `una_rt_serve_enable`, which the C `main` of a program with an operation of `HttpServer`
+    // calls, so `hello` links none of it: not the serve threads, not their start, stop and join,
+    // and not the engine's panic hook (review of #1655, M2).
+    let hello = "module hello\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  @console.print(\"Hello, Una\")\n";
+    let dir = package(
+        "plainserve",
+        "\n[run]\nentry = \"hello\"\ngrants = [\"console\"]\n",
+        &[("src/hello.una", hello)],
+    );
+    let built = una(&dir, &["build", "."]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    let symbols = Command::new("nm")
+        .arg(dir.join("target/una/plainserve"))
+        .output()
+        .unwrap();
+    assert!(symbols.status.success(), "{symbols:?}");
+    let symbols = String::from_utf8_lossy(&symbols.stdout);
+    // Mangled names: `una_http::serve::thread`, `Server::start`, `Server::stop`, `Live::end`,
+    // `fault::install_hook`, and the runtime's `install_live` and `end_engine`.
+    const NEEDLES: [&str; 7] = [
+        "5serve6thread",
+        "6Server5start",
+        "6Server4stop",
+        "4Live3end",
+        "5fault12install_hook",
+        "12install_live",
+        "10end_engine",
+    ];
+    for needle in NEEDLES {
+        assert!(
+            !symbols.contains(needle),
+            "{needle} found in a program that serves nothing"
+        );
+    }
+    // The positive control: a program that serves, built by the test build of `una` while
+    // `spec/31 §1` rule 10 stands, links every one of them, so the names above still name the
+    // engine's code and the check above checks something.
+    let serving = std::env::temp_dir().join(format!("una-http-serving-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&serving);
+    std::fs::create_dir_all(serving.join("src")).unwrap();
+    let case = root().join("tests/serve_runs/language_form");
+    std::fs::write(
+        serving.join("ita.una"),
+        "ita serving\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry srv\n  grants\n    console\n    serve \"http://127.0.0.1:8080\"\n",
+    )
+    .unwrap();
+    std::fs::copy(case.join("ita.lock"), serving.join("ita.lock")).unwrap();
+    std::fs::copy(case.join("src/srv.una"), serving.join("src/srv.una")).unwrap();
+    runtime();
+    let built = Command::new(env!("CARGO_BIN_EXE_una"))
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env("UNA_TEST_BUILD_SERVER", "1")
+        .env("NO_COLOR", "1")
+        .args(["build", "."])
+        .current_dir(&serving)
+        .output()
+        .unwrap();
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    let listed = Command::new("nm")
+        .arg(serving.join("target/una/serving"))
+        .output()
+        .unwrap();
+    assert!(listed.status.success(), "{listed:?}");
+    let listed = String::from_utf8_lossy(&listed.stdout);
+    for needle in NEEDLES {
+        assert!(
+            listed.contains(needle),
+            "{needle} missing from a program that serves: the check names nothing"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&serving);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The bytes of `ring`'s code in `executable`: each `ring_core` text symbol runs to the next
 /// symbol, by `nm -n`.
 fn ring_bytes(executable: &Path) -> u64 {
@@ -565,6 +649,13 @@ fn ring_bytes(executable: &Path) -> u64 {
         .filter(|pair| pair[0].1)
         .map(|pair| pair[1].0 - pair[0].0)
         .sum()
+}
+
+/// Empties `dir/out`, so the variants the next engine writes there are its own: the
+/// interpreter's files are not left for the executable's run to pass on (review L1 of #1562).
+fn fresh_out(dir: &Path) {
+    let _ = std::fs::remove_dir_all(dir.join("out"));
+    std::fs::create_dir_all(dir.join("out")).unwrap();
 }
 
 /// A server on `127.0.0.1` that accepts connections and never answers.
@@ -675,6 +766,7 @@ pub main() -> Unit
             "TimedOut|TimedOut"
         );
     }
+    fresh_out(&dir);
     assert_eq!(
         trace[1],
         serde_json::json!({"seq": 2, "outcome": {"kind": "timeout"}})
@@ -703,6 +795,15 @@ pub main() -> Unit
     let native: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(trace_file).unwrap()).unwrap();
     assert_eq!(trace, native);
+    // The trace shows the requests' outcomes redacted in both engines, so the variants the
+    // executable wrote are what tells its deadline from the interpreter's.
+    for n in 0..2 {
+        assert_eq!(
+            std::fs::read_to_string(dir.join(format!("out/v{n}.txt"))).unwrap(),
+            "TimedOut|TimedOut",
+            "native v{n}"
+        );
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -787,6 +888,7 @@ pub main() -> Unit
         std::fs::read_to_string(dir.join("out/v.txt")).unwrap(),
         "TimedOut"
     );
+    fresh_out(&dir);
 
     let built = una(&dir, &["build", "."]);
     assert_eq!(built.status.code(), Some(0), "{built:?}");
@@ -808,6 +910,11 @@ pub main() -> Unit
     let native: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(trace_file).unwrap()).unwrap();
     assert_eq!(trace, native);
+    assert_eq!(
+        std::fs::read_to_string(dir.join("out/v.txt")).unwrap(),
+        "TimedOut",
+        "native"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -909,6 +1016,7 @@ pub main() -> Unit
     let built = una(&dir, &["build", "."]);
     assert_eq!(built.status.code(), Some(0), "{built:?}");
     for run in 0..5 {
+        fresh_out(&dir);
         let trace_file = dir.join(format!("trace-{run}.json"));
         let native = Command::new(dir.join("target/una/tasked"))
             .args(flags)
@@ -925,6 +1033,13 @@ pub main() -> Unit
         let native: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(trace_file).unwrap()).unwrap();
         assert_eq!(trace, native, "run {run}");
+        for n in 0..2 {
+            assert_eq!(
+                std::fs::read_to_string(dir.join(format!("out/v{n}.txt"))).unwrap(),
+                "TimedOut|TimedOut",
+                "native run {run} v{n}"
+            );
+        }
     }
     let _ = std::fs::remove_dir_all(&dir);
 }

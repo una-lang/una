@@ -584,6 +584,17 @@ pub fn event(site: i64, instance: i64) -> i64 {
     .unwrap_or(-1)
 }
 
+/// Whether the event at `slot`, of operation `op`, is one of the host's `HttpServer`, whose
+/// values are written in the reduced form of ADR 0123 rule 1.
+fn server_event(state: &crate::runtime::State, op: &OpSite, slot: usize) -> bool {
+    op.capability == "HttpServer"
+        && state
+            .trace
+            .as_ref()
+            .and_then(|trace| trace.get(slot))
+            .is_some_and(|event| event.instance == "host:HttpServer")
+}
+
 /// Records argument `index` of the event at `slot`, of operation `site`.
 pub fn event_arg(site: i64, slot: i64, index: i64, value: i64) {
     let (Ok(site), Ok(slot), Ok(index)) = (
@@ -595,6 +606,7 @@ pub fn event_arg(site: i64, slot: i64, index: i64, value: i64) {
     };
     // An argument that holds an integer too long for text aborts the run at the operation
     // (`spec/11 §7`, #923), its event left `aborted`.
+    let trace = crate::serve::trace();
     let too_long = with_state(|state| {
         let Some(op) = state.ops.get(site) else {
             return false;
@@ -604,22 +616,26 @@ pub fn event_arg(site: i64, slot: i64, index: i64, value: i64) {
             .get(index)
             .cloned()
             .unwrap_or_else(|| format!("arg{index}"));
-        // ADR 0123 rule 1: the arguments of the host's `HttpServer` are never written in clear
-        // whatever their labels; until the reduced form of that rule lands, every one is
-        // written as an `internal` value is, redacted, as in the interpreter.
-        let server = op.capability == "HttpServer"
-            && state
-                .trace
-                .as_ref()
-                .and_then(|trace| trace.get(slot))
-                .is_some_and(|event| event.instance == "host:HttpServer");
-        let shown = match op.args.get(index) {
-            Some(arg) if server => {
+        // ADR 0123 rule 1 (`spec/31 §1` rule 7): the values of the events of the host's
+        // `HttpServer` are redacted by their labels, as every event's are, and are written in
+        // the reduced form whatever their labels, under the run's trace key, as in the
+        // interpreter. Without the run's engine every argument is written as an `internal`
+        // value is, redacted, failing closed.
+        let server = server_event(state, op, slot);
+        let shown = match (op.args.get(index), server.then_some(trace).flatten()) {
+            // The toolchain's tests only: the reduced form without the labels' redaction.
+            (Some(arg), Some((key, true))) => state.types.server_written(arg.ty, value, &key),
+            (Some(arg), Some((key, false))) => {
+                state
+                    .types
+                    .server_redacted(arg.ty, value, arg.redacted.as_deref(), &key)
+            }
+            (Some(arg), None) if server => {
                 let level = arg.redacted.as_deref().unwrap_or("internal");
                 state.types.redacted(arg.ty, value, Some(level))
             }
-            Some(arg) => state.types.redacted(arg.ty, value, arg.redacted.as_deref()),
-            None => Some("?".to_owned()),
+            (Some(arg), None) => state.types.redacted(arg.ty, value, arg.redacted.as_deref()),
+            (None, _) => Some("?".to_owned()),
         };
         let Some(shown) = shown else {
             return true;
@@ -668,19 +684,33 @@ fn end_event(site: usize, slot: usize, value: i64, (failed, interrupted): (i64, 
     }
     // An outcome that holds an integer too long for text aborts the run at the operation
     // (`spec/11 §7`, #923), its event left `aborted`.
+    let trace = crate::serve::trace();
     let too_long = with_state(|state| {
         let Some(op) = state.ops.get(site) else {
             return false;
         };
+        // The outcome of an event of the host's `HttpServer`, in the reduced form of ADR 0123
+        // rule 1, as its arguments are.
+        let trace = trace.filter(|_| server_event(state, op, slot));
+        let revealed = matches!(trace, Some((_, true)));
         // S-45 (#1552): an outcome labeled above `public` is written as `redacted`, from the
         // site's static level alone; no text is built from the value, so it raises no abort.
-        let outcome = if let Some(level) = &op.outcome {
+        let outcome = if let Some(level) = op.outcome.as_ref().filter(|_| !revealed) {
             Some(EventOutcome::Redacted(level.clone()))
         } else if failed == 0 {
-            state
-                .types
-                .redacted(op.result.ty, value, op.result.redacted.as_deref())
-                .map(EventOutcome::Ok)
+            match trace {
+                Some((key, true)) => state.types.server_written(op.result.ty, value, &key),
+                Some((key, false)) => state.types.server_redacted(
+                    op.result.ty,
+                    value,
+                    op.result.redacted.as_deref(),
+                    &key,
+                ),
+                None => state
+                    .types
+                    .redacted(op.result.ty, value, op.result.redacted.as_deref()),
+            }
+            .map(EventOutcome::Ok)
         } else {
             let ty = op.error.unwrap_or(usize::MAX);
             let variant = state.types.variant_name(ty, value);
@@ -1070,6 +1100,37 @@ pub fn http_delete(site: i64, url: i64, headers: i64, key_name: i64) -> i64 {
 mod tests {
     use super::http_error_index;
     use una_http::client::Error;
+
+    #[test]
+    fn an_operation_site_without_its_outcome_label_fails_to_load() {
+        // S-45 (#1552, `spec/11 §5`), review L3 of #1562: the native description's `outcome`
+        // key is required. `null` is an outcome in clear and a string is the level it is
+        // redacted at; a site that lacks the key, or gives a value that is neither `null` nor a
+        // string, fails to load, so the executable never shows an outcome in clear by default.
+        let site = |outcome: Option<serde_json::Value>| {
+            let mut value = serde_json::json!({
+                "capability": "Console",
+                "op": "print",
+                "params": [],
+                "args": [],
+                "result": {"type": 0},
+            });
+            if let (Some(outcome), Some(fields)) = (outcome, value.as_object_mut()) {
+                fields.insert("outcome".to_owned(), outcome);
+            }
+            super::OpSite::parse(&value)
+        };
+        assert_eq!(site(None).map(|op| op.outcome), None);
+        assert_eq!(site(Some(serde_json::json!(1))).map(|op| op.outcome), None);
+        assert_eq!(
+            site(Some(serde_json::Value::Null)).map(|op| op.outcome),
+            Some(None)
+        );
+        assert_eq!(
+            site(Some(serde_json::json!("internal"))).map(|op| op.outcome),
+            Some(Some("internal".to_owned()))
+        );
+    }
 
     /// Starts, on `sched`, a task whose operation runs on a helper of the I/O pool through
     /// [`super::on_helper`] until `gate` opens, its cancellation entry that of `scope`'s tasks;

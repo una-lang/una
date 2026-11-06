@@ -13,6 +13,7 @@ pub mod fault;
 pub mod gate;
 pub mod gcra;
 pub mod grant;
+pub mod live;
 pub mod net;
 pub mod peer;
 pub mod place;
@@ -26,6 +27,7 @@ pub mod server;
 #[cfg(feature = "test-hooks")]
 pub mod sim;
 pub mod thread;
+pub mod trace;
 
 use std::fs::{File, Metadata, OpenOptions};
 use std::io::Read;
@@ -37,6 +39,14 @@ use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use una_core::http::serve::{ServeGrant, TlsPolicy, overlapping};
 use una_sys::server::Identity;
+
+/// Installs, once per process, the panic hook of the serve engine, which keeps the panics it
+/// contains off standard error (`spec/31 §6` rule 13), chained to the hook in place. A run calls
+/// it on the thread that starts it, before any serve thread or worker starts, after any hook of
+/// its own ([`fault`]'s precondition).
+pub fn install_panic_hook() {
+    fault::install_hook();
+}
 
 /// The largest TLS file the host reads, certificate chain or key.
 pub const MAX_TLS_FILE: u64 = 1 << 20;

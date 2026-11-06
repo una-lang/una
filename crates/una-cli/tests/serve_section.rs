@@ -9,6 +9,8 @@
 
 #[path = "common/hermetic.rs"]
 mod hermetic;
+#[path = "common/native_build.rs"]
+mod native_build;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -325,4 +327,139 @@ fn a_package_that_serves_nothing_has_no_server_entries() {
     assert_eq!(document["tcb"]["server"], serde_json::Value::Null);
     assert_eq!(document["out_of_model"].as_array().unwrap().len(), 13);
     assert_eq!(document["warnings"], serde_json::json!([]));
+}
+
+/// `una build . --out app` of the package in `dir` in the toolchain's test build, which builds
+/// the driver of a `serve` section (`spec/31 §1` rule 10).
+fn test_build(dir: &Path) -> Output {
+    native_build::runtime();
+    Command::new(env!("CARGO_BIN_EXE_una"))
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env("NO_COLOR", "1")
+        .env("UNA_TEST_BUILD_SERVER", "1")
+        .args(["build", ".", "--out", "app"])
+        .current_dir(dir)
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn an_executable_without_a_serve_grant_is_the_usage_error_of_rule_1() {
+    // `spec/31 §7` rule 1: a run of a package with a `serve` section and no `serve:` grant, in
+    // `run grants` or by `--grant`, is a usage error, exit code 2, before anything starts; the
+    // executable that `una build` writes gives the error `una run` gives. The build itself
+    // takes no grant: the executable's may come from its flags.
+    let dir = package("ungranted-native", "    console", HEALTH);
+    let built = test_build(&dir);
+    assert!(built.status.success(), "{}", stderr(&built));
+    let ran = Command::new(dir.join("app"))
+        .env("NO_COLOR", "1")
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert_eq!(ran.status.code(), Some(2), "{}", stderr(&ran));
+    let interpreted = Command::new(env!("CARGO_BIN_EXE_una"))
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env("NO_COLOR", "1")
+        .env("UNA_TEST_RUN_SERVER", "1")
+        .args(["run", "."])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert_eq!(
+        interpreted.status.code(),
+        Some(2),
+        "{}",
+        stderr(&interpreted)
+    );
+    assert!(
+        stderr(&ran).contains("grants an address to serve on"),
+        "{}",
+        stderr(&ran)
+    );
+    assert_eq!(stderr(&ran), stderr(&interpreted));
+    // With a `--grant` flag the executable serves, until a host stop ends it with exit code 0.
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let mut served = Command::new(dir.join("app"))
+        .env("NO_COLOR", "1")
+        .arg("--grant")
+        .arg(format!("serve:http://127.0.0.1:{port}"))
+        .current_dir(&dir)
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let started = std::time::Instant::now();
+    while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(60),
+            "the executable never listened"
+        );
+        assert!(served.try_wait().unwrap().is_none(), "the executable ended");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let killed = Command::new("kill")
+        .args(["-TERM", &served.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(killed.success());
+    let ended = served.wait_with_output().unwrap();
+    assert_eq!(ended.status.code(), Some(0), "{}", stderr(&ended));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_serve_section_with_within_is_refused_by_the_build_and_the_executable() {
+    // `spec/31 §7` rule 3 item 7: every `within` of a section is U4003 today, so the test build
+    // never writes a driver that would run without the deadline it names.
+    let dir = package("within-build", LOOPBACK, HEALTH);
+    let manifest = std::fs::read_to_string(dir.join("ita.una")).unwrap();
+    std::fs::write(
+        dir.join("ita.una"),
+        manifest.replace("  module health\n", "  module health\n  within 5000\n"),
+    )
+    .unwrap();
+    let built = test_build(&dir);
+    assert_eq!(built.status.code(), Some(1), "{}", stderr(&built));
+    assert!(stderr(&built).contains("U4003"), "{}", stderr(&built));
+    assert!(!dir.join("app").exists(), "no executable is written");
+    let _ = std::fs::remove_dir_all(&dir);
+    // An executable whose description names a `within` is no description: the runtime refuses
+    // to start it rather than run the driver without its deadline.
+    let dir = package("within-description", LOOPBACK, HEALTH);
+    let built = test_build(&dir);
+    assert!(built.status.success(), "{}", stderr(&built));
+    let executable = std::fs::read(dir.join("app")).unwrap();
+    let null = br#""within":null}"#;
+    let at = executable
+        .windows(null.len())
+        .position(|window| window == null)
+        .expect("the description names the section");
+    let mut patched = executable.clone();
+    patched[at..at + null.len()].copy_from_slice(br#""within":5000}"#);
+    std::fs::write(dir.join("app"), patched).unwrap();
+    // A changed executable needs its ad hoc signature again on macOS, or the kernel kills it.
+    if cfg!(target_os = "macos") {
+        let signed = Command::new("codesign")
+            .args(["--force", "--sign", "-"])
+            .arg(dir.join("app"))
+            .output()
+            .unwrap();
+        assert!(signed.status.success(), "{}", stderr(&signed));
+    }
+    let ran = Command::new(dir.join("app"))
+        .env("NO_COLOR", "1")
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert_eq!(ran.status.code(), Some(3), "{}", stderr(&ran));
+    assert!(
+        stderr(&ran).contains("embedded description is invalid"),
+        "{}",
+        stderr(&ran)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

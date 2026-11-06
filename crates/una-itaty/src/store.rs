@@ -7,7 +7,9 @@
 //! path names a file outside the store. A write replaces a file whole: [`FileStore`] writes a
 //! temporary file in the same directory, syncs it, and renames it into place, so a reader sees
 //! the old bytes or the new ones, never a mix. A web server that serves the directory itself
-//! maps `checkpoint` to `checkpoint/latest` ([`FileStore`]).
+//! maps `checkpoint` to `checkpoint/latest` ([`FileStore`]). A store has one writer: a
+//! [`FileStore`] holds an exclusive lock on the file `.lock` of its directory, a name no store
+//! path can have, while it is open, and a second one refuses to open.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -63,16 +65,32 @@ pub fn check_path(path: &str) -> Result<(), Error> {
 pub struct FileStore {
     root: PathBuf,
     counter: AtomicU64,
+    /// The file `.lock`, locked exclusively while the store is open; dropping it unlocks it.
+    _lock: fs::File,
 }
 
 impl FileStore {
-    /// A store in the directory `root`, created if missing.
+    /// A store in the directory `root`, created if missing, locked against a second writer:
+    /// refused while another [`FileStore`] has it open, in this process or another.
     pub fn open(root: impl Into<PathBuf>) -> Result<FileStore, Error> {
         let root = root.into();
         fs::create_dir_all(&root).map_err(|e| format!("cannot create the store: {e}"))?;
+        let lock = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(root.join(".lock"))
+            .map_err(|e| format!("cannot open the store's lock: {e}"))?;
+        lock.try_lock().map_err(|e| match e {
+            fs::TryLockError::WouldBlock => {
+                "the store is open in another registry: a store has one writer".to_owned()
+            }
+            fs::TryLockError::Error(e) => format!("cannot lock the store: {e}"),
+        })?;
         Ok(FileStore {
             root,
             counter: AtomicU64::new(0),
+            _lock: lock,
         })
     }
 

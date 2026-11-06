@@ -454,6 +454,13 @@ const EXPECTED_DIFFERENCES_0_4: &[Difference04] = &[
         added: &[],
         removed: &[("U1001", "src/gate.una:6:8")],
     },
+    // ADR 0123 rule 21 (`spec/31 §8`): `test_request` is a name of `std.testing` from edition
+    // 0.4.
+    Difference04 {
+        case: "names/test_request_import_0_3",
+        added: &[],
+        removed: &[("U1001", "src/m.una:6:21")],
+    },
     // ADR 0119 rule 18: a package function `update` whose first parameter is a `Map`.
     Difference04 {
         case: "names/map_update_function_in_0_3",

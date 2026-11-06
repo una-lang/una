@@ -40,7 +40,7 @@ use std::os::unix::net::UnixStream;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -227,6 +227,67 @@ pub struct Server {
     acceptor: Arc<Acceptor>,
     clock: Arc<SystemClock>,
     handles: Mutex<Vec<JoinHandle<()>>>,
+    started: Arc<Started>,
+}
+
+/// How many serve threads reported: in place, their wake pair registered in their poller and,
+/// for thread 0, the accept poller in its own (S4 design SC6), or not, when a registration
+/// failed or the thread ended before it.
+#[derive(Default)]
+struct Started {
+    count: Mutex<usize>,
+    all: Condvar,
+    failed: AtomicBool,
+}
+
+/// A serve thread's report to [`Started`], once: when it is in place, or when a registration
+/// failed or it ends first, which [`Server::start`] refuses.
+struct Report {
+    started: Arc<Started>,
+    done: bool,
+}
+
+impl Report {
+    fn report(&mut self, placed: bool) {
+        if !std::mem::replace(&mut self.done, true) {
+            if !placed {
+                self.started.failed.store(true, Ordering::SeqCst);
+            }
+            *lock(&self.started.count) += 1;
+            self.started.all.notify_all();
+        }
+    }
+}
+
+impl Drop for Report {
+    fn drop(&mut self) {
+        self.report(false);
+    }
+}
+
+/// Registrations of a starting serve thread that fail, for a test of [`Server::start`]: a
+/// process-wide count, so its test runs alone in its binary.
+#[cfg(feature = "test-hooks")]
+static REGISTRATION_FAULTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Makes the next `n` registrations of a starting serve thread fail, for a test.
+#[cfg(feature = "test-hooks")]
+pub fn fail_registrations(n: usize) {
+    REGISTRATION_FAULTS.store(n, Ordering::SeqCst);
+}
+
+/// Whether a registration of a starting serve thread fails by a test's fault.
+fn registration_fault() -> bool {
+    #[cfg(feature = "test-hooks")]
+    {
+        REGISTRATION_FAULTS
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .is_ok()
+    }
+    #[cfg(not(feature = "test-hooks"))]
+    {
+        false
+    }
 }
 
 impl Server {
@@ -293,6 +354,7 @@ impl Server {
                 }))
                 .map_err(|e| e.to_string())?;
         }
+        let started = Arc::new(Started::default());
         let mut handles = Vec::new();
         for (index, (inbox, wake_rx)) in inboxes.into_iter().zip(pairs).enumerate() {
             let poller = Arc::new(Poller::new().map_err(|e| failed("a poller", e))?);
@@ -307,6 +369,10 @@ impl Server {
                 poller: Arc::clone(&poller),
                 armed: armed.clone(),
                 backoff: Vec::new(),
+                report: Report {
+                    started: Arc::clone(&started),
+                    done: false,
+                },
             };
             let handle = std::thread::Builder::new()
                 .name(format!("una-serve-{index}"))
@@ -314,12 +380,34 @@ impl Server {
                 .map_err(|e| failed("a thread", e))?;
             handles.push(handle);
         }
-        Ok(Server {
+        // SC6: the run's first job comes after every serve thread is in place, so no thread is
+        // still starting while the program runs. Each reports once, at the latest as it ends.
+        {
+            let mut count = lock(&started.count);
+            while *count < threads {
+                count = started
+                    .all
+                    .wait(count)
+                    .unwrap_or_else(PoisonError::into_inner);
+            }
+        }
+        let server = Server {
             shared,
             acceptor,
             clock,
             handles: Mutex::new(handles),
-        })
+            started,
+        };
+        if server.started.failed.load(Ordering::SeqCst) {
+            // A thread that could not register its wake pair could never be woken: the run
+            // does not start, and the threads that did start end at once.
+            server.hard_stop();
+            let _ = server.join_within(Duration::from_secs(1));
+            return Err(
+                "cannot start the serve threads: a serve thread could not register its wake pair or the accept poller".to_owned(),
+            );
+        }
+        Ok(server)
     }
 
     /// What the serve threads share: the grants, the counters, the stop.
@@ -341,6 +429,12 @@ impl Server {
         for index in 0..self.acceptor.listeners.len() {
             self.acceptor.arm(index);
         }
+    }
+
+    /// How many serve threads were in place when [`Server::start`] returned, or ended first:
+    /// every one of them, which [`Server::start`] waits for (S4 design SC6).
+    pub fn threads_started(&self) -> usize {
+        *lock(&self.started.count)
     }
 
     /// Whether accepting began.
@@ -381,6 +475,30 @@ impl Server {
         self.shared.hard_stop();
     }
 
+    /// Nanoseconds of the engine's monotonic clock since the run began: the clock of a rate's
+    /// retry time ([`Next::Blocked`]).
+    pub fn now(&self) -> u64 {
+        self.clock.now()
+    }
+
+    /// Waits at most `bound` for the serve threads to end, as [`Server::join`] does; `true`
+    /// when every one ended. The threads still running are left to end later, or with the
+    /// process.
+    pub fn join_within(&self, bound: Duration) -> bool {
+        let end = std::time::Instant::now().checked_add(bound);
+        loop {
+            let finished = lock(&self.handles).iter().all(JoinHandle::is_finished);
+            if finished {
+                self.join();
+                return true;
+            }
+            if end.is_some_and(|end| std::time::Instant::now() >= end) {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
     /// Waits for the serve threads to end, which they do once the run is stopping and every
     /// connection is closed. Call [`Server::stop`] first.
     pub fn join(&self) {
@@ -403,6 +521,8 @@ struct Context {
     armed: Armed,
     /// Listeners to register again, and when, after an error of `accept`.
     backoff: Vec<(u64, usize)>,
+    /// Tells [`Server::start`] that this thread is in place.
+    report: Report,
 }
 
 impl Context {
@@ -448,10 +568,11 @@ impl Context {
 
     fn serve(&mut self, thread: &mut Thread) {
         let mut events = Events::with_capacity(EVENTS);
-        self.arm_wake();
         // The turn to accept starts with thread 0 and passes round (see `accept_ready`).
-        if self.index == 0 {
-            self.arm_accept();
+        let placed = self.arm_wake() && (self.index != 0 || self.arm_accept());
+        self.report.report(placed);
+        if !placed {
+            return;
         }
         loop {
             #[cfg(feature = "test-hooks")]
@@ -553,17 +674,19 @@ impl Context {
         Some(Duration::from_nanos(at.saturating_sub(now)))
     }
 
-    fn arm_wake(&self) {
+    /// Registers the wake pair again; whether that held.
+    fn arm_wake(&self) -> bool {
         let fd = self.wake_rx.as_fd();
         let _ = self.poller.delete(fd, Interest::Read);
-        let _ = self.poller.add(fd, Interest::Read, WAKE);
+        !registration_fault() && self.poller.add(fd, Interest::Read, WAKE).is_ok()
     }
 
-    fn arm_accept(&self) {
+    /// Takes the turn to accept and registers the accept poller; whether that held.
+    fn arm_accept(&self) -> bool {
         self.shared.set_turn(self.index);
         let fd = self.acceptor.poller.as_fd();
         let _ = self.poller.delete(fd, Interest::Read);
-        let _ = self.poller.add(fd, Interest::Read, ACCEPT);
+        !registration_fault() && self.poller.add(fd, Interest::Read, ACCEPT).is_ok()
     }
 
     /// Registers again the listeners whose backoff ended.

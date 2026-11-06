@@ -16,6 +16,7 @@
 #![allow(clippy::expect_used)]
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Instant;
 
@@ -24,6 +25,7 @@ use serde_json::{Value, json};
 use super::program::{Port, Waited};
 use super::run::Next;
 use super::sim::{Reads, Sim};
+use super::trace::TraceKey;
 
 const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
@@ -151,7 +153,12 @@ impl Scripted {
 }
 
 /// The scripted engine as the program's operations meet it, from any thread of the run.
-pub struct ScriptPort(Mutex<Scripted>);
+pub struct ScriptPort {
+    scripted: Mutex<Scripted>,
+    /// Whether the trace writes the server's values without their labels' redaction
+    /// ([`ScriptPort::reveal`]).
+    reveal: AtomicBool,
+}
 
 /// What a scripted run left: the wire, as the lines of `expected.jsonl`, and what was not at
 /// rest at its end, which a case requires to be nothing.
@@ -175,7 +182,7 @@ impl ScriptPort {
             .iter()
             .map(|g| g.listener.clone())
             .collect();
-        ScriptPort(Mutex::new(Scripted {
+        let scripted = Mutex::new(Scripted {
             sim,
             listeners,
             events: script.into(),
@@ -184,11 +191,22 @@ impl ScriptPort {
             stopped: false,
             stop,
             last: 0,
-        }))
+        });
+        ScriptPort {
+            scripted,
+            reveal: AtomicBool::new(false),
+        }
+    }
+
+    /// Asks the trace of the run to write the values of the events of the host's `HttpServer`
+    /// without the redaction of their labels, still in the reduced form of ADR 0123 rule 1, so
+    /// that a test compares the reduced form of both engines ([`Port::reveals_trace`]).
+    pub fn reveal(&self) {
+        self.reveal.store(true, Ordering::SeqCst);
     }
 
     fn scripted(&self) -> MutexGuard<'_, Scripted> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+        self.scripted.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Ends the run's engine once the program has ended: the events the program did not wait
@@ -351,5 +369,15 @@ impl Port for ScriptPort {
         let mut scripted = self.scripted();
         scripted.sim.shared.stop();
         scripted.epoch += 1;
+    }
+
+    /// All zeros under a script (ADR 0123 rule 1), so that two runs of one script, in either
+    /// engine, give the same trace.
+    fn trace_key(&self) -> TraceKey {
+        TraceKey::ZERO
+    }
+
+    fn reveals_trace(&self) -> bool {
+        self.reveal.load(Ordering::SeqCst)
     }
 }

@@ -9,8 +9,17 @@
 //! The backend is delivered in slices (#26): a runnable program that `una build` cannot compile
 //! yet must be listed in `tests/native/unsupported.txt`, and a listed program that compiles fails
 //! the test until it leaves the list, so the list stays exact.
+//!
+//! Each program is a test of its own (#1652), `interpreter::<name>` and `linkers::<name>`,
+//! generated from the list that `una-test-cases` builds from the corpus;
+//! [`the_generated_programs_are_the_runnable_programs_on_disk`] holds that list to the one on
+//! disk, and the tests of the lists' exactness hold each list to the programs.
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
 
+#[path = "common/case_lists.rs"]
+mod case_lists;
+#[path = "common/cpu.rs"]
+mod cpu;
 #[path = "common/hermetic.rs"]
 mod hermetic;
 #[path = "common/native_build.rs"]
@@ -38,108 +47,6 @@ fn copy(source: &Path, scratch: &Path) -> PathBuf {
         .unwrap();
     assert!(status.success());
     target
-}
-
-/// A runnable program: where it is in the repository, and the grants it runs with.
-struct Program {
-    path: PathBuf,
-    grants: Vec<String>,
-}
-
-/// The programs of the suites that may run.
-fn candidates() -> Vec<Program> {
-    let root = root();
-    let mut programs = Vec::new();
-    for entry in sorted(&root.join("examples")) {
-        programs.push(Program {
-            path: entry,
-            grants: Vec::new(),
-        });
-    }
-    for case in files(&root.join("tests/conformance"), "una") {
-        let text = std::fs::read_to_string(&case).unwrap_or_default();
-        let directives: Vec<&str> = text.lines().take_while(|l| l.starts_with("-- ")).collect();
-        if !directives
-            .iter()
-            .any(|d| d.starts_with("-- expect: run-output") || d.starts_with("-- grant: "))
-        {
-            continue;
-        }
-        let grants = directives
-            .iter()
-            .filter_map(|d| d.strip_prefix("-- grant: "))
-            .map(str::to_owned)
-            .collect();
-        // A case of several modules is the directory above its `src`, described by `una.toml`
-        // or, from edition 0.4, by `ita.una` (ADR 0122).
-        let path = match case
-            .ancestors()
-            .find(|a| a.join("una.toml").is_file() || a.join("ita.una").is_file())
-        {
-            Some(package) if package.starts_with(root.join("tests/conformance")) => {
-                package.to_path_buf()
-            }
-            _ => case,
-        };
-        programs.push(Program { path, grants });
-    }
-    for review in sorted(&root.join("docs/reviews")) {
-        let mut dirs = vec![review.join("adversarial")];
-        dirs.extend(sorted(&review).into_iter().map(|d| d.join("adversarial")));
-        for dir in dirs.into_iter().filter(|d| d.is_dir()) {
-            for program in sorted(&dir) {
-                let text: String = files(&program, "una")
-                    .iter()
-                    .chain(std::iter::once(&program))
-                    .filter_map(|f| std::fs::read_to_string(f).ok())
-                    .collect();
-                if !text.contains("pub main(") {
-                    continue;
-                }
-                // A single file has no `[run] grants`: it runs with the grants that need no
-                // path.
-                let grants = if program.is_file() {
-                    vec!["console".to_owned(), "clock".to_owned(), "env".to_owned()]
-                } else {
-                    Vec::new()
-                };
-                programs.push(Program {
-                    path: program,
-                    grants,
-                });
-            }
-        }
-    }
-    programs.sort_by(|a, b| a.path.cmp(&b.path));
-    programs.dedup_by(|a, b| a.path == b.path);
-    programs
-}
-
-fn sorted(dir: &Path) -> Vec<PathBuf> {
-    let mut entries: Vec<PathBuf> = std::fs::read_dir(dir)
-        .map(|r| r.filter_map(|e| e.ok().map(|e| e.path())).collect())
-        .unwrap_or_default();
-    entries.retain(|e| {
-        !e.file_name()
-            .is_some_and(|n| n.to_string_lossy().starts_with('.'))
-    });
-    entries.sort();
-    entries
-}
-
-fn files(dir: &Path, extension: &str) -> Vec<PathBuf> {
-    if dir.is_file() {
-        return Vec::new();
-    }
-    let mut out = Vec::new();
-    for entry in sorted(dir) {
-        if entry.is_dir() {
-            out.extend(files(&entry, extension));
-        } else if entry.extension().is_some_and(|e| e == extension) {
-            out.push(entry);
-        }
-    }
-    out
 }
 
 /// The runnable programs whose `una run` is rejected, by repository path with a reason
@@ -175,77 +82,88 @@ fn unsupported() -> BTreeSet<String> {
         .collect()
 }
 
-#[test]
-fn every_runnable_program_runs_natively_as_in_the_interpreter() {
+/// The programs of the generated list, as [`case_lists::native_programs`] gives them.
+fn generated() -> Vec<case_lists::Program> {
+    macro_rules! programs {
+        ($($name:ident => $path:literal [$($grant:literal),*],)*) => {
+            vec![$(case_lists::Program {
+                path: $path.to_owned(),
+                grants: vec![$($grant.to_owned()),*],
+            }),*]
+        };
+    }
+    una_test_cases::native_programs!(programs)
+}
+
+/// A fresh scratch directory of one program's test, `kind` naming the differential and `test`
+/// the generated test, unique among the programs.
+fn scratch(kind: &str, test: &str) -> PathBuf {
+    let scratch = std::env::temp_dir().join(format!("una-{kind}-{}-{test}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    scratch
+}
+
+/// The copy of the program at `name` under `dir`: the directory it runs in and the target it
+/// names, `.` for a package.
+fn program_copy(name: &str, dir: &Path) -> (PathBuf, String) {
+    std::fs::create_dir_all(dir).unwrap();
+    let copied = copy(&root().join(name), dir);
+    if copied.is_file() {
+        (
+            dir.to_path_buf(),
+            copied.file_name().unwrap().to_string_lossy().into_owned(),
+        )
+    } else {
+        (copied.clone(), ".".to_owned())
+    }
+}
+
+/// One runnable program runs natively as in the interpreter: `test` is its generated test's
+/// name, `name` its path relative to the repository root, and `grants` the grants it runs with.
+fn runs_natively_as_in_the_interpreter(test: &str, name: &str, grants: &[&str]) {
     runtime();
-    let root = root();
     let listed = unsupported();
     let rejected_list = rejected();
-    let mut seen_rejected: BTreeSet<String> = BTreeSet::new();
-    let candidate_names: BTreeSet<String> = candidates()
-        .iter()
-        .map(|program| {
-            program
-                .path
-                .strip_prefix(&root)
-                .unwrap()
-                .display()
-                .to_string()
-        })
-        .collect();
-    let scratch = std::env::temp_dir().join(format!("una-native-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&scratch);
+    let scratch = scratch("native", test);
     // A copied single file keeps edition 0.1 whatever lies above the temporary directory
     // (#1560).
     hermetic::seal(&scratch);
     let mut failures = Vec::new();
-    let mut compiled = Vec::new();
-    let mut not_compiled = Vec::new();
-    for (index, program) in candidates().into_iter().enumerate() {
-        let name = program
-            .path
-            .strip_prefix(&root)
-            .unwrap()
-            .display()
-            .to_string();
-        let dir = scratch.join(index.to_string());
-        std::fs::create_dir_all(&dir).unwrap();
-        let copied = copy(&program.path, &dir);
-        let (work, target) = if copied.is_file() {
-            (
-                dir.clone(),
-                copied.file_name().unwrap().to_string_lossy().into_owned(),
-            )
-        } else {
-            (copied.clone(), ".".to_owned())
-        };
-        let mut run_args = vec!["--json", "run", target.as_str()];
-        for grant in &program.grants {
-            run_args.push("--grant");
-            run_args.push(grant);
-        }
-        let run = una(&work, &run_args);
-        // A case that `una run` rejects, or whose document does not parse, is compared with
-        // nothing, so it is a failure unless tests/native/rejected.txt lists it with a reason
-        // (#1045); a listed case that runs must leave the list.
-        let document = serde_json::from_slice::<Value>(&run.stdout).ok();
-        let is_rejected = document
-            .as_ref()
-            .is_none_or(|document| document["status"] == "rejected");
+    let mut compiled = false;
+    let dir = scratch.join("0");
+    let (work, target) = program_copy(name, &dir);
+    let mut run_args = vec!["--json", "run", target.as_str()];
+    for grant in grants {
+        run_args.push("--grant");
+        run_args.push(grant);
+    }
+    let run = una(&work, &run_args);
+    // A case that `una run` rejects, or whose document does not parse, is compared with
+    // nothing, so it is a failure unless tests/native/rejected.txt lists it with a reason
+    // (#1045); a listed case that runs must leave the list.
+    let document = serde_json::from_slice::<Value>(&run.stdout).ok();
+    let is_rejected = document
+        .as_ref()
+        .is_none_or(|document| document["status"] == "rejected");
+    'compare: {
         if is_rejected {
-            if rejected_list.contains_key(&name) {
-                seen_rejected.insert(name.clone());
-            } else {
+            if !rejected_list.contains_key(name) {
                 failures.push(format!(
                     "{name}: una run rejected it, so nothing is compared, and it is not listed in tests/native/rejected.txt: {}",
                     String::from_utf8_lossy(&run.stderr).trim()
                 ));
             }
-            continue;
+            // A rejected program is neither compiled nor not compiled.
+            if listed.contains(name) {
+                failures.push(format!(
+                    "{name}: listed in tests/native/unsupported.txt, but not a runnable program"
+                ));
+            }
+            break 'compare;
         }
         // INVARIANT: a document that is not rejected parsed.
         let document = document.unwrap_or(Value::Null);
-        if let Some(reason) = rejected_list.get(&name) {
+        if let Some(reason) = rejected_list.get(name) {
             failures.push(format!(
                 "{name}: runs now; remove it from tests/native/rejected.txt (listed as: {reason})"
             ));
@@ -264,8 +182,7 @@ fn every_runnable_program_runs_natively_as_in_the_interpreter() {
         let stderr = String::from_utf8_lossy(&built.stderr);
         if !built.status.success() {
             if stderr.contains("the native backend does not compile") {
-                not_compiled.push(name.clone());
-                if !listed.contains(&name) {
+                if !listed.contains(name) {
                     failures.push(format!(
                         "{name}: runnable but not compiled, and not listed in tests/native/unsupported.txt: {}",
                         stderr.trim()
@@ -273,11 +190,17 @@ fn every_runnable_program_runs_natively_as_in_the_interpreter() {
                 }
             } else {
                 failures.push(format!("{name}: una build failed: {}", stderr.trim()));
+                // A program whose build fails otherwise is neither compiled nor not compiled.
+                if listed.contains(name) {
+                    failures.push(format!(
+                        "{name}: listed in tests/native/unsupported.txt, but not a runnable program"
+                    ));
+                }
             }
-            continue;
+            break 'compare;
         }
-        compiled.push(name.clone());
-        if listed.contains(&name) {
+        compiled = true;
+        if listed.contains(name) {
             failures.push(format!(
                 "{name}: compiles now; remove it from tests/native/unsupported.txt"
             ));
@@ -285,7 +208,7 @@ fn every_runnable_program_runs_natively_as_in_the_interpreter() {
         let trace = dir.join("trace.json");
         let mut native = Command::new(&exe);
         native.current_dir(&work).arg("--trace").arg(&trace);
-        for grant in &program.grants {
+        for grant in grants {
             native.arg("--grant").arg(grant);
         }
         let native = native.output().unwrap();
@@ -313,7 +236,17 @@ fn every_runnable_program_runs_natively_as_in_the_interpreter() {
                     .into_iter()
                     .map(|difference| format!("{name}: {difference}")),
             );
-            continue;
+            // Under `--virtual-time` native code follows the interpreter's schedule, so a run
+            // with started tasks MUST give the same output, exit status and whole trace in both
+            // engines (`spec/27 §8` rule 3), installation ids included (#1542).
+            if has_started(&document["trace"]) || has_started(&native_trace) {
+                failures.extend(
+                    virtual_time_differences(&work, &target, &exe, grants, &dir)
+                        .into_iter()
+                        .map(|difference| format!("{name}: under --virtual-time, {difference}")),
+                );
+            }
+            break 'compare;
         }
         if String::from_utf8_lossy(&native.stdout) != expected_stdout {
             failures.push(format!(
@@ -328,122 +261,91 @@ fn every_runnable_program_runs_natively_as_in_the_interpreter() {
             ));
         }
     }
-    for name in &listed {
-        if !compiled.contains(name) && !not_compiled.contains(name) {
-            failures.push(format!(
-                "{name}: listed in tests/native/unsupported.txt, but not a runnable program"
-            ));
-        }
-    }
-    for name in rejected_list.keys() {
-        if !seen_rejected.contains(name) && !candidate_names.contains(name) {
-            failures.push(format!(
-                "{name}: listed in tests/native/rejected.txt, but not a runnable program"
-            ));
-        }
-    }
     let _ = std::fs::remove_dir_all(&scratch);
-    assert!(
-        compiled.iter().any(|name| name == "examples/hello"),
-        "examples/hello must compile: {failures:#?}"
-    );
+    if name == "examples/hello" {
+        assert!(compiled, "examples/hello must compile: {failures:#?}");
+    }
     assert!(failures.is_empty(), "{failures:#?}");
 }
 
-/// Whether a trace has events of tasks (`spec/19 §7` rule 1).
-/// The internal linker against the system `cc` (ADR 0124 rule 33, "Per program"): every
-/// runnable program that compiles is built by both, from the same `una`, and the two executables
-/// run with the same grants give the same output, failure, exit status and trace. A program that
-/// starts tasks is compared by its exit status alone (see below).
+/// The internal linker against the system `cc` (ADR 0124 rule 33, "Per program"): a runnable
+/// program that compiles is built by both, from the same `una`, and the two executables run
+/// with the same grants give the same output, failure, exit status and trace. A program that
+/// starts tasks is compared by its exit status alone (see below). A program that neither
+/// builds must be one that `tests/native/unsupported.txt` or `tests/native/rejected.txt`
+/// lists, which [`runs_natively_as_in_the_interpreter`] holds exact: so a failure of both
+/// linkers on a program that compiles never passes unseen, as the count of compared programs
+/// guarded before #1652 ([`the_linkers_compare_more_than_a_hundred_programs`]).
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-#[test]
-fn every_runnable_program_runs_alike_linked_by_una_link_and_by_cc() {
+fn runs_alike_linked_by_una_link_and_by_cc(test: &str, name: &str, grants: &[&str]) {
     runtime();
-    let root = root();
-    let scratch = std::env::temp_dir().join(format!("una-linkers-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&scratch);
+    let scratch = scratch("linkers", test);
     // A copied single file keeps edition 0.1 whatever lies above the temporary directory
     // (#1560).
     hermetic::seal(&scratch);
     let mut failures = Vec::new();
-    let mut compared = 0usize;
-    for (index, program) in candidates().into_iter().enumerate() {
-        let name = program
-            .path
-            .strip_prefix(&root)
-            .unwrap()
-            .display()
-            .to_string();
-        let dir = scratch.join(index.to_string());
-        std::fs::create_dir_all(&dir).unwrap();
-        let copied = copy(&program.path, &dir);
-        let (work, target) = if copied.is_file() {
-            (
-                dir.clone(),
-                copied.file_name().unwrap().to_string_lossy().into_owned(),
-            )
-        } else {
-            (copied.clone(), ".".to_owned())
-        };
-        let mut outcomes = Vec::new();
-        for linker in ["cc", "internal"] {
-            let exe = dir.join(format!("exe-{linker}"));
-            let built = Command::new(env!("CARGO_BIN_EXE_una"))
-                .env("HOME", env!("CARGO_TARGET_TMPDIR"))
-                .env_remove("UNA_PROOF_KEY")
-                .env("NO_COLOR", "1")
-                .env("UNA_LINKER", linker)
-                .args(["build", target.as_str(), "--out", exe.to_str().unwrap()])
-                .current_dir(&work)
-                .output()
-                .unwrap();
-            if !built.status.success() {
-                outcomes.push(None);
-                continue;
-            }
-            let trace = dir.join(format!("trace-{linker}.json"));
-            let mut run = Command::new(&exe);
-            run.current_dir(&work).arg("--trace").arg(&trace);
-            for grant in &program.grants {
-                run.arg("--grant").arg(grant);
-            }
-            let output = run.output().unwrap();
-            let trace: Value = std::fs::read(&trace)
-                .ok()
-                .and_then(|t| serde_json::from_slice(&t).ok())
-                .unwrap_or(Value::Null);
-            outcomes.push(Some((output, trace)));
+    let dir = scratch.join("0");
+    let (work, target) = program_copy(name, &dir);
+    let mut outcomes = Vec::new();
+    for linker in ["cc", "internal"] {
+        let exe = dir.join(format!("exe-{linker}"));
+        let built = Command::new(env!("CARGO_BIN_EXE_una"))
+            .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+            .env_remove("UNA_PROOF_KEY")
+            .env("NO_COLOR", "1")
+            .env("UNA_LINKER", linker)
+            .args(["build", target.as_str(), "--out", exe.to_str().unwrap()])
+            .current_dir(&work)
+            .output()
+            .unwrap();
+        if !built.status.success() {
+            outcomes.push(None);
+            continue;
         }
-        match (&outcomes[0], &outcomes[1]) {
-            (None, None) => continue,
-            (Some(_), None) => {
+        let trace = dir.join(format!("trace-{linker}.json"));
+        let mut run = Command::new(&exe);
+        run.current_dir(&work).arg("--trace").arg(&trace);
+        for grant in grants {
+            run.arg("--grant").arg(grant);
+        }
+        let output = run.output().unwrap();
+        let trace: Value = std::fs::read(&trace)
+            .ok()
+            .and_then(|t| serde_json::from_slice(&t).ok())
+            .unwrap_or(Value::Null);
+        outcomes.push(Some((output, trace)));
+    }
+    match (&outcomes[0], &outcomes[1]) {
+        (None, None) => {
+            if !unsupported().contains(name) && !rejected().contains_key(name) {
                 failures.push(format!(
-                    "{name}: cc links it and the internal linker does not"
+                    "{name}: neither cc nor the internal linker links it, and neither tests/native/unsupported.txt nor tests/native/rejected.txt lists it"
                 ));
-                continue;
             }
-            (None, Some(_)) => {
+        }
+        (Some(_), None) => {
+            failures.push(format!(
+                "{name}: cc links it and the internal linker does not"
+            ));
+        }
+        (None, Some(_)) => {
+            failures.push(format!(
+                "{name}: the internal linker links it and cc does not"
+            ));
+        }
+        (Some((cc, cc_trace)), Some((internal, internal_trace))) => {
+            if cc.status.code() != internal.status.code() {
                 failures.push(format!(
-                    "{name}: the internal linker links it and cc does not"
+                    "{name}: exit status differs: cc {:?}, internal {:?}",
+                    cc.status.code(),
+                    internal.status.code()
                 ));
-                continue;
             }
-            (Some((cc, cc_trace)), Some((internal, internal_trace))) => {
-                compared += 1;
-                if cc.status.code() != internal.status.code() {
-                    failures.push(format!(
-                        "{name}: exit status differs: cc {:?}, internal {:?}",
-                        cc.status.code(),
-                        internal.status.code()
-                    ));
-                }
-                // Two native runs that start tasks may interleave and cancel differently by
-                // design (`spec/19 §8`): each is held to the interpreter's run by
-                // `every_runnable_program_runs_natively_as_in_the_interpreter`, and only their
-                // exit status is compared here.
-                if starts_tasks(cc_trace) || starts_tasks(internal_trace) {
-                    continue;
-                }
+            // Two native runs that start tasks may interleave and cancel differently by
+            // design (`spec/19 §8`): each is held to the interpreter's run by
+            // `runs_natively_as_in_the_interpreter`, and only their exit status is compared
+            // here.
+            if !(starts_tasks(cc_trace) || starts_tasks(internal_trace)) {
                 if cc.stdout != internal.stdout {
                     failures.push(format!(
                         "{name}: stdout differs: cc {:?}, internal {:?}",
@@ -467,11 +369,92 @@ fn every_runnable_program_runs_alike_linked_by_una_link_and_by_cc() {
         }
     }
     let _ = std::fs::remove_dir_all(&scratch);
-    assert!(
-        compared > 100,
-        "only {compared} programs were compared: {failures:#?}"
-    );
     assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// One test per runnable program in each differential: `interpreter::<name>` and, on
+/// aarch64-apple-darwin, `linkers::<name>`.
+macro_rules! program_tests {
+    ($($name:ident => $path:literal [$($grant:literal),*],)*) => {
+        /// Every runnable program runs natively as in the interpreter.
+        mod interpreter {
+            $(
+                #[test]
+                fn $name() {
+                    super::runs_natively_as_in_the_interpreter(stringify!($name), $path, &[$($grant),*]);
+                }
+            )*
+        }
+        /// Every runnable program runs alike linked by una-link and by cc.
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        mod linkers {
+            $(
+                #[test]
+                fn $name() {
+                    super::runs_alike_linked_by_una_link_and_by_cc(stringify!($name), $path, &[$($grant),*]);
+                }
+            )*
+        }
+    };
+}
+
+una_test_cases::native_programs!(program_tests);
+
+/// The generated tests are the runnable programs on disk, path for path and grant for grant: a
+/// program added, removed or changed without a rebuild of `una-test-cases` fails here, never
+/// goes untested.
+#[test]
+fn the_generated_programs_are_the_runnable_programs_on_disk() {
+    assert!(root().join("examples").is_dir(), "examples is missing");
+    let on_disk = case_lists::native_programs(&root());
+    assert!(
+        on_disk
+            .iter()
+            .any(|program| program.path == "examples/hello"),
+        "no runnable program found on disk"
+    );
+    pretty_assertions::assert_eq!(generated(), on_disk);
+}
+
+/// Every program that `tests/native/unsupported.txt` or `tests/native/rejected.txt` lists is a
+/// runnable program; whether each listed one is still not compiled or still rejected is its own
+/// test's.
+#[test]
+fn the_native_lists_name_runnable_programs_only() {
+    let names: BTreeSet<String> = generated()
+        .into_iter()
+        .map(|program| program.path)
+        .collect();
+    let mut failures = Vec::new();
+    for name in unsupported() {
+        if !names.contains(&name) {
+            failures.push(format!(
+                "{name}: listed in tests/native/unsupported.txt, but not a runnable program"
+            ));
+        }
+    }
+    for name in rejected().keys() {
+        if !names.contains(name) {
+            failures.push(format!(
+                "{name}: listed in tests/native/rejected.txt, but not a runnable program"
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// More than a hundred programs are expected to build and so are compared by the two linkers:
+/// each such program's test fails when neither linker builds it.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+fn the_linkers_compare_more_than_a_hundred_programs() {
+    let listed = unsupported();
+    let rejected = rejected();
+    let compared = generated()
+        .into_iter()
+        .filter(|program| !listed.contains(&program.path) && !rejected.contains_key(&program.path))
+        .count();
+    assert!(compared > 100, "only {compared} programs are compared");
 }
 
 /// The internal linker through `una build` (ADR 0124 rules 27 and 29, step 3): the same package
@@ -547,10 +530,78 @@ fn una_build_links_by_itself_deterministically_and_fails_closed() {
     let _ = std::fs::remove_dir_all(&scratch);
 }
 
+/// Whether a trace has events of tasks (`spec/19 §7` rule 1).
 fn starts_tasks(trace: &Value) -> bool {
     trace
         .as_array()
         .is_some_and(|events| events.iter().any(|event| event.get("task").is_some()))
+}
+
+/// How the runs of `target` in `work` under `--virtual-time` differ, the interpreter's and the
+/// executable `exe`'s, with `grants`: their exit status, output and whole traces MUST be equal
+/// (`spec/27 §8` rule 3). The native trace is written under `dir`.
+fn virtual_time_differences(
+    work: &Path,
+    target: &str,
+    exe: &Path,
+    grants: &[&str],
+    dir: &Path,
+) -> Vec<String> {
+    let mut differences = Vec::new();
+    let mut run_args = vec!["--json", "run", "--virtual-time", target];
+    for grant in grants {
+        run_args.push("--grant");
+        run_args.push(grant);
+    }
+    let run = una(work, &run_args);
+    let Ok(document) = serde_json::from_slice::<Value>(&run.stdout) else {
+        differences.push(format!(
+            "una run gave no document: {}",
+            String::from_utf8_lossy(&run.stderr).trim()
+        ));
+        return differences;
+    };
+    let trace = dir.join("trace-virtual.json");
+    let mut native = Command::new(exe);
+    native
+        .current_dir(work)
+        .arg("--virtual-time")
+        .arg("--trace")
+        .arg(&trace);
+    for grant in grants {
+        native.arg("--grant").arg(grant);
+    }
+    let native = native.output().unwrap();
+    if native.status.code() != run.status.code() {
+        differences.push(format!(
+            "exit status differs: interpreter {:?}, native {:?}",
+            run.status.code(),
+            native.status.code()
+        ));
+    }
+    let expected_stdout: String = document["output"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|line| format!("{}\n", line.as_str().unwrap_or_default()))
+        .collect();
+    if String::from_utf8_lossy(&native.stdout) != expected_stdout {
+        differences.push(format!(
+            "stdout differs: interpreter {expected_stdout:?}, native {:?}",
+            String::from_utf8_lossy(&native.stdout)
+        ));
+    }
+    let native_trace: Value = std::fs::read(&trace)
+        .ok()
+        .and_then(|t| serde_json::from_slice(&t).ok())
+        .unwrap_or(Value::Null);
+    if native_trace != document["trace"] {
+        differences.push(format!(
+            "trace differs: interpreter {}, native {native_trace}",
+            document["trace"]
+        ));
+    }
+    differences
 }
 
 /// How a native run that starts tasks departs from the equivalence of `spec/19 §8` rule 4,
@@ -600,9 +651,12 @@ fn task_differences(stdout: &str, interpreted: &Value, native: &Value) -> Vec<St
         }
     }
     // Started tasks write their events in the order of real time (`spec/27 §8`): each task's
-    // events are compared in their own order, and the tasks are the same.
+    // events are compared in their own order, and the tasks are the same. Installations are
+    // numbered run-wide in the order they happen, so their ids are compared up to one
+    // renumbering of the run (#1542).
     if has_started(interpreted) || has_started(native) {
-        let (interpreted, native) = (by_task(interpreted), by_task(native));
+        let interpreted = by_task(interpreted);
+        let native = renumbered(&interpreted, by_task(native));
         if interpreted != native {
             differences.push(format!(
                 "the events of each task differ: interpreter {interpreted:?}, native {native:?}"
@@ -669,6 +723,90 @@ fn by_task(trace: &Value) -> std::collections::BTreeMap<String, Vec<Value>> {
         tasks.entry(task).or_default().push(event);
     }
     tasks
+}
+
+/// The numbered installation id `with:<handler>#<n>` of an event, if it has one: not a host
+/// instance, a `given` one, nor a quiet `with:<handler>#q`.
+fn numbered_instance(event: &Value) -> Option<&str> {
+    let id = event["instance"].as_str()?;
+    let (handler, number) = id.strip_prefix("with:")?.rsplit_once('#')?;
+    (!handler.is_empty() && !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()))
+        .then_some(id)
+}
+
+/// `native`, the events of a run by task, with its numbered installation ids renamed to the
+/// interpreter's, when one renaming maps every task's events onto `interpreted`'s at the same
+/// places; `native` unchanged otherwise, which the comparison then reports. Started tasks
+/// install in the order of real time, which numbers the installations of the run (`spec/27
+/// §8` rules 1 and 4, #1542), so only this renumbering is set aside, and only one that:
+/// - is one to one: two native ids never map onto one interpreter id, nor one onto two;
+/// - keeps each handler, whose installations are numbered apart;
+/// - keeps, within each task, the order of each handler's numbers, the order of the task's
+///   installations;
+/// - leaves quiet (`#q`), host and `given` ids as they are.
+///
+/// It does not require the same set of numbers: under the real clock a task that installs an
+/// instance which serves no operation, so has no event, can take a number before another
+/// task's, which then shows a number the interpreter's run does not (review of #1669, M2).
+/// Numbers skipped or shifted, as a count of quiet installations would shift them (S-41), are
+/// caught by the whole traces compared under `--virtual-time` (`spec/27 §8` rule 3) and by the
+/// `s41_*` tests. O(e log e) in the events.
+fn renumbered(
+    interpreted: &std::collections::BTreeMap<String, Vec<Value>>,
+    mut native: std::collections::BTreeMap<String, Vec<Value>>,
+) -> std::collections::BTreeMap<String, Vec<Value>> {
+    use std::collections::BTreeMap;
+    let parts = |id: &str| -> (String, u64) {
+        let (handler, number) = id.rsplit_once('#').unwrap_or((id, "0"));
+        (handler.to_owned(), number.parse().unwrap_or(0))
+    };
+    let mut to_interpreted: BTreeMap<String, String> = BTreeMap::new();
+    let mut to_native: BTreeMap<String, String> = BTreeMap::new();
+    for (task, events) in &native {
+        let Some(theirs) = interpreted.get(task) else {
+            continue;
+        };
+        // The pairs of numbers of this task, by handler, native to interpreted: each handler
+        // numbers its own installations (`with:<handler>#<n>`).
+        let mut pairs: BTreeMap<(String, u64), u64> = BTreeMap::new();
+        for (ours, theirs) in events.iter().zip(theirs) {
+            let (Some(ours), Some(theirs)) = (numbered_instance(ours), numbered_instance(theirs))
+            else {
+                continue;
+            };
+            let ((our_handler, our_number), (their_handler, their_number)) =
+                (parts(ours), parts(theirs));
+            if our_handler != their_handler {
+                return native;
+            }
+            let forward = to_interpreted
+                .entry(ours.to_owned())
+                .or_insert_with(|| theirs.to_owned());
+            let backward = to_native
+                .entry(theirs.to_owned())
+                .or_insert_with(|| ours.to_owned());
+            if forward != theirs || backward != ours {
+                return native;
+            }
+            pairs.insert((our_handler, our_number), their_number);
+        }
+        // Sorted by handler and native number, the interpreter's numbers of each handler MUST
+        // increase too.
+        let pairs: Vec<(&(String, u64), &u64)> = pairs.iter().collect();
+        if pairs
+            .windows(2)
+            .any(|w| w[0].0.0 == w[1].0.0 && w[0].1 >= w[1].1)
+        {
+            return native;
+        }
+    }
+    for event in native.values_mut().flatten() {
+        let renamed = numbered_instance(event).and_then(|id| to_interpreted.get(id).cloned());
+        if let Some(renamed) = renamed {
+            event["instance"] = Value::from(renamed);
+        }
+    }
+    native
 }
 
 /// Whether `part` is a subsequence of `whole`.
@@ -2278,7 +2416,7 @@ fn a_map_passed_by_edit_moves_into_the_callee() {
 }
 
 #[test]
-fn map_updates_are_in_place_and_scale_as_n_log_n() {
+fn map_updates_are_in_place_and_scale_as_n_log_n_in_cpu_time() {
     // `spec/21 §5` rule 2 and the performance rule: `set`, `has` and `remove` on a map nothing
     // else holds are O(log n) and in place; the one copy is the map that `kept` still sees.
     // The copy count is the primary check; the timing is the secondary one: ten times the keys
@@ -2307,12 +2445,9 @@ fn map_updates_are_in_place_and_scale_as_n_log_n() {
     // Times a run of the executable built for `n` keys.
     let measure = |n: usize| {
         let dir = &dirs[sizes.iter().position(|&s| s == n).unwrap()];
-        let (output, seconds) = timing::timed(|| {
-            Command::new(dir.join(format!("target/una/maps_{n}")))
-                .current_dir(dir)
-                .output()
-                .unwrap()
-        });
+        let (output, seconds) = cpu::cpu_output(
+            Command::new(dir.join(format!("target/una/maps_{n}"))).current_dir(dir),
+        );
         assert_eq!(output.status.code(), Some(0));
         assert_eq!(
             String::from_utf8_lossy(&output.stdout),
@@ -3575,7 +3710,7 @@ fn a_list_given_while_live_then_appended_through_calls_grows_in_linear_time() {
 }
 
 #[test]
-fn json_parses_and_writes_in_linear_time_natively() {
+fn json_parses_and_writes_in_linear_cpu_time_natively() {
     // ADR 0073 J6 (#238): natively, the debug runtime's count of copies is the same at every
     // size, so nothing is copied per item; the timing is a second check, wide in margin: each
     // tenfold step stays under 30x, against about 100x for quadratic work. A miss is measured
@@ -3607,12 +3742,10 @@ fn json_parses_and_writes_in_linear_time_natively() {
     // Times a run of the executable built for `steps` items, and checks its notes.
     let measure = |steps: usize| {
         let dir = &dirs[sizes.iter().position(|&s| s == steps).unwrap()];
-        let (output, seconds) = timing::timed(|| {
+        let (output, seconds) = cpu::cpu_output(
             Command::new(dir.join("target/una").join(format!("json-scaling-{steps}")))
-                .current_dir(dir)
-                .output()
-                .unwrap()
-        });
+                .current_dir(dir),
+        );
         assert_eq!(output.status.code(), Some(0), "{output:?}");
         assert!(
             String::from_utf8_lossy(&output.stdout).ends_with(" true\n"),
@@ -4392,6 +4525,109 @@ fn a_driven_module_without_its_shapes_or_a_bad_stop_count_is_a_usage_error() {
         assert_eq!(output.status.code(), Some(2), "{count}");
     }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A driven state of a function type, labeled higher at its result in `step` and `on_stop`
+/// than in the result of `init`.
+const RAISED_FUNCTION: &str = "module counter
+
+import std.drive (Tick)
+
+pub init() -> fn(Int) -> Int = double
+
+pub step(edit f: fn(Int) -> secret Int, input: Tick) -> Unit
+  uses @console: Console[print]
+=
+  @console.print(\"step\")
+
+pub on_stop(f: fn(Int) -> secret Int) -> Unit
+  uses @console: Console[print]
+=
+  @console.print(\"stopped\")
+
+double(x: Int) -> Int = x * 2
+";
+
+/// A driven state refined in `step`, `Pos`, where `init` returns a plain `Int`: nothing proves
+/// the hand-off satisfies the refinement, which the division in `step` relies on.
+const REFINED_STEP: &str = "module counter
+
+import std.drive (Tick)
+
+pub kind Pos = Int where it > 0
+
+pub init() -> Int = 0
+
+pub step(edit n: Pos, input: Tick) -> Unit
+  uses @console: Console[print]
+=
+  @console.print(\"q {100 / n}\")
+";
+
+/// The same refinement written as a range in each signature.
+const RANGED: &str = "module counter
+
+import std.drive (Tick)
+
+pub init() -> Int in 1..10 = 1
+
+pub step(edit n: Int in 1..10, input: Tick) -> Unit
+  uses @console: Console[print]
+=
+  @console.print(\"q {100 / n}\")
+";
+
+#[test]
+fn a_driven_state_is_one_type_with_labels_aside_and_no_refinement() {
+    // `spec/26 §2` rule 2, issue #1644: the labels of the state are the checker's, so a
+    // function-typed state labeled higher in `step` runs in both engines, as `una check`
+    // accepts it. A refinement in the state is U7008 in `una check`, on one side only or equal
+    // on both, so `una run` and `una build` stop at the check and write no executable; the
+    // run-time comparison of refinements behind it is tested directly in `runtime.rs`.
+    runtime();
+    let dir = ita_package("raisedfn", DRIVE, &[("src/counter.una", RAISED_FUNCTION)]);
+    let output = "step\nstep\nstopped\n";
+    let run = una(&dir, &["run", "--stop-after-iterations", "2"]);
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout), output);
+    let built = una(&dir, &["build"]);
+    assert_eq!(
+        built.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let native = Command::new(dir.join("target/una/raisedfn"))
+        .current_dir(&dir)
+        .args(["--stop-after-iterations", "2"])
+        .output()
+        .unwrap();
+    assert_eq!(native.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&native.stdout), output);
+    let _ = std::fs::remove_dir_all(&dir);
+    for (name, source) in [("refined", REFINED_STEP), ("ranged", RANGED)] {
+        let dir = ita_package(name, DRIVE, &[("src/counter.una", source)]);
+        let checked = una(&dir, &["check"]);
+        assert_eq!(checked.status.code(), Some(1), "{name}");
+        assert!(
+            String::from_utf8_lossy(&checked.stdout).contains("U7008")
+                || String::from_utf8_lossy(&checked.stderr).contains("U7008"),
+            "{name}: {}",
+            String::from_utf8_lossy(&checked.stderr)
+        );
+        for args in [&["run", "--stop-after-iterations", "1"][..], &["build"][..]] {
+            let output = una(&dir, args);
+            assert_eq!(output.status.code(), Some(1), "{name} {args:?}");
+            assert!(output.stdout.is_empty(), "{name} {args:?}");
+        }
+        assert!(!dir.join("target/una").join(name).exists(), "{name}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 /// The `run` section of a `for ever` program whose entry is `name`, granted the console.
@@ -7046,6 +7282,152 @@ fn s41_the_conformance_case_has_one_trace_for_every_secret() {
     // The two `put`s of quiet instances, under an effect floor and a decision on values of a
     // type parameter, append no event since #1544.
     assert_eq!(ids, ["with:keep#1", "with:keep#2"], "{trace}");
+}
+
+#[test]
+fn started_tasks_number_installations_run_wide_in_schedule_order() {
+    // #1542, `spec/27 §8` rules 1, 3 and 4: the conformance case `started_tasks_install_handlers`,
+    // two started tasks that each install two handlers. Under `--virtual-time` both engines
+    // follow the interpreter's schedule, each task to its end, so the whole traces are equal
+    // and the first task's instances are `#1` and `#2`. Under the real clock native code runs
+    // the tasks on two workers and numbers the installations in the order of real time across
+    // them: each task's events equal the interpreter's up to one renumbering of the run, whose
+    // ids are still `#1` to `#4`, each once.
+    let path =
+        root().join("tests/conformance/runtime/started_tasks_install_handlers/src/installs.una");
+    let source = std::fs::read_to_string(&path)
+        .unwrap()
+        .replace("module installs", "module leak");
+    let printed = serde_json::json!(["w 1", "w 2", "done"]);
+    let puts = |trace: &Value| -> Vec<(String, String, String)> {
+        trace
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|event| event["op"] == "put")
+            .map(|event| {
+                (
+                    event["task"].as_str().unwrap_or_default().to_owned(),
+                    event["args"]["x"].as_str().unwrap_or_default().to_owned(),
+                    event["instance"].as_str().unwrap_or_default().to_owned(),
+                )
+            })
+            .collect()
+    };
+    let (output, run, native) = secret_run("i1542vt", &source, 0, &["--virtual-time"]);
+    assert_eq!(output, printed);
+    assert_eq!(run, native, "under virtual time");
+    let expected: Vec<(String, String, String)> = [
+        ("s1.1", "1", "with:keep#1"),
+        ("s1.1", "11", "with:keep#2"),
+        ("s1.2", "2", "with:keep#3"),
+        ("s1.2", "12", "with:keep#4"),
+    ]
+    .iter()
+    .map(|(task, x, id)| ((*task).to_owned(), (*x).to_owned(), (*id).to_owned()))
+    .collect();
+    assert_eq!(puts(&run), expected, "{run}");
+    for round in 0..4 {
+        let (output, run, native_output, native) = secret_runs("i1542", &source, round, &[]);
+        assert_eq!(output, printed, "{round}");
+        assert_eq!(puts(&run), expected, "{round}: {run}");
+        let mut lines: Vec<String> = serde_json::from_value(native_output).unwrap();
+        lines.sort();
+        assert_eq!(lines, ["done", "w 1", "w 2"], "{round}");
+        let interpreted = by_task(&run);
+        assert_eq!(
+            renumbered(&interpreted, by_task(&native)),
+            interpreted,
+            "{round}: {run} {native}"
+        );
+        let mut ids: Vec<String> = puts(&native).into_iter().map(|(_, _, id)| id).collect();
+        ids.sort();
+        assert_eq!(
+            ids,
+            ["with:keep#1", "with:keep#2", "with:keep#3", "with:keep#4"],
+            "{round}: {native}"
+        );
+    }
+}
+
+#[test]
+fn renumbering_sets_aside_only_one_renaming_of_the_installations() {
+    // #1542, reviews of #1669 (M1, L1, M2): under the real clock the comparison task by task
+    // accepts native ids that a one-to-one renaming maps onto the interpreter's, keeping each
+    // handler and, within each task, the order of its numbers: never two ids onto one, a change
+    // of handler or of a quiet id, nor two numbers of one task swapped. Numbers that another
+    // task's unused installation shifted, which the real clock allows, are accepted; that is
+    // also what a counter stepping by 2 or counting quiet installations looks like here, which
+    // the whole traces under `--virtual-time` reject instead.
+    let put = |task: &str, id: &str| serde_json::json!({"task": task, "instance": id, "op": "put"});
+    let trace = |ids: &[(&str, &str)]| {
+        by_task(&Value::from(
+            ids.iter()
+                .map(|(task, id)| put(task, id))
+                .collect::<Vec<_>>(),
+        ))
+    };
+    let interpreted = trace(&[
+        ("s1.1", "with:k#1"),
+        ("s1.1", "with:k#2"),
+        ("s1.2", "with:k#3"),
+    ]);
+    let swapped = trace(&[
+        ("s1.1", "with:k#2"),
+        ("s1.1", "with:k#3"),
+        ("s1.2", "with:k#1"),
+    ]);
+    assert_eq!(renumbered(&interpreted, swapped), interpreted);
+    for shifted in [
+        trace(&[
+            ("s1.1", "with:k#2"),
+            ("s1.1", "with:k#4"),
+            ("s1.2", "with:k#6"),
+        ]),
+        trace(&[
+            ("s1.1", "with:k#3"),
+            ("s1.1", "with:k#4"),
+            ("s1.2", "with:k#5"),
+        ]),
+    ] {
+        assert_eq!(renumbered(&interpreted, shifted), interpreted);
+    }
+    // The reproducer of M2: `s1.2` installs an instance it never uses, and installs it first.
+    let user = trace(&[("s1.1", "with:keep#1")]);
+    assert_eq!(renumbered(&user, trace(&[("s1.1", "with:keep#2")])), user);
+    for wrong in [
+        trace(&[
+            ("s1.1", "with:k#2"),
+            ("s1.1", "with:k#1"),
+            ("s1.2", "with:k#3"),
+        ]),
+        trace(&[
+            ("s1.1", "with:k#1"),
+            ("s1.1", "with:k#1"),
+            ("s1.2", "with:k#3"),
+        ]),
+        trace(&[
+            ("s1.1", "with:k#1"),
+            ("s1.1", "with:k#2"),
+            ("s1.2", "with:k#2"),
+        ]),
+        trace(&[
+            ("s1.1", "with:j#1"),
+            ("s1.1", "with:k#2"),
+            ("s1.2", "with:k#3"),
+        ]),
+        trace(&[
+            ("s1.1", "with:k#q"),
+            ("s1.1", "with:k#2"),
+            ("s1.2", "with:k#3"),
+        ]),
+    ] {
+        assert_ne!(
+            renumbered(&interpreted, wrong.clone()),
+            interpreted,
+            "{wrong:?}"
+        );
+    }
 }
 
 /// #1544, `spec/26 §6` rule 4: the reproducer of the review of #1543 (`p_local.una`): a

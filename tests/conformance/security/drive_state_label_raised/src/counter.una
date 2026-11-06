@@ -1,0 +1,14 @@
+-- test: the state may be labeled higher in `step` and `on_stop` than in the result of `init`, since a flow to a higher label is allowed; here a `public` start is kept as `secret` (spec/26 §2)
+-- spec: spec/26 §2
+-- expect: ok
+module counter
+
+import std.drive (Tick)
+
+pub init() -> Int = 0
+
+pub step(edit count: secret Int, input: secret Tick) -> Unit
+=
+  count = count + 1
+
+pub on_stop(count: secret Int) -> Unit = unit

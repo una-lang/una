@@ -2711,9 +2711,37 @@ fn unrefined(declared: &Declared) -> bool {
     }
 }
 
+/// Whether `declared` carries no refinement at any depth, labels aside: at its top, in a type
+/// argument of a list, a map, a dense value, a collection or a kind, in a measured magnitude,
+/// and in a parameter, the result or the failure kind of a function type (`spec/26 §2` rule 2).
+/// A kind's own fields are not looked into: their refinements are invariants that each
+/// construction proves. O(size of the type).
+fn unrefined_deep(declared: &Declared) -> bool {
+    fn plain(ty: &Ty) -> bool {
+        match ty {
+            Ty::Refined(..) => false,
+            Ty::Labeled(_, inner) | Ty::List(inner) | Ty::Dense(_, inner) => plain(inner),
+            Ty::Measured(_, inner) => plain(inner),
+            Ty::Map(keys, values) => plain(keys) && plain(values),
+            Ty::Coll(_, args) | Ty::Kind(_, args) => args.iter().all(plain),
+            Ty::Fn(function) => {
+                function.refinements.params.iter().all(Vec::is_empty)
+                    && function.refinements.result.is_empty()
+                    && function.params.iter().all(plain)
+                    && plain(&function.result)
+                    && function.fails.as_ref().is_none_or(plain)
+            }
+            _ => true,
+        }
+    }
+    declared.refinements.is_empty() && plain(&declared.base)
+}
+
 /// U3029: `step` and `on_stop` of a `[drive]` module handle every failure they meet, since the
 /// host has no caller to give a failure to (ADR 0116 rule 2); `init` may fail. Reported at the
-/// `fails` clause. And U3027: none of them says `diverges` (rule 8).
+/// `fails` clause. U3027: none of them says `diverges` (rule 8). And U7008 at the section's
+/// `module`: none of them declares `requires` or a refined parameter or result type, a
+/// precondition no call of the host establishes (`spec/26 §2` rule 2). O(clauses + params).
 pub(crate) fn drive_failures(env: &Env<'_>, settings: &Manifest, report: &mut Report<'_>) {
     let Some(drive) = &settings.drive else {
         return;
@@ -2757,6 +2785,16 @@ pub(crate) fn drive_failures(env: &Env<'_>, settings: &Manifest, report: &mut Re
         }
     }
     // ADR 0116 rule 8: none of the driven functions may say `diverges` (U3027).
+    // `spec/26 §2` rule 2: the shapes are exact, with no `requires` and no refinement (U7008).
+    let at = |span: Span| {
+        env.drive_driver.map_or(span, |driver| {
+            Span::new(
+                driver.file,
+                drive.module.range.start,
+                drive.module.range.end,
+            )
+        })
+    };
     for name in ["init", "step", "on_stop"] {
         let Some(Entity::Function(id)) = env
             .modules
@@ -2765,21 +2803,346 @@ pub(crate) fn drive_failures(env: &Env<'_>, settings: &Manifest, report: &mut Re
         else {
             continue;
         };
-        let Some(super::env::FnAst::Function(decl)) = env.functions.get(id).map(|f| f.ast) else {
+        let Some(def) = env.functions.get(id) else {
             continue;
         };
-        for clause in &decl.clauses {
-            if matches!(clause.kind, una_syntax::ast::ClauseKind::Diverges) {
-                report.error(
-                    Code::U3027,
-                    clause.span,
-                    format!(
-                        "`{name}` of the driven module `{}` says `diverges`, but the host's loop is the only one that runs forever: each call of `{name}` must end",
-                        drive.module.value
-                    ),
-                );
+        if let super::env::FnAst::Function(decl) = def.ast {
+            for clause in &decl.clauses {
+                match clause.kind {
+                    una_syntax::ast::ClauseKind::Diverges => {
+                        report.error(
+                            Code::U3027,
+                            clause.span,
+                            format!(
+                                "`{name}` of the driven module `{}` says `diverges`, but the host's loop is the only one that runs forever: each call of `{name}` must end",
+                                drive.module.value
+                            ),
+                        );
+                    }
+                    // The host calls `init` once, `step` for every tick and `on_stop` at the
+                    // stop, and no call of the host establishes a precondition, so a `requires`
+                    // would be a fact the verifier assumes and nothing proves.
+                    una_syntax::ast::ClauseKind::Requires(_) => {
+                        let mut diagnostic = report.make(
+                            Code::U7008,
+                            at(clause.span),
+                            format!(
+                                "the `drive` section's module `{}` declares `requires` on `{name}`, which no call of the host establishes, so nothing would prove it",
+                                drive.module.value
+                            ),
+                        );
+                        diagnostic
+                            .related
+                            .push(report.related(clause.span, "the `requires` clause"));
+                        diagnostic.repairs.push(Report::advice(format!(
+                            "remove the `requires` clause from `{name}` and check the condition in its body"
+                        )));
+                        report.push(diagnostic);
+                    }
+                    _ => {}
+                }
             }
         }
+        // A refinement on a type of `init`, `step` or `on_stop`, at any depth of it, written
+        // there or carried by a refined kind, is a precondition that no call of the host establishes, as a `requires`
+        // is: the host gives `step` each tick with no fact about it, and hands the state from
+        // one function to the next by its type `S` alone, whose refinements the usage check of
+        // the shapes does not compare. Labels stay allowed (IF7 labels `input`).
+        let positions = def
+            .params
+            .iter()
+            .map(|param| (&param.ty, param.span, "parameter"))
+            .chain([(&def.result, def.result_span, "result")]);
+        for (declared, span, what) in positions {
+            if unrefined_deep(declared) {
+                continue;
+            }
+            let mut diagnostic = report.make(
+                Code::U7008,
+                at(span),
+                format!(
+                    "the `drive` section's module `{}` declares the {what} of `{name}` with a refined type, or a type with a refinement inside it, but the host calls `{name}` with no fact it establishes and the shapes are exact, with no refinement",
+                    drive.module.value
+                ),
+            );
+            diagnostic
+                .related
+                .push(report.related(span, format!("the refined type of the {what}")));
+            diagnostic.repairs.push(Report::advice(format!(
+                "declare the {what} without a refinement, as in `pub init() -> S`, `pub step(edit state: S, input: Tick) -> Unit` and `pub on_stop(state: S) -> Unit`, and check the condition in the body of `{name}`"
+            )));
+            report.push(diagnostic);
+        }
+    }
+}
+
+/// A hand-off of a driven module's state by the host: the type it comes from, with where it
+/// is written and how a message names it, the state parameter it goes to, and the name of
+/// that parameter's function.
+type Handoff<'e, 'a> = (
+    (&'e Ty, Span, &'static str),
+    &'e super::env::ParamDef<'a>,
+    &'static str,
+);
+
+/// The hand-offs of the state of the package's `[drive]` module (`spec/26 §2` rule 2): the
+/// result of `init` into the state parameter of `step` and of `on_stop`, and the state of
+/// `step` into that of `on_stop`. `None` without a driven module that reports, or without an
+/// `init` that takes no parameter. Which shapes the module has is the usage error of `una run`
+/// and `una build`; only a pair whose positions exist is listed. O(1).
+fn drive_handoffs<'e, 'a>(env: &'e Env<'a>, settings: &Manifest) -> Option<Vec<Handoff<'e, 'a>>> {
+    let drive = settings.drive.as_ref()?;
+    let module = (0..env.prelude).find(|m| {
+        env.modules
+            .get(*m)
+            .is_some_and(|m| m.path == drive.module.value)
+    })?;
+    if !env.reports(module) {
+        return None;
+    }
+    let function = |name: &str| match env
+        .modules
+        .get(module)
+        .and_then(|m| m.lower.get(name).copied())
+    {
+        Some(Entity::Function(id)) => env.functions.get(id),
+        _ => None,
+    };
+    let init = function("init").filter(|init| init.params.is_empty())?;
+    let step = function("step").and_then(|step| step.params.first());
+    let on_stop = function("on_stop").and_then(|on_stop| match on_stop.params.as_slice() {
+        [state] => Some(state),
+        _ => None,
+    });
+    let from_init = (&init.result.base, init.result_span, "the result of `init`");
+    let mut pairs = Vec::new();
+    if let Some(state) = step {
+        pairs.push((from_init, state, "step"));
+    }
+    if let Some(state) = on_stop {
+        pairs.push((from_init, state, "on_stop"));
+        if let Some(held) = step {
+            let from_step = (&held.ty.base, held.span, "the state parameter of `step`");
+            pairs.push((from_step, state, "on_stop"));
+        }
+    }
+    Some(pairs)
+}
+
+/// U4001 at the state parameter of `step` or `on_stop` of a `[drive]` module whose declared
+/// type the state the host hands it does not flow into (`spec/26 §2` rule 2): the result of
+/// `init` into the state of `step` and of `on_stop`, and the state of `step` into that of
+/// `on_stop`. The host is a caller that no label rule checks, so without this a `secret`
+/// state would reach a parameter that is not, and from there any sink. Labels are compared
+/// at every position of the type, by the rule of every flow into a declared type
+/// ([`super::flow::violation`]). A flow to a higher label stays legal. O(size of the types).
+pub(crate) fn drive_state_labels(env: &Env<'_>, settings: &Manifest, report: &mut Report<'_>) {
+    let Some(pairs) = drive_handoffs(env, settings) else {
+        return;
+    };
+    let top = Label::top(&env.categories);
+    // One diagnostic per parameter: `on_stop`'s is reported for the first source that does
+    // not flow into it.
+    let mut reported = BTreeSet::new();
+    for ((found, from_span, from_what), state, name) in pairs {
+        if reported.contains(name) {
+            continue;
+        }
+        let Some(super::flow::Violation {
+            from,
+            to,
+            covariant,
+            invariant,
+        }) = super::flow::flow_violation(found, &state.ty.base, true, &top, &env.kind_labels)
+        else {
+            continue;
+        };
+        reported.insert(name);
+        let param = state.name;
+        // At a covariant position the source's data flows into the parameter. At a
+        // contravariant one, a parameter of a function type, the data flows the other way: the
+        // parameter's function would pass data labeled `from` to the source's function, which
+        // takes `to` there. In an argument of an invariant kind parameter, data flows both
+        // ways, so its labels must be equal.
+        let (message, related, repair) = if invariant {
+            (
+                format!(
+                    "the host hands `{name}` its state `{param}` from {from_what}, and an invariant type argument of a kind carries data both ways, so its labels must be equal: `{param}` has `{from}` where {from_what} has `{to}`, a flow from `{from}` to `{to}`"
+                ),
+                format!("{from_what}, labeled `{to}` in that type argument"),
+                format!(
+                    "make the labels of that type argument equal in {from_what} and in the type of `{param}`"
+                ),
+            )
+        } else if covariant {
+            (
+                format!(
+                    "the host hands `{name}` its state `{param}` from {from_what}, which carries `{from}` where `{param}` is `{to}`: a flow from `{from}` to `{to}`"
+                ),
+                format!("{from_what}, labeled `{from}` there"),
+                format!(
+                    "label the state parameter `{param}` of `{name}` at least `{from}` at that position, as the state is declared where the host takes it from"
+                ),
+            )
+        } else {
+            (
+                format!(
+                    "the host hands `{name}` its state `{param}` from {from_what}, and through `{param}` the code would pass `{from}` data to the function in {from_what}, which takes `{to}` there: a flow from `{from}` to `{to}`"
+                ),
+                format!("{from_what}, a function that takes `{to}` there"),
+                format!(
+                    "label that parameter position in {from_what} at least `{from}`, or lower it to `{to}` in the type of `{param}`"
+                ),
+            )
+        };
+        let mut diagnostic = report.make(Code::U4001, state.span, message);
+        diagnostic.related.push(report.related(from_span, related));
+        diagnostic.repairs.push(Report::advice(repair));
+        report.push(diagnostic);
+    }
+}
+
+/// U2028 at the state parameter of `step` or `on_stop` of a `[drive]` module whose declared
+/// type differs from the type the host hands it only in units of measure, at any position
+/// (`spec/26 §2` rule 2, `spec/25 §2` rule 4): the same hand-offs as
+/// [`drive_state_labels`]. Core IR erases units, so the shape that `una run` and `una build`
+/// compare does not see them; without this, `init() -> Int of Second = 7` would reach
+/// `step(edit state: Int of Millisecond, ...)` as 7 milliseconds. One diagnostic per
+/// parameter. O(size of the types).
+pub(crate) fn drive_state_units(env: &Env<'_>, settings: &Manifest, report: &mut Report<'_>) {
+    let Some(pairs) = drive_handoffs(env, settings) else {
+        return;
+    };
+    let mut reported = BTreeSet::new();
+    for ((found, from_span, from_what), state, name) in pairs {
+        if reported.contains(name) || units_agree(found, &state.ty.base) {
+            continue;
+        }
+        reported.insert(name);
+        let param = state.name;
+        let (shown_from, shown_to) = (env.show_plain(found), env.show_plain(&state.ty.base));
+        let mut diagnostic = report.make(
+            Code::U2028,
+            state.span,
+            format!(
+                "the host hands `{name}` its state `{param}` from {from_what}, of type `{shown_from}`, but `{param}` is `{shown_to}`: the units of measure differ"
+            ),
+        );
+        diagnostic
+            .related
+            .push(report.related(from_span, format!("{from_what}, of type `{shown_from}`")));
+        diagnostic.repairs.push(Report::advice(format!(
+            "declare the state parameter `{param}` of `{name}` with the units of {from_what}, since the host hands the value on unchanged, and convert it in the body with `convert()` where another unit is needed"
+        )));
+        report.push(diagnostic);
+    }
+}
+
+/// Whether `found` and `expected` have the same units of measure at every position they
+/// share, labels and refinements aside (ADR 0104 rule 2). A position whose types differ in
+/// more than their units is not a unit mismatch: that is a different shape, the usage error
+/// of `una run` and `una build` (`spec/26 §2` rule 2), so it agrees here. O(size of the
+/// types).
+fn units_agree(found: &Ty, expected: &Ty) -> bool {
+    fn bare(mut ty: &Ty) -> &Ty {
+        while let Ty::Labeled(_, inner) | Ty::Refined(_, inner) = ty {
+            ty = inner;
+        }
+        ty
+    }
+    let all = |xs: &[Ty], ys: &[Ty]| {
+        xs.len() != ys.len() || xs.iter().zip(ys).all(|(x, y)| units_agree(x, y))
+    };
+    match (bare(found), bare(expected)) {
+        (Ty::Error(_) | Ty::Never, _) | (_, Ty::Error(_) | Ty::Never) => true,
+        (Ty::Measured(u, a), Ty::Measured(v, b)) => u == v || bare(a) != bare(b),
+        (Ty::Measured(_, magnitude), other) | (other, Ty::Measured(_, magnitude)) => {
+            bare(magnitude) != other
+        }
+        (Ty::List(a), Ty::List(b)) => units_agree(a, b),
+        (Ty::Dense(x, a), Ty::Dense(y, b)) => x != y || units_agree(a, b),
+        (Ty::Map(k, v), Ty::Map(l, w)) => units_agree(k, l) && units_agree(v, w),
+        (Ty::Coll(c, xs), Ty::Coll(d, ys)) => c != d || all(xs, ys),
+        (Ty::Kind(i, xs), Ty::Kind(j, ys)) => i != j || all(xs, ys),
+        (Ty::Fn(f), Ty::Fn(g)) => {
+            all(&f.params, &g.params)
+                && units_agree(&f.result, &g.result)
+                && match (&f.fails, &g.fails) {
+                    (Some(x), Some(y)) => units_agree(x, y),
+                    _ => true,
+                }
+        }
+        _ => true,
+    }
+}
+
+/// The units of measure at each position of the state types of the package's `[drive]`
+/// module, for the shape check of `una run` and `una build`, whose Core IR has no units
+/// (`spec/26 §2` rule 2). `None` without a driven module that reports, or without an `init`
+/// that takes no parameter. O(size of the types).
+pub(crate) fn drive_units(env: &Env<'_>, settings: &Manifest) -> Option<super::DriveUnits> {
+    let pairs = drive_handoffs(env, settings)?;
+    let key = |ty: &Ty| {
+        let mut out = String::new();
+        unit_positions(ty, &mut String::new(), &mut out);
+        out
+    };
+    let mut units = super::DriveUnits::default();
+    for ((found, _, from_what), state, name) in pairs {
+        if from_what == "the result of `init`" {
+            units.init = key(found);
+        }
+        match name {
+            "step" => units.step = Some(key(&state.ty.base)),
+            _ => units.on_stop = Some(key(&state.ty.base)),
+        }
+    }
+    if units.step.is_none() && units.on_stop.is_none() {
+        // `init` alone: nothing is handed on, and `una run` refuses the module anyway.
+        return None;
+    }
+    Some(units)
+}
+
+/// Appends to `out` each measured position of `ty`, by its path of child indices from the top,
+/// with the normal form of its unit (ADR 0104 rule 2); labels and refinements are not
+/// positions. Two types with the same shape have equal results exactly when their units agree
+/// at every position. O(size of the type).
+fn unit_positions(ty: &Ty, path: &mut String, out: &mut String) {
+    use std::fmt::Write as _;
+    fn child(index: &str, ty: &Ty, path: &mut String, out: &mut String) {
+        let length = path.len();
+        path.push('.');
+        path.push_str(index);
+        unit_positions(ty, path, out);
+        path.truncate(length);
+    }
+    match ty {
+        Ty::Labeled(_, inner) | Ty::Refined(_, inner) => unit_positions(inner, path, out),
+        Ty::Measured(unit, magnitude) => {
+            let _ = write!(out, "{path}={unit:?};");
+            child("m", magnitude, path, out);
+        }
+        Ty::List(element) | Ty::Dense(_, element) => child("0", element, path, out),
+        Ty::Map(key, value) => {
+            child("0", key, path, out);
+            child("1", value, path, out);
+        }
+        Ty::Coll(_, args) | Ty::Kind(_, args) => {
+            for (index, arg) in args.iter().enumerate() {
+                child(&index.to_string(), arg, path, out);
+            }
+        }
+        Ty::Fn(function) => {
+            for (index, param) in function.params.iter().enumerate() {
+                child(&format!("p{index}"), param, path, out);
+            }
+            child("r", &function.result, path, out);
+            if let Some(fails) = &function.fails {
+                child("f", fails, path, out);
+            }
+        }
+        _ => {}
     }
 }
 

@@ -3,6 +3,8 @@
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
 
+#[path = "common/case_lists.rs"]
+mod case_lists;
 #[path = "common/hermetic.rs"]
 mod hermetic;
 
@@ -110,65 +112,73 @@ fn json_is_a_global_flag() {
     assert_eq!(stdout(&output), EMPTY_LIST);
 }
 
-#[test]
-fn check_json_is_byte_identical_across_runs() {
-    // compiler/testing.md §4: every example, and every case of the finished areas with its
-    // diagnostics, twice and with one worker thread.
-    // A sealed copy of the examples and the corpus: no manifest above the checkout changes the
-    // edition of their single files (#1560).
-    let repository = hermetic::checkout(&["examples", "tests/conformance"]);
+/// `una check --json` on `target`, a path relative to the repository root, is byte-identical
+/// across two runs and with one worker thread (`compiler/testing.md §4`).
+fn check_json_is_byte_identical_across_runs(target: &str) {
+    // A sealed copy of the target: no manifest above the checkout changes the edition of its
+    // single files (#1560).
+    let copy = hermetic::checkout_case(&[target]);
+    let repository = &copy.root;
     let una = |args: &[&str]| {
         Command::new(env!("CARGO_BIN_EXE_una"))
             .env("HOME", env!("CARGO_TARGET_TMPDIR"))
             .env_remove("UNA_PROOF_KEY")
             .args(args)
-            .current_dir(&repository)
+            .current_dir(repository)
             .output()
             .unwrap()
     };
-    let mut targets: Vec<String> = std::fs::read_dir(repository.join("examples"))
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-        .filter(|name| !name.starts_with('.'))
-        .map(|name| format!("examples/{name}"))
-        .collect();
-    targets.sort();
-    for area in [
-        "syntax",
-        "fmt",
-        "names",
-        "project",
-        "types",
-        "authority",
-        "security",
-        "runtime",
-    ] {
-        let mut cases: Vec<String> =
-            std::fs::read_dir(repository.join("tests/conformance").join(area))
-                .unwrap()
-                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-                .filter(|name| !name.starts_with('.'))
-                .map(|name| format!("tests/conformance/{area}/{name}"))
-                .collect();
-        cases.sort();
-        targets.extend(cases);
+    let first = una(&["check", "--json", target]);
+    let second = una(&["check", "--json", target]);
+    let single = Command::new(env!("CARGO_BIN_EXE_una"))
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
+        .args(["check", "--json", target])
+        .env("RAYON_NUM_THREADS", "1")
+        .current_dir(repository)
+        .output()
+        .unwrap();
+    assert!(matches!(first.status.code(), Some(0 | 1)), "{target}");
+    assert_eq!(first.stdout, second.stdout, "{target}");
+    assert_eq!(first.stdout, single.stdout, "{target}");
+}
+
+/// One test per target of the determinism test (#1652), `determinism::<name>`: every example,
+/// and every case of the finished areas with its diagnostics.
+macro_rules! determinism_tests {
+    ($($name:ident => $path:literal [],)*) => {
+        /// `una check --json` is byte-identical across runs on every target.
+        mod determinism {
+            $(
+                #[test]
+                fn $name() {
+                    super::check_json_is_byte_identical_across_runs($path);
+                }
+            )*
+            /// The generated targets, in order.
+            pub const TARGETS: &[&str] = &[$($path),*];
+        }
+    };
+}
+
+una_test_cases::determinism_targets!(determinism_tests);
+
+/// The generated tests of the determinism test are the targets on disk, and there are more
+/// than 110: a target added, removed or renamed without a rebuild of `una-test-cases` fails
+/// here, never goes untested.
+#[test]
+fn the_determinism_targets_are_the_examples_and_cases_on_disk() {
+    let repository = hermetic::repository();
+    assert!(repository.join("examples").is_dir(), "examples is missing");
+    for area in case_lists::DETERMINISM_AREAS {
+        assert!(
+            repository.join("tests/conformance").join(area).is_dir(),
+            "tests/conformance/{area} is missing"
+        );
     }
-    for target in &targets {
-        let first = una(&["check", "--json", target]);
-        let second = una(&["check", "--json", target]);
-        let single = Command::new(env!("CARGO_BIN_EXE_una"))
-            .env("HOME", env!("CARGO_TARGET_TMPDIR"))
-            .env_remove("UNA_PROOF_KEY")
-            .args(["check", "--json", target])
-            .env("RAYON_NUM_THREADS", "1")
-            .current_dir(&repository)
-            .output()
-            .unwrap();
-        assert!(matches!(first.status.code(), Some(0 | 1)), "{target}");
-        assert_eq!(first.stdout, second.stdout, "{target}");
-        assert_eq!(first.stdout, single.stdout, "{target}");
-    }
-    assert!(targets.len() > 110);
+    let on_disk = case_lists::determinism_targets(&repository);
+    assert!(on_disk.len() > 110, "only {} targets", on_disk.len());
+    assert_eq!(determinism::TARGETS, on_disk.as_slice());
 }
 
 #[test]

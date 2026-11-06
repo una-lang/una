@@ -866,7 +866,7 @@ impl<'a> Checker<'_, 'a, '_> {
         if let Some(current) = self.current {
             self.findings.edges.push((current, callee, span));
         }
-        self.graph_call(callee);
+        self.graph_call(callee, span);
         // What can run beside a part of a task construct (ADR 0116 IF6): the block of a
         // `tasks` statement runs beside the tasks it starts (ADR 0117 rule 7).
         if self.task_depth > 0 || !self.tasks_frames.is_empty() {
@@ -2129,6 +2129,9 @@ impl<'a> Checker<'_, 'a, '_> {
             };
         }
         let prelude_lambda = std::mem::replace(&mut self.prelude_lambda, prelude);
+        // A lambda's body is code of `Λ`, which runs wherever the lambda is called, not in the
+        // parts around the place it is written (ADR 0116 P1, P3).
+        let parts = std::mem::take(&mut self.parts);
         self.lambda_depth += 1;
         let frames_depth = std::mem::replace(&mut self.frames_depth, self.lambda_depth);
         let frames_lambda = self.frames_lambda.replace(span);
@@ -2156,6 +2159,7 @@ impl<'a> Checker<'_, 'a, '_> {
             found
         });
         self.lambda_depth -= 1;
+        self.parts = parts;
         self.statement = statement;
         self.frames_depth = frames_depth;
         self.frames_lambda = frames_lambda;

@@ -150,6 +150,51 @@ pub fn run_drive(
     })
 }
 
+/// Runs the driver of the `serve` section of module `module` (ADR 0123 rule 16, `spec/31 §7`
+/// rule 4): a task per request that calls `handle`, until a host stop drains them, then
+/// `on_stop` when the module declares it, with the host capabilities of each one's `uses`, in
+/// `world`. The shapes of the functions were checked with the package. `None` when the module
+/// has no function `handle`.
+///
+/// The driver applies no `within`: a caller MUST refuse a section that sets one, as `una run`
+/// does, until the driver takes it (`spec/31 §7` rule 3 item 7 refuses every `within` today).
+pub fn run_serve(
+    program: &Program,
+    module: &str,
+    world: &mut dyn World,
+    host: &Host,
+    limits: Limits<'_>,
+) -> Option<Run> {
+    let mut index = Index::new(program);
+    // The driver's `tasks` statement is the engine's, not the program's: its tasks run as
+    // coroutines whatever the program holds.
+    index.tasks = true;
+    let handle = index.function(module, "handle")?;
+    let on_stop = index.function(module, "on_stop");
+    let mut roots = vec![&handle.body];
+    roots.extend(on_stop.map(|fun| &fun.body));
+    let hashing = match hashes::process_key(&index, &roots) {
+        Ok(hashing) => hashing,
+        Err(abort) => return Some(not_started(abort)),
+    };
+    let clock = Clock::for_run(host.virtual_time);
+    let mut machine = Machine::new(&index, world, &host.grants, &host.keys, limits, clock);
+    machine.keyed(hashing);
+    let result = machine
+        .rooted(|machine| machine.serve_driver(handle, on_stop))
+        .unwrap_or_else(unrooted);
+    debug_assert!(
+        machine.run.next_waiters.borrow().is_empty(),
+        "a task left in the waiters of `next`"
+    );
+    let completion = completion(&index, result, Form::Redacted);
+    Some(Run {
+        completion,
+        trace: machine.run.take_trace(),
+        rights_left: machine.run.serve.as_ref().map_or(0, |s| s.live()),
+    })
+}
+
 /// The outcome of a root task that could not run as a coroutine (ADR 0117 rule 11): the abort
 /// rather than a value.
 fn unrooted<'p>(abort: Abort) -> Flow<'p> {

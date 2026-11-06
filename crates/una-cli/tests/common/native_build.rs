@@ -24,6 +24,13 @@ pub fn root() -> PathBuf {
 pub fn runtime() {
     static BUILT: OnceLock<()> = OnceLock::new();
     BUILT.get_or_init(|| {
+        // Set by the nextest setup script (.config/nextest.toml): the library is built, and a second build in each test
+        // process would rewrite it under the tests that link it.
+        #[allow(clippy::disallowed_methods)]
+        let prebuilt = std::env::var_os("UNA_RT_PREBUILT").is_some();
+        if prebuilt {
+            return;
+        }
         let mut args = vec!["build", "--quiet", "--locked", "-p", "una-rt"];
         if !cfg!(debug_assertions) {
             args.push("--release");

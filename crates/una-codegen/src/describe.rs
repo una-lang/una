@@ -261,7 +261,16 @@ impl<'p> Types<'p> {
                 variant(name, fields)
             })
             .collect();
-        Some(data(variants))
+        let mut shape = data(variants);
+        // A kind of the server of `std.host`, whose fields the events of the host's
+        // `HttpServer` write in the reduced form of ADR 0123 rule 1 (`spec/31 §1` rule 7).
+        if module == una_core::PRELUDE_MODULE
+            && matches!(name, "Request" | "Reply" | "Header" | "Param")
+            && let Some(object) = shape.as_object_mut()
+        {
+            object.insert("server".to_owned(), json!(name));
+        }
+        Some(shape)
     }
 }
 

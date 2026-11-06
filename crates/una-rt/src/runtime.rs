@@ -285,7 +285,10 @@ thread_local! {
 
 /// Installs, once, the panic hook of the runtime, chained to the hook in place: inside
 /// [`guarded`] it keeps the panic's message for U8001; anywhere else it passes the panic on, so
-/// every other panic prints as before (ADR 0113 rule 5).
+/// every other panic prints as before (ADR 0113 rule 5). The serve engine's hook, which keeps
+/// the panics it contains quiet (`spec/31 §6` rule 13), is chained over it here, in the same
+/// place, before any thread of the run starts: two installs that ran at once on two threads
+/// could lose one of the hooks.
 pub(crate) fn install_panic_hook() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
@@ -304,6 +307,10 @@ pub(crate) fn install_panic_hook() {
             }
         }));
     });
+    // The serve engine's, chained over it, only in a program that serves ([`enable_serve`]).
+    if let Some(hooks) = SERVE.get() {
+        (hooks.hook)();
+    }
 }
 
 /// What a [`guarded`] region of a `together` block does, for the message of a panic in it.
@@ -342,6 +349,45 @@ static HTTP_PREPARE: OnceLock<fn()> = OnceLock::new();
 /// grants include `Http` (`una_rt_http_enable`).
 pub(crate) fn enable_http() {
     let _ = HTTP_PREPARE.set(una_http::client::prepare);
+}
+
+/// What the runtime does with the serve engine, set only by a program that performs an
+/// operation of `HttpServer` ([`enable_serve`]): the only references from the runtime to the
+/// serve threads, their start, stop and join, and the engine's panic hook, so an executable that
+/// serves nothing links none of them (ADR 0074 H7; the test
+/// `an_executable_that_serves_nothing_carries_no_serve_engine` in `crates/una-cli/tests/http.rs`).
+/// It still links what the run's end calls directly in case the run serves: the table of reply
+/// rights and the answer of an exchange (`crate::serve::answer_held`, `answer_all_left`).
+struct ServeHooks {
+    /// Starts the serve threads before `main` ([`crate::serve::install_live`]).
+    start: fn(
+        una_http::serve::Prepared,
+        &[una_core::http::serve::ServeGrant],
+        usize,
+        &RunStop,
+    ) -> Result<(), String>,
+    /// Ends them at the run's end ([`crate::serve::end_engine`]).
+    end: fn(std::time::Duration, bool),
+    /// Installs the serve engine's panic hook over the runtime's (`spec/31 §6` rule 13).
+    hook: fn(),
+}
+static SERVE: OnceLock<ServeHooks> = OnceLock::new();
+
+/// Lets the runs of this process start their serve threads before `main` when their grants
+/// include `serve:` (`una_rt_serve_enable`).
+pub(crate) fn enable_serve() {
+    let _ = SERVE.set(ServeHooks {
+        start: crate::serve::install_live,
+        end: crate::serve::end_engine,
+        hook: una_http::serve::install_panic_hook,
+    });
+}
+
+/// Ends the serve engine of a run that serves ([`ServeHooks::end`]); nothing in any other.
+fn end_serving(drain: std::time::Duration, hard: bool) {
+    if let Some(hooks) = SERVE.get() {
+        (hooks.end)(drain, hard);
+    }
 }
 
 /// The bytes that 2^32 − 1 references take, one word each: a count at its limit with less held
@@ -434,8 +480,12 @@ pub struct Meta {
     /// `` `run grants` `` in `ita.una`.
     pub grants_section: String,
     /// Whether the program is of edition 0.4, whose runs may take `serve:` grants
-    /// (`spec/31 §2` rule 4).
+    /// (`spec/31 §2` rule 4): the description's `serve_grants`.
     pub serve: bool,
+    /// The module of the `serve` section whose driver the program runs (ADR 0123 rule 16):
+    /// the description's `serve`, `{"module": ..., "within": null}`, whose serve threads start
+    /// before the driver (S4 P8).
+    pub serve_section: Option<String>,
     /// Whether the program has a `for ever`, so the run takes host stops: the executable then
     /// installs the handlers of SIGINT and SIGTERM (ADR 0116 rule 18).
     pub stops: bool,
@@ -573,7 +623,22 @@ impl Meta {
             Some(section) => section.as_str()?.to_owned(),
             None => "`[run] grants`".to_owned(),
         };
-        let serve = value.get("serve").and_then(Value::as_bool).unwrap_or(false);
+        let serve = value
+            .get("serve_grants")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        // The driver applies no `within` (`spec/31 §7` rule 3 item 7 refuses every one today):
+        // a description with one is no description, and the executable refuses to start.
+        let serve_section = match value.get("serve") {
+            None => None,
+            Some(section) => {
+                let module = section.get("module")?.as_str()?.to_owned();
+                if !section.get("within")?.is_null() {
+                    return None;
+                }
+                Some(module)
+            }
+        };
         let float32_probes = value
             .get("float32_probes")
             .and_then(Value::as_bool)
@@ -628,6 +693,7 @@ impl Meta {
             drive,
             grants_section,
             serve,
+            serve_section,
             float32_probes,
         })
     }
@@ -2068,6 +2134,16 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
         .as_deref()
         .map(|label| (label, meta.limits_allowed));
     let specs: Vec<String> = meta.grants.iter().chain(&options.grants).cloned().collect();
+    // `spec/31 §7` rule 1: the driver of a `serve` section needs a `serve:` grant, of the
+    // description or of a `--grant` flag, before anything starts, as in `una run`.
+    if let Some(module) = &meta.serve_section
+        && !specs
+            .iter()
+            .any(|spec| spec.starts_with(una_core::http::serve::PREFIX))
+    {
+        let _ = writeln!(stderr, "error: {}", una_interp::unserved_section(module));
+        return USAGE;
+    }
     if let Err(message) = una_interp::check_limited_flags(&specs, limit) {
         let _ = writeln!(stderr, "error: {message}");
         return USAGE;
@@ -2111,9 +2187,19 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
     };
     #[cfg(not(feature = "test-hooks"))]
     let scripted = false;
-    // Nothing accepts on the listeners until the serve threads of ADR 0123 step 4 take them
-    // over; they are held until the run ends.
-    let _listeners = match serve(
+    // Live peers send in real time, which virtual time cannot place: a run under
+    // `--virtual-time` takes no `serve:` grant until `--serve-script` (ADR 0123, S4 amendment
+    // C). The scripted engine of the tests stands for such a script.
+    if options.virtual_time
+        && !scripted
+        && grants
+            .iter()
+            .any(|grant| matches!(grant, Grant::Serve { .. }))
+    {
+        let _ = writeln!(stderr, "error: {}", una_interp::VIRTUAL_SERVE);
+        return USAGE;
+    }
+    let listeners = match serve(
         if scripted { &[] } else { &grants },
         options.serve_threads.max(1),
         options.concurrency.file_threads,
@@ -2123,6 +2209,31 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
             let _ = writeln!(stderr, "error: {message}");
             return USAGE;
         }
+    };
+    // A program that serves starts its serve threads here, before `main`, over the listeners
+    // bound above; they accept nothing until its first server operation (S4 amendment B.2).
+    // Any other run holds its listeners until it ends.
+    let serves = meta.serve_section.is_some()
+        || (meta.serve && meta.uses.iter().any(|need| need.capability == "HttpServer"));
+    let live = SERVE.get().map(|hooks| hooks.start).filter(|_| serves);
+    let _listeners = if let Some(install) = live
+        && !scripted
+        && !listeners.listeners.is_empty()
+    {
+        let served: Vec<una_core::http::serve::ServeGrant> = grants
+            .iter()
+            .filter_map(|grant| match grant {
+                Grant::Serve { grant, .. } => Some((**grant).clone()),
+                _ => None,
+            })
+            .collect();
+        if let Err(message) = install(listeners, &served, options.serve_threads.max(1), &stop) {
+            let _ = writeln!(stderr, "error: {message}");
+            return USAGE;
+        }
+        None
+    } else {
+        Some(listeners)
     };
     let drive = meta.drive.map(|drive| Driver {
         ticks: drive.ticks,
@@ -2474,6 +2585,12 @@ fn finish(mut state: State) -> i32 {
     // 21).
     #[cfg(feature = "test-hooks")]
     crate::serve::script::end();
+    // The serve threads write what the run answered, then end (ADR 0123 rule 18); after an
+    // abort that ends the process at once, `abort_run` made the hard stop already.
+    end_serving(
+        run_stop().map_or(std::time::Duration::from_secs(1), |stop| stop.grace()),
+        false,
+    );
     if let Err(error) = state.shared.finish() {
         let _ = writeln!(stderr, "error: cannot write the trace: {error}");
         code = USAGE;
@@ -3174,7 +3291,16 @@ fn site_location(state: &State, site: usize) -> Location {
 fn abort_run(state: State, code: Code, location: Location, message: String) {
     let least = if code == Code::U8001 { 3 } else { 1 };
     // Every reply right still held is answered `503`, with no event, before the process ends
-    // without waiting for its tasks (ADR 0123 rule 4.5, rule 18 item 6).
+    // without waiting for its tasks (ADR 0123 rule 4.5, rule 18 item 6). After the hard stop or
+    // an internal error, the engine's hard stop comes first: from it on the engine discards the
+    // program's answers, and the serve threads answer each exchange still open `503` in one
+    // non-blocking write and close every connection, without waiting on a peer; the wait for
+    // them (at most a second) ends before the answers below, which then send nothing. A reply
+    // already in progress when the hard stop comes, past its check of the stop, may be lost
+    // with its connection.
+    if matches!(code, Code::U6007 | Code::U8001) {
+        end_serving(std::time::Duration::ZERO, true);
+    }
     crate::serve::answer_all_left();
     crate::ceiling(usize::MAX);
     // One stop ends the process: a stop on another thread may have claimed it (ADR 0113).

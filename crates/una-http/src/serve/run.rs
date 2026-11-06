@@ -250,8 +250,18 @@ pub enum Sent {
     NotHeld,
 }
 
-/// What runs when a request is queued or an exchange ends.
-pub type Ready = Arc<dyn Fn() + Send + Sync>;
+/// Which of the program's waiters an event of the engine may let deliver.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Wake {
+    /// A request was queued or an exchange ended: one delivery more may succeed, so one waiter
+    /// is enough.
+    One,
+    /// The run stopped: every waiter must see it.
+    All,
+}
+
+/// What runs when a request is queued, an exchange ends or the run stops, with who must wake.
+pub type Ready = Arc<dyn Fn(Wake) + Send + Sync>;
 /// What runs when a connection of a grant closes: the grant's number.
 pub type Freed = Arc<dyn Fn(usize) + Send + Sync>;
 
@@ -431,8 +441,8 @@ impl Shared {
         (Arc::new(shared), receivers)
     }
 
-    /// Sets what runs when a request is queued, an exchange ends or the run stops: the
-    /// program's `next` waits on it. Set once, before serving starts; read on every event
+    /// Sets what runs when a request is queued or an exchange ends ([`Wake::One`]) or the run
+    /// stops ([`Wake::All`]): the program's `next` waits on it. Set once, before serving starts; read on every event
     /// without a lock. A second call is a defined error: it changes nothing and returns
     /// [`AlreadyRegistered`], in every build.
     pub fn on_ready(&self, f: Ready) -> Result<(), AlreadyRegistered> {
@@ -448,10 +458,10 @@ impl Shared {
     /// Runs the program's callback. A panic in it is caught, so it does not end the serve
     /// thread it runs on, and stops the run (`spec/31 §6` rule 13): the fault is the program's,
     /// and the program must see it. Called with no lock of a grant held.
-    pub(crate) fn notify(&self) {
+    pub(crate) fn notify(&self, wake: Wake) {
         if let Some(f) = self.notify.get()
             && !self.notify_broken.load(Ordering::SeqCst)
-            && !fault::callback(&self.health, || f())
+            && !fault::callback(&self.health, || f(wake))
         {
             // Calls already under way on other serve threads finish: at most one per thread.
             self.notify_broken.store(true, Ordering::SeqCst);
@@ -923,7 +933,7 @@ impl Shared {
             items.queue.push_back(pending);
             queue.ready.store(true, Ordering::Release);
         }
-        self.notify();
+        self.notify(Wake::One);
     }
 
     /// A queued request of `thread` and `grant` was ended by its owner: it stays in its queue
@@ -1034,7 +1044,7 @@ impl Shared {
         for thread in 0..self.threads {
             self.send(thread, Msg::Stop);
         }
-        self.notify();
+        self.notify(Wake::All);
     }
 
     /// The hard stop (ADR 0116 rule 16): every open exchange gets its answer in one
@@ -1045,7 +1055,7 @@ impl Shared {
         for thread in 0..self.threads {
             self.send(thread, Msg::HardStop);
         }
-        self.notify();
+        self.notify(Wake::All);
     }
 
     /// Whether a host stop was asked.
@@ -1133,7 +1143,7 @@ impl Exchange {
         self.done = true;
         if self.exch.expire_open() {
             self.conn.grant.end_exchange(self.exch.bytes);
-            self.shared.notify();
+            self.shared.notify(Wake::One);
         }
         self.shared
             .send(self.conn.owner, Msg::Close(Arc::clone(&self.conn)));
@@ -1147,12 +1157,20 @@ impl Exchange {
             self.shared.enforce();
             return Sent::Discarded;
         }
+        // After the hard stop only the serve threads end an open exchange (rule 18 item 6): each
+        // answers it `503` in one non-blocking write when it sees the stop. An answer or a reply
+        // of the program from here on is discarded before it can take the exchange, so the
+        // engine's `503` is never lost to one that its owner would then close unwritten. The
+        // flag is stored before any `HardStop` message is sent.
+        if self.shared.hard.load(Ordering::SeqCst) {
+            return Sent::Discarded;
+        }
         if !self.exch.change(TAKEN, REPLIED) {
             return Sent::Discarded;
         }
         let grant = &self.conn.grant;
         grant.end_exchange(self.exch.bytes);
-        self.shared.notify();
+        self.shared.notify(Wake::One);
         match grant.reserve_reply(&self.conn, bytes.len() as u64) {
             Reserve::CloseSelf => {
                 self.conn.close();

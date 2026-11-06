@@ -423,45 +423,25 @@ fn s45_a_shared_limiter_token_shows_in_no_outcome() {
     }
 }
 
-/// A capability whose handler fails on a public argument, used by public code and through a
-/// binding that labels the answers `internal` (ADR 0094 rule 2).
-const GIVES: &str = r#"module leak
-
-pub kind Lookup = | NotFound
-
-capability Store
-  op owner(file: Text) -> Text
-    fails Lookup
-
-handler names() for Store
-  op owner(file) =
-    if file == "missing"
-      fail NotFound
-    else
-      "ana"
-
-labeled(s: internal Int) -> Unit
-  uses @store: Store[owner gives internal]
-=
-  let a = attempt @store.owner("missing")
-  let b = attempt @store.owner("found")
-  unit
-
-plain() -> Unit
-  uses @store: Store[owner]
-=
-  let a = attempt @store.owner("missing")
-  let b = attempt @store.owner("found")
-  unit
-
-pub main() -> Unit
-  uses @console: Console[print]
-=
-  let s: internal Int = SECRET
-  labeled(s) with @store = names()
-  plain() with @store = names()
-  @console.print("done")
-"#;
+/// The conformance case `outcomes_at_their_labels`, with its fixed `internal` value replaced by
+/// `SECRET`: a capability whose handler fails on a public argument, used by public code and
+/// through a binding that labels the answers `internal` (ADR 0094 rule 2). The case checks its
+/// output only; this test compares its whole traces, so the case's program encodes the rule.
+fn gives() -> String {
+    let path = root().join("tests/conformance/runtime/outcomes_at_their_labels/src/outcomes.una");
+    let source = std::fs::read_to_string(&path).unwrap();
+    let fixed = "let s: internal Int = 2";
+    assert_eq!(source.matches(fixed).count(), 1, "{}", path.display());
+    assert_eq!(
+        source.matches("module outcomes").count(),
+        1,
+        "{}",
+        path.display()
+    );
+    source
+        .replace(fixed, "let s: internal Int = SECRET")
+        .replace("module outcomes", "module leak")
+}
 
 #[test]
 fn s45_a_gives_labeled_answer_is_redacted_and_a_public_one_stays_in_clear() {
@@ -471,7 +451,7 @@ fn s45_a_gives_labeled_answer_is_redacted_and_a_public_one_stays_in_clear() {
     let trace = one_trace(
         "s45gives",
         &Manifest::Toml("0.3", ""),
-        GIVES,
+        &gives(),
         &[0, 1, 3],
         &[],
     );
@@ -657,7 +637,7 @@ fn s45_a_redacted_outcome_builds_no_text_so_a_long_integer_does_not_abort() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// An example of `GIVES`'s shape: its trace keeps the outcomes in clear.
+/// An example of `gives()`'s shape: its trace keeps the outcomes in clear.
 const EXAMPLE: &str = r#"module leak
 
 pub kind Lookup = | NotFound

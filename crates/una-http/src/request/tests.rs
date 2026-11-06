@@ -205,6 +205,8 @@ fn host_values() {
             true,
         ),
         ("x1.example", "x1.example", None, false),
+        ("a.x0", "a.x0", None, false),
+        ("0x.example", "0x.example", None, false),
     ] {
         assert_eq!(
             host(value),
@@ -243,6 +245,9 @@ fn host_values() {
         "127.0.0.1.",
         "0x7f.0.0.1",
         "1.2.3.0x4",
+        "1.2.3.0x",
+        "a.0x",
+        "a.0X.",
         "01.02.03.04",
         "256.0.0.1",
         "1.2.3.4.5",
@@ -932,4 +937,80 @@ fn reading_is_linear() {
     }
     assert!(reader.finish().is_ok());
     assert!(start.elapsed() < best(&bytes) * 64 + std::time::Duration::from_millis(50));
+}
+
+#[test]
+fn a_test_request_is_read_as_a_peer_s_would_be() {
+    let read = test_request(Method::Post, "/orders/a%20b?x=1&y=%C3%A9&z", "{\"n\": 7}").unwrap();
+    assert_eq!(read.method, Method::Post);
+    assert_eq!(read.target, "/orders/a%20b?x=1&y=%C3%A9&z");
+    assert_eq!(read.segments, ["orders", "a b"]);
+    assert_eq!(
+        read.query,
+        [
+            ("x".to_owned(), "1".to_owned()),
+            ("y".to_owned(), "é".to_owned()),
+            ("z".to_owned(), String::new())
+        ]
+    );
+    assert_eq!(read.headers, [("host".to_owned(), TEST_HOST.to_owned())]);
+    assert_eq!(read.body, "{\"n\": 7}");
+    let empty = test_request(Method::Get, "/", "").unwrap();
+    assert_eq!(empty.segments, [""]);
+    assert_eq!(empty.body, "");
+    // The absolute-form, on the authority `test` only, is rewritten to origin-form.
+    let absolute = test_request(Method::Get, "http://test/a//b?q", "").unwrap();
+    assert_eq!(absolute.target, "/a//b?q");
+    assert_eq!(absolute.segments, ["a", "", "b"]);
+}
+
+#[test]
+fn a_test_request_is_refused_where_the_host_answers_400() {
+    for target in [
+        "",
+        "*",
+        "test:80",
+        "a/b",
+        "/a b",
+        "/a\r\nx-injected: 1",
+        "/a\nb",
+        "/é",
+        "/a#b",
+        "/%zz",
+        "/%4",
+        "/a/../b",
+        "/%2e%2e",
+        "/a%2Fb",
+        "/a%00",
+        "/%ff",
+        "/?q=%ff",
+        "/a|b",
+        "http://other/a",
+        "https://test/a",
+    ] {
+        assert_eq!(
+            test_request(Method::Get, target, "").map(|r| r.target),
+            Err(Refusal::BadRequest),
+            "{target:?}"
+        );
+    }
+}
+
+#[test]
+fn a_test_request_is_linear_in_its_target_and_body() {
+    let time = |n: usize| {
+        let target = format!("/{}", "a/".repeat(n));
+        let body = "b".repeat(n * 8);
+        let start = std::time::Instant::now();
+        for _ in 0..4 {
+            std::hint::black_box(test_request(Method::Post, &target, &body).unwrap());
+        }
+        start.elapsed()
+    };
+    let small = time(2_000);
+    let large = time(20_000);
+    assert!(
+        large < small * 40 + std::time::Duration::from_millis(50),
+        "{small:?} {large:?}"
+    );
 }

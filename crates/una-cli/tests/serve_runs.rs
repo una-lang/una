@@ -20,6 +20,15 @@
 //!   bytes that are UTF-8.
 //! - `run.jsonl`: `{"completion", "output"}`, then each event of the trace as `una run --json`
 //!   writes it.
+//! - `revealed.jsonl` (optional): the same lines from a run whose trace writes the values of the
+//!   events of the host's `HttpServer` without the redaction of their labels, still in the
+//!   reduced form of ADR 0123 rule 1 (`spec/31 §1` rule 7), which only the scripted engine of
+//!   these tests can ask for (`Port::reveals_trace`): so the reduced form of both engines is
+//!   compared, byte for byte, although a run's labels redact every field of a request and a
+//!   reply.
+//! - `secrets.txt` (optional): texts, one per line, that neither trace may hold anywhere.
+//! - `wire-secrets.txt` (optional): texts, one per line, that the bytes the connections received
+//!   may not hold: what a server must never send, such as the payload of a failure of `handle`.
 //!
 //! After the program ends the engine's clock runs one more hour, so every timer ends, and then
 //! every counter, reserve and share must be zero, and no reply right may be left.
@@ -29,6 +38,11 @@
 //! runtime built with its `test-hooks`, which serves the same scripted engine
 //! (`una_http::serve::script`) when `UNA_TEST_SERVE_SCRIPT` names the case: its bytes, output,
 //! completion and trace must be the interpreter's, byte for byte.
+//!
+//! A case whose `ita.una` has a `serve` section runs the host's driver of that section
+//! (`spec/31 §7` rule 4) in place of `main`; `serve_section_program` is the program of rule 4
+//! written out in the language form, and each `serve_section_program_<case>` likewise for
+//! `serve_section_<case>`: their bytes and traces must be the driver's, in both engines.
 //!
 //! `una run` and `una build` themselves still refuse these programs (`spec/31 §1` rule 10): this
 //! harness calls the interpreter with the engine directly, and builds the native executable
@@ -41,6 +55,9 @@
     clippy::panic,
     clippy::unwrap_used
 )]
+
+#[path = "common/timing.rs"]
+mod timing;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -94,13 +111,18 @@ fn lines(path: &Path) -> Vec<Value> {
 const HANG: std::time::Duration = std::time::Duration::from_secs(60);
 
 fn run(dir: &Path) -> (Vec<Value>, Vec<Value>) {
+    run_with(dir, false)
+}
+
+/// [`run`], with the trace revealed when `reveal` (`revealed.jsonl`).
+fn run_with(dir: &Path, reveal: bool) -> (Vec<Value>, Vec<Value>) {
     let stack = una_interp::stack_bytes(10_000).unwrap();
     let (sender, receiver) = std::sync::mpsc::channel();
     let owned = dir.to_path_buf();
     std::thread::Builder::new()
         .stack_size(stack)
         .spawn(move || {
-            let _ = sender.send(run_here(&owned));
+            let _ = sender.send(run_here(&owned, reveal));
         })
         .unwrap();
     receiver
@@ -108,7 +130,7 @@ fn run(dir: &Path) -> (Vec<Value>, Vec<Value>) {
         .unwrap_or_else(|error| panic!("{}: the run did not end: {error}", dir.display()))
 }
 
-fn run_here(dir: &Path) -> (Vec<Value>, Vec<Value>) {
+fn run_here(dir: &Path, reveal: bool) -> (Vec<Value>, Vec<Value>) {
     let grants: Vec<String> = std::fs::read_to_string(dir.join("grant.txt"))
         .expect("grant.txt")
         .lines()
@@ -143,6 +165,9 @@ fn run_here(dir: &Path) -> (Vec<Value>, Vec<Value>) {
         lines(&dir.join("script.jsonl")),
         Box::new(move || stopping.request_local()),
     );
+    if reveal {
+        port.reveal();
+    }
     let host = Host {
         grants: vec![Grant::Console],
         keys: BTreeMap::new(),
@@ -157,8 +182,12 @@ fn run_here(dir: &Path) -> (Vec<Value>, Vec<Value>) {
         task_depth: una_interp::Concurrency::default().task_depth,
         ..Limits::depth(una_interp::DEFAULT_MAX_DEPTH)
     };
-    let run =
-        una_interp::run_main(&checked.program, "srv", &mut lines, &host, limits).expect("a `main`");
+    let run = match served(&manifest) {
+        Some(module) => una_interp::run_serve(&checked.program, &module, &mut lines, &host, limits)
+            .expect("a `handle`"),
+        None => una_interp::run_main(&checked.program, "srv", &mut lines, &host, limits)
+            .expect("a `main`"),
+    };
     let printed = lines.0;
     assert_eq!(run.rights_left, 0, "{}: reply rights left", dir.display());
     let ended = port.end();
@@ -181,6 +210,24 @@ fn run_here(dir: &Path) -> (Vec<Value>, Vec<Value>) {
     (wire, ran)
 }
 
+/// The module of the `serve` section of `manifest`, the text of an `ita.una`, when it has one.
+fn served(manifest: &str) -> Option<String> {
+    let mut lines = manifest.lines().skip_while(|line| *line != "serve");
+    lines.next()?;
+    let section: Vec<&str> = lines.take_while(|line| line.starts_with("  ")).collect();
+    // `run_serve` applies no `within` (`spec/31 §7` rule 3 item 7 refuses every one today).
+    assert!(
+        !section
+            .iter()
+            .any(|line| line.trim().starts_with("within ")),
+        "a case with a `within` in its `serve` section"
+    );
+    section
+        .iter()
+        .find_map(|line| line.trim().strip_prefix("module "))
+        .map(str::to_owned)
+}
+
 fn cases() -> Vec<PathBuf> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/serve_runs");
     let mut dirs: Vec<PathBuf> = std::fs::read_dir(&root)
@@ -197,6 +244,26 @@ fn text(values: &[Value]) -> String {
     values.iter().map(|v| format!("{v}\n")).collect()
 }
 
+/// The case's file of secrets `file`: texts that what it names may not hold.
+fn secrets(dir: &Path, file: &str) -> Vec<String> {
+    std::fs::read_to_string(dir.join(file))
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Fails when `trace`, the output of the case `dir` named `name`, holds one of the secrets of
+/// its file `file`.
+fn hides_secrets(dir: &Path, file: &str, name: &str, trace: &str, failures: &mut Vec<String>) {
+    for secret in secrets(dir, file) {
+        if trace.contains(&secret) {
+            failures.push(format!("{}: {name} holds `{secret}`", dir.display()));
+        }
+    }
+}
+
 #[test]
 fn every_serve_run_gives_its_expected_bytes_and_trace() {
     // A test, not a library crate: `UNA_BLESS` asks it to write the expected files.
@@ -207,7 +274,23 @@ fn every_serve_run_gives_its_expected_bytes_and_trace() {
     let mut failures = Vec::new();
     for dir in dirs {
         let (wire, ran) = run(&dir);
-        for (name, got) in [("expected.jsonl", text(&wire)), ("run.jsonl", text(&ran))] {
+        let mut files = vec![("expected.jsonl", text(&wire)), ("run.jsonl", text(&ran))];
+        if dir.join("revealed.jsonl").exists() {
+            let (revealed_wire, revealed) = run_with(&dir, true);
+            assert_eq!(revealed_wire, wire, "{}: the wire", dir.display());
+            files.push(("revealed.jsonl", text(&revealed)));
+        }
+        for (name, got) in &files[1..] {
+            hides_secrets(&dir, "secrets.txt", name, got, &mut failures);
+        }
+        hides_secrets(
+            &dir,
+            "wire-secrets.txt",
+            "expected.jsonl",
+            &files[0].1,
+            &mut failures,
+        );
+        for (name, got) in files {
             let path = dir.join(name);
             if bless {
                 std::fs::write(&path, &got).expect("write an expected file");
@@ -223,6 +306,43 @@ fn every_serve_run_gives_its_expected_bytes_and_trace() {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn the_driver_of_a_serve_section_runs_as_its_program() {
+    // `spec/31 §7` rule 4 and decision S6-D4: the driver is engine code equivalent to the
+    // program of rule 4, so a package that serves with the section and one that runs that
+    // program, with the same `handle`, `on_stop` and script, give the same bytes and the same
+    // trace, the events of each request in the root task and in `s1.k`.
+    // The three shapes of rule 4's `answer`: a reply, a failure of `handle` (`500` with an
+    // empty body), and a reply that `reply` refuses (`BadReply`, then the task's `500`); the
+    // revealed traces too, where the case has one.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/serve_runs");
+    for (section, program) in [
+        ("serve_section_health", "serve_section_program"),
+        ("serve_section_failures", "serve_section_program_failures"),
+        ("serve_section_bad_reply", "serve_section_program_bad_reply"),
+    ] {
+        let (section_dir, program_dir) = (root.join(section), root.join(program));
+        let ran = run(&section_dir);
+        let written = run(&program_dir);
+        assert_eq!(ran.0, written.0, "{section}: the bytes");
+        assert_eq!(text(&ran.1), text(&written.1), "{section}: the run");
+        assert_eq!(
+            section_dir.join("revealed.jsonl").exists(),
+            program_dir.join("revealed.jsonl").exists(),
+            "{section}: both or neither reveal"
+        );
+        if section_dir.join("revealed.jsonl").exists() {
+            let ran = run_with(&section_dir, true);
+            let written = run_with(&program_dir, true);
+            assert_eq!(
+                text(&ran.1),
+                text(&written.1),
+                "{section}: the revealed run"
+            );
+        }
+    }
 }
 
 #[test]
@@ -302,63 +422,47 @@ fn a_reply_never_follows_an_abort_of_the_run_at_any_switch_point() {
 }
 
 /// The runtime library with its test hook of the scripted engine (`una-rt`'s `test-hooks`),
-/// built once for this test binary beside the plain one, which is then built again, so that
-/// the other tests of the toolchain link the plain runtime: its path. `cargo test` builds
-/// `una-rt`'s static library only when asked.
+/// built once for this test binary in a target directory of its own, so that the plain
+/// `libuna_rt.a` that the other tests of the toolchain link is never replaced, even for a
+/// moment: its path. `cargo test` builds `una-rt`'s static library only when asked.
 fn hooked_runtime() -> PathBuf {
     static BUILT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     BUILT
         .get_or_init(|| {
             let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-            let profile_args: &[&str] = if cfg!(debug_assertions) {
-                &[]
+            let (profile_args, profile): (&[&str], &str) = if cfg!(debug_assertions) {
+                (&[], "debug")
             } else {
-                &["--release"]
+                (&["--release"], "release")
             };
-            let build = |features: &[&str]| {
-                let status = std::process::Command::new(env!("CARGO"))
-                    .args(["build", "--quiet", "--locked", "-p", "una-rt"])
-                    .args(profile_args)
-                    .args(features)
-                    .current_dir(&root)
-                    .status()
-                    .unwrap();
-                assert!(
-                    status.success(),
-                    "cargo build -p una-rt {features:?} failed"
-                );
-            };
-            build(&["--features", "una-rt/test-hooks"]);
-            let built = Path::new(env!("CARGO_BIN_EXE_una"))
-                .parent()
-                .unwrap()
-                .join("libuna_rt.a");
-            let kept = Path::new(env!("CARGO_TARGET_TMPDIR")).join("serve-hooks-libuna_rt.a");
-            std::fs::copy(&built, &kept).unwrap();
-            build(&[]);
-            kept
+            let target = Path::new(env!("CARGO_TARGET_TMPDIR")).join("serve-hooks");
+            let status = std::process::Command::new(env!("CARGO"))
+                .args(["build", "--quiet", "--locked", "-p", "una-rt"])
+                .args(profile_args)
+                .args(["--features", "una-rt/test-hooks", "--target-dir"])
+                .arg(&target)
+                .current_dir(&root)
+                .status()
+                .unwrap();
+            assert!(
+                status.success(),
+                "cargo build -p una-rt --features una-rt/test-hooks failed"
+            );
+            target.join(profile).join("libuna_rt.a")
         })
         .clone()
 }
 
-/// The code of the abort an interpreted run ended with, as the native executable reports it.
-fn abort_code(completion: &Value) -> Option<&'static str> {
-    let aborted = completion["aborted"].as_str()?;
-    if aborted.starts_with("IntText") {
-        return Some("U6003");
-    }
-    panic!("the code of the abort {aborted}: add it here");
-}
-
-/// Runs one case as a native executable over the same scripted engine, through its runtime's
-/// test hook: the lines of `expected.jsonl` and of `run.jsonl` it gives, the completion given
-/// as the interpreter's when the exit status and the diagnostic agree with it.
-fn run_native(dir: &Path, interpreted: &Value) -> (Vec<Value>, Vec<Value>) {
+/// The executable of the case `dir`, built with the runtime's test hook in a fresh copy of it:
+/// the scratch directory, the copy and the package's name. `tag` tells the copies of one case
+/// apart. The description of a package with a `serve` section carries the section (ADR 0123
+/// rule 16).
+fn build_native(dir: &Path, tag: &str) -> (PathBuf, PathBuf, String) {
     let runtime = hooked_runtime();
     let scratch = std::env::temp_dir().join(format!(
-        "una-serve-native-{}-{}",
+        "una-serve-native-{}-{}{tag}",
         std::process::id(),
-        dir.file_name().unwrap().to_string_lossy()
+        dir.file_name().unwrap().to_string_lossy(),
     ));
     let _ = std::fs::remove_dir_all(&scratch);
     std::fs::create_dir_all(&scratch).unwrap();
@@ -388,11 +492,40 @@ fn run_native(dir: &Path, interpreted: &Value) -> (Vec<Value>, Vec<Value>) {
         .unwrap()
         .trim()
         .to_owned();
+    if let Some(module) = served(&manifest) {
+        let executable = std::fs::read(package.join("target/una").join(&name)).unwrap();
+        let section = format!(r#""serve":{{"module":"{module}","within":null}}"#);
+        assert!(
+            executable
+                .windows(section.len())
+                .any(|window| window == section.as_bytes()),
+            "{}: the description lacks {section}",
+            dir.display()
+        );
+    }
+    (scratch, package, name)
+}
+
+/// The code of the abort an interpreted run ended with, as the native executable reports it.
+fn abort_code(completion: &Value) -> Option<&'static str> {
+    let aborted = completion["aborted"].as_str()?;
+    if aborted.starts_with("IntText") {
+        return Some("U6003");
+    }
+    panic!("the code of the abort {aborted}: add it here");
+}
+
+/// Runs one case as a native executable over the same scripted engine, through its runtime's
+/// test hook: the lines of `expected.jsonl` and of `run.jsonl` it gives, the completion given
+/// as the interpreter's when the exit status and the diagnostic agree with it.
+fn run_native(dir: &Path, interpreted: &Value, reveal: bool) -> (Vec<Value>, Vec<Value>) {
+    let (scratch, package, name) = build_native(dir, if reveal { "-revealed" } else { "" });
     let trace = scratch.join("trace.json");
     let wire = scratch.join("wire.jsonl");
     let mut child = std::process::Command::new(package.join("target/una").join(&name))
         .env("UNA_TEST_SERVE_SCRIPT", &package)
         .env("UNA_TEST_SERVE_WIRE", &wire)
+        .env("UNA_TEST_SERVE_REVEAL", if reveal { "1" } else { "0" })
         .args(["--virtual-time", "--trace"])
         .arg(&trace)
         .current_dir(&package)
@@ -457,7 +590,40 @@ fn every_serve_run_runs_alike_in_native_code() {
     for dir in cases() {
         let interpreted: Vec<Value> = lines(&dir.join("run.jsonl"));
         let expected: Vec<Value> = lines(&dir.join("expected.jsonl"));
-        let (wire, ran) = run_native(&dir, &interpreted[0]);
+        if dir.join("revealed.jsonl").exists() {
+            let revealed: Vec<Value> = lines(&dir.join("revealed.jsonl"));
+            let (wire, ran) = run_native(&dir, &revealed[0], true);
+            if wire != expected || ran != revealed {
+                failures.push(format!(
+                    "{}: the revealed run\n--- interpreter\n{}--- native\n{}",
+                    dir.display(),
+                    text(&revealed),
+                    text(&ran)
+                ));
+            }
+            hides_secrets(
+                &dir,
+                "secrets.txt",
+                "the native revealed trace",
+                &text(&ran),
+                &mut failures,
+            );
+        }
+        let (wire, ran) = run_native(&dir, &interpreted[0], false);
+        hides_secrets(
+            &dir,
+            "secrets.txt",
+            "the native trace",
+            &text(&ran),
+            &mut failures,
+        );
+        hides_secrets(
+            &dir,
+            "wire-secrets.txt",
+            "the native bytes",
+            &text(&wire),
+            &mut failures,
+        );
         if wire != expected {
             failures.push(format!(
                 "{}: the wire\n--- interpreter\n{}--- native\n{}",
@@ -476,4 +642,132 @@ fn every_serve_run_runs_alike_in_native_code() {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// A copy of `serve_section_health` whose script sends `n` requests, a multiple of 100, in a
+/// fresh directory: 100 on each connection, the last of them with `Connection: close`, then
+/// the host stop.
+fn requests_case(n: usize) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("una-serve-scaling-{}-{n}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let status = std::process::Command::new("cp")
+        .arg("-R")
+        .arg(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/serve_runs/serve_section_health"),
+        )
+        .arg(&dir)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let mut script = String::new();
+    let mut at = 0;
+    for connection in 1..=n / 100 {
+        let open = json!({"at": at, "connection": connection, "grant": "127.0.0.1:8080", "peer": "192.0.2.1", "reads": "eager"});
+        script.push_str(&format!("{open}\n"));
+        for request in 1..=100 {
+            at += 1;
+            let close = if request == 100 {
+                "Connection: close\r\n"
+            } else {
+                ""
+            };
+            let text = format!("GET /health HTTP/1.1\r\nHost: localhost\r\n{close}\r\n");
+            let line = json!({"at": at, "connection": connection, "text": text});
+            script.push_str(&format!("{line}\n"));
+        }
+        at += 1;
+    }
+    script.push_str(&format!("{}\n", json!({"at": at, "stop": true})));
+    std::fs::write(dir.join("script.jsonl"), script).unwrap();
+    dir
+}
+
+/// The replies of `wire` that answer `200`.
+fn answered(wire: &[Value]) -> usize {
+    wire.iter()
+        .filter(|line| {
+            line["text"]
+                .as_str()
+                .is_some_and(|text| text.starts_with("HTTP/1.1 200 OK"))
+        })
+        .count()
+}
+
+/// The seconds the native executable built in `package` takes to serve its script.
+fn native_seconds(package: &Path, name: &str, n: usize) -> f64 {
+    let wire = package.join("wire.jsonl");
+    let (ran, seconds) = timing::timed(|| {
+        std::process::Command::new(package.join("target/una").join(name))
+            .env("UNA_TEST_SERVE_SCRIPT", package)
+            .env("UNA_TEST_SERVE_WIRE", &wire)
+            .env("UNA_TEST_SERVE_REVEAL", "0")
+            .arg("--virtual-time")
+            .current_dir(package)
+            .output()
+            .unwrap()
+    });
+    assert_eq!(ran.status.code(), Some(0), "{ran:?}");
+    assert_eq!(answered(&lines(&wire)), n);
+    seconds
+}
+
+/// Directories that are removed when it is dropped, a failed assertion's unwinding included.
+struct Scratch(Vec<PathBuf>);
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        for dir in &self.0 {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+}
+
+#[test]
+fn a_serve_section_takes_constant_time_per_request() {
+    // `spec/31 §7` rule 4: each request costs one `next`, one `start`, one move of one reply
+    // right and one `reply`, O(1) beside `handle`, so serving `n` requests takes O(n) in both
+    // engines. From 2,500 to 10,000 requests four times as many take about four times as long;
+    // a cost per request that grew with the requests served would take about sixteen once it
+    // dominates. The bound, 8, lies between the two: most of a request's time is the scripted
+    // engine's and the wire file's, so the bound catches a per-request cost that grows to about
+    // the scripted engine's own per-request cost, not a smaller growing term.
+    let sizes = [2_500, 10_000];
+    let interpreted = |n: usize| {
+        let dir = requests_case(n);
+        let _scratch = Scratch(vec![dir.clone()]);
+        let ((wire, _), seconds) = timing::timed(|| run(&dir));
+        assert_eq!(answered(&wire), n, "interpreted: {n} requests");
+        seconds
+    };
+    let fixed = timing::best_of_three(|| interpreted(100));
+    timing::assert_growth(
+        "interpreted requests",
+        &sizes,
+        fixed,
+        1e-3,
+        8.0,
+        interpreted,
+    );
+    let mut scratch = Scratch(Vec::new());
+    let mut built: BTreeMap<usize, (PathBuf, String)> = BTreeMap::new();
+    for n in [100, sizes[0], sizes[1]] {
+        let case = requests_case(n);
+        scratch.0.push(case.clone());
+        let (dir, package, name) = build_native(&case, "");
+        scratch.0.push(dir);
+        built.insert(n, (package, name));
+    }
+    let native = |n: usize| {
+        let (package, name) = &built[&n];
+        native_seconds(package, name, n)
+    };
+    // The first run of a freshly built executable pays for its first load, which would land
+    // mostly on the smaller size and lower the ratio: each one runs once, unmeasured, first.
+    for n in [100, sizes[0], sizes[1]] {
+        native(n);
+    }
+    let fixed = timing::best_of_three(|| native(100));
+    timing::assert_growth("native requests", &sizes, fixed, 1e-3, 8.0, native);
+    drop(scratch);
 }

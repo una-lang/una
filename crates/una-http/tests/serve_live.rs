@@ -43,7 +43,7 @@ fn start(items: &str, threads: usize) -> Live {
     let signal = Arc::clone(&ready);
     server
         .shared()
-        .on_ready(Arc::new(move || {
+        .on_ready(Arc::new(move |_| {
             let (count, condvar) = &*signal;
             *count.lock().unwrap() += 1;
             condvar.notify_all();
@@ -81,6 +81,19 @@ impl Live {
         // macOS rejects the call with EINVAL once the server has closed the socket.
         let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
         stream
+    }
+}
+
+/// Polls `f` every few milliseconds for up to `limit` and returns its last value, so a count that
+/// settles a moment after the event that causes it is read once settled, not at once.
+fn settled<T: PartialEq>(limit: Duration, want: &T, f: impl Fn() -> T) -> T {
+    let end = Instant::now() + limit;
+    loop {
+        let value = f();
+        if value == *want || Instant::now() >= end {
+            return value;
+        }
+        std::thread::sleep(Duration::from_millis(5));
     }
 }
 
@@ -224,7 +237,11 @@ fn a_peer_over_its_connections_is_closed_at_once() {
     let mut byte = [0u8; 1];
     // Closed by the host without a byte.
     assert_eq!(c.read(&mut byte).unwrap_or(0), 0);
-    assert_eq!(live.server.shared().grants[0].counters().connections, 2);
+    // The accept loop holds a slot for an instant while it attempts the refused connection.
+    let held = settled(Duration::from_secs(5), &2, || {
+        live.server.shared().grants[0].counters().connections
+    });
+    assert_eq!(held, 2);
     drop((a, b));
     live.server.stop();
     live.server.join();
@@ -329,7 +346,7 @@ fn a_panicking_callback_stops_the_run() {
     let (server, _grant) = prepared(port, 4);
     server
         .shared()
-        .on_ready(Arc::new(move || {
+        .on_ready(Arc::new(move |_| {
             let on_serve = std::thread::current()
                 .name()
                 .is_some_and(|n| n.starts_with("una-serve-"));
@@ -387,7 +404,7 @@ fn a_serve_thread_that_ends_gives_back_its_connections_and_accepting_goes_on() {
     // those whose keyed owner was thread 0.
     let port = free_port();
     let (server, _grant) = prepared(port, 2);
-    server.shared().on_ready(Arc::new(|| {})).unwrap();
+    server.shared().on_ready(Arc::new(|_| {})).unwrap();
     server.begin();
     let live = Live {
         server,
@@ -456,7 +473,7 @@ fn a_fault_while_accepting_gives_back_the_slot_and_accepting_goes_on() {
     // accepts. In both cases every later connection is answered.
     let port = free_port();
     let (server, _grant) = prepared(port, 2);
-    server.shared().on_ready(Arc::new(|| {})).unwrap();
+    server.shared().on_ready(Arc::new(|_| {})).unwrap();
     server.begin();
     let live = Live {
         server,
@@ -485,7 +502,8 @@ fn a_fault_while_accepting_gives_back_the_slot_and_accepting_goes_on() {
         matches!(first.read(&mut byte), Ok(0)),
         "the faulted connection is closed"
     );
-    assert_eq!(shared.faults(), 1);
+    // The fault is counted just after the connection is closed.
+    assert_eq!(settled(Duration::from_secs(5), &1, || shared.faults()), 1);
     ask(8);
     assert!((0..shared.threads).all(|t| !shared.is_ended(t)));
     shared.fail_next_bursts(1);

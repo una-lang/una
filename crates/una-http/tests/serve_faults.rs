@@ -127,7 +127,7 @@ fn a_panicking_on_ready_callback_stops_the_run() {
     let calls = Arc::new(AtomicUsize::new(0));
     let seen = Arc::clone(&calls);
     sim.shared
-        .on_ready(Arc::new(move || {
+        .on_ready(Arc::new(move |_| {
             seen.fetch_add(1, Ordering::SeqCst);
             panic!("a program callback panics");
         }))
@@ -497,13 +497,13 @@ fn a_second_registration_of_a_callback_is_a_defined_error() {
     let second = Arc::new(AtomicUsize::new(0));
     let (a, b) = (Arc::clone(&first), Arc::clone(&second));
     assert_eq!(
-        sim.shared.on_ready(Arc::new(move || {
+        sim.shared.on_ready(Arc::new(move |_| {
             a.fetch_add(1, Ordering::SeqCst);
         })),
         Ok(())
     );
     assert_eq!(
-        sim.shared.on_ready(Arc::new(move || {
+        sim.shared.on_ready(Arc::new(move |_| {
             b.fetch_add(1, Ordering::SeqCst);
         })),
         Err(AlreadyRegistered)

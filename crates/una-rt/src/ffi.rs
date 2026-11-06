@@ -8,7 +8,7 @@
 
 use std::ffi::{CStr, c_char, c_int};
 
-use crate::{decimal, generic, host, json, runtime, serve, tasks, values};
+use crate::{decimal, driver, generic, host, json, runtime, serve, tasks, values};
 
 /// The allocator of a debug build (ADR 0113, I3): the release build's [`cap::Cap`], wrapped to
 /// keep the most bytes the process ever held, its high-water mark, and the bytes each thread
@@ -665,6 +665,15 @@ pub extern "C" fn una_rt_http_enable() {
     runtime::enable_http();
 }
 
+/// Called by the C `main` of a program that performs an operation of `HttpServer`, before
+/// `una_rt_start`: lets the run start its serve threads before `main` when its grants include
+/// `serve:` ([`runtime::enable_serve`]). A program without one never calls it, so the linker
+/// drops the serve threads from its executable (ADR 0074 H7).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_serve_enable() {
+    runtime::enable_serve();
+}
+
 /// Checks the memory budget at an iteration of the loop at `site` (U6003 over it): 1 when
 /// the task must stop instead ([`runtime::budget`]).
 #[unsafe(no_mangle)]
@@ -799,6 +808,28 @@ pub extern "C" fn una_rt_start_task(closure: i64, site: i64, captures: i64) -> i
         usize::try_from(captures).unwrap_or(0),
         invoke,
     )
+}
+
+/// Runs the driver of a `serve` section on the run's main task, starting a copy of the borrowed
+/// closure `answer` for each request, with `next` the event of `next` and `site` the driver's
+/// site: 0 after a host stop drained it, or 2 when the task stops ([`driver::drive`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_serve_drive(answer: i64, next: i64, site: i64) -> i64 {
+    driver::drive(answer, next, site)
+}
+
+/// Answers the borrowed `exchange` of a task of the driver of a `serve` section with what
+/// `handle` returned, `value` and `status`, with `reply` the event of `reply`: 0, or 2 when the
+/// task stops ([`driver::answer`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_serve_answer(
+    reply: i64,
+    site: i64,
+    exchange: i64,
+    value: i64,
+    status: i64,
+) -> i64 {
+    driver::answer(reply, site, exchange, value, status)
 }
 
 /// Ends the innermost `tasks` statement once its block has ended, cancelling its tasks first
