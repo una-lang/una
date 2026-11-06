@@ -1,0 +1,44 @@
+-- test: the failures that the deadline of a `for ever within` causes carry the timing label of its body, which counts every value the code it reaches computes (ADR 0116 IF5, IF8, ADR 0116 amendment of 2026-11-06, #1685): a body that calls a function making a `secret` value from its own literals makes `Http`'s `internal` failure too low (U4001 at the loop), as a body reading a `secret` binding does; the same body on `public` values is accepted
+-- spec: spec/26 §7
+-- expect: error U4001 at src/poll.una:30:3
+module poll
+
+import std.time (millisecond)
+
+count(n: Int) -> Int
+=
+  let edit acc = 0
+  for i in 0..<n
+    acc = acc + 1
+  acc
+
+hidden() -> Unit
+=
+  let k: secret Int = 3000000
+  let r = k + 1
+  unit
+
+shown() -> Unit
+=
+  let r = count(3000000)
+  unit
+
+pub secretly(url: Text) -> Unit
+  uses @http: Http[get]
+  diverges
+=
+  for ever within 100 * millisecond
+    hidden()
+    let reading = attempt @http.get(url, headers: [], key_name: None)
+    stop
+  unit
+
+pub openly(url: Text) -> Unit
+  uses @http: Http[get]
+  diverges
+=
+  for ever within 100 * millisecond
+    shown()
+    let reading = attempt @http.get(url, headers: [], key_name: None)
+    stop
+  unit

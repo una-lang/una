@@ -1176,6 +1176,11 @@ pub(crate) struct Findings {
     /// they apply to arguments whose code is not known at the call (#1436). Its `sources` and
     /// `unplaced` are not used.
     pub(crate) handler_seeds: std::collections::BTreeMap<usize, timing::TimingSeed>,
+    /// The join of `ℓ*` of every value each function's body computes, its lambdas' included,
+    /// symbolic labels dropped, by function; `None` or no entry while every value is `public`
+    /// (#1685). A site counts it for every function it reaches, so a value a callee labels
+    /// from literals raises the site's timing label as the same value passed in would.
+    pub(crate) body_labels: std::collections::BTreeMap<usize, Option<label::Label>>,
     /// The `for ever within` loops checked (ADR 0116 rule 11, IF8): each loop's span, its
     /// function, and the seed of its body's timing label.
     pub(crate) deadline_loops: Vec<DeadlineLoop>,

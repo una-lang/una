@@ -5,7 +5,8 @@
 //! 1. While a site is checked, [`Checker::timing_start`] and [`Checker::timing_end`] record
 //!    its [`TimingSeed`]: the program counter, the bindings it reads from outside it, the
 //!    functions it calls, the operations it performs, the handlers it installs and whether it
-//!    calls a function value.
+//!    calls a function value. Every value checked joins `ℓ*` of its type into the seeds of the
+//!    open sites and into the body label of its function or handler ([`Checker::timing_value`]).
 //! 2. Once every body is checked, [`timing`] closes the seed over the call graph of the whole
 //!    package: `τ⁰` from the functions the site reaches, their operations and the handlers that
 //!    can serve them, and `τ_conc` from the parts of task constructs that can run beside it.
@@ -48,6 +49,11 @@ pub(crate) struct TimingSeed {
     pub(crate) node: Option<Caller>,
     /// The innermost construct whose part holds it (P3), an index of `Findings::constructs`.
     pub(crate) construct: Option<usize>,
+    /// The join of `ℓ*` of every value its own code computes, its symbolic labels dropped
+    /// (#1685): a value labeled in it from literals, as `let k: secret Int = 3000000`, counts as
+    /// the same value read from outside would by IF5 item 2; `None` while every value is
+    /// `public`.
+    pub(crate) values: Option<Label>,
     /// The join of the deep labels of what it binds and of the answers of the operations it
     /// performs, for the reach of a `start` (#1674); `None` when it is `public`.
     pub(crate) bound: Option<Label>,
@@ -390,6 +396,35 @@ impl Checker<'_, '_, '_> {
                     .sources
                     .push((label.clone(), format!("the binding `{name}`")));
             }
+        }
+    }
+
+    /// Records a value of type `ty` computed by the code being checked (#1685): `ℓ*` of `ty`,
+    /// its symbolic labels dropped, joins the values of every open site, of the function being
+    /// checked ([`Findings::body_labels`]) and of the handler being checked. A type parameter's
+    /// label `ℓ_T` is dropped, since the values of `T` come from the callers, whose own code
+    /// counts them. O(size of `ty`) per expression, so checking a body stays linear.
+    pub(crate) fn timing_value(&mut self, ty: &Ty) {
+        let label = self.deep(ty).concrete();
+        if label.is_public() {
+            return;
+        }
+        fn raise(values: &mut Option<Label>, label: &Label) {
+            match values {
+                Some(values) if label.flows_to(values) => {}
+                Some(values) => *values = values.join(label),
+                None => *values = Some(label.clone()),
+            }
+        }
+        for frame in &mut self.timing {
+            raise(&mut frame.seed.values, &label);
+        }
+        if let Some(current) = self.current {
+            let body = self.findings.body_labels.entry(current).or_insert(None);
+            raise(body, &label);
+        }
+        if let Some(seed) = self.handler_seed() {
+            raise(&mut seed.values, &label);
         }
     }
 
@@ -789,6 +824,12 @@ pub(crate) fn graph(env: &Env<'_>, findings: &Findings) -> Graph {
         lambda,
     };
     for (f, def) in env.functions.iter().enumerate() {
+        // What its body computes (#1685), as `timing` counts it.
+        if let Some(Some(body)) = findings.body_labels.get(&f)
+            && let Some(slot) = graph.local.get_mut(f)
+        {
+            *slot = slot.join(body);
+        }
         // A call of a function value anywhere in the function, its lambdas' included (IF5 item
         // 4), as `timing` counts it.
         if findings.value_callers.contains(&f)
@@ -814,6 +855,14 @@ pub(crate) fn graph(env: &Env<'_>, findings: &Findings) -> Graph {
         // `⊤` for a parameter whose type may hold a function (#1436).
         for param in &handler.params {
             own = own.join(&handler_param_label(env, &param.ty.base));
+        }
+        // What its operation bodies compute (#1685), as `timing` counts it.
+        if let Some(values) = findings
+            .handler_seeds
+            .get(&h)
+            .and_then(|b| b.values.as_ref())
+        {
+            own = own.join(values);
         }
         let node = graph.handler_node(h);
         if let Some(slot) = graph.local.get_mut(node) {
@@ -903,10 +952,10 @@ pub(crate) fn graph(env: &Env<'_>, findings: &Findings) -> Graph {
 /// recorded.
 fn seed_label(env: &Env<'_>, graph: &Graph, seed: &TimingSeed) -> (Label, bool) {
     let top = Label::top(&env.categories);
-    let mut label = seed
-        .sources
-        .iter()
-        .fold(Label::public(), |tau, (label, _)| tau.join(label));
+    let mut label = seed.sources.iter().fold(
+        seed.values.clone().unwrap_or_else(Label::public),
+        |tau, (label, _)| tau.join(label),
+    );
     let mut http = false;
     let reach = |node: usize, label: &mut Label, http: &mut bool| {
         if let Some(down) = graph.down.get(node) {
@@ -2069,6 +2118,10 @@ struct Gather<'f> {
     needs: Vec<(CapId, String)>,
     /// The sources so far.
     sources: Vec<(Label, String)>,
+    /// The values that the reached functions and handlers compute in their own code, each with
+    /// the source a message names, joined after every other source so that a message names
+    /// what a site reads or performs first (#1685).
+    values: Vec<(Label, String)>,
 }
 
 impl Gather<'_> {
@@ -2139,6 +2192,11 @@ impl Gather<'_> {
                     format!("a call of a function value in `{}`", def.name),
                 ));
             }
+            // What its body computes, as `let k: secret Int = 3000000` (#1685).
+            if let Some(Some(body)) = findings.body_labels.get(&f) {
+                self.values
+                    .push((body.clone(), format!("a value computed in `{}`", def.name)));
+            }
             // A prelude function that applies a function argument, such as `map`, when the
             // site or a function it reaches calls it with an argument whose code is not known
             // at the call, or names it as a value (#1023). Called only with lambdas written at
@@ -2205,6 +2263,14 @@ impl Gather<'_> {
 /// the operations they perform, the handlers they install, a call of a function value (`⊤`)
 /// and a prelude function applied to an argument whose code is not known (`⊤`).
 ///
+/// **Values** (ADR 0116 IF5 item 7, amendment of 2026-11-06, `spec/26 §7` rule 5 item 7,
+/// #1685). The values that the site's own code, each
+/// function reached and each handler taken compute count by `ℓ*` of their types, symbolic labels
+/// dropped: a value a callee labels from literals, as `let k: secret Int = 3000000`, raises `τ`
+/// as the same value passed in does under IF5 item 2. They join after every other source, so a
+/// message names what the site reads or performs first. One label per function, recorded while
+/// its body is checked, so this adds O(F + H) joins to a site.
+///
 /// **Complexity** (review R1 of #1440): each function, handler and operation is taken once per
 /// site, and each lookup is in an ordered map or set, so a site costs
 /// O((F + E + H + O + S) log n), for `F` functions, `E` call edges, `H` handlers, `O`
@@ -2241,7 +2307,15 @@ pub(crate) fn timing(
         queue: seed.handlers.iter().copied().collect(),
         needs: seed.ops.iter().cloned().collect(),
         sources: seed.sources.clone(),
+        values: Vec::new(),
     };
+    // What the site's own code computes, its own bindings included (#1685).
+    if let Some(values) = &seed.values {
+        gather.values.push((
+            values.clone(),
+            "a value computed in its own code".to_owned(),
+        ));
+    }
     if seed.value_call {
         gather
             .sources
@@ -2306,6 +2380,15 @@ pub(crate) fn timing(
             }
             // What its operation bodies run, taken as the site's own code is (#1436).
             if let Some(body) = findings.handler_seeds.get(&id) {
+                if let Some(values) = &body.values {
+                    gather.values.push((
+                        values.clone(),
+                        format!(
+                            "a value computed in the handler `{}`",
+                            env.text(handler.module, handler.ast.name.name)
+                        ),
+                    ));
+                }
                 if body.value_call {
                     gather.sources.push((
                         top.clone(),
@@ -2331,6 +2414,7 @@ pub(crate) fn timing(
         }
     }
     let mut sources = gather.sources;
+    sources.extend(gather.values);
     // `τ_conc` (IF6): `⊤` when a part of a task construct can run beside the site.
     if seed.unplaced || function.is_some_and(|f| concurrent.contains(&f)) {
         sources.push((top, "tasks that can run beside it".to_owned()));

@@ -55,6 +55,7 @@ impl<'a> Checker<'_, 'a, '_> {
         let ty = self.infer_kind(expr, expected, site);
         self.ctx.rl = rl;
         self.typed(expr.span, &ty);
+        self.timing_value(&ty);
         ty
     }
 
