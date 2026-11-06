@@ -56,6 +56,9 @@
     clippy::unwrap_used
 )]
 
+#[path = "common/timing.rs"]
+mod timing;
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -639,4 +642,132 @@ fn every_serve_run_runs_alike_in_native_code() {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// A copy of `serve_section_health` whose script sends `n` requests, a multiple of 100, in a
+/// fresh directory: 100 on each connection, the last of them with `Connection: close`, then
+/// the host stop.
+fn requests_case(n: usize) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("una-serve-scaling-{}-{n}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let status = std::process::Command::new("cp")
+        .arg("-R")
+        .arg(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/serve_runs/serve_section_health"),
+        )
+        .arg(&dir)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let mut script = String::new();
+    let mut at = 0;
+    for connection in 1..=n / 100 {
+        let open = json!({"at": at, "connection": connection, "grant": "127.0.0.1:8080", "peer": "192.0.2.1", "reads": "eager"});
+        script.push_str(&format!("{open}\n"));
+        for request in 1..=100 {
+            at += 1;
+            let close = if request == 100 {
+                "Connection: close\r\n"
+            } else {
+                ""
+            };
+            let text = format!("GET /health HTTP/1.1\r\nHost: localhost\r\n{close}\r\n");
+            let line = json!({"at": at, "connection": connection, "text": text});
+            script.push_str(&format!("{line}\n"));
+        }
+        at += 1;
+    }
+    script.push_str(&format!("{}\n", json!({"at": at, "stop": true})));
+    std::fs::write(dir.join("script.jsonl"), script).unwrap();
+    dir
+}
+
+/// The replies of `wire` that answer `200`.
+fn answered(wire: &[Value]) -> usize {
+    wire.iter()
+        .filter(|line| {
+            line["text"]
+                .as_str()
+                .is_some_and(|text| text.starts_with("HTTP/1.1 200 OK"))
+        })
+        .count()
+}
+
+/// The seconds the native executable built in `package` takes to serve its script.
+fn native_seconds(package: &Path, name: &str, n: usize) -> f64 {
+    let wire = package.join("wire.jsonl");
+    let (ran, seconds) = timing::timed(|| {
+        std::process::Command::new(package.join("target/una").join(name))
+            .env("UNA_TEST_SERVE_SCRIPT", package)
+            .env("UNA_TEST_SERVE_WIRE", &wire)
+            .env("UNA_TEST_SERVE_REVEAL", "0")
+            .arg("--virtual-time")
+            .current_dir(package)
+            .output()
+            .unwrap()
+    });
+    assert_eq!(ran.status.code(), Some(0), "{ran:?}");
+    assert_eq!(answered(&lines(&wire)), n);
+    seconds
+}
+
+/// Directories that are removed when it is dropped, a failed assertion's unwinding included.
+struct Scratch(Vec<PathBuf>);
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        for dir in &self.0 {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+}
+
+#[test]
+fn a_serve_section_takes_constant_time_per_request() {
+    // `spec/31 §7` rule 4: each request costs one `next`, one `start`, one move of one reply
+    // right and one `reply`, O(1) beside `handle`, so serving `n` requests takes O(n) in both
+    // engines. From 2,500 to 10,000 requests four times as many take about four times as long;
+    // a cost per request that grew with the requests served would take about sixteen once it
+    // dominates. The bound, 8, lies between the two: most of a request's time is the scripted
+    // engine's and the wire file's, so the bound catches a per-request cost that grows to about
+    // the scripted engine's own per-request cost, not a smaller growing term.
+    let sizes = [2_500, 10_000];
+    let interpreted = |n: usize| {
+        let dir = requests_case(n);
+        let _scratch = Scratch(vec![dir.clone()]);
+        let ((wire, _), seconds) = timing::timed(|| run(&dir));
+        assert_eq!(answered(&wire), n, "interpreted: {n} requests");
+        seconds
+    };
+    let fixed = timing::best_of_three(|| interpreted(100));
+    timing::assert_growth(
+        "interpreted requests",
+        &sizes,
+        fixed,
+        1e-3,
+        8.0,
+        interpreted,
+    );
+    let mut scratch = Scratch(Vec::new());
+    let mut built: BTreeMap<usize, (PathBuf, String)> = BTreeMap::new();
+    for n in [100, sizes[0], sizes[1]] {
+        let case = requests_case(n);
+        scratch.0.push(case.clone());
+        let (dir, package, name) = build_native(&case, "");
+        scratch.0.push(dir);
+        built.insert(n, (package, name));
+    }
+    let native = |n: usize| {
+        let (package, name) = &built[&n];
+        native_seconds(package, name, n)
+    };
+    // The first run of a freshly built executable pays for its first load, which would land
+    // mostly on the smaller size and lower the ratio: each one runs once, unmeasured, first.
+    for n in [100, sizes[0], sizes[1]] {
+        native(n);
+    }
+    let fixed = timing::best_of_three(|| native(100));
+    timing::assert_growth("native requests", &sizes, fixed, 1e-3, 8.0, native);
+    drop(scratch);
 }
