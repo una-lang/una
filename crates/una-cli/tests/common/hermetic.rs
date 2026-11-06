@@ -76,6 +76,41 @@ pub fn checkout(trees: &[&str]) -> PathBuf {
     root.clone()
 }
 
+/// A sealed copy of `trees` for one test of a test that runs one test per case (#1652), at the
+/// same relative paths under its [`CaseCheckout::root`]: [`checkout`] for a single case, where a
+/// copy of the whole corpus per test would cost more than the test. Under
+/// `CARGO_TARGET_TMPDIR/hermetic/<test crate>-<process id>-<n>`, `n` counting the calls of the
+/// process, so tests running at once, in one process or in many, never share a copy; removed
+/// when the value is dropped, and by a later call once a day old if its test was killed.
+/// O(bytes of the trees).
+pub fn checkout_case(trees: &[&str]) -> CaseCheckout {
+    static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let parent = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("hermetic");
+    // The copies of a killed test, a day old or more.
+    remove_stale(&parent);
+    let base = parent.join(format!(
+        "{}-{}-{n}",
+        env!("CARGO_CRATE_NAME"),
+        std::process::id()
+    ));
+    let root = checkout_under(&base, trees);
+    CaseCheckout { base, root }
+}
+
+/// A copy made by [`checkout_case`], removed when dropped.
+pub struct CaseCheckout {
+    base: PathBuf,
+    /// The root of the copy, which holds the trees at their paths relative to the repository.
+    pub root: PathBuf,
+}
+
+impl Drop for CaseCheckout {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.base);
+    }
+}
+
 /// [`checkout`] made afresh under `base`, which it seals: the root is `base/repository`.
 pub fn checkout_under(base: &Path, trees: &[&str]) -> PathBuf {
     let root = base.join("repository");
