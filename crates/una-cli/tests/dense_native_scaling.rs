@@ -3,12 +3,15 @@
 //! the matrix moves into the runtime's `_owned` entry point, which writes the element in place
 //! when the matrix and its store are held once. Reading and writing each of `n` elements once
 //! through two levels of loops is O(n) in total, O(1) per access; a copy at each `set`, of the
-//! whole matrix, would make it O(n^2). Only the native run is timed, the shortest of three per
-//! size, and a miss is measured twice more (#341).
+//! whole matrix, would make it O(n^2). Only the native run is timed, by its processor time
+//! (`cpu::cpu_output`, #1662), the shortest of three per size, and a miss is measured twice more
+//! (#341).
 
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
 
+#[path = "common/cpu.rs"]
+mod cpu;
 #[path = "common/native_build.rs"]
 mod native_build;
 #[path = "common/timing.rs"]
@@ -16,7 +19,6 @@ mod timing;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Instant;
 
 use native_build::{root, una};
 
@@ -49,19 +51,17 @@ fn built(dir: &Path, source: &str) -> PathBuf {
     dir.join("target/una/scaling")
 }
 
-/// The seconds a run of `exe` takes, the shortest of three.
+/// The processor time of a run of `exe` (`cpu::cpu_output`, #1662), the shortest of three.
 fn run_seconds(exe: &Path) -> f64 {
     timing::best_of_three(|| {
-        let started = Instant::now();
-        let run = Command::new(exe).output().unwrap();
-        let seconds = started.elapsed().as_secs_f64();
+        let (run, seconds) = cpu::cpu_output(&Command::new(exe));
         assert_eq!(run.status.code(), Some(0), "{run:?}");
         seconds
     })
 }
 
 #[test]
-fn a_matrix_set_through_nested_loops_in_native_code_takes_linear_time() {
+fn a_matrix_set_through_nested_loops_in_native_code_takes_linear_cpu_time() {
     // From 200,000 to 400,000 elements, twice as many accesses take about twice as long; a copy
     // of the matrix at each `set` would take about four times. The bound, 3, lies between the
     // two.
