@@ -643,10 +643,11 @@ fn serve_section_drains(engine: Engine) {
     let answer = read_reply(&mut stream);
     let (code, lines, stderr) = run.end();
     assert_eq!(code, Some(0), "{engine:?}: {stderr}");
-    assert_eq!(output(&lines), ["handling", "stopped"]);
+    assert_eq!(output(&lines), ["handling", "stopped"], "{engine:?}");
     assert_eq!(
         dateless(&answer),
-        "HTTP/1.1 200 OK\r\nContent-Length: 4\r\ncontent-type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\ndone"
+        "HTTP/1.1 200 OK\r\nContent-Length: 4\r\ncontent-type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\ndone",
+        "{engine:?}"
     );
     let trace = trace(&dir);
     // The second `next` ends at the stop while the request is in flight; its task replies
@@ -701,12 +702,13 @@ fn serve_section_hard_stop(engine: Engine) {
     let answer = read_to_close(&mut stream);
     let (code, lines, stderr) = run.end();
     assert_eq!(code, Some(1), "{engine:?}: {stderr}");
-    assert!(stderr.contains("[U6007]"), "{stderr}");
-    assert_eq!(output(&lines), ["handling"]);
+    assert!(stderr.contains("[U6007]"), "{engine:?}: {stderr}");
+    assert_eq!(output(&lines), ["handling"], "{engine:?}");
     assert_eq!(
         dateless(&answer),
-        "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nRetry-After: 1\r\nConnection: close\r\n\r\n"
+        "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nRetry-After: 1\r\nConnection: close\r\n\r\n",
+        "{engine:?}"
     );
-    assert!(!has_unanswered(&trace(&dir)));
+    assert!(!has_unanswered(&trace(&dir)), "{engine:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }

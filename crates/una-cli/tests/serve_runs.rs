@@ -712,19 +712,32 @@ fn native_seconds(package: &Path, name: &str, n: usize) -> f64 {
     seconds
 }
 
+/// Directories that are removed when it is dropped, a failed assertion's unwinding included.
+struct Scratch(Vec<PathBuf>);
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        for dir in &self.0 {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+}
+
 #[test]
 fn a_serve_section_takes_constant_time_per_request() {
     // `spec/31 §7` rule 4: each request costs one `next`, one `start`, one move of one reply
     // right and one `reply`, O(1) beside `handle`, so serving `n` requests takes O(n) in both
     // engines. From 2,500 to 10,000 requests four times as many take about four times as long;
-    // a cost per request that grew with the requests served would take about sixteen. The
-    // bound, 8, lies between the two.
+    // a cost per request that grew with the requests served would take about sixteen once it
+    // dominates. The bound, 8, lies between the two: most of a request's time is the scripted
+    // engine's and the wire file's, so the bound catches a per-request cost that grows to about
+    // the scripted engine's own per-request cost, not a smaller growing term.
     let sizes = [2_500, 10_000];
     let interpreted = |n: usize| {
         let dir = requests_case(n);
+        let _scratch = Scratch(vec![dir.clone()]);
         let ((wire, _), seconds) = timing::timed(|| run(&dir));
-        assert_eq!(answered(&wire), n);
-        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(answered(&wire), n, "interpreted: {n} requests");
         seconds
     };
     let fixed = timing::best_of_three(|| interpreted(100));
@@ -736,20 +749,25 @@ fn a_serve_section_takes_constant_time_per_request() {
         8.0,
         interpreted,
     );
-    let built: BTreeMap<usize, (PathBuf, PathBuf, String)> = [100, sizes[0], sizes[1]]
-        .into_iter()
-        .map(|n| (n, build_native(&requests_case(n), "")))
-        .collect();
+    let mut scratch = Scratch(Vec::new());
+    let mut built: BTreeMap<usize, (PathBuf, String)> = BTreeMap::new();
+    for n in [100, sizes[0], sizes[1]] {
+        let case = requests_case(n);
+        scratch.0.push(case.clone());
+        let (dir, package, name) = build_native(&case, "");
+        scratch.0.push(dir);
+        built.insert(n, (package, name));
+    }
     let native = |n: usize| {
-        let (_, package, name) = &built[&n];
+        let (package, name) = &built[&n];
         native_seconds(package, name, n)
     };
+    // The first run of a freshly built executable pays for its first load, which would land
+    // mostly on the smaller size and lower the ratio: each one runs once, unmeasured, first.
+    for n in [100, sizes[0], sizes[1]] {
+        native(n);
+    }
     let fixed = timing::best_of_three(|| native(100));
     timing::assert_growth("native requests", &sizes, fixed, 1e-3, 8.0, native);
-    for (n, (scratch, _, _)) in built {
-        let _ = std::fs::remove_dir_all(scratch);
-        let _ = std::fs::remove_dir_all(
-            std::env::temp_dir().join(format!("una-serve-scaling-{}-{n}", std::process::id())),
-        );
-    }
+    drop(scratch);
 }
