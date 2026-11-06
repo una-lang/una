@@ -538,6 +538,45 @@ fn an_executable_that_never_uses_http_carries_no_tls_stack() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn an_executable_that_serves_nothing_carries_no_serve_engine() {
+    // ADR 0074 H7, `spec/31 §6` rule 14: the runtime reaches the serve engine only through
+    // `una_rt_serve_enable`, which the C `main` of a program with an operation of `HttpServer`
+    // calls, so `hello` links none of it: not the serve threads, not their start, stop and join,
+    // and not the engine's panic hook (review of #1655, M2).
+    let hello = "module hello\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  @console.print(\"Hello, Una\")\n";
+    let dir = package(
+        "plainserve",
+        "\n[run]\nentry = \"hello\"\ngrants = [\"console\"]\n",
+        &[("src/hello.una", hello)],
+    );
+    let built = una(&dir, &["build", "."]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    let symbols = Command::new("nm")
+        .arg(dir.join("target/una/plainserve"))
+        .output()
+        .unwrap();
+    assert!(symbols.status.success(), "{symbols:?}");
+    let symbols = String::from_utf8_lossy(&symbols.stdout);
+    // Mangled names: `una_http::serve::thread`, `Server::start`, `Server::stop`, `Live::end`,
+    // `fault::install_hook`, and the runtime's `install_live` and `end_engine`.
+    for needle in [
+        "5serve6thread",
+        "6Server5start",
+        "6Server4stop",
+        "4Live3end",
+        "5fault12install_hook",
+        "12install_live",
+        "10end_engine",
+    ] {
+        assert!(
+            !symbols.contains(needle),
+            "{needle} found in a program that serves nothing"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The bytes of `ring`'s code in `executable`: each `ring_core` text symbol runs to the next
 /// symbol, by `nm -n`.
 fn ring_bytes(executable: &Path) -> u64 {

@@ -307,7 +307,10 @@ pub(crate) fn install_panic_hook() {
             }
         }));
     });
-    una_http::serve::install_panic_hook();
+    // The serve engine's, chained over it, only in a program that serves ([`enable_serve`]).
+    if let Some(hooks) = SERVE.get() {
+        (hooks.hook)();
+    }
 }
 
 /// What a [`guarded`] region of a `together` block does, for the message of a panic in it.
@@ -348,21 +351,41 @@ pub(crate) fn enable_http() {
     let _ = HTTP_PREPARE.set(una_http::client::prepare);
 }
 
-/// How a run starts its serve threads before `main`, set only by a program that performs an
-/// operation of `HttpServer` ([`enable_serve`]): the only reference to the serve threads from the
-/// runtime's start, so an executable that serves nothing carries none of them (ADR 0074 H7).
-type ServeStart = fn(
-    una_http::serve::Prepared,
-    &[una_core::http::serve::ServeGrant],
-    usize,
-    &RunStop,
-) -> Result<(), String>;
-static SERVE_START: OnceLock<ServeStart> = OnceLock::new();
+/// What the runtime does with the serve engine, set only by a program that performs an
+/// operation of `HttpServer` ([`enable_serve`]): the only references to the serve engine from
+/// the runtime, so an executable that serves nothing links none of its code, neither the serve
+/// threads, nor their stop and join, nor its panic hook (ADR 0074 H7;
+/// `an_executable_that_serves_nothing_carries_no_serve_engine` in `crates/una-cli/tests/http.rs`).
+struct ServeHooks {
+    /// Starts the serve threads before `main` ([`crate::serve::install_live`]).
+    start: fn(
+        una_http::serve::Prepared,
+        &[una_core::http::serve::ServeGrant],
+        usize,
+        &RunStop,
+    ) -> Result<(), String>,
+    /// Ends them at the run's end ([`crate::serve::end_engine`]).
+    end: fn(std::time::Duration, bool),
+    /// Installs the serve engine's panic hook over the runtime's (`spec/31 §6` rule 13).
+    hook: fn(),
+}
+static SERVE: OnceLock<ServeHooks> = OnceLock::new();
 
 /// Lets the runs of this process start their serve threads before `main` when their grants
 /// include `serve:` (`una_rt_serve_enable`).
 pub(crate) fn enable_serve() {
-    let _ = SERVE_START.set(crate::serve::install_live);
+    let _ = SERVE.set(ServeHooks {
+        start: crate::serve::install_live,
+        end: crate::serve::end_engine,
+        hook: una_http::serve::install_panic_hook,
+    });
+}
+
+/// Ends the serve engine of a run that serves ([`ServeHooks::end`]); nothing in any other.
+fn end_serving(drain: std::time::Duration, hard: bool) {
+    if let Some(hooks) = SERVE.get() {
+        (hooks.end)(drain, hard);
+    }
 }
 
 /// The bytes that 2^32 − 1 references take, one word each: a count at its limit with less held
@@ -2159,7 +2182,7 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
     // bound above; they accept nothing until its first server operation (S4 amendment B.2).
     // Any other run holds its listeners until it ends.
     let serves = meta.serve && meta.uses.iter().any(|need| need.capability == "HttpServer");
-    let live = SERVE_START.get().filter(|_| serves);
+    let live = SERVE.get().map(|hooks| hooks.start).filter(|_| serves);
     let _listeners = if let Some(install) = live
         && !scripted
         && !listeners.listeners.is_empty()
@@ -2531,7 +2554,7 @@ fn finish(mut state: State) -> i32 {
     crate::serve::script::end();
     // The serve threads write what the run answered, then end (ADR 0123 rule 18); after an
     // abort that ends the process at once, `abort_run` made the hard stop already.
-    crate::serve::end_engine(
+    end_serving(
         run_stop().map_or(std::time::Duration::from_secs(1), |stop| stop.grace()),
         false,
     );
@@ -3236,12 +3259,13 @@ fn abort_run(state: State, code: Code, location: Location, message: String) {
     let least = if code == Code::U8001 { 3 } else { 1 };
     // Every reply right still held is answered `503`, with no event, before the process ends
     // without waiting for its tasks (ADR 0123 rule 4.5, rule 18 item 6). After the hard stop or
-    // an internal error, the engine's hard stop comes first, while the exchanges the tasks hold
-    // are still open: the serve threads answer each `503` in one non-blocking write and close
-    // every connection, without waiting on a peer, whatever the order in which they see the
-    // stop and a later answer (`Port::hard_stop`); the answers below then send nothing.
+    // an internal error, the engine's hard stop comes first: from it on the engine discards the
+    // program's answers, and the serve threads answer each exchange still open `503` in one
+    // non-blocking write and close every connection, without waiting on a peer; the wait for
+    // them (at most a second) ends before the answers below, which then send nothing. A reply
+    // that took its exchange just before the hard stop may be lost with its connection.
     if matches!(code, Code::U6007 | Code::U8001) {
-        crate::serve::end_engine(std::time::Duration::ZERO, true);
+        end_serving(std::time::Duration::ZERO, true);
     }
     crate::serve::answer_all_left();
     crate::ceiling(usize::MAX);

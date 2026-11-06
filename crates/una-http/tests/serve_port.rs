@@ -20,7 +20,7 @@ use una_core::http::serve::ServeGrant;
 use una_http::reply::Reply;
 use una_http::serve::live::Live;
 use una_http::serve::program::{Port, Waited};
-use una_http::serve::run::Next;
+use una_http::serve::run::{Next, Sent};
 use una_http::serve::{ServeInput, prepare};
 
 fn free_port() -> u16 {
@@ -206,16 +206,18 @@ fn the_hard_stop_answers_an_exchange_still_held() {
     stream
         .write_all(b"GET /held HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
         .unwrap();
-    let exchange = next(&live, Duration::from_secs(10)).unwrap();
-    // The program's side makes the hard stop before it drops what its tasks hold.
+    let mut exchange = next(&live, Duration::from_secs(10)).unwrap();
+    // The program's side makes the hard stop, then answers what its task held at once, on the
+    // same thread, as the interpreter does at a task's end: the serve thread has not seen the
+    // stop yet, and the engine must still be the one that answers (review of #1655, H1).
     Port::hard_stop(&live);
+    assert_eq!(exchange.answer(503), Sent::Discarded);
     let answer = read_all(&mut stream);
     assert!(
         answer.starts_with("HTTP/1.1 503 Service Unavailable\r\n"),
         "{answer}"
     );
     assert!(answer.contains("Retry-After: 1\r\n"), "{answer}");
-    // Dropped after the hard stop, the exchange sends nothing more.
     drop(exchange);
     live.end(Duration::ZERO, true);
     assert!(live.is_quiet());
@@ -253,4 +255,33 @@ fn every_live_run_draws_its_own_trace_key() {
     assert_ne!(one.trace_key(), una_http::serve::trace::TraceKey::ZERO);
     one.end(Duration::from_secs(5), false);
     two.end(Duration::from_secs(5), false);
+}
+
+#[test]
+fn a_reply_after_the_hard_stop_is_discarded_and_the_engine_answers() {
+    // L1 of the review of #1655: a task that replies after the hard stop, before its next check
+    // point, sends nothing; the peer gets the hard stop's `503`, whatever the serve thread saw.
+    for _ in 0..20 {
+        let (live, port) = live(2);
+        live.begin();
+        let mut stream = client(port);
+        stream
+            .write_all(b"GET /late HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+            .unwrap();
+        let mut exchange = next(&live, Duration::from_secs(10)).unwrap();
+        live.hard_stop();
+        let sent = exchange.reply(&Reply {
+            status: 200,
+            headers: Vec::new(),
+            body: "late".to_owned(),
+        });
+        assert_eq!(sent, Ok(Sent::Discarded));
+        let answer = read_all(&mut stream);
+        assert!(
+            answer.starts_with("HTTP/1.1 503 Service Unavailable\r\n"),
+            "{answer}"
+        );
+        drop(exchange);
+        live.end(Duration::ZERO, true);
+    }
 }

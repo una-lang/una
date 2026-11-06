@@ -63,10 +63,12 @@ pub trait Port: Sync {
 
     /// The hard stop of the engine (ADR 0123 rule 18 item 6): every exchange still open is
     /// answered `503` in one non-blocking write and every connection closes, without waiting on
-    /// a peer. The program's side calls it before it drops the exchanges that its tasks still
-    /// hold at the hard stop, so that those exchanges are open when the engine answers them,
-    /// whatever the order in which the serve threads see the stop and a later answer. An engine
-    /// with no peers to answer, as a script's, does nothing.
+    /// a peer. From the call on, the engine discards every answer and reply of the program
+    /// before it can take an exchange ([`super::run::Exchange::reply`]), so only the serve
+    /// threads end the exchanges still open. The program's side calls it before it drops the
+    /// exchanges its tasks hold at the hard stop. A reply that took its exchange just before the
+    /// hard stop may still be lost: its connection can close before the reply is written. An
+    /// engine with no peers to answer, as a script's, does nothing.
     fn hard_stop(&self) {}
 
     /// The key of the run's reduced trace form (ADR 0123 rule 1, [`TraceKey`]): drawn at random

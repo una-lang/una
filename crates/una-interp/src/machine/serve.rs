@@ -631,8 +631,10 @@ impl<'p> Machine<'p, '_> {
         };
         let hard = hard_stopped(result);
         if hard {
-            // The engine answers the exchanges still open, these included, before they are
-            // dropped, so the peer gets the hard stop's `503` (rule 18 item 6).
+            // The engine's hard stop, made by the watcher already and here again in case the
+            // task got here first: from it on the engine discards the answers below, and its
+            // serve threads answer the exchanges still open, these included, `503` (rule 18
+            // item 6).
             serving.port.hard_stop();
         }
         let ended = serving.rights.end(self.holder());

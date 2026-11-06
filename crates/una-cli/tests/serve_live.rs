@@ -469,6 +469,7 @@ pub main() -> Unit
 
 #[test]
 fn the_hard_stop_answers_every_held_right_with_503_and_no_event() {
+    let mut seen: Vec<Value> = Vec::new();
     for engine in ENGINES {
         let port = free_port();
         let dir = package("live_hard", port, HARD, engine);
@@ -491,10 +492,15 @@ fn the_hard_stop_answers_every_held_right_with_503_and_no_event() {
         );
         let trace = trace(&dir);
         // Native code ends the process at the hard stop and writes no `unanswered` event; the
-        // interpreter writes what native code writes (`spec/31 §1` rule 3 item 5).
+        // interpreter writes none either (`spec/31 §1` rule 3 item 5).
         assert!(!has_unanswered(&trace), "{engine:?}: {trace}");
+        seen.push(trace);
         let _ = std::fs::remove_dir_all(&dir);
     }
+    assert_eq!(
+        seen[0], seen[1],
+        "the engines' traces differ at the hard stop"
+    );
 }
 
 /// A server that answers each request at once on its own task, without a `tasks` statement:

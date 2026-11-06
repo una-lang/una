@@ -322,11 +322,12 @@ fn watch(stop: &RunStop, deadline: Option<Duration>) {
         std::thread::sleep((grace - elapsed).min(GRACE_STEP));
     };
     stop.hard.store(reason, Ordering::SeqCst);
+    // The serve engine first: from here it refuses the program's answers and answers every open
+    // exchange `503` in one write, closing every connection without waiting on a peer (ADR 0123
+    // rule 18 item 6), before any task can reach a check point that sees the hard stop.
+    stop.hook.run(true);
     // Every check point of the run takes its slow path, and finds the hard stop.
     una_sys::attention::raise_all();
-    // The serve engine answers every open exchange `503` in one write and closes every
-    // connection, without waiting on a peer (ADR 0123 rule 18 item 6).
-    stop.hook.run(true);
     let hard = Instant::now();
     loop {
         if stop.done() {
