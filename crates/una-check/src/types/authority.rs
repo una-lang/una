@@ -3754,8 +3754,9 @@ pub(crate) fn via_timing(env: &Env<'_>, findings: &Findings, report: &mut Report
         }
         // A site already refused with U4001 at its own span keeps that one diagnostic: a
         // `limiter` that can run beside other tasks always is, by `spec/27 §10`, since the
-        // preview's `τ_conc` there is `⊤`, above `internal`; so is a `within` whose outcome
-        // flows into a binding labeled below its timing label.
+        // preview's `τ_conc` there is `⊤`, above `internal`. A flow of a site's outcome into a
+        // binding labeled too low is reported at the operand, not at the site, so it does not
+        // match here, and the site gets the U4001 of this rule beside it.
         if report.has(Code::U4001, span) {
             continue;
         }

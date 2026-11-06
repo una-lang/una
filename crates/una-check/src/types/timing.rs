@@ -1712,7 +1712,8 @@ impl ViaReach {
 
 /// [`ViaReach`] of the package: the graph of ADR 0116 P1, O(F + H + C + O + E), and one search
 /// of it from every `via` function at once, each node taking the first `via` that reaches it,
-/// with each lambda's edges taken from its home: O(V + E + A log A) for `A` opaque applications.
+/// with each lambda's edges taken from its home: O(V log F + E + A log A), for `A` opaque
+/// applications, since each node looks up the sets of value callers and opaque appliers.
 pub(crate) fn via_reach(env: &Env<'_>, findings: &Findings) -> ViaReach {
     let graph = graph(env, findings);
     let nodes = graph.succ.len();
