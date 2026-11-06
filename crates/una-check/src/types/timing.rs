@@ -44,6 +44,10 @@ pub(crate) struct TimingSeed {
     /// Whether it lies inside a lambda, a `together` task or a handler's operation, whose
     /// concurrent work the structure of its function does not show: `τ_conc` is then `⊤`.
     pub(crate) unplaced: bool,
+    /// The join of what decides whether each call, operation and install in it runs: the
+    /// program counter and the left operands of `and`, `or` and `implies` there (#1674);
+    /// `None` when it is `public`.
+    pub(crate) decides: Option<Label>,
 }
 
 /// The timing label of a site (ADR 0116 IF5): its join, and the sources it joins, in the order
@@ -156,7 +160,28 @@ impl Checker<'_, '_, '_> {
     pub(crate) fn graph_call(&mut self, callee: usize) {
         if let Some(from) = self.caller() {
             self.findings.calls.insert((from, callee));
+            self.graph_decides(from);
         }
+    }
+
+    /// What decides whether a call here runs: the program counter, and the left operands of the
+    /// `and`, `or` and `implies` whose right operand is being checked (#1674).
+    pub(crate) fn decides(&self) -> Label {
+        self.ctx.pc.join(&self.short_circuit)
+    }
+
+    /// Joins [`Self::decides`] into what decides the calls of the node `from` (#1674).
+    fn graph_decides(&mut self, from: Caller) {
+        let decides = self.decides();
+        if decides.is_public() {
+            return;
+        }
+        let slot = self
+            .findings
+            .call_pcs
+            .entry(from)
+            .or_insert_with(Label::public);
+        *slot = slot.join(&decides);
     }
 
     /// Records that the code being checked performs the operation `op` of `capability`, an edge
@@ -167,6 +192,7 @@ impl Checker<'_, '_, '_> {
             self.findings
                 .caller_ops
                 .insert((from, capability, op.to_owned()));
+            self.graph_decides(from);
         }
     }
 
@@ -174,6 +200,7 @@ impl Checker<'_, '_, '_> {
     pub(crate) fn graph_value_call(&mut self) {
         if let Some(from) = self.caller() {
             self.findings.value_calls.insert(from);
+            self.graph_decides(from);
         }
     }
 
@@ -181,6 +208,7 @@ impl Checker<'_, '_, '_> {
     pub(crate) fn graph_install(&mut self, handler: usize) {
         if let Some(from) = self.caller() {
             self.findings.caller_installs.insert((from, handler));
+            self.graph_decides(from);
         }
     }
 
@@ -252,9 +280,28 @@ impl Checker<'_, '_, '_> {
         Some(self.findings.handler_seeds.entry(handler).or_default())
     }
 
+    /// Joins [`Self::decides`] into the seed of every open site, for the depth of a started
+    /// task (#1674).
+    fn timing_decides(&mut self) {
+        if self.timing.is_empty() {
+            return;
+        }
+        let decides = self.decides();
+        if decides.is_public() {
+            return;
+        }
+        for frame in &mut self.timing {
+            frame.seed.decides = Some(match &frame.seed.decides {
+                Some(before) => before.join(&decides),
+                None => decides.clone(),
+            });
+        }
+    }
+
     /// Records a call of, or a reference to, the function `callee` in every open site, and in
     /// the seed of the handler being checked.
     pub(crate) fn timing_callee(&mut self, callee: usize) {
+        self.timing_decides();
         for frame in &mut self.timing {
             frame.seed.callees.insert(callee);
         }
@@ -266,6 +313,7 @@ impl Checker<'_, '_, '_> {
     /// Records the operation `op` of `capability` in every open site, and in the seed of the
     /// handler being checked.
     pub(crate) fn timing_op(&mut self, capability: CapId, op: &str) {
+        self.timing_decides();
         for frame in &mut self.timing {
             frame.seed.ops.insert((capability, op.to_owned()));
         }
@@ -277,6 +325,7 @@ impl Checker<'_, '_, '_> {
     /// Records the installation of the handler `handler` in every open site, and in the seed
     /// of the handler being checked.
     pub(crate) fn timing_install(&mut self, handler: usize) {
+        self.timing_decides();
         for frame in &mut self.timing {
             frame.seed.handlers.insert(handler);
         }
@@ -288,6 +337,7 @@ impl Checker<'_, '_, '_> {
     /// Records a call of a function value in every open site (IF5 item 4), and in the seed of
     /// the handler being checked (#1436).
     pub(crate) fn timing_value_call(&mut self) {
+        self.timing_decides();
         for frame in &mut self.timing {
             frame.seed.value_call = true;
         }
@@ -789,6 +839,176 @@ fn seed_label(env: &Env<'_>, graph: &Graph, seed: &TimingSeed) -> (Label, bool) 
         reach(graph.lambda, &mut label, &mut http);
     }
     (label, http)
+}
+
+/// What decides how deep the code of each node of [`Graph`] can recurse (#1674): the join,
+/// over every node it reaches, itself included, of what decides each call, operation and
+/// install written there ([`Findings::call_pcs`]), and whether it reaches code whose calls the
+/// findings do not show precisely, for which [`depth`] takes `τ⁰` instead.
+pub(crate) struct DepthGraph {
+    /// The successors of each node: those of [`Graph`], and from each policy to its `via`
+    /// function, which a call of the policy runs.
+    succ: Vec<Vec<usize>>,
+    /// The join of what decides the calls of every node each node reaches.
+    down: Vec<Label>,
+    /// Whether each node reaches code the findings do not show precisely.
+    loose: Vec<bool>,
+    /// What decides the calls of each node itself, for a message.
+    local: Vec<Label>,
+}
+
+/// Whether the calls of `def` are not shown precisely by the findings, so that what decides
+/// them is not known (#1674): a standard function or one of a dependency not checked with the
+/// package, whose bodies are checked apart; a generic function, whose conditions on values of
+/// a type parameter carry the labels of its callers' types, not of its own; and a function
+/// that applies a function argument, such as `map`, which may call it once per element.
+fn loose_calls(env: &Env<'_>, def: &super::env::FnDef<'_>) -> bool {
+    def.module >= env.prelude
+        || !env.reports(def.module)
+        || !def.type_params.is_empty()
+        || applies_function(env, def)
+}
+
+/// The [`DepthGraph`] of the package, over `graph`: two passes of [`close`], O(V + E + P) for
+/// `P` policies.
+pub(crate) fn depth_graph(env: &Env<'_>, findings: &Findings, graph: &Graph) -> DepthGraph {
+    let nodes = graph.succ.len();
+    let mut succ = graph.succ.clone();
+    for (&via, &policy) in &env.vias {
+        if via < graph.functions
+            && let Some(edges) = succ.get_mut(policy)
+        {
+            edges.push(via);
+        }
+    }
+    let mut local = vec![Label::public(); nodes];
+    let mut loose = vec![false; nodes];
+    for (caller, label) in &findings.call_pcs {
+        if let Some(slot) = graph.node_of(*caller).and_then(|node| local.get_mut(node)) {
+            *slot = label.clone();
+        }
+    }
+    let apart = |module: usize| module >= env.prelude || !env.reports(module);
+    for (f, def) in env.functions.iter().enumerate() {
+        if loose_calls(env, def)
+            && let Some(slot) = loose.get_mut(f)
+        {
+            *slot = true;
+        }
+    }
+    // A handler checked apart, whose operation bodies the findings do not hold.
+    for (h, handler) in env.handlers.iter().enumerate() {
+        if apart(handler.module)
+            && let Some(slot) = loose.get_mut(graph.handler_node(h))
+        {
+            *slot = true;
+        }
+    }
+    // `Λ`, every lambda and every function named as a value, is precise when the findings hold
+    // every lambda a call of a function value can run, each checked with the labels of its
+    // captures. Not when a dependency checked apart may make one, or a generic function's
+    // lambda may branch on a value of a type parameter, or a standard function's result is of
+    // a function type. The standard modules write no lambda, so a function value they return
+    // otherwise came from the package, whose lambdas `Λ` holds.
+    let lambdas_apart = env.functions.iter().any(|def| {
+        if def.module >= env.prelude {
+            holds_fn_type(&def.result.base)
+        } else if env.reports(def.module) {
+            !def.type_params.is_empty()
+        } else {
+            true
+        }
+    });
+    if lambdas_apart && let Some(slot) = loose.get_mut(graph.lambda) {
+        *slot = true;
+    }
+    DepthGraph {
+        down: close(&succ, &local, |a: &Label, b: &Label| a.join(b)),
+        loose: close(&succ, &loose, |a: &bool, b: &bool| *a || *b),
+        local,
+        succ,
+    }
+}
+
+/// What decides how deep a site whose checking recorded `seed` can recurse (#1674): what
+/// decides its own calls, joined with `down` of every node it reaches, `Λ` for a call of a
+/// function value, and whether it reaches code the findings do not show precisely, a function
+/// applied to an argument whose code is not known at the call included. O(size of the seed)
+/// lookups.
+///
+/// The depth a task reaches is decided by which calls run, and each runs or not by the program
+/// counter at it and the left operands of the `and`, `or` and `implies` around it: a function's
+/// parameters bound by their types what its conditions read, `fail` and `if error pass` need a
+/// `public` program counter (`spec/07 §3` rule 3), and a loop runs its body under the label of
+/// what it visits. So, where the findings show every call, the depth depends on no data above
+/// this label.
+pub(crate) fn depth(graph: &Graph, depth: &DepthGraph, seed: &TimingSeed) -> (Label, bool) {
+    let mut label = seed.decides.clone().unwrap_or_else(Label::public);
+    let mut loose = !seed.opaque_applies.is_empty();
+    let mut reach = |node: usize| {
+        if let Some(down) = depth.down.get(node) {
+            label = label.join(down);
+        }
+        loose |= depth.loose.get(node).copied().unwrap_or(false);
+    };
+    for &callee in &seed.callees {
+        if callee < graph.functions {
+            reach(callee);
+        }
+    }
+    for &handler in &seed.handlers {
+        if handler < graph.handlers {
+            reach(graph.handler_node(handler));
+        }
+    }
+    for (cap, op) in &seed.ops {
+        match graph.ops.get(&(*cap, op.clone())) {
+            Some(&node) => reach(node),
+            None if *cap < graph.capabilities => reach(graph.cap_node(*cap)),
+            None => {}
+        }
+    }
+    if seed.value_call {
+        reach(graph.lambda);
+    }
+    (label, loose)
+}
+
+/// The first function, in index order, that a site whose checking recorded `seed` reaches and
+/// whose calls are decided by data above `bound`, for a message (#1674). O(V + E).
+/// `None` when only a lambda's calls, or the site's own, are.
+pub(crate) fn depth_culprit(
+    env: &Env<'_>,
+    graph: &Graph,
+    depth: &DepthGraph,
+    seed: &TimingSeed,
+    bound: &Label,
+) -> Option<String> {
+    let roots = seed
+        .callees
+        .iter()
+        .copied()
+        .filter(|&f| f < graph.functions)
+        .chain(
+            seed.handlers
+                .iter()
+                .filter(|&&h| h < graph.handlers)
+                .map(|&h| graph.handler_node(h)),
+        );
+    let seen = reached_from(&depth.succ, roots);
+    env.functions.iter().enumerate().find_map(|(f, def)| {
+        let above = seen.get(f).copied().unwrap_or(false)
+            && depth
+                .local
+                .get(f)
+                .is_some_and(|label| !label.flows_to(bound));
+        above.then(
+            || match env.modules.get(def.module).map(|m| m.path.as_str()) {
+                Some(path) if !path.is_empty() => format!("`{path}.{}`", def.name),
+                _ => format!("`{}`", def.name),
+            },
+        )
+    })
 }
 
 /// A `tasks` statement checked (ADR 0117 rule 7), for the residue label of ADR 0116 P9: where
@@ -1469,6 +1689,22 @@ pub(crate) fn holds_function_by(env: &Env<'_>, ty: &Ty, resolve: &dyn Fn(&Ty) ->
             env.holds_function_kinds.get(id).copied().unwrap_or(true)
                 || args.iter().any(|arg| holds_function_by(env, arg, resolve))
         }
+        _ => false,
+    }
+}
+
+/// Whether `ty` holds a function type, at any depth of its written structure: a type
+/// parameter does not count, unlike in [`holds_function`] (#1674).
+fn holds_fn_type(ty: &Ty) -> bool {
+    match ty {
+        Ty::Fn(_) => true,
+        Ty::List(inner)
+        | Ty::Dense(_, inner)
+        | Ty::Labeled(_, inner)
+        | Ty::Refined(_, inner)
+        | Ty::Measured(_, inner) => holds_fn_type(inner),
+        Ty::Map(key, value) => holds_fn_type(key) || holds_fn_type(value),
+        Ty::Coll(_, args) | Ty::Kind(_, args) => args.iter().any(holds_fn_type),
         _ => false,
     }
 }

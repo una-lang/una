@@ -1219,6 +1219,10 @@ pub(crate) struct Findings {
     pub(crate) caller_installs: std::collections::BTreeSet<(timing::Caller, usize)>,
     /// The operations each node of that graph performs, those of lambdas included (#1148).
     pub(crate) caller_ops: std::collections::BTreeSet<(timing::Caller, ty::CapId, String)>,
+    /// For each node of that graph, the join of what decides whether each of its calls,
+    /// operations and installs runs: the program counter and the left operands of `and`, `or`
+    /// and `implies` there (#1674).
+    pub(crate) call_pcs: std::collections::BTreeMap<timing::Caller, una_core::Label>,
     /// Names bound by selfified `let`s.
     pub(crate) selfified: Vec<Span>,
     /// The conditions of `for until` loops that are in the refinement language, which the

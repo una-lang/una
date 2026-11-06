@@ -1078,10 +1078,16 @@ impl<'a> Checker<'_, 'a, '_> {
         let operand = format!("an operand of `{symbol}`");
         match op {
             BinaryOp::And | BinaryOp::Or | BinaryOp::Implies => {
-                for side in [left, right] {
-                    let found = self.expr_as(side, Some(&Ty::Bool), Role::Condition(&operand));
-                    self.operands.push(found);
-                }
+                let found = self.expr_as(left, Some(&Ty::Bool), Role::Condition(&operand));
+                // The left operand decides whether the right one runs, and so whether its calls
+                // run, which the depth of a started task counts (#1674).
+                let decides = self.labeled(&found).top_label();
+                self.operands.push(found);
+                let saved = self.short_circuit.clone();
+                self.short_circuit = saved.join(&decides);
+                let found = self.expr_as(right, Some(&Ty::Bool), Role::Condition(&operand));
+                self.short_circuit = saved;
+                self.operands.push(found);
                 Ty::Bool
             }
             BinaryOp::Eq | BinaryOp::NotEq => {

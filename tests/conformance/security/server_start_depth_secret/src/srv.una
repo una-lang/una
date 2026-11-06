@@ -1,0 +1,34 @@
+-- test: a `start` that moves a reply right is checked under `pc ⊔ τ⁰(e)` even without `within`: a task whose recursion depth depends on `secret` data could end alone past `--task-depth`, and its `500` would reveal the depth, so it is U4003 at the `start`, though it replies (spec/31 §1, ADR 0123 IF6, #1674)
+-- spec: spec/31 §1
+-- expect: error U4003 at src/srv.una:31:11
+module srv
+
+import std.host (Exchange, HttpServer, Reply)
+
+deep(n: secret Int) -> secret Int
+=
+  if n <= 0
+    0
+  else
+    1 + deep(n - 1)
+
+answer(exchange: internal Exchange, key: secret Int) -> Unit
+  uses @server: HttpServer[reply]
+=
+  let d = deep(key - exchange.request.body.len)
+  @server.reply(to: exchange.right, reply: Reply(status: 200, headers: [], body: "ok"))
+    if error use unit
+
+pub serve_all(key: secret Int) -> Unit
+  uses @server: HttpServer[next, reply, close]
+  diverges
+=
+  tasks at most 1000 at once
+    for ever
+      let next = attempt @server.next()
+      when next
+        is Ok(exchange) ->
+          start answer(exchange, key: key)
+        is Err(failure) -> unit
+    on stop
+      @server.close()

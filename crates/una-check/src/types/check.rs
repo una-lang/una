@@ -253,6 +253,10 @@ pub(crate) struct Checker<'c, 'a, 's> {
     pub(crate) do_stops: bool,
     /// The sites whose timing label is being recorded, innermost last (ADR 0116 IF5).
     pub(crate) timing: Vec<super::timing::TimingFrame>,
+    /// The join of the left operands of the `and`, `or` and `implies` whose right operand is
+    /// being checked, which decide whether it runs: with the program counter, what decides a
+    /// call there, for the depth of a started task (#1674).
+    pub(crate) short_circuit: Label,
     /// The `stop` and `skip` statements reported as U2034, after which no U2040 is reported.
     pub(crate) misplaced_exits: Vec<Span>,
     /// The receiver of the method call being checked, with its call-site marker, for its
@@ -559,6 +563,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             in_ever: false,
             do_stops: false,
             timing: Vec::new(),
+            short_circuit: Label::public(),
             call_targets: BTreeMap::new(),
             operands: Vec::new(),
             unit_blind: BTreeMap::new(),

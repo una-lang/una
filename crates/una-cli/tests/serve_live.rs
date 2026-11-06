@@ -704,3 +704,115 @@ fn a_serve_section_at_the_hard_stop_answers_503_and_skips_on_stop() {
     assert!(!has_unanswered(&trace(&dir)));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The probe of the serve hunt (#1674): a request task whose recursion depth depends on
+/// `secret` data and on the length of the request's body. Past `--task-depth` the task ends
+/// alone and its right is answered `500`, otherwise the program's `200` goes out, so a peer
+/// could recover `key` by a binary search on the body's length. `DEPTH_LABEL` is the label of
+/// `key` and of `deep`'s parameter.
+const DEPTH_PROBE: &str = r#"module srv
+
+import std.host (Exchange, HttpServer, Reply)
+
+deep(n: DEPTH_LABEL Int) -> DEPTH_LABEL Int
+=
+  if n <= 0
+    0
+  else
+    1 + deep(n - 1)
+
+answer(exchange: internal Exchange, key: DEPTH_LABEL Int) -> Unit
+  uses @server: HttpServer[reply]
+=
+  let d = deep(key - exchange.request.body.len)
+  @server.reply(to: exchange.right, reply: Reply(status: 200, headers: [], body: "ok"))
+    if error use unit
+
+pub main() -> Unit
+  uses @server: HttpServer[next, reply, close]
+  uses @console: Console[print]
+  diverges
+=
+  let key: DEPTH_LABEL Int = 4321
+  @console.print("serving")
+  tasks at most 1000 at once
+    for ever
+      let next = attempt @server.next()
+      when next
+        is Ok(exchange) ->
+          start answer(exchange, key: key)
+        is Err(failure) -> unit
+    on stop
+      @server.close()
+  @console.print("stopped")
+"#;
+
+/// The status line of the reply to a `POST` of `n` bytes.
+fn status_of_body(port: u16, n: usize) -> String {
+    let mut stream = connect(port);
+    let mut request =
+        format!("POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {n}\r\n\r\n").into_bytes();
+    request.extend(std::iter::repeat_n(b'a', n));
+    stream.write_all(&request).unwrap();
+    let reply = read_reply(&mut stream);
+    reply.lines().next().unwrap_or_default().to_owned()
+}
+
+#[test]
+fn a_task_whose_depth_depends_on_secret_data_is_refused_before_it_serves() {
+    // ADR 0123 IF6, #1674: `una run` and `una build` check first, so neither engine binds the
+    // listener, and no peer can query the depth.
+    let port = free_port();
+    let program = DEPTH_PROBE.replace("DEPTH_LABEL", "secret");
+    let dir = package("depth_secret", port, &program, Engine::Interpreter);
+    for (verb, flag) in [
+        ("run", "UNA_TEST_RUN_SERVER"),
+        ("build", "UNA_TEST_BUILD_SERVER"),
+    ] {
+        let out = Command::new(env!("CARGO_BIN_EXE_una"))
+            .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+            .env(flag, "1")
+            .env("NO_COLOR", "1")
+            .args([verb, "."])
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "{verb}: {stderr}");
+        assert!(
+            stderr.contains("[U4003]") && stderr.contains("src/srv.una:31:11"),
+            "{verb}: {stderr}"
+        );
+        assert!(
+            TcpStream::connect(("127.0.0.1", port)).is_err(),
+            "{verb}: a listener is open"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_task_whose_depth_depends_on_internal_data_answers_500_past_its_depth() {
+    // The twin, accepted: the depth depends only on `internal` data, which a reply accepts, so
+    // the `500` of a task that ends alone reveals no more than its reply could. Both engines
+    // answer the same: `200` below `--task-depth` (1000), `500` past it.
+    for engine in ENGINES {
+        let port = free_port();
+        let program = DEPTH_PROBE.replace("DEPTH_LABEL", "internal");
+        let dir = package("depth_internal", port, &program, engine);
+        let mut run = start(&dir, "depth_internal", engine, &["--stop-grace", "10"]);
+        run.expect("serving");
+        assert_eq!(status_of_body(port, 4000), "HTTP/1.1 200 OK", "{engine:?}");
+        assert_eq!(
+            status_of_body(port, 0),
+            "HTTP/1.1 500 Internal Server Error",
+            "{engine:?}"
+        );
+        run.terminate();
+        let (code, lines, stderr) = run.end();
+        assert_eq!(code, Some(0), "{engine:?}: {stderr}");
+        assert_eq!(output(&lines), ["serving", "stopped"], "{engine:?}");
+        assert!(stderr.contains("ended alone"), "{engine:?}: {stderr}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

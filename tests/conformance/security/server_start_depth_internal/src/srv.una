@@ -1,0 +1,34 @@
+-- test: the twin of `server_start_depth_secret`: a task whose recursion depth depends only on `internal` request data has `τ⁰(e)` at `internal`, which the auto-answer accepts, so the `start` is accepted (spec/31 §1, ADR 0123 IF6, #1674)
+-- spec: spec/31 §1
+-- expect: ok
+module srv
+
+import std.host (Exchange, HttpServer, Reply)
+
+deep(n: internal Int) -> internal Int
+=
+  if n <= 0
+    0
+  else
+    1 + deep(n - 1)
+
+answer(exchange: internal Exchange) -> Unit
+  uses @server: HttpServer[reply]
+=
+  let d = deep(exchange.request.body.len)
+  @server.reply(to: exchange.right, reply: Reply(status: 200, headers: [], body: "ok"))
+    if error use unit
+
+pub serve_all() -> Unit
+  uses @server: HttpServer[next, reply, close]
+  diverges
+=
+  tasks at most 1000 at once
+    for ever
+      let next = attempt @server.next()
+      when next
+        is Ok(exchange) ->
+          start answer(exchange)
+        is Err(failure) -> unit
+    on stop
+      @server.close()

@@ -9,8 +9,9 @@
 //! - **IF6**: a `start e` whose captures can hold a reply right, by their types, or, in a
 //!   package that can hold reply rights, a function value, moves them to its task, whose end
 //!   answers them through the host when the task does not. That answer is checked as a `reply`
-//!   at the `start`: under `pc ⊔ τ(e)` with `within`, under `pc` without, against `internal`
-//!   (U4003).
+//!   at the `start`: under `pc ⊔ δ(e)`, joined with `τ(e)` with `within`, against `internal`
+//!   (U4003). The depth label `δ(e)` bounds how deep the task recurses, and so whether it ends
+//!   alone past `--task-depth` and is answered `500` (#1674, [`super::timing::depth`]).
 //! - **`L_srv`**: the operations of `HttpServer` and the `start`s of IF6 are the hand-off sites
 //!   of the serve threads, whose work after them can shift every timing site of the package
 //!   ([`super::timing::server_label`]).
@@ -51,6 +52,8 @@ pub(crate) struct StartSite {
     pub(crate) reply: bool,
     /// Whether a capture's type can hold a function value.
     pub(crate) function_value: bool,
+    /// The seed of `e`, for its depth label and `τ⁰(e)` (#1674).
+    pub(crate) seed: super::timing::TimingSeed,
 }
 
 /// One open `start`, whose captures [`Checker::start_capture_read`] marks.
@@ -240,6 +243,8 @@ impl Checker<'_, '_, '_> {
 
     /// Opens the captures of a `start` whose expression is about to be checked (IF6).
     pub(crate) fn start_capture_open(&mut self) {
+        // The seed of `e`, for the depth of its task (#1674).
+        self.timing_start();
         self.start_captures.push(CaptureFrame {
             mark: self.locals.len(),
             reply: false,
@@ -274,6 +279,7 @@ impl Checker<'_, '_, '_> {
     /// Closes the captures of the `start` at `keyword`, once its expression is checked, and
     /// records it when a capture can hold a reply right or a function value (IF6).
     pub(crate) fn start_capture_close(&mut self, keyword: Span, within: Option<Span>) {
+        let mut seed = self.timing_end();
         let Some(frame) = self.start_captures.pop() else {
             return;
         };
@@ -298,6 +304,9 @@ impl Checker<'_, '_, '_> {
         if let Some((timing, _, _)) = &self.ctx.timing {
             pc = pc.join(timing);
         }
+        // The depth of a task does not depend on the tasks beside it, each of which has its own
+        // stack: `τ⁰`, without `τ_conc` (ADR 0116 IF6).
+        seed.unplaced = false;
         self.findings.server_starts.push(StartSite {
             keyword,
             function: self.current,
@@ -306,6 +315,7 @@ impl Checker<'_, '_, '_> {
             within,
             reply: frame.reply,
             function_value: frame.function_value,
+            seed,
         });
     }
 }
@@ -318,13 +328,28 @@ pub(crate) fn moves_rights(env: &Env<'_>, site: &StartSite) -> bool {
 
 /// IF6 after pass 2 (ADR 0123, `spec/31 §1`): each `start` that moves reply rights is checked as
 /// a `reply` of the auto-answer its task's end may send, under its program counter, joined with
-/// `τ(e)` when it has `within`, against `internal`: U4003 at the `start` otherwise. O(sites).
+/// the depth label `δ(e)`, and with `τ(e)` when it has `within`, against `internal`: U4003 at
+/// the `start` otherwise.
+///
+/// `δ(e)` is there because a started task that runs past `--task-depth` ends alone and its
+/// rights are answered `500`, so whether the peer gets the program's reply or the host's `500`
+/// depends on how deep `e` recursed (#1674). It is what decides the calls `e` can run
+/// ([`super::timing::depth`]), joined with `τ⁰(e)`, which bounds every step of `e` (ADR 0116
+/// IF5), where `e` reaches code whose calls the findings do not show precisely; `τ_conc` never
+/// counts, since a task's depth is its own stack's.
+///
+/// O(V + E) once for the graphs, then O(size of the seed) per `start`, with one
+/// [`super::timing::timing`], O((F + E + H + O) log n), where `τ⁰(e)` is needed, and one
+/// search, O(V + E), for the message of a refused one.
 pub(crate) fn start_rights(env: &Env<'_>, findings: &Findings, report: &mut Report<'_>) {
     let internal = Label {
         level: una_syntax::ast::Level::Internal,
         ..Label::public()
     };
     let mut seen: BTreeSet<Span> = BTreeSet::new();
+    // The call graph and what decides the depth of its nodes, built once, at the first `start`
+    // that moves reply rights.
+    let mut graphs = None;
     for site in &findings.server_starts {
         if !moves_rights(env, site) || !seen.insert(site.keyword) {
             continue;
@@ -333,7 +358,29 @@ pub(crate) fn start_rights(env: &Env<'_>, findings: &Findings, report: &mut Repo
             .within
             .and_then(|key| env.within_timing.get(&key).cloned())
             .unwrap_or_else(Label::public);
-        let label = site.pc.join(&tau);
+        let (graph, depth_graph) = graphs.get_or_insert_with(|| {
+            let graph = super::timing::graph(env, findings);
+            let depth_graph = super::timing::depth_graph(env, findings, &graph);
+            (graph, depth_graph)
+        });
+        let (decides, loose) = super::timing::depth(graph, depth_graph, &site.seed);
+        // Where the findings do not show every call the task can make, `τ⁰(e)`, which bounds
+        // every step of `e`.
+        let fallback = loose.then(|| {
+            super::timing::timing(
+                env,
+                findings,
+                &site.seed,
+                None,
+                super::timing::HostHandlers::All,
+                &BTreeSet::new(),
+            )
+        });
+        let depth = match &fallback {
+            Some(tau0) => decides.join(&tau0.label),
+            None => decides.clone(),
+        };
+        let label = site.pc.join(&tau).join(&depth);
         if label.flows_to(&internal) {
             continue;
         }
@@ -342,11 +389,23 @@ pub(crate) fn start_rights(env: &Env<'_>, findings: &Findings, report: &mut Repo
         } else {
             "it captures a function value, which can hold a reply right"
         };
-        let why = if site.pc.flows_to(&internal) {
-            format!("its deadline depends on `{tau}` timing")
-        } else {
+        let why = if !site.pc.flows_to(&internal) {
             let pc = &site.pc;
             format!("it runs under a `{pc}` condition")
+        } else if !tau.flows_to(&internal) {
+            format!("its deadline depends on `{tau}` timing")
+        } else {
+            let culprit =
+                super::timing::depth_culprit(env, graph, depth_graph, &site.seed, &internal)
+                    .map(|name| format!("the conditions of the calls in {name}"))
+                    .or_else(|| fallback.as_ref().map(|tau0| tau0.culprit(&internal)));
+            let through = match culprit {
+                Some(culprit) if !culprit.is_empty() => format!(", through {culprit}"),
+                _ => String::new(),
+            };
+            format!(
+                "how deep its task recurses depends on `{depth}` data{through}, and a started task that runs past `--task-depth` ends alone and its rights are answered `500`"
+            )
         };
         let mut diagnostic = report.make(
             Code::U4003,
@@ -356,7 +415,7 @@ pub(crate) fn start_rights(env: &Env<'_>, findings: &Findings, report: &mut Repo
             ),
         );
         diagnostic.repairs.push(Report::advice(
-            "start the task under an `internal` condition at most, without a deadline whose timing is above `internal`, and reply inside it",
+            "start the task under an `internal` condition at most, on data at most `internal` in what it captures, reads and calls, without a deadline whose timing is above `internal`, and reply inside it",
         ));
         report.push(diagnostic);
     }
