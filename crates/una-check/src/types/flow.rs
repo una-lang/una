@@ -1008,16 +1008,20 @@ pub(crate) fn close_quiet(env: &super::env::Env<'_>, findings: &mut super::Findi
     seeds.extend(findings.opaque_applies.iter().map(|&(f, _)| f));
     seeds.extend(findings.installs.iter().map(|&(f, _)| f));
     let performers: BTreeSet<usize> = findings
-        .caller_ops
+        .graph_edges
         .iter()
-        .filter_map(|(caller, _, _)| match caller {
-            super::timing::Caller::Function(f) => Some(*f),
+        .filter_map(|edge| match (edge.from, &edge.to) {
+            (super::timing::Caller::Function(f), super::timing::Target::Op(..)) => Some(f),
             _ => None,
         })
         .collect();
     let mut callers: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
     for &(caller, callee, _) in &findings.edges {
         callers.entry(callee).or_default().push(caller);
+    }
+    // A policy's call runs its `via` function (#1673).
+    for &(policy, via) in &findings.policy_vias {
+        callers.entry(via).or_default().push(policy);
     }
     let close = |mut set: BTreeSet<usize>| {
         let mut pending: Vec<usize> = set.iter().copied().collect();

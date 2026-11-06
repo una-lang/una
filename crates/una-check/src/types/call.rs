@@ -253,7 +253,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 if let Some(current) = self.current {
                     self.findings.value_callers.insert(current);
                 }
-                self.graph_value_call();
+                // `call_value` recorded the call's edge to `Λ` (ADR 0116 P1), once per site.
                 self.timing_value_call();
                 // S-39: a function value may run any construct.
                 self.quiet_site(span);
@@ -570,7 +570,7 @@ impl<'a> Checker<'_, 'a, '_> {
         if let Some(current) = self.current {
             self.findings.value_callers.insert(current);
         }
-        self.graph_value_call();
+        self.graph_value_call(span);
         self.timing_value_call();
         self.ordered(span, (0..args.len()).map(Some).collect());
         let mut flows = Vec::new();
@@ -617,8 +617,6 @@ impl<'a> Checker<'_, 'a, '_> {
             self.raise_of(index, &decided);
         }
         let value_label = value_label.join(&decided);
-        // #1674: which code runs depends on the value, so its label decides the call's depth.
-        self.value_call_decided(&value_label);
         // S-39: a function value may run any construct. Which one runs depends on the value, so
         // the call stands under `pc ⊔ l_f` with the decisions of its arguments (T-App below),
         // and is quiet when that is above `public`, at a `public` program counter too (round 4).
@@ -961,6 +959,13 @@ impl<'a> Checker<'_, 'a, '_> {
             if !trusted_policy {
                 self.release_site(span);
             }
+            // The call runs the policy's `via` function (`spec/07 §5`): an edge of the graph
+            // of ADR 0116 P1 at the call site, and, for the timing label's search over the call
+            // edges and the quiet calls of S-39, the policy's own edge to it (#1673).
+            if let Some(via) = self.env.via_of(id) {
+                self.graph_call(via, span);
+                self.findings.policy_vias.insert((id, via));
+            }
             let result = self.call_policy(&def, &callee, receiver, args, span);
             if let Some(boundary) = crossing {
                 let granting = Granting {
@@ -1040,18 +1045,6 @@ impl<'a> Checker<'_, 'a, '_> {
             && !self.known_function_arguments(&def.params, args, has_receiver, &checked)
         {
             self.timing_opaque_apply(id);
-        }
-        // #1674: how many times, and whether, such a function runs its lambdas is decided by
-        // its other arguments, a list's length and elements, so their deep labels decide the
-        // calls in the lambdas, as the label of a function value decides a call of it.
-        if super::timing::applies_function(self.env, &def) {
-            let mut label = Label::public();
-            for (_, found, _, _) in &checked {
-                if !self.holds_function(found) {
-                    label = label.join(&self.deep(found));
-                }
-            }
-            self.value_call_decided(&label);
         }
         // ADR 0092 rule 3: the function values the callee may run through the caller's
         // bindings, charged once the arguments are typed (#615).
@@ -1628,7 +1621,7 @@ impl<'a> Checker<'_, 'a, '_> {
             self.timing_op(id, op_name);
             // The edge of ADR 0116 P1 from the node whose code holds the operation, a lambda's
             // included, to the operation: every operation call, whatever `uses` names (#1148).
-            self.graph_op(id, op_name);
+            self.graph_op(id, op_name, span);
         }
         let capability = resolved
             .and_then(|id| self.env.capabilities.get(id))
@@ -1839,6 +1832,9 @@ impl<'a> Checker<'_, 'a, '_> {
         } else {
             result.raise_deep(&gives)
         };
+        // ADR 0123 IF6 (#1674): the answer is data the code holds, bound or not.
+        let answer = self.deep(&result);
+        self.reach_label(&answer);
         if self.pass == super::authority::Pass::Check {
             self.outcome_site(span, &capability, &decided, def.fails.as_ref(), &result);
         }

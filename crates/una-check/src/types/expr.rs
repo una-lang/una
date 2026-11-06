@@ -866,7 +866,7 @@ impl<'a> Checker<'_, 'a, '_> {
         if let Some(current) = self.current {
             self.findings.edges.push((current, callee, span));
         }
-        self.graph_call(callee);
+        self.graph_call(callee, span);
         // What can run beside a part of a task construct (ADR 0116 IF6): the block of a
         // `tasks` statement runs beside the tasks it starts (ADR 0117 rule 7).
         if self.task_depth > 0 || !self.tasks_frames.is_empty() {
@@ -1078,16 +1078,10 @@ impl<'a> Checker<'_, 'a, '_> {
         let operand = format!("an operand of `{symbol}`");
         match op {
             BinaryOp::And | BinaryOp::Or | BinaryOp::Implies => {
-                let found = self.expr_as(left, Some(&Ty::Bool), Role::Condition(&operand));
-                // The left operand decides whether the right one runs, and so whether its calls
-                // run, which the depth of a started task counts (#1674).
-                let decides = self.labeled(&found).top_label();
-                self.operands.push(found);
-                let saved = self.short_circuit.clone();
-                self.short_circuit = saved.join(&decides);
-                let found = self.expr_as(right, Some(&Ty::Bool), Role::Condition(&operand));
-                self.short_circuit = saved;
-                self.operands.push(found);
+                for side in [left, right] {
+                    let found = self.expr_as(side, Some(&Ty::Bool), Role::Condition(&operand));
+                    self.operands.push(found);
+                }
                 Ty::Bool
             }
             BinaryOp::Eq | BinaryOp::NotEq => {
@@ -2135,6 +2129,9 @@ impl<'a> Checker<'_, 'a, '_> {
             };
         }
         let prelude_lambda = std::mem::replace(&mut self.prelude_lambda, prelude);
+        // A lambda's body is code of `Λ`, which runs wherever the lambda is called, not in the
+        // parts around the place it is written (ADR 0116 P1, P3).
+        let parts = std::mem::take(&mut self.parts);
         self.lambda_depth += 1;
         let frames_depth = std::mem::replace(&mut self.frames_depth, self.lambda_depth);
         let frames_lambda = self.frames_lambda.replace(span);
@@ -2162,6 +2159,7 @@ impl<'a> Checker<'_, 'a, '_> {
             found
         });
         self.lambda_depth -= 1;
+        self.parts = parts;
         self.statement = statement;
         self.frames_depth = frames_depth;
         self.frames_lambda = frames_lambda;

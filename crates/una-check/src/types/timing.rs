@@ -44,10 +44,13 @@ pub(crate) struct TimingSeed {
     /// Whether it lies inside a lambda, a `together` task or a handler's operation, whose
     /// concurrent work the structure of its function does not show: `τ_conc` is then `⊤`.
     pub(crate) unplaced: bool,
-    /// The join of what decides whether each call, operation and install in it runs: the
-    /// program counter and the left operands of `and`, `or` and `implies` there (#1674);
-    /// `None` when it is `public`.
-    pub(crate) decides: Option<Label>,
+    /// The node of the graph of ADR 0116 P1 whose code holds it, `None` outside every node.
+    pub(crate) node: Option<Caller>,
+    /// The innermost construct whose part holds it (P3), an index of `Findings::constructs`.
+    pub(crate) construct: Option<usize>,
+    /// The join of the deep labels of what it binds and of the answers of the operations it
+    /// performs, for the reach of a `start` (#1674); `None` when it is `public`.
+    pub(crate) bound: Option<Label>,
 }
 
 /// The timing label of a site (ADR 0116 IF5): its join, and the sources it joins, in the order
@@ -108,6 +111,75 @@ pub(crate) enum Caller {
     Lambda,
 }
 
+/// What an edge of the graph of ADR 0116 P1 goes to.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Target {
+    /// A function called, or named as a value.
+    Function(usize),
+    /// `Λ`: a call of a function value, a `uses of` parameter's included.
+    Lambda,
+    /// An operation of a capability, and through it the capability's node `K(c)`.
+    Op(CapId, String),
+    /// A handler installed by `with` or `given`.
+    Install(usize),
+}
+
+/// An edge of the graph of ADR 0116 P1, with the call site it comes from and the innermost
+/// task construct whose part holds that site (P3), so that `ctx` of the site is that of the
+/// construct.
+#[derive(Clone, Debug)]
+pub(crate) struct GraphEdge {
+    /// The node whose code holds the call: a function's body, a handler's operations, or `Λ`
+    /// for a lambda's body.
+    pub(crate) from: Caller,
+    /// What it goes to.
+    pub(crate) to: Target,
+    /// The call site.
+    pub(crate) span: una_syntax::Span,
+    /// The innermost construct whose part holds the call, an index of `Findings::constructs`.
+    pub(crate) construct: Option<usize>,
+}
+
+/// The task constructs of ADR 0116 P2.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ConstructKind {
+    /// `together`: each branch is a part.
+    Together,
+    /// `together for`: the body is a part, the list is not.
+    TogetherFor,
+    /// `first of`: each branch is a part.
+    FirstOf,
+    /// `tasks`: the block, with each `start` in it, is a part, the bound is not.
+    Tasks,
+}
+
+impl ConstructKind {
+    /// Its words.
+    pub(crate) fn words(self) -> &'static str {
+        match self {
+            ConstructKind::Together => "together",
+            ConstructKind::TogetherFor => "together for",
+            ConstructKind::FirstOf => "first of",
+            ConstructKind::Tasks => "tasks",
+        }
+    }
+}
+
+/// A task construct checked, a node of the construct tree of its body (ADR 0116 P3): the
+/// constructs of one node's code form a tree by nesting, a lambda's body starting a tree of its
+/// own, since its code leaves from `Λ`.
+#[derive(Clone, Debug)]
+pub(crate) struct ConstructNode {
+    /// Which construct it is.
+    pub(crate) kind: ConstructKind,
+    /// The whole construct.
+    pub(crate) span: una_syntax::Span,
+    /// The node of the graph whose code holds it.
+    pub(crate) node: Option<Caller>,
+    /// The innermost construct whose part holds it.
+    pub(crate) parent: Option<usize>,
+}
+
 /// One frame of [`Checker::timing_start`]: where the site's locals start, and its seed.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct TimingFrame {
@@ -122,6 +194,8 @@ impl Checker<'_, '_, '_> {
     pub(crate) fn timing_start(&mut self) {
         let mut seed = TimingSeed {
             unplaced: self.unplaced(),
+            node: self.caller(),
+            construct: self.parts.last().copied(),
             ..TimingSeed::default()
         };
         seed.sources
@@ -155,77 +229,91 @@ impl Checker<'_, '_, '_> {
         }
     }
 
-    /// Records a call of, or a reference to, the function `callee` from the code being checked,
-    /// in the call graph of ADR 0116 P1.
-    pub(crate) fn graph_call(&mut self, callee: usize) {
+    /// Records an edge of the call graph of ADR 0116 P1 from the node whose code is being
+    /// checked to `to`, at the call site `span`, with the innermost construct whose part holds
+    /// it (P3).
+    fn graph_edge(&mut self, to: Target, span: una_syntax::Span) {
         if let Some(from) = self.caller() {
-            self.findings.calls.insert((from, callee));
-            self.graph_decides(from);
+            let construct = self.parts.last().copied();
+            self.findings.graph_edges.push(GraphEdge {
+                from,
+                to,
+                span,
+                construct,
+            });
         }
     }
 
-    /// What decides whether a call here runs: the program counter, and the left operands of the
-    /// `and`, `or` and `implies` whose right operand is being checked (#1674).
-    pub(crate) fn decides(&self) -> Label {
-        self.ctx.pc.join(&self.short_circuit)
+    /// Records a call of, or a reference to, the function `callee` at `span`.
+    pub(crate) fn graph_call(&mut self, callee: usize, span: una_syntax::Span) {
+        self.graph_edge(Target::Function(callee), span);
     }
 
-    /// Joins [`Self::decides`] into what decides the calls of the node `from` (#1674).
-    fn graph_decides(&mut self, from: Caller) {
-        let decides = self.decides();
-        if decides.is_public() {
-            return;
-        }
-        let slot = self
-            .findings
-            .call_pcs
-            .entry(from)
-            .or_insert_with(Label::public);
-        *slot = slot.join(&decides);
+    /// Records that the code being checked performs the operation `op` of `capability` at
+    /// `span`, an edge to the operation from its node, `Λ` for a lambda's body: without it, a
+    /// request written directly in a lambda would reach nothing.
+    pub(crate) fn graph_op(&mut self, capability: CapId, op: &str, span: una_syntax::Span) {
+        self.graph_edge(Target::Op(capability, op.to_owned()), span);
     }
 
-    /// Records that the code being checked performs the operation `op` of `capability`, an edge
-    /// of the call graph of ADR 0116 P1 from its node, `Λ` for a lambda's body, to the
-    /// operation: without it, a request written directly in a lambda would reach nothing.
-    pub(crate) fn graph_op(&mut self, capability: CapId, op: &str) {
-        if let Some(from) = self.caller() {
-            self.findings
-                .caller_ops
-                .insert((from, capability, op.to_owned()));
-            self.graph_decides(from);
-        }
+    /// Records that the code being checked calls a function value at `span`, so it reaches
+    /// `Λ`.
+    pub(crate) fn graph_value_call(&mut self, span: una_syntax::Span) {
+        self.graph_edge(Target::Lambda, span);
     }
 
-    /// Records that the code being checked calls a function value, so it reaches `Λ`.
-    pub(crate) fn graph_value_call(&mut self) {
-        if let Some(from) = self.caller() {
-            self.findings.value_calls.insert(from);
-            self.graph_decides(from);
-        }
-    }
-
-    /// Joins `label`, the label of a function value called here, into what decides the call
-    /// for its node and every open site: which code runs, and so how deep, depends on the value
-    /// (T-App, `spec/07 §3` rule 4; #1674).
-    pub(crate) fn value_call_decided(&mut self, label: &Label) {
+    /// Records that the code being checked binds, or receives from an operation, a value whose
+    /// deep label is `label`: in its node of the graph of ADR 0116 P1 and in every open site,
+    /// for the reach of a `start` (ADR 0123 IF6, #1674). O(open sites + log n).
+    pub(crate) fn reach_label(&mut self, label: &Label) {
+        let label = &concrete(label);
         if label.is_public() {
             return;
         }
-        let saved = self.short_circuit.clone();
-        self.short_circuit = saved.join(label);
         if let Some(from) = self.caller() {
-            self.graph_decides(from);
+            let slot = self
+                .findings
+                .reach_labels
+                .entry(from)
+                .or_insert_with(Label::public);
+            *slot = slot.join(label);
         }
-        self.timing_decides();
-        self.short_circuit = saved;
+        for frame in &mut self.timing {
+            frame.seed.bound = Some(match &frame.seed.bound {
+                Some(before) => before.join(label),
+                None => label.clone(),
+            });
+        }
     }
 
-    /// Records that the code being checked installs the handler `handler`.
-    pub(crate) fn graph_install(&mut self, handler: usize) {
-        if let Some(from) = self.caller() {
-            self.findings.caller_installs.insert((from, handler));
-            self.graph_decides(from);
-        }
+    /// Records that the code being checked installs the handler `handler` at `span`.
+    pub(crate) fn graph_install(&mut self, handler: usize, span: una_syntax::Span) {
+        self.graph_edge(Target::Install(handler), span);
+    }
+
+    /// Opens the task construct `kind` at `span` (ADR 0116 P2), a node of the construct tree
+    /// of the code being checked (P3), and returns its id; its parts are checked between
+    /// [`Self::part_open`] and [`Self::part_close`].
+    pub(crate) fn construct_open(&mut self, kind: ConstructKind, span: una_syntax::Span) -> usize {
+        let id = self.findings.constructs.len();
+        self.findings.constructs.push(ConstructNode {
+            kind,
+            span,
+            node: self.caller(),
+            parent: self.parts.last().copied(),
+        });
+        id
+    }
+
+    /// Starts checking a part of the construct `id`: the edges and sites recorded until
+    /// [`Self::part_close`] lie in it, unless a construct nested in it holds them.
+    pub(crate) fn part_open(&mut self, id: usize) {
+        self.parts.push(id);
+    }
+
+    /// Ends the part that [`Self::part_open`] started.
+    pub(crate) fn part_close(&mut self) {
+        self.parts.pop();
     }
 
     /// Records an operation of the host's `Http` at `span`, for `L_lim` (ADR 0117 IF4).
@@ -296,28 +384,9 @@ impl Checker<'_, '_, '_> {
         Some(self.findings.handler_seeds.entry(handler).or_default())
     }
 
-    /// Joins [`Self::decides`] into the seed of every open site, for the depth of a started
-    /// task (#1674).
-    fn timing_decides(&mut self) {
-        if self.timing.is_empty() {
-            return;
-        }
-        let decides = self.decides();
-        if decides.is_public() {
-            return;
-        }
-        for frame in &mut self.timing {
-            frame.seed.decides = Some(match &frame.seed.decides {
-                Some(before) => before.join(&decides),
-                None => decides.clone(),
-            });
-        }
-    }
-
     /// Records a call of, or a reference to, the function `callee` in every open site, and in
     /// the seed of the handler being checked.
     pub(crate) fn timing_callee(&mut self, callee: usize) {
-        self.timing_decides();
         for frame in &mut self.timing {
             frame.seed.callees.insert(callee);
         }
@@ -329,7 +398,6 @@ impl Checker<'_, '_, '_> {
     /// Records the operation `op` of `capability` in every open site, and in the seed of the
     /// handler being checked.
     pub(crate) fn timing_op(&mut self, capability: CapId, op: &str) {
-        self.timing_decides();
         for frame in &mut self.timing {
             frame.seed.ops.insert((capability, op.to_owned()));
         }
@@ -341,7 +409,6 @@ impl Checker<'_, '_, '_> {
     /// Records the installation of the handler `handler` in every open site, and in the seed
     /// of the handler being checked.
     pub(crate) fn timing_install(&mut self, handler: usize) {
-        self.timing_decides();
         for frame in &mut self.timing {
             frame.seed.handlers.insert(handler);
         }
@@ -353,7 +420,6 @@ impl Checker<'_, '_, '_> {
     /// Records a call of a function value in every open site (IF5 item 4), and in the seed of
     /// the handler being checked (#1436).
     pub(crate) fn timing_value_call(&mut self) {
-        self.timing_decides();
         for frame in &mut self.timing {
             frame.seed.value_call = true;
         }
@@ -684,8 +750,10 @@ pub(crate) fn graph(env: &Env<'_>, findings: &Findings) -> Graph {
         }
     }
     // The operations performed where no `uses` names them, as in a lambda's body (#1148).
-    for (_, cap, op) in &findings.caller_ops {
-        if *cap < capabilities {
+    for edge in &findings.graph_edges {
+        if let Target::Op(cap, op) = &edge.to
+            && *cap < capabilities
+        {
             let at = functions + handlers + capabilities + ops.len();
             ops.entry((*cap, op.clone())).or_insert(at);
         }
@@ -743,34 +811,31 @@ pub(crate) fn graph(env: &Env<'_>, findings: &Findings) -> Graph {
             add(&mut graph.succ, from, node);
         }
     }
-    for &(from, callee) in &findings.calls {
-        if let Some(from) = graph.node_of(from)
-            && callee < functions
-        {
-            add(&mut graph.succ, from, callee);
-        }
-    }
-    for &from in &findings.value_calls {
-        if let Some(node) = graph.node_of(from) {
-            if let Some(slot) = graph.local.get_mut(node) {
-                *slot = top.clone();
+    // Each edge checking recorded at its call site (P1): a call or a function named as a
+    // value, a call of a function value (to `Λ`), an operation (#1148), an installation.
+    for edge in &findings.graph_edges {
+        let Some(from) = graph.node_of(edge.from) else {
+            continue;
+        };
+        match &edge.to {
+            Target::Function(callee) if *callee < functions => add(&mut graph.succ, from, *callee),
+            Target::Function(_) => {}
+            Target::Lambda => {
+                if let Some(slot) = graph.local.get_mut(from) {
+                    *slot = top.clone();
+                }
+                add(&mut graph.succ, from, lambda);
             }
-            add(&mut graph.succ, node, lambda);
-        }
-    }
-    // Each operation call, from the node that holds it (#1148): one edge per recorded call.
-    for (from, cap, op) in &findings.caller_ops {
-        if let (Some(from), Some(&to)) = (graph.node_of(*from), graph.ops.get(&(*cap, op.clone())))
-        {
-            add(&mut graph.succ, from, to);
-        }
-    }
-    for &(from, h) in &findings.caller_installs {
-        if let Some(from) = graph.node_of(from)
-            && h < handlers
-        {
-            let to = graph.handler_node(h);
-            add(&mut graph.succ, from, to);
+            Target::Op(cap, op) => {
+                if let Some(&to) = graph.ops.get(&(*cap, op.clone())) {
+                    add(&mut graph.succ, from, to);
+                }
+            }
+            Target::Install(h) if *h < handlers => {
+                let to = graph.handler_node(*h);
+                add(&mut graph.succ, from, to);
+            }
+            Target::Install(_) => {}
         }
     }
     // A function named as a value may run wherever a value is called.
@@ -801,6 +866,13 @@ pub(crate) fn graph(env: &Env<'_>, findings: &Findings) -> Graph {
         }
         let to = graph.cap_node(cap);
         add(&mut graph.succ, node, to);
+    }
+    // One edge per pair of nodes, in the order of the nodes: the edges come per call site,
+    // so the searches below meet them in an order that does not depend on the source's.
+    // O(E log E) in all.
+    for edges in &mut graph.succ {
+        edges.sort_unstable();
+        edges.dedup();
     }
     graph.down = close(&graph.succ, &graph.local, |a: &Label, b: &Label| a.join(b));
     graph.http = close(&graph.succ, &http_local, |a: &bool, b: &bool| *a || *b);
@@ -857,198 +929,330 @@ fn seed_label(env: &Env<'_>, graph: &Graph, seed: &TimingSeed) -> (Label, bool) 
     (label, http)
 }
 
-/// What decides how deep the code of each node of [`Graph`] can recurse (#1674): the join,
-/// over every node it reaches, itself included, of what decides each call, operation and
-/// install written there ([`Findings::call_pcs`]), and whether it reaches code whose calls the
-/// findings do not show precisely, for which [`depth`] takes `τ⁰` instead.
-pub(crate) struct DepthGraph {
-    /// The successors of each node: those of [`Graph`], and from each policy to its `via`
-    /// function, which a call of the policy runs.
-    succ: Vec<Vec<usize>>,
-    /// The join of what decides the calls of every node each node reaches.
-    down: Vec<Label>,
-    /// Whether each node reaches code the findings do not show precisely.
-    loose: Vec<bool>,
-    /// What decides the calls of each node itself, for a message.
+/// Why the code of a node can push frames without a bound that its own code shows, for the
+/// reach of a `start` (ADR 0123 IF6, #1674).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Unbounded {
+    /// It lies on a cycle of the graph: it can recurse.
+    Cycle(usize),
+    /// `Λ`: a call of a function value, or of a `uses of` parameter, runs code that the call
+    /// does not show.
+    ValueCall,
+    /// A function or handler of a standard module other than the prelude, or of a dependency
+    /// not checked with the package, whose code the findings do not hold.
+    Unseen(usize),
+}
+
+/// What each node of the graph of ADR 0116 P1 reaches, for IF6 (#1674): a node that can push
+/// frames without a bound its code shows ([`Unbounded`]), and a node whose code can hold data
+/// above `internal`, each as one witness. Both are closed once per package over the strongly
+/// connected components, O(V + E), so each `start` costs O(size of its seed) lookups.
+pub(crate) struct Reach {
+    /// A node each node reaches, itself included, that is [`Unbounded`], with why.
+    unbounded: Vec<Option<Unbounded>>,
+    /// A node each node reaches, itself included, whose own label is above `internal`.
+    labeled: Vec<Option<usize>>,
+    /// Each node's own label: the deep labels of its signature, of what its code binds and of
+    /// the answers of its operations.
     local: Vec<Label>,
+    /// The number of functions, handlers and capabilities, to name a node.
+    functions: usize,
+    handlers: usize,
+    capabilities: usize,
+    /// The node of each operation, and `Λ`.
+    ops: BTreeMap<(CapId, String), usize>,
+    lambda: usize,
 }
 
-/// Whether the calls of `def` are not shown precisely by the findings, so that what decides
-/// them is not known (#1674):
-/// - a function of a standard module other than the prelude, or of a dependency not checked
-///   with the package, whose bodies are checked apart;
-/// - a generic function of the package, whose conditions on values of a type parameter carry
-///   the labels of its callers' types, not its own.
-///
-/// The prelude's functions are not: both engines run each as host code, which makes no call of
-/// Una code but through a function argument (the interpreter's `Machine::prelude`, the
-/// runtime's intrinsics), so a call of one pushes no frame that data could multiply. One that
-/// applies a function argument, such as `map`, runs lambdas, which `Λ` holds; how often is
-/// decided by its other arguments, which [`Checker::value_call_decided`] joins at the call, and
-/// a call whose function argument is not a lambda written there makes its caller loose.
-fn loose_calls(env: &Env<'_>, def: &super::env::FnDef<'_>) -> bool {
-    if def.module >= env.prelude {
-        return env
-            .modules
-            .get(def.module)
-            .is_none_or(|module| module.path != "prelude");
+/// Whether each node lies on a cycle of `succ`: in a strongly connected component of more than
+/// one node, or with an edge to itself. Tarjan's algorithm, iteratively, O(V + E).
+fn on_cycle(succ: &[Vec<usize>]) -> Vec<bool> {
+    // Each node's index and low link, unset as `usize::MAX`, and whether it is on the stack.
+    let n = succ.len();
+    let mut index = vec![usize::MAX; n];
+    let mut low = vec![0usize; n];
+    let mut on_stack = vec![false; n];
+    let mut stack: Vec<usize> = Vec::new();
+    let mut cyclic = vec![false; n];
+    let mut next = 0usize;
+    let get = |values: &[usize], node: usize| values.get(node).copied().unwrap_or(0);
+    let set = |values: &mut [usize], node: usize, value: usize| {
+        if let Some(slot) = values.get_mut(node) {
+            *slot = value;
+        }
+    };
+    let mark = |flags: &mut [bool], node: usize, value: bool| {
+        if let Some(slot) = flags.get_mut(node) {
+            *slot = value;
+        }
+    };
+    for root in 0..n {
+        if get(&index, root) != usize::MAX {
+            continue;
+        }
+        let mut frames: Vec<(usize, usize)> = vec![(root, 0)];
+        set(&mut index, root, next);
+        set(&mut low, root, next);
+        next += 1;
+        stack.push(root);
+        mark(&mut on_stack, root, true);
+        while let Some(&mut (node, ref mut at)) = frames.last_mut() {
+            una_core::label_counters::pass_step();
+            let successors = succ.get(node).map_or(&[][..], Vec::as_slice);
+            if let Some(&to) = successors.get(*at) {
+                *at += 1;
+                if get(&index, to) == usize::MAX {
+                    set(&mut index, to, next);
+                    set(&mut low, to, next);
+                    next += 1;
+                    stack.push(to);
+                    mark(&mut on_stack, to, true);
+                    frames.push((to, 0));
+                } else if on_stack.get(to).copied().unwrap_or(false) {
+                    let lowest = get(&low, node).min(get(&index, to));
+                    set(&mut low, node, lowest);
+                }
+                continue;
+            }
+            frames.pop();
+            if let Some(&(parent, _)) = frames.last() {
+                let lowest = get(&low, parent).min(get(&low, node));
+                set(&mut low, parent, lowest);
+            }
+            if get(&low, node) != get(&index, node) {
+                continue;
+            }
+            let mut members = Vec::new();
+            while let Some(member) = stack.pop() {
+                mark(&mut on_stack, member, false);
+                members.push(member);
+                if member == node {
+                    break;
+                }
+            }
+            let looped = members.len() > 1 || successors.contains(&node);
+            for member in members {
+                mark(&mut cyclic, member, looped);
+            }
+        }
     }
-    !env.reports(def.module) || !def.type_params.is_empty()
+    cyclic
 }
 
-/// The [`DepthGraph`] of the package, over `graph`: two passes of [`close`], O(V + E + P) for
-/// `P` policies.
-pub(crate) fn depth_graph(env: &Env<'_>, findings: &Findings, graph: &Graph) -> DepthGraph {
+/// `label` without its symbolic labels `ℓ_T` (#1674). The values of a type parameter in a
+/// generic body come from its callers, whose own code labels them concretely: a call the task
+/// makes passes what the task holds, which counts where the task holds it.
+fn concrete(label: &Label) -> Label {
+    if label.symbols.is_empty() {
+        return label.clone();
+    }
+    Label {
+        symbols: Default::default(),
+        ..label.clone()
+    }
+}
+
+/// The [`Reach`] of the package: one graph, one search for cycles and two closures, O(V + E).
+pub(crate) fn start_reaches(env: &Env<'_>, findings: &Findings) -> Reach {
+    let graph = graph(env, findings);
+    let kinds = env.kind_labels.as_ref();
     let nodes = graph.succ.len();
     let mut succ = graph.succ.clone();
-    for (&via, &policy) in &env.vias {
-        if via < graph.functions
+    for &(policy, via) in &findings.policy_vias {
+        if policy < graph.functions
+            && via < graph.functions
             && let Some(edges) = succ.get_mut(policy)
         {
             edges.push(via);
         }
     }
+    let cyclic = on_cycle(&succ);
+    let apart = |module: usize| {
+        let standard = module >= env.prelude;
+        let prelude = env.modules.get(module).is_some_and(|m| m.path == "prelude");
+        (standard && !prelude) || (!standard && !env.reports(module))
+    };
     let mut local = vec![Label::public(); nodes];
-    let mut loose = vec![false; nodes];
-    for (caller, label) in &findings.call_pcs {
-        if let Some(slot) = graph.node_of(*caller).and_then(|node| local.get_mut(node)) {
-            *slot = label.clone();
-        }
-    }
-    let apart = |module: usize| module >= env.prelude || !env.reports(module);
+    let mut own: Vec<Option<Unbounded>> = vec![None; nodes];
     for (f, def) in env.functions.iter().enumerate() {
-        if loose_calls(env, def)
-            && let Some(slot) = loose.get_mut(f)
+        let mut label = def.result.base.deep_label(kinds);
+        for param in &def.params {
+            label = label.join(&param.ty.base.deep_label(kinds));
+        }
+        if let Some(slot) = local.get_mut(f) {
+            *slot = concrete(&label);
+        }
+        if apart(def.module)
+            && let Some(slot) = own.get_mut(f)
         {
-            *slot = true;
+            *slot = Some(Unbounded::Unseen(f));
         }
     }
-    // A function that applies a function argument whose code is not known at the call.
-    for &(f, _) in &findings.opaque_applies {
-        if let Some(slot) = loose.get_mut(f) {
-            *slot = true;
-        }
-    }
-    for (&h, seed) in &findings.handler_seeds {
-        if !seed.opaque_applies.is_empty()
-            && let Some(slot) = loose.get_mut(graph.handler_node(h))
-        {
-            *slot = true;
-        }
-    }
-    // A handler checked apart, whose operation bodies the findings do not hold.
     for (h, handler) in env.handlers.iter().enumerate() {
+        let node = graph.handler_node(h);
+        let mut label = Label::public();
+        for param in &handler.params {
+            label = label.join(&param.ty.base.deep_label(kinds));
+        }
+        if let Some(slot) = local.get_mut(node) {
+            *slot = concrete(&label);
+        }
         if apart(handler.module)
-            && let Some(slot) = loose.get_mut(graph.handler_node(h))
+            && let Some(slot) = own.get_mut(node)
         {
-            *slot = true;
+            *slot = Some(Unbounded::Unseen(node));
         }
     }
-    // `Λ`, every lambda and every function named as a value, is precise when the findings hold
-    // every lambda a call of a function value can run, each checked with the labels of its
-    // captures. Not when a dependency checked apart may make one, or a generic function's
-    // lambda may branch on a value of a type parameter, or a standard function's result is of
-    // a function type. The standard modules write no lambda, so a function value they return
-    // otherwise came from the package, whose lambdas `Λ` holds.
-    let lambdas_apart = env.functions.iter().any(|def| {
-        if def.module >= env.prelude {
-            holds_fn_type(&def.result.base)
-        } else if env.reports(def.module) {
-            !def.type_params.is_empty()
-        } else {
-            true
+    for ((cap, op), &node) in &graph.ops {
+        if let Some(rho) = rho(env, *cap, op)
+            && let Some(slot) = local.get_mut(node)
+        {
+            *slot = concrete(&rho);
         }
-    });
-    if lambdas_apart && let Some(slot) = loose.get_mut(graph.lambda) {
-        *slot = true;
     }
-    DepthGraph {
-        down: close(&succ, &local, |a: &Label, b: &Label| a.join(b)),
-        loose: close(&succ, &loose, |a: &bool, b: &bool| *a || *b),
+    for (caller, label) in &findings.reach_labels {
+        if let Some(slot) = graph.node_of(*caller).and_then(|node| local.get_mut(node)) {
+            *slot = slot.join(label);
+        }
+    }
+    if let Some(slot) = own.get_mut(graph.lambda) {
+        *slot = Some(Unbounded::ValueCall);
+    }
+    for (node, slot) in own.iter_mut().enumerate() {
+        if slot.is_none() && cyclic.get(node).copied().unwrap_or(false) {
+            *slot = Some(Unbounded::Cycle(node));
+        }
+    }
+    let internal = Label {
+        level: una_syntax::ast::Level::Internal,
+        ..Label::public()
+    };
+    let above: Vec<Option<usize>> = local
+        .iter()
+        .enumerate()
+        .map(|(node, label)| (!label.flows_to(&internal)).then_some(node))
+        .collect();
+    Reach {
+        unbounded: close(
+            &succ,
+            &own,
+            |a: &Option<Unbounded>, b: &Option<Unbounded>| a.or(*b),
+        ),
+        labeled: close(&succ, &above, |a: &Option<usize>, b: &Option<usize>| {
+            a.or(*b)
+        }),
         local,
-        succ,
+        functions: graph.functions,
+        handlers: graph.handlers,
+        capabilities: graph.capabilities,
+        ops: graph.ops,
+        lambda: graph.lambda,
     }
 }
 
-/// What decides how deep a site whose checking recorded `seed` can recurse (#1674): what
-/// decides its own calls, joined with `down` of every node it reaches, `Λ` for a call of a
-/// function value, and whether it reaches code the findings do not show precisely, a function
-/// applied to an argument whose code is not known at the call included. O(size of the seed)
-/// lookups.
-///
-/// The depth a task reaches is decided by which calls run, and each runs or not by the program
-/// counter at it and the left operands of the `and`, `or` and `implies` around it: a function's
-/// parameters bound by their types what its conditions read, `fail` and `if error pass` need a
-/// `public` program counter (`spec/07 §3` rule 3), and a loop runs its body under the label of
-/// what it visits. So, where the findings show every call, the depth depends on no data above
-/// this label.
-pub(crate) fn depth(graph: &Graph, depth: &DepthGraph, seed: &TimingSeed) -> (Label, bool) {
-    let mut label = seed.decides.clone().unwrap_or_else(Label::public);
-    let mut loose = !seed.opaque_applies.is_empty();
-    let mut reach = |node: usize| {
-        if let Some(down) = depth.down.get(node) {
-            label = label.join(down);
+/// What a `start` reaches (#1674), as [`start_reach`] finds it.
+pub(crate) struct StartReach {
+    /// A node it reaches that is [`Unbounded`].
+    pub(crate) unbounded: Option<Unbounded>,
+    /// A source of its own seed whose label is above the bound, as a message names it.
+    pub(crate) source: Option<String>,
+    /// A node it reaches whose own label is above `internal`.
+    pub(crate) labeled: Option<usize>,
+    /// The join of its own data and of that node's label.
+    pub(crate) label: Label,
+}
+
+/// What a `start` whose expression's checking recorded `seed` reaches (#1674): a node that is
+/// [`Unbounded`], and its own data or a node whose label is above `bound`, each as one witness
+/// for a message. O(size of the seed) lookups.
+pub(crate) fn start_reach(reach: &Reach, seed: &TimingSeed, bound: &Label) -> StartReach {
+    let mut unbounded = None;
+    let mut labeled: Option<usize> = None;
+    let mut look = |node: usize| {
+        if unbounded.is_none() {
+            unbounded = reach.unbounded.get(node).copied().flatten();
         }
-        loose |= depth.loose.get(node).copied().unwrap_or(false);
+        if labeled.is_none() {
+            labeled = reach.labeled.get(node).copied().flatten();
+        }
     };
     for &callee in &seed.callees {
-        if callee < graph.functions {
-            reach(callee);
+        if callee < reach.functions {
+            look(callee);
         }
     }
     for &handler in &seed.handlers {
-        if handler < graph.handlers {
-            reach(graph.handler_node(handler));
+        if handler < reach.handlers {
+            look(reach.functions + handler);
         }
     }
     for (cap, op) in &seed.ops {
-        match graph.ops.get(&(*cap, op.clone())) {
-            Some(&node) => reach(node),
-            None if *cap < graph.capabilities => reach(graph.cap_node(*cap)),
+        match reach.ops.get(&(*cap, op.clone())) {
+            Some(&node) => look(node),
+            None if *cap < reach.capabilities => look(reach.functions + reach.handlers + cap),
             None => {}
         }
     }
-    if seed.value_call {
-        reach(graph.lambda);
+    if seed.value_call || !seed.opaque_applies.is_empty() {
+        look(reach.lambda);
     }
-    (label, loose)
+    // The site's own data: the program counter, the bindings it reads from outside it, what it
+    // binds and receives itself.
+    let mut label = seed.bound.clone().unwrap_or_else(Label::public);
+    let mut source = None;
+    if !label.flows_to(bound) {
+        source = Some("what it binds".to_owned());
+    }
+    for (own, named) in &seed.sources {
+        let own = &concrete(own);
+        label = label.join(own);
+        if !own.flows_to(bound) {
+            source = Some(named.clone());
+            break;
+        }
+    }
+    if let Some(own) = labeled.and_then(|node| reach.local.get(node)) {
+        label = label.join(own);
+    }
+    StartReach {
+        unbounded,
+        source,
+        labeled,
+        label,
+    }
 }
 
-/// The first function, in index order, that a site whose checking recorded `seed` reaches and
-/// whose calls are decided by data above `bound`, for a message (#1674). O(V + E).
-/// `None` when only a lambda's calls, or the site's own, are.
-pub(crate) fn depth_culprit(
-    env: &Env<'_>,
-    graph: &Graph,
-    depth: &DepthGraph,
-    seed: &TimingSeed,
-    bound: &Label,
-) -> Option<String> {
-    let roots = seed
-        .callees
-        .iter()
-        .copied()
-        .filter(|&f| f < graph.functions)
-        .chain(
-            seed.handlers
-                .iter()
-                .filter(|&&h| h < graph.handlers)
-                .map(|&h| graph.handler_node(h)),
-        );
-    let seen = reached_from(&depth.succ, roots);
-    env.functions.iter().enumerate().find_map(|(f, def)| {
-        let above = seen.get(f).copied().unwrap_or(false)
-            && depth
-                .local
-                .get(f)
-                .is_some_and(|label| !label.flows_to(bound));
-        above.then(
-            || match env.modules.get(def.module).map(|m| m.path.as_str()) {
-                Some(path) if !path.is_empty() => format!("`{path}.{}`", def.name),
-                _ => format!("`{}`", def.name),
-            },
-        )
-    })
+impl Reach {
+    /// How a message names the node `node` as code.
+    pub(crate) fn name(&self, env: &Env<'_>, node: usize) -> String {
+        if node < self.functions {
+            if let Some(def) = env.functions.get(node) {
+                return match env.modules.get(def.module).map(|m| m.path.as_str()) {
+                    Some(path) if !path.is_empty() => format!("`{path}.{}`", def.name),
+                    _ => format!("`{}`", def.name),
+                };
+            }
+        } else if node < self.functions + self.handlers
+            && let Some(handler) = env.handlers.get(node - self.functions)
+        {
+            return format!(
+                "the handler `{}`",
+                env.text(handler.module, handler.ast.name.name)
+            );
+        }
+        if node == self.lambda {
+            return "a lambda".to_owned();
+        }
+        self.ops
+            .iter()
+            .find(|(_, at)| **at == node)
+            .and_then(|((cap, op), _)| {
+                env.capabilities
+                    .get(*cap)
+                    .map(|c| format!("the operation `{}.{op}`", c.name))
+            })
+            .unwrap_or_else(|| "an operation".to_owned())
+    }
 }
 
 /// A `tasks` statement checked (ADR 0117 rule 7), for the residue label of ADR 0116 P9: where
@@ -1658,11 +1862,15 @@ pub(crate) fn ancestor_labels(
     }
 }
 
-/// The callees of each function, from the package's call edges.
+/// The callees of each function, from the package's call edges, with the `via` function of
+/// each policy called, which the policy's call runs (#1673).
 fn callees_of(findings: &Findings) -> BTreeMap<usize, Vec<usize>> {
     let mut callees: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
     for &(caller, callee, _) in &findings.edges {
         callees.entry(caller).or_default().push(callee);
+    }
+    for &(policy, via) in &findings.policy_vias {
+        callees.entry(policy).or_default().push(via);
     }
     callees
 }
@@ -1729,22 +1937,6 @@ pub(crate) fn holds_function_by(env: &Env<'_>, ty: &Ty, resolve: &dyn Fn(&Ty) ->
             env.holds_function_kinds.get(id).copied().unwrap_or(true)
                 || args.iter().any(|arg| holds_function_by(env, arg, resolve))
         }
-        _ => false,
-    }
-}
-
-/// Whether `ty` holds a function type, at any depth of its written structure: a type
-/// parameter does not count, unlike in [`holds_function`] (#1674).
-fn holds_fn_type(ty: &Ty) -> bool {
-    match ty {
-        Ty::Fn(_) => true,
-        Ty::List(inner)
-        | Ty::Dense(_, inner)
-        | Ty::Labeled(_, inner)
-        | Ty::Refined(_, inner)
-        | Ty::Measured(_, inner) => holds_fn_type(inner),
-        Ty::Map(key, value) => holds_fn_type(key) || holds_fn_type(value),
-        Ty::Coll(_, args) | Ty::Kind(_, args) => args.iter().any(holds_fn_type),
         _ => false,
     }
 }
@@ -2056,6 +2248,153 @@ pub(crate) fn timing(
         label,
         sources,
         ops: seen,
+    }
+}
+
+/// A node of the graph of ADR 0116 P1, as [`TimingGraph`] shows it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TimingNode {
+    /// The body of a function, by its qualified name, `module.name`.
+    Function(String),
+    /// The operations of a handler, by its qualified name.
+    Handler(String),
+    /// `Λ`, the node of every lambda.
+    Lambda,
+}
+
+/// What an edge of [`TimingGraph`] goes to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TimingTarget {
+    /// A function called or named as a value, by its qualified name.
+    Function(String),
+    /// `Λ`: a call of a function value.
+    Lambda,
+    /// An operation, by its capability's name and its own.
+    Operation(String, String),
+    /// A handler installed, by its qualified name.
+    Install(String),
+}
+
+/// An edge of [`TimingGraph`]: the node whose code holds the call, what it goes to, the call
+/// site, and the innermost task construct whose part holds the call.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TimingEdge {
+    /// The node whose code holds the call.
+    pub from: TimingNode,
+    /// What it goes to.
+    pub to: TimingTarget,
+    /// The call site.
+    pub span: una_syntax::Span,
+    /// The innermost construct whose part holds it, an index of [`TimingGraph::constructs`].
+    pub construct: Option<usize>,
+}
+
+/// A task construct, or a timing site, of [`TimingGraph`], placed in its body's construct tree.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TimingPlace {
+    /// Its words: `together`, `together for`, `first of` or `tasks` for a construct, `within`,
+    /// `first of`, `for ever within` or `tasks` for a site.
+    pub kind: &'static str,
+    /// Where it is.
+    pub span: una_syntax::Span,
+    /// The node whose code holds it, `None` outside every node.
+    pub node: Option<TimingNode>,
+    /// The innermost construct whose part holds it, an index of [`TimingGraph::constructs`].
+    pub construct: Option<usize>,
+}
+
+/// The graph of ADR 0116 P1 and the construct trees of P3, as checking recorded them, for the
+/// completeness test of P1 (`una-cli/tests/timing_graph.rs`), which holds them to the Core IR
+/// of every package of the conformance suite.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TimingGraph {
+    /// Each edge, at its call site, in the order checking recorded them.
+    pub edges: Vec<TimingEdge>,
+    /// Each task construct, by the ids edges and places record; its `construct` is its parent.
+    pub constructs: Vec<TimingPlace>,
+    /// Each timing site, in the order checking recorded them.
+    pub sites: Vec<TimingPlace>,
+}
+
+/// [`TimingGraph`] of the package from its findings: O(edges + constructs + sites).
+pub(crate) fn recorded_graph(env: &Env<'_>, findings: &Findings) -> TimingGraph {
+    let qualified =
+        |module: usize, name: &str| match env.modules.get(module).map(|m| m.path.as_str()) {
+            Some(path) if !path.is_empty() => format!("{path}.{name}"),
+            _ => name.to_owned(),
+        };
+    let function = |f: usize| {
+        env.functions
+            .get(f)
+            .map_or_else(String::new, |def| qualified(def.module, def.name))
+    };
+    let handler = |h: usize| {
+        env.handlers.get(h).map_or_else(String::new, |def| {
+            qualified(def.module, env.text(def.module, def.ast.name.name))
+        })
+    };
+    let node = |caller: Caller| match caller {
+        Caller::Function(f) => TimingNode::Function(function(f)),
+        Caller::Handler(h) => TimingNode::Handler(handler(h)),
+        Caller::Lambda => TimingNode::Lambda,
+    };
+    let edges = findings
+        .graph_edges
+        .iter()
+        .map(|edge| TimingEdge {
+            from: node(edge.from),
+            to: match &edge.to {
+                Target::Function(f) => TimingTarget::Function(function(*f)),
+                Target::Lambda => TimingTarget::Lambda,
+                Target::Op(cap, op) => TimingTarget::Operation(
+                    env.capabilities
+                        .get(*cap)
+                        .map_or_else(String::new, |c| c.name.to_owned()),
+                    op.clone(),
+                ),
+                Target::Install(h) => TimingTarget::Install(handler(*h)),
+            },
+            span: edge.span,
+            construct: edge.construct,
+        })
+        .collect();
+    let constructs = findings
+        .constructs
+        .iter()
+        .map(|c| TimingPlace {
+            kind: c.kind.words(),
+            span: c.span,
+            node: c.node.map(node),
+            construct: c.parent,
+        })
+        .collect();
+    let place = |kind: &'static str, span: una_syntax::Span, seed: &TimingSeed| TimingPlace {
+        kind,
+        span,
+        node: seed.node.map(node),
+        construct: seed.construct,
+    };
+    let mut sites: Vec<TimingPlace> = findings
+        .withins
+        .iter()
+        .map(|site| place(site.construct.words(), site.span, &site.seed))
+        .collect();
+    sites.extend(
+        findings
+            .deadline_loops
+            .iter()
+            .map(|site| place("for ever within", site.span, &site.seed)),
+    );
+    sites.extend(
+        findings
+            .tasks_sites
+            .iter()
+            .map(|site| place("tasks", site.span, &site.seed)),
+    );
+    TimingGraph {
+        edges,
+        constructs,
+        sites,
     }
 }
 

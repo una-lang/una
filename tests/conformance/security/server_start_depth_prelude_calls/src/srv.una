@@ -1,4 +1,4 @@
--- test: a request task that reads `secret` data and calls prelude functions, host code that makes no call of Una code but through a lambda written at the call, over data the `secret` value does not decide, is accepted: the prelude does not make the depth label fall back to `τ⁰` (spec/31 §1, ADR 0123 IF6, #1674)
+-- test: a request task that reads `secret` data and calls prelude functions, host code that pushes no frame of Una code, but neither recurses nor calls a function value, is accepted (spec/31 §1, ADR 0123 IF6, #1674)
 -- spec: spec/31 §1
 -- expect: ok
 module srv
@@ -17,7 +17,7 @@ answer(exchange: internal Exchange, key: secret Int, keys: secret List[Int]) -> 
 =
   let t = exchange.request.body.trim()
   let s = key * 2
-  let xs = [1, 2, 3].map(each: fn(x) -> x + 1)
+  let xs = [3, 1, 2].sort()
   @server.reply(to: exchange.right, reply: Reply(status: 200, headers: [], body: "ok"))
     if error use unit
 

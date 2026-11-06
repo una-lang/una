@@ -51,6 +51,12 @@ fn free_port() -> u16 {
 /// A package of edition `0.4` named `name`, granted `console` and `serve` on `port`, whose entry
 /// module `srv` is `program`, in a fresh temporary directory; built natively for `engine`.
 fn package(name: &str, port: u16, program: &str, engine: Engine) -> PathBuf {
+    package_with(name, port, program, engine, false)
+}
+
+/// [`package`], whose `ita.una` has, when `served`, a `serve` section that names `srv` in
+/// place of the `run entry`.
+fn package_with(name: &str, port: u16, program: &str, engine: Engine, served: bool) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
         "una-serve-live-{name}-{engine:?}-{}",
         std::process::id()
@@ -59,9 +65,15 @@ fn package(name: &str, port: u16, program: &str, engine: Engine) -> PathBuf {
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(
         dir.join("ita.una"),
-        format!(
-            "ita {name}\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry srv\n  grants\n    console\n    serve \"http://127.0.0.1:{port}\"\n"
-        ),
+        if served {
+            format!(
+                "ita {name}\n  version 0.1.0\n  edition 0.4\n\nrun\n  grants\n    console\n    serve \"http://127.0.0.1:{port}\"\n\nserve\n  module srv\n"
+            )
+        } else {
+            format!(
+                "ita {name}\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry srv\n  grants\n    console\n    serve \"http://127.0.0.1:{port}\"\n"
+            )
+        },
     )
     .unwrap();
     std::fs::copy(
@@ -575,21 +587,6 @@ fn virtual_time_refuses_a_serve_grant_before_main() {
     }
 }
 
-/// A package like [`package`] whose `serve` section names the module `srv`, which declares
-/// `handle` and `on_stop`, for the interpreter: native code has no driver of the section yet
-/// (the second part of #1587).
-fn served_package(name: &str, port: u16, program: &str) -> PathBuf {
-    let dir = package(name, port, program, Engine::Interpreter);
-    std::fs::write(
-        dir.join("ita.una"),
-        format!(
-            "ita {name}\n  version 0.1.0\n  edition 0.4\n\nrun\n  grants\n    console\n    serve \"http://127.0.0.1:{port}\"\n\nserve\n  module srv\n"
-        ),
-    )
-    .unwrap();
-    dir
-}
-
 /// A `serve` module whose `handle` computes for a while before it answers, and whose
 /// `on_stop` says that the server stopped. `COUNT` is the length of the computation: long
 /// enough that the host stop comes while the request is in flight.
@@ -621,15 +618,22 @@ pub on_stop() -> Unit
 fn a_serve_section_drains_a_request_in_flight_then_runs_on_stop() {
     // `spec/31 §7` rule 4: at a host stop the driver's `next` fails with `Interrupted`, the
     // request in flight is answered by its task, and `on_stop` runs after it, exit code 0.
+    for engine in ENGINES {
+        serve_section_drains(engine);
+    }
+}
+
+/// [`a_serve_section_drains_a_request_in_flight_then_runs_on_stop`] in `engine`.
+fn serve_section_drains(engine: Engine) {
     let port = free_port();
-    let program = SERVED.replace("COUNT", "500000");
-    let dir = served_package("served_drain", port, &program);
-    let mut run = start(
-        &dir,
-        "served_drain",
-        Engine::Interpreter,
-        &["--stop-grace", "60"],
-    );
+    // Native code computes faster: a longer computation keeps its request in flight.
+    let count = match engine {
+        Engine::Interpreter => "500000",
+        Engine::Native => "5000000",
+    };
+    let program = SERVED.replace("COUNT", count);
+    let dir = package_with("served_drain", port, &program, engine, true);
+    let mut run = start(&dir, "served_drain", engine, &["--stop-grace", "60"]);
     let mut stream = connect(port);
     stream
         .write_all(b"GET /work HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
@@ -638,11 +642,12 @@ fn a_serve_section_drains_a_request_in_flight_then_runs_on_stop() {
     run.terminate();
     let answer = read_reply(&mut stream);
     let (code, lines, stderr) = run.end();
-    assert_eq!(code, Some(0), "{stderr}");
-    assert_eq!(output(&lines), ["handling", "stopped"]);
+    assert_eq!(code, Some(0), "{engine:?}: {stderr}");
+    assert_eq!(output(&lines), ["handling", "stopped"], "{engine:?}");
     assert_eq!(
         dateless(&answer),
-        "HTTP/1.1 200 OK\r\nContent-Length: 4\r\ncontent-type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\ndone"
+        "HTTP/1.1 200 OK\r\nContent-Length: 4\r\ncontent-type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\ndone",
+        "{engine:?}"
     );
     let trace = trace(&dir);
     // The second `next` ends at the stop while the request is in flight; its task replies
@@ -668,7 +673,7 @@ fn a_serve_section_drains_a_request_in_flight_then_runs_on_stop() {
             ("reply", "s1.1"),
             ("print", "")
         ],
-        "{trace}"
+        "{engine:?}: {trace}"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -677,15 +682,17 @@ fn a_serve_section_drains_a_request_in_flight_then_runs_on_stop() {
 fn a_serve_section_at_the_hard_stop_answers_503_and_skips_on_stop() {
     // ADR 0123 rule 18: past the grace period every task is cancelled, the right in flight is
     // answered `503`, `on_stop` does not run, and the run ends with U6007.
+    for engine in ENGINES {
+        serve_section_hard_stop(engine);
+    }
+}
+
+/// [`a_serve_section_at_the_hard_stop_answers_503_and_skips_on_stop`] in `engine`.
+fn serve_section_hard_stop(engine: Engine) {
     let port = free_port();
     let program = SERVED.replace("COUNT", "100000000000");
-    let dir = served_package("served_hard", port, &program);
-    let mut run = start(
-        &dir,
-        "served_hard",
-        Engine::Interpreter,
-        &["--stop-grace", "1"],
-    );
+    let dir = package_with("served_hard", port, &program, engine, true);
+    let mut run = start(&dir, "served_hard", engine, &["--stop-grace", "1"]);
     let mut stream = connect(port);
     stream
         .write_all(b"GET /work HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
@@ -694,14 +701,15 @@ fn a_serve_section_at_the_hard_stop_answers_503_and_skips_on_stop() {
     run.terminate();
     let answer = read_to_close(&mut stream);
     let (code, lines, stderr) = run.end();
-    assert_eq!(code, Some(1), "{stderr}");
-    assert!(stderr.contains("[U6007]"), "{stderr}");
-    assert_eq!(output(&lines), ["handling"]);
+    assert_eq!(code, Some(1), "{engine:?}: {stderr}");
+    assert!(stderr.contains("[U6007]"), "{engine:?}: {stderr}");
+    assert_eq!(output(&lines), ["handling"], "{engine:?}");
     assert_eq!(
         dateless(&answer),
-        "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nRetry-After: 1\r\nConnection: close\r\n\r\n"
+        "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nRetry-After: 1\r\nConnection: close\r\n\r\n",
+        "{engine:?}"
     );
-    assert!(!has_unanswered(&trace(&dir)));
+    assert!(!has_unanswered(&trace(&dir)), "{engine:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -758,9 +766,9 @@ fn status_of_body(port: u16, n: usize) -> String {
     reply.lines().next().unwrap_or_default().to_owned()
 }
 
-/// The review's probe of #1674: the depth is chosen by a function value that `secret` data
-/// picks, a recursive lambda or a trivial one, whose call is decided by the value's label.
-fn value_probe() -> String {
+/// The review's probe of #1674: the depth is chosen by a function value that data labeled
+/// `label` picks, a recursive lambda or a trivial one.
+fn value_probe(label: &str) -> String {
     DEPTH_PROBE
         .replace(
             "deep(n: DEPTH_LABEL Int) -> DEPTH_LABEL Int",
@@ -770,7 +778,7 @@ fn value_probe() -> String {
             "  let d = deep(key - exchange.request.body.len)\n",
             "  let a = fn() -> deep(5000)\n  let b = fn() -> 0\n  let f = if key > exchange.request.body.len then a else b\n  let d = f()\n",
         )
-        .replace("DEPTH_LABEL", "secret")
+        .replace("DEPTH_LABEL", label)
 }
 
 #[test]
@@ -783,7 +791,7 @@ fn a_task_whose_depth_depends_on_secret_data_is_refused_before_it_serves() {
             DEPTH_PROBE.replace("DEPTH_LABEL", "secret"),
             "31:11",
         ),
-        ("depth_value", value_probe(), "34:11"),
+        ("depth_value", value_probe("secret"), "34:11"),
     ];
     for (name, program, at) in probes {
         refused_before_serving(name, &program, at);
@@ -826,13 +834,34 @@ fn a_task_whose_depth_depends_on_internal_data_answers_500_past_its_depth() {
     // The twin, accepted: the depth depends only on `internal` data, which a reply accepts, so
     // the `500` of a task that ends alone reveals no more than its reply could. Both engines
     // answer the same: `200` below `--task-depth` (1000), `500` past it.
+    let twins = [
+        (
+            "depth_internal",
+            DEPTH_PROBE.replace("DEPTH_LABEL", "internal"),
+            4000,
+        ),
+        ("depth_value_internal", value_probe("internal"), 5000),
+    ];
     for engine in ENGINES {
+        for (name, program, long) in &twins {
+            internal_twin(name, program, *long, engine);
+        }
+    }
+}
+
+/// Serves the `internal` twin `program` in `engine`: `200` for a body of `long` bytes, whose
+/// task stays below `--task-depth`, `500` for an empty one, whose task ends alone.
+fn internal_twin(name: &str, program: &str, long: usize, engine: Engine) {
+    {
         let port = free_port();
-        let program = DEPTH_PROBE.replace("DEPTH_LABEL", "internal");
-        let dir = package("depth_internal", port, &program, engine);
-        let mut run = start(&dir, "depth_internal", engine, &["--stop-grace", "10"]);
+        let dir = package(name, port, program, engine);
+        let mut run = start(&dir, name, engine, &["--stop-grace", "10"]);
         run.expect("serving");
-        assert_eq!(status_of_body(port, 4000), "HTTP/1.1 200 OK", "{engine:?}");
+        assert_eq!(
+            status_of_body(port, long),
+            "HTTP/1.1 200 OK",
+            "{name} {engine:?}"
+        );
         assert_eq!(
             status_of_body(port, 0),
             "HTTP/1.1 500 Internal Server Error",

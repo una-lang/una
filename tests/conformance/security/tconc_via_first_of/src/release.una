@@ -1,0 +1,15 @@
+trusted module release
+
+pub policy key_of
+  from internal Int
+  to Int
+  via reveal_it
+  purpose "a test"
+  owner privacy
+
+--- The `via` function, which a call of `key_of` runs: it makes a request on a limited grant.
+reveal_it(t: internal Int) -> Int
+  uses @http: Http[get]
+=
+  let reply = attempt @http.get(url: "https://api.example.com/k", headers: [], key_name: None)
+  1
