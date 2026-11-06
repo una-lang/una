@@ -49,6 +49,16 @@ print(" | ".join("(" + x + ")" for x in fs))
     fi
 fi
 
+# Runs one step, echoing it first and its wall time after it.
+step() {
+    local t0=$SECONDS rc
+    echo "+ $*"
+    "$@"
+    rc=$?
+    echo "step time: $((SECONDS - t0)) s (exit $rc): $*"
+    return $rc
+}
+
 header() {
     echo "gate tier: $tier"
     printf '%s\n' "$reasons" | sed '/^$/d; s/^/reason: /'
@@ -57,10 +67,9 @@ header() {
 if [ "$tier" != fast ]; then
     header
     if [ "$plan" = 1 ]; then exit 0; fi
-    set -x
-    cargo build --locked -p una-rt || exit $?
-    cargo nextest run --workspace --locked --no-fail-fast || exit $?
-    cargo test --workspace --doc --locked
+    step cargo build --locked -p una-rt || exit $?
+    step cargo nextest run --workspace --locked --no-fail-fast || exit $?
+    step cargo test --workspace --doc --locked
     exit $?
 fi
 
@@ -81,12 +90,12 @@ fi
 
 log=$(mktemp "${TMPDIR:-/tmp}/gate-tests.XXXXXX") || exit 2
 trap 'rm -f "$log"' EXIT
-{
-    echo "+ cargo build --locked -p una-rt"
-    cargo build --locked -p una-rt
-} >"$log" 2>&1 || { header; cat "$log"; exit 1; }
+t0=$SECONDS
+step cargo build --locked -p una-rt >"$log" 2>&1 || { header; cat "$log"; exit 1; }
+# Listing builds every test binary; the second listing reuses them.
 all_count=$(cargo nextest list --workspace --locked --message-format oneline 2>>"$log" | grep -c .)
 fast_count=$(cargo nextest list --workspace --locked --message-format oneline -E "$expr" 2>>"$log" | grep -c .)
+echo "step time: $((SECONDS - t0)) s: the runtime library, the test binaries and the two listings" >>"$log"
 header
 if [ "$all_count" -gt 0 ] && [ "$fast_count" -gt 0 ]; then
     echo "tests not run: $((all_count - fast_count)) of $all_count (this tier runs $fast_count)"
@@ -99,6 +108,5 @@ echo "$NIGHTLY_SENTENCE"
 printf '%s\n' "$extras" | sed '/^$/d; s/^/extra: /'
 echo "filterset: $expr"
 cat "$log"
-set -x
-cargo nextest run --workspace --locked --no-fail-fast -E "$expr" || exit $?
-cargo test --workspace --doc --locked
+step cargo nextest run --workspace --locked --no-fail-fast -E "$expr" || exit $?
+step cargo test --workspace --doc --locked
