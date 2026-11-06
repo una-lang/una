@@ -2054,6 +2054,71 @@
           ]
         }
       ]
+    },
+    {
+      "name": "TestRequestError",
+      "module": "std.testing",
+      "kind": "kind",
+      "spec": [
+        "spec/31 §4"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "pub kind TestRequestError = | Refused",
+          "docs": [
+            "Why `test_request` refuses a request: the host would answer it `400` (ADR 0123 rule 21,",
+            "`spec/31 §4`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "test_request",
+      "module": "std.testing",
+      "kind": "function",
+      "spec": [
+        "spec/31 §4",
+        "spec/14 §4"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "pub test_request(method: Method, target: Text, body: Text) -> Request\n  fails TestRequestError",
+          "docs": [
+            "A request as the host would read it from a peer (ADR 0123 rule 21, `spec/31 §4`): its target",
+            "read by the host's own rules, the only header `host: test`, the peer `192.0.2.1` and the",
+            "listener `test`. Fails with `Refused` where the host would answer `400`. Usable only in",
+            "examples and in handlers that only examples install (`spec/14 §4`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "test_exchange",
+      "module": "std.testing",
+      "kind": "function",
+      "spec": [
+        "spec/31 §1",
+        "spec/14 §4"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "pub test_exchange(request: Request) -> Exchange",
+          "docs": [
+            "An exchange of `request` with a fresh reply right, distinct from every other reply right of",
+            "the run (ADR 0123 rule 21, `spec/31 §1`). Usable only in examples and in handlers that only",
+            "examples install (`spec/14 §4`)."
+          ]
+        }
+      ]
     }
   ]
 }

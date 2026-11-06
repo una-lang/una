@@ -425,7 +425,9 @@ fn standard_kinds(
         let Some(m) = env.modules.get(module) else {
             continue;
         };
-        if !m.path.starts_with("std.") || m.path == "std.testing" {
+        // `std.testing` has one kind, `TestRequestError` (ADR 0123 rule 21), declared only for a
+        // package that uses the server, so the Core IR of every other package does not change.
+        if !m.path.starts_with("std.") || (m.path == "std.testing" && !env.server_imported) {
             continue;
         }
         let mut decls = Vec::new();
@@ -599,6 +601,15 @@ fn library(
     let mut out = Vec::new();
     for (decl, entity) in m.tree.decls.iter().zip(m.decls.clone()) {
         if let DeclKind::Function(function) = &decl.kind {
+            // ADR 0123 rule 21: `test_request` and `test_exchange` name the server's kinds,
+            // which Core IR declares only for a package that uses the server.
+            if !env.server_imported
+                && m.path == crate::names::prelude::STD_TESTING
+                && crate::names::prelude::STD_TESTING_SERVER_NAMES
+                    .contains(&env.text(module, function.name.name))
+            {
+                continue;
+            }
             let signature = match entity {
                 Some(Entity::Function(id)) => {
                     let mut fx = Fx::new(env, findings, dbs, module);
