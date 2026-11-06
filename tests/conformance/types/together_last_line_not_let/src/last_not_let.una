@@ -1,0 +1,20 @@
+-- test: a `together` body whose last line is not a `let` is U2024 at `together`, also when the block is the last line of its own block (spec/19 §1 rule 3)
+-- spec: spec/19 §1
+-- expect: error U2024 at src/last_not_let.una:9:3
+-- expect: error U2024 at src/last_not_let.una:17:3
+module last_not_let
+
+pub value(a: Int, b: Int) -> Int
+=
+  together
+    let x = a
+    let y = b
+    a + b
+
+pub assigned(a: Int, b: Int) -> Unit
+=
+  let edit total = 0
+  together
+    let x = a
+    let y = b
+    total = a

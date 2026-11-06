@@ -2228,7 +2228,8 @@ impl<'e, 'a> Fx<'e, 'a> {
                         tail_span = stmt.span;
                     }
                 }
-                // Never the last line of a block, which the parser reports.
+                // Never the last line of a block of a checked program: the parser or U2024
+                // reports it.
                 Stmt::Together(stmt) => self.together(&mut lets, stmt),
                 // As the last line, the value is `unit` (`spec/27 §7`).
                 Stmt::Tasks(stmt) => {
