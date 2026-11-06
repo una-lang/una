@@ -3525,6 +3525,27 @@ pub(crate) fn limiter_timing(
     }
 }
 
+/// `τ(e)` of a `within` or a `first of`, before `L_res`: a `within` takes the precise
+/// `τ_conc` of `spec/27 §11` (ADR 0116, amendment of 2026-10-25, P4), a `first of` the
+/// preview's until slice 4 of the plan on #1087.
+fn within_site_timing(
+    env: &Env<'_>,
+    findings: &Findings,
+    site: &super::within::WithinSite,
+    concurrent: &BTreeSet<usize>,
+    concurrency: &super::timing::Concurrency,
+) -> super::timing::Timing {
+    let host = super::timing::HostHandlers::All;
+    match site.construct {
+        super::within::Construct::Within => {
+            super::timing::timing_precise(env, findings, &site.seed, host, concurrency)
+        }
+        super::within::Construct::FirstOf => {
+            super::timing::timing(env, findings, &site.seed, site.function, host, concurrent)
+        }
+    }
+}
+
 /// The timing label `τ(e)` of each `within` and `first of` that `findings` recorded, by the
 /// span of its deadline or its words (ADR 0117 IF2, IF3, ADR 0116 IF5 and IF6), each joined with
 /// the residue label `L_res` (ADR 0116 P9 and C), which is returned too, for the messages of pass
@@ -3538,17 +3559,11 @@ pub(crate) fn within_labels(
         return (BTreeMap::new(), super::timing::Residue::none());
     }
     let concurrent = super::timing::concurrent_functions(findings);
+    let concurrency = super::timing::concurrency_of(env, findings);
     let residue = super::timing::residue_of(env, findings);
     let mut labels: BTreeMap<Span, Label> = BTreeMap::new();
     for site in &findings.withins {
-        let timing = super::timing::timing(
-            env,
-            findings,
-            &site.seed,
-            site.function,
-            super::timing::HostHandlers::All,
-            &concurrent,
-        );
+        let timing = within_site_timing(env, findings, site, &concurrent, &concurrency);
         let timing = residue.join_into(timing);
         // A site checked twice, as an `attempt` inside a probe, keeps the join.
         let label = match labels.get(&site.key) {
@@ -3579,19 +3594,13 @@ pub(crate) fn within_timing(
         return Vec::new();
     }
     let concurrent = super::timing::concurrent_functions(findings);
+    let concurrency = super::timing::concurrency_of(env, findings);
     let mut sites: Vec<&super::within::WithinSite> = findings.withins.iter().collect();
     sites.sort_by_key(|site| (site.span.file, site.span.start, site.span.end));
     sites.dedup_by_key(|site| site.key);
     let mut entries = Vec::new();
     for site in sites {
-        let timing = super::timing::timing(
-            env,
-            findings,
-            &site.seed,
-            site.function,
-            super::timing::HostHandlers::All,
-            &concurrent,
-        );
+        let timing = within_site_timing(env, findings, site, &concurrent, &concurrency);
         // ADR 0116 P9 and C: every timing site joins `L_res`.
         let timing = residue.join_into(timing);
         let used = env

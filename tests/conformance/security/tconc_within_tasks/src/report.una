@@ -1,0 +1,33 @@
+-- test: precise `τ_conc` (ADR 0116 amendment of 2026-10-25, P2 to P4): a `tasks` statement starts `churn(key)` and `report(n)`; the `within` in `report` runs beside work on a `secret`, so its `τ_conc` is `secret` and the printed value carries it (U4003 at the print)
+-- spec: spec/27 §11
+-- expect: error U4003 at src/report.una:24:18
+module report
+
+import std.time (millisecond)
+
+crunch(key: secret Int) -> secret Int = key * 3
+
+--- Work on `key`, which a started task runs.
+churn(key: secret Int) -> Unit
+=
+  let spent = crunch(key)
+  unit
+
+step(n: Int) -> Int = n + 1
+
+--- Prints whether `step(n)` met its deadline: the value carries the deadline's timing label.
+report(n: Int) -> Unit
+  uses @console: Console[print]
+=
+  let v = step(n) within 10 * millisecond
+    if error use 0
+  @console.print("{v}")
+
+--- Starts `churn(key)`, and starts `report(n)`, beside it.
+pub serve(key: secret Int, n: Int) -> Unit
+  uses @console: Console[print]
+=
+  tasks
+    start churn(key)
+    start report(n)
+  unit

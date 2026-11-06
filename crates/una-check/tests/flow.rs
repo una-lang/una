@@ -739,40 +739,39 @@ fn tau_conc_follows_every_kind_of_edge_from_the_parts_of_a_construct() {
     // `κ` of each construct: the parts' own reads and what they reach. Under IF5 item 7 (ADR
     // 0116, amendment of 2026-11-06), `τ⁰` of a part also counts the values the functions it
     // reaches compute. `direct`, `in_handler`, `pong`, `lone` and `in_install` each bind `w`, the
-    // outcome of a `within`, and that value is labeled by the site's `τ` as checking computes it:
-    // the preview's `τ_conc`, `⊤` (`restricted`) in a function a part of a construct reaches. So
-    // `κ` of every construct whose parts reach one of them is `restricted`, an increase by a join.
-    // The values of `run_value`, `run_map` and `run_uses_of` were `⊤` already, through `Λ`, and
-    // `run_block`'s task reaches no `within`. Once the outcome of a `within` carries the precise
-    // `τ_conc`, these labels come down again.
+    // outcome of a `within`, which is labeled by that `within`'s `τ`, whose `τ_conc` is now the
+    // precise one (`spec/27 §11`): `κ` of the construct beside it. So `κ` and `τ_conc` meet at
+    // their least fixpoint, which the probe of pass 2 reaches from below: `secret` beside work on
+    // `key`, `public` beside `public` work. `run_value`, `run_map` and `run_uses_of` are `⊤`
+    // through `Λ` (IF5 item 4).
     assert_eq!(
         constructs,
         [
-            ("app.run_direct".to_owned(), some("restricted")),
+            ("app.run_direct".to_owned(), some("secret")),
             ("app.run_value".to_owned(), some("restricted")),
             ("app.run_map".to_owned(), some("restricted")),
-            ("app.run_op".to_owned(), some("restricted")),
-            ("app.run_cycle".to_owned(), some("restricted")),
+            ("app.run_op".to_owned(), some("public")),
+            ("app.run_cycle".to_owned(), some("public")),
             ("app.run_block".to_owned(), some("secret")),
             ("app.run_uses_of".to_owned(), some("restricted")),
-            ("app.run_install".to_owned(), some("restricted")),
+            ("app.run_install".to_owned(), some("secret")),
         ]
     );
-    // A direct call from a branch beside work on `key`; `restricted` by item 7, as above.
-    assert_eq!(at("app.direct"), [some("restricted")]);
+    // A direct call from a branch beside work on `key`.
+    assert_eq!(at("app.direct"), [some("secret")]);
     // A function value, through `apply`'s call and `Λ`; a lambda given to `map`, through `Λ`.
     assert_eq!(at("app.by_value"), [some("restricted")]);
     assert_eq!(at("app.by_map"), [some("restricted")]);
     // An operation, through its capability to the handler that serves it: beside a construct
-    // whose `κ` is `restricted` by item 7, as above, which is not the same as nothing beside it.
-    assert_eq!(at("app.in_handler"), [some("restricted")]);
+    // whose `κ` is `public`, which is not the same as nothing beside it.
+    assert_eq!(at("app.in_handler"), [some("public")]);
     // A `uses of` parameter called in `run_with`, through `Λ`.
     assert_eq!(at("app.by_uses_of"), [some("restricted")]);
-    // A handler installed in a branch, whose operation calls the function; item 7 as above.
-    assert_eq!(at("app.in_install"), [some("restricted")]);
-    // A cycle shares one `conc`, and so does what it calls; item 7 as above.
-    assert_eq!(at("app.pong"), [some("restricted")]);
-    assert_eq!(at("app.lone"), [some("restricted")]);
+    // A handler installed in a branch beside work on `key`, whose operation calls the function.
+    assert_eq!(at("app.in_install"), [some("secret")]);
+    // A cycle shares one `conc`, and so does what it calls.
+    assert_eq!(at("app.pong"), [some("public")]);
+    assert_eq!(at("app.lone"), [some("public")]);
     // A site in the block of a `tasks` statement runs beside its tasks (P2).
     assert_eq!(at("app.run_block"), [some("secret")]);
     // Called after the statement has ended, nothing runs beside it.

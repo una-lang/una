@@ -137,7 +137,9 @@ pub(crate) enum Target {
 pub(crate) struct GraphEdge {
     /// The node whose code holds the call: a function's body, a handler's operations, or `Λ`
     /// for a lambda's body.
-    pub(crate) from: Caller,
+    /// `None` in code outside every node, as an example's `do` line, whose edges still seed
+    /// `conc` of what they reach from a part (P3).
+    pub(crate) from: Option<Caller>,
     /// What it goes to.
     pub(crate) to: Target,
     /// The call site.
@@ -241,15 +243,13 @@ impl Checker<'_, '_, '_> {
     /// checked to `to`, at the call site `span`, with the innermost construct whose part holds
     /// it (P3).
     fn graph_edge(&mut self, to: Target, span: una_syntax::Span) {
-        if let Some(from) = self.caller() {
-            let construct = self.parts.last().copied();
-            self.findings.graph_edges.push(GraphEdge {
-                from,
-                to,
-                span,
-                construct,
-            });
-        }
+        let construct = self.parts.last().copied();
+        self.findings.graph_edges.push(GraphEdge {
+            from: self.caller(),
+            to,
+            span,
+            construct,
+        });
     }
 
     /// Records a call of, or a reference to, the function `callee` at `span`.
@@ -880,7 +880,7 @@ pub(crate) fn graph(env: &Env<'_>, findings: &Findings) -> Graph {
     // Each edge checking recorded at its call site (P1): a call or a function named as a
     // value, a call of a function value (to `Λ`), an operation (#1148), an installation.
     for edge in &findings.graph_edges {
-        let Some(from) = graph.node_of(edge.from) else {
+        let Some(from) = edge.from.and_then(|from| graph.node_of(from)) else {
             continue;
         };
         match &edge.to {
@@ -2285,6 +2285,33 @@ pub(crate) fn timing(
     host: HostHandlers,
     concurrent: &BTreeSet<usize>,
 ) -> Timing {
+    // The preview's `τ_conc` (IF6): `⊤` when a part of a task construct can run beside the site.
+    let beside = (seed.unplaced || function.is_some_and(|f| concurrent.contains(&f)))
+        .then(|| Label::top(&env.categories));
+    timing_with(env, findings, seed, host, beside)
+}
+
+/// [`timing`] with the precise `τ_conc` of the amendment of 2026-10-25 (`spec/27 §11`):
+/// `conc` of the site's node joined with `ctx` at it, `⊤` for a site in no node (P4).
+pub(crate) fn timing_precise(
+    env: &Env<'_>,
+    findings: &Findings,
+    seed: &TimingSeed,
+    host: HostHandlers,
+    concurrency: &Concurrency,
+) -> Timing {
+    timing_with(env, findings, seed, host, concurrency.tau_conc(seed))
+}
+
+/// [`timing`] with `beside` as `τ_conc`, `None` when no part of a construct can run beside the
+/// site.
+fn timing_with(
+    env: &Env<'_>,
+    findings: &Findings,
+    seed: &TimingSeed,
+    host: HostHandlers,
+    beside: Option<Label>,
+) -> Timing {
     let kinds = env.kind_labels.as_ref();
     let top = Label::top(&env.categories);
     let callees = callees_of(findings);
@@ -2415,9 +2442,11 @@ pub(crate) fn timing(
     }
     let mut sources = gather.sources;
     sources.extend(gather.values);
-    // `τ_conc` (IF6): `⊤` when a part of a task construct can run beside the site.
-    if seed.unplaced || function.is_some_and(|f| concurrent.contains(&f)) {
-        sources.push((top, "tasks that can run beside it".to_owned()));
+    // `τ_conc` (IF6), last, so that a message names the site's own sources first.
+    if let Some(beside) = beside
+        && !beside.is_public()
+    {
+        sources.push((beside, "tasks that can run beside it".to_owned()));
     }
     let label = sources
         .iter()
@@ -2485,6 +2514,11 @@ impl Concurrency {
     }
 }
 
+/// [`concurrency`] of the package, with its graph built here: O(V + E log E) for the graph.
+pub(crate) fn concurrency_of(env: &Env<'_>, findings: &Findings) -> Concurrency {
+    concurrency(env, findings, &graph(env, findings))
+}
+
 /// `κ`, `ctx` and `conc` of the package (ADR 0116 P2 to P4).
 ///
 /// - **`κ(C)`** is `τ⁰` of the seed of `C` over `graph` ([`seed_label`]), O(size of the seed).
@@ -2498,8 +2532,9 @@ impl Concurrency {
 ///   reaches `n`, `n` included: one pass of [`close`] over the reversed graph, whose strongly
 ///   connected components share one label (a cycle of calls shares one `conc`). O(V + E) joins.
 ///
-/// In all O(V + E + F + size of the seeds) joins, each O(k) for `k` categories. No label of a
-/// site uses it yet: slice 2 of the plan on #1087 only computes it.
+/// In all O(V + E + F + size of the seeds) joins, each O(k) for `k` categories. The `within`
+/// sites take their `τ_conc` from it ([`timing_precise`], slice 3 of the plan on #1087); the
+/// other sites keep the preview's until their slices.
 pub(crate) fn concurrency(env: &Env<'_>, findings: &Findings, graph: &Graph) -> Concurrency {
     let kappa: Vec<Label> = findings
         .constructs
@@ -2646,11 +2681,13 @@ pub(crate) fn recorded_graph(env: &Env<'_>, findings: &Findings) -> TimingGraph 
         Caller::Handler(h) => TimingNode::Handler(handler(h)),
         Caller::Lambda => TimingNode::Lambda,
     };
+    // The edges of code outside every node have no node to show.
     let edges = findings
         .graph_edges
         .iter()
-        .map(|edge| TimingEdge {
-            from: node(edge.from),
+        .filter_map(|edge| Some((edge, edge.from?)))
+        .map(|(edge, from)| TimingEdge {
+            from: node(from),
             to: match &edge.to {
                 Target::Function(f) => TimingTarget::Function(function(*f)),
                 Target::Lambda => TimingTarget::Lambda,

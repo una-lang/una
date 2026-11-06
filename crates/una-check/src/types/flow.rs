@@ -1011,7 +1011,7 @@ pub(crate) fn close_quiet(env: &super::env::Env<'_>, findings: &mut super::Findi
         .graph_edges
         .iter()
         .filter_map(|edge| match (edge.from, &edge.to) {
-            (super::timing::Caller::Function(f), super::timing::Target::Op(..)) => Some(f),
+            (Some(super::timing::Caller::Function(f)), super::timing::Target::Op(..)) => Some(f),
             _ => None,
         })
         .collect();
