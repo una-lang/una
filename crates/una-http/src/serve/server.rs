@@ -40,7 +40,7 @@ use std::os::unix::net::UnixStream;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -227,6 +227,36 @@ pub struct Server {
     acceptor: Arc<Acceptor>,
     clock: Arc<SystemClock>,
     handles: Mutex<Vec<JoinHandle<()>>>,
+    started: Arc<Started>,
+}
+
+/// How many serve threads are in place: their wake pair registered in their poller and, for
+/// thread 0, the accept poller in its own (S4 design SC6), or ended before that.
+#[derive(Default)]
+struct Started {
+    count: Mutex<usize>,
+    all: Condvar,
+}
+
+/// A serve thread's report to [`Started`], once: when it is in place, or when it ends first.
+struct Report {
+    started: Arc<Started>,
+    done: bool,
+}
+
+impl Report {
+    fn report(&mut self) {
+        if !std::mem::replace(&mut self.done, true) {
+            *lock(&self.started.count) += 1;
+            self.started.all.notify_all();
+        }
+    }
+}
+
+impl Drop for Report {
+    fn drop(&mut self) {
+        self.report();
+    }
 }
 
 impl Server {
@@ -293,6 +323,7 @@ impl Server {
                 }))
                 .map_err(|e| e.to_string())?;
         }
+        let started = Arc::new(Started::default());
         let mut handles = Vec::new();
         for (index, (inbox, wake_rx)) in inboxes.into_iter().zip(pairs).enumerate() {
             let poller = Arc::new(Poller::new().map_err(|e| failed("a poller", e))?);
@@ -307,6 +338,10 @@ impl Server {
                 poller: Arc::clone(&poller),
                 armed: armed.clone(),
                 backoff: Vec::new(),
+                report: Report {
+                    started: Arc::clone(&started),
+                    done: false,
+                },
             };
             let handle = std::thread::Builder::new()
                 .name(format!("una-serve-{index}"))
@@ -314,11 +349,23 @@ impl Server {
                 .map_err(|e| failed("a thread", e))?;
             handles.push(handle);
         }
+        // SC6: the run's first job comes after every serve thread is in place, so no thread is
+        // still starting while the program runs. Each reports once, at the latest as it ends.
+        {
+            let mut count = lock(&started.count);
+            while *count < threads {
+                count = started
+                    .all
+                    .wait(count)
+                    .unwrap_or_else(PoisonError::into_inner);
+            }
+        }
         Ok(Server {
             shared,
             acceptor,
             clock,
             handles: Mutex::new(handles),
+            started,
         })
     }
 
@@ -341,6 +388,12 @@ impl Server {
         for index in 0..self.acceptor.listeners.len() {
             self.acceptor.arm(index);
         }
+    }
+
+    /// How many serve threads were in place when [`Server::start`] returned, or ended first:
+    /// every one of them, which [`Server::start`] waits for (S4 design SC6).
+    pub fn threads_started(&self) -> usize {
+        *lock(&self.started.count)
     }
 
     /// Whether accepting began.
@@ -427,6 +480,8 @@ struct Context {
     armed: Armed,
     /// Listeners to register again, and when, after an error of `accept`.
     backoff: Vec<(u64, usize)>,
+    /// Tells [`Server::start`] that this thread is in place.
+    report: Report,
 }
 
 impl Context {
@@ -477,6 +532,7 @@ impl Context {
         if self.index == 0 {
             self.arm_accept();
         }
+        self.report.report();
         loop {
             #[cfg(feature = "test-hooks")]
             #[allow(clippy::panic)]

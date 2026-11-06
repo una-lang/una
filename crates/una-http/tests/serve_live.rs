@@ -43,7 +43,7 @@ fn start(items: &str, threads: usize) -> Live {
     let signal = Arc::clone(&ready);
     server
         .shared()
-        .on_ready(Arc::new(move || {
+        .on_ready(Arc::new(move |_| {
             let (count, condvar) = &*signal;
             *count.lock().unwrap() += 1;
             condvar.notify_all();
@@ -346,7 +346,7 @@ fn a_panicking_callback_stops_the_run() {
     let (server, _grant) = prepared(port, 4);
     server
         .shared()
-        .on_ready(Arc::new(move || {
+        .on_ready(Arc::new(move |_| {
             let on_serve = std::thread::current()
                 .name()
                 .is_some_and(|n| n.starts_with("una-serve-"));
@@ -404,7 +404,7 @@ fn a_serve_thread_that_ends_gives_back_its_connections_and_accepting_goes_on() {
     // those whose keyed owner was thread 0.
     let port = free_port();
     let (server, _grant) = prepared(port, 2);
-    server.shared().on_ready(Arc::new(|| {})).unwrap();
+    server.shared().on_ready(Arc::new(|_| {})).unwrap();
     server.begin();
     let live = Live {
         server,
@@ -473,7 +473,7 @@ fn a_fault_while_accepting_gives_back_the_slot_and_accepting_goes_on() {
     // accepts. In both cases every later connection is answered.
     let port = free_port();
     let (server, _grant) = prepared(port, 2);
-    server.shared().on_ready(Arc::new(|| {})).unwrap();
+    server.shared().on_ready(Arc::new(|_| {})).unwrap();
     server.begin();
     let live = Live {
         server,

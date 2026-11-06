@@ -563,6 +563,9 @@ pub fn next(site: i64) -> i64 {
                 .unwrap_or(Waited::Changed)
         };
         if cancelled(&entries) && !serving.aborted() {
+            // A wake this wait claimed, or one its helper may still claim before it sees the
+            // cancellation, goes to another waiter: the engine wakes one waiter per request.
+            serving.port.pass();
             return interrupted();
         }
         match waited {

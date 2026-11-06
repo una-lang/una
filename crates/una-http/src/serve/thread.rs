@@ -24,7 +24,7 @@ use super::grant::GrantState;
 use super::net::Readiness;
 use super::peer::PeerKey;
 use super::pressure::ConnShared;
-use super::run::{Adopt, ExchState, Msg, Pending, Shared};
+use super::run::{Adopt, ExchState, Msg, Pending, Shared, Wake};
 use crate::reply::{self, CONTINUE};
 use crate::request::{RequestLimits, RequestReader, Scheme};
 use crate::strict::BodyFraming;
@@ -1156,7 +1156,7 @@ impl Core {
                     self.shared.queued_died(self.index, c.grant.index);
                 } else if exch.expire_open() {
                     c.grant.end_exchange(exch.bytes);
-                    self.shared.notify();
+                    self.shared.notify(Wake::One);
                 } else {
                     // The reply is on its way: `answer` ends where the reply starts.
                     return;
@@ -1213,7 +1213,7 @@ impl Core {
             self.shared.slot_freed(c.grant.index);
         }
         if !std::mem::replace(&mut c.notified, true) {
-            self.shared.notify();
+            self.shared.notify(Wake::One);
         }
         // Last, after everything is given back: a fault in the readiness leaves nothing held.
         if !std::mem::replace(&mut c.forgot, true) {
