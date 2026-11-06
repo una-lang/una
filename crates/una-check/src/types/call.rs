@@ -3168,7 +3168,6 @@ fn covariant_in(ty: &Ty, kinds: &KindLabels) -> bool {
     }
 }
 
-/// Whether `ty` holds a type variable at any position.
 /// `ty` without the label at its top, its refinements kept.
 fn without_top_label(ty: &Ty) -> Ty {
     match ty {
@@ -3195,6 +3194,7 @@ fn holds_param(ty: &Ty) -> bool {
     }
 }
 
+/// Whether `ty` holds a type variable at any position.
 fn holds_var(ty: &Ty) -> bool {
     match ty {
         Ty::Var(_) => true,
