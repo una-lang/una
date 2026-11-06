@@ -384,6 +384,11 @@ fn copy_dir(from: &Path, to: &Path) {
 fn runtime() {
     static BUILT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
     BUILT.get_or_init(|| {
+        // Set by the nextest setup script (.config/nextest.toml): the library is built, and a second build in each test
+        // process would rewrite it under the tests that link it.
+        if std::env::var_os("UNA_RT_PREBUILT").is_some() {
+            return;
+        }
         let status = Command::new(env!("CARGO"))
             .args(["build", "--quiet", "-p", "una-rt"])
             .current_dir(repository())
