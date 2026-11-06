@@ -617,6 +617,8 @@ impl<'a> Checker<'_, 'a, '_> {
             self.raise_of(index, &decided);
         }
         let value_label = value_label.join(&decided);
+        // #1674: which code runs depends on the value, so its label decides the call's depth.
+        self.value_call_decided(&value_label);
         // S-39: a function value may run any construct. Which one runs depends on the value, so
         // the call stands under `pc ⊔ l_f` with the decisions of its arguments (T-App below),
         // and is quiet when that is above `public`, at a `public` program counter too (round 4).
@@ -1038,6 +1040,18 @@ impl<'a> Checker<'_, 'a, '_> {
             && !self.known_function_arguments(&def.params, args, has_receiver, &checked)
         {
             self.timing_opaque_apply(id);
+        }
+        // #1674: how many times, and whether, such a function runs its lambdas is decided by
+        // its other arguments, a list's length and elements, so their deep labels decide the
+        // calls in the lambdas, as the label of a function value decides a call of it.
+        if super::timing::applies_function(self.env, &def) {
+            let mut label = Label::public();
+            for (_, found, _, _) in &checked {
+                if !self.holds_function(found) {
+                    label = label.join(&self.deep(found));
+                }
+            }
+            self.value_call_decided(&label);
         }
         // ADR 0092 rule 3: the function values the callee may run through the caller's
         // bindings, charged once the arguments are typed (#615).

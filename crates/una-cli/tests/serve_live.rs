@@ -758,13 +758,43 @@ fn status_of_body(port: u16, n: usize) -> String {
     reply.lines().next().unwrap_or_default().to_owned()
 }
 
+/// The review's probe of #1674: the depth is chosen by a function value that `secret` data
+/// picks, a recursive lambda or a trivial one, whose call is decided by the value's label.
+fn value_probe() -> String {
+    DEPTH_PROBE
+        .replace(
+            "deep(n: DEPTH_LABEL Int) -> DEPTH_LABEL Int",
+            "deep(n: internal Int) -> internal Int",
+        )
+        .replace(
+            "  let d = deep(key - exchange.request.body.len)\n",
+            "  let a = fn() -> deep(5000)\n  let b = fn() -> 0\n  let f = if key > exchange.request.body.len then a else b\n  let d = f()\n",
+        )
+        .replace("DEPTH_LABEL", "secret")
+}
+
 #[test]
 fn a_task_whose_depth_depends_on_secret_data_is_refused_before_it_serves() {
     // ADR 0123 IF6, #1674: `una run` and `una build` check first, so neither engine binds the
     // listener, and no peer can query the depth.
+    let probes = [
+        (
+            "depth_secret",
+            DEPTH_PROBE.replace("DEPTH_LABEL", "secret"),
+            "31:11",
+        ),
+        ("depth_value", value_probe(), "34:11"),
+    ];
+    for (name, program, at) in probes {
+        refused_before_serving(name, &program, at);
+    }
+}
+
+/// Checks that `una run` and `una build` of `program` both refuse it with U4003 at `at` of
+/// `src/srv.una`, and that nothing listens on its port.
+fn refused_before_serving(name: &str, program: &str, at: &str) {
     let port = free_port();
-    let program = DEPTH_PROBE.replace("DEPTH_LABEL", "secret");
-    let dir = package("depth_secret", port, &program, Engine::Interpreter);
+    let dir = package(name, port, program, Engine::Interpreter);
     for (verb, flag) in [
         ("run", "UNA_TEST_RUN_SERVER"),
         ("build", "UNA_TEST_BUILD_SERVER"),
@@ -778,14 +808,14 @@ fn a_task_whose_depth_depends_on_secret_data_is_refused_before_it_serves() {
             .output()
             .unwrap();
         let stderr = String::from_utf8_lossy(&out.stderr);
-        assert_eq!(out.status.code(), Some(1), "{verb}: {stderr}");
+        assert_eq!(out.status.code(), Some(1), "{name} {verb}: {stderr}");
         assert!(
-            stderr.contains("[U4003]") && stderr.contains("src/srv.una:31:11"),
-            "{verb}: {stderr}"
+            stderr.contains("[U4003]") && stderr.contains(&format!("src/srv.una:{at}")),
+            "{name} {verb}: {stderr}"
         );
         assert!(
             TcpStream::connect(("127.0.0.1", port)).is_err(),
-            "{verb}: a listener is open"
+            "{name} {verb}: a listener is open"
         );
     }
     let _ = std::fs::remove_dir_all(&dir);

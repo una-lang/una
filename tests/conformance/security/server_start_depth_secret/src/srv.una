@@ -1,4 +1,4 @@
--- test: a `start` that moves a reply right is checked under `pc ⊔ τ⁰(e)` even without `within`: a task whose recursion depth depends on `secret` data could end alone past `--task-depth`, and its `500` would reveal the depth, so it is U4003 at the `start`, though it replies (spec/31 §1, ADR 0123 IF6, #1674)
+-- test: a `start` that moves a reply right is checked under its depth label `δ(e)` even without `within`: a task whose recursion depth depends on `secret` data could end alone past `--task-depth`, and its `500` would reveal the depth, so it is U4003 at the `start`, though it replies (spec/31 §1, ADR 0123 IF6, #1674)
 -- spec: spec/31 §1
 -- expect: error U4003 at src/srv.una:31:11
 module srv

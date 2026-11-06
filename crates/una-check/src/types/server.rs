@@ -395,17 +395,36 @@ pub(crate) fn start_rights(env: &Env<'_>, findings: &Findings, report: &mut Repo
         } else if !tau.flows_to(&internal) {
             format!("its deadline depends on `{tau}` timing")
         } else {
-            let culprit =
-                super::timing::depth_culprit(env, graph, depth_graph, &site.seed, &internal)
-                    .map(|name| format!("the conditions of the calls in {name}"))
-                    .or_else(|| fallback.as_ref().map(|tau0| tau0.culprit(&internal)));
-            let through = match culprit {
-                Some(culprit) if !culprit.is_empty() => format!(", through {culprit}"),
-                _ => String::new(),
-            };
-            format!(
-                "how deep its task recurses depends on `{depth}` data{through}, and a started task that runs past `--task-depth` ends alone and its rights are answered `500`"
-            )
+            match &fallback {
+                // The refusal comes from `τ⁰(e)`: say that the checker cannot see what decides
+                // the calls, not that a source decides them.
+                Some(tau0) if decides.flows_to(&internal) => {
+                    let culprit = tau0.culprit(&internal);
+                    let through = if culprit.is_empty() {
+                        String::new()
+                    } else {
+                        format!(", and {culprit} is `{}`", tau0.label)
+                    };
+                    format!(
+                        "its task reaches standard, generic or dependency code, or applies a function whose code is not known at the call, so the checker cannot see what decides how deep it recurses and bounds it by all the task reads{through}; a started task that runs past `--task-depth` ends alone and its rights are answered `500`"
+                    )
+                }
+                _ => {
+                    let culprit = super::timing::depth_culprit(
+                        env,
+                        graph,
+                        depth_graph,
+                        &site.seed,
+                        &internal,
+                    )
+                    .map_or_else(String::new, |name| {
+                        format!(", through the conditions of the calls in {name}")
+                    });
+                    format!(
+                        "how deep its task recurses depends on `{decides}` data{culprit}, and a started task that runs past `--task-depth` ends alone and its rights are answered `500`"
+                    )
+                }
+            }
         };
         let mut diagnostic = report.make(
             Code::U4003,

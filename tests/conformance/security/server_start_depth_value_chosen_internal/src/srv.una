@@ -1,0 +1,30 @@
+-- test: the twin of `server_start_depth_value_chosen`: the function value is chosen by `internal` request data, which a reply accepts, so the `start` is accepted (spec/31 §1, ADR 0123 IF6, #1674)
+-- spec: spec/31 §1
+-- expect: ok
+module srv
+
+import std.host (Exchange, HttpServer, Reply)
+
+big(n: internal Int) -> internal Int
+=
+  if n <= 0
+    0
+  else
+    1 + big(n - 1)
+
+answer(exchange: internal Exchange, key: secret Int, keys: secret List[Int]) -> Unit
+  uses @server: HttpServer[reply]
+=
+  let a = fn() -> big(5000)
+  let b = fn() -> 0
+  let f = if exchange.request.body.len > 3 then a else b
+  let d = f()
+  @server.reply(to: exchange.right, reply: Reply(status: 200, headers: [], body: "ok"))
+    if error use unit
+
+pub serve_all(exchanges: internal List[Exchange], key: secret Int, keys: secret List[Int]) -> Unit
+  uses @server: HttpServer[reply]
+=
+  tasks
+    for exchange in exchanges
+      start answer(exchange, key: key, keys: keys)

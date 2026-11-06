@@ -204,6 +204,22 @@ impl Checker<'_, '_, '_> {
         }
     }
 
+    /// Joins `label`, the label of a function value called here, into what decides the call
+    /// for its node and every open site: which code runs, and so how deep, depends on the value
+    /// (T-App, `spec/07 §3` rule 4; #1674).
+    pub(crate) fn value_call_decided(&mut self, label: &Label) {
+        if label.is_public() {
+            return;
+        }
+        let saved = self.short_circuit.clone();
+        self.short_circuit = saved.join(label);
+        if let Some(from) = self.caller() {
+            self.graph_decides(from);
+        }
+        self.timing_decides();
+        self.short_circuit = saved;
+    }
+
     /// Records that the code being checked installs the handler `handler`.
     pub(crate) fn graph_install(&mut self, handler: usize) {
         if let Some(from) = self.caller() {
@@ -858,15 +874,26 @@ pub(crate) struct DepthGraph {
 }
 
 /// Whether the calls of `def` are not shown precisely by the findings, so that what decides
-/// them is not known (#1674): a standard function or one of a dependency not checked with the
-/// package, whose bodies are checked apart; a generic function, whose conditions on values of
-/// a type parameter carry the labels of its callers' types, not of its own; and a function
-/// that applies a function argument, such as `map`, which may call it once per element.
+/// them is not known (#1674):
+/// - a function of a standard module other than the prelude, or of a dependency not checked
+///   with the package, whose bodies are checked apart;
+/// - a generic function of the package, whose conditions on values of a type parameter carry
+///   the labels of its callers' types, not its own.
+///
+/// The prelude's functions are not: both engines run each as host code, which makes no call of
+/// Una code but through a function argument (the interpreter's `Machine::prelude`, the
+/// runtime's intrinsics), so a call of one pushes no frame that data could multiply. One that
+/// applies a function argument, such as `map`, runs lambdas, which `Λ` holds; how often is
+/// decided by its other arguments, which [`Checker::value_call_decided`] joins at the call, and
+/// a call whose function argument is not a lambda written there makes its caller loose.
 fn loose_calls(env: &Env<'_>, def: &super::env::FnDef<'_>) -> bool {
-    def.module >= env.prelude
-        || !env.reports(def.module)
-        || !def.type_params.is_empty()
-        || applies_function(env, def)
+    if def.module >= env.prelude {
+        return env
+            .modules
+            .get(def.module)
+            .is_none_or(|module| module.path != "prelude");
+    }
+    !env.reports(def.module) || !def.type_params.is_empty()
 }
 
 /// The [`DepthGraph`] of the package, over `graph`: two passes of [`close`], O(V + E + P) for
@@ -892,6 +919,19 @@ pub(crate) fn depth_graph(env: &Env<'_>, findings: &Findings, graph: &Graph) -> 
     for (f, def) in env.functions.iter().enumerate() {
         if loose_calls(env, def)
             && let Some(slot) = loose.get_mut(f)
+        {
+            *slot = true;
+        }
+    }
+    // A function that applies a function argument whose code is not known at the call.
+    for &(f, _) in &findings.opaque_applies {
+        if let Some(slot) = loose.get_mut(f) {
+            *slot = true;
+        }
+    }
+    for (&h, seed) in &findings.handler_seeds {
+        if !seed.opaque_applies.is_empty()
+            && let Some(slot) = loose.get_mut(graph.handler_node(h))
         {
             *slot = true;
         }

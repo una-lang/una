@@ -1,0 +1,29 @@
+-- test: a request task that reads `secret` data and calls prelude functions, host code that makes no call of Una code but through a lambda written at the call, over data the `secret` value does not decide, is accepted: the prelude does not make the depth label fall back to `τ⁰` (spec/31 §1, ADR 0123 IF6, #1674)
+-- spec: spec/31 §1
+-- expect: ok
+module srv
+
+import std.host (Exchange, HttpServer, Reply)
+
+big(n: internal Int) -> internal Int
+=
+  if n <= 0
+    0
+  else
+    1 + big(n - 1)
+
+answer(exchange: internal Exchange, key: secret Int, keys: secret List[Int]) -> Unit
+  uses @server: HttpServer[reply]
+=
+  let t = exchange.request.body.trim()
+  let s = key * 2
+  let xs = [1, 2, 3].map(each: fn(x) -> x + 1)
+  @server.reply(to: exchange.right, reply: Reply(status: 200, headers: [], body: "ok"))
+    if error use unit
+
+pub serve_all(exchanges: internal List[Exchange], key: secret Int, keys: secret List[Int]) -> Unit
+  uses @server: HttpServer[reply]
+=
+  tasks
+    for exchange in exchanges
+      start answer(exchange, key: key, keys: keys)
