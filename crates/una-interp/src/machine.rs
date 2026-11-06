@@ -274,6 +274,8 @@ pub(crate) mod hashes;
 
 pub(crate) mod serve;
 
+mod driver;
+
 mod bitsets;
 
 /// The fault of a `slice` outside the text (#693).
@@ -2867,6 +2869,16 @@ impl<'p, 'w> Machine<'p, 'w> {
         bound: Option<usize>,
         body: &'p Expr,
     ) -> Flow<'p> {
+        self.tasks_with(bound, |machine| machine.eval(env, caps, body))
+    }
+
+    /// [`Machine::tasks`] with the block `body`, code of the engine's own: the driver of a
+    /// `serve` section (`spec/31 §7` rule 4) runs its loop as the block of a `tasks` statement.
+    pub(super) fn tasks_with(
+        &mut self,
+        bound: Option<usize>,
+        body: impl FnOnce(&mut Self) -> Flow<'p>,
+    ) -> Flow<'p> {
         // Quiet code does not count its statements, `qs`, so that whether it ran one, which may
         // depend on data above `public`, moves the path of no later statement (S-39, S-40,
         // `spec/26 §6` rule 4).
@@ -2881,7 +2893,7 @@ impl<'p, 'w> Machine<'p, 'w> {
         path.push(crate::concurrency::block_name('s', quiet, count));
         let scope = Rc::new(TasksScope::new(path, bound));
         self.scopes.push(Rc::clone(&scope));
-        let result = self.eval(env, caps, body);
+        let result = body(self);
         self.scopes.pop();
         if !matches!(result, Ok(_) | Err(Stop::Exit(..))) {
             scope.cancelled.set(true);
@@ -2928,6 +2940,36 @@ impl<'p, 'w> Machine<'p, 'w> {
         (task, rights): (&'p Expr, &'p [Name]),
         span: Span,
     ) -> Result<(), Stop<'p>> {
+        let reads = self.reads(task);
+        let mut captured: Env<'p> = reads.iter().filter_map(|name| env.binding(name)).collect();
+        // What the walk of ADR 0123 rule 4.2 reads: the captures that can hold a reply right.
+        let moved: Env<'p> = if rights.is_empty() || self.run.serve.is_none() {
+            Env::new()
+        } else {
+            rights
+                .iter()
+                .filter_map(|name| captured.binding(name))
+                .collect()
+        };
+        let caps = caps.clone();
+        self.start_with(
+            span,
+            move |child| child.eval(&mut captured, &caps, task),
+            // ADR 0123 rule 4.2: the reply rights this task holds that the captures reach move
+            // to the started task, before it can run.
+            |machine, id| machine.move_rights(&moved, rights, id),
+        )
+    }
+
+    /// [`Machine::start`] of a task that runs `body`, code of the engine's own or the started
+    /// expression, after `moves` gave it, by its id, the reply rights it takes (ADR 0123 rule
+    /// 4.2), before it can run.
+    pub(super) fn start_with(
+        &mut self,
+        span: Span,
+        body: impl FnOnce(&mut Machine<'p, 'w>) -> Flow<'p> + 'w,
+        moves: impl FnOnce(&Self, u64),
+    ) -> Result<(), Stop<'p>> {
         let Some(scope) = self.scopes.last().cloned() else {
             return Err(fault("a `start` outside its `tasks` statement"));
         };
@@ -2955,18 +2997,6 @@ impl<'p, 'w> Machine<'p, 'w> {
         let k = counts.next(quiet);
         scope.started.set(counts);
         let mut child = self.child(&scope, crate::concurrency::start_name(quiet, k));
-        let reads = self.reads(task);
-        let mut captured: Env<'p> = reads.iter().filter_map(|name| env.binding(name)).collect();
-        // What the walk of ADR 0123 rule 4.2 reads: the captures that can hold a reply right.
-        let moved: Env<'p> = if rights.is_empty() || self.run.serve.is_none() {
-            Env::new()
-        } else {
-            rights
-                .iter()
-                .filter_map(|name| captured.binding(name))
-                .collect()
-        };
-        let caps = caps.clone();
         let bytes = crate::stack_bytes(self.task_depth).unwrap_or(STACK_RESERVE * 2);
         scope.running.set(scope.running.get() + 1);
         self.run.live.set(self.run.live.get() + 1);
@@ -2977,7 +3007,7 @@ impl<'p, 'w> Machine<'p, 'w> {
             run: Rc::clone(&self.run),
             task: id,
         };
-        let body = move || {
+        let task = move || {
             // Its statement counts it ended once its events are written, or, if it never
             // starts, when the driver drops it, or after a panic, which the run keeps.
             let _ending = ending;
@@ -2985,18 +3015,16 @@ impl<'p, 'w> Machine<'p, 'w> {
             run.guarded(|| {
                 let base = 0usize;
                 child.stack_base = stack_position(&base);
-                let result = child.eval(&mut captured, &caps, task);
+                let result = body(&mut child);
                 child.started_end(result);
             });
         };
-        // ADR 0123 rule 4.2: the reply rights this task holds that the captures reach move to
-        // the started task, before it can run.
-        self.move_rights(&moved, rights, id as u64);
+        moves(self, id as u64);
         let started = self
             .run
             .sched
             .borrow_mut()
-            .start(Box::new(body), bytes, span);
+            .start(Box::new(task), bytes, span);
         if started != id {
             return Err(fault("a started task took an id other than its own"));
         }

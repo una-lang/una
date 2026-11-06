@@ -37,6 +37,12 @@
 //! (`una_http::serve::script`) when `UNA_TEST_SERVE_SCRIPT` names the case: its bytes, output,
 //! completion and trace must be the interpreter's, byte for byte.
 //!
+//! A case whose `ita.una` has a `serve` section runs the host's driver of that section
+//! (`spec/31 §7` rule 4) in place of `main`; `serve_section_program` is the program of rule 4
+//! written out in the language form, whose bytes and trace must be those of
+//! `serve_section_health`. Native code has no driver of the section yet, so those cases run in
+//! the interpreter only ([`NATIVE_PENDING`]).
+//!
 //! `una run` and `una build` themselves still refuse these programs (`spec/31 §1` rule 10): this
 //! harness calls the interpreter with the engine directly, and builds the native executable
 //! through the test hook, until the serve threads start before `main`.
@@ -172,8 +178,12 @@ fn run_here(dir: &Path, reveal: bool) -> (Vec<Value>, Vec<Value>) {
         task_depth: una_interp::Concurrency::default().task_depth,
         ..Limits::depth(una_interp::DEFAULT_MAX_DEPTH)
     };
-    let run =
-        una_interp::run_main(&checked.program, "srv", &mut lines, &host, limits).expect("a `main`");
+    let run = match served(&manifest) {
+        Some(module) => una_interp::run_serve(&checked.program, &module, &mut lines, &host, limits)
+            .expect("a `handle`"),
+        None => una_interp::run_main(&checked.program, "srv", &mut lines, &host, limits)
+            .expect("a `main`"),
+    };
     let printed = lines.0;
     assert_eq!(run.rights_left, 0, "{}: reply rights left", dir.display());
     let ended = port.end();
@@ -195,6 +205,24 @@ fn run_here(dir: &Path, reveal: bool) -> (Vec<Value>, Vec<Value>) {
     }
     (wire, ran)
 }
+
+/// The module of the `serve` section of `manifest`, the text of an `ita.una`, when it has one.
+fn served(manifest: &str) -> Option<String> {
+    let mut lines = manifest.lines().skip_while(|line| *line != "serve");
+    lines.next()?;
+    lines
+        .take_while(|line| line.starts_with("  "))
+        .find_map(|line| line.trim().strip_prefix("module "))
+        .map(str::to_owned)
+}
+
+/// The cases that run in the interpreter only: native code has no driver of a `serve` section
+/// yet (the second part of #1587).
+const NATIVE_PENDING: [&str; 3] = [
+    "serve_section_bad_reply",
+    "serve_section_failures",
+    "serve_section_health",
+];
 
 fn cases() -> Vec<PathBuf> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/serve_runs");
@@ -266,6 +294,19 @@ fn every_serve_run_gives_its_expected_bytes_and_trace() {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn the_driver_of_a_serve_section_runs_as_its_program() {
+    // `spec/31 §7` rule 4 and decision S6-D4: the driver is engine code equivalent to the
+    // program of rule 4, so a package that serves with the section and one that runs that
+    // program, with the same `handle`, `on_stop` and script, give the same bytes and the same
+    // trace, the events of each request in the root task and in `s1.k`.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/serve_runs");
+    let section = run(&root.join("serve_section_health"));
+    let program = run(&root.join("serve_section_program"));
+    assert_eq!(section.0, program.0, "the bytes");
+    assert_eq!(text(&section.1), text(&program.1), "the run");
 }
 
 #[test]
@@ -492,6 +533,9 @@ fn every_serve_run_runs_alike_in_native_code() {
     // byte for byte, over the same engine.
     let mut failures = Vec::new();
     for dir in cases() {
+        if NATIVE_PENDING.contains(&dir.file_name().unwrap().to_string_lossy().as_ref()) {
+            continue;
+        }
         let interpreted: Vec<Value> = lines(&dir.join("run.jsonl"));
         let expected: Vec<Value> = lines(&dir.join("expected.jsonl"));
         if dir.join("revealed.jsonl").exists() {
