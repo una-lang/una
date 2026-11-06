@@ -34,8 +34,14 @@ fn free_port() -> u16 {
 }
 
 fn live(threads: usize) -> (Live, u16) {
+    live_with(threads, "")
+}
+
+/// A live engine over one grant with the limits `extra` adds.
+fn live_with(threads: usize, extra: &str) -> (Live, u16) {
     let port = free_port();
-    let grant = ServeGrant::parse(&format!("serve:http://127.0.0.1:{port};peer=none")).unwrap();
+    let grant =
+        ServeGrant::parse(&format!("serve:http://127.0.0.1:{port};peer=none{extra}")).unwrap();
     let prepared = prepare(
         &[ServeInput {
             grant: &grant,
@@ -426,6 +432,93 @@ fn a_wake_handed_on_reaches_another_waiter() {
     assert_eq!(delivered.len(), 1);
     assert!(delivered[0].duration_since(sent) < Duration::from_secs(5));
     live.end(Duration::from_secs(5), false);
+}
+
+/// A POST of `kib` KiB over a new connection, sent whole.
+fn post(port: u16, path: &str, kib: usize, close: bool) -> TcpStream {
+    let mut stream = client(port);
+    let body = vec![b'x'; kib * 1024];
+    let close = if close { "Connection: close\r\n" } else { "" };
+    stream
+        .write_all(
+            format!(
+                "POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n{close}Content-Length: {}\r\n\r\n",
+                body.len()
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+    stream.write_all(&body).unwrap();
+    stream
+}
+
+fn ok() -> Reply {
+    Reply {
+        status: 200,
+        headers: Vec::new(),
+        body: "ok".to_owned(),
+    }
+}
+
+/// One ended exchange can let two queued requests through: the `delivered` budget of 1 MiB
+/// holds a 900 KiB request, and its end frees room for both 400 KiB requests queued behind
+/// it. Both queue signals were claimed already by waiters whose attempts found them held, so
+/// the second comes through only by the wake that the first delivery sends
+/// (`Live::next`). Without that wake it waits for a deadline: removing it fails this test.
+#[test]
+fn one_ended_exchange_lets_two_queued_requests_through() {
+    let (live, port) = live_with(2, ";delivered=1;body=2048;buffers=8");
+    live.begin();
+    let done = AtomicBool::new(false);
+    let mediums = AtomicUsize::new(0);
+    let big = std::sync::Mutex::new(None::<Box<una_http::serve::run::Exchange>>);
+    let held = std::sync::Mutex::new(Vec::new());
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let took = std::thread::scope(|scope| {
+        for _ in 0..3 {
+            scope.spawn(|| {
+                while !done.load(Ordering::SeqCst) {
+                    let epoch = live.epoch();
+                    if let Next::Exchange(exchange) = live.next() {
+                        if exchange.request.segments.first().map(String::as_str) == Some("big") {
+                            big.lock().unwrap().replace(exchange);
+                        } else {
+                            // Each handler holds what it took, so it waits no more.
+                            mediums.fetch_add(1, Ordering::SeqCst);
+                            held.lock().unwrap().push(exchange);
+                            while !done.load(Ordering::SeqCst) {
+                                std::thread::sleep(Duration::from_millis(1));
+                            }
+                        }
+                        continue;
+                    }
+                    let _ = live.wait(epoch, None, Some(deadline), &|| done.load(Ordering::SeqCst));
+                }
+            });
+        }
+        let _big = post(port, "/big", 900, false);
+        while big.lock().unwrap().is_none() {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let _first = post(port, "/m1", 400, true);
+        let _second = post(port, "/m2", 400, true);
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(mediums.load(Ordering::SeqCst), 0, "the budget holds both");
+        let answered = Instant::now();
+        let _ = big.lock().unwrap().take().unwrap().reply(&ok());
+        while mediums.load(Ordering::SeqCst) < 2 && answered.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let took = answered.elapsed();
+        done.store(true, Ordering::SeqCst);
+        took
+    });
+    for mut exchange in held.into_inner().unwrap() {
+        let _ = exchange.reply(&ok());
+    }
+    live.end(Duration::from_secs(2), false);
+    assert_eq!(mediums.load(Ordering::SeqCst), 2, "after {took:?}");
+    assert!(took < Duration::from_secs(5), "{took:?}");
 }
 
 /// SC6 (S4 design §11.3): when the engine has started, before the run's first job, every serve

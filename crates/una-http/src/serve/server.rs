@@ -230,23 +230,29 @@ pub struct Server {
     started: Arc<Started>,
 }
 
-/// How many serve threads are in place: their wake pair registered in their poller and, for
-/// thread 0, the accept poller in its own (S4 design SC6), or ended before that.
+/// How many serve threads reported: in place, their wake pair registered in their poller and,
+/// for thread 0, the accept poller in its own (S4 design SC6), or not, when a registration
+/// failed or the thread ended before it.
 #[derive(Default)]
 struct Started {
     count: Mutex<usize>,
     all: Condvar,
+    failed: AtomicBool,
 }
 
-/// A serve thread's report to [`Started`], once: when it is in place, or when it ends first.
+/// A serve thread's report to [`Started`], once: when it is in place, or when a registration
+/// failed or it ends first, which [`Server::start`] refuses.
 struct Report {
     started: Arc<Started>,
     done: bool,
 }
 
 impl Report {
-    fn report(&mut self) {
+    fn report(&mut self, placed: bool) {
         if !std::mem::replace(&mut self.done, true) {
+            if !placed {
+                self.started.failed.store(true, Ordering::SeqCst);
+            }
             *lock(&self.started.count) += 1;
             self.started.all.notify_all();
         }
@@ -255,7 +261,32 @@ impl Report {
 
 impl Drop for Report {
     fn drop(&mut self) {
-        self.report();
+        self.report(false);
+    }
+}
+
+/// Registrations of a starting serve thread that fail, for a test of [`Server::start`]: a
+/// process-wide count, so its test runs alone in its binary.
+#[cfg(feature = "test-hooks")]
+static REGISTRATION_FAULTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Makes the next `n` registrations of a starting serve thread fail, for a test.
+#[cfg(feature = "test-hooks")]
+pub fn fail_registrations(n: usize) {
+    REGISTRATION_FAULTS.store(n, Ordering::SeqCst);
+}
+
+/// Whether a registration of a starting serve thread fails by a test's fault.
+fn registration_fault() -> bool {
+    #[cfg(feature = "test-hooks")]
+    {
+        REGISTRATION_FAULTS
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .is_ok()
+    }
+    #[cfg(not(feature = "test-hooks"))]
+    {
+        false
     }
 }
 
@@ -360,13 +391,23 @@ impl Server {
                     .unwrap_or_else(PoisonError::into_inner);
             }
         }
-        Ok(Server {
+        let server = Server {
             shared,
             acceptor,
             clock,
             handles: Mutex::new(handles),
             started,
-        })
+        };
+        if server.started.failed.load(Ordering::SeqCst) {
+            // A thread that could not register its wake pair could never be woken: the run
+            // does not start, and the threads that did start end at once.
+            server.hard_stop();
+            let _ = server.join_within(Duration::from_secs(1));
+            return Err(
+                "cannot start the serve threads: a serve thread could not register its wake pair or the accept poller".to_owned(),
+            );
+        }
+        Ok(server)
     }
 
     /// What the serve threads share: the grants, the counters, the stop.
@@ -527,12 +568,12 @@ impl Context {
 
     fn serve(&mut self, thread: &mut Thread) {
         let mut events = Events::with_capacity(EVENTS);
-        self.arm_wake();
         // The turn to accept starts with thread 0 and passes round (see `accept_ready`).
-        if self.index == 0 {
-            self.arm_accept();
+        let placed = self.arm_wake() && (self.index != 0 || self.arm_accept());
+        self.report.report(placed);
+        if !placed {
+            return;
         }
-        self.report.report();
         loop {
             #[cfg(feature = "test-hooks")]
             #[allow(clippy::panic)]
@@ -633,17 +674,19 @@ impl Context {
         Some(Duration::from_nanos(at.saturating_sub(now)))
     }
 
-    fn arm_wake(&self) {
+    /// Registers the wake pair again; whether that held.
+    fn arm_wake(&self) -> bool {
         let fd = self.wake_rx.as_fd();
         let _ = self.poller.delete(fd, Interest::Read);
-        let _ = self.poller.add(fd, Interest::Read, WAKE);
+        !registration_fault() && self.poller.add(fd, Interest::Read, WAKE).is_ok()
     }
 
-    fn arm_accept(&self) {
+    /// Takes the turn to accept and registers the accept poller; whether that held.
+    fn arm_accept(&self) -> bool {
         self.shared.set_turn(self.index);
         let fd = self.acceptor.poller.as_fd();
         let _ = self.poller.delete(fd, Interest::Read);
-        let _ = self.poller.add(fd, Interest::Read, ACCEPT);
+        !registration_fault() && self.poller.add(fd, Interest::Read, ACCEPT).is_ok()
     }
 
     /// Registers again the listeners whose backoff ended.

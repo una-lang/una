@@ -7,11 +7,13 @@
 //!   of the run's reduced trace form ([`TraceKey::from_host`]). Nothing is accepted until the
 //!   run's first server operation ([`Port::begin`]): until then a peer's connection waits in the
 //!   kernel's backlog.
-//! - **Waiting.** A request queued and an exchange that ends each run the engine's `on_ready`
-//!   callback with [`Wake::One`], which sends one signal and wakes one waiter; a delivery sends
-//!   one more, so that a waiter that a single event let through hands the turn on when more
-//!   than one request became deliverable. A stop runs it with [`Wake::All`] and wakes every
-//!   waiter. Each signal is claimed by at most one waiter, and only by one whose last attempt
+//! - **Waiting.** A request queued, an exchange that ends and a connection that closes each run
+//!   the engine's `on_ready` callback with [`Wake::One`], which sends one signal and wakes one
+//!   waiter; a delivery sends one more, so that a waiter that a single event let through hands
+//!   the turn on when more than one request became deliverable: an ended exchange gives back
+//!   its bytes of the `delivered` budget, which can let several smaller queued requests
+//!   through, while `/once` gains one place only. A stop runs it with [`Wake::All`] and wakes
+//!   every waiter. Each signal is claimed by at most one waiter, and only by one whose last attempt
 //!   came before the signal was sent ([`Signals`]), so a large pool of waiters costs O(1)
 //!   wakes per request, not one per waiter. A wait also ends at its deadline, at a rate's retry
 //!   time, and when its `stopped` test holds, which it reads at least every [`LOOK`]. It takes
@@ -204,7 +206,9 @@ impl Port for Live {
     fn next(&self) -> Next {
         let next = self.server.next();
         // A delivery hands the turn on: one more waiter tries, in case the event that let this
-        // one through let more than one request through. O(1) more wakes per request.
+        // one through let more than one request through, as an ended exchange does when the
+        // bytes it gives back to the `delivered` budget fit several queued requests. O(1) more
+        // wakes per request.
         if matches!(next, Next::Exchange(_)) {
             signal(&self.epoch, Wake::One);
         }
