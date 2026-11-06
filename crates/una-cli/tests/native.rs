@@ -3465,7 +3465,9 @@ fn appends_through_calls(shape: &str, steps: usize) -> String {
 }
 
 #[test]
-fn a_list_appended_through_calls_grows_in_linear_time() {
+fn a_list_appended_through_calls_grows_in_linear_cpu_time_natively() {
+    // Each run is measured by the processor time of the executable (`cpu::cpu_output`, #1662),
+    // which other tests running beside it do not change, so the test needs no exclusive slot.
     // ADR 0072 D1 and D2 (#262): natively too, an `edit` argument, or a binding at its last
     // use rebound from the result, moves into the callee's owned parameter, which appends in
     // place through any number of call levels, copying nothing: the copy count is the primary
@@ -3501,15 +3503,13 @@ fn a_list_appended_through_calls_grows_in_linear_time() {
         // Times a run of the executable built for `steps` appends.
         let measure = |steps: usize| {
             let dir = &dirs[sizes.iter().position(|&s| s == steps).unwrap()];
-            let (output, seconds) = timing::timed(|| {
+            let (output, seconds) = cpu::cpu_output(
                 Command::new(
                     dir.join("target/una")
                         .join(format!("calls-{shape}-{steps}")),
                 )
-                .current_dir(dir)
-                .output()
-                .unwrap()
-            });
+                .current_dir(dir),
+            );
             assert_eq!(output.status.code(), Some(0), "{output:?}");
             assert_eq!(
                 String::from_utf8_lossy(&output.stdout),
@@ -3836,7 +3836,9 @@ pub main() -> Unit
 ";
 
 #[test]
-fn native_text_len_and_slice_take_constant_time_on_any_text() {
+fn native_text_len_and_slice_take_constant_cpu_time_on_any_text() {
+    // Each run is measured by the processor time of the executable (`cpu::cpu_output`, #1662),
+    // which other tests running beside it do not change, so the test needs no exclusive slot.
     // `spec/22 §6` rule 1, natively: a slice at each of n positions of a non-ASCII text takes
     // linear time. Ten times the text takes under 30 times as long, about 10x when linear
     // against about 100x when a position costs O(n). A miss is measured twice more before it
@@ -3867,12 +3869,9 @@ fn native_text_len_and_slice_take_constant_time_on_any_text() {
     // Times a run of the executable built for `count` scalar values.
     let measure = |count: usize| {
         let dir = &dirs[sizes.iter().position(|&s| s == count).unwrap()];
-        let (output, seconds) = timing::timed(|| {
-            Command::new(dir.join(format!("target/una/slice_{count}")))
-                .current_dir(dir)
-                .output()
-                .unwrap()
-        });
+        let (output, seconds) = cpu::cpu_output(
+            Command::new(dir.join(format!("target/una/slice_{count}"))).current_dir(dir),
+        );
         assert_eq!(output.status.code(), Some(0));
         // Each of the `count` slices adds 1 and the length `count`.
         let total = count * (count + 1);
@@ -3958,7 +3957,9 @@ fn text_scale_packages(
 }
 
 #[test]
-fn native_text_reads_stop_at_the_first_difference_whatever_the_text_size() {
+fn native_text_reads_stop_at_the_first_difference_in_cpu_time_whatever_the_text_size() {
+    // Each run is measured by the processor time of the executable (`cpu::cpu_output`, #1662),
+    // which other tests running beside it do not change, so the test needs no exclusive slot.
     // `spec/22 §2` (`ends_with`, O(m)) and the complexity rule of the Proposed ADR for the
     // standard library: `starts_with`, `ends_with`, `==` and `<` on a text of b scalar values
     // and a short operand take constant time, so a text of 4096 times the size takes under 4
@@ -3994,24 +3995,19 @@ fn native_text_reads_stop_at_the_first_difference_whatever_the_text_size() {
             &[("K", 0)],
         );
         let run_idle = || {
-            timing::timed(|| {
+            cpu::cpu_output(
                 Command::new(idle[0].join(format!("target/una/reads_idle_{name}_8")))
-                    .current_dir(&idle[0])
-                    .output()
-                    .unwrap()
-            })
+                    .current_dir(&idle[0]),
+            )
             .1
         };
         let fixed = timing::best_of_three(run_idle);
         let measure = |size: usize| {
             let log = size.trailing_zeros() as usize - 1;
             let dir = &dirs[logs.iter().position(|&s| s == log).unwrap()];
-            let (output, seconds) = timing::timed(|| {
-                Command::new(dir.join(format!("target/una/reads_{name}_{log}")))
-                    .current_dir(dir)
-                    .output()
-                    .unwrap()
-            });
+            let (output, seconds) = cpu::cpu_output(
+                Command::new(dir.join(format!("target/una/reads_{name}_{log}"))).current_dir(dir),
+            );
             assert_eq!(output.status.code(), Some(0), "{name}");
             assert_eq!(
                 String::from_utf8_lossy(&output.stdout),
@@ -4112,7 +4108,9 @@ const ALIASED: &str = "module aliased\n\npub main() -> Unit\n  uses @console: Co
 const ALIASED_OUTPUT: &str = "[1, 2] [1, 2, 3] [1, 2, 4] [1, 2, 5] [1, 2, 6] [1, 2, 7, 8] [1, 2]\n";
 
 #[test]
-fn a_list_built_through_function_values_grows_in_linear_time() {
+fn a_list_built_through_function_values_grows_in_linear_cpu_time_natively() {
+    // Each run is measured by the processor time of the executable (`cpu::cpu_output`, #1662),
+    // which other tests running beside it do not change, so the test needs no exclusive slot.
     // #312 (IP-1, IP-2): a call through a function value moves its arguments into the
     // lambda, which owns them, so a list or a text appended through function values and `fold`
     // grows in place: the debug runtime's count of copies is the same at every size, 0, or 1
@@ -4153,15 +4151,13 @@ fn a_list_built_through_function_values_grows_in_linear_time() {
         // Times a run of the executable built for `steps` appends, and checks its copies.
         let measure = |steps: usize| {
             let dir = &dirs[sizes.iter().position(|&s| s == steps).unwrap()];
-            let (output, seconds) = timing::timed(|| {
+            let (output, seconds) = cpu::cpu_output(
                 Command::new(
                     dir.join("target/una")
                         .join(format!("values-{shape}-{steps}")),
                 )
-                .current_dir(dir)
-                .output()
-                .unwrap()
-            });
+                .current_dir(dir),
+            );
             assert_eq!(output.status.code(), Some(0), "{output:?}");
             assert_eq!(
                 String::from_utf8_lossy(&output.stdout),
