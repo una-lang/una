@@ -285,7 +285,10 @@ thread_local! {
 
 /// Installs, once, the panic hook of the runtime, chained to the hook in place: inside
 /// [`guarded`] it keeps the panic's message for U8001; anywhere else it passes the panic on, so
-/// every other panic prints as before (ADR 0113 rule 5).
+/// every other panic prints as before (ADR 0113 rule 5). The serve engine's hook, which keeps
+/// the panics it contains quiet (`spec/31 §6` rule 13), is chained over it here, in the same
+/// place, before any thread of the run starts: two installs that ran at once on two threads
+/// could lose one of the hooks.
 pub(crate) fn install_panic_hook() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
@@ -304,6 +307,7 @@ pub(crate) fn install_panic_hook() {
             }
         }));
     });
+    una_http::serve::install_panic_hook();
 }
 
 /// What a [`guarded`] region of a `together` block does, for the message of a panic in it.
@@ -342,6 +346,23 @@ static HTTP_PREPARE: OnceLock<fn()> = OnceLock::new();
 /// grants include `Http` (`una_rt_http_enable`).
 pub(crate) fn enable_http() {
     let _ = HTTP_PREPARE.set(una_http::client::prepare);
+}
+
+/// How a run starts its serve threads before `main`, set only by a program that performs an
+/// operation of `HttpServer` ([`enable_serve`]): the only reference to the serve threads from the
+/// runtime's start, so an executable that serves nothing carries none of them (ADR 0074 H7).
+type ServeStart = fn(
+    una_http::serve::Prepared,
+    &[una_core::http::serve::ServeGrant],
+    usize,
+    &RunStop,
+) -> Result<(), String>;
+static SERVE_START: OnceLock<ServeStart> = OnceLock::new();
+
+/// Lets the runs of this process start their serve threads before `main` when their grants
+/// include `serve:` (`una_rt_serve_enable`).
+pub(crate) fn enable_serve() {
+    let _ = SERVE_START.set(crate::serve::install_live);
 }
 
 /// The bytes that 2^32 − 1 references take, one word each: a count at its limit with less held
@@ -2138,7 +2159,11 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
     // bound above; they accept nothing until its first server operation (S4 amendment B.2).
     // Any other run holds its listeners until it ends.
     let serves = meta.serve && meta.uses.iter().any(|need| need.capability == "HttpServer");
-    let _listeners = if serves && !scripted && !listeners.listeners.is_empty() {
+    let live = SERVE_START.get().filter(|_| serves);
+    let _listeners = if let Some(install) = live
+        && !scripted
+        && !listeners.listeners.is_empty()
+    {
         let served: Vec<una_core::http::serve::ServeGrant> = grants
             .iter()
             .filter_map(|grant| match grant {
@@ -2146,9 +2171,7 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
                 _ => None,
             })
             .collect();
-        if let Err(message) =
-            crate::serve::install_live(listeners, &served, options.serve_threads.max(1), &stop)
-        {
+        if let Err(message) = install(listeners, &served, options.serve_threads.max(1), &stop) {
             let _ = writeln!(stderr, "error: {message}");
             return USAGE;
         }

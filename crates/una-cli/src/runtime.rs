@@ -610,6 +610,8 @@ pub(crate) fn run_command(
     // bound above; they accept nothing until its first server operation (S4 amendment B.2).
     // Any other run holds its listeners until it ends.
     let live = if serves && !listeners.listeners.is_empty() {
+        // The engine's panic hook, from this thread, before any serve thread starts.
+        una_http::serve::install_panic_hook();
         match una_http::serve::live::Live::start(listeners, &served, serve_threads) {
             Ok(live) => Some(std::sync::Arc::new(live)),
             Err(message) => {

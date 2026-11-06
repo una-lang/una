@@ -502,15 +502,16 @@ pub fn next(site: i64) -> i64 {
         let until = covering.map(|covering| covering.at_millis());
         waiting.until(until);
         // Another ready task runs first, unless it only waits in `next` itself and its wait has
-        // not ended.
-        let waiters = lock(&serving.waiters).clone();
+        // not ended. Each queued task is looked up in the waiters as the scheduler's scan reaches
+        // it, O(log waiters), with no copy of the waiters: the scan holds its worker's queue, and
+        // the waiters' lock is never held while a queue's is taken, so the order is one way only.
         let aborted = serving.aborted();
         let yielded = crate::sched::yield_to_progress(|key| {
             aborted
                 || key.is_none_or(|key| {
-                    waiters
+                    lock(&serving.waiters)
                         .get(&key)
-                        .is_none_or(|waiter| waiter.ended(clock.now()))
+                        .is_none_or(|waiter| waiter.ended(now))
                 })
         });
         if yielded {

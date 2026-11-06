@@ -28,8 +28,11 @@
 //!
 //! **Precondition of the install.** Chaining takes the hook in place and then sets the new one,
 //! which is not atomic: this install and the runtime's (`una-rt`) must not run at once on two
-//! threads, or one of the hooks is lost. Today each runs on its own start path; S5 (#1571)
-//! installs both from one place before any serve thread or worker starts.
+//! threads, or one of the hooks is lost. Both are installed from one place, on the thread that
+//! starts the run, before any serve thread or worker starts: native code's start-up installs the
+//! runtime's hook and then this one ([`super::install_panic_hook`]), and `una run` installs this
+//! one before it starts the serve threads. The engine's own start ([`super::run::Shared::new`])
+//! installs it too, once, for the engine's tests.
 
 use std::cell::Cell;
 use std::fmt;
@@ -186,7 +189,7 @@ impl Loud {
 
 /// Installs, once per process, the hook that keeps contained faults off the panic hook, chained
 /// to the hook in place: every other panic reaches that hook as before.
-pub(crate) fn install_hook() {
+pub fn install_hook() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         let previous = std::panic::take_hook();
