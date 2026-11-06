@@ -1832,6 +1832,9 @@ impl<'a> Checker<'_, 'a, '_> {
         } else {
             result.raise_deep(&gives)
         };
+        // ADR 0123 IF6 (#1674): the answer is data the code holds, bound or not.
+        let answer = self.deep(&result);
+        self.reach_label(&answer);
         if self.pass == super::authority::Pass::Check {
             self.outcome_site(span, &capability, &decided, def.fails.as_ref(), &result);
         }

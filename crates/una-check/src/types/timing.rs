@@ -48,6 +48,9 @@ pub(crate) struct TimingSeed {
     pub(crate) node: Option<Caller>,
     /// The innermost construct whose part holds it (P3), an index of `Findings::constructs`.
     pub(crate) construct: Option<usize>,
+    /// The join of the deep labels of what it binds and of the answers of the operations it
+    /// performs, for the reach of a `start` (#1674); `None` when it is `public`.
+    pub(crate) bound: Option<Label>,
 }
 
 /// The timing label of a site (ADR 0116 IF5): its join, and the sources it joins, in the order
@@ -259,6 +262,29 @@ impl Checker<'_, '_, '_> {
     /// `Λ`.
     pub(crate) fn graph_value_call(&mut self, span: una_syntax::Span) {
         self.graph_edge(Target::Lambda, span);
+    }
+
+    /// Records that the code being checked binds, or receives from an operation, a value whose
+    /// deep label is `label`: in its node of the graph of ADR 0116 P1 and in every open site,
+    /// for the reach of a `start` (ADR 0123 IF6, #1674). O(open sites + log n).
+    pub(crate) fn reach_label(&mut self, label: &Label) {
+        if label.is_public() {
+            return;
+        }
+        if let Some(from) = self.caller() {
+            let slot = self
+                .findings
+                .reach_labels
+                .entry(from)
+                .or_insert_with(Label::public);
+            *slot = slot.join(label);
+        }
+        for frame in &mut self.timing {
+            frame.seed.bound = Some(match &frame.seed.bound {
+                Some(before) => before.join(label),
+                None => label.clone(),
+            });
+        }
     }
 
     /// Records that the code being checked installs the handler `handler` at `span`.
@@ -918,6 +944,409 @@ fn seed_label(env: &Env<'_>, graph: &Graph, seed: &TimingSeed) -> (Label, bool) 
         reach(graph.lambda, &mut label, &mut http);
     }
     (label, http)
+}
+
+/// Why the code of a node can push frames without a bound that its own code shows, for the
+/// reach of a `start` (ADR 0123 IF6, #1674).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Unbounded {
+    /// It lies on a cycle of the graph: it can recurse.
+    Cycle(usize),
+    /// `Λ`: a call of a function value, or of a `uses of` parameter, runs code that the call
+    /// does not show.
+    ValueCall,
+    /// A function or handler of a standard module other than the prelude, or of a dependency
+    /// not checked with the package, whose code the findings do not hold.
+    Unseen(usize),
+}
+
+/// What each node of the graph of ADR 0116 P1 reaches, for IF6 (#1674): a node that can push
+/// frames without a bound its code shows ([`Unbounded`]), and a node whose code can hold data
+/// above `internal`, each as one witness. Both are closed once per package over the strongly
+/// connected components, O(V + E), so each `start` costs O(size of its seed) lookups.
+pub(crate) struct Reach {
+    /// A node each node reaches, itself included, that is [`Unbounded`], with why.
+    unbounded: Vec<Option<Unbounded>>,
+    /// A node each node reaches, itself included, whose own label is above `internal`.
+    labeled: Vec<Option<usize>>,
+    /// Each node's own label: the deep labels of its signature, of what its code binds and of
+    /// the answers of its operations, a function's and `Λ`'s without symbols.
+    local: Vec<Label>,
+    /// Whether each node reaches one that can hand the task a function value made outside it.
+    foreign: Vec<bool>,
+    /// Whether each node reaches `Λ`.
+    to_lambda: Vec<bool>,
+    /// The label of `Λ` with its symbols, when a lambda of the package holds a value whose
+    /// label is a type parameter's.
+    lambda_symbols: Option<Label>,
+    /// The number of functions, handlers and capabilities, to name a node.
+    functions: usize,
+    handlers: usize,
+    capabilities: usize,
+    /// The node of each operation, and `Λ`.
+    ops: BTreeMap<(CapId, String), usize>,
+    lambda: usize,
+}
+
+/// Whether each node lies on a cycle of `succ`: in a strongly connected component of more than
+/// one node, or with an edge to itself. Tarjan's algorithm, iteratively, O(V + E).
+fn on_cycle(succ: &[Vec<usize>]) -> Vec<bool> {
+    // Each node's index and low link, unset as `usize::MAX`, and whether it is on the stack.
+    let n = succ.len();
+    let mut index = vec![usize::MAX; n];
+    let mut low = vec![0usize; n];
+    let mut on_stack = vec![false; n];
+    let mut stack: Vec<usize> = Vec::new();
+    let mut cyclic = vec![false; n];
+    let mut next = 0usize;
+    let get = |values: &[usize], node: usize| values.get(node).copied().unwrap_or(0);
+    let set = |values: &mut [usize], node: usize, value: usize| {
+        if let Some(slot) = values.get_mut(node) {
+            *slot = value;
+        }
+    };
+    let mark = |flags: &mut [bool], node: usize, value: bool| {
+        if let Some(slot) = flags.get_mut(node) {
+            *slot = value;
+        }
+    };
+    for root in 0..n {
+        if get(&index, root) != usize::MAX {
+            continue;
+        }
+        let mut frames: Vec<(usize, usize)> = vec![(root, 0)];
+        set(&mut index, root, next);
+        set(&mut low, root, next);
+        next += 1;
+        stack.push(root);
+        mark(&mut on_stack, root, true);
+        while let Some(&mut (node, ref mut at)) = frames.last_mut() {
+            una_core::label_counters::pass_step();
+            let successors = succ.get(node).map_or(&[][..], Vec::as_slice);
+            if let Some(&to) = successors.get(*at) {
+                *at += 1;
+                if get(&index, to) == usize::MAX {
+                    set(&mut index, to, next);
+                    set(&mut low, to, next);
+                    next += 1;
+                    stack.push(to);
+                    mark(&mut on_stack, to, true);
+                    frames.push((to, 0));
+                } else if on_stack.get(to).copied().unwrap_or(false) {
+                    let lowest = get(&low, node).min(get(&index, to));
+                    set(&mut low, node, lowest);
+                }
+                continue;
+            }
+            frames.pop();
+            if let Some(&(parent, _)) = frames.last() {
+                let lowest = get(&low, parent).min(get(&low, node));
+                set(&mut low, parent, lowest);
+            }
+            if get(&low, node) != get(&index, node) {
+                continue;
+            }
+            let mut members = Vec::new();
+            while let Some(member) = stack.pop() {
+                mark(&mut on_stack, member, false);
+                members.push(member);
+                if member == node {
+                    break;
+                }
+            }
+            let looped = members.len() > 1 || successors.contains(&node);
+            for member in members {
+                mark(&mut cyclic, member, looped);
+            }
+        }
+    }
+    cyclic
+}
+
+/// `label` without its symbolic labels `ℓ_T` (#1674), for the node of a generic function `g`
+/// only, whose symbols are those of `g`'s own type parameters. In a task, `g` runs only when the
+/// task calls it, so the values of its type parameters are what the task passes, which count
+/// where the task holds them: in the seed of the `start`, kept with its symbols, since a `start`
+/// in a generic body takes its type parameters' values from callers outside the task, or in a
+/// node the task reaches.
+fn concrete(label: &Label) -> Label {
+    if label.symbols.is_empty() {
+        return label.clone();
+    }
+    Label {
+        symbols: Default::default(),
+        ..label.clone()
+    }
+}
+
+/// The [`Reach`] of the package: one graph, one search for cycles and two closures, O(V + E).
+pub(crate) fn start_reaches(env: &Env<'_>, findings: &Findings) -> Reach {
+    let graph = graph(env, findings);
+    let kinds = env.kind_labels.as_ref();
+    let nodes = graph.succ.len();
+    let mut succ = graph.succ.clone();
+    for &(policy, via) in &findings.policy_vias {
+        if policy < graph.functions
+            && via < graph.functions
+            && let Some(edges) = succ.get_mut(policy)
+        {
+            edges.push(via);
+        }
+    }
+    let cyclic = on_cycle(&succ);
+    let apart = |module: usize| {
+        let standard = module >= env.prelude;
+        let prelude = env.modules.get(module).is_some_and(|m| m.path == "prelude");
+        (standard && !prelude) || (!standard && !env.reports(module))
+    };
+    let mut local = vec![Label::public(); nodes];
+    let mut own: Vec<Option<Unbounded>> = vec![None; nodes];
+    // Whether a node can hand the task a function value made outside it: a handler whose
+    // parameters may hold one, an operation whose answer may.
+    let mut foreign = vec![false; nodes];
+    for (f, def) in env.functions.iter().enumerate() {
+        let mut label = def.result.base.deep_label(kinds);
+        for param in &def.params {
+            label = label.join(&param.ty.base.deep_label(kinds));
+        }
+        if let Some(slot) = local.get_mut(f) {
+            *slot = label;
+        }
+        if apart(def.module)
+            && let Some(slot) = own.get_mut(f)
+        {
+            *slot = Some(Unbounded::Unseen(f));
+        }
+    }
+    for (h, handler) in env.handlers.iter().enumerate() {
+        let node = graph.handler_node(h);
+        let mut label = Label::public();
+        for param in &handler.params {
+            label = label.join(&param.ty.base.deep_label(kinds));
+        }
+        if let Some(slot) = local.get_mut(node) {
+            *slot = label;
+        }
+        if handler
+            .params
+            .iter()
+            .any(|param| holds_function(env, &param.ty.base))
+            && let Some(slot) = foreign.get_mut(node)
+        {
+            *slot = true;
+        }
+        if apart(handler.module)
+            && let Some(slot) = own.get_mut(node)
+        {
+            *slot = Some(Unbounded::Unseen(node));
+        }
+    }
+    for ((cap, op), &node) in &graph.ops {
+        if let Some(rho) = rho(env, *cap, op)
+            && let Some(slot) = local.get_mut(node)
+        {
+            *slot = rho;
+        }
+        let answers_function = env
+            .capabilities
+            .get(*cap)
+            .and_then(|c| c.ops.iter().find(|d| d.name == *op))
+            .is_some_and(|d| holds_function(env, &d.result.base));
+        if answers_function && let Some(slot) = foreign.get_mut(node) {
+            *slot = true;
+        }
+    }
+    for (caller, label) in &findings.reach_labels {
+        if let Some(slot) = graph.node_of(*caller).and_then(|node| local.get_mut(node)) {
+            *slot = slot.join(label);
+        }
+    }
+    // A function's own symbols are what the task passes it (see [`concrete`]).
+    for slot in local.iter_mut().take(graph.functions) {
+        *slot = concrete(slot);
+    }
+    // `Λ` holds every lambda of the package, whose captures may carry the symbols of the
+    // generic function that wrote it: kept apart, since a lambda made outside the task may
+    // reach it (`lambda_symbols`).
+    let lambda_symbols = local
+        .get(graph.lambda)
+        .filter(|label| !label.symbols.is_empty())
+        .cloned();
+    if let Some(slot) = local.get_mut(graph.lambda) {
+        *slot = concrete(slot);
+    }
+    if let Some(slot) = own.get_mut(graph.lambda) {
+        *slot = Some(Unbounded::ValueCall);
+    }
+    for (node, slot) in own.iter_mut().enumerate() {
+        if slot.is_none() && cyclic.get(node).copied().unwrap_or(false) {
+            *slot = Some(Unbounded::Cycle(node));
+        }
+    }
+    let internal = Label {
+        level: una_syntax::ast::Level::Internal,
+        ..Label::public()
+    };
+    let above: Vec<Option<usize>> = local
+        .iter()
+        .enumerate()
+        .map(|(node, label)| (!label.flows_to(&internal)).then_some(node))
+        .collect();
+    Reach {
+        unbounded: close(
+            &succ,
+            &own,
+            |a: &Option<Unbounded>, b: &Option<Unbounded>| a.or(*b),
+        ),
+        labeled: close(&succ, &above, |a: &Option<usize>, b: &Option<usize>| {
+            a.or(*b)
+        }),
+        foreign: close(&succ, &foreign, |a: &bool, b: &bool| *a || *b),
+        to_lambda: {
+            let mut is_lambda = vec![false; nodes];
+            if let Some(slot) = is_lambda.get_mut(graph.lambda) {
+                *slot = true;
+            }
+            close(&succ, &is_lambda, |a: &bool, b: &bool| *a || *b)
+        },
+        lambda_symbols,
+        local,
+        functions: graph.functions,
+        handlers: graph.handlers,
+        capabilities: graph.capabilities,
+        ops: graph.ops,
+        lambda: graph.lambda,
+    }
+}
+
+/// What a `start` reaches (#1674), as [`start_reach`] finds it.
+pub(crate) struct StartReach {
+    /// A node it reaches that is [`Unbounded`].
+    pub(crate) unbounded: Option<Unbounded>,
+    /// A source of its own seed whose label is above the bound, as a message names it.
+    pub(crate) source: Option<String>,
+    /// A node it reaches whose own label is above `internal`.
+    pub(crate) labeled: Option<usize>,
+    /// The join of its own data and of that node's label.
+    pub(crate) label: Label,
+}
+
+/// What a `start` whose expression's checking recorded `seed` reaches (#1674): a node that is
+/// [`Unbounded`], and its own data or a node whose label is above `bound`, each as one witness
+/// for a message. O(size of the seed) lookups.
+///
+/// A lambda that the task calls may have been made outside it, when its captures can hold a
+/// function value (`captures_function`) or a node it reaches can hand it one: the symbols of
+/// `Λ` then count, since the generic call that made the lambda need not be the task's.
+pub(crate) fn start_reach(
+    reach: &Reach,
+    seed: &TimingSeed,
+    captures_function: bool,
+    bound: &Label,
+) -> StartReach {
+    let mut unbounded = None;
+    let mut labeled: Option<usize> = None;
+    let mut lambda = false;
+    let mut foreign = captures_function;
+    let mut look = |node: usize| {
+        if unbounded.is_none() {
+            unbounded = reach.unbounded.get(node).copied().flatten();
+        }
+        if labeled.is_none() {
+            labeled = reach.labeled.get(node).copied().flatten();
+        }
+        lambda |= reach.to_lambda.get(node).copied().unwrap_or(false);
+        foreign |= reach.foreign.get(node).copied().unwrap_or(false);
+    };
+    for &callee in &seed.callees {
+        if callee < reach.functions {
+            look(callee);
+        }
+    }
+    for &handler in &seed.handlers {
+        if handler < reach.handlers {
+            look(reach.functions + handler);
+        }
+    }
+    for (cap, op) in &seed.ops {
+        match reach.ops.get(&(*cap, op.clone())) {
+            Some(&node) => look(node),
+            None if *cap < reach.capabilities => look(reach.functions + reach.handlers + cap),
+            None => {}
+        }
+    }
+    if seed.value_call || !seed.opaque_applies.is_empty() {
+        look(reach.lambda);
+    }
+    // The site's own data: the program counter, the bindings it reads from outside it, what it
+    // binds and receives itself.
+    let mut label = seed.bound.clone().unwrap_or_else(Label::public);
+    let mut source = None;
+    if !label.flows_to(bound) {
+        source = Some("what it binds".to_owned());
+    }
+    // Kept with their symbols: a `start` in a generic body takes the values of its type
+    // parameters from callers outside the task.
+    for (own, named) in &seed.sources {
+        label = label.join(own);
+        if source.is_none() && !own.flows_to(bound) {
+            source = Some(named.clone());
+        }
+    }
+    if let Some(own) = labeled.and_then(|node| reach.local.get(node)) {
+        label = label.join(own);
+    }
+    if lambda
+        && foreign
+        && let Some(symbols) = &reach.lambda_symbols
+    {
+        label = label.join(symbols);
+        if source.is_none() {
+            source = Some(
+                "a lambda that may be made outside the task, whose captures carry a type parameter's label"
+                    .to_owned(),
+            );
+        }
+    }
+    StartReach {
+        unbounded,
+        source,
+        labeled,
+        label,
+    }
+}
+
+impl Reach {
+    /// How a message names the node `node` as code.
+    pub(crate) fn name(&self, env: &Env<'_>, node: usize) -> String {
+        if node < self.functions {
+            if let Some(def) = env.functions.get(node) {
+                return match env.modules.get(def.module).map(|m| m.path.as_str()) {
+                    Some(path) if !path.is_empty() => format!("`{path}.{}`", def.name),
+                    _ => format!("`{}`", def.name),
+                };
+            }
+        } else if node < self.functions + self.handlers
+            && let Some(handler) = env.handlers.get(node - self.functions)
+        {
+            return format!(
+                "the handler `{}`",
+                env.text(handler.module, handler.ast.name.name)
+            );
+        }
+        if node == self.lambda {
+            return "a lambda".to_owned();
+        }
+        self.ops
+            .iter()
+            .find(|(_, at)| **at == node)
+            .and_then(|((cap, op), _)| {
+                env.capabilities
+                    .get(*cap)
+                    .map(|c| format!("the operation `{}.{op}`", c.name))
+            })
+            .unwrap_or_else(|| "an operation".to_owned())
+    }
 }
 
 /// A `tasks` statement checked (ADR 0117 rule 7), for the residue label of ADR 0116 P9: where
