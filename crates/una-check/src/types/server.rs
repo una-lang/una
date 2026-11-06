@@ -362,7 +362,7 @@ pub(crate) fn start_rights(env: &Env<'_>, findings: &Findings, report: &mut Repo
             .and_then(|key| env.within_timing.get(&key).cloned())
             .unwrap_or_else(Label::public);
         let reach = reach.get_or_insert_with(|| super::timing::start_reaches(env, findings));
-        let found = super::timing::start_reach(reach, &site.seed, &internal);
+        let found = super::timing::start_reach(reach, &site.seed, site.function_value, &internal);
         let deep = found.unbounded.is_some() && !found.label.flows_to(&internal);
         if site.pc.join(&tau).flows_to(&internal) && !deep {
             continue;

@@ -266,7 +266,6 @@ impl Checker<'_, '_, '_> {
     /// deep label is `label`: in its node of the graph of ADR 0116 P1 and in every open site,
     /// for the reach of a `start` (ADR 0123 IF6, #1674). O(open sites + log n).
     pub(crate) fn reach_label(&mut self, label: &Label) {
-        let label = &concrete(label);
         if label.is_public() {
             return;
         }
@@ -953,8 +952,15 @@ pub(crate) struct Reach {
     /// A node each node reaches, itself included, whose own label is above `internal`.
     labeled: Vec<Option<usize>>,
     /// Each node's own label: the deep labels of its signature, of what its code binds and of
-    /// the answers of its operations.
+    /// the answers of its operations, a function's and `Λ`'s without symbols.
     local: Vec<Label>,
+    /// Whether each node reaches one that can hand the task a function value made outside it.
+    foreign: Vec<bool>,
+    /// Whether each node reaches `Λ`.
+    to_lambda: Vec<bool>,
+    /// The label of `Λ` with its symbols, when a lambda of the package holds a value whose
+    /// label is a type parameter's.
+    lambda_symbols: Option<Label>,
     /// The number of functions, handlers and capabilities, to name a node.
     functions: usize,
     handlers: usize,
@@ -1039,9 +1045,12 @@ fn on_cycle(succ: &[Vec<usize>]) -> Vec<bool> {
     cyclic
 }
 
-/// `label` without its symbolic labels `ℓ_T` (#1674). The values of a type parameter in a
-/// generic body come from its callers, whose own code labels them concretely: a call the task
-/// makes passes what the task holds, which counts where the task holds it.
+/// `label` without its symbolic labels `ℓ_T` (#1674), for the node of a generic function `g`
+/// only, whose symbols are those of `g`'s own type parameters. In a task, `g` runs only when the
+/// task calls it, so the values of its type parameters are what the task passes, which count
+/// where the task holds them: in the seed of the `start`, kept with its symbols, since a `start`
+/// in a generic body takes its type parameters' values from callers outside the task, or in a
+/// node the task reaches.
 fn concrete(label: &Label) -> Label {
     if label.symbols.is_empty() {
         return label.clone();
@@ -1074,13 +1083,16 @@ pub(crate) fn start_reaches(env: &Env<'_>, findings: &Findings) -> Reach {
     };
     let mut local = vec![Label::public(); nodes];
     let mut own: Vec<Option<Unbounded>> = vec![None; nodes];
+    // Whether a node can hand the task a function value made outside it: a handler whose
+    // parameters may hold one, an operation whose answer may.
+    let mut foreign = vec![false; nodes];
     for (f, def) in env.functions.iter().enumerate() {
         let mut label = def.result.base.deep_label(kinds);
         for param in &def.params {
             label = label.join(&param.ty.base.deep_label(kinds));
         }
         if let Some(slot) = local.get_mut(f) {
-            *slot = concrete(&label);
+            *slot = label;
         }
         if apart(def.module)
             && let Some(slot) = own.get_mut(f)
@@ -1095,7 +1107,15 @@ pub(crate) fn start_reaches(env: &Env<'_>, findings: &Findings) -> Reach {
             label = label.join(&param.ty.base.deep_label(kinds));
         }
         if let Some(slot) = local.get_mut(node) {
-            *slot = concrete(&label);
+            *slot = label;
+        }
+        if handler
+            .params
+            .iter()
+            .any(|param| holds_function(env, &param.ty.base))
+            && let Some(slot) = foreign.get_mut(node)
+        {
+            *slot = true;
         }
         if apart(handler.module)
             && let Some(slot) = own.get_mut(node)
@@ -1107,13 +1127,35 @@ pub(crate) fn start_reaches(env: &Env<'_>, findings: &Findings) -> Reach {
         if let Some(rho) = rho(env, *cap, op)
             && let Some(slot) = local.get_mut(node)
         {
-            *slot = concrete(&rho);
+            *slot = rho;
+        }
+        let answers_function = env
+            .capabilities
+            .get(*cap)
+            .and_then(|c| c.ops.iter().find(|d| d.name == *op))
+            .is_some_and(|d| holds_function(env, &d.result.base));
+        if answers_function && let Some(slot) = foreign.get_mut(node) {
+            *slot = true;
         }
     }
     for (caller, label) in &findings.reach_labels {
         if let Some(slot) = graph.node_of(*caller).and_then(|node| local.get_mut(node)) {
             *slot = slot.join(label);
         }
+    }
+    // A function's own symbols are what the task passes it (see [`concrete`]).
+    for slot in local.iter_mut().take(graph.functions) {
+        *slot = concrete(slot);
+    }
+    // `Λ` holds every lambda of the package, whose captures may carry the symbols of the
+    // generic function that wrote it: kept apart, since a lambda made outside the task may
+    // reach it (`lambda_symbols`).
+    let lambda_symbols = local
+        .get(graph.lambda)
+        .filter(|label| !label.symbols.is_empty())
+        .cloned();
+    if let Some(slot) = local.get_mut(graph.lambda) {
+        *slot = concrete(slot);
     }
     if let Some(slot) = own.get_mut(graph.lambda) {
         *slot = Some(Unbounded::ValueCall);
@@ -1141,6 +1183,15 @@ pub(crate) fn start_reaches(env: &Env<'_>, findings: &Findings) -> Reach {
         labeled: close(&succ, &above, |a: &Option<usize>, b: &Option<usize>| {
             a.or(*b)
         }),
+        foreign: close(&succ, &foreign, |a: &bool, b: &bool| *a || *b),
+        to_lambda: {
+            let mut is_lambda = vec![false; nodes];
+            if let Some(slot) = is_lambda.get_mut(graph.lambda) {
+                *slot = true;
+            }
+            close(&succ, &is_lambda, |a: &bool, b: &bool| *a || *b)
+        },
+        lambda_symbols,
         local,
         functions: graph.functions,
         handlers: graph.handlers,
@@ -1165,9 +1216,20 @@ pub(crate) struct StartReach {
 /// What a `start` whose expression's checking recorded `seed` reaches (#1674): a node that is
 /// [`Unbounded`], and its own data or a node whose label is above `bound`, each as one witness
 /// for a message. O(size of the seed) lookups.
-pub(crate) fn start_reach(reach: &Reach, seed: &TimingSeed, bound: &Label) -> StartReach {
+///
+/// A lambda that the task calls may have been made outside it, when its captures can hold a
+/// function value (`captures_function`) or a node it reaches can hand it one: the symbols of
+/// `Λ` then count, since the generic call that made the lambda need not be the task's.
+pub(crate) fn start_reach(
+    reach: &Reach,
+    seed: &TimingSeed,
+    captures_function: bool,
+    bound: &Label,
+) -> StartReach {
     let mut unbounded = None;
     let mut labeled: Option<usize> = None;
+    let mut lambda = false;
+    let mut foreign = captures_function;
     let mut look = |node: usize| {
         if unbounded.is_none() {
             unbounded = reach.unbounded.get(node).copied().flatten();
@@ -1175,6 +1237,8 @@ pub(crate) fn start_reach(reach: &Reach, seed: &TimingSeed, bound: &Label) -> St
         if labeled.is_none() {
             labeled = reach.labeled.get(node).copied().flatten();
         }
+        lambda |= reach.to_lambda.get(node).copied().unwrap_or(false);
+        foreign |= reach.foreign.get(node).copied().unwrap_or(false);
     };
     for &callee in &seed.callees {
         if callee < reach.functions {
@@ -1203,16 +1267,28 @@ pub(crate) fn start_reach(reach: &Reach, seed: &TimingSeed, bound: &Label) -> St
     if !label.flows_to(bound) {
         source = Some("what it binds".to_owned());
     }
+    // Kept with their symbols: a `start` in a generic body takes the values of its type
+    // parameters from callers outside the task.
     for (own, named) in &seed.sources {
-        let own = &concrete(own);
         label = label.join(own);
-        if !own.flows_to(bound) {
+        if source.is_none() && !own.flows_to(bound) {
             source = Some(named.clone());
-            break;
         }
     }
     if let Some(own) = labeled.and_then(|node| reach.local.get(node)) {
         label = label.join(own);
+    }
+    if lambda
+        && foreign
+        && let Some(symbols) = &reach.lambda_symbols
+    {
+        label = label.join(symbols);
+        if source.is_none() {
+            source = Some(
+                "a lambda that may be made outside the task, whose captures carry a type parameter's label"
+                    .to_owned(),
+            );
+        }
     }
     StartReach {
         unbounded,

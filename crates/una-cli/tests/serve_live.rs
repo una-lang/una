@@ -781,6 +781,63 @@ fn value_probe(label: &str) -> String {
         .replace("DEPTH_LABEL", label)
 }
 
+/// Review 3 of #1678: a `start` in a generic function, whose type parameter `main` instantiates
+/// with `KEY_LABEL Int`; the task recurses through generic functions on the key minus the body's
+/// length. With `generic` false the function that starts the task is not generic.
+fn generic_probe(label: &str, generic: bool) -> String {
+    let header = if generic {
+        "serve_all[T: Integer](key: T) -> Unit"
+    } else {
+        "serve_all(key: internal Int) -> Unit"
+    };
+    GENERIC_PROBE
+        .replace("SERVE_ALL", header)
+        .replace("KEY_LABEL", label)
+}
+
+const GENERIC_PROBE: &str = r#"module srv
+
+import std.host (Exchange, HttpServer, Reply)
+
+deep[T: Integer](n: T, i: internal Int) -> internal Int
+=
+  if n.to_int() - i <= 0
+    0
+  else
+    1 + deep(n, i: i + 1)
+
+answer[T: Integer](exchange: internal Exchange, key: T) -> Unit
+  uses @server: HttpServer[reply]
+=
+  let d = deep(key, i: exchange.request.body.len)
+  @server.reply(to: exchange.right, reply: Reply(status: 200, headers: [], body: "ok"))
+    if error use unit
+
+SERVE_ALL
+  uses @server: HttpServer[next, reply, close]
+  diverges
+=
+  tasks at most 1000 at once
+    for ever
+      let next = attempt @server.next()
+      when next
+        is Ok(exchange) ->
+          start answer(exchange, key: key)
+        is Err(failure) -> unit
+    on stop
+      @server.close()
+
+pub main() -> Unit
+  uses @server: HttpServer[next, reply, close]
+  uses @console: Console[print]
+  diverges
+=
+  let key: KEY_LABEL Int = 4321
+  @console.print("serving")
+  serve_all(key)
+  @console.print("stopped")
+"#;
+
 #[test]
 fn a_task_whose_depth_depends_on_secret_data_is_refused_before_it_serves() {
     // ADR 0123 IF6, #1674: `una run` and `una build` check first, so neither engine binds the
@@ -792,6 +849,7 @@ fn a_task_whose_depth_depends_on_secret_data_is_refused_before_it_serves() {
             "31:11",
         ),
         ("depth_value", value_probe("secret"), "34:11"),
+        ("depth_generic", generic_probe("secret", true), "28:11"),
     ];
     for (name, program, at) in probes {
         refused_before_serving(name, &program, at);
@@ -841,6 +899,11 @@ fn a_task_whose_depth_depends_on_internal_data_answers_500_past_its_depth() {
             4000,
         ),
         ("depth_value_internal", value_probe("internal"), 5000),
+        (
+            "depth_generic_internal",
+            generic_probe("internal", false),
+            4000,
+        ),
     ];
     for engine in ENGINES {
         for (name, program, long) in &twins {
