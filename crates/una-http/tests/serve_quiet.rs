@@ -104,7 +104,7 @@ fn contained_faults_stay_off_the_panic_hook_and_the_others_reach_it() {
     let seen = Arc::clone(&calls);
     called
         .shared
-        .on_ready(Arc::new(move || {
+        .on_ready(Arc::new(move |_| {
             if seen.fetch_add(1, Ordering::SeqCst) == 0 {
                 panic!("a program callback panics");
             }

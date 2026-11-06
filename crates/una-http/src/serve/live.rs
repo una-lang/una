@@ -7,10 +7,17 @@
 //!   of the run's reduced trace form ([`TraceKey::from_host`]). Nothing is accepted until the
 //!   run's first server operation ([`Port::begin`]): until then a peer's connection waits in the
 //!   kernel's backlog.
-//! - **Waiting.** A request queued, an exchange that ends and a stop each run the engine's
-//!   `on_ready` callback, which counts one more epoch and wakes every waiter. A wait also ends at
-//!   its deadline, at a rate's retry time, and when its `stopped` test holds, which it reads at
-//!   least every [`LOOK`]. It takes no request (rule 4.7).
+//! - **Waiting.** A request queued, an exchange that ends and a connection that closes each run
+//!   the engine's `on_ready` callback with [`Wake::One`], which sends one signal and wakes one
+//!   waiter; a delivery sends one more, so that a waiter that a single event let through hands
+//!   the turn on when more than one request became deliverable: an ended exchange gives back
+//!   its bytes of the `delivered` budget, which can let several smaller queued requests
+//!   through, while `/once` gains one place only. A stop runs it with [`Wake::All`] and wakes
+//!   every waiter. Each signal is claimed by at most one waiter, and only by one whose last attempt
+//!   came before the signal was sent ([`Signals`]), so a large pool of waiters costs O(1)
+//!   wakes per request, not one per waiter. A wait also ends at its deadline, at a rate's retry
+//!   time, and when its `stopped` test holds, which it reads at least every [`LOOK`]. It takes
+//!   no request (rule 4.7).
 //! - **Stopping.** A host stop ([`Live::host_stop`]) closes the listeners at once, refuses what
 //!   was not delivered with `503` and lets the open exchanges drain (rule 18); the hard stop
 //!   ([`Live::hard_stop`]) answers every open exchange `503` in one non-blocking write and closes
@@ -26,7 +33,7 @@ use una_core::http::serve::ServeGrant;
 
 use super::Prepared;
 use super::program::{Port, Waited};
-use super::run::Next;
+use super::run::{Next, Wake};
 use super::server::Server;
 use super::trace::TraceKey;
 
@@ -42,8 +49,55 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// The epoch of the engine and the condition its waiters sleep on.
-type Epoch = Arc<(Mutex<u64>, Condvar)>;
+/// The signals of the engine to its waiters, under one lock, and the condition they sleep on.
+///
+/// Signals are numbered from 1 in the order sent; [`Port::epoch`] is the number of the last one
+/// sent. A waiter that read epoch `e` before its last attempt to deliver may claim the first
+/// signal after both `e` and every signal claimed so far, and the claim ends its wait. Signals
+/// up to `e` are never claimed by it: its attempt came after them and found nothing it could
+/// deliver, so a signal that no waiter needed is dropped by the next waiter instead of waking
+/// one more. A stop is a signal too, and every waiter that read an epoch before it sees it.
+#[derive(Debug, Default)]
+struct Signals {
+    /// The number of the last signal sent.
+    sent: u64,
+    /// The number of the last signal claimed, or dropped as one no waiter needed.
+    claimed: u64,
+    /// The number of the last stop.
+    all: u64,
+}
+
+impl Signals {
+    /// Claims, for a waiter that read `epoch`, a signal sent after it, if one is left.
+    fn claim(&mut self, epoch: u64) -> bool {
+        let from = self.claimed.max(epoch);
+        if self.sent > from {
+            self.claimed = from.saturating_add(1);
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// The engine's signals and the condition its waiters sleep on.
+type Epoch = Arc<(Mutex<Signals>, Condvar)>;
+
+/// Sends one signal: one waiter wakes for [`Wake::One`], every waiter for [`Wake::All`].
+fn signal(epoch: &Epoch, wake: Wake) {
+    let (signals, changed) = &**epoch;
+    {
+        let mut signals = lock(signals);
+        signals.sent = signals.sent.wrapping_add(1);
+        if wake == Wake::All {
+            signals.all = signals.sent;
+        }
+    }
+    match wake {
+        Wake::One => changed.notify_one(),
+        Wake::All => changed.notify_all(),
+    }
+}
 
 /// The serve engine of a run over live sockets.
 pub struct Live {
@@ -74,18 +128,11 @@ impl Live {
             "the host gave no random bytes for the key of the run's trace of its server".to_owned()
         })?;
         let server = Server::start(prepared, grants, threads)?;
-        let epoch: Epoch = Arc::new((Mutex::new(0), Condvar::new()));
-        let bump = Arc::clone(&epoch);
+        let epoch: Epoch = Arc::new((Mutex::new(Signals::default()), Condvar::new()));
+        let bell = Arc::clone(&epoch);
         server
             .shared()
-            .on_ready(Arc::new(move || {
-                let (count, changed) = &*bump;
-                {
-                    let mut count = lock(count);
-                    *count = count.wrapping_add(1);
-                }
-                changed.notify_all();
-            }))
+            .on_ready(Arc::new(move |wake| signal(&bell, wake)))
             .map_err(|error| error.to_string())?;
         Ok(Live {
             server,
@@ -125,6 +172,12 @@ impl Live {
         }
     }
 
+    /// How many serve threads were in place before [`Live::start`] returned: all of them (S4
+    /// design SC6).
+    pub fn threads_started(&self) -> usize {
+        self.server.threads_started()
+    }
+
     /// Whether accepting began, at the run's first server operation.
     pub fn begun(&self) -> bool {
         self.server.begun()
@@ -147,11 +200,23 @@ impl Port for Live {
     }
 
     fn epoch(&self) -> u64 {
-        *lock(&self.epoch.0)
+        lock(&self.epoch.0).sent
     }
 
     fn next(&self) -> Next {
-        self.server.next()
+        let next = self.server.next();
+        // A delivery hands the turn on: one more waiter tries, in case the event that let this
+        // one through let more than one request through, as an ended exchange does when the
+        // bytes it gives back to the `delivered` budget fit several queued requests. O(1) more
+        // wakes per request.
+        if matches!(next, Next::Exchange(_)) {
+            signal(&self.epoch, Wake::One);
+        }
+        next
+    }
+
+    fn pass(&self) {
+        signal(&self.epoch, Wake::One);
     }
 
     fn wait(
@@ -161,14 +226,19 @@ impl Port for Live {
         deadline: Option<Instant>,
         stopped: &dyn Fn() -> bool,
     ) -> Waited {
-        let (count, changed) = &*self.epoch;
-        let mut guard = lock(count);
+        let (signals, changed) = &*self.epoch;
+        let mut guard = lock(signals);
         loop {
-            if *guard != epoch {
+            if guard.all > epoch {
                 return Waited::Changed;
             }
+            // The stop test comes before a claim, so a waiter that is leaving takes no signal
+            // another waiter needs.
             if stopped() {
                 return Waited::Stopped;
+            }
+            if guard.claim(epoch) {
+                return Waited::Changed;
             }
             let now = Instant::now();
             if deadline.is_some_and(|deadline| now >= deadline) {

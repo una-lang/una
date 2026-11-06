@@ -45,9 +45,11 @@ pub trait Port: Sync {
     /// One attempt to deliver the next request: [`super::run::Shared::next`].
     fn next(&self) -> Next;
 
-    /// Waits until the epoch differs from `epoch`, until `retry` on the engine's clock when a
-    /// rate holds the next request, until `deadline`, or until `stopped` holds, which it reads
-    /// at least every few milliseconds. It takes no request.
+    /// Waits until something changed since `epoch` that may let the next attempt deliver,
+    /// until `retry` on the engine's clock when a rate holds the next request, until
+    /// `deadline`, or until `stopped` holds, which it reads at least every few milliseconds. It
+    /// takes no request. An engine may end only one wait for an event that lets one request
+    /// through, and every wait for a stop ([`super::live`]).
     fn wait(
         &self,
         epoch: u64,
@@ -55,6 +57,11 @@ pub trait Port: Sync {
         deadline: Option<Instant>,
         stopped: &dyn Fn() -> bool,
     ) -> Waited;
+
+    /// Hands on a wake that a wait ended with [`Waited::Changed`] and that its caller will not
+    /// use: a `next` that leaves without a further attempt, as at a cancellation, calls it so
+    /// that the request that woke it wakes another waiter. A spare call costs one wake.
+    fn pass(&self) {}
 
     /// `close` (ADR 0123 rule 1): the listeners close, the requests read and not delivered are
     /// answered `503` with `Connection: close`, and each connection finishes the exchange it
