@@ -1,0 +1,21 @@
+-- test: a race outcome reaches the result of a `via` function (#1673): the race of a `first of` in the `via` body decides its result, and the policy is called in a branch of `together` beside work on a `secret` key, so the concurrent label of the `first of` is above `public` (U4001 at the `first of`)
+-- spec: spec/07 §5
+-- expect: error U4001 at src/release.una:13:3
+module main
+
+import release (key_of)
+
+crunch(key: secret Int) -> secret Int
+=
+  let edit acc = key
+  for i in 0..1000
+    acc = if acc > 0 then acc - 1 else acc + 1
+  acc
+
+--- The policy is called in a branch of `together`, beside a branch that works on `key`.
+pub both(key: secret Int, n: internal Int) -> Int
+=
+  together
+    let a = crunch(key)
+    let b = key_of(n)
+  b

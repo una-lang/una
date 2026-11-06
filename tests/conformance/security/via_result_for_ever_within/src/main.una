@@ -1,0 +1,21 @@
+-- test: a deadline outcome reaches the result of a `via` function (#1673): how far a `for ever within` in the `via` body counts before its deadline decides its result, and the policy is called in a branch of `together` beside work on a `secret` key, so the concurrent label of the loop is above `public` (U4001 at the loop)
+-- spec: spec/07 §5
+-- expect: error U4001 at src/release.una:17:3
+module main
+
+import release (key_of)
+
+crunch(key: secret Int) -> secret Int
+=
+  let edit acc = key
+  for i in 0..1000
+    acc = if acc > 0 then acc - 1 else acc + 1
+  acc
+
+--- The policy is called in a branch of `together`, beside a branch that works on `key`.
+pub both(key: secret Int, n: internal Int) -> Int
+=
+  together
+    let a = crunch(key)
+    let b = key_of(n)
+  b
