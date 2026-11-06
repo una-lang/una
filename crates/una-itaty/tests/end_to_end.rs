@@ -825,3 +825,15 @@ fn a_publication_refused_before_its_body_reads_its_refusal() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_store_has_one_writer() {
+    let dir = temp_dir("lock");
+    let first = FileStore::open(&dir).unwrap();
+    let second = FileStore::open(&dir).unwrap_err();
+    assert!(second.contains("one writer"), "{second}");
+    drop(first);
+    let reopened = FileStore::open(&dir).unwrap();
+    drop(reopened);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
