@@ -36,7 +36,7 @@ use una_project::tlog::merkle::{leaf_hash, verify_consistency, verify_inclusion}
 use una_project::tlog::note::{Key, encode_base64, parse_checkpoint, parse_note};
 use una_project::tlog::publish::{Release, statement};
 use una_project::tlog::release::parse_statement;
-use una_project::tlog::root::{digest as root_digest, trust_first};
+use una_project::tlog::root::{digest as root_digest, named, trust_first};
 use una_project::tlog::witness::{Cosigned, checkpoint_time, logged_at};
 use una_syntax::ita::parse_manifest;
 
@@ -403,6 +403,8 @@ fn a_client_publishes_and_verifies_every_proof() {
     );
     let checkpoint = parse_checkpoint(&checkpoint_note.text).unwrap();
     assert_eq!(checkpoint.size, 2);
+    // It names the root version it was signed under (spec/30 §11 rule 9).
+    assert_eq!(named(&checkpoint.extensions), Ok((1, pin.clone())));
 
     // The release statement is the log's entry 1: its inclusion proof, from tiles.
     let logged = entries(addr, 0, checkpoint.size);
@@ -822,4 +824,16 @@ fn a_publication_refused_before_its_body_reads_its_refusal() {
         assert!(response.starts_with("HTTP/1.1 503"), "{response}");
     }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_store_has_one_writer() {
+    let dir = temp_dir("lock");
+    let first = FileStore::open(&dir).unwrap();
+    let second = FileStore::open(&dir).unwrap_err();
+    assert!(second.contains("one writer"), "{second}");
+    drop(first);
+    let reopened = FileStore::open(&dir).unwrap();
+    drop(reopened);
+    std::fs::remove_dir_all(&dir).unwrap();
 }

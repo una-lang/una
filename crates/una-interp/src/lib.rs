@@ -38,6 +38,14 @@ pub const DEFAULT_MAX_DEPTH: usize = 10_000;
 /// The default memory budget of a run, in MiB (`spec/11 §7`, ADR 0061).
 pub const DEFAULT_MAX_MEMORY: usize = 4096;
 
+/// The usage error of a run of a package with a `serve` section whose module is `module` and
+/// that holds no `serve:` grant (`spec/31 §7` rule 1), in `una run` and in an executable alike.
+pub fn unserved_section(module: &str) -> String {
+    format!(
+        "the `serve` section's module `{module}` answers requests, but neither `run grants` of ita.una nor a `--grant` flag grants an address to serve on; grant one, as `serve \"http://127.0.0.1:8080\"` in `run grants` or `--grant serve:http://127.0.0.1:8080`"
+    )
+}
+
 /// The usage error of a run under `--virtual-time` that holds a `serve:` grant (ADR 0123, S4
 /// amendment C), the same in `una run` and in executables: live peers send in real time, which
 /// virtual time cannot place.

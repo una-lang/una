@@ -42,8 +42,7 @@
 //! A case whose `ita.una` has a `serve` section runs the host's driver of that section
 //! (`spec/31 §7` rule 4) in place of `main`; `serve_section_program` is the program of rule 4
 //! written out in the language form, and each `serve_section_program_<case>` likewise for
-//! `serve_section_<case>`: their bytes and traces must be the driver's. Native code has no driver of the section yet, so those cases run in
-//! the interpreter only ([`NATIVE_PENDING`]).
+//! `serve_section_<case>`: their bytes and traces must be the driver's, in both engines.
 //!
 //! `una run` and `una build` themselves still refuse these programs (`spec/31 §1` rule 10): this
 //! harness calls the interpreter with the engine directly, and builds the native executable
@@ -225,14 +224,6 @@ fn served(manifest: &str) -> Option<String> {
         .find_map(|line| line.trim().strip_prefix("module "))
         .map(str::to_owned)
 }
-
-/// The cases that run in the interpreter only: native code has no driver of a `serve` section
-/// yet (the second part of #1587).
-const NATIVE_PENDING: [&str; 3] = [
-    "serve_section_bad_reply",
-    "serve_section_failures",
-    "serve_section_health",
-];
 
 fn cases() -> Vec<PathBuf> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/serve_runs");
@@ -459,25 +450,16 @@ fn hooked_runtime() -> PathBuf {
         .clone()
 }
 
-/// The code of the abort an interpreted run ended with, as the native executable reports it.
-fn abort_code(completion: &Value) -> Option<&'static str> {
-    let aborted = completion["aborted"].as_str()?;
-    if aborted.starts_with("IntText") {
-        return Some("U6003");
-    }
-    panic!("the code of the abort {aborted}: add it here");
-}
-
-/// Runs one case as a native executable over the same scripted engine, through its runtime's
-/// test hook: the lines of `expected.jsonl` and of `run.jsonl` it gives, the completion given
-/// as the interpreter's when the exit status and the diagnostic agree with it.
-fn run_native(dir: &Path, interpreted: &Value, reveal: bool) -> (Vec<Value>, Vec<Value>) {
+/// The executable of the case `dir`, built with the runtime's test hook in a fresh copy of it:
+/// the scratch directory, the copy and the package's name. `tag` tells the copies of one case
+/// apart. The description of a package with a `serve` section carries the section (ADR 0123
+/// rule 16).
+fn build_native(dir: &Path, tag: &str) -> (PathBuf, PathBuf, String) {
     let runtime = hooked_runtime();
     let scratch = std::env::temp_dir().join(format!(
-        "una-serve-native-{}-{}{}",
+        "una-serve-native-{}-{}{tag}",
         std::process::id(),
         dir.file_name().unwrap().to_string_lossy(),
-        if reveal { "-revealed" } else { "" }
     ));
     let _ = std::fs::remove_dir_all(&scratch);
     std::fs::create_dir_all(&scratch).unwrap();
@@ -507,6 +489,34 @@ fn run_native(dir: &Path, interpreted: &Value, reveal: bool) -> (Vec<Value>, Vec
         .unwrap()
         .trim()
         .to_owned();
+    if let Some(module) = served(&manifest) {
+        let executable = std::fs::read(package.join("target/una").join(&name)).unwrap();
+        let section = format!(r#""serve":{{"module":"{module}","within":null}}"#);
+        assert!(
+            executable
+                .windows(section.len())
+                .any(|window| window == section.as_bytes()),
+            "{}: the description lacks {section}",
+            dir.display()
+        );
+    }
+    (scratch, package, name)
+}
+
+/// The code of the abort an interpreted run ended with, as the native executable reports it.
+fn abort_code(completion: &Value) -> Option<&'static str> {
+    let aborted = completion["aborted"].as_str()?;
+    if aborted.starts_with("IntText") {
+        return Some("U6003");
+    }
+    panic!("the code of the abort {aborted}: add it here");
+}
+
+/// Runs one case as a native executable over the same scripted engine, through its runtime's
+/// test hook: the lines of `expected.jsonl` and of `run.jsonl` it gives, the completion given
+/// as the interpreter's when the exit status and the diagnostic agree with it.
+fn run_native(dir: &Path, interpreted: &Value, reveal: bool) -> (Vec<Value>, Vec<Value>) {
+    let (scratch, package, name) = build_native(dir, if reveal { "-revealed" } else { "" });
     let trace = scratch.join("trace.json");
     let wire = scratch.join("wire.jsonl");
     let mut child = std::process::Command::new(package.join("target/una").join(&name))
@@ -575,9 +585,6 @@ fn every_serve_run_runs_alike_in_native_code() {
     // byte for byte, over the same engine.
     let mut failures = Vec::new();
     for dir in cases() {
-        if NATIVE_PENDING.contains(&dir.file_name().unwrap().to_string_lossy().as_ref()) {
-            continue;
-        }
         let interpreted: Vec<Value> = lines(&dir.join("run.jsonl"));
         let expected: Vec<Value> = lines(&dir.join("expected.jsonl"));
         if dir.join("revealed.jsonl").exists() {

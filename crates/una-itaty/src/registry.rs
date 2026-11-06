@@ -25,7 +25,7 @@ use una_project::tlog::map::Head;
 use una_project::tlog::merkle::Hash;
 use una_project::tlog::note::{Key, Note, encode_base64, parse_checkpoint, parse_note};
 use una_project::tlog::release::{Statement, within};
-use una_project::tlog::root::{Root, trust_first, walk};
+use una_project::tlog::root::{CHECKPOINT_ROOT, Root, named, trust_first, walk_all};
 use una_project::tlog::{map, publish};
 use una_project::version::Version;
 use una_syntax::ita::parse_manifest;
@@ -170,6 +170,8 @@ pub struct Prepared {
 pub struct Registry {
     store: Arc<dyn Store>,
     root: Root,
+    /// Every version of the root chain, `root/1` first; the last is `root`.
+    roots: Vec<Root>,
     log: Signer,
     clock: Arc<dyn Clock>,
     tree: Tree,
@@ -194,8 +196,16 @@ impl std::fmt::Debug for Registry {
 }
 
 /// Reads root metadata `root/1`, `root/2`, … from the store, trusts the first by `pin` and
-/// walks the chain (rule 35), at `now`.
+/// walks the chain (rule 35), at `now`: the version in force.
 pub fn read_root(store: &dyn Store, pin: &str, now: u64) -> Result<Root, String> {
+    read_roots(store, pin, now)?
+        .pop()
+        .ok_or_else(|| "the store has no root metadata `root/1`".to_owned())
+}
+
+/// Every version of the root chain in the store, `root/1` first, walked as [`read_root`]
+/// walks it. O(R) documents for R versions.
+pub fn read_roots(store: &dyn Store, pin: &str, now: u64) -> Result<Vec<Root>, String> {
     let mut documents = Vec::new();
     let mut n = 1u64;
     while let Some(bytes) = store.get(&format!("root/{n}"), crate::MAX_ENTRY)? {
@@ -207,7 +217,7 @@ pub fn read_root(store: &dyn Store, pin: &str, now: u64) -> Result<Root, String>
         .ok_or("the store has no root metadata `root/1`")?;
     let first = trust_first(first, pin)?;
     let rest: Vec<&str> = rest.iter().map(String::as_str).collect();
-    walk(&first, &rest, now)
+    walk_all(&first, &rest, now)
 }
 
 impl Registry {
@@ -219,7 +229,11 @@ impl Registry {
         config: &Config,
         clock: Arc<dyn Clock>,
     ) -> Result<Registry, String> {
-        let root = read_root(store.as_ref(), &config.pin, clock.now())?;
+        let roots = read_roots(store.as_ref(), &config.pin, clock.now())?;
+        let root = roots
+            .last()
+            .cloned()
+            .ok_or("the store has no root metadata `root/1`")?;
         let log = Signer::from_seed(&root.log.name, &config.log_seed);
         if log.key().public != root.log.public {
             return Err("the log's key is not the one the root metadata names".to_owned());
@@ -227,6 +241,7 @@ impl Registry {
         let mut registry = Registry {
             store,
             root,
+            roots,
             log,
             clock,
             tree: Tree::new(),
@@ -268,6 +283,10 @@ impl Registry {
             None => 0,
         };
         let max_bundle = usize::try_from(WIDTH).unwrap_or(256) * (MAX_ENTRY + 2);
+        // Every size below the log's has its checkpoint stored, each one the log's under a root
+        // version of the chain, and the versions never decrease as the size grows (`spec/30
+        // §16` rule 9, §11 rule 9); the log's own size may lack one after a crash.
+        let mut version = self.stored_version(size, 0)?;
         let mut index = 0u64;
         while index < size {
             let n = index / WIDTH;
@@ -304,18 +323,7 @@ impl Registry {
                 self.grow(&entry);
                 self.apply(&entry);
                 index += 1;
-            }
-        }
-        if let Some(bytes) = self.store.get(&checkpoint_path(size), MAX_DOCUMENT)? {
-            let text = String::from_utf8(bytes).map_err(|_| "a checkpoint is not UTF-8")?;
-            let signed = parse_note(&text)?;
-            let checkpoint = parse_checkpoint(&signed.text)?;
-            if (checkpoint.root, map_root_of(&checkpoint))
-                != (self.root_hash()?, Some(self.map.root()))
-            {
-                return Err(format!(
-                    "the log replayed does not have the checkpoint of size {size}: the store was changed"
-                ));
+                version = self.stored_version(size, version)?;
             }
         }
         if let Some(bytes) = self.store.get(STATE_WITNESSES, MAX_DOCUMENT)? {
@@ -345,35 +353,90 @@ impl Registry {
         tree_root(&mut self.tree, size)
     }
 
-    /// The text of the checkpoint of the log as it is.
-    fn checkpoint_text(&mut self) -> Result<String, String> {
-        let root = self.root_hash()?;
+    /// The text of the checkpoint of the log as it is, signed under `root`: its `ita-map` line,
+    /// then its `ita-root` line naming `root`'s version and digest (`spec/30 §11` rule 9).
+    fn checkpoint_text(&mut self, root: &Root) -> Result<String, String> {
+        let hash = self.root_hash()?;
         Ok(format!(
-            "{}\n{}\n{}\n{} {}\n",
-            self.root.log.name,
+            "{}\n{}\n{}\n{} {}\n{CHECKPOINT_ROOT}{} {}\n",
+            root.log.name,
             self.tree.size(),
-            encode_base64(&root),
+            encode_base64(&hash),
             map::EXTENSION,
-            encode_base64(&self.map.root())
+            encode_base64(&self.map.root()),
+            root.version,
+            root.digest
         ))
     }
 
-    /// Signs the checkpoint of the log as it is, unless it is already stored, and serves it to
-    /// witnesses.
-    fn sign_checkpoint(&mut self) -> Result<(), String> {
-        let text = self.checkpoint_text()?;
+    /// The checkpoint stored for the log as it is, checked, and the root version it names: it
+    /// must name a version of the chain with that version's digest, be signed by that version's
+    /// log key, and be the log's checkpoint under it. `None` when none is stored. O(R) for R
+    /// root versions, besides the root hash.
+    fn stored_checkpoint(&mut self) -> Result<Option<(String, u64)>, String> {
         let path = checkpoint_path(self.tree.size());
-        let document = match self.store.get(&path, MAX_DOCUMENT)? {
-            Some(bytes) => {
-                let document = String::from_utf8(bytes).map_err(|_| "a checkpoint is not UTF-8")?;
-                if parse_note(&document)?.text != text {
-                    return Err(format!(
-                        "the stored {path} is not the log's: the store was changed"
-                    ));
-                }
-                document
-            }
+        let Some(bytes) = self.store.get(&path, MAX_DOCUMENT)? else {
+            return Ok(None);
+        };
+        let document = String::from_utf8(bytes).map_err(|_| "a checkpoint is not UTF-8")?;
+        let changed = || format!("the stored {path} is not the log's: the store was changed");
+        let signed = parse_note(&document)?;
+        let checkpoint = parse_checkpoint(&signed.text)?;
+        if !checkpoint
+            .extensions
+            .iter()
+            .any(|line| line.starts_with(CHECKPOINT_ROOT))
+        {
+            return Err(format!(
+                "the stored {path} names no root version: a store written before checkpoints named their root does not open"
+            ));
+        }
+        let (version, digest) = named(&checkpoint.extensions).map_err(|_| changed())?;
+        let first = self
+            .roots
+            .iter()
+            .find(|r| r.version == version && r.digest == digest)
+            .cloned()
+            .ok_or_else(changed)?;
+        if !signed.signed_by(&first.log) {
+            return Err(changed());
+        }
+        if signed.text != self.checkpoint_text(&first)? {
+            return Err(changed());
+        }
+        Ok(Some((document, version)))
+    }
+
+    /// While replaying a log of `size` entries: checks the checkpoint stored for the log as it
+    /// is, which every size below `size` must have, and that it names no version below
+    /// `previous`, the one of the size before. The version it names, or `previous`.
+    fn stored_version(&mut self, size: u64, previous: u64) -> Result<u64, String> {
+        let at = self.tree.size();
+        match self.stored_checkpoint()? {
+            Some((_, version)) if version < previous => Err(format!(
+                "the stored {} names root version {version}, below the {previous} of the size before: the store was changed",
+                checkpoint_path(at)
+            )),
+            Some((_, version)) => Ok(version),
+            None if at < size => Err(format!(
+                "the checkpoint of size {at} is missing: the store was changed"
+            )),
+            None => Ok(previous),
+        }
+    }
+
+    /// Signs the checkpoint of the log as it is, unless it is already stored, and serves it to
+    /// witnesses. A size stored already keeps the root version it was first signed under, even
+    /// after a rotation (`spec/30 §16` rule 9), once [`Registry::stored_checkpoint`] checks it.
+    /// A new size is signed under the version in force, which no stored checkpoint names a
+    /// version above, since each names one of the chain.
+    fn sign_checkpoint(&mut self) -> Result<(), String> {
+        let path = checkpoint_path(self.tree.size());
+        let document = match self.stored_checkpoint()? {
+            Some((document, _)) => document,
             None => {
+                let root = self.root.clone();
+                let text = self.checkpoint_text(&root)?;
                 let document = note(&text, &[&self.log]);
                 self.store.put(&path, document.as_bytes())?;
                 document
