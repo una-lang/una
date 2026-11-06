@@ -62,6 +62,7 @@ mod within;
 
 pub use hover::{Hover, HoverStats, HoverType};
 pub use index::Index;
+pub use timing::{TimingEdge, TimingGraph, TimingNode, TimingPlace, TimingTarget};
 use una_diag::{
     Code, Diagnostic, Edit, Escape, Location, ObligationKind, Related, Repair, Severity,
 };
@@ -430,6 +431,9 @@ pub struct TypeCheck {
     /// The units of measure of the state types of the package's `[drive]` module, which Core
     /// IR erases, for the shape check of `una run` and `una build` (`spec/26 §2` rule 2).
     pub drive_units: Option<DriveUnits>,
+    /// The graph of ADR 0116 P1 and the construct trees of P3 as checking recorded them, for
+    /// the completeness test of P1.
+    pub timing_graph: TimingGraph,
 }
 
 /// The units of measure at each position of the state types of a `[drive]` module: the
@@ -475,6 +479,7 @@ impl Default for TypeCheck {
             index: Index::default(),
             timing: Vec::new(),
             limit_label: una_core::Label::public(),
+            timing_graph: TimingGraph::default(),
             drive_units: None,
         }
     }
@@ -967,9 +972,11 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
     } else {
         Vec::new()
     };
+    let timing_graph = timing::recorded_graph(&env, &findings);
     let check = TypeCheck {
         limit_label,
         drive_units,
+        timing_graph,
         timing: timing_sites
             .into_iter()
             .map(|(construct, function, span, label)| TimingSite {
@@ -1210,15 +1217,13 @@ pub(crate) struct Findings {
     /// IF5): each one's binding, its function and the seed of the timing label of the statement
     /// it scopes over.
     pub(crate) limiter_sites: Vec<LimiterSite>,
-    /// The calls of the call graph of ADR 0116 P1: from a function's body, a handler's
-    /// operations or a lambda (`Λ`), to a function called or named.
-    pub(crate) calls: std::collections::BTreeSet<(timing::Caller, usize)>,
-    /// The nodes of that graph that call a function value, and so reach `Λ`.
-    pub(crate) value_calls: std::collections::BTreeSet<timing::Caller>,
-    /// The handlers each node of that graph installs.
-    pub(crate) caller_installs: std::collections::BTreeSet<(timing::Caller, usize)>,
-    /// The operations each node of that graph performs, those of lambdas included (#1148).
-    pub(crate) caller_ops: std::collections::BTreeSet<(timing::Caller, ty::CapId, String)>,
+    /// The edges of the call graph of ADR 0116 P1, one per call site, each with the node whose
+    /// code holds it (a function's body, a handler's operations, or `Λ` for a lambda's body)
+    /// and the innermost task construct whose part holds it (P3).
+    pub(crate) graph_edges: Vec<timing::GraphEdge>,
+    /// The task constructs checked, the nodes of each body's construct tree (ADR 0116 P2, P3),
+    /// by the ids that edges and sites record.
+    pub(crate) constructs: Vec<timing::ConstructNode>,
     /// Names bound by selfified `let`s.
     pub(crate) selfified: Vec<Span>,
     /// The conditions of `for until` loops that are in the refinement language, which the

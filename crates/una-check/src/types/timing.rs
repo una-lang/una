@@ -44,6 +44,10 @@ pub(crate) struct TimingSeed {
     /// Whether it lies inside a lambda, a `together` task or a handler's operation, whose
     /// concurrent work the structure of its function does not show: `τ_conc` is then `⊤`.
     pub(crate) unplaced: bool,
+    /// The node of the graph of ADR 0116 P1 whose code holds it, `None` outside every node.
+    pub(crate) node: Option<Caller>,
+    /// The innermost construct whose part holds it (P3), an index of `Findings::constructs`.
+    pub(crate) construct: Option<usize>,
 }
 
 /// The timing label of a site (ADR 0116 IF5): its join, and the sources it joins, in the order
@@ -104,6 +108,75 @@ pub(crate) enum Caller {
     Lambda,
 }
 
+/// What an edge of the graph of ADR 0116 P1 goes to.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Target {
+    /// A function called, or named as a value.
+    Function(usize),
+    /// `Λ`: a call of a function value, a `uses of` parameter's included.
+    Lambda,
+    /// An operation of a capability, and through it the capability's node `K(c)`.
+    Op(CapId, String),
+    /// A handler installed by `with` or `given`.
+    Install(usize),
+}
+
+/// An edge of the graph of ADR 0116 P1, with the call site it comes from and the innermost
+/// task construct whose part holds that site (P3), so that `ctx` of the site is that of the
+/// construct.
+#[derive(Clone, Debug)]
+pub(crate) struct GraphEdge {
+    /// The node whose code holds the call: a function's body, a handler's operations, or `Λ`
+    /// for a lambda's body.
+    pub(crate) from: Caller,
+    /// What it goes to.
+    pub(crate) to: Target,
+    /// The call site.
+    pub(crate) span: una_syntax::Span,
+    /// The innermost construct whose part holds the call, an index of `Findings::constructs`.
+    pub(crate) construct: Option<usize>,
+}
+
+/// The task constructs of ADR 0116 P2.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ConstructKind {
+    /// `together`: each branch is a part.
+    Together,
+    /// `together for`: the body is a part, the list is not.
+    TogetherFor,
+    /// `first of`: each branch is a part.
+    FirstOf,
+    /// `tasks`: the block, with each `start` in it, is a part, the bound is not.
+    Tasks,
+}
+
+impl ConstructKind {
+    /// Its words.
+    pub(crate) fn words(self) -> &'static str {
+        match self {
+            ConstructKind::Together => "together",
+            ConstructKind::TogetherFor => "together for",
+            ConstructKind::FirstOf => "first of",
+            ConstructKind::Tasks => "tasks",
+        }
+    }
+}
+
+/// A task construct checked, a node of the construct tree of its body (ADR 0116 P3): the
+/// constructs of one node's code form a tree by nesting, a lambda's body starting a tree of its
+/// own, since its code leaves from `Λ`.
+#[derive(Clone, Debug)]
+pub(crate) struct ConstructNode {
+    /// Which construct it is.
+    pub(crate) kind: ConstructKind,
+    /// The whole construct.
+    pub(crate) span: una_syntax::Span,
+    /// The node of the graph whose code holds it.
+    pub(crate) node: Option<Caller>,
+    /// The innermost construct whose part holds it.
+    pub(crate) parent: Option<usize>,
+}
+
 /// One frame of [`Checker::timing_start`]: where the site's locals start, and its seed.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct TimingFrame {
@@ -118,6 +191,8 @@ impl Checker<'_, '_, '_> {
     pub(crate) fn timing_start(&mut self) {
         let mut seed = TimingSeed {
             unplaced: self.unplaced(),
+            node: self.caller(),
+            construct: self.parts.last().copied(),
             ..TimingSeed::default()
         };
         seed.sources
@@ -151,37 +226,67 @@ impl Checker<'_, '_, '_> {
         }
     }
 
-    /// Records a call of, or a reference to, the function `callee` from the code being checked,
-    /// in the call graph of ADR 0116 P1.
-    pub(crate) fn graph_call(&mut self, callee: usize) {
+    /// Records an edge of the call graph of ADR 0116 P1 from the node whose code is being
+    /// checked to `to`, at the call site `span`, with the innermost construct whose part holds
+    /// it (P3).
+    fn graph_edge(&mut self, to: Target, span: una_syntax::Span) {
         if let Some(from) = self.caller() {
-            self.findings.calls.insert((from, callee));
+            let construct = self.parts.last().copied();
+            self.findings.graph_edges.push(GraphEdge {
+                from,
+                to,
+                span,
+                construct,
+            });
         }
     }
 
-    /// Records that the code being checked performs the operation `op` of `capability`, an edge
-    /// of the call graph of ADR 0116 P1 from its node, `Λ` for a lambda's body, to the
-    /// operation: without it, a request written directly in a lambda would reach nothing.
-    pub(crate) fn graph_op(&mut self, capability: CapId, op: &str) {
-        if let Some(from) = self.caller() {
-            self.findings
-                .caller_ops
-                .insert((from, capability, op.to_owned()));
-        }
+    /// Records a call of, or a reference to, the function `callee` at `span`.
+    pub(crate) fn graph_call(&mut self, callee: usize, span: una_syntax::Span) {
+        self.graph_edge(Target::Function(callee), span);
     }
 
-    /// Records that the code being checked calls a function value, so it reaches `Λ`.
-    pub(crate) fn graph_value_call(&mut self) {
-        if let Some(from) = self.caller() {
-            self.findings.value_calls.insert(from);
-        }
+    /// Records that the code being checked performs the operation `op` of `capability` at
+    /// `span`, an edge to the operation from its node, `Λ` for a lambda's body: without it, a
+    /// request written directly in a lambda would reach nothing.
+    pub(crate) fn graph_op(&mut self, capability: CapId, op: &str, span: una_syntax::Span) {
+        self.graph_edge(Target::Op(capability, op.to_owned()), span);
     }
 
-    /// Records that the code being checked installs the handler `handler`.
-    pub(crate) fn graph_install(&mut self, handler: usize) {
-        if let Some(from) = self.caller() {
-            self.findings.caller_installs.insert((from, handler));
-        }
+    /// Records that the code being checked calls a function value at `span`, so it reaches
+    /// `Λ`.
+    pub(crate) fn graph_value_call(&mut self, span: una_syntax::Span) {
+        self.graph_edge(Target::Lambda, span);
+    }
+
+    /// Records that the code being checked installs the handler `handler` at `span`.
+    pub(crate) fn graph_install(&mut self, handler: usize, span: una_syntax::Span) {
+        self.graph_edge(Target::Install(handler), span);
+    }
+
+    /// Opens the task construct `kind` at `span` (ADR 0116 P2), a node of the construct tree
+    /// of the code being checked (P3), and returns its id; its parts are checked between
+    /// [`Self::part_open`] and [`Self::part_close`].
+    pub(crate) fn construct_open(&mut self, kind: ConstructKind, span: una_syntax::Span) -> usize {
+        let id = self.findings.constructs.len();
+        self.findings.constructs.push(ConstructNode {
+            kind,
+            span,
+            node: self.caller(),
+            parent: self.parts.last().copied(),
+        });
+        id
+    }
+
+    /// Starts checking a part of the construct `id`: the edges and sites recorded until
+    /// [`Self::part_close`] lie in it, unless a construct nested in it holds them.
+    pub(crate) fn part_open(&mut self, id: usize) {
+        self.parts.push(id);
+    }
+
+    /// Ends the part that [`Self::part_open`] started.
+    pub(crate) fn part_close(&mut self) {
+        self.parts.pop();
     }
 
     /// Records an operation of the host's `Http` at `span`, for `L_lim` (ADR 0117 IF4).
@@ -618,8 +723,10 @@ pub(crate) fn graph(env: &Env<'_>, findings: &Findings) -> Graph {
         }
     }
     // The operations performed where no `uses` names them, as in a lambda's body (#1148).
-    for (_, cap, op) in &findings.caller_ops {
-        if *cap < capabilities {
+    for edge in &findings.graph_edges {
+        if let Target::Op(cap, op) = &edge.to
+            && *cap < capabilities
+        {
             let at = functions + handlers + capabilities + ops.len();
             ops.entry((*cap, op.clone())).or_insert(at);
         }
@@ -677,34 +784,31 @@ pub(crate) fn graph(env: &Env<'_>, findings: &Findings) -> Graph {
             add(&mut graph.succ, from, node);
         }
     }
-    for &(from, callee) in &findings.calls {
-        if let Some(from) = graph.node_of(from)
-            && callee < functions
-        {
-            add(&mut graph.succ, from, callee);
-        }
-    }
-    for &from in &findings.value_calls {
-        if let Some(node) = graph.node_of(from) {
-            if let Some(slot) = graph.local.get_mut(node) {
-                *slot = top.clone();
+    // Each edge checking recorded, one per call site (P1): a call or a function named as a
+    // value, a call of a function value (to `Λ`), an operation (#1148), an installation.
+    for edge in &findings.graph_edges {
+        let Some(from) = graph.node_of(edge.from) else {
+            continue;
+        };
+        match &edge.to {
+            Target::Function(callee) if *callee < functions => add(&mut graph.succ, from, *callee),
+            Target::Function(_) => {}
+            Target::Lambda => {
+                if let Some(slot) = graph.local.get_mut(from) {
+                    *slot = top.clone();
+                }
+                add(&mut graph.succ, from, lambda);
             }
-            add(&mut graph.succ, node, lambda);
-        }
-    }
-    // Each operation call, from the node that holds it (#1148): one edge per recorded call.
-    for (from, cap, op) in &findings.caller_ops {
-        if let (Some(from), Some(&to)) = (graph.node_of(*from), graph.ops.get(&(*cap, op.clone())))
-        {
-            add(&mut graph.succ, from, to);
-        }
-    }
-    for &(from, h) in &findings.caller_installs {
-        if let Some(from) = graph.node_of(from)
-            && h < handlers
-        {
-            let to = graph.handler_node(h);
-            add(&mut graph.succ, from, to);
+            Target::Op(cap, op) => {
+                if let Some(&to) = graph.ops.get(&(*cap, op.clone())) {
+                    add(&mut graph.succ, from, to);
+                }
+            }
+            Target::Install(h) if *h < handlers => {
+                let to = graph.handler_node(*h);
+                add(&mut graph.succ, from, to);
+            }
+            Target::Install(_) => {}
         }
     }
     // A function named as a value may run wherever a value is called.
@@ -735,6 +839,13 @@ pub(crate) fn graph(env: &Env<'_>, findings: &Findings) -> Graph {
         }
         let to = graph.cap_node(cap);
         add(&mut graph.succ, node, to);
+    }
+    // One edge per pair of nodes, in the order of the nodes: the edges come one per call site,
+    // so the searches below meet them in an order that does not depend on the source's.
+    // O(E log E) in all.
+    for edges in &mut graph.succ {
+        edges.sort_unstable();
+        edges.dedup();
     }
     graph.down = close(&graph.succ, &graph.local, |a: &Label, b: &Label| a.join(b));
     graph.http = close(&graph.succ, &http_local, |a: &bool, b: &bool| *a || *b);
@@ -1780,6 +1891,153 @@ pub(crate) fn timing(
         label,
         sources,
         ops: seen,
+    }
+}
+
+/// A node of the graph of ADR 0116 P1, as [`TimingGraph`] shows it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TimingNode {
+    /// The body of a function, by its qualified name, `module.name`.
+    Function(String),
+    /// The operations of a handler, by its qualified name.
+    Handler(String),
+    /// `Λ`, the node of every lambda.
+    Lambda,
+}
+
+/// What an edge of [`TimingGraph`] goes to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TimingTarget {
+    /// A function called or named as a value, by its qualified name.
+    Function(String),
+    /// `Λ`: a call of a function value.
+    Lambda,
+    /// An operation, by its capability's name and its own.
+    Operation(String, String),
+    /// A handler installed, by its qualified name.
+    Install(String),
+}
+
+/// An edge of [`TimingGraph`]: the node whose code holds the call, what it goes to, the call
+/// site, and the innermost task construct whose part holds the call.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TimingEdge {
+    /// The node whose code holds the call.
+    pub from: TimingNode,
+    /// What it goes to.
+    pub to: TimingTarget,
+    /// The call site.
+    pub span: una_syntax::Span,
+    /// The innermost construct whose part holds it, an index of [`TimingGraph::constructs`].
+    pub construct: Option<usize>,
+}
+
+/// A task construct, or a timing site, of [`TimingGraph`], placed in its body's construct tree.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TimingPlace {
+    /// Its words: `together`, `together for`, `first of` or `tasks` for a construct, `within`,
+    /// `first of`, `for ever within` or `tasks` for a site.
+    pub kind: &'static str,
+    /// Where it is.
+    pub span: una_syntax::Span,
+    /// The node whose code holds it, `None` outside every node.
+    pub node: Option<TimingNode>,
+    /// The innermost construct whose part holds it, an index of [`TimingGraph::constructs`].
+    pub construct: Option<usize>,
+}
+
+/// The graph of ADR 0116 P1 and the construct trees of P3, as checking recorded them, for the
+/// completeness test of P1 (`una-cli/tests/timing_graph.rs`), which holds them to the Core IR
+/// of every package of the conformance suite.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TimingGraph {
+    /// Each edge, one per call site, in the order checking recorded them.
+    pub edges: Vec<TimingEdge>,
+    /// Each task construct, by the ids edges and places record; its `construct` is its parent.
+    pub constructs: Vec<TimingPlace>,
+    /// Each timing site, in the order checking recorded them.
+    pub sites: Vec<TimingPlace>,
+}
+
+/// [`TimingGraph`] of the package from its findings: O(edges + constructs + sites).
+pub(crate) fn recorded_graph(env: &Env<'_>, findings: &Findings) -> TimingGraph {
+    let qualified =
+        |module: usize, name: &str| match env.modules.get(module).map(|m| m.path.as_str()) {
+            Some(path) if !path.is_empty() => format!("{path}.{name}"),
+            _ => name.to_owned(),
+        };
+    let function = |f: usize| {
+        env.functions
+            .get(f)
+            .map_or_else(String::new, |def| qualified(def.module, def.name))
+    };
+    let handler = |h: usize| {
+        env.handlers.get(h).map_or_else(String::new, |def| {
+            qualified(def.module, env.text(def.module, def.ast.name.name))
+        })
+    };
+    let node = |caller: Caller| match caller {
+        Caller::Function(f) => TimingNode::Function(function(f)),
+        Caller::Handler(h) => TimingNode::Handler(handler(h)),
+        Caller::Lambda => TimingNode::Lambda,
+    };
+    let edges = findings
+        .graph_edges
+        .iter()
+        .map(|edge| TimingEdge {
+            from: node(edge.from),
+            to: match &edge.to {
+                Target::Function(f) => TimingTarget::Function(function(*f)),
+                Target::Lambda => TimingTarget::Lambda,
+                Target::Op(cap, op) => TimingTarget::Operation(
+                    env.capabilities
+                        .get(*cap)
+                        .map_or_else(String::new, |c| c.name.to_owned()),
+                    op.clone(),
+                ),
+                Target::Install(h) => TimingTarget::Install(handler(*h)),
+            },
+            span: edge.span,
+            construct: edge.construct,
+        })
+        .collect();
+    let constructs = findings
+        .constructs
+        .iter()
+        .map(|c| TimingPlace {
+            kind: c.kind.words(),
+            span: c.span,
+            node: c.node.map(node),
+            construct: c.parent,
+        })
+        .collect();
+    let place = |kind: &'static str, span: una_syntax::Span, seed: &TimingSeed| TimingPlace {
+        kind,
+        span,
+        node: seed.node.map(node),
+        construct: seed.construct,
+    };
+    let mut sites: Vec<TimingPlace> = findings
+        .withins
+        .iter()
+        .map(|site| place(site.construct.words(), site.span, &site.seed))
+        .collect();
+    sites.extend(
+        findings
+            .deadline_loops
+            .iter()
+            .map(|site| place("for ever within", site.span, &site.seed)),
+    );
+    sites.extend(
+        findings
+            .tasks_sites
+            .iter()
+            .map(|site| place("tasks", site.span, &site.seed)),
+    );
+    TimingGraph {
+        edges,
+        constructs,
+        sites,
     }
 }
 

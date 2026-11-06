@@ -773,6 +773,8 @@ impl<'a> Checker<'_, 'a, '_> {
             pc_from,
             ..self.ctx.clone()
         };
+        // A lambda's body is code of `Λ`, not of the parts around it (ADR 0116 P1, P3).
+        let parts = std::mem::take(&mut self.parts);
         self.lambda_depth += 1;
         self.inherited += 1;
         self.of_lambdas.push(OfLambda {
@@ -792,6 +794,7 @@ impl<'a> Checker<'_, 'a, '_> {
         let lambda = self.of_lambdas.pop();
         self.inherited -= 1;
         self.lambda_depth -= 1;
+        self.parts = parts;
         self.locals.truncate(mark);
         let (effects, fails) = lambda.map_or((false, None), |l| (l.effects, l.fails));
         // `first_where` stops at the first element its lambda accepts, so the lambda's

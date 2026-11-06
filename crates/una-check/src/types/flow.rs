@@ -1008,10 +1008,10 @@ pub(crate) fn close_quiet(env: &super::env::Env<'_>, findings: &mut super::Findi
     seeds.extend(findings.opaque_applies.iter().map(|&(f, _)| f));
     seeds.extend(findings.installs.iter().map(|&(f, _)| f));
     let performers: BTreeSet<usize> = findings
-        .caller_ops
+        .graph_edges
         .iter()
-        .filter_map(|(caller, _, _)| match caller {
-            super::timing::Caller::Function(f) => Some(*f),
+        .filter_map(|edge| match (edge.from, &edge.to) {
+            (super::timing::Caller::Function(f), super::timing::Target::Op(..)) => Some(f),
             _ => None,
         })
         .collect();
