@@ -205,6 +205,8 @@ fn host_values() {
             true,
         ),
         ("x1.example", "x1.example", None, false),
+        ("a.x0", "a.x0", None, false),
+        ("0x.example", "0x.example", None, false),
     ] {
         assert_eq!(
             host(value),
@@ -243,6 +245,9 @@ fn host_values() {
         "127.0.0.1.",
         "0x7f.0.0.1",
         "1.2.3.0x4",
+        "1.2.3.0x",
+        "a.0x",
+        "a.0X.",
         "01.02.03.04",
         "256.0.0.1",
         "1.2.3.4.5",

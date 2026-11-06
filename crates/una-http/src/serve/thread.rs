@@ -1039,7 +1039,18 @@ impl Core {
                 return;
             }
         };
-        if self.shared.is_stopping() || !c.grant.queue_waiting() {
+        if self.shared.is_stopping() {
+            self.refuse(c, 503, true, now);
+            return;
+        }
+        // A request whose bytes exceed the whole of `delivered` could never be delivered: it
+        // would hold the front of its queue until `answer`, and every request behind it would
+        // wait (`spec/31 §6` rule 5). It is answered `413` at once and takes no place. O(1).
+        if c.request_bytes > c.grant.limits.delivered {
+            self.refuse(c, 413, false, now);
+            return;
+        }
+        if !c.grant.queue_waiting() {
             self.refuse(c, 503, true, now);
             return;
         }

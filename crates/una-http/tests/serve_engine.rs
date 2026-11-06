@@ -403,6 +403,80 @@ fn a_request_that_waits_past_answer_for_delivery_gets_503() {
     quiet(&sim);
 }
 
+/// A socket that stays ready fires again: a pump yields after a bounded number of steps, and
+/// the scripted peer wakes its connection only when it acts.
+fn ready(sim: &mut Sim, k: u64) {
+    for _ in 0..4 {
+        sim.allow(k, 0);
+    }
+}
+
+/// `spec/31 §6` rule 5 (#1675): a request whose bytes exceed the whole of `delivered` could
+/// never be delivered, so it is answered `413` at once instead of holding its queue's front
+/// until `answer`; a request of exactly `delivered` bytes is still delivered.
+#[test]
+fn a_request_larger_than_delivered_is_answered_413_at_once() {
+    let mib = 1024 * 1024;
+    let mut sim = Sim::new(&["serve:http://127.0.0.1:8080;delivered=1;answer=3"], 1);
+    // Within `body` (1024 KiB), but head and body together exceed `delivered` (1 MiB).
+    sim.connect(1, 0, &addr(1), Reads::Eager);
+    let length = mib - 10;
+    sim.send(1, &post("/big", length));
+    sim.send(1, &vec![b'a'; length]);
+    ready(&mut sim, 1);
+    let out = text(&sim.received(1));
+    assert!(out.starts_with("HTTP/1.1 413 "), "{out}");
+    assert!(!out.contains("Retry-After"), "{out}");
+    assert!(out.contains("Connection: close"), "{out}");
+    let counters = sim.shared.grants[0].counters();
+    assert_eq!((counters.buffers, counters.delivered), (0, 0));
+    // A request behind it on the same thread is delivered at once, not at `answer`.
+    sim.connect(2, 0, &addr(2), Reads::Eager);
+    sim.send(2, &get("/small"));
+    let mut small = sim.deliver().expect("the small request is not blocked");
+    assert_eq!(small.request.target, "/small");
+    small.reply(&ok("s")).unwrap();
+    sim.flush();
+    assert_eq!(status_of(&sim.received(2)), 200);
+    // The boundary: head and body of exactly `delivered` bytes fit and are delivered.
+    sim.connect(3, 0, &addr(3), Reads::Eager);
+    let head = post("/edge", 0).len();
+    let mut length = mib - head;
+    // The length's own digits are part of the head: settle the fixed point.
+    while post("/edge", length).len() + length != mib {
+        length = mib - post("/edge", length).len();
+    }
+    sim.send(3, &post("/edge", length));
+    sim.send(3, &vec![b'e'; length]);
+    ready(&mut sim, 3);
+    let mut edge = sim
+        .deliver()
+        .expect("a request of exactly `delivered` bytes");
+    assert_eq!(edge.request.body.len(), length);
+    assert_eq!(sim.shared.grants[0].counters().delivered, mib as u64);
+    edge.reply(&ok("e")).unwrap();
+    sim.flush();
+    assert_eq!(status_of(&sim.received(3)), 200);
+    // A chunked body counts its framing too: data within `body` whose chunk lines push the
+    // request over `delivered` is refused the same way.
+    sim.connect(4, 0, &addr(4), Reads::Eager);
+    sim.send(
+        4,
+        b"POST /chunked HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n",
+    );
+    let data = mib - 64;
+    sim.send(4, format!("{data:x}\r\n").as_bytes());
+    sim.send(4, &vec![b'c'; data]);
+    sim.send(4, b"\r\n0\r\n\r\n");
+    ready(&mut sim, 4);
+    assert_eq!(status_of(&sim.received(4)), 413);
+    for k in 1..=4 {
+        sim.close_peer(k);
+    }
+    sim.run_to_ms(10_000);
+    quiet(&sim);
+}
+
 #[test]
 fn peers_and_connections_are_bounded() {
     let mut sim = Sim::new(&["serve:http://127.0.0.1:8080;peer=2;connections=4"], 1);
