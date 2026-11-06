@@ -1,0 +1,45 @@
+-- test: a list literal given for a field of a generic kind whose type argument the expected type fixes takes that type, so each element is its own obligation and the field's flow is at the same type: `Box(v: [5])` as a `Box[List[Pos]]`, at a return, an annotated `let` and an argument, a field of type `List[T]`, a nested literal, a literal in a `Some`, and a literal of a fixed-width type, as `Box(v: [1, 2])` where a `Box[List[U8]]` is expected (ADR 0103 rules 3 and 5, `spec/18 §2` rule 1, #1657)
+-- spec: spec/12 §3
+-- expect: ok
+module literal
+
+pub kind Pos = Int where it > 0
+
+pub kind Box[T]
+  v: T
+
+pub kind Bag[T]
+  items: List[T]
+
+pub make() -> Box[List[Pos]] = Box(v: [5])
+
+pub several(p: Pos) -> Box[List[Pos]] = Box(v: [5, p, 7])
+
+pub empty() -> Box[List[Pos]] = Box(v: [])
+
+pub annotated() -> Int
+=
+  let b: Box[List[Pos]] = Box(v: [3, 4])
+  b.v.len
+
+pub size(b: Box[List[Pos]]) -> Int = b.v.len
+
+pub passed() -> Int = size(b: Box(v: [9]))
+
+pub bag() -> Bag[Pos] = Bag(items: [1, 2])
+
+pub nested() -> Box[List[List[Pos]]] = Box(v: [[5], [6, 7]])
+
+pub optional() -> Box[Option[List[Pos]]] = Box(v: Some([5]))
+
+pub bytes() -> Box[List[U8]] = Box(v: [1, 2])
+
+pub byte_bag() -> Bag[U8] = Bag(items: [1, 2])
+
+pub read() -> Int
+  ensures result > 0
+=
+  let b = make()
+  when first(b.v)
+    is Some(x) -> x
+    is None -> 1

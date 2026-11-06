@@ -1,0 +1,26 @@
+-- test: a list literal given for a field of a generic kind at a refined type argument keeps the obligation of each element: an element that violates the refinement is refuted, at the literal, in a field of type `T` and of type `List[T]`, nested, and in a `Some` (ADR 0103 rules 3 and 5, #1657)
+-- spec: spec/12 §3
+-- expect: error U5001 at src/refuted.una:18:39
+-- expect: error U5001 at src/refuted.una:20:40
+-- expect: error U5001 at src/refuted.una:22:36
+-- expect: error U5001 at src/refuted.una:24:53
+-- expect: error U5001 at src/refuted.una:26:56
+module refuted
+
+pub kind Pos = Int where it > 0
+
+pub kind Box[T]
+  v: T
+
+pub kind Bag[T]
+  items: List[T]
+
+pub zero() -> Box[List[Pos]] = Box(v: [0])
+
+pub mixed() -> Box[List[Pos]] = Box(v: [5, 0])
+
+pub bag() -> Bag[Pos] = Bag(items: [1, -2])
+
+pub nested() -> Box[List[List[Pos]]] = Box(v: [[5], [0]])
+
+pub optional() -> Box[Option[List[Pos]]] = Box(v: Some([0]))
