@@ -27,6 +27,8 @@
 //!   compared, byte for byte, although a run's labels redact every field of a request and a
 //!   reply.
 //! - `secrets.txt` (optional): texts, one per line, that neither trace may hold anywhere.
+//! - `wire-secrets.txt` (optional): texts, one per line, that the bytes the connections received
+//!   may not hold: what a server must never send, such as the payload of a failure of `handle`.
 //!
 //! After the program ends the engine's clock runs one more hour, so every timer ends, and then
 //! every counter, reserve and share must be zero, and no reply right may be left.
@@ -39,8 +41,8 @@
 //!
 //! A case whose `ita.una` has a `serve` section runs the host's driver of that section
 //! (`spec/31 §7` rule 4) in place of `main`; `serve_section_program` is the program of rule 4
-//! written out in the language form, whose bytes and trace must be those of
-//! `serve_section_health`. Native code has no driver of the section yet, so those cases run in
+//! written out in the language form, and each `serve_section_program_<case>` likewise for
+//! `serve_section_<case>`: their bytes and traces must be the driver's. Native code has no driver of the section yet, so those cases run in
 //! the interpreter only ([`NATIVE_PENDING`]).
 //!
 //! `una run` and `una build` themselves still refuse these programs (`spec/31 §1` rule 10): this
@@ -210,8 +212,16 @@ fn run_here(dir: &Path, reveal: bool) -> (Vec<Value>, Vec<Value>) {
 fn served(manifest: &str) -> Option<String> {
     let mut lines = manifest.lines().skip_while(|line| *line != "serve");
     lines.next()?;
-    lines
-        .take_while(|line| line.starts_with("  "))
+    let section: Vec<&str> = lines.take_while(|line| line.starts_with("  ")).collect();
+    // `run_serve` applies no `within` (`spec/31 §7` rule 3 item 7 refuses every one today).
+    assert!(
+        !section
+            .iter()
+            .any(|line| line.trim().starts_with("within ")),
+        "a case with a `within` in its `serve` section"
+    );
+    section
+        .iter()
         .find_map(|line| line.trim().strip_prefix("module "))
         .map(str::to_owned)
 }
@@ -240,9 +250,9 @@ fn text(values: &[Value]) -> String {
     values.iter().map(|v| format!("{v}\n")).collect()
 }
 
-/// The case's `secrets.txt`: texts that no trace of it may hold.
-fn secrets(dir: &Path) -> Vec<String> {
-    std::fs::read_to_string(dir.join("secrets.txt"))
+/// The case's file of secrets `file`: texts that what it names may not hold.
+fn secrets(dir: &Path, file: &str) -> Vec<String> {
+    std::fs::read_to_string(dir.join(file))
         .unwrap_or_default()
         .lines()
         .filter(|l| !l.is_empty())
@@ -250,9 +260,10 @@ fn secrets(dir: &Path) -> Vec<String> {
         .collect()
 }
 
-/// Fails when `trace`, a trace of the case `dir` named `name`, holds one of its secrets.
-fn hides_secrets(dir: &Path, name: &str, trace: &str, failures: &mut Vec<String>) {
-    for secret in secrets(dir) {
+/// Fails when `trace`, the output of the case `dir` named `name`, holds one of the secrets of
+/// its file `file`.
+fn hides_secrets(dir: &Path, file: &str, name: &str, trace: &str, failures: &mut Vec<String>) {
+    for secret in secrets(dir, file) {
         if trace.contains(&secret) {
             failures.push(format!("{}: {name} holds `{secret}`", dir.display()));
         }
@@ -276,8 +287,15 @@ fn every_serve_run_gives_its_expected_bytes_and_trace() {
             files.push(("revealed.jsonl", text(&revealed)));
         }
         for (name, got) in &files[1..] {
-            hides_secrets(&dir, name, got, &mut failures);
+            hides_secrets(&dir, "secrets.txt", name, got, &mut failures);
         }
+        hides_secrets(
+            &dir,
+            "wire-secrets.txt",
+            "expected.jsonl",
+            &files[0].1,
+            &mut failures,
+        );
         for (name, got) in files {
             let path = dir.join(name);
             if bless {
@@ -302,11 +320,35 @@ fn the_driver_of_a_serve_section_runs_as_its_program() {
     // program of rule 4, so a package that serves with the section and one that runs that
     // program, with the same `handle`, `on_stop` and script, give the same bytes and the same
     // trace, the events of each request in the root task and in `s1.k`.
+    // The three shapes of rule 4's `answer`: a reply, a failure of `handle` (`500` with an
+    // empty body), and a reply that `reply` refuses (`BadReply`, then the task's `500`); the
+    // revealed traces too, where the case has one.
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/serve_runs");
-    let section = run(&root.join("serve_section_health"));
-    let program = run(&root.join("serve_section_program"));
-    assert_eq!(section.0, program.0, "the bytes");
-    assert_eq!(text(&section.1), text(&program.1), "the run");
+    for (section, program) in [
+        ("serve_section_health", "serve_section_program"),
+        ("serve_section_failures", "serve_section_program_failures"),
+        ("serve_section_bad_reply", "serve_section_program_bad_reply"),
+    ] {
+        let (section_dir, program_dir) = (root.join(section), root.join(program));
+        let ran = run(&section_dir);
+        let written = run(&program_dir);
+        assert_eq!(ran.0, written.0, "{section}: the bytes");
+        assert_eq!(text(&ran.1), text(&written.1), "{section}: the run");
+        assert_eq!(
+            section_dir.join("revealed.jsonl").exists(),
+            program_dir.join("revealed.jsonl").exists(),
+            "{section}: both or neither reveal"
+        );
+        if section_dir.join("revealed.jsonl").exists() {
+            let ran = run_with(&section_dir, true);
+            let written = run_with(&program_dir, true);
+            assert_eq!(
+                text(&ran.1),
+                text(&written.1),
+                "{section}: the revealed run"
+            );
+        }
+    }
 }
 
 #[test]
@@ -551,13 +593,27 @@ fn every_serve_run_runs_alike_in_native_code() {
             }
             hides_secrets(
                 &dir,
+                "secrets.txt",
                 "the native revealed trace",
                 &text(&ran),
                 &mut failures,
             );
         }
         let (wire, ran) = run_native(&dir, &interpreted[0], false);
-        hides_secrets(&dir, "the native trace", &text(&ran), &mut failures);
+        hides_secrets(
+            &dir,
+            "secrets.txt",
+            "the native trace",
+            &text(&ran),
+            &mut failures,
+        );
+        hides_secrets(
+            &dir,
+            "wire-secrets.txt",
+            "the native bytes",
+            &text(&wire),
+            &mut failures,
+        );
         if wire != expected {
             failures.push(format!(
                 "{}: the wire\n--- interpreter\n{}--- native\n{}",

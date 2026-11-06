@@ -155,6 +155,9 @@ pub fn run_drive(
 /// `on_stop` when the module declares it, with the host capabilities of each one's `uses`, in
 /// `world`. The shapes of the functions were checked with the package. `None` when the module
 /// has no function `handle`.
+///
+/// The driver applies no `within`: a caller MUST refuse a section that sets one, as `una run`
+/// does, until the driver takes it (`spec/31 §7` rule 3 item 7 refuses every `within` today).
 pub fn run_serve(
     program: &Program,
     module: &str,
