@@ -1114,6 +1114,32 @@ Items 1 to 4 are confirmed as written, with the notes each carries; item 10 stat
 
     A panic inside the wheel or the readiness ends the thread (item 9). Contained steps do not print through the panic hook, so faults cannot flood the log. At S5 (#1007) the program reads the count of contained faults through `faults()`, and each contained fault is a trace event; until then they are counted and not shown. #1391 also closes the windows in which a contained fault leaves a slot or a peer's place held: a fault in a peer's admission after its place was taken, a fault in the hand-off before the connection reaches its owner's inbox, and a panic inside closing code. It states the error of a stop, and amends `spec/31 §6` rule 13 with this policy. Each callback is registered once per run; a second registration is a defined error (`AlreadyRegistered`) in every build and changes nothing, so S5 registers its callback once, not once per `next`.
 
+## Amendment (2026-11-05): the native move at `start`
+
+- Status: Accepted by the project on 2026-11-05. Drafted for issue #1571 (slice S5b) as `docs/plan/0123-s5b-native-move-amendment-draft.md`, which now points here. The wording of the cost and of the order was corrected afterwards to match the code (the pass runs after the copy succeeds, and native code walks every captured value); the corrected wording was confirmed by the project's decision of 2026-11-06. The accepted text of this record above this amendment is unchanged.
+- Concerns: rule 4 item 2 ("A task's reply rights are found by the walk that copies its captures, so the walk costs nothing in native code") and the Costs row "Move reply rights at `start`" ("native: none beyond the copy of the captures (ADR 0113)").
+
+### Why
+
+Both engines must move the rights that a `start`'s captures reach in one order: each marked capture in the order of its name, each value depth first, left to right, an object that several values share at its first meeting (`spec/31 §1` rule 3 item 2). That order decides the order of the started task's held list, and so the order of its auto-answers and of their `unanswered` events (rule 4 item 5).
+
+The copy of the captures that ADR 0113 makes in native code (`values::export`) walks its objects in another order: right to left, children before their parent, each step announced and checked against the memory budget before it allocates. Two ways to find the rights in the copy were considered:
+
+- **Reorder the copy.** The copy's order is where a copy is refused (U6003) and what keeps it deterministic. Reordering it would move the memory-refusal points of every program, servers or not, for a cost that only servers need. Rejected.
+- **Record the rights where the copy meets them.** In the copy's order, an object that several values share is reached at its last left-to-right meeting, not its first, so the order of moves, and with it the order of auto-answers and their events, would differ from the interpreter's whenever a right is shared. Rejected.
+
+So native code finds the rights with a pass of its own over the values of the closure that `start` copies, in the order above. The order of the steps is: the copy of ADR 0113, then the pass, then the task is queued. The pass runs after the copy succeeds and before the task is queued, so a refused copy moves no right to a task that never exists.
+
+### Amendment
+
+The Costs row "Move reply rights at `start`" reads, for native code: one extra pass, O(objects that the task's captured values reach), the same order as the copy itself, only at a `start` with at least one capture that can hold a `ReplyRight`; none otherwise. When any capture is marked, native code hands over every capture and walks all of them; the interpreter walks only the marked ones. Both engines move the same rights in the same order, because an unmarked capture holds no right. Rule 4 item 2's "so the walk costs nothing in native code" reads: native code finds the rights in a pass of its own over the captured values, in the order of the interpreter's walk, after the copy of ADR 0113 succeeds and before the task is queued; the copy's order and refusal points do not change. The order of moves and the result are the same in both engines.
+
+### Bounds
+
+- Time: each object that the captured values reach is looked at once (a set of the objects seen), so the pass is O(objects reached by the task's captures), the copy's own order of cost; a scaling test bounds it (`values::tests::the_walk_of_start_is_linear_in_the_values_it_reaches`).
+- Space: the pass's stack and its set of the objects seen, O(objects reached by the task's captures), released before the task is queued.
+- A `start` whose captures cannot hold a reply right, as Core IR marks it (`rights` empty), makes no pass at all.
+
 ## Amendment (2026-11-06): what slice S5 settles, and the count of contained faults
 
 - Status: Accepted, by the project's decision of 2026-11-06 on the draft `docs/plan/0123-s5-amendment-draft.md`, which now points here. The accepted text of this record above this amendment is unchanged; where the two differ, this amendment governs.
