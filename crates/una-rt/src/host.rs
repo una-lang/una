@@ -1104,9 +1104,9 @@ mod tests {
     #[test]
     fn an_operation_site_without_its_outcome_label_fails_to_load() {
         // S-45 (#1552, `spec/11 §5`), review L3 of #1562: the native description's `outcome`
-        // key is required. `null` is an outcome in clear and a level is redacted at it; a site
-        // that lacks the key, or gives a value that is not a level, fails to load, so the
-        // executable never shows an outcome in clear by default.
+        // key is required. `null` is an outcome in clear and a string is the level it is
+        // redacted at; a site that lacks the key, or gives a value that is neither `null` nor a
+        // string, fails to load, so the executable never shows an outcome in clear by default.
         let site = |outcome: Option<serde_json::Value>| {
             let mut value = serde_json::json!({
                 "capability": "Console",
