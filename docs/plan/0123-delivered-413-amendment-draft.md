@@ -1,6 +1,6 @@
 # Draft: ADR 0123, Amendment: `413` for a request that can never fit `delivered` (issue #1675)
 
-- Status: Draft, held for the project's decision. Dated 2026-11-06. The accepted text of ADR 0123 does not change until the project accepts an amendment; `spec/31 §6` rule 5 states what the implementation does meanwhile, which stays inside the accepted rules 13 and 14.
+- Status: Not accepted. By its decision of 2026-11-06 the project did not accept this amendment; it stays a draft, and ADR 0123 rules 10 and 14 stand as written: a request that can never fit `delivered` is answered `503` with `Retry-After: 1` at once, as `spec/31 §6` rule 5 states. Dated 2026-11-06.
 - Origin: finding F2 of the hunt of #1392.
 
 ## Why
