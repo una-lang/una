@@ -97,6 +97,22 @@ unimplemented = "deny"
 unreachable = "deny"
 unwrap_used = "deny"
 
+# The tests run the development build of `una` tens of thousands of times, so it is built at
+# opt-level 1 (#1697: the full nextest run went from 998 s to 778 s). Debug assertions and overflow
+# checks stay on, as at opt-level 0, so the semantics under test are those of every development build.
+[profile.dev]
+opt-level = 1
+debug-assertions = true
+overflow-checks = true
+
+# The runtime and the HTTP engine it links stay at opt-level 0: tests of `crates/una-cli/tests/http.rs`
+# read the symbols that a built program links, and inlining removes names they look for (`Server::stop`
+# at opt-level 1; the TLS stack's names when the dependencies are at opt-level 2, so they stay at 1).
+[profile.dev.package.una-rt]
+opt-level = 0
+[profile.dev.package.una-http]
+opt-level = 0
+
 # The internal linker reads and hashes the whole runtime archive (tens of MB) on every
 # `una build`; the tests build hundreds of executables, so a development build optimizes it and
 # the crates it reads and hashes with (ADR 0124 step 3). Behavior is the same at every level.

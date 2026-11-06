@@ -1,0 +1,1 @@
+- **The tests build at opt-level 1** (#1697). The development profile builds at opt-level 1 with debug assertions and overflow checks on, and keeps the runtime and the HTTP engine at opt-level 0: the full nextest run went from 998 s to 778 s on the gate machine, with the same 9,843 tests passing.
