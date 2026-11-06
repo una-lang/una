@@ -319,9 +319,9 @@ pub(super) fn test_request<'p>(args: &[Value<'p>]) -> Flow<'p> {
 
 impl<'p> Machine<'p, '_> {
     /// `std.testing.test_exchange(request)` (ADR 0123 rule 21): `request` with a fresh reply
-    /// right. Its word has the generation 0, which no right of the run's table ever has
-    /// ([`Rights`] starts every slot at 1), so it is distinct from every right `next` gives, and
-    /// a `reply` of the host's on it is `NotHeld`; the slot half counts the test's rights, so
+    /// right. Its word has the generation 0, which no word the run's table gives has
+    /// ([`Rights`] starts every slot at 1, and a retired slot holds no entry), so it is distinct
+    /// from every right `next` gives, and a `reply` of the host's on it is `NotHeld`; the slot half counts the test's rights, so
     /// each is distinct from the others. O(1).
     pub(super) fn test_exchange(&mut self, args: &[Value<'p>]) -> Flow<'p> {
         let Some(request) = args.first() else {

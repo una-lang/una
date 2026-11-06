@@ -426,8 +426,9 @@ fn standard_kinds(
             continue;
         };
         // `std.testing` has one kind, `TestRequestError` (ADR 0123 rule 21), declared only for a
-        // package that uses the server, so the Core IR of every other package does not change.
-        if !m.path.starts_with("std.") || (m.path == "std.testing" && !env.server_imported) {
+        // package that imports a name of `std.testing` for servers, so the Core IR of every
+        // other package, a server's included, does not change.
+        if !m.path.starts_with("std.") || (m.path == "std.testing" && !env.testing_server) {
             continue;
         }
         let mut decls = Vec::new();
@@ -601,9 +602,10 @@ fn library(
     let mut out = Vec::new();
     for (decl, entity) in m.tree.decls.iter().zip(m.decls.clone()) {
         if let DeclKind::Function(function) = &decl.kind {
-            // ADR 0123 rule 21: `test_request` and `test_exchange` name the server's kinds,
-            // which Core IR declares only for a package that uses the server.
-            if !env.server_imported
+            // ADR 0123 rule 21: `test_request` and `test_exchange` join Core IR only for a
+            // package that imports a name of `std.testing` for servers, so the Core IR of every
+            // other package, a server's included, does not change.
+            if !env.testing_server
                 && m.path == crate::names::prelude::STD_TESTING
                 && crate::names::prelude::STD_TESTING_SERVER_NAMES
                     .contains(&env.text(module, function.name.name))

@@ -486,6 +486,10 @@ pub(crate) struct Env<'a> {
     /// `test_exchange` of `std.testing`, the names through which a value of the package can
     /// hold a reply right (ADR 0123 IF6 and rule 21).
     pub(crate) reply_rights: bool,
+    /// Whether a module of the package imports `test_request`, `test_exchange` or
+    /// `TestRequestError` of `std.testing` (ADR 0123 rule 21): only then does Core IR declare
+    /// them, so the Core IR of a package that does not, a server's included, does not change.
+    pub(crate) testing_server: bool,
     /// The `via` functions whose failure reveals nothing, by function id (ADR 0098): a call of
     /// their policy fails at the program counter, not at `pc ⊔ ℓ(to)`.
     pub(crate) plain_vias: BTreeSet<usize>,
@@ -635,6 +639,7 @@ impl<'a> Env<'a> {
             drive_driver: None,
             server_imported: false,
             reply_rights: false,
+            testing_server: false,
             plain_vias: BTreeSet::new(),
             blocked_vias: BTreeMap::new(),
             map_module: None,
@@ -1046,6 +1051,7 @@ impl<'a> Env<'a> {
                         && prelude::STD_TESTING_SERVER_NAMES.contains(&name)
                     {
                         self.server_imported = true;
+                        self.testing_server = true;
                         if name == "test_exchange" {
                             self.reply_rights = true;
                         }
