@@ -1,0 +1,23 @@
+trusted module release
+
+import std.time (millisecond)
+
+pub policy key_of
+  from internal Int
+  to Int
+  via reveal_it
+  purpose "a test"
+  owner privacy
+
+--- The `via` function: what `timed(t)` returns becomes its result.
+reveal_it(t: internal Int) -> Int = timed(t)
+
+--- Checked with labels, and its `restricted` result may hold the outcome of its `within`, which
+--- the `via` body, where no label is checked, then releases.
+timed(t: internal Int) -> restricted Int
+=
+  let v: restricted Int = count(t) within 1 * millisecond
+    if error use 0
+  v
+
+count(t: internal Int) -> internal Int = t + 1
