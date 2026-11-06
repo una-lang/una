@@ -96,6 +96,9 @@ pub(crate) struct Run<'p, 'w> {
     /// deadline ended still runs to see it (ADR 0123 rule 4.7). Each task enters at most once,
     /// and leaves on every way out of `next`.
     pub(crate) next_waiters: RefCell<BTreeMap<usize, NextWaiter>>,
+    /// The reply rights `std.testing.test_exchange` gave so far (ADR 0123 rule 21), which
+    /// numbers the next one.
+    pub(crate) test_rights: Cell<u32>,
 }
 
 impl<'p, 'w> Run<'p, 'w> {
@@ -125,6 +128,7 @@ impl<'p, 'w> Run<'p, 'w> {
             http_limits: una_http::limit::Governor::new(Vec::new()),
             serve: None,
             next_waiters: RefCell::new(BTreeMap::new()),
+            test_rights: Cell::new(0),
         }
     }
 

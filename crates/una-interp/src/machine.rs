@@ -3333,6 +3333,13 @@ impl<'p, 'w> Machine<'p, 'w> {
                     _ => Err(fault("`fake_hash` without an `Int` seed")),
                 };
             }
+            // ADR 0123 rule 21: a request and an exchange for a test of a server.
+            "std.testing" if function.name == "test_request" => {
+                return serve::test_request(&args);
+            }
+            "std.testing" if function.name == "test_exchange" => {
+                return self.test_exchange(&args);
+            }
             // `elapse(d)` moves the test's virtual clock forward by `d` milliseconds at once
             // (ADR 0116 rule 19, `spec/14 §4`). Its `requires d >= 0` is verified at each call,
             // and only tests call it, whose clock is always virtual.

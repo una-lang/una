@@ -479,12 +479,17 @@ pub(crate) struct Env<'a> {
     /// diagnostics of its module's shapes point at its `module` line (`spec/26 §2`).
     pub(crate) drive_driver: Option<Span>,
     /// Whether a module of the package imports a name of the server from `std.host` (ADR 0123
-    /// rule 0): only then does Core IR declare the server's kinds, and a value of the package
-    /// can hold a reply right.
+    /// rule 0), or one of `std.testing` that names the server's kinds (rule 21): only then does
+    /// Core IR declare the server's kinds, and a value of the package can hold a reply right.
     pub(crate) server_imported: bool,
-    /// Whether a module of the package imports `HttpServer`, `Exchange` or `ReplyRight`, the
-    /// names through which a value of the package can hold a reply right (ADR 0123 IF6).
+    /// Whether a module of the package imports `HttpServer`, `Exchange` or `ReplyRight`, or
+    /// `test_exchange` of `std.testing`, the names through which a value of the package can
+    /// hold a reply right (ADR 0123 IF6 and rule 21).
     pub(crate) reply_rights: bool,
+    /// Whether a module of the package imports `test_request`, `test_exchange` or
+    /// `TestRequestError` of `std.testing` (ADR 0123 rule 21): only then does Core IR declare
+    /// them, so the Core IR of a package that does not, a server's included, does not change.
+    pub(crate) testing_server: bool,
     /// The `via` functions whose failure reveals nothing, by function id (ADR 0098): a call of
     /// their policy fails at the program counter, not at `pc ⊔ ℓ(to)`.
     pub(crate) plain_vias: BTreeSet<usize>,
@@ -634,6 +639,7 @@ impl<'a> Env<'a> {
             drive_driver: None,
             server_imported: false,
             reply_rights: false,
+            testing_server: false,
             plain_vias: BTreeSet::new(),
             blocked_vias: BTreeMap::new(),
             map_module: None,
@@ -1010,9 +1016,10 @@ impl<'a> Env<'a> {
                 let joined = path.join(".");
                 let host = joined == prelude::STD_HOST;
                 let time = joined == prelude::STD_TIME;
+                let joined_testing = joined == prelude::STD_TESTING;
                 let standard = host
                     || time
-                    || joined == "std.testing"
+                    || joined_testing
                     || joined == prelude::STD_DRIVE
                     || joined == prelude::STD_COLLECTIONS
                     || joined == prelude::STD_LIMIT;
@@ -1034,6 +1041,18 @@ impl<'a> Env<'a> {
                     if host && index < count && prelude::SERVER_NAMES.contains(&name) {
                         self.server_imported = true;
                         if matches!(name, "HttpServer" | "Exchange" | "ReplyRight") {
+                            self.reply_rights = true;
+                        }
+                    }
+                    // ADR 0123 rule 21: the functions of `std.testing` that make and return
+                    // the server's kinds, `test_exchange` a reply right.
+                    if joined_testing
+                        && index < count
+                        && prelude::STD_TESTING_SERVER_NAMES.contains(&name)
+                    {
+                        self.server_imported = true;
+                        self.testing_server = true;
+                        if name == "test_exchange" {
                             self.reply_rights = true;
                         }
                     }

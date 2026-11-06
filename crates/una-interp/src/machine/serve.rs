@@ -22,7 +22,7 @@ use std::cell::Cell;
 use std::collections::HashSet;
 use std::rc::Rc;
 
-use una_core::Name;
+use una_core::{Ctor, Name, Path};
 use una_http::serve::program::{Port, Waited, peer_text};
 use una_http::serve::rights::{Rights, Task, Word};
 use una_http::serve::run::{Exchange, Next, Sent};
@@ -223,7 +223,15 @@ fn header<'p>(name: &str, value: &str) -> Value<'p> {
 /// The `Request` of `std.host` for what the engine read (`spec/31 §1`): one copy of its bytes
 /// into values.
 fn request<'p>(exchange: &Exchange) -> Value<'p> {
-    let read = &exchange.request;
+    request_value(
+        &exchange.request,
+        &peer_text(exchange.peer()),
+        exchange.listener(),
+    )
+}
+
+/// The `Request` of `std.host` for `read`, from `peer` through `listener`.
+fn request_value<'p>(read: &una_http::request::Request, peer: &str, listener: &str) -> Value<'p> {
     let segments = read.segments.iter().map(|s| Value::text(s)).collect();
     let params = read
         .query
@@ -249,10 +257,86 @@ fn request<'p>(exchange: &Exchange) -> Value<'p> {
             Value::List(Rc::new(params)),
             Value::List(Rc::new(headers)),
             Value::text(&read.body),
-            Value::text(&peer_text(exchange.peer())),
-            Value::text(exchange.listener()),
+            Value::text(peer),
+            Value::text(listener),
         ],
     )
+}
+
+/// The peer of the requests of `std.testing.test_request`, from the block of RFC 5737 for
+/// documentation (ADR 0123 rule 21).
+const TEST_PEER: &str = "192.0.2.1";
+
+/// The listener of the requests of `std.testing.test_request` (ADR 0123 rule 21).
+const TEST_LISTENER: &str = "test";
+
+/// The engine's method for a `Method` of `std.host`, by its variant's position.
+fn method_of(value: Option<&Value<'_>>) -> Option<una_http::strict::Method> {
+    use una_http::strict::Method as M;
+    let Some(Value::Data(data)) = value else {
+        return None;
+    };
+    [
+        M::Get,
+        M::Head,
+        M::Post,
+        M::Put,
+        M::Patch,
+        M::Delete,
+        M::Options,
+    ]
+    .get(data.ctor.index)
+    .copied()
+}
+
+/// `std.testing.test_request(method, target, body)` (ADR 0123 rule 21): the request the host
+/// would read, by the host's own reader (`una_http::request::test_request`), or `Refused` of
+/// `TestRequestError` where the host would answer `400`. O(t + b) for a target of t bytes and a
+/// body of b bytes.
+pub(super) fn test_request<'p>(args: &[Value<'p>]) -> Flow<'p> {
+    let (Some(method), Some(Value::Text(target)), Some(Value::Text(body))) =
+        (method_of(args.first()), args.get(1), args.get(2))
+    else {
+        return Err(fault(
+            "`test_request` without a method, a target and a body",
+        ));
+    };
+    match una_http::request::test_request(method, target, body) {
+        Ok(read) => Ok(request_value(&read, TEST_PEER, TEST_LISTENER)),
+        Err(_) => Err(Stop::Fail(Value::data(
+            Ctor {
+                kind: Path {
+                    module: "std.testing".to_owned(),
+                    name: "TestRequestError".to_owned(),
+                },
+                name: "Refused".to_owned(),
+                index: 0,
+            },
+            Vec::new(),
+        ))),
+    }
+}
+
+impl<'p> Machine<'p, '_> {
+    /// `std.testing.test_exchange(request)` (ADR 0123 rule 21): `request` with a fresh reply
+    /// right. Its word has the generation 0, which no word the run's table gives has
+    /// ([`Rights`] starts every slot at 1, and a retired slot holds no entry), so it is distinct
+    /// from every right `next` gives, and a `reply` of the host's on it is `NotHeld`; the slot half counts the test's rights, so
+    /// each is distinct from the others. O(1).
+    pub(super) fn test_exchange(&mut self, args: &[Value<'p>]) -> Flow<'p> {
+        let Some(request) = args.first() else {
+            return Err(fault("`test_exchange` without a request"));
+        };
+        let count = self.run.test_rights.get();
+        let Some(next) = count.checked_add(1) else {
+            return Err(fault("more reply rights than a test can make"));
+        };
+        self.run.test_rights.set(next);
+        Ok(Value::data(
+            prelude_ctor("Exchange", "Exchange", 0),
+            vec![request.clone(), Value::Right(u64::from(count) << 32)],
+        ))
+    }
 }
 
 /// The engine's reply for a `Reply` of `std.host`: a status out of range stays out of range,

@@ -155,8 +155,20 @@ pub(crate) fn std_host_names(edition: Edition) -> &'static [&'static str] {
 /// The public functions of `std.testing`.
 pub(crate) const STD_TESTING_NAMES: [&str; 1] = ["fake_hash"];
 
-/// The public functions of `std.testing` in edition 0.4: also `elapse` (ADR 0116 rule 19).
-pub(crate) const STD_TESTING_NAMES_0_4: [&str; 2] = ["fake_hash", "elapse"];
+/// The public names of `std.testing` in edition 0.4: also `elapse` (ADR 0116 rule 19), and
+/// `test_request`, `test_exchange` and `TestRequestError` (ADR 0123 rule 21).
+pub(crate) const STD_TESTING_NAMES_0_4: [&str; 5] = [
+    "fake_hash",
+    "elapse",
+    "test_request",
+    "test_exchange",
+    "TestRequestError",
+];
+
+/// The names of `std.testing` that name the server's kinds (ADR 0123 rule 21): an import of
+/// one makes the package one that uses the server, as an import of [`SERVER_NAMES`] does.
+pub(crate) const STD_TESTING_SERVER_NAMES: [&str; 3] =
+    ["test_request", "test_exchange", "TestRequestError"];
 
 /// What `std.testing` exports to an import in `edition`.
 pub(crate) fn std_testing_names(edition: Edition) -> &'static [&'static str] {

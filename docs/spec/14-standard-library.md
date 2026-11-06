@@ -140,3 +140,7 @@ Usable only in test code (ADR 0028, ADR 0043):
 | --- | --- |
 | `fake_hash(seed: Int) -> internal Hashed` | Deterministic `Hashed` value for tests; equal seeds give equal values |
 | `elapse(d: Int of Millisecond) -> Unit`, `requires d >= 0` | (Edition 0.4, ADR 0116 rule 19.) Moves the test's virtual clock forward by `d` at once, without waiting (`spec/26 §8`) |
+| `test_request(method: Method, target: Text, body: Text) -> Request`, `fails TestRequestError` | (Edition 0.4, ADR 0123 rule 21.) The request the host would read for `method`, `target` and `body`, with the header `host: test`; `Refused` where the host would answer `400` (`spec/31 §8`) |
+| `test_exchange(request: Request) -> Exchange` | (Edition 0.4, ADR 0123 rule 21.) An exchange of `request` with a fresh reply right (`spec/31 §8`) |
+
+(Edition 0.4, ADR 0123 rule 21.) `std.testing` also declares `pub kind TestRequestError = | Refused`.
