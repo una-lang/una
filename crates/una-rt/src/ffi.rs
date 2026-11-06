@@ -1455,10 +1455,18 @@ mod tests {
             if function.starts_with("host") {
                 continue;
             }
-            // Outside a run no memory budget bounds a range's list, or a dense value filled
-            // from one element (#989): they take small bounds there.
+            // Outside a run no memory budget bounds a range's list, a dense value filled from
+            // one element (#989), or an empty bit set's words (#1700): they take small bounds
+            // there. A bit set's size the allocator cannot give is refused at the call, its
+            // own test in `values::collections`; inside a run the budget refuses it first.
             let words = match bounds {
-                Some(bounds) if name == "una_rt_range" || name.contains("_filled") => bounds,
+                Some(bounds)
+                    if name == "una_rt_range"
+                        || name.contains("_filled")
+                        || name == "una_rt_bit_set_empty" =>
+                {
+                    bounds
+                }
                 _ => pool,
             };
             let mut tuples: Vec<Vec<i64>> = Vec::new();

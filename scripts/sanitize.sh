@@ -139,8 +139,15 @@ ASAN_OPTIONS="verbosity=1" "$asan_tests_binary" --list 2>&1 \
 # The scenarios that run in a process of their own are run by their parent tests through this
 # same binary (`current_exe`), so they run instrumented too, with these options; an
 # AddressSanitizer report there ends the scenario with a code its parent test refuses.
+# `allocator_may_return_null=1` (#1700): the runtime takes its large allocations through the
+# fallible `try_reserve` of the standard library and refuses the call with U6003 when the
+# allocator returns null, as the native allocator does for a request it cannot meet. Outside a
+# run no memory budget stops such a request first, and a unit test asks for 2^59 bytes there
+# (`empty_bit_set(size: 2^62)`); AddressSanitizer's default is to abort on a request above its
+# own maximum rather than return null, which would end the binary on a path the native runtime
+# takes without fault. Memory errors are still reported and still abort.
 step "The unit tests of una-rt with AddressSanitizer" \
-    env ASAN_OPTIONS="abort_on_error=1:detect_leaks=0" "$asan_tests_binary"
+    env ASAN_OPTIONS="abort_on_error=1:detect_leaks=0:allocator_may_return_null=1" "$asan_tests_binary"
 # The shim lives in this checkout's target directory and is on the PATH of one command only.
 shim=$root/target/sanitize/shim
 mkdir -p "$shim"
