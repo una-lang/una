@@ -2549,8 +2549,8 @@ impl<'a> Checker<'_, 'a, '_> {
         }
     }
 
-    /// Whether `expr` is an integer literal, possibly negated, or a constructor application,
-    /// whose type an expected type decides.
+    /// Whether `expr` is an integer literal, possibly negated, a constructor application or a
+    /// list literal, whose type an expected type decides.
     fn literal_or_constructor(expr: &Expr) -> bool {
         match &expr.kind {
             ExprKind::Paren(inner) => Self::literal_or_constructor(inner),
@@ -2558,6 +2558,9 @@ impl<'a> Checker<'_, 'a, '_> {
                 super::fixed::literal_value(expr).is_some()
             }
             ExprKind::Call { callee, .. } => matches!(callee.kind, ExprKind::UpperName(_)),
+            // ADR 0103 rules 3 and 5: `Box(v: [5])` where a `Box[List[Pos]]` is expected is a
+            // literal at `List[Pos]`, one obligation per element (#1657).
+            ExprKind::List(_) => true,
             _ => false,
         }
     }
@@ -2736,14 +2739,27 @@ impl<'a> Checker<'_, 'a, '_> {
                 field: field.name,
                 kind: constructor,
             };
-            // A literal, or a constructor, given for a field of a type parameter that the
-            // expected type fixes takes that type, as `Some(3)` where an `Option[U8]` is
-            // expected (`spec/18 §2.1`, #187). The parameter then takes the value's type.
-            let hinted = match (&field.ty.base, hint) {
-                (Ty::Param(param), Some(hint)) if Self::literal_or_constructor(&arg.value) => hint
-                    .get(*param)
-                    .filter(|ty| !holds_var(ty))
-                    .map(|ty| ty.unlabeled().clone()),
+            // A literal, a constructor or a list literal, given for a field whose type holds a
+            // type parameter that the expected type fixes, takes the field's type at those
+            // arguments, as `Some(3)` where an `Option[U8]` is expected (`spec/18 §2.1`, #187),
+            // and `Box(v: [5])` or `Bag(items: [5])` where a `Box[List[Pos]]` or a `Bag[Pos]`
+            // is (ADR 0103 rule 5, #1657). The parameters then take the value's type. A field
+            // of a parameter takes the argument without its top label and refinement, which
+            // the field's own flow and obligation check; a field that holds a parameter at a
+            // nested position keeps the refinement there, since only the literal's elements
+            // can prove it.
+            let hinted = match hint {
+                Some(hint) if Self::literal_or_constructor(&arg.value) => match &field.ty.base {
+                    Ty::Param(param) => hint
+                        .get(*param)
+                        .filter(|ty| !holds_var(ty))
+                        .map(|ty| ty.unlabeled().clone()),
+                    base if holds_param(base) => {
+                        let hint: Vec<Ty> = hint.iter().map(without_top_label).collect();
+                        Some(base.substitute(&hint)).filter(|ty| !holds_var(ty))
+                    }
+                    _ => None,
+                },
                 _ => None,
             };
             let found = match hinted {
@@ -3149,6 +3165,32 @@ fn covariant_in(ty: &Ty, kinds: &KindLabels) -> bool {
         }),
         Ty::Fn(_) => no_params(ty),
         _ => true,
+    }
+}
+
+/// `ty` without the label at its top, its refinements kept.
+fn without_top_label(ty: &Ty) -> Ty {
+    match ty {
+        Ty::Labeled(_, inner) => (**inner).clone(),
+        other => other.clone(),
+    }
+}
+
+/// Whether `ty` names a type parameter at some position. O(size of `ty`).
+fn holds_param(ty: &Ty) -> bool {
+    match ty {
+        Ty::Param(_) => true,
+        Ty::Labeled(_, inner) | Ty::Refined(_, inner) | Ty::List(inner) | Ty::Dense(_, inner) => {
+            holds_param(inner)
+        }
+        Ty::Map(key, value) => holds_param(key) || holds_param(value),
+        Ty::Kind(_, args) | Ty::Coll(_, args) => args.iter().any(holds_param),
+        Ty::Fn(function) => {
+            function.params.iter().any(holds_param)
+                || holds_param(&function.result)
+                || function.fails.as_ref().is_some_and(holds_param)
+        }
+        _ => false,
     }
 }
 
