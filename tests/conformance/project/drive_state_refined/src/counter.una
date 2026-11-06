@@ -1,0 +1,21 @@
+-- test: the state of a driven module carries no refinement: the host hands it from `init` to `step` and `on_stop` by its type alone, so `step` would assume of it what `init` never proved (spec/26 §2)
+-- spec: spec/26 §2
+-- expect: error U7008 at ita.una:6:10
+module counter
+
+import std.drive (Tick)
+
+--- A count that cannot exist.
+kind Never = Int where it == 0 and it == 1
+
+--- Needs the impossible.
+impossible(count: Int) -> Unit
+  requires 1 == 2
+=
+  unit
+
+--- Starts the count.
+pub init() -> Int = 0
+
+--- Counts each tick, through the impossible, which the refinement would prove.
+pub step(edit count: Never, input: Tick) -> Unit = impossible(count)

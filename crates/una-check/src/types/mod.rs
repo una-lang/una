@@ -554,6 +554,12 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
         .as_ref()
         .zip(package.manifest)
         .map(|(serve, manifest)| Span::new(manifest, serve.at.start, serve.at.end));
+    env.drive_driver = package
+        .settings
+        .drive
+        .as_ref()
+        .zip(package.manifest)
+        .map(|(drive, manifest)| Span::new(manifest, drive.at.start, drive.at.end));
     env.trusted_dependencies = env
         .modules
         .iter()
