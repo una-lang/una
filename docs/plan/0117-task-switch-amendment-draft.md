@@ -1,6 +1,6 @@
 # Draft: ADR 0117, Amendment: a task switch that work under a raised label does not move (issue #1684)
 
-- Status: Draft, not accepted. The accepted text of ADR 0117 does not change until the project accepts an amendment. By its decision of 2026-11-06 the project chose, for issue #1684, a conservative checker rule now (section B) and this amendment later (section C): section C stays a draft for a later decision.
+- Status: Draft, not accepted. The accepted text of ADR 0117 does not change until the project accepts an amendment. By its decision of 2026-11-06 the project chose, for issue #1684, option 2 of the card now, a conservative checker rule that refuses started tasks whose loop bounds depend on `secret` data, and this amendment later (section C), which stays a draft for a later decision. Section B shows that the rule as worded is not enough and proposes the shape a sound rule needs; that shape is **proposed, not decided**, and the choice of the exact rule is open.
 - Origin: finding T1 of the security hunt of #973 (Medium, confirmed in both engines, on `main` only; no released line has `tasks`).
 - Concerns: ADR 0117 rules 11 and 12 (the interpreter's schedule and native code under `--virtual-time`), `spec/27 §8` rules 2 and 3.
 
@@ -14,9 +14,13 @@ So the number of check points a task passes decides when it yields, and with it 
 
 The number of check points depends on data above `public` in more ways than a loop's bound: a branch under a raised program counter whose two sides pass different numbers of check points, a loop whose condition or collection is labeled, a prelude function over a labeled list, and a recursion whose depth labeled data decides.
 
-## B. The conservative rule, now (decided on 2026-11-06, to be implemented by #1684)
+## B. The conservative rule, now (proposed shape for the decided option 2; the exact rule is open)
 
-A rule of the checker that refuses the programs whose schedule could depend on data above `public`, with no change of the engines. Its spec text lands in `spec/27 §8` with its code and conformance cases. The shape that the implementation states, the most secure reading of option 2 of the card, is:
+**What was decided.** Option 2 of the card: a conservative rule of the checker, with no change of the engines, that refuses started tasks whose loop bounds depend on `secret` data. Its spec text lands in `spec/27 §8` with its code and conformance cases (#1684).
+
+**Why loop bounds are not enough.** A loop's bound is one way in which `secret` data decides how many check points a task passes, but not the only one. A branch on `secret` data whose two sides pass different numbers of check points does it too: a loop of `public` length whose body calls a function on one side of a `secret` branch passes a `secret` number of check points, and so moves the switch, with no labeled bound anywhere. So does a loop whose condition or collection is labeled, a prelude function over a labeled list, and a recursion whose depth labeled data decides. And the root task switches with the started tasks (`spec/27 §8` rule 2), so the root's code moves the switch as a started task's does. A rule that refuses only labeled loop bounds in started tasks leaves the channel open.
+
+**What a sound rule must therefore cover.** Every way in which data above `public` can decide the number of check points that the root task or a started task passes. The shape proposed here, **for the project to confirm before #1684 implements it**, is:
 
 In a package whose code holds a `tasks` statement, U4001 at each construct whose number of check points can depend on data above `public`, in code that the root task or a started task can run (the call graph of ADR 0116 P1):
 1. a check point under a program counter above `public` (a call, an operation, a loop, or a prelude function over a list, inside a branch on labeled data);
@@ -24,9 +28,9 @@ In a package whose code holds a `tasks` statement, U4001 at each construct whose
 3. a prelude function over a list whose label is above `public` (`map`, `filter`, `first_where`, `fold`);
 4. a recursion, a cycle of the call graph, entered under a program counter above `public` or with an argument above `public`.
 
-"Loop bounds only", the card's first wording, is not enough: a loop of `public` length whose body branches on a `secret` value with a call on one side passes a `secret` number of check points.
+**Cost to programmers.** This is much more than option 2 as worded refuses. In a program with started tasks, code that branches on `secret` data must pass no check point inside the branch: no call, no operation, no loop. That refuses much code that is sound today in programs without `tasks`, and it is the reason for section C.
 
-**Cost to programmers.** In a program with started tasks, code that branches on `secret` data must pass no check point inside the branch: no call, no operation, no loop. That refuses much code that is sound today in programs without `tasks`, and it is the reason for section C.
+**Open.** The choice of the exact rule: option 2 as worded (labeled loop bounds in started tasks), which is not sound alone; the shape above; or a shape between them, such as items 1 to 4 for started tasks only, which leaves the root's switches open. Each refuses less than the one after it and closes less of the channel.
 
 **Cost of the check.** One pass over the bodies that the program counter analysis visits already, plus the reach from the `tasks` statements and the cycles of the call graph, O(V + E) per package.
 
