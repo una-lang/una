@@ -1,0 +1,68 @@
+-- test: the timing label of `first of` counts every value that its branches compute, and that the code they reach computes (ADR 0116 IF5, ADR 0117 IF3, #1685): beside a branch that calls a function making a `secret` value from its own literals, or that builds a kind with a `secret` field itself, a `public` print in a sibling is U4003, as beside a branch on a `secret` passed in; on `public` values both are accepted
+-- spec: spec/27 §6
+-- expect: error U4003 at src/race.una:48:5
+-- expect: error U4003 at src/race.una:56:5
+module race
+
+kind Key
+  k: secret Int
+
+kind Open
+  k: Int
+
+spin(n: secret Int) -> secret Int
+=
+  let edit acc: secret Int = 0
+  for i in 0..<n
+    acc = acc + 1
+  acc
+
+count(n: Int) -> Int
+=
+  let edit acc = 0
+  for i in 0..<n
+    acc = acc + 1
+  acc
+
+idle_key(key: Key) -> Unit = unit
+
+idle_open(open: Open) -> Unit = unit
+
+hidden() -> Unit
+=
+  let k: secret Int = 3000000
+  let r = spin(k)
+  unit
+
+shown() -> Unit
+=
+  let k = 3000000
+  let r = count(k)
+  unit
+
+pub by_callee() -> Unit
+  uses @console: Console[print]
+=
+  let printed = first of
+    hidden()
+    @console.print("b")
+  unit
+
+pub by_branch() -> Unit
+  uses @console: Console[print]
+=
+  let printed = first of
+    idle_key(Key(k: 3000000))
+    @console.print("b")
+  unit
+
+pub in_public() -> Unit
+  uses @console: Console[print]
+=
+  let printed = first of
+    shown()
+    @console.print("b")
+  let built = first of
+    idle_open(Open(k: 3000000))
+    @console.print("c")
+  unit
