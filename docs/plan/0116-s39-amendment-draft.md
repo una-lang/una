@@ -29,7 +29,7 @@ Out of scope:
 - **The run-wide budget** (S-36, #1478): how many iterations a `secret` loop took from `--stop-after-iterations` shows in the output of a later public loop, not in the trace.
 - **The hard stop.** The `cancelled` events and U6007 of the hard stop of `public` code are the time of a host stop (`spec/07 §1`); inside quiet code its `cancelled` events are left out as well.
 
-The formal model has none of these events yet, so a declaration that runs a `for ever`, or holds `quiet`, is not re-checked by it.
+The formal model has none of these events yet. Since #1553 its importer reads `quiet e` as `e`, so a declaration that holds `quiet` is re-checked on F1's trace, which keeps the operations' events that quiet code leaves out; the step to the runtime's trace is argued, not proven.
 
 ## Addition (proposed 2026-11-04): handler installations in quiet code (S-41)
 
