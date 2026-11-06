@@ -3669,11 +3669,18 @@ pub(crate) fn within_timing(
 /// else of the site's timing label is checked: the rest is the `via`'s own data, which rule 3
 /// trusts it to release.
 ///
+/// **Reach** ([`timing::via_reach`]): a lambda's code counts with the function or handler it is
+/// written in, and the code of every lambda, with every function named as a value, only when
+/// a reached node calls a function value or applies one whose code is not known at the call.
+///
 /// O(F + H + C + O + E) for the graph and one search of it from every `via` function at once,
-/// O(F + E) for [`timing::concurrent_functions`], then O(log n) per site, so linear in the
-/// package up to the logarithms, with no work at all in a package without a `via` function.
+/// O(F + E) for [`timing::concurrent_functions`], and O(S log S + S log F) to sort the `S`
+/// sites and look each up. A site that would be reported first scans the diagnostics reported
+/// so far for a U4001 at its span, O(D) for `D` of them, so the reported sites cost O(R × D)
+/// more, on the error path only. No work at all in a package without a `via` function.
 ///
 /// [`timing::preview_concurrent`]: super::timing::preview_concurrent
+/// [`timing::via_reach`]: super::timing::via_reach
 /// [`timing::concurrent_functions`]: super::timing::concurrent_functions
 pub(crate) fn via_timing(env: &Env<'_>, findings: &Findings, report: &mut Report<'_>) {
     if env.vias.is_empty() {
@@ -3739,16 +3746,17 @@ pub(crate) fn via_timing(env: &Env<'_>, findings: &Findings, report: &mut Report
             .unwrap_or_default()
     };
     for (words, what, span, function, seed) in sites {
-        let Some(via) = reach.via_of(seed.node) else {
+        let Some((via, path)) = reach.via_of(seed) else {
             continue;
         };
         if !super::timing::preview_concurrent(seed, function, &concurrent) {
             continue;
         }
-        // A `limiter` whose statement can run beside other tasks is U4001 at its binding by
-        // `spec/27 §10` already, since the preview's `τ_conc` there is `⊤`, above `internal`:
-        // one diagnostic at the site, not two.
-        if words == "limiter" && report.has(Code::U4001, span) {
+        // A site already refused with U4001 at its own span keeps that one diagnostic: a
+        // `limiter` that can run beside other tasks always is, by `spec/27 §10`, since the
+        // preview's `τ_conc` there is `⊤`, above `internal`; so is a `within` whose outcome
+        // flows into a binding labeled below its timing label.
+        if report.has(Code::U4001, span) {
             continue;
         }
         let via_name = qualified(via);
@@ -3756,16 +3764,18 @@ pub(crate) fn via_timing(env: &Env<'_>, findings: &Findings, report: &mut Report
         let policy_name = policy
             .and_then(|id| env.functions.get(id))
             .map_or_else(String::new, |def| def.name.to_owned());
-        let through = if seed.node == Some(super::timing::Caller::Function(via)) {
-            String::new()
-        } else {
-            " through the code it reaches".to_owned()
+        let through = match path {
+            super::timing::ViaPath::Body => String::new(),
+            super::timing::ViaPath::Calls => " through the code it calls".to_owned(),
+            super::timing::ViaPath::Lambda => format!(
+                " through a function value: `{via_name}`, or code it calls, calls a function value or applies one whose code is not known at the call, so every lambda's code, and every function named as a value, counts as code it reaches, this site's included"
+            ),
         };
         let mut diagnostic = report.make(
             Code::U4001,
             span,
             format!(
-                "this `{words}` can run beside other tasks of the program, so its concurrent label is `{top}`, above `public`: {what} depends on their timing, and its outcome can reach the result of the `via` function `{via_name}`{through}, where no label is checked, so the policy `{policy_name}` would release that timing (`spec/07 §5` rule 7)"
+                "this `{words}` can run beside other tasks of the program, so its concurrent label is `{top}`, above `public`: {what} depends on their timing, and its outcome can reach the result of the `via` function `{via_name}`{through}; no label is checked there, so the policy `{policy_name}` would release that timing (`spec/07 §5` rule 7)"
             ),
         );
         if let Some(FnAst::Policy(decl)) = policy
@@ -3777,9 +3787,15 @@ pub(crate) fn via_timing(env: &Env<'_>, findings: &Findings, report: &mut Report
                 format!("the policy `{policy_name}` runs `{via_name}`"),
             ));
         }
-        diagnostic.repairs.push(Report::advice(format!(
-            "call the policy `{policy_name}` outside every part of a task construct, so that no task runs beside it, or move the `{words}` out of the `via` function and the code it reaches"
-        )));
+        if path == super::timing::ViaPath::Lambda {
+            diagnostic.repairs.push(Report::advice(format!(
+                "in `{via_name}` and the code it calls, pass only lambdas written at the call to functions such as `map`, and call no function value, so that only the lambdas written there count; or run this `{words}` where no part of a task construct runs beside it"
+            )));
+        } else {
+            diagnostic.repairs.push(Report::advice(format!(
+                "call the policy `{policy_name}` outside every part of a task construct, so that no task runs beside it, or move the `{words}` out of the `via` function and the code it calls"
+            )));
+        }
         report.push(diagnostic);
     }
 }

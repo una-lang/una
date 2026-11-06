@@ -1,0 +1,15 @@
+trusted module release
+
+pub policy key_of
+  from internal Int
+  to Int
+  via reveal_it
+  purpose "a test"
+  owner privacy
+
+--- The `via` function applies lambdas written at their calls only.
+reveal_it(t: internal Int) -> Int = sum([t].map(each: fn(x: internal Int) -> x + 1))
+
+sum(xs: List[internal Int]) -> internal Int = xs.fold(initial: 0,
+  step: fn(a: internal Int, b: internal Int) -> b
+)

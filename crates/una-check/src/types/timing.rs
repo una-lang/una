@@ -47,6 +47,9 @@ pub(crate) struct TimingSeed {
     pub(crate) unplaced: bool,
     /// The node of the graph of ADR 0116 P1 whose code holds it, `None` outside every node.
     pub(crate) node: Option<Caller>,
+    /// The function or handler whose code holds it, a lambda written there included, `None`
+    /// outside both: where a lambda's code is written, for the reach of a `via` (#1673).
+    pub(crate) home: Option<Caller>,
     /// The innermost construct whose part holds it (P3), an index of `Findings::constructs`.
     pub(crate) construct: Option<usize>,
     /// The join of `ℓ*` of every value its own code computes, its symbolic labels dropped
@@ -138,6 +141,9 @@ pub(crate) struct GraphEdge {
     /// The node whose code holds the call: a function's body, a handler's operations, or `Λ`
     /// for a lambda's body.
     pub(crate) from: Caller,
+    /// The function or handler whose code holds the call, a lambda written there included:
+    /// where a lambda's call is written, for the reach of a `via` (#1673).
+    pub(crate) home: Option<Caller>,
     /// What it goes to.
     pub(crate) to: Target,
     /// The call site.
@@ -203,6 +209,7 @@ impl Checker<'_, '_, '_> {
         let mut seed = TimingSeed {
             unplaced: self.unplaced(),
             node: self.caller(),
+            home: self.home(),
             construct: self.parts.last().copied(),
             ..TimingSeed::default()
         };
@@ -237,14 +244,25 @@ impl Checker<'_, '_, '_> {
         }
     }
 
+    /// The function or handler whose code is being checked, a lambda written there included:
+    /// a handler's operation, then a function; `None` elsewhere.
+    pub(crate) fn home(&self) -> Option<Caller> {
+        match self.handler {
+            Some(handler) => Some(Caller::Handler(handler)),
+            None => self.current.map(Caller::Function),
+        }
+    }
+
     /// Records an edge of the call graph of ADR 0116 P1 from the node whose code is being
     /// checked to `to`, at the call site `span`, with the innermost construct whose part holds
     /// it (P3).
     fn graph_edge(&mut self, to: Target, span: una_syntax::Span) {
         if let Some(from) = self.caller() {
             let construct = self.parts.last().copied();
+            let home = self.home();
             self.findings.graph_edges.push(GraphEdge {
                 from,
+                home,
                 to,
                 span,
                 construct,
@@ -1619,13 +1637,25 @@ pub(crate) fn reached_from(
 }
 
 /// The `via` functions of the package and the code each reaches (`spec/07 §5` rule 7, ADR 0098
-/// amendment of 2026-11-06, #1673): for each node of the graph of ADR 0116 P1, a `via`
-/// function whose code reaches it, along the call edges, the edge of each policy call to its
-/// `via` included, the operations and the handlers that can serve them, and `Λ`.
+/// amendment of 2026-11-06, #1673), over the graph of ADR 0116 P1: the call edges, the edge of
+/// each policy call to its `via`, the operations and every handler that can serve them.
+///
+/// **Lambdas.** All lambdas are one node `Λ` in that graph, so following its edges blindly
+/// would count every lambda of the package as reached from a `via` that applies one lambda of
+/// its own. Here a lambda's code is taken with the function or handler it is written in (its
+/// `home`): a reached node reaches what its lambdas call, perform and install. `Λ`, every
+/// lambda's code with every function named as a value, counts as reached only from a reached
+/// node whose code can run code it does not show: it calls a function value, or applies a
+/// prelude function to an argument other than a lambda written at the call (`value_callers`,
+/// `opaque_applies`, the same facts as IF5 item 4 and #1023). A prelude function such as
+/// `map` runs only the functions it is given, which those two facts cover, so its own edge to
+/// `Λ` is not followed.
 pub(crate) struct ViaReach {
     /// For each node, the `via` function the search reached it from first, `None` when no
     /// `via` function reaches it.
     by_node: Vec<Option<usize>>,
+    /// For each node, whether the search reached it only through `Λ`.
+    through_lambda: Vec<bool>,
     /// The number of functions and of handlers, and the node `Λ`, to find a caller's node as
     /// [`Graph::node_of`] does.
     functions: usize,
@@ -1633,30 +1663,104 @@ pub(crate) struct ViaReach {
     lambda: usize,
 }
 
+/// How a `via` function reaches a site, for [`ViaReach::via_of`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ViaPath {
+    /// The site is in the `via` body, a lambda written there included.
+    Body,
+    /// The site is in code the `via` body calls, performs or installs.
+    Calls,
+    /// The site is in a lambda's code, or code it reaches, and the `via` reaches `Λ`: it calls a
+    /// function value or applies one whose code is not known.
+    Lambda,
+}
+
 impl ViaReach {
-    /// A `via` function whose code reaches the node `caller` holds, `None` when none does or the
-    /// code is in no node of the graph.
-    pub(crate) fn via_of(&self, caller: Option<Caller>) -> Option<usize> {
-        let node = match caller? {
-            Caller::Function(f) => (f < self.functions).then_some(f)?,
-            Caller::Handler(h) => (h < self.handlers).then_some(self.functions + h)?,
-            Caller::Lambda => self.lambda,
+    fn node(&self, caller: Caller) -> Option<usize> {
+        match caller {
+            Caller::Function(f) => (f < self.functions).then_some(f),
+            Caller::Handler(h) => (h < self.handlers).then_some(self.functions + h),
+            Caller::Lambda => Some(self.lambda),
+        }
+    }
+
+    /// A `via` function that reaches the site whose checking recorded `seed`, and how: through
+    /// the node its code is in, or, in a lambda, through the function or handler the lambda is
+    /// written in. `None` when no `via` function reaches it.
+    pub(crate) fn via_of(&self, seed: &TimingSeed) -> Option<(usize, ViaPath)> {
+        let path = |node: usize, via: usize| {
+            if self.through_lambda.get(node).copied().unwrap_or(false) {
+                ViaPath::Lambda
+            } else if node == via {
+                ViaPath::Body
+            } else {
+                ViaPath::Calls
+            }
         };
-        self.by_node.get(node).copied().flatten()
+        let at = |caller: Option<Caller>| {
+            let node = self.node(caller?)?;
+            let via = self.by_node.get(node).copied().flatten()?;
+            Some((via, path(node, via)))
+        };
+        if seed.node == Some(Caller::Lambda) {
+            at(seed.home).or_else(|| at(Some(Caller::Lambda)))
+        } else {
+            at(seed.node)
+        }
     }
 }
 
 /// [`ViaReach`] of the package: the graph of ADR 0116 P1, O(F + H + C + O + E), and one search
 /// of it from every `via` function at once, each node taking the first `via` that reaches it,
-/// O(V + E).
+/// with each lambda's edges taken from its home: O(V + E + A log A) for `A` opaque applications.
 pub(crate) fn via_reach(env: &Env<'_>, findings: &Findings) -> ViaReach {
     let graph = graph(env, findings);
-    let mut by_node: Vec<Option<usize>> = vec![None; graph.succ.len()];
+    let nodes = graph.succ.len();
+    let lambda = graph.lambda;
+    // The edges of the lambdas written in each function or handler, by its node.
+    let mut written: Vec<Vec<usize>> = vec![Vec::new(); nodes];
+    for edge in &findings.graph_edges {
+        if edge.from != Caller::Lambda {
+            continue;
+        }
+        let Some(home) = edge.home.and_then(|home| graph.node_of(home)) else {
+            continue;
+        };
+        let to = match &edge.to {
+            Target::Function(f) => (*f < graph.functions).then_some(*f),
+            Target::Lambda => Some(lambda),
+            Target::Op(cap, op) => graph.ops.get(&(*cap, op.clone())).copied(),
+            Target::Install(h) => (*h < graph.handlers).then(|| graph.handler_node(*h)),
+        };
+        if let (Some(to), Some(slot)) = (to, written.get_mut(home)) {
+            slot.push(to);
+        }
+    }
+    // The nodes whose code runs code it does not show, and so reaches `Λ`.
+    let opaque_functions: BTreeSet<usize> = findings
+        .opaque_applies
+        .iter()
+        .map(|&(caller, _)| caller)
+        .collect();
+    let opens_lambda = |node: usize| {
+        if node < graph.functions {
+            findings.value_callers.contains(&node) || opaque_functions.contains(&node)
+        } else if node < graph.functions + graph.handlers {
+            findings
+                .handler_seeds
+                .get(&(node - graph.functions))
+                .is_some_and(|seed| seed.value_call || !seed.opaque_applies.is_empty())
+        } else {
+            false
+        }
+    };
+    let mut by_node: Vec<Option<usize>> = vec![None; nodes];
+    let mut through_lambda = vec![false; nodes];
     let mut queue: std::collections::VecDeque<usize> = std::collections::VecDeque::new();
     for &via in env.vias.keys() {
-        if let Some(slot) = by_node.get_mut(via)
+        if via < graph.functions
+            && let Some(slot) = by_node.get_mut(via)
             && slot.is_none()
-            && via < graph.functions
         {
             *slot = Some(via);
             queue.push_back(via);
@@ -1664,20 +1768,32 @@ pub(crate) fn via_reach(env: &Env<'_>, findings: &Findings) -> ViaReach {
     }
     while let Some(node) = queue.pop_front() {
         let first = by_node.get(node).copied().flatten();
-        for &to in graph.succ.get(node).map_or(&[][..], Vec::as_slice) {
+        let late = through_lambda.get(node).copied().unwrap_or(false) || node == lambda;
+        let own = graph.succ.get(node).map_or(&[][..], Vec::as_slice);
+        let lambdas = written.get(node).map_or(&[][..], Vec::as_slice);
+        let open = (opens_lambda(node) || node == lambda).then_some(lambda);
+        for &to in own.iter().chain(lambdas).chain(open.iter()) {
+            // `Λ` only from code that runs code it does not show, or from `Λ` itself.
+            if to == lambda && open.is_none() {
+                continue;
+            }
             if let Some(slot) = by_node.get_mut(to)
                 && slot.is_none()
             {
                 *slot = first;
+                if let Some(flag) = through_lambda.get_mut(to) {
+                    *flag = late || to == lambda;
+                }
                 queue.push_back(to);
             }
         }
     }
     ViaReach {
         by_node,
+        through_lambda,
         functions: graph.functions,
         handlers: graph.handlers,
-        lambda: graph.lambda,
+        lambda,
     }
 }
 
