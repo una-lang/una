@@ -2263,8 +2263,8 @@ impl Gather<'_> {
 /// the operations they perform, the handlers they install, a call of a function value (`⊤`)
 /// and a prelude function applied to an argument whose code is not known (`⊤`).
 ///
-/// **Values** (#1685; the item 7 of IF5 that `docs/plan/0116-tau-item7-amendment-draft.md`
-/// proposes, held until the project accepts it). The values that the site's own code, each
+/// **Values** (ADR 0116 IF5 item 7, amendment of 2026-11-06, `spec/26 §7` rule 5 item 7,
+/// #1685). The values that the site's own code, each
 /// function reached and each handler taken compute count by `ℓ*` of their types, symbolic labels
 /// dropped: a value a callee labels from literals, as `let k: secret Int = 3000000`, raises `τ`
 /// as the same value passed in does under IF5 item 2. They join after every other source, so a

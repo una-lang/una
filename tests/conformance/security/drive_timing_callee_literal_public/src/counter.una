@@ -1,4 +1,4 @@
--- test: a driven step that calls a function computing only on `public` values made from its own literals has a `public` timing label, and its `input` needs no label (spec/26 §2, ADR 0116 IF5, IF7, #1685, `docs/plan/0116-tau-item7-amendment-draft.md`): the accepted twin of `drive_timing_callee_literal_secret`
+-- test: a driven step that calls a function computing only on `public` values made from its own literals has a `public` timing label, and its `input` needs no label (spec/26 §2, ADR 0116 IF5, IF7, ADR 0116 amendment of 2026-11-06, #1685): the accepted twin of `drive_timing_callee_literal_secret`
 -- spec: spec/26 §2
 -- expect: ok
 module counter

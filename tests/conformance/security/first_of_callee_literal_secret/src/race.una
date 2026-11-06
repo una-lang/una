@@ -1,4 +1,4 @@
--- test: the timing label of `first of` counts every value that its branches compute, and that the code they reach computes (ADR 0116 IF5, ADR 0117 IF3, #1685, `docs/plan/0116-tau-item7-amendment-draft.md`): beside a branch that calls a function making a `secret` value from its own literals, or that builds a kind with a `secret` field itself, a `public` print in a sibling is U4003, as beside a branch on a `secret` passed in; on `public` values both are accepted
+-- test: the timing label of `first of` counts every value that its branches compute, and that the code they reach computes (ADR 0116 IF5, ADR 0117 IF3, ADR 0116 amendment of 2026-11-06, #1685): beside a branch that calls a function making a `secret` value from its own literals, or that builds a kind with a `secret` field itself, a `public` print in a sibling is U4003, as beside a branch on a `secret` passed in; on `public` values both are accepted
 -- spec: spec/27 §6
 -- expect: error U4003 at src/race.una:41:5
 -- expect: error U4003 at src/race.una:49:5
