@@ -54,8 +54,10 @@ mod describe;
 mod lower;
 mod owned;
 mod range;
+mod serve;
 
 pub use range::{machine_width, proven_range};
+pub use serve::compile_serve;
 
 use lower::Body;
 
@@ -527,6 +529,8 @@ const RUNTIME: &[(&str, usize, bool)] = &[
     ("una_rt_serve_next", 1, true),
     ("una_rt_serve_reply", 3, true),
     ("una_rt_serve_close", 1, true),
+    ("una_rt_serve_drive", 3, true),
+    ("una_rt_serve_answer", 5, true),
     ("una_rt_event", 2, true),
     ("una_rt_push_op", 2, false),
     ("una_rt_event_arg", 4, false),
