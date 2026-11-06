@@ -166,11 +166,65 @@ The rule follows: a native test that sets `--max-memory` uses a budget above thi
 
 ## 8. Gate tiers
 
-The `tests` gate runs `scripts/gate-tests.sh`, in one of two tiers that `scripts/gate-tier.sh` chooses from the paths a pull request changes (`git diff --name-only --no-renames origin/main...HEAD`, plus what is staged, modified or untracked in the worktree, so that a merge-train worktree counts its merge).
+The `tests` gate runs `scripts/gate-tests.sh`, in one of two tiers that `scripts/gate-tier.sh` chooses from the paths a change touches: `git diff --name-only --no-renames origin/main...HEAD`, plus what is staged, modified or untracked in the worktree, so that a merge-train worktree counts its merge. The base is always `origin/main`; no setting lowers the tier.
 
-- **Full:** `cargo build --locked -p una-rt`, `cargo nextest run --workspace --locked --no-fail-fast` and `cargo test --workspace --doc --locked`, the whole suite of §3. The tier is full when `UNA_GATE_TIER=full` is set, when the changed paths cannot be computed, or when any changed path is runtime code (`una-rt`, `una-interp`, `una-codegen`, `una-http`, `una-sys`, `una-link`, `una-z3`, `una-itaty`), soundness code (`una-check`, `una-verify`, `una-core`, and `una-syntax`, whose parser feeds the checker), the diagnostic codes (`una-diag/src/codes.rs`), security code (`una-crypto`, `una-hash`, `una-diag/src/safe_write.rs`), supply-chain code (`una-project`), the case lists of the sharded suites (`una-test-cases`), the modules of `una-cli` on the check, build, run, package or solver path, a manifest or build script, the build, test, toolchain, CI or supply-chain configuration (`Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `.config/`, `.cargo/`, `.github/`, `supply-chain/`, `deny.toml`, `clippy.toml`, `verification.lock`, `install.sh`, `fuzz/`), a gate, release, solver, toolchain or security script under `scripts/`, a security conformance case (`tests/conformance/security`), an adversarial review case (`docs/reviews/*/adversarial`), a test helper shared by several suites, the native differential's own file, or a file the native differential reads by path. A path that no rule names is full: the rules list what may be fast, not what must be full. The workflows `security-fix`, `soundness-change`, `performance` and `release` always run the full tier: the gate script of the harness sets `UNA_GATE_TIER=full` for them.
-- **Fast:** the same three steps, with nextest limited to every test except the long suites (the native differential, the release-gate, runtime, verification, HTTP, serving, redaction, guide, website, recovery, profile and refinement suites of `una-cli`, the confinement tests of `una-interp`, and the integration tests of `una-http` and `una-sys`) and the exclusive timing tests (the overrides of `.config/nextest.toml` that reserve every slot), plus what the change needs: the test binaries it edits, the whole package of a changed crate among `una-fmt`, `una-explain`, `una-report`, `una-lsp` and `una-diag`, the native differential tests of each program of `examples` and `tests/conformance` it edits, and each skipped suite that reads a changed file by a literal path. Every crate's unit tests, the conformance cases, the Core IR and determinism suites and the documentation tests always run. Paths that may be fast: documentation (including `docs/spec` and `docs/adr`; a change that also touches a crate above is full), changelog fragments, examples, conformance cases outside `security`, other test corpora, tests of `una-cli` outside the native differential, `una-fmt`, `una-explain`, `una-report`, `una-lsp`, the rest of `una-diag`, the `una-cli` modules of the commands `contract`, `fix`, `lsp`, `migrate`, `report`, `trace` and the standard library listing and argument parsing, `site/`, `formal/` and the other scripts.
+**Full** is the whole suite of §3: `cargo build --locked -p una-rt`, `cargo nextest run --workspace --locked --no-fail-fast` and `cargo test --workspace --doc --locked`. The tier is full when any of these holds:
 
-The first lines of the gate log name the tier and its reasons; a fast log adds the number of tests it did not run (the difference of two `cargo nextest list` counts), the sentence "the full suite runs nightly and before every merge of a security, soundness or runtime change", and the filterset it ran. `scripts/gate-tier.sh --paths FILE` classifies a list of paths, and `scripts/gate-tests.sh --plan` prints the tier and the filterset without running anything. A tier cannot be forced to fast: `UNA_GATE_TIER` only raises it.
+- `UNA_GATE_TIER=full` is set. The gate script of the harness sets it for the `security-fix`, `soundness-change`, `performance` and `release` workflows, and the nightly run sets it too.
+- The harness run that holds the gate (`UNA_HARNESS_GATE_HELD`) has one of those workflows, or its workflow cannot be read.
+- The changed paths cannot be computed, or no path changed.
+- A changed path is not one of the fast paths listed below. Among them:
+  - runtime code: `una-rt`, `una-interp`, `una-codegen`, `una-http`, `una-sys`, `una-link`, `una-z3`, `una-itaty`;
+  - soundness code: `una-check`, `una-verify`, `una-core`, and `una-syntax`, whose parser feeds the checker;
+  - security code: `una-crypto`, `una-hash`, `una-diag/src/codes.rs`, `una-diag/src/safe_write.rs`;
+  - supply-chain code: `una-project`;
+  - the case lists `una-test-cases` and the conformance discovery they include;
+  - every manifest and build script, and a crate the rules do not name;
+  - every module of `una-cli` but the two of the standard library listing. Each of the others is on the check, build, run, serve, package, solver, grant, limit, contract, manifest, report or repair path;
+  - the Cargo, nextest, toolchain, CI and supply-chain configuration;
+  - every script under `scripts/` but the two below;
+  - the security conformance cases (`tests/conformance/security`) and the adversarial review cases (`docs/reviews/*/adversarial`);
+  - the test helpers shared by several suites (`crates/una-cli/tests/common`), and the native differential's own file;
+  - any file the native differential reads by path. That includes every example, since it reads the whole `examples` directory.
 
-**Nightly.** The full tier runs every night on the head of `main` (a local scheduled job of the gate machine, outside this repository), with the `build` and `verification` gates. Its report gives the commit, the duration of each gate, the result and the failing tests. A failure opens a P0 issue and marks the night red; while it is red, nothing merges except the fix, and the next green nightly clears it.
+**Fast** runs the same three steps, with nextest limited to every test except two groups:
+
+- The long suites:
+  - the `una-cli` suites `native`, `release_gates`, `runtime`, `verification`, `serve_runs`, `serve_live`, `http`, `http_limits`, `outcome_redaction`, `guide`, `site_website`, `profiles`, `recovery` and `refined_elements`;
+  - `una-interp::confine`;
+  - every integration test of `una-http` and `una-sys`.
+- The exclusive timing tests: the overrides of `.config/nextest.toml` that reserve every slot.
+
+To that subset it adds what the change needs:
+
+- the test binary of each changed test file;
+- the whole package of a changed `una-fmt`, `una-explain`, `una-report`, `una-lsp` or `una-diag` file;
+- the `interpreter::` and `linkers::` tests of each changed program of `tests/conformance`;
+- the `verification` and `runtime` suites for any change under `tests/conformance`, since they read the whole corpus;
+- each skipped suite whose source names a changed file, or a directory above it, by a literal path, a bare directory or the prefix of a format string.
+
+Every crate's unit tests, the conformance cases, the Core IR and determinism suites and the documentation tests always run.
+
+The fast paths are:
+
+- documentation under `docs/` (including `docs/spec` and `docs/adr`; a change that also touches a full path is full), `*.md`, `changelog.d/`, `site/`, `formal/`, `images/` and `.claude/`;
+- the conformance cases outside `security`;
+- the other test corpora under `tests/`;
+- the test files of `una-cli` (but `native.rs`, `common/` and `conformance/discovery.rs`), and the test files of `una-fmt`, `una-explain`, `una-report`, `una-lsp` and `una-diag`;
+- `una-fmt`, `una-explain`, `una-report`, `una-lsp` and `una-diag` (but its codes and safe writes);
+- `una-cli/src/std_listing.rs` and `std_builtins.rs`. They render the standard library reference, and the `std_listing` suite holds them to the checker;
+- `scripts/changelog-assemble.sh` and `scripts/demo/`. They are documentation helpers that no gate calls, and their suites, `changelog_fragments` and `demo_scripts`, run in the fast tier.
+
+Both tiers first run `scripts/gate-tier-selftest.sh`. It classifies more than a hundred path lists and conditions with `scripts/gate-tier.sh --paths`, so an edit that loosens the rule fails the gate.
+
+The first lines of the gate log name the tier and its reasons. A fast log adds:
+
+- the number of tests it did not run, the difference of two `cargo nextest list` counts;
+- the sentence "the full suite runs nightly and before every merge of a security, soundness or runtime change";
+- the filterset it ran.
+
+`scripts/gate-tests.sh --plan` prints the tier and the filterset without running anything.
+
+The harness gives the check one timeout for the whole script and kills only the script's shell when it expires. A watchdog therefore stops every step after `UNA_GATE_TESTS_BUDGET` seconds (default 5100), and the gate fails.
+
+**Nightly.** The full tier runs every night on the head of `main`, together with the `build` and `verification` gates. It is a local scheduled job of the gate machine, outside this repository. Its report gives the commit, the duration and result of each gate, and the failing tests. A failure opens a P0 issue and marks the night red. While it is red, nothing merges except the fix, and the next green nightly clears it.

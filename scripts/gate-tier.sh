@@ -10,24 +10,27 @@
 #                 suites that read the files it edits
 #   `skipped: ...` (fast only) the nextest filterset of the suites the fast tier leaves out
 #
-# The tier is `full` when UNA_GATE_TIER=full, when the changed paths cannot be computed, or when
-# any changed path is runtime, soundness, security or supply-chain code, the build, test or
-# toolchain configuration, a gate or release script, a security conformance case, an adversarial
-# review case, a shared test helper or the native differential's own test file. Every path that
-# no rule names is `full` too: a path is `fast` only when a rule below says so.
+# The tier is `full` when UNA_GATE_TIER=full, when the run of the engineering harness that holds the
+# gate (UNA_HARNESS_GATE_HELD) has a security-fix, soundness-change, performance or release workflow
+# or a workflow that cannot be read, when the changed paths cannot be computed or are empty, or when
+# any changed path is not one that a rule below names as fast. The rules name what may be fast; every
+# other path (runtime, soundness, security and supply-chain code, configuration, scripts outside a
+# short list, shared test helpers, ...) is full. Nothing can lower the tier: there is no setting that
+# makes a change fast, and the base of the comparison is always origin/main.
 #
-# Changed paths: `git diff --name-only --no-renames <base>...HEAD` (base: UNA_GATE_BASE, default
-# origin/main), plus what is staged or modified against HEAD (a merge-train worktree holds its
-# merge in the index) and untracked files. Bash 3.2 (macOS) compatible.
+# Changed paths: `git diff --name-only --no-renames origin/main...HEAD`, plus what is staged or
+# modified against HEAD (a merge-train worktree holds its merge in the index) and untracked files.
+# Bash 3.2 (macOS) compatible. scripts/gate-tier-selftest.sh holds the rule to a list of cases.
 #
 # Usage: scripts/gate-tier.sh [--paths FILE]   (--paths classifies the paths listed in FILE, one per
-# line, instead of the worktree's changes: for reviewing the rule on past pull requests)
+# line, instead of the worktree's changes: for reviewing the rule and for the self-test)
 set -u
 
 paths_file=""
 if [ "${1:-}" = --paths ]; then
     paths_file=${2:?--paths needs a file}
     case "$paths_file" in /*) ;; *) paths_file="$PWD/$paths_file" ;; esac
+    [ -f "$paths_file" ] || { echo "gate-tier: no such file: $paths_file" >&2; exit 2; }
 fi
 
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
@@ -58,20 +61,21 @@ fi
 # security, soundness, performance or a release run the full tier, as the gate script of the harness also asks.
 held=${UNA_HARNESS_GATE_HELD:-}
 if [ -n "$held" ]; then
-    run=${held%%:*} dir=$root
+    run=${held%%:*} dir=$root wf=""
     while [ "$dir" != / ]; do
         dir=$(dirname "$dir")
         manifest="$dir/.una-harness/runs/$run/manifest.json"
         [ -f "$manifest" ] || continue
         wf=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["work_item"]["workflow"])' "$manifest" 2>/dev/null)
-        case "$wf" in
-        security-fix | soundness-change | performance | release*) go_full "the harness run $run has the workflow $wf" ;;
-        esac
         break
     done
+    case "$wf" in
+    "") go_full "the workflow of the harness run $run cannot be read (fail closed)" ;;
+    security-fix | soundness-change | performance | release*) go_full "the harness run $run has the workflow $wf" ;;
+    esac
 fi
 
-base=${UNA_GATE_BASE:-origin/main}
+base=origin/main
 paths=""
 if [ -n "$paths_file" ]; then
     paths=$(sed '/^$/d' "$paths_file" | sort -u)
@@ -141,25 +145,38 @@ suite_files() {
 # A skipped suite that reads a repository file by a literal path ("tests/serve",
 # "../../tests/serve", "examples/hello/verification.lock"): a changed path under (or above) one of
 # those literals adds the suite to the fast run; the native differential reading it makes the tier full.
+readers_table=""
 readers_of() {
     local p=$1 suite f b lit
-    for suite in $SKIPPED_SUITES; do
-        for f in $(suite_files "$suite"); do
-            b=${f#crates/}; b="${b%%/*}::$(basename "${f%/main.rs}" .rs)"
-            for lit in $(grep -oE '"(\.\./)*(docs|examples|scripts|site|tests|fuzz|formal)/[^"{ ]*"' "$f" | tr -d '"' | sed -E 's#^(\.\./)+##; s#/$##' | sort -u); do
-                case "$p" in
-                "$lit" | "$lit"/*) ;;
-                *) case "$lit" in "$p"/*) ;; *) continue ;; esac ;;
-                esac
-                if [ "$b" = una-cli::native ]; then
-                    go_full "$p: read by the native differential (una-cli::native)"
-                else
-                    add_extra "binary_id($b)"
-                fi
-                break
+    if [ -z "$readers_table" ]; then
+        # One line per suite and literal: `<binary id> <literal>`, read once per invocation.
+        for suite in $SKIPPED_SUITES; do
+            for f in $(suite_files "$suite"); do
+                b=${f#crates/}; b="${b%%/*}::$(basename "${f%/main.rs}" .rs)"
+                # A literal path, a bare directory ("examples") or the prefix of a format string
+                # ("tests/conformance/{case}"); matching more than the suite reads only adds tests.
+                for lit in $(grep -oE '"(\.\./)*(docs|examples|scripts|site|tests|fuzz|formal)(/[^"{ ]*)?' "$f" | tr -d '"' | sed -E 's#^(\.\./)+##; s#/$##' | sort -u); do
+                    readers_table="${readers_table}$b $lit
+"
+                done
             done
         done
-    done
+        readers_table="${readers_table}-"
+    fi
+    while read -r b lit; do
+        [ -n "$lit" ] || continue
+        case "$p" in
+        "$lit" | "$lit"/*) ;;
+        *) case "$lit" in "$p"/*) ;; *) continue ;; esac ;;
+        esac
+        if [ "$b" = una-cli::native ]; then
+            go_full "$p: read by the native differential (una-cli::native)"
+        else
+            add_extra "binary_id($b)"
+        fi
+    done <<EOF2
+$readers_table
+EOF2
 }
 
 # A test file or directory of a crate's tests/: the binary it belongs to.
@@ -203,16 +220,23 @@ classify() {
         go_full "$p: the case lists of the sharded suites" ;;
     crates/*/Cargo.toml | crates/*/build.rs)
         go_full "$p: build configuration" ;;
-    crates/una-cli/src/args.rs | crates/una-cli/src/contract.rs | crates/una-cli/src/core_json.rs | crates/una-cli/src/fix.rs | \
-    crates/una-cli/src/lsp.rs | crates/una-cli/src/migrate.rs | crates/una-cli/src/report.rs | crates/una-cli/src/std_builtins.rs | \
-    crates/una-cli/src/std_listing.rs | crates/una-cli/src/trace.rs)
+    # The standard library reference listing (docs/std/listing.json): presentation of what the
+    # checker declares, held to it by the std_listing suite, which the fast tier runs. Every other
+    # module of una-cli is on the check, build, run, serve, package, solver, grant, limit, contract,
+    # manifest, report or repair path (args.rs: grants, limits, default tier; contract.rs: entry points;
+    # report.rs: dependency authority; trace.rs: obligation status; fix.rs and migrate.rs: rewrite
+    # sources and manifests; lsp.rs: lock and proof cache; core_json.rs: the formal track's input).
+    crates/una-cli/src/std_builtins.rs | crates/una-cli/src/std_listing.rs)
+        add_extra "binary_id(una-cli::std_listing)"
         fast_count=$((fast_count + 1)) ;;
     crates/una-cli/src/*)
-        go_full "$p: una-cli code on the check, build, run, package or solver path" ;;
+        go_full "$p: una-cli code on the check, build, run, serve, package, solver, grant, limit, contract, manifest, report or repair path" ;;
     crates/una-cli/tests/common/*)
         go_full "$p: a test helper shared by every una-cli suite" ;;
     crates/una-cli/tests/native.rs)
         go_full "$p: the native differential suite" ;;
+    crates/una-cli/tests/conformance/discovery.rs)
+        go_full "$p: shared with the case lists of crates/una-test-cases" ;;
     crates/*/tests/*)
         local crate=${p#crates/}; crate=${crate%%/*}
         case "$crate" in
@@ -228,25 +252,34 @@ classify() {
     Cargo.toml | Cargo.lock | rust-toolchain.toml | clippy.toml | deny.toml | verification.lock | install.sh | \
     .cargo/* | .config/* | .github/* | supply-chain/* | fuzz/*)
         go_full "$p: build, test, toolchain or supply-chain configuration" ;;
-    scripts/gate-* | scripts/z3-library.sh | scripts/build-z3.sh | scripts/install-z3.sh | scripts/check-solver.sh | \
-    scripts/check-toolchain.toml | scripts/install-check-toolchain.sh | scripts/toolchain-free.sh | \
-    scripts/release* | scripts/check-release* | scripts/local-release.sh | scripts/sanitize* | scripts/fuzz* | \
-    scripts/security-hunt/* | scripts/hunt-* | scripts/deps-audit.sh | scripts/no-libm* | scripts/check-fma.sh | \
-    scripts/load-commands* | scripts/libsystem-exports.sh | scripts/scan-* | scripts/link-oracle-elf.sh | \
-    scripts/local-ci* | scripts/container-* | scripts/check-released-sections.sh | scripts/musl* )
-        go_full "$p: a gate, release, solver, toolchain or security script" ;;
+    # Scripts: full, except two documentation helpers whose own suites the fast tier runs:
+    # changelog-assemble.sh (assembles changelog.d into CHANGELOG.md; suite changelog_fragments) and
+    # the walkthrough scripts of scripts/demo (suite demo_scripts). No release gate or harness check
+    # calls either. Every other script is called by a gate, the release, the solver, the toolchain,
+    # the formal track, the website bundle or the security hunt, or produces a test corpus.
+    scripts/changelog-assemble.sh)
+        add_extra "binary_id(una-cli::changelog_fragments)"
+        fast_count=$((fast_count + 1)) ;;
+    scripts/demo/*)
+        add_extra "binary_id(una-cli::demo_scripts)"
+        fast_count=$((fast_count + 1)) ;;
+    scripts/*)
+        go_full "$p: a script (gates, release, solver, toolchain, formal track, website bundle, hunt or corpus)" ;;
     tests/conformance/security/*)
         go_full "$p: a security conformance case" ;;
     docs/reviews/*/adversarial/*)
         go_full "$p: an adversarial review case (read by the native differential and the verification suite)" ;;
     tests/conformance/* | examples/*)
+        # The verification and runtime suites read the whole corpus (examples, tests/conformance).
         native_programs_of "$p"; readers_of "$p"
+        add_extra "binary_id(una-cli::verification)"
+        add_extra "binary_id(una-cli::runtime)"
         fast_count=$((fast_count + 1)) ;;
     tests/*)
         # Other corpora of tests/ (serve_runs, ...): the suites that read them by path.
         readers_of "$p"
         fast_count=$((fast_count + 1)) ;;
-    docs/* | changelog.d/* | site/* | formal/* | images/* | scripts/* | .claude/* | *.md | LICENSE | .gitignore | .gitattributes | .mcp.json)
+    docs/* | changelog.d/* | site/* | formal/* | images/* | .claude/* | *.md | LICENSE | .gitignore | .gitattributes | .mcp.json)
         readers_of "$p"
         fast_count=$((fast_count + 1)) ;;
     *)
@@ -263,15 +296,14 @@ EOF
 fi
 
 total=$(printf '%s\n' "$paths" | sed '/^$/d' | wc -l | tr -d ' ')
+if [ "$total" -eq 0 ]; then
+    go_full "no changed path against $base (an empty change runs the whole suite)"
+fi
 echo "$tier"
 if [ "$tier" = full ]; then
     printf '%s' "$reasons"
 else
-    if [ "$total" -eq 0 ]; then
-        echo "reason: no path changed against $base"
-    else
-        echo "reason: $total changed path(s) (against $base), none of them runtime, soundness, security, supply-chain or configuration"
-    fi
+    echo "reason: $total changed path(s) (against $base), each one named fast by a rule"
     printf '%s' "$reasons"
     printf '%s' "$extras" | sed '/^$/d; s/^/extra: /'
     printf 'skipped: '

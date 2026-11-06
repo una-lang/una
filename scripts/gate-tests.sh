@@ -2,6 +2,8 @@
 # The `tests` gate of the engineering harness, in the tier scripts/gate-tier.sh chooses
 # (docs/compiler/testing.md, "Gate tiers").
 #
+# Both tiers first run scripts/gate-tier-selftest.sh, which holds the classification to its cases.
+#
 # full: cargo build --locked -p una-rt
 #       cargo nextest run --workspace --locked --no-fail-fast
 #       cargo test --workspace --doc --locked
@@ -15,6 +17,11 @@
 # nightly and before every merge of a security, soundness or runtime change. The steps stop at the
 # first failure, as the harness does with `steps`.
 #
+# Time budget: the harness gives the check one timeout for the whole script and, when it expires,
+# kills only this shell. A watchdog therefore stops every step of this script (the whole process
+# tree below it) after UNA_GATE_TESTS_BUDGET seconds (default 5100, under the check's timeout of
+# 5400 s), so that no cargo or nextest process outlives the gate; the gate then fails.
+#
 # Usage: scripts/gate-tests.sh [--plan]   (--plan prints the tier and the nextest filterset only)
 set -u
 
@@ -25,6 +32,27 @@ NIGHTLY_SENTENCE='the full suite runs nightly and before every merge of a securi
 
 plan=0
 [ "${1:-}" = --plan ] && plan=1
+
+kill_tree() {
+    local c
+    for c in $(pgrep -P "$1" 2>/dev/null); do kill_tree "$c"; done
+    kill -TERM "$1" 2>/dev/null
+}
+watchdog=""
+cleanup() {
+    [ -n "$watchdog" ] && kill_tree "$watchdog"
+    [ -n "${log:-}" ] && rm -f "$log"
+}
+trap cleanup EXIT
+if [ "$plan" = 0 ]; then
+    budget=${UNA_GATE_TESTS_BUDGET:-5100}
+    bash -c '
+        kill_tree() { local c; for c in $(pgrep -P "$1" 2>/dev/null); do [ "$c" = "$$" ] || kill_tree "$c"; done; kill -TERM "$1" 2>/dev/null; }
+        sleep "$1"
+        echo "gate-tests: over the time budget of $1 s; stopping every step" >&2
+        kill_tree "$2"' gate-tests-watchdog "$budget" "$$" &
+    watchdog=$!
+fi
 
 tier_out=$(scripts/gate-tier.sh) || tier_out=$'full\nreason: scripts/gate-tier.sh failed'
 tier=$(printf '%s\n' "$tier_out" | sed -n 1p)
@@ -67,6 +95,7 @@ header() {
 if [ "$tier" != fast ]; then
     header
     if [ "$plan" = 1 ]; then exit 0; fi
+    step scripts/gate-tier-selftest.sh || exit $?
     step cargo build --locked -p una-rt || exit $?
     step cargo nextest run --workspace --locked --no-fail-fast || exit $?
     step cargo test --workspace --doc --locked
@@ -89,9 +118,8 @@ if [ "$plan" = 1 ]; then
 fi
 
 log=$(mktemp "${TMPDIR:-/tmp}/gate-tests.XXXXXX") || exit 2
-trap 'rm -f "$log"' EXIT
 t0=$SECONDS
-step cargo build --locked -p una-rt >"$log" 2>&1 || { header; cat "$log"; exit 1; }
+{ step scripts/gate-tier-selftest.sh && step cargo build --locked -p una-rt; } >"$log" 2>&1 || { header; cat "$log"; exit 1; }
 # Listing builds every test binary; the second listing reuses them.
 all_count=$(cargo nextest list --workspace --locked --message-format oneline 2>>"$log" | grep -c .)
 fast_count=$(cargo nextest list --workspace --locked --message-format oneline -E "$expr" 2>>"$log" | grep -c .)
