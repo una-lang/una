@@ -253,7 +253,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 if let Some(current) = self.current {
                     self.findings.value_callers.insert(current);
                 }
-                self.graph_value_call();
+                // `call_value` recorded the call's edge to `Λ` (ADR 0116 P1), once per site.
                 self.timing_value_call();
                 // S-39: a function value may run any construct.
                 self.quiet_site(span);
@@ -570,7 +570,7 @@ impl<'a> Checker<'_, 'a, '_> {
         if let Some(current) = self.current {
             self.findings.value_callers.insert(current);
         }
-        self.graph_value_call();
+        self.graph_value_call(span);
         self.timing_value_call();
         self.ordered(span, (0..args.len()).map(Some).collect());
         let mut flows = Vec::new();
@@ -958,6 +958,13 @@ impl<'a> Checker<'_, 'a, '_> {
             let trusted_policy = self.env.trusted_dependencies.contains(&def.module);
             if !trusted_policy {
                 self.release_site(span);
+            }
+            // The call runs the policy's `via` function (`spec/07 §5`): an edge of the graph
+            // of ADR 0116 P1 at the call site, and, for the timing label's search over the call
+            // edges and the quiet calls of S-39, the policy's own edge to it (#1673).
+            if let Some(via) = self.env.via_of(id) {
+                self.graph_call(via, span);
+                self.findings.policy_vias.insert((id, via));
             }
             let result = self.call_policy(&def, &callee, receiver, args, span);
             if let Some(boundary) = crossing {
@@ -1614,7 +1621,7 @@ impl<'a> Checker<'_, 'a, '_> {
             self.timing_op(id, op_name);
             // The edge of ADR 0116 P1 from the node whose code holds the operation, a lambda's
             // included, to the operation: every operation call, whatever `uses` names (#1148).
-            self.graph_op(id, op_name);
+            self.graph_op(id, op_name, span);
         }
         let capability = resolved
             .and_then(|id| self.env.capabilities.get(id))

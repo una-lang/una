@@ -1,0 +1,21 @@
+-- test: the twin of `tconc_via_together`: the same policy is called outside the construct, where no task runs beside it, so `L_lim` stays `internal`
+-- spec: spec/07 §5
+-- expect: ok
+module main
+
+import release (key_of)
+
+crunch(key: Int) -> Int
+=
+  let edit acc = key
+  for i in 0..1000
+    acc = if acc > 0 then acc - 1 else acc + 1
+  acc
+
+--- The policy is called after the work on `key`, beside nothing.
+pub both(key: Int, n: Int) -> Int
+  uses @http: Http[get]
+=
+  let a = crunch(key)
+  let b = key_of(n)
+  b

@@ -19,6 +19,7 @@ use super::env::{Entity, KindDef};
 use super::label::Label;
 use super::locals::TakenState;
 use super::records::Res;
+use super::timing::ConstructKind;
 use super::ty::{KindId, Shared, Ty};
 use super::unify::Origin;
 
@@ -829,9 +830,13 @@ impl<'a> Checker<'_, 'a, '_> {
                 }
             }
         }
+        // ADR 0116 P2: the block, with each `start` in it, is a part; the bound is not.
+        let construct = self.construct_open(ConstructKind::Tasks, stmt.span);
+        self.part_open(construct);
         self.tasks_frames.push((self.task_depth, self.lambda_depth));
         let ty = self.block(&stmt.block, None, Role::Plain, false);
         self.tasks_frames.pop();
+        self.part_close();
         let seed = self.timing_end();
         self.findings.tasks_sites.push(super::timing::TasksSite {
             span: stmt.span,
@@ -953,6 +958,9 @@ impl<'a> Checker<'_, 'a, '_> {
             .server_branch
             .replace(("a branch of `together`", stmt.keyword));
         self.task_depth += 1;
+        // ADR 0116 P2: each branch is a part.
+        let construct = self.construct_open(ConstructKind::Together, stmt.span);
+        self.part_open(construct);
         let mut bound = Vec::new();
         for branch in &stmt.body {
             let Stmt::Let(branch) = branch else {
@@ -970,6 +978,7 @@ impl<'a> Checker<'_, 'a, '_> {
             // The branch's binding waits for the join, so its siblings do not see it.
             bound.extend(self.locals.drain_from(mark));
         }
+        self.part_close();
         self.task_mark = saved;
         self.task_word = word;
         self.server_branch = branch;
@@ -1028,6 +1037,9 @@ impl<'a> Checker<'_, 'a, '_> {
             .server_branch
             .replace(("a branch of `first of`", first.keyword));
         self.task_depth += 1;
+        // ADR 0116 P2: each branch is a part; the race's own site lies outside them.
+        let construct = self.construct_open(ConstructKind::FirstOf, first.span);
+        self.part_open(construct);
         let mut joined = expected.cloned();
         let mut types: Vec<(Span, Ty)> = Vec::new();
         for branch in &first.body {
@@ -1048,6 +1060,7 @@ impl<'a> Checker<'_, 'a, '_> {
             }
             types.push((handled.expr.span, ty));
         }
+        self.part_close();
         self.task_mark = saved_mark;
         self.task_word = word;
         self.server_branch = branch;
@@ -1109,6 +1122,9 @@ impl<'a> Checker<'_, 'a, '_> {
             .server_branch
             .replace(("the body of `together for`", together.span));
         self.task_depth += 1;
+        // ADR 0116 P2: the body is a part; the list, checked above, is not.
+        let construct = self.construct_open(ConstructKind::TogetherFor, together.span);
+        self.part_open(construct);
         self.bind_loop_var(self.name(&together.var), var_ty, "a `together for`");
         let element = self.block(
             &together.block,
@@ -1116,6 +1132,7 @@ impl<'a> Checker<'_, 'a, '_> {
             Role::Plain,
             false,
         );
+        self.part_close();
         self.locals.truncate(mark);
         self.task_depth -= 1;
         self.task_mark = saved_mark;

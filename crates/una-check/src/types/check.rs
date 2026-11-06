@@ -253,6 +253,10 @@ pub(crate) struct Checker<'c, 'a, 's> {
     pub(crate) do_stops: bool,
     /// The sites whose timing label is being recorded, innermost last (ADR 0116 IF5).
     pub(crate) timing: Vec<super::timing::TimingFrame>,
+    /// The task constructs whose parts enclose the code checked, innermost last, by their ids
+    /// in `Findings::constructs` (ADR 0116 P2, P3): those of the node being checked only, so
+    /// a lambda's body starts with none.
+    pub(crate) parts: Vec<usize>,
     /// The `stop` and `skip` statements reported as U2034, after which no U2040 is reported.
     pub(crate) misplaced_exits: Vec<Span>,
     /// The receiver of the method call being checked, with its call-site marker, for its
@@ -559,6 +563,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             in_ever: false,
             do_stops: false,
             timing: Vec::new(),
+            parts: Vec::new(),
             call_targets: BTreeMap::new(),
             operands: Vec::new(),
             unit_blind: BTreeMap::new(),
@@ -852,7 +857,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         match self.env.lower(self.module, name) {
             Some(Entity::Handler(id)) => {
                 self.resolved(call.span, Res::Handler { id });
-                self.graph_install(id);
+                self.graph_install(id, call.span);
                 if let Some(current) = self.current {
                     self.findings.installs.insert((current, id));
                 }
