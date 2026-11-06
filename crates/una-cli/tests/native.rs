@@ -574,9 +574,12 @@ fn task_differences(stdout: &str, interpreted: &Value, native: &Value) -> Vec<St
         }
     }
     // Started tasks write their events in the order of real time (`spec/27 §8`): each task's
-    // events are compared in their own order, and the tasks are the same.
+    // events are compared in their own order, and the tasks are the same. Installations are
+    // numbered run-wide in the order they happen, so their ids are compared up to one
+    // renumbering of the run (#1542).
     if has_started(interpreted) || has_started(native) {
-        let (interpreted, native) = (by_task(interpreted), by_task(native));
+        let interpreted = by_task(interpreted);
+        let native = renumbered(&interpreted, by_task(native));
         if interpreted != native {
             differences.push(format!(
                 "the events of each task differ: interpreter {interpreted:?}, native {native:?}"
@@ -643,6 +646,60 @@ fn by_task(trace: &Value) -> std::collections::BTreeMap<String, Vec<Value>> {
         tasks.entry(task).or_default().push(event);
     }
     tasks
+}
+
+/// The numbered installation id `with:<handler>#<n>` of an event, if it has one: not a host
+/// instance, a `given` one, nor a quiet `with:<handler>#q`.
+fn numbered_instance(event: &Value) -> Option<&str> {
+    let id = event["instance"].as_str()?;
+    let (handler, number) = id.strip_prefix("with:")?.rsplit_once('#')?;
+    (!handler.is_empty() && !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()))
+        .then_some(id)
+}
+
+/// `native`, the events of a run by task, with its numbered installation ids renamed to the
+/// interpreter's, when one renaming, a bijection of the run's ids that keeps each handler,
+/// maps every task's events onto `interpreted`'s at the same places; `native` unchanged
+/// otherwise, which the comparison then reports. Started tasks install in the order of real
+/// time, which numbers the installations of the run (`spec/27 §8` rules 1 and 4, #1542), so
+/// only this renumbering is set aside. O(e log e) in the events.
+fn renumbered(
+    interpreted: &std::collections::BTreeMap<String, Vec<Value>>,
+    mut native: std::collections::BTreeMap<String, Vec<Value>>,
+) -> std::collections::BTreeMap<String, Vec<Value>> {
+    let handler = |id: &str| id.rsplit_once('#').map(|(handler, _)| handler.to_owned());
+    let mut to_interpreted: std::collections::BTreeMap<String, String> = Default::default();
+    let mut to_native: std::collections::BTreeMap<String, String> = Default::default();
+    for (task, events) in &native {
+        let Some(theirs) = interpreted.get(task) else {
+            continue;
+        };
+        for (ours, theirs) in events.iter().zip(theirs) {
+            let (Some(ours), Some(theirs)) = (numbered_instance(ours), numbered_instance(theirs))
+            else {
+                continue;
+            };
+            if handler(ours) != handler(theirs) {
+                return native;
+            }
+            let forward = to_interpreted
+                .entry(ours.to_owned())
+                .or_insert_with(|| theirs.to_owned());
+            let backward = to_native
+                .entry(theirs.to_owned())
+                .or_insert_with(|| ours.to_owned());
+            if forward != theirs || backward != ours {
+                return native;
+            }
+        }
+    }
+    for event in native.values_mut().flatten() {
+        let renamed = numbered_instance(event).and_then(|id| to_interpreted.get(id).cloned());
+        if let Some(renamed) = renamed {
+            event["instance"] = Value::from(renamed);
+        }
+    }
+    native
 }
 
 /// Whether `part` is a subsequence of `whole`.
@@ -7118,6 +7175,125 @@ fn s41_the_conformance_case_has_one_trace_for_every_secret() {
     // The two `put`s of quiet instances, under an effect floor and a decision on values of a
     // type parameter, append no event since #1544.
     assert_eq!(ids, ["with:keep#1", "with:keep#2"], "{trace}");
+}
+
+#[test]
+fn started_tasks_number_installations_run_wide_in_schedule_order() {
+    // #1542, `spec/27 §8` rules 1, 3 and 4: the conformance case `started_tasks_install_handlers`,
+    // two started tasks that each install two handlers. Under `--virtual-time` both engines
+    // follow the interpreter's schedule, each task to its end, so the whole traces are equal
+    // and the first task's instances are `#1` and `#2`. Under the real clock native code runs
+    // the tasks on two workers and numbers the installations in the order of real time across
+    // them: each task's events equal the interpreter's up to one renumbering of the run, whose
+    // ids are still `#1` to `#4`, each once.
+    let path =
+        root().join("tests/conformance/runtime/started_tasks_install_handlers/src/installs.una");
+    let source = std::fs::read_to_string(&path)
+        .unwrap()
+        .replace("module installs", "module leak");
+    let printed = serde_json::json!(["w 1", "w 2", "done"]);
+    let puts = |trace: &Value| -> Vec<(String, String, String)> {
+        trace
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|event| event["op"] == "put")
+            .map(|event| {
+                (
+                    event["task"].as_str().unwrap_or_default().to_owned(),
+                    event["args"]["x"].as_str().unwrap_or_default().to_owned(),
+                    event["instance"].as_str().unwrap_or_default().to_owned(),
+                )
+            })
+            .collect()
+    };
+    let (output, run, native) = secret_run("i1542vt", &source, 0, &["--virtual-time"]);
+    assert_eq!(output, printed);
+    assert_eq!(run, native, "under virtual time");
+    let expected: Vec<(String, String, String)> = [
+        ("s1.1", "1", "with:keep#1"),
+        ("s1.1", "11", "with:keep#2"),
+        ("s1.2", "2", "with:keep#3"),
+        ("s1.2", "12", "with:keep#4"),
+    ]
+    .iter()
+    .map(|(task, x, id)| ((*task).to_owned(), (*x).to_owned(), (*id).to_owned()))
+    .collect();
+    assert_eq!(puts(&run), expected, "{run}");
+    for round in 0..4 {
+        let (output, run, native_output, native) = secret_runs("i1542", &source, round, &[]);
+        assert_eq!(output, printed, "{round}");
+        assert_eq!(puts(&run), expected, "{round}: {run}");
+        let mut lines: Vec<String> = serde_json::from_value(native_output).unwrap();
+        lines.sort();
+        assert_eq!(lines, ["done", "w 1", "w 2"], "{round}");
+        let interpreted = by_task(&run);
+        assert_eq!(
+            renumbered(&interpreted, by_task(&native)),
+            interpreted,
+            "{round}: {run} {native}"
+        );
+        let mut ids: Vec<String> = puts(&native).into_iter().map(|(_, _, id)| id).collect();
+        ids.sort();
+        assert_eq!(
+            ids,
+            ["with:keep#1", "with:keep#2", "with:keep#3", "with:keep#4"],
+            "{round}: {native}"
+        );
+    }
+}
+
+#[test]
+fn renumbering_sets_aside_only_one_renaming_of_the_installations() {
+    // #1542: the comparison task by task accepts native ids that one bijection maps onto the
+    // interpreter's, never two ids onto one, nor a change of handler or of a quiet id.
+    let put = |task: &str, id: &str| serde_json::json!({"task": task, "instance": id, "op": "put"});
+    let trace = |ids: &[(&str, &str)]| {
+        by_task(&Value::from(
+            ids.iter()
+                .map(|(task, id)| put(task, id))
+                .collect::<Vec<_>>(),
+        ))
+    };
+    let interpreted = trace(&[
+        ("s1.1", "with:k#1"),
+        ("s1.1", "with:k#2"),
+        ("s1.2", "with:k#3"),
+    ]);
+    let swapped = trace(&[
+        ("s1.1", "with:k#2"),
+        ("s1.1", "with:k#3"),
+        ("s1.2", "with:k#1"),
+    ]);
+    assert_eq!(renumbered(&interpreted, swapped), interpreted);
+    for wrong in [
+        trace(&[
+            ("s1.1", "with:k#1"),
+            ("s1.1", "with:k#1"),
+            ("s1.2", "with:k#3"),
+        ]),
+        trace(&[
+            ("s1.1", "with:k#1"),
+            ("s1.1", "with:k#2"),
+            ("s1.2", "with:k#2"),
+        ]),
+        trace(&[
+            ("s1.1", "with:j#1"),
+            ("s1.1", "with:k#2"),
+            ("s1.2", "with:k#3"),
+        ]),
+        trace(&[
+            ("s1.1", "with:k#q"),
+            ("s1.1", "with:k#2"),
+            ("s1.2", "with:k#3"),
+        ]),
+    ] {
+        assert_ne!(
+            renumbered(&interpreted, wrong.clone()),
+            interpreted,
+            "{wrong:?}"
+        );
+    }
 }
 
 /// #1544, `spec/26 §6` rule 4: the reproducer of the review of #1543 (`p_local.una`): a
