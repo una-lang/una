@@ -2,8 +2,9 @@
 # Checks the native runtime's memory safety with the checking toolchain of
 # scripts/check-toolchain.toml (#766), which never builds a release artifact:
 #
-# 1. Miri runs the unit tests of `una-rt`, the crate whose `ffi.rs` holds the only `unsafe` of
-#    the workspace (ADR 0058), and reports undefined behavior in the Rust code they reach. The
+# 1. Miri runs the unit tests of `una-rt`, the crate whose `ffi.rs` holds the runtime's `unsafe`
+#    (ADR 0058; `una-sys` and `una-z3` hold the rest, docs/security/tcb.md §3.3), and reports
+#    undefined behavior in the Rust code they reach. The
 #    tests Miri does not run are ignored in the code with their reason, and the set it ignores
 #    must be exactly scripts/sanitize-miri-ignored.txt, so it cannot change unseen.
 # 2. AddressSanitizer: `una-rt` is built with `-Zsanitizer=address`, and the native equivalence
