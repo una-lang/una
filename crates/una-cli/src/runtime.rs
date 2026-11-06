@@ -457,7 +457,8 @@ pub(crate) fn run_command(
     // The module the host drives (ADR 0116 rule 3), whose `init` starts the run; or the entry,
     // `[run] entry` or the module of a single file, whose `main` runs.
     // The host-driven form of a server (ADR 0123 rule 16): the module's shapes, then a `serve:`
-    // grant, each a usage error; then the driver, which does not run yet, fails closed.
+    // grant, each a usage error; then the driver, whose operations of `HttpServer` run only in
+    // the toolchain's own test builds (`spec/31 §1` rule 10), fails closed in every other run.
     if let Some(serve) = &manifest.serve {
         let module = serve.module.value.as_str();
         if let Err(message) = served_module(&analysis, &package.sources, module) {
@@ -474,14 +475,43 @@ pub(crate) fn run_command(
             )?;
             return Ok(ExitStatus::Usage);
         }
-        writeln!(stderr, "error: {}", serve_pending(module))?;
-        return Ok(ExitStatus::Usage);
+        // The test builds run the driver when `UNA_TEST_RUN_SERVER` is 1, as a program that
+        // serves in the language form below.
+        #[cfg(feature = "test-hooks")]
+        let runs =
+            crate::variable(options.environment, "UNA_TEST_RUN_SERVER").as_deref() == Some("1");
+        #[cfg(not(feature = "test-hooks"))]
+        let runs = false;
+        if !runs {
+            writeln!(stderr, "error: {}", serve_pending(module))?;
+            return Ok(ExitStatus::Usage);
+        }
+        // `within` is U4003 under the preview's `L_srv` (`spec/31 §7` rule 3 item 7), so a
+        // package that checks has none; the driver never runs without the deadline it names.
+        if serve.within.is_some() {
+            writeln!(
+                stderr,
+                "error: the `within` of the `serve` section of module `{module}` does not run in this release yet"
+            )?;
+            return Ok(ExitStatus::Usage);
+        }
     }
     let drive = manifest.drive.as_ref().map(|drive| una_interp::Drive {
         ticks: drive.ticks,
         budget: drive.budget,
     });
-    let (entry, start) = if let Some(driven) = &manifest.drive {
+    let (entry, start) = if let Some(serve) = &manifest.serve {
+        // Its shapes were checked above: `handle` is there.
+        let module = serve.module.value.clone();
+        let Some(handle) = function_of(&analysis.program, &module, "handle") else {
+            writeln!(
+                stderr,
+                "error: the module `{module}` has no `handle` to run"
+            )?;
+            return Ok(ExitStatus::Usage);
+        };
+        (module, handle)
+    } else if let Some(driven) = &manifest.drive {
         let module = driven.module.value.clone();
         match driven_init(&analysis, &package.sources, &module) {
             Ok(init) => (module, init),
@@ -507,15 +537,19 @@ pub(crate) fn run_command(
         };
         (entry, main)
     };
-    let started: &[&str] = if drive.is_some() {
+    let serving = manifest.serve.is_some();
+    let started: &[&str] = if serving {
+        &["handle", "on_stop"]
+    } else if drive.is_some() {
         &["init", "step", "on_stop"]
     } else {
         &["main"]
     };
-    // Whether the program serves: its entry functions use the host's `HttpServer`, so its
-    // serve threads start before `main` (S4 amendment B.2).
+    // Whether the program serves: its entry functions use the host's `HttpServer`, or it has a
+    // `serve` section, whose driver does, so its serve threads start before `main` (S4
+    // amendment B.2, P8).
     let pending = server_pending(&analysis, &entry, started);
-    let serves = pending.is_some();
+    let serves = pending.is_some() || serving;
     // The toolchain's own test builds run a program that serves when `UNA_TEST_RUN_SERVER` is
     // 1, for the live runs of `tests/serve_live.rs` and the timing oracles of `L_srv`; every
     // other run keeps the usage error of `spec/31 §1` rule 10.
@@ -627,7 +661,12 @@ pub(crate) fn run_command(
     // handlers of SIGINT and SIGTERM; any other keeps their default actions.
     // The run's host stop state is made first, so a signal that comes while the handlers are
     // installed counts for the run.
-    let stops = takes_stops(&analysis, &package.sources, &entry, drive.is_some());
+    let stops = takes_stops(
+        &analysis,
+        &package.sources,
+        &entry,
+        drive.is_some() || serving,
+    );
     let stop = una_interp::stopping::RunStop::new(options.stop_grace);
     // The serve engine learns of the host stop and of the hard stop from the run's watcher
     // (ADR 0123 rule 18).
@@ -708,6 +747,9 @@ pub(crate) fn run_command(
                     Some(drive) => {
                         una_interp::run_drive(program, entry_path, &mut world, host, limits, drive)
                             .ok()
+                    }
+                    None if serving => {
+                        una_interp::run_serve(program, entry_path, &mut world, host, limits)
                     }
                     None => una_interp::run_main(program, entry_path, &mut world, host, limits),
                 };
@@ -1128,9 +1170,9 @@ pub(crate) fn served_module(
     Ok(())
 }
 
-/// The usage error of a run or a build of a package with a `serve` section, while the driver
-/// of ADR 0123 rule 16 runs in neither engine: the section, its module and its checks are in
-/// place, and the driver needs the operations of `HttpServer`, which land with a later slice.
+/// The usage error of a run or a build of a package with a `serve` section: the driver of ADR
+/// 0123 rule 16 runs the operations of `HttpServer`, which run only in the toolchain's own test
+/// builds (`spec/31 §1` rule 10), and in the interpreter only until native code has its driver.
 /// Fails closed before anything starts, as [`server_pending`] does.
 pub(crate) fn serve_pending(module: &str) -> String {
     format!(
@@ -1235,9 +1277,14 @@ fn is_unit(ty: &Type) -> bool {
 }
 
 fn main_of<'a>(program: &'a Program, entry: &str) -> Option<&'a Fun> {
-    let module = program.modules.iter().find(|m| m.path == entry)?;
+    function_of(program, entry, "main")
+}
+
+/// The function `name` of module `module` in Core IR.
+fn function_of<'a>(program: &'a Program, module: &str, name: &str) -> Option<&'a Fun> {
+    let module = program.modules.iter().find(|m| m.path == module)?;
     module.decls.iter().find_map(|decl| match decl {
-        Decl::Fun(fun) if fun.name == "main" => Some(fun.as_ref()),
+        Decl::Fun(fun) if fun.name == name => Some(fun.as_ref()),
         _ => None,
     })
 }

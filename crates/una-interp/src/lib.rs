@@ -23,7 +23,7 @@ pub use clock::{Clock, NotVirtual, VirtualClock};
 pub use concurrency::Concurrency;
 pub use harness::{
     Completion, DriveShape, ExampleFailure, ExampleRun, Host, Run, run_drive, run_examples,
-    run_main,
+    run_main, run_serve,
 };
 pub use host::{
     FileFault, Grant, LimitLabel, NotText, World, check_limited_flags, confine, disk_absent,

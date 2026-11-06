@@ -574,3 +574,133 @@ fn virtual_time_refuses_a_serve_grant_before_main() {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+/// A package like [`package`] whose `serve` section names the module `srv`, which declares
+/// `handle` and `on_stop`, for the interpreter: native code has no driver of the section yet
+/// (the second part of #1587).
+fn served_package(name: &str, port: u16, program: &str) -> PathBuf {
+    let dir = package(name, port, program, Engine::Interpreter);
+    std::fs::write(
+        dir.join("ita.una"),
+        format!(
+            "ita {name}\n  version 0.1.0\n  edition 0.4\n\nrun\n  grants\n    console\n    serve \"http://127.0.0.1:{port}\"\n\nserve\n  module srv\n"
+        ),
+    )
+    .unwrap();
+    dir
+}
+
+/// A `serve` module whose `handle` computes for a while before it answers, and whose
+/// `on_stop` says that the server stopped. `COUNT` is the length of the computation: long
+/// enough that the host stop comes while the request is in flight.
+const SERVED: &str = r#"module srv
+
+import std.host (Reply, Request)
+
+crunch(n: Int) -> Int
+=
+  let edit total = 0
+  for i in 1..n
+    total = total + 1
+  total
+
+pub handle(request: internal Request) -> internal Reply
+  uses @console: Console[print]
+=
+  @console.print("handling")
+  let spent = crunch(COUNT)
+  Reply(status: 200, headers: [], body: "done")
+
+pub on_stop() -> Unit
+  uses @console: Console[print]
+=
+  @console.print("stopped")
+"#;
+
+#[test]
+fn a_serve_section_drains_a_request_in_flight_then_runs_on_stop() {
+    // `spec/31 §7` rule 4: at a host stop the driver's `next` fails with `Interrupted`, the
+    // request in flight is answered by its task, and `on_stop` runs after it, exit code 0.
+    let port = free_port();
+    let program = SERVED.replace("COUNT", "500000");
+    let dir = served_package("served_drain", port, &program);
+    let mut run = start(
+        &dir,
+        "served_drain",
+        Engine::Interpreter,
+        &["--stop-grace", "60"],
+    );
+    let mut stream = connect(port);
+    stream
+        .write_all(b"GET /work HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+        .unwrap();
+    run.expect("handling");
+    run.terminate();
+    let answer = read_reply(&mut stream);
+    let (code, lines, stderr) = run.end();
+    assert_eq!(code, Some(0), "{stderr}");
+    assert_eq!(output(&lines), ["handling", "stopped"]);
+    assert_eq!(
+        dateless(&answer),
+        "HTTP/1.1 200 OK\r\nContent-Length: 4\r\ncontent-type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\ndone"
+    );
+    let trace = trace(&dir);
+    // The second `next` ends at the stop while the request is in flight; its task replies
+    // after the loop's `stop`, and `on_stop` prints last, on the root task.
+    let steps: Vec<(&str, &str)> = trace
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|event| {
+            let step = event["op"]
+                .as_str()
+                .or_else(|| event["outcome"]["kind"].as_str());
+            (step.unwrap(), event["task"].as_str().unwrap_or(""))
+        })
+        .collect();
+    assert_eq!(
+        steps,
+        [
+            ("next", ""),
+            ("print", "s1.1"),
+            ("next", ""),
+            ("stop", ""),
+            ("reply", "s1.1"),
+            ("print", "")
+        ],
+        "{trace}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_serve_section_at_the_hard_stop_answers_503_and_skips_on_stop() {
+    // ADR 0123 rule 18: past the grace period every task is cancelled, the right in flight is
+    // answered `503`, `on_stop` does not run, and the run ends with U6007.
+    let port = free_port();
+    let program = SERVED.replace("COUNT", "100000000000");
+    let dir = served_package("served_hard", port, &program);
+    let mut run = start(
+        &dir,
+        "served_hard",
+        Engine::Interpreter,
+        &["--stop-grace", "1"],
+    );
+    let mut stream = connect(port);
+    stream
+        .write_all(b"GET /work HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+        .unwrap();
+    run.expect("handling");
+    run.terminate();
+    let answer = read_to_close(&mut stream);
+    let (code, lines, stderr) = run.end();
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(stderr.contains("[U6007]"), "{stderr}");
+    assert_eq!(output(&lines), ["handling"]);
+    assert_eq!(
+        dateless(&answer),
+        "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nRetry-After: 1\r\nConnection: close\r\n\r\n"
+    );
+    assert!(!has_unanswered(&trace(&dir)));
+    let _ = std::fs::remove_dir_all(&dir);
+}
