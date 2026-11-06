@@ -182,8 +182,8 @@ nm -u "$canary/target/una/canary" | grep -q '___asan_report' \
 step "The native equivalence test against it" \
     env "$linker_var=/usr/bin/cc" CC=/usr/bin/cc UNA_LINKER=cc UNA_RT_LIB="$runtime" PATH="$shim:$PATH" \
     ASAN_OPTIONS="abort_on_error=1:detect_leaks=0" \
-    cargo test -p una-cli --test native interpreter:: the_generated_programs_are_the_runnable_programs_on_disk \
-    the_native_lists_name_runnable_programs_only -- --nocapture
+    cargo test -p una-cli --test native -- interpreter:: the_generated_programs_are_the_runnable_programs_on_disk \
+    the_native_lists_name_runnable_programs_only --test-threads=1 --nocapture
 
 # 3. libFuzzer: the targets of fuzz/, a crate outside the workspace with its own Cargo.lock,
 # built with the flags of scripts/fuzz-targets.sh and no other tool: libFuzzer's coverage of

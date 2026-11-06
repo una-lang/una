@@ -93,13 +93,10 @@ fn generated() -> Vec<case_lists::Program> {
     una_test_cases::native_programs!(programs)
 }
 
-/// A fresh, sealed scratch directory of one program's test, `kind` naming the test.
-fn scratch(kind: &str, name: &str) -> PathBuf {
-    let scratch = std::env::temp_dir().join(format!(
-        "una-{kind}-{}-{}",
-        std::process::id(),
-        name.replace('/', "_")
-    ));
+/// A fresh scratch directory of one program's test, `kind` naming the differential and `test`
+/// the generated test, unique among the programs.
+fn scratch(kind: &str, test: &str) -> PathBuf {
+    let scratch = std::env::temp_dir().join(format!("una-{kind}-{}-{test}", std::process::id()));
     let _ = std::fs::remove_dir_all(&scratch);
     scratch
 }
@@ -119,13 +116,13 @@ fn program_copy(name: &str, dir: &Path) -> (PathBuf, String) {
     }
 }
 
-/// One runnable program runs natively as in the interpreter: `name` is its path relative to
-/// the repository root, and `grants` the grants it runs with.
-fn runs_natively_as_in_the_interpreter(name: &str, grants: &[&str]) {
+/// One runnable program runs natively as in the interpreter: `test` is its generated test's
+/// name, `name` its path relative to the repository root, and `grants` the grants it runs with.
+fn runs_natively_as_in_the_interpreter(test: &str, name: &str, grants: &[&str]) {
     runtime();
     let listed = unsupported();
     let rejected_list = rejected();
-    let scratch = scratch("native", name);
+    let scratch = scratch("native", test);
     // A copied single file keeps edition 0.1 whatever lies above the temporary directory
     // (#1560).
     hermetic::seal(&scratch);
@@ -268,9 +265,9 @@ fn runs_natively_as_in_the_interpreter(name: &str, grants: &[&str]) {
 /// linkers on a program that compiles never passes unseen, as the count of compared programs
 /// guarded before #1652 ([`the_linkers_compare_more_than_a_hundred_programs`]).
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-fn runs_alike_linked_by_una_link_and_by_cc(name: &str, grants: &[&str]) {
+fn runs_alike_linked_by_una_link_and_by_cc(test: &str, name: &str, grants: &[&str]) {
     runtime();
-    let scratch = scratch("linkers", name);
+    let scratch = scratch("linkers", test);
     // A copied single file keeps edition 0.1 whatever lies above the temporary directory
     // (#1560).
     hermetic::seal(&scratch);
@@ -372,7 +369,7 @@ macro_rules! program_tests {
             $(
                 #[test]
                 fn $name() {
-                    super::runs_natively_as_in_the_interpreter($path, &[$($grant),*]);
+                    super::runs_natively_as_in_the_interpreter(stringify!($name), $path, &[$($grant),*]);
                 }
             )*
         }
@@ -382,7 +379,7 @@ macro_rules! program_tests {
             $(
                 #[test]
                 fn $name() {
-                    super::runs_alike_linked_by_una_link_and_by_cc($path, &[$($grant),*]);
+                    super::runs_alike_linked_by_una_link_and_by_cc(stringify!($name), $path, &[$($grant),*]);
                 }
             )*
         }
@@ -396,6 +393,7 @@ una_test_cases::native_programs!(program_tests);
 /// goes untested.
 #[test]
 fn the_generated_programs_are_the_runnable_programs_on_disk() {
+    assert!(root().join("examples").is_dir(), "examples is missing");
     let on_disk = case_lists::native_programs(&root());
     assert!(
         on_disk

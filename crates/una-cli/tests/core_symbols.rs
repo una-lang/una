@@ -82,9 +82,9 @@ fn walk(node: &Value, path: &str, out: &mut Vec<String>, in_place: &mut usize) {
 /// What `una --json core` prints for `case`, a package or single file by path relative to the
 /// repository root.
 enum Export {
-    /// A document, with the labels that hold a plain symbol off its own type parameter and the
-    /// number of plain symbolic labels in place.
-    Walked(Vec<String>, usize),
+    /// A document, with the labels that hold a plain symbol off its own type parameter, the
+    /// number of plain symbolic labels in place, and the edition it names.
+    Walked(Vec<String>, usize, Option<String>),
     /// A document nested deeper than the parser's recursion limit of 128, which the walk
     /// passes over, as it did before #1652.
     TooDeep,
@@ -93,9 +93,11 @@ enum Export {
 }
 
 fn exports(case: &str) -> Export {
-    // A sealed copy of the case: no manifest above the checkout changes the edition of its
-    // single files (#1560).
-    let copy = hermetic::checkout_case(&[case]);
+    // A sealed copy of the case, or of the package that holds it, so that a module file of a
+    // package keeps the package's edition and modules: no manifest above the checkout changes
+    // the edition of its single files (#1560).
+    let package = case_lists::package_of(case, &hermetic::repository());
+    let copy = hermetic::checkout_case(&[package.as_deref().unwrap_or(case)]);
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
         .env_remove("UNA_PROOF_KEY")
@@ -109,7 +111,8 @@ fn exports(case: &str) -> Export {
             let mut found = Vec::new();
             let mut in_place = 0;
             walk(&document, "", &mut found, &mut in_place);
-            Export::Walked(found, in_place)
+            let edition = document["edition"].as_str().map(str::to_owned);
+            Export::Walked(found, in_place, edition)
         }
         Err(error)
             if output.stdout.starts_with(b"{\"schema\":")
@@ -127,7 +130,30 @@ fn exports(case: &str) -> Export {
 /// which parses unless it is nested too deep for the parser.
 fn core_exports_a_plain_symbolic_label_only_on_its_own_type_parameter(case: &str) {
     match exports(case) {
-        Export::Walked(found, _) => {
+        Export::Walked(found, _, edition) => {
+            // The edition the case has in place: the one `una` gives it in its package, read
+            // from the checkout's own manifest, or 0.1 for a single file outside every package
+            // (ADR 0021), so a copy that lost its package fails here.
+            let repository = hermetic::repository();
+            let expected = match case_lists::package_of(case, &repository) {
+                Some(_) => {
+                    let output = Command::new(env!("CARGO_BIN_EXE_una"))
+                        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+                        .env_remove("UNA_PROOF_KEY")
+                        .args(["--json", "core", case])
+                        .current_dir(&repository)
+                        .output()
+                        .unwrap();
+                    String::from_utf8_lossy(&output.stdout)
+                        .split_once("\"edition\":\"")
+                        .and_then(|(_, rest)| rest.split_once('"'))
+                        .map(|(edition, _)| edition.to_owned())
+                }
+                None => Some("0.1".to_owned()),
+            };
+            if edition.is_some() || expected.is_some() {
+                assert_eq!(edition, expected, "{case}: the edition of its Core IR");
+            }
             let failures: Vec<String> = found
                 .into_iter()
                 .map(|finding| format!("{case}: {finding}"))
@@ -165,7 +191,9 @@ una_test_cases::core_corpus!(core_tests);
 /// untested.
 #[test]
 fn the_core_corpus_is_the_packages_and_files_on_disk() {
-    let on_disk = case_lists::core_corpus(&hermetic::repository());
+    let repository = hermetic::repository();
+    assert!(repository.join("examples").is_dir(), "examples is missing");
+    let on_disk = case_lists::core_corpus(&repository);
     assert!(on_disk.len() > 500, "only {} cases", on_disk.len());
     assert_eq!(core_ir::CORPUS, on_disk.as_slice());
 }
@@ -178,7 +206,7 @@ fn the_walk_sees_a_plain_symbolic_label_in_place() {
         .iter()
         .filter(|case| case.starts_with("examples/"))
         .map(|case| match exports(case) {
-            Export::Walked(_, in_place) => in_place,
+            Export::Walked(_, in_place, _) => in_place,
             _ => 0,
         })
         .sum();

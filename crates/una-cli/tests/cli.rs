@@ -169,6 +169,7 @@ una_test_cases::determinism_targets!(determinism_tests);
 #[test]
 fn the_determinism_targets_are_the_examples_and_cases_on_disk() {
     let repository = hermetic::repository();
+    assert!(repository.join("examples").is_dir(), "examples is missing");
     for area in case_lists::DETERMINISM_AREAS {
         assert!(
             repository.join("tests/conformance").join(area).is_dir(),

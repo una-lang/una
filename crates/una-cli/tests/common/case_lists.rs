@@ -200,3 +200,21 @@ pub fn core_corpus(root: &Path) -> Vec<String> {
     walk(&root.join("examples"), root, &mut out);
     out
 }
+
+/// The package that holds `case`, a path relative to `root` of [`core_corpus`]: the nearest
+/// directory at or above it, inside `tests/conformance` or `examples`, with `una.toml` or
+/// `ita.una`, relative to `root`; `None` for a single file outside every package. A module file
+/// of a package that `ita.una` describes takes that package's edition and sees its sibling
+/// modules, so it is exported inside a copy of the package.
+pub fn package_of(case: &str, root: &Path) -> Option<String> {
+    let path = root.join(case);
+    let corpora = [root.join("tests/conformance"), root.join("examples")];
+    path.ancestors()
+        .filter(|dir| {
+            corpora
+                .iter()
+                .any(|corpus| dir.starts_with(corpus) && *dir != corpus)
+        })
+        .find(|dir| dir.join("una.toml").is_file() || dir.join("ita.una").is_file())
+        .map(|dir| relative(dir, root))
+}
