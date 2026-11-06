@@ -651,6 +651,13 @@ fn ring_bytes(executable: &Path) -> u64 {
         .sum()
 }
 
+/// Empties `dir/out`, so the variants the next engine writes there are its own: the
+/// interpreter's files are not left for the executable's run to pass on (review L1 of #1562).
+fn fresh_out(dir: &Path) {
+    let _ = std::fs::remove_dir_all(dir.join("out"));
+    std::fs::create_dir_all(dir.join("out")).unwrap();
+}
+
 /// A server on `127.0.0.1` that accepts connections and never answers.
 fn silent_server() -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -759,6 +766,7 @@ pub main() -> Unit
             "TimedOut|TimedOut"
         );
     }
+    fresh_out(&dir);
     assert_eq!(
         trace[1],
         serde_json::json!({"seq": 2, "outcome": {"kind": "timeout"}})
@@ -787,6 +795,15 @@ pub main() -> Unit
     let native: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(trace_file).unwrap()).unwrap();
     assert_eq!(trace, native);
+    // The trace shows the requests' outcomes redacted in both engines, so the variants the
+    // executable wrote are what tells its deadline from the interpreter's.
+    for n in 0..2 {
+        assert_eq!(
+            std::fs::read_to_string(dir.join(format!("out/v{n}.txt"))).unwrap(),
+            "TimedOut|TimedOut",
+            "native v{n}"
+        );
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -871,6 +888,7 @@ pub main() -> Unit
         std::fs::read_to_string(dir.join("out/v.txt")).unwrap(),
         "TimedOut"
     );
+    fresh_out(&dir);
 
     let built = una(&dir, &["build", "."]);
     assert_eq!(built.status.code(), Some(0), "{built:?}");
@@ -892,6 +910,11 @@ pub main() -> Unit
     let native: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(trace_file).unwrap()).unwrap();
     assert_eq!(trace, native);
+    assert_eq!(
+        std::fs::read_to_string(dir.join("out/v.txt")).unwrap(),
+        "TimedOut",
+        "native"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -993,6 +1016,7 @@ pub main() -> Unit
     let built = una(&dir, &["build", "."]);
     assert_eq!(built.status.code(), Some(0), "{built:?}");
     for run in 0..5 {
+        fresh_out(&dir);
         let trace_file = dir.join(format!("trace-{run}.json"));
         let native = Command::new(dir.join("target/una/tasked"))
             .args(flags)
@@ -1009,6 +1033,13 @@ pub main() -> Unit
         let native: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(trace_file).unwrap()).unwrap();
         assert_eq!(trace, native, "run {run}");
+        for n in 0..2 {
+            assert_eq!(
+                std::fs::read_to_string(dir.join(format!("out/v{n}.txt"))).unwrap(),
+                "TimedOut|TimedOut",
+                "native run {run} v{n}"
+            );
+        }
     }
     let _ = std::fs::remove_dir_all(&dir);
 }

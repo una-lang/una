@@ -1183,9 +1183,12 @@ pub(crate) struct Findings {
     /// a timing floor: the operations they run append no event (S-42, #1515). Core marks the
     /// others `quiet` with `timing`.
     pub(crate) hushed: std::collections::BTreeSet<Span>,
-    /// The calls and the operations under a timing floor alone, which [`flow::close_quiet`]
-    /// marks `quiet` as S-39 did, and not `hushed`.
+    /// The calls under a timing floor alone, by span, with their callees, which
+    /// [`flow::close_quiet`] marks `quiet` as S-39 did, and not `hushed`.
     pub(crate) timing_calls: std::collections::BTreeMap<Span, usize>,
+    /// The operations under a timing floor alone, by span, which [`flow::close_quiet`] marks
+    /// `quiet`, and not `hushed`, when the package declares a handler: Core marks them `quiet`
+    /// with `timing`, and their events stay (S-42, `spec/27 §5` rule 7).
     pub(crate) timing_ops: std::collections::BTreeSet<Span>,
     /// The `within`s checked (ADR 0117 rule 5, IF2): each one's deadline, span, function and
     /// the seed of its timing label.
