@@ -1432,3 +1432,56 @@ Rule 14 drops "in tests, the `stop after` line (rule 19)" from its list of host 
 
 - The `stop` event of a loop under a raised program counter (review of #946, the first Medium) is still emitted only on the path that entered that loop, and the trace gives it no label. This amendment does not change it: it is the separate finding that the model drops the `stop` event, to settle with #946 (and S-39, #1507, which follows in its own amendment).
 - `spec/26 §9` item 6, added by PR #1470, lists "schedules that count iterations across loops, as `stop after N` and `--stop-after-iterations` do" as outside the model. Under this amendment these flags give a schedule of the modeled shape, so when PR #1470 lands it updates that item: the iteration budget is inside the model, and only schedules whose stop points differ between entries of one loop (a sticky request that ends a later loop at its first iteration) stay outside.
+
+## Amendment (2026-11-06): values computed by the code a site reaches (IF5 item 7)
+
+- Status: Accepted, by the project's decision of 2026-11-06 on the draft `docs/plan/0116-tau-item7-amendment-draft.md`, option A. This amendment adds to the accepted text above, which is unchanged; where the two differ, this amendment governs.
+- Issue: #1685, finding T2 of the security hunt of #973 (Low, confirmed). Implemented by PR #1687, which carries the matching items of `spec/26 §7` rule 5 and §2 rule 5.
+
+**The problem.** IF5 defines `τ(e)` as the join of six items: the program counter, `ℓ*` of the free variables of `e`, the latency label of each operation in its effect set (handlers included), `⊤` for an unknown function value, the deadline's label and `τ_conc`, and says `τ(e)` "is computed from headers and the call graph". A value that a function reached from `e` labels in its own body, from literals, is in none of the six items:
+
+```una
+key() -> secret Int = 3000000
+
+work() -> Unit
+=
+  let k: secret Int = 3000000
+  let r = k + key()
+  unit
+```
+
+`attempt work() within 5 * millisecond` has a `public` `τ`, and printing whether it timed out is accepted. The same `k` bound in the caller and passed to `work(k: secret Int)` is a free variable of the site and makes `τ` `secret` (U4003). The same gap holds for `first of`, `for ever within`, the statement a `limiter` scopes over and a driven step, and for a kind with a `secret` field built in a callee or in a handler's operation.
+
+Under T6 a literal is the same in every run, so this is no break of noninterference: two runs that differ only in `secret` inputs still agree. But a value the program declares `secret` loses its label one call away, while the same code written at the site keeps it.
+
+**The amendment.** IF5 gains an item 7, after item 6:
+
+> 7. `ℓ*` of every value that `e` computes, and that the code it reaches computes: every function in its call graph, and the operation bodies of every handler item 3 counts, their lambdas included. The labels of type parameters are left out, since the values of a type parameter come from the callers, whose own values count.
+
+The sentence "`τ(e)` is computed from headers and the call graph, once per site" reads "`τ(e)` is computed from headers, the bodies' values and the call graph, once per site". The other items are unchanged. Item 7 joins after them, so a message still names a read, an operation or a function value first where one of them raises `τ`. `τ⁰`, which is `τ` without item 6, keeps item 7, so the precise `τ_conc` of the amendment of 2026-10-25 (#1087), computed from the same graph, counts it with no change of its own.
+
+**What it newly refuses.** Item 7 counts values, not only labels written in annotations, so a reached function that computes on a parameter labeled above the argument it gets counts at the parameter's label:
+
+```una
+spin(n: secret Int) -> secret Int
+=
+  let edit acc: secret Int = 0
+  for i in 0..<n
+    acc = acc + 1
+  acc
+
+pub decision() -> public Bool
+=
+  let r = attempt spin(10) within 5 * millisecond
+  when r
+    is Ok(v) -> true
+    is Err(e) -> false
+```
+
+It was accepted before this amendment and is U4001 under item 7. A callee that never reads its `secret` parameter, such as `unread(n: secret Int) -> Bool = true`, called as `unread(10)`, stays accepted. The review of PR #1687 checked every case of the conformance corpus, `examples/` and the una-by-example programs, and found no other newly refused program. The tightening goes beyond the preview's terms ("MAY only become more precise", amendment of 2026-10-19), which is why it is made by this amendment and not by the implementation alone.
+
+**Why values, not annotations.** Every label annotation is an upper bound: `let edit acc: secret Int = 0` in `spin` reads as a declared constant just as `let k: secret Int = 3000000` does. A rule that counted only annotations would either count the raise at a call argument, and refuse `work(1)` to a function that never reads its `secret` parameter (`first_of_timing_floor`, accepted), or not count it, and miss a literal passed to a `secret` parameter that the callee loops on. Counting the values each body computes needs no flow analysis and has neither problem.
+
+**The alternative not chosen.** Declaring values built from literals, in code that a site reaches, outside `τ`, as constants under T6, would refuse nothing accepted before, at the cost that a `secret` declared in a helper has no timing label while the same declaration at the site has one. The project chose the more secure option.
+
+**Costs.** One `ℓ*` of the type of each expression checked, O(size of the type), the order of the type record beside it. Each site then makes O(F + H) joins for the F functions and H handlers it already visits, and the call graph O(F + H) joins once per package: linear in the size of the bodies. The scaling tests of the timing label pass unchanged.
