@@ -236,6 +236,16 @@ fn runs_natively_as_in_the_interpreter(test: &str, name: &str, grants: &[&str]) 
                     .into_iter()
                     .map(|difference| format!("{name}: {difference}")),
             );
+            // Under `--virtual-time` native code follows the interpreter's schedule, so a run
+            // with started tasks MUST give the same output, exit status and whole trace in both
+            // engines (`spec/27 §8` rule 3), installation ids included (#1542).
+            if has_started(&document["trace"]) || has_started(&native_trace) {
+                failures.extend(
+                    virtual_time_differences(&work, &target, &exe, grants, &dir)
+                        .into_iter()
+                        .map(|difference| format!("{name}: under --virtual-time, {difference}")),
+                );
+            }
             break 'compare;
         }
         if String::from_utf8_lossy(&native.stdout) != expected_stdout {
@@ -527,6 +537,73 @@ fn starts_tasks(trace: &Value) -> bool {
         .is_some_and(|events| events.iter().any(|event| event.get("task").is_some()))
 }
 
+/// How the runs of `target` in `work` under `--virtual-time` differ, the interpreter's and the
+/// executable `exe`'s, with `grants`: their exit status, output and whole traces MUST be equal
+/// (`spec/27 §8` rule 3). The native trace is written under `dir`.
+fn virtual_time_differences(
+    work: &Path,
+    target: &str,
+    exe: &Path,
+    grants: &[&str],
+    dir: &Path,
+) -> Vec<String> {
+    let mut differences = Vec::new();
+    let mut run_args = vec!["--json", "run", "--virtual-time", target];
+    for grant in grants {
+        run_args.push("--grant");
+        run_args.push(grant);
+    }
+    let run = una(work, &run_args);
+    let Ok(document) = serde_json::from_slice::<Value>(&run.stdout) else {
+        differences.push(format!(
+            "una run gave no document: {}",
+            String::from_utf8_lossy(&run.stderr).trim()
+        ));
+        return differences;
+    };
+    let trace = dir.join("trace-virtual.json");
+    let mut native = Command::new(exe);
+    native
+        .current_dir(work)
+        .arg("--virtual-time")
+        .arg("--trace")
+        .arg(&trace);
+    for grant in grants {
+        native.arg("--grant").arg(grant);
+    }
+    let native = native.output().unwrap();
+    if native.status.code() != run.status.code() {
+        differences.push(format!(
+            "exit status differs: interpreter {:?}, native {:?}",
+            run.status.code(),
+            native.status.code()
+        ));
+    }
+    let expected_stdout: String = document["output"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|line| format!("{}\n", line.as_str().unwrap_or_default()))
+        .collect();
+    if String::from_utf8_lossy(&native.stdout) != expected_stdout {
+        differences.push(format!(
+            "stdout differs: interpreter {expected_stdout:?}, native {:?}",
+            String::from_utf8_lossy(&native.stdout)
+        ));
+    }
+    let native_trace: Value = std::fs::read(&trace)
+        .ok()
+        .and_then(|t| serde_json::from_slice(&t).ok())
+        .unwrap_or(Value::Null);
+    if native_trace != document["trace"] {
+        differences.push(format!(
+            "trace differs: interpreter {}, native {native_trace}",
+            document["trace"]
+        ));
+    }
+    differences
+}
+
 /// How a native run that starts tasks departs from the equivalence of `spec/19 §8` rule 4,
 /// the exit status being compared already:
 /// - the output is what the native trace says each task printed, each task's lines in its own
@@ -658,28 +735,54 @@ fn numbered_instance(event: &Value) -> Option<&str> {
 }
 
 /// `native`, the events of a run by task, with its numbered installation ids renamed to the
-/// interpreter's, when one renaming, a bijection of the run's ids that keeps each handler,
-/// maps every task's events onto `interpreted`'s at the same places; `native` unchanged
-/// otherwise, which the comparison then reports. Started tasks install in the order of real
-/// time, which numbers the installations of the run (`spec/27 §8` rules 1 and 4, #1542), so
-/// only this renumbering is set aside. O(e log e) in the events.
+/// interpreter's, when one renaming maps every task's events onto `interpreted`'s at the same
+/// places; `native` unchanged otherwise, which the comparison then reports. Started tasks
+/// install in the order of real time, which numbers the installations of the run (`spec/27
+/// §8` rules 1 and 4, #1542), so only this renumbering is set aside, and only one that:
+/// - is a bijection between the numbered ids of the two runs, which are then the same set:
+///   no number skipped or added, so a count that quiet code moved still shows (S-41). The
+///   trace cannot show that the numbers are dense, since an instance that serves no operation
+///   has no event, so the interpreter's set is the reference;
+/// - keeps each handler, whose installations are numbered apart;
+/// - keeps, within each task, the order of each handler's numbers, the order of the task's
+///   installations;
+/// - leaves quiet (`#q`), host and `given` ids as they are.
+///
+/// O(e log e) in the events.
 fn renumbered(
     interpreted: &std::collections::BTreeMap<String, Vec<Value>>,
     mut native: std::collections::BTreeMap<String, Vec<Value>>,
 ) -> std::collections::BTreeMap<String, Vec<Value>> {
-    let handler = |id: &str| id.rsplit_once('#').map(|(handler, _)| handler.to_owned());
-    let mut to_interpreted: std::collections::BTreeMap<String, String> = Default::default();
-    let mut to_native: std::collections::BTreeMap<String, String> = Default::default();
+    use std::collections::{BTreeMap, BTreeSet};
+    let parts = |id: &str| -> (String, u64) {
+        let (handler, number) = id.rsplit_once('#').unwrap_or((id, "0"));
+        (handler.to_owned(), number.parse().unwrap_or(0))
+    };
+    let ids = |tasks: &BTreeMap<String, Vec<Value>>| -> BTreeSet<String> {
+        tasks
+            .values()
+            .flatten()
+            .filter_map(numbered_instance)
+            .map(str::to_owned)
+            .collect()
+    };
+    let mut to_interpreted: BTreeMap<String, String> = BTreeMap::new();
+    let mut to_native: BTreeMap<String, String> = BTreeMap::new();
     for (task, events) in &native {
         let Some(theirs) = interpreted.get(task) else {
             continue;
         };
+        // The pairs of numbers of this task, by handler, native to interpreted: each handler
+        // numbers its own installations (`with:<handler>#<n>`).
+        let mut pairs: BTreeMap<(String, u64), u64> = BTreeMap::new();
         for (ours, theirs) in events.iter().zip(theirs) {
             let (Some(ours), Some(theirs)) = (numbered_instance(ours), numbered_instance(theirs))
             else {
                 continue;
             };
-            if handler(ours) != handler(theirs) {
+            let ((our_handler, our_number), (their_handler, their_number)) =
+                (parts(ours), parts(theirs));
+            if our_handler != their_handler {
                 return native;
             }
             let forward = to_interpreted
@@ -691,7 +794,24 @@ fn renumbered(
             if forward != theirs || backward != ours {
                 return native;
             }
+            pairs.insert((our_handler, our_number), their_number);
         }
+        // Sorted by handler and native number, the interpreter's numbers of each handler MUST
+        // increase too.
+        let pairs: Vec<(&(String, u64), &u64)> = pairs.iter().collect();
+        if pairs
+            .windows(2)
+            .any(|w| w[0].0.0 == w[1].0.0 && w[0].1 >= w[1].1)
+        {
+            return native;
+        }
+    }
+    let (ours, theirs) = (ids(&native), ids(interpreted));
+    if ours != theirs
+        || to_interpreted.keys().cloned().collect::<BTreeSet<_>>() != ours
+        || to_native.keys().cloned().collect::<BTreeSet<_>>() != theirs
+    {
+        return native;
     }
     for event in native.values_mut().flatten() {
         let renamed = numbered_instance(event).and_then(|id| to_interpreted.get(id).cloned());
@@ -7245,8 +7365,11 @@ fn started_tasks_number_installations_run_wide_in_schedule_order() {
 
 #[test]
 fn renumbering_sets_aside_only_one_renaming_of_the_installations() {
-    // #1542: the comparison task by task accepts native ids that one bijection maps onto the
-    // interpreter's, never two ids onto one, nor a change of handler or of a quiet id.
+    // #1542, review of #1669 (M1, L1): the comparison task by task accepts native ids that one
+    // bijection maps onto the interpreter's same set of ids, keeping each handler and, within
+    // each task, the order of its numbers: never two ids onto one, a change of handler or of a
+    // quiet id, numbers skipped (a counter stepping by 2), numbers shifted by installations
+    // counted elsewhere (quiet ones, S-41), nor two numbers of one task swapped.
     let put = |task: &str, id: &str| serde_json::json!({"task": task, "instance": id, "op": "put"});
     let trace = |ids: &[(&str, &str)]| {
         by_task(&Value::from(
@@ -7267,6 +7390,21 @@ fn renumbering_sets_aside_only_one_renaming_of_the_installations() {
     ]);
     assert_eq!(renumbered(&interpreted, swapped), interpreted);
     for wrong in [
+        trace(&[
+            ("s1.1", "with:k#2"),
+            ("s1.1", "with:k#4"),
+            ("s1.2", "with:k#6"),
+        ]),
+        trace(&[
+            ("s1.1", "with:k#3"),
+            ("s1.1", "with:k#4"),
+            ("s1.2", "with:k#5"),
+        ]),
+        trace(&[
+            ("s1.1", "with:k#2"),
+            ("s1.1", "with:k#1"),
+            ("s1.2", "with:k#3"),
+        ]),
         trace(&[
             ("s1.1", "with:k#1"),
             ("s1.1", "with:k#1"),
