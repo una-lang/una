@@ -51,6 +51,12 @@ fn free_port() -> u16 {
 /// A package of edition `0.4` named `name`, granted `console` and `serve` on `port`, whose entry
 /// module `srv` is `program`, in a fresh temporary directory; built natively for `engine`.
 fn package(name: &str, port: u16, program: &str, engine: Engine) -> PathBuf {
+    package_with(name, port, program, engine, false)
+}
+
+/// [`package`], whose `ita.una` has, when `served`, a `serve` section that names `srv` in
+/// place of the `run entry`.
+fn package_with(name: &str, port: u16, program: &str, engine: Engine, served: bool) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
         "una-serve-live-{name}-{engine:?}-{}",
         std::process::id()
@@ -59,9 +65,15 @@ fn package(name: &str, port: u16, program: &str, engine: Engine) -> PathBuf {
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(
         dir.join("ita.una"),
-        format!(
-            "ita {name}\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry srv\n  grants\n    console\n    serve \"http://127.0.0.1:{port}\"\n"
-        ),
+        if served {
+            format!(
+                "ita {name}\n  version 0.1.0\n  edition 0.4\n\nrun\n  grants\n    console\n    serve \"http://127.0.0.1:{port}\"\n\nserve\n  module srv\n"
+            )
+        } else {
+            format!(
+                "ita {name}\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry srv\n  grants\n    console\n    serve \"http://127.0.0.1:{port}\"\n"
+            )
+        },
     )
     .unwrap();
     std::fs::copy(
@@ -575,21 +587,6 @@ fn virtual_time_refuses_a_serve_grant_before_main() {
     }
 }
 
-/// A package like [`package`] whose `serve` section names the module `srv`, which declares
-/// `handle` and `on_stop`, for the interpreter: native code has no driver of the section yet
-/// (the second part of #1587).
-fn served_package(name: &str, port: u16, program: &str) -> PathBuf {
-    let dir = package(name, port, program, Engine::Interpreter);
-    std::fs::write(
-        dir.join("ita.una"),
-        format!(
-            "ita {name}\n  version 0.1.0\n  edition 0.4\n\nrun\n  grants\n    console\n    serve \"http://127.0.0.1:{port}\"\n\nserve\n  module srv\n"
-        ),
-    )
-    .unwrap();
-    dir
-}
-
 /// A `serve` module whose `handle` computes for a while before it answers, and whose
 /// `on_stop` says that the server stopped. `COUNT` is the length of the computation: long
 /// enough that the host stop comes while the request is in flight.
@@ -621,15 +618,22 @@ pub on_stop() -> Unit
 fn a_serve_section_drains_a_request_in_flight_then_runs_on_stop() {
     // `spec/31 §7` rule 4: at a host stop the driver's `next` fails with `Interrupted`, the
     // request in flight is answered by its task, and `on_stop` runs after it, exit code 0.
+    for engine in ENGINES {
+        serve_section_drains(engine);
+    }
+}
+
+/// [`a_serve_section_drains_a_request_in_flight_then_runs_on_stop`] in `engine`.
+fn serve_section_drains(engine: Engine) {
     let port = free_port();
-    let program = SERVED.replace("COUNT", "500000");
-    let dir = served_package("served_drain", port, &program);
-    let mut run = start(
-        &dir,
-        "served_drain",
-        Engine::Interpreter,
-        &["--stop-grace", "60"],
-    );
+    // Native code computes faster: a longer computation keeps its request in flight.
+    let count = match engine {
+        Engine::Interpreter => "500000",
+        Engine::Native => "5000000",
+    };
+    let program = SERVED.replace("COUNT", count);
+    let dir = package_with("served_drain", port, &program, engine, true);
+    let mut run = start(&dir, "served_drain", engine, &["--stop-grace", "60"]);
     let mut stream = connect(port);
     stream
         .write_all(b"GET /work HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
@@ -638,7 +642,7 @@ fn a_serve_section_drains_a_request_in_flight_then_runs_on_stop() {
     run.terminate();
     let answer = read_reply(&mut stream);
     let (code, lines, stderr) = run.end();
-    assert_eq!(code, Some(0), "{stderr}");
+    assert_eq!(code, Some(0), "{engine:?}: {stderr}");
     assert_eq!(output(&lines), ["handling", "stopped"]);
     assert_eq!(
         dateless(&answer),
@@ -668,7 +672,7 @@ fn a_serve_section_drains_a_request_in_flight_then_runs_on_stop() {
             ("reply", "s1.1"),
             ("print", "")
         ],
-        "{trace}"
+        "{engine:?}: {trace}"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -677,15 +681,17 @@ fn a_serve_section_drains_a_request_in_flight_then_runs_on_stop() {
 fn a_serve_section_at_the_hard_stop_answers_503_and_skips_on_stop() {
     // ADR 0123 rule 18: past the grace period every task is cancelled, the right in flight is
     // answered `503`, `on_stop` does not run, and the run ends with U6007.
+    for engine in ENGINES {
+        serve_section_hard_stop(engine);
+    }
+}
+
+/// [`a_serve_section_at_the_hard_stop_answers_503_and_skips_on_stop`] in `engine`.
+fn serve_section_hard_stop(engine: Engine) {
     let port = free_port();
     let program = SERVED.replace("COUNT", "100000000000");
-    let dir = served_package("served_hard", port, &program);
-    let mut run = start(
-        &dir,
-        "served_hard",
-        Engine::Interpreter,
-        &["--stop-grace", "1"],
-    );
+    let dir = package_with("served_hard", port, &program, engine, true);
+    let mut run = start(&dir, "served_hard", engine, &["--stop-grace", "1"]);
     let mut stream = connect(port);
     stream
         .write_all(b"GET /work HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
@@ -694,7 +700,7 @@ fn a_serve_section_at_the_hard_stop_answers_503_and_skips_on_stop() {
     run.terminate();
     let answer = read_to_close(&mut stream);
     let (code, lines, stderr) = run.end();
-    assert_eq!(code, Some(1), "{stderr}");
+    assert_eq!(code, Some(1), "{engine:?}: {stderr}");
     assert!(stderr.contains("[U6007]"), "{stderr}");
     assert_eq!(output(&lines), ["handling"]);
     assert_eq!(
