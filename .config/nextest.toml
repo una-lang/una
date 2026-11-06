@@ -23,6 +23,6 @@ filter = 'all()'
 setup = 'runtime'
 
 [[profile.default.overrides]]
-filter = 'test(/scale|scaling|linear|n_log_n|bounded_share|limiter|virtual_time|cube|cubic|constant_time|cost_the_same|does_not_depend|whatever_the|no_real_time|meets_the_deadline/) | binary(/scaling/)'
+filter = 'test(/scale|scaling|linear|n_log_n|bounded_share|limiter|virtual_time|cube|cubic|constant_time|cost_the_same|does_not_depend|whatever_the|no_real_time|meets?_the_deadline/) | binary(/scaling/)'
 threads-required = "num-cpus"
 slow-timeout = { period = "120s", terminate-after = 30 }
