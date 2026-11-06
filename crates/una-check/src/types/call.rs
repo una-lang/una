@@ -621,6 +621,10 @@ impl<'a> Checker<'_, 'a, '_> {
         // the call stands under `pc ⊔ l_f` with the decisions of its arguments (T-App below),
         // and is quiet when that is above `public`, at a `public` program counter too (round 4).
         self.quiet_site_under(span, &value_label);
+        // `spec/27 §8` rule 5: which code runs, and so how many check points, `l_f` decides.
+        self.switch_site(span, &value_label, || {
+            format!("which code this call of {what} runs, and whether it runs,")
+        });
         // Calling a function value needs the capabilities of its type (`spec/10 §2`, S-Fun).
         let level = self.frames.len();
         self.needs_site(what, &function.uses, span, level);
@@ -1101,6 +1105,8 @@ impl<'a> Checker<'_, 'a, '_> {
         // under a raised program counter. Only edition 0.1 raises a call so, and no construct
         // that appends events of its own exists there, so this is defensive (round 4).
         self.quiet_call_site_under(span, id, &decided);
+        // `spec/27 §8` rule 5: a check point of the schedule of started tasks (#1684).
+        self.switch_call(span, id, &def, &checked);
         let result = if prelude_labeled(self.env.prelude, &def)
             || collections_labeled(self.env.collections, &def)
         {
@@ -1617,6 +1623,9 @@ impl<'a> Checker<'_, 'a, '_> {
         // S-39, S-42: the operation's event, and those of a handler that serves it, would show
         // that it ran.
         self.quiet_op_site(span);
+        self.switch_site(span, &Label::public(), || {
+            format!("whether this operation `@{cap_name}.{op_name}` runs")
+        });
         if let Some(id) = resolved {
             self.timing_op(id, op_name);
             // The edge of ADR 0116 P1 from the node whose code holds the operation, a lambda's

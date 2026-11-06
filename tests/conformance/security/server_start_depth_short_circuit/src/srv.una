@@ -1,6 +1,7 @@
--- test: the left operand of `and` decides whether its right operand's calls run, so a task whose deep call stands behind a `secret` operand has a depth that depends on `secret` data: U4003 at the `start` (spec/31 §1, ADR 0123 IF6, #1674)
+-- test: the left operand of `and` decides whether its right operand's calls run, so a task whose deep call stands behind a `secret` operand has a depth that depends on `secret` data: U4003 at the `start` (spec/31 §1, ADR 0123 IF6, #1674); in a program that starts tasks, the check point that `secret` data decide there is also U4002 (spec/27 §8 rule 5, #1684)
 -- spec: spec/31 §1
--- expect: error U4003 at src/srv.una:27:7
+-- expect: error U4003 at src/srv.una:28:7
+-- expect: error U4002 at src/srv.una:19:23
 module srv
 
 import std.host (Exchange, HttpServer, Reply)

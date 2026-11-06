@@ -1079,10 +1079,16 @@ impl<'a> Checker<'_, 'a, '_> {
         let operand = format!("an operand of `{symbol}`");
         match op {
             BinaryOp::And | BinaryOp::Or | BinaryOp::Implies => {
-                for side in [left, right] {
-                    let found = self.expr_as(side, Some(&Ty::Bool), Role::Condition(&operand));
-                    self.operands.push(found);
-                }
+                let found = self.expr_as(left, Some(&Ty::Bool), Role::Condition(&operand));
+                // The right operand runs only as the left one decides: it short-circuits, as
+                // Core's `if` does, so its calls are check points under that label (`spec/27
+                // §8` rule 5, #1684). Operands have no effects and cannot fail (U3013).
+                let decided = self.deep(&found);
+                self.operands.push(found);
+                let saved = self.raise_pc(&decided, left.span);
+                let found = self.expr_as(right, Some(&Ty::Bool), Role::Condition(&operand));
+                self.restore_pc(saved);
+                self.operands.push(found);
                 Ty::Bool
             }
             BinaryOp::Eq | BinaryOp::NotEq => {

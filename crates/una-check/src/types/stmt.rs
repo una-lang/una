@@ -255,6 +255,9 @@ impl<'a> Checker<'_, 'a, '_> {
         // S-39: under a raised program counter, a host stop that ends the loop appends no
         // `stop` event.
         self.quiet_site(stmt.span);
+        self.switch_site(stmt.span, &Label::public(), || {
+            "whether this `for ever` loop runs".to_owned()
+        });
         if let Some(reason) = self.divergence_refused() {
             self.report.error(
                 Code::U3027,
@@ -593,6 +596,10 @@ impl<'a> Checker<'_, 'a, '_> {
         let before = self.taken_state();
         let before_len = self.locals.len();
         let saved = self.raise_pc(&label, from);
+        // `spec/27 §8` rule 5: each iteration is a check point, under the body's program counter.
+        self.switch_site(stmt.span, &Label::public(), || {
+            "how many times this `for` loop iterates".to_owned()
+        });
         let mark = self.locals.len();
         self.bind_loop_var(self.name(&stmt.var), var_ty, "a `for` loop");
         self.loops.push(LoopFrame {
@@ -758,6 +765,9 @@ impl<'a> Checker<'_, 'a, '_> {
         let before = self.taken_state();
         let before_len = self.locals.len();
         let saved = self.raise_pc(&label, stmt.condition.span);
+        self.switch_site(stmt.span, &Label::public(), || {
+            "how many times this `for until` loop iterates".to_owned()
+        });
         let mark = self.locals.len();
         self.loops.push(LoopFrame {
             pc: self.ctx.pc.clone(),

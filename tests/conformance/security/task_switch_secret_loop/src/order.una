@@ -1,0 +1,32 @@
+-- test: the hunt's probe (#973 T1): a started task whose pure loop runs as many iterations as a `secret` bit decides, then prints; the interpreter switches tasks after 1024 check points, so the order of the prints spelled the key, one bit per task. Each iteration is a check point, and the loop's bound is `secret`, so the loop is U4002 in a program that starts tasks; `una run` and `una build` refuse it at check time (spec/27 §8 rule 5, #1684)
+-- spec: spec/27 §8
+-- expect: error U4002 at src/order.una:9:3
+module order
+
+spin(n: secret Int) -> secret Int
+=
+  let edit acc: secret Int = 0
+  for i in 0..<n
+    acc = acc + 1
+  acc
+
+bit(k: Int, key: secret Int) -> secret Int
+=
+  let edit x: secret Int = key
+  for i in 0..<k
+    x = x / 2
+  x mod 2
+
+worker(k: Int, key: secret Int) -> Unit
+  uses @console: Console[print]
+=
+  let r = spin(bit(k, key: key) * 3000)
+  @console.print("{k}")
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let key: secret Int = 90
+  tasks
+    for k in 0..<8
+      start worker(k, key: key)
