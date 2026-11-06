@@ -18,6 +18,8 @@
 
 #[path = "common/case_lists.rs"]
 mod case_lists;
+#[path = "common/cpu.rs"]
+mod cpu;
 #[path = "common/hermetic.rs"]
 mod hermetic;
 #[path = "common/native_build.rs"]
@@ -2250,7 +2252,7 @@ fn a_map_passed_by_edit_moves_into_the_callee() {
 }
 
 #[test]
-fn map_updates_are_in_place_and_scale_as_n_log_n() {
+fn map_updates_are_in_place_and_scale_as_n_log_n_in_cpu_time() {
     // `spec/21 §5` rule 2 and the performance rule: `set`, `has` and `remove` on a map nothing
     // else holds are O(log n) and in place; the one copy is the map that `kept` still sees.
     // The copy count is the primary check; the timing is the secondary one: ten times the keys
@@ -2279,7 +2281,7 @@ fn map_updates_are_in_place_and_scale_as_n_log_n() {
     // Times a run of the executable built for `n` keys.
     let measure = |n: usize| {
         let dir = &dirs[sizes.iter().position(|&s| s == n).unwrap()];
-        let (output, seconds) = timing::timed(|| {
+        let (output, seconds) = cpu::cpu_timed(|| {
             Command::new(dir.join(format!("target/una/maps_{n}")))
                 .current_dir(dir)
                 .output()
@@ -3547,7 +3549,7 @@ fn a_list_given_while_live_then_appended_through_calls_grows_in_linear_time() {
 }
 
 #[test]
-fn json_parses_and_writes_in_linear_time_natively() {
+fn json_parses_and_writes_in_linear_cpu_time_natively() {
     // ADR 0073 J6 (#238): natively, the debug runtime's count of copies is the same at every
     // size, so nothing is copied per item; the timing is a second check, wide in margin: each
     // tenfold step stays under 30x, against about 100x for quadratic work. A miss is measured
@@ -3579,7 +3581,7 @@ fn json_parses_and_writes_in_linear_time_natively() {
     // Times a run of the executable built for `steps` items, and checks its notes.
     let measure = |steps: usize| {
         let dir = &dirs[sizes.iter().position(|&s| s == steps).unwrap()];
-        let (output, seconds) = timing::timed(|| {
+        let (output, seconds) = cpu::cpu_timed(|| {
             Command::new(dir.join("target/una").join(format!("json-scaling-{steps}")))
                 .current_dir(dir)
                 .output()

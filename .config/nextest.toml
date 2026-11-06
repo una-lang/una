@@ -8,6 +8,10 @@
 # virtual-time checks) run alone: `threads-required = "num-cpus"` reserves every slot, so no other test of this
 # run runs beside them. Processes outside this run still add load; keep builders and other gates away while a
 # gate runs. No test is skipped and no assertion is changed.
+#
+# A scaling test that measures the processor time of the children it runs (`una` or a built executable) rather
+# than the wall clock holds `cpu_time` in its name and is left out (#1656): a child's user and system time stay
+# what its work costs when other tests run beside it.
 
 experimental = ["setup-scripts"]
 
@@ -25,6 +29,6 @@ setup = 'runtime'
 [[profile.default.overrides]]
 # The tests generated one per case (#1652) are named after their case's path, which may hold one of these
 # words (`case::runtime__limiter_acquire`); none of them compares wall-clock readings, so they are left out.
-filter = '(test(/scale|scaling|linear|n_log_n|bounded_share|limiter|virtual_time|cube|cubic|constant_time|cost_the_same|does_not_depend|whatever_the|no_real_time|meets?_the_deadline/) | binary(/scaling/)) & !test(/^(case|interpreter|linkers|determinism|core_ir)::/)'
+filter = '(test(/scale|scaling|linear|n_log_n|bounded_share|limiter|virtual_time|cube|cubic|constant_time|cost_the_same|does_not_depend|whatever_the|no_real_time|meets?_the_deadline/) | binary(/scaling/)) & !test(/^(case|interpreter|linkers|determinism|core_ir)::/) & !test(/cpu_time/)'
 threads-required = "num-cpus"
 slow-timeout = { period = "120s", terminate-after = 30 }

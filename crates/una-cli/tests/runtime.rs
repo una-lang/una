@@ -4,6 +4,8 @@
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
 
+#[path = "common/cpu.rs"]
+mod cpu;
 #[path = "common/hermetic.rs"]
 mod hermetic;
 #[path = "common/timing.rs"]
@@ -1837,7 +1839,7 @@ pub main() -> Unit
 ";
 
 #[test]
-fn map_updates_and_lookups_scale_as_n_log_n() {
+fn map_updates_and_lookups_scale_as_n_log_n_in_cpu_time() {
     // The performance rule, `spec/21 §5` rule 2: `set`, `has` and `remove` are O(log n), and an
     // update of a map nothing else holds is in place. Ten times the keys take under 40 times
     // as long: n log n gives about 12, a copy per update about 100, and the bound of 40x is
@@ -1859,7 +1861,7 @@ fn map_updates_and_lookups_scale_as_n_log_n() {
         )
         .unwrap();
         let (output, seconds) =
-            timing::timed(|| una(&["run", dir, "--grant", "console", "--max-memory", "1024"]));
+            cpu::cpu_timed(|| una(&["run", dir, "--grant", "console", "--max-memory", "1024"]));
         assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
         assert_eq!(stdout(&output), format!("{n} 0\n"));
         seconds
@@ -1894,7 +1896,7 @@ pub main() -> Unit
 ";
 
 #[test]
-fn queue_and_stack_pushes_and_pops_scale_linearly() {
+fn queue_and_stack_pushes_and_pops_scale_linearly_in_cpu_time() {
     // ADR 0119 rules 5 and 6: `push` and `pop` are O(1) amortized, and an update of a sequence
     // nothing else holds is in place. Ten times the items take under 30 times as long: linear
     // time gives about 10, a copy per update about 100. A miss is measured twice more before it
@@ -1923,7 +1925,7 @@ fn queue_and_stack_pushes_and_pops_scale_linearly() {
         )
         .unwrap();
         let (output, seconds) =
-            timing::timed(|| una(&["run", dir, "--grant", "console", "--max-memory", "1024"]));
+            cpu::cpu_timed(|| una(&["run", dir, "--grant", "console", "--max-memory", "1024"]));
         assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
         assert_eq!(stdout(&output), "0 0\n");
         seconds
@@ -1961,7 +1963,7 @@ pub main() -> Unit
 ";
 
 #[test]
-fn set_updates_lookups_and_operations_scale_as_n_log_n() {
+fn set_updates_lookups_and_operations_scale_as_n_log_n_in_cpu_time() {
     // `spec/28 §6`: `add`, `has` and `remove` are O(log n), `intersection` is O(n + m), and an
     // update of a set nothing else holds is in place. Ten times the items take under 40 times
     // as long: n log n gives about 12, a copy per update about 100, and the bound of 40x is
@@ -1990,7 +1992,7 @@ fn set_updates_lookups_and_operations_scale_as_n_log_n() {
         )
         .unwrap();
         let (output, seconds) =
-            timing::timed(|| una(&["run", dir, "--grant", "console", "--max-memory", "1024"]));
+            cpu::cpu_timed(|| una(&["run", dir, "--grant", "console", "--max-memory", "1024"]));
         assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
         assert_eq!(stdout(&output), format!("{n} {} 0\n", n - 1));
         seconds
@@ -2033,7 +2035,7 @@ pub main() -> Unit
 ";
 
 #[test]
-fn hash_table_updates_lookups_and_operations_scale_linearly() {
+fn hash_table_updates_lookups_and_operations_scale_linearly_in_cpu_time() {
     // `spec/28 §7`: `set`, `add`, `has` and `remove` are O(|k|) expected, amortized, and
     // `intersection` is O(n · |k|); an update of a table nothing else holds is in place. Ten
     // times the keys take under 25 times as long: expected O(1) per operation gives about 10,
@@ -2062,7 +2064,7 @@ fn hash_table_updates_lookups_and_operations_scale_linearly() {
         )
         .unwrap();
         let (output, seconds) =
-            timing::timed(|| una(&["run", dir, "--grant", "console", "--max-memory", "1024"]));
+            cpu::cpu_timed(|| una(&["run", dir, "--grant", "console", "--max-memory", "1024"]));
         assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
         assert_eq!(stdout(&output), format!("{n} {} 0 0\n", n - 1));
         seconds
@@ -2105,7 +2107,7 @@ pub main() -> Unit
 ";
 
 #[test]
-fn priority_queue_pushes_and_pops_scale_as_n_log_n() {
+fn priority_queue_pushes_and_pops_scale_as_n_log_n_in_cpu_time() {
     // `spec/28 §8`: `push` and `pop` make O(log n) comparisons, `peek_priority` is O(1), and an
     // update of a queue nothing else holds is in place. Ten times the items take under 40 times
     // as long: n log n gives about 12, a copy per update about 100, and the bound of 40x is
@@ -2134,7 +2136,7 @@ fn priority_queue_pushes_and_pops_scale_as_n_log_n() {
         )
         .unwrap();
         let (output, seconds) =
-            timing::timed(|| una(&["run", dir, "--grant", "console", "--max-memory", "1024"]));
+            cpu::cpu_timed(|| una(&["run", dir, "--grant", "console", "--max-memory", "1024"]));
         assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
         assert_eq!(stdout(&output), format!("{n} {n} 0\n"));
         seconds
@@ -2174,7 +2176,7 @@ pub main() -> Unit
 ";
 
 #[test]
-fn bit_set_updates_and_lookups_scale_linearly() {
+fn bit_set_updates_and_lookups_scale_linearly_in_cpu_time() {
     // `spec/28 §9`: `add`, `has` and `remove` are O(1), `intersection` is O(size / 64), and an
     // update of a bit set nothing else holds is in place. Ten times the bits take under 30 times
     // as long: linear time gives about 10, a copy of the words per update about 100. A miss is
@@ -2203,7 +2205,7 @@ fn bit_set_updates_and_lookups_scale_linearly() {
         )
         .unwrap();
         let (output, seconds) =
-            timing::timed(|| una(&["run", dir, "--grant", "console", "--max-memory", "1024"]));
+            cpu::cpu_timed(|| una(&["run", dir, "--grant", "console", "--max-memory", "1024"]));
         assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
         assert_eq!(stdout(&output), format!("{n} {} 0\n", n - 1));
         seconds
@@ -2233,7 +2235,7 @@ fn appends_through_calls(shape: &str, steps: usize) -> String {
 }
 
 #[test]
-fn a_list_appended_through_calls_grows_in_linear_time() {
+fn a_list_appended_through_calls_grows_in_linear_cpu_time() {
     // ADR 0072 D1 and D3 (#262): an `edit` argument, or a binding at its last use rebound from
     // the result, moves into the callee, which appends in place through any number of call
     // levels. Each tenfold step stays under 30x: about 4x to 10x with the run's fixed cost,
@@ -2262,7 +2264,7 @@ fn a_list_appended_through_calls_grows_in_linear_time() {
                 appends_through_calls(shape, steps),
             )
             .unwrap();
-            let (output, seconds) = timing::timed(|| una(&["run", dir, "--grant", "console"]));
+            let (output, seconds) = cpu::cpu_timed(|| una(&["run", dir, "--grant", "console"]));
             assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
             assert_eq!(stdout(&output), format!("{steps}\n"));
             seconds
@@ -2411,7 +2413,7 @@ pub main() -> Unit
 ";
 
 #[test]
-fn text_len_and_slice_take_constant_time_on_any_text() {
+fn text_len_and_slice_take_constant_cpu_time_on_any_text() {
     // `spec/22 §6` rule 1 and the performance rule: `.len` is O(1), and a position O(1) once
     // the text's index is built, which appends extend; so a slice at each of n positions of a
     // non-ASCII text takes linear time. Ten times the text takes under 30 times as long, about
@@ -2434,7 +2436,7 @@ fn text_len_and_slice_take_constant_time_on_any_text() {
         )
         .unwrap();
         let (output, seconds) =
-            timing::timed(|| una(&["run", dir, "--grant", "console", "--max-memory", "1024"]));
+            cpu::cpu_timed(|| una(&["run", dir, "--grant", "console", "--max-memory", "1024"]));
         assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
         // Each of the `count` slices adds 1 and the length `count`.
         let total = count * (count + 1);

@@ -10,7 +10,8 @@
 //! confinement recorded, which `una-z3` requires before it calls Z3's front end. A step that
 //! fails ends the attempt: there is no unconfined fallback. The parent uses [`spawn`] to start
 //! the child with an empty environment and only its three pipes, and on macOS [`footprint`]
-//! to read the child's physical footprint.
+//! to read the child's physical footprint; [`usage`] reads the processor time of the children
+//! it waited for, which the scaling tests of `una-cli` measure instead of the wall clock (#1656).
 //!
 //! The bindings are through the `libc` crate's declarations, and four of macOS's that it
 //! lacks (`sandbox_init`, `sandbox_free_error`, `sandbox_check`, `mach_task_self_`), each bound
@@ -26,6 +27,7 @@ pub mod sandbox;
 #[cfg(target_os = "linux")]
 pub mod seccomp;
 pub mod spawn;
+pub mod usage;
 
 use std::fmt;
 use std::io;
