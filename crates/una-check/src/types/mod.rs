@@ -882,6 +882,8 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
         &residue,
         &mut report,
     ));
+    // `spec/07 §5` rule 7: the timing sites a `via` function reaches (#1673).
+    authority::via_timing(&env, &findings, &mut report);
     timing_sites.sort_by_key(|(_, _, span, _)| (span.file, span.start, span.end));
     // ADR 0123 IF6: the auto-answers of the reply rights each `start` moves.
     server::start_rights(&env, &findings, &mut report);

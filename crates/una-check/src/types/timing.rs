@@ -1618,6 +1618,80 @@ pub(crate) fn reached_from(
     seen
 }
 
+/// The `via` functions of the package and the code each reaches (`spec/07 §5` rule 7, ADR 0098
+/// amendment of 2026-11-06, #1673): for each node of the graph of ADR 0116 P1, a `via`
+/// function whose code reaches it, along the call edges, the edge of each policy call to its
+/// `via` included, the operations and the handlers that can serve them, and `Λ`.
+pub(crate) struct ViaReach {
+    /// For each node, the `via` function the search reached it from first, `None` when no
+    /// `via` function reaches it.
+    by_node: Vec<Option<usize>>,
+    /// The number of functions and of handlers, and the node `Λ`, to find a caller's node as
+    /// [`Graph::node_of`] does.
+    functions: usize,
+    handlers: usize,
+    lambda: usize,
+}
+
+impl ViaReach {
+    /// A `via` function whose code reaches the node `caller` holds, `None` when none does or the
+    /// code is in no node of the graph.
+    pub(crate) fn via_of(&self, caller: Option<Caller>) -> Option<usize> {
+        let node = match caller? {
+            Caller::Function(f) => (f < self.functions).then_some(f)?,
+            Caller::Handler(h) => (h < self.handlers).then_some(self.functions + h)?,
+            Caller::Lambda => self.lambda,
+        };
+        self.by_node.get(node).copied().flatten()
+    }
+}
+
+/// [`ViaReach`] of the package: the graph of ADR 0116 P1, O(F + H + C + O + E), and one search
+/// of it from every `via` function at once, each node taking the first `via` that reaches it,
+/// O(V + E).
+pub(crate) fn via_reach(env: &Env<'_>, findings: &Findings) -> ViaReach {
+    let graph = graph(env, findings);
+    let mut by_node: Vec<Option<usize>> = vec![None; graph.succ.len()];
+    let mut queue: std::collections::VecDeque<usize> = std::collections::VecDeque::new();
+    for &via in env.vias.keys() {
+        if let Some(slot) = by_node.get_mut(via)
+            && slot.is_none()
+            && via < graph.functions
+        {
+            *slot = Some(via);
+            queue.push_back(via);
+        }
+    }
+    while let Some(node) = queue.pop_front() {
+        let first = by_node.get(node).copied().flatten();
+        for &to in graph.succ.get(node).map_or(&[][..], Vec::as_slice) {
+            if let Some(slot) = by_node.get_mut(to)
+                && slot.is_none()
+            {
+                *slot = first;
+                queue.push_back(to);
+            }
+        }
+    }
+    ViaReach {
+        by_node,
+        functions: graph.functions,
+        handlers: graph.handlers,
+        lambda: graph.lambda,
+    }
+}
+
+/// Whether the preview's `τ_conc` of a site is `⊤` (ADR 0116 IF6): it lies inside a lambda, a
+/// task or a handler's operation, or in a function that a part of a task construct can reach
+/// (`concurrent`, [`concurrent_functions`]); `public` otherwise.
+pub(crate) fn preview_concurrent(
+    seed: &TimingSeed,
+    function: Option<usize>,
+    concurrent: &BTreeSet<usize>,
+) -> bool {
+    seed.unplaced || function.is_some_and(|f| concurrent.contains(&f))
+}
+
 /// The functions outside what the package's findings hold precisely that its code can reach,
 /// each `⊤` for `L_res`, with the message that names it (#1148, failing closed until #1166):
 /// - a function of a standard module whose body holds a `tasks` statement or a `first of`,
@@ -2416,7 +2490,7 @@ pub(crate) fn timing(
     let mut sources = gather.sources;
     sources.extend(gather.values);
     // `τ_conc` (IF6): `⊤` when a part of a task construct can run beside the site.
-    if seed.unplaced || function.is_some_and(|f| concurrent.contains(&f)) {
+    if preview_concurrent(seed, function, concurrent) {
         sources.push((top, "tasks that can run beside it".to_owned()));
     }
     let label = sources

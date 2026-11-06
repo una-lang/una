@@ -3654,6 +3654,136 @@ pub(crate) fn within_timing(
     entries
 }
 
+/// `spec/07 §5` rule 7 (ADR 0098, amendment of 2026-11-06, #1673): a deadline or race outcome
+/// may reach the result of a `via` function only if its concurrent label is `public`. No label
+/// is checked in a `via` body (rule 3), so every outcome of a timing site that the body reaches
+/// counts as reaching the result: each `within` (with `start ... within`), `first of`, `for ever
+/// within` and statement a `limiter` installation scopes over, in a `via` body or in code it
+/// reaches along the graph of ADR 0116 P1, is U4001 at the site when its concurrent label is
+/// above `public`.
+///
+/// The concurrent label is the site's `τ_conc`, the preview's ([`timing::preview_concurrent`]),
+/// as every timing site's label uses it until the precise one of ADR 0116's amendment of
+/// 2026-10-25 lands: `⊤` inside a lambda, a task or a handler's operation, or in a function a
+/// part of a task construct can reach, `public` otherwise. `L_res` is not joined, and nothing
+/// else of the site's timing label is checked: the rest is the `via`'s own data, which rule 3
+/// trusts it to release.
+///
+/// O(F + H + C + O + E) for the graph and one search of it from every `via` function at once,
+/// O(F + E) for [`timing::concurrent_functions`], then O(log n) per site, so linear in the
+/// package up to the logarithms, with no work at all in a package without a `via` function.
+///
+/// [`timing::preview_concurrent`]: super::timing::preview_concurrent
+/// [`timing::concurrent_functions`]: super::timing::concurrent_functions
+pub(crate) fn via_timing(env: &Env<'_>, findings: &Findings, report: &mut Report<'_>) {
+    if env.vias.is_empty() {
+        return;
+    }
+    // Each site: its words, what its outcome is, its span, its function and its seed.
+    let mut sites: Vec<(
+        &'static str,
+        &'static str,
+        Span,
+        Option<usize>,
+        &super::timing::TimingSeed,
+    )> = Vec::new();
+    let mut withins: Vec<&super::within::WithinSite> = findings.withins.iter().collect();
+    withins.sort_by_key(|site| (site.span.file, site.span.start, site.span.end));
+    withins.dedup_by_key(|site| site.key);
+    for site in withins {
+        let what = match site.construct {
+            super::within::Construct::Within => "whether it meets its deadline",
+            super::within::Construct::FirstOf => "which branch wins",
+        };
+        sites.push((
+            site.construct.words(),
+            what,
+            site.span,
+            site.function,
+            &site.seed,
+        ));
+    }
+    for site in &findings.deadline_loops {
+        sites.push((
+            "for ever within",
+            "when its deadline ends it",
+            site.span,
+            site.function,
+            &site.seed,
+        ));
+    }
+    for site in &findings.limiter_sites {
+        sites.push((
+            "limiter",
+            "whether `acquire` finds a token",
+            site.span,
+            site.function,
+            &site.seed,
+        ));
+    }
+    if sites.is_empty() {
+        return;
+    }
+    sites.sort_by_key(|(_, _, span, _, _)| (span.file, span.start, span.end));
+    sites.dedup_by_key(|(_, _, span, _, _)| *span);
+    let reach = super::timing::via_reach(env, findings);
+    let concurrent = super::timing::concurrent_functions(findings);
+    let top = Label::top(&env.categories);
+    let qualified = |id: usize| {
+        env.functions
+            .get(id)
+            .map(|def| {
+                let module = env.modules.get(def.module).map_or("", |m| m.path.as_str());
+                format!("{module}.{}", def.name)
+            })
+            .unwrap_or_default()
+    };
+    for (words, what, span, function, seed) in sites {
+        let Some(via) = reach.via_of(seed.node) else {
+            continue;
+        };
+        if !super::timing::preview_concurrent(seed, function, &concurrent) {
+            continue;
+        }
+        // A `limiter` whose statement can run beside other tasks is U4001 at its binding by
+        // `spec/27 §10` already, since the preview's `τ_conc` there is `⊤`, above `internal`:
+        // one diagnostic at the site, not two.
+        if words == "limiter" && report.has(Code::U4001, span) {
+            continue;
+        }
+        let via_name = qualified(via);
+        let policy = env.vias.get(&via).copied();
+        let policy_name = policy
+            .and_then(|id| env.functions.get(id))
+            .map_or_else(String::new, |def| def.name.to_owned());
+        let through = if seed.node == Some(super::timing::Caller::Function(via)) {
+            String::new()
+        } else {
+            " through the code it reaches".to_owned()
+        };
+        let mut diagnostic = report.make(
+            Code::U4001,
+            span,
+            format!(
+                "this `{words}` can run beside other tasks of the program, so its concurrent label is `{top}`, above `public`: {what} depends on their timing, and its outcome can reach the result of the `via` function `{via_name}`{through}, where no label is checked, so the policy `{policy_name}` would release that timing (`spec/07 §5` rule 7)"
+            ),
+        );
+        if let Some(FnAst::Policy(decl)) = policy
+            .and_then(|id| env.functions.get(id))
+            .map(|def| def.ast)
+        {
+            diagnostic.related.push(report.related(
+                decl.via.span,
+                format!("the policy `{policy_name}` runs `{via_name}`"),
+            ));
+        }
+        diagnostic.repairs.push(Report::advice(format!(
+            "call the policy `{policy_name}` outside every part of a task construct, so that no task runs beside it, or move the `{words}` out of the `via` function and the code it reaches"
+        )));
+        report.push(diagnostic);
+    }
+}
+
 /// U7003: each module uses `checked` at most `[escape_budget] checked_per_module` times; the
 /// first use beyond the budget is reported, with the later ones related (`spec/06 §6`).
 pub(crate) fn budget(
