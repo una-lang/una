@@ -105,9 +105,13 @@ opt-level = 1
 debug-assertions = true
 overflow-checks = true
 
-# The runtime and the HTTP engine it links stay at opt-level 0: tests of `crates/una-cli/tests/http.rs`
-# read the symbols that a built program links, and inlining removes names they look for (`Server::stop`
-# at opt-level 1; the TLS stack's names when the dependencies are at opt-level 2, so they stay at 1).
+# The crates `una-rt` and `una-http` stay at opt-level 0: tests of `crates/una-cli/tests/http.rs` read
+# the symbols that a built program links, and inlining removes names they look for (`Server::stop` at
+# opt-level 1; the TLS stack's names when the dependencies are at opt-level 2, so they stay at 1). The
+# other crates of the runtime archive `libuna_rt.a` (una-interp, una-sys, una-core, una-hash, cap,
+# rustls) build at opt-level 1, as do the release-gate steps that build this profile (the ASan steps of
+# `scripts/sanitize.sh`, `cargo test --workspace` of the `build` gate, the `determinism` and `native`
+# gates); the `--release` builds of `scripts/release-gates.sh` do not use it.
 [profile.dev.package.una-rt]
 opt-level = 0
 [profile.dev.package.una-http]
