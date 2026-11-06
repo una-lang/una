@@ -14,6 +14,7 @@ cd "$root" || exit 2
 tier_script="$here/gate-tier.sh"
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/gate-tier-selftest.XXXXXX") || exit 2
 trap 'rm -rf "${tmp:?}"' EXIT
+export UNA_GATE_READERS_CACHE="$tmp/readers"
 fails=0 n=0
 
 check() { # <name> <expected tier> <extra text> <output>

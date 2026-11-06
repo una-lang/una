@@ -186,6 +186,11 @@ suite_files() {
 readers_table=""
 readers_of() {
     local p=$1 suite f b lit
+    # UNA_GATE_READERS_CACHE (set by the self-test, which classifies many lists of one tree) names a
+    # file that holds the table once built.
+    if [ -z "$readers_table" ] && [ -n "${UNA_GATE_READERS_CACHE:-}" ] && [ -s "$UNA_GATE_READERS_CACHE" ]; then
+        readers_table=$(cat "$UNA_GATE_READERS_CACHE")
+    fi
     if [ -z "$readers_table" ]; then
         # One line per suite and literal: `<binary id> <literal>`, read once per invocation. A literal
         # starts with any top-level entry of the repository (docs, examples, tests, README.md, images, ...).
@@ -204,6 +209,7 @@ readers_of() {
             done
         done
         readers_table="${readers_table}-"
+        [ -n "${UNA_GATE_READERS_CACHE:-}" ] && printf '%s' "$readers_table" > "$UNA_GATE_READERS_CACHE"
     fi
     while read -r b lit; do
         [ -n "$lit" ] || continue
