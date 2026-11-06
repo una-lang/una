@@ -6,3 +6,21 @@ pub elapse(d: Int of Millisecond) -> Unit
   requires d >= 0
 =
   unit
+
+--- Why `test_request` refuses a request: the host would answer it `400` (ADR 0123 rule 21,
+--- `spec/31 §4`).
+pub kind TestRequestError = | Refused
+
+--- A request as the host would read it from a peer (ADR 0123 rule 21, `spec/31 §4`): its target
+--- read by the host's own rules, the only header `host: test`, the peer `192.0.2.1` and the
+--- listener `test`. Fails with `Refused` where the host would answer `400`. Usable only in
+--- examples and in handlers that only examples install (`spec/14 §4`).
+pub test_request(method: Method, target: Text, body: Text) -> Request
+  fails TestRequestError
+=
+  fail Refused
+
+--- An exchange of `request` with a fresh reply right, distinct from every other reply right of
+--- the run (ADR 0123 rule 21, `spec/31 §1`). Usable only in examples and in handlers that only
+--- examples install (`spec/14 §4`).
+pub test_exchange(request: Request) -> Exchange = test_exchange(request)

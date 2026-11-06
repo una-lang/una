@@ -151,18 +151,21 @@ fn of_prelude() -> String {
 const TESTING: &str = include_str!("../std/testing.una");
 
 /// What edition 0.4 adds to `std.testing`: `elapse` (ADR 0116 rule 19), whose duration is in
-/// `Millisecond` of `std.time`.
+/// `Millisecond` of `std.time`, and `test_request` and `test_exchange` (ADR 0123 rule 21),
+/// over the server's kinds of `std.host`.
 const TESTING_0_4: &str = include_str!("../std/testing_0_4.una");
 
-/// The line of `std.testing` after which edition 0.4 imports `Millisecond` from `std.time`.
+/// The line of `std.testing` after which edition 0.4 imports `Millisecond` from `std.time` and
+/// the server's kinds from `std.host`.
 const TESTING_MODULE_LINE: &str = "module std.testing\n";
 
-/// `std.testing` in `edition`: in edition 0.4, it imports `Millisecond` and adds `elapse`.
+/// `std.testing` in `edition`: in edition 0.4, it imports `Millisecond` and the server's kinds,
+/// and adds `elapse`, `test_request` and `test_exchange`.
 fn testing_source(edition: Edition) -> String {
     if edition >= Edition::V0_4 {
         let imported = TESTING.replacen(
             TESTING_MODULE_LINE,
-            "module std.testing\n\nimport std.time (Millisecond)\n",
+            "module std.testing\n\nimport std.host (Exchange, Method, Request)\nimport std.time (Millisecond)\n",
             1,
         );
         format!("{imported}{TESTING_0_4}")
