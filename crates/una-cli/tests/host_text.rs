@@ -24,7 +24,9 @@ fn runtime() {
     BUILT.get_or_init(|| {
         // Set by the nextest setup script (.config/nextest.toml): the library is built, and a second build in each test
         // process would rewrite it under the tests that link it.
-        if std::env::var_os("UNA_RT_PREBUILT").is_some() {
+        #[allow(clippy::disallowed_methods)]
+        let prebuilt = std::env::var_os("UNA_RT_PREBUILT").is_some();
+        if prebuilt {
             return;
         }
         let status = Command::new(env!("CARGO"))
