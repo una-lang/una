@@ -86,10 +86,10 @@ fast|crates/una-cli/tests/runtime.rs|una-cli::runtime
 fast|crates/una-cli/tests/release_gates.rs|una-cli::release_gates
 fast|crates/una-cli/tests/conformance/main.rs|una-cli::conformance
 fast|crates/una-cli/tests/snapshots/cli__help.snap|una-cli::cli
-fast|crates/una-fmt/src/lib.rs|package(una-fmt)
+full|crates/una-fmt/src/lib.rs|
 fast|crates/una-explain/src/lib.rs|package(una-explain)
-fast|crates/una-lsp/src/lib.rs|package(una-lsp)
-fast|crates/una-diag/src/human.rs|package(una-diag)
+full|crates/una-lsp/src/lib.rs|
+full|crates/una-diag/src/human.rs|
 # Configuration
 full|Cargo.toml|
 full|Cargo.lock|
@@ -133,7 +133,7 @@ full|tests/native/rejected.txt|
 fast|tests/conformance/types/new_case.una|una-cli::verification
 fast|tests/conformance/types/new_case.una|una-cli::runtime
 fast|tests/conformance/types/new_case.una|tests__conformance__types__new_case_una
-fast|tests/serve/answer_timeout/consumer.jsonl|una-http::serve_scripts
+full|tests/serve/answer_timeout/consumer.jsonl|
 fast|tests/serve_runs/serve_section_health/src/main.una|una-cli::serve_runs
 fast|tests/demo/checkpoint-1/hello.una|una-cli::guide
 # Documentation
@@ -146,6 +146,98 @@ fast|README.md|
 fast|site/index.html|
 fast|formal/F1/Basic.lean|
 fast|.claude/state/STATE.md|
+# Adversarial cases (review rounds 1 and 2 and own): diagnostics, rewriting crates, snapshots,
+# root files, case variants, dot segments, corpora, configuration look-alikes.
+full|crates/una-diag/src/diagnostic.rs|
+full|crates/una-diag/src/lib.rs|
+full|crates/una-diag/src/json.rs|
+full|crates/una-diag/tests/json_shape.rs|
+full|crates/una-diag/tests/snapshots/human_rendering__x.snap|
+full|crates/una-fmt/src/layout.rs|
+full|crates/una-fmt/tests/format.rs|
+full|crates/una-lsp/src/server.rs|
+full|crates/una-lsp/tests/session.rs|
+full|crates/una-report/src/lib.rs|
+fast|crates/una-explain/explain/U0101.md|una-cli::explain_examples
+fast|crates/una-cli/tests/snapshots/verification__queries_hello.snap|una-cli::verification
+fast|crates/una-cli/tests/snapshots/verification__queries_wordfreq.snap|una-cli::verification
+fast|crates/una-cli/tests/snapshots/runtime__run_hello_json.snap|una-cli::runtime
+fast|crates/una-cli/tests/snapshots/runtime__test_events_json.snap|una-cli::runtime
+fast|crates/una-cli/tests/snapshots/guide__x.snap|una-cli::guide
+full|crates/una-cli/tests/snapshots/native__x.snap|
+full|crates/una-cli/tests/snapshots/no_prefix.snap|
+full|crates/una-cli/tests/snapshots/nosuchsuite__x.snap|
+fast|README.md|una-cli::guide
+fast|images/logo.svg|una-cli::guide
+full|crates/una-lsp/../../docs/x.md|
+full|tests/conformance/SECURITY/x.una|
+full|tests/conformance/Security/flow.una|
+full|docs/reviews/v0.1-review/ADVERSARIAL/new/src/main.una|
+full|docs/reviews/r/d/adversarial/c/src/main.una|
+full|Crates/una-rt/src/lib.rs|
+full|CRATES/una-cli/src/main.rs|
+full|crates/UNA-RT/src/lib.rs|
+full|Scripts/release.sh|
+full|./crates/una-rt/src/lib.rs|
+full|./docs/a.md|
+full|docs/../crates/una-rt/src/lib.rs|
+full|docs/./../scripts/release-gates.sh|
+full|changelog.d/../Cargo.lock|
+full|site/../scripts/x.sh|
+full|images/../install.sh|
+full|docs/compiler/../../.cargo/config.toml|
+full|docs//a.md|
+full|crates\una-rt\src\lib.rs|
+full|"crates/una-rt/src/\303\251.rs"|
+full|crates/una-rt/tests/ffi.rs|
+full|crates/una-http/tests/data/x.bin|
+full|crates/una-interp/tests/confine.rs|
+full|tests/native/unsupported.txt|
+full|tests/conformance/runtime/within_runs/ita.lock|
+full|tests/conformance/runtime/for_ever_on_stop/ita.lock|
+full|tests/conformance/security/limits_lambda_handler/src/main.una|
+fast|tests/conformance/names/new_case.una|una-cli::runtime
+fast|tests/conformance/fmt/new_case.una|una-cli::verification
+full|tests/never_named_corpus/x.txt|
+fast|tests/fixtures/examples/events/x.una|una-cli::guide
+full|.gitattributes|
+full|.gitmodules|
+full|.envrc|
+full|rust-toolchain|
+full|Makefile|
+full|justfile|
+full|fuzz/Cargo.toml|
+full|supply-chain/musl.lock|
+full|.agents/harness.toml|
+full|ops/run-gates.sh|
+full|crates/una-check/std/testing.una|
+full|crates/una-cli/build.rs|
+full|crates/una-explain/Cargo.toml|
+full|crates/una-explain/build.rs|
+full|examples/README.md|
+full|examples/wordfreq/src/main.una|
+fast|docs/guide/README.md|una-cli::guide
+fast|docs/spec/13-diagnostics-and-abi.md|
+fast|docs/std/listing.json|
+fast|docs/std/builtins.json|
+fast|formal/README.md|
+fast|.claude/plan/NEXT.md|
+fast|.mcp.json|
+fast|LICENSE|
+fast|CHANGELOG.md|
+fast|SECURITY.md|
+fast|CONTRIBUTING.md|
+full|docs/reviews/v0.1-review/adversarial|
+fast|docs/reviews/v0.1-review/README.md|
+fast|changelog.d/README.md|
+full|crates/una-cli/tests/common/case_lists.rs|
+full|crates/una-cli/tests/conformance/discovery.rs|
+fast|crates/una-cli/tests/conformance/outcome.rs|una-cli::conformance
+fast|crates/una-cli/tests/lsp.rs|una-cli::lsp
+fast|crates/una-cli/tests/verification.rs|una-cli::verification
+fast|crates/una-cli/tests/guide.rs|una-cli::guide
+full|crates/una-cli/src/std_listing.rs crates/una-cli/src/lib.rs|
+full|docs/adr/0001-x.md crates/una-diag/src/diagnostic.rs|
 # Mixed changes: one full path makes the change full
 full|docs/spec/07-information-flow.md crates/una-check/src/lib.rs|
 full|docs/adr/0138-x.md crates/una-rt/src/lib.rs|

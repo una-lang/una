@@ -149,13 +149,17 @@ readers_table=""
 readers_of() {
     local p=$1 suite f b lit
     if [ -z "$readers_table" ]; then
-        # One line per suite and literal: `<binary id> <literal>`, read once per invocation.
+        # One line per suite and literal: `<binary id> <literal>`, read once per invocation. A literal
+        # starts with any top-level entry of the repository (docs, examples, tests, README.md, images, ...).
+        local tops
+        tops=$(git ls-tree --name-only HEAD 2>/dev/null | grep -E '^[A-Za-z0-9._-]+$' | sed 's/\./\\./g' | paste -sd'|' -)
+        [ -n "$tops" ] || tops='docs|examples|scripts|site|tests|fuzz|formal|images|README\.md|CHANGELOG\.md'
         for suite in $SKIPPED_SUITES; do
             for f in $(suite_files "$suite"); do
                 b=${f#crates/}; b="${b%%/*}::$(basename "${f%/main.rs}" .rs)"
                 # A literal path, a bare directory ("examples") or the prefix of a format string
                 # ("tests/conformance/{case}"); matching more than the suite reads only adds tests.
-                for lit in $(grep -oE '"(\.\./)*(docs|examples|scripts|site|tests|fuzz|formal)(/[^"{ ]*)?' "$f" | tr -d '"' | sed -E 's#^(\.\./)+##; s#/$##' | sort -u); do
+                for lit in $(grep -oE "\"(\\.\\./)*($tops)(/[^\"{ ]*)?" "$f" | tr -d '"' | sed -E 's#^(\.\./)+##; s#/$##' | sort -u); do
                     readers_table="${readers_table}$b $lit
 "
                 done
@@ -179,6 +183,23 @@ $readers_table
 EOF2
 }
 
+# A corpus directory tests/<d>/: every skipped suite whose source names `<d>` as a path segment or a
+# string adds itself (the native differential makes the tier full). A corpus that no test source names
+# at all is full: nothing shows which suite reads it.
+corpus_readers_of() {
+    local p=$1 d suite f b hit=0
+    d=${p#tests/}; d=${d%%/*}
+    for suite in $SKIPPED_SUITES; do
+        for f in $(suite_files "$suite"); do
+            grep -qE "[\"/]$d[\"/]" "$f" || continue
+            b=${f#crates/}; b="${b%%/*}::$(basename "${f%/main.rs}" .rs)"
+            if [ "$b" = una-cli::native ]; then go_full "$p: the native differential reads tests/$d"; else add_extra "binary_id($b)"; fi
+        done
+    done
+    grep -rqlE "[\"/]$d[\"/]" crates/*/tests crates/*/src crates/*/build.rs 2>/dev/null || hit=1
+    [ "$hit" = 0 ] || go_full "$p: no test source names tests/$d"
+}
+
 # A test file or directory of a crate's tests/: the binary it belongs to.
 test_binary_of() {
     local p=$1 crate rest name
@@ -188,8 +209,15 @@ test_binary_of() {
     */*) name=${rest%%/*}
         if [ -f "crates/$crate/tests/$name/main.rs" ] || [ -f "crates/$crate/tests/$name.rs" ]; then
             add_extra "binary_id($crate::$name)"
-        elif [ "$crate" = una-cli ] && [ "$name" = snapshots ]; then
-            add_extra "binary_id(una-cli::cli) | binary_id(una-cli::guide) | binary_id(una-cli::install)"
+        elif [ "$name" = snapshots ]; then
+            # insta names a snapshot `<test binary>__<test>.snap`.
+            local stem prefix
+            stem=$(basename "$rest"); prefix=${stem%%__*}
+            if [ "$prefix" != "$stem" ] && [ "$prefix" != native ] && [ -f "crates/$crate/tests/$prefix.rs" ]; then
+                add_extra "binary_id($crate::$prefix)"
+            else
+                return 1
+            fi
         else
             return 1
         fi ;;
@@ -210,9 +238,9 @@ classify() {
     # Soundness code: the checker, the verifier, Core IR, and the parser and lexer that feed them.
     crates/una-check/* | crates/una-verify/* | crates/una-core/* | crates/una-syntax/*)
         go_full "$p: soundness code" ;;
-    crates/una-diag/src/codes.rs)
-        go_full "$p: diagnostic codes" ;;
-    crates/una-diag/src/safe_write.rs | crates/una-crypto/* | crates/una-hash/*)
+    crates/una-diag/*)
+        go_full "$p: diagnostics (severity, which decides rejection; the obligation status; codes; safe writes)" ;;
+    crates/una-crypto/* | crates/una-hash/*)
         go_full "$p: security code" ;;
     crates/una-project/*)
         go_full "$p: supply chain (package manager, registry client, locks)" ;;
@@ -240,13 +268,19 @@ classify() {
     crates/*/tests/*)
         local crate=${p#crates/}; crate=${crate%%/*}
         case "$crate" in
-        una-cli | una-fmt | una-explain | una-report | una-lsp | una-diag)
+        una-cli | una-explain)
             if test_binary_of "$p"; then fast_count=$((fast_count + 1)); else go_full "$p: test support of more than one suite"; fi ;;
         *) go_full "$p: a test of $crate" ;;
         esac ;;
-    crates/una-fmt/* | crates/una-explain/* | crates/una-report/* | crates/una-lsp/* | crates/una-diag/*)
-        local crate=${p#crates/}; crate=${crate%%/*}
-        add_extra "package($crate)"
+    # The explanation texts of `una explain`: Markdown that no check, build or run reads (the crate is
+    # kept out of every executable, #413). Every other crate is full: una-diag decides severity and the
+    # obligation status, una-fmt and una-lsp rewrite sources, una-report is a stub with no test of its own.
+    crates/una-fmt/* | crates/una-lsp/*)
+        go_full "$p: rewrites sources (formatting, quick fixes), so a bug changes the program that is checked and run" ;;
+    crates/una-report/*)
+        go_full "$p: build report assembly, with no suite of its own to run in the fast tier" ;;
+    crates/una-explain/*)
+        add_extra "package(una-explain) | binary_id(una-cli::explain_examples)"
         fast_count=$((fast_count + 1)) ;;
     # Build, test, toolchain, CI and supply-chain configuration.
     Cargo.toml | Cargo.lock | rust-toolchain.toml | clippy.toml | deny.toml | verification.lock | install.sh | \
@@ -265,9 +299,9 @@ classify() {
         fast_count=$((fast_count + 1)) ;;
     scripts/*)
         go_full "$p: a script (gates, release, solver, toolchain, formal track, website bundle, hunt or corpus)" ;;
-    tests/conformance/security/*)
+    tests/conformance/security | tests/conformance/security/*)
         go_full "$p: a security conformance case" ;;
-    docs/reviews/*/adversarial/*)
+    docs/reviews/*/adversarial | docs/reviews/*/adversarial/*)
         go_full "$p: an adversarial review case (read by the native differential and the verification suite)" ;;
     tests/conformance/* | examples/*)
         # The verification and runtime suites read the whole corpus (examples, tests/conformance).
@@ -276,10 +310,10 @@ classify() {
         add_extra "binary_id(una-cli::runtime)"
         fast_count=$((fast_count + 1)) ;;
     tests/*)
-        # Other corpora of tests/ (serve_runs, ...): the suites that read them by path.
-        readers_of "$p"
+        # Other corpora of tests/ (serve_runs, ...): the suites that read them by path or name.
+        readers_of "$p"; corpus_readers_of "$p"
         fast_count=$((fast_count + 1)) ;;
-    docs/* | changelog.d/* | site/* | formal/* | images/* | .claude/* | *.md | LICENSE | .gitignore | .gitattributes | .mcp.json)
+    docs/* | changelog.d/* | site/* | formal/* | images/* | .claude/* | *.md | LICENSE | .gitignore | .mcp.json)
         readers_of "$p"
         fast_count=$((fast_count + 1)) ;;
     *)
@@ -289,7 +323,18 @@ classify() {
 
 if [ -n "$paths" ]; then
     while IFS= read -r p; do
+        case "/$p/" in
+        */./* | */../* | *//*) go_full "$p: a path with . or .. segments (not normalized)"; continue ;;
+        esac
         classify "$p"
+        # A case-insensitive file system opens `tests/conformance/SECURITY` as `security`, and the
+        # corpus reader opens `ADVERSARIAL` as `adversarial`: those two rules also match the lowercase
+        # path (only ever raising the tier; every other uppercase variant is unclassified, so full).
+        lp=$(printf '%s' "$p" | tr 'A-Z' 'a-z')
+        case "$lp" in
+        tests/conformance/security | tests/conformance/security/*) [ "$lp" = "$p" ] || go_full "$p: a security conformance case (case-insensitive)" ;;
+        docs/reviews/*/adversarial | docs/reviews/*/adversarial/*) [ "$lp" = "$p" ] || go_full "$p: an adversarial review case (case-insensitive)" ;;
+        esac
     done <<EOF
 $paths
 EOF

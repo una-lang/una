@@ -173,19 +173,24 @@ The `tests` gate runs `scripts/gate-tests.sh`, in one of two tiers that `scripts
 - `UNA_GATE_TIER=full` is set. The gate script of the harness sets it for the `security-fix`, `soundness-change`, `performance` and `release` workflows, and the nightly run sets it too.
 - The harness run that holds the gate (`UNA_HARNESS_GATE_HELD`) has one of those workflows, or its workflow cannot be read.
 - The changed paths cannot be computed, or no path changed.
+- A changed path is not normalized (a `.` or `..` segment, a leading `./`, a doubled `/`), or is a security conformance case or an adversarial review case in any letter case (a case-insensitive file system opens `SECURITY` as `security`).
 - A changed path is not one of the fast paths listed below. Among them:
   - runtime code: `una-rt`, `una-interp`, `una-codegen`, `una-http`, `una-sys`, `una-link`, `una-z3`, `una-itaty`;
   - soundness code: `una-check`, `una-verify`, `una-core`, and `una-syntax`, whose parser feeds the checker;
-  - security code: `una-crypto`, `una-hash`, `una-diag/src/codes.rs`, `una-diag/src/safe_write.rs`;
+  - security code: `una-crypto`, `una-hash`;
+  - `una-diag`, whose severity decides rejection and which defines the obligation status (`unknown` included), the codes and the safe writes;
+  - `una-fmt` and `una-lsp`, which rewrite sources (formatting, quick fixes), and `una-report`;
   - supply-chain code: `una-project`;
   - the case lists `una-test-cases` and the conformance discovery they include;
   - every manifest and build script, and a crate the rules do not name;
   - every module of `una-cli` but the two of the standard library listing. Each of the others is on the check, build, run, serve, package, solver, grant, limit, contract, manifest, report or repair path;
-  - the Cargo, nextest, toolchain, CI and supply-chain configuration;
+  - the Cargo, nextest, toolchain, CI and supply-chain configuration, and `.gitattributes`;
   - every script under `scripts/` but the two below;
   - the security conformance cases (`tests/conformance/security`) and the adversarial review cases (`docs/reviews/*/adversarial`);
   - the test helpers shared by several suites (`crates/una-cli/tests/common`), and the native differential's own file;
-  - any file the native differential reads by path. That includes every example, since it reads the whole `examples` directory.
+  - any file the native differential reads by path or names as a corpus directory. That includes every example, since it reads the whole `examples` directory;
+  - a corpus directory under `tests/` that no test source names;
+  - a snapshot whose name does not start with the name of a test binary of its crate.
 
 **Fast** runs the same three steps, with nextest limited to every test except two groups:
 
@@ -197,25 +202,25 @@ The `tests` gate runs `scripts/gate-tests.sh`, in one of two tiers that `scripts
 
 To that subset it adds what the change needs:
 
-- the test binary of each changed test file;
-- the whole package of a changed `una-fmt`, `una-explain`, `una-report`, `una-lsp` or `una-diag` file;
+- the test binary of each changed test file, and for a snapshot (`<binary>__<test>.snap`) the binary its name starts with;
+- `una-explain` and the `explain_examples` suite for a changed `una-explain` file;
 - the `interpreter::` and `linkers::` tests of each changed program of `tests/conformance`;
 - the `verification` and `runtime` suites for any change under `tests/conformance`, since they read the whole corpus;
-- each skipped suite whose source names a changed file, or a directory above it, by a literal path, a bare directory or the prefix of a format string.
+- each skipped suite whose source names a changed file, or a directory above it, by a literal path that starts with a top-level entry of the repository (`docs`, `examples`, `tests`, `README.md`, `images`, ...), a bare directory or the prefix of a format string, and, for a changed file under `tests/<d>/`, each skipped suite whose source names `<d>` as a path segment or a string.
 
-Every crate's unit tests, the conformance cases, the Core IR and determinism suites and the documentation tests always run.
+Every crate's unit tests except those whose names match the exclusive timing filter, the conformance cases, the Core IR and determinism suites and the documentation tests always run.
 
 The fast paths are:
 
-- documentation under `docs/` (including `docs/spec` and `docs/adr`; a change that also touches a full path is full), `*.md`, `changelog.d/`, `site/`, `formal/`, `images/` and `.claude/`;
+- documentation under `docs/` (including `docs/spec` and `docs/adr`; a change that also touches a full path is full), `*.md`, `changelog.d/`, `site/`, `formal/`, `images/`, `.claude/`, `LICENSE`, `.gitignore` and `.mcp.json`;
 - the conformance cases outside `security`;
 - the other test corpora under `tests/`;
-- the test files of `una-cli` (but `native.rs`, `common/` and `conformance/discovery.rs`), and the test files of `una-fmt`, `una-explain`, `una-report`, `una-lsp` and `una-diag`;
-- `una-fmt`, `una-explain`, `una-report`, `una-lsp` and `una-diag` (but its codes and safe writes);
+- the test files of `una-cli` (but `native.rs`, `common/` and `conformance/discovery.rs`) and of `una-explain`, and the snapshots of `una-cli` named after one of its test binaries other than `native`;
+- `una-explain`: the explanation texts of `una explain`, which no check, build or run reads;
 - `una-cli/src/std_listing.rs` and `std_builtins.rs`. They render the standard library reference, and the `std_listing` suite holds them to the checker;
 - `scripts/changelog-assemble.sh` and `scripts/demo/`. They are documentation helpers that no gate calls, and their suites, `changelog_fragments` and `demo_scripts`, run in the fast tier.
 
-Both tiers first run `scripts/gate-tier-selftest.sh`. It classifies more than a hundred path lists and conditions with `scripts/gate-tier.sh --paths`, so an edit that loosens the rule fails the gate.
+Both tiers first run `scripts/gate-tier-selftest.sh`. It classifies about two hundred path lists and conditions with `scripts/gate-tier.sh --paths`, so an edit that loosens the rule fails the gate.
 
 The first lines of the gate log name the tier and its reasons. A fast log adds:
 
