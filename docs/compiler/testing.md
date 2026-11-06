@@ -68,7 +68,7 @@ The runner (`cargo test -p una-cli --test conformance`) discovers cases, runs th
 | `pending` | at most 1 | `M1` to `M10` |
 
 - `ok`, `tier0-ok` and `test-pass` appear at most once each.
-- In `error <code> at <line>:<col>`, `<code>` is registered in `spec/13 §4`; `<line>` and `<col>` are 1-based decimal integers, the column counted in Unicode scalar values with the rule of `spec/13 §1` (ADR 0015), and they MUST denote a position of the file: an existing line, and a column at most one past its last character. Two identical `error` lines are malformed, because expectations form a set.
+- In `error <code> at <line>:<col>`, `<code>` is registered in `spec/13 §4`; `<line>` and `<col>` are 1-based decimal integers, the column counted in Unicode scalar values with the rule of `spec/13 §1` (ADR 0015), and they MUST denote a position of the file: an existing line, and a column at most one past its last character. Two identical `error` lines are malformed, because expectations form a set. Since a set would also match a diagnostic reported twice, the runner fails any case in which `una check` reports one diagnostic more than once, with the same code, span and message, whatever the case expects (#932).
 - A single-module case is its own package root (ADR 0015), so its expected errors match diagnostics whose `file` is the case's file name, for example `cap_as_value.una`.
 - `run-output` directives are compared in order, one per printed line; repeats are allowed.
 - `test-fail` names a non-empty example; two identical `test-fail` lines are malformed.
