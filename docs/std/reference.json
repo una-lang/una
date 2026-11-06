@@ -78,8 +78,11 @@
   "std.host Request",
   "std.host ServeError",
   "std.host Status",
+  "std.testing TestRequestError",
   "std.testing elapse",
-  "std.testing fake_hash"
+  "std.testing fake_hash",
+  "std.testing test_exchange",
+  "std.testing test_request"
  ],
  "entries": [
   {

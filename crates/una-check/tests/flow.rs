@@ -689,3 +689,84 @@ relay(file: Text, f: fn(Int) -> Unit) -> Unit\n  uses of f\n  uses @service_file
     );
     assert!(!joined.contains("this value carries"), "{joined}");
 }
+
+/// A package of edition 0.4 whose sites `τ_conc` reaches through each kind of edge of ADR 0116
+/// P1 (slice 2 of #1087): a direct call, a function value through `Λ`, a prelude function with a
+/// function argument (`map`), a `uses of` parameter through `Λ`, an operation through `K(c)` to
+/// a handler, an installation of a handler, a cycle of calls, and a site in the block of a
+/// `tasks` statement.
+const CONCURRENT: &str = "module app\n\nimport std.time (millisecond)\n\ncapability C\n  op get(k: Int) -> Int\n\nhandler h() for C\n  op get(k) = in_handler(k)\n\nstep(n: Int) -> Int = n + 1\n\nsec(key: secret Int) -> secret Int = key * 3\n\ndirect(n: Int) -> Int\n=\n  let w = step(n) within 10 * millisecond\n    if error use 0\n  w\n\nby_value(n: Int) -> Int\n=\n  let w = step(n) within 10 * millisecond\n    if error use 0\n  w\n\nby_map(n: Int) -> Int\n=\n  let w = step(n) within 10 * millisecond\n    if error use 0\n  w\n\nin_handler(n: Int) -> Int\n=\n  let w = step(n) within 10 * millisecond\n    if error use 0\n  w\n\nafter(n: Int) -> Int\n=\n  let w = step(n) within 10 * millisecond\n    if error use 0\n  w\n\nping(n: Int) -> Int = if n > 0 then pong(n - 1) else 0\n\npong(n: Int) -> Int\n=\n  let w = step(n) within 10 * millisecond\n    if error use 0\n  let v = lone(n)\n  if n > 0 then ping(n - 1) else w + v\n\nlone(n: Int) -> Int\n=\n  let w = step(n) within 10 * millisecond\n    if error use 0\n  w\n\napply(f: fn(Int) -> Int, n: Int) -> Int = f(n)\n\npub run_direct(key: secret Int, n: Int) -> secret Int\n=\n  together\n    let a = direct(n)\n    let b = sec(key)\n  b\n\npub run_value(n: Int) -> Int\n=\n  together\n    let a = apply(by_value, n)\n    let b = step(n)\n  b\n\npub run_map(n: Int) -> List[Int]\n=\n  together\n    let a = [n].map(each: fn(x: Int) -> by_map(x))\n    let b = step(n)\n  a\n\npub run_op(n: Int) -> Int\n  uses @c: C[get]\n=\n  together\n    let a = @c.get(n)\n    let b = step(n)\n  b\n\npub run_cycle(n: Int) -> Int\n=\n  together\n    let a = ping(n)\n    let b = step(n)\n  b\n\npub run_block(key: secret Int, n: Int) -> Unit\n=\n  tasks\n    start ignore(sec(key))\n    let w = step(n) within 10 * millisecond\n      if error use 0\n    unit\n  let z = after(n)\n  unit\n\ncapability D\n  op get(k: Int) -> Int\n\nhandler hd() for D\n  op get(k) = in_install(k)\n\nin_install(n: Int) -> Int\n=\n  let w = step(n) within 10 * millisecond\n    if error use 0\n  w\n\nrun_with(f: fn(Int) -> Int, n: Int) -> Int\n  uses of f\n=\n  f(n)\n\nby_uses_of(n: Int) -> Int\n=\n  let w = step(n) within 10 * millisecond\n    if error use 0\n  w\n\npub run_uses_of(key: secret Int, n: Int) -> secret Int\n=\n  together\n    let a = run_with(by_uses_of, n)\n    let b = sec(key)\n  b\n\npub run_install(key: secret Int, n: Int) -> secret Int\n=\n  together\n    let a = @d.get(n) with @d = hd()\n    let b = sec(key)\n  b\n\nignore(n: secret Int) -> Unit = unit\n";
+
+/// Labels by the function that holds what they label, as their text.
+type Labeled = Vec<(String, Option<String>)>;
+
+/// `τ_conc` of the `within` of each function, and `κ` of each construct, by the function that
+/// holds it, as the type check records them (ADR 0116 P2 to P4).
+fn concurrency(text: &str) -> (Labeled, Labeled) {
+    let manifest = "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"0.4\"\n";
+    let (_, types) = run(&[("una.toml", manifest), ("src/app.una", text)], false);
+    let name = |node: &Option<una_check::TimingNode>| match node {
+        Some(una_check::TimingNode::Function(name)) => name.clone(),
+        other => format!("{other:?}"),
+    };
+    let label = |label: &Option<una_core::Label>| label.as_ref().map(ToString::to_string);
+    let graph = &types.timing_graph;
+    let sites = graph
+        .sites
+        .iter()
+        .filter(|site| site.kind == "within")
+        .map(|site| (name(&site.node), label(&site.label)))
+        .collect();
+    let constructs = graph
+        .constructs
+        .iter()
+        .map(|c| (name(&c.node), label(&c.label)))
+        .collect();
+    (sites, constructs)
+}
+
+#[test]
+fn tau_conc_follows_every_kind_of_edge_from_the_parts_of_a_construct() {
+    let (sites, constructs) = concurrency(CONCURRENT);
+    let some = |text: &str| Some(text.to_owned());
+    let at = |function: &str| -> Vec<Option<String>> {
+        sites
+            .iter()
+            .filter(|(name, _)| name == function)
+            .map(|(_, label)| label.clone())
+            .collect()
+    };
+    // `κ` of each construct: the parts' own reads and what they reach.
+    assert_eq!(
+        constructs,
+        [
+            ("app.run_direct".to_owned(), some("secret")),
+            ("app.run_value".to_owned(), some("restricted")),
+            ("app.run_map".to_owned(), some("restricted")),
+            ("app.run_op".to_owned(), some("public")),
+            ("app.run_cycle".to_owned(), some("public")),
+            ("app.run_block".to_owned(), some("secret")),
+            ("app.run_uses_of".to_owned(), some("restricted")),
+            ("app.run_install".to_owned(), some("secret")),
+        ]
+    );
+    // A direct call from a branch beside work on `key`.
+    assert_eq!(at("app.direct"), [some("secret")]);
+    // A function value, through `apply`'s call and `Λ`; a lambda given to `map`, through `Λ`.
+    assert_eq!(at("app.by_value"), [some("restricted")]);
+    assert_eq!(at("app.by_map"), [some("restricted")]);
+    // An operation, through its capability to the handler that serves it: beside a construct
+    // whose `κ` is `public`, which is not the same as nothing beside it.
+    assert_eq!(at("app.in_handler"), [some("public")]);
+    // A `uses of` parameter called in `run_with`, through `Λ`.
+    assert_eq!(at("app.by_uses_of"), [some("restricted")]);
+    // A handler installed in a branch, whose operation calls the function.
+    assert_eq!(at("app.in_install"), [some("secret")]);
+    // A cycle shares one `conc`, and so does what it calls.
+    assert_eq!(at("app.pong"), [some("public")]);
+    assert_eq!(at("app.lone"), [some("public")]);
+    // A site in the block of a `tasks` statement runs beside its tasks (P2).
+    assert_eq!(at("app.run_block"), [some("secret")]);
+    // Called after the statement has ended, nothing runs beside it.
+    assert_eq!(at("app.after"), [None]);
+}
