@@ -109,9 +109,9 @@ overflow-checks = true
 # the symbols that a built program links, and inlining removes names they look for (`Server::stop` at
 # opt-level 1; the TLS stack's names when the dependencies are at opt-level 2, so they stay at 1). The
 # other crates of the runtime archive `libuna_rt.a` (una-interp, una-sys, una-core, una-hash, cap,
-# rustls) build at opt-level 1, as do the release-gate steps that build this profile (the ASan steps of
-# `scripts/sanitize.sh`, `cargo test --workspace` of the `build` gate, the `determinism` and `native`
-# gates); the `--release` builds of `scripts/release-gates.sh` do not use it.
+# rustls) build at opt-level 1. The release gates keep opt-level 0: `scripts/sanitize.sh` and
+# `scripts/release-gates.sh` export `CARGO_PROFILE_DEV_OPT_LEVEL=0`, which sets the profile-wide value
+# and leaves the per-package values below as they are.
 [profile.dev.package.una-rt]
 opt-level = 0
 [profile.dev.package.una-http]

@@ -26,6 +26,10 @@ set -u
 
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
+# The test profile of the per-PR gate is opt-level 1 for speed (#1697); the release evidence keeps
+# the unoptimized build it always had. Crates with their own opt-level in Cargo.toml (una-rt and
+# una-http at 0, una-link, object and sha2 at 3) keep it: the variable sets the profile-wide value only.
+export CARGO_PROFILE_DEV_OPT_LEVEL=0
 
 fail() {
     echo "sanitize: FAIL ($1)" >&2
