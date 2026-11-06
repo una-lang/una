@@ -1070,12 +1070,9 @@ impl<'a> Checker<'_, 'a, '_> {
         self.task_word = word;
         self.server_branch = branch;
         self.task_depth -= 1;
-        let tau = self.race_close(&open);
-        // ADR 0116 P2: `κ` of the race is `τ⁰` of the race's own seed.
-        if let Some(site) = self.findings.withins.last() {
-            let seed = site.seed.clone();
-            self.construct_seed(construct, seed);
-        }
+        let (tau, seed) = self.race_close(&open);
+        // ADR 0116 P2: `κ` of the race is `τ⁰` of the race's own seed, over every branch.
+        self.construct_seed(construct, seed);
         let reached: Vec<(Span, Ty)> = types
             .iter()
             .filter(|(_, ty)| self.resolve(ty) != Ty::Never)

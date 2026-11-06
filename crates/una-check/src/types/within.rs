@@ -165,8 +165,9 @@ impl Checker<'_, '_, '_> {
     }
 
     /// Closes the `first of` that `open` opened, once its branches are checked: records the
-    /// site, and returns `t`, the label of its value.
-    pub(crate) fn race_close(&mut self, open: &OpenWithin) -> Label {
+    /// site, and returns `t`, the label of its value, and the race's seed, from which `κ` of the
+    /// race comes (ADR 0116 P2).
+    pub(crate) fn race_close(&mut self, open: &OpenWithin) -> (Label, TimingSeed) {
         self.ctx.timing = open.saved.clone();
         let seed = self.timing_end();
         self.findings.withins.push(WithinSite {
@@ -174,9 +175,9 @@ impl Checker<'_, '_, '_> {
             key: open.key,
             span: open.span,
             function: self.current,
-            seed,
+            seed: seed.clone(),
         });
-        open.tau.clone()
+        (open.tau.clone(), seed)
     }
 
     /// The failure of `e within d`: `Timed[E]` when `e` fails with `E`, else `Deadline`.

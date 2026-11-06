@@ -276,7 +276,15 @@ impl Checker<'_, '_, '_> {
             span,
             node: self.caller(),
             parent: self.parts.last().copied(),
-            seed: TimingSeed::default(),
+            // `⊤` until `construct_seed` records the seed, so a construct whose seed is never
+            // recorded fails closed (P4, F item 6).
+            seed: TimingSeed {
+                sources: vec![(
+                    Label::top(&self.env.categories),
+                    "a construct whose seed was not recorded".to_owned(),
+                )],
+                ..TimingSeed::default()
+            },
         });
         id
     }
@@ -1937,9 +1945,15 @@ pub(crate) struct Concurrency {
 }
 
 impl Concurrency {
-    /// `ctx` at a place whose innermost construct is `construct`, `None` outside every one.
+    /// `ctx` at a place whose innermost construct is `construct`, `None` outside every one, and
+    /// `⊤` for an id that names no construct, failing closed.
     pub(crate) fn ctx_at(&self, construct: Option<usize>) -> Option<Label> {
-        construct.and_then(|id| self.ctx.get(id).cloned())
+        construct.map(|id| {
+            self.ctx
+                .get(id)
+                .cloned()
+                .unwrap_or_else(|| self.top.clone())
+        })
     }
 
     /// `τ_conc` of a site whose checking recorded `seed` (P4): `conc` of its node joined with
@@ -1980,17 +1994,22 @@ pub(crate) fn concurrency(env: &Env<'_>, findings: &Findings, graph: &Graph) -> 
         .map(|c| seed_label(env, graph, &c.seed).0)
         .collect();
     let mut ctx: Vec<Label> = Vec::with_capacity(kappa.len());
+    let top = Label::top(&env.categories);
     for (id, c) in findings.constructs.iter().enumerate() {
         una_core::label_counters::pass_step();
-        let own = kappa.get(id).cloned().unwrap_or_else(Label::public);
-        let outer = c.parent.and_then(|p| ctx.get(p)).cloned();
+        let own = kappa.get(id).cloned().unwrap_or_else(|| top.clone());
+        // A parent always has a lower id; one that names no construct counts as `⊤`.
+        let outer = c
+            .parent
+            .map(|p| ctx.get(p).cloned().unwrap_or_else(|| top.clone()));
         ctx.push(outer.map_or_else(|| own.clone(), |outer| outer.join(&own)));
     }
     let nodes = graph.succ.len();
     let mut seed: Vec<Option<Label>> = vec![None; nodes];
     for edge in &findings.graph_edges {
         una_core::label_counters::pass_step();
-        let Some(at) = edge.construct.and_then(|id| ctx.get(id)) else {
+        // An id that names no construct counts as `⊤`, failing closed.
+        let Some(at) = edge.construct.map(|id| ctx.get(id).unwrap_or(&top)) else {
             continue;
         };
         let to = match &edge.to {
@@ -2019,7 +2038,7 @@ pub(crate) fn concurrency(env: &Env<'_>, findings: &Findings, graph: &Graph) -> 
         functions: graph.functions,
         handlers: graph.handlers,
         lambda: graph.lambda,
-        top: Label::top(&env.categories),
+        top,
     }
 }
 
