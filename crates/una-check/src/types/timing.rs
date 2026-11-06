@@ -175,6 +175,8 @@ pub(crate) struct ConstructNode {
     pub(crate) node: Option<Caller>,
     /// The innermost construct whose part holds it.
     pub(crate) parent: Option<usize>,
+    /// The seed of `κ`, `τ⁰` of the whole construct (P2): its parts, its list and its bound.
+    pub(crate) seed: TimingSeed,
 }
 
 /// One frame of [`Checker::timing_start`]: where the site's locals start, and its seed.
@@ -274,8 +276,16 @@ impl Checker<'_, '_, '_> {
             span,
             node: self.caller(),
             parent: self.parts.last().copied(),
+            seed: TimingSeed::default(),
         });
         id
+    }
+
+    /// Records `seed`, that of `κ` (P2), for the construct `id`, once its parts are checked.
+    pub(crate) fn construct_seed(&mut self, id: usize, seed: TimingSeed) {
+        if let Some(construct) = self.findings.constructs.get_mut(id) {
+            construct.seed = seed;
+        }
     }
 
     /// Starts checking a part of the construct `id`: the edges and sites recorded until
@@ -1898,6 +1908,121 @@ pub(crate) fn timing(
     }
 }
 
+/// `a ⊔ b` over `None` as the least element: `None` when no construct counts.
+fn join_some(a: &Option<Label>, b: &Option<Label>) -> Option<Label> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a.join(b)),
+        (Some(l), None) | (None, Some(l)) => Some(l.clone()),
+        (None, None) => None,
+    }
+}
+
+/// The labels of concurrent work (ADR 0116 P2 to P4), computed once per package.
+pub(crate) struct Concurrency {
+    /// `κ(C)` of each construct, by its id: `τ⁰` of its whole seed, closed over the graph of
+    /// P1 (P2), so a part that calls a function value or `map` makes it `⊤` (F, item 7).
+    pub(crate) kappa: Vec<Label>,
+    /// `ctx` of each construct: the join of `κ` over it and the constructs around it in its
+    /// body's tree (P3).
+    pub(crate) ctx: Vec<Label>,
+    /// `conc(n)` of each node of the graph (P3), `None` when no part of a construct reaches it.
+    pub(crate) conc: Vec<Option<Label>>,
+    /// The number of functions and of handlers, and the node `Λ`, to find a caller's node as
+    /// [`Graph::node_of`] does.
+    functions: usize,
+    handlers: usize,
+    lambda: usize,
+    /// `⊤`, for a site in no node (P4).
+    top: Label,
+}
+
+impl Concurrency {
+    /// `ctx` at a place whose innermost construct is `construct`, `None` outside every one.
+    pub(crate) fn ctx_at(&self, construct: Option<usize>) -> Option<Label> {
+        construct.and_then(|id| self.ctx.get(id).cloned())
+    }
+
+    /// `τ_conc` of a site whose checking recorded `seed` (P4): `conc` of its node joined with
+    /// `ctx` at it; `⊤` for a site in no node of the graph; `None` when nothing runs beside it.
+    pub(crate) fn tau_conc(&self, seed: &TimingSeed) -> Option<Label> {
+        let node = seed.node.and_then(|caller| match caller {
+            Caller::Function(f) => (f < self.functions).then_some(f),
+            Caller::Handler(h) => (h < self.handlers).then_some(self.functions + h),
+            Caller::Lambda => Some(self.lambda),
+        });
+        let Some(node) = node else {
+            return Some(self.top.clone());
+        };
+        let conc = self.conc.get(node).cloned().flatten();
+        join_some(&conc, &self.ctx_at(seed.construct))
+    }
+}
+
+/// `κ`, `ctx` and `conc` of the package (ADR 0116 P2 to P4).
+///
+/// - **`κ(C)`** is `τ⁰` of the seed of `C` over `graph` ([`seed_label`]), O(size of the seed).
+/// - **`ctx`** comes from the root of each body's tree down, as `ctx(parent) ⊔ κ(C)`: a parent
+///   is recorded before the constructs nested in it, so one pass in the order of the ids gives
+///   it, O(F) joins.
+/// - **`conc`** is the least solution of `conc(n) ≥ conc(m) ⊔ ctx(s)` for every edge from `m`
+///   at the site `s` to `n` (P3). The `ctx(s)` of each recorded edge is a constant, so it seeds
+///   the node the edge goes to (an operation's node for an operation, whose edges lead on to its
+///   capability and its handlers), and `conc(n)` is the join of the seeds of every node that
+///   reaches `n`, `n` included: one pass of [`close`] over the reversed graph, whose strongly
+///   connected components share one label (a cycle of calls shares one `conc`). O(V + E) joins.
+///
+/// In all O(V + E + F + size of the seeds) joins, each O(k) for `k` categories. No label of a
+/// site uses it yet: slice 2 of the plan on #1087 only computes it.
+pub(crate) fn concurrency(env: &Env<'_>, findings: &Findings, graph: &Graph) -> Concurrency {
+    let kappa: Vec<Label> = findings
+        .constructs
+        .iter()
+        .map(|c| seed_label(env, graph, &c.seed).0)
+        .collect();
+    let mut ctx: Vec<Label> = Vec::with_capacity(kappa.len());
+    for (id, c) in findings.constructs.iter().enumerate() {
+        una_core::label_counters::pass_step();
+        let own = kappa.get(id).cloned().unwrap_or_else(Label::public);
+        let outer = c.parent.and_then(|p| ctx.get(p)).cloned();
+        ctx.push(outer.map_or_else(|| own.clone(), |outer| outer.join(&own)));
+    }
+    let nodes = graph.succ.len();
+    let mut seed: Vec<Option<Label>> = vec![None; nodes];
+    for edge in &findings.graph_edges {
+        una_core::label_counters::pass_step();
+        let Some(at) = edge.construct.and_then(|id| ctx.get(id)) else {
+            continue;
+        };
+        let to = match &edge.to {
+            Target::Function(f) => (*f < graph.functions).then_some(*f),
+            Target::Lambda => Some(graph.lambda),
+            Target::Op(cap, op) => graph.ops.get(&(*cap, op.clone())).copied(),
+            Target::Install(h) => (*h < graph.handlers).then(|| graph.handler_node(*h)),
+        };
+        if let Some(slot) = to.and_then(|to| seed.get_mut(to)) {
+            *slot = join_some(slot, &Some(at.clone()));
+        }
+    }
+    let mut pred: Vec<Vec<usize>> = vec![Vec::new(); nodes];
+    for (from, tos) in graph.succ.iter().enumerate() {
+        for &to in tos {
+            if let Some(edges) = pred.get_mut(to) {
+                edges.push(from);
+            }
+        }
+    }
+    let conc = close(&pred, &seed, join_some);
+    Concurrency {
+        kappa,
+        ctx,
+        conc,
+        functions: graph.functions,
+        handlers: graph.handlers,
+        lambda: graph.lambda,
+        top: Label::top(&env.categories),
+    }
+}
+
 /// A node of the graph of ADR 0116 P1, as [`TimingGraph`] shows it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TimingNode {
@@ -1948,6 +2073,9 @@ pub struct TimingPlace {
     pub node: Option<TimingNode>,
     /// The innermost construct whose part holds it, an index of [`TimingGraph::constructs`].
     pub construct: Option<usize>,
+    /// For a construct, `κ` (ADR 0116 P2). For a site, `τ_conc` (P4): `None` when no part of a
+    /// construct can run beside it, which is `τ_conc = public`.
+    pub label: Option<Label>,
 }
 
 /// The graph of ADR 0116 P1 and the construct trees of P3, as checking recorded them, for the
@@ -1965,6 +2093,7 @@ pub struct TimingGraph {
 
 /// [`TimingGraph`] of the package from its findings: O(edges + constructs + sites).
 pub(crate) fn recorded_graph(env: &Env<'_>, findings: &Findings) -> TimingGraph {
+    let conc = concurrency(env, findings, &graph(env, findings));
     let qualified =
         |module: usize, name: &str| match env.modules.get(module).map(|m| m.path.as_str()) {
             Some(path) if !path.is_empty() => format!("{path}.{name}"),
@@ -2008,11 +2137,13 @@ pub(crate) fn recorded_graph(env: &Env<'_>, findings: &Findings) -> TimingGraph 
     let constructs = findings
         .constructs
         .iter()
-        .map(|c| TimingPlace {
+        .enumerate()
+        .map(|(id, c)| TimingPlace {
             kind: c.kind.words(),
             span: c.span,
             node: c.node.map(node),
             construct: c.parent,
+            label: conc.kappa.get(id).cloned(),
         })
         .collect();
     let place = |kind: &'static str, span: una_syntax::Span, seed: &TimingSeed| TimingPlace {
@@ -2020,6 +2151,7 @@ pub(crate) fn recorded_graph(env: &Env<'_>, findings: &Findings) -> TimingGraph 
         span,
         node: seed.node.map(node),
         construct: seed.construct,
+        label: conc.tau_conc(seed),
     };
     let mut sites: Vec<TimingPlace> = findings
         .withins

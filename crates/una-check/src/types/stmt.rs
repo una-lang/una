@@ -838,6 +838,8 @@ impl<'a> Checker<'_, 'a, '_> {
         self.tasks_frames.pop();
         self.part_close();
         let seed = self.timing_end();
+        // ADR 0116 P2: `κ` of the statement, its bound and its block.
+        self.construct_seed(construct, seed.clone());
         self.findings.tasks_sites.push(super::timing::TasksSite {
             span: stmt.span,
             function: self.current,
@@ -958,7 +960,8 @@ impl<'a> Checker<'_, 'a, '_> {
             .server_branch
             .replace(("a branch of `together`", stmt.keyword));
         self.task_depth += 1;
-        // ADR 0116 P2: each branch is a part.
+        // ADR 0116 P2: each branch is a part, and the seed of `κ` covers them all.
+        self.timing_start();
         let construct = self.construct_open(ConstructKind::Together, stmt.span);
         self.part_open(construct);
         let mut bound = Vec::new();
@@ -979,6 +982,8 @@ impl<'a> Checker<'_, 'a, '_> {
             bound.extend(self.locals.drain_from(mark));
         }
         self.part_close();
+        let seed = self.timing_end();
+        self.construct_seed(construct, seed);
         self.task_mark = saved;
         self.task_word = word;
         self.server_branch = branch;
@@ -1066,6 +1071,11 @@ impl<'a> Checker<'_, 'a, '_> {
         self.server_branch = branch;
         self.task_depth -= 1;
         let tau = self.race_close(&open);
+        // ADR 0116 P2: `κ` of the race is `τ⁰` of the race's own seed.
+        if let Some(site) = self.findings.withins.last() {
+            let seed = site.seed.clone();
+            self.construct_seed(construct, seed);
+        }
         let reached: Vec<(Span, Ty)> = types
             .iter()
             .filter(|(_, ty)| self.resolve(ty) != Ty::Never)
@@ -1107,6 +1117,8 @@ impl<'a> Checker<'_, 'a, '_> {
         }
         // S-39: as for `tasks`.
         self.quiet_site(together.span);
+        // ADR 0116 P2: the seed of `κ` covers the list too.
+        self.timing_start();
         let (var_ty, label, from) = self.loop_source(&together.source);
         let var_ty = var_ty.with_label(&label);
         self.typed(together.var.span, &var_ty);
@@ -1133,6 +1145,8 @@ impl<'a> Checker<'_, 'a, '_> {
             false,
         );
         self.part_close();
+        let seed = self.timing_end();
+        self.construct_seed(construct, seed);
         self.locals.truncate(mark);
         self.task_depth -= 1;
         self.task_mark = saved_mark;
