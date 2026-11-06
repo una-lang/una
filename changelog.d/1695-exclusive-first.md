@@ -1,0 +1,1 @@
+- **The exclusive timing tests run first under nextest** (#1695). A test that reserves every slot waits until the pool drains, so the timing tests now run first, one after another, and the other tests then fill every slot: the full run went from 1,720 s to 998 s on the gate machine, with the same 9,843 tests passing. No test is skipped or changed.
