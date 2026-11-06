@@ -1,21 +1,14 @@
--- test: the timing label of a driven step counts every value that the code it reaches computes (spec/26 §2, ADR 0116 IF5, IF7, #1685): a step that calls a function making a `secret` value from its own literals needs its `input` labeled `secret`, as a step on a `secret` state does, so an unlabeled `input` is U4001
+-- test: the timing label of a driven step counts every value that the code it reaches computes (spec/26 §2, ADR 0116 IF5, IF7, #1685, `docs/plan/0116-tau-item7-amendment-draft.md`): a step that calls a function making a `secret` value from its own literals needs its `input` labeled `secret`, as a step on a `secret` state does, so an unlabeled `input` is U4001
 -- spec: spec/26 §2
--- expect: error U4001 at src/counter.una:23:34
+-- expect: error U4001 at src/counter.una:16:34
 module counter
 
 import std.drive (Tick)
 
-spin(n: secret Int) -> secret Int
-=
-  let edit acc: secret Int = 0
-  for i in 0..<n
-    acc = acc + 1
-  acc
-
 hidden() -> Unit
 =
   let k: secret Int = 3000
-  let r = spin(k)
+  let r = k + 1
   unit
 
 pub init() -> Int = 0

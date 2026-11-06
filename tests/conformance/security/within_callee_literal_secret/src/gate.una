@@ -1,10 +1,10 @@
--- test: the timing label of `e within d` counts every value that the code `e` reaches computes (ADR 0116 IF5, #1685): a `secret` value that a called function makes from its own literals, by a labeled binding, a labeled result or a kind with a `secret` field, or that a handler's operation makes, labels the outcome as the same value passed in from the caller does, so it cannot flow into a `public` result (U4001), and the operation the handler serves runs under the timing floor (U4003); the same code on `public` values is accepted
+-- test: the timing label of `e within d` counts every value that the code `e` reaches computes (ADR 0116 IF5, #1685, `docs/plan/0116-tau-item7-amendment-draft.md`): a `secret` value that a called function makes from its own literals, by a labeled binding, a labeled result or a kind with a `secret` field, or that a handler's operation makes, labels the outcome as the same value passed in from the caller does, so it cannot flow into a `public` result (U4001), and the operation the handler serves runs under the timing floor (U4003); the same code on `public` values is accepted
 -- spec: spec/27 §5
--- expect: error U4001 at src/gate.una:73:3
--- expect: error U4001 at src/gate.una:79:3
--- expect: error U4001 at src/gate.una:85:3
--- expect: error U4003 at src/gate.una:89:12
--- expect: error U4001 at src/gate.una:91:3
+-- expect: error U4001 at src/gate.una:66:3
+-- expect: error U4001 at src/gate.una:72:3
+-- expect: error U4001 at src/gate.una:78:3
+-- expect: error U4003 at src/gate.una:82:12
+-- expect: error U4001 at src/gate.una:84:3
 module gate
 
 import std.time (millisecond)
@@ -27,13 +27,6 @@ handler sealed() for Vault
 handler plain() for Shelf
   op check() = idle_open(Open(k: 3000000))
 
-spin(n: secret Int) -> secret Int
-=
-  let edit acc: secret Int = 0
-  for i in 0..<n
-    acc = acc + 1
-  acc
-
 count(n: Int) -> Int
 =
   let edit acc = 0
@@ -50,12 +43,12 @@ key() -> secret Int = 3000000
 bound() -> Bool
 =
   let k: secret Int = 3000000
-  let r = spin(k)
+  let r = k + 1
   true
 
 returned() -> Bool
 =
-  let r = spin(key())
+  let r = key() + 1
   true
 
 built() -> Bool = idle_key(Key(k: 3000000))
