@@ -381,6 +381,30 @@ impl Server {
         self.shared.hard_stop();
     }
 
+    /// Nanoseconds of the engine's monotonic clock since the run began: the clock of a rate's
+    /// retry time ([`Next::Blocked`]).
+    pub fn now(&self) -> u64 {
+        self.clock.now()
+    }
+
+    /// Waits at most `bound` for the serve threads to end, as [`Server::join`] does; `true`
+    /// when every one ended. The threads still running are left to end later, or with the
+    /// process.
+    pub fn join_within(&self, bound: Duration) -> bool {
+        let end = std::time::Instant::now().checked_add(bound);
+        loop {
+            let finished = lock(&self.handles).iter().all(JoinHandle::is_finished);
+            if finished {
+                self.join();
+                return true;
+            }
+            if end.is_some_and(|end| std::time::Instant::now() >= end) {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
     /// Waits for the serve threads to end, which they do once the run is stopping and every
     /// connection is closed. Call [`Server::stop`] first.
     pub fn join(&self) {

@@ -289,6 +289,13 @@ fn reply_of(value: Option<&Value<'_>>) -> una_http::reply::Reply {
     reply
 }
 
+/// Whether a task ended with `result` by the hard stop (ADR 0116 rule 16, ADR 0123 rule 18 item
+/// 6): its rights are answered `503` and append no `unanswered` event, as in native code, which
+/// ends the process at the hard stop without waiting for its tasks (`spec/31 §1` rule 3 item 5).
+pub(crate) fn hard_stopped(result: &Flow<'_>) -> bool {
+    matches!(result, Err(Stop::Abort(Abort::HostStop { .. })))
+}
+
 /// The status of the auto-answers of a task that ended with `result` (rule 4.5): `500` when it
 /// returned, failed or ended alone past its depth; `503` when it was cancelled, cut by `within`
 /// or stopped, the run's stop by an abort included. `alone` says whether the task is a started
@@ -608,18 +615,30 @@ impl<'p> Machine<'p, '_> {
         }
     }
 
-    /// The end of the task that runs, with the status of its auto-answers (rule 4.5): each
-    /// right it still holds, in the order it received them, is answered by the host, once, and
-    /// appends its `unanswered` event, even when another transition of rule 4.7 ended the
-    /// exchange first, so the trace does not depend on timing. Quiet code appends no event, as
-    /// for its operations (S-42, `spec/26 §6` rule 4). O(rights held).
-    pub(super) fn answer_held(&mut self, status: u16) {
+    /// The end of the task that runs, which ended with `result`, `alone` for a started task,
+    /// with the status of its auto-answers ([`status_of`], rule 4.5): each right it still holds,
+    /// in the order it received them, is answered by the host, once, and appends its
+    /// `unanswered` event, even when another transition of rule 4.7 ended the exchange first, so
+    /// the trace does not depend on timing. Quiet code appends no event, as for its operations
+    /// (S-42, `spec/26 §6` rule 4), and neither does a task that the hard stop ended
+    /// ([`hard_stopped`]): native code answers every right `503` and ends the process at once
+    /// there, and the interpreter writes what native code writes. O(rights held).
+    pub(super) fn answer_held(&mut self, result: &Flow<'p>, alone: bool) {
+        let status = status_of(result, alone);
         let run = Rc::clone(&self.run);
         let Some(serving) = run.serve.as_ref() else {
             return;
         };
+        let hard = hard_stopped(result);
+        if hard {
+            // The engine's hard stop, made by the watcher already and here again in case the
+            // task got here first: from it on the engine discards the answers below, and its
+            // serve threads answer the exchanges still open, these included, `503` (rule 18
+            // item 6).
+            serving.port.hard_stop();
+        }
         let ended = serving.rights.end(self.holder());
-        let hushed = self.hushed > 0 && !self.run.quiet_events.get();
+        let hushed = (self.hushed > 0 && !self.run.quiet_events.get()) || hard;
         for (_, mut exchange) in ended {
             exchange.answer(status);
             if !hushed {

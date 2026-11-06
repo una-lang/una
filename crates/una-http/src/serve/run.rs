@@ -1147,6 +1147,14 @@ impl Exchange {
             self.shared.enforce();
             return Sent::Discarded;
         }
+        // After the hard stop only the serve threads end an open exchange (rule 18 item 6): each
+        // answers it `503` in one non-blocking write when it sees the stop. An answer or a reply
+        // of the program from here on is discarded before it can take the exchange, so the
+        // engine's `503` is never lost to one that its owner would then close unwritten. The
+        // flag is stored before any `HardStop` message is sent.
+        if self.shared.hard.load(Ordering::SeqCst) {
+            return Sent::Discarded;
+        }
         if !self.exch.change(TAKEN, REPLIED) {
             return Sent::Discarded;
         }

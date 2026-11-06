@@ -2490,6 +2490,9 @@ impl<'p> Lowerer<'_, 'p, '_> {
             if capability_path.name == "Http" && !limit {
                 self.emitter.http = true;
             }
+            if capability_path.name == "HttpServer" {
+                self.emitter.serve = true;
+            }
             let sited = limit
                 || matches!(
                     (capability_path.name.as_str(), op.as_str()),

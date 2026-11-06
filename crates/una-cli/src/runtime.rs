@@ -512,8 +512,29 @@ pub(crate) fn run_command(
     } else {
         &["main"]
     };
-    if let Some(message) = server_pending(&analysis, &entry, started) {
+    // Whether the program serves: its entry functions use the host's `HttpServer`, so its
+    // serve threads start before `main` (S4 amendment B.2).
+    let pending = server_pending(&analysis, &entry, started);
+    let serves = pending.is_some();
+    // The toolchain's own test builds run a program that serves when `UNA_TEST_RUN_SERVER` is
+    // 1, for the live runs of `tests/serve_live.rs` and the timing oracles of `L_srv`; every
+    // other run keeps the usage error of `spec/31 §1` rule 10.
+    #[cfg(feature = "test-hooks")]
+    let pending = pending.filter(|_| {
+        crate::variable(options.environment, "UNA_TEST_RUN_SERVER").as_deref() != Some("1")
+    });
+    if let Some(message) = pending {
         writeln!(stderr, "error: {message}")?;
+        return Ok(ExitStatus::Usage);
+    }
+    // Live peers send in real time, which virtual time cannot place: a run under
+    // `--virtual-time` takes no `serve:` grant until `--serve-script` (ADR 0123, S4 amendment C).
+    if options.virtual_time
+        && grants
+            .iter()
+            .any(|grant| matches!(grant, Grant::Serve { .. }))
+    {
+        writeln!(stderr, "error: {}", una_interp::VIRTUAL_SERVE)?;
         return Ok(ExitStatus::Usage);
     }
     let keys = match load_keys(&grants) {
@@ -550,7 +571,11 @@ pub(crate) fn run_command(
     // A `--serve-threads` out of range is refused below; here it only sizes the descriptors.
     let serve_threads =
         una_interp::concurrency::serve_threads(options.tasks.serve_threads).unwrap_or(1);
-    let _listeners = match una_http::serve::prepare(
+    let served: Vec<una_core::http::serve::ServeGrant> = serve_inputs(&grants)
+        .iter()
+        .map(|input| input.grant.clone())
+        .collect();
+    let listeners = match una_http::serve::prepare(
         &serve_inputs(&grants),
         serve_threads,
         options
@@ -581,12 +606,41 @@ pub(crate) fn run_command(
         writeln!(stderr, "error: {message}")?;
         return Ok(ExitStatus::Usage);
     }
+    // A program that serves starts its serve threads here, before `main`, over the listeners
+    // bound above; they accept nothing until its first server operation (S4 amendment B.2).
+    // Any other run holds its listeners until it ends.
+    let live = if serves && !listeners.listeners.is_empty() {
+        // The engine's panic hook, from this thread, before any serve thread starts.
+        una_http::serve::install_panic_hook();
+        match una_http::serve::live::Live::start(listeners, &served, serve_threads) {
+            Ok(live) => Some(std::sync::Arc::new(live)),
+            Err(message) => {
+                writeln!(stderr, "error: {message}")?;
+                return Ok(ExitStatus::Usage);
+            }
+        }
+    } else {
+        drop(listeners);
+        None
+    };
     // ADR 0116 rule 18: a run that can reach a `for ever` or runs a driver installs the
     // handlers of SIGINT and SIGTERM; any other keeps their default actions.
     // The run's host stop state is made first, so a signal that comes while the handlers are
     // installed counts for the run.
     let stops = takes_stops(&analysis, &package.sources, &entry, drive.is_some());
     let stop = una_interp::stopping::RunStop::new(options.stop_grace);
+    // The serve engine learns of the host stop and of the hard stop from the run's watcher
+    // (ADR 0123 rule 18).
+    if let Some(live) = &live {
+        let live = std::sync::Arc::clone(live);
+        stop.on_stops(Box::new(move |hard| {
+            if hard {
+                live.hard_stop();
+            } else {
+                live.host_stop();
+            }
+        }));
+    }
     if stops && let Err(una_sys::signals::InstallError(message)) = una_sys::signals::install() {
         writeln!(stderr, "internal compiler error (U8001): {message}")?;
         return Ok(ExitStatus::Internal);
@@ -630,7 +684,10 @@ pub(crate) fn run_command(
     let entry_path = entry.as_str();
     let host = &host;
     let max_depth = options.max_depth;
-    let limits = limits(&options, Some(&stop));
+    let mut limits = limits(&options, Some(&stop));
+    limits.serve = live
+        .as_deref()
+        .map(|live| live as &dyn una_http::serve::program::Port);
     let environment = options.environment;
     let mut output = Vec::new();
     let mut write_error = None;
@@ -680,6 +737,22 @@ pub(crate) fn run_command(
         )
     });
     drop(ceiling);
+    // The serve engine ends with the run: what the run answered is written, as a host stop
+    // drains, for at most the grace period, then the hard stop closes what is left; after the
+    // hard stop or an internal error, the hard stop at once (ADR 0123 rule 18).
+    if let Some(live) = &live {
+        let hard = matches!(
+            &evaluated,
+            Ok((Some(run), _)) if matches!(
+                run.completion,
+                Completion::Aborted(Abort::HostStop { .. } | Abort::Fault { .. })
+            )
+        );
+        live.end(
+            std::time::Duration::from_secs(options.stop_grace.max(1)),
+            hard,
+        );
+    }
     drop(watching);
     let (evaluated, traced) = match evaluated {
         Ok((run, traced)) => (Ok(run), traced),
