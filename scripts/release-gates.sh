@@ -86,6 +86,10 @@
 #
 # Usage: scripts/release-gates.sh SHA OUT [GATE...]
 set -u
+# The test profile of the per-PR gate is opt-level 1 for speed (#1697); the release evidence keeps
+# the unoptimized build it always had. Crates with their own opt-level in Cargo.toml (una-rt and
+# una-http at 0, una-link, object and sha2 at 3) keep it: the variable sets the profile-wide value only.
+export CARGO_PROFILE_DEV_OPT_LEVEL=0
 # A trace would print the patterns below, and a startup file could read them: refuse a trace,
 # whether `bash -x` or an exported SHELLOPTS turned it on (SHELLOPTS itself is read-only, and
 # holds no xtrace once this check passes), drop the startup files the shells of the gates would
